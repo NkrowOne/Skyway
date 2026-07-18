@@ -7,9 +7,12 @@ import {
   getProject,
   getService,
   getSetting,
+  setDeploymentDiagnosis,
   successfulDeploymentsBeyond,
   updateDeployment,
 } from '../db';
+import { fireAlert, resolveServiceAlerts } from '../alerts';
+import { diagnose } from './diagnose';
 import { emitDeploy } from '../events';
 import { dockerAvailable } from '../docker/client';
 import {
@@ -122,6 +125,10 @@ async function runDeployment(deploymentId: string): Promise<void> {
     emitDeploy(deploymentId, { type: 'done', status: 'success' });
     log('✔ Despliegue completado');
 
+    // Un despliegue correcto resuelve las alertas de caída previas.
+    resolveServiceAlerts(service.id, 'service_down', false);
+    resolveServiceAlerts(service.id, 'crash_loop', false);
+
     if (service.type === 'git' && !deployment.image_tag) {
       await cleanupOldImages(service.id, log);
     }
@@ -129,7 +136,24 @@ async function runDeployment(deploymentId: string): Promise<void> {
     const message = err?.message || String(err);
     log(`✖ Error: ${message}`);
     updateDeployment(deploymentId, { status: 'failed', error: message, finished_at: now() });
+
+    const diag = diagnose(message, (log as any).buffer());
+    if (diag) {
+      setDeploymentDiagnosis(deploymentId, diag);
+      log(`ℹ ${diag.title}: ${diag.cause}`);
+    }
     emitDeploy(deploymentId, { type: 'done', status: 'failed', error: message });
+
+    if (service && project) {
+      fireAlert({
+        severity: 'warning',
+        type: 'deploy_failed',
+        serviceId: service.id,
+        title: `Despliegue fallido: ${service.name}`,
+        message: `El despliegue (${deployment.trigger}) de "${service.name}" en ${project.name} falló: ${message.slice(0, 300)}`,
+        explanation: diag ? `${diag.title}. ${diag.fix}` : null,
+      });
+    }
   } finally {
     (log as any).stop();
   }

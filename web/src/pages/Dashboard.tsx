@@ -1,15 +1,37 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Boxes, FolderOpen, Plus } from 'lucide-react';
+import { Boxes, Building2, FolderOpen, Plus } from 'lucide-react';
 import { api } from '../api';
 import { Button, Field, Modal, Spinner, useToast } from '../components/ui';
 import { Project } from '../types';
-import { timeAgo } from '../utils';
+import { cx, timeAgo } from '../utils';
+
+function ProjectCard({ project }: { project: Project }) {
+  return (
+    <Link
+      to={`/projects/${project.id}`}
+      className="card group p-5 transition-all hover:border-acc/50 hover:shadow-lg hover:shadow-acc/5"
+    >
+      <div className="flex items-start justify-between">
+        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-acc/15 text-acc">
+          <Boxes size={17} />
+        </span>
+        <span className="text-xs text-sub">{timeAgo(project.created_at)}</span>
+      </div>
+      <h2 className="mt-3 font-medium group-hover:text-acc">{project.name}</h2>
+      <p className="mt-1 text-xs text-sub">
+        {project.serviceCount === 1 ? '1 servicio' : `${project.serviceCount ?? 0} servicios`} · {project.slug}
+      </p>
+    </Link>
+  );
+}
 
 export default function Dashboard() {
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState('');
+  const [client, setClient] = useState('');
+  const [filter, setFilter] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const toast = useToast();
 
@@ -19,15 +41,33 @@ export default function Dashboard() {
   });
 
   const create = useMutation({
-    mutationFn: () => api.post<{ project: Project }>('/projects', { name }),
+    mutationFn: () => api.post<{ project: Project }>('/projects', { name, ...(client.trim() ? { client } : {}) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       setCreateOpen(false);
       setName('');
+      setClient('');
       toast('Proyecto creado', 'ok');
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
+
+  const all = projects.data?.projects ?? [];
+  const clients = useMemo(
+    () => [...new Set(all.map((p) => p.client).filter((c): c is string => !!c))].sort(),
+    [all],
+  );
+  const existingClients = clients;
+  const visible = filter === null ? all : all.filter((p) => (filter === '' ? !p.client : p.client === filter));
+
+  const grouped = useMemo(() => {
+    const groups = new Map<string, Project[]>();
+    for (const p of visible) {
+      const key = p.client ?? '';
+      groups.set(key, [...(groups.get(key) ?? []), p]);
+    }
+    return [...groups.entries()].sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)));
+  }, [visible]);
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">
@@ -41,9 +81,35 @@ export default function Dashboard() {
         </Button>
       </div>
 
+      {clients.length > 0 && (
+        <div className="mb-5 flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setFilter(null)}
+            className={cx(
+              'rounded-full border px-3 py-1 text-xs transition-colors',
+              filter === null ? 'border-acc/60 bg-acc/15 text-acc' : 'border-line bg-panel2 text-sub hover:text-txt',
+            )}
+          >
+            Todas
+          </button>
+          {clients.map((c) => (
+            <button
+              key={c}
+              onClick={() => setFilter(filter === c ? null : c)}
+              className={cx(
+                'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors',
+                filter === c ? 'border-acc/60 bg-acc/15 text-acc' : 'border-line bg-panel2 text-sub hover:text-txt',
+              )}
+            >
+              <Building2 size={11} /> {c}
+            </button>
+          ))}
+        </div>
+      )}
+
       {projects.isLoading && <Spinner label="Cargando proyectos..." />}
 
-      {projects.data && projects.data.projects.length === 0 && (
+      {projects.data && all.length === 0 && (
         <div className="card flex flex-col items-center gap-3 py-16 text-center">
           <FolderOpen size={32} className="text-sub/50" />
           <p className="text-sm text-sub">Aún no tienes proyectos. Crea el primero para empezar a desplegar.</p>
@@ -53,26 +119,30 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {projects.data?.projects.map((p) => (
-          <Link
-            key={p.id}
-            to={`/projects/${p.id}`}
-            className="card group p-5 transition-all hover:border-acc/50 hover:shadow-lg hover:shadow-acc/5"
-          >
-            <div className="flex items-start justify-between">
-              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-acc/15 text-acc">
-                <Boxes size={17} />
-              </span>
-              <span className="text-xs text-sub">{timeAgo(p.created_at)}</span>
-            </div>
-            <h2 className="mt-3 font-medium group-hover:text-acc">{p.name}</h2>
-            <p className="mt-1 text-xs text-sub">
-              {p.serviceCount === 1 ? '1 servicio' : `${p.serviceCount ?? 0} servicios`} · {p.slug}
-            </p>
-          </Link>
-        ))}
-      </div>
+      {clients.length === 0 ? (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {visible.map((p) => (
+            <ProjectCard key={p.id} project={p} />
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-7">
+          {grouped.map(([clientName, list]) => (
+            <section key={clientName || '_none'}>
+              <h2 className="mb-3 flex items-center gap-2 text-sm font-medium text-sub">
+                <Building2 size={14} className="text-acc" />
+                {clientName || 'Sin empresa'}
+                <span className="text-xs text-sub/60">({list.length})</span>
+              </h2>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {list.map((p) => (
+                  <ProjectCard key={p.id} project={p} />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
 
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Nuevo proyecto">
         <form
@@ -82,8 +152,16 @@ export default function Dashboard() {
           }}
           className="space-y-4"
         >
-          <Field label="Nombre" hint="Ej: mi-saas, blog personal...">
+          <Field label="Nombre" hint="Ej: web corporativa, api interna...">
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} autoFocus required />
+          </Field>
+          <Field label="Empresa / cliente (opcional)" hint="Agrupa los proyectos por empresa en el panel">
+            <input className="input" list="clients-list" value={client} onChange={(e) => setClient(e.target.value)} placeholder="Acme S.L." />
+            <datalist id="clients-list">
+              {existingClients.map((c) => (
+                <option key={c} value={c} />
+              ))}
+            </datalist>
           </Field>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" type="button" onClick={() => setCreateOpen(false)}>

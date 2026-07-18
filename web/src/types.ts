@@ -20,6 +20,7 @@ export interface Project {
   id: string;
   name: string;
   slug: string;
+  client: string | null;
   created_at: number;
   serviceCount?: number;
 }
@@ -60,6 +61,13 @@ export interface Service {
 
 export type DeploymentStatus = 'queued' | 'building' | 'deploying' | 'success' | 'failed' | 'canceled';
 
+export interface Diagnosis {
+  id: string;
+  title: string;
+  cause: string;
+  fix: string;
+}
+
 export interface Deployment {
   id: string;
   service_id: string;
@@ -70,8 +78,56 @@ export interface Deployment {
   image_tag: string | null;
   logs?: string;
   error: string | null;
+  diagnosis: string | null;
   created_at: number;
   finished_at: number | null;
+}
+
+export type AlertSeverity = 'critical' | 'warning' | 'info';
+
+export interface Alert {
+  id: string;
+  ts: number;
+  severity: AlertSeverity;
+  type: string;
+  project_id: string | null;
+  service_id: string | null;
+  title: string;
+  message: string;
+  explanation: string | null;
+  resolved_at: number | null;
+  read_at: number | null;
+}
+
+export interface AuditEntry {
+  id: string;
+  ts: number;
+  actor: string;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  detail: string | null;
+  ip: string | null;
+}
+
+export interface SecurityFinding {
+  id: string;
+  severity: AlertSeverity;
+  title: string;
+  detail: string;
+  fix: string;
+  projectId?: string;
+  projectName?: string;
+  serviceId?: string;
+  serviceName?: string;
+}
+
+export interface SecurityReport {
+  score: number;
+  grade: string;
+  findings: SecurityFinding[];
+  failedLogins24h: number;
+  jwtFromEnv: boolean;
 }
 
 export interface ServiceStats {

@@ -1,7 +1,17 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { clearAuthCookie, setAuthCookie, signToken, userIdFromRequest } from '../auth';
-import { countUsers, createUser, getUser, getUserByEmail } from '../db';
+import {
+  clearAuthCookie,
+  clearLoginFailures,
+  loginBlocked,
+  recordLoginFailure,
+  requireAuth,
+  setAuthCookie,
+  signToken,
+  userIdFromRequest,
+} from '../auth';
+import { audit } from '../audit';
+import { countUsers, createUser, getUser, getUserByEmail, updateUserPassword } from '../db';
 import { hashPassword, verifyPassword } from '../util';
 
 const credentialsSchema = z.object({
@@ -27,21 +37,52 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const body = credentialsSchema.parse(req.body);
     const user = createUser(body.email.toLowerCase(), hashPassword(body.password));
     setAuthCookie(reply, signToken(user.id), req.protocol === 'https');
+    audit(req, 'setup', { type: 'user', id: user.id, detail: user.email }, user.email);
     return { user: { id: user.id, email: user.email } };
   });
 
   app.post('/api/auth/login', async (req, reply) => {
+    if (loginBlocked(req.ip)) {
+      audit(req, 'login_blocked', { type: 'ip', id: req.ip });
+      return reply.code(429).send({ error: 'Demasiados intentos fallidos. Espera 15 minutos.' });
+    }
     const body = credentialsSchema.parse(req.body);
     const user = getUserByEmail(body.email.toLowerCase());
     if (!user || !verifyPassword(body.password, user.password_hash)) {
+      recordLoginFailure(req.ip);
+      audit(req, 'login_failed', { type: 'user', id: body.email.toLowerCase() });
       return reply.code(401).send({ error: 'Credenciales incorrectas' });
     }
+    clearLoginFailures(req.ip);
     setAuthCookie(reply, signToken(user.id), req.protocol === 'https');
+    audit(req, 'login', { type: 'user', id: user.id, detail: user.email }, user.email);
     return { user: { id: user.id, email: user.email } };
   });
 
-  app.post('/api/auth/logout', async (_req, reply) => {
+  app.post('/api/auth/logout', async (req, reply) => {
+    audit(req, 'logout');
     clearAuthCookie(reply);
     return { ok: true };
+  });
+
+  app.register(async (secured) => {
+    secured.addHook('preHandler', requireAuth);
+
+    secured.post('/api/auth/password', async (req, reply) => {
+      const body = z
+        .object({
+          current: z.string().min(1, 'Contraseña actual requerida'),
+          next: z.string().min(8, 'La nueva contraseña debe tener al menos 8 caracteres'),
+        })
+        .parse(req.body);
+      const userId = userIdFromRequest(req)!;
+      const user = getUser(userId)!;
+      if (!verifyPassword(body.current, user.password_hash)) {
+        return reply.code(401).send({ error: 'La contraseña actual no es correcta' });
+      }
+      updateUserPassword(userId, hashPassword(body.next));
+      audit(req, 'password_changed', { type: 'user', id: userId });
+      return { ok: true };
+    });
   });
 }

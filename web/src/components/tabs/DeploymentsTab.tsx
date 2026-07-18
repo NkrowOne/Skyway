@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { History, RotateCcw } from 'lucide-react';
+import { History, Lightbulb, RotateCcw } from 'lucide-react';
 import { api, openStream } from '../../api';
-import { Deployment } from '../../types';
+import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_STATUS_STYLE, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
 import { Button, Spinner, useToast } from '../ui';
@@ -13,6 +13,29 @@ const TRIGGER_LABEL: Record<string, string> = {
   webhook: 'push',
   rollback: 'rollback',
 };
+
+/** Explicación del fallo generada por el servidor (qué pasó y cómo arreglarlo). */
+function DiagnosisCard({ raw }: { raw: string | null }) {
+  if (!raw) return null;
+  let diagnosis: Diagnosis;
+  try {
+    diagnosis = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  return (
+    <div className="mb-2 rounded-lg border border-warn/30 bg-warn/5 p-3 text-xs">
+      <p className="flex items-center gap-1.5 font-medium text-warn">
+        <Lightbulb size={13} /> {diagnosis.title}
+      </p>
+      <p className="mt-1.5 text-sub">{diagnosis.cause}</p>
+      <p className="mt-1.5">
+        <span className="font-medium text-ok">Cómo arreglarlo: </span>
+        <span className="text-sub">{diagnosis.fix}</span>
+      </p>
+    </div>
+  );
+}
 
 /** Logs de un despliegue: histórico + streaming en vivo si está activo. */
 function DeploymentLogs({ deployment }: { deployment: Deployment }) {
@@ -127,6 +150,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
           {openId === d.id && (
             <div className="border-t border-line p-3">
               {d.error && <p className="mb-2 rounded-lg border border-err/30 bg-err/10 px-3 py-2 text-xs text-err">{d.error}</p>}
+              <DiagnosisCard raw={d.diagnosis} />
               <DeploymentLogs deployment={d} />
             </div>
           )}

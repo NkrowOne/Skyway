@@ -1,8 +1,10 @@
 import { FastifyInstance } from 'fastify';
 import { requireAuth } from '../auth';
+import { audit } from '../audit';
 import { getDeployment, getService, listDeployments } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
 import { onDeploy } from '../events';
+import { markManualAction } from '../monitor';
 import { sseInit } from '../sse';
 
 const ACTIVE = new Set(['queued', 'building', 'deploying']);
@@ -35,6 +37,8 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     if (service.type === 'database') {
       return reply.code(400).send({ error: 'Las bases de datos no soportan rollback de imagen' });
     }
+    markManualAction(service.id);
+    audit(req, 'service_rollback', { type: 'service', id: service.id, detail: `${service.name} → ${deployment.image_tag}` });
     const rollback = triggerDeploy(service.id, 'rollback', { imageTag: deployment.image_tag });
     reply.code(202);
     return { deployment: rollback };

@@ -3,9 +3,11 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { api } from './api';
 import { Spinner } from './components/ui';
 import Layout from './components/Layout';
+import AlertsPage from './pages/Alerts';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
 import ProjectPage from './pages/Project';
+import SecurityPage from './pages/Security';
 import SettingsPage from './pages/Settings';
 import Setup from './pages/Setup';
 
@@ -53,6 +55,8 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/projects/:projectId" element={<ProjectPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/security" element={<SecurityPage />} />
+        <Route path="/alerts" element={<AlertsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

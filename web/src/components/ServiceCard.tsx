@@ -1,4 +1,4 @@
-import { Database, GitBranch, Globe } from 'lucide-react';
+import { BellRing, Database, GitBranch, Globe } from 'lucide-react';
 import { ContainerState, Service, ServiceStats } from '../types';
 import { cx, fmtBytes, STATE_COLOR, STATE_LABEL } from '../utils';
 import { StatusDot } from './ui';
@@ -14,11 +14,13 @@ const TEMPLATE_LABEL: Record<string, string> = {
 export default function ServiceCard({
   service,
   metrics,
+  alertCount = 0,
   selected,
   onClick,
 }: {
   service: Service;
   metrics: { state: ContainerState; stats: ServiceStats | null } | null;
+  alertCount?: number;
   selected: boolean;
   onClick: () => void;
 }) {
@@ -31,10 +33,16 @@ export default function ServiceCard({
     <button
       onClick={onClick}
       className={cx(
-        'card group p-4 text-left transition-all hover:border-acc/60',
+        'card group relative p-4 text-left transition-all hover:border-acc/60',
         selected && 'border-acc/70 ring-1 ring-acc/30',
+        alertCount > 0 && !selected && 'border-err/40',
       )}
     >
+      {alertCount > 0 && (
+        <span className="absolute -right-2 -top-2 flex items-center gap-1 rounded-full border border-err/40 bg-err/15 px-2 py-0.5 text-[10px] font-medium text-err">
+          <BellRing size={10} /> {alertCount}
+        </span>
+      )}
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2.5">
           <span

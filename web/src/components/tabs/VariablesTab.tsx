@@ -15,6 +15,15 @@ interface Row {
   value: string;
 }
 
+/** Variables típicas que casi toda app necesita, para añadirlas en un clic. */
+const SUGGESTED_VARS: { key: string; value: string; hint: string }[] = [
+  { key: 'NODE_ENV', value: 'production', hint: 'Modo de ejecución para apps Node' },
+  { key: 'TZ', value: 'Europe/Madrid', hint: 'Zona horaria del contenedor' },
+  { key: 'LOG_LEVEL', value: 'info', hint: 'Nivel de logs de la aplicación' },
+  { key: 'DATABASE_URL', value: '${{PostgreSQL.DATABASE_URL}}', hint: 'Conexión a la base de datos del proyecto' },
+  { key: 'REDIS_URL', value: '${{Redis.REDIS_URL}}', hint: 'Conexión al Redis del proyecto' },
+];
+
 export default function VariablesTab({ serviceId, onSaved }: { serviceId: string; onSaved: () => void }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -80,7 +89,9 @@ export default function VariablesTab({ serviceId, onSaved }: { serviceId: string
     <div className="space-y-4 p-4">
       <div className="flex items-center justify-between">
         <p className="text-xs text-sub">
-          Usa referencias <span className="font-mono text-acc2">{'${{Servicio.VAR}}'}</span> para conectar servicios
+          Referencias: <span className="font-mono text-acc2">{'${{Servicio.VAR}}'}</span> ·{' '}
+          <span className="font-mono text-acc2">{'${{shared.VAR}}'}</span>. Las variables compartidas del proyecto se
+          heredan automáticamente.
         </p>
         <div className="flex items-center gap-1">
           <Button size="sm" variant="ghost" onClick={() => setReveal(!reveal)} title={reveal ? 'Ocultar valores' : 'Mostrar valores'}>
@@ -164,13 +175,34 @@ export default function VariablesTab({ serviceId, onSaved }: { serviceId: string
         </p>
       )}
 
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-sub">
+        <span>Sugerencias:</span>
+        {SUGGESTED_VARS.filter((s) => !rows.some((r) => r.key === s.key)).map((s) => (
+          <button
+            key={s.key}
+            className="rounded-md border border-line bg-panel2 px-2 py-0.5 font-mono text-[11px] text-sub hover:border-acc/50 hover:text-txt"
+            title={s.hint}
+            onClick={() => {
+              setRows([...rows, { key: s.key, value: s.value }]);
+              setDirty(true);
+            }}
+          >
+            + {s.key}
+          </button>
+        ))}
+      </div>
+
       {references.length > 0 && (
         <details className="card p-3 text-xs">
-          <summary className="cursor-pointer text-sub hover:text-txt">Referencias disponibles de otros servicios</summary>
+          <summary className="cursor-pointer text-sub hover:text-txt">
+            Referencias disponibles (variables compartidas y otros servicios)
+          </summary>
           <div className="mt-2 space-y-2">
             {references.map((ref) => (
               <div key={ref.service}>
-                <p className="mb-1 font-medium text-txt">{ref.service}</p>
+                <p className="mb-1 font-medium text-txt">
+                  {ref.service === 'shared' ? 'Variables compartidas del proyecto' : ref.service}
+                </p>
                 <div className="flex flex-wrap gap-1.5">
                   {ref.vars.map((v) => {
                     const token = `\${{${ref.service}.${v}}}`;

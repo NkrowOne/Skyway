@@ -74,3 +74,60 @@ export const DEPLOY_STATUS_STYLE: Record<DeploymentStatus, string> = {
 export function isActiveDeploy(status: DeploymentStatus): boolean {
   return status === 'queued' || status === 'building' || status === 'deploying';
 }
+
+export type Severity = 'critical' | 'warning' | 'info';
+
+export const SEVERITY_LABEL: Record<Severity, string> = {
+  critical: 'Crítico',
+  warning: 'Aviso',
+  info: 'Info',
+};
+
+export const SEVERITY_STYLE: Record<Severity, string> = {
+  critical: 'text-err border-err/40 bg-err/10',
+  warning: 'text-warn border-warn/40 bg-warn/10',
+  info: 'text-acc2 border-acc2/40 bg-acc2/10',
+};
+
+export const ALERT_TYPE_LABEL: Record<string, string> = {
+  service_down: 'Servicio caído',
+  crash_loop: 'Bucle de reinicios',
+  cpu_high: 'CPU alta',
+  mem_high: 'Memoria alta',
+  deploy_failed: 'Despliegue fallido',
+};
+
+export const AUDIT_ACTION_LABEL: Record<string, string> = {
+  setup: 'Cuenta creada',
+  login: 'Inicio de sesión',
+  login_failed: 'Login fallido',
+  login_blocked: 'Login bloqueado (rate limit)',
+  logout: 'Cierre de sesión',
+  password_changed: 'Contraseña cambiada',
+  sessions_rotated: 'Sesiones invalidadas',
+  project_created: 'Proyecto creado',
+  project_updated: 'Proyecto actualizado',
+  project_deleted: 'Proyecto eliminado',
+  project_vars_updated: 'Variables compartidas actualizadas',
+  service_created: 'Servicio creado',
+  service_updated: 'Servicio actualizado',
+  service_deleted: 'Servicio eliminado',
+  service_deploy: 'Despliegue manual',
+  service_rollback: 'Rollback',
+  service_start: 'Servicio iniciado',
+  service_stop: 'Servicio detenido',
+  service_restart: 'Servicio reiniciado',
+  service_env_updated: 'Variables actualizadas',
+  settings_updated: 'Ajustes globales cambiados',
+  webhook_push: 'Push recibido (webhook)',
+  server_started: 'Servidor iniciado',
+};
+
+export function fmtDateTime(ts: number): string {
+  return new Date(ts).toLocaleString('es', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}

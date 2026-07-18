@@ -12,6 +12,8 @@ import { deploymentRoutes } from './routes/deployments';
 import { streamRoutes } from './routes/streams';
 import { systemRoutes } from './routes/system';
 import { webhookRoutes } from './routes/webhooks';
+import { securityRoutes } from './routes/security';
+import { alertRoutes } from './routes/alerts';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -39,6 +41,8 @@ export function buildApp(): FastifyInstance {
   app.register(streamRoutes);
   app.register(systemRoutes);
   app.register(webhookRoutes);
+  app.register(securityRoutes);
+  app.register(alertRoutes);
 
   // Sirve la UI compilada (producción) con fallback SPA.
   if (fs.existsSync(path.join(config.webDist, 'index.html'))) {

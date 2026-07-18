@@ -24,6 +24,42 @@ export function jwtSecret(): string {
   return cachedSecret;
 }
 
+/** Invalida todas las sesiones rotando el secreto de firma. */
+export function rotateJwtSecret(): void {
+  const next = randomToken(32);
+  setSetting('jwtSecret', next);
+  cachedSecret = config.jwtSecretEnv ? cachedSecret : next;
+}
+
+// --- límite de intentos de login por IP (anti fuerza bruta) ---
+const WINDOW_MS = 15 * 60_000;
+const MAX_ATTEMPTS = 8;
+const attempts = new Map<string, { count: number; first: number }>();
+
+export function loginBlocked(ip: string): boolean {
+  const entry = attempts.get(ip);
+  if (!entry) return false;
+  if (Date.now() - entry.first > WINDOW_MS) {
+    attempts.delete(ip);
+    return false;
+  }
+  return entry.count >= MAX_ATTEMPTS;
+}
+
+export function recordLoginFailure(ip: string): void {
+  const entry = attempts.get(ip);
+  if (!entry || Date.now() - entry.first > WINDOW_MS) {
+    attempts.set(ip, { count: 1, first: Date.now() });
+  } else {
+    entry.count += 1;
+  }
+  if (attempts.size > 5000) attempts.clear();
+}
+
+export function clearLoginFailures(ip: string): void {
+  attempts.delete(ip);
+}
+
 export function signToken(userId: string): string {
   return jwt.sign({ sub: userId }, jwtSecret(), { expiresIn: TOKEN_TTL });
 }

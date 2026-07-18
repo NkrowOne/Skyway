@@ -1,6 +1,8 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAuth } from '../auth';
+import { audit } from '../audit';
+import { markManualAction } from '../monitor';
 import {
   createService,
   deleteService,
@@ -65,6 +67,7 @@ const patchSchema = z.object({
       memoryMb: z.coerce.number().int().min(32).max(1024 * 512).nullable().optional(),
       version: z.string().trim().optional(),
       buildArgs: z.record(z.string()).optional(),
+      alertsMuted: z.boolean().optional(),
     })
     .optional(),
 });
@@ -124,6 +127,8 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       setEnv(service.id, template.makeEnv(slug));
     }
 
+    audit(req, 'service_created', { type: 'service', id: service.id, detail: `${service.name} (${service.type})` });
+    markManualAction(service.id);
     const deployment = triggerDeploy(service.id, 'initial');
     reply.code(201);
     return { service, deployment };
@@ -184,6 +189,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const updated = getService(id)!;
+    audit(req, 'service_updated', { type: 'service', id, detail: updated.name });
     return { service: updated, needsRedeploy };
   });
 
@@ -193,6 +199,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
 
+    markManualAction(id);
     if (await dockerAvailable()) {
       const name = containerName(found.project, found.service);
       try {
@@ -206,6 +213,11 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
     }
     deleteService(id);
+    audit(req, 'service_deleted', {
+      type: 'service',
+      id,
+      detail: `${found.service.name}${volumes === 'true' ? ' (con volumen)' : ''}`,
+    });
     return { ok: true };
   });
 
@@ -213,6 +225,8 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    markManualAction(id);
+    audit(req, 'service_deploy', { type: 'service', id, detail: found.service.name });
     const deployment = triggerDeploy(id, 'manual');
     reply.code(202);
     return { deployment };
@@ -225,6 +239,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
       if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
       const name = containerName(found.project, found.service);
+      markManualAction(id);
       try {
         if (action === 'start') await startContainer(name);
         else if (action === 'stop') await stopContainer(name);
@@ -232,6 +247,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       } catch (err: any) {
         return reply.code(500).send({ error: err?.message || 'Operación fallida' });
       }
+      audit(req, `service_${action}`, { type: 'service', id, detail: found.service.name });
       return { ok: true, runtime: await getRuntime(name) };
     });
   }
@@ -258,6 +274,11 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
     }
     setEnv(id, body.vars);
+    audit(req, 'service_env_updated', {
+      type: 'service',
+      id,
+      detail: `${found.service.name}: ${Object.keys(body.vars).length} variables`,
+    });
     return { ok: true, needsRedeploy: true };
   });
 }

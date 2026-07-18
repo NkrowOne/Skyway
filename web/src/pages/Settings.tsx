@@ -10,6 +10,13 @@ interface Settings {
   rootDomain: string | null;
   letsencryptEmail: string | null;
   hasGithubToken: boolean;
+  hasTelegramToken: boolean;
+  alertCpuPercent: string | null;
+  alertMemPercent: string | null;
+  alertSustainMinutes: string | null;
+  alertWebhookUrl: string | null;
+  alertDiscordUrl: string | null;
+  alertTelegramChat: string | null;
 }
 
 function Chip({ ok, label }: { ok: boolean; label: string }) {
@@ -32,6 +39,14 @@ export default function SettingsPage() {
   const [rootDomain, setRootDomain] = useState('');
   const [letsencryptEmail, setLetsencryptEmail] = useState('');
   const [githubToken, setGithubToken] = useState('');
+  const [cpuPct, setCpuPct] = useState('');
+  const [memPct, setMemPct] = useState('');
+  const [sustainMin, setSustainMin] = useState('');
+  const [webhookUrl, setWebhookUrl] = useState('');
+  const [discordUrl, setDiscordUrl] = useState('');
+  const [telegramToken, setTelegramToken] = useState('');
+  const [telegramChat, setTelegramChat] = useState('');
+  const [testing, setTesting] = useState(false);
 
   const settings = useQuery({
     queryKey: ['settings'],
@@ -44,8 +59,15 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (settings.data) {
-      setRootDomain(settings.data.settings.rootDomain || '');
-      setLetsencryptEmail(settings.data.settings.letsencryptEmail || '');
+      const s = settings.data.settings;
+      setRootDomain(s.rootDomain || '');
+      setLetsencryptEmail(s.letsencryptEmail || '');
+      setCpuPct(s.alertCpuPercent || '');
+      setMemPct(s.alertMemPercent || '');
+      setSustainMin(s.alertSustainMinutes || '');
+      setWebhookUrl(s.alertWebhookUrl || '');
+      setDiscordUrl(s.alertDiscordUrl || '');
+      setTelegramChat(s.alertTelegramChat || '');
     }
   }, [settings.data]);
 
@@ -54,15 +76,36 @@ export default function SettingsPage() {
       api.put('/settings', {
         rootDomain,
         letsencryptEmail,
+        alertCpuPercent: cpuPct,
+        alertMemPercent: memPct,
+        alertSustainMinutes: sustainMin,
+        alertWebhookUrl: webhookUrl,
+        alertDiscordUrl: discordUrl,
+        alertTelegramChat: telegramChat,
         ...(githubToken ? { githubToken } : {}),
+        ...(telegramToken ? { alertTelegramToken: telegramToken } : {}),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       setGithubToken('');
+      setTelegramToken('');
       toast('Ajustes guardados', 'ok');
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
+
+  const testChannels = async () => {
+    setTesting(true);
+    try {
+      const res = await api.post<{ ok: boolean; channels: string[]; failures: string[] }>('/settings/alerts/test');
+      if (res.failures.length > 0) toast(`Fallo en: ${res.failures.join(', ')}. Revisa la configuración.`, 'err');
+      else toast(`Notificación enviada a: ${res.channels.join(', ')} ✓`, 'ok');
+    } catch (err) {
+      toast((err as Error).message, 'err');
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const sys = system.data;
 
@@ -103,6 +146,52 @@ export default function SettingsPage() {
             onChange={(e) => setGithubToken(e.target.value)}
           />
         </Field>
+      </section>
+
+      <section className="card p-6">
+        <h2 className="mb-1 text-sm font-semibold">Alertas y notificaciones</h2>
+        <p className="mb-4 text-xs text-sub">
+          Skyway vigila caídas, bucles de reinicio y consumo de CPU/RAM. Configura al menos un canal para enterarte sin
+          tener el panel abierto.
+        </p>
+        <div className="mb-4 grid grid-cols-3 gap-3">
+          <Field label="Umbral CPU (%)" hint="por defecto 90">
+            <input className="input" type="number" min={10} max={100} placeholder="90" value={cpuPct} onChange={(e) => setCpuPct(e.target.value)} />
+          </Field>
+          <Field label="Umbral RAM (%)" hint="por defecto 90">
+            <input className="input" type="number" min={10} max={100} placeholder="90" value={memPct} onChange={(e) => setMemPct(e.target.value)} />
+          </Field>
+          <Field label="Sostenido (min)" hint="por defecto 5">
+            <input className="input" type="number" min={1} max={120} placeholder="5" value={sustainMin} onChange={(e) => setSustainMin(e.target.value)} />
+          </Field>
+        </div>
+        <div className="space-y-4">
+          <Field label="Webhook genérico (POST JSON)" hint="Para n8n, Zapier, tu propio endpoint...">
+            <input className="input font-mono text-xs" placeholder="https://..." value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} />
+          </Field>
+          <Field label="Webhook de Discord" hint="Canal → Ajustes → Integraciones → Webhooks">
+            <input className="input font-mono text-xs" placeholder="https://discord.com/api/webhooks/..." value={discordUrl} onChange={(e) => setDiscordUrl(e.target.value)} />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Token del bot de Telegram" hint={settings.data?.settings.hasTelegramToken ? 'Token configurado ✓' : 'Crea un bot con @BotFather'}>
+              <input
+                className="input font-mono text-xs"
+                type="password"
+                placeholder={settings.data?.settings.hasTelegramToken ? '••••••••  (escribir para reemplazar)' : '123456:ABC...'}
+                value={telegramToken}
+                onChange={(e) => setTelegramToken(e.target.value)}
+              />
+            </Field>
+            <Field label="Chat ID de Telegram" hint="Tu ID o el de un grupo (@userinfobot)">
+              <input className="input font-mono text-xs" placeholder="-100123456789" value={telegramChat} onChange={(e) => setTelegramChat(e.target.value)} />
+            </Field>
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <Button variant="outline" size="sm" onClick={testChannels} loading={testing}>
+            Enviar notificación de prueba
+          </Button>
+        </div>
       </section>
 
       <div className="flex justify-end">

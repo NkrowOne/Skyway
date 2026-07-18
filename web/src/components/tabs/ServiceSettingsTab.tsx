@@ -37,6 +37,7 @@ export default function ServiceSettingsTab({
   const [hostPort, setHostPort] = useState(cfg.hostPort ? String(cfg.hostPort) : '');
   const [cpus, setCpus] = useState(cfg.cpus ? String(cfg.cpus) : '');
   const [memoryMb, setMemoryMb] = useState(cfg.memoryMb ? String(cfg.memoryMb) : '');
+  const [alertsMuted, setAlertsMuted] = useState(!!(cfg as any).alertsMuted);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteVolumes, setDeleteVolumes] = useState(false);
 
@@ -51,6 +52,7 @@ export default function ServiceSettingsTab({
         hostPort: hostPort ? Number(hostPort) : null,
         cpus: cpus ? Number(cpus) : null,
         memoryMb: memoryMb ? Number(memoryMb) : null,
+        alertsMuted,
       };
       if (isGit) {
         Object.assign(config, {
@@ -196,6 +198,10 @@ export default function ServiceSettingsTab({
         <p className="mt-1.5 text-xs text-sub/80">
           Los límites de CPU/RAM se aplican en caliente si el contenedor está activo.
         </p>
+        <label className="mt-3 flex items-center gap-2 text-sm text-sub">
+          <input type="checkbox" checked={alertsMuted} onChange={(e) => setAlertsMuted(e.target.checked)} className="accent-acc" />
+          Silenciar alertas de este servicio (caídas, CPU/RAM, despliegues fallidos)
+        </label>
       </section>
 
       {isGit && (

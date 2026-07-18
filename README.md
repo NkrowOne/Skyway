@@ -14,6 +14,10 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 - **Gestión dinámica de recursos** — límites de CPU y RAM por servicio, aplicados **en caliente** sin reiniciar el contenedor. Métricas en vivo (CPU, memoria, red) por servicio y del host.
 - **Dominios y TLS** — Traefik enruta tus dominios a cada servicio; con un email de Let's Encrypt, certificados automáticos. Subdominios generados a partir de tu dominio raíz.
 - **Logs en tiempo real** — logs de build y de ejecución en streaming (SSE), historial de despliegues y **rollback** a cualquier versión anterior.
+- **Errores explicados** — cuando un despliegue falla, Skyway diagnostica la causa (repo privado sin token, OOM, puerto ocupado, rama inexistente, build roto...) y te dice **qué pasó y cómo arreglarlo**, en español.
+- **Alertas** — un monitor vigila caídas, bucles de reinicio, CPU/RAM sostenidas y despliegues fallidos, con recuperación automática. Notificaciones por **Discord, Telegram o webhook** (n8n, Zapier...), además de la campana del panel.
+- **Panel de seguridad** — puntuación y hallazgos con explicación y solución (bases de datos expuestas, servicios sin límites, dominios sin TLS, intentos de login sospechosos), registro de auditoría de toda la actividad, cambio de contraseña y cierre de sesiones remoto. Login con límite de intentos por IP.
+- **Multi-empresa** — asigna cada proyecto a una empresa/cliente y el panel los agrupa y filtra. **Variables compartidas por proyecto** (SMTP, claves S3, TZ...) heredadas por todos sus servicios y referenciables con `${{shared.VAR}}`.
 - **Ligero** — un solo binario Node + SQLite. Sin Kubernetes, sin dependencias pesadas: pensado para un único servidor dedicado.
 
 ## Requisitos
@@ -45,8 +49,12 @@ Abre `http://IP-DEL-SERVIDOR:4000` (o `http://tu-dominio`) y crea la cuenta de a
    DATABASE_URL=${{PostgreSQL.DATABASE_URL}}
    ```
    y redespliega. La app llega a la base de datos por la red privada del proyecto.
+
+   Para lo común de una empresa (SMTP, claves de API, `TZ`...), usa **Variables compartidas** del proyecto: se heredan en todos sus servicios (las del servicio ganan si repiten clave) y se referencian con `${{shared.VAR}}`.
 5. **Ponle dominio** — en **Ajustes** del servicio añade `app.midominio.com` (con el DNS apuntando a tu servidor). Con email de Let's Encrypt configurado, TLS automático.
 6. **Auto-deploy** — copia la URL y el secreto del webhook (Ajustes del servicio) en GitHub → Settings → Webhooks. Cada push despliega.
+7. **Activa las notificaciones** — en Ajustes → Alertas configura Discord, Telegram o un webhook y pulsa "Enviar notificación de prueba". Si un servicio de un cliente se cae, te llega al momento con la explicación del código de salida.
+8. **Revisa el panel de seguridad** (icono del escudo) — corrige los hallazgos hasta subir la nota: límites de recursos en todos los servicios, TLS activado, sin puertos de bases de datos expuestos.
 
 ## Desarrollo local
 

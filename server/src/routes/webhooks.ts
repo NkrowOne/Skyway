@@ -1,6 +1,8 @@
 import { FastifyInstance } from 'fastify';
+import { auditSystem } from '../audit';
 import { getService } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
+import { markManualAction } from '../monitor';
 import { GitConfig } from '../types';
 import { hmacSha256, safeEqual } from '../util';
 
@@ -49,6 +51,9 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
         return { ok: true, ignored: `ref ${payload?.ref} (se espera ${expectedRef})` };
       }
 
+      const commit = (payload?.head_commit?.id as string | undefined)?.slice(0, 7);
+      auditSystem('webhook_push', `${service.name}${commit ? ` @ ${commit}` : ''}`);
+      markManualAction(service.id);
       const deployment = triggerDeploy(service.id, 'webhook');
       return { ok: true, deployment: { id: deployment.id, status: deployment.status } };
     });
