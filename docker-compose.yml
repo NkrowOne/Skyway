@@ -1,0 +1,62 @@
+# Skyway + Traefik para tu servidor dedicado.
+#   1. cp .env.example .env   (ajusta SKYWAY_DOMAIN y LETSENCRYPT_EMAIL si quieres TLS)
+#   2. docker compose up -d --build
+#   3. Abre http://IP-DEL-SERVIDOR:4000 (o http://SKYWAY_DOMAIN) y crea tu cuenta.
+
+services:
+  skyway:
+    build: .
+    container_name: skyway
+    restart: unless-stopped
+    environment:
+      DATA_DIR: /data
+      # JWT_SECRET: define uno propio si quieres sesiones estables entre reinstalaciones
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - skyway-data:/data
+    networks:
+      - skyway-edge
+    ports:
+      - "4000:4000" # acceso directo a la UI; puedes quitarlo si solo usas el dominio
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=skyway-edge
+      - traefik.http.routers.skyway.rule=Host(`${SKYWAY_DOMAIN:-skyway.localhost}`)
+      - traefik.http.routers.skyway.entrypoints=web
+      - traefik.http.routers.skyway-secure.rule=Host(`${SKYWAY_DOMAIN:-skyway.localhost}`)
+      - traefik.http.routers.skyway-secure.entrypoints=websecure
+      - traefik.http.routers.skyway-secure.tls.certresolver=le
+      - traefik.http.services.skyway.loadbalancer.server.port=4000
+
+  traefik:
+    image: traefik:v3.1
+    container_name: skyway-traefik
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=skyway-edge
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.email=${LETSENCRYPT_EMAIL:-noreply@example.com}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.httpchallenge=true
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-letsencrypt:/letsencrypt
+    networks:
+      - skyway-edge
+
+networks:
+  # Red compartida: Skyway conecta aquí los contenedores que tienen dominio
+  # para que Traefik pueda enrutarles tráfico.
+  skyway-edge:
+    name: skyway-edge
+
+volumes:
+  skyway-data:
+  traefik-letsencrypt:

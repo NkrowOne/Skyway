@@ -1,0 +1,298 @@
+import Docker from 'dockerode';
+import { PassThrough } from 'stream';
+import { docker } from './client';
+import { EDGE_NETWORK, projectNetworkName } from './networks';
+import { getSetting } from '../db';
+import {
+  DatabaseConfig,
+  GitConfig,
+  ProjectRow,
+  ServiceRow,
+  ServiceRuntime,
+  ServiceStats,
+} from '../types';
+import { lineSplitter } from '../util';
+
+export function containerName(project: ProjectRow, service: ServiceRow): string {
+  return `skyway-${project.slug}-${service.slug}`;
+}
+
+export function volumeName(project: ProjectRow, service: ServiceRow, suffix = 'data'): string {
+  return `skyway-${project.slug}-${service.slug}-${suffix}`;
+}
+
+export async function findContainer(name: string): Promise<Docker.ContainerInspectInfo | null> {
+  try {
+    return await docker.getContainer(name).inspect();
+  } catch {
+    return null;
+  }
+}
+
+export async function getRuntime(name: string): Promise<ServiceRuntime> {
+  const info = await findContainer(name);
+  if (!info) {
+    return { state: 'not_created', startedAt: null, exitCode: null, restartCount: 0, image: null };
+  }
+  const st = info.State;
+  return {
+    state: (st.Status as ServiceRuntime['state']) || 'unknown',
+    startedAt: st.Running ? st.StartedAt : null,
+    exitCode: st.Running ? null : st.ExitCode,
+    restartCount: info.RestartCount || 0,
+    image: info.Config?.Image || null,
+  };
+}
+
+export async function stopContainer(name: string): Promise<void> {
+  const c = docker.getContainer(name);
+  try {
+    await c.stop({ t: 10 });
+  } catch (err: any) {
+    if (err?.statusCode !== 304 && err?.statusCode !== 404) throw err;
+  }
+}
+
+export async function startContainer(name: string): Promise<void> {
+  try {
+    await docker.getContainer(name).start();
+  } catch (err: any) {
+    if (err?.statusCode !== 304) throw err;
+  }
+}
+
+export async function restartContainer(name: string): Promise<void> {
+  await docker.getContainer(name).restart({ t: 10 });
+}
+
+export async function removeContainer(name: string): Promise<void> {
+  try {
+    await docker.getContainer(name).remove({ force: true, v: false });
+  } catch (err: any) {
+    if (err?.statusCode !== 404) throw err;
+  }
+}
+
+export async function removeVolume(name: string): Promise<void> {
+  try {
+    await docker.getVolume(name).remove({ force: true });
+  } catch {
+    // best-effort
+  }
+}
+
+export async function removeImage(tag: string): Promise<void> {
+  try {
+    await docker.getImage(tag).remove({ force: true });
+  } catch {
+    // best-effort: puede estar en uso o no existir
+  }
+}
+
+export async function imageExists(tag: string): Promise<boolean> {
+  try {
+    await docker.getImage(tag).inspect();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function traefikLabels(
+  project: ProjectRow,
+  service: ServiceRow,
+  domains: string[],
+  port: number,
+): Record<string, string> {
+  const labels: Record<string, string> = {};
+  if (domains.length === 0) return labels;
+  const router = `skyway-${project.slug}-${service.slug}`;
+  const rule = domains.map((d) => `Host(\`${d}\`)`).join(' || ');
+  const tls = !!getSetting('letsencryptEmail');
+  labels['traefik.enable'] = 'true';
+  labels['traefik.docker.network'] = EDGE_NETWORK;
+  // Router HTTP (puerto 80). Con TLS activo se añade un segundo router HTTPS:
+  // un único router con tls=true rechazaría las conexiones en claro del puerto 80.
+  labels[`traefik.http.routers.${router}.rule`] = rule;
+  labels[`traefik.http.routers.${router}.entrypoints`] = 'web';
+  if (tls) {
+    labels[`traefik.http.routers.${router}-secure.rule`] = rule;
+    labels[`traefik.http.routers.${router}-secure.entrypoints`] = 'websecure';
+    labels[`traefik.http.routers.${router}-secure.tls.certresolver`] = 'le';
+  }
+  labels[`traefik.http.services.${router}.loadbalancer.server.port`] = String(port);
+  return labels;
+}
+
+export interface RunSpec {
+  project: ProjectRow;
+  service: ServiceRow;
+  image: string;
+  env: Record<string, string>;
+  deploymentId: string;
+  /** Puerto interno que escucha la app (para Traefik). */
+  internalPort: number | null;
+  domains: string[];
+  hostPort?: number | null;
+  cpus?: number | null;
+  memoryMb?: number | null;
+  cmd?: string[] | null;
+  volumes?: { name: string; containerPath: string }[];
+}
+
+/** Crea y arranca el contenedor de un servicio (elimina el anterior si existe). */
+export async function runServiceContainer(spec: RunSpec): Promise<string> {
+  const name = containerName(spec.project, spec.service);
+  const netName = projectNetworkName(spec.project);
+
+  await removeContainer(name);
+
+  const labels: Record<string, string> = {
+    'skyway.managed': 'true',
+    'skyway.project': spec.project.id,
+    'skyway.service': spec.service.id,
+    'skyway.deployment': spec.deploymentId,
+    ...(spec.internalPort ? traefikLabels(spec.project, spec.service, spec.domains, spec.internalPort) : {}),
+  };
+
+  const hostConfig: Docker.HostConfig = {
+    RestartPolicy: { Name: 'unless-stopped' },
+    Binds: (spec.volumes || []).map((v) => `${v.name}:${v.containerPath}`),
+  };
+  if (spec.cpus && spec.cpus > 0) hostConfig.NanoCpus = Math.round(spec.cpus * 1e9);
+  if (spec.memoryMb && spec.memoryMb > 0) hostConfig.Memory = Math.round(spec.memoryMb * 1024 * 1024);
+
+  const exposed: Record<string, {}> = {};
+  if (spec.internalPort) exposed[`${spec.internalPort}/tcp`] = {};
+  if (spec.hostPort && spec.internalPort) {
+    hostConfig.PortBindings = {
+      [`${spec.internalPort}/tcp`]: [{ HostPort: String(spec.hostPort) }],
+    };
+  }
+
+  const container = await docker.createContainer({
+    name,
+    Image: spec.image,
+    Env: Object.entries(spec.env).map(([k, v]) => `${k}=${v}`),
+    Labels: labels,
+    Cmd: spec.cmd || undefined,
+    ExposedPorts: exposed,
+    HostConfig: hostConfig,
+    NetworkingConfig: {
+      EndpointsConfig: {
+        [netName]: { Aliases: [spec.service.slug] },
+      },
+    },
+  });
+
+  if (spec.domains.length > 0) {
+    try {
+      await docker.getNetwork(EDGE_NETWORK).connect({ Container: container.id });
+    } catch (err: any) {
+      if (!String(err?.message || '').includes('already exists')) throw err;
+    }
+  }
+
+  await container.start();
+  return container.id;
+}
+
+/** Actualiza límites de CPU/RAM de un contenedor en caliente. */
+export async function updateResources(
+  name: string,
+  cpus: number | null | undefined,
+  memoryMb: number | null | undefined,
+): Promise<void> {
+  const c = docker.getContainer(name);
+  const update: any = {
+    NanoCpus: cpus && cpus > 0 ? Math.round(cpus * 1e9) : 0,
+    Memory: memoryMb && memoryMb > 0 ? Math.round(memoryMb * 1024 * 1024) : 0,
+    MemorySwap: memoryMb && memoryMb > 0 ? -1 : 0,
+  };
+  await c.update(update);
+}
+
+export async function getStats(name: string): Promise<ServiceStats | null> {
+  try {
+    const c = docker.getContainer(name);
+    const s: any = await c.stats({ stream: false });
+    const cpuDelta = (s.cpu_stats?.cpu_usage?.total_usage || 0) - (s.precpu_stats?.cpu_usage?.total_usage || 0);
+    const sysDelta = (s.cpu_stats?.system_cpu_usage || 0) - (s.precpu_stats?.system_cpu_usage || 0);
+    const onlineCpus = s.cpu_stats?.online_cpus || 1;
+    const cpuPercent = sysDelta > 0 && cpuDelta > 0 ? (cpuDelta / sysDelta) * onlineCpus * 100 : 0;
+    let netRx = 0;
+    let netTx = 0;
+    for (const nw of Object.values(s.networks || {}) as any[]) {
+      netRx += nw.rx_bytes || 0;
+      netTx += nw.tx_bytes || 0;
+    }
+    return {
+      cpuPercent: Math.round(cpuPercent * 10) / 10,
+      memUsage: s.memory_stats?.usage || 0,
+      memLimit: s.memory_stats?.limit || 0,
+      netRx,
+      netTx,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sigue los logs de un contenedor y entrega líneas completas.
+ * Devuelve una función para detener el stream.
+ */
+export async function followLogs(
+  name: string,
+  onLine: (line: string) => void,
+  tail = 200,
+): Promise<() => void> {
+  const c = docker.getContainer(name);
+  const stream = (await c.logs({
+    follow: true,
+    stdout: true,
+    stderr: true,
+    tail,
+    timestamps: false,
+  })) as NodeJS.ReadableStream;
+
+  const out = new PassThrough();
+  const err = new PassThrough();
+  const feed = lineSplitter(onLine);
+  out.on('data', feed);
+  err.on('data', feed);
+  docker.modem.demuxStream(stream, out, err);
+
+  const stop = () => {
+    try {
+      (stream as any).destroy?.();
+    } catch {
+      /* noop */
+    }
+  };
+  return stop;
+}
+
+export function buildSpecFromService(
+  project: ProjectRow,
+  service: ServiceRow,
+): { internalPort: number | null; domains: string[]; hostPort: number | null; cpus: number | null; memoryMb: number | null } {
+  if (service.type === 'git') {
+    const cfg = service.config as GitConfig;
+    return {
+      internalPort: cfg.port || null,
+      domains: cfg.domains || [],
+      hostPort: cfg.hostPort ?? null,
+      cpus: cfg.cpus ?? null,
+      memoryMb: cfg.memoryMb ?? null,
+    };
+  }
+  const cfg = service.config as DatabaseConfig;
+  return {
+    internalPort: null,
+    domains: [],
+    hostPort: cfg.hostPort ?? null,
+    cpus: cfg.cpus ?? null,
+    memoryMb: cfg.memoryMb ?? null,
+  };
+}

@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-ink text-txt font-sans antialiased;
+}
+
+::selection {
+  @apply bg-acc/40;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2b303c transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2b303c;
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.pulse-soft {
+  animation: pulse-soft 1.6s ease-in-out infinite;
+}
+
+.input {
+  @apply w-full rounded-lg border border-line bg-panel2 px-3 py-2 text-sm text-txt placeholder-sub/60 outline-none transition-colors focus:border-acc/70 focus:ring-1 focus:ring-acc/40;
+}
+
+.card {
+  @apply rounded-xl border border-line bg-panel;
+}

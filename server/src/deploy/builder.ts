@@ -1,0 +1,155 @@
+import { spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { lineSplitter } from '../util';
+
+export type LogFn = (line: string) => void;
+
+let nixpacksCache: boolean | null = null;
+
+export async function nixpacksAvailable(): Promise<boolean> {
+  if (nixpacksCache !== null) return nixpacksCache;
+  nixpacksCache = await new Promise<boolean>((resolve) => {
+    const p = spawn('nixpacks', ['--version'], { stdio: 'ignore' });
+    p.on('error', () => resolve(false));
+    p.on('exit', (code) => resolve(code === 0));
+  });
+  return nixpacksCache;
+}
+
+export function spawnLogged(
+  cmd: string,
+  args: string[],
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; mask?: string[] },
+  log: LogFn,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const masked = (line: string) => {
+      let out = line;
+      for (const secret of opts.mask || []) {
+        if (secret) out = out.split(secret).join('*****');
+      }
+      log(out);
+    };
+    const p = spawn(cmd, args, {
+      cwd: opts.cwd,
+      env: { ...process.env, ...opts.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const feedOut = lineSplitter(masked);
+    const feedErr = lineSplitter(masked);
+    p.stdout.on('data', feedOut);
+    p.stderr.on('data', feedErr);
+    p.on('error', (err) => reject(new Error(`No se pudo ejecutar ${cmd}: ${err.message}`)));
+    p.on('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${cmd} terminó con código ${code}`));
+    });
+  });
+}
+
+export interface CloneResult {
+  commitSha: string | null;
+  commitMsg: string | null;
+}
+
+/** Normaliza URLs de repo: admite "owner/repo" como atajo de GitHub. */
+export function normalizeRepoUrl(repoUrl: string): string {
+  const trimmed = repoUrl.trim();
+  if (/^[\w.-]+\/[\w.-]+$/.test(trimmed)) return `https://github.com/${trimmed}`;
+  return trimmed;
+}
+
+function withToken(url: string, token: string | null): { url: string; mask: string[] } {
+  if (!token) return { url, mask: [] };
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'https:' && !u.username) {
+      u.username = 'x-access-token';
+      u.password = token;
+      return { url: u.toString(), mask: [token, u.toString()] };
+    }
+  } catch {
+    /* URL no estándar (ssh, etc.) */
+  }
+  return { url, mask: [token] };
+}
+
+export async function cloneRepo(
+  opts: { repoUrl: string; branch: string; token: string | null; dest: string },
+  log: LogFn,
+): Promise<CloneResult> {
+  const normalized = normalizeRepoUrl(opts.repoUrl);
+  const { url, mask } = withToken(normalized, opts.token);
+  fs.rmSync(opts.dest, { recursive: true, force: true });
+  fs.mkdirSync(opts.dest, { recursive: true });
+  log(`Clonando ${normalized} (rama ${opts.branch})...`);
+  await spawnLogged(
+    'git',
+    ['clone', '--depth', '1', '--branch', opts.branch, '--single-branch', url, opts.dest],
+    { env: { GIT_TERMINAL_PROMPT: '0' }, mask },
+    log,
+  );
+  const info = await new Promise<CloneResult>((resolve) => {
+    const p = spawn('git', ['-C', opts.dest, 'log', '-1', '--format=%H%n%s'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let buf = '';
+    p.stdout.on('data', (d) => (buf += d.toString()));
+    p.on('error', () => resolve({ commitSha: null, commitMsg: null }));
+    p.on('exit', () => {
+      const [sha, ...msg] = buf.trim().split('\n');
+      resolve({ commitSha: sha || null, commitMsg: msg.join('\n') || null });
+    });
+  });
+  if (info.commitSha) log(`Commit ${info.commitSha.slice(0, 7)}: ${info.commitMsg || ''}`);
+  return info;
+}
+
+export interface BuildOpts {
+  repoDir: string;
+  rootDir?: string;
+  dockerfilePath?: string;
+  imageTag: string;
+  buildArgs?: Record<string, string>;
+}
+
+/** Construye la imagen: Dockerfile si existe; si no, Nixpacks (como Railway). */
+export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
+  const context = path.resolve(opts.repoDir, opts.rootDir || '.');
+  if (!context.startsWith(path.resolve(opts.repoDir))) {
+    throw new Error('rootDir fuera del repositorio');
+  }
+  if (!fs.existsSync(context)) {
+    throw new Error(`El directorio raíz "${opts.rootDir}" no existe en el repositorio`);
+  }
+
+  const dockerfile = path.join(context, opts.dockerfilePath || 'Dockerfile');
+  const argFlags: string[] = [];
+  for (const [k, v] of Object.entries(opts.buildArgs || {})) {
+    argFlags.push('--build-arg', `${k}=${v}`);
+  }
+
+  if (fs.existsSync(dockerfile)) {
+    log(`Construyendo con Dockerfile (${path.relative(opts.repoDir, dockerfile)})...`);
+    await spawnLogged(
+      'docker',
+      ['build', '-t', opts.imageTag, '-f', dockerfile, ...argFlags, context],
+      { env: { DOCKER_BUILDKIT: '1' } },
+      log,
+    );
+    return;
+  }
+
+  if (await nixpacksAvailable()) {
+    log('No hay Dockerfile; construyendo con Nixpacks...');
+    const envFlags: string[] = [];
+    for (const [k, v] of Object.entries(opts.buildArgs || {})) {
+      envFlags.push('--env', `${k}=${v}`);
+    }
+    await spawnLogged('nixpacks', ['build', context, '--name', opts.imageTag, ...envFlags], {}, log);
+    return;
+  }
+
+  throw new Error(
+    'No se encontró Dockerfile y Nixpacks no está instalado. Añade un Dockerfile al repositorio o instala nixpacks en el servidor (https://nixpacks.com).',
+  );
+}
