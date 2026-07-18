@@ -110,6 +110,13 @@ const RULES: Rule[] = [
     fix: 'Revisa el Dockerfile y el campo "Directorio raíz" del servicio: las rutas de COPY/ADD son relativas a ese directorio.',
   },
   {
+    id: 'healthcheck-failed',
+    test: (e) => has(e, 'no pasó la validación', 'no respondió 2xx', 'Se restauró la versión anterior', 'Se mantuvo la versión anterior'),
+    title: 'La versión nueva no superó la validación de salud',
+    cause: 'Skyway arrancó la versión nueva y la comprobó antes de retirar la anterior: o el proceso murió al arrancar, o el healthcheck no respondió 2xx a tiempo. La versión anterior sigue sirviendo.',
+    fix: 'Mira las "últimas líneas del contenedor fallido" en este log: ahí está el error de tu app. Comprueba también que la ruta de healthcheck existe, responde 2xx sin autenticación y que el puerto interno es el correcto.',
+  },
+  {
     id: 'container-died',
     test: (e) => has(e, 'El contenedor terminó inesperadamente'),
     title: 'La aplicación arrancó pero se cerró enseguida',

@@ -76,6 +76,7 @@ const patchSchema = z.object({
       memoryMb: z.coerce.number().int().min(32).max(1024 * 512).nullable().optional(),
       version: z.string().trim().optional(),
       image: z.string().trim().min(1).optional(),
+      healthcheckPath: z.string().trim().max(200).nullable().optional(),
       buildArgs: z.record(z.string()).optional(),
       alertsMuted: z.boolean().optional(),
     })
@@ -85,7 +86,7 @@ const patchSchema = z.object({
 /** Campos cuyo cambio requiere recrear el contenedor. */
 const REDEPLOY_FIELDS = [
   'repoUrl', 'branch', 'rootDir', 'dockerfilePath', 'startCmd', 'port',
-  'domains', 'hostPort', 'version', 'image', 'buildArgs',
+  'domains', 'hostPort', 'version', 'image', 'buildArgs', 'healthcheckPath',
 ] as const;
 
 function loadService(id: string): { service: ServiceRow; project: NonNullable<ReturnType<typeof getProject>> } | null {

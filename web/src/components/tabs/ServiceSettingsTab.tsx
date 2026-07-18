@@ -41,6 +41,7 @@ export default function ServiceSettingsTab({
   const [cpus, setCpus] = useState(cfg.cpus ? String(cfg.cpus) : '');
   const [memoryMb, setMemoryMb] = useState(cfg.memoryMb ? String(cfg.memoryMb) : '');
   const [alertsMuted, setAlertsMuted] = useState(!!(cfg as any).alertsMuted);
+  const [healthcheckPath, setHealthcheckPath] = useState(cfg.healthcheckPath ?? '');
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteVolumes, setDeleteVolumes] = useState(false);
 
@@ -56,6 +57,7 @@ export default function ServiceSettingsTab({
         cpus: cpus ? Number(cpus) : null,
         memoryMb: memoryMb ? Number(memoryMb) : null,
         alertsMuted,
+        ...(service.type !== 'database' ? { healthcheckPath: healthcheckPath.trim() || null } : {}),
       };
       if (isGit) {
         Object.assign(config, {
@@ -138,6 +140,12 @@ export default function ServiceSettingsTab({
             <Field label="Comando de arranque" hint="Opcional: sobreescribe el CMD de la imagen">
               <input className="input font-mono text-xs" value={startCmd} onChange={(e) => setStartCmd(e.target.value)} placeholder="npm run start" />
             </Field>
+            <Field
+              label="Ruta de healthcheck"
+              hint="Opcional, ej: /health. Si responde 2xx la nueva versión se considera sana: activa los despliegues sin corte con marcha atrás automática."
+            >
+              <input className="input font-mono text-xs" value={healthcheckPath} onChange={(e) => setHealthcheckPath(e.target.value)} placeholder="/health" />
+            </Field>
           </>
         ) : isImage ? (
           <>
@@ -152,6 +160,9 @@ export default function ServiceSettingsTab({
                 <input className="input font-mono text-xs" value={startCmd} onChange={(e) => setStartCmd(e.target.value)} />
               </Field>
             </div>
+            <Field label="Ruta de healthcheck" hint="Opcional, ej: /healthz. Activa despliegues validados con marcha atrás automática.">
+              <input className="input font-mono text-xs" value={healthcheckPath} onChange={(e) => setHealthcheckPath(e.target.value)} placeholder="/healthz" />
+            </Field>
           </>
         ) : (
           <Field label="Versión de la imagen" hint={`Imagen: ${cfg.template}`}>

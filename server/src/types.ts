@@ -19,6 +19,7 @@ export interface GitConfig {
   memoryMb?: number | null;
   webhookSecret: string;
   volumes?: VolumeMount[];
+  healthcheckPath?: string | null;
 }
 
 export interface DatabaseConfig {
@@ -39,6 +40,7 @@ export interface ImageConfig {
   cpus?: number | null;
   memoryMb?: number | null;
   volumes?: VolumeMount[];
+  healthcheckPath?: string | null;
 }
 
 export type ServiceConfig = GitConfig | DatabaseConfig | ImageConfig;

@@ -15,6 +15,7 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 - **Variables con referencias** — conecta servicios con `${{Postgres.DATABASE_URL}}`, igual que en Railway. Se resuelven al desplegar.
 - **Gestión dinámica de recursos** — límites de CPU y RAM por servicio, aplicados **en caliente** sin reiniciar el contenedor. Métricas en vivo (CPU, memoria, red) por servicio y del host.
 - **Dominios y TLS** — Traefik enruta tus dominios a cada servicio; con un email de Let's Encrypt, certificados automáticos. Subdominios generados a partir de tu dominio raíz.
+- **Despliegues sin corte** — la versión nueva se arranca y se **valida** (healthcheck HTTP o periodo de gracia) antes de retirar la anterior. Sin volúmenes ni puertos fijos el intercambio es de **corte cero** (ambas conviven unos segundos tras el proxy); con estado, intercambio con **restauración automática**: si la nueva falla, la anterior vuelve sola. Un deploy roto ya no puede tumbar un servicio en producción.
 - **Logs en tiempo real** — logs de build y de ejecución en streaming (SSE), historial de despliegues y **rollback** a cualquier versión anterior.
 - **Errores explicados** — cuando un despliegue falla, Skyway diagnostica la causa (repo privado sin token, OOM, puerto ocupado, rama inexistente, build roto...) y te dice **qué pasó y cómo arreglarlo**, en español.
 - **Alertas** — un monitor vigila caídas, bucles de reinicio, CPU/RAM sostenidas y despliegues fallidos, con recuperación automática. Notificaciones por **Discord, Telegram o webhook** (n8n, Zapier...), además de la campana del panel.
@@ -132,16 +133,22 @@ web/src/
 
 En **Ajustes** (UI): dominio raíz para subdominios generados, email de Let's Encrypt y token de GitHub para repos privados.
 
+## ¿Y Kubernetes?
+
+Kubernetes es un orquestador pensado para repartir contenedores entre **flotas de servidores**: decide en qué máquina corre cada cosa, mueve cargas cuando un nodo muere y escala horizontalmente. Ese es su valor — y en un **único servidor dedicado no aporta nada de eso**, pero sí cobra su peaje: cientos de MB de RAM para su propio plano de control (RAM que dejarían de tener tus aplicaciones) y una complejidad operativa enorme (pods, ingresses, PVCs, RBAC...).
+
+Por eso Skyway usa Docker a pelo y, en su lugar, incorpora de forma nativa lo que de Kubernetes sí tiene sentido en una máquina: **despliegues validados sin corte con marcha atrás automática y healthchecks** (ver arriba). Si algún día pasas a 2-3 servidores o más, entonces sí: la capa de orquestación de Skyway está aislada en `server/src/docker/`, y se podría añadir un driver de Kubernetes (k3s) manteniendo el mismo panel. Hasta entonces, cada MB del servidor trabaja para tus proyectos.
+
 ## Notas y límites actuales
 
-- Al redesplegar hay unos segundos de corte (se recrea el contenedor; sin blue-green todavía).
+- Los servicios **con volúmenes o puerto de host fijo** (y las bases de datos) tienen un corte breve al redesplegar: no pueden convivir dos instancias escribiendo el mismo volumen. Aun así el intercambio valida la versión nueva y restaura la anterior si falla.
 - Las credenciales de una base de datos se fijan al crearla (viven en su volumen); cambiar las variables después no cambia la contraseña real.
 - El rollback reutiliza imágenes construidas: solo funciona hacia despliegues que sigan entre los 5 conservados.
 - `docker compose` incluye Traefik; si ya tienes un proxy propio, elimina ese servicio y publica los puertos que necesites.
 
 ## Hoja de ruta
 
-- Despliegues blue-green sin corte y healthchecks configurables
+- Réplicas por servicio con balanceo
 - Cron jobs y comandos one-off (`skyway run`)
 - Copias de seguridad programadas de volúmenes
 - Múltiples usuarios y tokens de API

@@ -131,11 +131,23 @@ export interface RunSpec {
   memoryMb?: number | null;
   cmd?: string[] | null;
   volumes?: { name: string; containerPath: string }[];
+  /** Overrides para el contenedor de validación de los despliegues sin corte. */
+  nameOverride?: string;
+  aliasOverride?: string;
+  withTraefik?: boolean;
+  withHostPort?: boolean;
+  withVolumes?: boolean;
+  /** 'no' para contenedores de validación: si mueren, queremos verlos muertos. */
+  restartPolicy?: 'unless-stopped' | 'no';
 }
 
-/** Crea y arranca el contenedor de un servicio (elimina el anterior si existe). */
+/** Crea y arranca el contenedor de un servicio (elimina el homónimo si existe). */
 export async function runServiceContainer(spec: RunSpec): Promise<string> {
-  const name = containerName(spec.project, spec.service);
+  const name = spec.nameOverride ?? containerName(spec.project, spec.service);
+  const alias = spec.aliasOverride ?? spec.service.slug;
+  const withTraefik = spec.withTraefik !== false;
+  const withHostPort = spec.withHostPort !== false;
+  const withVolumes = spec.withVolumes !== false;
   const netName = projectNetworkName(spec.project);
 
   await removeContainer(name);
@@ -145,19 +157,21 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
     'skyway.project': spec.project.id,
     'skyway.service': spec.service.id,
     'skyway.deployment': spec.deploymentId,
-    ...(spec.internalPort ? traefikLabels(spec.project, spec.service, spec.domains, spec.internalPort) : {}),
+    ...(withTraefik && spec.internalPort
+      ? traefikLabels(spec.project, spec.service, spec.domains, spec.internalPort)
+      : {}),
   };
 
   const hostConfig: Docker.HostConfig = {
-    RestartPolicy: { Name: 'unless-stopped' },
-    Binds: (spec.volumes || []).map((v) => `${v.name}:${v.containerPath}`),
+    RestartPolicy: { Name: spec.restartPolicy ?? 'unless-stopped' },
+    Binds: withVolumes ? (spec.volumes || []).map((v) => `${v.name}:${v.containerPath}`) : [],
   };
   if (spec.cpus && spec.cpus > 0) hostConfig.NanoCpus = Math.round(spec.cpus * 1e9);
   if (spec.memoryMb && spec.memoryMb > 0) hostConfig.Memory = Math.round(spec.memoryMb * 1024 * 1024);
 
   const exposed: Record<string, {}> = {};
   if (spec.internalPort) exposed[`${spec.internalPort}/tcp`] = {};
-  if (spec.hostPort && spec.internalPort) {
+  if (withHostPort && spec.hostPort && spec.internalPort) {
     hostConfig.PortBindings = {
       [`${spec.internalPort}/tcp`]: [{ HostPort: String(spec.hostPort) }],
     };
@@ -173,12 +187,12 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
     HostConfig: hostConfig,
     NetworkingConfig: {
       EndpointsConfig: {
-        [netName]: { Aliases: [spec.service.slug] },
+        [netName]: { Aliases: [alias] },
       },
     },
   });
 
-  if (spec.domains.length > 0) {
+  if (withTraefik && spec.domains.length > 0) {
     try {
       await docker.getNetwork(EDGE_NETWORK).connect({ Container: container.id });
     } catch (err: any) {
@@ -188,6 +202,10 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
 
   await container.start();
   return container.id;
+}
+
+export async function renameContainer(from: string, to: string): Promise<void> {
+  await docker.getContainer(from).rename({ name: to });
 }
 
 /** Actualiza límites de CPU/RAM de un contenedor en caliente. */

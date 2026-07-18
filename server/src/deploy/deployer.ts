@@ -1,3 +1,4 @@
+import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
@@ -14,13 +15,16 @@ import {
 import { fireAlert, resolveServiceAlerts } from '../alerts';
 import { diagnose } from './diagnose';
 import { emitDeploy } from '../events';
-import { dockerAvailable } from '../docker/client';
+import { docker, dockerAvailable } from '../docker/client';
 import {
   containerName,
+  findContainer,
   imageExists,
   removeContainer,
   removeImage,
+  renameContainer,
   runServiceContainer,
+  startContainer,
   stopContainer,
   volumeName,
   getRuntime,
@@ -279,12 +283,7 @@ async function deployContainer(
   env.SKYWAY_SERVICE = service.slug;
   env.SKYWAY_DEPLOYMENT = deploymentId;
 
-  const name = containerName(project, service);
-  log(`Recreando contenedor ${name}...`);
-  await stopContainer(name);
-  await removeContainer(name);
-
-  await runServiceContainer({
+  const spec = {
     project,
     service,
     image,
@@ -297,21 +296,191 @@ async function deployContainer(
     memoryMb,
     cmd,
     volumes,
-  });
+  };
 
-  log('Contenedor iniciado, comprobando estado...');
-  await sleep(3000);
-  const runtime = await getRuntime(name);
-  if (runtime.state !== 'running') {
-    throw new Error(
-      `El contenedor terminó inesperadamente (estado: ${runtime.state}, código de salida: ${runtime.exitCode ?? 'n/a'}). Revisa los logs del servicio.`,
-    );
+  const name = containerName(project, service);
+  const tempName = `${name}--next`;
+  const prevName = `${name}--prev`;
+  const healthcheckPath: string | null =
+    service.type !== 'database' ? (service.config as any).healthcheckPath || null : null;
+
+  await recoverStaleSwap(name, prevName, tempName, log);
+
+  // Sin volúmenes ni puerto de host, la versión nueva puede convivir con la
+  // vieja unos segundos: corte cero. Con estado compartido, intercambio con
+  // restauración automática (nunca dos procesos escribiendo el mismo volumen).
+  const canOverlap = service.type !== 'database' && volumes.length === 0 && !hostPort;
+  const oldExists = !!(await findContainer(name));
+
+  if (canOverlap && oldExists) {
+    log('Validando la versión nueva antes de tocar la actual (la vieja sigue sirviendo)...');
+    await runServiceContainer({
+      ...spec,
+      nameOverride: tempName,
+      aliasOverride: `${service.slug}-next`,
+      withTraefik: false,
+      withHostPort: false,
+      restartPolicy: 'no',
+    });
+    const verdict = await validateContainer(netName, `${service.slug}-next`, internalPort, healthcheckPath, tempName, log);
+    if (!verdict.ok) {
+      await appendContainerTail(tempName, log);
+      await removeContainer(tempName);
+      throw new Error(
+        `La versión nueva no pasó la validación (${verdict.reason}). La versión anterior sigue en marcha SIN interrupción.`,
+      );
+    }
+    await removeContainer(tempName);
+
+    log('Versión validada. Intercambiando sin corte...');
+    await renameContainer(name, prevName);
+    try {
+      await runServiceContainer(spec);
+      await sleep(3000);
+      const runtime = await getRuntime(name);
+      if (runtime.state !== 'running') {
+        throw new Error(`estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'}`);
+      }
+    } catch (err: any) {
+      log('El arranque definitivo falló: restaurando la versión anterior...');
+      await removeContainer(name);
+      await renameContainer(prevName, name);
+      throw new Error(
+        `Fallo en el arranque definitivo (${err?.message || err}). Se mantuvo la versión anterior sin interrupción.`,
+      );
+    }
+    await stopContainer(prevName);
+    await removeContainer(prevName);
+    log('Intercambio completado: corte cero.');
+  } else {
+    if (oldExists) {
+      log('Servicio con estado (volúmenes/puerto fijo): intercambio con restauración automática...');
+      await renameContainer(name, prevName);
+      await stopContainer(prevName);
+    }
+    try {
+      await runServiceContainer(spec);
+      const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, name, log);
+      if (!verdict.ok) throw new Error(verdict.reason);
+    } catch (err: any) {
+      await appendContainerTail(name, log);
+      await removeContainer(name);
+      if (oldExists) {
+        log('La versión nueva falló: restaurando la anterior...');
+        await renameContainer(prevName, name);
+        await startContainer(name);
+        throw new Error(
+          `La versión nueva falló (${err?.message || err}). Se restauró la versión anterior automáticamente.`,
+        );
+      }
+      throw new Error(
+        `El contenedor terminó inesperadamente (${err?.message || err}). Revisa los logs del servicio.`,
+      );
+    }
+    if (oldExists) await removeContainer(prevName);
   }
+
   if (domains.length > 0) {
     log(`Dominios activos: ${domains.join(', ')}`);
   }
   if (hostPort && internalPort) {
     log(`Puerto publicado: ${hostPort} → ${internalPort}`);
+  }
+}
+
+/** Repara restos de un intercambio interrumpido (caída del servidor a mitad). */
+async function recoverStaleSwap(name: string, prevName: string, tempName: string, log: (l: string) => void): Promise<void> {
+  await removeContainer(tempName);
+  const prev = await findContainer(prevName);
+  if (!prev) return;
+  const current = await findContainer(name);
+  if (current) {
+    await removeContainer(prevName);
+  } else {
+    log('Recuperando intercambio interrumpido: restaurando contenedor previo...');
+    await renameContainer(prevName, name);
+  }
+}
+
+const PROBE_TIMEOUT_MS = 60_000;
+const PROBE_INTERVAL_MS = 2500;
+const GRACE_MS = 5000;
+
+/**
+ * Valida un contenedor recién arrancado: sonda HTTP al healthcheck si está
+ * configurado; si no, un periodo de gracia comprobando que sigue vivo.
+ */
+async function validateContainer(
+  netName: string,
+  aliasHost: string,
+  port: number | null,
+  healthcheckPath: string | null,
+  containerRef: string,
+  log: (l: string) => void,
+): Promise<{ ok: boolean; reason: string }> {
+  if (healthcheckPath && port) {
+    const path = healthcheckPath.startsWith('/') ? healthcheckPath : `/${healthcheckPath}`;
+    log(`Esperando healthcheck 2xx en http://${aliasHost}:${port}${path} (hasta ${PROBE_TIMEOUT_MS / 1000}s)...`);
+    if (!(await imageExists('busybox:stable'))) {
+      await spawnLogged('docker', ['pull', 'busybox:stable'], {}, log);
+    }
+    const deadline = Date.now() + PROBE_TIMEOUT_MS;
+    let attempts = 0;
+    await sleep(1000);
+    while (Date.now() < deadline) {
+      attempts += 1;
+      const state = await getRuntime(containerRef);
+      if (state.state !== 'running') {
+        return { ok: false, reason: `el proceso murió durante el arranque (código ${state.exitCode ?? 'n/a'})` };
+      }
+      if (await probeOnce(netName, aliasHost, port, path)) {
+        log(`Healthcheck superado en el intento ${attempts}.`);
+        return { ok: true, reason: 'ok' };
+      }
+      await sleep(PROBE_INTERVAL_MS);
+    }
+    return { ok: false, reason: `el healthcheck ${path} no respondió 2xx en ${PROBE_TIMEOUT_MS / 1000}s` };
+  }
+
+  log(`Sin healthcheck configurado: periodo de gracia de ${GRACE_MS / 1000}s...`);
+  await sleep(GRACE_MS);
+  const runtime = await getRuntime(containerRef);
+  if (runtime.state !== 'running') {
+    return { ok: false, reason: `el proceso terminó enseguida (estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'})` };
+  }
+  return { ok: true, reason: 'ok' };
+}
+
+function probeOnce(netName: string, host: string, port: number, path: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const p = spawn('docker', [
+      'run', '--rm', '--network', netName, 'busybox:stable',
+      'wget', '-q', '-T', '3', '-O', '/dev/null', `http://${host}:${port}${path}`,
+    ], { stdio: 'ignore' });
+    p.on('error', () => resolve(false));
+    p.on('exit', (code) => resolve(code === 0));
+  });
+}
+
+/** Añade al log del despliegue las últimas líneas del contenedor fallido. */
+async function appendContainerTail(name: string, log: (l: string) => void): Promise<void> {
+  try {
+    const info = await findContainer(name);
+    if (!info) return;
+    const container = docker.getContainer(name);
+    const buf = (await container.logs({ stdout: true, stderr: true, tail: 15, follow: false })) as unknown as Buffer;
+    const text = buf
+      .toString('utf8')
+      .split('\n')
+      .map((l) => l.slice(8)) // cabecera de multiplexado de docker
+      .filter((l) => l.trim())
+      .slice(-15);
+    if (text.length > 0) {
+      log('— Últimas líneas del contenedor fallido —');
+      for (const line of text) log(`  ${line}`);
+    }
+  } catch {
+    /* best-effort */
   }
 }
 

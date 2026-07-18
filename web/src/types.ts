@@ -38,6 +38,7 @@ export interface GitConfig {
   cpus?: number | null;
   memoryMb?: number | null;
   webhookSecret: string;
+  healthcheckPath?: string | null;
 }
 
 export interface DatabaseConfig {
