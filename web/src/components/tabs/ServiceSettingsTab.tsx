@@ -22,6 +22,8 @@ export default function ServiceSettingsTab({
 }) {
   const toast = useToast();
   const isGit = service.type === 'git';
+  const isImage = service.type === 'image';
+  const hasDomains = isGit || isImage;
   const cfg = service.config;
 
   const [name, setName] = useState(service.name);
@@ -30,8 +32,9 @@ export default function ServiceSettingsTab({
   const [rootDir, setRootDir] = useState(cfg.rootDir ?? '');
   const [dockerfilePath, setDockerfilePath] = useState(cfg.dockerfilePath ?? '');
   const [startCmd, setStartCmd] = useState(cfg.startCmd ?? '');
-  const [port, setPort] = useState(String(cfg.port ?? 3000));
+  const [port, setPort] = useState(isImage ? (cfg.port ? String(cfg.port) : '') : String(cfg.port ?? 3000));
   const [version, setVersion] = useState(cfg.version ?? '');
+  const [image, setImage] = useState(cfg.image ?? '');
   const [domains, setDomains] = useState<string[]>(cfg.domains ?? []);
   const [newDomain, setNewDomain] = useState('');
   const [hostPort, setHostPort] = useState(cfg.hostPort ? String(cfg.hostPort) : '');
@@ -62,6 +65,13 @@ export default function ServiceSettingsTab({
           dockerfilePath: dockerfilePath.trim() || null,
           startCmd: startCmd.trim() || null,
           port: Number(port) || 3000,
+          domains,
+        });
+      } else if (isImage) {
+        Object.assign(config, {
+          image: image.trim() || cfg.image,
+          startCmd: startCmd.trim() || null,
+          port: port ? Number(port) : null,
           domains,
         });
       } else {
@@ -129,6 +139,20 @@ export default function ServiceSettingsTab({
               <input className="input font-mono text-xs" value={startCmd} onChange={(e) => setStartCmd(e.target.value)} placeholder="npm run start" />
             </Field>
           </>
+        ) : isImage ? (
+          <>
+            <Field label="Imagen" hint="Cambiarla requiere redesplegar">
+              <input className="input font-mono" value={image} onChange={(e) => setImage(e.target.value)} />
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Puerto interno" hint="vacío = sin HTTP">
+                <input className="input" type="number" value={port} onChange={(e) => setPort(e.target.value)} />
+              </Field>
+              <Field label="Comando de arranque" hint="opcional">
+                <input className="input font-mono text-xs" value={startCmd} onChange={(e) => setStartCmd(e.target.value)} />
+              </Field>
+            </div>
+          </>
         ) : (
           <Field label="Versión de la imagen" hint={`Imagen: ${cfg.template}`}>
             <input className="input font-mono" value={version} onChange={(e) => setVersion(e.target.value)} />
@@ -136,7 +160,7 @@ export default function ServiceSettingsTab({
         )}
       </section>
 
-      {isGit && (
+      {hasDomains && (
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Dominios</h3>
           <div className="space-y-2">

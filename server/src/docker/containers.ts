@@ -3,14 +3,7 @@ import { PassThrough } from 'stream';
 import { docker } from './client';
 import { EDGE_NETWORK, projectNetworkName } from './networks';
 import { getSetting } from '../db';
-import {
-  DatabaseConfig,
-  GitConfig,
-  ProjectRow,
-  ServiceRow,
-  ServiceRuntime,
-  ServiceStats,
-} from '../types';
+import { ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
 import { lineSplitter } from '../util';
 
 export function containerName(project: ProjectRow, service: ServiceRow): string {
@@ -273,26 +266,3 @@ export async function followLogs(
   return stop;
 }
 
-export function buildSpecFromService(
-  project: ProjectRow,
-  service: ServiceRow,
-): { internalPort: number | null; domains: string[]; hostPort: number | null; cpus: number | null; memoryMb: number | null } {
-  if (service.type === 'git') {
-    const cfg = service.config as GitConfig;
-    return {
-      internalPort: cfg.port || null,
-      domains: cfg.domains || [],
-      hostPort: cfg.hostPort ?? null,
-      cpus: cfg.cpus ?? null,
-      memoryMb: cfg.memoryMb ?? null,
-    };
-  }
-  const cfg = service.config as DatabaseConfig;
-  return {
-    internalPort: null,
-    domains: [],
-    hostPort: cfg.hostPort ?? null,
-    cpus: cfg.cpus ?? null,
-    memoryMb: cfg.memoryMb ?? null,
-  };
-}

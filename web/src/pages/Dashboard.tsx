@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Boxes, Building2, FolderOpen, Plus } from 'lucide-react';
+import { Boxes, Building2, FolderOpen, Plus, TrainFront } from 'lucide-react';
 import { api } from '../api';
+import RailwayImportModal from '../components/RailwayImportModal';
 import { Button, Field, Modal, Spinner, useToast } from '../components/ui';
 import { Project } from '../types';
 import { cx, timeAgo } from '../utils';
@@ -29,6 +30,7 @@ function ProjectCard({ project }: { project: Project }) {
 
 export default function Dashboard() {
   const [createOpen, setCreateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [name, setName] = useState('');
   const [client, setClient] = useState('');
   const [filter, setFilter] = useState<string | null>(null);
@@ -76,9 +78,14 @@ export default function Dashboard() {
           <h1 className="text-xl font-semibold">Proyectos</h1>
           <p className="mt-1 text-sm text-sub">Cada proyecto agrupa servicios que comparten una red privada</p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus size={15} /> Nuevo proyecto
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setImportOpen(true)} title="Migra un proyecto desde Railway">
+            <TrainFront size={15} /> Importar de Railway
+          </Button>
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus size={15} /> Nuevo proyecto
+          </Button>
+        </div>
       </div>
 
       {clients.length > 0 && (
@@ -143,6 +150,8 @@ export default function Dashboard() {
           ))}
         </div>
       )}
+
+      <RailwayImportModal open={importOpen} onClose={() => setImportOpen(false)} />
 
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Nuevo proyecto">
         <form

@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Database, GitBranch } from 'lucide-react';
+import { Database, GitBranch, Package } from 'lucide-react';
 import { api } from '../api';
 import { DbTemplate, Deployment, Service } from '../types';
 import { cx } from '../utils';
 import { Button, Field, Modal, useToast } from './ui';
 
-type Step = 'pick' | 'git' | 'database';
+type Step = 'pick' | 'git' | 'database' | 'image';
 
 export default function NewServiceModal({
   open,
@@ -27,6 +27,8 @@ export default function NewServiceModal({
   const [port, setPort] = useState('3000');
   const [rootDir, setRootDir] = useState('');
   const [template, setTemplate] = useState<string | null>(null);
+  const [image, setImage] = useState('');
+  const [imagePort, setImagePort] = useState('');
 
   const templates = useQuery({
     queryKey: ['templates'],
@@ -43,6 +45,8 @@ export default function NewServiceModal({
     setPort('3000');
     setRootDir('');
     setTemplate(null);
+    setImage('');
+    setImagePort('');
   };
 
   const close = () => {
@@ -81,7 +85,7 @@ export default function NewServiceModal({
   return (
     <Modal open={open} onClose={close} title="Nuevo servicio" wide>
       {step === 'pick' && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <button
             onClick={() => setStep('git')}
             className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-acc/60"
@@ -108,7 +112,62 @@ export default function NewServiceModal({
               <p className="mt-1 text-xs text-sub">PostgreSQL, Redis, MySQL, MongoDB o MinIO listos para usar</p>
             </div>
           </button>
+          <button
+            onClick={() => setStep('image')}
+            className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-warn/60"
+          >
+            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-warn/10 text-warn">
+              <Package size={18} />
+            </span>
+            <div>
+              <h3 className="text-sm font-medium group-hover:text-warn">Imagen Docker</h3>
+              <p className="mt-1 text-xs text-sub">Cualquier imagen pública: n8n, Plausible, Uptime Kuma...</p>
+            </div>
+          </button>
         </div>
+      )}
+
+      {step === 'image' && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const inferred = name.trim() || image.split('/').pop()?.split(':')[0] || 'servicio';
+            create.mutate({
+              type: 'image',
+              name: inferred,
+              image: image.trim(),
+              ...(imagePort ? { port: Number(imagePort) } : {}),
+            });
+          }}
+          className="space-y-4"
+        >
+          <Field label="Imagen" hint="De Docker Hub, ghcr.io, etc. Incluye el tag si no quieres :latest">
+            <input
+              className="input font-mono"
+              placeholder="n8nio/n8n:latest"
+              value={image}
+              onChange={(e) => setImage(e.target.value)}
+              required
+              autoFocus
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Nombre (opcional)">
+              <input className="input" placeholder="se infiere de la imagen" value={name} onChange={(e) => setName(e.target.value)} />
+            </Field>
+            <Field label="Puerto interno (opcional)" hint="Si sirve HTTP y quieres ponerle dominio">
+              <input className="input" type="number" placeholder="5678" value={imagePort} onChange={(e) => setImagePort(e.target.value)} />
+            </Field>
+          </div>
+          <div className="flex justify-between pt-1">
+            <Button type="button" variant="ghost" onClick={() => setStep('pick')}>
+              Atrás
+            </Button>
+            <Button type="submit" loading={create.isPending}>
+              Crear y desplegar
+            </Button>
+          </div>
+        </form>
       )}
 
       {step === 'git' && (

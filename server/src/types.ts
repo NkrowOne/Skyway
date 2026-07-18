@@ -1,4 +1,4 @@
-export type ServiceType = 'git' | 'database';
+export type ServiceType = 'git' | 'database' | 'image';
 
 export interface VolumeMount {
   name: string;
@@ -30,7 +30,18 @@ export interface DatabaseConfig {
   memoryMb?: number | null;
 }
 
-export type ServiceConfig = GitConfig | DatabaseConfig;
+export interface ImageConfig {
+  image: string;
+  port?: number | null;
+  startCmd?: string;
+  domains: string[];
+  hostPort?: number | null;
+  cpus?: number | null;
+  memoryMb?: number | null;
+  volumes?: VolumeMount[];
+}
+
+export type ServiceConfig = GitConfig | DatabaseConfig | ImageConfig;
 
 export interface ProjectRow {
   id: string;

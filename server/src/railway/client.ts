@@ -1,0 +1,220 @@
+/**
+ * Cliente mínimo de la API GraphQL pública de Railway.
+ *
+ * El token de cuenta (railway.com/account/tokens) viaja solo en memoria
+ * durante la importación: Skyway no lo persiste nunca.
+ *
+ * La API de Railway puede cambiar con el tiempo: todo el parseo es
+ * defensivo y los errores de GraphQL se devuelven tal cual a la UI.
+ */
+
+const ENDPOINTS = [
+  process.env.RAILWAY_GQL_URL,
+  'https://backboard.railway.com/graphql/v2',
+  'https://backboard.railway.app/graphql/v2',
+].filter(Boolean) as string[];
+
+export class RailwayError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RailwayError';
+  }
+}
+
+async function gql<T>(token: string, query: string, variables: Record<string, unknown> = {}): Promise<T> {
+  let lastError: Error | null = null;
+  for (const endpoint of ENDPOINTS) {
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ query, variables }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (res.status === 401 || res.status === 403) {
+        throw new RailwayError('Railway rechazó el token (401/403). Comprueba que es un token de cuenta válido.');
+      }
+      if (!res.ok) {
+        throw new RailwayError(`Railway respondió HTTP ${res.status}`);
+      }
+      const body: any = await res.json();
+      if (body.errors?.length) {
+        throw new RailwayError(`Error de la API de Railway: ${body.errors.map((e: any) => e.message).join('; ')}`);
+      }
+      return body.data as T;
+    } catch (err: any) {
+      lastError = err;
+      // Solo probamos el siguiente endpoint en errores de red, no de la API.
+      if (err instanceof RailwayError) throw err;
+    }
+  }
+  throw new RailwayError(`No se pudo conectar con la API de Railway: ${lastError?.message || 'error de red'}`);
+}
+
+const edges = (conn: any): any[] => conn?.edges?.map((e: any) => e?.node).filter(Boolean) ?? [];
+
+export interface RailwayProject {
+  id: string;
+  name: string;
+  team: string | null;
+}
+
+/** Lista los proyectos accesibles con el token (personales y de equipos). */
+export async function listRailwayProjects(token: string): Promise<RailwayProject[]> {
+  const data = await gql<any>(
+    token,
+    `query {
+      me {
+        projects { edges { node { id name } } }
+        workspaces {
+          name
+          team { projects { edges { node { id name } } } }
+        }
+      }
+    }`,
+  );
+  const out = new Map<string, RailwayProject>();
+  for (const p of edges(data?.me?.projects)) out.set(p.id, { id: p.id, name: p.name, team: null });
+  for (const ws of data?.me?.workspaces ?? []) {
+    for (const p of edges(ws?.team?.projects)) {
+      out.set(p.id, { id: p.id, name: p.name, team: ws?.name ?? null });
+    }
+  }
+  return [...out.values()];
+}
+
+export interface RailwayServiceRaw {
+  id: string;
+  name: string;
+  repo: string | null;
+  image: string | null;
+  branch: string | null;
+  startCommand: string | null;
+  rootDirectory: string | null;
+  buildCommand: string | null;
+  customDomains: string[];
+  serviceDomains: string[];
+  volumeMounts: string[];
+}
+
+export interface RailwayProjectDetail {
+  id: string;
+  name: string;
+  environments: { id: string; name: string }[];
+  services: RailwayServiceRaw[];
+}
+
+/** Lee la estructura de un proyecto de Railway para un entorno concreto. */
+export async function getRailwayProject(
+  token: string,
+  projectId: string,
+  environmentId?: string,
+): Promise<RailwayProjectDetail> {
+  const data = await gql<any>(
+    token,
+    `query ($id: String!) {
+      project(id: $id) {
+        id
+        name
+        environments { edges { node { id name } } }
+        volumes {
+          edges { node {
+            name
+            volumeInstances { edges { node { mountPath serviceId environmentId } } }
+          } }
+        }
+        services {
+          edges { node {
+            id
+            name
+            serviceInstances { edges { node {
+              environmentId
+              startCommand
+              rootDirectory
+              buildCommand
+              source { repo image }
+              domains {
+                customDomains { domain }
+                serviceDomains { domain }
+              }
+            } } }
+          } }
+        }
+      }
+    }`,
+    { id: projectId },
+  );
+
+  const project = data?.project;
+  if (!project) throw new RailwayError('Proyecto no encontrado en Railway (¿ID correcto y token con acceso?)');
+
+  const environments = edges(project.environments).map((e: any) => ({ id: e.id, name: e.name }));
+  const envId =
+    environmentId ||
+    environments.find((e) => e.name === 'production')?.id ||
+    environments[0]?.id;
+
+  const volumeMountsByService = new Map<string, string[]>();
+  for (const vol of edges(project.volumes)) {
+    for (const inst of edges(vol.volumeInstances)) {
+      if (inst.environmentId && envId && inst.environmentId !== envId) continue;
+      if (!inst.serviceId || !inst.mountPath) continue;
+      volumeMountsByService.set(inst.serviceId, [
+        ...(volumeMountsByService.get(inst.serviceId) ?? []),
+        inst.mountPath,
+      ]);
+    }
+  }
+
+  const services: RailwayServiceRaw[] = edges(project.services).map((s: any) => {
+    const instances = edges(s.serviceInstances);
+    const instance = instances.find((i: any) => i.environmentId === envId) ?? instances[0] ?? {};
+    return {
+      id: s.id,
+      name: s.name,
+      repo: instance?.source?.repo ?? null,
+      image: instance?.source?.image ?? null,
+      branch: instance?.branch ?? null,
+      startCommand: instance?.startCommand ?? null,
+      rootDirectory: instance?.rootDirectory ?? null,
+      buildCommand: instance?.buildCommand ?? null,
+      customDomains: (instance?.domains?.customDomains ?? []).map((d: any) => d?.domain).filter(Boolean),
+      serviceDomains: (instance?.domains?.serviceDomains ?? []).map((d: any) => d?.domain).filter(Boolean),
+      volumeMounts: volumeMountsByService.get(s.id) ?? [],
+    };
+  });
+
+  return { id: project.id, name: project.name, environments, services };
+}
+
+/** Variables de un servicio (o compartidas del entorno si no se pasa serviceId). */
+export async function getRailwayVariables(
+  token: string,
+  projectId: string,
+  environmentId: string,
+  serviceId?: string,
+): Promise<Record<string, string>> {
+  try {
+    const data = await gql<any>(
+      token,
+      `query ($projectId: String!, $environmentId: String!, $serviceId: String) {
+        variables(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId)
+      }`,
+      { projectId, environmentId, serviceId: serviceId ?? null },
+    );
+    const vars = data?.variables;
+    if (vars && typeof vars === 'object') {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(vars)) out[k] = String(v);
+      return out;
+    }
+    return {};
+  } catch (err) {
+    if (serviceId) throw err;
+    // Las variables compartidas pueden no existir; no es fatal.
+    return {};
+  }
+}

@@ -6,7 +6,9 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 
 ## Características
 
+- **Importador de Railway** — migra tus proyectos existentes en minutos: un asistente lee tu cuenta por la API oficial de Railway y recrea servicios, variables (con sus referencias), dominios propios y volúmenes, además de generar los comandos exactos para copiar los datos de cada base de datos. Ver [Migrar desde Railway](#migrar-desde-railway).
 - **Despliegue desde GitHub** — pega la URL del repo (o `usuario/repo`) y Skyway clona, construye y despliega. Usa el `Dockerfile` del repo o, si no hay, [Nixpacks](https://nixpacks.com) (el mismo builder que usa Railway). Repos privados con token.
+- **Imágenes Docker** — despliega cualquier imagen pública (n8n, Plausible, Uptime Kuma...) como un servicio más, con dominio, volúmenes y límites.
 - **Auto-deploy con webhooks** — cada `git push` a la rama configurada redespliega automáticamente (firma HMAC verificada).
 - **Bases de datos en un clic** — PostgreSQL, Redis, MySQL, MongoDB y MinIO con credenciales generadas, volumen persistente y variables de conexión listas.
 - **Proyectos con red privada** — los servicios de un proyecto comparten una red Docker y se resuelven entre sí por nombre (`postgres:5432`, `redis:6379`...), sin exponer nada al exterior.
@@ -55,6 +57,17 @@ Abre `http://IP-DEL-SERVIDOR:4000` (o `http://tu-dominio`) y crea la cuenta de a
 6. **Auto-deploy** — copia la URL y el secreto del webhook (Ajustes del servicio) en GitHub → Settings → Webhooks. Cada push despliega.
 7. **Activa las notificaciones** — en Ajustes → Alertas configura Discord, Telegram o un webhook y pulsa "Enviar notificación de prueba". Si un servicio de un cliente se cae, te llega al momento con la explicación del código de salida.
 8. **Revisa el panel de seguridad** (icono del escudo) — corrige los hallazgos hasta subir la nota: límites de recursos en todos los servicios, TLS activado, sin puertos de bases de datos expuestos.
+
+## Migrar desde Railway
+
+1. Crea un **token de cuenta** en Railway (Account Settings → Tokens). No selecciones equipo si también quieres ver tus proyectos personales.
+2. En Skyway: **Dashboard → Importar de Railway**, pega el token (se usa solo en memoria durante la importación, nunca se guarda) y elige proyecto y entorno.
+3. Revisa la **vista previa**: qué servicio se convierte en qué (repo → servicio git, Postgres/Redis/MySQL/Mongo/MinIO → plantilla con credenciales nuevas, otras imágenes → servicio de imagen), con avisos de todo lo que conviene revisar.
+4. Importa. Las bases de datos e imágenes se despliegan solas; los repos quedan listos para pulsar **Desplegar** (configura antes el token de GitHub si son privados).
+5. **Copia los datos**: el informe (accesible después desde el banner del proyecto) incluye el comando exacto `pg_dump | psql` / `mysqldump | mysql` / `mongodump | mongorestore` para cada base de datos, usando el TCP proxy público de Railway y las credenciales nuevas. Ejecútalo en el servidor.
+6. Apunta el **DNS** de tus dominios a la IP del servidor cuando quieras hacer el cambio, verifica, y pausa el proyecto en Railway.
+
+Qué se traslada: servicios con su configuración (rama, directorio raíz, comando de arranque, puerto si estaba en `PORT`), variables por servicio **con referencias `${{Servicio.VAR}}` funcionando** (misma sintaxis), variables compartidas del entorno, dominios propios y volúmenes. Qué no: los dominios `*.up.railway.app` (genera los tuyos), el build command (Skyway construye con Dockerfile/Nixpacks) y los datos (un comando por base de datos, incluido en el informe).
 
 ## Desarrollo local
 

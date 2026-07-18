@@ -79,7 +79,13 @@ export default function ServiceDrawer({
   const { service, runtime } = detail.data;
   const state = latestMetrics?.services[serviceId]?.state ?? runtime.state;
   const isRunning = state === 'running' || state === 'restarting';
-  const domain = service.type === 'git' ? service.config.domains?.[0] : undefined;
+  const domain = service.type !== 'database' ? service.config.domains?.[0] : undefined;
+  const subtitle =
+    service.type === 'git'
+      ? `${service.config.repoUrl} · ${service.config.branch}`
+      : service.type === 'image'
+        ? `${service.config.image} · host interno: ${service.slug}`
+        : `${service.config.template}:${service.config.version} · host interno: ${service.slug}`;
 
   return (
     <aside className="flex w-[560px] shrink-0 flex-col border-l border-line bg-panel">
@@ -93,11 +99,7 @@ export default function ServiceDrawer({
                 {STATE_LABEL[state]}
               </span>
             </div>
-            <p className="mt-0.5 truncate text-xs text-sub">
-              {service.type === 'git'
-                ? `${service.config.repoUrl} · ${service.config.branch}`
-                : `${service.config.template}:${service.config.version} · host interno: ${service.slug}`}
-            </p>
+            <p className="mt-0.5 truncate text-xs text-sub">{subtitle}</p>
           </div>
           <button onClick={onClose} className="rounded-md p-1.5 text-sub hover:bg-panel2 hover:text-txt">
             <X size={16} />

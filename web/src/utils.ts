@@ -121,6 +121,7 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   settings_updated: 'Ajustes globales cambiados',
   webhook_push: 'Push recibido (webhook)',
   server_started: 'Servidor iniciado',
+  railway_import: 'Proyecto importado de Railway',
 };
 
 export function fmtDateTime(ts: number): string {

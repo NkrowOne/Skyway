@@ -1,4 +1,4 @@
-import { BellRing, Database, GitBranch, Globe } from 'lucide-react';
+import { BellRing, Database, GitBranch, Globe, Package } from 'lucide-react';
 import { ContainerState, Service, ServiceStats } from '../types';
 import { cx, fmtBytes, STATE_COLOR, STATE_LABEL } from '../utils';
 import { StatusDot } from './ui';
@@ -27,7 +27,13 @@ export default function ServiceCard({
   const state = metrics?.state ?? service.runtime?.state ?? 'unknown';
   const stats = metrics?.stats ?? null;
   const isDb = service.type === 'database';
+  const isImage = service.type === 'image';
   const domain = !isDb ? service.config.domains?.[0] : undefined;
+  const subtitle = isDb
+    ? `${TEMPLATE_LABEL[service.config.template] ?? service.config.template}:${service.config.version}`
+    : isImage
+      ? service.config.image ?? ''
+      : service.config.repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, '');
 
   return (
     <button
@@ -48,18 +54,14 @@ export default function ServiceCard({
           <span
             className={cx(
               'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
-              isDb ? 'bg-acc2/10 text-acc2' : 'bg-acc/15 text-acc',
+              isDb ? 'bg-acc2/10 text-acc2' : isImage ? 'bg-warn/10 text-warn' : 'bg-acc/15 text-acc',
             )}
           >
-            {isDb ? <Database size={16} /> : <GitBranch size={16} />}
+            {isDb ? <Database size={16} /> : isImage ? <Package size={16} /> : <GitBranch size={16} />}
           </span>
           <div className="min-w-0">
             <h3 className="truncate text-sm font-medium">{service.name}</h3>
-            <p className="truncate text-xs text-sub">
-              {isDb
-                ? `${TEMPLATE_LABEL[service.config.template] ?? service.config.template}:${service.config.version}`
-                : service.config.repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, '')}
-            </p>
+            <p className="truncate text-xs text-sub">{subtitle}</p>
           </div>
         </div>
         <span className="flex items-center gap-1.5 whitespace-nowrap rounded-full border border-line bg-panel2 px-2 py-0.5 text-[11px] text-sub">

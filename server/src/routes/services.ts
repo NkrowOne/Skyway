@@ -29,7 +29,7 @@ import {
 import { triggerDeploy } from '../deploy/deployer';
 import { getTemplate, templateList } from '../templates';
 import { availableReferences, resolveServiceEnv } from '../variables';
-import { DatabaseConfig, GitConfig, ServiceRow } from '../types';
+import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from '../types';
 import { randomToken, slugify } from '../util';
 
 const createGitSchema = z.object({
@@ -51,6 +51,15 @@ const createDbSchema = z.object({
   version: z.string().trim().optional(),
 });
 
+const createImageSchema = z.object({
+  type: z.literal('image'),
+  name: z.string().trim().min(1).max(60),
+  image: z.string().trim().min(1, 'Imagen requerida'),
+  port: z.coerce.number().int().min(1).max(65535).optional(),
+  startCmd: z.string().trim().optional(),
+  domains: z.array(z.string().trim().min(1)).default([]),
+});
+
 const patchSchema = z.object({
   name: z.string().trim().min(1).max(60).optional(),
   config: z
@@ -66,6 +75,7 @@ const patchSchema = z.object({
       cpus: z.coerce.number().min(0.1).max(64).nullable().optional(),
       memoryMb: z.coerce.number().int().min(32).max(1024 * 512).nullable().optional(),
       version: z.string().trim().optional(),
+      image: z.string().trim().min(1).optional(),
       buildArgs: z.record(z.string()).optional(),
       alertsMuted: z.boolean().optional(),
     })
@@ -75,7 +85,7 @@ const patchSchema = z.object({
 /** Campos cuyo cambio requiere recrear el contenedor. */
 const REDEPLOY_FIELDS = [
   'repoUrl', 'branch', 'rootDir', 'dockerfilePath', 'startCmd', 'port',
-  'domains', 'hostPort', 'version', 'buildArgs',
+  'domains', 'hostPort', 'version', 'image', 'buildArgs',
 ] as const;
 
 function loadService(id: string): { service: ServiceRow; project: NonNullable<ReturnType<typeof getProject>> } | null {
@@ -96,10 +106,20 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const project = getProject(projectId);
     if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
 
-    const base = z.object({ type: z.enum(['git', 'database']) }).parse(req.body);
+    const base = z.object({ type: z.enum(['git', 'database', 'image']) }).parse(req.body);
 
     let service: ServiceRow;
-    if (base.type === 'git') {
+    if (base.type === 'image') {
+      const body = createImageSchema.parse(req.body);
+      const slug = uniqueSlug(projectId, body.name);
+      const cfg: ImageConfig = {
+        image: body.image,
+        port: body.port ?? null,
+        startCmd: body.startCmd || undefined,
+        domains: body.domains,
+      };
+      service = createService(projectId, body.name, slug, 'image', cfg);
+    } else if (base.type === 'git') {
       const body = createGitSchema.parse(req.body);
       const slug = uniqueSlug(projectId, body.name);
       const cfg: GitConfig = {

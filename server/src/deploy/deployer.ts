@@ -30,7 +30,7 @@ import { buildImage, cloneRepo, spawnLogged } from './builder';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
 import { getTemplate } from '../templates';
 import { resolveServiceEnv } from '../variables';
-import { DatabaseConfig, DeploymentRow, GitConfig, ProjectRow, ServiceRow } from '../types';
+import { DatabaseConfig, DeploymentRow, GitConfig, ImageConfig, ProjectRow, ServiceRow } from '../types';
 import { now } from '../util';
 
 const MAX_LOG_CHARS = 400_000;
@@ -106,6 +106,8 @@ async function runDeployment(deploymentId: string): Promise<void> {
     let image: string;
     if (service.type === 'database') {
       image = await prepareDatabaseImage(service, log);
+    } else if (service.type === 'image') {
+      image = await preparePlainImage(service, log);
     } else if (deployment.image_tag) {
       image = deployment.image_tag;
       log(`Rollback a la imagen ${image}`);
@@ -157,6 +159,18 @@ async function runDeployment(deploymentId: string): Promise<void> {
   } finally {
     (log as any).stop();
   }
+}
+
+async function preparePlainImage(service: ServiceRow, log: (l: string) => void): Promise<string> {
+  const cfg = service.config as ImageConfig;
+  if (!cfg.image) throw new Error('El servicio no tiene imagen configurada');
+  if (!(await imageExists(cfg.image))) {
+    log(`Descargando imagen ${cfg.image}...`);
+    await spawnLogged('docker', ['pull', cfg.image], {}, log);
+  } else {
+    log(`Imagen ${cfg.image} ya disponible`);
+  }
+  return cfg.image;
 }
 
 async function prepareDatabaseImage(service: ServiceRow, log: (l: string) => void): Promise<string> {
@@ -239,6 +253,16 @@ async function deployContainer(
     hostPort = cfg.hostPort ?? null;
     cpus = cfg.cpus ?? null;
     memoryMb = cfg.memoryMb ?? null;
+  } else if (service.type === 'image') {
+    const cfg = service.config as ImageConfig;
+    internalPort = cfg.port ?? null;
+    domains = cfg.domains || [];
+    hostPort = cfg.hostPort ?? null;
+    cpus = cfg.cpus ?? null;
+    memoryMb = cfg.memoryMb ?? null;
+    volumes = cfg.volumes || [];
+    if (cfg.startCmd) cmd = ['sh', '-c', cfg.startCmd];
+    if (internalPort && !env.PORT) env.PORT = String(internalPort);
   } else {
     const cfg = service.config as GitConfig;
     internalPort = cfg.port || 3000;

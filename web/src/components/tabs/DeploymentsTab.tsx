@@ -12,6 +12,7 @@ const TRIGGER_LABEL: Record<string, string> = {
   manual: 'manual',
   webhook: 'push',
   rollback: 'rollback',
+  import: 'importación',
 };
 
 /** Explicación del fallo generada por el servidor (qué pasó y cómo arreglarlo). */

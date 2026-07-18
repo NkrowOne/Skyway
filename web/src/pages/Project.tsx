@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Building2, ChevronRight, KeyRound, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Building2, ChevronRight, FileText, KeyRound, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { api, openStream } from '../api';
 import { Button, ConfirmModal, Field, Modal, Spinner, useToast } from '../components/ui';
 import NewServiceModal from '../components/NewServiceModal';
+import { ImportReport, ImportReportView } from '../components/RailwayImportModal';
 import ServiceCard from '../components/ServiceCard';
 import ServiceDrawer from '../components/ServiceDrawer';
 import SharedVarsModal from '../components/SharedVarsModal';
@@ -70,6 +71,7 @@ export default function ProjectPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
   const [editClient, setEditClient] = useState('');
+  const [reportOpen, setReportOpen] = useState(false);
 
   const selectedId = searchParams.get('s');
 
@@ -84,6 +86,21 @@ export default function ProjectPage() {
   });
 
   const { latest, historyRef } = useProjectMetrics(projectId);
+
+  const importReport = useQuery({
+    queryKey: ['importReport', projectId],
+    queryFn: () => api.get<{ report: ImportReport | null }>(`/projects/${projectId}/import-report`),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+
+  const dismissReport = useMutation({
+    mutationFn: () => api.del(`/projects/${projectId}/import-report`),
+    onSuccess: () => {
+      setReportOpen(false);
+      queryClient.invalidateQueries({ queryKey: ['importReport', projectId] });
+    },
+  });
 
   const removeProject = useMutation({
     mutationFn: () => api.del(`/projects/${projectId}?volumes=${deleteVolumes}`),
@@ -165,6 +182,27 @@ export default function ProjectPage() {
           </div>
         </div>
 
+        {importReport.data?.report && (
+          <div className="mb-4 flex items-center justify-between rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
+            <span className="flex items-center gap-2 text-acc">
+              <FileText size={15} />
+              Proyecto importado de Railway: consulta el informe con los comandos de copia de datos y pasos pendientes.
+            </span>
+            <span className="flex items-center gap-1">
+              <Button size="sm" variant="outline" onClick={() => setReportOpen(true)}>
+                Ver informe
+              </Button>
+              <button
+                onClick={() => dismissReport.mutate()}
+                className="rounded-md p-1.5 text-sub hover:bg-panel2 hover:text-txt"
+                title="Descartar informe"
+              >
+                <X size={14} />
+              </button>
+            </span>
+          </div>
+        )}
+
         {services.length === 0 ? (
           <div className="card flex flex-col items-center gap-3 py-20 text-center">
             <p className="text-sm text-sub">
@@ -213,6 +251,17 @@ export default function ProjectPage() {
       />
 
       <SharedVarsModal open={sharedOpen} onClose={() => setSharedOpen(false)} projectId={proj.id} />
+
+      {importReport.data?.report && (
+        <Modal open={reportOpen} onClose={() => setReportOpen(false)} title="Informe de importación de Railway" wide>
+          <ImportReportView report={importReport.data.report} />
+          <div className="mt-4 flex justify-end">
+            <Button variant="ghost" onClick={() => dismissReport.mutate()} loading={dismissReport.isPending}>
+              Descartar informe
+            </Button>
+          </div>
+        </Modal>
+      )}
 
       <Modal open={editOpen} onClose={() => setEditOpen(false)} title="Editar proyecto">
         <form

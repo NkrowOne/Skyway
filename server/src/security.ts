@@ -36,7 +36,7 @@ export function securityFindings(): { findings: SecurityFinding[]; score: number
         });
       }
 
-      if (service.type === 'git' && cfg.hostPort) {
+      if ((service.type === 'git' || service.type === 'image') && cfg.hostPort) {
         findings.push({
           id: `app-hostport-${service.id}`,
           severity: 'warning',
@@ -58,7 +58,7 @@ export function securityFindings(): { findings: SecurityFinding[]; score: number
         });
       }
 
-      if (service.type === 'git' && (cfg.domains?.length ?? 0) > 0) {
+      if ((service.type === 'git' || service.type === 'image') && (cfg.domains?.length ?? 0) > 0) {
         servicesWithDomains.push(service.name);
       }
     }

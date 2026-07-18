@@ -53,8 +53,8 @@ export interface Service {
   project_id: string;
   name: string;
   slug: string;
-  type: 'git' | 'database';
-  config: GitConfig & DatabaseConfig;
+  type: 'git' | 'database' | 'image';
+  config: GitConfig & DatabaseConfig & { image?: string };
   created_at: number;
   runtime?: Runtime;
 }
