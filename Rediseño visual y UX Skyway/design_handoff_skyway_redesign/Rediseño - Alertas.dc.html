@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/_ds_bundle.css">
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/styles.css">
+  <script src="ds-loader.js"></script>
+  <script src="lucide.js"></script>
+  <style>
+    html, body { height: 100%; }
+    body { margin: 0; }
+    a { color: var(--color-brand); text-decoration: none; }
+    a:hover { color: var(--color-brand); }
+    * { scrollbar-width: thin; scrollbar-color: oklch(32% 0.018 280) transparent; }
+    *::-webkit-scrollbar { width: 8px; height: 8px; }
+    *::-webkit-scrollbar-thumb { background: oklch(32% 0.018 280); border-radius: 4px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    @keyframes pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+  </style>
+</helmet>
+<div data-screen-label="Rediseño Alertas" style="min-height: 100vh; display: flex; flex-direction: column; background: var(--color-bg); color: var(--color-fg);">
+  <header style="display: flex; height: 56px; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--color-border); background: var(--color-surface); padding: 0 20px;">
+    <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+      <a href="Rediseño - Dashboard.dc.html" style="display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 650; color: var(--color-fg); flex-shrink: 0;">
+        <span style="display: flex; height: 28px; width: 28px; align-items: center; justify-content: center; border-radius: 8px; background: linear-gradient(135deg, var(--color-brand), oklch(42% 0.16 295)); color: #fff; box-shadow: 0 2px 8px -2px color-mix(in oklab, var(--color-brand) 60%, transparent);"><l-i name="rocket" size="15"></l-i></span>
+        Skyway
+      </a>
+      <l-i name="chevron-right" size="14" style="color: var(--color-fg-subtle);"></l-i>
+      <span style="font-size: 14px; font-weight: 500;">Alertas</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 4px;">
+      <button style="display: flex; align-items: center; gap: 8px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 6px 10px; font-size: 12px; color: var(--color-fg-subtle); cursor: pointer; font-family: inherit;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 45%, var(--color-border));"><l-i name="search" size="13"></l-i><kbd style="font-family: var(--font-mono); font-size: 11px;">⌘K</kbd></button>
+      <span title="Alertas" style="position: relative; display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg); background: var(--color-surface-2); line-height: 0;">
+        <l-i name="bell" size="16"></l-i>
+        <span style="position: absolute; right: -1px; top: -1px; display: flex; height: 15px; min-width: 15px; align-items: center; justify-content: center; border-radius: 9999px; background: var(--color-danger); border: 2px solid var(--color-surface); padding: 0 3px; font-size: 9px; font-weight: 700; color: #fff; line-height: 1;">2</span>
+      </span>
+      <a href="Rediseño - Seguridad.dc.html" title="Panel de seguridad" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="shield-check" size="16"></l-i></a>
+      <a href="Rediseño - Ajustes.dc.html" title="Ajustes" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="settings" size="16"></l-i></a>
+      <button title="Cerrar sesión" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="log-out" size="16"></l-i></button>
+    </div>
+  </header>
+  <main style="flex: 1; overflow-y: auto;">
+    <div style="max-width: 880px; margin: 0 auto; padding: 40px 24px; display: flex; flex-direction: column; gap: 18px;">
+      <div style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px;">
+        <div>
+          <h1 style="margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -.02em;">Alertas</h1>
+          <p style="margin: 6px 0 0; font-size: 14px; color: var(--color-fg-muted); text-wrap: pretty;">Caídas, bucles de reinicio, CPU/RAM altas y despliegues fallidos de todos los proyectos</p>
+        </div>
+        <div style="display: inline-flex; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 3px; gap: 2px;">
+          <button style="border-radius: calc(var(--radius) - 3px); background: var(--color-surface-2); color: var(--color-fg); border: none; padding: 5px 14px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;">Activas <span style="display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; border-radius: 9999px; background: color-mix(in oklab, var(--color-danger) 18%, transparent); color: var(--color-danger); font-size: 10px; font-weight: 700; margin-left: 4px; vertical-align: 1px;">2</span></button>
+          <button style="border-radius: calc(var(--radius) - 3px); background: transparent; color: var(--color-fg-muted); border: none; padding: 5px 14px; font-size: 12px; cursor: pointer; font-family: inherit; transition: color .15s ease-out;" style-hover="color: var(--color-fg);">Historial</button>
+        </div>
+      </div>
+      <p style="margin: 0; font-size: 12px; color: var(--color-fg-subtle); text-wrap: pretty;">Las alertas se recuperan solas cuando la causa desaparece. Configura Discord, Telegram o un webhook en <a href="Rediseño - Ajustes.dc.html" style-hover="text-decoration: underline;">Ajustes → Alertas y notificaciones</a> para recibirlas fuera del panel.</p>
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        <div style="border-radius: 12px; border: 1px solid color-mix(in oklab, var(--color-danger) 35%, var(--color-border)); background: var(--color-surface); padding: 16px 18px;">
+          <div style="display: flex; align-items: flex-start; gap: 12px;">
+            <span style="display: flex; height: 34px; width: 34px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 9px; background: color-mix(in oklab, var(--color-danger) 14%, transparent); color: var(--color-danger);"><l-i name="rocket" size="16"></l-i></span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                <span style="font-size: 14px; font-weight: 600;">api: el despliegue terminó con error</span>
+                <span style="display: inline-flex; align-items: center; border-radius: 9999px; background: color-mix(in oklab, var(--color-danger) 14%, transparent); color: var(--color-danger); padding: 2px 9px; font-size: 10px; font-weight: 600;">Crítico</span>
+                <span style="display: inline-flex; align-items: center; border-radius: 9999px; background: var(--color-surface-2); color: var(--color-fg-muted); padding: 2px 9px; font-size: 10px;">Despliegue fallido</span>
+                <span style="margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">18/07 09:14</span>
+              </div>
+              <p style="margin: 6px 0 0; font-size: 13px; color: var(--color-fg-muted); text-wrap: pretty;">El build de api (rama main, commit 91d3b0f) terminó con código 1. El servicio sigue sirviendo la versión anterior.</p>
+              <div style="margin: 10px 0 0; display: flex; align-items: flex-start; gap: 8px; border-radius: var(--radius); background: var(--color-bg); border: 1px solid var(--color-border); padding: 10px 12px; font-size: 12px; color: var(--color-fg-muted);">
+                <l-i name="lightbulb" size="13" style="color: var(--color-warning); margin-top: 1px;"></l-i>
+                <p style="margin: 0; text-wrap: pretty;">Skyway mantuvo la versión anterior activa: no hay corte de servicio. Revisa el diagnóstico en la pestaña Despliegues y corrige el Dockerfile antes de volver a desplegar.</p>
+              </div>
+              <div style="margin-top: 10px; display: flex; align-items: center; gap: 8px;">
+                <a href="Rediseño - Proyecto.dc.html" style="font-size: 12px; font-weight: 600; color: var(--color-brand);" style-hover="text-decoration: underline;">Ir al servicio →</a>
+                <div style="margin-left: auto;"><x-import component-from-global-scope="FightX.Button" variant="ghost" size="sm" hint-size="auto,30px">Marcar resuelta</x-import></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 16px 18px;">
+          <div style="display: flex; align-items: flex-start; gap: 12px;">
+            <span style="display: flex; height: 34px; width: 34px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 9px; background: color-mix(in oklab, var(--color-warning) 13%, transparent); color: var(--color-warning);"><l-i name="cpu" size="16"></l-i></span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                <span style="font-size: 14px; font-weight: 600;">worker: CPU sostenida al 94%</span>
+                <span style="display: inline-flex; align-items: center; border-radius: 9999px; background: color-mix(in oklab, var(--color-warning) 13%, transparent); color: var(--color-warning); padding: 2px 9px; font-size: 10px; font-weight: 600;">Aviso</span>
+                <span style="display: inline-flex; align-items: center; border-radius: 9999px; background: var(--color-surface-2); color: var(--color-fg-muted); padding: 2px 9px; font-size: 10px;">CPU alta</span>
+                <span style="margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">19/07 06:41</span>
+              </div>
+              <p style="margin: 6px 0 0; font-size: 13px; color: var(--color-fg-muted); text-wrap: pretty;">El servicio worker de citas-online lleva 12 minutos por encima del umbral del 90% de CPU.</p>
+              <div style="margin: 10px 0 0; display: flex; align-items: flex-start; gap: 8px; border-radius: var(--radius); background: var(--color-bg); border: 1px solid var(--color-border); padding: 10px 12px; font-size: 12px; color: var(--color-fg-muted);">
+                <l-i name="lightbulb" size="13" style="color: var(--color-warning); margin-top: 1px;"></l-i>
+                <p style="margin: 0; text-wrap: pretty;">Si es un pico esperado (colas, informes), sube el umbral o el tiempo sostenido en Ajustes → Alertas. Si no, revisa bucles o consultas pesadas con Métricas y un comando en el contenedor.</p>
+              </div>
+              <div style="margin-top: 10px; display: flex; align-items: center; gap: 8px;">
+                <a href="Rediseño - Proyecto.dc.html" style="font-size: 12px; font-weight: 600; color: var(--color-brand);" style-hover="text-decoration: underline;">Ir al servicio →</a>
+                <div style="margin-left: auto;"><x-import component-from-global-scope="FightX.Button" variant="ghost" size="sm" hint-size="auto,30px">Marcar resuelta</x-import></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 16px 18px; opacity: .65;">
+          <div style="display: flex; align-items: flex-start; gap: 12px;">
+            <span style="display: flex; height: 34px; width: 34px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 9px; background: var(--color-surface-2); color: var(--color-fg-subtle);"><l-i name="archive" size="16"></l-i></span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                <span style="font-size: 14px; font-weight: 600;">MySQL (tienda-woo): backup programado fallido</span>
+                <span style="display: inline-flex; align-items: center; border-radius: 9999px; background: var(--color-surface-2); color: var(--color-fg-muted); padding: 2px 9px; font-size: 10px;">Backup fallido</span>
+                <span style="margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">14/07 04:02</span>
+              </div>
+              <p style="margin: 6px 0 0; font-size: 13px; color: var(--color-fg-muted);">mysqldump terminó con error: disco temporal lleno. Se reintentó y completó a las 04:31.</p>
+              <div style="margin-top: 10px; display: flex; align-items: center;">
+                <span style="display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--color-success);"><l-i name="check-circle-2" size="12"></l-i> Resuelta 14/07 04:31</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</x-dc>
+</body>
+</html>

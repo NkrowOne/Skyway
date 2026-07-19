@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/_ds_bundle.css">
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/styles.css">
+  <script src="ds-loader.js"></script>
+  <script src="lucide.js"></script>
+  <style>
+    html, body { height: 100%; }
+    body { margin: 0; }
+    a { color: var(--color-brand); text-decoration: none; }
+    a:hover { color: var(--color-brand); }
+  </style>
+</helmet>
+<div data-screen-label="Rediseño Login" style="display: flex; min-height: 100vh; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; background: radial-gradient(1200px 600px at 50% -10%, color-mix(in oklab, var(--color-brand) 10%, transparent), transparent 70%), var(--color-bg); color: var(--color-fg);">
+  <div style="width: 100%; max-width: 400px;">
+    <div style="border-radius: 14px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 32px 28px; box-shadow: 0 24px 64px -24px rgba(0,0,0,.7);">
+      <div style="margin-bottom: 26px; display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center;">
+        <span style="display: flex; height: 52px; width: 52px; align-items: center; justify-content: center; border-radius: 14px; background: linear-gradient(135deg, var(--color-brand), oklch(42% 0.16 295)); color: #fff; box-shadow: 0 8px 24px -8px color-mix(in oklab, var(--color-brand) 70%, transparent);"><l-i name="rocket" size="24"></l-i></span>
+        <div>
+          <h1 style="margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -.015em;">Entrar en Skyway</h1>
+          <p style="margin: 5px 0 0; font-size: 13px; color: var(--color-fg-muted);">Tu plataforma de despliegue auto-alojada</p>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 16px;">
+        <label style="display: block;">
+          <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Email</span>
+          <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 9px 12px; font-size: 14px; color: var(--color-fg);">admin@vidasana.es</div>
+        </label>
+        <label style="display: block;">
+          <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Contraseña</span>
+          <div style="border-radius: var(--radius); border: 1px solid var(--color-brand); box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-brand) 25%, transparent); background: var(--color-bg); padding: 9px 12px; font-size: 14px; color: var(--color-fg); display: flex; align-items: center; justify-content: space-between;">•••••••••••• <span style="display: inline-flex; color: var(--color-fg-subtle); cursor: pointer;"><l-i name="eye" size="14"></l-i></span></div>
+        </label>
+        <div style="display: flex;"><x-import component-from-global-scope="FightX.Button" variant="primary" size="lg" class-name="w-full" hint-size="100%,42px">Entrar</x-import></div>
+      </div>
+    </div>
+    <p style="margin: 16px 0 0; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 11.5px; color: var(--color-fg-subtle);"><l-i name="shield-check" size="12"></l-i> Intentos limitados por IP · toda la actividad queda en el registro de auditoría</p>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

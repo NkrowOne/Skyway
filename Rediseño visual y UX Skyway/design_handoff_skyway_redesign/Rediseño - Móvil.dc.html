@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <meta name="design_doc_mode" content="canvas">
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/_ds_bundle.css">
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/styles.css">
+  <script src="ds-loader.js"></script>
+  <script src="lucide.js"></script>
+  <style>
+    body { margin: 0; }
+    a { color: var(--color-brand); text-decoration: none; }
+    a:hover { color: var(--color-brand); }
+    @keyframes pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+  </style>
+</helmet>
+<div data-screen-label="Rediseño móvil" style="min-height: 100vh; background: oklch(10% 0.008 280); color: var(--color-fg); padding: 48px; display: flex; gap: 48px; align-items: flex-start; flex-wrap: wrap;">
+  <div>
+    <p style="margin: 0 0 12px; font-size: 13px; font-weight: 600; color: var(--color-fg-muted);">Tablet / ventana estrecha · 780px <span style="color: var(--color-fg-subtle); font-weight: 400;">— la topbar colapsa las stats, rejilla de 2 columnas</span></p>
+    <div style="width: 780px; height: 880px; border-radius: 16px; border: 1px solid var(--color-border); background: var(--color-bg); overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 24px 64px -24px rgba(0,0,0,.7);">
+      <header style="display: flex; height: 52px; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--color-border); background: var(--color-surface); padding: 0 16px;">
+        <a href="#" style="display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 650; color: var(--color-fg);">
+          <span style="display: flex; height: 26px; width: 26px; align-items: center; justify-content: center; border-radius: 7px; background: linear-gradient(135deg, var(--color-brand), oklch(42% 0.16 295)); color: #fff;"><l-i name="rocket" size="14"></l-i></span>
+          Skyway
+        </a>
+        <div style="display: flex; align-items: center; gap: 2px;">
+          <button style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0;"><l-i name="search" size="16"></l-i></button>
+          <button style="position: relative; display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0;">
+            <l-i name="bell" size="16"></l-i>
+            <span style="position: absolute; right: 0; top: 0; display: flex; height: 14px; min-width: 14px; align-items: center; justify-content: center; border-radius: 9999px; background: var(--color-danger); border: 2px solid var(--color-surface); padding: 0 3px; font-size: 9px; font-weight: 700; color: #fff; line-height: 1;">2</span>
+          </button>
+          <button style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0;"><l-i name="shield-check" size="16"></l-i></button>
+          <button style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0;"><l-i name="settings" size="16"></l-i></button>
+        </div>
+      </header>
+      <div style="flex: 1; overflow: hidden; padding: 24px 20px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px;">
+          <div>
+            <h1 style="margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.015em;">Proyectos</h1>
+            <p style="margin: 4px 0 0; font-size: 12px; color: var(--color-fg-muted);">6 proyectos · 4 empresas</p>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button style="display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-fg); padding: 8px 12px; font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer; font-family: inherit;" title="Importar de Railway">Importar</button>
+            <x-import component-from-global-scope="FightX.Button" variant="primary" size="sm" hint-size="auto,34px"><l-i name="plus" size="14"></l-i> Nuevo</x-import>
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px; overflow: hidden; margin-bottom: 20px;">
+          <button style="flex-shrink: 0; border-radius: 9999px; border: 1px solid color-mix(in oklab, var(--color-brand) 55%, transparent); background: color-mix(in oklab, var(--color-brand) 16%, transparent); color: #b9a7ee; padding: 5px 13px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: inherit;">Todas</button>
+          <button style="flex-shrink: 0; display: flex; align-items: center; gap: 6px; border-radius: 9999px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-fg-muted); padding: 5px 13px; font-size: 12px; white-space: nowrap; cursor: pointer; font-family: inherit;"><l-i name="building-2" size="11"></l-i> Clínica Vidasana</button>
+          <button style="flex-shrink: 0; display: flex; align-items: center; gap: 6px; border-radius: 9999px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-fg-muted); padding: 5px 13px; font-size: 12px; white-space: nowrap; cursor: pointer; font-family: inherit;"><l-i name="building-2" size="11"></l-i> Estudio Nómada</button>
+          <button style="flex-shrink: 0; display: flex; align-items: center; gap: 6px; border-radius: 9999px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-fg-muted); padding: 5px 13px; font-size: 12px; white-space: nowrap; cursor: pointer; font-family: inherit;"><l-i name="building-2" size="11"></l-i> Taller B…</button>
+        </div>
+        <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 12px;">
+          <h2 style="margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: var(--color-fg-muted);">Clínica Vidasana</h2>
+          <div style="flex: 1; height: 1px; background: var(--color-border);"></div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 24px;">
+          <a href="#" style="display: block; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 18px; color: inherit;">
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+              <span style="display: flex; height: 34px; width: 34px; align-items: center; justify-content: center; border-radius: 9px; background: color-mix(in oklab, var(--color-brand) 16%, transparent); color: #b9a7ee;"><l-i name="boxes" size="16"></l-i></span>
+              <div style="display: flex; gap: 6px;">
+                <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 8px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>4</span>
+                <span style="display: inline-flex; align-items: center; gap: 4px; border-radius: 9999px; background: color-mix(in oklab, var(--color-danger) 15%, transparent); color: var(--color-danger); padding: 3px 8px; font-size: 11px; font-weight: 500;"><l-i name="bell-ring" size="10"></l-i>1</span>
+              </div>
+            </div>
+            <h3 style="margin: 12px 0 0; font-size: 15px; font-weight: 600;">citas-online</h3>
+            <p style="margin: 4px 0 0; font-size: 12px; color: var(--color-fg-muted);">4 servicios</p>
+          </a>
+          <a href="#" style="display: block; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 18px; color: inherit;">
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+              <span style="display: flex; height: 34px; width: 34px; align-items: center; justify-content: center; border-radius: 9px; background: color-mix(in oklab, var(--color-brand) 16%, transparent); color: #b9a7ee;"><l-i name="boxes" size="16"></l-i></span>
+              <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 8px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>2</span>
+            </div>
+            <h3 style="margin: 12px 0 0; font-size: 15px; font-weight: 600;">web-clinica</h3>
+            <p style="margin: 4px 0 0; font-size: 12px; color: var(--color-fg-muted);">2 servicios</p>
+          </a>
+        </div>
+        <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 12px;">
+          <h2 style="margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: var(--color-fg-muted);">Estudio Nómada</h2>
+          <div style="flex: 1; height: 1px; background: var(--color-border);"></div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+          <a href="#" style="display: block; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 18px; color: inherit;">
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+              <span style="display: flex; height: 34px; width: 34px; align-items: center; justify-content: center; border-radius: 9px; background: color-mix(in oklab, var(--color-brand) 16%, transparent); color: #b9a7ee;"><l-i name="si-wordpress" size="16"></l-i></span>
+              <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 8px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>2</span>
+            </div>
+            <h3 style="margin: 12px 0 0; font-size: 15px; font-weight: 600;">wordpress-corporativo</h3>
+            <p style="margin: 4px 0 0; font-size: 12px; color: var(--color-fg-muted);">2 servicios</p>
+          </a>
+          <a href="#" style="display: block; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 18px; color: inherit;">
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+              <span style="display: flex; height: 34px; width: 34px; align-items: center; justify-content: center; border-radius: 9px; background: color-mix(in oklab, var(--color-brand) 16%, transparent); color: #b9a7ee;"><l-i name="si-n8n" size="16"></l-i></span>
+              <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 8px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>1</span>
+            </div>
+            <h3 style="margin: 12px 0 0; font-size: 15px; font-weight: 600;">panel-n8n</h3>
+            <p style="margin: 4px 0 0; font-size: 12px; color: var(--color-fg-muted);">1 servicio</p>
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <p style="margin: 0 0 12px; font-size: 13px; font-weight: 600; color: var(--color-fg-muted);">Móvil · 400px <span style="color: var(--color-fg-subtle); font-weight: 400;">— canvas a 1 columna, acciones táctiles ≥44px</span></p>
+    <div style="width: 400px; height: 880px; border-radius: 16px; border: 1px solid var(--color-border); background: var(--color-bg); overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 24px 64px -24px rgba(0,0,0,.7);">
+      <header style="display: flex; height: 52px; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--color-border); background: var(--color-surface); padding: 0 12px;">
+        <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+          <span style="display: flex; height: 26px; width: 26px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 7px; background: linear-gradient(135deg, var(--color-brand), oklch(42% 0.16 295)); color: #fff;"><l-i name="rocket" size="14"></l-i></span>
+          <l-i name="chevron-right" size="13" style="color: var(--color-fg-subtle);"></l-i>
+          <span style="font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">citas-online</span>
+        </div>
+        <div style="display: flex; align-items: center;">
+          <button style="position: relative; display: inline-flex; border-radius: var(--radius); padding: 10px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0;">
+            <l-i name="bell" size="17"></l-i>
+            <span style="position: absolute; right: 2px; top: 2px; display: flex; height: 14px; min-width: 14px; align-items: center; justify-content: center; border-radius: 9999px; background: var(--color-danger); border: 2px solid var(--color-surface); padding: 0 3px; font-size: 9px; font-weight: 700; color: #fff; line-height: 1;">2</span>
+          </button>
+          <button style="display: inline-flex; border-radius: var(--radius); padding: 10px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0;"><l-i name="search" size="17"></l-i></button>
+        </div>
+      </header>
+      <div style="flex: 1; overflow: hidden; padding: 18px 14px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px;">
+          <h1 style="margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.015em;">citas-online</h1>
+          <span style="display: flex; align-items: center; gap: 5px; border-radius: 9999px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 3px 10px; font-size: 11px; color: var(--color-fg-muted); flex-shrink: 0;"><l-i name="building-2" size="10"></l-i> Clínica Vidasana</span>
+        </div>
+        <p style="margin: 0 0 14px; font-size: 11px; color: var(--color-fg-subtle);">Red privada <span style="font-family: var(--font-mono);">skyway-citas-online</span></p>
+        <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+          <button style="flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; border-radius: var(--radius); background: var(--color-brand); color: #fff; border: none; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit;"><l-i name="plus" size="15"></l-i> Nuevo servicio</button>
+          <button style="display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-fg); cursor: pointer; line-height: 0;" title="Variables compartidas"><l-i name="key-round" size="16"></l-i></button>
+          <button style="display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-fg); cursor: pointer; line-height: 0;" title="Desplegar todo"><l-i name="refresh-cw" size="16"></l-i></button>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+          <button style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 16px; text-align: left; cursor: pointer; font-family: inherit; color: inherit; min-height: 44px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+                <span style="display: flex; height: 38px; width: 38px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in oklab, var(--color-fg) 9%, transparent); color: var(--color-fg);"><l-i name="si-github" size="17"></l-i></span>
+                <div style="min-width: 0;">
+                  <h3 style="margin: 0; font-size: 14px; font-weight: 600;">api</h3>
+                  <p style="margin: 2px 0 0; font-size: 11px; color: var(--color-fg-muted); font-variant-numeric: tabular-nums;">CPU 2.4% · RAM 187 MB</p>
+                </div>
+              </div>
+              <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500; flex-shrink: 0;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>2/2</span>
+            </div>
+          </button>
+          <button style="position: relative; border-radius: 12px; border: 1px solid color-mix(in oklab, var(--color-danger) 45%, var(--color-border)); background: var(--color-surface); padding: 16px; text-align: left; cursor: pointer; font-family: inherit; color: inherit;">
+            <span style="position: absolute; right: 12px; top: -9px; display: flex; align-items: center; gap: 4px; border-radius: 9999px; background: var(--color-danger); padding: 2px 8px; font-size: 10px; font-weight: 600; color: #fff;"><l-i name="bell-ring" size="10"></l-i> 1 alerta</span>
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+                <span style="display: flex; height: 38px; width: 38px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in oklab, var(--color-fg) 9%, transparent); color: var(--color-fg);"><l-i name="si-github" size="17"></l-i></span>
+                <div style="min-width: 0;">
+                  <h3 style="margin: 0; font-size: 14px; font-weight: 600;">worker</h3>
+                  <p style="margin: 2px 0 0; font-size: 11px; color: var(--color-fg-muted); font-variant-numeric: tabular-nums;">CPU <span style="color: var(--color-warning); font-weight: 600;">94.2%</span> · RAM 412 MB</p>
+                </div>
+              </div>
+              <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500; flex-shrink: 0;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>Activo</span>
+            </div>
+          </button>
+          <button style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 16px; text-align: left; cursor: pointer; font-family: inherit; color: inherit;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+                <span style="display: flex; height: 38px; width: 38px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 10px; background: rgba(51,103,145,.28); color: #93bce2;"><l-i name="si-postgresql" size="17"></l-i></span>
+                <div style="min-width: 0;">
+                  <h3 style="margin: 0; font-size: 14px; font-weight: 600;">PostgreSQL</h3>
+                  <p style="margin: 2px 0 0; font-size: 11px; color: var(--color-fg-muted); font-variant-numeric: tabular-nums;">CPU 1.1% · RAM 240 MB</p>
+                </div>
+              </div>
+              <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500; flex-shrink: 0;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>Activo</span>
+            </div>
+          </button>
+          <button style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 16px; text-align: left; cursor: pointer; font-family: inherit; color: inherit;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+                <span style="display: flex; height: 38px; width: 38px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 10px; background: rgba(220,56,44,.16); color: #e0837b;"><l-i name="si-redis" size="17"></l-i></span>
+                <div style="min-width: 0;">
+                  <h3 style="margin: 0; font-size: 14px; font-weight: 600;">Redis</h3>
+                  <p style="margin: 2px 0 0; font-size: 11px; color: var(--color-fg-muted); font-variant-numeric: tabular-nums;">CPU 0.2% · RAM 18.4 MB</p>
+                </div>
+              </div>
+              <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500; flex-shrink: 0;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>Activo</span>
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <p style="margin: 0 0 12px; font-size: 13px; font-weight: 600; color: var(--color-fg-muted);">Móvil · drawer a pantalla completa <span style="color: var(--color-fg-subtle); font-weight: 400;">— entra con slide+fade, esc/atrás lo cierra</span></p>
+    <div style="width: 400px; height: 880px; border-radius: 16px; border: 1px solid var(--color-border); background: var(--color-surface); overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 24px 64px -24px rgba(0,0,0,.7);">
+      <div style="display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--color-border); padding: 10px 12px; flex-shrink: 0;">
+        <button style="display: inline-flex; align-items: center; gap: 6px; min-height: 40px; border-radius: var(--radius); padding: 0 10px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; font-family: inherit; font-size: 13px;"><l-i name="chevron-right" size="15" style="transform: rotate(180deg);"></l-i> citas-online</button>
+        <div style="margin-left: auto; display: flex; align-items: center; gap: 2px;">
+          <button style="display: inline-flex; min-width: 40px; min-height: 40px; align-items: center; justify-content: center; border-radius: var(--radius); color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;"><l-i name="x" size="17"></l-i></button>
+        </div>
+      </div>
+      <div style="padding: 16px 14px 0; flex-shrink: 0;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span style="display: flex; height: 40px; width: 40px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in oklab, var(--color-fg) 9%, transparent); color: var(--color-fg);"><l-i name="si-github" size="18"></l-i></span>
+          <div style="min-width: 0;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <h2 style="margin: 0; font-size: 17px; font-weight: 650;">api</h2>
+              <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 2px 9px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>Activo · 2/2</span>
+            </div>
+            <p style="margin: 2px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">vidasana/citas-api · main</p>
+          </div>
+        </div>
+        <div style="margin-top: 14px; display: flex; gap: 8px;">
+          <button style="flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; border-radius: var(--radius); background: var(--color-brand); color: #fff; border: none; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit;"><l-i name="rocket" size="14"></l-i> Desplegar</button>
+          <button style="display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-fg); cursor: pointer; line-height: 0;" title="Reiniciar"><l-i name="refresh-cw" size="16"></l-i></button>
+          <button style="display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-fg); cursor: pointer; line-height: 0;" title="Detener"><l-i name="square" size="16"></l-i></button>
+          <button style="display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-fg); cursor: pointer; line-height: 0;" title="Terminal"><l-i name="terminal" size="16"></l-i></button>
+        </div>
+        <div style="margin-top: 10px; display: flex; gap: 2px; overflow: hidden; border-bottom: 1px solid var(--color-border);">
+          <button style="position: relative; padding: 11px 12px; font-size: 13px; font-weight: 600; color: var(--color-fg); background: transparent; border: none; cursor: pointer; font-family: inherit; flex-shrink: 0;">Despliegues<span style="position: absolute; left: 10px; right: 10px; bottom: 0; height: 2px; border-radius: 9999px; background: var(--color-brand);"></span></button>
+          <button style="padding: 11px 12px; font-size: 13px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; font-family: inherit; flex-shrink: 0;">Variables</button>
+          <button style="padding: 11px 12px; font-size: 13px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; font-family: inherit; flex-shrink: 0;">Métricas</button>
+          <button style="padding: 11px 12px; font-size: 13px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; font-family: inherit; flex-shrink: 0;">Logs</button>
+          <button style="padding: 11px 12px; font-size: 13px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; font-family: inherit; flex-shrink: 0;">Aju…</button>
+        </div>
+      </div>
+      <div style="flex: 1; overflow: hidden; padding: 14px; display: flex; flex-direction: column; gap: 10px;">
+        <div style="border-radius: 12px; border: 1px solid color-mix(in oklab, var(--color-brand) 30%, var(--color-border)); background: var(--color-bg); overflow: hidden;">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px;">
+            <div style="display: flex; min-width: 0; align-items: center; gap: 10px;">
+              <span style="flex-shrink: 0; display: inline-flex; align-items: center; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 10px; font-size: 11px; font-weight: 600;">Activo</span>
+              <div style="min-width: 0;">
+                <p style="margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500;">fix: recordatorios duplicados</p>
+                <p style="margin: 2px 0 0; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">push · a4f9c2e · hace 2 h</p>
+              </div>
+            </div>
+          </div>
+          <div style="border-top: 1px solid var(--color-border);">
+            <div style="display: flex; align-items: center; justify-content: space-between; background: var(--color-surface-2); padding: 6px 12px;">
+              <span style="font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--color-fg-subtle);">Build &amp; deploy</span>
+              <l-i name="copy" size="12" style="color: var(--color-fg-subtle);"></l-i>
+            </div>
+            <div style="height: 190px; overflow: hidden; background: oklch(11% 0.008 280); padding: 12px; font-family: var(--font-mono); font-size: 11px; line-height: 1.7; color: color-mix(in oklab, var(--color-fg) 88%, transparent);">
+              <div>Clonando vidasana/citas-api (main)...</div>
+              <div>#7 [4/6] RUN npm ci --omit=dev</div>
+              <div>#9 [6/6] RUN npm run build</div>
+              <div>#9 compilado sin errores en 24.1s</div>
+              <div>Réplica 1/2 ✓ · Réplica 2/2 ✓</div>
+              <div>Retirando versión anterior... (corte cero)</div>
+              <div>Despliegue completado en 1m 42s</div>
+            </div>
+          </div>
+        </div>
+        <div style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px;">
+          <div style="display: flex; min-width: 0; align-items: center; gap: 10px;">
+            <span style="flex-shrink: 0; display: inline-flex; align-items: center; border-radius: 9999px; background: var(--color-surface-2); color: var(--color-fg-muted); padding: 3px 10px; font-size: 11px; font-weight: 600;">Fallido</span>
+            <div style="min-width: 0;">
+              <p style="margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500;">chore: actualiza dependencias</p>
+              <p style="margin: 2px 0 0; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">push · 91d3b0f · hace 1 d</p>
+            </div>
+          </div>
+        </div>
+        <div style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px;">
+          <div style="display: flex; min-width: 0; align-items: center; gap: 10px;">
+            <span style="flex-shrink: 0; display: inline-flex; align-items: center; border-radius: 9999px; background: var(--color-surface-2); color: var(--color-fg-muted); padding: 3px 10px; font-size: 11px; font-weight: 600;">Completado</span>
+            <div style="min-width: 0;">
+              <p style="margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500;">feat: exportación de citas a CSV</p>
+              <p style="margin: 2px 0 0; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">manual · c7e51aa · hace 3 d</p>
+            </div>
+          </div>
+          <l-i name="rotate-ccw" size="14" style="color: var(--color-fg-subtle);"></l-i>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
