@@ -1,6 +1,6 @@
 {
   "name": "@skyway/server",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "main": "dist/index.js",
   "scripts": {
@@ -12,6 +12,8 @@
   "dependencies": {
     "@fastify/cookie": "^9.4.0",
     "@fastify/static": "^7.0.4",
+    "@simplewebauthn/server": "^9.0.3",
+    "@simplewebauthn/types": "^9.0.1",
     "better-sqlite3": "^11.3.0",
     "dockerode": "^4.0.2",
     "fastify": "^4.28.1",

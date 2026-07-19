@@ -9,8 +9,8 @@ export function audit(
   target?: { type: string; id: string; detail?: string },
   actorOverride?: string,
 ): void {
-  let actor = actorOverride ?? 'sistema';
-  if (!actorOverride) {
+  let actor = actorOverride ?? req.authActor ?? 'sistema';
+  if (!actorOverride && !req.authActor) {
     const userId = userIdFromRequest(req);
     if (userId) {
       const user = getUser(userId);

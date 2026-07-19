@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { requireAuth } from '../auth';
+import { requireAdmin } from '../auth';
 import { audit } from '../audit';
 import { getProject, getSetting, setSetting } from '../db';
 import { listRailwayProjects } from '../railway/client';
@@ -13,7 +13,8 @@ const tokenSchema = z.string().trim().min(10, 'Token de Railway requerido');
  * se usa en memoria y NO se guarda en ningún sitio (ni en la auditoría).
  */
 export async function importRoutes(app: FastifyInstance): Promise<void> {
-  app.addHook('preHandler', requireAuth);
+  // Importar de Railway crea proyectos y toca credenciales: solo administradores.
+  app.addHook('preHandler', requireAdmin);
 
   app.post('/api/import/railway/projects', async (req) => {
     const body = z.object({ token: tokenSchema }).parse(req.body);

@@ -4,13 +4,16 @@ import { config } from './config';
 import {
   AlertRow,
   AlertSeverity,
+  ApiTokenRow,
   AuditRow,
   DeploymentRow,
   DeploymentStatus,
+  PasskeyRow,
   ProjectRow,
   ServiceConfig,
   ServiceRow,
   ServiceType,
+  UserRole,
   UserRow,
 } from './types';
 import { id, now } from './util';
@@ -26,7 +29,37 @@ export function initDb(): void {
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'admin',
       created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS user_projects (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      PRIMARY KEY (user_id, project_id)
+    );
+    CREATE TABLE IF NOT EXISTS passkeys (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      credential_id TEXT NOT NULL UNIQUE,
+      public_key TEXT NOT NULL,
+      counter INTEGER NOT NULL DEFAULT 0,
+      transports TEXT,
+      device_type TEXT,
+      backed_up INTEGER NOT NULL DEFAULT 0,
+      rp_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS api_tokens (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      prefix TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER,
+      expires_at INTEGER
     );
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -106,6 +139,7 @@ export function initDb(): void {
   // Migraciones de columnas para bases de datos ya existentes.
   ensureColumn('projects', 'client', 'TEXT');
   ensureColumn('deployments', 'diagnosis', 'TEXT');
+  ensureColumn('users', 'role', "TEXT NOT NULL DEFAULT 'admin'"); // los usuarios previos eran el dueño
 }
 
 function ensureColumn(table: string, column: string, ddl: string): void {
@@ -124,12 +158,108 @@ export function countUsers(): number {
   return (db.prepare('SELECT COUNT(*) AS c FROM users').get() as any).c;
 }
 
-export function createUser(email: string, passwordHash: string): UserRow {
-  const row: UserRow = { id: id('usr'), email, password_hash: passwordHash, created_at: now() };
-  db.prepare('INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)').run(
-    row.id, row.email, row.password_hash, row.created_at,
+export function createUser(email: string, passwordHash: string, role: UserRole = 'admin'): UserRow {
+  const row: UserRow = { id: id('usr'), email, password_hash: passwordHash, role, created_at: now() };
+  db.prepare('INSERT INTO users (id, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    row.id, row.email, row.password_hash, row.role, row.created_at,
   );
   return row;
+}
+
+export function listUsers(): UserRow[] {
+  return db.prepare('SELECT * FROM users ORDER BY created_at ASC').all() as UserRow[];
+}
+
+export function countAdmins(): number {
+  return (db.prepare("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").get() as any).c;
+}
+
+export function updateUserRole(userId: string, role: UserRole): void {
+  db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, userId);
+}
+
+export function deleteUser(userId: string): void {
+  db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+}
+
+// ---------- workspaces por usuario ----------
+export function listUserProjectIds(userId: string): string[] {
+  return (db.prepare('SELECT project_id FROM user_projects WHERE user_id = ?').all(userId) as any[])
+    .map((r) => r.project_id);
+}
+
+export function setUserProjects(userId: string, projectIds: string[]): void {
+  const del = db.prepare('DELETE FROM user_projects WHERE user_id = ?');
+  const ins = db.prepare('INSERT OR IGNORE INTO user_projects (user_id, project_id) VALUES (?, ?)');
+  const tx = db.transaction(() => {
+    del.run(userId);
+    for (const pid of projectIds) ins.run(userId, pid);
+  });
+  tx();
+}
+
+export function userHasProject(userId: string, projectId: string): boolean {
+  return !!db.prepare('SELECT 1 FROM user_projects WHERE user_id = ? AND project_id = ?').get(userId, projectId);
+}
+
+// ---------- passkeys ----------
+export function insertPasskey(row: Omit<PasskeyRow, 'id' | 'created_at' | 'last_used_at'>): PasskeyRow {
+  const full: PasskeyRow = { ...row, id: id('pky'), created_at: now(), last_used_at: null };
+  db.prepare(
+    `INSERT INTO passkeys (id, user_id, credential_id, public_key, counter, transports, device_type, backed_up, rp_id, name, created_at, last_used_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(full.id, full.user_id, full.credential_id, full.public_key, full.counter, full.transports, full.device_type, full.backed_up, full.rp_id, full.name, full.created_at, full.last_used_at);
+  return full;
+}
+
+export function listPasskeys(userId: string): PasskeyRow[] {
+  return db.prepare('SELECT * FROM passkeys WHERE user_id = ? ORDER BY created_at ASC').all(userId) as PasskeyRow[];
+}
+
+export function countPasskeys(userId: string): number {
+  return (db.prepare('SELECT COUNT(*) AS c FROM passkeys WHERE user_id = ?').get(userId) as any).c;
+}
+
+export function getPasskeyByCredentialId(credentialId: string): PasskeyRow | undefined {
+  return db.prepare('SELECT * FROM passkeys WHERE credential_id = ?').get(credentialId) as PasskeyRow | undefined;
+}
+
+export function touchPasskey(passkeyId: string, counter: number): void {
+  db.prepare('UPDATE passkeys SET counter = ?, last_used_at = ? WHERE id = ?').run(counter, now(), passkeyId);
+}
+
+export function deletePasskey(passkeyId: string, userId: string): boolean {
+  return db.prepare('DELETE FROM passkeys WHERE id = ? AND user_id = ?').run(passkeyId, userId).changes > 0;
+}
+
+// ---------- tokens de API ----------
+export function insertApiToken(row: Omit<ApiTokenRow, 'id' | 'created_at' | 'last_used_at'>): ApiTokenRow {
+  const full: ApiTokenRow = { ...row, id: id('tok'), created_at: now(), last_used_at: null };
+  db.prepare(
+    `INSERT INTO api_tokens (id, user_id, name, token_hash, prefix, created_at, last_used_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(full.id, full.user_id, full.name, full.token_hash, full.prefix, full.created_at, full.last_used_at, full.expires_at);
+  return full;
+}
+
+export function listApiTokens(userId: string): ApiTokenRow[] {
+  return db.prepare('SELECT * FROM api_tokens WHERE user_id = ? ORDER BY created_at ASC').all(userId) as ApiTokenRow[];
+}
+
+export function countApiTokens(userId: string): number {
+  return (db.prepare('SELECT COUNT(*) AS c FROM api_tokens WHERE user_id = ?').get(userId) as any).c;
+}
+
+export function getApiTokenByHash(tokenHash: string): ApiTokenRow | undefined {
+  return db.prepare('SELECT * FROM api_tokens WHERE token_hash = ?').get(tokenHash) as ApiTokenRow | undefined;
+}
+
+export function touchApiToken(tokenId: string): void {
+  db.prepare('UPDATE api_tokens SET last_used_at = ? WHERE id = ?').run(now(), tokenId);
+}
+
+export function deleteApiToken(tokenId: string, userId: string): boolean {
+  return db.prepare('DELETE FROM api_tokens WHERE id = ? AND user_id = ?').run(tokenId, userId).changes > 0;
 }
 
 export function getUserByEmail(email: string): UserRow | undefined {
@@ -390,21 +520,41 @@ export function insertAlert(alert: {
   return row;
 }
 
-export function listAlerts(opts: { limit?: number; openOnly?: boolean } = {}): AlertRow[] {
+export function listAlerts(opts: { limit?: number; openOnly?: boolean; projectIds?: string[] } = {}): AlertRow[] {
   const limit = Math.min(opts.limit ?? 50, 200);
-  if (opts.openOnly) {
-    return db
-      .prepare('SELECT * FROM alerts WHERE resolved_at IS NULL ORDER BY ts DESC LIMIT ?')
-      .all(limit) as AlertRow[];
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (opts.openOnly) where.push('resolved_at IS NULL');
+  if (opts.projectIds) {
+    // Restricción por workspaces: las alertas de servidor (sin proyecto) quedan fuera.
+    if (opts.projectIds.length === 0) return [];
+    where.push(`project_id IN (${opts.projectIds.map(() => '?').join(',')})`);
+    params.push(...opts.projectIds);
   }
-  return db.prepare('SELECT * FROM alerts ORDER BY ts DESC LIMIT ?').all(limit) as AlertRow[];
+  const sql = `SELECT * FROM alerts${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY ts DESC LIMIT ?`;
+  return db.prepare(sql).all(...params, limit) as AlertRow[];
 }
 
-export function countUnreadAlerts(): number {
+export function getAlert(alertId: string): AlertRow | undefined {
+  return db.prepare('SELECT * FROM alerts WHERE id = ?').get(alertId) as AlertRow | undefined;
+}
+
+export function countUnreadAlerts(projectIds?: string[]): number {
+  if (projectIds) {
+    if (projectIds.length === 0) return 0;
+    const sql = `SELECT COUNT(*) AS c FROM alerts WHERE read_at IS NULL AND project_id IN (${projectIds.map(() => '?').join(',')})`;
+    return (db.prepare(sql).get(...projectIds) as any).c;
+  }
   return (db.prepare('SELECT COUNT(*) AS c FROM alerts WHERE read_at IS NULL').get() as any).c;
 }
 
-export function markAlertsRead(): void {
+export function markAlertsRead(projectIds?: string[]): void {
+  if (projectIds) {
+    if (projectIds.length === 0) return;
+    const sql = `UPDATE alerts SET read_at = ? WHERE read_at IS NULL AND project_id IN (${projectIds.map(() => '?').join(',')})`;
+    db.prepare(sql).run(now(), ...projectIds);
+    return;
+  }
   db.prepare('UPDATE alerts SET read_at = ? WHERE read_at IS NULL').run(now());
 }
 

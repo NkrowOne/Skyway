@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { requireAuth } from '../auth';
+import { assertProjectAccess, requireAuth } from '../auth';
 import { audit } from '../audit';
 import {
   backupSupported,
@@ -32,6 +32,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
 
     const body = z.object({ command: z.string().trim().min(1, 'Comando requerido').max(2000) }).parse(req.body);
@@ -55,6 +56,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     return { supported: backupSupported(found.service), backups: listBackups(id) };
   });
 
@@ -62,6 +64,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     if (!backupSupported(found.service)) {
       return reply.code(400).send({ error: 'Este servicio no soporta backups' });
     }
@@ -91,6 +94,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     const { id, file } = req.params as { id: string; file: string };
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     const body = z.object({ confirm: z.literal(true) }).parse(req.body);
     void body;
     if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });

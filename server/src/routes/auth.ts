@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   clearAuthCookie,
   clearLoginFailures,
+  currentUser,
   loginBlocked,
   recordLoginFailure,
   requireAuth,
@@ -22,11 +23,10 @@ const credentialsSchema = z.object({
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/auth/me', async (req) => {
     const needsSetup = countUsers() === 0;
-    const userId = userIdFromRequest(req);
-    const user = userId ? getUser(userId) : undefined;
+    const user = currentUser(req);
     return {
       needsSetup,
-      user: user ? { id: user.id, email: user.email } : null,
+      user: user ? { id: user.id, email: user.email, role: user.role } : null,
     };
   });
 
@@ -35,10 +35,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(403).send({ error: 'Skyway ya está configurado' });
     }
     const body = credentialsSchema.parse(req.body);
-    const user = createUser(body.email.toLowerCase(), hashPassword(body.password));
+    // El primer usuario es siempre el administrador del servidor.
+    const user = createUser(body.email.toLowerCase(), hashPassword(body.password), 'admin');
     setAuthCookie(reply, signToken(user.id), req.protocol === 'https');
     audit(req, 'setup', { type: 'user', id: user.id, detail: user.email }, user.email);
-    return { user: { id: user.id, email: user.email } };
+    return { user: { id: user.id, email: user.email, role: user.role } };
   });
 
   app.post('/api/auth/login', async (req, reply) => {
@@ -56,7 +57,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     clearLoginFailures(req.ip);
     setAuthCookie(reply, signToken(user.id), req.protocol === 'https');
     audit(req, 'login', { type: 'user', id: user.id, detail: user.email }, user.email);
-    return { user: { id: user.id, email: user.email } };
+    return { user: { id: user.id, email: user.email, role: user.role } };
   });
 
   app.post('/api/auth/logout', async (req, reply) => {

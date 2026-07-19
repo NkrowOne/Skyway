@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { requireAuth } from '../auth';
+import { assertProjectAccess, canAccessProject, currentUser, requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
 import {
   createProject,
@@ -37,14 +37,15 @@ async function serviceWithRuntime(project: any, service: any, docker: boolean) {
 export async function projectRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
-  app.get('/api/projects', async () => {
-    const projects = listProjects();
+  app.get('/api/projects', async (req) => {
+    const user = currentUser(req)!;
+    const projects = listProjects().filter((p) => canAccessProject(user, p.id));
     return {
       projects: projects.map((p) => ({ ...p, serviceCount: listServices(p.id).length })),
     };
   });
 
-  app.post('/api/projects', async (req, reply) => {
+  app.post('/api/projects', { preHandler: requireAdmin }, async (req, reply) => {
     const body = projectSchema.parse(req.body);
     let slug = slugify(body.name);
     let i = 2;
@@ -59,6 +60,7 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const project = getProject(id);
     if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectAccess(req, reply, id)) return reply;
     const docker = await dockerAvailable();
     const services = await Promise.all(
       listServices(id).map((s) => serviceWithRuntime(project, s, docker)),
@@ -66,7 +68,7 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     return { project, services, docker, alertCounts: openAlertCountsByService(id) };
   });
 
-  app.patch('/api/projects/:id', async (req, reply) => {
+  app.patch('/api/projects/:id', { preHandler: requireAdmin }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const project = getProject(id);
     if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
@@ -78,7 +80,7 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     return { project: { ...project, name, client } };
   });
 
-  app.delete('/api/projects/:id', async (req, reply) => {
+  app.delete('/api/projects/:id', { preHandler: requireAdmin }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const { volumes } = req.query as { volumes?: string };
     const project = getProject(id);
@@ -118,6 +120,7 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const project = getProject(id);
     if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectAccess(req, reply, id)) return reply;
     const targets = listServices(id).filter((s) => s.type !== 'database');
     for (const service of targets) {
       markManualAction(service.id);
@@ -132,12 +135,14 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/projects/:id/vars', async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!getProject(id)) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectAccess(req, reply, id)) return reply;
     return { vars: getProjectVars(id) };
   });
 
   app.put('/api/projects/:id/vars', async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!getProject(id)) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectAccess(req, reply, id)) return reply;
     const body = z.object({ vars: z.record(z.string()) }).parse(req.body);
     for (const key of Object.keys(body.vars)) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {

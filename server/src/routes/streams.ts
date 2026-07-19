@@ -1,6 +1,6 @@
 import os from 'os';
 import { FastifyInstance } from 'fastify';
-import { requireAuth } from '../auth';
+import { assertProjectAccess, requireAuth } from '../auth';
 import { getProject, getService, listServices } from '../db';
 import { dockerAvailable } from '../docker/client';
 import { configuredReplicas, containerName, followLogs, getRuntime, getStats, replicaName } from '../docker/containers';
@@ -15,6 +15,7 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     const service = getService(id);
     const project = service ? getProject(service.project_id) : undefined;
     if (!service || !project) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, project.id)) return reply;
 
     const channel = sseInit(reply);
     const name = containerName(project, service);
@@ -55,6 +56,7 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const project = getProject(id);
     if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectAccess(req, reply, id)) return reply;
 
     const channel = sseInit(reply);
 

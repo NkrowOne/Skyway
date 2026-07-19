@@ -1,10 +1,22 @@
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from './config';
-import { getSetting, getUser, setSetting } from './db';
+import { getApiTokenByHash, getSetting, getUser, setSetting, touchApiToken, userHasProject } from './db';
+import { UserRow } from './types';
 import { randomToken } from './util';
 
+declare module 'fastify' {
+  interface FastifyRequest {
+    /** Usuario autenticado, resuelto una vez por petición (cookie o token Bearer). */
+    authUser?: UserRow | null;
+    /** Cómo nombrar al actor en auditoría (email, o email · token:nombre). */
+    authActor?: string;
+  }
+}
+
 export const COOKIE_NAME = 'skyway_token';
+export const API_TOKEN_PREFIX = 'sky_';
 const TOKEN_TTL = '30d';
 
 let cachedSecret: string | null = null;
@@ -89,10 +101,79 @@ export function userIdFromRequest(req: FastifyRequest): string | null {
   }
 }
 
-/** preHandler que exige sesión válida. */
+export function hashApiToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * Resuelve el usuario de la petición: primero token Bearer de API
+ * (automatizaciones, Claude), después cookie de sesión. Cachea en la request.
+ */
+export function currentUser(req: FastifyRequest): UserRow | null {
+  if (req.authUser !== undefined) return req.authUser;
+  let user: UserRow | null = null;
+
+  const header = req.headers.authorization;
+  if (typeof header === 'string' && header.startsWith('Bearer ')) {
+    const raw = header.slice(7).trim();
+    if (raw.startsWith(API_TOKEN_PREFIX)) {
+      const row = getApiTokenByHash(hashApiToken(raw));
+      if (row && (!row.expires_at || row.expires_at > Date.now())) {
+        const owner = getUser(row.user_id);
+        if (owner) {
+          user = owner;
+          req.authActor = `${owner.email} · token:${row.name}`;
+          touchApiToken(row.id);
+        }
+      }
+    }
+  }
+
+  if (!user) {
+    const userId = userIdFromRequest(req);
+    if (userId) {
+      const fromCookie = getUser(userId);
+      if (fromCookie) {
+        user = fromCookie;
+        req.authActor = fromCookie.email;
+      }
+    }
+  }
+
+  req.authUser = user;
+  return user;
+}
+
+/** preHandler que exige sesión válida (cookie o token de API). */
 export async function requireAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> {
-  const userId = userIdFromRequest(req);
-  if (!userId || !getUser(userId)) {
+  if (!currentUser(req)) {
     reply.code(401).send({ error: 'No autenticado' });
   }
+}
+
+/** preHandler que exige rol administrador. */
+export async function requireAdmin(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  const user = currentUser(req);
+  if (!user) {
+    reply.code(401).send({ error: 'No autenticado' });
+    return;
+  }
+  if (user.role !== 'admin') {
+    reply.code(403).send({ error: 'Requiere permisos de administrador' });
+  }
+}
+
+export function canAccessProject(user: UserRow, projectId: string): boolean {
+  return user.role === 'admin' || userHasProject(user.id, projectId);
+}
+
+/**
+ * Comprueba acceso al proyecto; si no lo hay responde 403 y devuelve false.
+ * Úsalo tras requireAuth (siempre hay usuario).
+ */
+export function assertProjectAccess(req: FastifyRequest, reply: FastifyReply, projectId: string): boolean {
+  const user = currentUser(req)!;
+  if (canAccessProject(user, projectId)) return true;
+  reply.code(403).send({ error: 'No tienes acceso a este workspace' });
+  return false;
 }

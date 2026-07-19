@@ -14,11 +14,13 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  UserRound,
+  Users2,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { api } from '../api';
 import { isEditableTarget } from '../hooks';
-import { Alert, Project, Service, SystemInfo } from '../types';
+import { Alert, Me, Project, Service, SystemInfo } from '../types';
 import { cx, fmtBytes, SEVERITY_TONE, timeAgo } from '../utils';
 import { Kbd, StatusBadge } from './ui';
 
@@ -38,6 +40,8 @@ const PAGE_LABEL: Record<string, string> = {
   '/security': 'Seguridad',
   '/settings': 'Ajustes',
   '/alerts': 'Alertas',
+  '/users': 'Usuarios',
+  '/account': 'Mi cuenta',
 };
 
 // ---------- Paleta de comandos (⌘K) ----------
@@ -52,7 +56,7 @@ interface PaletteItem {
   to: string;
 }
 
-function CommandPalette({ open, onClose, unread }: { open: boolean; onClose: () => void; unread: number }) {
+function CommandPalette({ open, onClose, unread, isAdmin }: { open: boolean; onClose: () => void; unread: number; isAdmin: boolean }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [sel, setSel] = useState(0);
@@ -96,26 +100,46 @@ function CommandPalette({ open, onClose, unread }: { open: boolean; onClose: () 
         to: '/alerts',
       },
       {
-        key: 'a-security',
+        key: 'a-account',
         group: 'Acciones rápidas',
-        icon: <ShieldCheck size={15} className="text-subtle" />,
-        label: 'Abrir panel de seguridad',
-        keywords: 'seguridad auditoria contraseña',
-        to: '/security',
+        icon: <UserRound size={15} className="text-subtle" />,
+        label: 'Mi cuenta (passkeys y tokens)',
+        keywords: 'cuenta passkey token contraseña api',
+        to: '/account',
       },
-      {
-        key: 'a-settings',
-        group: 'Acciones rápidas',
-        icon: <Settings size={15} className="text-subtle" />,
-        label: 'Ajustes del servidor',
-        keywords: 'ajustes configuracion dominios github telegram',
-        to: '/settings',
-      },
+      ...(isAdmin
+        ? [
+            {
+              key: 'a-users',
+              group: 'Acciones rápidas' as const,
+              icon: <Users2 size={15} className="text-subtle" />,
+              label: 'Gestionar usuarios',
+              keywords: 'usuarios roles clientes workspaces permisos',
+              to: '/users',
+            },
+            {
+              key: 'a-security',
+              group: 'Acciones rápidas' as const,
+              icon: <ShieldCheck size={15} className="text-subtle" />,
+              label: 'Abrir panel de seguridad',
+              keywords: 'seguridad auditoria contraseña',
+              to: '/security',
+            },
+            {
+              key: 'a-settings',
+              group: 'Acciones rápidas' as const,
+              icon: <Settings size={15} className="text-subtle" />,
+              label: 'Ajustes del servidor',
+              keywords: 'ajustes configuracion dominios github telegram',
+              to: '/settings',
+            },
+          ]
+        : []),
     ];
     const q = query.trim().toLowerCase();
     const all = [...list, ...actions];
     return q ? all.filter((i) => i.keywords.includes(q)) : all;
-  }, [projects.data, query, unread]);
+  }, [projects.data, query, unread, isAdmin]);
 
   useEffect(() => {
     setSel((s) => Math.min(s, Math.max(0, items.length - 1)));
@@ -368,6 +392,13 @@ export default function Layout() {
   const [helpOpen, setHelpOpen] = useState(false);
   const pendingG = useRef<number | null>(null);
 
+  const me = useQuery({
+    queryKey: ['me'],
+    queryFn: () => api.get<Me>('/auth/me'),
+    staleTime: 60_000,
+  });
+  const isAdmin = me.data?.user?.role === 'admin';
+
   const system = useQuery({
     queryKey: ['system'],
     queryFn: () => api.get<SystemInfo>('/system'),
@@ -509,19 +540,37 @@ export default function Layout() {
             </div>
           )}
           <AlertBell />
+          {isAdmin && (
+            <>
+              <Link
+                to="/users"
+                className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+                title="Usuarios"
+              >
+                <Users2 size={16} />
+              </Link>
+              <Link
+                to="/security"
+                className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+                title="Panel de seguridad"
+              >
+                <ShieldCheck size={16} />
+              </Link>
+              <Link
+                to="/settings"
+                className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+                title="Ajustes"
+              >
+                <Settings size={16} />
+              </Link>
+            </>
+          )}
           <Link
-            to="/security"
+            to="/account"
             className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
-            title="Panel de seguridad"
+            title="Mi cuenta"
           >
-            <ShieldCheck size={16} />
-          </Link>
-          <Link
-            to="/settings"
-            className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
-            title="Ajustes"
-          >
-            <Settings size={16} />
+            <UserRound size={16} />
           </Link>
           <button
             onClick={logout}
@@ -544,7 +593,7 @@ export default function Layout() {
         <Outlet />
       </main>
 
-      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} unread={bell.data?.unread ?? 0} />
+      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} unread={bell.data?.unread ?? 0} isAdmin={isAdmin} />
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
