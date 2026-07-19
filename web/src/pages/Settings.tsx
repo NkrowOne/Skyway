@@ -96,6 +96,12 @@ export default function SettingsPage() {
   const [telegramToken, setTelegramToken] = useState('');
   const [telegramChat, setTelegramChat] = useState('');
   const [testing, setTesting] = useState(false);
+  const [githubTesting, setGithubTesting] = useState(false);
+  const [githubTest, setGithubTest] = useState<
+    | { ok: true; login: string; name: string | null; scopes: string[]; tokenType: string }
+    | { ok: false; message: string }
+    | null
+  >(null);
 
   const settings = useQuery({
     queryKey: ['settings'],
@@ -168,6 +174,33 @@ export default function SettingsPage() {
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
+
+  const removeGithub = useMutation({
+    mutationFn: () => api.del('/settings/github'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      setGithubToken('');
+      setGithubTest(null);
+      toast('Token de GitHub eliminado', 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const testGithub = async () => {
+    setGithubTesting(true);
+    setGithubTest(null);
+    try {
+      const res = await api.post<{ login: string; name: string | null; scopes: string[]; tokenType: string }>(
+        '/settings/github/test',
+        githubToken.trim() ? { token: githubToken.trim() } : {},
+      );
+      setGithubTest({ ok: true, ...res });
+    } catch (err) {
+      setGithubTest({ ok: false, message: (err as Error).message });
+    } finally {
+      setGithubTesting(false);
+    }
+  };
 
   const testChannels = async () => {
     setTesting(true);
@@ -252,11 +285,60 @@ export default function SettingsPage() {
           <input
             className="input font-mono text-xs"
             type="password"
-            placeholder={settings.data?.settings.hasGithubToken ? '••••••••••••  (escribir para reemplazar)' : 'ghp_...'}
+            placeholder={settings.data?.settings.hasGithubToken ? '••••••••••••  (escribir para reemplazar)' : 'ghp_... o github_pat_...'}
             value={githubToken}
-            onChange={(e) => setGithubToken(e.target.value)}
+            onChange={(e) => {
+              setGithubToken(e.target.value);
+              setGithubTest(null);
+            }}
           />
         </Field>
+
+        {githubTest && (
+          <div
+            className={cx(
+              'mt-3 rounded-lg border px-3 py-2 text-xs',
+              githubTest.ok ? 'border-ok/30 bg-ok/[.08] text-ok' : 'border-err/30 bg-err/[.08] text-err',
+            )}
+          >
+            {githubTest.ok ? (
+              <>
+                Conectado como <span className="font-semibold">@{githubTest.login}</span>
+                {githubTest.name ? ` (${githubTest.name})` : ''} ·{' '}
+                {githubTest.tokenType === 'fine-grained'
+                  ? 'token fine-grained'
+                  : githubTest.scopes.length
+                    ? `permisos: ${githubTest.scopes.join(', ')}`
+                    : 'sin scopes clásicos'}
+                {githubTest.tokenType === 'classic' && !githubTest.scopes.includes('repo') && (
+                  <span className="mt-1 block text-warn">⚠ Falta el permiso «repo»: no podrá clonar repositorios privados.</span>
+                )}
+              </>
+            ) : (
+              githubTest.message
+            )}
+          </div>
+        )}
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={testGithub} loading={githubTesting}>
+            Probar conexión
+          </Button>
+          {settings.data?.settings.hasGithubToken && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => removeGithub.mutate()}
+              loading={removeGithub.isPending}
+              className="text-err hover:bg-err/[.1]"
+            >
+              <Trash2 size={13} /> Eliminar token
+            </Button>
+          )}
+          <span className="text-[11px] text-subtle">
+            «Probar» valida el token escrito, o el guardado si el campo está vacío.
+          </span>
+        </div>
       </SettingsSection>
 
       <SettingsSection

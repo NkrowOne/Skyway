@@ -10,6 +10,7 @@ import { getSetting, setSetting } from '../db';
 import { docker, dockerAvailable } from '../docker/client';
 import { nixpacksAvailable } from '../deploy/builder';
 import { channelsConfigured, dispatchToChannels } from '../notify';
+import { verifyGithubToken } from '../github/client';
 
 export async function diskUsage(): Promise<{ total: number; free: number } | null> {
   try {
@@ -137,6 +138,26 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       setIf('alertTelegramToken', body.alertTelegramToken);
       setIf('alertTelegramChat', body.alertTelegramChat);
       audit(req, 'settings_updated');
+      return { ok: true };
+    });
+
+    /** Valida el token de GitHub: el guardado, o uno pasado para probar antes de guardar. */
+    secured.post('/api/settings/github/test', { preHandler: requireAdmin }, async (req, reply) => {
+      const body = z.object({ token: z.string().trim().optional() }).parse(req.body ?? {});
+      const token = body.token || getSetting('githubToken');
+      if (!token) return reply.code(400).send({ error: 'No hay ningún token de GitHub configurado' });
+      try {
+        const identity = await verifyGithubToken(token);
+        return { ok: true, ...identity };
+      } catch (err: any) {
+        return reply.code(502).send({ error: err?.message || 'No se pudo validar el token' });
+      }
+    });
+
+    /** Elimina el token de GitHub guardado. */
+    secured.delete('/api/settings/github', { preHandler: requireAdmin }, async (req) => {
+      setSetting('githubToken', null);
+      audit(req, 'github_token_removed', { type: 'system', id: 'github' });
       return { ok: true };
     });
 
