@@ -1,38 +1,55 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, Play, RefreshCw, Rocket, Square, Terminal, X } from 'lucide-react';
+import { ChevronLeft, ExternalLink, MoveHorizontal, Play, RefreshCw, Rocket, Square, Terminal, X } from 'lucide-react';
 import { api } from '../api';
+import { useLocalStorage, useMediaQuery } from '../hooks';
 import { MetricPoint } from '../pages/Project';
 import { Deployment, MetricsSnapshot, Project, Runtime, Service } from '../types';
-import { STATE_COLOR, STATE_LABEL } from '../utils';
+import { cx, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
 import ExecModal from './ExecModal';
+import { ModuleChip, moduleKind } from './ModuleIcon';
 import BackupsTab from './tabs/BackupsTab';
 import DeploymentsTab from './tabs/DeploymentsTab';
 import LogsTab from './tabs/LogsTab';
 import MetricsTab from './tabs/MetricsTab';
 import ServiceSettingsTab from './tabs/ServiceSettingsTab';
 import VariablesTab from './tabs/VariablesTab';
-import { Button, StatusDot, Tabs, useToast } from './ui';
+import { Button, Skeleton, StatusBadge, Tabs, useToast } from './ui';
 
 const BACKUP_TEMPLATES = ['postgres', 'mysql', 'mongo'];
 
 export default function ServiceDrawer({
   serviceId,
   projectId,
+  projectName,
   latestMetrics,
   historyRef,
   onClose,
 }: {
   serviceId: string;
   projectId: string;
+  projectName: string;
   latestMetrics: MetricsSnapshot | null;
   historyRef: React.MutableRefObject<Map<string, MetricPoint[]>>;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState('deployments');
   const [execOpen, setExecOpen] = useState(false);
+  const [wide, setWide] = useLocalStorage('skyway.drawerWide', false);
+  const fullscreen = useMediaQuery('(max-width: 899px)');
   const toast = useToast();
   const queryClient = useQueryClient();
+
+  // Esc cierra el drawer, salvo que haya un modal/paleta abierto por encima.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"]')) return;
+      onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const detail = useQuery({
     queryKey: ['service', serviceId],
@@ -65,16 +82,43 @@ export default function ServiceDrawer({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  const asideCls = cx(
+    'drawer-in flex flex-col bg-surface',
+    fullscreen
+      ? 'fixed inset-0 z-40'
+      : 'min-h-0 shrink-0 border-l border-line shadow-drawer transition-[width] duration-200 ease-out',
+  );
+  const asideStyle = fullscreen ? undefined : { width: wide ? 'min(840px, calc(100vw - 64px))' : 'min(600px, calc(100vw - 64px))' };
+
   if (!detail.data) {
     return (
-      <aside className="flex w-[560px] shrink-0 items-center justify-center border-l border-line bg-panel">
-        <span className="text-sm text-sub">Cargando servicio...</span>
+      <aside className={asideCls} style={asideStyle} aria-busy>
+        <div className="border-b border-line p-5">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-[38px] w-[38px] rounded-[10px]" />
+            <div>
+              <Skeleton className="h-4 w-36" />
+              <Skeleton className="mt-1.5 h-3 w-52" />
+            </div>
+          </div>
+          <div className="mt-4 flex gap-2">
+            <Skeleton className="h-8 w-28" />
+            <Skeleton className="h-8 w-24" />
+            <Skeleton className="h-8 w-24" />
+          </div>
+        </div>
+        <div className="space-y-2.5 p-5">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-16 w-full rounded-xl" />
+          ))}
+        </div>
       </aside>
     );
   }
 
   const { service, runtime } = detail.data;
   const state = latestMetrics?.services[serviceId]?.state ?? runtime.state;
+  const replicas = latestMetrics?.services[serviceId]?.replicas;
   const isRunning = state === 'running' || state === 'restarting';
   const hasBackups = service.type === 'database' && BACKUP_TEMPLATES.includes(service.config.template);
   const tabs = [
@@ -88,77 +132,146 @@ export default function ServiceDrawer({
   const domain = service.type !== 'database' ? service.config.domains?.[0] : undefined;
   const subtitle =
     service.type === 'git'
-      ? `${service.config.repoUrl} · ${service.config.branch}`
+      ? `${service.config.repoUrl.replace(/^https?:\/\/(www\.)?/, '')} · ${service.config.branch}`
       : service.type === 'image'
         ? `${service.config.image} · host interno: ${service.slug}`
         : `${service.config.template}:${service.config.version} · host interno: ${service.slug}`;
 
   return (
-    <aside className="flex w-[560px] shrink-0 flex-col border-l border-line bg-panel">
-      <div className="border-b border-line px-5 py-4">
-        <div className="flex items-start justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h2 className="truncate text-base font-semibold">{service.name}</h2>
-              <span className="flex items-center gap-1.5 rounded-full border border-line bg-panel2 px-2 py-0.5 text-[11px] text-sub">
-                <StatusDot colorClass={STATE_COLOR[state]} size={6} />
-                {STATE_LABEL[state]}
-              </span>
-            </div>
-            <p className="mt-0.5 truncate text-xs text-sub">{subtitle}</p>
-          </div>
-          <button onClick={onClose} className="rounded-md p-1.5 text-sub hover:bg-panel2 hover:text-txt">
-            <X size={16} />
+    <aside className={asideCls} style={asideStyle} role="complementary" aria-label={`Servicio ${service.name}`}>
+      {fullscreen && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
+          <button
+            onClick={onClose}
+            className="flex min-h-10 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-sub transition-colors hover:bg-surface2 hover:text-txt"
+          >
+            <ChevronLeft size={15} /> {projectName}
+          </button>
+          <button
+            onClick={onClose}
+            className="ml-auto flex min-h-10 min-w-10 items-center justify-center rounded-lg leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+            title="Cerrar (esc)"
+          >
+            <X size={17} />
           </button>
         </div>
+      )}
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={() => deploy.mutate()} loading={deploy.isPending}>
+      <div className={cx('shrink-0 border-b border-line', fullscreen ? 'px-3.5 pt-4' : 'px-5 pt-[18px]')}>
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-3">
+            <ModuleChip kind={moduleKind(service)} size={fullscreen ? 40 : 38} />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h2 className="truncate text-base font-[650] tracking-[-.01em]">{service.name}</h2>
+                <StatusBadge
+                  tone={STATE_TONE[state]}
+                  label={STATE_LABEL[state]}
+                  pulse={STATE_PULSE[state]}
+                  replicas={replicas}
+                  className="px-[9px] py-0.5"
+                />
+              </div>
+              <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">{subtitle}</p>
+            </div>
+          </div>
+          {!fullscreen && (
+            <div className="flex shrink-0 items-center gap-0.5">
+              <button
+                onClick={() => setWide(!wide)}
+                className="rounded-lg p-[7px] leading-none text-subtle transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+                title="Cambiar ancho del panel"
+              >
+                <MoveHorizontal size={15} />
+              </button>
+              <button
+                onClick={onClose}
+                className="rounded-lg p-[7px] leading-none text-subtle transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+                title="Cerrar (esc)"
+              >
+                <X size={15} />
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-3.5 flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            className={cx(fullscreen && 'h-11 flex-1')}
+            onClick={() => deploy.mutate()}
+            loading={deploy.isPending}
+          >
             <Rocket size={13} /> Desplegar
           </Button>
           {isRunning ? (
             <>
-              <Button size="sm" variant="outline" onClick={() => action.mutate('restart')} loading={action.isPending}>
-                <RefreshCw size={13} /> Reiniciar
+              <Button
+                size="sm"
+                variant="secondary"
+                className={cx(fullscreen && 'h-11 min-w-11 px-0')}
+                onClick={() => action.mutate('restart')}
+                loading={action.isPending}
+                title="Reiniciar"
+              >
+                <RefreshCw size={fullscreen ? 16 : 13} /> {!fullscreen && 'Reiniciar'}
               </Button>
-              <Button size="sm" variant="outline" onClick={() => action.mutate('stop')} loading={action.isPending}>
-                <Square size={13} /> Detener
+              <Button
+                size="sm"
+                variant="secondary"
+                className={cx(fullscreen && 'h-11 min-w-11 px-0')}
+                onClick={() => action.mutate('stop')}
+                loading={action.isPending}
+                title="Detener"
+              >
+                <Square size={fullscreen ? 16 : 13} /> {!fullscreen && 'Detener'}
               </Button>
             </>
           ) : (
             state !== 'not_created' && (
-              <Button size="sm" variant="outline" onClick={() => action.mutate('start')} loading={action.isPending}>
+              <Button
+                size="sm"
+                variant="secondary"
+                className={cx(fullscreen && 'h-11 px-4')}
+                onClick={() => action.mutate('start')}
+                loading={action.isPending}
+              >
                 <Play size={13} /> Iniciar
               </Button>
             )
           )}
           {isRunning && (
-            <Button size="sm" variant="outline" onClick={() => setExecOpen(true)} title="Ejecutar comando en el contenedor">
-              <Terminal size={13} />
+            <Button
+              size="sm"
+              variant="ghost"
+              className={cx(fullscreen && 'h-11 min-w-11 border border-line px-0')}
+              onClick={() => setExecOpen(true)}
+              title="Ejecutar comando en el contenedor"
+            >
+              <Terminal size={fullscreen ? 16 : 13} />
             </Button>
           )}
-          {domain && (
+          {domain && !fullscreen && (
             <a
               href={`http://${domain}`}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-acc2 hover:bg-panel2"
+              className="ml-auto inline-flex min-w-0 max-w-[190px] items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
             >
-              <ExternalLink size={13} /> {domain}
+              <ExternalLink size={12} className="shrink-0" />
+              <span className="truncate">{domain}</span>
             </a>
           )}
         </div>
+
+        <Tabs tabs={tabs} active={tab} onChange={setTab} className="mt-3 border-b-0 px-0" />
       </div>
 
-      <Tabs tabs={tabs} active={tab} onChange={setTab} />
-
-      <div className="flex-1 overflow-y-auto">
+      <div className="relative min-h-0 flex-1 overflow-y-auto" role="tabpanel">
         {tab === 'deployments' && <DeploymentsTab serviceId={serviceId} serviceType={service.type} />}
-        {tab === 'variables' && <VariablesTab serviceId={serviceId} onSaved={invalidate} />}
+        {tab === 'variables' && <VariablesTab serviceId={serviceId} onSaved={invalidate} onDeploy={() => deploy.mutate()} />}
         {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
-        {tab === 'metrics' && (
-          <MetricsTab serviceId={serviceId} latest={latestMetrics} historyRef={historyRef} />
-        )}
+        {tab === 'metrics' && <MetricsTab serviceId={serviceId} latest={latestMetrics} historyRef={historyRef} />}
         {tab === 'logs' && <LogsTab serviceId={serviceId} replicas={(service.config as any).replicas ?? 1} />}
         {tab === 'settings' && (
           <ServiceSettingsTab

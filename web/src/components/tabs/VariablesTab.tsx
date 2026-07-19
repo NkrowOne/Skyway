@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import { api } from '../../api';
-import { Button, CopyButton, Spinner, useToast } from '../ui';
+import { cx } from '../../utils';
+import { Button, CopyButton, Skeleton, useToast } from '../ui';
 
 interface EnvResponse {
   vars: Record<string, string>;
@@ -24,7 +25,17 @@ const SUGGESTED_VARS: { key: string; value: string; hint: string }[] = [
   { key: 'REDIS_URL', value: '${{Redis.REDIS_URL}}', hint: 'Conexión al Redis del proyecto' },
 ];
 
-export default function VariablesTab({ serviceId, onSaved }: { serviceId: string; onSaved: () => void }) {
+const isReference = (v: string) => v.includes('${{');
+
+export default function VariablesTab({
+  serviceId,
+  onSaved,
+  onDeploy,
+}: {
+  serviceId: string;
+  onSaved: () => void;
+  onDeploy?: () => void;
+}) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<Row[]>([]);
@@ -51,14 +62,16 @@ export default function VariablesTab({ serviceId, onSaved }: { serviceId: string
     onSuccess: () => {
       setDirty(false);
       queryClient.invalidateQueries({ queryKey: ['env', serviceId] });
-      toast('Variables guardadas. Redespliega el servicio para aplicarlas.', 'ok');
+      toast('Variables guardadas. Redespliega el servicio para aplicarlas.', 'ok', {
+        action: onDeploy ? { label: 'Desplegar ahora', onClick: onDeploy } : undefined,
+      });
       onSaved();
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
   const submit = () => {
-    let vars: Record<string, string> = {};
+    const vars: Record<string, string> = {};
     if (raw) {
       for (const line of rawText.split('\n')) {
         const trimmed = line.trim();
@@ -81,25 +94,49 @@ export default function VariablesTab({ serviceId, onSaved }: { serviceId: string
 
   const references = env.data?.references ?? [];
   const resolved = env.data?.resolved ?? {};
-  const hasRefs = useMemo(() => rows.some((r) => r.value.includes('${{')), [rows]);
+  const hasRefs = useMemo(() => rows.some((r) => isReference(r.value)), [rows]);
 
-  if (env.isLoading) return <Spinner label="Cargando variables..." />;
+  const edit = (i: number, patch: Partial<Row>) => {
+    setRows((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+    setDirty(true);
+  };
+
+  if (env.isLoading) {
+    return (
+      <div aria-busy className="flex flex-col gap-3 p-4 sm:px-5">
+        <Skeleton className="h-4 w-3/4" />
+        <Skeleton className="h-48 w-full rounded-xl" />
+        <Skeleton className="h-4 w-1/2" />
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-4 p-4">
-      <div className="flex items-center justify-between">
+    <div className="flex flex-col gap-3.5 p-4 sm:px-5">
+      <div className="flex items-start justify-between gap-2">
         <p className="text-xs text-sub">
-          Referencias: <span className="font-mono text-acc2">{'${{Servicio.VAR}}'}</span> ·{' '}
-          <span className="font-mono text-acc2">{'${{shared.VAR}}'}</span>. Las variables compartidas del proyecto se
-          heredan automáticamente.
+          Referencias <span className="font-mono text-[11px] text-info">{'${{Servicio.VAR}}'}</span> ·{' '}
+          <span className="font-mono text-[11px] text-info">{'${{shared.VAR}}'}</span> — las compartidas del proyecto se
+          heredan solas.
         </p>
-        <div className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" onClick={() => setReveal(!reveal)} title={reveal ? 'Ocultar valores' : 'Mostrar valores'}>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            onClick={() => setReveal(!reveal)}
+            className="rounded-lg p-[7px] leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+            title={reveal ? 'Ocultar valores' : 'Mostrar valores'}
+          >
             {reveal ? <EyeOff size={13} /> : <Eye size={13} />}
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setRaw(!raw)}>
-            {raw ? 'Editor' : 'RAW'}
-          </Button>
+          </button>
+          <button
+            onClick={() => setRaw(!raw)}
+            className={cx(
+              'rounded-lg px-2 py-[5px] font-mono text-[11px] transition-colors',
+              raw ? 'bg-acc/[.14] text-acc-soft' : 'text-subtle hover:bg-surface2 hover:text-txt',
+            )}
+            title="Editar como texto plano"
+          >
+            RAW
+          </button>
         </div>
       </div>
 
@@ -115,72 +152,67 @@ export default function VariablesTab({ serviceId, onSaved }: { serviceId: string
           spellCheck={false}
         />
       ) : (
-        <div className="space-y-2">
-          {rows.length === 0 && <p className="py-6 text-center text-sm text-sub/70">Sin variables definidas</p>}
+        <div className="overflow-hidden rounded-xl border border-line bg-bg">
+          {rows.length === 0 && <p className="px-4 py-6 text-center text-sm text-subtle">Sin variables definidas</p>}
           {rows.map((row, i) => (
-            <div key={i} className="flex items-center gap-2">
+            <div key={i} className="flex items-center border-b border-line">
               <input
-                className="input w-2/5 font-mono text-xs"
+                className="w-[38%] shrink-0 border-r border-line bg-transparent px-3.5 py-[9px] font-mono text-xs text-txt outline-none placeholder:text-subtle focus:bg-surface2/50"
                 placeholder="CLAVE"
                 value={row.key}
-                onChange={(e) => {
-                  const next = [...rows];
-                  next[i] = { ...next[i], key: e.target.value };
-                  setRows(next);
-                  setDirty(true);
-                }}
+                spellCheck={false}
+                onChange={(e) => edit(i, { key: e.target.value })}
               />
-              <div className="relative flex-1">
-                <input
-                  className="input w-full pr-8 font-mono text-xs"
-                  placeholder="valor"
-                  type={reveal ? 'text' : 'password'}
-                  value={row.value}
-                  onChange={(e) => {
-                    const next = [...rows];
-                    next[i] = { ...next[i], value: e.target.value };
-                    setRows(next);
+              <input
+                className={cx(
+                  'min-w-0 flex-1 bg-transparent px-3.5 py-[9px] font-mono text-xs outline-none placeholder:text-subtle focus:bg-surface2/50',
+                  isReference(row.value) ? 'text-info' : reveal ? 'text-txt' : 'text-subtle',
+                )}
+                placeholder="valor"
+                type={reveal || isReference(row.value) ? 'text' : 'password'}
+                value={row.value}
+                spellCheck={false}
+                onChange={(e) => edit(i, { value: e.target.value })}
+              />
+              <div className="flex shrink-0 items-center gap-0.5 pr-2">
+                <CopyButton value={resolved[row.key] ?? row.value} title="Copiar valor resuelto" />
+                <button
+                  onClick={() => {
+                    setRows(rows.filter((_, j) => j !== i));
                     setDirty(true);
                   }}
-                />
-                <CopyButton value={resolved[row.key] ?? row.value} className="absolute right-1.5 top-1/2 -translate-y-1/2" />
+                  className="rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-err"
+                  title="Eliminar"
+                >
+                  <Trash2 size={13} />
+                </button>
               </div>
-              <button
-                onClick={() => {
-                  setRows(rows.filter((_, j) => j !== i));
-                  setDirty(true);
-                }}
-                className="rounded-md p-1.5 text-sub hover:bg-panel2 hover:text-err"
-              >
-                <Trash2 size={13} />
-              </button>
             </div>
           ))}
-          <Button
-            size="sm"
-            variant="outline"
+          <button
             onClick={() => {
               setRows([...rows, { key: '', value: '' }]);
               setDirty(true);
             }}
+            className="flex w-full items-center gap-2 px-3.5 py-2.5 text-xs text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
           >
             <Plus size={13} /> Añadir variable
-          </Button>
+          </button>
         </div>
       )}
 
       {hasRefs && !raw && (
-        <p className="text-xs text-sub/80">
+        <p className="text-[11px] text-subtle">
           Las referencias se resuelven al desplegar; el botón de copiar copia el valor ya resuelto.
         </p>
       )}
 
-      <div className="flex flex-wrap items-center gap-1.5 text-xs text-sub">
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
         <span>Sugerencias:</span>
         {SUGGESTED_VARS.filter((s) => !rows.some((r) => r.key === s.key)).map((s) => (
           <button
             key={s.key}
-            className="rounded-md border border-line bg-panel2 px-2 py-0.5 font-mono text-[11px] text-sub hover:border-acc/50 hover:text-txt"
+            className="rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-[11px] text-sub transition-colors duration-150 hover:border-[color-mix(in_oklab,#6e56cf_50%,var(--color-line))] hover:text-txt"
             title={s.hint}
             onClick={() => {
               setRows([...rows, { key: s.key, value: s.value }]);
@@ -193,15 +225,13 @@ export default function VariablesTab({ serviceId, onSaved }: { serviceId: string
       </div>
 
       {references.length > 0 && (
-        <details className="card p-3 text-xs">
-          <summary className="cursor-pointer text-sub hover:text-txt">
-            Referencias disponibles (variables compartidas y otros servicios)
-          </summary>
-          <div className="mt-2 space-y-2">
+        <div className="rounded-xl border border-line bg-surface p-3.5 text-xs">
+          <p className="mb-2.5 font-semibold text-sub">Referencias disponibles</p>
+          <div className="flex flex-col gap-2.5">
             {references.map((ref) => (
               <div key={ref.service}>
-                <p className="mb-1 font-medium text-txt">
-                  {ref.service === 'shared' ? 'Variables compartidas del proyecto' : ref.service}
+                <p className="mb-1.5 text-[11px] uppercase tracking-[.07em] text-subtle">
+                  {ref.service === 'shared' ? 'Compartidas del proyecto' : ref.service}
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {ref.vars.map((v) => {
@@ -209,7 +239,7 @@ export default function VariablesTab({ serviceId, onSaved }: { serviceId: string
                     return (
                       <button
                         key={v}
-                        className="rounded-md border border-line bg-panel2 px-2 py-0.5 font-mono text-[11px] text-acc2 hover:border-acc2/50"
+                        className="rounded-md border border-line bg-bg px-2 py-0.5 font-mono text-[11px] text-info transition-colors duration-150 hover:border-[color-mix(in_oklab,var(--color-info)_50%,var(--color-line))]"
                         title="Copiar referencia"
                         onClick={() => {
                           navigator.clipboard.writeText(token);
@@ -224,11 +254,15 @@ export default function VariablesTab({ serviceId, onSaved }: { serviceId: string
               </div>
             ))}
           </div>
-        </details>
+        </div>
       )}
 
-      <div className="flex justify-end">
-        <Button onClick={submit} loading={save.isPending} disabled={!dirty}>
+      <div className="flex items-center justify-end gap-2.5">
+        <span className={cx('text-xs', dirty ? 'flex items-center gap-1.5 text-warn' : 'text-subtle')}>
+          {dirty && <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />}
+          {dirty ? 'Cambios sin guardar' : 'Sin cambios'}
+        </span>
+        <Button size="sm" onClick={submit} loading={save.isPending} disabled={!dirty}>
           Guardar variables
         </Button>
       </div>

@@ -4,21 +4,44 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: '#0a0b0f',
-        panel: '#12141a',
-        panel2: '#171a22',
-        line: '#262a35',
-        txt: '#e7e9f0',
-        sub: '#9aa0b0',
-        acc: '#8b5cf6',
-        acc2: '#22d3ee',
-        ok: '#34d399',
-        warn: '#fbbf24',
-        err: '#f87171',
+        // Tokens del rediseño (design_handoff_skyway_redesign): superficies oklch + violeta #6e56cf.
+        bg: 'oklch(14% 0.01 280 / <alpha-value>)', // fondo de página
+        surface: 'oklch(18% 0.013 280 / <alpha-value>)', // tarjetas / drawer
+        surface2: 'oklch(22% 0.016 280 / <alpha-value>)', // superficie elevada / hover
+        line: 'oklch(28% 0.018 280 / <alpha-value>)', // bordes hairline
+        txt: 'oklch(96% 0.005 280 / <alpha-value>)', // texto principal
+        sub: 'oklch(70% 0.015 280 / <alpha-value>)', // texto secundario
+        subtle: 'oklch(55% 0.015 280 / <alpha-value>)', // texto terciario / placeholders
+        acc: '#6e56cf', // violeta de marca
+        'acc-soft': '#b9a7ee', // violeta claro para iconos sobre tinte de marca
+        ok: 'oklch(74% 0.16 142 / <alpha-value>)',
+        warn: 'oklch(80% 0.15 80 / <alpha-value>)',
+        err: 'oklch(64% 0.22 25 / <alpha-value>)',
+        info: 'oklch(70% 0.13 220 / <alpha-value>)',
+        term: 'oklch(11% 0.008 280 / <alpha-value>)', // fondo de terminales/logs
+      },
+      borderRadius: {
+        // Radios unificados: controles 10px, tarjetas 12px, overlays 14px.
+        lg: '10px',
+        xl: '12px',
+        '2xl': '14px',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
-        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
+        sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
+        mono: ['ui-monospace', 'SFMono-Regular', 'SF Mono', 'Menlo', 'Consolas', 'Liberation Mono', 'monospace'],
+      },
+      boxShadow: {
+        // Elevación de 3 niveles.
+        lvl1: '0 1px 2px rgba(0,0,0,.3)',
+        lvl3: '0 24px 64px -16px rgba(0,0,0,.8)',
+        toast: '0 16px 40px -12px rgba(0,0,0,.7)',
+        'card-hover': '0 12px 32px -16px color-mix(in oklab, #6e56cf 35%, rgba(0,0,0,.7))',
+        'card-selected': '0 0 0 1px color-mix(in oklab, #6e56cf 40%, transparent), 0 8px 24px -12px color-mix(in oklab, #6e56cf 40%, transparent)',
+        drawer: '-12px 0 32px -20px rgba(0,0,0,.6)',
+      },
+      screens: {
+        nav: '1100px', // topbar: stats de host visibles a partir de aquí
+        drawer: '900px', // el drawer es panel lateral a partir de aquí; debajo, pantalla completa
       },
     },
   },

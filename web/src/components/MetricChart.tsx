@@ -14,12 +14,15 @@ export default function MetricChart({
   title,
   points,
   color,
+  fillOpacity = 0.14,
   format,
   fixedMax,
 }: {
   title: string;
   points: Point[];
+  /** Color de la serie (admite var(--color-*)). */
   color: string;
+  fillOpacity?: number;
   format: (v: number) => string;
   fixedMax?: number;
 }) {
@@ -70,15 +73,13 @@ export default function MetricChart({
   const hovered = hover !== null && points[hover] ? points[hover] : null;
 
   return (
-    <div className="card relative p-4">
-      <div className="mb-2 flex items-baseline justify-between">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-sub">{title}</h3>
-        <span className="text-sm text-txt">{current !== null ? format(current) : '—'}</span>
+    <div className="relative rounded-xl border border-line bg-bg p-4">
+      <div className="mb-2.5 flex items-baseline justify-between">
+        <h3 className="text-xs font-semibold text-sub">{title}</h3>
+        <span className="tnum text-[15px] font-semibold text-txt">{current !== null ? format(current) : '—'}</span>
       </div>
       {points.length < 2 ? (
-        <div className="flex h-[140px] items-center justify-center text-xs text-sub/60">
-          Recopilando datos...
-        </div>
+        <div className="flex h-[140px] items-center justify-center text-xs text-subtle">Recopilando datos…</div>
       ) : (
         <div className="relative">
           <svg
@@ -89,30 +90,38 @@ export default function MetricChart({
             onMouseLeave={() => setHover(null)}
           >
             {gridYs.map((y, i) => (
-              <line key={i} x1={PAD.left} x2={W - PAD.right} y1={y} y2={y} stroke="#262a35" strokeWidth="1" />
+              <line key={i} x1={PAD.left} x2={W - PAD.right} y1={y} y2={y} stroke="var(--color-line)" opacity="0.5" strokeWidth="1" />
             ))}
-            <line x1={PAD.left} x2={W - PAD.right} y1={H - PAD.bottom} y2={H - PAD.bottom} stroke="#2b303c" strokeWidth="1" />
-            {area && <path d={area} fill={color} opacity="0.12" />}
+            <line x1={PAD.left} x2={W - PAD.right} y1={H - PAD.bottom} y2={H - PAD.bottom} stroke="var(--color-line)" strokeWidth="1" />
+            {area && <path d={area} fill={color} opacity={fillOpacity} />}
             <path d={path} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
             {hovered && hover !== null && (
               <>
-                <line x1={xs[hover]} x2={xs[hover]} y1={PAD.top} y2={H - PAD.bottom} stroke="#9aa0b0" strokeWidth="1" strokeDasharray="3,3" />
-                <circle cx={xs[hover]} cy={ys[hover]} r="4" fill={color} stroke="#12141a" strokeWidth="2" />
+                <line
+                  x1={xs[hover]}
+                  x2={xs[hover]}
+                  y1={PAD.top}
+                  y2={H - PAD.bottom}
+                  stroke="var(--color-sub)"
+                  strokeWidth="1"
+                  strokeDasharray="3,3"
+                />
+                <circle cx={xs[hover]} cy={ys[hover]} r="4" fill={color} stroke="var(--color-surface)" strokeWidth="2" />
               </>
             )}
-            <text x={PAD.left} y={H - 5} fontSize="9" fill="#9aa0b0">
+            <text x={PAD.left} y={H - 5} fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
               {points.length > 0 ? fmtTime(points[0].ts) : ''}
             </text>
-            <text x={W - PAD.right} y={H - 5} fontSize="9" fill="#9aa0b0" textAnchor="end">
+            <text x={W - PAD.right} y={H - 5} fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace" textAnchor="end">
               {points.length > 0 ? fmtTime(points[points.length - 1].ts) : ''}
             </text>
-            <text x={W - PAD.right} y={PAD.top + 4} fontSize="9" fill="#9aa0b0" textAnchor="end">
+            <text x={W - PAD.right} y={PAD.top + 4} fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace" textAnchor="end">
               {format(max)}
             </text>
           </svg>
           {hovered && hover !== null && (
             <div
-              className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-panel2 px-2 py-1 text-[11px] text-txt shadow-lg"
+              className="tnum pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-surface2 px-2 py-1 text-[11px] text-txt shadow-lvl1"
               style={{ left: `${(xs[hover] / W) * 100}%` }}
             >
               {format(hovered.value)} · {fmtTime(hovered.ts)}

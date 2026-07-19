@@ -102,13 +102,13 @@ export default function NewServiceModal({
           </button>
           <button
             onClick={() => setStep('database')}
-            className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-acc2/60"
+            className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-info/60"
           >
-            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-acc2/10 text-acc2">
+            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-info/10 text-info">
               <Database size={18} />
             </span>
             <div>
-              <h3 className="text-sm font-medium group-hover:text-acc2">Base de datos</h3>
+              <h3 className="text-sm font-medium group-hover:text-info">Base de datos</h3>
               <p className="mt-1 text-xs text-sub">PostgreSQL, Redis, MySQL, MongoDB o MinIO listos para usar</p>
             </div>
           </button>
@@ -221,11 +221,11 @@ export default function NewServiceModal({
                   submitDb(tpl);
                 }}
                 className={cx(
-                  'card flex items-center gap-3 p-4 text-left transition-all hover:border-acc2/60 disabled:opacity-60',
-                  template === tpl.key && create.isPending && 'border-acc2/70',
+                  'card flex items-center gap-3 p-4 text-left transition-all hover:border-info/60 disabled:opacity-60',
+                  template === tpl.key && create.isPending && 'border-info/70',
                 )}
               >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-acc2/10 text-acc2">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-info/10 text-info">
                   <Database size={16} />
                 </span>
                 <div className="min-w-0">
