@@ -5,6 +5,7 @@ import { initDb, markStaleDeploymentsFailed } from './db';
 import { dockerAvailable } from './docker/client';
 import { ensureNetwork, EDGE_NETWORK } from './docker/networks';
 import { startMonitor } from './monitor';
+import { startScheduler } from './scheduler';
 
 async function main(): Promise<void> {
   ensureDataDirs();
@@ -26,6 +27,7 @@ async function main(): Promise<void> {
   }
 
   startMonitor({ warn: (msg) => app.log.warn(msg) });
+  startScheduler({ warn: (msg) => app.log.warn(msg) });
   auditSystem('server_started', `v${config.version}`);
 
   await app.listen({ port: config.port, host: config.host });

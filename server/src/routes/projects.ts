@@ -15,7 +15,7 @@ import {
   updateProjectMeta,
 } from '../db';
 import { dockerAvailable } from '../docker/client';
-import { containerName, getRuntime, removeContainer, removeVolume, stopContainer, volumeName } from '../docker/containers';
+import { containerName, getRuntime, listServiceContainers, removeContainer, removeVolume, stopContainer, volumeName } from '../docker/containers';
 import { projectNetworkName, removeNetwork } from '../docker/networks';
 import { triggerDeploy } from '../deploy/deployer';
 import { markManualAction } from '../monitor';
@@ -87,15 +87,19 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     const services = listServices(id);
     if (await dockerAvailable()) {
       for (const service of services) {
-        const name = containerName(project, service);
         try {
-          await stopContainer(name);
-          await removeContainer(name);
+          for (const c of await listServiceContainers(service.id)) {
+            await stopContainer(c.name);
+            await removeContainer(c.name);
+          }
         } catch {
           /* best-effort */
         }
         if (volumes === 'true') {
           await removeVolume(volumeName(project, service));
+          for (const vol of ((service.config as any).volumes ?? []) as { name: string }[]) {
+            await removeVolume(vol.name);
+          }
         }
       }
       await removeNetwork(projectNetworkName(project));

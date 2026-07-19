@@ -10,6 +10,27 @@ export function containerName(project: ProjectRow, service: ServiceRow): string 
   return `skyway-${project.slug}-${service.slug}`;
 }
 
+/** Nombre del contenedor de la réplica i (la 1 conserva el nombre canónico). */
+export function replicaName(project: ProjectRow, service: ServiceRow, index: number): string {
+  const base = containerName(project, service);
+  return index <= 1 ? base : `${base}-r${index}`;
+}
+
+export function configuredReplicas(service: ServiceRow): number {
+  if (service.type === 'database') return 1;
+  const n = (service.config as any).replicas;
+  return Number.isInteger(n) && n > 1 ? Math.min(n, 10) : 1;
+}
+
+/** Todos los contenedores del servicio por label (incluye réplicas y restos de swaps). */
+export async function listServiceContainers(serviceId: string): Promise<{ id: string; name: string }[]> {
+  const list = await docker.listContainers({
+    all: true,
+    filters: { label: [`skyway.service=${serviceId}`] } as any,
+  });
+  return list.map((c) => ({ id: c.Id, name: (c.Names?.[0] || c.Id).replace(/^\//, '') }));
+}
+
 export function volumeName(project: ProjectRow, service: ServiceRow, suffix = 'data'): string {
   return `skyway-${project.slug}-${service.slug}-${suffix}`;
 }

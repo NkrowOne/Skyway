@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, Download, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { Archive, CalendarClock, Download, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { api } from '../../api';
-import { fmtBytes, fmtDateTime } from '../../utils';
-import { Button, ConfirmModal, Spinner, useToast } from '../ui';
+import { Service } from '../../types';
+import { fmtBytes, fmtDateTime, timeAgo } from '../../utils';
+import { Button, ConfirmModal, Field, Spinner, useToast } from '../ui';
 
 interface BackupEntry {
   file: string;
@@ -11,7 +12,56 @@ interface BackupEntry {
   createdAt: number;
 }
 
-export default function BackupsTab({ serviceId }: { serviceId: string }) {
+/** Programación de backups automáticos (diario/semanal con retención). */
+function ScheduleSection({ service, onChanged }: { service: Service; onChanged: () => void }) {
+  const toast = useToast();
+  const [schedule, setSchedule] = useState<string>(service.config.backupSchedule ?? '');
+  const [retention, setRetention] = useState(String(service.config.backupRetention ?? 7));
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.patch(`/services/${service.id}`, {
+        config: {
+          backupSchedule: schedule === '' ? null : schedule,
+          backupRetention: Math.max(1, Number(retention) || 7),
+        },
+      }),
+    onSuccess: () => {
+      toast(schedule ? 'Backups automáticos activados' : 'Backups automáticos desactivados', 'ok');
+      onChanged();
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  return (
+    <div className="card p-4">
+      <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-sub">
+        <CalendarClock size={14} className="text-acc" /> Backups automáticos
+      </div>
+      <div className="grid grid-cols-3 items-end gap-3">
+        <Field label="Frecuencia">
+          <select className="input" value={schedule} onChange={(e) => setSchedule(e.target.value)}>
+            <option value="">Desactivados</option>
+            <option value="daily">Diaria (~04:00)</option>
+            <option value="weekly">Semanal (~04:00)</option>
+          </select>
+        </Field>
+        <Field label="Conservar" hint="backups; los más antiguos se borran solos">
+          <input className="input" type="number" min={1} max={60} value={retention} onChange={(e) => setRetention(e.target.value)} />
+        </Field>
+        <Button onClick={() => save.mutate()} loading={save.isPending}>
+          Guardar
+        </Button>
+      </div>
+      <p className="mt-2 text-xs text-sub/80">
+        Se ejecutan en la madrugada del servidor y, si uno falla, recibirás una alerta con la causa. Recuerda descargar
+        copias fuera del servidor de vez en cuando.
+      </p>
+    </div>
+  );
+}
+
+export default function BackupsTab({ serviceId, service, onChanged }: { serviceId: string; service: Service; onChanged: () => void }) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [restoreFile, setRestoreFile] = useState<string | null>(null);
@@ -65,13 +115,16 @@ export default function BackupsTab({ serviceId }: { serviceId: string }) {
 
   return (
     <div className="space-y-4 p-4">
+      <ScheduleSection service={service} onChanged={onChanged} />
+
       <div className="flex items-center justify-between">
         <p className="text-xs text-sub">
-          Volcado completo comprimido, guardado en el servidor (<span className="font-mono">DATA_DIR/backups</span>).
-          Descárgalos también fuera del servidor para estar cubierto ante un fallo de disco.
+          {list.length > 0
+            ? `Último backup ${timeAgo(list[0].createdAt)}. Guardados en el servidor (DATA_DIR/backups).`
+            : 'Volcado completo comprimido, guardado en el servidor (DATA_DIR/backups).'}
         </p>
         <Button size="sm" onClick={() => create.mutate()} loading={create.isPending}>
-          <Plus size={13} /> Crear backup
+          <Plus size={13} /> Crear backup ahora
         </Button>
       </div>
 

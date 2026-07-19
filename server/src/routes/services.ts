@@ -16,10 +16,13 @@ import {
 } from '../db';
 import { dockerAvailable } from '../docker/client';
 import {
+  configuredReplicas,
   containerName,
   getRuntime,
+  listServiceContainers,
   removeContainer,
   removeVolume,
+  replicaName,
   restartContainer,
   startContainer,
   stopContainer,
@@ -80,6 +83,9 @@ const patchSchema = z.object({
       buildArgs: z.record(z.string()).optional(),
       alertsMuted: z.boolean().optional(),
       volumes: z.array(z.object({ containerPath: z.string().trim().min(1).regex(/^\//, 'Ruta absoluta requerida') })).optional(),
+      replicas: z.coerce.number().int().min(1).max(10).optional(),
+      backupSchedule: z.enum(['daily', 'weekly']).nullable().optional(),
+      backupRetention: z.coerce.number().int().min(1).max(60).optional(),
     })
     .optional(),
 });
@@ -87,7 +93,7 @@ const patchSchema = z.object({
 /** Campos cuyo cambio requiere recrear el contenedor. */
 const REDEPLOY_FIELDS = [
   'repoUrl', 'branch', 'rootDir', 'dockerfilePath', 'startCmd', 'port',
-  'domains', 'hostPort', 'version', 'image', 'buildArgs', 'healthcheckPath', 'volumes',
+  'domains', 'hostPort', 'version', 'image', 'buildArgs', 'healthcheckPath', 'volumes', 'replicas',
 ] as const;
 
 function loadService(id: string): { service: ServiceRow; project: NonNullable<ReturnType<typeof getProject>> } | null {
@@ -186,6 +192,9 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (body.config) {
       for (const [key, value] of Object.entries(body.config)) {
         if (value === undefined) continue;
+        // Campos que no aplican a bases de datos: se ignoran sin efecto.
+        if (found.service.type === 'database' && ['replicas', 'healthcheckPath'].includes(key)) continue;
+        if (found.service.type !== 'database' && ['backupSchedule', 'backupRetention'].includes(key)) continue;
         let normalized: unknown = value === null ? undefined : value;
 
         // Los volúmenes llegan como rutas; se conserva el nombre del volumen
@@ -221,12 +230,22 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    if ((newCfg.replicas ?? 1) > 1 && ((newCfg.volumes?.length ?? 0) > 0 || newCfg.hostPort)) {
+      return reply.code(400).send({
+        error:
+          'Las réplicas requieren un servicio sin volúmenes y sin puerto público: varias copias no pueden compartir el mismo volumen de escritura ni el mismo puerto del host.',
+      });
+    }
+
     const name = body.name ?? found.service.name;
     updateService(id, name, newCfg);
 
     if (resourcesChanged && (await dockerAvailable())) {
       try {
-        await updateResources(containerName(found.project, found.service), newCfg.cpus, newCfg.memoryMb);
+        const updated = getService(id)!;
+        for (let i = 1; i <= configuredReplicas(updated); i++) {
+          await updateResources(replicaName(found.project, found.service, i), newCfg.cpus, newCfg.memoryMb);
+        }
       } catch {
         needsRedeploy = true;
       }
@@ -245,15 +264,20 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
 
     markManualAction(id);
     if (await dockerAvailable()) {
-      const name = containerName(found.project, found.service);
       try {
-        await stopContainer(name);
-        await removeContainer(name);
+        // Por label: incluye réplicas y restos de intercambios.
+        for (const c of await listServiceContainers(id)) {
+          await stopContainer(c.name);
+          await removeContainer(c.name);
+        }
       } catch {
         /* best-effort */
       }
       if (volumes === 'true') {
         await removeVolume(volumeName(found.project, found.service));
+        for (const vol of ((found.service.config as any).volumes ?? []) as { name: string }[]) {
+          await removeVolume(vol.name);
+        }
       }
     }
     deleteService(id);
@@ -282,17 +306,20 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       const found = loadService(id);
       if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
       if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
-      const name = containerName(found.project, found.service);
       markManualAction(id);
+      const total = configuredReplicas(found.service);
       try {
-        if (action === 'start') await startContainer(name);
-        else if (action === 'stop') await stopContainer(name);
-        else await restartContainer(name);
+        for (let i = 1; i <= total; i++) {
+          const name = replicaName(found.project, found.service, i);
+          if (action === 'start') await startContainer(name);
+          else if (action === 'stop') await stopContainer(name);
+          else await restartContainer(name);
+        }
       } catch (err: any) {
         return reply.code(500).send({ error: err?.message || 'Operación fallida' });
       }
       audit(req, `service_${action}`, { type: 'service', id, detail: found.service.name });
-      return { ok: true, runtime: await getRuntime(name) };
+      return { ok: true, runtime: await getRuntime(containerName(found.project, found.service)) };
     });
   }
 

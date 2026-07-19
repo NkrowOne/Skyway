@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { Plus, X } from 'lucide-react';
 import { api } from '../../api';
 import { Service } from '../../types';
+import { cx } from '../../utils';
 import DomainsEditor from '../DomainsEditor';
 import { Button, ConfirmModal, CopyButton, Field, useToast } from '../ui';
 
@@ -38,6 +39,7 @@ export default function ServiceSettingsTab({
   const [memoryMb, setMemoryMb] = useState(cfg.memoryMb ? String(cfg.memoryMb) : '');
   const [alertsMuted, setAlertsMuted] = useState(!!(cfg as any).alertsMuted);
   const [healthcheckPath, setHealthcheckPath] = useState(cfg.healthcheckPath ?? '');
+  const [replicas, setReplicas] = useState(String((cfg as any).replicas ?? 1));
   const [volumePaths, setVolumePaths] = useState<string[]>(
     ((cfg as any).volumes ?? []).map((v: { containerPath: string }) => v.containerPath),
   );
@@ -56,6 +58,7 @@ export default function ServiceSettingsTab({
           ? {
               healthcheckPath: healthcheckPath.trim() || null,
               volumes: volumePaths.map((p) => ({ containerPath: p })),
+              replicas: Math.max(1, Number(replicas) || 1),
             }
           : {}),
       };
@@ -224,7 +227,7 @@ export default function ServiceSettingsTab({
 
       <section>
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Recursos y red</h3>
-        <div className="grid grid-cols-3 gap-3">
+        <div className={cx('grid gap-3', service.type === 'database' ? 'grid-cols-3' : 'grid-cols-4')}>
           <Field label="CPUs" hint="vacío = sin límite">
             <input className="input" type="number" step="0.1" min="0.1" placeholder="1.5" value={cpus} onChange={(e) => setCpus(e.target.value)} />
           </Field>
@@ -234,7 +237,20 @@ export default function ServiceSettingsTab({
           <Field label="Puerto público" hint="expone TCP en el host">
             <input className="input" type="number" placeholder={isGit ? '8080' : '5432'} value={hostPort} onChange={(e) => setHostPort(e.target.value)} />
           </Field>
+          {service.type !== 'database' && (
+            <Field label="Réplicas" hint="copias en balanceo">
+              <input className="input" type="number" min="1" max="10" value={replicas} onChange={(e) => setReplicas(e.target.value)} />
+            </Field>
+          )}
         </div>
+        {service.type !== 'database' && Number(replicas) > 1 && (
+          <p className="mt-1.5 rounded-lg border border-acc/30 bg-acc/5 px-3 py-2 text-xs text-sub">
+            Con {replicas} réplicas, Traefik y el DNS interno reparten el tráfico entre las copias, y los despliegues se
+            hacen réplica a réplica (rodante): siempre queda alguna sirviendo. Requiere un servicio{' '}
+            <strong className="text-txt">sin volúmenes y sin puerto público</strong>
+            {(volumePaths.length > 0 || hostPort) && <span className="text-err"> — ahora mismo lo incumples: quítalos antes de guardar</span>}.
+          </p>
+        )}
         <p className="mt-1.5 text-xs text-sub/80">
           Los límites de CPU/RAM se aplican en caliente si el contenedor está activo.
         </p>

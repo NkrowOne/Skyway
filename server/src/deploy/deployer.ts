@@ -17,12 +17,15 @@ import { diagnose } from './diagnose';
 import { emitDeploy } from '../events';
 import { docker, dockerAvailable } from '../docker/client';
 import {
+  configuredReplicas,
   containerName,
   findContainer,
   imageExists,
+  listServiceContainers,
   removeContainer,
   removeImage,
   renameContainer,
+  replicaName,
   runServiceContainer,
   startContainer,
   stopContainer,
@@ -368,7 +371,14 @@ async function deployContainer(
   const healthcheckPath: string | null =
     service.type !== 'database' ? (service.config as any).healthcheckPath || null : null;
 
-  await recoverStaleSwap(name, prevName, tempName, log);
+  await recoverStaleSwap(service.id, log);
+
+  const replicas = configuredReplicas(service);
+  if (replicas > 1 && (volumes.length > 0 || hostPort)) {
+    throw new Error(
+      'Las réplicas requieren un servicio sin volúmenes y sin puerto público: varias copias no pueden compartir el mismo volumen de escritura ni el mismo puerto del host. Quita esas opciones o vuelve a 1 réplica.',
+    );
+  }
 
   // Sin volúmenes ni puerto de host, la versión nueva puede convivir con la
   // vieja unos segundos: corte cero. Con estado compartido, intercambio con
@@ -376,46 +386,76 @@ async function deployContainer(
   const canOverlap = service.type !== 'database' && volumes.length === 0 && !hostPort;
   const oldExists = !!(await findContainer(name));
 
-  if (canOverlap && oldExists) {
-    log('Validando la versión nueva antes de tocar la actual (la vieja sigue sirviendo)...');
-    await runServiceContainer({
-      ...spec,
-      nameOverride: tempName,
-      aliasOverride: `${service.slug}-next`,
-      withTraefik: false,
-      withHostPort: false,
-      restartPolicy: 'no',
-    });
-    const verdict = await validateContainer(netName, `${service.slug}-next`, internalPort, healthcheckPath, tempName, log);
-    if (!verdict.ok) {
-      await appendContainerTail(tempName, log);
-      await removeContainer(tempName);
-      throw new Error(
-        `La versión nueva no pasó la validación (${verdict.reason}). La versión anterior sigue en marcha SIN interrupción.`,
-      );
-    }
-    await removeContainer(tempName);
-
-    log('Versión validada. Intercambiando sin corte...');
-    await renameContainer(name, prevName);
-    try {
-      await runServiceContainer(spec);
-      await sleep(3000);
-      const runtime = await getRuntime(name);
-      if (runtime.state !== 'running') {
-        throw new Error(`estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'}`);
+  if (canOverlap) {
+    if (oldExists) {
+      log('Validando la versión nueva antes de tocar la actual (la vieja sigue sirviendo)...');
+      await runServiceContainer({
+        ...spec,
+        nameOverride: tempName,
+        aliasOverride: `${service.slug}-next`,
+        withTraefik: false,
+        withHostPort: false,
+        restartPolicy: 'no',
+      });
+      const verdict = await validateContainer(netName, `${service.slug}-next`, internalPort, healthcheckPath, tempName, log);
+      if (!verdict.ok) {
+        await appendContainerTail(tempName, log);
+        await removeContainer(tempName);
+        throw new Error(
+          `La versión nueva no pasó la validación (${verdict.reason}). La versión anterior sigue en marcha SIN interrupción.`,
+        );
       }
-    } catch (err: any) {
-      log('El arranque definitivo falló: restaurando la versión anterior...');
-      await removeContainer(name);
-      await renameContainer(prevName, name);
-      throw new Error(
-        `Fallo en el arranque definitivo (${err?.message || err}). Se mantuvo la versión anterior sin interrupción.`,
-      );
+      await removeContainer(tempName);
+      log(replicas > 1 ? `Versión validada. Actualización rodante de ${replicas} réplicas...` : 'Versión validada. Intercambiando sin corte...');
     }
-    await stopContainer(prevName);
-    await removeContainer(prevName);
-    log('Intercambio completado: corte cero.');
+
+    // Rolling update: réplica a réplica; todas comparten alias y labels de
+    // Traefik, así que el balanceo entre copias es automático.
+    for (let i = 1; i <= replicas; i++) {
+      const rn = replicaName(project, service, i);
+      const rPrev = `${rn}--prev`;
+      const hadOld = !!(await findContainer(rn));
+      if (hadOld) await renameContainer(rn, rPrev);
+      try {
+        await runServiceContainer({ ...spec, nameOverride: rn });
+        await sleep(3000);
+        const runtime = await getRuntime(rn);
+        if (runtime.state !== 'running') {
+          throw new Error(`estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'}`);
+        }
+        if (!oldExists && i === 1) {
+          const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, rn, log);
+          if (!verdict.ok) throw new Error(verdict.reason);
+        }
+      } catch (err: any) {
+        await appendContainerTail(rn, log);
+        await removeContainer(rn);
+        if (hadOld) {
+          log(`La réplica ${i} falló: restaurando su versión anterior...`);
+          await renameContainer(rPrev, rn);
+          throw new Error(
+            `La réplica ${i}/${replicas} falló (${err?.message || err}). Su versión anterior sigue en marcha; las réplicas ya actualizadas quedan con la versión nueva hasta el próximo despliegue.`,
+          );
+        }
+        throw new Error(`La réplica ${i}/${replicas} no arrancó (${err?.message || err}).`);
+      }
+      if (hadOld) {
+        await stopContainer(rPrev);
+        await removeContainer(rPrev);
+      }
+      if (replicas > 1) log(`Réplica ${i}/${replicas} lista.`);
+    }
+
+    // Scale-down: retira réplicas con índice mayor al configurado.
+    for (const c of await listServiceContainers(service.id)) {
+      const match = c.name.match(/-r(\d+)$/);
+      if (match && Number(match[1]) > replicas) {
+        log(`Retirando réplica sobrante ${c.name}...`);
+        await stopContainer(c.name);
+        await removeContainer(c.name);
+      }
+    }
+    log(oldExists ? 'Intercambio completado: corte cero.' : 'Servicio en marcha.');
   } else {
     if (oldExists) {
       log('Servicio con estado (volúmenes/puerto fijo): intercambio con restauración automática...');
@@ -453,16 +493,27 @@ async function deployContainer(
 }
 
 /** Repara restos de un intercambio interrumpido (caída del servidor a mitad). */
-async function recoverStaleSwap(name: string, prevName: string, tempName: string, log: (l: string) => void): Promise<void> {
-  await removeContainer(tempName);
-  const prev = await findContainer(prevName);
-  if (!prev) return;
-  const current = await findContainer(name);
-  if (current) {
-    await removeContainer(prevName);
-  } else {
-    log('Recuperando intercambio interrumpido: restaurando contenedor previo...');
-    await renameContainer(prevName, name);
+async function recoverStaleSwap(serviceId: string, log: (l: string) => void): Promise<void> {
+  let containers: { name: string }[] = [];
+  try {
+    containers = await listServiceContainers(serviceId);
+  } catch {
+    return;
+  }
+  for (const c of containers) {
+    if (c.name.endsWith('--next')) {
+      await removeContainer(c.name);
+      continue;
+    }
+    if (c.name.endsWith('--prev')) {
+      const base = c.name.slice(0, -'--prev'.length);
+      if (await findContainer(base)) {
+        await removeContainer(c.name);
+      } else {
+        log(`Recuperando intercambio interrumpido: restaurando ${base}...`);
+        await renameContainer(c.name, base);
+      }
+    }
   }
 }
 

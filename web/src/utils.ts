@@ -95,6 +95,7 @@ export const ALERT_TYPE_LABEL: Record<string, string> = {
   cpu_high: 'CPU alta',
   mem_high: 'Memoria alta',
   deploy_failed: 'Despliegue fallido',
+  backup_failed: 'Backup fallido',
 };
 
 export const AUDIT_ACTION_LABEL: Record<string, string> = {

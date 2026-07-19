@@ -4,7 +4,7 @@ import { openStream } from '../../api';
 import LogViewer from '../LogViewer';
 import { Button } from '../ui';
 
-export default function LogsTab({ serviceId }: { serviceId: string }) {
+export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string; replicas?: number }) {
   const [lines, setLines] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -37,7 +37,10 @@ export default function LogsTab({ serviceId }: { serviceId: string }) {
   return (
     <div className="p-4">
       <div className="mb-2 flex items-center justify-between">
-        <p className="text-xs text-sub">{notice ?? `${lines.length} líneas en memoria`}</p>
+        <p className="text-xs text-sub">
+          {notice ?? `${lines.length} líneas en memoria`}
+          {replicas > 1 && <span className="ml-2 text-sub/70">· mostrando la réplica 1 de {replicas}</span>}
+        </p>
         <Button size="sm" variant="ghost" onClick={download} disabled={lines.length === 0} title="Descargar logs visibles">
           <Download size={13} /> Descargar
         </Button>

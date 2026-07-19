@@ -1,4 +1,4 @@
-import { BellRing, Database, GitBranch, Globe, Package } from 'lucide-react';
+import { BellRing, Database, GitBranch, Globe, Layers, Package } from 'lucide-react';
 import { ContainerState, Service, ServiceStats } from '../types';
 import { cx, fmtBytes, STATE_COLOR, STATE_LABEL } from '../utils';
 import { StatusDot } from './ui';
@@ -19,7 +19,7 @@ export default function ServiceCard({
   onClick,
 }: {
   service: Service;
-  metrics: { state: ContainerState; stats: ServiceStats | null } | null;
+  metrics: { state: ContainerState; stats: ServiceStats | null; replicas?: { running: number; total: number } } | null;
   alertCount?: number;
   selected: boolean;
   onClick: () => void;
@@ -67,6 +67,11 @@ export default function ServiceCard({
         <span className="flex items-center gap-1.5 whitespace-nowrap rounded-full border border-line bg-panel2 px-2 py-0.5 text-[11px] text-sub">
           <StatusDot colorClass={STATE_COLOR[state]} size={6} />
           {STATE_LABEL[state]}
+          {metrics?.replicas && metrics.replicas.total > 1 && (
+            <span className={cx('flex items-center gap-0.5', metrics.replicas.running < metrics.replicas.total && 'text-warn')}>
+              <Layers size={9} /> {metrics.replicas.running}/{metrics.replicas.total}
+            </span>
+          )}
         </span>
       </div>
 

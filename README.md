@@ -17,7 +17,8 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 - **Dominios y TLS sin saber de DNS** — asistente estilo Railway: subdominio generado en un clic (con un comodín configurado una sola vez), o dominio propio con la tabla exacta de registros DNS a crear (tipo, nombre y la IP de tu servidor autodetectada) y **verificación en vivo** del DNS ("correcto ✓ / esperando propagación / apunta a otra IP"). Traefik enruta y, con Let's Encrypt, el certificado se emite solo.
 - **Despliegues sin corte** — la versión nueva se arranca y se **valida** (healthcheck HTTP o periodo de gracia) antes de retirar la anterior. Sin volúmenes ni puertos fijos el intercambio es de **corte cero** (ambas conviven unos segundos tras el proxy); con estado, intercambio con **restauración automática**: si la nueva falla, la anterior vuelve sola. Un deploy roto ya no puede tumbar un servicio en producción.
 - **Logs en tiempo real** — logs de build y de ejecución en streaming (SSE) y descargables, historial de despliegues, **cancelación** de despliegues en curso y **rollback** a cualquier versión anterior.
-- **Backups de bases de datos** — volcado comprimido de PostgreSQL/MySQL/MongoDB en un clic, con descarga, restauración y borrado desde el panel.
+- **Backups de bases de datos** — volcado comprimido de PostgreSQL/MySQL/MongoDB en un clic o **programado (diario/semanal, ~04:00) con retención automática**; descarga, restauración y borrado desde el panel, y alerta si un backup programado falla.
+- **Réplicas con balanceo** — varias copias de un servicio repartiéndose el tráfico (Traefik + DNS interno) con **actualización rodante** réplica a réplica: siempre queda alguna sirviendo. Monitorización y métricas agregadas por réplica.
 - **Comandos en el contenedor** — terminal de un comando (`sh -c`) para migraciones y diagnóstico, con salida capturada y registro en auditoría.
 - **Volúmenes persistentes** — monta rutas de datos en servicios de repo/imagen desde la UI; los nombres de volumen se conservan al editar para no perder datos.
 - **Mantenimiento del servidor** — uso de disco del host y de Docker (imágenes, volúmenes, caché) y botón de liberar espacio que nunca toca volúmenes; aviso de seguridad si el disco se agota.
@@ -152,8 +153,7 @@ Por eso Skyway usa Docker a pelo y, en su lugar, incorpora de forma nativa lo qu
 
 ## Hoja de ruta
 
-- Réplicas por servicio con balanceo
 - Cron jobs y comandos one-off (`skyway run`)
-- Copias de seguridad programadas de volúmenes
+- Backups de volúmenes de aplicaciones (uploads, etc.)
 - Múltiples usuarios y tokens de API
 - Plantillas de la comunidad (one-click apps)

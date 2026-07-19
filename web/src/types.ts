@@ -39,6 +39,7 @@ export interface GitConfig {
   memoryMb?: number | null;
   webhookSecret: string;
   healthcheckPath?: string | null;
+  replicas?: number;
 }
 
 export interface DatabaseConfig {
@@ -47,6 +48,8 @@ export interface DatabaseConfig {
   hostPort?: number | null;
   cpus?: number | null;
   memoryMb?: number | null;
+  backupSchedule?: 'daily' | 'weekly' | null;
+  backupRetention?: number;
 }
 
 export interface Service {
@@ -148,7 +151,10 @@ export interface MetricsSnapshot {
     totalMem: number;
     freeMem: number;
   };
-  services: Record<string, { state: ContainerState; stats: ServiceStats | null }>;
+  services: Record<
+    string,
+    { state: ContainerState; stats: ServiceStats | null; replicas?: { running: number; total: number } }
+  >;
 }
 
 export interface DbTemplate {

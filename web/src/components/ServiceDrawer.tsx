@@ -155,11 +155,11 @@ export default function ServiceDrawer({
       <div className="flex-1 overflow-y-auto">
         {tab === 'deployments' && <DeploymentsTab serviceId={serviceId} serviceType={service.type} />}
         {tab === 'variables' && <VariablesTab serviceId={serviceId} onSaved={invalidate} />}
-        {tab === 'backups' && <BackupsTab serviceId={serviceId} />}
+        {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
         {tab === 'metrics' && (
           <MetricsTab serviceId={serviceId} latest={latestMetrics} historyRef={historyRef} />
         )}
-        {tab === 'logs' && <LogsTab serviceId={serviceId} />}
+        {tab === 'logs' && <LogsTab serviceId={serviceId} replicas={(service.config as any).replicas ?? 1} />}
         {tab === 'settings' && (
           <ServiceSettingsTab
             service={service}

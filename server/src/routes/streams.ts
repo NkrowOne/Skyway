@@ -3,7 +3,7 @@ import { FastifyInstance } from 'fastify';
 import { requireAuth } from '../auth';
 import { getProject, getService, listServices } from '../db';
 import { dockerAvailable } from '../docker/client';
-import { containerName, followLogs, getRuntime, getStats } from '../docker/containers';
+import { configuredReplicas, containerName, followLogs, getRuntime, getStats, replicaName } from '../docker/containers';
 import { sseInit } from '../sse';
 
 export async function streamRoutes(app: FastifyInstance): Promise<void> {
@@ -68,10 +68,27 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
       const services = listServices(id);
       const entries = await Promise.all(
         services.map(async (s) => {
-          const name = containerName(project, s);
-          const runtime = await getRuntime(name);
-          const stats = runtime.state === 'running' ? await getStats(name) : null;
-          return [s.id, { state: runtime.state, stats }] as const;
+          const total = configuredReplicas(s);
+          let running = 0;
+          let aggregated: { cpuPercent: number; memUsage: number; memLimit: number; netRx: number; netTx: number } | null = null;
+          let firstState: string = 'not_created';
+          for (let i = 1; i <= total; i++) {
+            const name = replicaName(project, s, i);
+            const runtime = await getRuntime(name);
+            if (i === 1) firstState = runtime.state;
+            if (runtime.state !== 'running') continue;
+            running += 1;
+            const stats = await getStats(name);
+            if (stats) {
+              if (!aggregated) aggregated = { cpuPercent: 0, memUsage: 0, memLimit: stats.memLimit, netRx: 0, netTx: 0 };
+              aggregated.cpuPercent = Math.round((aggregated.cpuPercent + stats.cpuPercent) * 10) / 10;
+              aggregated.memUsage += stats.memUsage;
+              aggregated.netRx += stats.netRx;
+              aggregated.netTx += stats.netTx;
+            }
+          }
+          const state = running === total && total > 0 ? 'running' : running > 0 ? firstState === 'running' ? 'running' : firstState : firstState;
+          return [s.id, { state, stats: aggregated, replicas: { running, total } }] as const;
         }),
       );
       const load = os.loadavg()[0];

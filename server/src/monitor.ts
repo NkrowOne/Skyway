@@ -2,7 +2,7 @@ import os from 'os';
 import { fireAlert, resolveServiceAlerts } from './alerts';
 import { getSetting, listProjects, listServices } from './db';
 import { dockerAvailable } from './docker/client';
-import { containerName, getRuntime, getStats } from './docker/containers';
+import { configuredReplicas, getRuntime, getStats, replicaName } from './docker/containers';
 import { explainExitCode } from './deploy/diagnose';
 import { ContainerState } from './types';
 
@@ -46,14 +46,18 @@ async function tick(): Promise<void> {
 
   for (const project of listProjects()) {
     for (const service of listServices(project.id)) {
-      const name = containerName(project, service);
+      const totalReplicas = configuredReplicas(service);
+      for (let idx = 1; idx <= totalReplicas; idx++) {
+      const name = replicaName(project, service, idx);
+      const trackKey = `${service.id}#${idx}`;
+      const replicaTag = totalReplicas > 1 ? ` (réplica ${idx}/${totalReplicas})` : '';
       let runtime;
       try {
         runtime = await getRuntime(name);
       } catch {
         continue;
       }
-      const prev = tracked.get(service.id);
+      const prev = tracked.get(trackKey);
       const entry: Tracked = prev ?? {
         state: runtime.state,
         restartSamples: [],
@@ -69,8 +73,8 @@ async function tick(): Promise<void> {
           severity: 'critical',
           type: 'service_down',
           serviceId: service.id,
-          title: `Servicio caído: ${service.name}`,
-          message: `El contenedor de "${service.name}" (proyecto ${project.name}) se detuvo inesperadamente.`,
+          title: `Servicio caído: ${service.name}${replicaTag}`,
+          message: `El contenedor de "${service.name}"${replicaTag} (proyecto ${project.name}) se detuvo inesperadamente.`,
           explanation: explainExitCode(runtime.exitCode),
           dedupe: true,
         });
@@ -92,8 +96,8 @@ async function tick(): Promise<void> {
           severity: 'critical',
           type: 'crash_loop',
           serviceId: service.id,
-          title: `Bucle de reinicios: ${service.name}`,
-          message: `"${service.name}" se ha reiniciado ${restartDelta} veces en los últimos 10 minutos. Docker lo relanza (restart: unless-stopped) pero el proceso muere una y otra vez.`,
+          title: `Bucle de reinicios: ${service.name}${replicaTag}`,
+          message: `"${service.name}"${replicaTag} se ha reiniciado ${restartDelta} veces en los últimos 10 minutos. Docker lo relanza (restart: unless-stopped) pero el proceso muere una y otra vez.`,
           explanation: `${explainExitCode(runtime.exitCode)} Revisa la pestaña Logs del servicio: el error aparece justo antes de cada reinicio. Causas típicas: variable de entorno que falta, base de datos inaccesible o puerto interno equivocado.`,
           dedupe: true,
         });
@@ -153,14 +157,15 @@ async function tick(): Promise<void> {
       }
 
       entry.state = runtime.state;
-      tracked.set(service.id, entry);
+      tracked.set(trackKey, entry);
+      }
     }
   }
 
   // Limpieza de servicios eliminados.
   const alive = new Set<string>();
   for (const p of listProjects()) for (const s of listServices(p.id)) alive.add(s.id);
-  for (const key of tracked.keys()) if (!alive.has(key)) tracked.delete(key);
+  for (const key of tracked.keys()) if (!alive.has(key.split('#')[0])) tracked.delete(key);
 }
 
 let interval: NodeJS.Timeout | null = null;
