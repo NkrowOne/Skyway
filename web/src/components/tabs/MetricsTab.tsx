@@ -4,9 +4,24 @@ import { MetricsSnapshot } from '../../types';
 import { fmtBytes } from '../../utils';
 import MetricChart from '../MetricChart';
 
-// Colores validados (dataviz) sobre superficie oscura #12141a.
-const CPU_COLOR = '#8b5cf6';
-const MEM_COLOR = '#0891b2';
+function NetTile({ dir, value }: { dir: 'rx' | 'tx'; value: string }) {
+  const rx = dir === 'rx';
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-line bg-bg px-4 py-3.5">
+      <span
+        className={`flex h-[30px] w-[30px] items-center justify-center rounded-lg ${
+          rx ? 'bg-ok/[.13] text-ok' : 'bg-info/[.13] text-info'
+        }`}
+      >
+        {rx ? <ArrowDown size={15} /> : <ArrowUp size={15} />}
+      </span>
+      <div>
+        <p className="text-[11px] text-subtle">Red — {rx ? 'recibido' : 'enviado'}</p>
+        <p className="tnum mt-px text-sm font-semibold">{value}</p>
+      </div>
+    </div>
+  );
+}
 
 export default function MetricsTab({
   serviceId,
@@ -35,37 +50,29 @@ export default function MetricsTab({
   const memLimit = stats?.memLimit && stats.memLimit > 0 ? stats.memLimit : undefined;
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="flex flex-col gap-3.5 p-4 sm:px-5">
       <MetricChart
         title="CPU"
-        color={CPU_COLOR}
+        color="var(--color-acc)"
+        fillOpacity={0.14}
         points={history.map((p) => ({ ts: p.ts, value: p.cpu }))}
         format={(v) => `${v.toFixed(1)}%`}
       />
       <MetricChart
-        title={memLimit ? `Memoria (límite ${fmtBytes(memLimit)})` : 'Memoria'}
-        color={MEM_COLOR}
+        title={memLimit ? `Memoria · límite ${fmtBytes(memLimit)}` : 'Memoria'}
+        color="var(--color-info)"
+        fillOpacity={0.12}
         points={history.map((p) => ({ ts: p.ts, value: p.mem }))}
         format={(v) => fmtBytes(v)}
         fixedMax={memLimit}
       />
-      <div className="grid grid-cols-2 gap-4">
-        <div className="card flex items-center gap-3 p-4">
-          <ArrowDown size={16} className="text-ok" />
-          <div>
-            <p className="text-xs uppercase tracking-wide text-sub">Red — recibido</p>
-            <p className="text-sm">{stats ? fmtBytes(stats.netRx) : '—'}</p>
-          </div>
-        </div>
-        <div className="card flex items-center gap-3 p-4">
-          <ArrowUp size={16} className="text-acc2" />
-          <div>
-            <p className="text-xs uppercase tracking-wide text-sub">Red — enviado</p>
-            <p className="text-sm">{stats ? fmtBytes(stats.netTx) : '—'}</p>
-          </div>
-        </div>
+      <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+        <NetTile dir="rx" value={stats ? fmtBytes(stats.netRx) : '—'} />
+        <NetTile dir="tx" value={stats ? fmtBytes(stats.netTx) : '—'} />
       </div>
-      <p className="text-center text-xs text-sub/70">Muestras cada 2,5 s · ventana de {Math.round((history.length * 2.5) / 60)} min</p>
+      <p className="text-center text-[11px] text-subtle">
+        Muestras cada 2,5 s · ventana de {Math.max(1, Math.round((history.length * 2.5) / 60))} min
+      </p>
     </div>
   );
 }

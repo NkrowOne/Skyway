@@ -76,7 +76,7 @@ export default function ExecModal({
           {QUICK_COMMANDS.map((c) => (
             <button
               key={c}
-              className="rounded-md border border-line bg-panel2 px-2 py-0.5 font-mono text-[11px] hover:border-acc/50"
+              className="rounded-md border border-line bg-surface2 px-2 py-0.5 font-mono text-[11px] hover:border-acc/50"
               onClick={() => {
                 setCommand(c);
                 run(c);
@@ -88,7 +88,7 @@ export default function ExecModal({
         </div>
 
         <div className="relative">
-          <pre className="h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-ink p-3 font-mono text-[11.5px] leading-relaxed text-txt/90">
+          <pre className="h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-term p-3 font-mono text-[11.5px] leading-relaxed text-txt/[.88]">
             {running ? 'Ejecutando...' : result ? result.output || '(sin salida)' : 'La salida aparecerá aquí. El comando corre con `sh -c` dentro del contenedor.'}
           </pre>
           {result && (
@@ -103,7 +103,7 @@ export default function ExecModal({
             </span>
           )}
         </div>
-        <p className="text-xs text-sub/80">
+        <p className="text-xs text-subtle">
           Útil para migraciones (<span className="font-mono">npm run migrate</span>,{' '}
           <span className="font-mono">npx prisma migrate deploy</span>...). Cada ejecución queda en el registro de
           actividad. Límite: 60 s.

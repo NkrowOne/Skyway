@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Building2, ChevronRight, FileText, KeyRound, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { FileText, KeyRound, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { api, openStream } from '../api';
-import { Button, ConfirmModal, Field, Modal, Spinner, useToast } from '../components/ui';
+import { Button, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } from '../components/ui';
 import NewServiceModal from '../components/NewServiceModal';
 import { ImportReport, ImportReportView } from '../components/RailwayImportModal';
 import ServiceCard from '../components/ServiceCard';
@@ -56,6 +56,41 @@ function useProjectMetrics(projectId: string | undefined) {
   }, [projectId]);
 
   return { latest, historyRef };
+}
+
+function CanvasSkeleton() {
+  return (
+    <div aria-busy className="flex-1 px-4 py-6 sm:px-7">
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <Skeleton className="h-6 w-44" />
+          <Skeleton className="mt-2.5 h-3.5 w-72" />
+        </div>
+        <div className="hidden gap-2 sm:flex">
+          <Skeleton className="h-8 w-40" />
+          <Skeleton className="h-8 w-32" />
+          <Skeleton className="h-8 w-36" />
+        </div>
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3.5">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="card p-4">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2.5">
+                <Skeleton className="h-9 w-9 rounded-[10px]" />
+                <div>
+                  <Skeleton className="h-3.5 w-24" />
+                  <Skeleton className="mt-1.5 h-3 w-32" />
+                </div>
+              </div>
+              <Skeleton className="h-5 w-16 rounded-full" />
+            </div>
+            <Skeleton className="mt-4 h-3 w-2/3" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export default function ProjectPage() {
@@ -132,7 +167,7 @@ export default function ProjectPage() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  if (project.isLoading) return <Spinner label="Cargando proyecto..." />;
+  if (project.isLoading) return <CanvasSkeleton />;
   if (project.isError || !project.data) {
     return <div className="p-8 text-center text-sm text-sub">Proyecto no encontrado</div>;
   }
@@ -145,70 +180,82 @@ export default function ProjectPage() {
     else setSearchParams({});
   };
 
+  const hasDeployables = services.some((s) => s.type !== 'database');
+
   return (
     <div className="flex h-full">
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-1.5 text-sm text-sub">
-              <Link to="/" className="hover:text-txt">
-                Proyectos
-              </Link>
-              <ChevronRight size={14} />
-              <span className="text-txt">{proj.name}</span>
-              {proj.client && (
-                <span className="ml-1 flex items-center gap-1 rounded-full border border-line bg-panel2 px-2 py-0.5 text-[11px] text-sub">
-                  <Building2 size={10} /> {proj.client}
-                </span>
-              )}
-            </div>
-            <p className="mt-1 text-xs text-sub">
-              Red privada: <span className="font-mono">skyway-{proj.slug}</span> — los servicios se ven entre sí por su nombre
+      <div className="min-w-0 flex-1 overflow-y-auto px-4 py-5 sm:px-7 sm:py-7">
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold tracking-[-.015em]">{proj.name}</h1>
+            <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-sub">
+              Red privada{' '}
+              <span className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-px font-mono text-[11px] text-txt">
+                skyway-{proj.slug}
+              </span>
+              <CopyButton value={`skyway-${proj.slug}`} className="-ml-0.5 p-0.5" title="Copiar nombre de la red" />
+              <span className="hidden sm:inline">— los servicios se resuelven entre sí por nombre</span>
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+            <button
               onClick={() => {
                 setEditName(proj.name);
                 setEditClient(proj.client ?? '');
                 setEditOpen(true);
               }}
+              className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
               title="Renombrar / empresa"
             >
               <Pencil size={14} />
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setDeleteOpen(true)} title="Eliminar proyecto">
+            </button>
+            <button
+              onClick={() => setDeleteOpen(true)}
+              className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-err"
+              title="Eliminar proyecto"
+            >
               <Trash2 size={14} />
+            </button>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="max-sm:h-11 max-sm:min-w-11"
+              onClick={() => setSharedOpen(true)}
+              title="Variables compartidas del proyecto"
+            >
+              <KeyRound size={13} /> <span className="hidden sm:inline">Variables compartidas</span>
             </Button>
-            <Button variant="outline" onClick={() => setSharedOpen(true)} title="Variables compartidas del proyecto">
-              <KeyRound size={14} /> Variables compartidas
-            </Button>
-            {services.some((s) => s.type !== 'database') && (
-              <Button variant="outline" onClick={() => deployAll.mutate()} loading={deployAll.isPending} title="Redespliega todos los servicios de repo e imagen">
-                <RefreshCw size={14} /> Desplegar todo
+            {hasDeployables && (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="max-sm:h-11 max-sm:min-w-11"
+                onClick={() => deployAll.mutate()}
+                loading={deployAll.isPending}
+                title="Redespliega todos los servicios de repo e imagen"
+              >
+                <RefreshCw size={13} /> <span className="hidden sm:inline">Desplegar todo</span>
               </Button>
             )}
-            <Button onClick={() => setNewOpen(true)}>
-              <Plus size={15} /> Nuevo servicio
+            <Button size="sm" className="max-sm:h-11 max-sm:flex-1" onClick={() => setNewOpen(true)}>
+              <Plus size={14} /> Nuevo servicio
             </Button>
           </div>
         </div>
 
         {importReport.data?.report && (
-          <div className="mb-4 flex items-center justify-between rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
-            <span className="flex items-center gap-2 text-acc">
-              <FileText size={15} />
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
+            <span className="flex items-center gap-2 text-acc-soft">
+              <FileText size={15} className="shrink-0" />
               Proyecto importado de Railway: consulta el informe con los comandos de copia de datos y pasos pendientes.
             </span>
-            <span className="flex items-center gap-1">
-              <Button size="sm" variant="outline" onClick={() => setReportOpen(true)}>
+            <span className="flex shrink-0 items-center gap-1">
+              <Button size="sm" variant="secondary" onClick={() => setReportOpen(true)}>
                 Ver informe
               </Button>
               <button
                 onClick={() => dismissReport.mutate()}
-                className="rounded-md p-1.5 text-sub hover:bg-panel2 hover:text-txt"
+                className="rounded-md p-1.5 text-sub hover:bg-surface2 hover:text-txt"
                 title="Descartar informe"
               >
                 <X size={14} />
@@ -218,8 +265,15 @@ export default function ProjectPage() {
         )}
 
         {services.length === 0 ? (
-          <div className="card flex flex-col items-center gap-3 py-20 text-center">
-            <p className="text-sm text-sub">
+          <div className="card flex flex-col items-center gap-4 py-20 text-center">
+            <svg width="120" height="72" viewBox="0 0 120 72" fill="none" aria-hidden className="text-line">
+              <rect x="8" y="14" width="46" height="34" rx="8" stroke="currentColor" strokeWidth="2" />
+              <rect x="66" y="24" width="46" height="34" rx="8" stroke="currentColor" strokeWidth="2" strokeDasharray="5 5" />
+              <path d="M54 31h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              <circle cx="21" cy="27" r="3" fill="#6e56cf" />
+              <path d="M30 27h16M17 37h28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+            <p className="max-w-sm text-sm text-sub">
               Este proyecto está vacío. Despliega un repositorio de GitHub o añade una base de datos.
             </p>
             <Button onClick={() => setNewOpen(true)}>
@@ -227,7 +281,7 @@ export default function ProjectPage() {
             </Button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3.5">
             {services.map((s) => (
               <ServiceCard
                 key={s.id}
@@ -240,6 +294,12 @@ export default function ProjectPage() {
             ))}
           </div>
         )}
+
+        {services.length > 0 && (
+          <p className="mt-5 hidden text-[11px] text-subtle drawer:block">
+            Pulsa <kbd className="kbd">esc</kbd> para cerrar el panel · <kbd className="kbd">⌘K</kbd> para buscar
+          </p>
+        )}
       </div>
 
       {selected && (
@@ -247,6 +307,7 @@ export default function ProjectPage() {
           key={selected.id}
           serviceId={selected.id}
           projectId={proj.id}
+          projectName={proj.name}
           latestMetrics={latest}
           historyRef={historyRef}
           onClose={() => openService(null)}

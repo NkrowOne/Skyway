@@ -1,19 +1,83 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { KeyRound, ScrollText, ShieldCheck } from 'lucide-react';
+import { KeyRound, ScrollText } from 'lucide-react';
 import { api } from '../api';
-import { Button, Field, Spinner, useToast } from '../components/ui';
+import { Button, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { AuditEntry, SecurityReport } from '../types';
-import { AUDIT_ACTION_LABEL, cx, fmtDateTime, SEVERITY_LABEL, SEVERITY_STYLE } from '../utils';
+import { AUDIT_ACTION_LABEL, cx, fmtDateTime, SEVERITY_LABEL, SEVERITY_TONE } from '../utils';
 
-function ScoreBadge({ score, grade }: { score: number; grade: string }) {
-  const color =
-    grade === 'A' ? 'text-ok border-ok/50' : grade === 'B' ? 'text-acc2 border-acc2/50' : grade === 'C' ? 'text-warn border-warn/50' : 'text-err border-err/50';
+const GRADE_COLOR: Record<string, string> = {
+  A: 'var(--color-ok)',
+  B: 'var(--color-info)',
+  C: 'var(--color-warn)',
+};
+
+/** Anillo SVG de puntuación: progreso proporcional al score, en el tono de la nota. */
+function ScoreRing({ score, grade }: { score: number; grade: string }) {
+  const color = GRADE_COLOR[grade] ?? 'var(--color-err)';
+  const C = 238.7; // 2πr con r=38
+  const offset = C * (1 - Math.max(0, Math.min(100, score)) / 100);
   return (
-    <div className={cx('flex h-20 w-20 flex-col items-center justify-center rounded-2xl border-2 bg-panel2', color)}>
-      <span className="text-2xl font-bold">{grade}</span>
-      <span className="text-[11px] text-sub">{score}/100</span>
+    <div className="relative h-[88px] w-[88px] shrink-0">
+      <svg viewBox="0 0 88 88" className="block h-[88px] w-[88px] -rotate-90">
+        <circle cx="44" cy="44" r="38" fill="none" stroke="var(--color-line)" strokeWidth="7" />
+        <circle
+          cx="44"
+          cy="44"
+          r="38"
+          fill="none"
+          stroke={color}
+          strokeWidth="7"
+          strokeLinecap="round"
+          strokeDasharray={C}
+          strokeDashoffset={offset}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-[26px] font-bold leading-none" style={{ color }}>
+          {grade}
+        </span>
+        <span className="tnum text-[11px] text-subtle">{score}/100</span>
+      </div>
+    </div>
+  );
+}
+
+function SectionHeader({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-acc/[.15] text-acc-soft">
+        {icon}
+      </span>
+      <div>
+        <h2 className="text-sm font-semibold">{title}</h2>
+        <p className="mt-px text-xs text-subtle">{description}</p>
+      </div>
+    </div>
+  );
+}
+
+function SecuritySkeleton() {
+  return (
+    <div aria-busy className="mx-auto flex max-w-[880px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
+      <div>
+        <Skeleton className="h-7 w-64" />
+        <Skeleton className="mt-2.5 h-4 w-96 max-w-full" />
+      </div>
+      <div className="card flex items-center gap-6 p-6">
+        <Skeleton className="h-[88px] w-[88px] rounded-full" />
+        <div className="flex-1">
+          <div className="flex gap-2">
+            <Skeleton className="h-6 w-20 rounded-full" />
+            <Skeleton className="h-6 w-20 rounded-full" />
+          </div>
+          <Skeleton className="mt-3 h-3.5 w-3/4" />
+        </div>
+      </div>
+      {Array.from({ length: 3 }).map((_, i) => (
+        <Skeleton key={i} className="h-14 w-full rounded-xl" />
+      ))}
     </div>
   );
 }
@@ -56,72 +120,99 @@ export default function SecurityPage() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  if (report.isLoading) return <Spinner label="Analizando seguridad..." />;
+  if (report.isLoading) return <SecuritySkeleton />;
   if (!report.data) return <p className="p-8 text-center text-sm text-sub">No se pudo cargar el informe.</p>;
 
   const { findings, score, grade } = report.data;
-  const bySeverity = { critical: findings.filter((f) => f.severity === 'critical'), warning: findings.filter((f) => f.severity === 'warning'), info: findings.filter((f) => f.severity === 'info') };
+  const counts = {
+    critical: findings.filter((f) => f.severity === 'critical').length,
+    warning: findings.filter((f) => f.severity === 'warning').length,
+    info: findings.filter((f) => f.severity === 'info').length,
+  };
+  const ordered = (['critical', 'warning', 'info'] as const).flatMap((sev) => findings.filter((f) => f.severity === sev));
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 px-4 py-8">
-      <div className="flex items-center gap-3">
-        <ShieldCheck size={22} className="text-acc" />
-        <div>
-          <h1 className="text-xl font-semibold">Panel de seguridad</h1>
-          <p className="text-sm text-sub">Revisión continua de la configuración de todos los proyectos</p>
-        </div>
+    <div className="mx-auto flex max-w-[880px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
+      <div className="mb-2">
+        <h1 className="text-2xl font-semibold tracking-[-.02em]">Panel de seguridad</h1>
+        <p className="mt-1.5 text-sm text-sub">Revisión continua de la configuración de todos los proyectos</p>
       </div>
 
-      <section className="card flex items-center gap-5 p-6">
-        <ScoreBadge score={score} grade={grade} />
-        <div className="text-sm">
-          <p>
-            <span className="text-err">{bySeverity.critical.length} crítico(s)</span> ·{' '}
-            <span className="text-warn">{bySeverity.warning.length} aviso(s)</span> ·{' '}
-            <span className="text-acc2">{bySeverity.info.length} informativo(s)</span>
-          </p>
-          <p className="mt-1 text-xs text-sub">
+      <section className="card flex flex-wrap items-center gap-6 p-6">
+        <ScoreRing score={score} grade={grade} />
+        <div className="min-w-[240px] flex-1">
+          <div className="flex flex-wrap gap-2">
+            {counts.critical > 0 && (
+              <span className="inline-flex items-center rounded-full bg-err/[.14] px-2.5 py-[3px] text-xs font-semibold text-err">
+                {counts.critical} crítico{counts.critical !== 1 && 's'}
+              </span>
+            )}
+            {counts.warning > 0 && (
+              <span className="inline-flex items-center rounded-full bg-warn/[.13] px-2.5 py-[3px] text-xs font-semibold text-warn">
+                {counts.warning} aviso{counts.warning !== 1 && 's'}
+              </span>
+            )}
+            {counts.info > 0 && (
+              <span className="inline-flex items-center rounded-full bg-info/[.13] px-2.5 py-[3px] text-xs font-semibold text-info">
+                {counts.info} informativo{counts.info !== 1 && 's'}
+              </span>
+            )}
+            {findings.length === 0 && (
+              <span className="inline-flex items-center rounded-full bg-ok/[.14] px-2.5 py-[3px] text-xs font-semibold text-ok">
+                Sin hallazgos: todo en orden
+              </span>
+            )}
+          </div>
+          <p className="mt-2.5 text-xs text-sub">
             La puntuación baja con cada hallazgo crítico (−25) o aviso (−10). Corrige los hallazgos y el análisis se
             actualiza al momento.
           </p>
         </div>
       </section>
 
-      <section className="space-y-3">
-        {(['critical', 'warning', 'info'] as const).map((sev) =>
-          bySeverity[sev].map((f) => (
-            <details key={f.id} className="card group p-4" open={sev === 'critical'}>
-              <summary className="flex cursor-pointer list-none items-center gap-3">
-                <span className={cx('shrink-0 rounded-full border px-2 py-0.5 text-[11px]', SEVERITY_STYLE[sev])}>
-                  {SEVERITY_LABEL[sev]}
-                </span>
-                <span className="text-sm font-medium">{f.title}</span>
+      {ordered.length > 0 && (
+        <section className="flex flex-col gap-2.5">
+          {ordered.map((f) => (
+            <details
+              key={f.id}
+              open={f.severity === 'critical'}
+              className={cx(
+                'rounded-xl border bg-surface p-4',
+                f.severity === 'critical' ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]' : 'border-line',
+              )}
+            >
+              <summary className="flex cursor-pointer items-center gap-3">
+                <StatusBadge tone={SEVERITY_TONE[f.severity]} label={SEVERITY_LABEL[f.severity]} dot={false} className="font-semibold" />
+                <span className="min-w-0 flex-1 truncate text-sm font-semibold">{f.title}</span>
                 {f.projectId && (
                   <Link
                     to={`/projects/${f.projectId}${f.serviceId ? `?s=${f.serviceId}` : ''}`}
                     onClick={(e) => e.stopPropagation()}
-                    className="ml-auto shrink-0 text-xs text-acc hover:underline"
+                    className="ml-auto shrink-0 text-xs text-acc-soft hover:underline"
                   >
                     {f.projectName} →
                   </Link>
                 )}
               </summary>
-              <div className="mt-3 space-y-2 border-t border-line pt-3 text-sm">
+              <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3 text-[13px]">
                 <p className="text-sub">{f.detail}</p>
                 <p>
-                  <span className="font-medium text-ok">Cómo arreglarlo: </span>
+                  <span className="font-semibold text-ok">Cómo arreglarlo: </span>
                   <span className="text-sub">{f.fix}</span>
                 </p>
               </div>
             </details>
-          )),
-        )}
-      </section>
+          ))}
+        </section>
+      )}
 
-      <section className="card p-6">
-        <div className="mb-4 flex items-center gap-2">
-          <KeyRound size={16} className="text-acc" />
-          <h2 className="text-sm font-semibold">Cuenta y sesiones</h2>
+      <section className="card p-5">
+        <div className="mb-4">
+          <SectionHeader
+            icon={<KeyRound size={15} />}
+            title="Cuenta y sesiones"
+            description="Cambia la contraseña o invalida las sesiones abiertas en otros navegadores"
+          />
         </div>
         <form
           className="grid grid-cols-1 gap-3 sm:grid-cols-2"
@@ -136,13 +227,14 @@ export default function SecurityPage() {
           <Field label="Nueva contraseña" hint="Mínimo 8 caracteres; usa una larga y única">
             <input className="input" type="password" value={nextPw} onChange={(e) => setNextPw(e.target.value)} required minLength={8} />
           </Field>
-          <div className="sm:col-span-2 flex flex-wrap items-center justify-between gap-3">
-            <Button type="submit" loading={changePassword.isPending}>
+          <div className="flex flex-wrap items-center justify-between gap-3 sm:col-span-2">
+            <Button type="submit" size="sm" loading={changePassword.isPending}>
               Cambiar contraseña
             </Button>
             <Button
               type="button"
-              variant="outline"
+              size="sm"
+              variant="secondary"
               loading={rotateSessions.isPending}
               onClick={() => rotateSessions.mutate()}
               title="Invalida las cookies de sesión en todos los navegadores excepto este"
@@ -153,12 +245,13 @@ export default function SecurityPage() {
         </form>
       </section>
 
-      <section className="card p-6">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <ScrollText size={16} className="text-acc" />
-            <h2 className="text-sm font-semibold">Registro de actividad</h2>
-          </div>
+      <section className="card p-5">
+        <div className="mb-3.5 flex flex-wrap items-center justify-between gap-3">
+          <SectionHeader
+            icon={<ScrollText size={15} />}
+            title="Registro de actividad"
+            description="Auditoría completa: accesos, despliegues, cambios de configuración"
+          />
           <select className="input w-auto text-xs" value={auditFilter} onChange={(e) => setAuditFilter(e.target.value)}>
             <option value="">Todo</option>
             <option value="login">Accesos</option>
@@ -168,35 +261,34 @@ export default function SecurityPage() {
             <option value="webhook">Webhooks</option>
           </select>
         </div>
-        <div className="max-h-96 overflow-y-auto rounded-lg border border-line">
-          <table className="w-full text-left text-xs">
-            <thead className="sticky top-0 bg-panel2 text-sub">
+        <div className="max-h-[380px] overflow-y-auto rounded-lg border border-line">
+          <table className="w-full border-collapse text-left text-xs">
+            <thead className="sticky top-0 z-[1] bg-surface2 text-sub">
               <tr>
-                <th className="px-3 py-2 font-medium">Cuándo</th>
-                <th className="px-3 py-2 font-medium">Quién</th>
-                <th className="px-3 py-2 font-medium">Acción</th>
-                <th className="px-3 py-2 font-medium">Detalle</th>
-                <th className="px-3 py-2 font-medium">IP</th>
+                {['Cuándo', 'Quién', 'Acción', 'Detalle', 'IP'].map((h) => (
+                  <th key={h} className="px-3.5 py-[9px] text-[11px] font-semibold uppercase tracking-[.06em]">
+                    {h}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {(auditLog.data?.entries ?? []).map((entry) => (
-                <tr key={entry.id} className="border-t border-line/60">
-                  <td className="whitespace-nowrap px-3 py-2 text-sub">{fmtDateTime(entry.ts)}</td>
-                  <td className="px-3 py-2">{entry.actor}</td>
-                  <td className="px-3 py-2">
-                    <span
-                      className={cx(
-                        entry.action.includes('failed') || entry.action.includes('blocked') ? 'text-err' : 'text-txt',
-                      )}
-                    >
-                      {AUDIT_ACTION_LABEL[entry.action] ?? entry.action}
-                    </span>
-                  </td>
-                  <td className="max-w-[260px] truncate px-3 py-2 text-sub">{entry.detail ?? entry.target_id ?? ''}</td>
-                  <td className="px-3 py-2 font-mono text-sub">{entry.ip ?? ''}</td>
-                </tr>
-              ))}
+              {(auditLog.data?.entries ?? []).map((entry) => {
+                const failed = entry.action.includes('failed') || entry.action.includes('blocked');
+                return (
+                  <tr key={entry.id} className={cx('border-t border-line', failed && 'bg-err/[.04]')}>
+                    <td className="whitespace-nowrap px-3.5 py-[9px] font-mono text-[11px] text-subtle">{fmtDateTime(entry.ts)}</td>
+                    <td className="px-3.5 py-[9px]">{entry.actor}</td>
+                    <td className="px-3.5 py-[9px]">
+                      <span className={cx(failed && 'font-medium text-err')}>
+                        {AUDIT_ACTION_LABEL[entry.action] ?? entry.action}
+                      </span>
+                    </td>
+                    <td className="max-w-[240px] truncate px-3.5 py-[9px] text-sub">{entry.detail ?? entry.target_id ?? ''}</td>
+                    <td className="px-3.5 py-[9px] font-mono text-[11px] text-subtle">{entry.ip ?? ''}</td>
+                  </tr>
+                );
+              })}
               {(auditLog.data?.entries ?? []).length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-3 py-6 text-center text-sub">

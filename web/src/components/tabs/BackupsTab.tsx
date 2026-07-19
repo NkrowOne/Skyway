@@ -4,7 +4,7 @@ import { Archive, CalendarClock, Download, Plus, RotateCcw, Trash2 } from 'lucid
 import { api } from '../../api';
 import { Service } from '../../types';
 import { fmtBytes, fmtDateTime, timeAgo } from '../../utils';
-import { Button, ConfirmModal, Field, Spinner, useToast } from '../ui';
+import { Button, ConfirmModal, Field, Skeleton, useToast } from '../ui';
 
 interface BackupEntry {
   file: string;
@@ -34,11 +34,17 @@ function ScheduleSection({ service, onChanged }: { service: Service; onChanged: 
   });
 
   return (
-    <div className="card p-4">
-      <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-sub">
-        <CalendarClock size={14} className="text-acc" /> Backups automáticos
+    <div className="rounded-xl border border-line bg-bg p-4">
+      <div className="mb-3 flex items-center gap-2.5">
+        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-acc/[.15] text-acc-soft">
+          <CalendarClock size={14} />
+        </span>
+        <div>
+          <h3 className="text-[13px] font-semibold">Backups automáticos</h3>
+          <p className="mt-px text-[11px] text-subtle">Se ejecutan de madrugada, con retención automática</p>
+        </div>
       </div>
-      <div className="grid grid-cols-3 items-end gap-3">
+      <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2.5">
         <Field label="Frecuencia">
           <select className="input" value={schedule} onChange={(e) => setSchedule(e.target.value)}>
             <option value="">Desactivados</option>
@@ -46,16 +52,15 @@ function ScheduleSection({ service, onChanged }: { service: Service; onChanged: 
             <option value="weekly">Semanal (~04:00)</option>
           </select>
         </Field>
-        <Field label="Conservar" hint="backups; los más antiguos se borran solos">
-          <input className="input" type="number" min={1} max={60} value={retention} onChange={(e) => setRetention(e.target.value)} />
+        <Field label="Conservar">
+          <input className="input tnum" type="number" min={1} max={60} value={retention} onChange={(e) => setRetention(e.target.value)} />
         </Field>
-        <Button onClick={() => save.mutate()} loading={save.isPending}>
+        <Button variant="secondary" size="sm" className="mb-px h-9" onClick={() => save.mutate()} loading={save.isPending}>
           Guardar
         </Button>
       </div>
-      <p className="mt-2 text-xs text-sub/80">
-        Se ejecutan en la madrugada del servidor y, si uno falla, recibirás una alerta con la causa. Recuerda descargar
-        copias fuera del servidor de vez en cuando.
+      <p className="mt-2.5 text-[11px] text-subtle">
+        Si un backup programado falla recibirás una alerta con la causa. Descarga copias fuera del servidor de vez en cuando.
       </p>
     </div>
   );
@@ -101,7 +106,15 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  if (backups.isLoading) return <Spinner label="Cargando backups..." />;
+  if (backups.isLoading) {
+    return (
+      <div aria-busy className="flex flex-col gap-3.5 p-4 sm:px-5">
+        <Skeleton className="h-40 w-full rounded-xl" />
+        <Skeleton className="h-4 w-2/3" />
+        <Skeleton className="h-32 w-full rounded-xl" />
+      </div>
+    );
+  }
 
   if (backups.data && !backups.data.supported) {
     return (
@@ -114,14 +127,21 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
   const list = backups.data?.backups ?? [];
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="flex flex-col gap-3.5 p-4 sm:px-5">
       <ScheduleSection service={service} onChanged={onChanged} />
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2.5">
         <p className="text-xs text-sub">
-          {list.length > 0
-            ? `Último backup ${timeAgo(list[0].createdAt)}. Guardados en el servidor (DATA_DIR/backups).`
-            : 'Volcado completo comprimido, guardado en el servidor (DATA_DIR/backups).'}
+          {list.length > 0 ? (
+            <>
+              Último backup <span className="text-txt">{timeAgo(list[0].createdAt)}</span> · en{' '}
+              <span className="font-mono text-[11px]">DATA_DIR/backups</span>
+            </>
+          ) : (
+            <>
+              Volcado completo comprimido, en <span className="font-mono text-[11px]">DATA_DIR/backups</span>
+            </>
+          )}
         </p>
         <Button size="sm" onClick={() => create.mutate()} loading={create.isPending}>
           <Plus size={13} /> Crear backup ahora
@@ -129,54 +149,59 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
       </div>
 
       {create.isPending && (
-        <p className="rounded-lg border border-warn/30 bg-warn/5 px-3 py-2 text-xs text-warn">
-          Creando backup... con bases de datos grandes puede tardar varios minutos.
+        <p className="rounded-lg border border-warn/30 bg-warn/[.06] px-3 py-2 text-xs text-warn">
+          Creando backup… con bases de datos grandes puede tardar varios minutos.
         </p>
       )}
 
       {list.length === 0 && !create.isPending && (
-        <div className="flex flex-col items-center gap-2 py-12 text-center text-sm text-sub">
-          <Archive size={24} className="text-sub/50" />
+        <div className="flex flex-col items-center gap-2 rounded-xl border border-line bg-bg py-12 text-center text-sm text-sub">
+          <Archive size={24} className="text-subtle" />
           Sin backups todavía. Crea el primero — mejor antes de cualquier cambio delicado.
         </div>
       )}
 
-      <div className="space-y-2">
-        {list.map((b) => (
-          <div key={b.file} className="card flex items-center justify-between gap-2 px-4 py-3">
-            <div className="min-w-0">
-              <p className="truncate font-mono text-xs">{b.file}</p>
-              <p className="text-xs text-sub">
-                {fmtBytes(b.size)} · {fmtDateTime(b.createdAt)}
-              </p>
+      {list.length > 0 && (
+        <div className="overflow-hidden rounded-xl border border-line bg-bg">
+          {list.map((b) => (
+            <div key={b.file} className="flex items-center justify-between gap-2 border-b border-line px-3.5 py-[11px] last:border-b-0">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <Archive size={14} className="shrink-0 text-subtle" />
+                <div className="min-w-0">
+                  <p className="truncate font-mono text-xs">{b.file}</p>
+                  <p className="tnum mt-px text-[11px] text-subtle">
+                    {fmtBytes(b.size)} · {fmtDateTime(b.createdAt)}
+                  </p>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-0.5">
+                <a
+                  href={`/api/services/${serviceId}/backups/${b.file}/download`}
+                  className="rounded-md p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+                  title="Descargar"
+                  download
+                >
+                  <Download size={14} />
+                </a>
+                <button
+                  onClick={() => setRestoreFile(b.file)}
+                  className="rounded-md p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-warn"
+                  title="Restaurar"
+                >
+                  <RotateCcw size={14} />
+                </button>
+                <button
+                  onClick={() => setDeleteFile(b.file)}
+                  className="rounded-md p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-err"
+                  title="Eliminar"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             </div>
-            <div className="flex shrink-0 items-center gap-1">
-              <a
-                href={`/api/services/${serviceId}/backups/${b.file}/download`}
-                className="rounded-md p-1.5 text-sub hover:bg-panel2 hover:text-txt"
-                title="Descargar"
-                download
-              >
-                <Download size={14} />
-              </a>
-              <button
-                onClick={() => setRestoreFile(b.file)}
-                className="rounded-md p-1.5 text-sub hover:bg-panel2 hover:text-warn"
-                title="Restaurar"
-              >
-                <RotateCcw size={14} />
-              </button>
-              <button
-                onClick={() => setDeleteFile(b.file)}
-                className="rounded-md p-1.5 text-sub hover:bg-panel2 hover:text-err"
-                title="Eliminar"
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       <ConfirmModal
         open={!!restoreFile}

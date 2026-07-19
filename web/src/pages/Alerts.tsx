@@ -1,21 +1,116 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { BellRing, Check } from 'lucide-react';
+import { Archive, Check, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket } from 'lucide-react';
 import { api } from '../api';
-import { Button, Spinner, useToast } from '../components/ui';
+import { Button, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { Alert } from '../types';
-import { ALERT_TYPE_LABEL, cx, fmtDateTime, SEVERITY_LABEL, SEVERITY_STYLE } from '../utils';
+import { ALERT_TYPE_LABEL, cx, fmtDateTime, SEVERITY_LABEL, SEVERITY_TONE } from '../utils';
+
+const TYPE_ICON: Record<string, typeof Rocket> = {
+  deploy_failed: Rocket,
+  cpu_high: Cpu,
+  mem_high: MemoryStick,
+  service_down: Power,
+  crash_loop: RefreshCw,
+  backup_failed: Archive,
+};
+
+/** Chip de icono por tipo, teñido por severidad (neutro si está resuelta). */
+function AlertIcon({ alert }: { alert: Alert }) {
+  const Icon = TYPE_ICON[alert.type] ?? Rocket;
+  const cls = alert.resolved_at
+    ? 'bg-surface2 text-subtle'
+    : alert.severity === 'critical'
+      ? 'bg-err/[.14] text-err'
+      : alert.severity === 'warning'
+        ? 'bg-warn/[.13] text-warn'
+        : 'bg-info/[.13] text-info';
+  return (
+    <span className={cx('flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[9px]', cls)}>
+      <Icon size={16} />
+    </span>
+  );
+}
+
+function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: () => void; resolving: boolean }) {
+  const resolved = !!alert.resolved_at;
+  return (
+    <div
+      className={cx(
+        'rounded-xl border bg-surface px-[18px] py-4',
+        !resolved && alert.severity === 'critical'
+          ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]'
+          : 'border-line',
+        resolved && 'opacity-[.65]',
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <AlertIcon alert={alert} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold">{alert.title}</span>
+            {!resolved && (
+              <StatusBadge
+                tone={SEVERITY_TONE[alert.severity]}
+                label={SEVERITY_LABEL[alert.severity]}
+                dot={false}
+                className="px-[9px] py-0.5 text-[10px] font-semibold"
+              />
+            )}
+            <span className="inline-flex items-center rounded-full bg-surface2 px-[9px] py-0.5 text-[10px] text-sub">
+              {ALERT_TYPE_LABEL[alert.type] ?? alert.type}
+            </span>
+            <span className="ml-auto font-mono text-[11px] text-subtle">{fmtDateTime(alert.ts)}</span>
+          </div>
+          <p className="mt-1.5 text-[13px] text-sub">{alert.message}</p>
+          {alert.explanation && (
+            <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-line bg-bg px-3 py-2.5 text-xs text-sub">
+              <Lightbulb size={13} className="mt-px shrink-0 text-warn" />
+              <p>{alert.explanation}</p>
+            </div>
+          )}
+          <div className="mt-2.5 flex items-center gap-2">
+            {alert.project_id && (
+              <Link
+                to={`/projects/${alert.project_id}${alert.service_id ? `?s=${alert.service_id}` : ''}`}
+                className="text-xs font-semibold text-acc-soft hover:underline"
+              >
+                Ir al servicio →
+              </Link>
+            )}
+            {resolved ? (
+              <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-ok">
+                <CheckCircle2 size={12} /> Resuelta {fmtDateTime(alert.resolved_at!)}
+              </span>
+            ) : (
+              <Button size="sm" variant="ghost" className="ml-auto h-[30px]" onClick={onResolve} loading={resolving}>
+                Marcar resuelta
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function AlertsPage() {
   const [openOnly, setOpenOnly] = useState(true);
   const toast = useToast();
   const queryClient = useQueryClient();
 
-  const alerts = useQuery({
-    queryKey: ['alerts', 'page', openOnly],
-    queryFn: () => api.get<{ alerts: Alert[]; unread: number }>(`/alerts?limit=100&open=${openOnly}`),
+  // Las activas se consultan siempre: alimentan el contador del control segmentado.
+  const active = useQuery({
+    queryKey: ['alerts', 'page', true],
+    queryFn: () => api.get<{ alerts: Alert[]; unread: number }>(`/alerts?limit=100&open=true`),
     refetchInterval: 15_000,
+  });
+  const history = useQuery({
+    queryKey: ['alerts', 'page', false],
+    queryFn: () => api.get<{ alerts: Alert[]; unread: number }>(`/alerts?limit=100&open=false`),
+    refetchInterval: 15_000,
+    enabled: !openOnly,
   });
 
   const resolve = useMutation({
@@ -27,85 +122,78 @@ export default function AlertsPage() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  const list = alerts.data?.alerts ?? [];
+  const current = openOnly ? active : history;
+  const list = current.data?.alerts ?? [];
+  const activeCount = active.data?.alerts.length ?? 0;
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5 px-4 py-8">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <BellRing size={22} className="text-acc" />
-          <div>
-            <h1 className="text-xl font-semibold">Alertas</h1>
-            <p className="text-sm text-sub">
-              Caídas, bucles de reinicio, CPU/RAM altas y despliegues fallidos de todos los proyectos
-            </p>
-          </div>
+    <div className="mx-auto flex max-w-[880px] flex-col gap-[18px] px-4 py-7 sm:px-6 sm:py-10">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-[-.02em]">Alertas</h1>
+          <p className="mt-1.5 text-sm text-sub">
+            Caídas, bucles de reinicio, CPU/RAM altas y despliegues fallidos de todos los proyectos
+          </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant={openOnly ? 'primary' : 'outline'} onClick={() => setOpenOnly(true)}>
+        <div role="tablist" className="inline-flex gap-0.5 rounded-lg border border-line bg-bg p-[3px]">
+          <button
+            role="tab"
+            aria-selected={openOnly}
+            onClick={() => setOpenOnly(true)}
+            className={cx(
+              'rounded-[7px] px-3.5 py-[5px] text-xs transition-colors duration-150',
+              openOnly ? 'bg-surface2 font-semibold text-txt' : 'text-sub hover:text-txt',
+            )}
+          >
             Activas
-          </Button>
-          <Button size="sm" variant={!openOnly ? 'primary' : 'outline'} onClick={() => setOpenOnly(false)}>
+            {activeCount > 0 && (
+              <span className="ml-1.5 inline-flex h-4 min-w-4 translate-y-px items-center justify-center rounded-full bg-err/[.18] px-1 text-[10px] font-bold text-err">
+                {activeCount}
+              </span>
+            )}
+          </button>
+          <button
+            role="tab"
+            aria-selected={!openOnly}
+            onClick={() => setOpenOnly(false)}
+            className={cx(
+              'rounded-[7px] px-3.5 py-[5px] text-xs transition-colors duration-150',
+              !openOnly ? 'bg-surface2 font-semibold text-txt' : 'text-sub hover:text-txt',
+            )}
+          >
             Historial
-          </Button>
+          </button>
         </div>
       </div>
 
-      <p className="text-xs text-sub">
-        Las alertas se recuperan solas cuando la causa desaparece (p. ej. el servicio vuelve a estar activo). Configura
-        Discord, Telegram o un webhook en{' '}
-        <Link to="/settings" className="text-acc hover:underline">
+      <p className="text-xs text-subtle">
+        Las alertas se recuperan solas cuando la causa desaparece. Configura Discord, Telegram o un webhook en{' '}
+        <Link to="/settings" className="text-acc-soft hover:underline">
           Ajustes → Alertas y notificaciones
         </Link>{' '}
         para recibirlas fuera del panel.
       </p>
 
-      {alerts.isLoading && <Spinner label="Cargando alertas..." />}
+      {current.isLoading && (
+        <div aria-busy className="flex flex-col gap-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-28 w-full rounded-xl" />
+          ))}
+        </div>
+      )}
 
-      {!alerts.isLoading && list.length === 0 && (
-        <div className="card flex flex-col items-center gap-2 py-16 text-center text-sm text-sub">
-          <Check size={26} className="text-ok" />
+      {!current.isLoading && list.length === 0 && (
+        <div className="card flex flex-col items-center gap-2.5 py-16 text-center text-sm text-sub">
+          <span className="flex h-11 w-11 items-center justify-center rounded-full bg-ok/[.14] text-ok">
+            <Check size={22} />
+          </span>
           {openOnly ? 'No hay alertas activas. Todo en orden.' : 'Sin alertas registradas todavía.'}
         </div>
       )}
 
-      <div className="space-y-3">
+      <div className="flex flex-col gap-3">
         {list.map((a) => (
-          <div key={a.id} className={cx('card p-4', !a.resolved_at && a.severity === 'critical' && 'border-err/40')}>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className={cx('rounded-full border px-2 py-0.5 text-[11px]', SEVERITY_STYLE[a.severity])}>
-                {SEVERITY_LABEL[a.severity]}
-              </span>
-              <span className="rounded-full border border-line bg-panel2 px-2 py-0.5 text-[11px] text-sub">
-                {ALERT_TYPE_LABEL[a.type] ?? a.type}
-              </span>
-              <span className="text-sm font-medium">{a.title}</span>
-              <span className="ml-auto text-xs text-sub">{fmtDateTime(a.ts)}</span>
-            </div>
-            <p className="mt-2 text-sm text-sub">{a.message}</p>
-            {a.explanation && (
-              <p className="mt-2 rounded-lg border border-line bg-panel2 px-3 py-2 text-xs text-sub">
-                💡 {a.explanation}
-              </p>
-            )}
-            <div className="mt-3 flex items-center gap-2">
-              {a.project_id && (
-                <Link
-                  to={`/projects/${a.project_id}${a.service_id ? `?s=${a.service_id}` : ''}`}
-                  className="text-xs text-acc hover:underline"
-                >
-                  Ir al servicio →
-                </Link>
-              )}
-              {a.resolved_at ? (
-                <span className="ml-auto text-xs text-ok">Resuelta {fmtDateTime(a.resolved_at)}</span>
-              ) : (
-                <Button size="sm" variant="ghost" className="ml-auto" onClick={() => resolve.mutate(a.id)}>
-                  Marcar resuelta
-                </Button>
-              )}
-            </div>
-          </div>
+          <AlertCard key={a.id} alert={a} onResolve={() => resolve.mutate(a.id)} resolving={resolve.isPending} />
         ))}
       </div>
     </div>

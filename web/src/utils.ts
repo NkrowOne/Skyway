@@ -42,15 +42,23 @@ export const STATE_LABEL: Record<ContainerState, string> = {
   unknown: 'Desconocido',
 };
 
-export const STATE_COLOR: Record<ContainerState, string> = {
-  running: 'bg-ok',
-  restarting: 'bg-warn pulse-soft',
-  exited: 'bg-err',
-  paused: 'bg-warn',
-  created: 'bg-sub',
-  dead: 'bg-err',
-  not_created: 'bg-sub/60',
-  unknown: 'bg-sub/60',
+/** Tonos semánticos del StatusBadge unificado. */
+export type Tone = 'ok' | 'warn' | 'err' | 'info' | 'neutral';
+
+export const STATE_TONE: Record<ContainerState, Tone> = {
+  running: 'ok',
+  restarting: 'warn',
+  exited: 'err',
+  paused: 'warn',
+  created: 'neutral',
+  dead: 'err',
+  not_created: 'neutral',
+  unknown: 'neutral',
+};
+
+/** Estados transitorios: el dot del badge pulsa. */
+export const STATE_PULSE: Partial<Record<ContainerState, boolean>> = {
+  restarting: true,
 };
 
 export const DEPLOY_STATUS_LABEL: Record<DeploymentStatus, string> = {
@@ -60,15 +68,6 @@ export const DEPLOY_STATUS_LABEL: Record<DeploymentStatus, string> = {
   success: 'Completado',
   failed: 'Fallido',
   canceled: 'Cancelado',
-};
-
-export const DEPLOY_STATUS_STYLE: Record<DeploymentStatus, string> = {
-  queued: 'text-warn border-warn/40 bg-warn/10',
-  building: 'text-warn border-warn/40 bg-warn/10 pulse-soft',
-  deploying: 'text-warn border-warn/40 bg-warn/10 pulse-soft',
-  success: 'text-ok border-ok/40 bg-ok/10',
-  failed: 'text-err border-err/40 bg-err/10',
-  canceled: 'text-sub border-line bg-panel2',
 };
 
 export function isActiveDeploy(status: DeploymentStatus): boolean {
@@ -83,10 +82,10 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
   info: 'Info',
 };
 
-export const SEVERITY_STYLE: Record<Severity, string> = {
-  critical: 'text-err border-err/40 bg-err/10',
-  warning: 'text-warn border-warn/40 bg-warn/10',
-  info: 'text-acc2 border-acc2/40 bg-acc2/10',
+export const SEVERITY_TONE: Record<Severity, Tone> = {
+  critical: 'err',
+  warning: 'warn',
+  info: 'info',
 };
 
 export const ALERT_TYPE_LABEL: Record<string, string> = {

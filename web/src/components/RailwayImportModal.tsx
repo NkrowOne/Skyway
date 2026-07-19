@@ -51,7 +51,7 @@ export interface ImportReport {
 
 const KIND_META: Record<string, { label: string; icon: typeof GitBranch; cls: string }> = {
   git: { label: 'Repositorio', icon: GitBranch, cls: 'text-acc' },
-  database: { label: 'Base de datos', icon: Database, cls: 'text-acc2' },
+  database: { label: 'Base de datos', icon: Database, cls: 'text-info' },
   image: { label: 'Imagen Docker', icon: Package, cls: 'text-warn' },
   skipped: { label: 'Se omite', icon: Package, cls: 'text-sub' },
 };
@@ -70,7 +70,7 @@ export function ImportReportView({ report }: { report: ImportReport }) {
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Servicios creados</h3>
         <ul className="space-y-1.5">
           {report.created.map((c) => (
-            <li key={c.name} className="rounded-lg border border-line bg-panel2 px-3 py-2">
+            <li key={c.name} className="rounded-lg border border-line bg-surface2 px-3 py-2">
               <span className="font-medium">{c.name}</span> <span className="text-xs text-sub">— {c.kind}</span>
               {c.notes.map((n, i) => (
                 <p key={i} className="mt-0.5 text-xs text-sub">· {n}</p>
@@ -78,7 +78,7 @@ export function ImportReportView({ report }: { report: ImportReport }) {
             </li>
           ))}
           {report.skipped.map((s) => (
-            <li key={s.name} className="rounded-lg border border-line/60 bg-panel2/50 px-3 py-2 text-sub">
+            <li key={s.name} className="rounded-lg border border-line/60 bg-surface2/50 px-3 py-2 text-sub">
               <span>{s.name}</span> <span className="text-xs">— omitido: {s.notes.join(' ')}</span>
             </li>
           ))}
@@ -90,12 +90,12 @@ export function ImportReportView({ report }: { report: ImportReport }) {
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Copia de datos</h3>
           <div className="space-y-2">
             {report.dataCopy.map((d) => (
-              <div key={d.service} className="rounded-lg border border-line bg-panel2 p-3">
+              <div key={d.service} className="rounded-lg border border-line bg-surface2 p-3">
                 <p className="text-xs font-medium">{d.service} ({d.template})</p>
                 <p className="mt-1 text-xs text-sub">{d.note}</p>
                 {d.command && (
                   <div className="mt-2 flex items-start gap-1">
-                    <code className="block flex-1 overflow-x-auto whitespace-pre rounded-md bg-ink p-2 font-mono text-[10.5px] text-txt/90">
+                    <code className="block flex-1 overflow-x-auto whitespace-pre rounded-md bg-term p-2 font-mono text-[10.5px] text-txt/[.88]">
                       {d.command}
                     </code>
                     <CopyButton value={d.command} />
@@ -222,11 +222,11 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
     <Modal open={open} onClose={close} title="Importar desde Railway" wide>
       {step === 'token' && (
         <div className="space-y-4">
-          <div className="flex items-start gap-3 rounded-lg border border-line bg-panel2 p-3 text-xs text-sub">
+          <div className="flex items-start gap-3 rounded-lg border border-line bg-surface2 p-3 text-xs text-sub">
             <TrainFront size={16} className="mt-0.5 shrink-0 text-acc" />
             <p>
               Skyway leerá tus proyectos por la API oficial de Railway y recreará servicios, variables (las referencias{' '}
-              <span className="font-mono text-acc2">{'${{Servicio.VAR}}'}</span> funcionan igual), dominios propios y
+              <span className="font-mono text-info">{'${{Servicio.VAR}}'}</span> funcionan igual), dominios propios y
               volúmenes. El token se usa solo durante la importación y <strong className="text-txt">no se guarda</strong>.
             </p>
           </div>

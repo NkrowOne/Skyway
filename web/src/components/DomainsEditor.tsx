@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, ExternalLink, Globe, HelpCircle, Plus, RefreshCw, Sparkles, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
-import { cx } from '../utils';
+import { cx, Tone } from '../utils';
 import { Button, CopyButton, useToast } from './ui';
 
 interface DomainCheck {
@@ -18,11 +18,19 @@ interface SettingsData {
   settings: { rootDomain: string | null; letsencryptEmail: string | null };
 }
 
-const STATUS_META: Record<DomainCheck['status'], { label: string; cls: string }> = {
-  ok: { label: 'DNS correcto', cls: 'text-ok border-ok/40 bg-ok/10' },
-  no_record: { label: 'Esperando DNS', cls: 'text-warn border-warn/40 bg-warn/10' },
-  wrong_ip: { label: 'Apunta a otra IP', cls: 'text-err border-err/40 bg-err/10' },
-  unknown: { label: 'Sin verificar', cls: 'text-sub border-line bg-panel2' },
+const STATUS_META: Record<DomainCheck['status'], { label: string; tone: Tone }> = {
+  ok: { label: 'DNS correcto', tone: 'ok' },
+  no_record: { label: 'Esperando DNS', tone: 'warn' },
+  wrong_ip: { label: 'Apunta a otra IP', tone: 'err' },
+  unknown: { label: 'Sin verificar', tone: 'neutral' },
+};
+
+const TONE_PILL: Record<Tone, string> = {
+  ok: 'bg-ok/[.14] text-ok',
+  warn: 'bg-warn/[.13] text-warn',
+  err: 'bg-err/[.14] text-err',
+  info: 'bg-info/[.13] text-info',
+  neutral: 'bg-surface2 text-sub',
 };
 
 /** Divide un dominio en (nombre a crear, zona) de forma aproximada. */
@@ -36,7 +44,7 @@ function DnsInstructions({ domain, serverIp }: { domain: string; serverIp: strin
   const { name, zone } = splitDnsName(domain);
   const ip = serverIp ?? 'IP-DE-TU-SERVIDOR';
   return (
-    <div className="mt-2 rounded-lg border border-line bg-panel2 p-3 text-xs">
+    <div className="mt-2 rounded-lg border border-line bg-surface2 p-3 text-xs">
       <p className="mb-2 text-sub">
         En el panel DNS de <span className="font-mono text-txt">{zone}</span> (Cloudflare, IONOS, OVH, GoDaddy...) crea
         este registro:
@@ -64,7 +72,7 @@ function DnsInstructions({ domain, serverIp }: { domain: string; serverIp: strin
           </tbody>
         </table>
       </div>
-      <p className="mt-2 text-sub/80">
+      <p className="mt-2 text-subtle">
         La propagación suele tardar de 5 minutos a unas horas. Pulsa <RefreshCw size={10} className="inline" /> para
         volver a comprobar.
       </p>
@@ -95,21 +103,25 @@ function DomainRow({
   const meta = STATUS_META[status];
 
   return (
-    <div className="rounded-lg border border-line bg-panel2 px-3 py-2">
+    <div className="rounded-lg border border-line bg-surface px-3 py-2">
       <div className="flex items-center gap-2">
-        <Globe size={13} className="shrink-0 text-acc2" />
+        <Globe size={13} className="shrink-0 text-info" />
         <span className="min-w-0 truncate font-mono text-xs">{domain}</span>
         <button
           onClick={() => setExpanded(!expanded)}
-          className={cx('shrink-0 rounded-full border px-2 py-0.5 text-[10px]', meta.cls)}
+          className={cx(
+            'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold',
+            TONE_PILL[meta.tone],
+          )}
           title="Ver detalle"
         >
-          {check.isFetching ? 'Comprobando...' : meta.label}
+          {status === 'ok' && <CheckCircle2 size={10} />}
+          {check.isFetching ? 'Comprobando…' : meta.label}
         </button>
         <span className="ml-auto flex shrink-0 items-center gap-0.5">
           <button
             onClick={() => check.refetch()}
-            className="rounded-md p-1 text-sub hover:bg-panel hover:text-txt"
+            className="rounded-md p-1 leading-none text-subtle transition-colors hover:text-txt"
             title="Volver a comprobar el DNS"
           >
             <RefreshCw size={12} className={cx(check.isFetching && 'animate-spin')} />
@@ -118,12 +130,12 @@ function DomainRow({
             href={`${tls ? 'https' : 'http'}://${domain}`}
             target="_blank"
             rel="noreferrer"
-            className="rounded-md p-1 text-sub hover:bg-panel hover:text-txt"
+            className="rounded-md p-1 leading-none text-subtle transition-colors hover:text-txt"
             title="Abrir"
           >
             <ExternalLink size={12} />
           </a>
-          <button onClick={onRemove} className="rounded-md p-1 text-sub hover:bg-panel hover:text-err" title="Quitar">
+          <button onClick={onRemove} className="rounded-md p-1 leading-none text-subtle transition-colors hover:text-err" title="Quitar">
             <X size={12} />
           </button>
         </span>
@@ -193,9 +205,9 @@ export default function DomainsEditor({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-2.5">
       {domains.length > 0 && (
-        <div className="space-y-2">
+        <div className="flex flex-col gap-2">
           {domains.map((d) => (
             <DomainRow key={d} domain={d} serverIp={ip} tls={tls} onRemove={() => onChange(domains.filter((x) => x !== d))} />
           ))}
@@ -203,48 +215,63 @@ export default function DomainsEditor({
       )}
 
       {/* Subdominio automático */}
-      <div className="rounded-lg border border-acc/30 bg-acc/5 p-3">
-        <div className="flex items-center gap-2 text-xs font-medium text-acc">
-          <Sparkles size={13} /> Subdominio automático
-        </div>
+      <div className="rounded-lg border border-dashed border-[color-mix(in_oklab,#6e56cf_40%,var(--color-line))] bg-acc/[.06] p-3">
         {rootDomain ? (
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <span className="font-mono text-xs text-txt">{generated}</span>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!generated || domains.includes(generated)}
-              onClick={() => generated && add(generated)}
-            >
-              <Plus size={12} /> {domains.includes(generated!) ? 'Añadido' : 'Añadir'}
-            </Button>
-          </div>
-        ) : (
-          <div className="mt-2 space-y-2 text-xs text-sub">
-            <p>
-              Configura una vez tu <strong className="text-txt">dominio raíz</strong> (ej:{' '}
-              <span className="font-mono">apps.midominio.com</span>) y podrás generar subdominios para cada servicio en
-              un clic, como en Railway.
-            </p>
-            <div className="flex gap-2">
-              <input
-                className="input flex-1 font-mono text-xs"
-                placeholder="apps.midominio.com"
-                value={newRootDomain}
-                onChange={(e) => setNewRootDomain(e.target.value)}
-              />
-              <Button size="sm" variant="outline" disabled={!newRootDomain.trim()} loading={saveRootDomain.isPending} onClick={() => saveRootDomain.mutate()}>
-                Guardar
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="flex min-w-0 items-center gap-2 text-xs text-acc-soft">
+                <Sparkles size={13} className="shrink-0" />
+                <span className="truncate font-mono text-xs text-txt">{generated}</span>
+              </span>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-[30px]"
+                disabled={!generated || domains.includes(generated)}
+                onClick={() => generated && add(generated)}
+              >
+                <Plus size={12} /> {domains.includes(generated!) ? 'Añadido' : 'Añadir subdominio'}
               </Button>
             </div>
-          </div>
-        )}
-        {rootDomain && (
-          <p className="mt-2 text-[11px] text-sub/80">
-            Requisito único: un registro <span className="font-mono">A</span> comodín{' '}
-            <span className="font-mono">*.{rootDomain}</span> → <span className="font-mono">{ip ?? 'IP del servidor'}</span>{' '}
-            en tu DNS. Hecho eso, cada subdominio generado funciona al instante sin tocar nada más.
-          </p>
+            <p className="mt-2 text-[11px] text-subtle">
+              Generado desde tu dominio raíz. Requisito único: registro <span className="font-mono">A</span> comodín{' '}
+              <span className="font-mono">
+                *.{rootDomain} → {ip ?? 'IP del servidor'}
+              </span>
+              .
+            </p>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center gap-2 text-xs font-medium text-acc-soft">
+              <Sparkles size={13} /> Subdominio automático
+            </div>
+            <div className="mt-2 flex flex-col gap-2 text-xs text-sub">
+              <p>
+                Configura una vez tu <strong className="text-txt">dominio raíz</strong> (ej:{' '}
+                <span className="font-mono">apps.midominio.com</span>) y podrás generar subdominios para cada servicio en
+                un clic, como en Railway.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  className="input flex-1 font-mono text-xs"
+                  placeholder="apps.midominio.com"
+                  value={newRootDomain}
+                  onChange={(e) => setNewRootDomain(e.target.value)}
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-9"
+                  disabled={!newRootDomain.trim()}
+                  loading={saveRootDomain.isPending}
+                  onClick={() => saveRootDomain.mutate()}
+                >
+                  Guardar
+                </Button>
+              </div>
+            </div>
+          </>
         )}
       </div>
 
@@ -262,12 +289,12 @@ export default function DomainsEditor({
             }
           }}
         />
-        <Button size="sm" variant="outline" onClick={() => add(custom)}>
-          <Plus size={13} /> Añadir dominio propio
+        <Button size="sm" variant="secondary" className="h-9" onClick={() => add(custom)}>
+          <Plus size={13} /> Añadir
         </Button>
       </div>
 
-      <div className="flex items-start gap-2 text-[11px] text-sub/80">
+      <div className="flex items-start gap-2 text-[11px] text-subtle">
         <HelpCircle size={12} className="mt-0.5 shrink-0" />
         <p>
           El tráfico entra por Traefik (puertos 80/443).{' '}
@@ -279,7 +306,7 @@ export default function DomainsEditor({
           ) : (
             <>
               Sin TLS todavía: configura el email de Let's Encrypt en{' '}
-              <Link to="/settings" className="text-acc hover:underline">
+              <Link to="/settings" className="text-acc-soft hover:underline">
                 Ajustes
               </Link>{' '}
               para que cada dominio tenga HTTPS automático.
