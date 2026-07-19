@@ -122,6 +122,14 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   webhook_push: 'Push recibido (webhook)',
   server_started: 'Servidor iniciado',
   railway_import: 'Proyecto importado de Railway',
+  deployment_canceled: 'Despliegue cancelado',
+  project_deploy_all: 'Despliegue de todo el proyecto',
+  service_exec: 'Comando ejecutado en contenedor',
+  backup_created: 'Backup creado',
+  backup_downloaded: 'Backup descargado',
+  backup_restored: 'Backup restaurado',
+  backup_deleted: 'Backup eliminado',
+  system_prune: 'Espacio liberado (prune)',
 };
 
 export function fmtDateTime(ts: number): string {

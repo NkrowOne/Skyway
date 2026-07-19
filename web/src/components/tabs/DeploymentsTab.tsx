@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { History, Lightbulb, RotateCcw } from 'lucide-react';
+import { History, Lightbulb, RotateCcw, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_STATUS_STYLE, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
@@ -89,6 +89,15 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  const cancel = useMutation({
+    mutationFn: (deploymentId: string) => api.post(`/deployments/${deploymentId}/cancel`),
+    onSuccess: () => {
+      toast('Despliegue cancelado', 'ok');
+      queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
   const list = deployments.data?.deployments ?? [];
 
   // Abre automáticamente el despliegue activo más reciente.
@@ -134,6 +143,19 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
                 </p>
               </div>
             </div>
+            {isActiveDeploy(d.status) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  cancel.mutate(d.id);
+                }}
+                title="Cancelar despliegue"
+              >
+                <XCircle size={13} className="text-err" />
+              </Button>
+            )}
             {idx !== 0 && d.status === 'success' && serviceType === 'git' && (
               <Button
                 size="sm"

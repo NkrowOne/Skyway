@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Cpu, HardDrive, Package } from 'lucide-react';
+import { Cpu, Database, HardDrive, Package, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { Button, Field, useToast } from '../components/ui';
-import { SystemInfo } from '../types';
+import { DockerUsage, SystemInfo } from '../types';
 import { cx, fmtBytes } from '../utils';
 
 interface Settings {
@@ -55,6 +55,24 @@ export default function SettingsPage() {
   const system = useQuery({
     queryKey: ['system'],
     queryFn: () => api.get<SystemInfo>('/system'),
+  });
+
+  const dockerUsage = useQuery({
+    queryKey: ['dockerUsage'],
+    queryFn: () => api.get<DockerUsage>('/system/docker-usage'),
+    enabled: !!system.data?.docker,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  const prune = useMutation({
+    mutationFn: () => api.post<{ reclaimed: string }>('/system/prune'),
+    onSuccess: (res) => {
+      toast(`Espacio liberado: ${res.reclaimed}`, 'ok');
+      queryClient.invalidateQueries({ queryKey: ['dockerUsage'] });
+      queryClient.invalidateQueries({ queryKey: ['system'] });
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
   });
 
   useEffect(() => {
@@ -207,7 +225,7 @@ export default function SettingsPage() {
             <Chip ok={sys.docker} label={sys.docker ? 'Docker conectado' : 'Docker no disponible'} />
             <Chip ok={sys.nixpacks} label={sys.nixpacks ? 'Nixpacks instalado' : 'Nixpacks no instalado'} />
           </div>
-          <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
             <div className="flex items-center gap-3 rounded-lg border border-line bg-panel2 p-3">
               <Cpu size={18} className="text-acc" />
               <div>
@@ -223,6 +241,13 @@ export default function SettingsPage() {
               </div>
             </div>
             <div className="flex items-center gap-3 rounded-lg border border-line bg-panel2 p-3">
+              <Database size={18} className={cx(sys.disk && sys.disk.free / sys.disk.total < 0.1 ? 'text-err' : 'text-acc')} />
+              <div>
+                <p className="text-xs text-sub">Disco</p>
+                <p>{sys.disk ? `${fmtBytes(sys.disk.free)} libres de ${fmtBytes(sys.disk.total)}` : 'n/d'}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 rounded-lg border border-line bg-panel2 p-3">
               <Package size={18} className="text-acc" />
               <div>
                 <p className="text-xs text-sub">Skyway</p>
@@ -230,6 +255,27 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
+
+          {dockerUsage.data && (
+            <div className="mt-4 rounded-lg border border-line bg-panel2 p-4 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap gap-4 text-xs text-sub">
+                  <span>
+                    Imágenes: <span className="text-txt">{fmtBytes(dockerUsage.data.images.size)}</span> ({dockerUsage.data.images.count})
+                  </span>
+                  <span>
+                    Volúmenes: <span className="text-txt">{fmtBytes(dockerUsage.data.volumes.size)}</span> ({dockerUsage.data.volumes.count})
+                  </span>
+                  <span>
+                    Caché de build: <span className="text-txt">{fmtBytes(dockerUsage.data.buildCache.size)}</span>
+                  </span>
+                </div>
+                <Button size="sm" variant="outline" onClick={() => prune.mutate()} loading={prune.isPending} title="Purga imágenes colgantes y caché de build. Nunca toca volúmenes.">
+                  <Trash2 size={13} /> Liberar espacio
+                </Button>
+              </div>
+            </div>
+          )}
           <p className="mt-3 text-xs text-sub">
             Si Nixpacks no está instalado, los repositorios sin Dockerfile no podrán construirse. Instálalo con:{' '}
             <span className="font-mono">curl -sSL https://nixpacks.com/install.sh | bash</span>

@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { requireAuth } from '../auth';
 import { audit } from '../audit';
 import { getDeployment, getService, listDeployments } from '../db';
-import { triggerDeploy } from '../deploy/deployer';
+import { cancelDeployment, triggerDeploy } from '../deploy/deployer';
 import { onDeploy } from '../events';
 import { markManualAction } from '../monitor';
 import { sseInit } from '../sse';
@@ -23,6 +23,20 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const deployment = getDeployment(id);
     if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
     return { deployment };
+  });
+
+  app.post('/api/deployments/:id/cancel', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const deployment = getDeployment(id);
+    if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
+    if (!ACTIVE.has(deployment.status)) {
+      return reply.code(400).send({ error: 'El despliegue ya terminó' });
+    }
+    if (!cancelDeployment(id)) {
+      return reply.code(409).send({ error: 'No se pudo cancelar (puede haber terminado justo ahora)' });
+    }
+    audit(req, 'deployment_canceled', { type: 'deployment', id, detail: deployment.service_id });
+    return { ok: true };
   });
 
   app.post('/api/deployments/:id/rollback', async (req, reply) => {

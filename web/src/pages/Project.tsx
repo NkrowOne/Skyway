@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Building2, ChevronRight, FileText, KeyRound, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Building2, ChevronRight, FileText, KeyRound, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { api, openStream } from '../api';
 import { Button, ConfirmModal, Field, Modal, Spinner, useToast } from '../components/ui';
 import NewServiceModal from '../components/NewServiceModal';
@@ -112,6 +112,15 @@ export default function ProjectPage() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  const deployAll = useMutation({
+    mutationFn: () => api.post<{ count: number }>(`/projects/${projectId}/deploy-all`),
+    onSuccess: (res) => {
+      toast(`Desplegando ${res.count} servicio(s)...`, 'ok');
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
   const updateProject = useMutation({
     mutationFn: () => api.patch(`/projects/${projectId}`, { name: editName, client: editClient }),
     onSuccess: () => {
@@ -176,6 +185,11 @@ export default function ProjectPage() {
             <Button variant="outline" onClick={() => setSharedOpen(true)} title="Variables compartidas del proyecto">
               <KeyRound size={14} /> Variables compartidas
             </Button>
+            {services.some((s) => s.type !== 'database') && (
+              <Button variant="outline" onClick={() => deployAll.mutate()} loading={deployAll.isPending} title="Redespliega todos los servicios de repo e imagen">
+                <RefreshCw size={14} /> Desplegar todo
+              </Button>
+            )}
             <Button onClick={() => setNewOpen(true)}>
               <Plus size={15} /> Nuevo servicio
             </Button>

@@ -20,7 +20,7 @@ export async function nixpacksAvailable(): Promise<boolean> {
 export function spawnLogged(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; mask?: string[] },
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; mask?: string[]; onSpawn?: (p: ReturnType<typeof spawn>) => void },
   log: LogFn,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -36,6 +36,7 @@ export function spawnLogged(
       env: { ...process.env, ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    opts.onSpawn?.(p);
     const feedOut = lineSplitter(masked);
     const feedErr = lineSplitter(masked);
     p.stdout.on('data', feedOut);
@@ -76,7 +77,7 @@ function withToken(url: string, token: string | null): { url: string; mask: stri
 }
 
 export async function cloneRepo(
-  opts: { repoUrl: string; branch: string; token: string | null; dest: string },
+  opts: { repoUrl: string; branch: string; token: string | null; dest: string; onSpawn?: (p: any) => void },
   log: LogFn,
 ): Promise<CloneResult> {
   const normalized = normalizeRepoUrl(opts.repoUrl);
@@ -87,7 +88,7 @@ export async function cloneRepo(
   await spawnLogged(
     'git',
     ['clone', '--depth', '1', '--branch', opts.branch, '--single-branch', url, opts.dest],
-    { env: { GIT_TERMINAL_PROMPT: '0' }, mask },
+    { env: { GIT_TERMINAL_PROMPT: '0' }, mask, onSpawn: opts.onSpawn },
     log,
   );
   const info = await new Promise<CloneResult>((resolve) => {
@@ -110,6 +111,7 @@ export interface BuildOpts {
   dockerfilePath?: string;
   imageTag: string;
   buildArgs?: Record<string, string>;
+  onSpawn?: (p: any) => void;
 }
 
 /** Construye la imagen: Dockerfile si existe; si no, Nixpacks (como Railway). */
@@ -133,7 +135,7 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
     await spawnLogged(
       'docker',
       ['build', '-t', opts.imageTag, '-f', dockerfile, ...argFlags, context],
-      { env: { DOCKER_BUILDKIT: '1' } },
+      { env: { DOCKER_BUILDKIT: '1' }, onSpawn: opts.onSpawn },
       log,
     );
     return;
@@ -145,7 +147,7 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
     for (const [k, v] of Object.entries(opts.buildArgs || {})) {
       envFlags.push('--env', `${k}=${v}`);
     }
-    await spawnLogged('nixpacks', ['build', context, '--name', opts.imageTag, ...envFlags], {}, log);
+    await spawnLogged('nixpacks', ['build', context, '--name', opts.imageTag, ...envFlags], { onSpawn: opts.onSpawn }, log);
     return;
   }
 

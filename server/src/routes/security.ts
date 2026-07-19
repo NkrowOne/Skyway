@@ -10,7 +10,7 @@ export async function securityRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
   app.get('/api/security', async () => {
-    const { findings, score, grade } = securityFindings();
+    const { findings, score, grade } = await securityFindings();
     const failed24h = countFailedLogins(24 * 3600 * 1000);
     return {
       score,

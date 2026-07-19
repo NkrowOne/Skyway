@@ -1,13 +1,24 @@
+import fs from 'fs';
 import os from 'os';
+import { spawn } from 'child_process';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAuth } from '../auth';
 import { audit } from '../audit';
 import { config } from '../config';
 import { getSetting, setSetting } from '../db';
-import { dockerAvailable } from '../docker/client';
+import { docker, dockerAvailable } from '../docker/client';
 import { nixpacksAvailable } from '../deploy/builder';
 import { channelsConfigured, dispatchToChannels } from '../notify';
+
+export async function diskUsage(): Promise<{ total: number; free: number } | null> {
+  try {
+    const st = await fs.promises.statfs(config.dataDir);
+    return { total: st.blocks * st.bsize, free: st.bavail * st.bsize };
+  } catch {
+    return null;
+  }
+}
 
 const SETTINGS_KEYS = [
   'rootDomain',
@@ -39,8 +50,51 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
         load: os.loadavg().map((n) => Math.round(n * 100) / 100),
         uptime: os.uptime(),
       },
+      disk: await diskUsage(),
       dataDir: config.dataDir,
     }));
+
+    /** Desglose de lo que ocupa Docker (imágenes, contenedores, volúmenes, caché). */
+    secured.get('/api/system/docker-usage', async (_req, reply) => {
+      if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
+      try {
+        const df: any = await docker.df();
+        const sum = (arr: any[], pick: (x: any) => number) => (arr || []).reduce((acc, x) => acc + (pick(x) || 0), 0);
+        return {
+          images: { count: (df.Images || []).length, size: df.LayersSize || sum(df.Images || [], (i) => i.Size) },
+          containers: { count: (df.Containers || []).length, size: sum(df.Containers || [], (c) => c.SizeRw) },
+          volumes: {
+            count: (df.Volumes || []).length,
+            size: sum(df.Volumes || [], (v) => Math.max(0, v.UsageData?.Size ?? 0)),
+          },
+          buildCache: { size: sum(df.BuildCache || [], (b) => b.Size) },
+        };
+      } catch (err: any) {
+        return reply.code(500).send({ error: err?.message || 'No se pudo consultar el uso de Docker' });
+      }
+    });
+
+    /** Libera espacio: imágenes colgantes y caché de build (nunca volúmenes). */
+    secured.post('/api/system/prune', async (req, reply) => {
+      if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
+      const run = (args: string[]) =>
+        new Promise<string>((resolve) => {
+          const p = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+          let out = '';
+          p.stdout.on('data', (c) => (out += c.toString()));
+          p.stderr.on('data', (c) => (out += c.toString()));
+          p.on('error', (e) => resolve(`error: ${e.message}`));
+          p.on('exit', () => resolve(out));
+        });
+      const imageOut = await run(['image', 'prune', '-f']);
+      const builderOut = await run(['builder', 'prune', '-f']);
+      const reclaimed = [imageOut, builderOut]
+        .map((o) => o.match(/Total reclaimed space:\s*(.+)/i)?.[1]?.trim())
+        .filter(Boolean)
+        .join(' + ') || '0B';
+      audit(req, 'system_prune', { type: 'system', id: 'docker', detail: `liberado: ${reclaimed}` });
+      return { ok: true, reclaimed };
+    });
 
     secured.get('/api/settings', async () => {
       const out: Record<string, string | boolean | null> = {};

@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, Play, RefreshCw, Rocket, Square, X } from 'lucide-react';
+import { ExternalLink, Play, RefreshCw, Rocket, Square, Terminal, X } from 'lucide-react';
 import { api } from '../api';
 import { MetricPoint } from '../pages/Project';
 import { Deployment, MetricsSnapshot, Project, Runtime, Service } from '../types';
 import { STATE_COLOR, STATE_LABEL } from '../utils';
+import ExecModal from './ExecModal';
+import BackupsTab from './tabs/BackupsTab';
 import DeploymentsTab from './tabs/DeploymentsTab';
 import LogsTab from './tabs/LogsTab';
 import MetricsTab from './tabs/MetricsTab';
@@ -12,13 +14,7 @@ import ServiceSettingsTab from './tabs/ServiceSettingsTab';
 import VariablesTab from './tabs/VariablesTab';
 import { Button, StatusDot, Tabs, useToast } from './ui';
 
-const TABS = [
-  { key: 'deployments', label: 'Despliegues' },
-  { key: 'variables', label: 'Variables' },
-  { key: 'metrics', label: 'Métricas' },
-  { key: 'logs', label: 'Logs' },
-  { key: 'settings', label: 'Ajustes' },
-];
+const BACKUP_TEMPLATES = ['postgres', 'mysql', 'mongo'];
 
 export default function ServiceDrawer({
   serviceId,
@@ -34,6 +30,7 @@ export default function ServiceDrawer({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState('deployments');
+  const [execOpen, setExecOpen] = useState(false);
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -79,6 +76,15 @@ export default function ServiceDrawer({
   const { service, runtime } = detail.data;
   const state = latestMetrics?.services[serviceId]?.state ?? runtime.state;
   const isRunning = state === 'running' || state === 'restarting';
+  const hasBackups = service.type === 'database' && BACKUP_TEMPLATES.includes(service.config.template);
+  const tabs = [
+    { key: 'deployments', label: 'Despliegues' },
+    { key: 'variables', label: 'Variables' },
+    ...(hasBackups ? [{ key: 'backups', label: 'Backups' }] : []),
+    { key: 'metrics', label: 'Métricas' },
+    { key: 'logs', label: 'Logs' },
+    { key: 'settings', label: 'Ajustes' },
+  ];
   const domain = service.type !== 'database' ? service.config.domains?.[0] : undefined;
   const subtitle =
     service.type === 'git'
@@ -126,6 +132,11 @@ export default function ServiceDrawer({
               </Button>
             )
           )}
+          {isRunning && (
+            <Button size="sm" variant="outline" onClick={() => setExecOpen(true)} title="Ejecutar comando en el contenedor">
+              <Terminal size={13} />
+            </Button>
+          )}
           {domain && (
             <a
               href={`http://${domain}`}
@@ -139,11 +150,12 @@ export default function ServiceDrawer({
         </div>
       </div>
 
-      <Tabs tabs={TABS} active={tab} onChange={setTab} />
+      <Tabs tabs={tabs} active={tab} onChange={setTab} />
 
       <div className="flex-1 overflow-y-auto">
         {tab === 'deployments' && <DeploymentsTab serviceId={serviceId} serviceType={service.type} />}
         {tab === 'variables' && <VariablesTab serviceId={serviceId} onSaved={invalidate} />}
+        {tab === 'backups' && <BackupsTab serviceId={serviceId} />}
         {tab === 'metrics' && (
           <MetricsTab serviceId={serviceId} latest={latestMetrics} historyRef={historyRef} />
         )}
@@ -160,6 +172,8 @@ export default function ServiceDrawer({
           />
         )}
       </div>
+
+      <ExecModal open={execOpen} onClose={() => setExecOpen(false)} serviceId={serviceId} serviceName={service.name} />
     </aside>
   );
 }

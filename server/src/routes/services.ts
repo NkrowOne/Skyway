@@ -79,6 +79,7 @@ const patchSchema = z.object({
       healthcheckPath: z.string().trim().max(200).nullable().optional(),
       buildArgs: z.record(z.string()).optional(),
       alertsMuted: z.boolean().optional(),
+      volumes: z.array(z.object({ containerPath: z.string().trim().min(1).regex(/^\//, 'Ruta absoluta requerida') })).optional(),
     })
     .optional(),
 });
@@ -86,7 +87,7 @@ const patchSchema = z.object({
 /** Campos cuyo cambio requiere recrear el contenedor. */
 const REDEPLOY_FIELDS = [
   'repoUrl', 'branch', 'rootDir', 'dockerfilePath', 'startCmd', 'port',
-  'domains', 'hostPort', 'version', 'image', 'buildArgs', 'healthcheckPath',
+  'domains', 'hostPort', 'version', 'image', 'buildArgs', 'healthcheckPath', 'volumes',
 ] as const;
 
 function loadService(id: string): { service: ServiceRow; project: NonNullable<ReturnType<typeof getProject>> } | null {
@@ -185,9 +186,31 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (body.config) {
       for (const [key, value] of Object.entries(body.config)) {
         if (value === undefined) continue;
-        const normalized = value === null ? undefined : value;
+        let normalized: unknown = value === null ? undefined : value;
+
+        // Los volúmenes llegan como rutas; se conserva el nombre del volumen
+        // Docker existente para no perder los datos al reordenar/añadir.
+        if (key === 'volumes' && Array.isArray(value)) {
+          if (found.service.type === 'database') continue; // su volumen es fijo
+          const oldVols: { name: string; containerPath: string }[] = oldCfg.volumes ?? [];
+          const used = new Set(oldVols.map((v) => v.name));
+          normalized = (value as { containerPath: string }[]).map((v) => {
+            const existing = oldVols.find((o) => o.containerPath === v.containerPath);
+            if (existing) return existing;
+            let n = 0;
+            let volName: string;
+            do {
+              volName = `skyway-${found.project.slug}-${found.service.slug}-data${n === 0 ? '' : n + 1}`;
+              n += 1;
+            } while (used.has(volName));
+            used.add(volName);
+            return { name: volName, containerPath: v.containerPath };
+          });
+          if ((normalized as any[]).length === 0) normalized = undefined;
+        }
+
         if ((REDEPLOY_FIELDS as readonly string[]).includes(key)) {
-          if (JSON.stringify(oldCfg[key] ?? null) !== JSON.stringify(value ?? null)) needsRedeploy = true;
+          if (JSON.stringify(oldCfg[key] ?? null) !== JSON.stringify(normalized ?? null)) needsRedeploy = true;
         }
         if (key === 'cpus' || key === 'memoryMb') {
           if ((oldCfg[key] ?? null) !== (value ?? null)) resourcesChanged = true;

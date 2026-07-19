@@ -42,6 +42,10 @@ export default function ServiceSettingsTab({
   const [memoryMb, setMemoryMb] = useState(cfg.memoryMb ? String(cfg.memoryMb) : '');
   const [alertsMuted, setAlertsMuted] = useState(!!(cfg as any).alertsMuted);
   const [healthcheckPath, setHealthcheckPath] = useState(cfg.healthcheckPath ?? '');
+  const [volumePaths, setVolumePaths] = useState<string[]>(
+    ((cfg as any).volumes ?? []).map((v: { containerPath: string }) => v.containerPath),
+  );
+  const [newVolumePath, setNewVolumePath] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteVolumes, setDeleteVolumes] = useState(false);
 
@@ -57,7 +61,12 @@ export default function ServiceSettingsTab({
         cpus: cpus ? Number(cpus) : null,
         memoryMb: memoryMb ? Number(memoryMb) : null,
         alertsMuted,
-        ...(service.type !== 'database' ? { healthcheckPath: healthcheckPath.trim() || null } : {}),
+        ...(service.type !== 'database'
+          ? {
+              healthcheckPath: healthcheckPath.trim() || null,
+              volumes: volumePaths.map((p) => ({ containerPath: p })),
+            }
+          : {}),
       };
       if (isGit) {
         Object.assign(config, {
@@ -212,6 +221,57 @@ export default function ServiceSettingsTab({
             </div>
             <p className="text-xs text-sub/80">
               El tráfico llega a través de Traefik (puertos 80/443). Apunta el DNS del dominio a la IP de tu servidor.
+            </p>
+          </div>
+        </section>
+      )}
+
+      {!isGit && !isImage ? null : (
+        <section>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Volúmenes persistentes</h3>
+          <div className="space-y-2">
+            {volumePaths.map((p) => (
+              <div key={p} className="flex items-center justify-between rounded-lg border border-line bg-panel2 px-3 py-2">
+                <span className="font-mono text-xs">{p}</span>
+                <button onClick={() => setVolumePaths(volumePaths.filter((x) => x !== p))} className="text-sub hover:text-err">
+                  <X size={13} />
+                </button>
+              </div>
+            ))}
+            <div className="flex gap-2">
+              <input
+                className="input flex-1 font-mono text-xs"
+                placeholder="/app/uploads"
+                value={newVolumePath}
+                onChange={(e) => setNewVolumePath(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const p = newVolumePath.trim();
+                    if (p.startsWith('/') && !volumePaths.includes(p)) {
+                      setVolumePaths([...volumePaths, p]);
+                      setNewVolumePath('');
+                    }
+                  }
+                }}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const p = newVolumePath.trim();
+                  if (p.startsWith('/') && !volumePaths.includes(p)) {
+                    setVolumePaths([...volumePaths, p]);
+                    setNewVolumePath('');
+                  }
+                }}
+              >
+                <Plus size={13} />
+              </Button>
+            </div>
+            <p className="text-xs text-sub/80">
+              Los datos en estas rutas sobreviven a los redespliegues. Ojo: con volúmenes el despliegue deja de ser de
+              corte cero (no pueden convivir dos instancias escribiendo a la vez). Quitar una ruta no borra el volumen de Docker.
             </p>
           </div>
         </section>

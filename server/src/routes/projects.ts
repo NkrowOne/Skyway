@@ -17,6 +17,8 @@ import {
 import { dockerAvailable } from '../docker/client';
 import { containerName, getRuntime, removeContainer, removeVolume, stopContainer, volumeName } from '../docker/containers';
 import { projectNetworkName, removeNetwork } from '../docker/networks';
+import { triggerDeploy } from '../deploy/deployer';
+import { markManualAction } from '../monitor';
 import { ServiceRuntime } from '../types';
 import { slugify } from '../util';
 
@@ -105,6 +107,21 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
       detail: `${project.name}${volumes === 'true' ? ' (con volúmenes)' : ''}`,
     });
     return { ok: true };
+  });
+
+  /** Despliega de una vez todos los servicios de repo e imagen del proyecto. */
+  app.post('/api/projects/:id/deploy-all', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const project = getProject(id);
+    if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    const targets = listServices(id).filter((s) => s.type !== 'database');
+    for (const service of targets) {
+      markManualAction(service.id);
+      triggerDeploy(service.id, 'manual');
+    }
+    audit(req, 'project_deploy_all', { type: 'project', id, detail: `${project.name}: ${targets.length} servicios` });
+    reply.code(202);
+    return { count: targets.length };
   });
 
   // ---- variables compartidas del proyecto ----

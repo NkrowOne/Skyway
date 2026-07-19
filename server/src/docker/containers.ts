@@ -208,6 +208,76 @@ export async function renameContainer(from: string, to: string): Promise<void> {
   await docker.getContainer(from).rename({ name: to });
 }
 
+export interface ExecResult {
+  output: string;
+  exitCode: number | null;
+  truncated: boolean;
+  timedOut: boolean;
+  durationMs: number;
+}
+
+/** Ejecuta un comando dentro de un contenedor en marcha y captura su salida. */
+export async function execInContainer(
+  name: string,
+  command: string,
+  opts: { timeoutMs?: number; maxOutput?: number } = {},
+): Promise<ExecResult> {
+  const timeoutMs = opts.timeoutMs ?? 60_000;
+  const maxOutput = opts.maxOutput ?? 200_000;
+  const started = Date.now();
+  const container = docker.getContainer(name);
+  const exec = await container.exec({
+    Cmd: ['sh', '-c', command],
+    AttachStdout: true,
+    AttachStderr: true,
+  });
+  const stream = (await exec.start({})) as NodeJS.ReadableStream;
+
+  let output = '';
+  let truncated = false;
+  let timedOut = false;
+  const out = new PassThrough();
+  const err = new PassThrough();
+  const feed = (chunk: Buffer) => {
+    if (output.length < maxOutput) {
+      output += chunk.toString();
+      if (output.length >= maxOutput) truncated = true;
+    }
+  };
+  out.on('data', feed);
+  err.on('data', feed);
+  docker.modem.demuxStream(stream, out, err);
+
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        (stream as any).destroy?.();
+      } catch {
+        /* noop */
+      }
+      resolve();
+    }, timeoutMs);
+    stream.on('end', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    stream.on('error', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+
+  let exitCode: number | null = null;
+  try {
+    const info = await exec.inspect();
+    exitCode = info.ExitCode ?? null;
+  } catch {
+    /* noop */
+  }
+  return { output, exitCode, truncated, timedOut, durationMs: Date.now() - started };
+}
+
 /** Actualiza límites de CPU/RAM de un contenedor en caliente. */
 export async function updateResources(
   name: string,

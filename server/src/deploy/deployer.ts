@@ -43,6 +43,46 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+class CanceledError extends Error {
+  constructor() {
+    super('Despliegue cancelado por el usuario');
+    this.name = 'CanceledError';
+  }
+}
+
+interface ActiveJob {
+  canceled: boolean;
+  procs: Set<{ kill: (signal?: string) => void }>;
+}
+
+const activeJobs = new Map<string, ActiveJob>();
+
+/**
+ * Cancela un despliegue: si está corriendo, mata sus procesos (git/build);
+ * si sigue en cola, lo marca como cancelado antes de que arranque.
+ */
+export function cancelDeployment(deploymentId: string): boolean {
+  const job = activeJobs.get(deploymentId);
+  if (job) {
+    job.canceled = true;
+    for (const proc of job.procs) {
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        /* ya terminado */
+      }
+    }
+    return true;
+  }
+  const row = getDeployment(deploymentId);
+  if (row && row.status === 'queued') {
+    updateDeployment(deploymentId, { status: 'canceled', error: 'Cancelado antes de empezar', finished_at: now() });
+    emitDeploy(deploymentId, { type: 'done', status: 'canceled', error: null });
+    return true;
+  }
+  return false;
+}
+
 interface DeployContext {
   deployment: DeploymentRow;
   log: (line: string) => void;
@@ -92,10 +132,16 @@ async function runDeployment(deploymentId: string): Promise<void> {
   const service = getService(deployment.service_id);
   const project = service ? getProject(service.project_id) : undefined;
   const log = makeLogger(deploymentId);
+  const job: ActiveJob = { canceled: false, procs: new Set() };
+  activeJobs.set(deploymentId, job);
 
   const setStatus = (status: DeploymentRow['status']) => {
     updateDeployment(deploymentId, { status });
     emitDeploy(deploymentId, { type: 'status', status });
+  };
+
+  const checkCanceled = () => {
+    if (job.canceled) throw new CanceledError();
   };
 
   try {
@@ -119,12 +165,14 @@ async function runDeployment(deploymentId: string): Promise<void> {
         throw new Error(`La imagen ${image} ya no existe en el servidor (fue purgada). Haz un despliegue normal.`);
       }
     } else {
-      image = await buildGitImage(project, service, deploymentId, log);
+      image = await buildGitImage(project, service, deploymentId, job, log);
     }
+    checkCanceled();
     updateDeployment(deploymentId, { image_tag: image });
 
     setStatus('deploying');
     await deployContainer(project, service, image, deploymentId, log);
+    checkCanceled();
 
     setStatus('success');
     updateDeployment(deploymentId, { finished_at: now() });
@@ -139,6 +187,12 @@ async function runDeployment(deploymentId: string): Promise<void> {
       await cleanupOldImages(service.id, log);
     }
   } catch (err: any) {
+    if (err instanceof CanceledError || job.canceled) {
+      log('✖ Despliegue cancelado por el usuario');
+      updateDeployment(deploymentId, { status: 'canceled', error: 'Cancelado por el usuario', finished_at: now() });
+      emitDeploy(deploymentId, { type: 'done', status: 'canceled', error: null });
+      return;
+    }
     const message = err?.message || String(err);
     log(`✖ Error: ${message}`);
     updateDeployment(deploymentId, { status: 'failed', error: message, finished_at: now() });
@@ -161,6 +215,7 @@ async function runDeployment(deploymentId: string): Promise<void> {
       });
     }
   } finally {
+    activeJobs.delete(deploymentId);
     (log as any).stop();
   }
 }
@@ -195,19 +250,26 @@ async function buildGitImage(
   project: ProjectRow,
   service: ServiceRow,
   deploymentId: string,
+  job: ActiveJob,
   log: (l: string) => void,
 ): Promise<string> {
   const cfg = service.config as GitConfig;
   const image = `skyway/${project.slug}-${service.slug}:${deploymentId.slice(-8)}`;
   const workDir = path.join(config.buildsDir, deploymentId);
   const token = getSetting('githubToken');
+  const onSpawn = (p: any) => {
+    job.procs.add(p);
+    p.on('exit', () => job.procs.delete(p));
+  };
 
   await acquireBuildSlot();
   try {
+    if (job.canceled) throw new CanceledError();
     const info = await cloneRepo(
-      { repoUrl: cfg.repoUrl, branch: cfg.branch || 'main', token, dest: workDir },
+      { repoUrl: cfg.repoUrl, branch: cfg.branch || 'main', token, dest: workDir, onSpawn },
       log,
     );
+    if (job.canceled) throw new CanceledError();
     updateDeployment(deploymentId, { commit_sha: info.commitSha, commit_msg: info.commitMsg });
 
     await buildImage(
@@ -217,9 +279,11 @@ async function buildGitImage(
         dockerfilePath: cfg.dockerfilePath,
         imageTag: image,
         buildArgs: cfg.buildArgs,
+        onSpawn,
       },
       log,
     );
+    if (job.canceled) throw new CanceledError();
     log(`Imagen construida: ${image}`);
     return image;
   } finally {

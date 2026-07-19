@@ -173,5 +173,13 @@ export interface SystemInfo {
     load: number[];
     uptime: number;
   };
+  disk: { total: number; free: number } | null;
   dataDir: string;
+}
+
+export interface DockerUsage {
+  images: { count: number; size: number };
+  containers: { count: number; size: number };
+  volumes: { count: number; size: number };
+  buildCache: { size: number };
 }

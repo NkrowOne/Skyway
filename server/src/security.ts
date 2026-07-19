@@ -1,5 +1,6 @@
 import { countFailedLogins, getSetting, listProjects, listServices } from './db';
 import { channelsConfigured } from './notify';
+import { diskUsage } from './routes/system';
 import { DatabaseConfig, SecurityFinding, ServiceRow } from './types';
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -8,7 +9,7 @@ const DAY_MS = 24 * 3600 * 1000;
  * Escáner de seguridad: revisa la configuración real de proyectos y servicios
  * y devuelve hallazgos con explicación y solución.
  */
-export function securityFindings(): { findings: SecurityFinding[]; score: number; grade: string } {
+export async function securityFindings(): Promise<{ findings: SecurityFinding[]; score: number; grade: string }> {
   const findings: SecurityFinding[] = [];
   const projects = listProjects();
   const tlsConfigured = !!getSetting('letsencryptEmail');
@@ -91,6 +92,20 @@ export function securityFindings(): { findings: SecurityFinding[]; score: number
       detail: `IPs: ${failed.ips.join(', ')}. Puede ser un error tuyo tecleando o un escaneo automático.`,
       fix: 'Vigila el registro de actividad. Si crece, trata el panel como expuesto: VPN o firewall.',
     });
+  }
+
+  const disk = await diskUsage();
+  if (disk && disk.total > 0) {
+    const freePct = (disk.free / disk.total) * 100;
+    if (freePct < 10) {
+      findings.push({
+        id: 'disk-low',
+        severity: freePct < 5 ? 'critical' : 'warning',
+        title: `Disco casi lleno: ${Math.round(freePct)}% libre`,
+        detail: 'Sin espacio en disco fallan los builds, los logs y hasta las escrituras de las bases de datos de todos los proyectos.',
+        fix: 'Usa "Liberar espacio" en Ajustes → Sistema (purga imágenes colgantes y caché de build sin tocar volúmenes) y borra backups antiguos que ya hayas descargado.',
+      });
+    }
   }
 
   if (channelsConfigured().length === 0) {
