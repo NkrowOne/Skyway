@@ -16,6 +16,7 @@ import { securityRoutes } from './routes/security';
 import { alertRoutes } from './routes/alerts';
 import { importRoutes } from './routes/import';
 import { opsRoutes } from './routes/ops';
+import { domainRoutes } from './routes/domains';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -47,6 +48,7 @@ export function buildApp(): FastifyInstance {
   app.register(alertRoutes);
   app.register(importRoutes);
   app.register(opsRoutes);
+  app.register(domainRoutes);
 
   // Sirve la UI compilada (producción) con fallback SPA.
   if (fs.existsSync(path.join(config.webDist, 'index.html'))) {

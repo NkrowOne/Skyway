@@ -9,6 +9,7 @@ import { cx, fmtBytes } from '../utils';
 interface Settings {
   rootDomain: string | null;
   letsencryptEmail: string | null;
+  serverIp: string | null;
   hasGithubToken: boolean;
   hasTelegramToken: boolean;
   alertCpuPercent: string | null;
@@ -38,6 +39,7 @@ export default function SettingsPage() {
   const queryClient = useQueryClient();
   const [rootDomain, setRootDomain] = useState('');
   const [letsencryptEmail, setLetsencryptEmail] = useState('');
+  const [serverIp, setServerIp] = useState('');
   const [githubToken, setGithubToken] = useState('');
   const [cpuPct, setCpuPct] = useState('');
   const [memPct, setMemPct] = useState('');
@@ -55,6 +57,12 @@ export default function SettingsPage() {
   const system = useQuery({
     queryKey: ['system'],
     queryFn: () => api.get<SystemInfo>('/system'),
+  });
+
+  const serverIpInfo = useQuery({
+    queryKey: ['serverIp'],
+    queryFn: () => api.get<{ ip: string | null; source: string | null }>('/domains/server-ip'),
+    staleTime: 300_000,
   });
 
   const dockerUsage = useQuery({
@@ -80,6 +88,7 @@ export default function SettingsPage() {
       const s = settings.data.settings;
       setRootDomain(s.rootDomain || '');
       setLetsencryptEmail(s.letsencryptEmail || '');
+      setServerIp(s.serverIp || '');
       setCpuPct(s.alertCpuPercent || '');
       setMemPct(s.alertMemPercent || '');
       setSustainMin(s.alertSustainMinutes || '');
@@ -94,6 +103,7 @@ export default function SettingsPage() {
       api.put('/settings', {
         rootDomain,
         letsencryptEmail,
+        serverIp,
         alertCpuPercent: cpuPct,
         alertMemPercent: memPct,
         alertSustainMinutes: sustainMin,
@@ -136,7 +146,7 @@ export default function SettingsPage() {
         <div className="space-y-4">
           <Field
             label="Dominio raíz"
-            hint="Con un dominio raíz (ej: apps.midominio.com) podrás generar subdominios automáticos para tus servicios"
+            hint="Con un dominio raíz (ej: apps.midominio.com) generas subdominios por servicio en un clic. Requisito único: un registro A comodín (*.apps.midominio.com) apuntando a la IP del servidor."
           >
             <input className="input" placeholder="apps.midominio.com" value={rootDomain} onChange={(e) => setRootDomain(e.target.value)} />
           </Field>
@@ -145,6 +155,16 @@ export default function SettingsPage() {
             hint="Si lo defines, Traefik emitirá certificados TLS automáticos para los dominios de tus servicios"
           >
             <input className="input" type="email" placeholder="tu@email.com" value={letsencryptEmail} onChange={(e) => setLetsencryptEmail(e.target.value)} />
+          </Field>
+          <Field
+            label="IP pública del servidor"
+            hint={
+              serverIpInfo.data?.ip
+                ? `Detectada automáticamente: ${serverIpInfo.data.ip}. Rellénala solo si es incorrecta (se usa para verificar los DNS de tus dominios).`
+                : 'No se pudo detectar automáticamente: indícala para que Skyway verifique los DNS de tus dominios.'
+            }
+          >
+            <input className="input font-mono" placeholder={serverIpInfo.data?.ip ?? '203.0.113.10'} value={serverIp} onChange={(e) => setServerIp(e.target.value)} />
           </Field>
         </div>
       </section>

@@ -23,6 +23,7 @@ export async function diskUsage(): Promise<{ total: number; free: number } | nul
 const SETTINGS_KEYS = [
   'rootDomain',
   'letsencryptEmail',
+  'serverIp',
   'alertCpuPercent',
   'alertMemPercent',
   'alertSustainMinutes',
@@ -109,6 +110,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
         .object({
           rootDomain: z.string().trim().optional(),
           letsencryptEmail: z.union([z.string().trim().email(), z.literal('')]).optional(),
+          serverIp: z.union([z.string().trim().regex(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, 'IP inválida'), z.literal('')]).optional(),
           githubToken: z.string().trim().optional(),
           alertCpuPercent: z.union([z.coerce.number().min(10).max(100), z.literal('')]).optional(),
           alertMemPercent: z.union([z.coerce.number().min(10).max(100), z.literal('')]).optional(),
@@ -125,6 +127,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       };
       setIf('rootDomain', body.rootDomain);
       setIf('letsencryptEmail', body.letsencryptEmail);
+      setIf('serverIp', body.serverIp);
       setIf('githubToken', body.githubToken);
       setIf('alertCpuPercent', body.alertCpuPercent);
       setIf('alertMemPercent', body.alertMemPercent);

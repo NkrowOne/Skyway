@@ -1,13 +1,10 @@
 import { useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { Plus, Sparkles, X } from 'lucide-react';
+import { useMutation } from '@tanstack/react-query';
+import { Plus, X } from 'lucide-react';
 import { api } from '../../api';
 import { Service } from '../../types';
+import DomainsEditor from '../DomainsEditor';
 import { Button, ConfirmModal, CopyButton, Field, useToast } from '../ui';
-
-interface SettingsData {
-  settings: { rootDomain: string | null };
-}
 
 export default function ServiceSettingsTab({
   service,
@@ -36,7 +33,6 @@ export default function ServiceSettingsTab({
   const [version, setVersion] = useState(cfg.version ?? '');
   const [image, setImage] = useState(cfg.image ?? '');
   const [domains, setDomains] = useState<string[]>(cfg.domains ?? []);
-  const [newDomain, setNewDomain] = useState('');
   const [hostPort, setHostPort] = useState(cfg.hostPort ? String(cfg.hostPort) : '');
   const [cpus, setCpus] = useState(cfg.cpus ? String(cfg.cpus) : '');
   const [memoryMb, setMemoryMb] = useState(cfg.memoryMb ? String(cfg.memoryMb) : '');
@@ -48,11 +44,6 @@ export default function ServiceSettingsTab({
   const [newVolumePath, setNewVolumePath] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteVolumes, setDeleteVolumes] = useState(false);
-
-  const globalSettings = useQuery({
-    queryKey: ['settings'],
-    queryFn: () => api.get<SettingsData>('/settings'),
-  });
 
   const save = useMutation({
     mutationFn: () => {
@@ -109,14 +100,7 @@ export default function ServiceSettingsTab({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  const rootDomain = globalSettings.data?.settings.rootDomain;
   const webhookUrl = `${window.location.origin}/api/webhooks/github/${service.id}`;
-
-  const addDomain = (d: string) => {
-    const domain = d.trim().toLowerCase();
-    if (domain && !domains.includes(domain)) setDomains([...domains, domain]);
-    setNewDomain('');
-  };
 
   return (
     <div className="space-y-6 p-4">
@@ -183,46 +167,7 @@ export default function ServiceSettingsTab({
       {hasDomains && (
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Dominios</h3>
-          <div className="space-y-2">
-            {domains.map((d) => (
-              <div key={d} className="flex items-center justify-between rounded-lg border border-line bg-panel2 px-3 py-2">
-                <span className="font-mono text-xs">{d}</span>
-                <button onClick={() => setDomains(domains.filter((x) => x !== d))} className="text-sub hover:text-err">
-                  <X size={13} />
-                </button>
-              </div>
-            ))}
-            <div className="flex gap-2">
-              <input
-                className="input flex-1 font-mono text-xs"
-                placeholder="app.midominio.com"
-                value={newDomain}
-                onChange={(e) => setNewDomain(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    addDomain(newDomain);
-                  }
-                }}
-              />
-              <Button size="sm" variant="outline" onClick={() => addDomain(newDomain)}>
-                <Plus size={13} />
-              </Button>
-              {rootDomain && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  title="Generar subdominio automático"
-                  onClick={() => addDomain(`${service.slug}.${rootDomain}`)}
-                >
-                  <Sparkles size={13} /> Generar
-                </Button>
-              )}
-            </div>
-            <p className="text-xs text-sub/80">
-              El tráfico llega a través de Traefik (puertos 80/443). Apunta el DNS del dominio a la IP de tu servidor.
-            </p>
-          </div>
+          <DomainsEditor domains={domains} onChange={setDomains} slug={service.slug} />
         </section>
       )}
 
