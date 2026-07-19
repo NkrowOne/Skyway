@@ -3,12 +3,12 @@ import { z } from 'zod';
 import {
   clearAuthCookie,
   clearLoginFailures,
+  currentUser,
   loginBlocked,
   recordLoginFailure,
-  requireAuth,
+  requireSession,
   setAuthCookie,
   signToken,
-  userIdFromRequest,
 } from '../auth';
 import { audit } from '../audit';
 import { countUsers, createUser, getUser, getUserByEmail, updateUserPassword } from '../db';
@@ -22,11 +22,10 @@ const credentialsSchema = z.object({
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/auth/me', async (req) => {
     const needsSetup = countUsers() === 0;
-    const userId = userIdFromRequest(req);
-    const user = userId ? getUser(userId) : undefined;
+    const user = currentUser(req);
     return {
       needsSetup,
-      user: user ? { id: user.id, email: user.email } : null,
+      user: user ? { id: user.id, email: user.email, role: user.role } : null,
     };
   });
 
@@ -35,10 +34,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(403).send({ error: 'Skyway ya está configurado' });
     }
     const body = credentialsSchema.parse(req.body);
-    const user = createUser(body.email.toLowerCase(), hashPassword(body.password));
+    // El primer usuario es siempre el administrador del servidor.
+    const user = createUser(body.email.toLowerCase(), hashPassword(body.password), 'admin');
     setAuthCookie(reply, signToken(user.id), req.protocol === 'https');
     audit(req, 'setup', { type: 'user', id: user.id, detail: user.email }, user.email);
-    return { user: { id: user.id, email: user.email } };
+    return { user: { id: user.id, email: user.email, role: user.role } };
   });
 
   app.post('/api/auth/login', async (req, reply) => {
@@ -56,7 +56,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     clearLoginFailures(req.ip);
     setAuthCookie(reply, signToken(user.id), req.protocol === 'https');
     audit(req, 'login', { type: 'user', id: user.id, detail: user.email }, user.email);
-    return { user: { id: user.id, email: user.email } };
+    return { user: { id: user.id, email: user.email, role: user.role } };
   });
 
   app.post('/api/auth/logout', async (req, reply) => {
@@ -66,7 +66,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.register(async (secured) => {
-    secured.addHook('preHandler', requireAuth);
+    // Cambiar contraseña exige sesión de navegador, no un token de API.
+    secured.addHook('preHandler', requireSession);
 
     secured.post('/api/auth/password', async (req, reply) => {
       const body = z
@@ -75,13 +76,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           next: z.string().min(8, 'La nueva contraseña debe tener al menos 8 caracteres'),
         })
         .parse(req.body);
-      const userId = userIdFromRequest(req)!;
-      const user = getUser(userId)!;
+      const user = currentUser(req)!;
       if (!verifyPassword(body.current, user.password_hash)) {
         return reply.code(401).send({ error: 'La contraseña actual no es correcta' });
       }
-      updateUserPassword(userId, hashPassword(body.next));
-      audit(req, 'password_changed', { type: 'user', id: userId });
+      updateUserPassword(user.id, hashPassword(body.next));
+      // El bump de epoch invalida las cookies previas; renovamos la del solicitante.
+      setAuthCookie(reply, signToken(user.id), req.protocol === 'https');
+      audit(req, 'password_changed', { type: 'user', id: user.id });
       return { ok: true };
     });
   });

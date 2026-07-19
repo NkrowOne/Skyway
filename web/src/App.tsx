@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { api } from './api';
 import { Spinner } from './components/ui';
 import Layout from './components/Layout';
+import AccountPage from './pages/Account';
 import AlertsPage from './pages/Alerts';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
@@ -10,11 +11,8 @@ import ProjectPage from './pages/Project';
 import SecurityPage from './pages/Security';
 import SettingsPage from './pages/Settings';
 import Setup from './pages/Setup';
-
-interface Me {
-  needsSetup: boolean;
-  user: { id: string; email: string } | null;
-}
+import UsersPage from './pages/Users';
+import { Me } from './types';
 
 export default function App() {
   const location = useLocation();
@@ -54,9 +52,15 @@ export default function App() {
       <Route element={<Layout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/projects/:projectId" element={<ProjectPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/security" element={<SecurityPage />} />
+        <Route path="/account" element={<AccountPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
+        {user?.role === 'admin' && (
+          <>
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/security" element={<SecurityPage />} />
+            <Route path="/users" element={<UsersPage />} />
+          </>
+        )}
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

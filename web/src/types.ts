@@ -1,3 +1,39 @@
+export type UserRole = 'admin' | 'member';
+
+export interface Me {
+  needsSetup: boolean;
+  user: { id: string; email: string; role: UserRole } | null;
+}
+
+export interface UserSummary {
+  id: string;
+  email: string;
+  role: UserRole;
+  created_at: number;
+  projectIds: string[];
+  passkeys: number;
+  tokens: number;
+}
+
+export interface Passkey {
+  id: string;
+  name: string;
+  rp_id: string;
+  device_type: string | null;
+  backed_up: boolean;
+  created_at: number;
+  last_used_at: number | null;
+}
+
+export interface ApiToken {
+  id: string;
+  name: string;
+  prefix: string;
+  created_at: number;
+  last_used_at: number | null;
+  expires_at: number | null;
+}
+
 export type ContainerState =
   | 'running'
   | 'restarting'

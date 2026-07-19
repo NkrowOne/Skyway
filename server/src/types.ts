@@ -163,9 +163,39 @@ export interface ServiceStats {
   netTx: number;
 }
 
+export type UserRole = 'admin' | 'member';
+
 export interface UserRow {
   id: string;
   email: string;
   password_hash: string;
+  role: UserRole;
+  session_epoch: number;
   created_at: number;
+}
+
+export interface PasskeyRow {
+  id: string;
+  user_id: string;
+  credential_id: string; // base64url
+  public_key: string; // base64url
+  counter: number;
+  transports: string | null; // JSON array
+  device_type: string | null;
+  backed_up: number;
+  rp_id: string;
+  name: string;
+  created_at: number;
+  last_used_at: number | null;
+}
+
+export interface ApiTokenRow {
+  id: string;
+  user_id: string;
+  name: string;
+  token_hash: string; // sha256 hex del token completo
+  prefix: string; // primeros caracteres, para identificarlo en la UI
+  created_at: number;
+  last_used_at: number | null;
+  expires_at: number | null;
 }

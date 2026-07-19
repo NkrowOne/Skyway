@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { requireAuth } from '../auth';
+import { assertProjectAccess, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { markManualAction } from '../monitor';
 import {
@@ -113,6 +113,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const { projectId } = req.params as { projectId: string };
     const project = getProject(projectId);
     if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectAccess(req, reply, projectId)) return reply;
 
     const base = z.object({ type: z.enum(['git', 'database', 'image']) }).parse(req.body);
 
@@ -166,6 +167,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     const docker = await dockerAvailable();
     const runtime = docker
       ? await getRuntime(containerName(found.project, found.service))
@@ -182,6 +184,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     const body = patchSchema.parse(req.body);
 
     const oldCfg = found.service.config as any;
@@ -261,6 +264,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const { volumes } = req.query as { volumes?: string };
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
 
     markManualAction(id);
     if (await dockerAvailable()) {
@@ -293,6 +297,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     markManualAction(id);
     audit(req, 'service_deploy', { type: 'service', id, detail: found.service.name });
     const deployment = triggerDeploy(id, 'manual');
@@ -305,6 +310,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       const { id } = req.params as { id: string };
       const found = loadService(id);
       if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
       if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
       markManualAction(id);
       const total = configuredReplicas(found.service);
@@ -327,6 +333,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     return {
       vars: getEnv(id),
       resolved: resolveServiceEnv(found.service),
@@ -338,6 +345,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     const body = z.object({ vars: z.record(z.string()) }).parse(req.body);
     for (const key of Object.keys(body.vars)) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {

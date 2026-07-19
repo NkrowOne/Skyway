@@ -17,6 +17,9 @@ import { alertRoutes } from './routes/alerts';
 import { importRoutes } from './routes/import';
 import { opsRoutes } from './routes/ops';
 import { domainRoutes } from './routes/domains';
+import { passkeyRoutes } from './routes/passkeys';
+import { tokenRoutes } from './routes/tokens';
+import { userRoutes } from './routes/users';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -49,6 +52,9 @@ export function buildApp(): FastifyInstance {
   app.register(importRoutes);
   app.register(opsRoutes);
   app.register(domainRoutes);
+  app.register(passkeyRoutes);
+  app.register(tokenRoutes);
+  app.register(userRoutes);
 
   // Sirve la UI compilada (producción) con fallback SPA.
   if (fs.existsSync(path.join(config.webDist, 'index.html'))) {

@@ -1,13 +1,14 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { requireAuth, rotateJwtSecret, setAuthCookie, signToken, userIdFromRequest } from '../auth';
+import { currentUser, requireAdmin, rotateJwtSecret, setAuthCookie, signToken } from '../auth';
 import { audit } from '../audit';
 import { config } from '../config';
 import { countFailedLogins, listAudit } from '../db';
 import { securityFindings } from '../security';
 
 export async function securityRoutes(app: FastifyInstance): Promise<void> {
-  app.addHook('preHandler', requireAuth);
+  // Panel de seguridad y auditoría: solo administradores.
+  app.addHook('preHandler', requireAdmin);
 
   app.get('/api/security', async () => {
     const { findings, score, grade } = await securityFindings();
@@ -38,7 +39,7 @@ export async function securityRoutes(app: FastifyInstance): Promise<void> {
         error: 'JWT_SECRET viene de una variable de entorno: cámbialo ahí y reinicia Skyway para invalidar sesiones.',
       });
     }
-    const userId = userIdFromRequest(req)!;
+    const userId = currentUser(req)!.id;
     rotateJwtSecret();
     setAuthCookie(reply, signToken(userId), req.protocol === 'https');
     audit(req, 'sessions_rotated', { type: 'user', id: userId });

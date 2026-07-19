@@ -5,7 +5,7 @@ import { Boxes, Building2, FolderOpen, Plus, TrainFront } from 'lucide-react';
 import { api } from '../api';
 import RailwayImportModal from '../components/RailwayImportModal';
 import { Button, Field, Modal, Skeleton, useToast } from '../components/ui';
-import { Project } from '../types';
+import { Me, Project } from '../types';
 import { cx, timeAgo } from '../utils';
 
 function ProjectCard({ project }: { project: Project }) {
@@ -66,6 +66,9 @@ export default function Dashboard() {
     queryFn: () => api.get<{ projects: Project[] }>('/projects'),
   });
 
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
+  const isAdmin = me.data?.user?.role === 'admin';
+
   const create = useMutation({
     mutationFn: () => api.post<{ project: Project }>('/projects', { name, ...(client.trim() ? { client } : {}) }),
     onSuccess: () => {
@@ -109,15 +112,17 @@ export default function Dashboard() {
           <h1 className="text-2xl font-semibold leading-[30px] tracking-[-.02em]">Proyectos</h1>
           <p className="mt-1.5 text-sm text-sub">Cada proyecto agrupa servicios que comparten una red privada</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="secondary" onClick={() => setImportOpen(true)} title="Migra un proyecto desde Railway">
-            <TrainFront size={15} /> <span className="hidden sm:inline">Importar de Railway</span>
-            <span className="sm:hidden">Importar</span>
-          </Button>
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus size={15} /> Nuevo proyecto
-          </Button>
-        </div>
+        {isAdmin && (
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={() => setImportOpen(true)} title="Migra un proyecto desde Railway">
+              <TrainFront size={15} /> <span className="hidden sm:inline">Importar de Railway</span>
+              <span className="sm:hidden">Importar</span>
+            </Button>
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus size={15} /> Nuevo proyecto
+            </Button>
+          </div>
+        )}
       </div>
 
       {clients.length > 0 && (
@@ -143,10 +148,16 @@ export default function Dashboard() {
           <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-acc/[.14] text-acc-soft">
             <FolderOpen size={22} />
           </span>
-          <p className="text-sm text-sub">Aún no tienes proyectos. Crea el primero para empezar a desplegar.</p>
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus size={15} /> Crear proyecto
-          </Button>
+          {isAdmin ? (
+            <>
+              <p className="text-sm text-sub">Aún no tienes proyectos. Crea el primero para empezar a desplegar.</p>
+              <Button onClick={() => setCreateOpen(true)}>
+                <Plus size={15} /> Crear proyecto
+              </Button>
+            </>
+          ) : (
+            <p className="text-sm text-sub">Aún no tienes workspaces asignados. Pide a un administrador que te dé acceso.</p>
+          )}
         </div>
       )}
 

@@ -1,7 +1,9 @@
 # Skyway + Traefik para tu servidor dedicado.
 #   1. cp .env.example .env   (ajusta SKYWAY_DOMAIN y LETSENCRYPT_EMAIL si quieres TLS)
 #   2. docker compose up -d --build
-#   3. Abre http://IP-DEL-SERVIDOR:4000 (o http://SKYWAY_DOMAIN) y crea tu cuenta.
+#   3. Accede por https://SKYWAY_DOMAIN (recomendado), o por tunel SSH si aun no tienes dominio:
+#        ssh -L 4000:127.0.0.1:4000 TU_USUARIO@IP-DEL-SERVIDOR   -> luego abre http://localhost:4000
+#      y crea tu cuenta.
 
 services:
   skyway:
@@ -17,7 +19,7 @@ services:
     networks:
       - skyway-edge
     ports:
-      - "4000:4000" # acceso directo a la UI; puedes quitarlo si solo usas el dominio
+      - "127.0.0.1:4000:4000" # UI solo accesible en local (tunel SSH); acceso publico por dominio via Traefik
     labels:
       - traefik.enable=true
       - traefik.docker.network=skyway-edge

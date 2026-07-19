@@ -1,5 +1,5 @@
-import { FastifyInstance } from 'fastify';
-import { requireAuth } from '../auth';
+import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { assertProjectAccess, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { getDeployment, getService, listDeployments } from '../db';
 import { cancelDeployment, triggerDeploy } from '../deploy/deployer';
@@ -9,12 +9,22 @@ import { sseInit } from '../sse';
 
 const ACTIVE = new Set(['queued', 'building', 'deploying']);
 
+/** Acceso al workspace dueño del servicio del despliegue (404 si el servicio ya no existe). */
+function serviceAccess(req: FastifyRequest, reply: FastifyReply, serviceId: string): boolean {
+  const service = getService(serviceId);
+  if (!service) {
+    reply.code(404).send({ error: 'Servicio no encontrado' });
+    return false;
+  }
+  return assertProjectAccess(req, reply, service.project_id);
+}
+
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
   app.get('/api/services/:id/deployments', async (req, reply) => {
     const { id } = req.params as { id: string };
-    if (!getService(id)) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!serviceAccess(req, reply, id)) return reply;
     return { deployments: listDeployments(id, 25) };
   });
 
@@ -22,6 +32,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const deployment = getDeployment(id);
     if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
+    if (!serviceAccess(req, reply, deployment.service_id)) return reply;
     return { deployment };
   });
 
@@ -29,6 +40,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const deployment = getDeployment(id);
     if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
+    if (!serviceAccess(req, reply, deployment.service_id)) return reply;
     if (!ACTIVE.has(deployment.status)) {
       return reply.code(400).send({ error: 'El despliegue ya terminó' });
     }
@@ -43,6 +55,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const deployment = getDeployment(id);
     if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
+    if (!serviceAccess(req, reply, deployment.service_id)) return reply;
     if (deployment.status !== 'success' || !deployment.image_tag) {
       return reply.code(400).send({ error: 'Solo se puede hacer rollback a un despliegue exitoso' });
     }
@@ -63,6 +76,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const deployment = getDeployment(id);
     if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
+    if (!serviceAccess(req, reply, deployment.service_id)) return reply;
 
     const channel = sseInit(reply);
 

@@ -3,7 +3,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { requireAuth } from '../auth';
+import { requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { config } from '../config';
 import { getSetting, setSetting } from '../db';
@@ -56,7 +56,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     }));
 
     /** Desglose de lo que ocupa Docker (imágenes, contenedores, volúmenes, caché). */
-    secured.get('/api/system/docker-usage', async (_req, reply) => {
+    secured.get('/api/system/docker-usage', { preHandler: requireAdmin }, async (_req, reply) => {
       if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
       try {
         const df: any = await docker.df();
@@ -76,7 +76,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     });
 
     /** Libera espacio: imágenes colgantes y caché de build (nunca volúmenes). */
-    secured.post('/api/system/prune', async (req, reply) => {
+    secured.post('/api/system/prune', { preHandler: requireAdmin }, async (req, reply) => {
       if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
       const run = (args: string[]) =>
         new Promise<string>((resolve) => {
@@ -97,7 +97,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       return { ok: true, reclaimed };
     });
 
-    secured.get('/api/settings', async () => {
+    secured.get('/api/settings', { preHandler: requireAdmin }, async () => {
       const out: Record<string, string | boolean | null> = {};
       for (const key of SETTINGS_KEYS) out[key] = getSetting(key);
       out.hasGithubToken = !!getSetting('githubToken');
@@ -105,7 +105,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       return { settings: out };
     });
 
-    secured.put('/api/settings', async (req) => {
+    secured.put('/api/settings', { preHandler: requireAdmin }, async (req) => {
       const body = z
         .object({
           rootDomain: z.string().trim().optional(),
@@ -141,7 +141,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     });
 
     /** Envía una notificación de prueba a los canales configurados. */
-    secured.post('/api/settings/alerts/test', async (_req, reply) => {
+    secured.post('/api/settings/alerts/test', { preHandler: requireAdmin }, async (_req, reply) => {
       const channels = channelsConfigured();
       if (channels.length === 0) {
         return reply.code(400).send({ error: 'No hay ningún canal configurado. Guarda primero los ajustes.' });

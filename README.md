@@ -26,6 +26,9 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 - **Alertas** — un monitor vigila caídas, bucles de reinicio, CPU/RAM sostenidas y despliegues fallidos, con recuperación automática. Notificaciones por **Discord, Telegram o webhook** (n8n, Zapier...), además de la campana del panel.
 - **Panel de seguridad** — puntuación y hallazgos con explicación y solución (bases de datos expuestas, servicios sin límites, dominios sin TLS, intentos de login sospechosos), registro de auditoría de toda la actividad, cambio de contraseña y cierre de sesiones remoto. Login con límite de intentos por IP.
 - **Multi-empresa** — asigna cada proyecto a una empresa/cliente y el panel los agrupa y filtra. **Variables compartidas por proyecto** (SMTP, claves S3, TZ...) heredadas por todos sus servicios y referenciables con `${{shared.VAR}}`.
+- **Usuarios y roles** — crea usuarios **administradores** (control total del servidor) o **miembros** limitados a los workspaces de su cliente: solo ven y operan sus proyectos, sin ajustes del servidor, seguridad ni otros clientes. Alta, baja, cambio de rol y asignación de workspaces desde el panel.
+- **Passkeys (WebAuthn)** — entra con huella, cara o llave de seguridad, sin contraseña y resistente a phishing. Varias passkeys por usuario, gestionadas desde «Mi cuenta».
+- **Tokens de API** — control programático total (`Authorization: Bearer sky_…`) para automatizaciones, CI/CD o agentes como **Claude**; cada token hereda los permisos de su usuario, es revocable y queda auditado. Ver [docs/CONTROL-REMOTO.md](docs/CONTROL-REMOTO.md).
 - **Ligero** — un solo binario Node + SQLite. Sin Kubernetes, sin dependencias pesadas: pensado para un único servidor dedicado.
 
 ## Requisitos
