@@ -6,10 +6,9 @@ import {
   currentUser,
   loginBlocked,
   recordLoginFailure,
-  requireAuth,
+  requireSession,
   setAuthCookie,
   signToken,
-  userIdFromRequest,
 } from '../auth';
 import { audit } from '../audit';
 import { countUsers, createUser, getUser, getUserByEmail, updateUserPassword } from '../db';
@@ -67,7 +66,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.register(async (secured) => {
-    secured.addHook('preHandler', requireAuth);
+    // Cambiar contraseña exige sesión de navegador, no un token de API.
+    secured.addHook('preHandler', requireSession);
 
     secured.post('/api/auth/password', async (req, reply) => {
       const body = z
@@ -76,13 +76,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           next: z.string().min(8, 'La nueva contraseña debe tener al menos 8 caracteres'),
         })
         .parse(req.body);
-      const userId = userIdFromRequest(req)!;
-      const user = getUser(userId)!;
+      const user = currentUser(req)!;
       if (!verifyPassword(body.current, user.password_hash)) {
         return reply.code(401).send({ error: 'La contraseña actual no es correcta' });
       }
-      updateUserPassword(userId, hashPassword(body.next));
-      audit(req, 'password_changed', { type: 'user', id: userId });
+      updateUserPassword(user.id, hashPassword(body.next));
+      // El bump de epoch invalida las cookies previas; renovamos la del solicitante.
+      setAuthCookie(reply, signToken(user.id), req.protocol === 'https');
+      audit(req, 'password_changed', { type: 'user', id: user.id });
       return { ok: true };
     });
   });

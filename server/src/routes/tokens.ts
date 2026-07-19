@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { API_TOKEN_PREFIX, currentUser, hashApiToken, requireAuth } from '../auth';
+import { API_TOKEN_PREFIX, currentUser, hashApiToken, requireAuth, requireSession } from '../auth';
 import { audit } from '../audit';
 import { deleteApiToken, insertApiToken, listApiTokens } from '../db';
 import { randomToken } from '../util';
@@ -33,7 +33,8 @@ export async function tokenRoutes(app: FastifyInstance): Promise<void> {
     return { tokens: listApiTokens(user.id).map(publicToken) };
   });
 
-  app.post('/api/tokens', async (req, reply) => {
+  // Crear tokens exige sesión de navegador: un token robado no puede emitir más.
+  app.post('/api/tokens', { preHandler: requireSession }, async (req, reply) => {
     const user = currentUser(req)!;
     const body = createSchema.parse(req.body);
     const token = `${API_TOKEN_PREFIX}${randomToken(24)}`; // sky_ + 48 hex

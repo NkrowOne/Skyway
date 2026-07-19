@@ -106,6 +106,7 @@ export default function AccountPage() {
       }),
     onSuccess: (res) => {
       setNewToken(res.token);
+      setTokModal(true); // fuerza el modal abierto: el secreto solo se muestra una vez
       setTokName('');
       setTokDays('');
       queryClient.invalidateQueries({ queryKey: ['tokens'] });
@@ -260,7 +261,14 @@ export default function AccountPage() {
         </div>
       </Modal>
 
-      <Modal open={tokModal} onClose={() => setTokModal(false)} title={newToken ? 'Token creado' : 'Crear token de API'}>
+      <Modal
+        open={tokModal}
+        onClose={() => {
+          if (createToken.isPending) return; // no cerrar mientras se genera: perdería el secreto
+          setTokModal(false);
+        }}
+        title={newToken ? 'Token creado' : 'Crear token de API'}
+      >
         {newToken ? (
           <>
             <p className="text-sm text-sub">

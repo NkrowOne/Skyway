@@ -148,10 +148,16 @@ export default function Dashboard() {
           <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-acc/[.14] text-acc-soft">
             <FolderOpen size={22} />
           </span>
-          <p className="text-sm text-sub">Aún no tienes proyectos. Crea el primero para empezar a desplegar.</p>
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus size={15} /> Crear proyecto
-          </Button>
+          {isAdmin ? (
+            <>
+              <p className="text-sm text-sub">Aún no tienes proyectos. Crea el primero para empezar a desplegar.</p>
+              <Button onClick={() => setCreateOpen(true)}>
+                <Plus size={15} /> Crear proyecto
+              </Button>
+            </>
+          ) : (
+            <p className="text-sm text-sub">Aún no tienes workspaces asignados. Pide a un administrador que te dé acceso.</p>
+          )}
         </div>
       )}
 

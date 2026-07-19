@@ -12,6 +12,8 @@ declare module 'fastify' {
     authUser?: UserRow | null;
     /** Cómo nombrar al actor en auditoría (email, o email · token:nombre). */
     authActor?: string;
+    /** Con qué se autenticó: sesión de navegador ('cookie') o token de API ('token'). */
+    authMethod?: 'cookie' | 'token';
   }
 }
 
@@ -73,7 +75,8 @@ export function clearLoginFailures(ip: string): void {
 }
 
 export function signToken(userId: string): string {
-  return jwt.sign({ sub: userId }, jwtSecret(), { expiresIn: TOKEN_TTL });
+  const epoch = getUser(userId)?.session_epoch ?? 0;
+  return jwt.sign({ sub: userId, epoch }, jwtSecret(), { expiresIn: TOKEN_TTL });
 }
 
 export function setAuthCookie(reply: FastifyReply, token: string, secure: boolean): void {
@@ -91,11 +94,17 @@ export function clearAuthCookie(reply: FastifyReply): void {
 }
 
 export function userIdFromRequest(req: FastifyRequest): string | null {
+  return verifySession(req)?.userId ?? null;
+}
+
+/** Verifica la cookie de sesión y devuelve el usuario y el epoch firmado. */
+function verifySession(req: FastifyRequest): { userId: string; epoch: number } | null {
   const token = (req.cookies as Record<string, string | undefined>)?.[COOKIE_NAME];
   if (!token) return null;
   try {
     const payload = jwt.verify(token, jwtSecret()) as jwt.JwtPayload;
-    return typeof payload.sub === 'string' ? payload.sub : null;
+    if (typeof payload.sub !== 'string') return null;
+    return { userId: payload.sub, epoch: typeof payload.epoch === 'number' ? payload.epoch : 0 };
   } catch {
     return null;
   }
@@ -123,6 +132,7 @@ export function currentUser(req: FastifyRequest): UserRow | null {
         if (owner) {
           user = owner;
           req.authActor = `${owner.email} · token:${row.name}`;
+          req.authMethod = 'token';
           touchApiToken(row.id);
         }
       }
@@ -130,18 +140,35 @@ export function currentUser(req: FastifyRequest): UserRow | null {
   }
 
   if (!user) {
-    const userId = userIdFromRequest(req);
-    if (userId) {
-      const fromCookie = getUser(userId);
-      if (fromCookie) {
+    const session = verifySession(req);
+    if (session) {
+      const fromCookie = getUser(session.userId);
+      // El epoch corta las cookies emitidas antes de un cambio/reset de contraseña.
+      if (fromCookie && fromCookie.session_epoch === session.epoch) {
         user = fromCookie;
         req.authActor = fromCookie.email;
+        req.authMethod = 'cookie';
       }
     }
   }
 
   req.authUser = user;
   return user;
+}
+
+/**
+ * preHandler que exige sesión de navegador (cookie), rechazando tokens de API.
+ * Se usa en operaciones que crean credenciales persistentes (passkeys, tokens):
+ * así un token robado no puede fabricarse acceso que sobreviva a su revocación.
+ */
+export async function requireSession(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (!currentUser(req)) {
+    reply.code(401).send({ error: 'No autenticado' });
+    return;
+  }
+  if (req.authMethod !== 'cookie') {
+    reply.code(403).send({ error: 'Esta acción requiere una sesión de navegador, no un token de API' });
+  }
 }
 
 /** preHandler que exige sesión válida (cookie o token de API). */

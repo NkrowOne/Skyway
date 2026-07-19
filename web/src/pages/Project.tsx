@@ -9,7 +9,7 @@ import { ImportReport, ImportReportView } from '../components/RailwayImportModal
 import ServiceCard from '../components/ServiceCard';
 import ServiceDrawer from '../components/ServiceDrawer';
 import SharedVarsModal from '../components/SharedVarsModal';
-import { MetricsSnapshot, Project, Service } from '../types';
+import { Me, MetricsSnapshot, Project, Service } from '../types';
 
 export interface MetricPoint {
   ts: number;
@@ -122,6 +122,9 @@ export default function ProjectPage() {
 
   const { latest, historyRef } = useProjectMetrics(projectId);
 
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
+  const isAdmin = me.data?.user?.role === 'admin';
+
   const importReport = useQuery({
     queryKey: ['importReport', projectId],
     queryFn: () => api.get<{ report: ImportReport | null }>(`/projects/${projectId}/import-report`),
@@ -198,24 +201,28 @@ export default function ProjectPage() {
             </p>
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-            <button
-              onClick={() => {
-                setEditName(proj.name);
-                setEditClient(proj.client ?? '');
-                setEditOpen(true);
-              }}
-              className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
-              title="Renombrar / empresa"
-            >
-              <Pencil size={14} />
-            </button>
-            <button
-              onClick={() => setDeleteOpen(true)}
-              className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-err"
-              title="Eliminar proyecto"
-            >
-              <Trash2 size={14} />
-            </button>
+            {isAdmin && (
+              <>
+                <button
+                  onClick={() => {
+                    setEditName(proj.name);
+                    setEditClient(proj.client ?? '');
+                    setEditOpen(true);
+                  }}
+                  className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+                  title="Renombrar / empresa"
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
+                  onClick={() => setDeleteOpen(true)}
+                  className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-err"
+                  title="Eliminar proyecto"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </>
+            )}
             <Button
               variant="secondary"
               size="sm"

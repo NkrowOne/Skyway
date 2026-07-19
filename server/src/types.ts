@@ -170,6 +170,7 @@ export interface UserRow {
   email: string;
   password_hash: string;
   role: UserRole;
+  session_epoch: number;
   created_at: number;
 }
 

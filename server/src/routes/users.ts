@@ -14,6 +14,7 @@ import {
   listUserProjectIds,
   listUsers,
   setUserProjects,
+  transaction,
   updateUserPassword,
   updateUserRole,
 } from '../db';
@@ -72,28 +73,31 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     const me = currentUser(req)!;
     const body = patchSchema.parse(req.body);
 
-    if (body.role && body.role !== target.role) {
+    // --- Validación COMPLETA antes de tocar nada (evita mutaciones parciales en un 400) ---
+    const roleChange = body.role && body.role !== target.role ? body.role : null;
+    if (roleChange) {
       if (target.id === me.id) return reply.code(400).send({ error: 'No puedes cambiar tu propio rol' });
       if (target.role === 'admin' && countAdmins() <= 1) {
         return reply.code(400).send({ error: 'Debe quedar al menos un administrador' });
       }
-      updateUserRole(id, body.role);
-      // Un admin no necesita asignaciones; al degradar empieza sin workspaces salvo que se envíen.
-      if (body.role === 'admin') setUserProjects(id, []);
     }
-
     if (body.projectIds) {
       for (const pid of body.projectIds) {
         if (!getProject(pid)) return reply.code(400).send({ error: `Proyecto desconocido: ${pid}` });
       }
-      setUserProjects(id, body.projectIds);
     }
 
-    if (body.password) {
-      updateUserPassword(id, hashPassword(body.password));
-      audit(req, 'user_password_reset', { type: 'user', id, detail: target.email });
-    }
+    // --- Mutaciones atómicas: todo o nada ---
+    const effectiveRole = roleChange ?? target.role;
+    transaction(() => {
+      if (roleChange) updateUserRole(id, roleChange);
+      // Un admin no tiene asignaciones; un miembro recibe las enviadas (si las hay).
+      if (effectiveRole === 'admin') setUserProjects(id, []);
+      else if (body.projectIds) setUserProjects(id, body.projectIds);
+      if (body.password) updateUserPassword(id, hashPassword(body.password));
+    });
 
+    if (body.password) audit(req, 'user_password_reset', { type: 'user', id, detail: target.email });
     audit(req, 'user_updated', { type: 'user', id, detail: target.email });
     const updated = getUser(id)!;
     return {

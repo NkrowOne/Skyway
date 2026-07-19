@@ -17,6 +17,7 @@ import {
   loginBlocked,
   recordLoginFailure,
   requireAuth,
+  requireSession,
   setAuthCookie,
   signToken,
 } from '../auth';
@@ -83,7 +84,7 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
       };
     });
 
-    secured.post('/api/auth/passkeys/options', async (req) => {
+    secured.post('/api/auth/passkeys/options', { preHandler: requireSession }, async (req) => {
       const user = currentUser(req)!;
       const { rpId, origin } = rpInfo(req);
       const existing = listPasskeys(user.id);
@@ -108,7 +109,7 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
       return { options };
     });
 
-    secured.post('/api/auth/passkeys', async (req, reply) => {
+    secured.post('/api/auth/passkeys', { preHandler: requireSession }, async (req, reply) => {
       const user = currentUser(req)!;
       const body = z
         .object({ name: z.string().trim().min(1, 'Nombre requerido').max(60), response: z.any() })
@@ -174,6 +175,8 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
     });
     const challengeId = randomToken(16);
     sweep(authChallenges);
+    // Endpoint anónimo: tope duro anti-DoS de memoria (igual que el mapa de intentos).
+    if (authChallenges.size > 5000) authChallenges.clear();
     authChallenges.set(challengeId, { challenge: options.challenge, rpId, origin, expires: Date.now() + CHALLENGE_TTL_MS });
     return { challengeId, options };
   });

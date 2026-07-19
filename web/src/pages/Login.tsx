@@ -22,7 +22,8 @@ export default function Login() {
     setPkLoading(true);
     try {
       await loginWithPasskey();
-      await queryClient.invalidateQueries({ queryKey: ['me'] });
+      // Limpia la caché del usuario anterior antes de entrar como el nuevo.
+      queryClient.clear();
       navigate('/');
     } catch (err) {
       // Cancelar el diálogo del navegador no es un error que mostrar.
@@ -40,7 +41,8 @@ export default function Login() {
     setLoading(true);
     try {
       await api.post('/auth/login', { email, password });
-      await queryClient.invalidateQueries({ queryKey: ['me'] });
+      // Limpia la caché del usuario anterior antes de entrar como el nuevo.
+      queryClient.clear();
       navigate('/');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Error inesperado');

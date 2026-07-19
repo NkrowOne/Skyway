@@ -30,6 +30,7 @@ export function initDb(): void {
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'admin',
+      session_epoch INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS user_projects (
@@ -140,6 +141,7 @@ export function initDb(): void {
   ensureColumn('projects', 'client', 'TEXT');
   ensureColumn('deployments', 'diagnosis', 'TEXT');
   ensureColumn('users', 'role', "TEXT NOT NULL DEFAULT 'admin'"); // los usuarios previos eran el dueño
+  ensureColumn('users', 'session_epoch', 'INTEGER NOT NULL DEFAULT 0');
 }
 
 function ensureColumn(table: string, column: string, ddl: string): void {
@@ -147,6 +149,11 @@ function ensureColumn(table: string, column: string, ddl: string): void {
   if (!cols.some((c) => c.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
   }
+}
+
+/** Ejecuta varias escrituras de forma atómica (todo o nada). */
+export function transaction<T>(fn: () => T): T {
+  return db.transaction(fn)();
 }
 
 function parseService(row: any): ServiceRow {
@@ -159,7 +166,7 @@ export function countUsers(): number {
 }
 
 export function createUser(email: string, passwordHash: string, role: UserRole = 'admin'): UserRow {
-  const row: UserRow = { id: id('usr'), email, password_hash: passwordHash, role, created_at: now() };
+  const row: UserRow = { id: id('usr'), email, password_hash: passwordHash, role, session_epoch: 0, created_at: now() };
   db.prepare('INSERT INTO users (id, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)').run(
     row.id, row.email, row.password_hash, row.role, row.created_at,
   );
@@ -270,8 +277,9 @@ export function getUser(userId: string): UserRow | undefined {
   return db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as UserRow | undefined;
 }
 
+/** Cambia la contraseña e invalida las sesiones y cookies previas del usuario (bump de epoch). */
 export function updateUserPassword(userId: string, passwordHash: string): void {
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, userId);
+  db.prepare('UPDATE users SET password_hash = ?, session_epoch = session_epoch + 1 WHERE id = ?').run(passwordHash, userId);
 }
 
 // ---------- settings ----------
