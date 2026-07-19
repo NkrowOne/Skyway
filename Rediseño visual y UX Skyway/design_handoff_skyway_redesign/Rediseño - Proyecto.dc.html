@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/_ds_bundle.css">
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/styles.css">
+  <script src="ds-loader.js"></script>
+  <script src="lucide.js"></script>
+  <style>
+    html, body { height: 100%; }
+    body { margin: 0; }
+    a { color: var(--color-brand); text-decoration: none; }
+    a:hover { color: var(--color-brand); }
+    * { scrollbar-width: thin; scrollbar-color: oklch(32% 0.018 280) transparent; }
+    *::-webkit-scrollbar { width: 8px; height: 8px; }
+    *::-webkit-scrollbar-thumb { background: oklch(32% 0.018 280); border-radius: 4px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    @keyframes pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+    @keyframes drawer-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+  </style>
+</helmet>
+<div data-screen-label="Rediseño Proyecto (drawer)" style="height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: var(--color-bg); color: var(--color-fg);">
+  <header style="display: flex; height: 56px; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--color-border); background: var(--color-surface); padding: 0 20px;">
+    <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+      <a href="Rediseño - Dashboard.dc.html" style="display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 650; color: var(--color-fg); flex-shrink: 0;">
+        <span style="display: flex; height: 28px; width: 28px; align-items: center; justify-content: center; border-radius: 8px; background: linear-gradient(135deg, var(--color-brand), oklch(42% 0.16 295)); color: #fff; box-shadow: 0 2px 8px -2px color-mix(in oklab, var(--color-brand) 60%, transparent);"><l-i name="rocket" size="15"></l-i></span>
+        Skyway
+      </a>
+      <l-i name="chevron-right" size="14" style="color: var(--color-fg-subtle);"></l-i>
+      <span style="font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">citas-online</span>
+      <span style="display: flex; align-items: center; gap: 5px; border-radius: 9999px; border: 1px solid var(--color-border); background: var(--color-bg); padding: 2px 10px; font-size: 11px; color: var(--color-fg-muted); flex-shrink: 0;"><l-i name="building-2" size="10"></l-i> Clínica Vidasana</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 4px;">
+      <button style="display: flex; align-items: center; gap: 8px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 6px 10px; font-size: 12px; color: var(--color-fg-subtle); cursor: pointer; font-family: inherit;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 45%, var(--color-border));" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 2px;"><l-i name="search" size="13"></l-i><kbd style="font-family: var(--font-mono); font-size: 11px;">⌘K</kbd></button>
+      <a href="Rediseño - Alertas.dc.html" title="Alertas" style="position: relative; display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);">
+        <l-i name="bell" size="16"></l-i>
+        <span style="position: absolute; right: -1px; top: -1px; display: flex; height: 15px; min-width: 15px; align-items: center; justify-content: center; border-radius: 9999px; background: var(--color-danger); border: 2px solid var(--color-surface); padding: 0 3px; font-size: 9px; font-weight: 700; color: #fff; line-height: 1;">2</span>
+      </a>
+      <a href="Rediseño - Seguridad.dc.html" title="Panel de seguridad" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="shield-check" size="16"></l-i></a>
+      <a href="Rediseño - Ajustes.dc.html" title="Ajustes" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="settings" size="16"></l-i></a>
+      <button title="Cerrar sesión" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="log-out" size="16"></l-i></button>
+    </div>
+  </header>
+  <div style="flex: 1; display: flex; min-height: 0;">
+    <div style="flex: 1; overflow-y: auto; padding: 28px; min-width: 0;">
+      <div style="margin-bottom: 24px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
+        <div>
+          <h1 style="margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.015em;">citas-online</h1>
+          <p style="margin: 6px 0 0; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-fg-muted);">Red privada <span style="font-family: var(--font-mono); font-size: 11px; color: var(--color-fg); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 6px; padding: 1px 7px;">skyway-citas-online</span> <span style="display: inline-flex; color: var(--color-fg-subtle); cursor: pointer;"><l-i name="copy" size="12"></l-i></span> — los servicios se resuelven entre sí por nombre</p>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <button title="Renombrar / empresa" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0; transition: background .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="pencil" size="14"></l-i></button>
+          <button title="Eliminar proyecto" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0; transition: background .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-danger);"><l-i name="trash-2" size="14"></l-i></button>
+          <x-import component-from-global-scope="FightX.Button" variant="secondary" size="sm" hint-size="auto,32px"><l-i name="key-round" size="13"></l-i> Variables compartidas</x-import>
+          <x-import component-from-global-scope="FightX.Button" variant="secondary" size="sm" hint-size="auto,32px"><l-i name="refresh-cw" size="13"></l-i> Desplegar todo</x-import>
+          <x-import component-from-global-scope="FightX.Button" variant="primary" size="sm" hint-size="auto,32px"><l-i name="plus" size="14"></l-i> Nuevo servicio</x-import>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px;">
+        <button onClick="{{ selApi }}" style="position: relative; border-radius: 12px; border: 1px solid {{ apiBorder }}; box-shadow: {{ apiShadow }}; background: var(--color-surface); padding: 16px; text-align: left; cursor: pointer; font-family: inherit; color: inherit; transition: border-color .18s ease-out, box-shadow .18s ease-out;">
+          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+              <span style="display: flex; height: 36px; width: 36px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in oklab, var(--color-fg) 9%, transparent); color: var(--color-fg);"><l-i name="si-github" size="17"></l-i></span>
+              <div style="min-width: 0;">
+                <h3 style="margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600;">api</h3>
+                <p style="margin: 1px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">vidasana/citas-api</p>
+              </div>
+            </div>
+            <span style="display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>Activo · 2/2</span>
+          </div>
+          <div style="margin-top: 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--color-fg-muted);">
+            <div style="display: flex; align-items: center; gap: 12px; font-variant-numeric: tabular-nums;">
+              <span>CPU <span style="color: var(--color-fg);">2.4%</span></span>
+              <span>RAM <span style="color: var(--color-fg);">187 MB</span></span>
+            </div>
+            <span style="display: flex; align-items: center; gap: 4px; color: var(--color-fg-muted); min-width: 0;"><l-i name="globe" size="11"></l-i><span style="max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px;">citas.vidasana.es</span></span>
+          </div>
+        </button>
+        <button style="position: relative; border-radius: 12px; border: 1px solid color-mix(in oklab, var(--color-danger) 45%, var(--color-border)); background: var(--color-surface); padding: 16px; text-align: left; cursor: pointer; font-family: inherit; color: inherit; transition: border-color .18s ease-out;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 55%, var(--color-border));">
+          <span style="position: absolute; right: 12px; top: -9px; display: flex; align-items: center; gap: 4px; border-radius: 9999px; background: var(--color-danger); padding: 2px 8px; font-size: 10px; font-weight: 600; color: #fff; box-shadow: 0 2px 8px -2px color-mix(in oklab, var(--color-danger) 60%, transparent);"><l-i name="bell-ring" size="10"></l-i> 1 alerta</span>
+          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+              <span style="display: flex; height: 36px; width: 36px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in oklab, var(--color-fg) 9%, transparent); color: var(--color-fg);"><l-i name="si-github" size="17"></l-i></span>
+              <div style="min-width: 0;">
+                <h3 style="margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600;">worker</h3>
+                <p style="margin: 1px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">vidasana/citas-worker</p>
+              </div>
+            </div>
+            <span style="display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>Activo</span>
+          </div>
+          <div style="margin-top: 14px; display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--color-fg-muted); font-variant-numeric: tabular-nums;">
+            <span>CPU <span style="color: var(--color-warning); font-weight: 600;">94.2%</span></span>
+            <span>RAM <span style="color: var(--color-fg);">412 MB</span></span>
+          </div>
+        </button>
+        <button onClick="{{ selPg }}" style="position: relative; border-radius: 12px; border: 1px solid {{ pgBorder }}; box-shadow: {{ pgShadow }}; background: var(--color-surface); padding: 16px; text-align: left; cursor: pointer; font-family: inherit; color: inherit; transition: border-color .18s ease-out, box-shadow .18s ease-out;">
+          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+              <span style="display: flex; height: 36px; width: 36px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 10px; background: rgba(51,103,145,.28); color: #93bce2;"><l-i name="si-postgresql" size="17"></l-i></span>
+              <div style="min-width: 0;">
+                <h3 style="margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600;">PostgreSQL</h3>
+                <p style="margin: 1px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">postgres:16</p>
+              </div>
+            </div>
+            <span style="display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>Activo</span>
+          </div>
+          <div style="margin-top: 14px; display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--color-fg-muted); font-variant-numeric: tabular-nums;">
+            <span>CPU <span style="color: var(--color-fg);">1.1%</span></span>
+            <span>RAM <span style="color: var(--color-fg);">240 MB</span></span>
+          </div>
+        </button>
+        <button style="position: relative; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 16px; text-align: left; cursor: pointer; font-family: inherit; color: inherit; transition: border-color .18s ease-out;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 55%, var(--color-border));">
+          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+              <span style="display: flex; height: 36px; width: 36px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 10px; background: rgba(220,56,44,.16); color: #e0837b;"><l-i name="si-redis" size="17"></l-i></span>
+              <div style="min-width: 0;">
+                <h3 style="margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600;">Redis</h3>
+                <p style="margin: 1px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">redis:7</p>
+              </div>
+            </div>
+            <span style="display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>Activo</span>
+          </div>
+          <div style="margin-top: 14px; display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--color-fg-muted); font-variant-numeric: tabular-nums;">
+            <span>CPU <span style="color: var(--color-fg);">0.2%</span></span>
+            <span>RAM <span style="color: var(--color-fg);">18.4 MB</span></span>
+          </div>
+        </button>
+      </div>
+      <p style="margin: 20px 0 0; font-size: 11px; color: var(--color-fg-subtle);">Pulsa <kbd style="font-family: var(--font-mono); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; padding: 0 4px;">esc</kbd> para cerrar el panel · <kbd style="font-family: var(--font-mono); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; padding: 0 4px;">⌘K</kbd> para buscar</p>
+    </div>
+    <sc-if value="{{ drawerOpen }}" hint-placeholder-val="{{ true }}">
+      <aside style="display: flex; width: {{ drawerWidth }}; flex-shrink: 0; flex-direction: column; border-left: 1px solid var(--color-border); background: var(--color-surface); min-height: 0; box-shadow: -12px 0 32px -20px rgba(0,0,0,.6); animation: drawer-in .22s ease-out; transition: width .2s ease-out;">
+        <div style="border-bottom: 1px solid var(--color-border); padding: 18px 20px 0;">
+          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 12px; min-width: 0;">
+              <span style="display: flex; height: 38px; width: 38px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 10px; background: {{ svcIconBg }}; color: {{ svcIconFg }};"><l-i name="{{ svcIcon }}" size="17"></l-i></span>
+              <div style="min-width: 0;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <h2 style="margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 650; letter-spacing: -.01em;">{{ svcName }}</h2>
+                  <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 2px 9px; font-size: 11px; font-weight: 500; flex-shrink: 0;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>{{ svcState }}</span>
+                </div>
+                <p style="margin: 3px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">{{ svcSub }}</p>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;">
+              <button onClick="{{ toggleWide }}" title="Cambiar ancho del panel" style="display: inline-flex; border-radius: 8px; padding: 7px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0; transition: background .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="move-horizontal" size="15"></l-i></button>
+              <button onClick="{{ closeDrawer }}" title="Cerrar (esc)" style="display: inline-flex; border-radius: 8px; padding: 7px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0; transition: background .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="x" size="15"></l-i></button>
+            </div>
+          </div>
+          <div style="margin-top: 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+            <x-import component-from-global-scope="FightX.Button" variant="primary" size="sm" hint-size="auto,32px"><l-i name="rocket" size="13"></l-i> Desplegar</x-import>
+            <x-import component-from-global-scope="FightX.Button" variant="secondary" size="sm" hint-size="auto,32px"><l-i name="refresh-cw" size="13"></l-i> Reiniciar</x-import>
+            <x-import component-from-global-scope="FightX.Button" variant="secondary" size="sm" hint-size="auto,32px"><l-i name="square" size="13"></l-i> Detener</x-import>
+            <x-import component-from-global-scope="FightX.Button" variant="ghost" size="sm" hint-size="auto,32px"><l-i name="terminal" size="13"></l-i></x-import>
+            <sc-if value="{{ isApi }}" hint-placeholder-val="{{ true }}">
+              <a href="#" style="margin-left: auto; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--radius); padding: 6px 10px; font-size: 12px; color: var(--color-fg-muted); min-width: 0; max-width: 190px; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="external-link" size="12"></l-i> <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">citas.vidasana.es</span></a>
+            </sc-if>
+          </div>
+          <div style="margin-top: 12px; display: flex; gap: 2px; margin-bottom: -1px;">
+            <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="5">
+              <button onClick="{{ t.onClick }}" style="position: relative; padding: 9px 12px; font-size: 13px; font-weight: {{ t.weight }}; color: {{ t.color }}; background: transparent; border: none; cursor: pointer; font-family: inherit; transition: color .15s ease-out;" style-hover="color: var(--color-fg);" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: -2px; border-radius: 6px;">
+                {{ t.label }}
+                <sc-if value="{{ t.active }}" hint-placeholder-val="{{ false }}"><span style="position: absolute; left: 10px; right: 10px; bottom: 0; height: 2px; border-radius: 9999px; background: var(--color-brand);"></span></sc-if>
+              </button>
+            </sc-for>
+          </div>
+        </div>
+        <div style="flex: 1; overflow-y: auto; min-height: 0; position: relative;">
+          <sc-if value="{{ showDeployments }}" hint-placeholder-val="{{ true }}">
+            <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 10px;">
+              <sc-for list="{{ deployments }}" as="d" hint-placeholder-count="3">
+                <div style="border-radius: 12px; border: 1px solid {{ d.cardBorder }}; background: var(--color-bg); overflow: hidden;">
+                  <button onClick="{{ d.onClick }}" style="display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px; text-align: left; background: transparent; border: none; cursor: pointer; font-family: inherit; color: inherit; box-sizing: border-box; transition: background .15s ease-out;" style-hover="background: var(--color-surface-2);">
+                    <div style="display: flex; min-width: 0; align-items: center; gap: 12px;">
+                      <span style="flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: {{ d.bg }}; color: {{ d.fg }}; padding: 3px 10px; font-size: 11px; font-weight: 600;">{{ d.status }}</span>
+                      <div style="min-width: 0;">
+                        <p style="margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500;">{{ d.title }}</p>
+                        <p style="margin: 2px 0 0; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">{{ d.meta }}</p>
+                      </div>
+                    </div>
+                    <sc-if value="{{ d.canRollback }}" hint-placeholder-val="{{ false }}">
+                      <span title="Volver a esta versión" style="display: inline-flex; border-radius: 8px; padding: 6px; color: var(--color-fg-subtle);"><l-i name="rotate-ccw" size="13"></l-i></span>
+                    </sc-if>
+                  </button>
+                  <sc-if value="{{ d.open }}" hint-placeholder-val="{{ false }}">
+                    <div style="border-top: 1px solid var(--color-border); padding: 12px 14px;">
+                      <sc-if value="{{ d.hasError }}" hint-placeholder-val="{{ false }}">
+                        <div style="margin-bottom: 10px; border-radius: var(--radius); border: 1px solid color-mix(in oklab, var(--color-danger) 35%, transparent); background: color-mix(in oklab, var(--color-danger) 8%, transparent); padding: 10px 12px; font-size: 12px; color: var(--color-danger);">{{ d.error }}</div>
+                        <div style="margin-bottom: 10px; border-radius: var(--radius); border: 1px solid color-mix(in oklab, var(--color-warning) 30%, transparent); background: color-mix(in oklab, var(--color-warning) 6%, transparent); padding: 12px; font-size: 12px;">
+                          <p style="margin: 0; display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--color-warning);"><l-i name="lightbulb" size="13"></l-i> {{ d.dTitle }}</p>
+                          <p style="margin: 6px 0 0; color: var(--color-fg-muted); text-wrap: pretty;">{{ d.dCause }}</p>
+                          <p style="margin: 6px 0 0;"><span style="font-weight: 600; color: var(--color-success);">Cómo arreglarlo: </span><span style="color: var(--color-fg-muted);">{{ d.dFix }}</span></p>
+                        </div>
+                      </sc-if>
+                      <div style="border-radius: var(--radius); border: 1px solid var(--color-border); overflow: hidden;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; background: var(--color-surface-2); padding: 6px 12px;">
+                          <span style="font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--color-fg-subtle);">Build &amp; deploy</span>
+                          <span style="display: inline-flex; color: var(--color-fg-subtle); cursor: pointer;" title="Copiar logs"><l-i name="copy" size="12"></l-i></span>
+                        </div>
+                        <div style="height: 232px; overflow-y: auto; background: oklch(11% 0.008 280); padding: 12px; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.7; color: color-mix(in oklab, var(--color-fg) 88%, transparent); box-sizing: border-box;">
+                          <sc-for list="{{ d.logs }}" as="ln" hint-placeholder-count="4"><div style="white-space: pre-wrap; word-break: break-all;">{{ ln }}</div></sc-for>
+                        </div>
+                      </div>
+                    </div>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <sc-if value="{{ showVariables }}" hint-placeholder-val="{{ false }}">
+            <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 14px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+                <p style="margin: 0; font-size: 12px; color: var(--color-fg-muted); text-wrap: pretty;">Referencias <span style="font-family: var(--font-mono); font-size: 11px; color: var(--color-info);">${{refTokenSvc}}</span> · <span style="font-family: var(--font-mono); font-size: 11px; color: var(--color-info);">${{refTokenShared}}</span> — las compartidas del proyecto se heredan solas.</p>
+                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;">
+                  <button title="Mostrar valores" style="display: inline-flex; border-radius: 8px; padding: 7px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="eye" size="13"></l-i></button>
+                  <button style="display: inline-flex; border-radius: 8px; padding: 5px 9px; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer;" style-hover="background: var(--color-surface-2); color: var(--color-fg);">RAW</button>
+                </div>
+              </div>
+              <div style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); overflow: hidden;">
+                <sc-for list="{{ varRows }}" as="r" hint-placeholder-count="4">
+                  <div style="display: flex; align-items: center; gap: 0; border-bottom: 1px solid var(--color-border);">
+                    <div style="width: 38%; flex-shrink: 0; padding: 9px 14px; font-family: var(--font-mono); font-size: 12px; color: var(--color-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-right: 1px solid var(--color-border);">{{ r.key }}</div>
+                    <div style="flex: 1; min-width: 0; padding: 9px 14px; font-family: var(--font-mono); font-size: 12px; color: {{ r.valColor }}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ r.val }}</div>
+                    <div style="display: flex; align-items: center; gap: 2px; padding-right: 8px; flex-shrink: 0;">
+                      <span style="display: inline-flex; border-radius: 6px; padding: 5px; color: var(--color-fg-subtle); cursor: pointer;" title="Copiar valor resuelto"><l-i name="copy" size="13"></l-i></span>
+                      <span style="display: inline-flex; border-radius: 6px; padding: 5px; color: var(--color-fg-subtle); cursor: pointer;" title="Eliminar"><l-i name="trash-2" size="13"></l-i></span>
+                    </div>
+                  </div>
+                </sc-for>
+                <button style="display: flex; width: 100%; align-items: center; gap: 8px; padding: 10px 14px; font-size: 12px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; font-family: inherit; box-sizing: border-box; transition: background .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="plus" size="13"></l-i> Añadir variable</button>
+              </div>
+              <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--color-fg-subtle);">
+                <span>Sugerencias:</span>
+                <sc-for list="{{ sugChips }}" as="s" hint-placeholder-count="2">
+                  <button style="border-radius: 6px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 2px 8px; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-muted); cursor: pointer; transition: border-color .15s ease-out;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 50%, var(--color-border)); color: var(--color-fg);">+ {{ s }}</button>
+                </sc-for>
+              </div>
+              <sc-if value="{{ isApi }}" hint-placeholder-val="{{ true }}">
+                <div style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 14px; font-size: 12px;">
+                  <p style="margin: 0 0 10px; font-weight: 600; font-size: 12px; color: var(--color-fg-muted);">Referencias disponibles</p>
+                  <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <sc-for list="{{ refGroups }}" as="g" hint-placeholder-count="2">
+                      <div>
+                        <p style="margin: 0 0 5px; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--color-fg-subtle);">{{ g.name }}</p>
+                        <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                          <sc-for list="{{ g.vars }}" as="v" hint-placeholder-count="3">
+                            <button title="Copiar referencia" style="border-radius: 6px; border: 1px solid var(--color-border); background: var(--color-bg); padding: 2px 8px; font-family: var(--font-mono); font-size: 11px; color: var(--color-info); cursor: pointer; transition: border-color .15s ease-out;" style-hover="border-color: color-mix(in oklab, var(--color-info) 50%, var(--color-border));">{{ v }}</button>
+                          </sc-for>
+                        </div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-if>
+              <div style="display: flex; align-items: center; justify-content: flex-end; gap: 10px;">
+                <span style="font-size: 12px; color: var(--color-fg-subtle);">Sin cambios</span>
+                <x-import component-from-global-scope="FightX.Button" variant="primary" size="sm" disabled="{{ true }}" hint-size="auto,32px">Guardar variables</x-import>
+              </div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ showBackups }}" hint-placeholder-val="{{ false }}">
+            <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 14px;">
+              <div style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); padding: 16px;">
+                <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                  <span style="display: flex; height: 28px; width: 28px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-brand) 15%, transparent); color: #b9a7ee;"><l-i name="calendar-clock" size="14"></l-i></span>
+                  <div>
+                    <h3 style="margin: 0; font-size: 13px; font-weight: 600;">Backups automáticos</h3>
+                    <p style="margin: 1px 0 0; font-size: 11px; color: var(--color-fg-subtle);">Diarios a las ~04:00, con retención automática</p>
+                  </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; gap: 10px;">
+                  <label style="display: block;">
+                    <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Frecuencia</span>
+                    <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-size: 13px; color: var(--color-fg); display: flex; justify-content: space-between; align-items: center;">Diaria (~04:00) <span style="color: var(--color-fg-subtle); font-size: 10px;">▾</span></div>
+                  </label>
+                  <label style="display: block;">
+                    <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Conservar</span>
+                    <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-size: 13px; color: var(--color-fg); font-variant-numeric: tabular-nums;">7</div>
+                  </label>
+                  <x-import component-from-global-scope="FightX.Button" variant="secondary" size="sm" hint-size="auto,32px">Guardar</x-import>
+                </div>
+                <p style="margin: 10px 0 0; font-size: 11px; color: var(--color-fg-subtle); text-wrap: pretty;">Si un backup programado falla recibirás una alerta con la causa. Descarga copias fuera del servidor de vez en cuando.</p>
+              </div>
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+                <p style="margin: 0; font-size: 12px; color: var(--color-fg-muted);">Último backup <span style="color: var(--color-fg);">hace 3 h</span> · en <span style="font-family: var(--font-mono); font-size: 11px;">DATA_DIR/backups</span></p>
+                <x-import component-from-global-scope="FightX.Button" variant="primary" size="sm" hint-size="auto,32px"><l-i name="plus" size="13"></l-i> Crear backup ahora</x-import>
+              </div>
+              <div style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); overflow: hidden;">
+                <sc-for list="{{ backups }}" as="b" hint-placeholder-count="3">
+                  <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--color-border);">
+                    <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+                      <l-i name="archive" size="14" style="color: var(--color-fg-subtle);"></l-i>
+                      <div style="min-width: 0;">
+                        <p style="margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 12px;">{{ b.file }}</p>
+                        <p style="margin: 1px 0 0; font-size: 11px; color: var(--color-fg-subtle); font-variant-numeric: tabular-nums;">{{ b.meta }}</p>
+                      </div>
+                    </div>
+                    <div style="display: flex; flex-shrink: 0; align-items: center; gap: 2px;">
+                      <button title="Descargar" style="display: inline-flex; border-radius: 6px; padding: 6px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="download" size="14"></l-i></button>
+                      <button title="Restaurar" style="display: inline-flex; border-radius: 6px; padding: 6px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;" style-hover="background: var(--color-surface-2); color: var(--color-warning);"><l-i name="rotate-ccw" size="14"></l-i></button>
+                      <button title="Eliminar" style="display: inline-flex; border-radius: 6px; padding: 6px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;" style-hover="background: var(--color-surface-2); color: var(--color-danger);"><l-i name="trash-2" size="14"></l-i></button>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ showMetrics }}" hint-placeholder-val="{{ false }}">
+            <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 14px;">
+              <div style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); padding: 16px;">
+                <div style="margin-bottom: 10px; display: flex; align-items: baseline; justify-content: space-between;">
+                  <h3 style="margin: 0; font-size: 12px; font-weight: 600; color: var(--color-fg-muted);">CPU</h3>
+                  <span style="font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums;">{{ cpuCur }}</span>
+                </div>
+                <svg viewBox="0 0 480 140" style="display: block; width: 100%;">
+                  <line x1="8" x2="472" y1="38" y2="38" style="stroke: var(--color-border); opacity: .5;" stroke-width="1"></line>
+                  <line x1="8" x2="472" y1="66" y2="66" style="stroke: var(--color-border); opacity: .5;" stroke-width="1"></line>
+                  <line x1="8" x2="472" y1="94" y2="94" style="stroke: var(--color-border); opacity: .5;" stroke-width="1"></line>
+                  <line x1="8" x2="472" y1="122" y2="122" style="stroke: var(--color-border);" stroke-width="1"></line>
+                  <path d="{{ cpuArea }}" style="fill: var(--color-brand); opacity: .14;"></path>
+                  <path d="{{ cpuPath }}" fill="none" style="stroke: var(--color-brand);" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
+                  <text x="8" y="135" font-size="9" style="fill: var(--color-fg-subtle); font-family: var(--font-mono);">{{ t0 }}</text>
+                  <text x="472" y="135" font-size="9" style="fill: var(--color-fg-subtle); font-family: var(--font-mono);" text-anchor="end">{{ t1 }}</text>
+                  <text x="472" y="14" font-size="9" style="fill: var(--color-fg-subtle); font-family: var(--font-mono);" text-anchor="end">{{ cpuMax }}</text>
+                </svg>
+              </div>
+              <div style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); padding: 16px;">
+                <div style="margin-bottom: 10px; display: flex; align-items: baseline; justify-content: space-between;">
+                  <h3 style="margin: 0; font-size: 12px; font-weight: 600; color: var(--color-fg-muted);">{{ memTitle }}</h3>
+                  <span style="font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums;">{{ memCur }}</span>
+                </div>
+                <svg viewBox="0 0 480 140" style="display: block; width: 100%;">
+                  <line x1="8" x2="472" y1="38" y2="38" style="stroke: var(--color-border); opacity: .5;" stroke-width="1"></line>
+                  <line x1="8" x2="472" y1="66" y2="66" style="stroke: var(--color-border); opacity: .5;" stroke-width="1"></line>
+                  <line x1="8" x2="472" y1="94" y2="94" style="stroke: var(--color-border); opacity: .5;" stroke-width="1"></line>
+                  <line x1="8" x2="472" y1="122" y2="122" style="stroke: var(--color-border);" stroke-width="1"></line>
+                  <path d="{{ memArea }}" style="fill: var(--color-info); opacity: .12;"></path>
+                  <path d="{{ memPath }}" fill="none" style="stroke: var(--color-info);" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
+                  <text x="8" y="135" font-size="9" style="fill: var(--color-fg-subtle); font-family: var(--font-mono);">{{ t0 }}</text>
+                  <text x="472" y="135" font-size="9" style="fill: var(--color-fg-subtle); font-family: var(--font-mono);" text-anchor="end">{{ t1 }}</text>
+                  <text x="472" y="14" font-size="9" style="fill: var(--color-fg-subtle); font-family: var(--font-mono);" text-anchor="end">{{ memMax }}</text>
+                </svg>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+                <div style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); display: flex; align-items: center; gap: 12px; padding: 14px 16px;">
+                  <span style="display: flex; height: 30px; width: 30px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-success) 13%, transparent); color: var(--color-success);"><l-i name="arrow-down" size="15"></l-i></span>
+                  <div>
+                    <p style="margin: 0; font-size: 11px; color: var(--color-fg-subtle);">Red — recibido</p>
+                    <p style="margin: 1px 0 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums;">{{ netRx }}</p>
+                  </div>
+                </div>
+                <div style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); display: flex; align-items: center; gap: 12px; padding: 14px 16px;">
+                  <span style="display: flex; height: 30px; width: 30px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-info) 13%, transparent); color: var(--color-info);"><l-i name="arrow-up" size="15"></l-i></span>
+                  <div>
+                    <p style="margin: 0; font-size: 11px; color: var(--color-fg-subtle);">Red — enviado</p>
+                    <p style="margin: 1px 0 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums;">{{ netTx }}</p>
+                  </div>
+                </div>
+              </div>
+              <p style="margin: 0; text-align: center; font-size: 11px; color: var(--color-fg-subtle);">Muestras cada 2,5 s · ventana de 2 min</p>
+            </div>
+          </sc-if>
+          <sc-if value="{{ showLogs }}" hint-placeholder-val="{{ false }}">
+            <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; height: 100%; box-sizing: border-box;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <div style="flex: 1; display: flex; align-items: center; gap: 8px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 6px 10px;">
+                  <l-i name="search" size="13" style="color: var(--color-fg-subtle);"></l-i>
+                  <input placeholder="Filtrar líneas… (p. ej. error, /api/citas)" style="flex: 1; background: transparent; border: none; outline: none; color: var(--color-fg); font-size: 12px; font-family: var(--font-mono);">
+                </div>
+                <button title="Ajuste de línea" style="display: inline-flex; border-radius: 8px; padding: 7px; color: var(--color-brand); background: color-mix(in oklab, var(--color-brand) 14%, transparent); border: none; cursor: pointer; line-height: 0;"><l-i name="wrap-text" size="14"></l-i></button>
+                <button title="Ir al inicio" style="display: inline-flex; border-radius: 8px; padding: 7px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="arrow-up-to-line" size="14"></l-i></button>
+                <button title="Ir al final" style="display: inline-flex; border-radius: 8px; padding: 7px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="arrow-down-to-line" size="14"></l-i></button>
+                <button title="Copiar logs visibles" style="display: inline-flex; border-radius: 8px; padding: 7px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="copy" size="14"></l-i></button>
+                <button title="Descargar" style="display: inline-flex; border-radius: 8px; padding: 7px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="download" size="14"></l-i></button>
+              </div>
+              <p style="margin: 0; font-size: 11px; color: var(--color-fg-subtle);">{{ logCount }} líneas en memoria<sc-if value="{{ isApi }}" hint-placeholder-val="{{ true }}"> · réplica 1 de 2</sc-if> · <span style="color: var(--color-danger);">error</span> y <span style="color: var(--color-warning);">warn</span> coloreados</p>
+              <div style="position: relative; flex: 1; min-height: 240px;">
+                <div style="position: absolute; inset: 0; overflow-y: auto; border-radius: var(--radius); border: 1px solid var(--color-border); background: oklch(11% 0.008 280); padding: 12px; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.7; box-sizing: border-box;">
+                  <sc-for list="{{ svcLogLines }}" as="ln" hint-placeholder-count="8"><div style="white-space: pre-wrap; word-break: break-all; color: {{ ln.color }};">{{ ln.text }}</div></sc-for>
+                </div>
+                <span style="position: absolute; bottom: 10px; right: 12px; display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 16%, oklch(14% 0.01 280)); border: 1px solid color-mix(in oklab, var(--color-success) 35%, transparent); color: var(--color-success); padding: 3px 10px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor; animation: pulse-soft 1.6s ease-in-out infinite;"></span>Siguiendo</span>
+              </div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ showSettings }}" hint-placeholder-val="{{ false }}">
+            <div style="padding: 16px 20px 0; display: flex; flex-direction: column; gap: 14px;">
+              <section style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); padding: 16px;">
+                <div style="margin-bottom: 14px; display: flex; align-items: center; gap: 10px;">
+                  <span style="display: flex; height: 28px; width: 28px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-fg) 9%, transparent); color: var(--color-fg);"><l-i name="si-github" size="14"></l-i></span>
+                  <div>
+                    <h3 style="margin: 0; font-size: 13px; font-weight: 600;">General</h3>
+                    <p style="margin: 1px 0 0; font-size: 11px; color: var(--color-fg-subtle);">Origen, build y arranque del servicio</p>
+                  </div>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+                  <label style="display: block;">
+                    <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Nombre</span>
+                    <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-size: 13px; color: var(--color-fg);">{{ svcName }}</div>
+                  </label>
+                  <sc-if value="{{ isApi }}" hint-placeholder-val="{{ true }}">
+                    <label style="display: block;">
+                      <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Repositorio</span>
+                      <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--color-fg);">https://github.com/vidasana/citas-api</div>
+                    </label>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                      <label style="display: block;">
+                        <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Rama</span>
+                        <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-size: 13px; color: var(--color-fg);">main</div>
+                      </label>
+                      <label style="display: block;">
+                        <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Puerto interno</span>
+                        <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-size: 13px; color: var(--color-fg); font-variant-numeric: tabular-nums;">3000</div>
+                      </label>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                      <label style="display: block;">
+                        <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Directorio raíz</span>
+                        <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-size: 13px; color: var(--color-fg-subtle); min-height: 19px;">raíz del repo</div>
+                      </label>
+                      <label style="display: block;">
+                        <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Dockerfile</span>
+                        <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-size: 13px; color: var(--color-fg-subtle); min-height: 19px;">Dockerfile</div>
+                      </label>
+                    </div>
+                    <label style="display: block;">
+                      <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Ruta de healthcheck</span>
+                      <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--color-fg);">/health</div>
+                      <span style="margin-top: 4px; display: block; font-size: 11px; color: var(--color-fg-subtle); text-wrap: pretty;">Si responde 2xx la nueva versión se considera sana: despliegues sin corte con marcha atrás automática.</span>
+                    </label>
+                  </sc-if>
+                  <sc-if value="{{ isPg }}" hint-placeholder-val="{{ false }}">
+                    <label style="display: block;">
+                      <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Versión de la imagen</span>
+                      <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--color-fg);">16</div>
+                      <span style="margin-top: 4px; display: block; font-size: 11px; color: var(--color-fg-subtle);">Imagen: postgres</span>
+                    </label>
+                  </sc-if>
+                </div>
+              </section>
+              <sc-if value="{{ isApi }}" hint-placeholder-val="{{ true }}">
+                <section style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); padding: 16px;">
+                  <div style="margin-bottom: 14px; display: flex; align-items: center; gap: 10px;">
+                    <span style="display: flex; height: 28px; width: 28px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-info) 14%, transparent); color: var(--color-info);"><l-i name="globe" size="14"></l-i></span>
+                    <div>
+                      <h3 style="margin: 0; font-size: 13px; font-weight: 600;">Dominios</h3>
+                      <p style="margin: 1px 0 0; font-size: 11px; color: var(--color-fg-subtle);">Traefik enruta 80/443 · TLS automático activo</p>
+                    </div>
+                  </div>
+                  <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <div style="display: flex; align-items: center; gap: 8px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 8px 12px;">
+                      <l-i name="globe" size="13" style="color: var(--color-info);"></l-i>
+                      <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 12px;">citas.vidasana.es</span>
+                      <span style="flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 2px 8px; font-size: 10px; font-weight: 600;"><l-i name="check-circle-2" size="10"></l-i> DNS correcto</span>
+                      <span style="margin-left: auto; display: flex; flex-shrink: 0; align-items: center; gap: 2px;">
+                        <button title="Volver a comprobar" style="display: inline-flex; border-radius: 6px; padding: 4px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;" style-hover="color: var(--color-fg);"><l-i name="refresh-cw" size="12"></l-i></button>
+                        <button title="Abrir" style="display: inline-flex; border-radius: 6px; padding: 4px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;" style-hover="color: var(--color-fg);"><l-i name="external-link" size="12"></l-i></button>
+                        <button title="Quitar" style="display: inline-flex; border-radius: 6px; padding: 4px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;" style-hover="color: var(--color-danger);"><l-i name="x" size="12"></l-i></button>
+                      </span>
+                    </div>
+                    <div style="border-radius: var(--radius); border: 1px dashed color-mix(in oklab, var(--color-brand) 40%, var(--color-border)); background: color-mix(in oklab, var(--color-brand) 6%, transparent); padding: 12px;">
+                      <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+                        <span style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #b9a7ee;"><l-i name="sparkles" size="13"></l-i><span style="font-family: var(--font-mono); font-size: 12px; color: var(--color-fg);">api.apps.vidasana.es</span></span>
+                        <x-import component-from-global-scope="FightX.Button" variant="secondary" size="sm" hint-size="auto,30px"><l-i name="plus" size="12"></l-i> Añadir subdominio</x-import>
+                      </div>
+                      <p style="margin: 8px 0 0; font-size: 11px; color: var(--color-fg-subtle); text-wrap: pretty;">Generado desde tu dominio raíz. Requisito único: registro A comodín <span style="font-family: var(--font-mono);">*.apps.vidasana.es → 203.0.113.10</span>.</p>
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                      <div style="flex: 1; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--color-fg-subtle);">app.clienteacme.com</div>
+                      <x-import component-from-global-scope="FightX.Button" variant="secondary" size="sm" hint-size="auto,32px"><l-i name="plus" size="13"></l-i> Añadir</x-import>
+                    </div>
+                  </div>
+                </section>
+                <section style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); padding: 16px;">
+                  <div style="margin-bottom: 14px; display: flex; align-items: center; gap: 10px;">
+                    <span style="display: flex; height: 28px; width: 28px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-brand) 15%, transparent); color: #b9a7ee;"><l-i name="cpu" size="14"></l-i></span>
+                    <div>
+                      <h3 style="margin: 0; font-size: 13px; font-weight: 600;">Recursos y réplicas</h3>
+                      <p style="margin: 1px 0 0; font-size: 11px; color: var(--color-fg-subtle);">Los límites se aplican en caliente, sin reiniciar</p>
+                    </div>
+                  </div>
+                  <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;">
+                    <label style="display: block;">
+                      <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">CPUs</span>
+                      <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-size: 13px; color: var(--color-fg); font-variant-numeric: tabular-nums;">1.5</div>
+                    </label>
+                    <label style="display: block;">
+                      <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">RAM (MB)</span>
+                      <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-size: 13px; color: var(--color-fg); font-variant-numeric: tabular-nums;">512</div>
+                    </label>
+                    <label style="display: block;">
+                      <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Puerto público</span>
+                      <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-size: 13px; color: var(--color-fg-subtle); min-height: 19px;">—</div>
+                    </label>
+                    <label style="display: block;">
+                      <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Réplicas</span>
+                      <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); padding: 7px 12px; font-size: 13px; color: var(--color-fg); font-variant-numeric: tabular-nums;">2</div>
+                    </label>
+                  </div>
+                  <div style="margin-top: 10px; border-radius: var(--radius); background: color-mix(in oklab, var(--color-brand) 7%, transparent); border: 1px solid color-mix(in oklab, var(--color-brand) 25%, transparent); padding: 10px 12px; font-size: 12px; color: var(--color-fg-muted); text-wrap: pretty;">Con 2 réplicas el tráfico se reparte y los despliegues son rodantes: siempre queda una sirviendo. Requiere servicio <strong style="color: var(--color-fg);">sin volúmenes ni puerto público</strong>.</div>
+                  <label style="margin-top: 12px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--color-fg-muted); cursor: pointer;">
+                    <input type="checkbox" style="accent-color: var(--color-brand); width: 15px; height: 15px;">
+                    Silenciar alertas de este servicio
+                  </label>
+                </section>
+                <section style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-bg); padding: 16px;">
+                  <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 10px;">
+                    <span style="display: flex; height: 28px; width: 28px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-fg) 9%, transparent); color: var(--color-fg);"><l-i name="si-github" size="14"></l-i></span>
+                    <div>
+                      <h3 style="margin: 0; font-size: 13px; font-weight: 600;">Auto-deploy</h3>
+                      <p style="margin: 1px 0 0; font-size: 11px; color: var(--color-fg-subtle);">Webhook de GitHub — cada push a <span style="font-family: var(--font-mono);">main</span> despliega</p>
+                    </div>
+                  </div>
+                  <div style="display: flex; flex-direction: column; gap: 8px; font-size: 12px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; border-radius: var(--radius); background: var(--color-surface); border: 1px solid var(--color-border); padding: 8px 12px;">
+                      <span style="color: var(--color-fg-subtle); flex-shrink: 0;">URL</span>
+                      <span style="display: flex; min-width: 0; align-items: center; gap: 6px;">
+                        <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 11px;">https://panel.vidasana.es/api/webhooks/github/svc_8f2k1</span>
+                        <span style="display: inline-flex; color: var(--color-fg-subtle); cursor: pointer;"><l-i name="copy" size="13"></l-i></span>
+                      </span>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; border-radius: var(--radius); background: var(--color-surface); border: 1px solid var(--color-border); padding: 8px 12px;">
+                      <span style="color: var(--color-fg-subtle);">Secreto</span>
+                      <span style="display: flex; align-items: center; gap: 6px;">
+                        <span style="font-family: var(--font-mono); font-size: 11px;">••••••••••••</span>
+                        <span style="display: inline-flex; color: var(--color-fg-subtle); cursor: pointer;"><l-i name="copy" size="13"></l-i></span>
+                      </span>
+                    </div>
+                  </div>
+                </section>
+              </sc-if>
+              <section style="border-radius: 12px; border: 1px solid color-mix(in oklab, var(--color-danger) 30%, transparent); background: color-mix(in oklab, var(--color-danger) 4%, transparent); padding: 16px; margin-bottom: 14px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                  <div>
+                    <h3 style="margin: 0; font-size: 13px; font-weight: 600; color: var(--color-danger);">Zona de peligro</h3>
+                    <p style="margin: 3px 0 0; font-size: 11px; color: var(--color-fg-muted);">Elimina el servicio y su contenedor. Los volúmenes solo si lo marcas.</p>
+                  </div>
+                  <x-import component-from-global-scope="FightX.Button" variant="danger" size="sm" hint-size="auto,32px">Eliminar servicio</x-import>
+                </div>
+              </section>
+            </div>
+            <div style="position: sticky; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--color-border); background: color-mix(in oklab, var(--color-surface) 92%, transparent); backdrop-filter: blur(8px); padding: 10px 20px;">
+              <span style="display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--color-warning);"><span style="width: 6px; height: 6px; border-radius: 9999px; background: currentColor; animation: pulse-soft 1.6s ease-in-out infinite;"></span>Tienes cambios sin guardar</span>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <x-import component-from-global-scope="FightX.Button" variant="ghost" size="sm" hint-size="auto,32px">Descartar</x-import>
+                <x-import component-from-global-scope="FightX.Button" variant="primary" size="sm" hint-size="auto,32px">Guardar cambios</x-import>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+      </aside>
+    </sc-if>
+  </div>
+  <sc-if value="{{ toastVisible }}" hint-placeholder-val="{{ false }}">
+    <div style="position: fixed; bottom: 20px; right: 20px; z-index: 60; width: 340px; animation: toast-in .2s ease-out;">
+      <div style="display: flex; align-items: flex-start; gap: 10px; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface-2); box-shadow: 0 16px 40px -12px rgba(0,0,0,.7); padding: 12px 14px;">
+        <l-i name="check-circle-2" size="16" style="color: var(--color-success); margin-top: 1px;"></l-i>
+        <div style="flex: 1; min-width: 0;">
+          <p style="margin: 0; font-size: 13px; font-weight: 600;">Variables guardadas</p>
+          <p style="margin: 2px 0 0; font-size: 12px; color: var(--color-fg-muted);">Redespliega el servicio para aplicarlas.</p>
+          <button style="margin: 8px 0 0; padding: 0; font-size: 12px; font-weight: 600; color: var(--color-brand); background: none; border: none; cursor: pointer; font-family: inherit;">Desplegar ahora →</button>
+        </div>
+        <button onClick="{{ hideToast }}" style="display: inline-flex; border-radius: 6px; padding: 4px; color: var(--color-fg-subtle); background: transparent; border: none; cursor: pointer; line-height: 0;" style-hover="color: var(--color-fg);"><l-i name="x" size="13"></l-i></button>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { svc: 'api', tab: 'deployments', openDeploy: 'a1', wide: false, toast: true };
+  componentDidMount() {
+    this.onKey = (e) => { if (e.key === 'Escape') this.setState({ svc: null }); };
+    window.addEventListener('keydown', this.onKey);
+  }
+  componentWillUnmount() { window.removeEventListener('keydown', this.onKey); }
+  series(seed, base, amp, n) {
+    let s = seed, v = base; const out = [];
+    for (let i = 0; i < n; i++) { s = (s * 9301 + 49297) % 233280; const r = s / 233280; v = Math.max(0.05, v + (r - 0.5) * amp); out.push(v); }
+    return out;
+  }
+  chart(vals, max) {
+    const W = 480, H = 140, L = 8, R = 8, T = 10, B = 18, iw = W - L - R, ih = H - T - B, n = vals.length;
+    const xs = vals.map((_, i) => L + (i / (n - 1)) * iw);
+    const ys = vals.map((v) => T + ih - (Math.min(v, max) / max) * ih);
+    let p = '';
+    vals.forEach((_, i) => { p += (i ? 'L' : 'M') + xs[i].toFixed(1) + ',' + ys[i].toFixed(1); });
+    const base = T + ih;
+    return { path: p, area: p + 'L' + xs[n - 1].toFixed(1) + ',' + base + 'L' + xs[0].toFixed(1) + ',' + base + 'Z' };
+  }
+  renderVals() {
+    const { svc, tab, openDeploy, wide } = this.state;
+    const isApi = svc === 'api', isPg = svc === 'pg';
+    const activeTone = { fg: 'var(--color-success)', bg: 'color-mix(in oklab, var(--color-success) 14%, transparent)' };
+    const gris = { fg: 'var(--color-fg-muted)', bg: 'var(--color-surface-2)' };
+    const buildLogs = [
+      'Clonando https://github.com/vidasana/citas-api (rama main)...',
+      'HEAD ahora en a4f9c2e fix: recordatorios duplicados en agenda',
+      '#1 [internal] load build definition from Dockerfile',
+      '#2 [internal] load metadata for docker.io/library/node:20-alpine',
+      '#5 [2/6] WORKDIR /app',
+      '#6 [3/6] COPY package*.json ./',
+      '#7 [4/6] RUN npm ci --omit=dev',
+      '#7 added 214 packages in 18s',
+      '#8 [5/6] COPY . .',
+      '#9 [6/6] RUN npm run build',
+      '#9 compilado sin errores en 24.1s',
+      '#10 naming to skyway-citas-online-api:a4f9c2e done',
+      'Arrancando réplica 1/2... Healthcheck /health → 200 OK ✓',
+      'Arrancando réplica 2/2... Healthcheck /health → 200 OK ✓',
+      'Retirando la versión anterior... hecho (corte cero)',
+      'Despliegue completado en 1m 42s',
+    ];
+    const failLogs = [
+      'Clonando https://github.com/vidasana/citas-api (rama main)...',
+      'HEAD ahora en 91d3b0f chore: actualiza dependencias de node',
+      '#7 [4/6] RUN npm ci --omit=dev',
+      '#7 npm error gyp ERR! find Python',
+      '#7 npm error command failed: node-gyp rebuild (bcrypt@5.1.1)',
+      'ERROR: exit code: 1',
+    ];
+    const apiDeploys = [
+      { id: 'a1', ...activeTone, status: 'Activo', title: 'fix: recordatorios duplicados en agenda', meta: 'push · a4f9c2e · hace 2 h · 1m 42s', canRollback: false, hasError: false, logs: buildLogs },
+      { id: 'a2', ...gris, status: 'Fallido', title: 'chore: actualiza dependencias de node', meta: 'push · 91d3b0f · hace 1 d · 58s', canRollback: false, hasError: true, error: 'El build terminó con código 1 (npm ci).', dTitle: 'El build falló al compilar una dependencia nativa', dCause: 'npm ci intentó compilar "bcrypt" con node-gyp y la imagen base no incluye python3, make y g++.', dFix: 'Añade "apk add --no-cache python3 make g++" antes de npm ci, o sustituye bcrypt por bcryptjs.', logs: failLogs },
+      { id: 'a3', ...gris, status: 'Completado', title: 'feat: exportación de citas a CSV', meta: 'manual · c7e51aa · hace 3 d · 2m 05s', canRollback: true, hasError: false, logs: buildLogs.slice(0, 12) },
+      { id: 'a4', ...gris, status: 'Completado', title: 'Despliegue inicial', meta: 'creación · hace 148 d · 3m 12s', canRollback: true, hasError: false, logs: buildLogs.slice(0, 12) },
+    ];
+    const pgDeploys = [
+      { id: 'p1', ...activeTone, status: 'Activo', title: 'Despliegue de base de datos', meta: 'creación · hace 148 d · 22s', canRollback: false, hasError: false, logs: ['Descargando imagen postgres:16...', 'Creando volumen skyway-citas-online-postgres-data', 'Arrancando contenedor...', 'PostgreSQL listo y aceptando conexiones ✓', 'Despliegue completado en 22s'] },
+    ];
+    const deployments = (isApi ? apiDeploys : pgDeploys).map((d) => ({
+      ...d,
+      open: d.id === openDeploy,
+      cardBorder: d.id === openDeploy ? 'color-mix(in oklab, var(--color-brand) 30%, var(--color-border))' : 'var(--color-border)',
+      onClick: () => this.setState((s) => ({ openDeploy: s.openDeploy === d.id ? null : d.id })),
+    }));
+    const tabList = isApi
+      ? [['deployments', 'Despliegues'], ['variables', 'Variables'], ['metrics', 'Métricas'], ['logs', 'Logs'], ['settings', 'Ajustes']]
+      : [['deployments', 'Despliegues'], ['variables', 'Variables'], ['backups', 'Backups'], ['metrics', 'Métricas'], ['logs', 'Logs'], ['settings', 'Ajustes']];
+    const tabs = tabList.map(([key, label]) => ({
+      key, label, active: tab === key,
+      color: tab === key ? 'var(--color-fg)' : 'var(--color-fg-muted)',
+      weight: tab === key ? '600' : '400',
+      onClick: () => this.setState({ tab: key }),
+    }));
+    const mask = (n) => '•'.repeat(n);
+    const varRows = isApi
+      ? [
+          { key: 'NODE_ENV', val: mask(10), valColor: 'var(--color-fg-subtle)' },
+          { key: 'TZ', val: mask(13), valColor: 'var(--color-fg-subtle)' },
+          { key: 'DATABASE_URL', val: '${{PostgreSQL.DATABASE_URL}}', valColor: 'var(--color-info)' },
+          { key: 'REDIS_URL', val: '${{Redis.REDIS_URL}}', valColor: 'var(--color-info)' },
+          { key: 'SMTP_HOST', val: '${{shared.SMTP_HOST}}', valColor: 'var(--color-info)' },
+          { key: 'SMTP_PASS', val: '${{shared.SMTP_PASS}}', valColor: 'var(--color-info)' },
+        ]
+      : [
+          { key: 'POSTGRES_USER', val: mask(5), valColor: 'var(--color-fg-subtle)' },
+          { key: 'POSTGRES_PASSWORD', val: mask(24), valColor: 'var(--color-fg-subtle)' },
+          { key: 'POSTGRES_DB', val: mask(5), valColor: 'var(--color-fg-subtle)' },
+          { key: 'DATABASE_URL', val: mask(42), valColor: 'var(--color-fg-subtle)' },
+        ];
+    const sugChips = isApi ? ['LOG_LEVEL'] : ['NODE_ENV', 'TZ', 'LOG_LEVEL'];
+    const refGroups = [
+      { name: 'Compartidas del proyecto', vars: ['SMTP_HOST', 'SMTP_PASS', 'TZ'] },
+      { name: 'PostgreSQL', vars: ['DATABASE_URL', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE'] },
+      { name: 'Redis', vars: ['REDIS_URL'] },
+    ];
+    const lvl = (t) => t.includes('[warn]') || t.includes('WARNING') ? 'var(--color-warning)' : (t.includes('[error]') || t.includes('ERROR') ? 'var(--color-danger)' : 'color-mix(in oklab, var(--color-fg) 85%, transparent)');
+    const apiLogs = [
+      '06:56:03 [info] GET /api/agenda?dia=2026-07-19 200 11ms',
+      '06:56:09 [info] GET /api/pacientes/8231 200 8ms',
+      '06:56:14 [info] POST /api/citas 201 34ms',
+      '06:56:20 [info] GET /api/agenda?dia=2026-07-20 200 9ms',
+      '06:56:31 [warn] Recordatorio 5512 reintentado (SMTP timeout)',
+      '06:56:33 [info] Recordatorio 5512 enviado',
+      '06:56:47 [info] GET /api/citas/9917 200 6ms',
+      '06:57:02 [info] PATCH /api/citas/9917 200 21ms',
+      '06:57:12 [error] ECONNRESET al consultar SMTP (reintento 1/3)',
+      '06:57:18 [info] GET /health 200 1ms',
+      '06:57:26 [info] GET /api/agenda?dia=2026-07-19 200 10ms',
+      '06:57:40 [info] POST /api/pacientes 201 29ms',
+      '06:57:48 [info] GET /health 200 1ms',
+      '06:57:55 [info] GET /api/informes/semana 200 88ms',
+      '06:58:04 [info] GET /api/agenda?dia=2026-07-19 200 12ms',
+      '06:58:12 [info] GET /health 200 1ms',
+    ];
+    const pgLogs = [
+      '04:00:01 UTC [1] LOG: checkpoint starting: time',
+      '04:00:44 UTC [1] LOG: checkpoint complete: wrote 412 buffers',
+      '05:00:01 UTC [1] LOG: checkpoint starting: time',
+      '05:00:19 UTC [1] LOG: checkpoint complete: wrote 96 buffers',
+      '06:00:01 UTC [1] LOG: checkpoint starting: time',
+      '06:41:37 UTC [88] LOG: duration: 412.09 ms statement: SELECT * FROM citas WHERE ...',
+      '07:00:01 UTC [1] LOG: checkpoint starting: time',
+    ];
+    const n = 48;
+    const cpuC = this.chart(this.series(isApi ? 7 : 21, isApi ? 2.4 : 1.1, isApi ? 1.1 : 0.5, n), isApi ? 5 : 2);
+    const memC = this.chart(this.series(isApi ? 13 : 34, isApi ? 187 : 240, isApi ? 14 : 8, n), isApi ? 512 : 500);
+    return {
+      isApi, isPg,
+      drawerOpen: svc !== null,
+      drawerWidth: wide ? 'min(840px, calc(100vw - 64px))' : 'min(600px, calc(100vw - 64px))',
+      toggleWide: () => this.setState((s) => ({ wide: !s.wide })),
+      closeDrawer: () => this.setState({ svc: null }),
+      svcName: isApi ? 'api' : 'PostgreSQL',
+      svcState: isApi ? 'Activo · 2/2' : 'Activo',
+      svcSub: isApi ? 'github.com/vidasana/citas-api · main' : 'postgres:16 · host interno: postgres',
+      svcIcon: isApi ? 'si-github' : 'si-postgresql',
+      svcIconBg: isApi ? 'color-mix(in oklab, var(--color-fg) 9%, transparent)' : 'rgba(51,103,145,.28)',
+      svcIconFg: isApi ? 'var(--color-fg)' : '#93bce2',
+      apiBorder: isApi ? 'color-mix(in oklab, var(--color-brand) 70%, var(--color-border))' : 'var(--color-border)',
+      apiShadow: isApi ? '0 0 0 1px color-mix(in oklab, var(--color-brand) 40%, transparent), 0 8px 24px -12px color-mix(in oklab, var(--color-brand) 40%, transparent)' : '0 1px 2px rgba(0,0,0,.3)',
+      pgBorder: isPg ? 'color-mix(in oklab, var(--color-brand) 70%, var(--color-border))' : 'var(--color-border)',
+      pgShadow: isPg ? '0 0 0 1px color-mix(in oklab, var(--color-brand) 40%, transparent), 0 8px 24px -12px color-mix(in oklab, var(--color-brand) 40%, transparent)' : '0 1px 2px rgba(0,0,0,.3)',
+      selApi: () => this.setState({ svc: 'api', tab: 'deployments', openDeploy: 'a1' }),
+      selPg: () => this.setState({ svc: 'pg', tab: 'backups', openDeploy: 'p1' }),
+      tabs, deployments, varRows, sugChips, refGroups,
+      refTokenSvc: '{{Servicio.VAR}}', refTokenShared: '{{shared.VAR}}',
+      showDeployments: tab === 'deployments', showVariables: tab === 'variables',
+      showBackups: tab === 'backups', showMetrics: tab === 'metrics',
+      showLogs: tab === 'logs', showSettings: tab === 'settings',
+      backups: [
+        { file: 'postgres-20260719-040001.sql.gz', meta: '48.2 MB · 19/07 04:00' },
+        { file: 'postgres-20260718-040001.sql.gz', meta: '47.9 MB · 18/07 04:00' },
+        { file: 'postgres-20260717-040002.sql.gz', meta: '47.1 MB · 17/07 04:00' },
+      ],
+      svcLogLines: (isApi ? apiLogs : pgLogs).map((t) => ({ text: t, color: lvl(t) })),
+      logCount: isApi ? '1.243' : '312',
+      cpuPath: cpuC.path, cpuArea: cpuC.area, cpuCur: isApi ? '2.4%' : '1.1%', cpuMax: isApi ? '5.0%' : '2.0%',
+      memPath: memC.path, memArea: memC.area,
+      memTitle: isApi ? 'Memoria · límite 512 MB' : 'Memoria',
+      memCur: isApi ? '187 MB' : '240 MB', memMax: isApi ? '512 MB' : '500 MB',
+      netRx: isApi ? '1.9 GB' : '862 MB', netTx: isApi ? '4.2 GB' : '3.1 GB',
+      t0: '06:56:03', t1: '06:58:12',
+      toastVisible: this.state.toast && tab === 'variables',
+      hideToast: () => this.setState({ toast: false }),
+    };
+  }
+}
+</script>
+</body>
+</html>

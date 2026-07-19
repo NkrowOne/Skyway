@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/_ds_bundle.css">
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/styles.css">
+  <script src="ds-loader.js"></script>
+  <script src="lucide.js"></script>
+  <style>
+    html, body { height: 100%; }
+    body { margin: 0; }
+    a { color: var(--color-brand); text-decoration: none; }
+    a:hover { color: var(--color-brand); }
+    * { scrollbar-width: thin; scrollbar-color: oklch(32% 0.018 280) transparent; }
+    *::-webkit-scrollbar { width: 8px; height: 8px; }
+    *::-webkit-scrollbar-thumb { background: oklch(32% 0.018 280); border-radius: 4px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    @keyframes pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+    @keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes panel-in { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+  </style>
+</helmet>
+<div data-screen-label="Rediseño Dashboard" style="min-height: 100vh; display: flex; flex-direction: column; background: var(--color-bg); color: var(--color-fg);">
+  <header style="display: flex; height: 56px; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--color-border); background: var(--color-surface); padding: 0 20px;">
+    <a href="Rediseño - Dashboard.dc.html" style="display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 650; letter-spacing: .01em; color: var(--color-fg);">
+      <span style="display: flex; height: 28px; width: 28px; align-items: center; justify-content: center; border-radius: 8px; background: linear-gradient(135deg, var(--color-brand), oklch(42% 0.16 295)); color: #fff; box-shadow: 0 2px 8px -2px color-mix(in oklab, var(--color-brand) 60%, transparent);"><l-i name="rocket" size="15"></l-i></span>
+      Skyway
+    </a>
+    <button onClick="{{ openCmd }}" style="display: flex; flex: 0 1 300px; align-items: center; gap: 8px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 6px 8px 6px 12px; font-size: 13px; color: var(--color-fg-subtle); cursor: pointer; font-family: inherit; transition: border-color .15s ease-out, color .15s ease-out;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 45%, var(--color-border)); color: var(--color-fg-muted);" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 2px;">
+      <l-i name="search" size="14"></l-i>
+      <span style="flex: 1; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Buscar o saltar a…</span>
+      <span style="display: flex; gap: 4px;">
+        <kbd style="font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-muted); background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 5px; padding: 1px 5px;">⌘K</kbd>
+      </span>
+    </button>
+    <div style="display: flex; align-items: center; gap: 4px;">
+      <div style="margin-right: 8px; display: flex; align-items: center; gap: 8px; border-radius: 9999px; border: 1px solid var(--color-border); background: var(--color-bg); padding: 5px 12px; font-size: 12px; color: var(--color-fg-muted);">
+        <span style="display: inline-block; width: 6px; height: 6px; border-radius: 9999px; background: var(--color-success); box-shadow: 0 0 6px color-mix(in oklab, var(--color-success) 70%, transparent);"></span>
+        <span>CPU <span style="color: var(--color-fg); font-variant-numeric: tabular-nums;">0.42</span>/8</span>
+        <span style="color: var(--color-border);">·</span>
+        <span>RAM <span style="color: var(--color-fg); font-variant-numeric: tabular-nums;">9.3 GB</span> libres</span>
+      </div>
+      <a href="Rediseño - Alertas.dc.html" title="Alertas" style="position: relative; display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 1px;">
+        <l-i name="bell" size="16"></l-i>
+        <span style="position: absolute; right: -1px; top: -1px; display: flex; height: 15px; min-width: 15px; align-items: center; justify-content: center; border-radius: 9999px; background: var(--color-danger); border: 2px solid var(--color-surface); padding: 0 3px; font-size: 9px; font-weight: 700; color: #fff; line-height: 1;">2</span>
+      </a>
+      <a href="Rediseño - Seguridad.dc.html" title="Panel de seguridad" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 1px;"><l-i name="shield-check" size="16"></l-i></a>
+      <a href="Rediseño - Ajustes.dc.html" title="Ajustes" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 1px;"><l-i name="settings" size="16"></l-i></a>
+      <button title="Cerrar sesión" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 1px;"><l-i name="log-out" size="16"></l-i></button>
+    </div>
+  </header>
+  <main style="flex: 1; overflow-y: auto;">
+    <div style="max-width: 1120px; margin: 0 auto; padding: 40px 24px;">
+      <div style="margin-bottom: 28px; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
+        <div>
+          <h1 style="margin: 0; font-size: 24px; line-height: 30px; font-weight: 600; letter-spacing: -.02em;">Proyectos</h1>
+          <p style="margin: 6px 0 0; font-size: 14px; color: var(--color-fg-muted); text-wrap: pretty;">Cada proyecto agrupa servicios que comparten una red privada</p>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <x-import component-from-global-scope="FightX.Button" variant="secondary" size="md" hint-size="auto,36px"><l-i name="train-front" size="15"></l-i> Importar de Railway</x-import>
+          <x-import component-from-global-scope="FightX.Button" variant="primary" size="md" hint-size="auto,36px"><l-i name="plus" size="15"></l-i> Nuevo proyecto</x-import>
+        </div>
+      </div>
+      <div style="margin-bottom: 28px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+        <button style="border-radius: 9999px; border: 1px solid color-mix(in oklab, var(--color-brand) 55%, transparent); background: color-mix(in oklab, var(--color-brand) 16%, transparent); color: #b9a7ee; padding: 5px 14px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: inherit;" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 2px;">Todas <span style="opacity: .7;">6</span></button>
+        <button style="display: flex; align-items: center; gap: 6px; border-radius: 9999px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-fg-muted); padding: 5px 14px; font-size: 12px; white-space: nowrap; cursor: pointer; font-family: inherit; transition: color .15s ease-out, border-color .15s ease-out;" style-hover="color: var(--color-fg); border-color: color-mix(in oklab, var(--color-brand) 40%, var(--color-border));" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 2px;"><l-i name="building-2" size="11"></l-i> Clínica Vidasana <span style="opacity: .6;">2</span></button>
+        <button style="display: flex; align-items: center; gap: 6px; border-radius: 9999px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-fg-muted); padding: 5px 14px; font-size: 12px; white-space: nowrap; cursor: pointer; font-family: inherit; transition: color .15s ease-out, border-color .15s ease-out;" style-hover="color: var(--color-fg); border-color: color-mix(in oklab, var(--color-brand) 40%, var(--color-border));" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 2px;"><l-i name="building-2" size="11"></l-i> Estudio Nómada <span style="opacity: .6;">2</span></button>
+        <button style="display: flex; align-items: center; gap: 6px; border-radius: 9999px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-fg-muted); padding: 5px 14px; font-size: 12px; white-space: nowrap; cursor: pointer; font-family: inherit; transition: color .15s ease-out, border-color .15s ease-out;" style-hover="color: var(--color-fg); border-color: color-mix(in oklab, var(--color-brand) 40%, var(--color-border));" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 2px;"><l-i name="building-2" size="11"></l-i> Taller Bregón <span style="opacity: .6;">1</span></button>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 36px;">
+        <section>
+          <div style="margin-bottom: 14px; display: flex; align-items: center; gap: 12px;">
+            <h2 style="margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: var(--color-fg-muted);">Clínica Vidasana</h2>
+            <span style="font-size: 12px; color: var(--color-fg-subtle);">2 proyectos</span>
+            <div style="flex: 1; height: 1px; background: var(--color-border);"></div>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px;">
+            <a href="Rediseño - Proyecto.dc.html" style="display: block; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 20px; color: inherit; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: border-color .18s ease-out, transform .18s ease-out, box-shadow .18s ease-out;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 55%, var(--color-border)); transform: translateY(-1px); box-shadow: 0 12px 32px -16px color-mix(in oklab, var(--color-brand) 35%, rgba(0,0,0,.7));" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 2px;">
+              <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+                <span style="display: flex; height: 36px; width: 36px; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in oklab, var(--color-brand) 16%, transparent); color: #b9a7ee;"><l-i name="boxes" size="17"></l-i></span>
+                <div style="display: flex; gap: 6px;">
+                  <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>4 activos</span>
+                  <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-danger) 15%, transparent); color: var(--color-danger); padding: 3px 9px; font-size: 11px; font-weight: 500;"><l-i name="bell-ring" size="10"></l-i>1</span>
+                </div>
+              </div>
+              <h3 style="margin: 14px 0 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em;">citas-online</h3>
+              <p style="margin: 5px 0 0; font-size: 12px; color: var(--color-fg-muted);">4 servicios · <span style="font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">citas-online</span></p>
+              <p style="margin: 12px 0 0; font-size: 11px; color: var(--color-fg-subtle);">Último despliegue hace 2 h</p>
+            </a>
+            <a href="Rediseño - Proyecto.dc.html" style="display: block; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 20px; color: inherit; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: border-color .18s ease-out, transform .18s ease-out, box-shadow .18s ease-out;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 55%, var(--color-border)); transform: translateY(-1px); box-shadow: 0 12px 32px -16px color-mix(in oklab, var(--color-brand) 35%, rgba(0,0,0,.7));" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 2px;">
+              <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+                <span style="display: flex; height: 36px; width: 36px; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in oklab, var(--color-brand) 16%, transparent); color: #b9a7ee;"><l-i name="boxes" size="17"></l-i></span>
+                <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>2 activos</span>
+              </div>
+              <h3 style="margin: 14px 0 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em;">web-clinica</h3>
+              <p style="margin: 5px 0 0; font-size: 12px; color: var(--color-fg-muted);">2 servicios · <span style="font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">web-clinica</span></p>
+              <p style="margin: 12px 0 0; font-size: 11px; color: var(--color-fg-subtle);">Último despliegue hace 9 d</p>
+            </a>
+          </div>
+        </section>
+        <section>
+          <div style="margin-bottom: 14px; display: flex; align-items: center; gap: 12px;">
+            <h2 style="margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: var(--color-fg-muted);">Estudio Nómada</h2>
+            <span style="font-size: 12px; color: var(--color-fg-subtle);">2 proyectos</span>
+            <div style="flex: 1; height: 1px; background: var(--color-border);"></div>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px;">
+            <a href="Rediseño - Proyecto.dc.html" style="display: block; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 20px; color: inherit; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: border-color .18s ease-out, transform .18s ease-out, box-shadow .18s ease-out;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 55%, var(--color-border)); transform: translateY(-1px); box-shadow: 0 12px 32px -16px color-mix(in oklab, var(--color-brand) 35%, rgba(0,0,0,.7));" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 2px;">
+              <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+                <span style="display: flex; height: 36px; width: 36px; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in oklab, var(--color-brand) 16%, transparent); color: #b9a7ee;"><l-i name="boxes" size="17"></l-i></span>
+                <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>2 activos</span>
+              </div>
+              <h3 style="margin: 14px 0 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em;">wordpress-corporativo</h3>
+              <p style="margin: 5px 0 0; font-size: 12px; color: var(--color-fg-muted);">2 servicios · <span style="font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">wordpress-corporativo</span></p>
+              <p style="margin: 12px 0 0; font-size: 11px; color: var(--color-fg-subtle);">Último despliegue hace 21 d</p>
+            </a>
+            <a href="Rediseño - Proyecto.dc.html" style="display: block; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 20px; color: inherit; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: border-color .18s ease-out, transform .18s ease-out, box-shadow .18s ease-out;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 55%, var(--color-border)); transform: translateY(-1px); box-shadow: 0 12px 32px -16px color-mix(in oklab, var(--color-brand) 35%, rgba(0,0,0,.7));" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 2px;">
+              <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+                <span style="display: flex; height: 36px; width: 36px; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in oklab, var(--color-brand) 16%, transparent); color: #b9a7ee;"><l-i name="boxes" size="17"></l-i></span>
+                <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>1 activo</span>
+              </div>
+              <h3 style="margin: 14px 0 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em;">panel-n8n</h3>
+              <p style="margin: 5px 0 0; font-size: 12px; color: var(--color-fg-muted);">1 servicio · <span style="font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">panel-n8n</span></p>
+              <p style="margin: 12px 0 0; font-size: 11px; color: var(--color-fg-subtle);">Último despliegue hace 4 d</p>
+            </a>
+          </div>
+        </section>
+        <section>
+          <div style="margin-bottom: 14px; display: flex; align-items: center; gap: 12px;">
+            <h2 style="margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: var(--color-fg-muted);">Taller Bregón</h2>
+            <span style="font-size: 12px; color: var(--color-fg-subtle);">1 proyecto</span>
+            <div style="flex: 1; height: 1px; background: var(--color-border);"></div>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px;">
+            <a href="Rediseño - Proyecto.dc.html" style="display: block; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 20px; color: inherit; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: border-color .18s ease-out, transform .18s ease-out, box-shadow .18s ease-out;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 55%, var(--color-border)); transform: translateY(-1px); box-shadow: 0 12px 32px -16px color-mix(in oklab, var(--color-brand) 35%, rgba(0,0,0,.7));" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 2px;">
+              <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+                <span style="display: flex; height: 36px; width: 36px; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in oklab, var(--color-brand) 16%, transparent); color: #b9a7ee;"><l-i name="boxes" size="17"></l-i></span>
+                <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>3 activos</span>
+              </div>
+              <h3 style="margin: 14px 0 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em;">tienda-woo</h3>
+              <p style="margin: 5px 0 0; font-size: 12px; color: var(--color-fg-muted);">3 servicios · <span style="font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">tienda-woo</span></p>
+              <p style="margin: 12px 0 0; font-size: 11px; color: var(--color-fg-subtle);">Último despliegue hace 6 d</p>
+            </a>
+          </div>
+        </section>
+        <section>
+          <div style="margin-bottom: 14px; display: flex; align-items: center; gap: 12px;">
+            <h2 style="margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: var(--color-fg-muted);">Sin empresa</h2>
+            <span style="font-size: 12px; color: var(--color-fg-subtle);">1 proyecto</span>
+            <div style="flex: 1; height: 1px; background: var(--color-border);"></div>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px;">
+            <a href="Rediseño - Proyecto.dc.html" style="display: block; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 20px; color: inherit; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: border-color .18s ease-out, transform .18s ease-out, box-shadow .18s ease-out;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 55%, var(--color-border)); transform: translateY(-1px); box-shadow: 0 12px 32px -16px color-mix(in oklab, var(--color-brand) 35%, rgba(0,0,0,.7));" style-focus="outline: 2px solid color-mix(in oklab, var(--color-brand) 70%, transparent); outline-offset: 2px;">
+              <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+                <span style="display: flex; height: 36px; width: 36px; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in oklab, var(--color-brand) 16%, transparent); color: #b9a7ee;"><l-i name="boxes" size="17"></l-i></span>
+                <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 9px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>2 activos</span>
+              </div>
+              <h3 style="margin: 14px 0 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em;">utilidades</h3>
+              <p style="margin: 5px 0 0; font-size: 12px; color: var(--color-fg-muted);">2 servicios · <span style="font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">utilidades</span></p>
+              <p style="margin: 12px 0 0; font-size: 11px; color: var(--color-fg-subtle);">Último despliegue hace 12 d</p>
+            </a>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+  <sc-if value="{{ cmdOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closeAll }}" style="position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center; padding: 15vh 16px 16px; animation: overlay-in .15s ease-out;">
+      <div onClick="{{ stop }}" style="width: 100%; max-width: 580px; border-radius: 14px; border: 1px solid var(--color-border); background: var(--color-surface); box-shadow: 0 24px 64px -16px rgba(0,0,0,.8), 0 0 0 1px rgba(0,0,0,.3); overflow: hidden; animation: panel-in .18s ease-out;">
+        <div style="display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--color-border); padding: 14px 16px;">
+          <l-i name="search" size="16" style="color: var(--color-fg-subtle);"></l-i>
+          <input autoFocus placeholder="Busca proyectos, servicios o acciones…" style="flex: 1; background: transparent; border: none; outline: none; color: var(--color-fg); font-size: 15px; font-family: inherit;">
+          <kbd style="font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle); background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 5px; padding: 1px 6px;">esc</kbd>
+        </div>
+        <div style="max-height: 380px; overflow-y: auto; padding: 8px;">
+          <p style="margin: 6px 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--color-fg-subtle);">Proyectos</p>
+          <a href="Rediseño - Proyecto.dc.html" style="display: flex; align-items: center; gap: 10px; border-radius: 8px; padding: 9px 10px; color: var(--color-fg); background: color-mix(in oklab, var(--color-brand) 14%, transparent); box-shadow: inset 2px 0 0 var(--color-brand);">
+            <l-i name="boxes" size="15" style="color: #b9a7ee;"></l-i>
+            <span style="flex: 1; font-size: 14px;">citas-online</span>
+            <span style="font-size: 12px; color: var(--color-fg-subtle);">Clínica Vidasana</span>
+            <kbd style="font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle); background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 5px; padding: 0 5px;">↵</kbd>
+          </a>
+          <a href="Rediseño - Proyecto.dc.html" style="display: flex; align-items: center; gap: 10px; border-radius: 8px; padding: 9px 10px; color: var(--color-fg);" style-hover="background: var(--color-surface-2);">
+            <l-i name="boxes" size="15" style="color: var(--color-fg-subtle);"></l-i>
+            <span style="flex: 1; font-size: 14px;">wordpress-corporativo</span>
+            <span style="font-size: 12px; color: var(--color-fg-subtle);">Estudio Nómada</span>
+          </a>
+          <a href="Rediseño - Proyecto.dc.html" style="display: flex; align-items: center; gap: 10px; border-radius: 8px; padding: 9px 10px; color: var(--color-fg);" style-hover="background: var(--color-surface-2);">
+            <l-i name="git-branch" size="15" style="color: var(--color-fg-subtle);"></l-i>
+            <span style="flex: 1; font-size: 14px;">api <span style="color: var(--color-fg-subtle); font-size: 12px;">— servicio en citas-online</span></span>
+            <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 2px 8px; font-size: 11px;">Activo</span>
+          </a>
+          <p style="margin: 12px 8px 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--color-fg-subtle);">Acciones rápidas</p>
+          <a href="Rediseño - Proyecto.dc.html" style="display: flex; align-items: center; gap: 10px; border-radius: 8px; padding: 9px 10px; color: var(--color-fg);" style-hover="background: var(--color-surface-2);">
+            <l-i name="rocket" size="15" style="color: var(--color-fg-subtle);"></l-i>
+            <span style="flex: 1; font-size: 14px;">Desplegar <span style="font-family: var(--font-mono); font-size: 12px; color: var(--color-fg-muted);">api</span></span>
+          </a>
+          <a href="Rediseño - Alertas.dc.html" style="display: flex; align-items: center; gap: 10px; border-radius: 8px; padding: 9px 10px; color: var(--color-fg);" style-hover="background: var(--color-surface-2);">
+            <l-i name="bell-ring" size="15" style="color: var(--color-fg-subtle);"></l-i>
+            <span style="flex: 1; font-size: 14px;">Ver alertas activas</span>
+            <span style="display: inline-flex; align-items: center; border-radius: 9999px; background: color-mix(in oklab, var(--color-danger) 15%, transparent); color: var(--color-danger); padding: 2px 8px; font-size: 11px; font-weight: 600;">2</span>
+          </a>
+          <a href="Rediseño - Seguridad.dc.html" style="display: flex; align-items: center; gap: 10px; border-radius: 8px; padding: 9px 10px; color: var(--color-fg);" style-hover="background: var(--color-surface-2);">
+            <l-i name="shield-check" size="15" style="color: var(--color-fg-subtle);"></l-i>
+            <span style="flex: 1; font-size: 14px;">Abrir panel de seguridad</span>
+          </a>
+          <a href="Rediseño - Ajustes.dc.html" style="display: flex; align-items: center; gap: 10px; border-radius: 8px; padding: 9px 10px; color: var(--color-fg);" style-hover="background: var(--color-surface-2);">
+            <l-i name="settings" size="15" style="color: var(--color-fg-subtle);"></l-i>
+            <span style="flex: 1; font-size: 14px;">Ajustes del servidor</span>
+          </a>
+        </div>
+        <div style="display: flex; align-items: center; gap: 14px; border-top: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 16px; font-size: 11px; color: var(--color-fg-subtle);">
+          <span><kbd style="font-family: var(--font-mono); background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 4px; padding: 0 4px;">↑↓</kbd> navegar</span>
+          <span><kbd style="font-family: var(--font-mono); background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 4px; padding: 0 4px;">↵</kbd> abrir</span>
+          <span><kbd style="font-family: var(--font-mono); background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 4px; padding: 0 4px;">esc</kbd> cerrar</span>
+          <span style="margin-left: auto;"><kbd style="font-family: var(--font-mono); background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 4px; padding: 0 4px;">?</kbd> atajos</span>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+  <sc-if value="{{ helpOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closeAll }}" style="position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 16px; animation: overlay-in .15s ease-out;">
+      <div onClick="{{ stop }}" style="width: 100%; max-width: 420px; border-radius: 14px; border: 1px solid var(--color-border); background: var(--color-surface); box-shadow: 0 24px 64px -16px rgba(0,0,0,.8); padding: 20px; animation: panel-in .18s ease-out;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px;">
+          <l-i name="keyboard" size="16" style="color: var(--color-brand);"></l-i>
+          <h2 style="margin: 0; font-size: 15px; font-weight: 600;">Atajos de teclado</h2>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 10px; font-size: 13px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;"><span style="color: var(--color-fg-muted);">Paleta de comandos</span><kbd style="font-family: var(--font-mono); font-size: 11px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 5px; padding: 2px 6px;">⌘K</kbd></div>
+          <div style="display: flex; justify-content: space-between; align-items: center;"><span style="color: var(--color-fg-muted);">Ir a proyectos</span><span style="display: flex; gap: 4px;"><kbd style="font-family: var(--font-mono); font-size: 11px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 5px; padding: 2px 6px;">g</kbd><kbd style="font-family: var(--font-mono); font-size: 11px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 5px; padding: 2px 6px;">p</kbd></span></div>
+          <div style="display: flex; justify-content: space-between; align-items: center;"><span style="color: var(--color-fg-muted);">Ir a seguridad</span><span style="display: flex; gap: 4px;"><kbd style="font-family: var(--font-mono); font-size: 11px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 5px; padding: 2px 6px;">g</kbd><kbd style="font-family: var(--font-mono); font-size: 11px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 5px; padding: 2px 6px;">s</kbd></span></div>
+          <div style="display: flex; justify-content: space-between; align-items: center;"><span style="color: var(--color-fg-muted);">Ir a alertas</span><span style="display: flex; gap: 4px;"><kbd style="font-family: var(--font-mono); font-size: 11px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 5px; padding: 2px 6px;">g</kbd><kbd style="font-family: var(--font-mono); font-size: 11px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 5px; padding: 2px 6px;">a</kbd></span></div>
+          <div style="display: flex; justify-content: space-between; align-items: center;"><span style="color: var(--color-fg-muted);">Cerrar drawer / modales</span><kbd style="font-family: var(--font-mono); font-size: 11px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 5px; padding: 2px 6px;">esc</kbd></div>
+          <div style="display: flex; justify-content: space-between; align-items: center;"><span style="color: var(--color-fg-muted);">Esta ayuda</span><kbd style="font-family: var(--font-mono); font-size: 11px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 5px; padding: 2px 6px;">?</kbd></div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { cmd: false, help: false };
+  componentDidMount() {
+    this.onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); this.setState((s) => ({ cmd: !s.cmd, help: false })); }
+      else if (e.key === 'Escape') this.setState({ cmd: false, help: false });
+      else if (e.key === '?' && !this.state.cmd) { e.preventDefault(); this.setState((s) => ({ help: !s.help, cmd: false })); }
+    };
+    window.addEventListener('keydown', this.onKey);
+  }
+  componentWillUnmount() { window.removeEventListener('keydown', this.onKey); }
+  renderVals() {
+    return {
+      cmdOpen: this.state.cmd,
+      helpOpen: this.state.help,
+      openCmd: () => this.setState({ cmd: true, help: false }),
+      closeAll: () => this.setState({ cmd: false, help: false }),
+      stop: (e) => e.stopPropagation(),
+    };
+  }
+}
+</script>
+</body>
+</html>

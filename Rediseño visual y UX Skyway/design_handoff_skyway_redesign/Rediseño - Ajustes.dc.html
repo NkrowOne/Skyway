@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/_ds_bundle.css">
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/styles.css">
+  <script src="ds-loader.js"></script>
+  <script src="lucide.js"></script>
+  <style>
+    html, body { height: 100%; }
+    body { margin: 0; }
+    a { color: var(--color-brand); text-decoration: none; }
+    a:hover { color: var(--color-brand); }
+    * { scrollbar-width: thin; scrollbar-color: oklch(32% 0.018 280) transparent; }
+    *::-webkit-scrollbar { width: 8px; height: 8px; }
+    *::-webkit-scrollbar-thumb { background: oklch(32% 0.018 280); border-radius: 4px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    @keyframes pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+  </style>
+</helmet>
+<div data-screen-label="Rediseño Ajustes" style="min-height: 100vh; display: flex; flex-direction: column; background: var(--color-bg); color: var(--color-fg);">
+  <header style="display: flex; height: 56px; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--color-border); background: var(--color-surface); padding: 0 20px;">
+    <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+      <a href="Rediseño - Dashboard.dc.html" style="display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 650; color: var(--color-fg); flex-shrink: 0;">
+        <span style="display: flex; height: 28px; width: 28px; align-items: center; justify-content: center; border-radius: 8px; background: linear-gradient(135deg, var(--color-brand), oklch(42% 0.16 295)); color: #fff; box-shadow: 0 2px 8px -2px color-mix(in oklab, var(--color-brand) 60%, transparent);"><l-i name="rocket" size="15"></l-i></span>
+        Skyway
+      </a>
+      <l-i name="chevron-right" size="14" style="color: var(--color-fg-subtle);"></l-i>
+      <span style="font-size: 14px; font-weight: 500;">Ajustes</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 4px;">
+      <button style="display: flex; align-items: center; gap: 8px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 6px 10px; font-size: 12px; color: var(--color-fg-subtle); cursor: pointer; font-family: inherit;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 45%, var(--color-border));"><l-i name="search" size="13"></l-i><kbd style="font-family: var(--font-mono); font-size: 11px;">⌘K</kbd></button>
+      <a href="Rediseño - Alertas.dc.html" title="Alertas" style="position: relative; display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);">
+        <l-i name="bell" size="16"></l-i>
+        <span style="position: absolute; right: -1px; top: -1px; display: flex; height: 15px; min-width: 15px; align-items: center; justify-content: center; border-radius: 9999px; background: var(--color-danger); border: 2px solid var(--color-surface); padding: 0 3px; font-size: 9px; font-weight: 700; color: #fff; line-height: 1;">2</span>
+      </a>
+      <a href="Rediseño - Seguridad.dc.html" title="Panel de seguridad" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="shield-check" size="16"></l-i></a>
+      <span title="Ajustes" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg); background: var(--color-surface-2); line-height: 0;"><l-i name="settings" size="16"></l-i></span>
+      <button title="Cerrar sesión" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="log-out" size="16"></l-i></button>
+    </div>
+  </header>
+  <main style="flex: 1; overflow-y: auto;">
+    <div style="max-width: 780px; margin: 0 auto; padding: 40px 24px; display: flex; flex-direction: column; gap: 20px;">
+      <div style="margin-bottom: 8px;">
+        <h1 style="margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -.02em;">Ajustes</h1>
+        <p style="margin: 6px 0 0; font-size: 14px; color: var(--color-fg-muted);">Configuración global del servidor: dominios, integraciones, alertas y mantenimiento</p>
+      </div>
+      <section style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 20px;">
+        <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 10px;">
+          <span style="display: flex; height: 30px; width: 30px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-info) 13%, transparent); color: var(--color-info);"><l-i name="globe" size="15"></l-i></span>
+          <div>
+            <h2 style="margin: 0; font-size: 14px; font-weight: 600;">Dominios y TLS</h2>
+            <p style="margin: 1px 0 0; font-size: 12px; color: var(--color-fg-subtle);">Subdominios en un clic y certificados automáticos</p>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <label style="display: block;">
+            <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Dominio raíz</span>
+            <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-size: 13px; color: var(--color-fg);">apps.vidasana.es</div>
+            <span style="margin-top: 4px; display: block; font-size: 11px; color: var(--color-fg-subtle); text-wrap: pretty;">Genera subdominios por servicio en un clic. Requisito único: registro A comodín (*.apps.vidasana.es) apuntando a la IP del servidor.</span>
+          </label>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <label style="display: block;">
+              <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Email para Let's Encrypt</span>
+              <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-size: 13px; color: var(--color-fg);">admin@vidasana.es</div>
+              <span style="margin-top: 4px; display: block; font-size: 11px; color: var(--color-fg-subtle);">Con email definido, TLS automático en cada dominio</span>
+            </label>
+            <label style="display: block;">
+              <span style="margin-bottom: 5px; display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">IP pública del servidor <span style="display: inline-flex; align-items: center; gap: 4px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 1px 8px; font-size: 10px; font-weight: 600;">autodetectada</span></span>
+              <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--color-fg-subtle);">203.0.113.10</div>
+              <span style="margin-top: 4px; display: block; font-size: 11px; color: var(--color-fg-subtle);">Rellénala solo si es incorrecta; verifica los DNS</span>
+            </label>
+          </div>
+        </div>
+      </section>
+      <section style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 20px;">
+        <div style="margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="display: flex; height: 30px; width: 30px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-fg) 9%, transparent); color: var(--color-fg);"><l-i name="si-github" size="15"></l-i></span>
+            <div>
+              <h2 style="margin: 0; font-size: 14px; font-weight: 600;">GitHub</h2>
+              <p style="margin: 1px 0 0; font-size: 12px; color: var(--color-fg-subtle);">Token de acceso personal (permiso <span style="font-family: var(--font-mono);">repo</span>) para clonar repos privados</p>
+            </div>
+          </div>
+          <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 10px; font-size: 11px; font-weight: 600;"><l-i name="check-circle-2" size="11"></l-i> Conectado</span>
+        </div>
+        <label style="display: block;">
+          <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Token de GitHub</span>
+          <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--color-fg-subtle);">••••••••••••  (escribir para reemplazar)</div>
+          <span style="margin-top: 4px; display: block; font-size: 11px; color: var(--color-fg-subtle);">Se usa para clonar y para los webhooks de auto-deploy de cada servicio</span>
+        </label>
+      </section>
+      <section style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 20px;">
+        <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 10px;">
+          <span style="display: flex; height: 30px; width: 30px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-warning) 13%, transparent); color: var(--color-warning);"><l-i name="bell-ring" size="15"></l-i></span>
+          <div>
+            <h2 style="margin: 0; font-size: 14px; font-weight: 600;">Alertas y notificaciones</h2>
+            <p style="margin: 1px 0 0; font-size: 12px; color: var(--color-fg-subtle);">Caídas, bucles de reinicio y CPU/RAM sostenidas — sin tener el panel abierto</p>
+          </div>
+        </div>
+        <div style="margin-bottom: 14px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+          <label style="display: block;">
+            <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Umbral CPU (%)</span>
+            <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-size: 13px; color: var(--color-fg-subtle); font-variant-numeric: tabular-nums;">90</div>
+          </label>
+          <label style="display: block;">
+            <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Umbral RAM (%)</span>
+            <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-size: 13px; color: var(--color-fg-subtle); font-variant-numeric: tabular-nums;">90</div>
+          </label>
+          <label style="display: block;">
+            <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Sostenido (min)</span>
+            <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-size: 13px; color: var(--color-fg-subtle); font-variant-numeric: tabular-nums;">5</div>
+          </label>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+          <label style="display: block;">
+            <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Webhook genérico (POST JSON)</span>
+            <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--color-fg-subtle);">https://…</div>
+            <span style="margin-top: 4px; display: block; font-size: 11px; color: var(--color-fg-subtle);">Para n8n, Zapier, tu propio endpoint…</span>
+          </label>
+          <label style="display: block;">
+            <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Webhook de Discord</span>
+            <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--color-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">https://discord.com/api/webhooks/1129884…</div>
+          </label>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <label style="display: block;">
+              <span style="margin-bottom: 5px; display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Token del bot de Telegram <span style="display: inline-flex; align-items: center; gap: 4px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 1px 8px; font-size: 10px; font-weight: 600;">configurado</span></span>
+              <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--color-fg-subtle);">••••••••</div>
+            </label>
+            <label style="display: block;">
+              <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Chat ID de Telegram</span>
+              <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--color-fg);">-100482913377</div>
+            </label>
+          </div>
+        </div>
+        <div style="margin-top: 14px; display: flex; justify-content: flex-end;">
+          <x-import component-from-global-scope="FightX.Button" variant="secondary" size="sm" hint-size="auto,32px">Enviar notificación de prueba</x-import>
+        </div>
+      </section>
+      <section style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 20px;">
+        <div style="margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="display: flex; height: 30px; width: 30px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-brand) 15%, transparent); color: #b9a7ee;"><l-i name="cpu" size="15"></l-i></span>
+            <div>
+              <h2 style="margin: 0; font-size: 14px; font-weight: 600;">Sistema</h2>
+              <p style="margin: 1px 0 0; font-size: 12px; color: var(--color-fg-subtle);">Estado del host y uso de disco de Docker</p>
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 10px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>Docker conectado</span>
+            <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-success) 14%, transparent); color: var(--color-success); padding: 3px 10px; font-size: 11px; font-weight: 500;"><span style="width: 5px; height: 5px; border-radius: 9999px; background: currentColor;"></span>Nixpacks instalado</span>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px;">
+          <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 12px 14px;">
+            <p style="margin: 0; font-size: 11px; color: var(--color-fg-subtle);">CPU</p>
+            <p style="margin: 3px 0 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums;">8 núcleos</p>
+            <p style="margin: 1px 0 0; font-size: 11px; color: var(--color-fg-muted);">carga 0.42</p>
+          </div>
+          <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 12px 14px;">
+            <p style="margin: 0; font-size: 11px; color: var(--color-fg-subtle);">Memoria</p>
+            <p style="margin: 3px 0 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums;">9.3 GB libres</p>
+            <p style="margin: 1px 0 0; font-size: 11px; color: var(--color-fg-muted);">de 32 GB</p>
+          </div>
+          <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 12px 14px;">
+            <p style="margin: 0; font-size: 11px; color: var(--color-fg-subtle);">Disco</p>
+            <p style="margin: 3px 0 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums;">412 GB libres</p>
+            <p style="margin: 1px 0 0; font-size: 11px; color: var(--color-fg-muted);">de 960 GB</p>
+          </div>
+          <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 12px 14px;">
+            <p style="margin: 0; font-size: 11px; color: var(--color-fg-subtle);">Skyway</p>
+            <p style="margin: 3px 0 0; font-size: 14px; font-weight: 600;">v1.4.2</p>
+            <p style="margin: 1px 0 0; font-size: 11px; color: var(--color-fg-muted);">linux/x64</p>
+          </div>
+        </div>
+        <div style="margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 12px 14px;">
+          <div style="display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: var(--color-fg-muted); font-variant-numeric: tabular-nums;">
+            <span>Imágenes <span style="color: var(--color-fg); font-weight: 600;">18.4 GB</span> (34)</span>
+            <span>Volúmenes <span style="color: var(--color-fg); font-weight: 600;">6.2 GB</span> (9)</span>
+            <span>Caché de build <span style="color: var(--color-fg); font-weight: 600;">3.1 GB</span></span>
+          </div>
+          <x-import component-from-global-scope="FightX.Button" variant="secondary" size="sm" hint-size="auto,32px"><l-i name="trash-2" size="13"></l-i> Liberar espacio</x-import>
+        </div>
+        <p style="margin: 12px 0 0; font-size: 11px; color: var(--color-fg-subtle); text-wrap: pretty;">La limpieza purga imágenes colgantes y caché de build; nunca toca volúmenes. Si Nixpacks faltara, los repos sin Dockerfile no podrían construirse: <span style="font-family: var(--font-mono);">curl -sSL https://nixpacks.com/install.sh | bash</span></p>
+      </section>
+      <div style="position: sticky; bottom: 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--color-border); background: color-mix(in oklab, var(--color-bg) 90%, transparent); backdrop-filter: blur(8px); padding: 12px 0; margin-top: 4px;">
+        <span style="font-size: 12px; color: var(--color-fg-subtle);">Los cambios se aplican al guardar</span>
+        <x-import component-from-global-scope="FightX.Button" variant="primary" size="md" hint-size="auto,36px">Guardar ajustes</x-import>
+      </div>
+    </div>
+  </main>
+</div>
+</x-dc>
+</body>
+</html>

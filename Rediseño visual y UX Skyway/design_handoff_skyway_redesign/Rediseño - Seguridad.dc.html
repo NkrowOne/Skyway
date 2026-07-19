@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/_ds_bundle.css">
+  <link rel="stylesheet" href="_ds/fight-x-design-system-068192be-3576-4461-bc4c-fb8237614bfc/styles.css">
+  <script src="ds-loader.js"></script>
+  <script src="lucide.js"></script>
+  <style>
+    html, body { height: 100%; }
+    body { margin: 0; }
+    a { color: var(--color-brand); text-decoration: none; }
+    a:hover { color: var(--color-brand); }
+    * { scrollbar-width: thin; scrollbar-color: oklch(32% 0.018 280) transparent; }
+    *::-webkit-scrollbar { width: 8px; height: 8px; }
+    *::-webkit-scrollbar-thumb { background: oklch(32% 0.018 280); border-radius: 4px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    details > summary { list-style: none; }
+    details > summary::-webkit-details-marker { display: none; }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+  </style>
+</helmet>
+<div data-screen-label="Rediseño Seguridad" style="min-height: 100vh; display: flex; flex-direction: column; background: var(--color-bg); color: var(--color-fg);">
+  <header style="display: flex; height: 56px; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--color-border); background: var(--color-surface); padding: 0 20px;">
+    <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+      <a href="Rediseño - Dashboard.dc.html" style="display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 650; color: var(--color-fg); flex-shrink: 0;">
+        <span style="display: flex; height: 28px; width: 28px; align-items: center; justify-content: center; border-radius: 8px; background: linear-gradient(135deg, var(--color-brand), oklch(42% 0.16 295)); color: #fff; box-shadow: 0 2px 8px -2px color-mix(in oklab, var(--color-brand) 60%, transparent);"><l-i name="rocket" size="15"></l-i></span>
+        Skyway
+      </a>
+      <l-i name="chevron-right" size="14" style="color: var(--color-fg-subtle);"></l-i>
+      <span style="font-size: 14px; font-weight: 500;">Seguridad</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 4px;">
+      <button style="display: flex; align-items: center; gap: 8px; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 6px 10px; font-size: 12px; color: var(--color-fg-subtle); cursor: pointer; font-family: inherit;" style-hover="border-color: color-mix(in oklab, var(--color-brand) 45%, var(--color-border));"><l-i name="search" size="13"></l-i><kbd style="font-family: var(--font-mono); font-size: 11px;">⌘K</kbd></button>
+      <a href="Rediseño - Alertas.dc.html" title="Alertas" style="position: relative; display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);">
+        <l-i name="bell" size="16"></l-i>
+        <span style="position: absolute; right: -1px; top: -1px; display: flex; height: 15px; min-width: 15px; align-items: center; justify-content: center; border-radius: 9999px; background: var(--color-danger); border: 2px solid var(--color-surface); padding: 0 3px; font-size: 9px; font-weight: 700; color: #fff; line-height: 1;">2</span>
+      </a>
+      <span title="Panel de seguridad" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg); background: var(--color-surface-2); line-height: 0;"><l-i name="shield-check" size="16"></l-i></span>
+      <a href="Rediseño - Ajustes.dc.html" title="Ajustes" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="settings" size="16"></l-i></a>
+      <button title="Cerrar sesión" style="display: inline-flex; border-radius: var(--radius); padding: 8px; color: var(--color-fg-muted); background: transparent; border: none; cursor: pointer; line-height: 0; transition: background .15s ease-out, color .15s ease-out;" style-hover="background: var(--color-surface-2); color: var(--color-fg);"><l-i name="log-out" size="16"></l-i></button>
+    </div>
+  </header>
+  <main style="flex: 1; overflow-y: auto;">
+    <div style="max-width: 880px; margin: 0 auto; padding: 40px 24px; display: flex; flex-direction: column; gap: 20px;">
+      <div style="margin-bottom: 8px;">
+        <h1 style="margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -.02em;">Panel de seguridad</h1>
+        <p style="margin: 6px 0 0; font-size: 14px; color: var(--color-fg-muted);">Revisión continua de la configuración de todos los proyectos</p>
+      </div>
+      <section style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); display: flex; align-items: center; gap: 24px; padding: 24px; flex-wrap: wrap;">
+        <div style="position: relative; width: 88px; height: 88px; flex-shrink: 0;">
+          <svg viewBox="0 0 88 88" style="display: block; width: 88px; height: 88px; transform: rotate(-90deg);">
+            <circle cx="44" cy="44" r="38" fill="none" style="stroke: var(--color-border);" stroke-width="7"></circle>
+            <circle cx="44" cy="44" r="38" fill="none" style="stroke: var(--color-warning);" stroke-width="7" stroke-linecap="round" stroke-dasharray="238.7" stroke-dashoffset="107.4"></circle>
+          </svg>
+          <div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+            <span style="font-size: 26px; font-weight: 700; color: var(--color-warning); line-height: 1;">C</span>
+            <span style="font-size: 11px; color: var(--color-fg-subtle); font-variant-numeric: tabular-nums;">55/100</span>
+          </div>
+        </div>
+        <div style="flex: 1; min-width: 240px;">
+          <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+            <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-danger) 14%, transparent); color: var(--color-danger); padding: 3px 10px; font-size: 12px; font-weight: 600;">1 crítico</span>
+            <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-warning) 13%, transparent); color: var(--color-warning); padding: 3px 10px; font-size: 12px; font-weight: 600;">2 avisos</span>
+            <span style="display: inline-flex; align-items: center; gap: 5px; border-radius: 9999px; background: color-mix(in oklab, var(--color-info) 13%, transparent); color: var(--color-info); padding: 3px 10px; font-size: 12px; font-weight: 600;">1 informativo</span>
+          </div>
+          <p style="margin: 10px 0 0; font-size: 12px; color: var(--color-fg-muted); text-wrap: pretty;">La puntuación baja con cada hallazgo crítico (−25) o aviso (−10). Corrige los hallazgos y el análisis se actualiza al momento.</p>
+        </div>
+      </section>
+      <section style="display: flex; flex-direction: column; gap: 10px;">
+        <details open style="border-radius: 12px; border: 1px solid color-mix(in oklab, var(--color-danger) 35%, var(--color-border)); background: var(--color-surface); padding: 16px;">
+          <summary style="display: flex; cursor: pointer; align-items: center; gap: 12px;">
+            <span style="flex-shrink: 0; display: inline-flex; align-items: center; border-radius: 9999px; background: color-mix(in oklab, var(--color-danger) 14%, transparent); color: var(--color-danger); padding: 3px 10px; font-size: 11px; font-weight: 600;">Crítico</span>
+            <span style="font-size: 14px; font-weight: 600;">PostgreSQL expone su puerto TCP públicamente</span>
+            <a href="Rediseño - Proyecto.dc.html" style="margin-left: auto; flex-shrink: 0; font-size: 12px; color: var(--color-brand);" style-hover="text-decoration: underline;">citas-online →</a>
+          </summary>
+          <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--color-border); padding-top: 12px; font-size: 13px;">
+            <p style="margin: 0; color: var(--color-fg-muted); text-wrap: pretty;">El servicio PostgreSQL de citas-online publica el puerto 5432 en el host: cualquiera que conozca la IP del servidor puede intentar conectarse a la base de datos.</p>
+            <p style="margin: 0; text-wrap: pretty;"><span style="font-weight: 600; color: var(--color-success);">Cómo arreglarlo: </span><span style="color: var(--color-fg-muted);">Quita el puerto público en los Ajustes del servicio. Las aplicaciones del proyecto ya llegan por la red privada (postgres:5432) sin exponer nada.</span></p>
+          </div>
+        </details>
+        <details style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 16px;">
+          <summary style="display: flex; cursor: pointer; align-items: center; gap: 12px;">
+            <span style="flex-shrink: 0; display: inline-flex; align-items: center; border-radius: 9999px; background: color-mix(in oklab, var(--color-warning) 13%, transparent); color: var(--color-warning); padding: 3px 10px; font-size: 11px; font-weight: 600;">Aviso</span>
+            <span style="font-size: 14px; font-weight: 600;">worker sin límites de recursos</span>
+            <a href="Rediseño - Proyecto.dc.html" style="margin-left: auto; flex-shrink: 0; font-size: 12px; color: var(--color-brand);" style-hover="text-decoration: underline;">citas-online →</a>
+          </summary>
+          <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--color-border); padding-top: 12px; font-size: 13px;">
+            <p style="margin: 0; color: var(--color-fg-muted); text-wrap: pretty;">El servicio worker no tiene límite de CPU ni de RAM: un bucle o una fuga de memoria puede agotar el servidor y afectar al resto de proyectos.</p>
+            <p style="margin: 0;"><span style="font-weight: 600; color: var(--color-success);">Cómo arreglarlo: </span><span style="color: var(--color-fg-muted);">Define CPUs y RAM (MB) en Ajustes del servicio; se aplican en caliente sin reiniciar.</span></p>
+          </div>
+        </details>
+        <details style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 16px;">
+          <summary style="display: flex; cursor: pointer; align-items: center; gap: 12px;">
+            <span style="flex-shrink: 0; display: inline-flex; align-items: center; border-radius: 9999px; background: color-mix(in oklab, var(--color-warning) 13%, transparent); color: var(--color-warning); padding: 3px 10px; font-size: 11px; font-weight: 600;">Aviso</span>
+            <span style="font-size: 14px; font-weight: 600;">3 intentos de login fallidos en las últimas 24 h</span>
+          </summary>
+          <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--color-border); padding-top: 12px; font-size: 13px;">
+            <p style="margin: 0; color: var(--color-fg-muted);">Se registraron 3 intentos de acceso fallidos desde la IP <span style="font-family: var(--font-mono); font-size: 12px;">203.0.113.99</span>. El límite de intentos por IP está activo.</p>
+            <p style="margin: 0;"><span style="font-weight: 600; color: var(--color-success);">Cómo arreglarlo: </span><span style="color: var(--color-fg-muted);">Usa una contraseña larga y única y, a ser posible, no expongas el puerto 4000 públicamente (dominio con TLS o VPN).</span></p>
+          </div>
+        </details>
+        <details style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 16px;">
+          <summary style="display: flex; cursor: pointer; align-items: center; gap: 12px;">
+            <span style="flex-shrink: 0; display: inline-flex; align-items: center; border-radius: 9999px; background: color-mix(in oklab, var(--color-info) 13%, transparent); color: var(--color-info); padding: 3px 10px; font-size: 11px; font-weight: 600;">Info</span>
+            <span style="font-size: 14px; font-weight: 600;">Dominio sin TLS: paneles.bregon.es</span>
+            <a href="Rediseño - Proyecto.dc.html" style="margin-left: auto; flex-shrink: 0; font-size: 12px; color: var(--color-brand);" style-hover="text-decoration: underline;">tienda-woo →</a>
+          </summary>
+          <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--color-border); padding-top: 12px; font-size: 13px;">
+            <p style="margin: 0; color: var(--color-fg-muted);">El dominio paneles.bregon.es sirve tráfico sin HTTPS.</p>
+            <p style="margin: 0;"><span style="font-weight: 600; color: var(--color-success);">Cómo arreglarlo: </span><span style="color: var(--color-fg-muted);">Configura el email de Let's Encrypt en Ajustes; el certificado se emite solo en la primera visita.</span></p>
+          </div>
+        </details>
+      </section>
+      <section style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 20px;">
+        <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 10px;">
+          <span style="display: flex; height: 30px; width: 30px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-brand) 15%, transparent); color: #b9a7ee;"><l-i name="key-round" size="15"></l-i></span>
+          <div>
+            <h2 style="margin: 0; font-size: 14px; font-weight: 600;">Cuenta y sesiones</h2>
+            <p style="margin: 1px 0 0; font-size: 12px; color: var(--color-fg-subtle);">Cambia la contraseña o invalida las sesiones abiertas en otros navegadores</p>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <label style="display: block;">
+            <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Contraseña actual</span>
+            <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-size: 13px; min-height: 20px; color: var(--color-fg-subtle);"></div>
+          </label>
+          <label style="display: block;">
+            <span style="margin-bottom: 5px; display: block; font-size: 12px; font-weight: 500; color: var(--color-fg-muted);">Nueva contraseña</span>
+            <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 8px 12px; font-size: 13px; min-height: 20px; color: var(--color-fg-subtle);"></div>
+            <span style="margin-top: 4px; display: block; font-size: 11px; color: var(--color-fg-subtle);">Mínimo 8 caracteres; usa una larga y única</span>
+          </label>
+        </div>
+        <div style="margin-top: 14px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;">
+          <x-import component-from-global-scope="FightX.Button" variant="primary" size="sm" hint-size="auto,32px">Cambiar contraseña</x-import>
+          <x-import component-from-global-scope="FightX.Button" variant="secondary" size="sm" hint-size="auto,32px">Cerrar sesión en todos los dispositivos</x-import>
+        </div>
+      </section>
+      <section style="border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 20px;">
+        <div style="margin-bottom: 14px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="display: flex; height: 30px; width: 30px; align-items: center; justify-content: center; border-radius: 8px; background: color-mix(in oklab, var(--color-brand) 15%, transparent); color: #b9a7ee;"><l-i name="scroll-text" size="15"></l-i></span>
+            <div>
+              <h2 style="margin: 0; font-size: 14px; font-weight: 600;">Registro de actividad</h2>
+              <p style="margin: 1px 0 0; font-size: 12px; color: var(--color-fg-subtle);">Auditoría completa: accesos, despliegues, cambios de configuración</p>
+            </div>
+          </div>
+          <div style="border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-bg); padding: 6px 12px; font-size: 12px; color: var(--color-fg); display: flex; align-items: center; gap: 8px;">Todo <span style="color: var(--color-fg-subtle); font-size: 10px;">▾</span></div>
+        </div>
+        <div style="max-height: 380px; overflow-y: auto; border-radius: var(--radius); border: 1px solid var(--color-border);">
+          <table style="width: 100%; text-align: left; font-size: 12px; border-collapse: collapse;">
+            <thead style="position: sticky; top: 0; background: var(--color-surface-2); color: var(--color-fg-muted); z-index: 1;">
+              <tr>
+                <th style="padding: 9px 14px; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;">Cuándo</th>
+                <th style="padding: 9px 14px; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;">Quién</th>
+                <th style="padding: 9px 14px; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;">Acción</th>
+                <th style="padding: 9px 14px; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;">Detalle</th>
+                <th style="padding: 9px 14px; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;">IP</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-top: 1px solid var(--color-border);"><td style="white-space: nowrap; padding: 9px 14px; color: var(--color-fg-subtle); font-family: var(--font-mono); font-size: 11px;">19/07 06:58</td><td style="padding: 9px 14px;">admin@vidasana.es</td><td style="padding: 9px 14px;">Despliegue manual</td><td style="max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 9px 14px; color: var(--color-fg-muted);">api</td><td style="padding: 9px 14px; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">88.12.44.7</td></tr>
+              <tr style="border-top: 1px solid var(--color-border);"><td style="white-space: nowrap; padding: 9px 14px; color: var(--color-fg-subtle); font-family: var(--font-mono); font-size: 11px;">19/07 05:12</td><td style="padding: 9px 14px; color: var(--color-fg-muted);">sistema</td><td style="padding: 9px 14px;">Push recibido (webhook)</td><td style="max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 9px 14px; color: var(--color-fg-muted);">api · a4f9c2e</td><td style="padding: 9px 14px;"></td></tr>
+              <tr style="border-top: 1px solid var(--color-border);"><td style="white-space: nowrap; padding: 9px 14px; color: var(--color-fg-subtle); font-family: var(--font-mono); font-size: 11px;">19/07 04:00</td><td style="padding: 9px 14px; color: var(--color-fg-muted);">sistema</td><td style="padding: 9px 14px;">Backup creado</td><td style="max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 9px 14px; color: var(--color-fg-muted); font-family: var(--font-mono); font-size: 11px;">postgres-20260719-040001.sql.gz</td><td style="padding: 9px 14px;"></td></tr>
+              <tr style="border-top: 1px solid var(--color-border); background: color-mix(in oklab, var(--color-danger) 4%, transparent);"><td style="white-space: nowrap; padding: 9px 14px; color: var(--color-fg-subtle); font-family: var(--font-mono); font-size: 11px;">18/07 22:03</td><td style="padding: 9px 14px; color: var(--color-fg-muted);">—</td><td style="padding: 9px 14px;"><span style="color: var(--color-danger); font-weight: 500;">Login fallido</span></td><td style="max-width: 240px; padding: 9px 14px;"></td><td style="padding: 9px 14px; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">203.0.113.99</td></tr>
+              <tr style="border-top: 1px solid var(--color-border);"><td style="white-space: nowrap; padding: 9px 14px; color: var(--color-fg-subtle); font-family: var(--font-mono); font-size: 11px;">18/07 09:14</td><td style="padding: 9px 14px; color: var(--color-fg-muted);">sistema</td><td style="padding: 9px 14px;">Push recibido (webhook)</td><td style="max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 9px 14px; color: var(--color-fg-muted);">api · 91d3b0f</td><td style="padding: 9px 14px;"></td></tr>
+              <tr style="border-top: 1px solid var(--color-border);"><td style="white-space: nowrap; padding: 9px 14px; color: var(--color-fg-subtle); font-family: var(--font-mono); font-size: 11px;">17/07 19:41</td><td style="padding: 9px 14px;">admin@vidasana.es</td><td style="padding: 9px 14px;">Variables actualizadas</td><td style="max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 9px 14px; color: var(--color-fg-muted);">worker</td><td style="padding: 9px 14px; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">88.12.44.7</td></tr>
+              <tr style="border-top: 1px solid var(--color-border);"><td style="white-space: nowrap; padding: 9px 14px; color: var(--color-fg-subtle); font-family: var(--font-mono); font-size: 11px;">17/07 19:22</td><td style="padding: 9px 14px;">admin@vidasana.es</td><td style="padding: 9px 14px;">Inicio de sesión</td><td style="max-width: 240px; padding: 9px 14px;"></td><td style="padding: 9px 14px; font-family: var(--font-mono); font-size: 11px; color: var(--color-fg-subtle);">88.12.44.7</td></tr>
+              <tr style="border-top: 1px solid var(--color-border);"><td style="white-space: nowrap; padding: 9px 14px; color: var(--color-fg-subtle); font-family: var(--font-mono); font-size: 11px;">16/07 04:00</td><td style="padding: 9px 14px; color: var(--color-fg-muted);">sistema</td><td style="padding: 9px 14px;">Backup creado</td><td style="max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 9px 14px; color: var(--color-fg-muted); font-family: var(--font-mono); font-size: 11px;">mysql-20260716-040002.sql.gz</td><td style="padding: 9px 14px;"></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</x-dc>
+</body>
+</html>
