@@ -1,7 +1,8 @@
-import { BellRing, Database, GitBranch, Globe, Layers, Package } from 'lucide-react';
+import { BellRing, Globe } from 'lucide-react';
 import { ContainerState, Service, ServiceStats } from '../types';
-import { cx, fmtBytes, STATE_COLOR, STATE_LABEL } from '../utils';
-import { StatusDot } from './ui';
+import { cx, fmtBytes, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
+import { ModuleChip, moduleKind } from './ModuleIcon';
+import { StatusBadge } from './ui';
 
 const TEMPLATE_LABEL: Record<string, string> = {
   postgres: 'PostgreSQL',
@@ -10,6 +11,9 @@ const TEMPLATE_LABEL: Record<string, string> = {
   mongo: 'MongoDB',
   minio: 'MinIO',
 };
+
+/** Umbral visual: CPU al límite se marca en warn. */
+const CPU_ALERT = 90;
 
 export default function ServiceCard({
   service,
@@ -27,11 +31,10 @@ export default function ServiceCard({
   const state = metrics?.state ?? service.runtime?.state ?? 'unknown';
   const stats = metrics?.stats ?? null;
   const isDb = service.type === 'database';
-  const isImage = service.type === 'image';
   const domain = !isDb ? service.config.domains?.[0] : undefined;
   const subtitle = isDb
-    ? `${TEMPLATE_LABEL[service.config.template] ?? service.config.template}:${service.config.version}`
-    : isImage
+    ? `${(TEMPLATE_LABEL[service.config.template] ?? service.config.template).toLowerCase()}:${service.config.version}`
+    : service.type === 'image'
       ? service.config.image ?? ''
       : service.config.repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, '');
 
@@ -39,61 +42,55 @@ export default function ServiceCard({
     <button
       onClick={onClick}
       className={cx(
-        'card group relative p-4 text-left transition-all hover:border-acc/60',
-        selected && 'border-acc/70 ring-1 ring-acc/30',
-        alertCount > 0 && !selected && 'border-err/40',
+        'relative rounded-xl border bg-surface p-4 text-left transition-[border-color,box-shadow] duration-[180ms] ease-out',
+        selected
+          ? 'border-[color-mix(in_oklab,#6e56cf_70%,var(--color-line))] shadow-card-selected'
+          : alertCount > 0
+            ? 'border-[color-mix(in_oklab,var(--color-err)_45%,var(--color-line))] shadow-lvl1 hover:border-[color-mix(in_oklab,#6e56cf_55%,var(--color-line))]'
+            : 'border-line shadow-lvl1 hover:border-[color-mix(in_oklab,#6e56cf_55%,var(--color-line))]',
       )}
     >
       {alertCount > 0 && (
-        <span className="absolute -right-2 -top-2 flex items-center gap-1 rounded-full border border-err/40 bg-err/15 px-2 py-0.5 text-[10px] font-medium text-err">
-          <BellRing size={10} /> {alertCount}
+        <span className="absolute -top-[9px] right-3 flex items-center gap-1 rounded-full bg-err px-2 py-0.5 text-[10px] font-semibold text-white shadow-[0_2px_8px_-2px_color-mix(in_oklab,var(--color-err)_60%,transparent)]">
+          <BellRing size={10} /> {alertCount === 1 ? '1 alerta' : `${alertCount} alertas`}
         </span>
       )}
       <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2.5">
-          <span
-            className={cx(
-              'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
-              isDb ? 'bg-acc2/10 text-acc2' : isImage ? 'bg-warn/10 text-warn' : 'bg-acc/15 text-acc',
-            )}
-          >
-            {isDb ? <Database size={16} /> : isImage ? <Package size={16} /> : <GitBranch size={16} />}
-          </span>
+        <div className="flex min-w-0 items-center gap-2.5">
+          <ModuleChip kind={moduleKind(service)} size={36} />
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-medium">{service.name}</h3>
-            <p className="truncate text-xs text-sub">{subtitle}</p>
+            <h3 className="truncate text-sm font-semibold">{service.name}</h3>
+            <p className="truncate font-mono text-[11px] text-subtle">{subtitle}</p>
           </div>
         </div>
-        <span className="flex items-center gap-1.5 whitespace-nowrap rounded-full border border-line bg-panel2 px-2 py-0.5 text-[11px] text-sub">
-          <StatusDot colorClass={STATE_COLOR[state]} size={6} />
-          {STATE_LABEL[state]}
-          {metrics?.replicas && metrics.replicas.total > 1 && (
-            <span className={cx('flex items-center gap-0.5', metrics.replicas.running < metrics.replicas.total && 'text-warn')}>
-              <Layers size={9} /> {metrics.replicas.running}/{metrics.replicas.total}
-            </span>
-          )}
-        </span>
+        <StatusBadge
+          tone={STATE_TONE[state]}
+          label={STATE_LABEL[state]}
+          pulse={STATE_PULSE[state]}
+          replicas={metrics?.replicas}
+        />
       </div>
 
-      <div className="mt-3 flex items-center justify-between text-xs text-sub">
-        <div className="flex items-center gap-3">
-          {stats ? (
-            <>
-              <span>
-                CPU <span className="text-txt">{stats.cpuPercent}%</span>
+      <div className="mt-3.5 flex items-center justify-between gap-2 text-xs text-sub">
+        {stats ? (
+          <div className="tnum flex items-center gap-3">
+            <span>
+              CPU{' '}
+              <span className={cx(stats.cpuPercent >= CPU_ALERT ? 'font-semibold text-warn' : 'text-txt')}>
+                {stats.cpuPercent}%
               </span>
-              <span>
-                RAM <span className="text-txt">{fmtBytes(stats.memUsage)}</span>
-              </span>
-            </>
-          ) : (
-            <span className="text-sub/60">Sin métricas</span>
-          )}
-        </div>
+            </span>
+            <span>
+              RAM <span className="text-txt">{fmtBytes(stats.memUsage)}</span>
+            </span>
+          </div>
+        ) : (
+          <span className="text-subtle">Sin métricas</span>
+        )}
         {domain && (
-          <span className="flex items-center gap-1 text-acc2">
-            <Globe size={12} />
-            <span className="max-w-[140px] truncate">{domain}</span>
+          <span className="flex min-w-0 items-center gap-1 text-sub">
+            <Globe size={11} className="shrink-0" />
+            <span className="max-w-[120px] truncate text-[11px]">{domain}</span>
           </span>
         )}
       </div>

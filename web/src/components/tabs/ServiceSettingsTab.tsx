@@ -1,11 +1,86 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { Plus, X } from 'lucide-react';
+import { Cpu, Globe, HardDrive, Plus, X } from 'lucide-react';
 import { api } from '../../api';
 import { Service } from '../../types';
 import { cx } from '../../utils';
 import DomainsEditor from '../DomainsEditor';
+import { ModuleLogo, moduleKind } from '../ModuleIcon';
 import { Button, ConfirmModal, CopyButton, Field, useToast } from '../ui';
+
+/** Card de sección con cabecera icono-chip + título + descripción. */
+function SectionCard({
+  icon,
+  iconClass,
+  title,
+  description,
+  children,
+  className,
+}: {
+  icon: React.ReactNode;
+  iconClass: string;
+  title: string;
+  description: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={cx('rounded-xl border border-line bg-bg p-4', className)}>
+      <div className="mb-3.5 flex items-center gap-2.5">
+        <span className={cx('flex h-7 w-7 shrink-0 items-center justify-center rounded-lg', iconClass)}>{icon}</span>
+        <div>
+          <h3 className="text-[13px] font-semibold">{title}</h3>
+          <p className="mt-px text-[11px] text-subtle">{description}</p>
+        </div>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+interface FormState {
+  name: string;
+  repoUrl: string;
+  branch: string;
+  rootDir: string;
+  dockerfilePath: string;
+  startCmd: string;
+  port: string;
+  version: string;
+  image: string;
+  domains: string[];
+  hostPort: string;
+  cpus: string;
+  memoryMb: string;
+  alertsMuted: boolean;
+  healthcheckPath: string;
+  replicas: string;
+  volumePaths: string[];
+}
+
+function formFromService(service: Service): FormState {
+  const cfg = service.config;
+  const isImage = service.type === 'image';
+  return {
+    name: service.name,
+    repoUrl: cfg.repoUrl ?? '',
+    branch: cfg.branch ?? 'main',
+    rootDir: cfg.rootDir ?? '',
+    dockerfilePath: cfg.dockerfilePath ?? '',
+    startCmd: cfg.startCmd ?? '',
+    port: isImage ? (cfg.port ? String(cfg.port) : '') : String(cfg.port ?? 3000),
+    version: cfg.version ?? '',
+    image: cfg.image ?? '',
+    domains: cfg.domains ?? [],
+    hostPort: cfg.hostPort ? String(cfg.hostPort) : '',
+    cpus: cfg.cpus ? String(cfg.cpus) : '',
+    memoryMb: cfg.memoryMb ? String(cfg.memoryMb) : '',
+    alertsMuted: !!(cfg as any).alertsMuted,
+    healthcheckPath: cfg.healthcheckPath ?? '',
+    replicas: String((cfg as any).replicas ?? 1),
+    volumePaths: ((cfg as any).volumes ?? []).map((v: { containerPath: string }) => v.containerPath),
+  };
+}
 
 export default function ServiceSettingsTab({
   service,
@@ -21,74 +96,59 @@ export default function ServiceSettingsTab({
   const toast = useToast();
   const isGit = service.type === 'git';
   const isImage = service.type === 'image';
+  const isDb = service.type === 'database';
   const hasDomains = isGit || isImage;
   const cfg = service.config;
 
-  const [name, setName] = useState(service.name);
-  const [repoUrl, setRepoUrl] = useState(cfg.repoUrl ?? '');
-  const [branch, setBranch] = useState(cfg.branch ?? 'main');
-  const [rootDir, setRootDir] = useState(cfg.rootDir ?? '');
-  const [dockerfilePath, setDockerfilePath] = useState(cfg.dockerfilePath ?? '');
-  const [startCmd, setStartCmd] = useState(cfg.startCmd ?? '');
-  const [port, setPort] = useState(isImage ? (cfg.port ? String(cfg.port) : '') : String(cfg.port ?? 3000));
-  const [version, setVersion] = useState(cfg.version ?? '');
-  const [image, setImage] = useState(cfg.image ?? '');
-  const [domains, setDomains] = useState<string[]>(cfg.domains ?? []);
-  const [hostPort, setHostPort] = useState(cfg.hostPort ? String(cfg.hostPort) : '');
-  const [cpus, setCpus] = useState(cfg.cpus ? String(cfg.cpus) : '');
-  const [memoryMb, setMemoryMb] = useState(cfg.memoryMb ? String(cfg.memoryMb) : '');
-  const [alertsMuted, setAlertsMuted] = useState(!!(cfg as any).alertsMuted);
-  const [healthcheckPath, setHealthcheckPath] = useState(cfg.healthcheckPath ?? '');
-  const [replicas, setReplicas] = useState(String((cfg as any).replicas ?? 1));
-  const [volumePaths, setVolumePaths] = useState<string[]>(
-    ((cfg as any).volumes ?? []).map((v: { containerPath: string }) => v.containerPath),
-  );
+  const [baseline, setBaseline] = useState<FormState>(() => formFromService(service));
+  const [form, setForm] = useState<FormState>(baseline);
   const [newVolumePath, setNewVolumePath] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteVolumes, setDeleteVolumes] = useState(false);
 
+  const dirty = useMemo(() => JSON.stringify(form) !== JSON.stringify(baseline), [form, baseline]);
+  const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
+
   const save = useMutation({
     mutationFn: () => {
       const config: Record<string, unknown> = {
-        hostPort: hostPort ? Number(hostPort) : null,
-        cpus: cpus ? Number(cpus) : null,
-        memoryMb: memoryMb ? Number(memoryMb) : null,
-        alertsMuted,
-        ...(service.type !== 'database'
+        hostPort: form.hostPort ? Number(form.hostPort) : null,
+        cpus: form.cpus ? Number(form.cpus) : null,
+        memoryMb: form.memoryMb ? Number(form.memoryMb) : null,
+        alertsMuted: form.alertsMuted,
+        ...(!isDb
           ? {
-              healthcheckPath: healthcheckPath.trim() || null,
-              volumes: volumePaths.map((p) => ({ containerPath: p })),
-              replicas: Math.max(1, Number(replicas) || 1),
+              healthcheckPath: form.healthcheckPath.trim() || null,
+              volumes: form.volumePaths.map((p) => ({ containerPath: p })),
+              replicas: Math.max(1, Number(form.replicas) || 1),
             }
           : {}),
       };
       if (isGit) {
         Object.assign(config, {
-          repoUrl: repoUrl.trim(),
-          branch: branch.trim() || 'main',
-          rootDir: rootDir.trim() || null,
-          dockerfilePath: dockerfilePath.trim() || null,
-          startCmd: startCmd.trim() || null,
-          port: Number(port) || 3000,
-          domains,
+          repoUrl: form.repoUrl.trim(),
+          branch: form.branch.trim() || 'main',
+          rootDir: form.rootDir.trim() || null,
+          dockerfilePath: form.dockerfilePath.trim() || null,
+          startCmd: form.startCmd.trim() || null,
+          port: Number(form.port) || 3000,
+          domains: form.domains,
         });
       } else if (isImage) {
         Object.assign(config, {
-          image: image.trim() || cfg.image,
-          startCmd: startCmd.trim() || null,
-          port: port ? Number(port) : null,
-          domains,
+          image: form.image.trim() || cfg.image,
+          startCmd: form.startCmd.trim() || null,
+          port: form.port ? Number(form.port) : null,
+          domains: form.domains,
         });
       } else {
-        Object.assign(config, { version: version.trim() || cfg.version });
+        Object.assign(config, { version: form.version.trim() || cfg.version });
       }
-      return api.patch<{ service: Service; needsRedeploy: boolean }>(`/services/${service.id}`, { name, config });
+      return api.patch<{ service: Service; needsRedeploy: boolean }>(`/services/${service.id}`, { name: form.name, config });
     },
     onSuccess: (data) => {
-      toast(
-        data.needsRedeploy ? 'Guardado. Redespliega para aplicar los cambios.' : 'Guardado y aplicado.',
-        'ok',
-      );
+      setBaseline(form);
+      toast(data.needsRedeploy ? 'Guardado. Redespliega para aplicar los cambios.' : 'Guardado y aplicado.', 'ok');
       onChanged();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -103,202 +163,265 @@ export default function ServiceSettingsTab({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  const addVolume = () => {
+    const p = newVolumePath.trim();
+    if (p.startsWith('/') && !form.volumePaths.includes(p)) {
+      set('volumePaths', [...form.volumePaths, p]);
+      setNewVolumePath('');
+    }
+  };
+
   const webhookUrl = `${window.location.origin}/api/webhooks/github/${service.id}`;
+  const replicasN = Number(form.replicas) || 1;
 
   return (
-    <div className="space-y-6 p-4">
-      <section className="space-y-4">
-        <Field label="Nombre">
-          <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
+    <>
+      <div className="flex flex-col gap-3.5 p-4 pb-0 sm:px-5">
+        <SectionCard
+          icon={<ModuleLogo kind={moduleKind(service)} size={14} />}
+          iconClass="bg-txt/[.09] text-txt"
+          title="General"
+          description="Origen, build y arranque del servicio"
+        >
+          <div className="flex flex-col gap-3">
+            <Field label="Nombre">
+              <input className="input" value={form.name} onChange={(e) => set('name', e.target.value)} />
+            </Field>
 
-        {isGit ? (
-          <>
-            <Field label="Repositorio">
-              <input className="input font-mono text-xs" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} />
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Rama">
-                <input className="input" value={branch} onChange={(e) => setBranch(e.target.value)} />
+            {isGit ? (
+              <>
+                <Field label="Repositorio">
+                  <input className="input font-mono text-xs" value={form.repoUrl} onChange={(e) => set('repoUrl', e.target.value)} />
+                </Field>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <Field label="Rama">
+                    <input className="input" value={form.branch} onChange={(e) => set('branch', e.target.value)} />
+                  </Field>
+                  <Field label="Puerto interno">
+                    <input className="input tnum" type="number" value={form.port} onChange={(e) => set('port', e.target.value)} />
+                  </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <Field label="Directorio raíz" hint="vacío = raíz del repo">
+                    <input className="input" value={form.rootDir} onChange={(e) => set('rootDir', e.target.value)} />
+                  </Field>
+                  <Field label="Dockerfile" hint="vacío = Dockerfile">
+                    <input className="input" value={form.dockerfilePath} onChange={(e) => set('dockerfilePath', e.target.value)} />
+                  </Field>
+                </div>
+                <Field label="Comando de arranque" hint="Opcional: sobreescribe el CMD de la imagen">
+                  <input
+                    className="input font-mono text-xs"
+                    value={form.startCmd}
+                    onChange={(e) => set('startCmd', e.target.value)}
+                    placeholder="npm run start"
+                  />
+                </Field>
+                <Field
+                  label="Ruta de healthcheck"
+                  hint="Opcional, ej: /health. Si responde 2xx la nueva versión se considera sana: despliegues sin corte con marcha atrás automática."
+                >
+                  <input
+                    className="input font-mono text-xs"
+                    value={form.healthcheckPath}
+                    onChange={(e) => set('healthcheckPath', e.target.value)}
+                    placeholder="/health"
+                  />
+                </Field>
+              </>
+            ) : isImage ? (
+              <>
+                <Field label="Imagen" hint="Cambiarla requiere redesplegar">
+                  <input className="input font-mono text-xs" value={form.image} onChange={(e) => set('image', e.target.value)} />
+                </Field>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <Field label="Puerto interno" hint="vacío = sin HTTP">
+                    <input className="input tnum" type="number" value={form.port} onChange={(e) => set('port', e.target.value)} />
+                  </Field>
+                  <Field label="Comando de arranque" hint="opcional">
+                    <input className="input font-mono text-xs" value={form.startCmd} onChange={(e) => set('startCmd', e.target.value)} />
+                  </Field>
+                </div>
+                <Field label="Ruta de healthcheck" hint="Opcional, ej: /healthz. Activa despliegues validados con marcha atrás automática.">
+                  <input
+                    className="input font-mono text-xs"
+                    value={form.healthcheckPath}
+                    onChange={(e) => set('healthcheckPath', e.target.value)}
+                    placeholder="/healthz"
+                  />
+                </Field>
+              </>
+            ) : (
+              <Field label="Versión de la imagen" hint={`Imagen: ${cfg.template}`}>
+                <input className="input font-mono text-xs" value={form.version} onChange={(e) => set('version', e.target.value)} />
               </Field>
-              <Field label="Puerto interno">
-                <input className="input" type="number" value={port} onChange={(e) => setPort(e.target.value)} />
-              </Field>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Directorio raíz" hint="vacío = raíz del repo">
-                <input className="input" value={rootDir} onChange={(e) => setRootDir(e.target.value)} />
-              </Field>
-              <Field label="Dockerfile" hint="vacío = Dockerfile">
-                <input className="input" value={dockerfilePath} onChange={(e) => setDockerfilePath(e.target.value)} />
-              </Field>
-            </div>
-            <Field label="Comando de arranque" hint="Opcional: sobreescribe el CMD de la imagen">
-              <input className="input font-mono text-xs" value={startCmd} onChange={(e) => setStartCmd(e.target.value)} placeholder="npm run start" />
-            </Field>
-            <Field
-              label="Ruta de healthcheck"
-              hint="Opcional, ej: /health. Si responde 2xx la nueva versión se considera sana: activa los despliegues sin corte con marcha atrás automática."
-            >
-              <input className="input font-mono text-xs" value={healthcheckPath} onChange={(e) => setHealthcheckPath(e.target.value)} placeholder="/health" />
-            </Field>
-          </>
-        ) : isImage ? (
-          <>
-            <Field label="Imagen" hint="Cambiarla requiere redesplegar">
-              <input className="input font-mono" value={image} onChange={(e) => setImage(e.target.value)} />
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Puerto interno" hint="vacío = sin HTTP">
-                <input className="input" type="number" value={port} onChange={(e) => setPort(e.target.value)} />
-              </Field>
-              <Field label="Comando de arranque" hint="opcional">
-                <input className="input font-mono text-xs" value={startCmd} onChange={(e) => setStartCmd(e.target.value)} />
-              </Field>
-            </div>
-            <Field label="Ruta de healthcheck" hint="Opcional, ej: /healthz. Activa despliegues validados con marcha atrás automática.">
-              <input className="input font-mono text-xs" value={healthcheckPath} onChange={(e) => setHealthcheckPath(e.target.value)} placeholder="/healthz" />
-            </Field>
-          </>
-        ) : (
-          <Field label="Versión de la imagen" hint={`Imagen: ${cfg.template}`}>
-            <input className="input font-mono" value={version} onChange={(e) => setVersion(e.target.value)} />
-          </Field>
+            )}
+          </div>
+        </SectionCard>
+
+        {hasDomains && (
+          <SectionCard
+            icon={<Globe size={14} />}
+            iconClass="bg-info/[.14] text-info"
+            title="Dominios"
+            description="Traefik enruta 80/443 con TLS automático si está configurado"
+          >
+            <DomainsEditor domains={form.domains} onChange={(d) => set('domains', d)} slug={service.slug} />
+          </SectionCard>
         )}
-      </section>
 
-      {hasDomains && (
-        <section>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Dominios</h3>
-          <DomainsEditor domains={domains} onChange={setDomains} slug={service.slug} />
-        </section>
-      )}
-
-      {!isGit && !isImage ? null : (
-        <section>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Volúmenes persistentes</h3>
-          <div className="space-y-2">
-            {volumePaths.map((p) => (
-              <div key={p} className="flex items-center justify-between rounded-lg border border-line bg-panel2 px-3 py-2">
-                <span className="font-mono text-xs">{p}</span>
-                <button onClick={() => setVolumePaths(volumePaths.filter((x) => x !== p))} className="text-sub hover:text-err">
-                  <X size={13} />
-                </button>
-              </div>
-            ))}
-            <div className="flex gap-2">
-              <input
-                className="input flex-1 font-mono text-xs"
-                placeholder="/app/uploads"
-                value={newVolumePath}
-                onChange={(e) => setNewVolumePath(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    const p = newVolumePath.trim();
-                    if (p.startsWith('/') && !volumePaths.includes(p)) {
-                      setVolumePaths([...volumePaths, p]);
-                      setNewVolumePath('');
+        {!isDb && (
+          <SectionCard
+            icon={<HardDrive size={14} />}
+            iconClass="bg-warn/[.13] text-warn"
+            title="Volúmenes persistentes"
+            description="Rutas que sobreviven a los redespliegues"
+          >
+            <div className="flex flex-col gap-2">
+              {form.volumePaths.map((p) => (
+                <div key={p} className="flex items-center justify-between rounded-lg border border-line bg-surface px-3 py-2">
+                  <span className="font-mono text-xs">{p}</span>
+                  <button
+                    onClick={() => set('volumePaths', form.volumePaths.filter((x) => x !== p))}
+                    className="rounded p-0.5 text-subtle transition-colors hover:text-err"
+                    title="Quitar"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ))}
+              <div className="flex gap-2">
+                <input
+                  className="input flex-1 font-mono text-xs"
+                  placeholder="/app/uploads"
+                  value={newVolumePath}
+                  onChange={(e) => setNewVolumePath(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addVolume();
                     }
-                  }
-                }}
-              />
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  const p = newVolumePath.trim();
-                  if (p.startsWith('/') && !volumePaths.includes(p)) {
-                    setVolumePaths([...volumePaths, p]);
-                    setNewVolumePath('');
-                  }
-                }}
-              >
-                <Plus size={13} />
-              </Button>
+                  }}
+                />
+                <Button size="sm" variant="secondary" className="h-9" onClick={addVolume}>
+                  <Plus size={13} />
+                </Button>
+              </div>
+              <p className="text-[11px] text-subtle">
+                Ojo: con volúmenes el despliegue deja de ser de corte cero (no pueden convivir dos instancias escribiendo a la
+                vez). Quitar una ruta no borra el volumen de Docker.
+              </p>
             </div>
-            <p className="text-xs text-sub/80">
-              Los datos en estas rutas sobreviven a los redespliegues. Ojo: con volúmenes el despliegue deja de ser de
-              corte cero (no pueden convivir dos instancias escribiendo a la vez). Quitar una ruta no borra el volumen de Docker.
-            </p>
-          </div>
-        </section>
-      )}
-
-      <section>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Recursos y red</h3>
-        <div className={cx('grid gap-3', service.type === 'database' ? 'grid-cols-3' : 'grid-cols-4')}>
-          <Field label="CPUs" hint="vacío = sin límite">
-            <input className="input" type="number" step="0.1" min="0.1" placeholder="1.5" value={cpus} onChange={(e) => setCpus(e.target.value)} />
-          </Field>
-          <Field label="RAM (MB)" hint="vacío = sin límite">
-            <input className="input" type="number" min="32" placeholder="512" value={memoryMb} onChange={(e) => setMemoryMb(e.target.value)} />
-          </Field>
-          <Field label="Puerto público" hint="expone TCP en el host">
-            <input className="input" type="number" placeholder={isGit ? '8080' : '5432'} value={hostPort} onChange={(e) => setHostPort(e.target.value)} />
-          </Field>
-          {service.type !== 'database' && (
-            <Field label="Réplicas" hint="copias en balanceo">
-              <input className="input" type="number" min="1" max="10" value={replicas} onChange={(e) => setReplicas(e.target.value)} />
-            </Field>
-          )}
-        </div>
-        {service.type !== 'database' && Number(replicas) > 1 && (
-          <p className="mt-1.5 rounded-lg border border-acc/30 bg-acc/5 px-3 py-2 text-xs text-sub">
-            Con {replicas} réplicas, Traefik y el DNS interno reparten el tráfico entre las copias, y los despliegues se
-            hacen réplica a réplica (rodante): siempre queda alguna sirviendo. Requiere un servicio{' '}
-            <strong className="text-txt">sin volúmenes y sin puerto público</strong>
-            {(volumePaths.length > 0 || hostPort) && <span className="text-err"> — ahora mismo lo incumples: quítalos antes de guardar</span>}.
-          </p>
+          </SectionCard>
         )}
-        <p className="mt-1.5 text-xs text-sub/80">
-          Los límites de CPU/RAM se aplican en caliente si el contenedor está activo.
-        </p>
-        <label className="mt-3 flex items-center gap-2 text-sm text-sub">
-          <input type="checkbox" checked={alertsMuted} onChange={(e) => setAlertsMuted(e.target.checked)} className="accent-acc" />
-          Silenciar alertas de este servicio (caídas, CPU/RAM, despliegues fallidos)
-        </label>
-      </section>
 
-      {isGit && (
-        <section>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Auto-deploy (webhook de GitHub)</h3>
-          <div className="card space-y-2 p-3 text-xs">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-sub">URL</span>
-              <span className="flex min-w-0 items-center gap-1">
-                <span className="truncate font-mono">{webhookUrl}</span>
-                <CopyButton value={webhookUrl} />
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-sub">Secreto</span>
-              <span className="flex items-center gap-1">
-                <span className="font-mono">••••••••</span>
-                <CopyButton value={cfg.webhookSecret ?? ''} />
-              </span>
-            </div>
-            <p className="text-sub/80">
-              En GitHub: Settings → Webhooks → Add webhook. Content type <span className="font-mono">application/json</span>,
-              evento <span className="font-mono">push</span>. Cada push a <span className="font-mono">{branch}</span> desplegará automáticamente.
+        <SectionCard
+          icon={<Cpu size={14} />}
+          iconClass="bg-acc/[.15] text-acc-soft"
+          title={isDb ? 'Recursos y red' : 'Recursos y réplicas'}
+          description="Los límites se aplican en caliente, sin reiniciar"
+        >
+          <div className={cx('grid gap-2.5', isDb ? 'grid-cols-3' : 'grid-cols-2 sm:grid-cols-4')}>
+            <Field label="CPUs" hint="vacío = sin límite">
+              <input className="input tnum" type="number" step="0.1" min="0.1" placeholder="1.5" value={form.cpus} onChange={(e) => set('cpus', e.target.value)} />
+            </Field>
+            <Field label="RAM (MB)" hint="vacío = sin límite">
+              <input className="input tnum" type="number" min="32" placeholder="512" value={form.memoryMb} onChange={(e) => set('memoryMb', e.target.value)} />
+            </Field>
+            <Field label="Puerto público" hint="expone TCP en el host">
+              <input className="input tnum" type="number" placeholder={isGit ? '8080' : '5432'} value={form.hostPort} onChange={(e) => set('hostPort', e.target.value)} />
+            </Field>
+            {!isDb && (
+              <Field label="Réplicas" hint="copias en balanceo">
+                <input className="input tnum" type="number" min="1" max="10" value={form.replicas} onChange={(e) => set('replicas', e.target.value)} />
+              </Field>
+            )}
+          </div>
+          {!isDb && replicasN > 1 && (
+            <p className="mt-2.5 rounded-lg border border-acc/25 bg-acc/[.07] px-3 py-2.5 text-xs text-sub">
+              Con {replicasN} réplicas el tráfico se reparte y los despliegues son rodantes: siempre queda una sirviendo.
+              Requiere servicio <strong className="text-txt">sin volúmenes ni puerto público</strong>
+              {(form.volumePaths.length > 0 || form.hostPort) && (
+                <span className="text-err"> — ahora mismo lo incumples: quítalos antes de guardar</span>
+              )}
+              .
             </p>
+          )}
+          <label className="mt-3 flex cursor-pointer items-center gap-2 text-[13px] text-sub">
+            <input
+              type="checkbox"
+              checked={form.alertsMuted}
+              onChange={(e) => set('alertsMuted', e.target.checked)}
+              className="h-[15px] w-[15px] accent-acc"
+            />
+            Silenciar alertas de este servicio
+          </label>
+        </SectionCard>
+
+        {isGit && (
+          <SectionCard
+            icon={<ModuleLogo kind="github" size={14} />}
+            iconClass="bg-txt/[.09] text-txt"
+            title="Auto-deploy"
+            description="Webhook de GitHub — cada push a la rama despliega"
+          >
+            <div className="flex flex-col gap-2 text-xs">
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+                <span className="shrink-0 text-subtle">URL</span>
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate font-mono text-[11px]">{webhookUrl}</span>
+                  <CopyButton value={webhookUrl} />
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+                <span className="text-subtle">Secreto</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="font-mono text-[11px]">••••••••••••</span>
+                  <CopyButton value={cfg.webhookSecret ?? ''} />
+                </span>
+              </div>
+              <p className="text-[11px] text-subtle">
+                En GitHub: Settings → Webhooks → Add webhook. Content type <span className="font-mono">application/json</span>,
+                evento <span className="font-mono">push</span>. Cada push a <span className="font-mono">{form.branch}</span>{' '}
+                desplegará automáticamente.
+              </p>
+            </div>
+          </SectionCard>
+        )}
+
+        <section className="mb-3.5 rounded-xl border border-err/30 bg-err/[.04] p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-[13px] font-semibold text-err">Zona de peligro</h3>
+              <p className="mt-0.5 text-[11px] text-sub">Elimina el servicio y su contenedor. Los volúmenes solo si lo marcas.</p>
+            </div>
+            <Button variant="danger" size="sm" onClick={() => setDeleteOpen(true)}>
+              Eliminar servicio
+            </Button>
           </div>
         </section>
-      )}
-
-      <div className="flex justify-end">
-        <Button onClick={() => save.mutate()} loading={save.isPending}>
-          Guardar cambios
-        </Button>
       </div>
 
-      <section className="rounded-xl border border-err/30 bg-err/5 p-4">
-        <h3 className="text-sm font-medium text-err">Zona de peligro</h3>
-        <p className="mt-1 text-xs text-sub">Elimina el servicio y su contenedor. Los volúmenes solo se borran si lo marcas.</p>
-        <Button variant="danger" size="sm" className="mt-3" onClick={() => setDeleteOpen(true)}>
-          Eliminar servicio
-        </Button>
-      </section>
+      <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-line bg-surface/[.92] px-4 py-2.5 backdrop-blur-lg sm:px-5">
+        {dirty ? (
+          <span className="flex items-center gap-[7px] text-xs text-warn">
+            <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />
+            Tienes cambios sin guardar
+          </span>
+        ) : (
+          <span className="text-xs text-subtle">Sin cambios</span>
+        )}
+        <div className="flex items-center gap-2">
+          {dirty && (
+            <Button variant="ghost" size="sm" onClick={() => setForm(baseline)}>
+              Descartar
+            </Button>
+          )}
+          <Button size="sm" onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty}>
+            Guardar cambios
+          </Button>
+        </div>
+      </div>
 
       <ConfirmModal
         open={deleteOpen}
@@ -313,6 +436,6 @@ export default function ServiceSettingsTab({
           Eliminar también el volumen de datos
         </label>
       </ConfirmModal>
-    </div>
+    </>
   );
 }

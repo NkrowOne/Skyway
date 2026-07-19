@@ -2,6 +2,23 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  /* Fuente canónica de tokens (tokens/_ds_bundle.css) para usos fuera de Tailwind (SVG, color-mix). */
+  --color-bg: oklch(14% 0.01 280);
+  --color-surface: oklch(18% 0.013 280);
+  --color-surface-2: oklch(22% 0.016 280);
+  --color-line: oklch(28% 0.018 280);
+  --color-txt: oklch(96% 0.005 280);
+  --color-sub: oklch(70% 0.015 280);
+  --color-subtle: oklch(55% 0.015 280);
+  --color-acc: #6e56cf;
+  --color-acc-soft: #b9a7ee;
+  --color-ok: oklch(74% 0.16 142);
+  --color-warn: oklch(80% 0.15 80);
+  --color-err: oklch(64% 0.22 25);
+  --color-info: oklch(70% 0.13 220);
+}
+
 html,
 body,
 #root {
@@ -9,7 +26,7 @@ body,
 }
 
 body {
-  @apply bg-ink text-txt font-sans antialiased;
+  @apply bg-bg font-sans text-txt antialiased;
 }
 
 ::selection {
@@ -18,18 +35,31 @@ body {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #2b303c transparent;
+  scrollbar-color: oklch(32% 0.018 280) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #2b303c;
+  background: oklch(32% 0.018 280);
   border-radius: 4px;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Focus ring visible en todo elemento interactivo. */
+:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-acc) 70%, transparent);
+  outline-offset: 2px;
+}
+
+details > summary {
+  list-style: none;
+}
+details > summary::-webkit-details-marker {
+  display: none;
 }
 
 @keyframes pulse-soft {
@@ -45,10 +75,117 @@ body {
   animation: pulse-soft 1.6s ease-in-out infinite;
 }
 
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.overlay-in {
+  animation: overlay-in 0.15s ease-out;
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.panel-in {
+  animation: panel-in 0.18s ease-out;
+}
+
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.drawer-in {
+  animation: drawer-in 0.22s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.toast-in {
+  animation: toast-in 0.2s ease-out;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 .input {
-  @apply w-full rounded-lg border border-line bg-panel2 px-3 py-2 text-sm text-txt placeholder-sub/60 outline-none transition-colors focus:border-acc/70 focus:ring-1 focus:ring-acc/40;
+  @apply w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm text-txt placeholder-subtle outline-none transition-[border-color,box-shadow] duration-150;
+}
+.input:focus {
+  border-color: var(--color-acc);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-acc) 25%, transparent);
 }
 
 .card {
-  @apply rounded-xl border border-line bg-panel;
+  @apply rounded-xl border border-line bg-surface shadow-lvl1;
+}
+
+/* Tarjeta interactiva: borde de marca + lift + sombra tintada al pasar. */
+.card-hover {
+  @apply transition-[border-color,transform,box-shadow] duration-[180ms] ease-out;
+}
+.card-hover:hover {
+  border-color: color-mix(in oklab, var(--color-acc) 55%, var(--color-line));
+  transform: translateY(-1px);
+  @apply shadow-card-hover;
+}
+
+.skeleton {
+  @apply rounded-lg bg-surface2;
+  background-image: linear-gradient(
+    100deg,
+    transparent 30%,
+    color-mix(in oklab, var(--color-txt) 4%, transparent) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.8s linear infinite;
+}
+
+.kbd {
+  @apply rounded-[5px] border border-line bg-surface2 px-1.5 py-px font-mono text-[11px] leading-4 text-sub;
+}
+
+/* Números tabulares para métricas y fechas. */
+.tnum {
+  font-variant-numeric: tabular-nums;
 }

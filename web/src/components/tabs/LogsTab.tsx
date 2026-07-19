@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Download } from 'lucide-react';
 import { openStream } from '../../api';
 import LogViewer from '../LogViewer';
-import { Button } from '../ui';
 
 export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string; replicas?: number }) {
   const [lines, setLines] = useState<string[]>([]);
@@ -24,28 +22,16 @@ export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string
     return () => es.close();
   }, [serviceId]);
 
-  const download = () => {
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `logs-${serviceId}-${new Date().toISOString().slice(0, 19)}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   return (
-    <div className="p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <p className="text-xs text-sub">
-          {notice ?? `${lines.length} líneas en memoria`}
-          {replicas > 1 && <span className="ml-2 text-sub/70">· mostrando la réplica 1 de {replicas}</span>}
-        </p>
-        <Button size="sm" variant="ghost" onClick={download} disabled={lines.length === 0} title="Descargar logs visibles">
-          <Download size={13} /> Descargar
-        </Button>
-      </div>
-      <LogViewer lines={lines} className="h-[calc(100vh-320px)]" />
+    <div className="flex h-full flex-col p-4 sm:px-5">
+      <LogViewer
+        lines={lines}
+        toolbar
+        replicas={replicas}
+        statusNote={notice}
+        downloadName={`logs-${serviceId}-${new Date().toISOString().slice(0, 19)}.txt`}
+        className="min-h-[240px] flex-1"
+      />
     </div>
   );
 }

@@ -61,12 +61,12 @@ export default function SharedVarsModal({
       <p className="mb-4 text-xs text-sub">
         Se inyectan automáticamente en <strong className="text-txt">todos los servicios</strong> del proyecto (si un
         servicio define la misma clave, gana la suya). También puedes referenciarlas con{' '}
-        <span className="font-mono text-acc2">{'${{shared.VAR}}'}</span>. Útiles para lo común de una empresa: SMTP,
+        <span className="font-mono text-info">{'${{shared.VAR}}'}</span>. Útiles para lo común de una empresa: SMTP,
         claves de API, zona horaria, entorno...
       </p>
       <div className="space-y-2">
         {rows.length === 0 && (
-          <p className="py-4 text-center text-sm text-sub/70">
+          <p className="py-4 text-center text-sm text-subtle">
             Sin variables compartidas. Ejemplos típicos: <span className="font-mono text-xs">TZ</span>,{' '}
             <span className="font-mono text-xs">SMTP_HOST</span>, <span className="font-mono text-xs">S3_BUCKET</span>
           </p>
@@ -100,7 +100,7 @@ export default function SharedVarsModal({
                 setRows(rows.filter((_, j) => j !== i));
                 setDirty(true);
               }}
-              className="rounded-md p-1.5 text-sub hover:bg-panel2 hover:text-err"
+              className="rounded-md p-1.5 text-sub hover:bg-surface2 hover:text-err"
             >
               <Trash2 size={13} />
             </button>

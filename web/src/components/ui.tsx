@@ -1,24 +1,30 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Copy, Loader2, X } from 'lucide-react';
-import { cx } from '../utils';
+import { AlertCircle, Check, CheckCircle2, Copy, Info, Loader2, X } from 'lucide-react';
+import { cx, Tone } from '../utils';
 
 // ---------- Button ----------
 type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: 'primary' | 'ghost' | 'danger' | 'outline';
-  size?: 'sm' | 'md';
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger' | 'outline';
+  size?: 'sm' | 'md' | 'lg';
   loading?: boolean;
 };
 
 export function Button({ variant = 'primary', size = 'md', loading, className, children, disabled, ...rest }: ButtonProps) {
-  const base = 'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-acc/60';
+  const base =
+    'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-[background,border-color,color,box-shadow] duration-150 ease-out disabled:opacity-50 disabled:cursor-not-allowed';
   const variants = {
-    primary: 'bg-acc text-white hover:bg-acc/85',
-    ghost: 'bg-transparent text-sub hover:text-txt hover:bg-panel2',
-    danger: 'bg-err/15 text-err border border-err/30 hover:bg-err/25',
-    outline: 'bg-panel2 text-txt border border-line hover:border-acc/60',
+    primary: 'bg-acc text-white hover:bg-[#7d66d9] shadow-[0_2px_8px_-2px_color-mix(in_oklab,#6e56cf_50%,transparent)]',
+    secondary: 'bg-surface2 text-txt border border-line hover:border-acc/50',
+    outline: 'bg-surface2 text-txt border border-line hover:border-acc/50',
+    ghost: 'bg-transparent text-sub hover:text-txt hover:bg-surface2',
+    danger: 'bg-err/[.12] text-err border border-err/35 hover:bg-err/20',
   };
-  const sizes = { sm: 'text-xs px-2.5 py-1.5', md: 'text-sm px-3.5 py-2' };
+  const sizes = {
+    sm: 'h-8 text-xs px-2.5',
+    md: 'h-9 text-[13px] px-3.5',
+    lg: 'h-[42px] text-sm px-4 font-semibold',
+  };
   return (
     <button className={cx(base, variants[variant], sizes[size], className)} disabled={disabled || loading} {...rest}>
       {loading && <Loader2 size={14} className="animate-spin" />}
@@ -27,15 +33,88 @@ export function Button({ variant = 'primary', size = 'md', loading, className, c
   );
 }
 
+// ---------- Kbd ----------
+export function Kbd({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <kbd className={cx('kbd', className)}>{children}</kbd>;
+}
+
 // ---------- Field ----------
-export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+export function Field({
+  label,
+  hint,
+  error,
+  children,
+}: {
+  label: React.ReactNode;
+  hint?: React.ReactNode;
+  error?: string | null;
+  children: React.ReactNode;
+}) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-sub">{label}</span>
+      <span className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-sub">{label}</span>
       {children}
-      {hint && <span className="mt-1 block text-xs text-sub/80">{hint}</span>}
+      {error ? (
+        <span className="mt-1 flex items-center gap-1 text-[11px] text-err">
+          <AlertCircle size={11} /> {error}
+        </span>
+      ) : (
+        hint && <span className="mt-1 block text-[11px] leading-4 text-subtle">{hint}</span>
+      )}
     </label>
   );
+}
+
+// ---------- StatusBadge ----------
+const TONE_BADGE: Record<Tone, string> = {
+  ok: 'bg-ok/[.14] text-ok',
+  warn: 'bg-warn/[.13] text-warn',
+  err: 'bg-err/[.14] text-err',
+  info: 'bg-info/[.13] text-info',
+  neutral: 'bg-surface2 text-sub',
+};
+
+/**
+ * Pill de estado unificado: bg tono/14, dot 5px (pulsa en transitorios) y
+ * texto opcional de réplicas ("· 2/2").
+ */
+export function StatusBadge({
+  tone,
+  label,
+  pulse,
+  replicas,
+  dot = true,
+  className,
+}: {
+  tone: Tone;
+  label: React.ReactNode;
+  pulse?: boolean;
+  replicas?: { running: number; total: number };
+  dot?: boolean;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cx(
+        'inline-flex shrink-0 items-center gap-[5px] whitespace-nowrap rounded-full px-[9px] py-[3px] text-[11px] font-medium',
+        TONE_BADGE[tone],
+        className,
+      )}
+    >
+      {dot && <span className={cx('h-[5px] w-[5px] rounded-full bg-current', pulse && 'pulse-soft')} />}
+      {label}
+      {replicas && replicas.total > 1 && (
+        <span className={cx('tnum', replicas.running < replicas.total && 'text-warn')}>
+          · {replicas.running}/{replicas.total}
+        </span>
+      )}
+    </span>
+  );
+}
+
+// ---------- Skeleton ----------
+export function Skeleton({ className }: { className?: string }) {
+  return <div aria-hidden className={cx('skeleton', className)} />;
 }
 
 // ---------- Modal ----------
@@ -52,25 +131,57 @@ export function Modal({
   children: React.ReactNode;
   wide?: boolean;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
+
   useEffect(() => {
     if (!open) return;
+    previousFocus.current = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      } else if (e.key === 'Tab' && panelRef.current) {
+        // Focus trap sencillo dentro del panel.
+        const focusables = panelRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      previousFocus.current?.focus?.();
+    };
   }, [open, onClose]);
 
   if (!open) return null;
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 pt-[10vh]" onMouseDown={onClose}>
+    <div
+      className="overlay-in fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/55 p-4 pt-[10vh] backdrop-blur-[3px]"
+      onMouseDown={onClose}
+    >
       <div
-        className={cx('card w-full shadow-2xl shadow-black/50', wide ? 'max-w-2xl' : 'max-w-md')}
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className={cx('panel-in w-full rounded-2xl border border-line bg-surface shadow-lvl3', wide ? 'max-w-2xl' : 'max-w-md')}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
           <h2 className="text-sm font-semibold">{title}</h2>
-          <button onClick={onClose} className="rounded-md p-1 text-sub hover:bg-panel2 hover:text-txt">
+          <button onClick={onClose} className="rounded-md p-1 text-sub transition-colors hover:bg-surface2 hover:text-txt" title="Cerrar (esc)">
             <X size={16} />
           </button>
         </div>
@@ -118,37 +229,56 @@ export function ConfirmModal({
 }
 
 // ---------- Tabs ----------
+/** Tabs 13px con subrayado de 2px animado (transición de left/width). */
 export function Tabs({
   tabs,
   active,
   onChange,
+  className,
 }: {
   tabs: { key: string; label: string }[];
   active: string;
   onChange: (key: string) => void;
+  className?: string;
 }) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const [bar, setBar] = useState<{ left: number; width: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const el = listRef.current?.querySelector<HTMLButtonElement>(`[data-tab-key="${CSS.escape(active)}"]`);
+    if (el) setBar({ left: el.offsetLeft + 10, width: el.offsetWidth - 20 });
+  }, [active, tabs.map((t) => t.key).join('|')]);
+
   return (
-    <div className="flex gap-1 border-b border-line px-2">
+    <div
+      ref={listRef}
+      role="tablist"
+      className={cx('relative flex gap-0.5 overflow-x-auto border-b border-line px-2 [scrollbar-width:none]', className)}
+    >
       {tabs.map((t) => (
         <button
           key={t.key}
+          data-tab-key={t.key}
+          role="tab"
+          aria-selected={active === t.key}
           onClick={() => onChange(t.key)}
           className={cx(
-            'relative px-3 py-2.5 text-sm transition-colors',
-            active === t.key ? 'text-txt' : 'text-sub hover:text-txt',
+            'shrink-0 whitespace-nowrap px-3 py-[9px] text-[13px] transition-colors duration-150',
+            active === t.key ? 'font-semibold text-txt' : 'text-sub hover:text-txt',
           )}
         >
           {t.label}
-          {active === t.key && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-acc" />}
         </button>
       ))}
+      {bar && (
+        <span
+          aria-hidden
+          className="absolute bottom-0 h-0.5 rounded-full bg-acc transition-[left,width] duration-200 ease-out"
+          style={{ left: bar.left, width: bar.width }}
+        />
+      )}
     </div>
   );
-}
-
-// ---------- StatusDot ----------
-export function StatusDot({ colorClass, size = 8 }: { colorClass: string; size?: number }) {
-  return <span className={cx('inline-block rounded-full', colorClass)} style={{ width: size, height: size }} />;
 }
 
 // ---------- Spinner ----------
@@ -162,12 +292,12 @@ export function Spinner({ label }: { label?: string }) {
 }
 
 // ---------- CopyButton ----------
-export function CopyButton({ value, className }: { value: string; className?: string }) {
+export function CopyButton({ value, className, title = 'Copiar' }: { value: string; className?: string; title?: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
-      className={cx('rounded-md p-1 text-sub transition-colors hover:bg-panel2 hover:text-txt', className)}
-      title="Copiar"
+      className={cx('rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt', className)}
+      title={title}
       onClick={() => {
         navigator.clipboard.writeText(value).then(() => {
           setCopied(true);
@@ -175,49 +305,83 @@ export function CopyButton({ value, className }: { value: string; className?: st
         });
       }}
     >
-      {copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
+      {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
     </button>
   );
 }
 
 // ---------- Toasts ----------
+interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 interface Toast {
   id: number;
   message: string;
   kind: 'ok' | 'err' | 'info';
+  action?: ToastAction;
 }
 
-const ToastContext = createContext<(message: string, kind?: Toast['kind']) => void>(() => {});
+type PushToast = (message: string, kind?: Toast['kind'], opts?: { action?: ToastAction }) => void;
+
+const ToastContext = createContext<PushToast>(() => {});
 
 export function useToast() {
   return useContext(ToastContext);
 }
 
+const TOAST_ICON = {
+  ok: <CheckCircle2 size={16} className="mt-px shrink-0 text-ok" />,
+  err: <AlertCircle size={16} className="mt-px shrink-0 text-err" />,
+  info: <Info size={16} className="mt-px shrink-0 text-info" />,
+};
+
+const TOAST_TITLE = { ok: 'Hecho', err: 'Algo ha fallado', info: 'Aviso' };
+
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const idRef = useRef(0);
 
-  const push = useCallback((message: string, kind: Toast['kind'] = 'info') => {
+  const dismiss = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), []);
+
+  const push = useCallback<PushToast>((message, kind = 'info', opts) => {
     const id = ++idRef.current;
-    setToasts((t) => [...t, { id, message, kind }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4000);
-  }, []);
+    // Pila de máximo 3: la más antigua sale.
+    setToasts((t) => [...t.slice(-2), { id, message, kind, action: opts?.action }]);
+    setTimeout(() => dismiss(id), 5000);
+  }, [dismiss]);
 
   return (
     <ToastContext.Provider value={push}>
       {children}
       {createPortal(
-        <div className="fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2">
+        <div className="fixed bottom-5 right-5 z-[60] flex w-[340px] max-w-[calc(100vw-24px)] flex-col gap-2">
           {toasts.map((t) => (
             <div
               key={t.id}
-              className={cx(
-                'card px-4 py-3 text-sm shadow-xl shadow-black/40',
-                t.kind === 'ok' && 'border-ok/40',
-                t.kind === 'err' && 'border-err/40',
-              )}
+              role="status"
+              className="toast-in flex items-start gap-2.5 rounded-xl border border-line bg-surface2 px-3.5 py-3 shadow-toast"
             >
-              {t.message}
+              {TOAST_ICON[t.kind]}
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-semibold leading-snug">{TOAST_TITLE[t.kind]}</p>
+                <p className="mt-0.5 text-xs leading-snug text-sub">{t.message}</p>
+                {t.action && (
+                  <button
+                    className="mt-2 text-xs font-semibold text-acc-soft hover:underline"
+                    onClick={() => {
+                      t.action?.onClick();
+                      dismiss(t.id);
+                    }}
+                  >
+                    {t.action.label} →
+                  </button>
+                )}
+              </div>
+              <button onClick={() => dismiss(t.id)} className="rounded-md p-1 text-subtle hover:text-txt" title="Cerrar">
+                <X size={13} />
+              </button>
             </div>
           ))}
         </div>,
