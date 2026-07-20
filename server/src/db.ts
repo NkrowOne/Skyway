@@ -142,6 +142,20 @@ export function initDb(): void {
   ensureColumn('deployments', 'diagnosis', 'TEXT');
   ensureColumn('users', 'role', "TEXT NOT NULL DEFAULT 'admin'"); // los usuarios previos eran el dueño
   ensureColumn('users', 'session_epoch', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('projects', 'status_token', 'TEXT');
+  ensureColumn('projects', 'status_enabled', 'INTEGER NOT NULL DEFAULT 0');
+
+  // Histórico de disponibilidad agregado por horas (para las páginas de estado):
+  // una fila por servicio y hora, con muestras totales y muestras "en marcha".
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS uptime_hourly (
+      service_id TEXT NOT NULL,
+      hour INTEGER NOT NULL,
+      up INTEGER NOT NULL DEFAULT 0,
+      total INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (service_id, hour)
+    );
+  `);
 }
 
 function ensureColumn(table: string, column: string, ddl: string): void {
@@ -300,7 +314,9 @@ export function setSetting(key: string, value: string | null): void {
 
 // ---------- projects ----------
 export function createProject(name: string, slug: string, client: string | null = null): ProjectRow {
-  const row: ProjectRow = { id: id('prj'), name, slug, client, created_at: now() };
+  const row: ProjectRow = {
+    id: id('prj'), name, slug, client, created_at: now(), status_token: null, status_enabled: 0,
+  };
   db.prepare('INSERT INTO projects (id, name, slug, client, created_at) VALUES (?, ?, ?, ?, ?)').run(
     row.id, row.name, row.slug, row.client, row.created_at,
   );
@@ -325,6 +341,60 @@ export function updateProjectMeta(projectId: string, name: string, client: strin
 
 export function deleteProject(projectId: string): void {
   db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
+}
+
+// ---------- página de estado pública ----------
+export function getProjectByStatusToken(token: string): ProjectRow | undefined {
+  return db
+    .prepare('SELECT * FROM projects WHERE status_token = ? AND status_enabled = 1')
+    .get(token) as ProjectRow | undefined;
+}
+
+export function setProjectStatusPage(projectId: string, enabled: boolean, token?: string | null): void {
+  if (token !== undefined) {
+    db.prepare('UPDATE projects SET status_enabled = ?, status_token = ? WHERE id = ?')
+      .run(enabled ? 1 : 0, token, projectId);
+  } else {
+    db.prepare('UPDATE projects SET status_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, projectId);
+  }
+}
+
+// ---------- histórico de disponibilidad ----------
+/** Registra una muestra del monitor (una por servicio y tick) agregada por hora. */
+export function recordUptimeSample(serviceId: string, up: boolean): void {
+  const hour = Math.floor(now() / 3_600_000);
+  db.prepare(
+    `INSERT INTO uptime_hourly (service_id, hour, up, total) VALUES (?, ?, ?, 1)
+     ON CONFLICT(service_id, hour) DO UPDATE SET up = up + excluded.up, total = total + 1`,
+  ).run(serviceId, hour, up ? 1 : 0);
+}
+
+/** Disponibilidad acumulada de las últimas `hours` horas: NULL si no hay datos. */
+export function uptimePercent(serviceId: string, hours: number): number | null {
+  const from = Math.floor(now() / 3_600_000) - hours;
+  const row = db
+    .prepare('SELECT SUM(up) AS up, SUM(total) AS total FROM uptime_hourly WHERE service_id = ? AND hour > ?')
+    .get(serviceId, from) as { up: number | null; total: number | null };
+  if (!row.total) return null;
+  return Math.round(((row.up ?? 0) / row.total) * 10000) / 100;
+}
+
+/** Disponibilidad por día (UTC) de los últimos `days` días, para las barras de la página de estado. */
+export function uptimeDaily(serviceId: string, days: number): { day: number; up: number; total: number }[] {
+  const fromHour = Math.floor(now() / 3_600_000) - days * 24;
+  return db
+    .prepare(
+      `SELECT (hour / 24) AS day, SUM(up) AS up, SUM(total) AS total
+       FROM uptime_hourly WHERE service_id = ? AND hour > ? GROUP BY day ORDER BY day ASC`,
+    )
+    .all(serviceId, fromHour) as { day: number; up: number; total: number }[];
+}
+
+/** Borra el histórico de disponibilidad viejo y el de servicios eliminados. */
+export function pruneUptime(keepDays = 92): void {
+  const cutoff = Math.floor(now() / 3_600_000) - keepDays * 24;
+  db.prepare('DELETE FROM uptime_hourly WHERE hour < ?').run(cutoff);
+  db.prepare('DELETE FROM uptime_hourly WHERE service_id NOT IN (SELECT id FROM services)').run();
 }
 
 // ---------- services ----------

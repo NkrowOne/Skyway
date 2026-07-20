@@ -95,6 +95,7 @@ export const ALERT_TYPE_LABEL: Record<string, string> = {
   mem_high: 'Memoria alta',
   deploy_failed: 'Despliegue fallido',
   backup_failed: 'Backup fallido',
+  disk_quota: 'Espacio asignado superado',
 };
 
 export const AUDIT_ACTION_LABEL: Record<string, string> = {
@@ -130,6 +131,9 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   backup_restored: 'Backup restaurado',
   backup_deleted: 'Backup eliminado',
   system_prune: 'Espacio liberado (prune)',
+  db_query: 'Consulta en base de datos',
+  status_page_updated: 'Página de estado actualizada',
+  status_page_rotated: 'Enlace de página de estado rotado',
 };
 
 export function fmtDateTime(ts: number): string {

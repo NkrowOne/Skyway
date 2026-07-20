@@ -13,7 +13,7 @@ export const config = {
     : path.resolve(__dirname, '../../web/dist'),
   jwtSecretEnv: process.env.JWT_SECRET || null,
   buildConcurrency: Number(process.env.BUILD_CONCURRENCY || 2),
-  version: '0.9.1',
+  version: '0.10.0',
 };
 
 export function ensureDataDirs(): void {

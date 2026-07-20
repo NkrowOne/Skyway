@@ -77,6 +77,7 @@ const patchSchema = z.object({
       hostPort: z.coerce.number().int().min(1).max(65535).nullable().optional(),
       cpus: z.coerce.number().min(0.1).max(64).nullable().optional(),
       memoryMb: z.coerce.number().int().min(32).max(1024 * 512).nullable().optional(),
+      diskMb: z.coerce.number().int().min(64).max(1024 * 1024).nullable().optional(),
       version: z.string().trim().optional(),
       image: z.string().trim().min(1).optional(),
       healthcheckPath: z.string().trim().max(200).nullable().optional(),

@@ -2,12 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import {
+  Activity,
   AlertTriangle,
   Bell,
   BellRing,
   Boxes,
   Building2,
   ChevronRight,
+  Globe,
   Keyboard,
   LogOut,
   Rocket,
@@ -42,6 +44,8 @@ const PAGE_LABEL: Record<string, string> = {
   '/alerts': 'Alertas',
   '/users': 'Usuarios',
   '/account': 'Mi cuenta',
+  '/monitor': 'Monitor',
+  '/sites': 'Sitios web',
 };
 
 // ---------- Paleta de comandos (⌘K) ----------
@@ -87,6 +91,22 @@ function CommandPalette({ open, onClose, unread, isAdmin }: { open: boolean; onC
       to: `/projects/${p.id}`,
     }));
     const actions: PaletteItem[] = [
+      {
+        key: 'a-monitor',
+        group: 'Acciones rápidas',
+        icon: <Activity size={15} className="text-subtle" />,
+        label: 'Monitor: todos los servicios y buscador de logs',
+        keywords: 'monitor debug logs estado cpu ram disco buscar depurar',
+        to: '/monitor',
+      },
+      {
+        key: 'a-sites',
+        group: 'Acciones rápidas',
+        icon: <Globe size={15} className="text-subtle" />,
+        label: 'Sitios web desplegados',
+        keywords: 'sitios webs dominios paginas tls https',
+        to: '/sites',
+      },
       {
         key: 'a-alerts',
         group: 'Acciones rápidas',
@@ -257,6 +277,8 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
   const rows: { label: string; keys: string[] }[] = [
     { label: 'Paleta de comandos', keys: ['⌘K'] },
     { label: 'Ir a proyectos', keys: ['g', 'p'] },
+    { label: 'Ir al monitor', keys: ['g', 'm'] },
+    { label: 'Ir a sitios web', keys: ['g', 'w'] },
     { label: 'Ir a seguridad', keys: ['g', 's'] },
     { label: 'Ir a alertas', keys: ['g', 'a'] },
     { label: 'Cerrar drawer / modales', keys: ['esc'] },
@@ -454,7 +476,9 @@ export default function Layout() {
         return;
       }
       if (pendingG.current) {
-        const dest = { p: '/', s: '/security', a: '/alerts' }[e.key as 'p' | 's' | 'a'];
+        const dest = { p: '/', s: '/security', a: '/alerts', m: '/monitor', w: '/sites' }[
+          e.key as 'p' | 's' | 'a' | 'm' | 'w'
+        ];
         window.clearTimeout(pendingG.current);
         pendingG.current = null;
         if (dest) {
@@ -539,6 +563,20 @@ export default function Layout() {
               </span>
             </div>
           )}
+          <Link
+            to="/monitor"
+            className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+            title="Monitor (g m)"
+          >
+            <Activity size={16} />
+          </Link>
+          <Link
+            to="/sites"
+            className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+            title="Sitios web (g w)"
+          >
+            <Globe size={16} />
+          </Link>
           <AlertBell />
           {isAdmin && (
             <>

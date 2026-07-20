@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { FileText, KeyRound, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import { FileText, KeyRound, Pencil, Plus, RefreshCw, Signal, Trash2, X } from 'lucide-react';
 import { api, openStream } from '../api';
 import { Button, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } from '../components/ui';
 import NewServiceModal from '../components/NewServiceModal';
@@ -9,6 +9,7 @@ import { ImportReport, ImportReportView } from '../components/RailwayImportModal
 import ServiceCard from '../components/ServiceCard';
 import ServiceDrawer from '../components/ServiceDrawer';
 import SharedVarsModal from '../components/SharedVarsModal';
+import StatusPageModal from '../components/StatusPageModal';
 import { Me, MetricsSnapshot, Project, Service } from '../types';
 
 export interface MetricPoint {
@@ -103,6 +104,7 @@ export default function ProjectPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteVolumes, setDeleteVolumes] = useState(false);
   const [sharedOpen, setSharedOpen] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
   const [editClient, setEditClient] = useState('');
@@ -227,6 +229,15 @@ export default function ProjectPage() {
               variant="secondary"
               size="sm"
               className="max-sm:h-11 max-sm:min-w-11"
+              onClick={() => setStatusOpen(true)}
+              title="Página de estado pública para el cliente"
+            >
+              <Signal size={13} /> <span className="hidden sm:inline">Página de estado</span>
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="max-sm:h-11 max-sm:min-w-11"
               onClick={() => setSharedOpen(true)}
               title="Variables compartidas del proyecto"
             >
@@ -333,6 +344,8 @@ export default function ProjectPage() {
       />
 
       <SharedVarsModal open={sharedOpen} onClose={() => setSharedOpen(false)} projectId={proj.id} />
+
+      <StatusPageModal open={statusOpen} onClose={() => setStatusOpen(false)} projectId={proj.id} isAdmin={!!isAdmin} />
 
       {importReport.data?.report && (
         <Modal open={reportOpen} onClose={() => setReportOpen(false)} title="Informe de importación de Railway" wide>

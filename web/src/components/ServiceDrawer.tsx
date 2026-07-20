@@ -9,6 +9,7 @@ import { cx, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
 import ExecModal from './ExecModal';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import BackupsTab from './tabs/BackupsTab';
+import DbConsoleTab from './tabs/DbConsoleTab';
 import DeploymentsTab from './tabs/DeploymentsTab';
 import LogsTab from './tabs/LogsTab';
 import MetricsTab from './tabs/MetricsTab';
@@ -17,6 +18,7 @@ import VariablesTab from './tabs/VariablesTab';
 import { Button, Skeleton, StatusBadge, Tabs, useToast } from './ui';
 
 const BACKUP_TEMPLATES = ['postgres', 'mysql', 'mongo'];
+const CONSOLE_TEMPLATES = ['postgres', 'mysql', 'mongo', 'redis'];
 
 export default function ServiceDrawer({
   serviceId,
@@ -121,8 +123,10 @@ export default function ServiceDrawer({
   const replicas = latestMetrics?.services[serviceId]?.replicas;
   const isRunning = state === 'running' || state === 'restarting';
   const hasBackups = service.type === 'database' && BACKUP_TEMPLATES.includes(service.config.template);
+  const hasDbConsole = service.type === 'database' && CONSOLE_TEMPLATES.includes(service.config.template);
   const tabs = [
     { key: 'deployments', label: 'Despliegues' },
+    ...(hasDbConsole ? [{ key: 'db', label: 'Consultas' }] : []),
     { key: 'variables', label: 'Variables' },
     ...(hasBackups ? [{ key: 'backups', label: 'Backups' }] : []),
     { key: 'metrics', label: 'Métricas' },
@@ -269,6 +273,7 @@ export default function ServiceDrawer({
 
       <div className="relative min-h-0 flex-1 overflow-y-auto" role="tabpanel">
         {tab === 'deployments' && <DeploymentsTab serviceId={serviceId} serviceType={service.type} />}
+        {tab === 'db' && <DbConsoleTab serviceId={serviceId} />}
         {tab === 'variables' && <VariablesTab serviceId={serviceId} onSaved={invalidate} onDeploy={() => deploy.mutate()} />}
         {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
         {tab === 'metrics' && <MetricsTab serviceId={serviceId} latest={latestMetrics} historyRef={historyRef} />}

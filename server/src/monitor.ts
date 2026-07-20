@@ -1,13 +1,17 @@
 import os from 'os';
 import { fireAlert, resolveServiceAlerts } from './alerts';
-import { getSetting, listProjects, listServices } from './db';
+import { getSetting, listProjects, listServices, pruneUptime, recordUptimeSample } from './db';
+import { diskUsageByService } from './disk';
 import { dockerAvailable } from './docker/client';
 import { configuredReplicas, getRuntime, getStats, replicaName } from './docker/containers';
 import { explainExitCode } from './deploy/diagnose';
 import { ContainerState } from './types';
+import { fmtBytesEs } from './util';
 
 const TICK_MS = 30_000;
 const RESTART_WINDOW_MS = 10 * 60_000;
+/** Cada cuántos ticks se revisan las cuotas de disco (~5 min). */
+const DISK_CHECK_EVERY = 10;
 
 interface Tracked {
   state: ContainerState;
@@ -47,6 +51,8 @@ async function tick(): Promise<void> {
   for (const project of listProjects()) {
     for (const service of listServices(project.id)) {
       const totalReplicas = configuredReplicas(service);
+      let runningReplicas = 0;
+      let anyReplicaSeen = false;
       for (let idx = 1; idx <= totalReplicas; idx++) {
       const name = replicaName(project, service, idx);
       const trackKey = `${service.id}#${idx}`;
@@ -57,6 +63,8 @@ async function tick(): Promise<void> {
       } catch {
         continue;
       }
+      if (runtime.state !== 'not_created') anyReplicaSeen = true;
+      if (runtime.state === 'running') runningReplicas += 1;
       const prev = tracked.get(trackKey);
       const entry: Tracked = prev ?? {
         state: runtime.state,
@@ -159,6 +167,11 @@ async function tick(): Promise<void> {
       entry.state = runtime.state;
       tracked.set(trackKey, entry);
       }
+
+      // Muestra de disponibilidad para las páginas de estado: cuenta como "en
+      // marcha" si al menos una réplica corre. Antes del primer despliegue no
+      // se registra nada (no penaliza el uptime).
+      if (anyReplicaSeen) recordUptimeSample(service.id, runningReplicas > 0);
     }
   }
 
@@ -168,12 +181,58 @@ async function tick(): Promise<void> {
   for (const key of tracked.keys()) if (!alive.has(key.split('#')[0])) tracked.delete(key);
 }
 
+/**
+ * Vigila las cuotas de disco por servicio (config.diskMb): alerta al superar
+ * la cuota y avisa antes (90%) para dar margen de reacción.
+ */
+async function checkDiskQuotas(): Promise<void> {
+  if (!(await dockerAvailable())) return;
+  const usage = await diskUsageByService();
+  for (const project of listProjects()) {
+    for (const service of listServices(project.id)) {
+      const du = usage.get(service.id);
+      if (!du || !du.quotaMb) continue;
+      const quotaBytes = du.quotaMb * 1024 * 1024;
+      const pct = (du.totalBytes / quotaBytes) * 100;
+      if (pct >= 100) {
+        fireAlert({
+          severity: 'warning',
+          type: 'disk_quota',
+          serviceId: service.id,
+          title: `Espacio asignado superado: ${service.name}`,
+          message: `"${service.name}" (${project.name}) usa ${fmtBytesEs(du.totalBytes)} de los ${du.quotaMb} MB asignados (${Math.round(pct)}%).`,
+          explanation:
+            'La cuota es orientativa: el servicio sigue funcionando, pero está ocupando más disco del previsto. Revisa qué crece (datos de la base, uploads, logs) desde Monitor → Espacio, amplía la cuota en Ajustes del servicio o libera espacio.',
+          dedupe: true,
+        });
+      } else if (pct < 90) {
+        resolveServiceAlerts(service.id, 'disk_quota', false);
+      }
+    }
+  }
+}
+
 let interval: NodeJS.Timeout | null = null;
+let tickCount = 0;
+let lastPrune = 0;
 
 export function startMonitor(log: { warn: (msg: string) => void }): void {
   if (interval) return;
   interval = setInterval(() => {
     tick().catch((err) => log.warn(`monitor: ${err?.message || err}`));
+    tickCount += 1;
+    if (tickCount % DISK_CHECK_EVERY === 0) {
+      checkDiskQuotas().catch((err) => log.warn(`monitor disco: ${err?.message || err}`));
+    }
+    // Poda diaria del histórico de disponibilidad (se conservan ~92 días).
+    if (Date.now() - lastPrune > 24 * 3600_000) {
+      lastPrune = Date.now();
+      try {
+        pruneUptime();
+      } catch (err: any) {
+        log.warn(`monitor prune: ${err?.message || err}`);
+      }
+    }
   }, TICK_MS);
   interval.unref();
 }

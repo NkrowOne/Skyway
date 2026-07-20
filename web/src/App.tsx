@@ -7,20 +7,34 @@ import AccountPage from './pages/Account';
 import AlertsPage from './pages/Alerts';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
+import MonitorPage from './pages/Monitor';
 import ProjectPage from './pages/Project';
+import PublicStatusPage from './pages/PublicStatus';
 import SecurityPage from './pages/Security';
 import SettingsPage from './pages/Settings';
 import Setup from './pages/Setup';
+import SitesPage from './pages/Sites';
 import UsersPage from './pages/Users';
 import { Me } from './types';
 
 export default function App() {
   const location = useLocation();
+  // La página de estado pública no requiere sesión (la ven los clientes).
+  const isPublic = location.pathname.startsWith('/status/');
   const me = useQuery({
     queryKey: ['me'],
     queryFn: () => api.get<Me>('/auth/me'),
     staleTime: 60_000,
+    enabled: !isPublic,
   });
+
+  if (isPublic) {
+    return (
+      <Routes>
+        <Route path="/status/:token" element={<PublicStatusPage />} />
+      </Routes>
+    );
+  }
 
   if (me.isLoading) {
     return (
@@ -52,6 +66,8 @@ export default function App() {
       <Route element={<Layout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/projects/:projectId" element={<ProjectPage />} />
+        <Route path="/monitor" element={<MonitorPage />} />
+        <Route path="/sites" element={<SitesPage />} />
         <Route path="/account" element={<AccountPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
         {user?.role === 'admin' && (

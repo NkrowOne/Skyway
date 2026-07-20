@@ -186,6 +186,9 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
   const hostConfig: Docker.HostConfig = {
     RestartPolicy: { Name: spec.restartPolicy ?? 'unless-stopped' },
     Binds: withVolumes ? (spec.volumes || []).map((v) => `${v.name}:${v.containerPath}`) : [],
+    // Rotación de logs: sin esto, el json-log de un contenedor parlanchín
+    // crece sin límite y acaba llenando el disco del servidor.
+    LogConfig: { Type: 'json-file', Config: { 'max-size': '10m', 'max-file': '3' } },
   };
   if (spec.cpus && spec.cpus > 0) hostConfig.NanoCpus = Math.round(spec.cpus * 1e9);
   if (spec.memoryMb && spec.memoryMb > 0) hostConfig.Memory = Math.round(spec.memoryMb * 1024 * 1024);
@@ -241,7 +244,7 @@ export interface ExecResult {
 export async function execInContainer(
   name: string,
   command: string,
-  opts: { timeoutMs?: number; maxOutput?: number } = {},
+  opts: { timeoutMs?: number; maxOutput?: number; env?: string[] } = {},
 ): Promise<ExecResult> {
   const timeoutMs = opts.timeoutMs ?? 60_000;
   const maxOutput = opts.maxOutput ?? 200_000;
@@ -249,6 +252,9 @@ export async function execInContainer(
   const container = docker.getContainer(name);
   const exec = await container.exec({
     Cmd: ['sh', '-c', command],
+    // Env extra del exec: permite pasar datos (p. ej. una consulta SQL) sin
+    // interpolarlos en el shell, evitando cualquier problema de escapado.
+    Env: opts.env && opts.env.length > 0 ? opts.env : undefined,
     AttachStdout: true,
     AttachStderr: true,
   });
@@ -338,6 +344,55 @@ export async function getStats(name: string): Promise<ServiceStats | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Separa un buffer de logs multiplexado de Docker (frames de 8 bytes de
+ * cabecera) en texto plano. Si el contenedor corre con TTY el buffer ya es
+ * texto crudo, y se devuelve tal cual.
+ */
+function demuxLogBuffer(buf: Buffer): string {
+  let out = '';
+  let offset = 0;
+  while (offset + 8 <= buf.length) {
+    const type = buf[offset];
+    const zeros = buf[offset + 1] === 0 && buf[offset + 2] === 0 && buf[offset + 3] === 0;
+    const size = buf.readUInt32BE(offset + 4);
+    if ((type !== 0 && type !== 1 && type !== 2) || !zeros || offset + 8 + size > buf.length) {
+      // No parece multiplexado (contenedor con TTY): texto crudo.
+      return buf.toString('utf8');
+    }
+    out += buf.slice(offset + 8, offset + 8 + size).toString('utf8');
+    offset += 8 + size;
+  }
+  return out;
+}
+
+/** Devuelve las últimas líneas de log de un contenedor (sin seguir el stream). */
+export async function fetchLogsTail(
+  name: string,
+  tail = 400,
+  timestamps = true,
+): Promise<{ ts: number | null; line: string }[]> {
+  const c = docker.getContainer(name);
+  const raw = (await c.logs({ follow: false, stdout: true, stderr: true, tail, timestamps })) as unknown as Buffer;
+  const text = Buffer.isBuffer(raw) ? demuxLogBuffer(raw) : String(raw);
+  const out: { ts: number | null; line: string }[] = [];
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    if (!line) continue;
+    if (timestamps) {
+      // Formato: 2024-05-01T12:00:00.000000000Z <línea>
+      const idx = line.indexOf(' ');
+      const ts = idx > 0 ? Date.parse(line.slice(0, idx)) : NaN;
+      if (Number.isFinite(ts)) {
+        out.push({ ts, line: line.slice(idx + 1) });
+        continue;
+      }
+    }
+    out.push({ ts: null, line });
+  }
+  return out;
 }
 
 /**
