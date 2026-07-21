@@ -7,18 +7,12 @@ import MetricChart from '../MetricChart';
 function NetTile({ dir, value }: { dir: 'rx' | 'tx'; value: string }) {
   const rx = dir === 'rx';
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-line bg-bg px-4 py-3.5">
-      <span
-        className={`flex h-[30px] w-[30px] items-center justify-center rounded-lg ${
-          rx ? 'bg-ok/[.13] text-ok' : 'bg-info/[.13] text-info'
-        }`}
-      >
-        {rx ? <ArrowDown size={15} /> : <ArrowUp size={15} />}
-      </span>
-      <div>
-        <p className="text-[11px] text-subtle">Red — {rx ? 'recibido' : 'enviado'}</p>
-        <p className="tnum mt-px text-sm font-semibold">{value}</p>
-      </div>
+    <div className="rounded-xl border border-line bg-bg px-4 py-3.5">
+      <p className="flex items-center gap-1.5 text-[11px] text-subtle">
+        {rx ? <ArrowDown size={12} className="text-ok" /> : <ArrowUp size={12} className="text-info" />}
+        Red — {rx ? 'recibido' : 'enviado'}
+      </p>
+      <p className="tnum mt-1 text-sm font-semibold">{value}</p>
     </div>
   );
 }

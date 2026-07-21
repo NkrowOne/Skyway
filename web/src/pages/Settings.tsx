@@ -56,13 +56,16 @@ function SettingsSection({
 }) {
   return (
     <section className="card p-5">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2.5">
-        <div className="flex items-center gap-2.5">
-          <span className={cx('flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg', iconClass)}>{icon}</span>
-          <div>
-            <h2 className="text-sm font-semibold">{title}</h2>
-            <p className="mt-px text-xs text-subtle">{description}</p>
-          </div>
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-2.5">
+        <div>
+          {/* El icono anota el título a escala de texto; el tono aporta el matiz semántico. */}
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <span aria-hidden className={cx('[&>svg]:block', iconClass)}>
+              {icon}
+            </span>
+            {title}
+          </h2>
+          <p className="mt-1 text-xs text-subtle">{description}</p>
         </div>
         {aside}
       </div>
@@ -228,7 +231,7 @@ export default function SettingsPage() {
 
       <SettingsSection
         icon={<Globe size={15} />}
-        iconClass="bg-info/[.13] text-info"
+        iconClass="text-info"
         title="Dominios y TLS"
         description="Subdominios en un clic y certificados automáticos"
       >
@@ -274,7 +277,7 @@ export default function SettingsPage() {
 
       <SettingsSection
         icon={<ModuleLogo kind="github" size={15} />}
-        iconClass="bg-txt/[.09] text-txt"
+        iconClass="text-txt"
         title="GitHub"
         description={
           <>
@@ -345,7 +348,7 @@ export default function SettingsPage() {
 
       <SettingsSection
         icon={<BellRing size={15} />}
-        iconClass="bg-warn/[.13] text-warn"
+        iconClass="text-warn"
         title="Alertas y notificaciones"
         description="Caídas, bucles de reinicio y CPU/RAM sostenidas — sin tener el panel abierto"
       >
@@ -405,7 +408,7 @@ export default function SettingsPage() {
       {sys && (
         <SettingsSection
           icon={<Cpu size={15} />}
-          iconClass="bg-acc/[.15] text-acc-soft"
+          iconClass="text-acc-soft"
           title="Sistema"
           description="Estado del host y uso de disco de Docker"
           aside={
@@ -457,7 +460,7 @@ export default function SettingsPage() {
         </SettingsSection>
       )}
 
-      <div className="sticky bottom-0 mt-1 flex items-center justify-end gap-2.5 border-t border-line bg-bg/90 py-3 backdrop-blur-lg">
+      <div className="safe-b sticky bottom-0 mt-1 flex items-center justify-end gap-2.5 border-t border-line bg-bg/90 py-3 backdrop-blur-lg">
         <span className="text-xs text-subtle">Los cambios se aplican al guardar</span>
         <Button onClick={() => save.mutate()} loading={save.isPending} success={saved}>
           Guardar ajustes

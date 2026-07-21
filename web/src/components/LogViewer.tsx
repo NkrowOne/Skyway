@@ -29,7 +29,7 @@ function ToolButton({
       onClick={onClick}
       disabled={disabled}
       className={cx(
-        'rounded-lg p-[7px] leading-none transition-colors duration-150 disabled:opacity-40',
+        'press rounded-lg p-[7px] leading-none disabled:opacity-40',
         active ? 'bg-acc/[.14] text-acc-soft' : 'text-subtle hover:bg-surface2 hover:text-txt',
       )}
     >
@@ -145,7 +145,7 @@ export default function LogViewer({
               <ArrowDownToLine size={14} />
             </ToolButton>
             <ToolButton title="Copiar logs visibles" onClick={copyAll} disabled={visible.length === 0}>
-              {copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
+              {copied ? <Check size={14} className="pop-in text-ok" /> : <Copy size={14} />}
             </ToolButton>
             <ToolButton title="Descargar" onClick={download} disabled={visible.length === 0}>
               <Download size={14} />
@@ -185,7 +185,7 @@ export default function LogViewer({
         </div>
         {follow ? (
           toolbar && (
-            <span className="pointer-events-none absolute bottom-2.5 right-3 inline-flex items-center gap-[5px] rounded-full border border-ok/35 bg-[color-mix(in_oklab,var(--color-ok)_16%,oklch(14%_0.01_280))] px-2.5 py-[3px] text-[11px] font-medium text-ok">
+            <span className="badge-in pointer-events-none absolute bottom-2.5 right-3 inline-flex items-center gap-[5px] rounded-full border border-ok/35 bg-[color-mix(in_oklab,var(--color-ok)_16%,oklch(14%_0.01_280))] px-2.5 py-[3px] text-[11px] font-medium text-ok">
               <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-current" />
               Siguiendo
             </span>
@@ -193,7 +193,7 @@ export default function LogViewer({
         ) : (
           <button
             onClick={() => jump('bottom')}
-            className="absolute bottom-2.5 right-3 rounded-full border border-line bg-surface2 px-3 py-1 text-xs text-sub shadow-lvl1 transition-colors hover:text-txt"
+            className="badge-in press absolute bottom-2.5 right-3 rounded-full border border-line bg-surface2 px-3 py-1 text-xs text-sub shadow-lvl1 hover:text-txt"
           >
             ↓ Seguir
           </button>

@@ -15,7 +15,7 @@ import LogsTab from './tabs/LogsTab';
 import MetricsTab from './tabs/MetricsTab';
 import ServiceSettingsTab from './tabs/ServiceSettingsTab';
 import VariablesTab from './tabs/VariablesTab';
-import { Button, Skeleton, StatusBadge, Tabs, useToast } from './ui';
+import { Button, Skeleton, StatusBadge, Tabs, useFlash, useToast } from './ui';
 
 const BACKUP_TEMPLATES = ['postgres', 'mysql', 'mongo'];
 const CONSOLE_TEMPLATES = ['postgres', 'mysql', 'mongo', 'redis'];
@@ -26,6 +26,7 @@ export default function ServiceDrawer({
   projectName,
   latestMetrics,
   historyRef,
+  closing = false,
   onClose,
 }: {
   serviceId: string;
@@ -33,6 +34,8 @@ export default function ServiceDrawer({
   projectName: string;
   latestMetrics: MetricsSnapshot | null;
   historyRef: React.MutableRefObject<Map<string, MetricPoint[]>>;
+  /** El padre mantiene el drawer montado mientras se despide (usePresence). */
+  closing?: boolean;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState('deployments');
@@ -41,6 +44,14 @@ export default function ServiceDrawer({
   const fullscreen = useMediaQuery('(max-width: 899px)');
   const toast = useToast();
   const queryClient = useQueryClient();
+  // Dos fases de anchura (0 → objetivo) para que el canvas haga sitio con la misma transición.
+  const [entered, setEntered] = useState(false);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setEntered(true));
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  // Momento de la firma: el cohete despega al ordenar un despliegue.
+  const [launching, launch] = useFlash(700);
 
   // Esc cierra el drawer, salvo que haya un modal/paleta abierto por encima.
   useEffect(() => {
@@ -85,12 +96,18 @@ export default function ServiceDrawer({
   });
 
   const asideCls = cx(
-    'drawer-in flex flex-col bg-surface',
+    'flex flex-col bg-surface',
     fullscreen
-      ? 'fixed inset-0 z-40'
-      : 'min-h-0 shrink-0 border-l border-line shadow-drawer transition-[width] duration-200 ease-out',
+      ? // Móvil: entra y sale como una página apilada (push de navegación).
+        cx('fixed inset-0 z-40', closing ? 'push-out' : 'push-in')
+      : cx(
+          'min-h-0 shrink-0 overflow-hidden border-l border-line shadow-drawer transition-[width,opacity] duration-[220ms] ease-[cubic-bezier(.25,.8,.3,1)]',
+          closing ? 'opacity-0' : 'drawer-in',
+        ),
   );
-  const asideStyle = fullscreen ? undefined : { width: wide ? 'min(840px, calc(100vw - 64px))' : 'min(600px, calc(100vw - 64px))' };
+  // La anchura anima de 0 al objetivo al entrar y de vuelta a 0 al salir: el canvas hace sitio en el mismo gesto.
+  const targetWidth = wide ? 'min(840px, calc(100vw - 64px))' : 'min(600px, calc(100vw - 64px))';
+  const asideStyle = fullscreen ? undefined : { width: entered && !closing ? targetWidth : 0 };
 
   if (!detail.data) {
     return (
@@ -147,13 +164,13 @@ export default function ServiceDrawer({
         <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
           <button
             onClick={onClose}
-            className="flex min-h-10 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-sub transition-colors hover:bg-surface2 hover:text-txt"
+            className="press flex min-h-10 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-sub hover:bg-surface2 hover:text-txt"
           >
             <ChevronLeft size={15} /> {projectName}
           </button>
           <button
             onClick={onClose}
-            className="ml-auto flex min-h-10 min-w-10 items-center justify-center rounded-lg leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+            className="press ml-auto flex min-h-10 min-w-10 items-center justify-center rounded-lg leading-none text-subtle hover:bg-surface2 hover:text-txt"
             title="Cerrar (esc)"
           >
             <X size={17} />
@@ -183,14 +200,14 @@ export default function ServiceDrawer({
             <div className="flex shrink-0 items-center gap-0.5">
               <button
                 onClick={() => setWide(!wide)}
-                className="rounded-lg p-[7px] leading-none text-subtle transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+                className="press rounded-lg p-[7px] leading-none text-subtle hover:bg-surface2 hover:text-txt"
                 title="Cambiar ancho del panel"
               >
                 <MoveHorizontal size={15} />
               </button>
               <button
                 onClick={onClose}
-                className="rounded-lg p-[7px] leading-none text-subtle transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+                className="press rounded-lg p-[7px] leading-none text-subtle hover:bg-surface2 hover:text-txt"
                 title="Cerrar (esc)"
               >
                 <X size={15} />
@@ -202,11 +219,23 @@ export default function ServiceDrawer({
         <div className="mt-3.5 flex flex-wrap items-center gap-2">
           <Button
             size="sm"
-            className={cx(fullscreen && 'h-11 flex-1')}
-            onClick={() => deploy.mutate()}
+            className={cx('group', fullscreen && 'h-11 flex-1')}
+            onClick={() => {
+              launch();
+              deploy.mutate();
+            }}
             loading={deploy.isPending}
           >
-            <Rocket size={13} /> Desplegar
+            {/* La maniobra: apunta en hover, despega al ordenar el despliegue. */}
+            <span
+              className={cx(
+                'inline-flex leading-none transition-transform duration-200 ease-out group-hover:translate-x-[1.5px] group-hover:-translate-y-[1.5px]',
+                launching && 'rocket-launch',
+              )}
+            >
+              <Rocket size={13} />
+            </span>
+            Desplegar
           </Button>
           {isRunning ? (
             <>
@@ -271,24 +300,27 @@ export default function ServiceDrawer({
         <Tabs tabs={tabs} active={tab} onChange={setTab} className="mt-3 border-b-0 px-0" />
       </div>
 
-      <div className="relative min-h-0 flex-1 overflow-y-auto" role="tabpanel">
-        {tab === 'deployments' && <DeploymentsTab serviceId={serviceId} serviceType={service.type} />}
-        {tab === 'db' && <DbConsoleTab serviceId={serviceId} />}
-        {tab === 'variables' && <VariablesTab serviceId={serviceId} onSaved={invalidate} onDeploy={() => deploy.mutate()} />}
-        {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
-        {tab === 'metrics' && <MetricsTab serviceId={serviceId} latest={latestMetrics} historyRef={historyRef} />}
-        {tab === 'logs' && <LogsTab serviceId={serviceId} replicas={(service.config as any).replicas ?? 1} />}
-        {tab === 'settings' && (
-          <ServiceSettingsTab
-            service={service}
-            projectId={projectId}
-            onChanged={invalidate}
-            onDeleted={() => {
-              invalidate();
-              onClose();
-            }}
-          />
-        )}
+      <div className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain" role="tabpanel">
+        {/* La clave por pestaña relanza una aparición breve: se percibe el cambio de contexto sin esperar. */}
+        <div key={tab} className="tab-in flex min-h-full flex-col">
+          {tab === 'deployments' && <DeploymentsTab serviceId={serviceId} serviceType={service.type} />}
+          {tab === 'db' && <DbConsoleTab serviceId={serviceId} />}
+          {tab === 'variables' && <VariablesTab serviceId={serviceId} onSaved={invalidate} onDeploy={() => deploy.mutate()} />}
+          {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
+          {tab === 'metrics' && <MetricsTab serviceId={serviceId} latest={latestMetrics} historyRef={historyRef} />}
+          {tab === 'logs' && <LogsTab serviceId={serviceId} replicas={(service.config as any).replicas ?? 1} />}
+          {tab === 'settings' && (
+            <ServiceSettingsTab
+              service={service}
+              projectId={projectId}
+              onChanged={invalidate}
+              onDeleted={() => {
+                invalidate();
+                onClose();
+              }}
+            />
+          )}
+        </div>
       </div>
 
       <ExecModal open={execOpen} onClose={() => setExecOpen(false)} serviceId={serviceId} serviceName={service.name} />

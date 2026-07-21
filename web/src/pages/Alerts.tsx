@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Archive, Check, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket } from 'lucide-react';
+import { Archive, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket } from 'lucide-react';
 import { api } from '../api';
 import { Button, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { Alert } from '../types';
@@ -16,21 +16,17 @@ const TYPE_ICON: Record<string, typeof Rocket> = {
   backup_failed: Archive,
 };
 
-/** Chip de icono por tipo, teñido por severidad (neutro si está resuelta). */
+/** Icono desnudo por tipo, en el tono de la severidad (apagado si está resuelta). */
 function AlertIcon({ alert }: { alert: Alert }) {
   const Icon = TYPE_ICON[alert.type] ?? Rocket;
   const cls = alert.resolved_at
-    ? 'bg-surface2 text-subtle'
+    ? 'text-subtle'
     : alert.severity === 'critical'
-      ? 'bg-err/[.14] text-err'
+      ? 'text-err'
       : alert.severity === 'warning'
-        ? 'bg-warn/[.13] text-warn'
-        : 'bg-info/[.13] text-info';
-  return (
-    <span className={cx('flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[9px]', cls)}>
-      <Icon size={16} />
-    </span>
-  );
+        ? 'text-warn'
+        : 'text-info';
+  return <Icon size={16} strokeWidth={1.75} className={cx('mt-0.5 shrink-0', cls)} />;
 }
 
 function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: () => void; resolving: boolean }) {
@@ -183,15 +179,18 @@ export default function AlertsPage() {
       )}
 
       {!current.isLoading && list.length === 0 && (
-        <div className="card flex flex-col items-center gap-2.5 py-16 text-center text-sm text-sub">
-          <span className="flex h-11 w-11 items-center justify-center rounded-full bg-ok/[.14] text-ok">
-            <Check size={22} />
-          </span>
+        <div className="card flex flex-col items-center gap-3 py-16 text-center text-sm text-sub">
+          {/* El mismo dot de estado del sistema que en la topbar: verde y respirando. */}
+          <span
+            aria-hidden
+            className="pulse-soft h-2.5 w-2.5 rounded-full bg-ok shadow-[0_0_12px_color-mix(in_oklab,var(--color-ok)_60%,transparent)]"
+          />
           {openOnly ? 'No hay alertas activas. Todo en orden.' : 'Sin alertas registradas todavía.'}
         </div>
       )}
 
-      <div className="flex flex-col gap-3">
+      {/* La clave por vista relanza el escalonado al cambiar Activas ↔ Historial. */}
+      <div key={String(openOnly)} className="stagger flex flex-col gap-3">
         {list.map((a) => (
           <AlertCard key={a.id} alert={a} onResolve={() => resolve.mutate(a.id)} resolving={resolve.isPending} />
         ))}

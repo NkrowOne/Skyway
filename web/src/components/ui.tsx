@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertCircle, Check, CheckCircle2, Copy, Info, Loader2, X } from 'lucide-react';
+import { usePresence } from '../hooks';
 import { cx, Tone } from '../utils';
 
 // ---------- Button ----------
@@ -27,9 +28,11 @@ export function useFlash(ms = 1600): [boolean, () => void] {
 
 export function Button({ variant = 'primary', size = 'md', loading, success, className, children, disabled, ...rest }: ButtonProps) {
   const base =
-    'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-[background,border-color,color,box-shadow] duration-150 ease-out disabled:opacity-50 disabled:cursor-not-allowed';
+    'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-[background,border-color,color,box-shadow,transform,filter] duration-150 ease-out active:scale-[.98] active:duration-[60ms] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100';
   const variants = {
-    primary: 'bg-acc text-white hover:bg-[#7d66d9] shadow-[0_2px_8px_-2px_color-mix(in_oklab,#6e56cf_50%,transparent)]',
+    // Primario con volumen: gradiente vertical + brillo interior arriba; el hover ilumina, no cambia de color.
+    primary:
+      'bg-gradient-to-b from-[#7d66d9] to-[#6a52c9] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.16),0_2px_10px_-2px_color-mix(in_oklab,#6e56cf_55%,transparent)] hover:brightness-[1.07] hover:shadow-[inset_0_1px_0_rgba(255,255,255,.18),0_4px_16px_-6px_color-mix(in_oklab,#6e56cf_70%,transparent)]',
     secondary: 'bg-surface2 text-txt border border-line hover:border-acc/50',
     outline: 'bg-surface2 text-txt border border-line hover:border-acc/50',
     ghost: 'bg-transparent text-sub hover:text-txt hover:bg-surface2',
@@ -91,7 +94,8 @@ const TONE_BADGE: Record<Tone, string> = {
 
 /**
  * Pill de estado unificado: bg tono/14, dot 5px (pulsa en transitorios) y
- * texto opcional de réplicas ("· 2/2").
+ * texto opcional de réplicas ("· 2/2"). Cuando el estado cambia (Activo →
+ * Deteniendo…), el contenido hace un pop mínimo que lleva la mirada al dato.
  */
 export function StatusBadge({
   tone,
@@ -108,21 +112,24 @@ export function StatusBadge({
   dot?: boolean;
   className?: string;
 }) {
+  const stateKey = typeof label === 'string' || typeof label === 'number' ? `${tone}-${label}` : undefined;
   return (
     <span
       className={cx(
-        'inline-flex shrink-0 items-center gap-[5px] whitespace-nowrap rounded-full px-[9px] py-[3px] text-[11px] font-medium',
+        'inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-[9px] py-[3px] text-[11px] font-medium transition-colors duration-300',
         TONE_BADGE[tone],
         className,
       )}
     >
-      {dot && <span className={cx('h-[5px] w-[5px] rounded-full bg-current', pulse && 'pulse-soft')} />}
-      {label}
-      {replicas && replicas.total > 1 && (
-        <span className={cx('tnum', replicas.running < replicas.total && 'text-warn')}>
-          · {replicas.running}/{replicas.total}
-        </span>
-      )}
+      <span key={stateKey} className="badge-in inline-flex items-center gap-[5px]">
+        {dot && <span className={cx('h-[5px] w-[5px] rounded-full bg-current', pulse && 'pulse-soft')} />}
+        {label}
+        {replicas && replicas.total > 1 && (
+          <span className={cx('tnum', replicas.running < replicas.total && 'text-warn')}>
+            · {replicas.running}/{replicas.total}
+          </span>
+        )}
+      </span>
     </span>
   );
 }
@@ -146,6 +153,8 @@ export function Modal({
   children: React.ReactNode;
   wide?: boolean;
 }) {
+  // Presencia: el modal permanece montado durante la animación de salida.
+  const { mounted, closing } = usePresence(open, 220);
   const panelRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
 
@@ -180,10 +189,13 @@ export function Modal({
     };
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!mounted) return null;
   return createPortal(
     <div
-      className="overlay-in fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/55 p-4 pt-[10vh] backdrop-blur-[3px]"
+      className={cx(
+        'fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/55 p-4 pt-[10vh] backdrop-blur-[3px] max-sm:items-end max-sm:p-0 max-sm:pt-8',
+        closing ? 'overlay-out' : 'overlay-in',
+      )}
       onMouseDown={onClose}
     >
       <div
@@ -191,12 +203,23 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={cx('panel-in w-full rounded-2xl border border-line bg-surface shadow-lvl3', wide ? 'max-w-2xl' : 'max-w-md')}
+        className={cx(
+          'w-full rounded-2xl border border-line bg-surface shadow-lvl3',
+          wide ? 'max-w-2xl' : 'max-w-md',
+          // En móvil, hoja inferior: ancho completo, sube desde abajo y respeta el gesto del sistema.
+          'max-sm:max-h-[92dvh] max-sm:max-w-full max-sm:overflow-y-auto max-sm:overscroll-contain max-sm:rounded-b-none max-sm:border-x-0 max-sm:border-b-0 max-sm:safe-b',
+          closing ? 'modal-out' : 'modal-in',
+        )}
         onMouseDown={(e) => e.stopPropagation()}
       >
+        <div aria-hidden className="mx-auto mt-2 h-1 w-9 rounded-full bg-line sm:hidden" />
         <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
           <h2 className="text-sm font-semibold">{title}</h2>
-          <button onClick={onClose} className="rounded-md p-1 text-sub transition-colors hover:bg-surface2 hover:text-txt" title="Cerrar (esc)">
+          <button
+            onClick={onClose}
+            className="press rounded-md p-1 text-sub transition-colors hover:bg-surface2 hover:text-txt"
+            title="Cerrar (esc)"
+          >
             <X size={16} />
           </button>
         </div>
@@ -311,7 +334,7 @@ export function CopyButton({ value, className, title = 'Copiar' }: { value: stri
   const [copied, setCopied] = useState(false);
   return (
     <button
-      className={cx('rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt', className)}
+      className={cx('press rounded-md p-1 text-subtle hover:bg-surface2 hover:text-txt', className)}
       title={title}
       onClick={() => {
         navigator.clipboard.writeText(value).then(() => {
@@ -320,7 +343,7 @@ export function CopyButton({ value, className, title = 'Copiar' }: { value: stri
         });
       }}
     >
-      {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
+      {copied ? <Check size={13} className="pop-in text-ok" /> : <Copy size={13} />}
     </button>
   );
 }
@@ -336,6 +359,8 @@ interface Toast {
   message: string;
   kind: 'ok' | 'err' | 'info';
   action?: ToastAction;
+  /** En despedida: el toast se desliza fuera y su hueco se pliega. */
+  closing?: boolean;
 }
 
 type PushToast = (message: string, kind?: Toast['kind'], opts?: { action?: ToastAction }) => void;
@@ -358,12 +383,21 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const idRef = useRef(0);
 
-  const dismiss = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), []);
+  const remove = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), []);
+
+  // Despedida en dos tiempos: marca `closing` (animación de salida + pliegue del hueco) y retira después.
+  const dismiss = useCallback(
+    (id: number) => {
+      setToasts((t) => t.map((x) => (x.id === id ? { ...x, closing: true } : x)));
+      window.setTimeout(() => remove(id), 260);
+    },
+    [remove],
+  );
 
   const push = useCallback<PushToast>((message, kind = 'info', opts) => {
     const id = ++idRef.current;
     // Pila de máximo 3: la más antigua sale.
-    setToasts((t) => [...t.slice(-2), { id, message, kind, action: opts?.action }]);
+    setToasts((t) => [...t.filter((x) => !x.closing).slice(-2), { id, message, kind, action: opts?.action }]);
     setTimeout(() => dismiss(id), 5000);
   }, [dismiss]);
 
@@ -371,32 +405,38 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     <ToastContext.Provider value={push}>
       {children}
       {createPortal(
-        <div className="fixed bottom-5 right-5 z-[60] flex w-[340px] max-w-[calc(100vw-24px)] flex-col gap-2">
+        <div className="fixed bottom-[calc(20px+env(safe-area-inset-bottom))] right-5 z-[60] flex w-[340px] max-w-[calc(100vw-24px)] flex-col">
           {toasts.map((t) => (
-            <div
-              key={t.id}
-              role="status"
-              className="toast-in flex items-start gap-2.5 rounded-xl border border-line bg-surface2 px-3.5 py-3 shadow-toast"
-            >
-              {TOAST_ICON[t.kind]}
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-semibold leading-snug">{TOAST_TITLE[t.kind]}</p>
-                <p className="mt-0.5 text-xs leading-snug text-sub">{t.message}</p>
-                {t.action && (
-                  <button
-                    className="mt-2 text-xs font-semibold text-acc-soft hover:underline"
-                    onClick={() => {
-                      t.action?.onClick();
-                      dismiss(t.id);
-                    }}
-                  >
-                    {t.action.label} →
+            <div key={t.id} className={cx('toast-shell', t.closing && 'toast-shell-closing')}>
+              <div className="toast-clip">
+                <div
+                  role="status"
+                  className={cx(
+                    'mt-2 flex items-start gap-2.5 rounded-xl border border-line bg-surface2 px-3.5 py-3 shadow-toast',
+                    t.closing ? 'toast-out' : 'toast-in',
+                  )}
+                >
+                  {TOAST_ICON[t.kind]}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[13px] font-semibold leading-snug">{TOAST_TITLE[t.kind]}</p>
+                    <p className="mt-0.5 text-xs leading-snug text-sub">{t.message}</p>
+                    {t.action && (
+                      <button
+                        className="mt-2 text-xs font-semibold text-acc-soft hover:underline"
+                        onClick={() => {
+                          t.action?.onClick();
+                          dismiss(t.id);
+                        }}
+                      >
+                        {t.action.label} →
+                      </button>
+                    )}
+                  </div>
+                  <button onClick={() => dismiss(t.id)} className="press rounded-md p-1 text-subtle hover:text-txt" title="Cerrar">
+                    <X size={13} />
                   </button>
-                )}
+                </div>
               </div>
-              <button onClick={() => dismiss(t.id)} className="rounded-md p-1 text-subtle hover:text-txt" title="Cerrar">
-                <X size={13} />
-              </button>
             </div>
           ))}
         </div>,

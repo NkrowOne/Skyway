@@ -24,13 +24,15 @@ function Section({
 }) {
   return (
     <section className="card p-5">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2.5">
-        <div className="flex items-center gap-2.5">
-          <span className={`flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg ${iconClass}`}>{icon}</span>
-          <div>
-            <h2 className="text-sm font-semibold">{title}</h2>
-            <p className="mt-px text-xs text-subtle">{description}</p>
-          </div>
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-2.5">
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <span aria-hidden className={`[&>svg]:block ${iconClass}`}>
+              {icon}
+            </span>
+            {title}
+          </h2>
+          <p className="mt-1 text-xs text-subtle">{description}</p>
         </div>
         {aside}
       </div>
@@ -135,7 +137,7 @@ export default function AccountPage() {
 
       <Section
         icon={<Fingerprint size={15} />}
-        iconClass="bg-acc/[.15] text-acc-soft"
+        iconClass="text-acc-soft"
         title="Passkeys"
         description="Entra con huella, cara o PIN del dispositivo: sin contraseña y resistente a phishing"
         aside={
@@ -182,7 +184,7 @@ export default function AccountPage() {
 
       <Section
         icon={<Bot size={15} />}
-        iconClass="bg-info/[.13] text-info"
+        iconClass="text-info"
         title="Tokens de API"
         description="Para automatizaciones y agentes (Claude, CI/CD): heredan tus permisos"
         aside={
@@ -226,7 +228,7 @@ export default function AccountPage() {
 
       <Section
         icon={<KeyRound size={15} />}
-        iconClass="bg-warn/[.13] text-warn"
+        iconClass="text-warn"
         title="Contraseña"
         description="Cámbiala periódicamente; con passkey la usarás poco"
       >

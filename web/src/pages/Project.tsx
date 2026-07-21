@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { FileText, KeyRound, Pencil, Plus, RefreshCw, Signal, Trash2, X } from 'lucide-react';
 import { api, openStream } from '../api';
+import { usePresence } from '../hooks';
 import { Button, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } from '../components/ui';
 import NewServiceModal from '../components/NewServiceModal';
 import { ImportReport, ImportReportView } from '../components/RailwayImportModal';
@@ -111,6 +112,9 @@ export default function ProjectPage() {
   const [reportOpen, setReportOpen] = useState(false);
 
   const selectedId = searchParams.get('s');
+  // Presencia del drawer: sigue montado durante su animación de despedida.
+  const drawer = usePresence(!!selectedId, 240);
+  const lastServiceRef = useRef<Service | null>(null);
 
   const project = useQuery({
     queryKey: ['project', projectId],
@@ -179,6 +183,9 @@ export default function ProjectPage() {
 
   const { project: proj, services, alertCounts } = project.data;
   const selected = services.find((s) => s.id === selectedId) ?? null;
+  if (selected) lastServiceRef.current = selected;
+  // Durante la salida el drawer pinta el último servicio visto.
+  const drawerService = selected ?? lastServiceRef.current;
 
   const openService = (id: string | null) => {
     if (id) setSearchParams({ s: id });
@@ -211,14 +218,14 @@ export default function ProjectPage() {
                     setEditClient(proj.client ?? '');
                     setEditOpen(true);
                   }}
-                  className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+                  className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
                   title="Renombrar / empresa"
                 >
                   <Pencil size={14} />
                 </button>
                 <button
                   onClick={() => setDeleteOpen(true)}
-                  className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-err"
+                  className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-err"
                   title="Eliminar proyecto"
                 >
                   <Trash2 size={14} />
@@ -299,7 +306,7 @@ export default function ProjectPage() {
             </Button>
           </div>
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3.5">
+          <div className="stagger grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3.5">
             {services.map((s) => (
               <ServiceCard
                 key={s.id}
@@ -328,14 +335,15 @@ export default function ProjectPage() {
         )}
       </div>
 
-      {selected && (
+      {drawer.mounted && drawerService && (
         <ServiceDrawer
-          key={selected.id}
-          serviceId={selected.id}
+          key={drawerService.id}
+          serviceId={drawerService.id}
           projectId={proj.id}
           projectName={proj.name}
           latestMetrics={latest}
           historyRef={historyRef}
+          closing={drawer.closing}
           onClose={() => openService(null)}
         />
       )}

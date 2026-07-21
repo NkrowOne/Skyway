@@ -1,5 +1,30 @@
 import { useEffect, useState } from 'react';
 
+/**
+ * Presencia con salida animada: mantiene el nodo montado `exitMs` tras cerrarse
+ * para que la animación de despedida pueda verse. `closing` activa las clases
+ * *-out. Con `prefers-reduced-motion` desmonta al instante.
+ */
+export function usePresence(open: boolean, exitMs = 200): { mounted: boolean; closing: boolean } {
+  const [state, setState] = useState<'open' | 'closing' | 'closed'>(open ? 'open' : 'closed');
+  useEffect(() => {
+    if (open) {
+      setState('open');
+      return;
+    }
+    setState((prev) => {
+      if (prev === 'closed') return prev;
+      return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'closed' : 'closing';
+    });
+  }, [open]);
+  useEffect(() => {
+    if (state !== 'closing') return;
+    const t = window.setTimeout(() => setState('closed'), exitMs);
+    return () => window.clearTimeout(t);
+  }, [state, exitMs]);
+  return { mounted: state !== 'closed', closing: state === 'closing' };
+}
+
 /** true cuando la media query se cumple; se actualiza en vivo. */
 export function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);

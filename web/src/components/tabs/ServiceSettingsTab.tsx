@@ -8,7 +8,7 @@ import DomainsEditor from '../DomainsEditor';
 import { ModuleLogo, moduleKind } from '../ModuleIcon';
 import { Button, ConfirmModal, CopyButton, Field, useFlash, useToast } from '../ui';
 
-/** Card de sección con cabecera icono-chip + título + descripción. */
+/** Card de sección: el icono anota el título a escala de texto, sin caja. */
 function SectionCard({
   icon,
   iconClass,
@@ -26,12 +26,14 @@ function SectionCard({
 }) {
   return (
     <section className={cx('rounded-xl border border-line bg-bg p-4', className)}>
-      <div className="mb-3.5 flex items-center gap-2.5">
-        <span className={cx('flex h-7 w-7 shrink-0 items-center justify-center rounded-lg', iconClass)}>{icon}</span>
-        <div>
-          <h3 className="text-[13px] font-semibold">{title}</h3>
-          <p className="mt-px text-[11px] text-subtle">{description}</p>
-        </div>
+      <div className="mb-3.5">
+        <h3 className="flex items-center gap-2 text-[13px] font-semibold">
+          <span aria-hidden className={cx('[&>svg]:block', iconClass)}>
+            {icon}
+          </span>
+          {title}
+        </h3>
+        <p className="mt-1 text-[11px] text-subtle">{description}</p>
       </div>
       {children}
     </section>
@@ -184,7 +186,7 @@ export default function ServiceSettingsTab({
       <div className="flex flex-col gap-3.5 p-4 pb-0 sm:px-5">
         <SectionCard
           icon={<ModuleLogo kind={moduleKind(service)} size={14} />}
-          iconClass="bg-txt/[.09] text-txt"
+          iconClass="text-txt"
           title="General"
           description="Origen, build y arranque del servicio"
         >
@@ -267,7 +269,7 @@ export default function ServiceSettingsTab({
         {hasDomains && (
           <SectionCard
             icon={<Globe size={14} />}
-            iconClass="bg-info/[.14] text-info"
+            iconClass="text-info"
             title="Dominios"
             description="Traefik enruta 80/443 con TLS automático si está configurado"
           >
@@ -278,7 +280,7 @@ export default function ServiceSettingsTab({
         {!isDb && (
           <SectionCard
             icon={<HardDrive size={14} />}
-            iconClass="bg-warn/[.13] text-warn"
+            iconClass="text-warn"
             title="Volúmenes persistentes"
             description="Rutas que sobreviven a los redespliegues"
           >
@@ -322,7 +324,7 @@ export default function ServiceSettingsTab({
 
         <SectionCard
           icon={<Cpu size={14} />}
-          iconClass="bg-acc/[.15] text-acc-soft"
+          iconClass="text-acc-soft"
           title={isDb ? 'Recursos y red' : 'Recursos y réplicas'}
           description="Los límites se aplican en caliente, sin reiniciar"
         >
@@ -373,7 +375,7 @@ export default function ServiceSettingsTab({
         {isGit && (
           <SectionCard
             icon={<ModuleLogo kind="github" size={14} />}
-            iconClass="bg-txt/[.09] text-txt"
+            iconClass="text-txt"
             title="Auto-deploy"
             description="Webhook de GitHub — cada push a la rama despliega"
           >
@@ -414,7 +416,7 @@ export default function ServiceSettingsTab({
         </section>
       </div>
 
-      <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-line bg-surface/[.92] px-4 py-2.5 backdrop-blur-lg sm:px-5">
+      <div className="safe-b sticky bottom-0 flex items-center justify-between gap-3 border-t border-line bg-surface/[.92] px-4 py-2.5 backdrop-blur-lg sm:px-5">
         {dirty ? (
           <span className="flex items-center gap-[7px] text-xs text-warn">
             <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />

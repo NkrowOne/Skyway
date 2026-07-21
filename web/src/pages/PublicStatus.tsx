@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { AlertCircle, CheckCircle2, CircleSlash, HelpCircle, Megaphone, Rocket } from 'lucide-react';
 import { api } from '../api';
+import { Skeleton } from '../components/ui';
 import { PublicServiceState, PublicStatus } from '../types';
 import { cx } from '../utils';
 
@@ -67,7 +68,8 @@ function UptimeBars({ days }: { days: { date: number; pct: number | null }[] }) 
         {days.map((d, i) => (
           <div
             key={d.date}
-            className={cx('min-w-0 flex-1 rounded-[2px] transition-opacity', dayColor(d.pct), tip && tip.idx !== i && 'opacity-70')}
+            className={cx('bar-rise min-w-0 flex-1 rounded-[2px] transition-opacity', dayColor(d.pct), tip && tip.idx !== i && 'opacity-70')}
+            style={{ animationDelay: `${i * 6}ms` }}
             onMouseEnter={() => setTip({ idx: i, text: `${fmtDay(d.date)}: ${d.pct === null ? 'sin datos' : fmtPct(d.pct)}` })}
             onMouseLeave={() => setTip(null)}
           />
@@ -98,8 +100,23 @@ export default function PublicStatusPage() {
   }, [status.data]);
 
   if (status.isLoading) {
+    // Misma silueta que la página final: nada salta al llegar los datos.
     return (
-      <div className="flex h-full items-center justify-center text-sm text-sub">Cargando estado…</div>
+      <div aria-busy className="min-h-full overflow-y-auto bg-bg">
+        <div className="mx-auto w-full max-w-[760px] px-4 py-10 sm:px-6 sm:py-14">
+          <Skeleton className="h-3 w-32" />
+          <Skeleton className="mt-3 h-7 w-64" />
+          <Skeleton className="mt-8 h-[58px] w-full rounded-2xl" />
+          <div className="mt-7 rounded-2xl border border-line bg-surface p-5">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className={cx(i > 0 && 'mt-6')}>
+                <Skeleton className="h-4 w-40" />
+                <Skeleton className="mt-3 h-8 w-full" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     );
   }
 
@@ -122,7 +139,7 @@ export default function PublicStatusPage() {
 
   return (
     <div className="min-h-full overflow-y-auto bg-bg">
-      <div className="mx-auto w-full max-w-[760px] px-4 py-10 sm:px-6 sm:py-14">
+      <div className="page-in mx-auto w-full max-w-[760px] px-4 py-10 sm:px-6 sm:py-14">
         <header className="mb-7">
           <p className="text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">Estado del servicio</p>
           <h1 className="mt-1.5 text-[26px] font-semibold leading-8 tracking-[-.02em]">{data.project.name}</h1>

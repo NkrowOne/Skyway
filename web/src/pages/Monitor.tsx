@@ -103,16 +103,14 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
 
   return (
     <section className="card p-4 sm:p-5">
-      <div className="mb-3 flex items-center gap-2.5">
-        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-info/[.14] text-info">
-          <ScrollText size={14} />
-        </span>
-        <div>
-          <h2 className="text-[13px] font-semibold">Buscar en los logs de todos los servicios</h2>
-          <p className="text-[11px] text-subtle">
-            ¿Un error y no sabes de dónde viene? Busca el texto en las últimas ~400 líneas de cada contenedor.
-          </p>
-        </div>
+      <div className="mb-3">
+        <h2 className="flex items-center gap-2 text-[13px] font-semibold">
+          <ScrollText size={14} className="text-info" />
+          Buscar en los logs de todos los servicios
+        </h2>
+        <p className="mt-1 text-[11px] text-subtle">
+          ¿Un error y no sabes de dónde viene? Busca el texto en las últimas ~400 líneas de cada contenedor.
+        </p>
       </div>
       <form
         className="flex flex-wrap gap-2"
@@ -268,7 +266,7 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
           <button
             onClick={onRestart}
             disabled={restarting}
-            className="rounded-lg p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40"
+            className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt disabled:opacity-40"
             title="Reiniciar"
           >
             <RefreshCw size={13} className={cx(restarting && 'animate-spin')} />
@@ -276,7 +274,7 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
         )}
         <Link
           to={`/projects/${s.projectId}?s=${s.id}`}
-          className="rounded-lg p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+          className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
           title="Abrir servicio"
         >
           <ArrowUpRight size={13} />
@@ -560,7 +558,7 @@ export default function MonitorPage() {
             </div>
           )}
 
-          <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="stagger mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <StatTile
               icon={<Server size={12} />}
               label="Servicios"
@@ -636,6 +634,8 @@ export default function MonitorPage() {
             ))}
           </div>
 
+          {/* La clave por vista relanza una aparición breve al cambiar Servicios ↔ Espacio. */}
+          <div key={view} className="tab-in">
           {view === 'disk' && <DiskPanel isAdmin={!!isAdmin} />}
 
           {view === 'services' && (
@@ -705,7 +705,7 @@ export default function MonitorPage() {
                       .slice(0, 3)
                       .map((s) => (
                         <p key={s.id} className="flex items-start gap-2 py-1 text-[11.5px] leading-relaxed text-sub">
-                          <Database size={12} className="mt-0.5 shrink-0 text-err" />
+                          <TriangleAlert size={12} className="mt-0.5 shrink-0 text-err" />
                           <span>
                             <Link to={`/projects/${s.projectId}?s=${s.id}`} className="font-medium text-err hover:underline">
                               {s.name}
@@ -722,6 +722,7 @@ export default function MonitorPage() {
               <LogSearchPanel projects={projects} />
             </>
           )}
+          </div>
         </>
       )}
 

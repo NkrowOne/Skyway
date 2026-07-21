@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { KeyRound, ScrollText } from 'lucide-react';
+import { ChevronDown, KeyRound, ScrollText } from 'lucide-react';
 import { api } from '../api';
 import { Button, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { AuditEntry, SecurityFinding, SecurityReport } from '../types';
@@ -50,16 +50,17 @@ function ScoreRing({ score, grade }: { score: number; grade: string }) {
   );
 }
 
+/** Cabecera de sección: el icono anota el título a escala de texto, sin caja. */
 function SectionHeader({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
   return (
-    <div className="flex items-center gap-2.5">
-      <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-acc/[.15] text-acc-soft">
-        {icon}
-      </span>
-      <div>
-        <h2 className="text-sm font-semibold">{title}</h2>
-        <p className="mt-px text-xs text-subtle">{description}</p>
-      </div>
+    <div>
+      <h2 className="flex items-center gap-2 text-sm font-semibold">
+        <span aria-hidden className="text-sub [&>svg]:block">
+          {icon}
+        </span>
+        {title}
+      </h2>
+      <p className="mt-1 text-xs text-subtle">{description}</p>
     </div>
   );
 }
@@ -198,7 +199,7 @@ export default function SecurityPage() {
                   key={g.kind}
                   open={f.severity === 'critical'}
                   className={cx(
-                    'rounded-xl border bg-surface p-4',
+                    'group animate-details rounded-xl border bg-surface p-4',
                     f.severity === 'critical' ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]' : 'border-line',
                   )}
                 >
@@ -208,8 +209,12 @@ export default function SecurityPage() {
                     <span className="tnum ml-auto shrink-0 rounded-full bg-surface2 px-2.5 py-[3px] text-[11px] font-medium text-sub">
                       {g.items.length} servicios
                     </span>
+                    <ChevronDown
+                      size={14}
+                      className="shrink-0 text-subtle transition-transform duration-200 ease-out group-open:rotate-180"
+                    />
                   </summary>
-                  <div className="mt-3 flex flex-col gap-2.5 border-t border-line pt-3 text-[13px]">
+                  <div className="details-body mt-3 flex flex-col gap-2.5 border-t border-line pt-3 text-[13px]">
                     <div className="flex flex-wrap gap-1.5">
                       {g.items.map((i) => (
                         <Link
@@ -235,7 +240,7 @@ export default function SecurityPage() {
                 key={f.id}
                 open={f.severity === 'critical'}
                 className={cx(
-                  'rounded-xl border bg-surface p-4',
+                  'group animate-details rounded-xl border bg-surface p-4',
                   f.severity === 'critical' ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]' : 'border-line',
                 )}
               >
@@ -251,8 +256,12 @@ export default function SecurityPage() {
                       {f.projectName} →
                     </Link>
                   )}
+                  <ChevronDown
+                    size={14}
+                    className={cx('shrink-0 text-subtle transition-transform duration-200 ease-out group-open:rotate-180', !f.projectId && 'ml-auto')}
+                  />
                 </summary>
-                <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3 text-[13px]">
+                <div className="details-body mt-3 flex flex-col gap-2 border-t border-line pt-3 text-[13px]">
                   <p className="text-sub">{f.detail}</p>
                   <p>
                     <span className="font-semibold text-ok">Cómo arreglarlo: </span>
@@ -281,10 +290,25 @@ export default function SecurityPage() {
           }}
         >
           <Field label="Contraseña actual">
-            <input className="input" type="password" value={currentPw} onChange={(e) => setCurrentPw(e.target.value)} required />
+            <input
+              className="input"
+              type="password"
+              autoComplete="current-password"
+              value={currentPw}
+              onChange={(e) => setCurrentPw(e.target.value)}
+              required
+            />
           </Field>
           <Field label="Nueva contraseña" hint="Mínimo 8 caracteres; usa una larga y única">
-            <input className="input" type="password" value={nextPw} onChange={(e) => setNextPw(e.target.value)} required minLength={8} />
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              value={nextPw}
+              onChange={(e) => setNextPw(e.target.value)}
+              required
+              minLength={8}
+            />
           </Field>
           <div className="flex flex-wrap items-center justify-between gap-3 sm:col-span-2">
             <Button type="submit" size="sm" loading={changePassword.isPending}>

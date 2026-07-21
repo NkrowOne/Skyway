@@ -35,14 +35,12 @@ function ScheduleSection({ service, onChanged }: { service: Service; onChanged: 
 
   return (
     <div className="rounded-xl border border-line bg-bg p-4">
-      <div className="mb-3 flex items-center gap-2.5">
-        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-acc/[.15] text-acc-soft">
-          <CalendarClock size={14} />
-        </span>
-        <div>
-          <h3 className="text-[13px] font-semibold">Backups automáticos</h3>
-          <p className="mt-px text-[11px] text-subtle">Se ejecutan de madrugada, con retención automática</p>
-        </div>
+      <div className="mb-3">
+        <h3 className="flex items-center gap-2 text-[13px] font-semibold">
+          <CalendarClock size={14} className="text-acc-soft" />
+          Backups automáticos
+        </h3>
+        <p className="mt-1 text-[11px] text-subtle">Se ejecutan de madrugada, con retención automática</p>
       </div>
       <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2.5">
         <Field label="Frecuencia">

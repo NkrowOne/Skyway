@@ -23,7 +23,7 @@ export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string
   }, [serviceId]);
 
   return (
-    <div className="flex h-full flex-col p-4 sm:px-5">
+    <div className="flex flex-1 flex-col p-4 sm:px-5">
       <LogViewer
         lines={lines}
         toolbar

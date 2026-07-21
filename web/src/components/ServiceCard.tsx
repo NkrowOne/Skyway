@@ -42,12 +42,10 @@ export default function ServiceCard({
     <button
       onClick={onClick}
       className={cx(
-        'relative rounded-xl border bg-surface p-4 text-left transition-[border-color,box-shadow] duration-[180ms] ease-out',
+        'relative rounded-xl border bg-surface p-4 text-left',
         selected
-          ? 'border-[color-mix(in_oklab,#6e56cf_70%,var(--color-line))] shadow-card-selected'
-          : alertCount > 0
-            ? 'border-[color-mix(in_oklab,var(--color-err)_45%,var(--color-line))] shadow-lvl1 hover:border-[color-mix(in_oklab,#6e56cf_55%,var(--color-line))]'
-            : 'border-line shadow-lvl1 hover:border-[color-mix(in_oklab,#6e56cf_55%,var(--color-line))]',
+          ? 'border-[color-mix(in_oklab,#6e56cf_70%,var(--color-line))] shadow-card-selected transition-[border-color,box-shadow] duration-[180ms] ease-out'
+          : cx('card-hover', alertCount > 0 ? 'border-[color-mix(in_oklab,var(--color-err)_45%,var(--color-line))] shadow-lvl1' : 'border-line shadow-lvl1'),
       )}
     >
       {alertCount > 0 && (
