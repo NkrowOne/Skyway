@@ -5,11 +5,13 @@ import { config } from '../config';
 import {
   createDeployment,
   getDeployment,
+  getEnv,
   getGithubConnector,
   getProject,
   getService,
   getSetting,
   setDeploymentDiagnosis,
+  setEnv,
   successfulDeploymentsBeyond,
   touchGithubConnector,
   updateDeployment,
@@ -37,7 +39,7 @@ import {
 import { ensureNetwork, projectNetworkName, EDGE_NETWORK } from '../docker/networks';
 import { buildImage, cloneRepo, spawnLogged } from './builder';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
-import { getTemplate, volumePathFor } from '../templates';
+import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
 import { resolveServiceEnv } from '../variables';
 import { DatabaseConfig, DeploymentRow, GitConfig, ImageConfig, ProjectRow, ServiceRow } from '../types';
 import { now } from '../util';
@@ -241,7 +243,7 @@ async function prepareDatabaseImage(service: ServiceRow, log: (l: string) => voi
   const cfg = service.config as DatabaseConfig;
   const template = getTemplate(cfg.template);
   if (!template) throw new Error(`Plantilla desconocida: ${cfg.template}`);
-  const image = `${template.image}:${cfg.version || template.defaultVersion}`;
+  const image = `${template.image}:${effectiveDbVersion(template, cfg.version)}`;
   if (!(await imageExists(image))) {
     log(`Descargando imagen ${image}...`);
     await spawnLogged('docker', ['pull', image], {}, log);
@@ -249,6 +251,121 @@ async function prepareDatabaseImage(service: ServiceRow, log: (l: string) => voi
     log(`Imagen ${image} ya disponible`);
   }
   return image;
+}
+
+/**
+ * Garantiza que un servicio de base de datos tiene sus variables de conexión
+ * (DATABASE_URL, host, credenciales…) antes de cada arranque: completa SOLO
+ * las que falten, conservando las credenciales existentes para no dejar fuera
+ * a una base ya inicializada. Cubre servicios creados por versiones antiguas
+ * de Skyway y variables borradas a mano desde el editor.
+ */
+function ensureDatabaseEnv(service: ServiceRow, log: (l: string) => void): void {
+  const template = getTemplate((service.config as DatabaseConfig).template);
+  if (!template) return;
+  const stored = getEnv(service.id);
+  const full = template.makeEnv(service.slug, stored);
+  const missing = Object.keys(full).filter((k) => stored[k] === undefined);
+  if (missing.length === 0) return;
+  const next = { ...stored };
+  for (const k of missing) next[k] = full[k];
+  setEnv(service.id, next);
+  log(`Variables de conexión internas generadas (faltaban): ${missing.join(', ')}`);
+}
+
+/** Ejecuta un comando y captura su salida (a diferencia de spawnLogged, que la loguea). */
+function captureCommand(cmd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    p.stdout.on('data', (c) => (out += c.toString()));
+    p.stderr.on('data', (c) => (err += c.toString()));
+    p.on('error', reject);
+    p.on('exit', (code) =>
+      code === 0 ? resolve(out) : reject(new Error(err.trim() || `código de salida ${code}`)),
+    );
+  });
+}
+
+/**
+ * Postgres no puede abrir datos de otra versión mayor, y 18+ además cambió el
+ * layout del volumen (subdirectorio versionado bajo /var/lib/postgresql). Si el
+ * volumen ya contiene datos incompatibles con la versión pedida, el contenedor
+ * entraría en bucle de reinicio con un error confuso: mejor cortar aquí con el
+ * remedio concreto. La comprobación es best-effort: si no se puede inspeccionar
+ * el volumen, el despliegue continúa.
+ */
+async function assertPostgresVolumeCompatible(
+  volume: string,
+  version: string,
+  log: (l: string) => void,
+): Promise<void> {
+  const parsed = parseInt(version, 10);
+  const target = Number.isInteger(parsed) ? parsed : 18; // latest/alpine → 18+
+  try {
+    await docker.getVolume(volume).inspect();
+  } catch {
+    return; // volumen aún no creado: arranque limpio garantizado
+  }
+  let report: string;
+  try {
+    if (!(await imageExists('busybox:stable'))) {
+      await spawnLogged('docker', ['pull', 'busybox:stable'], {}, log);
+    }
+    report = await captureCommand('docker', [
+      'run', '--rm', '-v', `${volume}:/v:ro`, 'busybox:stable', 'sh', '-c',
+      'for f in /v/PG_VERSION /v/data/PG_VERSION /v/*/docker/PG_VERSION; do [ -s "$f" ] && echo "$f=$(cat "$f")"; done; true',
+    ]);
+  } catch (err: any) {
+    log(`⚠ No se pudo inspeccionar el volumen ${volume} (${err?.message || err}): se continúa.`);
+    return;
+  }
+
+  // Líneas `ruta=versión`: raíz (layout <18), data/ (layout mixto) o N/docker (layout 18+).
+  let rootMajor: number | null = null;
+  let nestedMajor: number | null = null;
+  const newLayoutMajors: number[] = [];
+  for (const line of report.split('\n')) {
+    const m = /^\/v\/(?:(.+)\/)?PG_VERSION=(\d+)/.exec(line.trim());
+    if (!m) continue;
+    const major = parseInt(m[2], 10);
+    if (!m[1]) rootMajor = major;
+    else if (m[1] === 'data') nestedMajor = major;
+    else if (/\/docker$/.test(m[1])) newLayoutMajors.push(major);
+  }
+  if (rootMajor === null && nestedMajor === null && newLayoutMajors.length === 0) return;
+
+  const migra =
+    'Para cambiar de versión mayor: crea un Backup con la versión actual de los datos, cambia la versión en Ajustes, borra el servicio marcando «borrar también el volumen», recréalo y restaura el backup. Para empezar de cero basta con borrar el servicio con su volumen.';
+
+  if (rootMajor !== null) {
+    if (target >= 18) {
+      throw new Error(
+        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} con el formato antiguo (anterior a 18) y la imagen pedida es ${version}: Postgres 18+ no puede abrirlos directamente. Mantén la versión «${rootMajor}-alpine» en Ajustes para seguir funcionando, o migra. ${migra}`,
+      );
+    }
+    if (rootMajor !== target) {
+      throw new Error(
+        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} y la imagen pedida es ${version}: una versión mayor no puede abrir los datos de otra. Vuelve a la versión «${rootMajor}-alpine» o migra. ${migra}`,
+      );
+    }
+    return; // datos y versión coinciden (layout <18): arranque normal
+  }
+
+  if (nestedMajor !== null) {
+    throw new Error(
+      `El volumen ${volume} tiene los datos de PostgreSQL ${nestedMajor} en el subdirectorio data/ (los escribió un Postgres <18 montado en la ruta de 18+, un estado que esta versión de Skyway ya no produce). Con el servicio parado, muévelos a la raíz del volumen: docker run --rm -v ${volume}:/v busybox sh -c 'mv /v/data/* /v/ && rmdir /v/data' y usa la versión «${nestedMajor}-alpine»; o borra el servicio con su volumen para empezar de cero.`,
+    );
+  }
+
+  // Solo layout 18+ (N/docker): la propia imagen abre el mayor que coincida.
+  if (target < 18 || !newLayoutMajors.includes(target)) {
+    const found = [...new Set(newLayoutMajors)].join(', ');
+    throw new Error(
+      `El volumen ${volume} ya está inicializado con el formato de Postgres 18+ (datos de la versión ${found}) y la imagen pedida es ${version}. Usa la versión «${found}-alpine» (o superior con pg_upgrade manual), o migra. ${migra}`,
+    );
+  }
 }
 
 async function buildGitImage(
@@ -325,6 +442,7 @@ async function deployContainer(
   await ensureNetwork(netName);
   await ensureNetwork(EDGE_NETWORK);
 
+  if (service.type === 'database') ensureDatabaseEnv(service, log);
   const env = resolveServiceEnv(service);
   let internalPort: number | null = null;
   let domains: string[] = [];
@@ -339,10 +457,17 @@ async function deployContainer(
     const template = getTemplate(cfg.template)!;
     internalPort = template.port;
     cmd = template.cmd || null;
-    volumes = [{ name: volumeName(project, service), containerPath: volumePathFor(template, cfg.version) }];
+    // La misma versión efectiva decide imagen y ruta de montaje: si divergieran,
+    // un Postgres <18 escribiría los datos en un subdirectorio del volumen y ese
+    // layout rompería cualquier cambio de versión posterior.
+    const version = effectiveDbVersion(template, cfg.version);
+    volumes = [{ name: volumeName(project, service), containerPath: volumePathFor(template, version) }];
     hostPort = cfg.hostPort ?? null;
     cpus = cfg.cpus ?? null;
     memoryMb = cfg.memoryMb ?? null;
+    if (template.key === 'postgres') {
+      await assertPostgresVolumeCompatible(volumes[0].name, version, log);
+    }
   } else if (service.type === 'image') {
     const cfg = service.config as ImageConfig;
     internalPort = cfg.port ?? null;

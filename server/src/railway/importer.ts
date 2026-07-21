@@ -184,6 +184,13 @@ async function planService(
     base.port = explicitPort;
     base.startCmd = raw.startCommand ?? undefined;
     if (!explicitPort) notes.push('Sin puerto conocido: configúralo en Ajustes si el servicio sirve HTTP.');
+    // Derivadas de Postgres que no mapean a plantilla (postgis…): la 18+ exige
+    // el volumen en /var/lib/postgresql y el montaje de Railway usa la ruta vieja.
+    if (/postg/i.test(raw.image) && raw.volumeMounts.includes('/var/lib/postgresql/data')) {
+      notes.push(
+        'Las imágenes basadas en Postgres 18+ se niegan a arrancar con el volumen montado en /var/lib/postgresql/data: si el contenedor entra en bucle de reinicio, cambia la ruta del volumen a /var/lib/postgresql en Ajustes.',
+      );
+    }
     return base;
   }
 
