@@ -20,8 +20,10 @@ RUN npm ci -w server --omit=dev --no-audit --no-fund
 
 # ---------- runtime ----------
 FROM node:22-alpine
-# docker-cli para builds/pulls contra el socket del host; git para clonar repos.
-RUN apk add --no-cache docker-cli git curl bash ca-certificates
+# docker-cli para builds/pulls contra el socket del host (buildx: el CLI
+# moderno construye con BuildKit y sin ese plugin `docker build` falla en
+# seco); git para clonar repos.
+RUN apk add --no-cache docker-cli docker-cli-buildx git curl bash ca-certificates
 
 # Nixpacks (builds sin Dockerfile, como Railway). Best-effort: si falla,
 # Skyway sigue funcionando y lo indica en Ajustes → Sistema. Se descarga a
