@@ -457,7 +457,7 @@ export default function SettingsPage() {
         </SettingsSection>
       )}
 
-      <div className="sticky bottom-0 mt-1 flex items-center justify-end gap-2.5 border-t border-line bg-bg/90 py-3 backdrop-blur-lg">
+      <div className="safe-b sticky bottom-0 mt-1 flex items-center justify-end gap-2.5 border-t border-line bg-bg/90 py-3 backdrop-blur-lg">
         <span className="text-xs text-subtle">Los cambios se aplican al guardar</span>
         <Button onClick={() => save.mutate()} loading={save.isPending} success={saved}>
           Guardar ajustes

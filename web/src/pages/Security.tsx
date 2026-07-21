@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { KeyRound, ScrollText } from 'lucide-react';
+import { ChevronDown, KeyRound, ScrollText } from 'lucide-react';
 import { api } from '../api';
 import { Button, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { AuditEntry, SecurityFinding, SecurityReport } from '../types';
@@ -198,7 +198,7 @@ export default function SecurityPage() {
                   key={g.kind}
                   open={f.severity === 'critical'}
                   className={cx(
-                    'rounded-xl border bg-surface p-4',
+                    'group rounded-xl border bg-surface p-4',
                     f.severity === 'critical' ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]' : 'border-line',
                   )}
                 >
@@ -208,8 +208,12 @@ export default function SecurityPage() {
                     <span className="tnum ml-auto shrink-0 rounded-full bg-surface2 px-2.5 py-[3px] text-[11px] font-medium text-sub">
                       {g.items.length} servicios
                     </span>
+                    <ChevronDown
+                      size={14}
+                      className="shrink-0 text-subtle transition-transform duration-200 ease-out group-open:rotate-180"
+                    />
                   </summary>
-                  <div className="mt-3 flex flex-col gap-2.5 border-t border-line pt-3 text-[13px]">
+                  <div className="details-body mt-3 flex flex-col gap-2.5 border-t border-line pt-3 text-[13px]">
                     <div className="flex flex-wrap gap-1.5">
                       {g.items.map((i) => (
                         <Link
@@ -235,7 +239,7 @@ export default function SecurityPage() {
                 key={f.id}
                 open={f.severity === 'critical'}
                 className={cx(
-                  'rounded-xl border bg-surface p-4',
+                  'group rounded-xl border bg-surface p-4',
                   f.severity === 'critical' ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]' : 'border-line',
                 )}
               >
@@ -251,8 +255,12 @@ export default function SecurityPage() {
                       {f.projectName} →
                     </Link>
                   )}
+                  <ChevronDown
+                    size={14}
+                    className={cx('shrink-0 text-subtle transition-transform duration-200 ease-out group-open:rotate-180', !f.projectId && 'ml-auto')}
+                  />
                 </summary>
-                <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3 text-[13px]">
+                <div className="details-body mt-3 flex flex-col gap-2 border-t border-line pt-3 text-[13px]">
                   <p className="text-sub">{f.detail}</p>
                   <p>
                     <span className="font-semibold text-ok">Cómo arreglarlo: </span>

@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { api } from '../api';
-import { isEditableTarget } from '../hooks';
+import { isEditableTarget, usePresence } from '../hooks';
 import { Alert, Me, Project, Service, SystemInfo } from '../types';
 import { cx, fmtBytes, SEVERITY_TONE, timeAgo } from '../utils';
 import { Kbd, StatusBadge } from './ui';
@@ -62,6 +62,7 @@ interface PaletteItem {
 
 function CommandPalette({ open, onClose, unread, isAdmin }: { open: boolean; onClose: () => void; unread: number; isAdmin: boolean }) {
   const navigate = useNavigate();
+  const { mounted, closing } = usePresence(open, 180);
   const [query, setQuery] = useState('');
   const [sel, setSel] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -170,7 +171,7 @@ function CommandPalette({ open, onClose, unread, isAdmin }: { open: boolean; onC
     listRef.current?.querySelector<HTMLElement>(`[data-idx="${sel}"]`)?.scrollIntoView({ block: 'nearest' });
   }, [sel]);
 
-  if (!open) return null;
+  if (!mounted) return null;
 
   const go = (item: PaletteItem) => {
     onClose();
@@ -181,14 +182,20 @@ function CommandPalette({ open, onClose, unread, isAdmin }: { open: boolean; onC
 
   return createPortal(
     <div
-      className="overlay-in fixed inset-0 z-50 flex items-start justify-center bg-black/55 px-4 pb-4 pt-[15vh] backdrop-blur-[3px]"
+      className={cx(
+        'fixed inset-0 z-50 flex items-start justify-center bg-black/55 px-4 pb-4 pt-[12vh] backdrop-blur-[3px] sm:pt-[15vh]',
+        closing ? 'overlay-out' : 'overlay-in',
+      )}
       onMouseDown={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Paleta de comandos"
-        className="panel-in w-full max-w-[580px] overflow-hidden rounded-2xl border border-line bg-surface shadow-lvl3"
+        className={cx(
+          'w-full max-w-[580px] overflow-hidden rounded-2xl border border-line bg-surface shadow-lvl3',
+          closing ? 'panel-out' : 'panel-in',
+        )}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2.5 border-b border-line px-4 py-3.5">
@@ -273,7 +280,8 @@ function CommandPalette({ open, onClose, unread, isAdmin }: { open: boolean; onC
 // ---------- Ayuda de atajos (?) ----------
 
 function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }) {
-  if (!open) return null;
+  const { mounted, closing } = usePresence(open, 180);
+  if (!mounted) return null;
   const rows: { label: string; keys: string[] }[] = [
     { label: 'Paleta de comandos', keys: ['⌘K'] },
     { label: 'Ir a proyectos', keys: ['g', 'p'] },
@@ -286,14 +294,20 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
   ];
   return createPortal(
     <div
-      className="overlay-in fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-[3px]"
+      className={cx(
+        'fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-[3px]',
+        closing ? 'overlay-out' : 'overlay-in',
+      )}
       onMouseDown={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Atajos de teclado"
-        className="panel-in w-full max-w-[420px] rounded-2xl border border-line bg-surface p-5 shadow-lvl3"
+        className={cx(
+          'w-full max-w-[420px] rounded-2xl border border-line bg-surface p-5 shadow-lvl3',
+          closing ? 'panel-out' : 'panel-in',
+        )}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="mb-3.5 flex items-center gap-2">
@@ -322,6 +336,7 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
 
 function AlertBell() {
   const [open, setOpen] = useState(false);
+  const menu = usePresence(open, 150);
   const ref = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
 
@@ -354,18 +369,26 @@ function AlertBell() {
     <div className="relative" ref={ref}>
       <button
         onClick={toggle}
-        className="relative rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+        className="press relative rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
         title="Alertas"
       >
         <Bell size={16} />
         {unread > 0 && (
-          <span className="absolute -right-px -top-px flex h-[15px] min-w-[15px] items-center justify-center rounded-full border-2 border-surface bg-err px-[3px] text-[9px] font-bold leading-none text-white">
+          <span
+            key={unread}
+            className="pop-in absolute -right-px -top-px flex h-[15px] min-w-[15px] items-center justify-center rounded-full border-2 border-surface bg-err px-[3px] text-[9px] font-bold leading-none text-white"
+          >
             {unread > 9 ? '9+' : unread}
           </span>
         )}
       </button>
-      {open && (
-        <div className="absolute right-0 top-11 z-50 w-96 max-w-[calc(100vw-24px)] rounded-xl border border-line bg-surface shadow-lvl3">
+      {menu.mounted && (
+        <div
+          className={cx(
+            'absolute right-0 top-11 z-50 w-96 max-w-[calc(100vw-24px)] origin-top-right rounded-xl border border-line bg-surface shadow-lvl3',
+            menu.closing ? 'menu-out' : 'menu-in',
+          )}
+        >
           <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
             <span className="text-sm font-semibold">Alertas</span>
             <Link to="/alerts" onClick={() => setOpen(false)} className="text-xs font-semibold text-acc-soft hover:underline">
@@ -412,6 +435,8 @@ export default function Layout() {
   const queryClient = useQueryClient();
   const [cmdOpen, setCmdOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  // La topbar gana sombra cuando el contenido pasa por debajo (elevación con propósito).
+  const [scrolled, setScrolled] = useState(false);
   const pendingG = useRef<number | null>(null);
 
   const me = useQuery({
@@ -501,7 +526,13 @@ export default function Layout() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-line bg-surface px-3 sm:px-5">
+      {/* Cristal: la nebulosa fija del fondo se insinúa tras la topbar translúcida. */}
+      <header
+        className={cx(
+          'relative z-30 flex h-14 shrink-0 items-center justify-between gap-4 border-b border-line bg-surface/80 px-3 backdrop-blur-xl transition-shadow duration-300 sm:px-5',
+          scrolled && 'shadow-[0_10px_28px_-18px_rgba(0,0,0,.9)]',
+        )}
+      >
         <div className="flex min-w-0 items-center gap-2.5">
           <Link to="/" className="flex shrink-0 items-center gap-2.5 text-sm font-[650] tracking-[.01em] text-txt">
             <BrandMark />
@@ -545,7 +576,7 @@ export default function Layout() {
           {isHome && (
             <button
               onClick={() => setCmdOpen(true)}
-              className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt sm:hidden"
+              className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt sm:hidden"
               title="Buscar (⌘K)"
             >
               <Search size={16} />
@@ -565,14 +596,14 @@ export default function Layout() {
           )}
           <Link
             to="/monitor"
-            className="hidden rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt sm:block"
+            className="hidden press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt sm:block"
             title="Monitor (g m)"
           >
             <Activity size={16} />
           </Link>
           <Link
             to="/sites"
-            className="hidden rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt sm:block"
+            className="hidden press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt sm:block"
             title="Sitios web (g w)"
           >
             <Globe size={16} />
@@ -583,21 +614,21 @@ export default function Layout() {
             <>
               <Link
                 to="/users"
-                className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+                className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
                 title="Usuarios"
               >
                 <Users2 size={16} />
               </Link>
               <Link
                 to="/security"
-                className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+                className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
                 title="Panel de seguridad"
               >
                 <ShieldCheck size={16} />
               </Link>
               <Link
                 to="/settings"
-                className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+                className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
                 title="Ajustes"
               >
                 <Settings size={16} />
@@ -607,14 +638,14 @@ export default function Layout() {
           <span aria-hidden className="mx-1 hidden h-4 w-px bg-line sm:block" />
           <Link
             to="/account"
-            className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+            className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
             title="Mi cuenta"
           >
             <UserRound size={16} />
           </Link>
           <button
             onClick={logout}
-            className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+            className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
             title="Cerrar sesión"
           >
             <LogOut size={16} />
@@ -629,7 +660,10 @@ export default function Layout() {
         </div>
       )}
 
-      <main className="flex-1 overflow-y-auto">
+      <main
+        className="flex-1 overflow-y-auto"
+        onScroll={(e) => setScrolled((e.target as HTMLElement).scrollTop > 8)}
+      >
         {/* La clave por ruta reinicia la animación de entrada al navegar (los searchParams no la relanzan). */}
         <div key={location.pathname} className="page-in min-h-full">
           <Outlet />

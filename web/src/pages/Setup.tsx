@@ -5,12 +5,14 @@ import { Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { BrandMark } from '../components/Layout';
 import { Button, Field } from '../components/ui';
+import { cx } from '../utils';
 
 export default function Setup() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
+  const [errorShake, setErrorShake] = useState(0);
   const [loading, setLoading] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -25,6 +27,7 @@ export default function Setup() {
       navigate('/');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Error inesperado');
+      setErrorShake((n) => n + 1);
     } finally {
       setLoading(false);
     }
@@ -39,8 +42,19 @@ export default function Setup() {
       }}
     >
       <span aria-hidden className="estrella-fugaz" />
-      <div className="panel-in w-full max-w-[400px]">
-        <div className="rounded-2xl border border-line bg-surface px-7 py-8 shadow-[0_24px_64px_-24px_rgba(0,0,0,.7),inset_0_1px_0_color-mix(in_oklab,#6e56cf_16%,transparent)]">
+      <div className="panel-in relative w-full max-w-[400px]">
+        <div
+          aria-hidden
+          className="halo-breathe pointer-events-none absolute -inset-10 -z-10 rounded-[40px] blur-3xl"
+          style={{ background: 'radial-gradient(closest-side, color-mix(in oklab, #6e56cf 16%, transparent), transparent 75%)' }}
+        />
+        <div
+          key={errorShake}
+          className={cx(
+            'rounded-2xl border border-line bg-surface px-7 py-8 shadow-[0_24px_64px_-24px_rgba(0,0,0,.7),inset_0_1px_0_color-mix(in_oklab,#6e56cf_16%,transparent)]',
+            errorShake > 0 && 'shake',
+          )}
+        >
           <div className="mb-6 flex flex-col items-center gap-3.5 text-center">
             <BrandMark size={52} iconSize={24} radius={14} />
             <div>
@@ -72,7 +86,7 @@ export default function Setup() {
                 </button>
               </div>
             </Field>
-            {error && <p className="text-sm text-err">{error}</p>}
+            {error && <p className="tab-in text-sm text-err">{error}</p>}
             <Button type="submit" size="lg" loading={loading} className="w-full">
               Crear cuenta
             </Button>

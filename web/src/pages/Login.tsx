@@ -5,6 +5,7 @@ import { Eye, EyeOff, Fingerprint, ShieldCheck } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { BrandMark } from '../components/Layout';
 import { Button, Field } from '../components/ui';
+import { cx } from '../utils';
 import { loginWithPasskey, passkeysSupported } from '../webauthn';
 
 export default function Login() {
@@ -12,10 +13,17 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
+  // Cada fallo incrementa la clave de la tarjeta: la sacudida se repite aunque el mensaje no cambie.
+  const [errorShake, setErrorShake] = useState(0);
   const [loading, setLoading] = useState(false);
   const [pkLoading, setPkLoading] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+
+  const fail = (message: string) => {
+    setError(message);
+    setErrorShake((n) => n + 1);
+  };
 
   const passkey = async () => {
     setError('');
@@ -28,7 +36,7 @@ export default function Login() {
     } catch (err) {
       // Cancelar el diálogo del navegador no es un error que mostrar.
       if ((err as DOMException)?.name !== 'NotAllowedError') {
-        setError(err instanceof ApiError ? err.message : 'No se pudo usar la passkey');
+        fail(err instanceof ApiError ? err.message : 'No se pudo usar la passkey');
       }
     } finally {
       setPkLoading(false);
@@ -45,7 +53,7 @@ export default function Login() {
       queryClient.clear();
       navigate('/');
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Error inesperado');
+      fail(err instanceof ApiError ? err.message : 'Error inesperado');
     } finally {
       setLoading(false);
     }
@@ -60,8 +68,20 @@ export default function Login() {
       }}
     >
       <span aria-hidden className="estrella-fugaz" />
-      <div className="panel-in w-full max-w-[400px]">
-        <div className="rounded-2xl border border-line bg-surface px-7 py-8 shadow-[0_24px_64px_-24px_rgba(0,0,0,.7),inset_0_1px_0_color-mix(in_oklab,#6e56cf_16%,transparent)]">
+      <div className="panel-in relative w-full max-w-[400px]">
+        {/* Halo de marca que respira despacio tras la tarjeta: profundidad sin distracción. */}
+        <div
+          aria-hidden
+          className="halo-breathe pointer-events-none absolute -inset-10 -z-10 rounded-[40px] blur-3xl"
+          style={{ background: 'radial-gradient(closest-side, color-mix(in oklab, #6e56cf 16%, transparent), transparent 75%)' }}
+        />
+        <div
+          key={errorShake}
+          className={cx(
+            'rounded-2xl border border-line bg-surface px-7 py-8 shadow-[0_24px_64px_-24px_rgba(0,0,0,.7),inset_0_1px_0_color-mix(in_oklab,#6e56cf_16%,transparent)]',
+            errorShake > 0 && 'shake',
+          )}
+        >
           <div className="mb-6 flex flex-col items-center gap-3.5 text-center">
             <BrandMark size={52} iconSize={24} radius={14} />
             <div>
@@ -92,7 +112,7 @@ export default function Login() {
                 </button>
               </div>
             </Field>
-            {error && <p className="text-sm text-err">{error}</p>}
+            {error && <p className="tab-in text-sm text-err">{error}</p>}
             <Button type="submit" size="lg" loading={loading} className="w-full">
               Entrar
             </Button>

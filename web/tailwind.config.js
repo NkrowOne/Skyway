@@ -1,6 +1,8 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
+  // En táctil el hover «se pega» tras cada toque: solo se emite donde hay puntero real.
+  future: { hoverOnlyWhenSupported: true },
   theme: {
     extend: {
       colors: {

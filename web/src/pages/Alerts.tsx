@@ -191,7 +191,8 @@ export default function AlertsPage() {
         </div>
       )}
 
-      <div className="flex flex-col gap-3">
+      {/* La clave por vista relanza el escalonado al cambiar Activas ↔ Historial. */}
+      <div key={String(openOnly)} className="stagger flex flex-col gap-3">
         {list.map((a) => (
           <AlertCard key={a.id} alert={a} onResolve={() => resolve.mutate(a.id)} resolving={resolve.isPending} />
         ))}

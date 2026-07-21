@@ -414,7 +414,7 @@ export default function ServiceSettingsTab({
         </section>
       </div>
 
-      <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-line bg-surface/[.92] px-4 py-2.5 backdrop-blur-lg sm:px-5">
+      <div className="safe-b sticky bottom-0 flex items-center justify-between gap-3 border-t border-line bg-surface/[.92] px-4 py-2.5 backdrop-blur-lg sm:px-5">
         {dirty ? (
           <span className="flex items-center gap-[7px] text-xs text-warn">
             <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />

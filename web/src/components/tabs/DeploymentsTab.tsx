@@ -76,7 +76,10 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
   );
 }
 
-/** Pill de estado del despliegue: el vigente en verde, el histórico en gris. */
+/**
+ * Pill de estado del despliegue: el vigente en verde, el histórico en gris.
+ * Cada transición (En cola → Construyendo → Activo) entra con un pop mínimo.
+ */
 function DeployPill({ deployment, isCurrent, isLatest }: { deployment: Deployment; isCurrent: boolean; isLatest: boolean }) {
   const active = isActiveDeploy(deployment.status);
   const label = isCurrent ? 'Activo' : DEPLOY_STATUS_LABEL[deployment.status];
@@ -88,7 +91,10 @@ function DeployPill({ deployment, isCurrent, isLatest }: { deployment: Deploymen
         ? 'bg-err/[.14] text-err'
         : 'bg-surface2 text-sub';
   return (
-    <span className={cx('inline-flex shrink-0 items-center rounded-full px-2.5 py-[3px] text-[11px] font-semibold', cls)}>
+    <span
+      key={label}
+      className={cx('badge-in inline-flex shrink-0 items-center rounded-full px-2.5 py-[3px] text-[11px] font-semibold', cls)}
+    >
       {label}
     </span>
   );
@@ -198,7 +204,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
                     cancel.mutate(d.id);
                   }}
                   onKeyDown={(e) => e.key === 'Enter' && cancel.mutate(d.id)}
-                  className="rounded-lg p-1.5 leading-none text-err/80 transition-colors hover:bg-surface2 hover:text-err"
+                  className="press rounded-lg p-1.5 leading-none text-err/80 hover:bg-surface2 hover:text-err"
                   title="Cancelar despliegue"
                 >
                   <XCircle size={14} />
@@ -213,7 +219,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
                     rollback.mutate(d.id);
                   }}
                   onKeyDown={(e) => e.key === 'Enter' && rollback.mutate(d.id)}
-                  className="rounded-lg p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+                  className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
                   title="Volver a esta versión"
                 >
                   <RotateCcw size={13} />
@@ -222,7 +228,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
             </span>
           </button>
           {openId === d.id && (
-            <div className="border-t border-line p-3">
+            <div className="tab-in border-t border-line p-3">
               {d.error && (
                 <p className="mb-2.5 rounded-lg border border-err/35 bg-err/[.08] px-3 py-2.5 text-xs text-err">{d.error}</p>
               )}

@@ -93,8 +93,18 @@ export default function MetricChart({
               <line key={i} x1={PAD.left} x2={W - PAD.right} y1={y} y2={y} stroke="var(--color-line)" opacity="0.5" strokeWidth="1" />
             ))}
             <line x1={PAD.left} x2={W - PAD.right} y1={H - PAD.bottom} y2={H - PAD.bottom} stroke="var(--color-line)" strokeWidth="1" />
-            {area && <path d={area} fill={color} opacity={fillOpacity} />}
-            <path d={path} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+            {/* pathLength=1 normaliza el dasharray: el trazo se dibuja una única vez al montar. */}
+            {area && <path d={area} fill={color} opacity={fillOpacity} className="chart-area" />}
+            <path
+              d={path}
+              pathLength={1}
+              fill="none"
+              stroke={color}
+              strokeWidth="2"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              className="chart-line"
+            />
             {hovered && hover !== null && (
               <>
                 <line
