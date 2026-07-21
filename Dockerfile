@@ -24,8 +24,18 @@ FROM node:22-alpine
 RUN apk add --no-cache docker-cli git curl bash ca-certificates
 
 # Nixpacks (builds sin Dockerfile, como Railway). Best-effort: si falla,
-# Skyway sigue funcionando y lo indica en Ajustes → Sistema.
-RUN curl -fsSL https://nixpacks.com/install.sh | bash || echo "aviso: nixpacks no instalado"
+# Skyway sigue funcionando y lo indica en Ajustes → Sistema. Se descarga a
+# fichero (con `curl | bash`, un curl fallido deja a bash sin entrada y sale
+# con 0: la instalación se saltaba sin dejar rastro), se reintenta ante fallos
+# de red y se verifica que el binario instalado de verdad se ejecuta.
+RUN for i in 1 2 3; do \
+      curl -fsSL --retry 3 --retry-delay 2 https://nixpacks.com/install.sh -o /tmp/nixpacks-install.sh \
+      && bash /tmp/nixpacks-install.sh && break; \
+      echo "intento $i de instalar nixpacks falló"; sleep 2; \
+    done; \
+    rm -f /tmp/nixpacks-install.sh; \
+    nixpacks --version \
+    || echo "AVISO: nixpacks no instalado: los repos sin Dockerfile no se podrán construir (se ve en Ajustes → Sistema)"
 
 WORKDIR /app
 ENV NODE_ENV=production \
