@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { History, Lightbulb, RotateCcw, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
@@ -6,6 +6,24 @@ import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
 import { CopyButton, Skeleton, useToast } from '../ui';
+
+/**
+ * Acordeón mantequilla: crece y se pliega animando grid-template-rows
+ * (0fr ↔ 1fr), que sí sabe interpolar hasta la altura natural del contenido.
+ * Monta en 0fr y crece al frame siguiente para que la apertura también anime.
+ */
+function Collapse({ open, children }: { open: boolean; children: React.ReactNode }) {
+  const [grown, setGrown] = useState(false);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setGrown(open));
+    return () => cancelAnimationFrame(raf);
+  }, [open]);
+  return (
+    <div className={cx('collapse-grid', grown && open && 'collapse-open')}>
+      <div>{children}</div>
+    </div>
+  );
+}
 
 const TRIGGER_LABEL: Record<string, string> = {
   initial: 'creación',
@@ -102,8 +120,22 @@ function DeployPill({ deployment, isCurrent, isLatest }: { deployment: Deploymen
 
 export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: string; serviceType: string }) {
   const [openId, setOpenId] = useState<string | null>(null);
+  // La tarjeta que se está plegando sigue montada hasta acabar su animación.
+  const [closingId, setClosingId] = useState<string | null>(null);
+  const closeTimer = useRef<number>();
   const toast = useToast();
   const queryClient = useQueryClient();
+
+  const toggle = (id: string) => {
+    const prev = openId;
+    setOpenId(id === prev ? null : id);
+    if (prev) {
+      setClosingId(prev);
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = window.setTimeout(() => setClosingId(null), 340);
+    }
+  };
+  useEffect(() => () => window.clearTimeout(closeTimer.current), []);
 
   const deployments = useQuery({
     queryKey: ['deployments', serviceId],
@@ -115,7 +147,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
     mutationFn: (deploymentId: string) => api.post<{ deployment: Deployment }>(`/deployments/${deploymentId}/rollback`),
     onSuccess: (data) => {
       toast('Rollback iniciado', 'ok');
-      setOpenId(data.deployment.id);
+      toggle(data.deployment.id);
       queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -163,17 +195,30 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
 
   return (
     <div className="flex flex-col gap-2.5 p-4 sm:px-5">
-      {list.map((d, idx) => (
-        <div
-          key={d.id}
-          className={cx(
-            'overflow-hidden rounded-xl border bg-bg',
-            openId === d.id ? 'border-[color-mix(in_oklab,#6e56cf_30%,var(--color-line))]' : 'border-line',
-          )}
-        >
+      {list.map((d, idx) => {
+        const open = openId === d.id;
+        const active = isActiveDeploy(d.status);
+        const isCurrent = d.id === currentId;
+        // Lógica de énfasis: solo el estado VIGENTE lleva color de fondo.
+        // El que sirve tráfico va en verde; el último intento, si falló, en rojo;
+        // el que está en curso lleva borde ámbar y cometa de progreso.
+        // El histórico queda neutro para que el color siempre signifique «ahora».
+        const isLatestFailed = idx === 0 && d.status === 'failed';
+        const tint = active
+          ? 'border-[color-mix(in_oklab,var(--color-warn)_40%,var(--color-line))] bg-warn/[.04]'
+          : isLatestFailed
+            ? 'border-[color-mix(in_oklab,var(--color-err)_45%,var(--color-line))] bg-err/[.06]'
+            : isCurrent
+              ? 'border-[color-mix(in_oklab,var(--color-ok)_35%,var(--color-line))] bg-ok/[.05]'
+              : open
+                ? 'border-[color-mix(in_oklab,#6e56cf_30%,var(--color-line))] bg-bg'
+                : 'border-line bg-bg';
+        return (
+        <div key={d.id} className={cx('relative overflow-hidden rounded-xl border transition-colors duration-300', tint)}>
+          {active && <span aria-hidden className="deploy-sweep" />}
           <button
-            onClick={() => setOpenId(openId === d.id ? null : d.id)}
-            className="flex w-full items-center justify-between gap-2 px-3.5 py-3 text-left transition-colors duration-150 hover:bg-surface2"
+            onClick={() => toggle(d.id)}
+            className="flex w-full items-center justify-between gap-2 px-3.5 py-3 text-left transition-colors duration-150 hover:bg-txt/[.03]"
           >
             <div className="flex min-w-0 items-center gap-3">
               <DeployPill deployment={d} isCurrent={d.id === currentId} isLatest={idx === 0} />
@@ -227,17 +272,20 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
               )}
             </span>
           </button>
-          {openId === d.id && (
-            <div className="tab-in border-t border-line p-3">
-              {d.error && (
-                <p className="mb-2.5 rounded-lg border border-err/35 bg-err/[.08] px-3 py-2.5 text-xs text-err">{d.error}</p>
-              )}
-              <DiagnosisCard raw={d.diagnosis} />
-              <DeploymentLogs deployment={d} />
-            </div>
+          {(open || closingId === d.id) && (
+            <Collapse open={open}>
+              <div className="border-t border-line p-3">
+                {d.error && (
+                  <p className="mb-2.5 rounded-lg border border-err/35 bg-err/[.08] px-3 py-2.5 text-xs text-err">{d.error}</p>
+                )}
+                <DiagnosisCard raw={d.diagnosis} />
+                <DeploymentLogs deployment={d} />
+              </div>
+            </Collapse>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

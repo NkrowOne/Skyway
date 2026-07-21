@@ -198,7 +198,7 @@ export default function SecurityPage() {
                   key={g.kind}
                   open={f.severity === 'critical'}
                   className={cx(
-                    'group rounded-xl border bg-surface p-4',
+                    'group animate-details rounded-xl border bg-surface p-4',
                     f.severity === 'critical' ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]' : 'border-line',
                   )}
                 >
@@ -239,7 +239,7 @@ export default function SecurityPage() {
                 key={f.id}
                 open={f.severity === 'critical'}
                 className={cx(
-                  'group rounded-xl border bg-surface p-4',
+                  'group animate-details rounded-xl border bg-surface p-4',
                   f.severity === 'critical' ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]' : 'border-line',
                 )}
               >
@@ -289,10 +289,25 @@ export default function SecurityPage() {
           }}
         >
           <Field label="Contraseña actual">
-            <input className="input" type="password" value={currentPw} onChange={(e) => setCurrentPw(e.target.value)} required />
+            <input
+              className="input"
+              type="password"
+              autoComplete="current-password"
+              value={currentPw}
+              onChange={(e) => setCurrentPw(e.target.value)}
+              required
+            />
           </Field>
           <Field label="Nueva contraseña" hint="Mínimo 8 caracteres; usa una larga y única">
-            <input className="input" type="password" value={nextPw} onChange={(e) => setNextPw(e.target.value)} required minLength={8} />
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              value={nextPw}
+              onChange={(e) => setNextPw(e.target.value)}
+              required
+              minLength={8}
+            />
           </Field>
           <div className="flex flex-wrap items-center justify-between gap-3 sm:col-span-2">
             <Button type="submit" size="sm" loading={changePassword.isPending}>

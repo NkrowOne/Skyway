@@ -64,13 +64,25 @@ export default function Setup() {
           </div>
           <form onSubmit={submit} className="flex flex-col gap-4">
             <Field label="Email">
-              <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
+              <input
+                className="input"
+                type="email"
+                inputMode="email"
+                autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoFocus
+              />
             </Field>
             <Field label="Contraseña" hint="Mínimo 8 caracteres">
               <div className="relative">
                 <input
                   className="input pr-10"
                   type={showPw ? 'text' : 'password'}
+                  autoComplete="new-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required

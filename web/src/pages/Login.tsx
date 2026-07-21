@@ -1,12 +1,83 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { Eye, EyeOff, Fingerprint, ShieldCheck } from 'lucide-react';
+import { Eye, EyeOff, Fingerprint, KeyRound, ShieldCheck, TerminalSquare, Users2 } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { BrandMark } from '../components/Layout';
-import { Button, Field } from '../components/ui';
+import { Button, CopyButton, Field, Modal } from '../components/ui';
 import { cx } from '../utils';
 import { loginWithPasskey, passkeysSupported } from '../webauthn';
+
+/**
+ * Recuperación de acceso honesta para una plataforma auto-alojada: sin email
+ * de reset (no hay proveedor de correo garantizado), tres vías reales según
+ * la situación, de la más rápida a la de último recurso.
+ */
+function RecoveryModal({ open, onClose, onPasskey }: { open: boolean; onClose: () => void; onPasskey: (() => void) | null }) {
+  const cmd = 'docker compose exec skyway node dist/tools/reset-password.js tu@email.com';
+  return (
+    <Modal open={open} onClose={onClose} title="Recuperar el acceso">
+      <div className="flex flex-col gap-4 text-[13px] text-sub">
+        {onPasskey && (
+          <div className="flex gap-3">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-acc/[.15] text-acc-soft">
+              <Fingerprint size={15} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-txt">¿Registraste una passkey?</p>
+              <p className="mt-0.5">Entra con ella y pon una contraseña nueva en Seguridad.</p>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2"
+                onClick={() => {
+                  onClose();
+                  onPasskey();
+                }}
+              >
+                <Fingerprint size={14} /> Entrar con passkey
+              </Button>
+            </div>
+          </div>
+        )}
+        <div className="flex gap-3">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-info/[.14] text-info">
+            <Users2 size={15} />
+          </span>
+          <div>
+            <p className="font-semibold text-txt">¿Hay otro administrador?</p>
+            <p className="mt-0.5">
+              Puede ponerte una contraseña nueva en <span className="text-txt">Usuarios → tu cuenta → Nueva contraseña</span>. Tus
+              sesiones antiguas se invalidan al momento.
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-3">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-warn/[.13] text-warn">
+            <TerminalSquare size={15} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-txt">¿Eres el único admin? Desde el servidor:</p>
+            <div className="mt-2 flex items-center gap-1 rounded-lg border border-line bg-term px-3 py-2">
+              <code className="min-w-0 flex-1 select-all whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-txt/90">
+                {cmd}
+              </code>
+              <CopyButton value={cmd} title="Copiar comando" />
+            </div>
+            <p className="mt-1.5 text-[11.5px] text-subtle">
+              Imprime una contraseña temporal, cierra las demás sesiones y deja rastro en la auditoría. Sin Docker:{' '}
+              <code className="font-mono text-[11px]">npm run reset-password -w server -- tu@email.com</code>
+            </p>
+          </div>
+        </div>
+        <p className="flex items-center gap-1.5 border-t border-line pt-3 text-[11.5px] text-subtle">
+          <KeyRound size={12} className="shrink-0" />
+          Skyway no envía emails de restablecimiento: nadie puede pedir un reset en tu nombre desde fuera.
+        </p>
+      </div>
+    </Modal>
+  );
+}
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -15,6 +86,7 @@ export default function Login() {
   const [error, setError] = useState('');
   // Cada fallo incrementa la clave de la tarjeta: la sacudida se repite aunque el mensaje no cambie.
   const [errorShake, setErrorShake] = useState(0);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [pkLoading, setPkLoading] = useState(false);
   const queryClient = useQueryClient();
@@ -91,13 +163,39 @@ export default function Login() {
           </div>
           <form onSubmit={submit} className="flex flex-col gap-4">
             <Field label="Email">
-              <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
+              {/* autocomplete webauthn: el teclado del móvil ofrece la passkey guardada al tocar el campo. */}
+              <input
+                className="input"
+                type="email"
+                inputMode="email"
+                autoComplete="username webauthn"
+                autoCapitalize="none"
+                spellCheck={false}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoFocus
+              />
             </Field>
-            <Field label="Contraseña">
+            <Field
+              label={
+                <span className="flex w-full items-center justify-between">
+                  Contraseña
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryOpen(true)}
+                    className="font-normal text-subtle transition-colors hover:text-acc-soft"
+                  >
+                    ¿La has olvidado?
+                  </button>
+                </span>
+              }
+            >
               <div className="relative">
                 <input
                   className="input pr-10"
                   type={showPw ? 'text' : 'password'}
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
@@ -105,7 +203,7 @@ export default function Login() {
                 <button
                   type="button"
                   onClick={() => setShowPw(!showPw)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-1 leading-none text-subtle transition-colors hover:text-txt"
+                  className="press absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-1 leading-none text-subtle hover:text-txt"
                   title={showPw ? 'Ocultar contraseña' : 'Mostrar contraseña'}
                 >
                   {showPw ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -134,6 +232,11 @@ export default function Login() {
           <ShieldCheck size={12} /> Intentos limitados por IP · toda la actividad queda en el registro de auditoría
         </p>
       </div>
+      <RecoveryModal
+        open={recoveryOpen}
+        onClose={() => setRecoveryOpen(false)}
+        onPasskey={passkeysSupported() ? passkey : null}
+      />
     </div>
   );
 }
