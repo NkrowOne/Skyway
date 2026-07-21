@@ -21,12 +21,14 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
+import { BandPoint, HistoryChart } from '../components/HistoryChart';
 import { Button, Skeleton, StatusBadge, useToast } from '../components/ui';
-import { DiskBreakdown, LogSearchResult, Me, MonitorOverview, MonitorService } from '../types';
+import { DiskBreakdown, HostMetricHistory, LogSearchResult, Me, MonitorOverview, MonitorService } from '../types';
 import { cx, fmtBytes, fmtDateTime, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
 
 type StateFilter = 'all' | 'running' | 'down' | 'stopped';
 type SortKey = 'default' | 'cpu' | 'mem' | 'disk';
+type View = 'services' | 'host' | 'disk';
 
 /** Tarjeta de indicador del host con barra de progreso opcional. */
 function StatTile({
@@ -433,11 +435,100 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
+/** Histórico del servidor: carga, RAM y disco a lo largo del tiempo. */
+function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
+  const [hours, setHours] = useState(24);
+  const ranges = [
+    { h: 24, label: '24 h' },
+    { h: 168, label: '7 días' },
+    { h: 720, label: '30 días' },
+  ];
+
+  const q = useQuery({
+    queryKey: ['hostHistory', hours],
+    queryFn: () => api.get<HostMetricHistory>(`/monitor/host-history?hours=${hours}`),
+    refetchInterval: 60_000,
+    retry: false,
+  });
+
+  const points = q.data?.points ?? [];
+  const memTotal = [...points].reverse().find((p) => p.memTotal)?.memTotal ?? null;
+  const diskTotal = [...points].reverse().find((p) => p.diskTotal)?.diskTotal ?? null;
+
+  const loadPoints: BandPoint[] = points.map((p) => ({ t: p.t, avg: p.loadAvg, max: p.loadMax }));
+  const memPoints: BandPoint[] = points.map((p) => ({ t: p.t, avg: p.memUsedAvg, max: p.memUsedMax }));
+  const diskPoints: BandPoint[] = points.map((p) => ({ t: p.t, avg: p.diskUsed, max: p.diskUsed }));
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-1 self-start rounded-xl border border-line bg-surface p-1 text-[13px]">
+        {ranges.map((r) => (
+          <button
+            key={r.h}
+            onClick={() => setHours(r.h)}
+            className={cx(
+              'press rounded-lg px-3 py-1 transition-colors',
+              hours === r.h ? 'bg-acc/[.16] font-medium text-acc-soft' : 'text-sub hover:text-txt',
+            )}
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+
+      {q.isLoading ? (
+        <div aria-busy className="flex flex-col gap-3.5">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-[208px] w-full rounded-xl" />
+          ))}
+        </div>
+      ) : q.isError ? (
+        <p className="card flex items-center gap-2 px-4 py-8 text-xs text-warn">
+          <TriangleAlert size={14} /> {(q.error as Error).message}
+        </p>
+      ) : (
+        <>
+          <HistoryChart
+            title={`Carga del sistema${cpus ? ` · ${cpus} núcleos` : ''}`}
+            points={loadPoints}
+            hours={hours}
+            color="var(--color-acc)"
+            format={(v) => v.toFixed(v < 10 ? 2 : 1)}
+            threshold={cpus ? { value: cpus, label: `${cpus} núcleos` } : null}
+          />
+          <HistoryChart
+            title="RAM del servidor"
+            points={memPoints}
+            hours={hours}
+            color="var(--color-info)"
+            format={(v) => fmtBytes(v)}
+            threshold={memTotal ? { value: memTotal, label: `total ${fmtBytes(memTotal)}` } : null}
+            fixedMax={memTotal ?? undefined}
+          />
+          <HistoryChart
+            title="Disco del servidor · ocupado"
+            points={diskPoints}
+            hours={hours}
+            color="var(--color-warn)"
+            format={(v) => fmtBytes(v)}
+            threshold={diskTotal ? { value: diskTotal, label: `total ${fmtBytes(diskTotal)}` } : null}
+            fixedMax={diskTotal ?? undefined}
+          />
+          <p className="text-center text-[11px] text-subtle">
+            La carga del sistema es el número medio de procesos esperando CPU; si supera el número de núcleos, el servidor va
+            saturado. La banda va de la media al pico de cada periodo.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function MonitorPage() {
   const [text, setText] = useState('');
   const [stateFilter, setStateFilter] = useState<StateFilter>('all');
   const [sortKey, setSortKey] = useState<SortKey>('default');
-  const [view, setView] = useState<'services' | 'disk'>('services');
+  const [view, setView] = useState<View>('services');
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -590,9 +681,9 @@ export default function MonitorPage() {
             />
             <StatTile
               icon={<Cpu size={12} />}
-              label="CPU host"
+              label="Carga CPU"
               value={host ? `${host.load}` : '—'}
-              detail={host ? `carga / ${host.cpus} núcleos` : undefined}
+              detail={host ? `${cpuPct !== null ? `${Math.round(cpuPct)}% de ` : ''}${host.cpus} núcleos` : undefined}
               pct={cpuPct}
               tone={cpuPct !== null && cpuPct > 90 ? 'err' : cpuPct !== null && cpuPct > 70 ? 'warn' : 'ok'}
             />
@@ -618,6 +709,7 @@ export default function MonitorPage() {
             {(
               [
                 { key: 'services', label: 'Servicios', icon: <Server size={13} /> },
+                { key: 'host', label: 'Servidor', icon: <Cpu size={13} /> },
                 { key: 'disk', label: 'Espacio', icon: <HardDrive size={13} /> },
               ] as const
             ).map((t) => (
@@ -636,6 +728,8 @@ export default function MonitorPage() {
 
           {/* La clave por vista relanza una aparición breve al cambiar Servicios ↔ Espacio. */}
           <div key={view} className="tab-in">
+          {view === 'host' && <HostHistoryPanel cpus={host?.cpus} />}
+
           {view === 'disk' && <DiskPanel isAdmin={!!isAdmin} />}
 
           {view === 'services' && (

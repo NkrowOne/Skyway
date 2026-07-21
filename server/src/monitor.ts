@@ -1,10 +1,22 @@
 import os from 'os';
 import { fireAlert, resolveServiceAlerts } from './alerts';
-import { getSetting, listProjects, listServices, pruneUptime, recordUptimeSample } from './db';
-import { diskUsageByService } from './disk';
+import {
+  getSetting,
+  listProjects,
+  listServices,
+  pruneMetrics,
+  pruneUptime,
+  recordHostDisk,
+  recordHostMetrics,
+  recordServiceDisk,
+  recordServiceMetrics,
+  recordUptimeSample,
+} from './db';
+import { diskUsageByService, hostDisk } from './disk';
 import { dockerAvailable } from './docker/client';
 import { configuredReplicas, getRuntime, getStats, replicaName } from './docker/containers';
 import { explainExitCode } from './deploy/diagnose';
+import { netDelta, pruneNetCounters } from './metrics';
 import { ContainerState } from './types';
 import { fmtBytesEs } from './util';
 
@@ -47,12 +59,17 @@ async function tick(): Promise<void> {
   const sustainMs = num('alertSustainMinutes', 5) * 60_000;
   const hostCores = os.cpus().length;
   const nowMs = Date.now();
+  // Réplicas con contador de red vivo este tick: las que desaparezcan se olvidan.
+  const seenReplicas = new Set<string>();
 
   for (const project of listProjects()) {
     for (const service of listServices(project.id)) {
       const totalReplicas = configuredReplicas(service);
       let runningReplicas = 0;
       let anyReplicaSeen = false;
+      // Acumulador del consumo del servicio (suma de sus réplicas) para el histórico.
+      const sample = { cpuPercent: 0, memUsage: 0, memLimit: 0, netRxDelta: 0, netTxDelta: 0 };
+      let sawStats = false;
       for (let idx = 1; idx <= totalReplicas; idx++) {
       const name = replicaName(project, service, idx);
       const trackKey = `${service.id}#${idx}`;
@@ -117,6 +134,16 @@ async function tick(): Promise<void> {
       if (runtime.state === 'running') {
         const stats = await getStats(name);
         if (stats) {
+          // Muestra para el histórico: suma de todas las réplicas del servicio.
+          const delta = netDelta(name, stats.netRx, stats.netTx);
+          seenReplicas.add(name);
+          sample.cpuPercent += stats.cpuPercent;
+          sample.memUsage += stats.memUsage;
+          sample.memLimit += stats.memLimit;
+          sample.netRxDelta += delta.rx;
+          sample.netTxDelta += delta.tx;
+          sawStats = true;
+
           const cfg = service.config as any;
           const cpuAllowance = (cfg.cpus && cfg.cpus > 0 ? cfg.cpus : hostCores) * 100;
           const cpuPct = (stats.cpuPercent / cpuAllowance) * 100;
@@ -172,8 +199,15 @@ async function tick(): Promise<void> {
       // marcha" si al menos una réplica corre. Antes del primer despliegue no
       // se registra nada (no penaliza el uptime).
       if (anyReplicaSeen) recordUptimeSample(service.id, runningReplicas > 0);
+      // Muestra de consumo para el histórico (solo si alguna réplica dio stats).
+      if (sawStats) recordServiceMetrics(service.id, sample);
     }
   }
+
+  // Histórico de carga y RAM del host (independiente de los servicios).
+  recordHostMetrics(os.loadavg()[0], os.totalmem() - os.freemem(), os.totalmem());
+  // Se olvidan los contadores de red de réplicas que ya no corren.
+  pruneNetCounters(seenReplicas);
 
   // Limpieza de servicios eliminados.
   const alive = new Set<string>();
@@ -188,9 +222,14 @@ async function tick(): Promise<void> {
 async function checkDiskQuotas(): Promise<void> {
   if (!(await dockerAvailable())) return;
   const usage = await diskUsageByService();
+  // Foto de disco del host para el histórico (una por cada ronda de disco, ~5 min).
+  const hd = await hostDisk().catch(() => null);
+  if (hd) recordHostDisk(hd.total - hd.free, hd.total);
   for (const project of listProjects()) {
     for (const service of listServices(project.id)) {
       const du = usage.get(service.id);
+      // Foto de disco del servicio para el histórico (aunque no tenga cuota).
+      if (du) recordServiceDisk(service.id, du.totalBytes);
       if (!du || !du.quotaMb) {
         // Sin cuota (o quitada): cualquier alerta de disco pendiente se cierra.
         resolveServiceAlerts(service.id, 'disk_quota', false);
@@ -257,11 +296,12 @@ export function startMonitor(log: { warn: (msg: string) => void }): void {
           log.warn(`monitor disco: ${err?.message || err}`);
         }
       }
-      // Poda diaria del histórico de disponibilidad (se conservan ~92 días).
+      // Poda diaria del histórico de disponibilidad y de consumo (~90-92 días).
       if (Date.now() - lastPrune > 24 * 3600_000) {
         lastPrune = Date.now();
         try {
           pruneUptime();
+          pruneMetrics();
         } catch (err: any) {
           log.warn(`monitor prune: ${err?.message || err}`);
         }

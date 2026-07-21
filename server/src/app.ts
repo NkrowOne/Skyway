@@ -24,6 +24,7 @@ import { userRoutes } from './routes/users';
 import { dbConsoleRoutes } from './routes/dbconsole';
 import { fileRoutes } from './routes/files';
 import { monitorRoutes } from './routes/monitor';
+import { metricsRoutes } from './routes/metrics';
 import { statusRoutes } from './routes/status';
 import { websiteRoutes } from './routes/websites';
 
@@ -97,6 +98,7 @@ export function buildApp(): FastifyInstance {
   app.register(dbConsoleRoutes);
   app.register(fileRoutes);
   app.register(monitorRoutes);
+  app.register(metricsRoutes);
   app.register(statusRoutes);
   app.register(websiteRoutes);
 

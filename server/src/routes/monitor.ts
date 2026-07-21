@@ -3,6 +3,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { canAccessProject, currentUser, requireAuth } from '../auth';
 import {
+  hostMetricsRange,
   listDeployments,
   listProjects,
   listServices,
@@ -11,6 +12,7 @@ import {
 } from '../db';
 import { explainExitCode } from '../deploy/diagnose';
 import { diskUsageByService, hostDisk } from '../disk';
+import { bucketHostMetrics } from '../metrics';
 import { docker, dockerAvailable } from '../docker/client';
 import {
   aggregateReplicaState,
@@ -242,5 +244,16 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
     }
 
     return { host: await hostDisk(), docker: dockerTotals, services };
+  });
+
+  /**
+   * Histórico de carga, RAM y disco del host, agrupado por cubos según la
+   * ventana (`?hours=`). Visible para cualquier usuario, igual que el resumen.
+   */
+  app.get('/api/monitor/host-history', async (req) => {
+    const { hours } = z
+      .object({ hours: z.coerce.number().int().min(1).max(24 * 90).default(24) })
+      .parse(req.query);
+    return { hours, points: bucketHostMetrics(hostMetricsRange(hours), hours) };
   });
 }

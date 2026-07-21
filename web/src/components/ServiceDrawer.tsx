@@ -310,7 +310,7 @@ export default function ServiceDrawer({
           {tab === 'variables' && <VariablesTab serviceId={serviceId} onSaved={invalidate} onDeploy={() => deploy.mutate()} />}
           {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
           {tab === 'files' && <FilesTab serviceId={serviceId} />}
-          {tab === 'metrics' && <MetricsTab serviceId={serviceId} latest={latestMetrics} historyRef={historyRef} />}
+          {tab === 'metrics' && <MetricsTab serviceId={serviceId} service={service} latest={latestMetrics} historyRef={historyRef} />}
           {tab === 'logs' && <LogsTab serviceId={serviceId} replicas={(service.config as any).replicas ?? 1} />}
           {tab === 'settings' && (
             <ServiceSettingsTab

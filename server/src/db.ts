@@ -9,9 +9,12 @@ import {
   DeploymentRow,
   DeploymentStatus,
   GithubConnectorRow,
+  HostMetricHour,
   PasskeyRow,
   ProjectRow,
   ServiceConfig,
+  ServiceMetricHour,
+  ServiceMetricSample,
   ServiceRow,
   ServiceType,
   UserRole,
@@ -156,6 +159,38 @@ export function initDb(): void {
       up INTEGER NOT NULL DEFAULT 0,
       total INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (service_id, hour)
+    );
+  `);
+
+  // Histórico de consumo por servicio y hora: una fila por servicio y hora con
+  // sumas (para medias) y máximos (para picos) de CPU/RAM, bytes de red del
+  // periodo (delta, no acumulado) y la última foto de disco de esa hora. El
+  // monitor lo alimenta cada 30 s; se conservan ~90 días y se podan a diario.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS service_metrics_hourly (
+      service_id TEXT NOT NULL,
+      hour INTEGER NOT NULL,
+      samples INTEGER NOT NULL DEFAULT 0,
+      cpu_sum REAL NOT NULL DEFAULT 0,
+      cpu_max REAL NOT NULL DEFAULT 0,
+      mem_sum REAL NOT NULL DEFAULT 0,
+      mem_max REAL NOT NULL DEFAULT 0,
+      mem_limit_last REAL NOT NULL DEFAULT 0,
+      net_rx REAL NOT NULL DEFAULT 0,
+      net_tx REAL NOT NULL DEFAULT 0,
+      disk_last REAL,
+      PRIMARY KEY (service_id, hour)
+    );
+    CREATE TABLE IF NOT EXISTS host_metrics_hourly (
+      hour INTEGER PRIMARY KEY,
+      samples INTEGER NOT NULL DEFAULT 0,
+      load_sum REAL NOT NULL DEFAULT 0,
+      load_max REAL NOT NULL DEFAULT 0,
+      mem_used_sum REAL NOT NULL DEFAULT 0,
+      mem_used_max REAL NOT NULL DEFAULT 0,
+      mem_total_last REAL NOT NULL DEFAULT 0,
+      disk_used_last REAL,
+      disk_total_last REAL
     );
   `);
 
@@ -444,6 +479,89 @@ export function pruneUptime(keepDays = 92): void {
   const cutoff = Math.floor(now() / 3_600_000) - keepDays * 24;
   db.prepare('DELETE FROM uptime_hourly WHERE hour < ?').run(cutoff);
   db.prepare('DELETE FROM uptime_hourly WHERE service_id NOT IN (SELECT id FROM services)').run();
+}
+
+// ---------- histórico de consumo (CPU/RAM/red/disco) ----------
+/**
+ * Acumula una muestra de consumo de un servicio en su cubo horario. Las sumas
+ * dividen luego entre `samples` para la media; los máximos guardan el pico real
+ * de la hora, que una media aplasta y es justo lo que delata un problema.
+ */
+export function recordServiceMetrics(serviceId: string, s: ServiceMetricSample): void {
+  const hour = Math.floor(now() / 3_600_000);
+  db.prepare(
+    `INSERT INTO service_metrics_hourly
+       (service_id, hour, samples, cpu_sum, cpu_max, mem_sum, mem_max, mem_limit_last, net_rx, net_tx)
+     VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(service_id, hour) DO UPDATE SET
+       samples = samples + 1,
+       cpu_sum = cpu_sum + excluded.cpu_sum,
+       cpu_max = MAX(cpu_max, excluded.cpu_max),
+       mem_sum = mem_sum + excluded.mem_sum,
+       mem_max = MAX(mem_max, excluded.mem_max),
+       mem_limit_last = excluded.mem_limit_last,
+       net_rx = net_rx + excluded.net_rx,
+       net_tx = net_tx + excluded.net_tx`,
+  ).run(serviceId, hour, s.cpuPercent, s.cpuPercent, s.memUsage, s.memUsage, s.memLimit, s.netRxDelta, s.netTxDelta);
+}
+
+/** Registra la foto de disco de un servicio en el cubo horario actual (sobrescribe). */
+export function recordServiceDisk(serviceId: string, totalBytes: number): void {
+  const hour = Math.floor(now() / 3_600_000);
+  db.prepare(
+    `INSERT INTO service_metrics_hourly (service_id, hour, disk_last) VALUES (?, ?, ?)
+     ON CONFLICT(service_id, hour) DO UPDATE SET disk_last = excluded.disk_last`,
+  ).run(serviceId, hour, totalBytes);
+}
+
+/** Acumula una muestra de carga y RAM del host en su cubo horario. */
+export function recordHostMetrics(load: number, memUsed: number, memTotal: number): void {
+  const hour = Math.floor(now() / 3_600_000);
+  db.prepare(
+    `INSERT INTO host_metrics_hourly
+       (hour, samples, load_sum, load_max, mem_used_sum, mem_used_max, mem_total_last)
+     VALUES (?, 1, ?, ?, ?, ?, ?)
+     ON CONFLICT(hour) DO UPDATE SET
+       samples = samples + 1,
+       load_sum = load_sum + excluded.load_sum,
+       load_max = MAX(load_max, excluded.load_max),
+       mem_used_sum = mem_used_sum + excluded.mem_used_sum,
+       mem_used_max = MAX(mem_used_max, excluded.mem_used_max),
+       mem_total_last = excluded.mem_total_last`,
+  ).run(hour, load, load, memUsed, memUsed, memTotal);
+}
+
+/** Registra la foto de disco del host en el cubo horario actual (sobrescribe). */
+export function recordHostDisk(diskUsed: number, diskTotal: number): void {
+  const hour = Math.floor(now() / 3_600_000);
+  db.prepare(
+    `INSERT INTO host_metrics_hourly (hour, disk_used_last, disk_total_last) VALUES (?, ?, ?)
+     ON CONFLICT(hour) DO UPDATE SET disk_used_last = excluded.disk_used_last, disk_total_last = excluded.disk_total_last`,
+  ).run(hour, diskUsed, diskTotal);
+}
+
+/** Filas horarias del histórico de un servicio de las últimas `hours` horas (orden ascendente). */
+export function serviceMetricsRange(serviceId: string, hours: number): ServiceMetricHour[] {
+  const from = Math.floor(now() / 3_600_000) - hours;
+  return db
+    .prepare('SELECT * FROM service_metrics_hourly WHERE service_id = ? AND hour > ? ORDER BY hour ASC')
+    .all(serviceId, from) as ServiceMetricHour[];
+}
+
+/** Filas horarias del histórico del host de las últimas `hours` horas (orden ascendente). */
+export function hostMetricsRange(hours: number): HostMetricHour[] {
+  const from = Math.floor(now() / 3_600_000) - hours;
+  return db
+    .prepare('SELECT * FROM host_metrics_hourly WHERE hour > ? ORDER BY hour ASC')
+    .all(from) as HostMetricHour[];
+}
+
+/** Poda el histórico de consumo viejo y el de servicios eliminados. */
+export function pruneMetrics(keepDays = 90): void {
+  const cutoff = Math.floor(now() / 3_600_000) - keepDays * 24;
+  db.prepare('DELETE FROM service_metrics_hourly WHERE hour < ?').run(cutoff);
+  db.prepare('DELETE FROM service_metrics_hourly WHERE service_id NOT IN (SELECT id FROM services)').run();
+  db.prepare('DELETE FROM host_metrics_hourly WHERE hour < ?').run(cutoff);
 }
 
 // ---------- services ----------

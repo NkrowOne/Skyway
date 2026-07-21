@@ -221,6 +221,44 @@ export interface MetricsSnapshot {
   >;
 }
 
+// ---------- histórico de consumo ----------
+
+/** Un punto (cubo) del histórico de consumo de un servicio. */
+export interface ServiceMetricPoint {
+  t: number;
+  /** Media de CPU en el cubo (100 = un núcleo). null si el servicio no corría. */
+  cpuAvg: number | null;
+  cpuMax: number | null;
+  memAvg: number | null;
+  memMax: number | null;
+  memLimit: number | null;
+  netRx: number;
+  netTx: number;
+  disk: number | null;
+}
+
+export interface ServiceMetricHistory {
+  hours: number;
+  points: ServiceMetricPoint[];
+}
+
+/** Un punto (cubo) del histórico de consumo del host. */
+export interface HostMetricPoint {
+  t: number;
+  loadAvg: number | null;
+  loadMax: number | null;
+  memUsedAvg: number | null;
+  memUsedMax: number | null;
+  memTotal: number | null;
+  diskUsed: number | null;
+  diskTotal: number | null;
+}
+
+export interface HostMetricHistory {
+  hours: number;
+  points: HostMetricPoint[];
+}
+
 export interface DbTemplate {
   key: string;
   label: string;

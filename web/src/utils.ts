@@ -37,6 +37,38 @@ export function fmtDuration(ms: number): string {
   return `${m}m ${s % 60}s`;
 }
 
+/** Caudal de red: bytes/s legibles (p. ej. «1,4 MB/s»). */
+export function fmtRate(bytesPerSec: number): string {
+  return `${fmtBytes(bytesPerSec)}/s`;
+}
+
+/**
+ * CPU en núcleos, la unidad que sí se entiende: la convención de Docker usa
+ * 100 = un núcleo, así que 250 % son 2,5 núcleos. Se muestra con el detalle
+ * justo (más decimales cuando es una fracción pequeña).
+ */
+export function fmtCores(cpuPercent: number): string {
+  const cores = cpuPercent / 100;
+  const txt = cores < 1 ? cores.toFixed(2) : cores < 10 ? cores.toFixed(1) : Math.round(cores).toString();
+  return `${txt} ${cores === 1 ? 'núcleo' : 'núcleos'}`;
+}
+
+/** Etiqueta de eje temporal adaptada a la ventana (24 h → hora; días → fecha). */
+export function fmtAxisTime(ts: number, hours: number): string {
+  const d = new Date(ts);
+  if (hours <= 24) return d.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+  if (hours <= 24 * 7) return d.toLocaleString('es', { weekday: 'short', hour: '2-digit' });
+  return d.toLocaleDateString('es', { day: '2-digit', month: '2-digit' });
+}
+
+/** Fecha+hora completa para tooltips del histórico. */
+export function fmtStamp(ts: number, hours: number): string {
+  const d = new Date(ts);
+  if (hours <= 24) return d.toLocaleString('es', { hour: '2-digit', minute: '2-digit' });
+  if (hours <= 24 * 7) return d.toLocaleString('es', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit' });
+  return d.toLocaleDateString('es', { weekday: 'short', day: '2-digit', month: '2-digit' });
+}
+
 export const STATE_LABEL: Record<ContainerState, string> = {
   running: 'Activo',
   restarting: 'Reiniciando',

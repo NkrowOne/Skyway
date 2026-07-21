@@ -175,6 +175,44 @@ export interface ServiceStats {
   netTx: number;
 }
 
+/** Muestra puntual del consumo de un servicio (agregada de sus réplicas). */
+export interface ServiceMetricSample {
+  /** % de CPU en la convención de Docker: 100 = un núcleo completo. */
+  cpuPercent: number;
+  memUsage: number;
+  memLimit: number;
+  /** Bytes transferidos DESDE la muestra anterior (no acumulado): permite sumar por hora. */
+  netRxDelta: number;
+  netTxDelta: number;
+}
+
+/** Fila horaria del histórico de un servicio (sumas para medias + máximos para picos). */
+export interface ServiceMetricHour {
+  hour: number;
+  samples: number;
+  cpu_sum: number;
+  cpu_max: number;
+  mem_sum: number;
+  mem_max: number;
+  mem_limit_last: number;
+  net_rx: number;
+  net_tx: number;
+  disk_last: number | null;
+}
+
+/** Fila horaria del histórico del host. */
+export interface HostMetricHour {
+  hour: number;
+  samples: number;
+  load_sum: number;
+  load_max: number;
+  mem_used_sum: number;
+  mem_used_max: number;
+  mem_total_last: number;
+  disk_used_last: number | null;
+  disk_total_last: number | null;
+}
+
 export type UserRole = 'admin' | 'member';
 
 export interface UserRow {

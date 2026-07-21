@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.13.4. Si el código y este documento discrepan,
+> Versión de este documento: 0.14.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -36,7 +36,8 @@ server/src/
   domains.ts            IP del servidor + verificación DNS de dominios
   notify.ts             envío a Discord/Telegram/webhook
   alerts.ts             creación/resolución de alertas (con dedupe) + notificación
-  monitor.ts            bucle 30 s: caídas, bucles de reinicio, CPU/RAM, uptime, disco
+  metrics.ts            deltas de red por réplica + agrupado del histórico de consumo
+  monitor.ts            bucle 30 s: caídas, bucles de reinicio, CPU/RAM, uptime, disco, histórico
   scheduler.ts          bucle 10 min: backups programados de BBDD + snapshot diario del panel
   events.ts             bus en memoria para logs de despliegue (SSE)
   sse.ts                utilidad Server-Sent Events
@@ -150,6 +151,8 @@ web/src/
 | `audit_log` | `ts`, `actor`, `action`, `target_*`, `detail`, `ip` |
 | `alerts` | `severity`, `type`, `title`, `message`, `explanation`, `dedupe_key`, `resolved_at`, `read_at` |
 | `uptime_hourly` | `(service_id, hour)` → `up`, `total` — histórico de disponibilidad |
+| `service_metrics_hourly` | `(service_id, hour)` → sumas y máximos de CPU/RAM, bytes de red del periodo (delta) y foto de disco — histórico de consumo (~90 d) |
+| `host_metrics_hourly` | `hour` → carga, RAM y disco del host (sumas, máximos y última foto) — histórico de consumo del servidor (~90 d) |
 | `github_connectors` | `id`, `project_id`, `name`, `token` (en claro: se necesita para clonar; jamás sale por la API), `gh_login`, `token_type`, `created_by`, `last_used_at` — cae en cascada con el proyecto |
 
 `config` de servicio (ver `types.ts`): `GitConfig`, `DatabaseConfig`, `ImageConfig`
@@ -243,8 +246,16 @@ Esto reproduce el comportamiento de un *worker* de Railway.
 - **Explorador de archivos** (Archivos): navegar, descargar, subir, crear
   carpeta y borrar dentro de cada contenedor, **sin FTP ni credenciales** (va por
   el socket de Docker). Ver §7.7.
-- **Métricas** (SSE): CPU, memoria y red por servicio (agregando réplicas) y del
-  host, cada 2,5 s.
+- **Métricas en vivo** (SSE): CPU, memoria y red por servicio (agregando réplicas)
+  y del host, cada 2,5 s.
+- **Histórico de consumo**: el monitor persiste cada 30 s el consumo por servicio
+  y del host en cubos horarios (CPU y RAM con media y **pico**, bytes de red del
+  periodo, foto de disco), conservados ~90 días. En la pestaña Métricas del
+  servicio se ve a 24 h / 7 d / 30 d como **bandas media→pico** —que revelan la
+  irregularidad, no solo el promedio—, la CPU en **núcleos** y **% del límite**
+  (no un porcentaje suelto), la red como tráfico transferido divergente
+  (enviado/recibido) y el disco frente a su cuota. El Monitor añade la vista
+  **Servidor** con el histórico de carga, RAM y disco del host.
 - **Monitor global**: todos los servicios con estado, consumo, disco, uptime 24 h,
   reinicios y alertas; buscador de logs entre todos los contenedores.
 - **Alertas y notificaciones**: caídas, bucles de reinicio, CPU/RAM sostenidas,
@@ -353,7 +364,8 @@ nunca se devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/deployments/:id/rollback` | +access | redespliega una imagen anterior (solo git) |
 | GET | `/deployments/:id/logs/stream` | +access | **SSE** de build/deploy |
 | GET | `/services/:id/logs/stream` | +access | **SSE** de logs de ejecución |
-| GET | `/projects/:id/metrics/stream` | +access | **SSE** de métricas del proyecto |
+| GET | `/projects/:id/metrics/stream` | +access | **SSE** de métricas en vivo del proyecto |
+| GET | `/services/:id/metrics/history` | +access | histórico de consumo del servicio (`?hours=`): CPU/RAM (media y pico), red y disco |
 
 ### 7.6 Consola de base de datos
 | Método | Ruta | Nivel | Descripción |
@@ -415,6 +427,7 @@ distroless), el explorador lo indica y no está disponible.
 | GET | `/monitor/overview` | auth | todos los servicios accesibles con estado/consumo |
 | GET | `/monitor/logs/search` | auth | busca texto en logs (`?q=&tail=&projectId=`) |
 | GET | `/monitor/disk` | auth | disco por servicio (+ host/Docker si admin) |
+| GET | `/monitor/host-history` | auth | histórico de carga, RAM y disco del host (`?hours=`) |
 | GET | `/websites` | auth | vista de sitios web (servicios con dominio) |
 
 ### 7.10 Dominios, estado público, importación y webhooks
