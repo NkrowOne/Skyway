@@ -3,7 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '../api';
 import { DbTemplate, Deployment, Service } from '../types';
 import { cx } from '../utils';
-import { ModuleKind, ModuleLogo, moduleFg } from './ModuleIcon';
+import { ModuleKind, ModuleLogo, moduleFg, moduleKind } from './ModuleIcon';
 import { Button, Field, Modal, useToast } from './ui';
 
 /** Los logos reales de lo que vas a desplegar: informan, no decoran. */
@@ -21,12 +21,13 @@ function LogoRow({ kinds, size = 20 }: { kinds: ModuleKind[]; size?: number }) {
 
 type Step = 'pick' | 'git' | 'database' | 'image';
 
-/** Logo real por plantilla de BD (MinIO y demás sin logo propio caen en genérico). */
+/** Logo real por plantilla de BD (las no mapeadas caen en genérico). */
 const TEMPLATE_KIND: Record<string, ModuleKind> = {
   postgres: 'postgres',
   redis: 'redis',
   mysql: 'mysql',
   mongo: 'mongo',
+  minio: 'minio',
 };
 
 export default function NewServiceModal({
@@ -157,14 +158,30 @@ export default function NewServiceModal({
           className="space-y-4"
         >
           <Field label="Imagen" hint="De Docker Hub, ghcr.io, etc. Incluye el tag si no quieres :latest">
-            <input
-              className="input font-mono"
-              placeholder="n8nio/n8n:latest"
-              value={image}
-              onChange={(e) => setImage(e.target.value)}
-              required
-              autoFocus
-            />
+            <div className="relative">
+              <input
+                className="input pr-10 font-mono"
+                placeholder="n8nio/n8n:latest"
+                value={image}
+                onChange={(e) => setImage(e.target.value)}
+                required
+                autoFocus
+              />
+              {/* Reconocemos la imagen mientras escribes: su logo oficial lo confirma. */}
+              {(() => {
+                const kind = moduleKind({ type: 'image', config: { image } as any });
+                if (kind === 'generic' || kind === 'docker') return null;
+                return (
+                  <span
+                    key={kind}
+                    className="badge-in pointer-events-none absolute right-3 top-1/2 -translate-y-1/2"
+                    style={{ color: moduleFg(kind) }}
+                  >
+                    <ModuleLogo kind={kind} size={16} />
+                  </span>
+                );
+              })()}
+            </div>
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Nombre (opcional)">
