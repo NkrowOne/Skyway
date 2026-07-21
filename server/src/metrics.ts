@@ -37,6 +37,8 @@ export function pruneNetCounters(seen: Set<string>): void {
 export interface ServiceMetricPoint {
   /** Inicio del cubo en ms (UTC). */
   t: number;
+  /** Muestras del monitor que respaldan el cubo (para ponderar medias entre cubos). */
+  samples: number;
   /** Media de CPU en el cubo (100 = un núcleo). null si no hubo muestras. */
   cpuAvg: number | null;
   cpuMax: number | null;
@@ -117,6 +119,7 @@ export function bucketServiceMetrics(rows: ServiceMetricHour[], hours: number): 
     }
     out.push({
       t: key * bh * 3_600_000,
+      samples,
       cpuAvg: samples > 0 ? cpuSum / samples : null,
       cpuMax,
       memAvg: samples > 0 ? memSum / samples : null,

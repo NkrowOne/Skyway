@@ -155,11 +155,15 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
   }
 
   const points = q.data?.points ?? [];
+  // Media del periodo PONDERADA por muestras: un cubo parcial del borde (con una
+  // sola muestra) no debe pesar igual que uno lleno, o el número se dispara.
   const cpuValid = points.filter((p) => p.cpuAvg !== null);
   const memValid = points.filter((p) => p.memAvg !== null);
-  const cpuAvg = cpuValid.length ? cpuValid.reduce((a, p) => a + (p.cpuAvg ?? 0), 0) / cpuValid.length : null;
+  const cpuSamples = cpuValid.reduce((a, p) => a + p.samples, 0);
+  const memSamples = memValid.reduce((a, p) => a + p.samples, 0);
+  const cpuAvg = cpuSamples ? cpuValid.reduce((a, p) => a + (p.cpuAvg ?? 0) * p.samples, 0) / cpuSamples : null;
   const cpuMax = points.reduce((a, p) => Math.max(a, p.cpuMax ?? 0), 0);
-  const memAvg = memValid.length ? memValid.reduce((a, p) => a + (p.memAvg ?? 0), 0) / memValid.length : null;
+  const memAvg = memSamples ? memValid.reduce((a, p) => a + (p.memAvg ?? 0) * p.samples, 0) / memSamples : null;
   const memMax = points.reduce((a, p) => Math.max(a, p.memMax ?? 0), 0);
   const rxTotal = points.reduce((a, p) => a + p.netRx, 0);
   const txTotal = points.reduce((a, p) => a + p.netTx, 0);
@@ -218,6 +222,8 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
         format={(v) => v.toFixed(v < 1 ? 2 : 1)}
         threshold={cpus ? { value: cpus, label: `límite ${cpus}` } : null}
       />
+      {/* Sin fixedMax: si un pico supera el límite, la banda lo muestra por
+          encima de la línea de umbral en vez de aplastarlo contra el techo. */}
       <HistoryChart
         title="Memoria"
         points={memPoints}
@@ -225,7 +231,6 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
         color="var(--color-info)"
         format={(v) => fmtBytes(v)}
         threshold={memLimitBytes ? { value: memLimitBytes, label: `límite ${memoryMb} MB` } : null}
-        fixedMax={memLimitBytes ?? undefined}
       />
       <NetBars points={netPoints} hours={hours} format={(v) => fmtBytes(v)} />
       <HistoryChart

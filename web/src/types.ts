@@ -226,6 +226,8 @@ export interface MetricsSnapshot {
 /** Un punto (cubo) del histórico de consumo de un servicio. */
 export interface ServiceMetricPoint {
   t: number;
+  /** Muestras que respaldan el cubo (para ponderar la media del periodo). */
+  samples: number;
   /** Media de CPU en el cubo (100 = un núcleo). null si el servicio no corría. */
   cpuAvg: number | null;
   cpuMax: number | null;

@@ -68,8 +68,12 @@ async function tick(): Promise<void> {
       let runningReplicas = 0;
       let anyReplicaSeen = false;
       // Acumulador del consumo del servicio (suma de sus réplicas) para el histórico.
-      const sample = { cpuPercent: 0, memUsage: 0, memLimit: 0, netRxDelta: 0, netTxDelta: 0 };
-      let sawStats = false;
+      // Los contadores de red se guardan crudos y el delta se calcula al final:
+      // así una muestra incompleta (una réplica con stats caídos) no avanza la
+      // línea base y no pierde bytes en el siguiente tick.
+      const agg = { cpuPercent: 0, memUsage: 0, memLimit: 0 };
+      const rawNet: { name: string; rx: number; tx: number }[] = [];
+      let statsReplicas = 0;
       for (let idx = 1; idx <= totalReplicas; idx++) {
       const name = replicaName(project, service, idx);
       const trackKey = `${service.id}#${idx}`;
@@ -132,17 +136,17 @@ async function tick(): Promise<void> {
 
       // --- uso de recursos ---
       if (runtime.state === 'running') {
+        // La réplica corre: su contador de red debe sobrevivir aunque getStats
+        // falle puntualmente (si no, al recuperarse perdería el tramo del hueco).
+        seenReplicas.add(name);
         const stats = await getStats(name);
         if (stats) {
           // Muestra para el histórico: suma de todas las réplicas del servicio.
-          const delta = netDelta(name, stats.netRx, stats.netTx);
-          seenReplicas.add(name);
-          sample.cpuPercent += stats.cpuPercent;
-          sample.memUsage += stats.memUsage;
-          sample.memLimit += stats.memLimit;
-          sample.netRxDelta += delta.rx;
-          sample.netTxDelta += delta.tx;
-          sawStats = true;
+          statsReplicas += 1;
+          agg.cpuPercent += stats.cpuPercent;
+          agg.memUsage += stats.memUsage;
+          agg.memLimit += stats.memLimit;
+          rawNet.push({ name, rx: stats.netRx, tx: stats.netTx });
 
           const cfg = service.config as any;
           const cpuAllowance = (cfg.cpus && cfg.cpus > 0 ? cfg.cpus : hostCores) * 100;
@@ -195,17 +199,38 @@ async function tick(): Promise<void> {
       tracked.set(trackKey, entry);
       }
 
-      // Muestra de disponibilidad para las páginas de estado: cuenta como "en
-      // marcha" si al menos una réplica corre. Antes del primer despliegue no
-      // se registra nada (no penaliza el uptime).
-      if (anyReplicaSeen) recordUptimeSample(service.id, runningReplicas > 0);
-      // Muestra de consumo para el histórico (solo si alguna réplica dio stats).
-      if (sawStats) recordServiceMetrics(service.id, sample);
+      // La telemetría es best-effort: un fallo de escritura (p. ej. disco lleno)
+      // no debe abortar el tick y dejar sin vigilar a los servicios siguientes.
+      try {
+        // Muestra de disponibilidad para las páginas de estado: cuenta como "en
+        // marcha" si al menos una réplica corre. Antes del primer despliegue no
+        // se registra nada (no penaliza el uptime).
+        if (anyReplicaSeen) recordUptimeSample(service.id, runningReplicas > 0);
+        // Muestra de consumo: solo si TODAS las réplicas en marcha dieron stats,
+        // para no sesgar la media con una lectura parcial. El delta de red se
+        // calcula aquí (avanza la línea base) únicamente cuando se registra.
+        if (statsReplicas > 0 && statsReplicas === runningReplicas) {
+          let netRxDelta = 0;
+          let netTxDelta = 0;
+          for (const r of rawNet) {
+            const d = netDelta(r.name, r.rx, r.tx);
+            netRxDelta += d.rx;
+            netTxDelta += d.tx;
+          }
+          recordServiceMetrics(service.id, { ...agg, netRxDelta, netTxDelta });
+        }
+      } catch {
+        /* histórico best-effort: se reintenta en el siguiente tick */
+      }
     }
   }
 
   // Histórico de carga y RAM del host (independiente de los servicios).
-  recordHostMetrics(os.loadavg()[0], os.totalmem() - os.freemem(), os.totalmem());
+  try {
+    recordHostMetrics(os.loadavg()[0], os.totalmem() - os.freemem(), os.totalmem());
+  } catch {
+    /* best-effort */
+  }
   // Se olvidan los contadores de red de réplicas que ya no corren.
   pruneNetCounters(seenReplicas);
 
