@@ -159,6 +159,7 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
   };
 
   const close = () => {
+    if (busy) return; // no cerrar con una operación en vuelo: una importación a medias deja el proyecto a medio crear
     reset();
     onClose();
   };
@@ -221,7 +222,13 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
   return (
     <Modal open={open} onClose={close} title="Importar desde Railway" wide>
       {step === 'token' && (
-        <div className="space-y-4">
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (token.trim().length >= 10 && !busy) void connect();
+          }}
+        >
           <div className="flex items-start gap-3 rounded-lg border border-line bg-surface2 p-3 text-xs text-sub">
             <TrainFront size={16} className="mt-0.5 shrink-0 text-acc" />
             <p>
@@ -244,11 +251,11 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
             />
           </Field>
           <div className="flex justify-end">
-            <Button onClick={connect} loading={busy} disabled={token.trim().length < 10}>
+            <Button type="submit" loading={busy} disabled={token.trim().length < 10}>
               Conectar <ArrowRight size={14} />
             </Button>
           </div>
-        </div>
+        </form>
       )}
 
       {step === 'pick' && (
@@ -273,17 +280,23 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
           )}
           <details className="text-xs text-sub" open={projects.length === 0}>
             <summary className="cursor-pointer hover:text-txt">¿No aparece tu proyecto? Pega su ID</summary>
-            <div className="mt-2 flex gap-2">
+            <form
+              className="mt-2 flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (manualId.trim() && !busy) void analyze(manualId.trim());
+              }}
+            >
               <input
                 className="input flex-1 font-mono text-xs"
                 placeholder="ID del proyecto (Settings del proyecto en Railway)"
                 value={manualId}
                 onChange={(e) => setManualId(e.target.value)}
               />
-              <Button size="sm" variant="outline" disabled={!manualId.trim() || busy} onClick={() => analyze(manualId.trim())}>
+              <Button size="sm" variant="outline" type="submit" disabled={!manualId.trim() || busy}>
                 Analizar
               </Button>
-            </div>
+            </form>
           </details>
           <div className="flex justify-between">
             <Button variant="ghost" onClick={() => setStep('token')}>

@@ -248,19 +248,40 @@ export default function AccountPage() {
       </Section>
 
       {/* ---- modales ---- */}
-      <Modal open={pkModal} onClose={() => setPkModal(false)} title="Añadir passkey">
-        <Field label="Nombre" hint="para reconocerla: «Portátil», «iPhone», «YubiKey»…">
-          <input className="input" value={pkName} onChange={(e) => setPkName(e.target.value)} autoFocus />
-        </Field>
-        <p className="mt-3 text-xs text-subtle">Tu navegador te pedirá la huella, cara o PIN del dispositivo.</p>
-        <div className="mt-5 flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setPkModal(false)}>
-            Cancelar
-          </Button>
-          <Button onClick={addPasskey} loading={pkBusy}>
-            <Fingerprint size={14} /> Continuar
-          </Button>
-        </div>
+      <Modal
+        open={pkModal}
+        onClose={() => {
+          if (pkBusy) return; // el navegador está pidiendo la huella/PIN: cerrar ahora solo confunde
+          setPkModal(false);
+        }}
+        title="Añadir passkey"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!pkBusy) void addPasskey();
+          }}
+        >
+          <Field label="Nombre" hint="para reconocerla: «Portátil», «iPhone», «YubiKey»…">
+            <input
+              className="input"
+              value={pkName}
+              onChange={(e) => setPkName(e.target.value)}
+              placeholder="Mi passkey"
+              maxLength={60}
+              autoFocus
+            />
+          </Field>
+          <p className="mt-3 text-xs text-subtle">Tu navegador te pedirá la huella, cara o PIN del dispositivo.</p>
+          <div className="mt-5 flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setPkModal(false)} disabled={pkBusy}>
+              Cancelar
+            </Button>
+            <Button type="submit" loading={pkBusy}>
+              <Fingerprint size={14} /> Continuar
+            </Button>
+          </div>
+        </form>
       </Modal>
 
       <Modal
@@ -285,10 +306,15 @@ export default function AccountPage() {
             </div>
           </>
         ) : (
-          <>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (tokName.trim() && !createToken.isPending) createToken.mutate();
+            }}
+          >
             <div className="flex flex-col gap-3">
               <Field label="Nombre" hint="quién lo usa: «Claude», «CI de GitHub»…">
-                <input className="input" value={tokName} onChange={(e) => setTokName(e.target.value)} autoFocus />
+                <input className="input" value={tokName} onChange={(e) => setTokName(e.target.value)} maxLength={60} autoFocus />
               </Field>
               <Field label="Caducidad en días" hint="vacío = no caduca">
                 <input
@@ -303,14 +329,14 @@ export default function AccountPage() {
               </Field>
             </div>
             <div className="mt-5 flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setTokModal(false)}>
+              <Button type="button" variant="ghost" onClick={() => setTokModal(false)}>
                 Cancelar
               </Button>
-              <Button onClick={() => createToken.mutate()} loading={createToken.isPending} disabled={!tokName.trim()}>
+              <Button type="submit" loading={createToken.isPending} disabled={!tokName.trim()}>
                 Crear token
               </Button>
             </div>
-          </>
+          </form>
         )}
       </Modal>
 
