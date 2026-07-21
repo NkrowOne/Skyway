@@ -50,16 +50,17 @@ function ScoreRing({ score, grade }: { score: number; grade: string }) {
   );
 }
 
+/** Cabecera de sección: el icono anota el título a escala de texto, sin caja. */
 function SectionHeader({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
   return (
-    <div className="flex items-center gap-2.5">
-      <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-acc/[.15] text-acc-soft">
-        {icon}
-      </span>
-      <div>
-        <h2 className="text-sm font-semibold">{title}</h2>
-        <p className="mt-px text-xs text-subtle">{description}</p>
-      </div>
+    <div>
+      <h2 className="flex items-center gap-2 text-sm font-semibold">
+        <span aria-hidden className="text-sub [&>svg]:block">
+          {icon}
+        </span>
+        {title}
+      </h2>
+      <p className="mt-1 text-xs text-subtle">{description}</p>
     </div>
   );
 }

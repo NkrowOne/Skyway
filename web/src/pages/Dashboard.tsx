@@ -1,21 +1,33 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { BellRing, Boxes, Building2, FolderOpen, Plus, TrainFront } from 'lucide-react';
+import { BellRing, Building2, Plus, TrainFront } from 'lucide-react';
 import { api } from '../api';
 import RailwayImportModal from '../components/RailwayImportModal';
 import { Button, Field, Modal, Skeleton, useToast } from '../components/ui';
 import { Me, Project } from '../types';
 import { cx, timeAgo } from '../utils';
 
+/**
+ * Monograma del proyecto: dos letras en mono, como sus slugs. Identidad real
+ * por tarjeta en lugar de un icono repetido que no dice nada.
+ */
+function Monogram({ name }: { name: string }) {
+  const words = name.trim().split(/[\s\-_]+/).filter(Boolean);
+  const initials = (words.length >= 2 ? words[0][0] + words[1][0] : name.trim().slice(0, 2)).toUpperCase();
+  return (
+    <span className="flex h-9 w-9 shrink-0 select-none items-center justify-center rounded-[10px] border border-line bg-surface2 font-mono text-[13px] font-semibold tracking-[.04em] text-sub">
+      {initials}
+    </span>
+  );
+}
+
 function ProjectCard({ project }: { project: Project }) {
   const alerts = project.openAlerts ?? 0;
   return (
     <Link to={`/projects/${project.id}`} className="card card-hover block p-5">
       <div className="flex items-start justify-between gap-2">
-        <span className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-acc/[.16] text-acc-soft">
-          <Boxes size={17} />
-        </span>
+        <Monogram name={project.name} />
         <span className="flex items-center gap-1.5">
           {alerts > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-err/[.15] px-[9px] py-[3px] text-[11px] font-semibold text-err tnum">
@@ -155,9 +167,22 @@ export default function Dashboard() {
 
       {projects.data && all.length === 0 && (
         <div className="card flex flex-col items-center gap-3 py-16 text-center">
-          <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-acc/[.14] text-acc-soft">
-            <FolderOpen size={22} />
-          </span>
+          {/* Plataforma de lanzamiento vacía: dibujo propio, en el trazo de la casa. */}
+          <svg width="120" height="72" viewBox="0 0 120 72" fill="none" aria-hidden className="text-line">
+            <path d="M18 60h84" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            <path d="M44 60v-6h20v6" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+            <path
+              d="M54 54c-3-14 0-26 6-32 6 6 9 18 6 32"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinejoin="round"
+            />
+            <circle cx="60" cy="34" r="3" fill="#6e56cf" />
+            <path d="M76 30c8-8 16-13 26-16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 5" />
+            <circle cx="30" cy="18" r="1.3" fill="currentColor" />
+            <circle cx="94" cy="42" r="1.3" fill="currentColor" />
+            <circle cx="106" cy="10" r="1.6" fill="#b9a7ee" opacity=".7" />
+          </svg>
           {isAdmin ? (
             <>
               <p className="text-sm text-sub">Aún no tienes proyectos. Crea el primero para empezar a desplegar.</p>

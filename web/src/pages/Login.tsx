@@ -17,58 +17,53 @@ function RecoveryModal({ open, onClose, onPasskey }: { open: boolean; onClose: (
   const cmd = 'docker compose exec skyway node dist/tools/reset-password.js tu@email.com';
   return (
     <Modal open={open} onClose={onClose} title="Recuperar el acceso">
-      <div className="flex flex-col gap-4 text-[13px] text-sub">
+      <div className="flex flex-col gap-5 text-[13px] leading-relaxed text-sub">
         {onPasskey && (
-          <div className="flex gap-3">
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-acc/[.15] text-acc-soft">
-              <Fingerprint size={15} />
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="font-semibold text-txt">¿Registraste una passkey?</p>
-              <p className="mt-0.5">Entra con ella y pon una contraseña nueva en Seguridad.</p>
-              <Button
-                size="sm"
-                variant="secondary"
-                className="mt-2"
-                onClick={() => {
-                  onClose();
-                  onPasskey();
-                }}
-              >
-                <Fingerprint size={14} /> Entrar con passkey
-              </Button>
-            </div>
+          <div>
+            <p className="flex items-center gap-2 font-semibold text-txt">
+              <Fingerprint size={14} className="text-acc-soft" />
+              ¿Registraste una passkey?
+            </p>
+            <p className="mt-1">Entra con ella y pon una contraseña nueva en Seguridad.</p>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="mt-2.5"
+              onClick={() => {
+                onClose();
+                onPasskey();
+              }}
+            >
+              <Fingerprint size={14} /> Entrar con passkey
+            </Button>
           </div>
         )}
-        <div className="flex gap-3">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-info/[.14] text-info">
-            <Users2 size={15} />
-          </span>
-          <div>
-            <p className="font-semibold text-txt">¿Hay otro administrador?</p>
-            <p className="mt-0.5">
-              Puede ponerte una contraseña nueva en <span className="text-txt">Usuarios → tu cuenta → Nueva contraseña</span>. Tus
-              sesiones antiguas se invalidan al momento.
-            </p>
-          </div>
+        <div>
+          <p className="flex items-center gap-2 font-semibold text-txt">
+            <Users2 size={14} className="text-info" />
+            ¿Hay otro administrador?
+          </p>
+          <p className="mt-1">
+            Puede ponerte una contraseña nueva en <span className="text-txt">Usuarios → tu cuenta → Nueva contraseña</span>. Tus
+            sesiones antiguas se invalidan al momento.
+          </p>
         </div>
-        <div className="flex gap-3">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-warn/[.13] text-warn">
-            <TerminalSquare size={15} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="font-semibold text-txt">¿Eres el único admin? Desde el servidor:</p>
-            <div className="mt-2 flex items-center gap-1 rounded-lg border border-line bg-term px-3 py-2">
-              <code className="min-w-0 flex-1 select-all whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-txt/90">
-                {cmd}
-              </code>
-              <CopyButton value={cmd} title="Copiar comando" />
-            </div>
-            <p className="mt-1.5 text-[11.5px] text-subtle">
-              Imprime una contraseña temporal, cierra las demás sesiones y deja rastro en la auditoría. Sin Docker:{' '}
-              <code className="font-mono text-[11px]">npm run reset-password -w server -- tu@email.com</code>
-            </p>
+        <div>
+          <p className="flex items-center gap-2 font-semibold text-txt">
+            <TerminalSquare size={14} className="text-warn" />
+            ¿Eres el único admin? Desde el servidor:
+          </p>
+          <div className="mt-2 flex items-center gap-1 rounded-lg border border-line bg-term px-3 py-2">
+            <code className="min-w-0 flex-1 select-all whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-txt/90">
+              <span className="mr-1.5 select-none text-subtle">$</span>
+              {cmd}
+            </code>
+            <CopyButton value={cmd} title="Copiar comando" />
           </div>
+          <p className="mt-1.5 text-[11.5px] text-subtle">
+            Imprime una contraseña temporal, cierra las demás sesiones y deja rastro en la auditoría. Sin Docker:{' '}
+            <code className="font-mono text-[11px]">npm run reset-password -w server -- tu@email.com</code>
+          </p>
         </div>
         <p className="flex items-center gap-1.5 border-t border-line pt-3 text-[11.5px] text-subtle">
           <KeyRound size={12} className="shrink-0" />

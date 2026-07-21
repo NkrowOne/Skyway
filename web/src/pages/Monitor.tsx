@@ -103,16 +103,14 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
 
   return (
     <section className="card p-4 sm:p-5">
-      <div className="mb-3 flex items-center gap-2.5">
-        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-info/[.14] text-info">
-          <ScrollText size={14} />
-        </span>
-        <div>
-          <h2 className="text-[13px] font-semibold">Buscar en los logs de todos los servicios</h2>
-          <p className="text-[11px] text-subtle">
-            ¿Un error y no sabes de dónde viene? Busca el texto en las últimas ~400 líneas de cada contenedor.
-          </p>
-        </div>
+      <div className="mb-3">
+        <h2 className="flex items-center gap-2 text-[13px] font-semibold">
+          <ScrollText size={14} className="text-info" />
+          Buscar en los logs de todos los servicios
+        </h2>
+        <p className="mt-1 text-[11px] text-subtle">
+          ¿Un error y no sabes de dónde viene? Busca el texto en las últimas ~400 líneas de cada contenedor.
+        </p>
       </div>
       <form
         className="flex flex-wrap gap-2"

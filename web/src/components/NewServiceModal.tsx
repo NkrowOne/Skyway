@@ -1,12 +1,33 @@
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Database, GitBranch, Package } from 'lucide-react';
 import { api } from '../api';
 import { DbTemplate, Deployment, Service } from '../types';
 import { cx } from '../utils';
+import { ModuleKind, ModuleLogo, moduleFg } from './ModuleIcon';
 import { Button, Field, Modal, useToast } from './ui';
 
+/** Los logos reales de lo que vas a desplegar: informan, no decoran. */
+function LogoRow({ kinds, size = 20 }: { kinds: ModuleKind[]; size?: number }) {
+  return (
+    <span className="flex h-8 items-center gap-2.5">
+      {kinds.map((k) => (
+        <span key={k} style={{ color: moduleFg(k) }}>
+          <ModuleLogo kind={k} size={size} />
+        </span>
+      ))}
+    </span>
+  );
+}
+
 type Step = 'pick' | 'git' | 'database' | 'image';
+
+/** Logo real por plantilla de BD (MinIO y demás sin logo propio caen en genérico). */
+const TEMPLATE_KIND: Record<string, ModuleKind> = {
+  postgres: 'postgres',
+  redis: 'redis',
+  mysql: 'mysql',
+  mongo: 'mongo',
+};
 
 export default function NewServiceModal({
   open,
@@ -90,9 +111,7 @@ export default function NewServiceModal({
             onClick={() => setStep('git')}
             className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-acc/60"
           >
-            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-acc/15 text-acc">
-              <GitBranch size={18} />
-            </span>
+            <LogoRow kinds={['github']} size={24} />
             <div>
               <h3 className="text-sm font-medium group-hover:text-acc">Repositorio de GitHub</h3>
               <p className="mt-1 text-xs text-sub">
@@ -104,9 +123,7 @@ export default function NewServiceModal({
             onClick={() => setStep('database')}
             className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-info/60"
           >
-            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-info/10 text-info">
-              <Database size={18} />
-            </span>
+            <LogoRow kinds={['postgres', 'redis', 'mysql', 'mongo']} size={17} />
             <div>
               <h3 className="text-sm font-medium group-hover:text-info">Base de datos</h3>
               <p className="mt-1 text-xs text-sub">PostgreSQL, Redis, MySQL, MongoDB o MinIO listos para usar</p>
@@ -116,9 +133,7 @@ export default function NewServiceModal({
             onClick={() => setStep('image')}
             className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-warn/60"
           >
-            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-warn/10 text-warn">
-              <Package size={18} />
-            </span>
+            <LogoRow kinds={['docker']} size={24} />
             <div>
               <h3 className="text-sm font-medium group-hover:text-warn">Imagen Docker</h3>
               <p className="mt-1 text-xs text-sub">Cualquier imagen pública: n8n, Plausible, Uptime Kuma...</p>
@@ -225,8 +240,11 @@ export default function NewServiceModal({
                   template === tpl.key && create.isPending && 'border-info/70',
                 )}
               >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-info/10 text-info">
-                  <Database size={16} />
+                <span
+                  className="shrink-0"
+                  style={{ color: moduleFg(TEMPLATE_KIND[tpl.key] ?? 'generic') }}
+                >
+                  <ModuleLogo kind={TEMPLATE_KIND[tpl.key] ?? 'generic'} size={20} />
                 </span>
                 <div className="min-w-0">
                   <h3 className="text-sm font-medium">{tpl.label}</h3>

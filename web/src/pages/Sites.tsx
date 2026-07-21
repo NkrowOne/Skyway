@@ -242,9 +242,16 @@ export default function SitesPage() {
 
       {sites.data && all.length === 0 && (
         <div className="card flex flex-col items-center gap-3 py-16 text-center">
-          <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-acc/[.14] text-acc-soft">
-            <Globe size={22} />
-          </span>
+          {/* Globo en órbita vacía: dibujo propio, en el trazo de la casa. */}
+          <svg width="120" height="72" viewBox="0 0 120 72" fill="none" aria-hidden className="text-line">
+            <circle cx="60" cy="36" r="17" stroke="currentColor" strokeWidth="2" />
+            <ellipse cx="60" cy="36" rx="7.5" ry="17" stroke="currentColor" strokeWidth="2" />
+            <path d="M44 31h32M44 41h32" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            <ellipse cx="60" cy="38" rx="34" ry="11" stroke="currentColor" strokeWidth="1.5" strokeDasharray="4 5" />
+            <circle cx="88" cy="30" r="2.5" fill="#6e56cf" />
+            <circle cx="22" cy="14" r="1.3" fill="currentColor" />
+            <circle cx="100" cy="58" r="1.3" fill="currentColor" />
+          </svg>
           <p className="max-w-sm text-sm text-sub">
             Aún no hay sitios desplegados. Crea un servicio de repositorio o imagen en cualquier proyecto y aparecerá aquí.
           </p>

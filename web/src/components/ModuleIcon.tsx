@@ -54,6 +54,11 @@ export function moduleKind(service: Pick<Service, 'type' | 'config'>): ModuleKin
   return image ? 'docker' : 'generic';
 }
 
+/** Color de marca del módulo (para pintar ModuleLogo desnudo, sin chip). */
+export function moduleFg(kind: ModuleKind): string {
+  return CHIP[kind].fg;
+}
+
 /** Logo oficial del módulo, coloreado con currentColor. */
 export function ModuleLogo({ kind, size = 17, className }: { kind: ModuleKind; size?: number; className?: string }) {
   if (kind === 'generic') return <Package size={size} className={className} />;
