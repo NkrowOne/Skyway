@@ -60,6 +60,8 @@ export interface Project {
   client: string | null;
   created_at: number;
   serviceCount?: number;
+  lastDeployAt?: number | null;
+  openAlerts?: number;
 }
 
 export interface GitConfig {

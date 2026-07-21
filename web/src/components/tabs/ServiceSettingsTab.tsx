@@ -6,7 +6,7 @@ import { Service } from '../../types';
 import { cx } from '../../utils';
 import DomainsEditor from '../DomainsEditor';
 import { ModuleLogo, moduleKind } from '../ModuleIcon';
-import { Button, ConfirmModal, CopyButton, Field, useToast } from '../ui';
+import { Button, ConfirmModal, CopyButton, Field, useFlash, useToast } from '../ui';
 
 /** Card de sección con cabecera icono-chip + título + descripción. */
 function SectionCard({
@@ -111,6 +111,7 @@ export default function ServiceSettingsTab({
   const dirty = useMemo(() => JSON.stringify(form) !== JSON.stringify(baseline), [form, baseline]);
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
 
+  const [saved, flashSaved] = useFlash();
   const save = useMutation({
     mutationFn: () => {
       const config: Record<string, unknown> = {
@@ -151,6 +152,7 @@ export default function ServiceSettingsTab({
     },
     onSuccess: (data) => {
       setBaseline(form);
+      flashSaved();
       toast(data.needsRedeploy ? 'Guardado. Redespliega para aplicar los cambios.' : 'Guardado y aplicado.', 'ok');
       onChanged();
     },
@@ -427,7 +429,7 @@ export default function ServiceSettingsTab({
               Descartar
             </Button>
           )}
-          <Button size="sm" onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty}>
+          <Button size="sm" onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty} success={saved && !dirty}>
             Guardar cambios
           </Button>
         </div>

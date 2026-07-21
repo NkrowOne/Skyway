@@ -194,6 +194,19 @@ details > summary::-webkit-details-marker {
 .page-in {
   animation: page-in 0.2s ease-out both;
 }
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.pop-in {
+  animation: pop-in 0.18s ease-out both;
+}
 .stagger > * {
   animation: page-in 0.28s ease-out backwards;
 }
@@ -215,45 +228,53 @@ details > summary::-webkit-details-marker {
   }
 }
 
-.input {
-  @apply w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm text-txt placeholder-subtle outline-none transition-[border-color,box-shadow] duration-150;
-}
-.input:focus {
-  border-color: var(--color-acc);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-acc) 25%, transparent);
-}
+/*
+ * En @layer components para que cualquier utilidad puntual (pl-8, pr-10, rounded-…)
+ * gane siempre a estas clases compuestas, independientemente del orden del fichero.
+ */
+@layer components {
+  .input {
+    @apply w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm text-txt placeholder-subtle outline-none transition-[border-color,box-shadow] duration-150;
+  }
+  .input:focus {
+    border-color: var(--color-acc);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-acc) 25%, transparent);
+  }
 
-.card {
-  @apply rounded-xl border border-line bg-surface shadow-lvl1;
-}
+  .card {
+    @apply rounded-xl border border-line bg-surface shadow-lvl1;
+  }
 
-/* Tarjeta interactiva: borde de marca + lift + sombra tintada al pasar. */
-.card-hover {
-  @apply transition-[border-color,transform,box-shadow] duration-[180ms] ease-out;
-}
-.card-hover:hover {
-  border-color: color-mix(in oklab, var(--color-acc) 55%, var(--color-line));
-  transform: translateY(-1px);
-  @apply shadow-card-hover;
-}
+  /* Tarjeta interactiva: borde de marca + lift + sombra tintada al pasar. */
+  .card-hover {
+    @apply transition-[border-color,transform,box-shadow] duration-[180ms] ease-out;
+  }
+  .card-hover:hover {
+    border-color: color-mix(in oklab, var(--color-acc) 55%, var(--color-line));
+    transform: translateY(-1px);
+    @apply shadow-card-hover;
+  }
 
-.skeleton {
-  @apply rounded-lg bg-surface2;
-  background-image: linear-gradient(
-    100deg,
-    transparent 30%,
-    color-mix(in oklab, var(--color-txt) 4%, transparent) 50%,
-    transparent 70%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.8s linear infinite;
-}
+  .skeleton {
+    @apply rounded-lg bg-surface2;
+    background-image: linear-gradient(
+      100deg,
+      transparent 30%,
+      color-mix(in oklab, var(--color-txt) 4%, transparent) 50%,
+      transparent 70%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.8s linear infinite;
+  }
 
-.kbd {
-  @apply rounded-[5px] border border-line bg-surface2 px-1.5 py-px font-mono text-[11px] leading-4 text-sub;
+  .kbd {
+    @apply rounded-[5px] border border-line bg-surface2 px-1.5 py-px font-mono text-[11px] leading-4 text-sub;
+  }
 }
 
 /* Números tabulares para métricas y fechas. */
-.tnum {
-  font-variant-numeric: tabular-nums;
+@layer utilities {
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
 }

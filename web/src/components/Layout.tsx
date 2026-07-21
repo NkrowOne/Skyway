@@ -577,6 +577,7 @@ export default function Layout() {
           >
             <Globe size={16} />
           </Link>
+          <span aria-hidden className="mx-1 hidden h-4 w-px bg-line sm:block" />
           <AlertBell />
           {isAdmin && (
             <>
@@ -603,6 +604,7 @@ export default function Layout() {
               </Link>
             </>
           )}
+          <span aria-hidden className="mx-1 hidden h-4 w-px bg-line sm:block" />
           <Link
             to="/account"
             className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
@@ -628,7 +630,10 @@ export default function Layout() {
       )}
 
       <main className="flex-1 overflow-y-auto">
-        <Outlet />
+        {/* La clave por ruta reinicia la animación de entrada al navegar (los searchParams no la relanzan). */}
+        <div key={location.pathname} className="page-in min-h-full">
+          <Outlet />
+        </div>
       </main>
 
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} unread={bell.data?.unread ?? 0} isAdmin={isAdmin} />

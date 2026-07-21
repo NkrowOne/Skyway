@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { KeyRound, ScrollText } from 'lucide-react';
 import { api } from '../api';
 import { Button, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
-import { AuditEntry, SecurityReport } from '../types';
+import { AuditEntry, SecurityFinding, SecurityReport } from '../types';
 import { AUDIT_ACTION_LABEL, cx, fmtDateTime, SEVERITY_LABEL, SEVERITY_TONE } from '../utils';
 
 const GRADE_COLOR: Record<string, string> = {
@@ -13,11 +13,16 @@ const GRADE_COLOR: Record<string, string> = {
   C: 'var(--color-warn)',
 };
 
-/** Anillo SVG de puntuación: progreso proporcional al score, en el tono de la nota. */
+/** Anillo SVG de puntuación: progreso proporcional al score, en el tono de la nota. Se dibuja al entrar. */
 function ScoreRing({ score, grade }: { score: number; grade: string }) {
   const color = GRADE_COLOR[grade] ?? 'var(--color-err)';
   const C = 238.7; // 2πr con r=38
   const offset = C * (1 - Math.max(0, Math.min(100, score)) / 100);
+  const [drawn, setDrawn] = useState(false);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setDrawn(true));
+    return () => cancelAnimationFrame(raf);
+  }, []);
   return (
     <div className="relative h-[88px] w-[88px] shrink-0">
       <svg viewBox="0 0 88 88" className="block h-[88px] w-[88px] -rotate-90">
@@ -31,7 +36,8 @@ function ScoreRing({ score, grade }: { score: number; grade: string }) {
           strokeWidth="7"
           strokeLinecap="round"
           strokeDasharray={C}
-          strokeDashoffset={offset}
+          strokeDashoffset={drawn ? offset : C}
+          className="transition-[stroke-dashoffset] duration-700 ease-out"
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
@@ -131,6 +137,17 @@ export default function SecurityPage() {
   };
   const ordered = (['critical', 'warning', 'info'] as const).flatMap((sev) => findings.filter((f) => f.severity === sev));
 
+  // Los hallazgos repetidos del mismo tipo (p. ej. «Sin límites de recursos: <servicio>» por cada
+  // servicio) se agrupan en una sola tarjeta con chips: la lista respira y la severidad se lee.
+  const groups: { kind: string; base: string; items: SecurityFinding[] }[] = [];
+  for (const f of ordered) {
+    const base = f.title.split(':')[0].trim();
+    const kind = `${f.severity}|${base}`;
+    const g = groups.find((x) => x.kind === kind);
+    if (g) g.items.push(f);
+    else groups.push({ kind, base, items: [f] });
+  }
+
   return (
     <div className="mx-auto flex max-w-[880px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-2">
@@ -172,37 +189,79 @@ export default function SecurityPage() {
 
       {ordered.length > 0 && (
         <section className="flex flex-col gap-2.5">
-          {ordered.map((f) => (
-            <details
-              key={f.id}
-              open={f.severity === 'critical'}
-              className={cx(
-                'rounded-xl border bg-surface p-4',
-                f.severity === 'critical' ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]' : 'border-line',
-              )}
-            >
-              <summary className="flex cursor-pointer items-center gap-3">
-                <StatusBadge tone={SEVERITY_TONE[f.severity]} label={SEVERITY_LABEL[f.severity]} dot={false} className="font-semibold" />
-                <span className="min-w-0 flex-1 truncate text-sm font-semibold">{f.title}</span>
-                {f.projectId && (
-                  <Link
-                    to={`/projects/${f.projectId}${f.serviceId ? `?s=${f.serviceId}` : ''}`}
-                    onClick={(e) => e.stopPropagation()}
-                    className="ml-auto shrink-0 text-xs text-acc-soft hover:underline"
-                  >
-                    {f.projectName} →
-                  </Link>
+          {groups.map((g) => {
+            const f = g.items[0];
+            // A partir de 3 repeticiones, una tarjeta agrupada con un chip por servicio afectado.
+            if (g.items.length >= 3) {
+              return (
+                <details
+                  key={g.kind}
+                  open={f.severity === 'critical'}
+                  className={cx(
+                    'rounded-xl border bg-surface p-4',
+                    f.severity === 'critical' ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]' : 'border-line',
+                  )}
+                >
+                  <summary className="flex cursor-pointer items-center gap-3">
+                    <StatusBadge tone={SEVERITY_TONE[f.severity]} label={SEVERITY_LABEL[f.severity]} dot={false} className="font-semibold" />
+                    <span className="min-w-0 flex-1 truncate text-sm font-semibold">{g.base}</span>
+                    <span className="tnum ml-auto shrink-0 rounded-full bg-surface2 px-2.5 py-[3px] text-[11px] font-medium text-sub">
+                      {g.items.length} servicios
+                    </span>
+                  </summary>
+                  <div className="mt-3 flex flex-col gap-2.5 border-t border-line pt-3 text-[13px]">
+                    <div className="flex flex-wrap gap-1.5">
+                      {g.items.map((i) => (
+                        <Link
+                          key={i.id}
+                          to={i.projectId ? `/projects/${i.projectId}${i.serviceId ? `?s=${i.serviceId}` : ''}` : '#'}
+                          className="rounded-full border border-line bg-bg px-2.5 py-[3px] font-mono text-[11px] text-sub transition-colors duration-150 hover:border-[color-mix(in_oklab,#6e56cf_45%,var(--color-line))] hover:text-txt"
+                        >
+                          {i.title.includes(':') ? i.title.split(':').slice(1).join(':').trim() : i.projectName ?? i.title}
+                          {i.projectName ? ` · ${i.projectName}` : ''}
+                        </Link>
+                      ))}
+                    </div>
+                    <p>
+                      <span className="font-semibold text-ok">Cómo arreglarlo: </span>
+                      <span className="text-sub">{f.fix}</span>
+                    </p>
+                  </div>
+                </details>
+              );
+            }
+            return g.items.map((f) => (
+              <details
+                key={f.id}
+                open={f.severity === 'critical'}
+                className={cx(
+                  'rounded-xl border bg-surface p-4',
+                  f.severity === 'critical' ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]' : 'border-line',
                 )}
-              </summary>
-              <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3 text-[13px]">
-                <p className="text-sub">{f.detail}</p>
-                <p>
-                  <span className="font-semibold text-ok">Cómo arreglarlo: </span>
-                  <span className="text-sub">{f.fix}</span>
-                </p>
-              </div>
-            </details>
-          ))}
+              >
+                <summary className="flex cursor-pointer items-center gap-3">
+                  <StatusBadge tone={SEVERITY_TONE[f.severity]} label={SEVERITY_LABEL[f.severity]} dot={false} className="font-semibold" />
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold">{f.title}</span>
+                  {f.projectId && (
+                    <Link
+                      to={`/projects/${f.projectId}${f.serviceId ? `?s=${f.serviceId}` : ''}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="ml-auto shrink-0 text-xs text-acc-soft hover:underline"
+                    >
+                      {f.projectName} →
+                    </Link>
+                  )}
+                </summary>
+                <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3 text-[13px]">
+                  <p className="text-sub">{f.detail}</p>
+                  <p>
+                    <span className="font-semibold text-ok">Cómo arreglarlo: </span>
+                    <span className="text-sub">{f.fix}</span>
+                  </p>
+                </div>
+              </details>
+            ));
+          })}
         </section>
       )}
 

@@ -10,6 +10,7 @@ import {
   listProjects,
   listServices,
   openAlertCountsByService,
+  projectDashboardMeta,
   projectSlugExists,
   setProjectVars,
   updateProjectMeta,
@@ -40,8 +41,14 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/projects', async (req) => {
     const user = currentUser(req)!;
     const projects = listProjects().filter((p) => canAccessProject(user, p.id));
+    const meta = projectDashboardMeta();
     return {
-      projects: projects.map((p) => ({ ...p, serviceCount: listServices(p.id).length })),
+      projects: projects.map((p) => ({
+        ...p,
+        serviceCount: listServices(p.id).length,
+        lastDeployAt: meta[p.id]?.lastDeployAt ?? null,
+        openAlerts: meta[p.id]?.openAlerts ?? 0,
+      })),
     };
   });
 

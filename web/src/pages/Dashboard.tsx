@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Boxes, Building2, FolderOpen, Plus, TrainFront } from 'lucide-react';
+import { BellRing, Boxes, Building2, FolderOpen, Plus, TrainFront } from 'lucide-react';
 import { api } from '../api';
 import RailwayImportModal from '../components/RailwayImportModal';
 import { Button, Field, Modal, Skeleton, useToast } from '../components/ui';
@@ -9,21 +9,31 @@ import { Me, Project } from '../types';
 import { cx, timeAgo } from '../utils';
 
 function ProjectCard({ project }: { project: Project }) {
+  const alerts = project.openAlerts ?? 0;
   return (
     <Link to={`/projects/${project.id}`} className="card card-hover block p-5">
       <div className="flex items-start justify-between gap-2">
         <span className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-acc/[.16] text-acc-soft">
           <Boxes size={17} />
         </span>
-        <span className="inline-flex items-center rounded-full bg-surface2 px-[9px] py-[3px] text-[11px] font-medium text-sub tnum">
-          {project.serviceCount === 1 ? '1 servicio' : `${project.serviceCount ?? 0} servicios`}
+        <span className="flex items-center gap-1.5">
+          {alerts > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-err/[.15] px-[9px] py-[3px] text-[11px] font-semibold text-err tnum">
+              <BellRing size={10} /> {alerts}
+            </span>
+          )}
+          <span className="inline-flex items-center rounded-full bg-surface2 px-[9px] py-[3px] text-[11px] font-medium text-sub tnum">
+            {project.serviceCount === 1 ? '1 servicio' : `${project.serviceCount ?? 0} servicios`}
+          </span>
         </span>
       </div>
       <h3 className="mt-3.5 text-[15px] font-semibold tracking-[-.01em]">{project.name}</h3>
       <p className="mt-1 text-xs text-sub">
         <span className="font-mono text-[11px] text-subtle">{project.slug}</span>
       </p>
-      <p className="mt-3 text-[11px] text-subtle">Creado {timeAgo(project.created_at)}</p>
+      <p className="mt-3 text-[11px] text-subtle">
+        {project.lastDeployAt ? `Último despliegue ${timeAgo(project.lastDeployAt)}` : 'Sin despliegues todavía'}
+      </p>
     </Link>
   );
 }
@@ -162,7 +172,7 @@ export default function Dashboard() {
       )}
 
       {clients.length === 0 ? (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
+        <div className="stagger grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
           {visible.map((p) => (
             <ProjectCard key={p.id} project={p} />
           ))}
@@ -180,7 +190,7 @@ export default function Dashboard() {
                 </span>
                 <div className="h-px flex-1 bg-line" />
               </div>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
+              <div className="stagger grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
                 {list.map((p) => (
                   <ProjectCard key={p.id} project={p} />
                 ))}
