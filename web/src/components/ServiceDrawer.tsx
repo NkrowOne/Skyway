@@ -180,7 +180,7 @@ export default function ServiceDrawer({
         </div>
       )}
 
-      <div className={cx('shrink-0 border-b border-line', fullscreen ? 'px-3.5 pt-4' : 'px-5 pt-[18px]')}>
+      <div className={cx('shrink-0', fullscreen ? 'px-3.5 pt-4' : 'px-5 pt-[18px]')}>
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-3">
             <ModuleChip kind={moduleKind(service)} size={fullscreen ? 40 : 38} />
@@ -299,7 +299,12 @@ export default function ServiceDrawer({
           )}
         </div>
 
-        <Tabs tabs={tabs} active={tab} onChange={setTab} className="mt-3 border-b-0 px-0" />
+        <Tabs
+          tabs={tabs}
+          active={tab}
+          onChange={setTab}
+          className={cx('mt-3.5', fullscreen ? '-mx-3.5 px-3.5' : '-mx-5 px-5')}
+        />
       </div>
 
       <div className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain" role="tabpanel">

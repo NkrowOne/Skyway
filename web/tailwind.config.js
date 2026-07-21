@@ -21,6 +21,7 @@ export default {
         err: 'oklch(64% 0.22 25 / <alpha-value>)',
         info: 'oklch(70% 0.13 220 / <alpha-value>)',
         term: 'oklch(11% 0.008 280 / <alpha-value>)', // fondo de terminales/logs
+        term2: 'oklch(15.5% 0.01 280 / <alpha-value>)', // cromo de la consola (cabecera, canalón, barra)
       },
       borderRadius: {
         // Radios unificados: controles 10px, tarjetas 12px, overlays 14px.

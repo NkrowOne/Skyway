@@ -288,8 +288,16 @@ export function Tabs({
   const [bar, setBar] = useState<{ left: number; width: number } | null>(null);
 
   useLayoutEffect(() => {
-    const el = listRef.current?.querySelector<HTMLButtonElement>(`[data-tab-key="${CSS.escape(active)}"]`);
-    if (el) setBar({ left: el.offsetLeft + 10, width: el.offsetWidth - 20 });
+    const c = listRef.current;
+    const el = c?.querySelector<HTMLButtonElement>(`[data-tab-key="${CSS.escape(active)}"]`);
+    if (!c || !el) return;
+    setBar({ left: el.offsetLeft + 12, width: el.offsetWidth - 24 });
+    // Mantiene visible la pestaña activa cuando la fila desborda (drawer estrecho
+    // con muchas pestañas), sin arrastrar el scroll de la página.
+    const left = el.offsetLeft;
+    const right = left + el.offsetWidth;
+    if (left < c.scrollLeft) c.scrollTo({ left: Math.max(0, left - 12), behavior: 'smooth' });
+    else if (right > c.scrollLeft + c.clientWidth) c.scrollTo({ left: right - c.clientWidth + 12, behavior: 'smooth' });
   }, [active, tabs.map((t) => t.key).join('|')]);
 
   return (
@@ -306,7 +314,7 @@ export function Tabs({
           aria-selected={active === t.key}
           onClick={() => onChange(t.key)}
           className={cx(
-            'shrink-0 whitespace-nowrap px-3 py-[9px] text-[13px] transition-colors duration-150',
+            'shrink-0 whitespace-nowrap px-3.5 py-2.5 text-[13px] transition-colors duration-150',
             active === t.key ? 'font-semibold text-txt' : 'text-sub hover:text-txt',
           )}
         >

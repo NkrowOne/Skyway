@@ -16,57 +16,64 @@ const TYPE_ICON: Record<string, typeof Rocket> = {
   backup_failed: Archive,
 };
 
-/** Icono desnudo por tipo, en el tono de la severidad (apagado si está resuelta). */
-function AlertIcon({ alert }: { alert: Alert }) {
-  const Icon = TYPE_ICON[alert.type] ?? Rocket;
-  const cls = alert.resolved_at
-    ? 'text-subtle'
-    : alert.severity === 'critical'
-      ? 'text-err'
-      : alert.severity === 'warning'
-        ? 'text-warn'
-        : 'text-info';
-  return <Icon size={16} strokeWidth={1.75} className={cx('mt-0.5 shrink-0', cls)} />;
-}
-
 function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: () => void; resolving: boolean }) {
   const resolved = !!alert.resolved_at;
+  const Icon = TYPE_ICON[alert.type] ?? Rocket;
+  const tone: 'err' | 'warn' | 'info' | 'neutral' = resolved
+    ? 'neutral'
+    : alert.severity === 'critical'
+      ? 'err'
+      : alert.severity === 'warning'
+        ? 'warn'
+        : 'info';
+  // El riel de severidad (un filo a la izquierda) codifica la gravedad en forma,
+  // no en una caja anidada. El chip la lleva también al icono.
+  const rail = { err: 'bg-err', warn: 'bg-warn', info: 'bg-info', neutral: 'bg-line' }[tone];
+  const chip = {
+    err: 'bg-err/[.14] text-err',
+    warn: 'bg-warn/[.14] text-warn',
+    info: 'bg-info/[.14] text-info',
+    neutral: 'bg-surface2 text-subtle',
+  }[tone];
+
   return (
     <div
       className={cx(
-        'rounded-xl border bg-surface px-[18px] py-4',
-        !resolved && alert.severity === 'critical'
-          ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]'
-          : 'border-line',
-        resolved && 'opacity-[.65]',
+        'relative overflow-hidden rounded-xl border border-line bg-surface py-4 pl-[18px] pr-[18px] transition-opacity',
+        !resolved && tone === 'err' && 'bg-err/[.035]',
+        resolved && 'opacity-[.7]',
       )}
     >
+      <span aria-hidden className={cx('absolute inset-y-0 left-0 w-[3px]', rail)} />
       <div className="flex items-start gap-3">
-        <AlertIcon alert={alert} />
+        <span className={cx('flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]', chip)}>
+          <Icon size={16} strokeWidth={1.9} />
+        </span>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold">{alert.title}</span>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="min-w-0 truncate text-sm font-semibold">{alert.title}</span>
             {!resolved && (
               <StatusBadge
                 tone={SEVERITY_TONE[alert.severity]}
                 label={SEVERITY_LABEL[alert.severity]}
                 dot={false}
-                className="px-[9px] py-0.5 text-[10px] font-semibold"
+                className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[.03em]"
               />
             )}
-            <span className="inline-flex items-center rounded-full bg-surface2 px-[9px] py-0.5 text-[10px] text-sub">
-              {ALERT_TYPE_LABEL[alert.type] ?? alert.type}
-            </span>
-            <span className="ml-auto font-mono text-[11px] text-subtle">{fmtDateTime(alert.ts)}</span>
           </div>
-          <p className="mt-1.5 text-[13px] text-sub">{alert.message}</p>
+          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-subtle">
+            <span>{ALERT_TYPE_LABEL[alert.type] ?? alert.type}</span>
+            <span className="text-line">·</span>
+            <span className="tnum">{fmtDateTime(alert.ts)}</span>
+          </p>
+          <p className="mt-2 text-[13px] leading-relaxed text-sub">{alert.message}</p>
           {alert.explanation && (
-            <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-line bg-bg px-3 py-2.5 text-xs text-sub">
+            <div className="mt-2.5 flex items-start gap-2 rounded-r-md border-l-2 border-warn/45 bg-warn/[.05] py-2 pl-2.5 pr-3 text-xs text-sub">
               <Lightbulb size={13} className="mt-px shrink-0 text-warn" />
-              <p>{alert.explanation}</p>
+              <p className="leading-relaxed">{alert.explanation}</p>
             </div>
           )}
-          <div className="mt-2.5 flex items-center gap-2">
+          <div className="mt-3 flex items-center gap-3">
             {alert.project_id && (
               <Link
                 to={`/projects/${alert.project_id}${alert.service_id ? `?s=${alert.service_id}` : ''}`}

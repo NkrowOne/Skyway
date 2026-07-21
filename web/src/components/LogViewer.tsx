@@ -1,13 +1,55 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowUpToLine, Check, Copy, Download, Search, WrapText } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import {
+  ArrowDownToLine,
+  ArrowUpToLine,
+  Check,
+  Copy,
+  Download,
+  Hash,
+  Maximize2,
+  Minimize2,
+  Search,
+  WrapText,
+  X,
+} from 'lucide-react';
 import { cx, stripAnsi } from '../utils';
 
-/** Heurística de niveles: líneas con error→err, warn→warn. */
-function levelClass(line: string): string | undefined {
+type Level = 'err' | 'warn' | 'plain';
+type LevelFilter = 'all' | 'err' | 'warn';
+
+/** Heurística de niveles: error/fatal/panic → err; warn → warn; resto neutro. */
+function detectLevel(line: string): Level {
   const l = line.toLowerCase();
-  if (l.includes('error') || l.includes(' err ') || l.includes('fatal')) return 'text-err';
-  if (l.includes('warn')) return 'text-warn';
-  return undefined;
+  if (l.includes('error') || l.includes(' err ') || l.includes('fatal') || l.includes('panic') || l.includes('[error]'))
+    return 'err';
+  if (l.includes('warn')) return 'warn';
+  return 'plain';
+}
+
+/** Resalta TODAS las coincidencias (sin distinguir mayúsculas) de `q` en la línea. */
+function highlight(line: string, q: string): React.ReactNode {
+  if (!q) return line;
+  const lower = line.toLowerCase();
+  const needle = q.toLowerCase();
+  const out: React.ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+  for (;;) {
+    const idx = lower.indexOf(needle, i);
+    if (idx < 0) {
+      out.push(line.slice(i));
+      break;
+    }
+    if (idx > i) out.push(line.slice(i, idx));
+    out.push(
+      <mark key={key++} className="log-mark">
+        {line.slice(idx, idx + q.length)}
+      </mark>,
+    );
+    i = idx + q.length;
+  }
+  return out;
 }
 
 function ToolButton({
@@ -25,12 +67,15 @@ function ToolButton({
 }) {
   return (
     <button
+      type="button"
       title={title}
+      aria-label={title}
+      aria-pressed={active}
       onClick={onClick}
       disabled={disabled}
       className={cx(
-        'press rounded-lg p-[7px] leading-none disabled:opacity-40',
-        active ? 'bg-acc/[.14] text-acc-soft' : 'text-subtle hover:bg-surface2 hover:text-txt',
+        'press flex h-8 w-8 items-center justify-center rounded-lg leading-none disabled:opacity-40',
+        active ? 'bg-acc/[.16] text-acc-soft' : 'text-subtle hover:bg-surface2 hover:text-txt',
       )}
     >
       {children}
@@ -39,8 +84,13 @@ function ToolButton({
 }
 
 /**
- * Visor de logs con autoscroll inteligente (sigue el final salvo que el usuario
- * suba) y, en modo `toolbar`, filtro, ajuste de línea, saltos, copia y descarga.
+ * Consola de logs profesional. Un mismo primitivo para logs de servicio y de
+ * despliegue, incrustado o a pantalla completa:
+ *  · autoscroll inteligente (sigue el final salvo que el usuario suba);
+ *  · filtro por texto (resaltado) y por nivel (error/aviso, con contadores);
+ *  · numeración de línea en canalón fijo, ajuste de línea, copia y descarga;
+ *  · cuerpo virtualizado (content-visibility) que aguanta buffers enormes;
+ *  · botón de maximizar que promueve la MISMA consola a pantalla completa.
  */
 export default function LogViewer({
   lines,
@@ -50,38 +100,110 @@ export default function LogViewer({
   replicas = 1,
   downloadName,
   statusNote,
+  title,
 }: {
   lines: string[];
   className?: string;
-  /** Muestra la barra de herramientas pro (filtro, wrap, saltos, copiar, descargar). */
+  /** Barra de herramientas pro (filtro, niveles, numeración, ajuste, saltos, copiar, descargar). */
   toolbar?: boolean;
-  /** Sin borde/radio propio: para incrustar bajo una cabecera de terminal. */
+  /** Sin borde/radio propio: para incrustar bajo otra cabecera. */
   bare?: boolean;
   replicas?: number;
   downloadName?: string;
   statusNote?: string | null;
+  /** Título del cromo de la consola (p. ej. «Build & deploy», «Logs en vivo»). */
+  title?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
   const [filter, setFilter] = useState('');
+  const [level, setLevel] = useState<LevelFilter>('all');
   const [wrap, setWrap] = useState(true);
+  const [gutter, setGutter] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [maximized, setMaximized] = useState(false);
 
   // Los builds reales (npm, docker…) emiten colores ANSI: se limpian una vez aquí
-  // y filtro, copia y descarga trabajan ya sobre texto legible.
-  const clean = useMemo(() => lines.map(stripAnsi), [lines]);
+  // y filtro, niveles, copia y descarga trabajan ya sobre texto legible.
+  const rows = useMemo(
+    () => lines.map((raw) => ({ text: stripAnsi(raw), lvl: detectLevel(raw) as Level })),
+    [lines],
+  );
 
+  const counts = useMemo(() => {
+    let err = 0;
+    let warn = 0;
+    for (const r of rows) {
+      if (r.lvl === 'err') err++;
+      else if (r.lvl === 'warn') warn++;
+    }
+    return { err, warn };
+  }, [rows]);
+
+  // Se conserva el índice original (1-based) para el canalón: al filtrar por
+  // nivel o texto los números siguen apuntando a la posición real en el flujo.
   const visible = useMemo(() => {
-    if (!filter.trim()) return clean;
-    const q = filter.toLowerCase();
-    return clean.filter((l) => l.toLowerCase().includes(q));
-  }, [clean, filter]);
+    const q = filter.trim().toLowerCase();
+    const out: { n: number; text: string; lvl: Level }[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (level !== 'all' && r.lvl !== level) continue;
+      if (q && !r.text.toLowerCase().includes(q)) continue;
+      out.push({ n: i + 1, text: r.text, lvl: r.lvl });
+    }
+    return out;
+  }, [rows, filter, level]);
 
   useEffect(() => {
-    if (follow && ref.current) {
-      ref.current.scrollTop = ref.current.scrollHeight;
-    }
+    if (!follow) return;
+    const el = ref.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    // Con content-visibility la altura de las filas fuera de pantalla es una
+    // estimación; se reaplica un frame después para clavar el fondo real cuando
+    // llega un lote grande (p. ej. el snapshot de un despliegue).
+    const raf = requestAnimationFrame(() => {
+      if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
   }, [visible, follow]);
+
+  // Al maximizar/restaurar el nodo se reubica; si veníamos siguiendo, al final.
+  useEffect(() => {
+    if (follow && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  }, [maximized]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A pantalla completa: bloquea el scroll del fondo, marca el resto de la app
+  // como inerte (foco atrapado + fuera del árbol de accesibilidad), cierra con
+  // Esc, da foco al diálogo y devuelve el foco al disparador al salir.
+  useEffect(() => {
+    if (!maximized) return;
+    const root = document.getElementById('root');
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    // El diálogo vive en document.body (portal), fuera de #root, así que inertar
+    // #root contiene el foco y el lector de pantalla sin tocar el diálogo.
+    root?.setAttribute('inert', '');
+    root?.setAttribute('aria-hidden', 'true');
+    overlayRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setMaximized(false);
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      root?.removeAttribute('inert');
+      root?.removeAttribute('aria-hidden');
+      window.removeEventListener('keydown', onKey, true);
+      previouslyFocused?.focus?.();
+    };
+  }, [maximized]);
 
   const onScroll = () => {
     const el = ref.current;
@@ -101,15 +223,17 @@ export default function LogViewer({
     }
   };
 
+  const plainText = () => visible.map((v) => v.text).join('\n');
+
   const copyAll = () => {
-    navigator.clipboard.writeText(visible.join('\n')).then(() => {
+    navigator.clipboard.writeText(plainText()).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
     });
   };
 
   const download = () => {
-    const blob = new Blob([visible.join('\n')], { type: 'text/plain' });
+    const blob = new Blob([plainText()], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -118,24 +242,107 @@ export default function LogViewer({
     URL.revokeObjectURL(url);
   };
 
-  const fmtCount = new Intl.NumberFormat('es').format(visible.length);
+  const nf = new Intl.NumberFormat('es');
+  const filtering = level !== 'all' || filter.trim().length > 0;
+  const showChrome = toolbar || !!title || maximized;
 
-  return (
-    <div className={cx('flex min-h-0 flex-col gap-2.5', className)}>
-      {toolbar && (
-        <>
-          <div className="flex items-center gap-1">
-            <div className="mr-1 flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-line bg-bg px-2.5 py-1.5 focus-within:border-acc">
-              <Search size={13} className="shrink-0 text-subtle" />
-              <input
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder="Filtrar líneas… (p. ej. error, /api)"
-                spellCheck={false}
-                className="min-w-0 flex-1 bg-transparent font-mono text-xs text-txt outline-none placeholder:text-subtle"
+  const levelChip = (key: LevelFilter, label: string, n?: number, tone?: 'err' | 'warn') => (
+    <button
+      type="button"
+      onClick={() => setLevel(key)}
+      aria-pressed={level === key}
+      className={cx(
+        'flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-medium transition-colors duration-150',
+        level === key
+          ? tone === 'err'
+            ? 'bg-err/[.16] text-err'
+            : tone === 'warn'
+              ? 'bg-warn/[.16] text-warn'
+              : 'bg-acc/[.16] text-acc-soft'
+          : 'text-subtle hover:bg-surface2 hover:text-txt',
+      )}
+    >
+      {tone && <span className={cx('h-[6px] w-[6px] rounded-full', tone === 'err' ? 'bg-err' : 'bg-warn')} />}
+      {label}
+      {n !== undefined && n > 0 && <span className="tnum opacity-80">{nf.format(n)}</span>}
+    </button>
+  );
+
+  const shell = (
+    <section
+      className={cx(
+        'log-shell relative flex min-h-0 flex-col overflow-hidden bg-term',
+        maximized ? 'h-full rounded-none' : cx(!bare && 'rounded-lg border border-line', className),
+      )}
+      style={{ '--log-line-h': maximized ? '22px' : '21px' } as React.CSSProperties}
+    >
+      {showChrome && (
+        <div className="flex shrink-0 items-center gap-2.5 border-b border-line bg-term2 px-3 py-2">
+          <span className="flex min-w-0 items-center gap-2">
+            {title && (
+              <span className="truncate font-mono text-[10.5px] font-medium uppercase tracking-[.09em] text-sub">
+                {title}
+              </span>
+            )}
+            <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-subtle">
+              <span
+                className={cx('h-[6px] w-[6px] rounded-full', follow ? 'pulse-soft bg-ok' : 'bg-subtle')}
+                title={follow ? 'En vivo' : 'En pausa (has subido)'}
               />
-            </div>
-            <ToolButton title="Ajuste de línea" onClick={() => setWrap(!wrap)} active={wrap}>
+              <span className="tnum">{nf.format(rows.length)}</span>
+              <span className="hidden sm:inline">líneas</span>
+              {replicas > 1 && <span className="hidden text-subtle sm:inline">· réplica 1/{replicas}</span>}
+            </span>
+          </span>
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            <ToolButton
+              title={maximized ? 'Restaurar (Esc)' : 'Pantalla completa'}
+              onClick={() => setMaximized((m) => !m)}
+            >
+              {maximized ? <Minimize2 size={15} /> : <Maximize2 size={14} />}
+            </ToolButton>
+            {maximized && (
+              <ToolButton title="Cerrar (Esc)" onClick={() => setMaximized(false)}>
+                <X size={16} />
+              </ToolButton>
+            )}
+          </div>
+        </div>
+      )}
+
+      {toolbar && (
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line bg-term2 px-2.5 py-2">
+          <div className="flex h-8 min-w-[150px] flex-1 items-center gap-2 rounded-lg border border-line bg-term px-2.5 focus-within:border-acc">
+            <Search size={13} className="shrink-0 text-subtle" />
+            <input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filtrar… (p. ej. error, ECONNREFUSED, /api)"
+              spellCheck={false}
+              className="min-w-0 flex-1 bg-transparent font-mono text-xs text-txt outline-none placeholder:text-subtle"
+            />
+            {filter && (
+              <button
+                type="button"
+                onClick={() => setFilter('')}
+                className="press shrink-0 text-subtle hover:text-txt"
+                title="Limpiar filtro"
+                aria-label="Limpiar filtro"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5 rounded-lg bg-term p-0.5">
+            {levelChip('all', 'Todo')}
+            {levelChip('err', 'Errores', counts.err, 'err')}
+            {levelChip('warn', 'Avisos', counts.warn, 'warn')}
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <ToolButton title="Numerar líneas" onClick={() => setGutter((g) => !g)} active={gutter}>
+              <Hash size={14} />
+            </ToolButton>
+            <ToolButton title="Ajuste de línea" onClick={() => setWrap((w) => !w)} active={wrap}>
               <WrapText size={14} />
             </ToolButton>
             <ToolButton title="Ir al inicio" onClick={() => jump('top')}>
@@ -144,61 +351,118 @@ export default function LogViewer({
             <ToolButton title="Ir al final" onClick={() => jump('bottom')}>
               <ArrowDownToLine size={14} />
             </ToolButton>
-            <ToolButton title="Copiar logs visibles" onClick={copyAll} disabled={visible.length === 0}>
+            <ToolButton title="Copiar líneas visibles" onClick={copyAll} disabled={visible.length === 0}>
               {copied ? <Check size={14} className="pop-in text-ok" /> : <Copy size={14} />}
             </ToolButton>
             <ToolButton title="Descargar" onClick={download} disabled={visible.length === 0}>
               <Download size={14} />
             </ToolButton>
           </div>
-          <p className="text-[11px] text-subtle">
-            {statusNote ?? (
-              <>
-                <span className="tnum">{fmtCount}</span> líneas{filter.trim() && ' (filtradas)'}
-                {replicas > 1 && <> · réplica 1 de {replicas}</>} · <span className="text-err">error</span> y{' '}
-                <span className="text-warn">warn</span> coloreados
-              </>
-            )}
-          </p>
-        </>
+        </div>
       )}
 
-      <div className={cx('relative min-h-0', toolbar ? 'flex-1' : '')}>
+      {toolbar && (
+        <p className="flex shrink-0 flex-wrap items-center gap-x-2 border-b border-line bg-term2 px-3 py-1.5 text-[11px] text-subtle">
+          {statusNote ? (
+            <span className="text-warn">{statusNote}</span>
+          ) : (
+            <>
+              <span>
+                <span className="tnum text-sub">{nf.format(visible.length)}</span>
+                {filtering ? ` de ${nf.format(rows.length)} líneas` : ' líneas'}
+              </span>
+              <span className="text-line">·</span>
+              <span>
+                <span className="text-err">error</span> y <span className="text-warn">warn</span> resaltados
+              </span>
+            </>
+          )}
+        </p>
+      )}
+
+      <div className={cx('relative min-h-0', showChrome || toolbar ? 'flex-1' : 'h-full')}>
         <div
           ref={ref}
           onScroll={onScroll}
           className={cx(
-            'overflow-y-auto bg-term p-3 font-mono text-[11.5px] leading-[1.7] text-txt/[.88]',
-            !bare && 'rounded-lg border border-line',
-            toolbar ? 'absolute inset-0' : 'h-full',
+            'h-full font-mono text-[12.5px] leading-[1.65] text-txt/90',
+            maximized && 'text-[13px] leading-[1.7]',
+            wrap ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto',
           )}
+          role="log"
+          // Sin anuncios en vivo: un flujo rápido saturaría al lector de pantalla.
+          // El indicador «En vivo», el contador y copiar/descargar dan el contenido.
+          aria-live="off"
+          aria-label="Salida de registro"
         >
           {visible.length === 0 ? (
-            <span className="text-subtle">{filter.trim() ? 'Ninguna línea coincide con el filtro.' : 'Sin logs todavía…'}</span>
+            <span className="block px-3 py-3 text-subtle">
+              {filtering ? 'Ninguna línea coincide con el filtro.' : 'Sin logs todavía…'}
+            </span>
           ) : (
-            visible.map((line, i) => (
-              <div key={i} className={cx(wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre', levelClass(line))}>
-                {line}
+            visible.map((v) => (
+              <div
+                key={v.n}
+                className={cx(
+                  'log-row flex',
+                  wrap ? 'w-full' : 'w-max min-w-full',
+                  v.lvl === 'err' && 'log-row-err',
+                  v.lvl === 'warn' && 'log-row-warn',
+                )}
+              >
+                {gutter && (
+                  <span className="log-gutter tnum select-none px-2.5 text-right text-[11px] tabular-nums" style={{ minWidth: '3.5ch' }}>
+                    {v.n}
+                  </span>
+                )}
+                <span className={cx('py-[1px] pr-3', gutter ? 'pl-2' : 'pl-3', wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre')}>
+                  {highlight(v.text, filter.trim())}
+                </span>
               </div>
             ))
           )}
         </div>
-        {follow ? (
-          toolbar && (
-            <span className="badge-in pointer-events-none absolute bottom-2.5 right-3 inline-flex items-center gap-[5px] rounded-full border border-ok/35 bg-[color-mix(in_oklab,var(--color-ok)_16%,oklch(14%_0.01_280))] px-2.5 py-[3px] text-[11px] font-medium text-ok">
-              <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-current" />
-              Siguiendo
-            </span>
-          )
-        ) : (
-          <button
-            onClick={() => jump('bottom')}
-            className="badge-in press absolute bottom-2.5 right-3 rounded-full border border-line bg-surface2 px-3 py-1 text-xs text-sub shadow-lvl1 hover:text-txt"
-          >
-            ↓ Seguir
-          </button>
-        )}
+
+        {follow
+          ? (toolbar || maximized) && (
+              <span className="badge-in pointer-events-none absolute bottom-2.5 right-3 inline-flex items-center gap-[5px] rounded-full border border-ok/35 bg-[color-mix(in_oklab,var(--color-ok)_16%,var(--color-term))] px-2.5 py-[3px] text-[11px] font-medium text-ok shadow-lvl1">
+                <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-current" />
+                En vivo
+              </span>
+            )
+          : (
+            <button
+              type="button"
+              onClick={() => jump('bottom')}
+              className="badge-in press absolute bottom-2.5 right-3 inline-flex items-center gap-1 rounded-full border border-line bg-surface2 px-3 py-1 text-xs text-sub shadow-lvl1 hover:text-txt"
+            >
+              <ArrowDownToLine size={12} /> Seguir el final
+            </button>
+          )}
       </div>
-    </div>
+    </section>
   );
+
+  if (maximized) {
+    return createPortal(
+      <div
+        ref={overlayRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title ? `${title} — pantalla completa` : 'Consola de logs a pantalla completa'}
+        tabIndex={-1}
+        className="console-in fixed inset-0 z-[70] flex flex-col bg-term p-0 outline-none sm:p-3"
+        onMouseDown={(e) => {
+          if (e.target === e.currentTarget) setMaximized(false);
+        }}
+      >
+        <div className="flex min-h-0 flex-1 overflow-hidden sm:rounded-2xl sm:border sm:border-line sm:shadow-lvl3">
+          {shell}
+        </div>
+      </div>,
+      document.body,
+    );
+  }
+
+  return shell;
 }

@@ -37,6 +37,7 @@
   --color-warn: oklch(80% 0.15 80);
   --color-err: oklch(64% 0.22 25);
   --color-info: oklch(70% 0.13 220);
+  --color-term: oklch(11% 0.008 280); /* fondo de terminales/logs */
 
   /*
    * Sistema de movimiento: tres curvas para toda la casa.
@@ -590,6 +591,83 @@ details[open] > .details-body {
   border-radius: 9999px;
   background: linear-gradient(90deg, transparent, var(--color-warn), transparent);
   animation: deploy-sweep 1.5s ease-in-out infinite;
+}
+
+/*
+ * ── Consola de logs profesional ───────────────────────────────────────────
+ * Un mismo primitivo sirve para logs de servicio y de despliegue, incrustado
+ * o a pantalla completa. El cuerpo virtualiza con content-visibility: las
+ * filas fuera de pantalla no maquetan ni pintan, así el buffer puede ser enorme
+ * (decenas de miles de líneas) sin ahogar el hilo principal.
+ */
+.log-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--log-line-h, 21px);
+}
+/* Canalón de numeración: se queda pegado a la izquierda al hacer scroll horizontal. */
+.log-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  user-select: none;
+  background: var(--color-term);
+  color: color-mix(in oklab, var(--color-subtle) 78%, transparent);
+}
+/* Riel de nivel: un filo de color a la izquierda marca error/aviso sin teñir toda la fila. */
+.log-row-err {
+  box-shadow: inset 2px 0 0 var(--color-err);
+  background: color-mix(in oklab, var(--color-err) 7%, transparent);
+}
+/* En modo canalón el número tapa el filo de la fila, así que el riel se pinta
+ * también sobre el propio canalón (fijo), para verse siempre a la izquierda. */
+.log-row-err .log-gutter {
+  background: color-mix(in oklab, var(--color-err) 9%, var(--color-term));
+  color: color-mix(in oklab, var(--color-err) 70%, var(--color-subtle));
+  box-shadow: inset 2px 0 0 var(--color-err);
+}
+.log-row-warn {
+  box-shadow: inset 2px 0 0 var(--color-warn);
+  background: color-mix(in oklab, var(--color-warn) 6%, transparent);
+}
+.log-row-warn .log-gutter {
+  background: color-mix(in oklab, var(--color-warn) 8%, var(--color-term));
+  color: color-mix(in oklab, var(--color-warn) 62%, var(--color-subtle));
+  box-shadow: inset 2px 0 0 var(--color-warn);
+}
+/* Coincidencia de búsqueda resaltada dentro de la línea. */
+.log-mark {
+  border-radius: 3px;
+  padding: 0 1px;
+  background: color-mix(in oklab, var(--color-warn) 34%, transparent);
+  color: var(--color-warn);
+}
+
+/* Pantalla completa de la consola: sube y se asienta; se despide en reversa. */
+@keyframes console-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.console-in {
+  animation: console-in 0.2s var(--ease-spring);
+}
+@keyframes console-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.99);
+  }
+}
+.console-out {
+  animation: console-out 0.16s var(--ease-out) both;
 }
 
 @keyframes shimmer {
