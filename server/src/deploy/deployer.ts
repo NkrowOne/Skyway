@@ -37,7 +37,7 @@ import {
 import { ensureNetwork, projectNetworkName, EDGE_NETWORK } from '../docker/networks';
 import { buildImage, cloneRepo, spawnLogged } from './builder';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
-import { getTemplate } from '../templates';
+import { getTemplate, volumePathFor } from '../templates';
 import { resolveServiceEnv } from '../variables';
 import { DatabaseConfig, DeploymentRow, GitConfig, ImageConfig, ProjectRow, ServiceRow } from '../types';
 import { now } from '../util';
@@ -339,7 +339,7 @@ async function deployContainer(
     const template = getTemplate(cfg.template)!;
     internalPort = template.port;
     cmd = template.cmd || null;
-    volumes = [{ name: volumeName(project, service), containerPath: template.volumePath }];
+    volumes = [{ name: volumeName(project, service), containerPath: volumePathFor(template, cfg.version) }];
     hostPort = cfg.hostPort ?? null;
     cpus = cfg.cpus ?? null;
     memoryMb = cfg.memoryMb ?? null;

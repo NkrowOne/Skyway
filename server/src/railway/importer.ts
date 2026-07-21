@@ -63,11 +63,15 @@ function matchTemplate(image: string): { template: string; version: string; exac
 
   const pick = (template: string) => {
     const tpl = getTemplate(template)!;
-    return {
-      template,
-      version: exactOfficial && tag ? tag : tpl.defaultVersion,
-      exact: exactOfficial,
-    };
+    let version = exactOfficial && tag ? tag : tpl.defaultVersion;
+    // Las imágenes de Railway (p. ej. postgres-ssl:18) codifican la versión
+    // mayor en el tag: respetarla evita que pg_dump rechace el volcado por
+    // ser el servidor origen más nuevo que el cliente.
+    if (!exactOfficial && template === 'postgres' && tag) {
+      const major = parseInt(tag, 10);
+      if (Number.isInteger(major) && major >= 13) version = `${major}-alpine`;
+    }
+    return { template, version, exact: exactOfficial };
   };
 
   if (/postgis/.test(norm)) return null; // postgis necesita su propia imagen

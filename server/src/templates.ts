@@ -119,6 +119,19 @@ export const DB_TEMPLATES: Record<string, DbTemplate> = {
   },
 };
 
+/**
+ * Ruta de datos a montar según la versión. La imagen oficial de Postgres 18+
+ * cambió el volumen a `/var/lib/postgresql` (los datos van en un subdirectorio
+ * versionado) y **se niega a arrancar** si se monta la ruta antigua
+ * `/var/lib/postgresql/data`. Los tags sin número (latest, alpine…) apuntan
+ * hoy a 18+, así que también usan la ruta nueva.
+ */
+export function volumePathFor(template: DbTemplate, version: string): string {
+  if (template.key !== 'postgres') return template.volumePath;
+  const major = parseInt(version, 10);
+  return Number.isInteger(major) && major < 18 ? template.volumePath : '/var/lib/postgresql';
+}
+
 export function getTemplate(key: string): DbTemplate | undefined {
   return DB_TEMPLATES[key];
 }
