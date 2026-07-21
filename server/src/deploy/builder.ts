@@ -17,6 +17,23 @@ export async function nixpacksAvailable(): Promise<boolean> {
   return nixpacksCache;
 }
 
+let buildxCache: boolean | null = null;
+
+/**
+ * El CLI de Docker moderno construye con BuildKit, que exige el plugin buildx;
+ * sin él, `docker build` falla en seco. Si falta (imagen de Skyway antigua),
+ * se degrada al builder clásico en vez de dejar el despliegue inservible.
+ */
+export async function buildxAvailable(): Promise<boolean> {
+  if (buildxCache !== null) return buildxCache;
+  buildxCache = await new Promise<boolean>((resolve) => {
+    const p = spawn('docker', ['buildx', 'version'], { stdio: 'ignore' });
+    p.on('error', () => resolve(false));
+    p.on('exit', (code) => resolve(code === 0));
+  });
+  return buildxCache;
+}
+
 export function spawnLogged(
   cmd: string,
   args: string[],
@@ -132,10 +149,14 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
 
   if (fs.existsSync(dockerfile)) {
     log(`Construyendo con Dockerfile (${path.relative(opts.repoDir, dockerfile)})...`);
+    const buildkit = await buildxAvailable();
+    if (!buildkit) {
+      log('⚠ docker buildx no está disponible: se usa el builder clásico. Reconstruye la imagen de Skyway para builds con BuildKit.');
+    }
     await spawnLogged(
       'docker',
       ['build', '-t', opts.imageTag, '-f', dockerfile, ...argFlags, context],
-      { env: { DOCKER_BUILDKIT: '1' }, onSpawn: opts.onSpawn },
+      { env: { DOCKER_BUILDKIT: buildkit ? '1' : '0' }, onSpawn: opts.onSpawn },
       log,
     );
     return;
