@@ -1,5 +1,5 @@
 import { getEnv, getProjectVars, listServices } from './db';
-import { ServiceRow } from './types';
+import { DatabaseConfig, ServiceRow } from './types';
 
 const REF_RE = /\$\{\{\s*([A-Za-z0-9 _.-]+?)\.([A-Za-z0-9_]+)\s*\}\}/g;
 
@@ -42,6 +42,8 @@ export function resolveServiceEnv(service: ServiceRow): Record<string, string> {
 
 export interface ReferenceGroup {
   service: string;
+  /** Plantilla si el hermano es una base de datos (postgres, redis…); null en el resto. */
+  template: string | null;
   vars: string[];
 }
 
@@ -50,11 +52,12 @@ export function availableReferences(service: ServiceRow): ReferenceGroup[] {
   const groups: ReferenceGroup[] = [];
   const shared = getProjectVars(service.project_id);
   if (Object.keys(shared).length > 0) {
-    groups.push({ service: 'shared', vars: Object.keys(shared) });
+    groups.push({ service: 'shared', template: null, vars: Object.keys(shared) });
   }
   const siblings = listServices(service.project_id).filter((s) => s.id !== service.id);
   for (const s of siblings) {
-    groups.push({ service: s.name, vars: Object.keys(getEnv(s.id)) });
+    const template = s.type === 'database' ? (s.config as DatabaseConfig).template : null;
+    groups.push({ service: s.name, template, vars: Object.keys(getEnv(s.id)) });
   }
   return groups;
 }

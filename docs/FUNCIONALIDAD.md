@@ -243,7 +243,11 @@ Esto reproduce el comportamiento de un *worker* de Railway.
   disponibilidad 90 días, incidencias y aviso de mantenimiento; token rotable.
 - **Importador de Railway**: analiza un proyecto por la API oficial y recrea
   servicios, variables (con referencias), dominios y volúmenes; genera los
-  comandos de copia de datos. El token viaja solo en memoria.
+  comandos de copia de datos. Las variables que apuntaban a bases de datos de
+  Railway también importadas se **reconectan solas** como referencias
+  `${{Base.VAR}}` al servicio nuevo (por host privado/proxy público, o por
+  esquema si es inequívoco); solo lo no mapeable genera aviso. El token viaja
+  solo en memoria.
 - **Multi-empresa y usuarios/roles**: proyectos por cliente; admins y miembros.
 - **Conectores de GitHub por proyecto**: cada cliente conecta su cuenta (token)
   y asigna sus repos a los servicios con selector de repo y rama; el admin ve y
