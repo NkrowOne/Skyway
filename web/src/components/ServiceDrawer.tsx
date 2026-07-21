@@ -11,6 +11,7 @@ import { ModuleChip, moduleKind } from './ModuleIcon';
 import BackupsTab from './tabs/BackupsTab';
 import DbConsoleTab from './tabs/DbConsoleTab';
 import DeploymentsTab from './tabs/DeploymentsTab';
+import FilesTab from './tabs/FilesTab';
 import LogsTab from './tabs/LogsTab';
 import MetricsTab from './tabs/MetricsTab';
 import ServiceSettingsTab from './tabs/ServiceSettingsTab';
@@ -146,6 +147,7 @@ export default function ServiceDrawer({
     ...(hasDbConsole ? [{ key: 'db', label: 'Consultas' }] : []),
     { key: 'variables', label: 'Variables' },
     ...(hasBackups ? [{ key: 'backups', label: 'Backups' }] : []),
+    { key: 'files', label: 'Archivos' },
     { key: 'metrics', label: 'Métricas' },
     { key: 'logs', label: 'Logs' },
     { key: 'settings', label: 'Ajustes' },
@@ -307,6 +309,7 @@ export default function ServiceDrawer({
           {tab === 'db' && <DbConsoleTab serviceId={serviceId} />}
           {tab === 'variables' && <VariablesTab serviceId={serviceId} onSaved={invalidate} onDeploy={() => deploy.mutate()} />}
           {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
+          {tab === 'files' && <FilesTab serviceId={serviceId} />}
           {tab === 'metrics' && <MetricsTab serviceId={serviceId} latest={latestMetrics} historyRef={historyRef} />}
           {tab === 'logs' && <LogsTab serviceId={serviceId} replicas={(service.config as any).replicas ?? 1} />}
           {tab === 'settings' && (

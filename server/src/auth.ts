@@ -48,6 +48,7 @@ export function rotateJwtSecret(): void {
 // --- límite de intentos de login por IP (anti fuerza bruta) ---
 const WINDOW_MS = 15 * 60_000;
 const MAX_ATTEMPTS = 8;
+const MAX_TRACKED_IPS = 5000;
 const attempts = new Map<string, { count: number; first: number }>();
 
 export function loginBlocked(ip: string): boolean {
@@ -67,7 +68,14 @@ export function recordLoginFailure(ip: string): void {
   } else {
     entry.count += 1;
   }
-  if (attempts.size > 5000) attempts.clear();
+  // Tope de memoria: se expulsan las entradas MÁS ANTIGUAS, nunca un clear()
+  // global. Un clear() dejaría que un atacante, inundando desde miles de IPs,
+  // reseteara de golpe el contador de todas las víctimas (amplificación).
+  while (attempts.size > MAX_TRACKED_IPS) {
+    const oldest = attempts.keys().next().value;
+    if (oldest === undefined) break;
+    attempts.delete(oldest);
+  }
 }
 
 export function clearLoginFailures(ip: string): void {
@@ -76,7 +84,7 @@ export function clearLoginFailures(ip: string): void {
 
 export function signToken(userId: string): string {
   const epoch = getUser(userId)?.session_epoch ?? 0;
-  return jwt.sign({ sub: userId, epoch }, jwtSecret(), { expiresIn: TOKEN_TTL });
+  return jwt.sign({ sub: userId, epoch }, jwtSecret(), { expiresIn: TOKEN_TTL, algorithm: 'HS256' });
 }
 
 export function setAuthCookie(reply: FastifyReply, token: string, secure: boolean): void {
@@ -102,7 +110,9 @@ function verifySession(req: FastifyRequest): { userId: string; epoch: number } |
   const token = (req.cookies as Record<string, string | undefined>)?.[COOKIE_NAME];
   if (!token) return null;
   try {
-    const payload = jwt.verify(token, jwtSecret()) as jwt.JwtPayload;
+    // algorithms fijado a HS256: sin esto, jsonwebtoken aceptaría cualquier
+    // algoritmo del propio token (incluida confusión de algoritmo).
+    const payload = jwt.verify(token, jwtSecret(), { algorithms: ['HS256'] }) as jwt.JwtPayload;
     if (typeof payload.sub !== 'string') return null;
     return { userId: payload.sub, epoch: typeof payload.epoch === 'number' ? payload.epoch : 0 };
   } catch {

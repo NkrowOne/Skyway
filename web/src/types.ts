@@ -351,6 +351,21 @@ export interface DbQueryResult {
   notice?: string;
 }
 
+// ---------- explorador de archivos ----------
+
+export interface FileEntry {
+  name: string;
+  type: 'file' | 'dir' | 'symlink' | 'other';
+  size: number;
+  perms: string;
+  target?: string;
+}
+
+export interface DirListing {
+  path: string;
+  entries: FileEntry[];
+}
+
 // ---------- página de estado pública ----------
 
 export type PublicServiceState = 'operational' | 'degraded' | 'down' | 'unknown';

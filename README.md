@@ -19,6 +19,7 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 - **Logs en tiempo real** — logs de build y de ejecución en streaming (SSE) y descargables, historial de despliegues, **cancelación** de despliegues en curso y **rollback** a cualquier versión anterior.
 - **Monitor global** — una página con **todos los servicios del servidor**: estado en vivo, CPU, RAM, disco, uptime 24 h, reinicios y alertas, con filtros, **ordenación por consumo** (¿quién se come la CPU?), reinicio en un clic y explicación del error cuando algo está caído. Incluye un **buscador de logs entre todos los contenedores** (filtrable por proyecto): escribe "ECONNREFUSED" o "500" y te dice en qué servicio y cuándo, con enlace directo.
 - **Consola de consultas a las bases de datos** — pestaña **Consultas** en cada PostgreSQL, MySQL, MongoDB y Redis: explorador de tablas/colecciones/claves con tamaños (clic = ver contenido, botón de columnas = ver estructura; en Redis detecta el tipo de la clave y usa GET/HGETALL/LRANGE... según toque), resultados en tabla **exportables a CSV/JSON**, snippets típicos, historial y **modo solo lectura por defecto** (las escrituras requieren activarlas a propósito). Todo corre dentro del contenedor con su cliente oficial: sin exponer puertos ni credenciales.
+- **Explorador de archivos (gestor tipo FTP)** — pestaña **Archivos** en cada servicio (app, módulo o base de datos): navega el sistema de ficheros del contenedor, **descarga**, **sube** (hasta 100 MB), **crea carpetas** y **borra**, sin abrir un servidor FTP ni gestionar credenciales — va por el socket de Docker con tu sesión del panel. Cada cambio queda en la auditoría.
 - **Asignación de espacio en disco** — cuota orientativa por servicio (MB) vigilada por el monitor con **aviso previo al 90 % y alerta al superarla**, y la vista **Monitor → Espacio**: qué ocupa cada servicio (volúmenes, contenedor, cuota con barra), qué ocupa Docker (imágenes, caché de build...) y el botón de **liberar espacio** sin tocar volúmenes. Los logs json de cada contenedor rotan solos (10 MB × 3) para que no se coman el disco.
 - **Página de estado para clientes** — activa en cada proyecto un **dashboard público con enlace compartible** (sin login): estado en vivo de los servicios, disponibilidad de los últimos 90 días con barras diarias, uptime 24 h/7 d/90 d, incidencias y un **aviso de mantenimiento** editable desde el panel. El enlace se puede rotar si se filtra.
 - **Vista de sitios web** — todas las webs y apps desplegadas en un solo sitio: dominio clicable con candado TLS, estado, réplicas, último deploy y acciones rápidas (abrir, desplegar, reiniciar), filtrables por cliente o dominio.
@@ -129,6 +130,7 @@ server/src/
   templates.ts            plantillas de bases de datos
   variables.ts            resolución de ${{Servicio.VAR}}
   dbconsole.ts            consola de consultas (psql/mysql/mongosh/redis-cli vía exec)
+  files.ts                explorador de archivos por contenedor (tar sobre el socket)
   disk.ts                 uso de disco por servicio (volúmenes + contenedor)
   docker/                 contenedores, redes, stats, logs
   deploy/                 builder (git+docker/nixpacks), orquestador, cola
@@ -138,6 +140,13 @@ web/src/
   components/             canvas de servicios, drawer con pestañas, gráficas
 ```
 
+### Documentación
+
+- **[docs/FUNCIONALIDAD.md](docs/FUNCIONALIDAD.md)** — referencia completa (módulos, modelo de datos, seguridad y **toda la API REST**), consultable fácilmente por un LLM.
+- **[docs/AUDITORIA.md](docs/AUDITORIA.md)** — informe de auditoría de seguridad y backend, con correcciones y recomendaciones.
+- **[docs/CONTROL-REMOTO.md](docs/CONTROL-REMOTO.md)** — control por API/tokens (`Authorization: Bearer sky_…`) para automatizaciones y agentes.
+- **[CLAUDE.md](CLAUDE.md)** — guía breve del repositorio para agentes/LLM.
+
 ## Configuración
 
 | Variable (servidor)   | Por defecto | Descripción                                    |
@@ -146,6 +155,7 @@ web/src/
 | `DATA_DIR`            | `./data`    | SQLite, builds temporales                      |
 | `JWT_SECRET`          | generado    | Secreto de sesiones (persiste en la BD si no)  |
 | `BUILD_CONCURRENCY`   | `2`         | Builds simultáneos                             |
+| `TRUST_PROXY`         | privadas    | Confianza en `X-Forwarded-*` para la IP real (rangos privados/loopback por defecto; `true`/`false`/nº/CIDRs) |
 | `DOCKER_SOCK`         | socket std  | Ruta alternativa al socket de Docker           |
 
 En **Ajustes** (UI): dominio raíz para subdominios generados, email de Let's Encrypt y token de GitHub para repos privados.

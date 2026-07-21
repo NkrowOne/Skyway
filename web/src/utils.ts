@@ -142,6 +142,10 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   backup_deleted: 'Backup eliminado',
   system_prune: 'Espacio liberado (prune)',
   db_query: 'Consulta en base de datos',
+  file_downloaded: 'Archivo descargado del contenedor',
+  file_uploaded: 'Archivo subido al contenedor',
+  file_deleted: 'Archivo/carpeta eliminado del contenedor',
+  file_mkdir: 'Carpeta creada en el contenedor',
   status_page_updated: 'Página de estado actualizada',
   status_page_rotated: 'Enlace de página de estado rotado',
 };

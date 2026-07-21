@@ -44,6 +44,17 @@ function sweep(map: Map<string, { expires: number }>): void {
   for (const [k, v] of map) if (v.expires < now) map.delete(k);
 }
 
+const MAX_PENDING_CHALLENGES = 5000;
+
+/** Tope de memoria expulsando los retos MÁS ANTIGUOS (nunca un clear() global). */
+function capChallenges(map: Map<string, unknown>): void {
+  while (map.size > MAX_PENDING_CHALLENGES) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
+
 /**
  * WebAuthn liga cada credencial al dominio (rpID). Se derivan del Host real de
  * la petición para que funcione tanto en localhost (túnel SSH) como con dominio.
@@ -175,9 +186,10 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
     });
     const challengeId = randomToken(16);
     sweep(authChallenges);
-    // Endpoint anónimo: tope duro anti-DoS de memoria (igual que el mapa de intentos).
-    if (authChallenges.size > 5000) authChallenges.clear();
     authChallenges.set(challengeId, { challenge: options.challenge, rpId, origin, expires: Date.now() + CHALLENGE_TTL_MS });
+    // Endpoint anónimo: tope de memoria expulsando los más antiguos, sin borrar
+    // los retos legítimos en vuelo (un clear() los invalidaría a todos).
+    capChallenges(authChallenges);
     return { challengeId, options };
   });
 
