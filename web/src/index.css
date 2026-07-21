@@ -194,6 +194,34 @@ details > summary::-webkit-details-marker {
 .page-in {
   animation: page-in 0.2s ease-out both;
 }
+/* La estrella fugaz del login: un único destello de bienvenida, nada más aterrizar. */
+@keyframes estrella-fugaz {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(-14deg) scaleX(0.35);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.85;
+  }
+  70% {
+    opacity: 0.2;
+  }
+  100% {
+    transform: translate3d(52vw, -13vw, 0) rotate(-14deg) scaleX(1);
+    opacity: 0;
+  }
+}
+.estrella-fugaz {
+  position: absolute;
+  top: 22%;
+  left: 10%;
+  width: 130px;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75), transparent);
+  animation: estrella-fugaz 1.15s ease-out 0.65s both;
+}
+
 @keyframes pop-in {
   from {
     opacity: 0;

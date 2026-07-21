@@ -32,14 +32,15 @@ export default function Setup() {
 
   return (
     <div
-      className="flex min-h-full items-center justify-center p-6"
+      className="relative flex min-h-full items-center justify-center overflow-hidden p-6"
       style={{
         background:
-          'radial-gradient(1200px 600px at 50% -10%, color-mix(in oklab, #6e56cf 10%, transparent), transparent 70%), var(--color-bg)',
+          'radial-gradient(1200px 600px at 50% -10%, color-mix(in oklab, #6e56cf 14%, transparent), transparent 70%), radial-gradient(700px 380px at 85% 0%, color-mix(in oklab, var(--color-info) 7%, transparent), transparent 62%), var(--color-bg)',
       }}
     >
-      <div className="w-full max-w-[400px]">
-        <div className="rounded-2xl border border-line bg-surface px-7 py-8 shadow-[0_24px_64px_-24px_rgba(0,0,0,.7)]">
+      <span aria-hidden className="estrella-fugaz" />
+      <div className="panel-in w-full max-w-[400px]">
+        <div className="rounded-2xl border border-line bg-surface px-7 py-8 shadow-[0_24px_64px_-24px_rgba(0,0,0,.7),inset_0_1px_0_color-mix(in_oklab,#6e56cf_16%,transparent)]">
           <div className="mb-6 flex flex-col items-center gap-3.5 text-center">
             <BrandMark size={52} iconSize={24} radius={14} />
             <div>
