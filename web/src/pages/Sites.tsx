@@ -1,17 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
-import {
-  ArrowUpRight,
-  BellRing,
-  ExternalLink,
-  Globe,
-  Lock,
-  RefreshCw,
-  Rocket,
-  Search,
-  Unlock,
-} from 'lucide-react';
+import { ArrowUpRight, BellRing, ExternalLink, Globe, Lock, RefreshCw, Rocket, Search, Unlock } from 'lucide-react';
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import { Button, Skeleton, StatusBadge, useToast } from '../components/ui';
@@ -148,8 +138,21 @@ export default function SitesPage() {
     refetchInterval: 8000,
   });
 
+  // Ids con acción en curso: `mutation.variables` solo recuerda la última.
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  const track = {
+    onMutate: (serviceId: string) => setBusyIds((prev) => new Set(prev).add(serviceId)),
+    onSettled: (_d: unknown, _e: unknown, serviceId: string) =>
+      setBusyIds((prev) => {
+        const next = new Set(prev);
+        next.delete(serviceId);
+        return next;
+      }),
+  };
+
   const restart = useMutation({
     mutationFn: (serviceId: string) => api.post(`/services/${serviceId}/restart`),
+    ...track,
     onSuccess: () => {
       toast('Servicio reiniciado', 'ok');
       queryClient.invalidateQueries({ queryKey: ['websites'] });
@@ -159,6 +162,7 @@ export default function SitesPage() {
 
   const deploy = useMutation({
     mutationFn: (serviceId: string) => api.post(`/services/${serviceId}/deploy`),
+    ...track,
     onSuccess: () => toast('Despliegue iniciado', 'ok'),
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -186,9 +190,14 @@ export default function SitesPage() {
             <Globe size={22} className="text-acc-soft" /> Sitios web
           </h1>
           <p className="mt-1.5 text-sm text-sub">
-            Todas las webs y apps desplegadas en el servidor: {online} en línea, {withDomain} con dominio
-            {sites.data && !sites.data.tls && withDomain > 0 && (
-              <span className="text-warn"> · TLS sin configurar (Ajustes → Let&apos;s Encrypt)</span>
+            Todas las webs y apps desplegadas en el servidor
+            {sites.data && (
+              <>
+                : {online} en línea, {withDomain} con dominio
+                {!sites.data.tls && withDomain > 0 && (
+                  <span className="text-warn"> · TLS sin configurar (Ajustes → Let&apos;s Encrypt)</span>
+                )}
+              </>
             )}
           </p>
         </div>
@@ -221,6 +230,16 @@ export default function SitesPage() {
         </div>
       )}
 
+      {sites.isError && !sites.data && (
+        <div className="card flex flex-col items-center gap-3 py-14 text-center">
+          <Globe size={22} className="text-warn" />
+          <p className="max-w-sm text-sm text-sub">No se pudieron cargar los sitios: {(sites.error as Error).message}</p>
+          <Button variant="secondary" size="sm" onClick={() => sites.refetch()}>
+            <RefreshCw size={13} /> Reintentar
+          </Button>
+        </div>
+      )}
+
       {sites.data && all.length === 0 && (
         <div className="card flex flex-col items-center gap-3 py-16 text-center">
           <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-acc/[.14] text-acc-soft">
@@ -245,9 +264,7 @@ export default function SitesPage() {
             serverIp={sites.data!.serverIp}
             onRestart={() => restart.mutate(s.id)}
             onDeploy={() => deploy.mutate(s.id)}
-            busy={
-              (restart.isPending && restart.variables === s.id) || (deploy.isPending && deploy.variables === s.id)
-            }
+            busy={busyIds.has(s.id)}
           />
         ))}
       </div>

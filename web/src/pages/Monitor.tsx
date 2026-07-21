@@ -194,7 +194,9 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
       tabIndex={0}
       onClick={() => navigate(`/projects/${s.projectId}?s=${s.id}`)}
       onKeyDown={(e) => {
-        if (e.key === 'Enter') navigate(`/projects/${s.projectId}?s=${s.id}`);
+        // Solo si el foco está en la fila: Enter sobre un botón interno
+        // (p. ej. Reiniciar) no debe además navegar fuera de la página.
+        if (e.key === 'Enter' && e.target === e.currentTarget) navigate(`/projects/${s.projectId}?s=${s.id}`);
       }}
       className={cx(
         'grid cursor-pointer grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] items-center gap-3 border-b border-line/70 px-4 py-2.5 transition-colors last:border-0 hover:bg-surface',
@@ -450,8 +452,18 @@ export default function MonitorPage() {
     refetchInterval: 6000,
   });
 
+  // Un Set de ids en curso: `mutation.variables` solo refleja la ÚLTIMA
+  // llamada y mentiría al reiniciar dos servicios seguidos.
+  const [restarting, setRestarting] = useState<Set<string>>(new Set());
   const restart = useMutation({
     mutationFn: (serviceId: string) => api.post(`/services/${serviceId}/restart`),
+    onMutate: (serviceId) => setRestarting((prev) => new Set(prev).add(serviceId)),
+    onSettled: (_d, _e, serviceId) =>
+      setRestarting((prev) => {
+        const next = new Set(prev);
+        next.delete(serviceId);
+        return next;
+      }),
     onSuccess: () => {
       toast('Servicio reiniciado', 'ok');
       queryClient.invalidateQueries({ queryKey: ['monitorOverview'] });
@@ -462,17 +474,12 @@ export default function MonitorPage() {
   const services = overview.data?.services ?? [];
   const filtered = useMemo(() => {
     const q = text.trim().toLowerCase();
+    // Partición exacta en tres grupos: cada servicio cae en un único chip y
+    // los contadores cuadran con las filas listadas.
+    const bucket = (s: MonitorService): StateFilter =>
+      s.state === 'running' ? 'running' : s.state === 'exited' || s.state === 'dead' || s.state === 'restarting' ? 'down' : 'stopped';
     const list = services.filter((s) => {
-      if (stateFilter === 'running' && s.state !== 'running' && s.state !== 'restarting') return false;
-      if (stateFilter === 'down' && s.state !== 'exited' && s.state !== 'dead' && s.state !== 'restarting') return false;
-      if (
-        stateFilter === 'stopped' &&
-        s.state !== 'not_created' &&
-        s.state !== 'created' &&
-        s.state !== 'paused' &&
-        s.state !== 'unknown'
-      )
-        return false;
+      if (stateFilter !== 'all' && bucket(s) !== stateFilter) return false;
       if (!q) return true;
       return `${s.name} ${s.projectName} ${s.client ?? ''} ${s.image ?? ''} ${s.domains.join(' ')}`.toLowerCase().includes(q);
     });
@@ -530,6 +537,18 @@ export default function MonitorPage() {
             ))}
           </div>
           <Skeleton className="h-64 w-full rounded-xl" />
+        </div>
+      )}
+
+      {overview.isError && !overview.data && (
+        <div className="card flex flex-col items-center gap-3 py-14 text-center">
+          <TriangleAlert size={22} className="text-warn" />
+          <p className="max-w-sm text-sm text-sub">
+            No se pudo cargar el monitor: {(overview.error as Error).message}
+          </p>
+          <Button variant="secondary" size="sm" onClick={() => overview.refetch()}>
+            <RefreshCw size={13} /> Reintentar
+          </Button>
         </div>
       )}
 
@@ -674,12 +693,7 @@ export default function MonitorPage() {
                       </p>
                     )}
                     {filtered.map((s) => (
-                      <ServiceRow
-                        key={s.id}
-                        s={s}
-                        onRestart={() => restart.mutate(s.id)}
-                        restarting={restart.isPending && restart.variables === s.id}
-                      />
+                      <ServiceRow key={s.id} s={s} onRestart={() => restart.mutate(s.id)} restarting={restarting.has(s.id)} />
                     ))}
                   </div>
                 </div>

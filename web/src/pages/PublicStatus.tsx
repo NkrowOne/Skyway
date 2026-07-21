@@ -103,7 +103,9 @@ export default function PublicStatusPage() {
     );
   }
 
-  if (status.isError || !status.data) {
+  // Solo sin datos en caché: un refetch de fondo fallido (red inestable del
+  // cliente) no debe convertir la página en "desactivada".
+  if (!status.data) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <CircleSlash size={28} className="text-subtle" />
@@ -170,8 +172,10 @@ export default function PublicStatusPage() {
           )}
           {data.services.map((s, idx) => {
             const meta = STATE_META[s.state];
+            // El nombre no es único (dos "PostgreSQL" en un proyecto): la key
+            // lleva el índice, y el orden del servidor es estable (created_at).
             return (
-              <div key={s.name} className={cx('px-5 py-4', idx > 0 && 'border-t border-line')}>
+              <div key={`${s.name}-${idx}`} className={cx('px-5 py-4', idx > 0 && 'border-t border-line')}>
                 <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
                   <p className="flex items-center gap-2 text-sm font-medium">
                     <span className={cx('h-2 w-2 rounded-full', meta.dot, s.state !== 'operational' && s.state !== 'unknown' && 'pulse-soft')} />

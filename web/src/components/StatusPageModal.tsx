@@ -30,10 +30,13 @@ export default function StatusPageModal({
     enabled: open,
   });
 
-  // Sincroniza el borrador del aviso cuando llega (o cambia) la configuración.
+  // Sincroniza el borrador solo cuando cambia el VALOR del aviso en el
+  // servidor: un refetch por rotar el enlace o cambiar el toggle no debe
+  // machacar lo que el admin esté escribiendo.
+  const serverNotice = config.data ? config.data.notice ?? '' : null;
   useEffect(() => {
-    if (config.data) setNotice(config.data.notice ?? '');
-  }, [config.data]);
+    if (serverNotice !== null) setNotice(serverNotice);
+  }, [serverNotice]);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['statusPage', projectId] });
 

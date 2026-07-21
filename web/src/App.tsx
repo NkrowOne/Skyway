@@ -32,6 +32,8 @@ export default function App() {
     return (
       <Routes>
         <Route path="/status/:token" element={<PublicStatusPage />} />
+        {/* /status/ sin token: al panel (que pedirá login si toca). */}
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     );
   }

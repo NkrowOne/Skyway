@@ -152,6 +152,7 @@ export type ContainerState =
   | 'exited'
   | 'paused'
   | 'created'
+  | 'removing'
   | 'dead'
   | 'not_created'
   | 'unknown';

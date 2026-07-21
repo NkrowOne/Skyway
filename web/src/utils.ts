@@ -37,6 +37,7 @@ export const STATE_LABEL: Record<ContainerState, string> = {
   exited: 'Detenido',
   paused: 'Pausado',
   created: 'Creado',
+  removing: 'Eliminando',
   dead: 'Muerto',
   not_created: 'Sin desplegar',
   unknown: 'Desconocido',
@@ -51,6 +52,7 @@ export const STATE_TONE: Record<ContainerState, Tone> = {
   exited: 'err',
   paused: 'warn',
   created: 'neutral',
+  removing: 'warn',
   dead: 'err',
   not_created: 'neutral',
   unknown: 'neutral',
@@ -59,6 +61,7 @@ export const STATE_TONE: Record<ContainerState, Tone> = {
 /** Estados transitorios: el dot del badge pulsa. */
 export const STATE_PULSE: Partial<Record<ContainerState, boolean>> = {
   restarting: true,
+  removing: true,
 };
 
 export const DEPLOY_STATUS_LABEL: Record<DeploymentStatus, string> = {

@@ -214,7 +214,10 @@ async function pgRun(name: string, query: string, allowWrite: boolean): Promise<
 }
 
 async function pgOverview(name: string): Promise<DbOverview> {
-  const sql = `SELECT c.relname, COALESCE(c.reltuples, 0)::bigint, pg_total_relation_size(c.oid)
+  // El nombre lleva el esquema salvo para public: dos tablas "users" en
+  // esquemas distintos deben distinguirse (y el browse debe calificarlas).
+  const sql = `SELECT CASE WHEN n.nspname = 'public' THEN c.relname ELSE n.nspname || '.' || c.relname END,
+      COALESCE(c.reltuples, 0)::bigint, pg_total_relation_size(c.oid)
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE c.relkind IN ('r','p','m') AND n.nspname NOT IN ('pg_catalog','information_schema')
     ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 200`;
@@ -412,13 +415,16 @@ async function redisOverview(name: string): Promise<DbOverview> {
   const text = info.output;
   const version = text.match(/redis_version:([^\r\n]+)/)?.[1] ?? null;
   const memory = text.match(/used_memory:(\d+)/)?.[1];
-  const keys = scan.exitCode === 0 ? scan.output.split('\n').filter((l) => l.trim().length > 0) : [];
+  // SCAN puede devolver la misma clave más de una vez: se deduplica.
+  const keys = scan.exitCode === 0
+    ? [...new Set(scan.output.split('\n').map((l) => l.trim()).filter((l) => l.length > 0))]
+    : [];
   return {
     engine: 'redis',
     version,
     sizeBytes: memory ? Number(memory) : null,
     objectLabel: 'claves (muestra)',
-    objects: keys.slice(0, 100).map((k) => ({ name: k.trim(), rows: null, sizeBytes: null })),
+    objects: keys.slice(0, 100).map((k) => ({ name: k, rows: null, sizeBytes: null })),
   };
 }
 
@@ -426,6 +432,14 @@ async function redisOverview(name: string): Promise<DbOverview> {
 
 const pgIdent = (t: string) => `"${t.replace(/"/g, '""')}"`;
 const pgLiteral = (t: string) => `'${t.replace(/'/g, "''")}'`;
+/** "esquema.tabla" → identificador calificado; sin punto → tabla a secas. */
+function pgQualified(object: string): { from: string; schema: string | null; table: string } {
+  const idx = object.indexOf('.');
+  if (idx < 0) return { from: pgIdent(object), schema: null, table: object };
+  const schema = object.slice(0, idx);
+  const table = object.slice(idx + 1);
+  return { from: `${pgIdent(schema)}.${pgIdent(table)}`, schema, table };
+}
 const myIdent = (t: string) => `\`${t.replace(/`/g, '``')}\``;
 /** Clave Redis citada como la entiende el parser de redis-cli. */
 const redisKey = (k: string) => `"${k.replace(/([\\"])/g, '\\$1')}"`;
@@ -453,10 +467,12 @@ const RUNNERS: Record<DbEngine, EngineRunner> = {
   postgres: {
     run: pgRun,
     overview: pgOverview,
-    browse: async (_name, t, mode) =>
-      mode === 'describe'
-        ? `SELECT column_name AS columna, data_type AS tipo, is_nullable AS nulable, column_default AS por_defecto\nFROM information_schema.columns WHERE table_name = ${pgLiteral(t)} ORDER BY ordinal_position;`
-        : `SELECT * FROM ${pgIdent(t)} LIMIT 50;`,
+    browse: async (_name, t, mode) => {
+      const q = pgQualified(t);
+      if (mode !== 'describe') return `SELECT * FROM ${q.from} LIMIT 50;`;
+      const schemaCond = q.schema ? ` AND table_schema = ${pgLiteral(q.schema)}` : '';
+      return `SELECT column_name AS columna, data_type AS tipo, is_nullable AS nulable, column_default AS por_defecto\nFROM information_schema.columns WHERE table_name = ${pgLiteral(q.table)}${schemaCond} ORDER BY ordinal_position;`;
+    },
     snippets: [
       { label: 'Tablas y tamaño', hint: 'Qué ocupa cada tabla', query: "SELECT c.relname AS tabla, pg_size_pretty(pg_total_relation_size(c.oid)) AS tamano, COALESCE(c.reltuples,0)::bigint AS filas_aprox\nFROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\nWHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')\nORDER BY pg_total_relation_size(c.oid) DESC;" },
       { label: 'Conexiones activas', hint: 'Quién está conectado ahora', query: "SELECT pid, usename, state, query_start, LEFT(query, 80) AS query\nFROM pg_stat_activity WHERE state <> 'idle' ORDER BY query_start;" },

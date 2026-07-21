@@ -24,7 +24,8 @@ function downloadFile(filename: string, content: string, mime: string): void {
   a.href = url;
   a.download = filename;
   a.click();
-  URL.revokeObjectURL(url);
+  // Revocar en diferido: hacerlo síncrono puede abortar la descarga.
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 const csvCell = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
@@ -35,7 +36,13 @@ function resultToCsv(result: DbQueryResult): string {
 }
 
 function resultToJson(result: DbQueryResult): string {
-  const cols = result.columns ?? [];
+  // Columnas repetidas (SELECT a, b AS a) se renombran para no perder datos.
+  const seen = new Map<string, number>();
+  const cols = (result.columns ?? []).map((c) => {
+    const n = seen.get(c) ?? 0;
+    seen.set(c, n + 1);
+    return n === 0 ? c : `${c}_${n + 1}`;
+  });
   return JSON.stringify(
     (result.rows ?? []).map((r) => Object.fromEntries(cols.map((c, i) => [c, r[i] ?? '']))),
     null,
@@ -139,7 +146,9 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
 
   const execute = (q?: string) => {
     const text = (q ?? query).trim();
-    if (!text) return;
+    // Una consulta en vuelo cada vez: evita que dos ejecuciones concurrentes
+    // dejen en pantalla el resultado de la más lenta (no de la última pedida).
+    if (!text || run.isPending) return;
     if (q !== undefined) setQuery(q);
     run.mutate(text);
   };
@@ -221,14 +230,15 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
             {overview.data?.overview.objectLabel} · {objects.length}
           </p>
           <div className="flex flex-wrap gap-1.5">
-            {objects.map((o) => (
+            {objects.map((o, i) => (
               <span
-                key={o.name}
+                key={`${o.name}-${i}`}
                 className="inline-flex max-w-full items-stretch overflow-hidden rounded-lg border border-line bg-surface text-[11.5px] text-sub transition-colors focus-within:border-acc/50 hover:border-acc/50"
               >
                 <button
                   onClick={() => browse.mutate({ object: o.name, mode: 'data' })}
-                  className="inline-flex min-w-0 items-center gap-1.5 px-2 py-1 transition-colors hover:text-txt"
+                  disabled={browse.isPending || run.isPending}
+                  className="inline-flex min-w-0 items-center gap-1.5 px-2 py-1 transition-colors hover:text-txt disabled:opacity-60"
                   title={`Ver contenido de ${o.name}`}
                 >
                   <Table2 size={11} className="shrink-0 text-subtle" />
@@ -240,7 +250,8 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
                 </button>
                 <button
                   onClick={() => browse.mutate({ object: o.name, mode: 'describe' })}
-                  className="inline-flex items-center border-l border-line px-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+                  disabled={browse.isPending || run.isPending}
+                  className="inline-flex items-center border-l border-line px-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-60"
                   title={engine === 'redis' ? `Tipo, TTL y memoria de ${o.name}` : `Estructura de ${o.name}`}
                 >
                   <Columns3 size={11} />
