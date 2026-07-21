@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BellRing, CheckCircle2, Cpu, Globe, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { ModuleLogo } from '../components/ModuleIcon';
-import { Button, Field, useToast } from '../components/ui';
+import { Button, Field, useFlash, useToast } from '../components/ui';
 import { DockerUsage, SystemInfo } from '../types';
 import { cx, fmtBytes } from '../utils';
 
@@ -151,6 +151,7 @@ export default function SettingsPage() {
     }
   }, [settings.data]);
 
+  const [saved, flashSaved] = useFlash();
   const save = useMutation({
     mutationFn: () =>
       api.put('/settings', {
@@ -170,6 +171,7 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       setGithubToken('');
       setTelegramToken('');
+      flashSaved();
       toast('Ajustes guardados', 'ok');
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -457,7 +459,7 @@ export default function SettingsPage() {
 
       <div className="sticky bottom-0 mt-1 flex items-center justify-end gap-2.5 border-t border-line bg-bg/90 py-3 backdrop-blur-lg">
         <span className="text-xs text-subtle">Los cambios se aplican al guardar</span>
-        <Button onClick={() => save.mutate()} loading={save.isPending}>
+        <Button onClick={() => save.mutate()} loading={save.isPending} success={saved}>
           Guardar ajustes
         </Button>
       </div>

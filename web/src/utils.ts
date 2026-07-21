@@ -1,5 +1,11 @@
 import { ContainerState, DeploymentStatus } from './types';
 
+/* Secuencias ANSI CSI (colores de npm/docker build…): se limpian antes de pintar logs. */
+const ANSI_RE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, '');
+}
+
 export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(' ');
 }

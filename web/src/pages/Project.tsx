@@ -315,7 +315,15 @@ export default function ProjectPage() {
 
         {services.length > 0 && (
           <p className="mt-5 hidden text-[11px] text-subtle drawer:block">
-            Pulsa <kbd className="kbd">esc</kbd> para cerrar el panel · <kbd className="kbd">⌘K</kbd> para buscar
+            {selected ? (
+              <>
+                Pulsa <kbd className="kbd">esc</kbd> para cerrar el panel · <kbd className="kbd">⌘K</kbd> para buscar
+              </>
+            ) : (
+              <>
+                Abre un servicio para desplegar, ver logs y editar variables · <kbd className="kbd">⌘K</kbd> para buscar
+              </>
+            )}
           </p>
         )}
       </div>

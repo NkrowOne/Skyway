@@ -8,9 +8,24 @@ type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger' | 'outline';
   size?: 'sm' | 'md' | 'lg';
   loading?: boolean;
+  /** Éxito momentáneo tras guardar: muestra un check que aparece con un pop. */
+  success?: boolean;
 };
 
-export function Button({ variant = 'primary', size = 'md', loading, className, children, disabled, ...rest }: ButtonProps) {
+/** Temporizador para el estado de éxito momentáneo de un botón (check tras guardar). */
+export function useFlash(ms = 1600): [boolean, () => void] {
+  const [on, setOn] = useState(false);
+  const timer = useRef<number>();
+  const flash = useCallback(() => {
+    setOn(true);
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setOn(false), ms);
+  }, [ms]);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  return [on, flash];
+}
+
+export function Button({ variant = 'primary', size = 'md', loading, success, className, children, disabled, ...rest }: ButtonProps) {
   const base =
     'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-[background,border-color,color,box-shadow] duration-150 ease-out disabled:opacity-50 disabled:cursor-not-allowed';
   const variants = {
@@ -27,7 +42,7 @@ export function Button({ variant = 'primary', size = 'md', loading, className, c
   };
   return (
     <button className={cx(base, variants[variant], sizes[size], className)} disabled={disabled || loading} {...rest}>
-      {loading && <Loader2 size={14} className="animate-spin" />}
+      {loading ? <Loader2 size={14} className="animate-spin" /> : success ? <Check size={14} className="pop-in text-current" /> : null}
       {children}
     </button>
   );

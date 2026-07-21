@@ -675,6 +675,20 @@ export function listProjectIncidents(projectId: string, types: string[], resolve
     .all(projectId, ...types, resolvedSince) as AlertRow[];
 }
 
+/** Metadatos de actividad por proyecto para el panel: último despliegue y alertas abiertas. */
+export function projectDashboardMeta(): Record<string, { lastDeployAt: number | null; openAlerts: number }> {
+  const out: Record<string, { lastDeployAt: number | null; openAlerts: number }> = {};
+  const deploys = db
+    .prepare('SELECT s.project_id AS pid, MAX(d.created_at) AS m FROM deployments d JOIN services s ON s.id = d.service_id GROUP BY s.project_id')
+    .all() as { pid: string; m: number }[];
+  for (const r of deploys) out[r.pid] = { lastDeployAt: r.m, openAlerts: 0 };
+  const alerts = db
+    .prepare('SELECT project_id AS pid, COUNT(*) AS c FROM alerts WHERE resolved_at IS NULL AND project_id IS NOT NULL GROUP BY project_id')
+    .all() as { pid: string; c: number }[];
+  for (const r of alerts) out[r.pid] = { lastDeployAt: out[r.pid]?.lastDeployAt ?? null, openAlerts: r.c };
+  return out;
+}
+
 export function openAlertCountsByService(projectId: string): Record<string, number> {
   const rows = db
     .prepare('SELECT service_id, COUNT(*) AS c FROM alerts WHERE project_id = ? AND resolved_at IS NULL AND service_id IS NOT NULL GROUP BY service_id')

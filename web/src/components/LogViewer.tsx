@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowUpToLine, Check, Copy, Download, Search, WrapText } from 'lucide-react';
-import { cx } from '../utils';
+import { cx, stripAnsi } from '../utils';
 
 /** Heurística de niveles: líneas con error→err, warn→warn. */
 function levelClass(line: string): string | undefined {
@@ -67,11 +67,15 @@ export default function LogViewer({
   const [wrap, setWrap] = useState(true);
   const [copied, setCopied] = useState(false);
 
+  // Los builds reales (npm, docker…) emiten colores ANSI: se limpian una vez aquí
+  // y filtro, copia y descarga trabajan ya sobre texto legible.
+  const clean = useMemo(() => lines.map(stripAnsi), [lines]);
+
   const visible = useMemo(() => {
-    if (!filter.trim()) return lines;
+    if (!filter.trim()) return clean;
     const q = filter.toLowerCase();
-    return lines.filter((l) => l.toLowerCase().includes(q));
-  }, [lines, filter]);
+    return clean.filter((l) => l.toLowerCase().includes(q));
+  }, [clean, filter]);
 
   useEffect(() => {
     if (follow && ref.current) {

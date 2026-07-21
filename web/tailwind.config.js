@@ -27,12 +27,12 @@ export default {
         '2xl': '14px',
       },
       fontFamily: {
-        sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
+        sans: ['Inter Variable', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
         mono: ['ui-monospace', 'SFMono-Regular', 'SF Mono', 'Menlo', 'Consolas', 'Liberation Mono', 'monospace'],
       },
       boxShadow: {
-        // Elevación de 3 niveles.
-        lvl1: '0 1px 2px rgba(0,0,0,.3)',
+        // Elevación de 3 niveles (nivel 1 con brillo interior superior: tacto de superficie).
+        lvl1: '0 1px 2px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.03)',
         lvl3: '0 24px 64px -16px rgba(0,0,0,.8)',
         toast: '0 16px 40px -12px rgba(0,0,0,.7)',
         'card-hover': '0 12px 32px -16px color-mix(in oklab, #6e56cf 35%, rgba(0,0,0,.7))',
