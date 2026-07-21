@@ -99,6 +99,7 @@ export const ALERT_TYPE_LABEL: Record<string, string> = {
   deploy_failed: 'Despliegue fallido',
   backup_failed: 'Backup fallido',
   disk_quota: 'Espacio asignado superado',
+  disk_quota_soon: 'Espacio asignado al 90%',
 };
 
 export const AUDIT_ACTION_LABEL: Record<string, string> = {

@@ -79,22 +79,28 @@ async function collect(): Promise<DiskSnapshot> {
 
       try {
         for (const c of await listServiceContainers(service.id)) {
-          const info: any = await docker.getContainer(c.id).inspect({ size: true } as any);
-          entry.containerBytes += info?.SizeRw ?? 0;
-          // El log json-file solo es medible si el path del host es accesible
-          // (Skyway corriendo en el host o con /var/lib/docker montado).
-          const logPath = info?.LogPath;
-          if (logPath) {
-            try {
-              const st = fs.statSync(logPath);
-              entry.logBytes = (entry.logBytes ?? 0) + st.size;
-            } catch {
-              /* inaccesible desde el contenedor de Skyway */
+          // try por contenedor: si uno desaparece a mitad (swap de deploy),
+          // las demás réplicas del servicio se siguen midiendo.
+          try {
+            const info: any = await docker.getContainer(c.id).inspect({ size: true } as any);
+            entry.containerBytes += info?.SizeRw ?? 0;
+            // El log json-file solo es medible si el path del host es accesible
+            // (Skyway corriendo en el host o con /var/lib/docker montado).
+            const logPath = info?.LogPath;
+            if (logPath) {
+              try {
+                const st = fs.statSync(logPath);
+                entry.logBytes = (entry.logBytes ?? 0) + st.size;
+              } catch {
+                /* inaccesible desde el contenedor de Skyway */
+              }
             }
+          } catch {
+            /* contenedor eliminado entre el listado y el inspect */
           }
         }
       } catch {
-        /* contenedor inexistente */
+        /* listado no disponible */
       }
 
       entry.totalBytes =

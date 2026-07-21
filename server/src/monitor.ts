@@ -199,6 +199,7 @@ async function checkDiskQuotas(): Promise<void> {
       const quotaBytes = du.quotaMb * 1024 * 1024;
       const pct = (du.totalBytes / quotaBytes) * 100;
       if (pct >= 100) {
+        resolveServiceAlerts(service.id, 'disk_quota_soon', false);
         fireAlert({
           severity: 'warning',
           type: 'disk_quota',
@@ -209,8 +210,21 @@ async function checkDiskQuotas(): Promise<void> {
             'La cuota es orientativa: el servicio sigue funcionando, pero está ocupando más disco del previsto. Revisa qué crece (datos de la base, uploads, logs) desde Monitor → Espacio, amplía la cuota en Ajustes del servicio o libera espacio.',
           dedupe: true,
         });
-      } else if (pct < 90) {
+      } else if (pct >= 90) {
+        // Aviso anticipado (solo campana): da margen antes de rebasar la cuota.
+        fireAlert({
+          severity: 'info',
+          type: 'disk_quota_soon',
+          serviceId: service.id,
+          title: `Espacio al ${Math.round(pct)}%: ${service.name}`,
+          message: `"${service.name}" (${project.name}) usa ${fmtBytesEs(du.totalBytes)} de los ${du.quotaMb} MB asignados. Al superar el 100% recibirás una alerta.`,
+          dedupe: true,
+          quiet: true,
+        });
         resolveServiceAlerts(service.id, 'disk_quota', false);
+      } else {
+        resolveServiceAlerts(service.id, 'disk_quota', false);
+        if (pct < 85) resolveServiceAlerts(service.id, 'disk_quota_soon', false);
       }
     }
   }
@@ -219,24 +233,42 @@ async function checkDiskQuotas(): Promise<void> {
 let interval: NodeJS.Timeout | null = null;
 let tickCount = 0;
 let lastPrune = 0;
+let tickRunning = false;
 
 export function startMonitor(log: { warn: (msg: string) => void }): void {
   if (interval) return;
   interval = setInterval(() => {
-    tick().catch((err) => log.warn(`monitor: ${err?.message || err}`));
-    tickCount += 1;
-    if (tickCount % DISK_CHECK_EVERY === 0) {
-      checkDiskQuotas().catch((err) => log.warn(`monitor disco: ${err?.message || err}`));
-    }
-    // Poda diaria del histórico de disponibilidad (se conservan ~92 días).
-    if (Date.now() - lastPrune > 24 * 3600_000) {
-      lastPrune = Date.now();
+    // Sin solape: con muchos contenedores un tick puede tardar más de 30 s
+    // (getStats ~1 s por contenedor) y los ticks apilados duplicarían las
+    // muestras de uptime y martillearían a Docker.
+    if (tickRunning) return;
+    tickRunning = true;
+    (async () => {
       try {
-        pruneUptime();
+        await tick();
       } catch (err: any) {
-        log.warn(`monitor prune: ${err?.message || err}`);
+        log.warn(`monitor: ${err?.message || err}`);
       }
-    }
+      tickCount += 1;
+      if (tickCount % DISK_CHECK_EVERY === 0) {
+        try {
+          await checkDiskQuotas();
+        } catch (err: any) {
+          log.warn(`monitor disco: ${err?.message || err}`);
+        }
+      }
+      // Poda diaria del histórico de disponibilidad (se conservan ~92 días).
+      if (Date.now() - lastPrune > 24 * 3600_000) {
+        lastPrune = Date.now();
+        try {
+          pruneUptime();
+        } catch (err: any) {
+          log.warn(`monitor prune: ${err?.message || err}`);
+        }
+      }
+    })().finally(() => {
+      tickRunning = false;
+    });
   }, TICK_MS);
   interval.unref();
 }

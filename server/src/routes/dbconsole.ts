@@ -31,7 +31,9 @@ export async function dbConsoleRoutes(app: FastifyInstance): Promise<void> {
       const overview = await getDbOverview(found.project, found.service);
       return { overview, snippets: dbSnippets(engine) };
     } catch (err: any) {
-      return reply.code(500).send({ error: err?.message || 'No se pudo leer el esquema' });
+      // 400 como el resto de la consola: son errores de estado (BD parada,
+      // versión sin cliente...), no fallos del servidor.
+      return reply.code(400).send({ error: err?.message || 'No se pudo leer el esquema' });
     }
   });
 

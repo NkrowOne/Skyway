@@ -3,7 +3,7 @@ import { PassThrough } from 'stream';
 import { docker } from './client';
 import { EDGE_NETWORK, projectNetworkName } from './networks';
 import { getSetting } from '../db';
-import { ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
+import { ContainerState, ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
 import { lineSplitter } from '../util';
 
 export function containerName(project: ProjectRow, service: ServiceRow): string {
@@ -20,6 +20,23 @@ export function configuredReplicas(service: ServiceRow): number {
   if (service.type === 'database') return 1;
   const n = (service.config as any).replicas;
   return Number.isInteger(n) && n > 1 ? Math.min(n, 10) : 1;
+}
+
+/**
+ * Estado agregado de un servicio a partir de los estados de sus réplicas,
+ * con una única semántica para todo el panel: si ALGUNA réplica corre, el
+ * servicio sirve tráfico ('running' — el badge de réplicas ya marca las
+ * caídas); si ninguna corre, gana el estado más informativo.
+ */
+export function aggregateReplicaState(states: ContainerState[]): ContainerState {
+  if (states.length === 0) return 'unknown';
+  const has = (s: ContainerState) => states.includes(s);
+  if (has('running')) return 'running';
+  for (const s of ['restarting', 'exited', 'dead', 'paused', 'removing', 'created'] as ContainerState[]) {
+    if (has(s)) return s;
+  }
+  if (states.every((s) => s === 'not_created')) return 'not_created';
+  return has('unknown') ? 'unknown' : states[0];
 }
 
 /** Todos los contenedores del servicio por label (incluye réplicas y restos de swaps). */
@@ -295,12 +312,20 @@ export async function execInContainer(
     });
   });
 
+  // El daemon puede tardar unos ms en registrar la salida del exec: si el
+  // código aún es null (y no hubo timeout), se reintenta brevemente para no
+  // confundir una carrera de timing con un fallo.
   let exitCode: number | null = null;
-  try {
-    const info = await exec.inspect();
-    exitCode = info.ExitCode ?? null;
-  } catch {
-    /* noop */
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const info = await exec.inspect();
+      exitCode = info.ExitCode ?? null;
+      if (exitCode !== null || info.Running === false) break;
+    } catch {
+      break;
+    }
+    if (timedOut) break;
+    await new Promise((r) => setTimeout(r, 60));
   }
   return { output, exitCode, truncated, timedOut, durationMs: Date.now() - started };
 }
@@ -357,15 +382,25 @@ export function demuxLogBuffer(buf: Buffer): string {
   while (offset + 8 <= buf.length) {
     const type = buf[offset];
     const zeros = buf[offset + 1] === 0 && buf[offset + 2] === 0 && buf[offset + 3] === 0;
+    if ((type !== 0 && type !== 1 && type !== 2) || !zeros) {
+      // Cabecera inválida: si es el primer frame, el contenedor corre con TTY
+      // (texto crudo). Si ya había frames válidos, es basura tras un corte:
+      // se conserva lo parseado y no se vuelca el buffer entero (duplicaría
+      // el contenido con las cabeceras binarias incrustadas).
+      return offset === 0 ? buf.toString('utf8') : out;
+    }
     const size = buf.readUInt32BE(offset + 4);
-    if ((type !== 0 && type !== 1 && type !== 2) || !zeros || offset + 8 + size > buf.length) {
-      // No parece multiplexado (contenedor con TTY): texto crudo.
-      return buf.toString('utf8');
+    if (offset + 8 + size > buf.length) {
+      // Frame truncado (conexión cortada a mitad): se añade el trozo legible.
+      out += buf.slice(offset + 8).toString('utf8');
+      return out;
     }
     out += buf.slice(offset + 8, offset + 8 + size).toString('utf8');
     offset += 8 + size;
   }
-  return out;
+  // Resto menor que una cabecera: con frames previos se descarta; sin ellos
+  // es un buffer TTY diminuto y se devuelve tal cual.
+  return offset === 0 && buf.length > 0 ? buf.toString('utf8') : out;
 }
 
 /** Devuelve las últimas líneas de log de un contenedor (sin seguir el stream). */

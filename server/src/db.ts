@@ -658,6 +658,23 @@ export function resolveAlertsByDedupe(dedupeKey: string): AlertRow[] {
   return open;
 }
 
+/**
+ * Incidencias para la página de estado: alertas de los tipos dados, abiertas
+ * o resueltas después de `resolvedSince`. Consulta dedicada — pasar por la
+ * ventana de listAlerts podía expulsar una incidencia abierta si había >100
+ * alertas más recientes de otros tipos.
+ */
+export function listProjectIncidents(projectId: string, types: string[], resolvedSince: number): AlertRow[] {
+  if (types.length === 0) return [];
+  const placeholders = types.map(() => '?').join(',');
+  return db
+    .prepare(
+      `SELECT * FROM alerts WHERE project_id = ? AND type IN (${placeholders})
+       AND (resolved_at IS NULL OR resolved_at > ?) ORDER BY ts DESC LIMIT 20`,
+    )
+    .all(projectId, ...types, resolvedSince) as AlertRow[];
+}
+
 export function openAlertCountsByService(projectId: string): Record<string, number> {
   const rows = db
     .prepare('SELECT service_id, COUNT(*) AS c FROM alerts WHERE project_id = ? AND resolved_at IS NULL AND service_id IS NOT NULL GROUP BY service_id')

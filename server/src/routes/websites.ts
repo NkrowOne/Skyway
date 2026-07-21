@@ -2,7 +2,8 @@ import { FastifyInstance } from 'fastify';
 import { canAccessProject, currentUser, requireAuth } from '../auth';
 import { getSetting, listDeployments, listProjects, listServices, openAlertCountsByService } from '../db';
 import { dockerAvailable } from '../docker/client';
-import { configuredReplicas, getRuntime, replicaName } from '../docker/containers';
+import { aggregateReplicaState, configuredReplicas, getRuntime, replicaName } from '../docker/containers';
+import { ContainerState } from '../types';
 
 /**
  * Vista global de sitios web: todos los servicios desplegables (repo/imagen)
@@ -25,18 +26,17 @@ export async function websiteRoutes(app: FastifyInstance): Promise<void> {
         const cfg = service.config as any;
         const total = configuredReplicas(service);
         let running = 0;
-        let firstState = 'unknown';
+        const states: ContainerState[] = [];
         let startedAt: string | null = null;
         if (dockerUp) {
-          firstState = 'not_created';
           for (let i = 1; i <= total; i++) {
             try {
               const runtime = await getRuntime(replicaName(project, service, i));
-              if (i === 1) {
-                firstState = runtime.state;
-                startedAt = runtime.startedAt;
+              states.push(runtime.state);
+              if (runtime.state === 'running') {
+                running += 1;
+                if (!startedAt) startedAt = runtime.startedAt;
               }
-              if (runtime.state === 'running') running += 1;
             } catch {
               /* réplica ilocalizable */
             }
@@ -54,7 +54,7 @@ export async function websiteRoutes(app: FastifyInstance): Promise<void> {
           client: project.client,
           domains: cfg.domains ?? [],
           hostPort: cfg.hostPort ?? null,
-          state: running > 0 && running === total ? 'running' : firstState,
+          state: aggregateReplicaState(states),
           startedAt,
           replicas: { running, total },
           alerts: alertCounts[service.id] ?? 0,

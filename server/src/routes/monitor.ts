@@ -13,13 +13,14 @@ import { explainExitCode } from '../deploy/diagnose';
 import { diskUsageByService, hostDisk } from '../disk';
 import { docker, dockerAvailable } from '../docker/client';
 import {
+  aggregateReplicaState,
   configuredReplicas,
   fetchLogsTail,
   getRuntime,
   getStats,
   replicaName,
 } from '../docker/containers';
-import { ProjectRow, ServiceRow } from '../types';
+import { ContainerState, ProjectRow, ServiceRow } from '../types';
 
 /** Proyectos visibles para el usuario de la petición (admin: todos). */
 function accessibleProjects(req: any): ProjectRow[] {
@@ -42,78 +43,85 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
     const services: any[] = [];
     for (const project of projects) {
       const alertCounts = openAlertCountsByService(project.id);
-      for (const service of listServices(project.id)) {
-        const cfg = service.config as any;
-        const total = configuredReplicas(service);
-        let running = 0;
-        let restartCount = 0;
-        let firstState = 'unknown';
-        let startedAt: string | null = null;
-        let exitCode: number | null = null;
-        let stats: { cpuPercent: number; memUsage: number; memLimit: number } | null = null;
+      // En paralelo por servicio: la latencia de la página es la del servicio
+      // más lento, no la suma de todos (getStats tarda ~1 s por contenedor).
+      const entries = await Promise.all(
+        listServices(project.id).map(async (service) => {
+          const cfg = service.config as any;
+          const total = configuredReplicas(service);
+          let running = 0;
+          let restartCount = 0;
+          const states: ContainerState[] = [];
+          let startedAt: string | null = null;
+          let exitCode: number | null = null;
+          let stats: { cpuPercent: number; memUsage: number; memLimit: number } | null = null;
 
-        if (dockerUp) {
-          firstState = 'not_created';
-          for (let i = 1; i <= total; i++) {
-            const name = replicaName(project, service, i);
-            let runtime;
-            try {
-              runtime = await getRuntime(name);
-            } catch {
-              continue;
-            }
-            if (i === 1) {
-              firstState = runtime.state;
-              startedAt = runtime.startedAt;
-              exitCode = runtime.exitCode;
-            }
-            restartCount += runtime.restartCount;
-            if (runtime.state !== 'running') continue;
-            running += 1;
-            const s = await getStats(name);
-            if (s) {
-              if (!stats) stats = { cpuPercent: 0, memUsage: 0, memLimit: s.memLimit };
-              stats.cpuPercent = Math.round((stats.cpuPercent + s.cpuPercent) * 10) / 10;
-              stats.memUsage += s.memUsage;
+          if (dockerUp) {
+            for (let i = 1; i <= total; i++) {
+              const name = replicaName(project, service, i);
+              let runtime;
+              try {
+                runtime = await getRuntime(name);
+              } catch {
+                continue;
+              }
+              states.push(runtime.state);
+              restartCount += runtime.restartCount;
+              if (runtime.state === 'running') {
+                running += 1;
+                if (!startedAt) startedAt = runtime.startedAt;
+                const s = await getStats(name);
+                if (s) {
+                  if (!stats) stats = { cpuPercent: 0, memUsage: 0, memLimit: 0 };
+                  stats.cpuPercent = Math.round((stats.cpuPercent + s.cpuPercent) * 10) / 10;
+                  stats.memUsage += s.memUsage;
+                  // El límite también se suma: usar solo el de la primera
+                  // réplica pintaba >100% de RAM en servicios sanos.
+                  stats.memLimit += s.memLimit;
+                }
+              } else if (exitCode === null && runtime.exitCode !== null) {
+                exitCode = runtime.exitCode;
+              }
             }
           }
-        }
 
-        const state = running > 0 ? (running === total ? 'running' : firstState === 'running' ? 'running' : firstState) : firstState;
-        const lastDeploy = listDeployments(service.id, 1)[0] ?? null;
-        const du = disk?.get(service.id);
-        const isDown = state === 'exited' || state === 'dead';
+          const state = aggregateReplicaState(states);
+          const lastDeploy = listDeployments(service.id, 1)[0] ?? null;
+          const du = disk?.get(service.id);
+          const isDown = state === 'exited' || state === 'dead';
 
-        services.push({
-          id: service.id,
-          projectId: project.id,
-          projectName: project.name,
-          client: project.client,
-          name: service.name,
-          slug: service.slug,
-          type: service.type,
-          template: service.type === 'database' ? cfg.template : undefined,
-          image: service.type === 'image' ? cfg.image : undefined,
-          domains: cfg.domains ?? [],
-          state,
-          startedAt,
-          exitCode: isDown ? exitCode : null,
-          exitExplanation: isDown && exitCode !== null ? explainExitCode(exitCode) : null,
-          restartCount,
-          replicas: { running, total },
-          stats,
-          memoryMb: cfg.memoryMb ?? null,
-          cpus: cfg.cpus ?? null,
-          alerts: alertCounts[service.id] ?? 0,
-          lastDeploy: lastDeploy
-            ? { id: lastDeploy.id, status: lastDeploy.status, created_at: lastDeploy.created_at }
-            : null,
-          disk: du
-            ? { totalBytes: du.totalBytes, quotaMb: du.quotaMb }
-            : { totalBytes: null, quotaMb: cfg.diskMb ?? null },
-          uptime24h: uptimePercent(service.id, 24),
-        });
-      }
+          return {
+            id: service.id,
+            projectId: project.id,
+            projectName: project.name,
+            client: project.client,
+            name: service.name,
+            slug: service.slug,
+            type: service.type,
+            template: service.type === 'database' ? cfg.template : undefined,
+            image: service.type === 'image' ? cfg.image : undefined,
+            domains: cfg.domains ?? [],
+            state,
+            startedAt,
+            exitCode: isDown ? exitCode : null,
+            exitExplanation: isDown && exitCode !== null ? explainExitCode(exitCode) : null,
+            restartCount,
+            replicas: { running, total },
+            stats,
+            memoryMb: cfg.memoryMb ?? null,
+            cpus: cfg.cpus ?? null,
+            alerts: alertCounts[service.id] ?? 0,
+            lastDeploy: lastDeploy
+              ? { id: lastDeploy.id, status: lastDeploy.status, created_at: lastDeploy.created_at }
+              : null,
+            disk: du
+              ? { totalBytes: du.totalBytes, quotaMb: du.quotaMb }
+              : { totalBytes: null, quotaMb: cfg.diskMb ?? null },
+            uptime24h: uptimePercent(service.id, 24),
+          };
+        }),
+      );
+      services.push(...entries);
     }
 
     return {

@@ -5,7 +5,7 @@ import { audit } from '../audit';
 import {
   getProject,
   getProjectByStatusToken,
-  listAlerts,
+  listProjectIncidents,
   listServices,
   setProjectStatusNotice,
   setProjectStatusPage,
@@ -13,17 +13,17 @@ import {
   uptimePercent,
 } from '../db';
 import { dockerAvailable } from '../docker/client';
-import { configuredReplicas, getRuntime, replicaName } from '../docker/containers';
-import { ProjectRow } from '../types';
+import { aggregateReplicaState, configuredReplicas, getRuntime, replicaName } from '../docker/containers';
+import { ContainerState, ProjectRow } from '../types';
 import { randomToken } from '../util';
 
 type PublicState = 'operational' | 'degraded' | 'down' | 'unknown';
 
-/** Estado presentable a un cliente a partir del estado del contenedor. */
-function publicState(state: string, running: number, total: number): PublicState {
+/** Estado presentable a un cliente a partir del estado agregado del servicio. */
+function publicState(state: ContainerState, running: number, total: number): PublicState {
   if (running > 0 && running < total) return 'degraded';
   if (state === 'running') return 'operational';
-  if (state === 'restarting' || state === 'paused') return 'degraded';
+  if (state === 'restarting' || state === 'paused' || state === 'removing') return 'degraded';
   if (state === 'exited' || state === 'dead') return 'down';
   return 'unknown';
 }
@@ -31,6 +31,7 @@ function publicState(state: string, running: number, total: number): PublicState
 /** La página es pública: se cachea unos segundos para no castigar a Docker. */
 const cache = new Map<string, { ts: number; payload: any }>();
 const CACHE_MS = 10_000;
+const CACHE_MAX = 500;
 
 async function buildStatusPayload(project: ProjectRow): Promise<any> {
   const dockerUp = await dockerAvailable();
@@ -39,21 +40,27 @@ async function buildStatusPayload(project: ProjectRow): Promise<any> {
   for (const service of listServices(project.id)) {
     const total = configuredReplicas(service);
     let running = 0;
-    let firstState = 'unknown';
+    const states: ContainerState[] = [];
     if (dockerUp) {
-      firstState = 'not_created';
       for (let i = 1; i <= total; i++) {
         try {
           const runtime = await getRuntime(replicaName(project, service, i));
-          if (i === 1) firstState = runtime.state;
+          states.push(runtime.state);
           if (runtime.state === 'running') running += 1;
         } catch {
           /* réplica ilocalizable */
         }
       }
     }
-    // Un servicio nunca desplegado no es un componente visible para el cliente.
-    if (firstState === 'not_created') continue;
+    const aggState = aggregateReplicaState(states);
+
+    const uptime24h = uptimePercent(service.id, 24);
+    const uptime90d = uptimePercent(service.id, 90 * 24);
+    // Un servicio nunca desplegado no es un componente visible para el
+    // cliente. Con Docker caído el estado es 'unknown': el histórico de
+    // uptime distingue lo nunca desplegado (sin muestras) de lo real.
+    if (aggState === 'not_created') continue;
+    if (aggState === 'unknown' && uptime24h === null && uptime90d === null) continue;
 
     const daily = uptimeDaily(service.id, 90);
     const byDay = new Map(daily.map((d) => [d.day, d]));
@@ -70,10 +77,10 @@ async function buildStatusPayload(project: ProjectRow): Promise<any> {
     services.push({
       name: service.name,
       type: service.type,
-      state: publicState(firstState, running, total),
-      uptime24h: uptimePercent(service.id, 24),
+      state: publicState(aggState, running, total),
+      uptime24h,
       uptime7d: uptimePercent(service.id, 7 * 24),
-      uptime90d: uptimePercent(service.id, 90 * 24),
+      uptime90d,
       days,
     });
   }
@@ -87,19 +94,18 @@ async function buildStatusPayload(project: ProjectRow): Promise<any> {
         : 'unknown';
 
   // Incidencias: alertas de caída/bucle del proyecto — abiertas y las resueltas
-  // de los últimos 7 días. Solo título, mensaje y fechas (sin detalles internos).
-  const incidentTypes = new Set(['service_down', 'crash_loop']);
-  const incidents = listAlerts({ limit: 100, projectIds: [project.id] })
-    .filter((a) => incidentTypes.has(a.type))
-    .filter((a) => !a.resolved_at || Date.now() - a.resolved_at < 7 * 86_400_000)
-    .slice(0, 20)
-    .map((a) => ({
-      id: a.id,
-      title: a.title,
-      startedAt: a.ts,
-      resolvedAt: a.resolved_at,
-      severity: a.severity,
-    }));
+  // de los últimos 7 días. Solo título y fechas (sin detalles internos).
+  const incidents = listProjectIncidents(
+    project.id,
+    ['service_down', 'crash_loop'],
+    Date.now() - 7 * 86_400_000,
+  ).map((a) => ({
+    id: a.id,
+    title: a.title,
+    startedAt: a.ts,
+    resolvedAt: a.resolved_at,
+    severity: a.severity,
+  }));
 
   return {
     project: { name: project.name, client: project.client },
@@ -111,6 +117,9 @@ async function buildStatusPayload(project: ProjectRow): Promise<any> {
   };
 }
 
+/** Peticiones concurrentes del mismo token comparten una única construcción. */
+const inFlight = new Map<string, Promise<any>>();
+
 export async function statusRoutes(app: FastifyInstance): Promise<void> {
   /** Página de estado pública (sin autenticación): datos mínimos y cacheados. */
   app.get('/api/public/status/:token', async (req, reply) => {
@@ -121,10 +130,27 @@ export async function statusRoutes(app: FastifyInstance): Promise<void> {
 
     const hit = cache.get(token);
     if (hit && Date.now() - hit.ts < CACHE_MS) return hit.payload;
-    const payload = await buildStatusPayload(project);
-    cache.set(token, { ts: Date.now(), payload });
-    if (cache.size > 500) cache.clear();
-    return payload;
+
+    // Single-flight: el endpoint es público, y sin esto una ráfaga de
+    // pestañas tras expirar la caché recorrería Docker una vez por petición.
+    let pending = inFlight.get(token);
+    if (!pending) {
+      pending = buildStatusPayload(project)
+        .then((payload) => {
+          cache.set(token, { ts: Date.now(), payload });
+          // Eviction acotada: se retiran las entradas más antiguas, nunca
+          // un clear() que tire también las frescas.
+          while (cache.size > CACHE_MAX) {
+            const oldest = cache.keys().next().value;
+            if (oldest === undefined) break;
+            cache.delete(oldest);
+          }
+          return payload;
+        })
+        .finally(() => inFlight.delete(token));
+      inFlight.set(token, pending);
+    }
+    return pending;
   });
 
   app.register(async (secured) => {

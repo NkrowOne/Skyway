@@ -71,8 +71,16 @@ async function requireRunning(project: ProjectRow, service: ServiceRow): Promise
 
 // ---------- parsers ----------
 
-/** Parser CSV mínimo (salida de `psql --csv`): comillas dobles y saltos dentro de campos. */
+/**
+ * Parser CSV mínimo (salida de `psql --csv`): comillas dobles y saltos dentro
+ * de campos. Solo se descarta el salto de línea FINAL de la salida: una línea
+ * vacía intermedia es una fila real (un NULL en una consulta de una columna)
+ * y filtrarla perdería datos en silencio.
+ */
 export function parseCsv(text: string): string[][] {
+  if (text.endsWith('\r\n')) text = text.slice(0, -2);
+  else if (text.endsWith('\n')) text = text.slice(0, -1);
+  if (text.length === 0) return [];
   const rows: string[][] = [];
   let row: string[] = [];
   let field = '';
@@ -105,23 +113,24 @@ export function parseCsv(text: string): string[][] {
       field += ch;
     }
   }
-  if (field.length > 0 || row.length > 0) {
-    row.push(field);
-    rows.push(row);
-  }
-  return rows.filter((r) => !(r.length === 1 && r[0] === ''));
+  row.push(field);
+  rows.push(row);
+  return rows;
 }
 
-/** Salida `mysql --batch`: TSV con \t, \n y \\ escapados dentro de los campos. */
+/**
+ * Salida `mysql --batch`: TSV con \t, \n y \\ escapados dentro de los campos.
+ * Igual que en CSV, solo se recorta el salto final: una línea vacía es una
+ * fila con valor '' en una consulta de una columna.
+ */
 export function parseMysqlBatch(text: string): string[][] {
+  if (text.endsWith('\n')) text = text.slice(0, -1);
+  if (text.length === 0) return [];
   const unescape = (s: string) =>
     s === 'NULL'
       ? ''
       : s.replace(/\\([\\nt0])/g, (_, c: string) => (c === 'n' ? '\n' : c === 't' ? '\t' : c === '0' ? '\0' : '\\'));
-  return text
-    .split('\n')
-    .filter((l) => l.length > 0)
-    .map((l) => l.split('\t').map(unescape));
+  return text.split('\n').map((l) => l.split('\t').map(unescape));
 }
 
 function tableResult(rows: string[][], durationMs: number, outputTruncated: boolean): QueryResult {
@@ -150,6 +159,12 @@ function execError(output: string, fallback: string): Error {
 
 const SQL_READ_START = /^\s*(select|with|show|explain|describe|desc|table|values|analyze)\b/i;
 const MONGO_WRITE = /\.\s*(insert\w*|update\w*|delete\w*|remove|replaceOne|drop\w*|create\w*|rename\w*|bulkWrite|findOneAndUpdate|findOneAndReplace|findOneAndDelete|findAndModify)\s*\(|dropDatabase|adminCommand|runCommand|fsync|shutdownServer/i;
+/**
+ * Formas de adminCommand/runCommand que son pura lectura: se neutralizan
+ * antes de aplicar MONGO_WRITE para que los propios snippets de la consola
+ * (listDatabases, currentOp...) no exijan el modo escritura.
+ */
+const MONGO_ADMIN_READ = /\b(?:adminCommand|runCommand)\s*\(\s*\{\s*['"]?(listDatabases|currentOp|serverStatus|ping|hello|buildInfo|hostInfo|top|connPoolStats|listCollections|collStats|dbStats|getParameter|getLog|whatsmyuri)\b/gi;
 const REDIS_READ = new Set([
   'get', 'mget', 'getrange', 'strlen', 'exists', 'type', 'ttl', 'pttl', 'keys', 'scan', 'randomkey',
   'llen', 'lrange', 'lindex', 'lpos', 'scard', 'smembers', 'sismember', 'srandmember', 'sscan',
@@ -160,7 +175,7 @@ const REDIS_READ = new Set([
 ]);
 
 /** Lanza si la consulta parece de escritura y el modo escritura no está activo. */
-function assertReadOnly(engine: DbEngine, query: string): void {
+export function assertReadOnly(engine: DbEngine, query: string): void {
   if (engine === 'postgres' || engine === 'mysql') {
     if (!SQL_READ_START.test(query)) {
       throw new Error(
@@ -170,14 +185,26 @@ function assertReadOnly(engine: DbEngine, query: string): void {
     return;
   }
   if (engine === 'mongo') {
-    if (MONGO_WRITE.test(query)) {
+    if (MONGO_WRITE.test(query.replace(MONGO_ADMIN_READ, '__admin_lectura('))) {
       throw new Error('Esa operación modifica datos. Activa "Permitir escritura" para ejecutarla.');
     }
     return;
   }
-  const first = query.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
-  if (!REDIS_READ.has(first)) {
-    throw new Error(`El comando "${first.toUpperCase()}" no es de lectura. Activa "Permitir escritura" para ejecutarlo.`);
+  // redis-cli ejecuta CADA línea como un comando: hay que validarlas todas,
+  // no solo la primera (pegar "GET x\nDEL x" colaría el DEL).
+  for (const line of query.split('\n')) {
+    const words = line.trim().split(/\s+/);
+    const first = words[0]?.toLowerCase() ?? '';
+    if (!first) continue;
+    // CLIENT mezcla lectura y escritura: solo pasan sus subcomandos de lectura.
+    if (first === 'client') {
+      const sub = words[1]?.toLowerCase() ?? '';
+      if (['list', 'info', 'getname', 'id'].includes(sub)) continue;
+      throw new Error(`"CLIENT ${sub.toUpperCase()}" no es de lectura. Activa "Permitir escritura" para ejecutarlo.`);
+    }
+    if (!REDIS_READ.has(first)) {
+      throw new Error(`El comando "${first.toUpperCase()}" no es de lectura. Activa "Permitir escritura" para ejecutarlo.`);
+    }
   }
 }
 
@@ -199,17 +226,25 @@ interface EngineRunner {
 
 const PSQL = 'psql -X -U "${POSTGRES_USER:-skyway}" -d "${POSTGRES_DB:-skyway}" -v ON_ERROR_STOP=1 -q';
 
+/**
+ * PGOPTIONS: statement_timeout hace que Postgres MATE la consulta al vencer
+ * (cortar solo el stream del exec la dejaría corriendo dentro de la base), y
+ * default_transaction_read_only impone el solo-lectura en el propio motor.
+ */
+function pgOptions(allowWrite: boolean): string {
+  const opts = [`-c statement_timeout=${QUERY_TIMEOUT_MS}`];
+  if (!allowWrite) opts.push('-c default_transaction_read_only=on');
+  return `PGOPTIONS=${opts.join(' ')}`;
+}
+
 async function pgRun(name: string, query: string, allowWrite: boolean): Promise<QueryResult> {
-  const env = [`SKYWAY_QUERY=${query}`];
-  // default_transaction_read_only: el propio Postgres rechaza cualquier escritura.
-  if (!allowWrite) env.push('PGOPTIONS=-c default_transaction_read_only=on');
   const res = await execInContainer(name, `${PSQL} --csv -c "$SKYWAY_QUERY"`, {
-    timeoutMs: QUERY_TIMEOUT_MS,
+    timeoutMs: QUERY_TIMEOUT_MS + 5000,
     maxOutput: MAX_OUTPUT,
-    env,
+    env: [`SKYWAY_QUERY=${query}`, pgOptions(allowWrite)],
   });
   if (res.timedOut) throw new Error('La consulta superó el tiempo máximo (30 s).');
-  if (res.exitCode !== 0) throw execError(res.output, 'La consulta falló.');
+  if (res.exitCode !== null && res.exitCode !== 0) throw execError(res.output, 'La consulta falló.');
   return tableResult(parseCsv(res.output), res.durationMs, res.truncated);
 }
 
@@ -224,14 +259,14 @@ async function pgOverview(name: string): Promise<DbOverview> {
   const meta = await execInContainer(
     name,
     `${PSQL} --csv -t -c "SELECT current_setting('server_version'), pg_database_size(current_database())"`,
-    { timeoutMs: QUERY_TIMEOUT_MS, env: [] },
+    { timeoutMs: QUERY_TIMEOUT_MS, env: [pgOptions(true)] },
   );
   const tables = await execInContainer(name, `${PSQL} --csv -t -c "$SKYWAY_QUERY"`, {
     timeoutMs: QUERY_TIMEOUT_MS,
     maxOutput: MAX_OUTPUT,
-    env: [`SKYWAY_QUERY=${sql}`],
+    env: [`SKYWAY_QUERY=${sql}`, pgOptions(true)],
   });
-  if (tables.exitCode !== 0) throw execError(tables.output, 'No se pudo leer el esquema.');
+  if (tables.exitCode !== null && tables.exitCode !== 0) throw execError(tables.output, 'No se pudo leer el esquema.');
   const metaRow = meta.exitCode === 0 ? parseCsv(meta.output)[0] : undefined;
   return {
     engine: 'postgres',
@@ -249,16 +284,20 @@ async function pgOverview(name: string): Promise<DbOverview> {
 const MYSQL = 'mysql --batch -u "${MYSQL_USER:-skyway}" -p"$MYSQL_PASSWORD" "${MYSQL_DATABASE:-skyway}"';
 
 async function mysqlRun(name: string, query: string, allowWrite: boolean): Promise<QueryResult> {
-  // La sesión entera se pone en solo lectura antes de la consulta del usuario.
-  const guarded = allowWrite ? query : `SET SESSION transaction_read_only = 1;\n${query}`;
+  // max_execution_time corta los SELECT largos en el propio motor y la sesión
+  // se pone en solo lectura. Los comentarios condicionales /*!NNNNN */ hacen
+  // que versiones antiguas sin esas variables ignoren la asignación en vez de
+  // romper toda la consola (el guard por palabra clave sigue aplicando).
+  const prelude = [`SET @skyway_t = 0/*!50708 , SESSION max_execution_time = ${QUERY_TIMEOUT_MS} */;`];
+  if (!allowWrite) prelude.push('SET @skyway_ro = 0/*!50700 , SESSION transaction_read_only = 1 */;');
   const res = await execInContainer(name, `${MYSQL} -e "$SKYWAY_QUERY" 2>&1`, {
-    timeoutMs: QUERY_TIMEOUT_MS,
+    timeoutMs: QUERY_TIMEOUT_MS + 5000,
     maxOutput: MAX_OUTPUT,
-    env: [`SKYWAY_QUERY=${guarded}`],
+    env: [`SKYWAY_QUERY=${prelude.join('\n')}\n${query}`],
   });
   if (res.timedOut) throw new Error('La consulta superó el tiempo máximo (30 s).');
   const output = res.output.replace(/^mysql: \[Warning\].*\n?/gm, '');
-  if (res.exitCode !== 0) throw execError(output, 'La consulta falló.');
+  if (res.exitCode !== null && res.exitCode !== 0) throw execError(output, 'La consulta falló.');
   return tableResult(parseMysqlBatch(output), res.durationMs, res.truncated);
 }
 
@@ -307,13 +346,17 @@ async function mongoRun(name: string, query: string): Promise<QueryResult> {
     maxOutput: MAX_OUTPUT,
     env: [`SKYWAY_QUERY=${query}`, `SKYWAY_WRAPPER=${MONGO_WRAPPER}`],
   });
-  if (res.timedOut) throw new Error('La consulta superó el tiempo máximo (30 s).');
+  if (res.timedOut) {
+    throw new Error(
+      'Se agotó la espera (30 s). Ojo: la operación puede seguir ejecutándose dentro de MongoDB; revisa db.currentOp() si era pesada.',
+    );
+  }
   if (res.exitCode === 126 || res.exitCode === 127) {
     throw new Error(
       'Esta imagen de MongoDB no incluye mongosh (las 4.x y anteriores no lo traen). Sube la versión de la imagen en Ajustes del servicio para usar la consola.',
     );
   }
-  if (res.exitCode !== 0) throw execError(res.output, 'La consulta falló.');
+  if (res.exitCode !== null && res.exitCode !== 0) throw execError(res.output, 'La consulta falló.');
   const raw = res.output.trim();
   if (raw === '__SKYWAY_OK__') {
     return { kind: 'text', raw: '', rowCount: 0, truncated: false, durationMs: res.durationMs, notice: 'Operación ejecutada.' };
@@ -362,7 +405,7 @@ for (const d of dbs) {
     try { count = sib.getCollection(c).estimatedDocumentCount(); } catch (e) {}
     out.push({ name: d.name + '.' + c, rows: count, sizeBytes: null });
   }
-  if (sib.getCollectionNames().length === 0) out.push({ name: d.name + ' (vacía)', rows: 0, sizeBytes: d.sizeOnDisk ?? null });
+  if (sib.getCollectionNames().length === 0) out.push({ name: d.name, rows: 0, sizeBytes: d.sizeOnDisk ?? null });
 }
 ({ version: db.version(), sizeBytes: dbs.reduce((a, d) => a + (d.sizeOnDisk || 0), 0), objects: out });
 `.trim();
@@ -394,15 +437,18 @@ async function redisRun(name: string, query: string): Promise<QueryResult> {
   });
   if (res.timedOut) throw new Error('El comando superó el tiempo máximo (30 s).');
   const raw = res.output.trim();
-  if (res.exitCode !== 0) throw execError(raw, 'El comando falló.');
-  if (/^(ERR|WRONGTYPE|NOAUTH|NOPERM)\b/m.test(raw)) throw execError(raw, 'El comando falló.');
+  if (res.exitCode !== null && res.exitCode !== 0) throw execError(raw, 'El comando falló.');
   const lines = raw ? raw.split('\n') : [];
+  // Un VALOR almacenado puede empezar por "ERR ...": no se puede distinguir
+  // con certeza de un error real, así que se muestra la salida y se avisa.
+  const looksLikeError = /^(ERR|WRONGTYPE|NOAUTH|NOPERM)\b/m.test(raw);
   return {
     kind: 'text',
     raw,
     rowCount: lines.length,
     truncated: res.truncated,
     durationMs: res.durationMs,
+    notice: looksLikeError ? 'La respuesta contiene un error de Redis (o un valor que empieza igual).' : undefined,
   };
 }
 
