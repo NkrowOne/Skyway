@@ -116,6 +116,9 @@ export default function LogViewer({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  // Última posición de scroll: al maximizar/restaurar el cuerpo se reubica, así
+  // que se restaura aquí para no perder el sitio de lectura (si no vamos al final).
+  const lastTopRef = useRef(0);
   const [follow, setFollow] = useState(true);
   const [filter, setFilter] = useState('');
   const [level, setLevel] = useState<LevelFilter>('all');
@@ -169,9 +172,12 @@ export default function LogViewer({
     return () => cancelAnimationFrame(raf);
   }, [visible, follow]);
 
-  // Al maximizar/restaurar el nodo se reubica; si veníamos siguiendo, al final.
+  // Al maximizar/restaurar el nodo se reubica: si veníamos siguiendo, al final;
+  // si el usuario había subido a leer, se recupera su posición (no se salta arriba).
   useEffect(() => {
-    if (follow && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+    const el = ref.current;
+    if (!el) return;
+    el.scrollTop = follow ? el.scrollHeight : lastTopRef.current;
   }, [maximized]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A pantalla completa: bloquea el scroll del fondo, marca el resto de la app
@@ -208,6 +214,7 @@ export default function LogViewer({
   const onScroll = () => {
     const el = ref.current;
     if (!el) return;
+    lastTopRef.current = el.scrollTop;
     setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
   };
 
