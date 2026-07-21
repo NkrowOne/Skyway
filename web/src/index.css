@@ -473,6 +473,23 @@ details > summary::-webkit-details-marker {
   animation: halo-breathe 9s ease-in-out infinite;
 }
 
+/*
+ * Página de estado: las barras de disponibilidad se levantan en onda al
+ * cargar (delay por índice), contando 90 días de historia en medio segundo.
+ */
+@keyframes bar-rise {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+.bar-rise {
+  transform-origin: bottom;
+  animation: bar-rise 0.5s var(--ease-out) both;
+}
+
 /* Gráficas: el trazo se dibuja una vez al abrir la pestaña (pathLength=1). */
 @keyframes chart-draw {
   from {
