@@ -33,7 +33,7 @@ export const config = {
   jwtSecretEnv: process.env.JWT_SECRET || null,
   buildConcurrency: Number(process.env.BUILD_CONCURRENCY || 2),
   trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
-  version: '0.12.0',
+  version: '0.13.0',
 };
 
 export function ensureDataDirs(): void {

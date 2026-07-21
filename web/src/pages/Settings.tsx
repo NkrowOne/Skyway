@@ -3,9 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BellRing, CheckCircle2, Cpu, DatabaseBackup, Download, Globe, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { ModuleLogo } from '../components/ModuleIcon';
-import { Button, Field, useFlash, useToast } from '../components/ui';
-import { DockerUsage, SystemInfo } from '../types';
-import { cx, fmtBytes, fmtDateTime } from '../utils';
+import { Button, ConfirmModal, Field, useFlash, useToast } from '../components/ui';
+import { DockerUsage, GithubConnector, SystemInfo } from '../types';
+import { cx, fmtBytes, fmtDateTime, timeAgo } from '../utils';
 
 interface SystemBackup {
   file: string;
@@ -220,6 +220,22 @@ export default function SettingsPage() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Control central de los conectores por proyecto (los tokens de los clientes).
+  const connectors = useQuery({
+    queryKey: ['connectors', 'all'],
+    queryFn: () => api.get<{ connectors: GithubConnector[] }>('/connectors'),
+  });
+  const [connectorToRevoke, setConnectorToRevoke] = useState<GithubConnector | null>(null);
+  const revokeConnector = useMutation({
+    mutationFn: (id: string) => api.del(`/connectors/${id}`),
+    onSuccess: () => {
+      setConnectorToRevoke(null);
+      toast('Conector revocado', 'ok');
+      queryClient.invalidateQueries({ queryKey: ['connectors'] });
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
   const testGithub = async () => {
     setGithubTesting(true);
     setGithubTest(null);
@@ -310,7 +326,8 @@ export default function SettingsPage() {
         title="GitHub"
         description={
           <>
-            Token de acceso personal (permiso <span className="font-mono">repo</span>) para clonar repos privados
+            Token de acceso personal (permiso <span className="font-mono">repo</span>) para clonar repos privados. Es el
+            token por defecto: los proyectos pueden añadir conectores propios que lo sustituyen servicio a servicio.
           </>
         }
         aside={settings.data?.settings.hasGithubToken ? <OkPill label="Conectado" /> : undefined}
@@ -373,7 +390,56 @@ export default function SettingsPage() {
             «Probar» valida el token escrito, o el guardado si el campo está vacío.
           </span>
         </div>
+
+        <div className="mt-5 border-t border-line pt-4">
+          <h3 className="text-xs font-semibold">Conectores por proyecto</h3>
+          <p className="mt-1 text-[11px] text-subtle">
+            Cuentas de GitHub que tus clientes han conectado a sus proyectos (desde el botón «Conectores» del proyecto).
+            Sus servicios clonan con ese token en lugar del global. Aquí puedes revocarlos todos.
+          </p>
+          {(connectors.data?.connectors.length ?? 0) === 0 ? (
+            <p className="mt-3 rounded-lg border border-dashed border-line px-3.5 py-3.5 text-center text-xs text-subtle">
+              Ningún proyecto tiene conectores todavía.
+            </p>
+          ) : (
+            <div className="mt-3 overflow-hidden rounded-lg border border-line">
+              {connectors.data!.connectors.map((c) => (
+                <div key={c.id} className="flex items-center gap-3 border-b border-line/60 bg-bg px-3.5 py-2 text-xs last:border-b-0">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate">
+                      <span className="font-medium">{c.project_name}</span>
+                      {c.project_client ? <span className="text-subtle"> · {c.project_client}</span> : ''}
+                      <span className="text-sub"> — {c.name} </span>
+                      <span className="font-mono text-[11px] text-sub">@{c.gh_login}</span>
+                    </p>
+                    <p className="mt-px truncate text-[11px] text-subtle">
+                      conectado por {c.created_by} · {timeAgo(c.created_at)}
+                      {c.last_used_at ? ` · último despliegue ${timeAgo(c.last_used_at)}` : ' · sin usar'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setConnectorToRevoke(c)}
+                    className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err"
+                    title="Revocar conector"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </SettingsSection>
+
+      <ConfirmModal
+        open={!!connectorToRevoke}
+        onClose={() => setConnectorToRevoke(null)}
+        onConfirm={() => connectorToRevoke && revokeConnector.mutate(connectorToRevoke.id)}
+        title="Revocar conector"
+        message={`«${connectorToRevoke?.name}» (@${connectorToRevoke?.gh_login}) de «${connectorToRevoke?.project_name}» dejará de usarse: sus servicios pasarán al token global en el próximo despliegue.`}
+        confirmLabel="Revocar"
+        loading={revokeConnector.isPending}
+      />
 
       <SettingsSection
         icon={<BellRing size={15} />}

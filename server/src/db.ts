@@ -8,6 +8,7 @@ import {
   AuditRow,
   DeploymentRow,
   DeploymentStatus,
+  GithubConnectorRow,
   PasskeyRow,
   ProjectRow,
   ServiceConfig,
@@ -156,6 +157,23 @@ export function initDb(): void {
       total INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (service_id, hour)
     );
+  `);
+
+  // Conectores de GitHub por proyecto: tokens de los clientes para clonar sus
+  // repos. Caen en cascada con el proyecto.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS github_connectors (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      token TEXT NOT NULL,
+      gh_login TEXT NOT NULL,
+      token_type TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_github_connectors_project ON github_connectors(project_id);
   `);
 }
 
@@ -565,6 +583,51 @@ export function setProjectVars(projectId: string, vars: Record<string, string>):
     for (const [k, v] of Object.entries(vars)) ins.run(projectId, k, v);
   });
   tx();
+}
+
+// ---------- conectores de GitHub por proyecto ----------
+export function insertGithubConnector(
+  row: Omit<GithubConnectorRow, 'id' | 'created_at' | 'last_used_at'>,
+): GithubConnectorRow {
+  const full: GithubConnectorRow = { ...row, id: id('ghc'), created_at: now(), last_used_at: null };
+  db.prepare(
+    `INSERT INTO github_connectors (id, project_id, name, token, gh_login, token_type, created_by, created_at, last_used_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(full.id, full.project_id, full.name, full.token, full.gh_login, full.token_type, full.created_by, full.created_at, full.last_used_at);
+  return full;
+}
+
+export function listGithubConnectors(projectId: string): GithubConnectorRow[] {
+  return db
+    .prepare('SELECT * FROM github_connectors WHERE project_id = ? ORDER BY created_at ASC')
+    .all(projectId) as GithubConnectorRow[];
+}
+
+/** Todos los conectores con su proyecto, para el panel de control del admin. */
+export function listAllGithubConnectors(): (GithubConnectorRow & { project_name: string; project_client: string | null })[] {
+  return db
+    .prepare(
+      `SELECT c.*, p.name AS project_name, p.client AS project_client
+       FROM github_connectors c JOIN projects p ON p.id = c.project_id
+       ORDER BY p.name ASC, c.created_at ASC`,
+    )
+    .all() as (GithubConnectorRow & { project_name: string; project_client: string | null })[];
+}
+
+export function getGithubConnector(connectorId: string): GithubConnectorRow | undefined {
+  return db.prepare('SELECT * FROM github_connectors WHERE id = ?').get(connectorId) as GithubConnectorRow | undefined;
+}
+
+export function countGithubConnectors(projectId: string): number {
+  return (db.prepare('SELECT COUNT(*) AS c FROM github_connectors WHERE project_id = ?').get(projectId) as any).c;
+}
+
+export function touchGithubConnector(connectorId: string): void {
+  db.prepare('UPDATE github_connectors SET last_used_at = ? WHERE id = ?').run(now(), connectorId);
+}
+
+export function deleteGithubConnector(connectorId: string): boolean {
+  return db.prepare('DELETE FROM github_connectors WHERE id = ?').run(connectorId).changes > 0;
 }
 
 // ---------- auditoría ----------

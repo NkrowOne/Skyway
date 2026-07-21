@@ -157,6 +157,11 @@ export function Modal({
   const { mounted, closing } = usePresence(open, 220);
   const panelRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
+  // onClose suele ser una arrow recreada en cada render del padre: si el efecto
+  // dependiera de ella, cada tecla en un input controlado lo re-ejecutaría y su
+  // cleanup devolvería el foco al elemento previo (te "sacaba" del campo).
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
@@ -164,7 +169,7 @@ export function Modal({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        onCloseRef.current();
       } else if (e.key === 'Tab' && panelRef.current) {
         // Focus trap sencillo dentro del panel.
         const focusables = panelRef.current.querySelectorAll<HTMLElement>(
@@ -187,7 +192,7 @@ export function Modal({
       window.removeEventListener('keydown', onKey);
       previousFocus.current?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!mounted) return null;
   return createPortal(

@@ -8,6 +8,8 @@ export interface VolumeMount {
 export interface GitConfig {
   repoUrl: string;
   branch: string;
+  /** Conector de GitHub del proyecto con cuyo token se clona (null/ausente = token global). */
+  connectorId?: string | null;
   rootDir?: string;
   dockerfilePath?: string;
   startCmd?: string;
@@ -208,4 +210,21 @@ export interface ApiTokenRow {
   created_at: number;
   last_used_at: number | null;
   expires_at: number | null;
+}
+
+/**
+ * Conector de GitHub ligado a un proyecto: un cliente conecta su propio token
+ * para desplegar sus repos privados sin depender del token global del admin.
+ * El token se necesita en claro para clonar; jamás se devuelve por la API.
+ */
+export interface GithubConnectorRow {
+  id: string;
+  project_id: string;
+  name: string;
+  token: string;
+  gh_login: string;
+  token_type: string;
+  created_by: string; // email de quien lo conectó (auditoría y control del admin)
+  created_at: number;
+  last_used_at: number | null;
 }

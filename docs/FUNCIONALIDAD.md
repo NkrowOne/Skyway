@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.12.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.13.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -49,7 +49,7 @@ server/src/
     deployer.ts         orquestador: build → swap sin corte → validación → rollback
     queue.ts            cola serializada por servicio + semáforo de builds
     diagnose.ts         diagnóstico de fallos y explicación de códigos de salida
-  github/client.ts      validación del token de GitHub (GET /user)
+  github/client.ts      API de GitHub: validar tokens, listar repos y ramas (solo lectura)
   railway/client.ts     cliente GraphQL de Railway (solo en memoria)
   railway/importer.ts   análisis y ejecución de la importación desde Railway
   routes/               una ruta por área (ver §7 API)
@@ -96,8 +96,11 @@ web/src/
    - `database` → `docker pull` de la imagen de la plantilla.
    - `image` → `docker pull` de la imagen indicada.
    - `git` → clone superficial (`--depth 1 --branch`) + build con **Dockerfile**
-     si existe, o **Nixpacks** si no. El token de GitHub se inyecta en la URL y
-     se **enmascara** en los logs.
+     si existe, o **Nixpacks** si no. El token para clonar se resuelve así: el
+     **conector de GitHub** del servicio (`connectorId`, token del cliente) o, en
+     su defecto, el token global (`settings.githubToken`); se inyecta en la URL y
+     se **enmascara** en los logs. Si el conector referenciado ya no existe, se
+     avisa en el log y se usa el global.
    - rollback → reutiliza una imagen ya construida (`image_tag`), si sigue viva.
 3. **Despliegue del contenedor** (swap con validación):
    - **Corte cero** (servicios sin volúmenes ni puerto de host): se arranca la
@@ -130,12 +133,13 @@ web/src/
 | `audit_log` | `ts`, `actor`, `action`, `target_*`, `detail`, `ip` |
 | `alerts` | `severity`, `type`, `title`, `message`, `explanation`, `dedupe_key`, `resolved_at`, `read_at` |
 | `uptime_hourly` | `(service_id, hour)` → `up`, `total` — histórico de disponibilidad |
+| `github_connectors` | `id`, `project_id`, `name`, `token` (en claro: se necesita para clonar; jamás sale por la API), `gh_login`, `token_type`, `created_by`, `last_used_at` — cae en cascada con el proyecto |
 
 `config` de servicio (ver `types.ts`): `GitConfig`, `DatabaseConfig`, `ImageConfig`
 comparten `domains`, `hostPort`, `cpus`, `memoryMb`, `diskMb`, `healthcheckPath`,
-`volumes`, `replicas`; git añade `repoUrl`, `branch`, `rootDir`, `dockerfilePath`,
-`startCmd`, `port`, `buildArgs`, `webhookSecret`; database añade `template`,
-`version`, `backupSchedule`, `backupRetention`.
+`volumes`, `replicas`; git añade `repoUrl`, `connectorId`, `branch`, `rootDir`,
+`dockerfilePath`, `startCmd`, `port`, `buildArgs`, `webhookSecret`; database añade
+`template`, `version`, `backupSchedule`, `backupRetention`.
 
 ---
 
@@ -189,6 +193,7 @@ aplican **en caliente**.
 | Opción | git | image | database | Notas |
 | --- | --- | --- | --- | --- |
 | `repoUrl`, `branch`, `rootDir`, `dockerfilePath`, `startCmd` | ✓ | — | — | build del repo |
+| `connectorId` | ✓ | — | — | conector de GitHub del proyecto para clonar (null = token global) |
 | `buildArgs` | ✓ | — | — | `--build-arg` |
 | `image` | — | ✓ | — | imagen pública |
 | `template`, `version` | — | — | ✓ | postgres/redis/mysql/mongo/minio |
@@ -240,6 +245,9 @@ Esto reproduce el comportamiento de un *worker* de Railway.
   servicios, variables (con referencias), dominios y volúmenes; genera los
   comandos de copia de datos. El token viaja solo en memoria.
 - **Multi-empresa y usuarios/roles**: proyectos por cliente; admins y miembros.
+- **Conectores de GitHub por proyecto**: cada cliente conecta su cuenta (token)
+  y asigna sus repos a los servicios con selector de repo y rama; el admin ve y
+  revoca todos los conectores desde Ajustes. Sin conector se usa el token global.
 - **Passkeys (WebAuthn)** y **tokens de API** para automatización/agentes.
 
 ---
@@ -277,7 +285,7 @@ Los cuerpos son JSON salvo indicación; la subida de archivos es binaria.
 | PATCH | `/users/:id` | admin | cambia rol / workspaces / contraseña |
 | DELETE | `/users/:id` | admin | elimina usuario (deja ≥1 admin) |
 
-### 7.3 Proyectos y variables compartidas
+### 7.3 Proyectos, variables compartidas y conectores de GitHub
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/projects` | auth | proyectos accesibles (con meta) |
@@ -288,6 +296,19 @@ Los cuerpos son JSON salvo indicación; la subida de archivos es binaria.
 | POST | `/projects/:id/deploy-all` | +access | despliega repos e imágenes del proyecto |
 | GET | `/projects/:id/vars` | +access | variables compartidas |
 | PUT | `/projects/:id/vars` | +access | reemplaza variables compartidas |
+| GET | `/projects/:id/connectors` | +access | conectores del proyecto (sin tokens) + `hasGlobalToken` |
+| POST | `/projects/:id/connectors` | +access | conecta un token (`{name, token}`; se verifica contra GitHub) |
+| DELETE | `/connectors/:id` | +access | elimina un conector (sus servicios vuelven al token global) |
+| POST | `/connectors/:id/test` | +access | revalida el token guardado contra GitHub |
+| GET | `/connectors/:id/repos` | +access | repos visibles con ese token (para el selector) |
+| GET | `/connectors/:id/branches?repo=owner/repo` | +access | ramas del repo (la por defecto primero) |
+| GET | `/connectors` | admin | todos los conectores de todos los proyectos (control central) |
+
+**Conectores de GitHub**: cualquier usuario con acceso al workspace (clientes
+incluidos) conecta un token de su cuenta; al crear o editar un servicio `git`
+elige el conector y el repo/rama de esa cuenta. El token se guarda en el servidor,
+nunca se devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
+(`connector_created`/`connector_deleted`) y el admin lo controla desde Ajustes.
 
 ### 7.4 Servicios
 | Método | Ruta | Nivel | Descripción |

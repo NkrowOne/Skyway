@@ -52,8 +52,10 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
 - **Aislamiento multi-empresa**: `assertProjectAccess` es consistente en las rutas
   de proyecto/servicio; alertas, monitor y búsqueda de logs se filtran por los
   workspaces del usuario. (`auth.ts` y rutas)
-- **Enmascarado de secretos**: el token de GitHub se enmascara en los logs de
-  build; los ajustes con secretos (GitHub/Telegram) se exponen como booleanos.
+- **Enmascarado de secretos**: el token de GitHub (global o de conector) se
+  enmascara en los logs de build; los ajustes con secretos (GitHub/Telegram) se
+  exponen como booleanos y los conectores por proyecto solo devuelven metadatos
+  (nombre, `@login`, quién lo conectó), nunca el token.
 - **Superficie de red**: el `docker-compose` publica la UI solo en
   `127.0.0.1:4000`; el acceso público va por dominio+TLS a través de Traefik.
 
@@ -73,6 +75,13 @@ Estos no son defectos, sino consecuencias del propósito de la herramienta
   diagnóstico); autenticada, con acceso al workspace y auditada.
 - **Secretos visibles para miembros**: un miembro con acceso a un workspace ve el
   `env` resuelto (con contraseñas) de sus servicios, igual que en Railway.
+- **Tokens de conectores de GitHub en claro**: como el `githubToken` global, los
+  tokens de los conectores por proyecto se guardan en claro en `skyway.db`
+  porque `git clone` los necesita tal cual (no sirve un hash). Mitigado: solo se
+  usan para listar repos y clonar, la API nunca los devuelve, el acceso está
+  limitado al workspace (`assertProjectAccess`), su alta/baja queda auditada y el
+  admin puede revocarlos todos desde Ajustes. Recomendación al cliente: token
+  *fine-grained* de solo lectura limitado a los repos que va a desplegar.
 
 ---
 
