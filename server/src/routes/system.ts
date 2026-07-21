@@ -1,4 +1,3 @@
-import fs from 'fs';
 import os from 'os';
 import { spawn } from 'child_process';
 import { FastifyInstance } from 'fastify';
@@ -7,19 +6,11 @@ import { requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { config } from '../config';
 import { getSetting, setSetting } from '../db';
+import { hostDisk } from '../disk';
 import { docker, dockerAvailable } from '../docker/client';
 import { nixpacksAvailable } from '../deploy/builder';
 import { channelsConfigured, dispatchToChannels } from '../notify';
 import { verifyGithubToken } from '../github/client';
-
-export async function diskUsage(): Promise<{ total: number; free: number } | null> {
-  try {
-    const st = await fs.promises.statfs(config.dataDir);
-    return { total: st.blocks * st.bsize, free: st.bavail * st.bsize };
-  } catch {
-    return null;
-  }
-}
 
 const SETTINGS_KEYS = [
   'rootDomain',
@@ -52,7 +43,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
         load: os.loadavg().map((n) => Math.round(n * 100) / 100),
         uptime: os.uptime(),
       },
-      disk: await diskUsage(),
+      disk: await hostDisk(),
       dataDir: config.dataDir,
     }));
 

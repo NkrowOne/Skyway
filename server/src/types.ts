@@ -17,6 +17,8 @@ export interface GitConfig {
   hostPort?: number | null;
   cpus?: number | null;
   memoryMb?: number | null;
+  /** Cuota de disco orientativa en MB (volúmenes + capa de escritura): al superarla salta una alerta. */
+  diskMb?: number | null;
   webhookSecret: string;
   volumes?: VolumeMount[];
   healthcheckPath?: string | null;
@@ -30,6 +32,7 @@ export interface DatabaseConfig {
   hostPort?: number | null;
   cpus?: number | null;
   memoryMb?: number | null;
+  diskMb?: number | null;
   backupSchedule?: 'daily' | 'weekly' | null;
   backupRetention?: number;
 }
@@ -42,6 +45,7 @@ export interface ImageConfig {
   hostPort?: number | null;
   cpus?: number | null;
   memoryMb?: number | null;
+  diskMb?: number | null;
   volumes?: VolumeMount[];
   healthcheckPath?: string | null;
   replicas?: number;
@@ -55,6 +59,11 @@ export interface ProjectRow {
   slug: string;
   client: string | null;
   created_at: number;
+  /** Página de estado pública: token de la URL compartible y si está activa. */
+  status_token: string | null;
+  status_enabled: number;
+  /** Aviso de mantenimiento visible en la página de estado (null = sin aviso). */
+  status_notice: string | null;
 }
 
 export interface ServiceRow {
@@ -143,6 +152,7 @@ export type ContainerState =
   | 'exited'
   | 'paused'
   | 'created'
+  | 'removing'
   | 'dead'
   | 'not_created'
   | 'unknown';

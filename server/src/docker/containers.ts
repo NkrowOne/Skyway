@@ -3,7 +3,7 @@ import { PassThrough } from 'stream';
 import { docker } from './client';
 import { EDGE_NETWORK, projectNetworkName } from './networks';
 import { getSetting } from '../db';
-import { ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
+import { ContainerState, ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
 import { lineSplitter } from '../util';
 
 export function containerName(project: ProjectRow, service: ServiceRow): string {
@@ -20,6 +20,23 @@ export function configuredReplicas(service: ServiceRow): number {
   if (service.type === 'database') return 1;
   const n = (service.config as any).replicas;
   return Number.isInteger(n) && n > 1 ? Math.min(n, 10) : 1;
+}
+
+/**
+ * Estado agregado de un servicio a partir de los estados de sus réplicas,
+ * con una única semántica para todo el panel: si ALGUNA réplica corre, el
+ * servicio sirve tráfico ('running' — el badge de réplicas ya marca las
+ * caídas); si ninguna corre, gana el estado más informativo.
+ */
+export function aggregateReplicaState(states: ContainerState[]): ContainerState {
+  if (states.length === 0) return 'unknown';
+  const has = (s: ContainerState) => states.includes(s);
+  if (has('running')) return 'running';
+  for (const s of ['restarting', 'exited', 'dead', 'paused', 'removing', 'created'] as ContainerState[]) {
+    if (has(s)) return s;
+  }
+  if (states.every((s) => s === 'not_created')) return 'not_created';
+  return has('unknown') ? 'unknown' : states[0];
 }
 
 /** Todos los contenedores del servicio por label (incluye réplicas y restos de swaps). */
@@ -186,6 +203,9 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
   const hostConfig: Docker.HostConfig = {
     RestartPolicy: { Name: spec.restartPolicy ?? 'unless-stopped' },
     Binds: withVolumes ? (spec.volumes || []).map((v) => `${v.name}:${v.containerPath}`) : [],
+    // Rotación de logs: sin esto, el json-log de un contenedor parlanchín
+    // crece sin límite y acaba llenando el disco del servidor.
+    LogConfig: { Type: 'json-file', Config: { 'max-size': '10m', 'max-file': '3' } },
   };
   if (spec.cpus && spec.cpus > 0) hostConfig.NanoCpus = Math.round(spec.cpus * 1e9);
   if (spec.memoryMb && spec.memoryMb > 0) hostConfig.Memory = Math.round(spec.memoryMb * 1024 * 1024);
@@ -241,7 +261,7 @@ export interface ExecResult {
 export async function execInContainer(
   name: string,
   command: string,
-  opts: { timeoutMs?: number; maxOutput?: number } = {},
+  opts: { timeoutMs?: number; maxOutput?: number; env?: string[] } = {},
 ): Promise<ExecResult> {
   const timeoutMs = opts.timeoutMs ?? 60_000;
   const maxOutput = opts.maxOutput ?? 200_000;
@@ -249,6 +269,9 @@ export async function execInContainer(
   const container = docker.getContainer(name);
   const exec = await container.exec({
     Cmd: ['sh', '-c', command],
+    // Env extra del exec: permite pasar datos (p. ej. una consulta SQL) sin
+    // interpolarlos en el shell, evitando cualquier problema de escapado.
+    Env: opts.env && opts.env.length > 0 ? opts.env : undefined,
     AttachStdout: true,
     AttachStderr: true,
   });
@@ -289,12 +312,20 @@ export async function execInContainer(
     });
   });
 
+  // El daemon puede tardar unos ms en registrar la salida del exec: si el
+  // código aún es null (y no hubo timeout), se reintenta brevemente para no
+  // confundir una carrera de timing con un fallo.
   let exitCode: number | null = null;
-  try {
-    const info = await exec.inspect();
-    exitCode = info.ExitCode ?? null;
-  } catch {
-    /* noop */
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const info = await exec.inspect();
+      exitCode = info.ExitCode ?? null;
+      if (exitCode !== null || info.Running === false) break;
+    } catch {
+      break;
+    }
+    if (timedOut) break;
+    await new Promise((r) => setTimeout(r, 60));
   }
   return { output, exitCode, truncated, timedOut, durationMs: Date.now() - started };
 }
@@ -338,6 +369,65 @@ export async function getStats(name: string): Promise<ServiceStats | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Separa un buffer de logs multiplexado de Docker (frames de 8 bytes de
+ * cabecera) en texto plano. Si el contenedor corre con TTY el buffer ya es
+ * texto crudo, y se devuelve tal cual.
+ */
+export function demuxLogBuffer(buf: Buffer): string {
+  let out = '';
+  let offset = 0;
+  while (offset + 8 <= buf.length) {
+    const type = buf[offset];
+    const zeros = buf[offset + 1] === 0 && buf[offset + 2] === 0 && buf[offset + 3] === 0;
+    if ((type !== 0 && type !== 1 && type !== 2) || !zeros) {
+      // Cabecera inválida: si es el primer frame, el contenedor corre con TTY
+      // (texto crudo). Si ya había frames válidos, es basura tras un corte:
+      // se conserva lo parseado y no se vuelca el buffer entero (duplicaría
+      // el contenido con las cabeceras binarias incrustadas).
+      return offset === 0 ? buf.toString('utf8') : out;
+    }
+    const size = buf.readUInt32BE(offset + 4);
+    if (offset + 8 + size > buf.length) {
+      // Frame truncado (conexión cortada a mitad): se añade el trozo legible.
+      out += buf.slice(offset + 8).toString('utf8');
+      return out;
+    }
+    out += buf.slice(offset + 8, offset + 8 + size).toString('utf8');
+    offset += 8 + size;
+  }
+  // Resto menor que una cabecera: con frames previos se descarta; sin ellos
+  // es un buffer TTY diminuto y se devuelve tal cual.
+  return offset === 0 && buf.length > 0 ? buf.toString('utf8') : out;
+}
+
+/** Devuelve las últimas líneas de log de un contenedor (sin seguir el stream). */
+export async function fetchLogsTail(
+  name: string,
+  tail = 400,
+  timestamps = true,
+): Promise<{ ts: number | null; line: string }[]> {
+  const c = docker.getContainer(name);
+  const raw = (await c.logs({ follow: false, stdout: true, stderr: true, tail, timestamps })) as unknown as Buffer;
+  const text = Buffer.isBuffer(raw) ? demuxLogBuffer(raw) : String(raw);
+  const out: { ts: number | null; line: string }[] = [];
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    if (!line) continue;
+    if (timestamps) {
+      // Formato: 2024-05-01T12:00:00.000000000Z <línea>
+      const idx = line.indexOf(' ');
+      const ts = idx > 0 ? Date.parse(line.slice(0, idx)) : NaN;
+      if (Number.isFinite(ts)) {
+        out.push({ ts, line: line.slice(idx + 1) });
+        continue;
+      }
+    }
+    out.push({ ts: null, line });
+  }
+  return out;
 }
 
 /**

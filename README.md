@@ -17,6 +17,11 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 - **Dominios y TLS sin saber de DNS** — asistente estilo Railway: subdominio generado en un clic (con un comodín configurado una sola vez), o dominio propio con la tabla exacta de registros DNS a crear (tipo, nombre y la IP de tu servidor autodetectada) y **verificación en vivo** del DNS ("correcto ✓ / esperando propagación / apunta a otra IP"). Traefik enruta y, con Let's Encrypt, el certificado se emite solo.
 - **Despliegues sin corte** — la versión nueva se arranca y se **valida** (healthcheck HTTP o periodo de gracia) antes de retirar la anterior. Sin volúmenes ni puertos fijos el intercambio es de **corte cero** (ambas conviven unos segundos tras el proxy); con estado, intercambio con **restauración automática**: si la nueva falla, la anterior vuelve sola. Un deploy roto ya no puede tumbar un servicio en producción.
 - **Logs en tiempo real** — logs de build y de ejecución en streaming (SSE) y descargables, historial de despliegues, **cancelación** de despliegues en curso y **rollback** a cualquier versión anterior.
+- **Monitor global** — una página con **todos los servicios del servidor**: estado en vivo, CPU, RAM, disco, uptime 24 h, reinicios y alertas, con filtros, **ordenación por consumo** (¿quién se come la CPU?), reinicio en un clic y explicación del error cuando algo está caído. Incluye un **buscador de logs entre todos los contenedores** (filtrable por proyecto): escribe "ECONNREFUSED" o "500" y te dice en qué servicio y cuándo, con enlace directo.
+- **Consola de consultas a las bases de datos** — pestaña **Consultas** en cada PostgreSQL, MySQL, MongoDB y Redis: explorador de tablas/colecciones/claves con tamaños (clic = ver contenido, botón de columnas = ver estructura; en Redis detecta el tipo de la clave y usa GET/HGETALL/LRANGE... según toque), resultados en tabla **exportables a CSV/JSON**, snippets típicos, historial y **modo solo lectura por defecto** (las escrituras requieren activarlas a propósito). Todo corre dentro del contenedor con su cliente oficial: sin exponer puertos ni credenciales.
+- **Asignación de espacio en disco** — cuota orientativa por servicio (MB) vigilada por el monitor con **aviso previo al 90 % y alerta al superarla**, y la vista **Monitor → Espacio**: qué ocupa cada servicio (volúmenes, contenedor, cuota con barra), qué ocupa Docker (imágenes, caché de build...) y el botón de **liberar espacio** sin tocar volúmenes. Los logs json de cada contenedor rotan solos (10 MB × 3) para que no se coman el disco.
+- **Página de estado para clientes** — activa en cada proyecto un **dashboard público con enlace compartible** (sin login): estado en vivo de los servicios, disponibilidad de los últimos 90 días con barras diarias, uptime 24 h/7 d/90 d, incidencias y un **aviso de mantenimiento** editable desde el panel. El enlace se puede rotar si se filtra.
+- **Vista de sitios web** — todas las webs y apps desplegadas en un solo sitio: dominio clicable con candado TLS, estado, réplicas, último deploy y acciones rápidas (abrir, desplegar, reiniciar), filtrables por cliente o dominio.
 - **Backups de bases de datos** — volcado comprimido de PostgreSQL/MySQL/MongoDB en un clic o **programado (diario/semanal, ~04:00) con retención automática**; descarga, restauración y borrado desde el panel, y alerta si un backup programado falla.
 - **Réplicas con balanceo** — varias copias de un servicio repartiéndose el tráfico (Traefik + DNS interno) con **actualización rodante** réplica a réplica: siempre queda alguna sirviendo. Monitorización y métricas agregadas por réplica.
 - **Comandos en el contenedor** — terminal de un comando (`sh -c`) para migraciones y diagnóstico, con salida capturada y registro en auditoría.
@@ -66,6 +71,8 @@ Abre `http://IP-DEL-SERVIDOR:4000` (o `http://tu-dominio`) y crea la cuenta de a
 6. **Auto-deploy** — copia la URL y el secreto del webhook (Ajustes del servicio) en GitHub → Settings → Webhooks. Cada push despliega.
 7. **Activa las notificaciones** — en Ajustes → Alertas configura Discord, Telegram o un webhook y pulsa "Enviar notificación de prueba". Si un servicio de un cliente se cae, te llega al momento con la explicación del código de salida.
 8. **Revisa el panel de seguridad** (icono del escudo) — corrige los hallazgos hasta subir la nota: límites de recursos en todos los servicios, TLS activado, sin puertos de bases de datos expuestos.
+9. **Vigila y depura desde el Monitor** (icono de actividad, o `g m`) — todos los servicios con su consumo y espacio; si algo falla, busca el texto del error en los logs de todos los contenedores a la vez.
+10. **Comparte el estado con tu cliente** — en el proyecto, botón **Página de estado**: actívala y pásale el enlace. Verá disponibilidad e incidencias sin entrar al panel.
 
 ## Migrar desde Railway
 
@@ -117,15 +124,17 @@ La UI de desarrollo (`http://localhost:5173`) proxya `/api` al servidor. Para pr
 ```
 server/src/
   index.ts, app.ts        arranque y ensamblado de Fastify
-  db.ts                   esquema y acceso SQLite
+  db.ts                   esquema y acceso SQLite (incl. histórico de uptime)
   auth.ts                 sesiones JWT (cookie httpOnly)
   templates.ts            plantillas de bases de datos
   variables.ts            resolución de ${{Servicio.VAR}}
+  dbconsole.ts            consola de consultas (psql/mysql/mongosh/redis-cli vía exec)
+  disk.ts                 uso de disco por servicio (volúmenes + contenedor)
   docker/                 contenedores, redes, stats, logs
   deploy/                 builder (git+docker/nixpacks), orquestador, cola
-  routes/                 API REST + SSE + webhooks
+  routes/                 API REST + SSE + webhooks (+ monitor, websites, status público)
 web/src/
-  pages/                  Dashboard, Proyecto, Ajustes, Login/Setup
+  pages/                  Dashboard, Proyecto, Monitor, Sitios, Estado público...
   components/             canvas de servicios, drawer con pestañas, gráficas
 ```
 
@@ -150,6 +159,8 @@ Por eso Skyway usa Docker a pelo y, en su lugar, incorpora de forma nativa lo qu
 ## Notas y límites actuales
 
 - Los servicios **con volúmenes o puerto de host fijo** (y las bases de datos) tienen un corte breve al redesplegar: no pueden convivir dos instancias escribiendo el mismo volumen. Aun así el intercambio valida la versión nueva y restaura la anterior si falla.
+- La **cuota de disco por servicio es orientativa**: Docker no corta la escritura al llegar al límite (haría falta un driver de almacenamiento con cuotas). Skyway mide el uso real, lo muestra y alerta al superarla — suficiente para detectar a tiempo una base que crece o unos uploads desbocados.
+- La rotación de logs (10 MB × 3 por contenedor) se aplica a los contenedores creados a partir de v0.10: los anteriores la adoptan en su próximo redespliegue.
 - Las credenciales de una base de datos se fijan al crearla (viven en su volumen); cambiar las variables después no cambia la contraseña real.
 - El rollback reutiliza imágenes construidas: solo funciona hacia despliegues que sigan entre los 5 conservados.
 - `docker compose` incluye Traefik; si ya tienes un proxy propio, elimina ese servicio y publica los puertos que necesites.
@@ -158,5 +169,5 @@ Por eso Skyway usa Docker a pelo y, en su lugar, incorpora de forma nativa lo qu
 
 - Cron jobs y comandos one-off (`skyway run`)
 - Backups de volúmenes de aplicaciones (uploads, etc.)
-- Múltiples usuarios y tokens de API
 - Plantillas de la comunidad (one-click apps)
+- Incidencias manuales y avisos de mantenimiento en la página de estado

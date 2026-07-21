@@ -52,6 +52,7 @@ interface FormState {
   hostPort: string;
   cpus: string;
   memoryMb: string;
+  diskMb: string;
   alertsMuted: boolean;
   healthcheckPath: string;
   replicas: string;
@@ -75,6 +76,7 @@ function formFromService(service: Service): FormState {
     hostPort: cfg.hostPort ? String(cfg.hostPort) : '',
     cpus: cfg.cpus ? String(cfg.cpus) : '',
     memoryMb: cfg.memoryMb ? String(cfg.memoryMb) : '',
+    diskMb: cfg.diskMb ? String(cfg.diskMb) : '',
     alertsMuted: !!(cfg as any).alertsMuted,
     healthcheckPath: cfg.healthcheckPath ?? '',
     replicas: String((cfg as any).replicas ?? 1),
@@ -115,6 +117,7 @@ export default function ServiceSettingsTab({
         hostPort: form.hostPort ? Number(form.hostPort) : null,
         cpus: form.cpus ? Number(form.cpus) : null,
         memoryMb: form.memoryMb ? Number(form.memoryMb) : null,
+        diskMb: form.diskMb ? Number(form.diskMb) : null,
         alertsMuted: form.alertsMuted,
         ...(!isDb
           ? {
@@ -321,12 +324,15 @@ export default function ServiceSettingsTab({
           title={isDb ? 'Recursos y red' : 'Recursos y réplicas'}
           description="Los límites se aplican en caliente, sin reiniciar"
         >
-          <div className={cx('grid gap-2.5', isDb ? 'grid-cols-3' : 'grid-cols-2 sm:grid-cols-4')}>
+          <div className={cx('grid gap-2.5 grid-cols-2', isDb ? 'sm:grid-cols-4' : 'sm:grid-cols-5')}>
             <Field label="CPUs" hint="vacío = sin límite">
               <input className="input tnum" type="number" step="0.1" min="0.1" placeholder="1.5" value={form.cpus} onChange={(e) => set('cpus', e.target.value)} />
             </Field>
             <Field label="RAM (MB)" hint="vacío = sin límite">
               <input className="input tnum" type="number" min="32" placeholder="512" value={form.memoryMb} onChange={(e) => set('memoryMb', e.target.value)} />
+            </Field>
+            <Field label="Disco (MB)" hint="espacio asignado: avisa al superarlo">
+              <input className="input tnum" type="number" min="64" placeholder="2048" value={form.diskMb} onChange={(e) => set('diskMb', e.target.value)} />
             </Field>
             <Field label="Puerto público" hint="expone TCP en el host">
               <input className="input tnum" type="number" placeholder={isGit ? '8080' : '5432'} value={form.hostPort} onChange={(e) => set('hostPort', e.target.value)} />
@@ -337,6 +343,10 @@ export default function ServiceSettingsTab({
               </Field>
             )}
           </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-subtle">
+            El espacio asignado (volúmenes + escritura del contenedor) es orientativo: Docker no corta el disco en seco,
+            pero Skyway lo vigila y te alerta al superarlo. Consúltalo en Monitor.
+          </p>
           {!isDb && replicasN > 1 && (
             <p className="mt-2.5 rounded-lg border border-acc/25 bg-acc/[.07] px-3 py-2.5 text-xs text-sub">
               Con {replicasN} réplicas el tráfico se reparte y los despliegues son rodantes: siempre queda una sirviendo.

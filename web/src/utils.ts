@@ -37,6 +37,7 @@ export const STATE_LABEL: Record<ContainerState, string> = {
   exited: 'Detenido',
   paused: 'Pausado',
   created: 'Creado',
+  removing: 'Eliminando',
   dead: 'Muerto',
   not_created: 'Sin desplegar',
   unknown: 'Desconocido',
@@ -51,6 +52,7 @@ export const STATE_TONE: Record<ContainerState, Tone> = {
   exited: 'err',
   paused: 'warn',
   created: 'neutral',
+  removing: 'warn',
   dead: 'err',
   not_created: 'neutral',
   unknown: 'neutral',
@@ -59,6 +61,7 @@ export const STATE_TONE: Record<ContainerState, Tone> = {
 /** Estados transitorios: el dot del badge pulsa. */
 export const STATE_PULSE: Partial<Record<ContainerState, boolean>> = {
   restarting: true,
+  removing: true,
 };
 
 export const DEPLOY_STATUS_LABEL: Record<DeploymentStatus, string> = {
@@ -95,6 +98,8 @@ export const ALERT_TYPE_LABEL: Record<string, string> = {
   mem_high: 'Memoria alta',
   deploy_failed: 'Despliegue fallido',
   backup_failed: 'Backup fallido',
+  disk_quota: 'Espacio asignado superado',
+  disk_quota_soon: 'Espacio asignado al 90%',
 };
 
 export const AUDIT_ACTION_LABEL: Record<string, string> = {
@@ -130,6 +135,9 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   backup_restored: 'Backup restaurado',
   backup_deleted: 'Backup eliminado',
   system_prune: 'Espacio liberado (prune)',
+  db_query: 'Consulta en base de datos',
+  status_page_updated: 'Página de estado actualizada',
+  status_page_rotated: 'Enlace de página de estado rotado',
 };
 
 export function fmtDateTime(ts: number): string {

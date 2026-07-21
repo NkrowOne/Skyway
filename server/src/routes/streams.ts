@@ -82,9 +82,12 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
             running += 1;
             const stats = await getStats(name);
             if (stats) {
-              if (!aggregated) aggregated = { cpuPercent: 0, memUsage: 0, memLimit: stats.memLimit, netRx: 0, netTx: 0 };
+              if (!aggregated) aggregated = { cpuPercent: 0, memUsage: 0, memLimit: 0, netRx: 0, netTx: 0 };
               aggregated.cpuPercent = Math.round((aggregated.cpuPercent + stats.cpuPercent) * 10) / 10;
               aggregated.memUsage += stats.memUsage;
+              // El límite se suma por réplica: si no, el % de RAM agregado
+              // supera el 100% con el servicio perfectamente sano.
+              aggregated.memLimit += stats.memLimit;
               aggregated.netRx += stats.netRx;
               aggregated.netTx += stats.netTx;
             }

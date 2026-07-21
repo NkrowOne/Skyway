@@ -40,6 +40,7 @@ export type ContainerState =
   | 'exited'
   | 'paused'
   | 'created'
+  | 'removing'
   | 'dead'
   | 'not_created'
   | 'unknown';
@@ -73,6 +74,7 @@ export interface GitConfig {
   hostPort?: number | null;
   cpus?: number | null;
   memoryMb?: number | null;
+  diskMb?: number | null;
   webhookSecret: string;
   healthcheckPath?: string | null;
   replicas?: number;
@@ -84,6 +86,7 @@ export interface DatabaseConfig {
   hostPort?: number | null;
   cpus?: number | null;
   memoryMb?: number | null;
+  diskMb?: number | null;
   backupSchedule?: 'daily' | 'weekly' | null;
   backupRetention?: number;
 }
@@ -224,4 +227,159 @@ export interface DockerUsage {
   containers: { count: number; size: number };
   volumes: { count: number; size: number };
   buildCache: { size: number };
+}
+
+// ---------- monitor global ----------
+
+export interface MonitorService {
+  id: string;
+  projectId: string;
+  projectName: string;
+  client: string | null;
+  name: string;
+  slug: string;
+  type: 'git' | 'database' | 'image';
+  template?: string;
+  image?: string;
+  domains: string[];
+  state: ContainerState;
+  startedAt: string | null;
+  exitCode: number | null;
+  exitExplanation: string | null;
+  restartCount: number;
+  replicas: { running: number; total: number };
+  stats: { cpuPercent: number; memUsage: number; memLimit: number } | null;
+  memoryMb: number | null;
+  cpus: number | null;
+  alerts: number;
+  lastDeploy: { id: string; status: DeploymentStatus; created_at: number } | null;
+  disk: { totalBytes: number | null; quotaMb: number | null };
+  uptime24h: number | null;
+}
+
+export interface MonitorOverview {
+  docker: boolean;
+  host: {
+    cpus: number;
+    load: number;
+    totalMem: number;
+    freeMem: number;
+    disk: { total: number; free: number } | null;
+  };
+  services: MonitorService[];
+}
+
+export interface LogSearchResult {
+  serviceId: string;
+  serviceName: string;
+  projectId: string;
+  projectName: string;
+  replica: number | null;
+  ts: number | null;
+  line: string;
+}
+
+export interface DiskBreakdown {
+  host: { total: number; free: number } | null;
+  docker: DockerUsage | null;
+  services: {
+    serviceId: string;
+    name: string;
+    type: string;
+    projectId: string;
+    projectName: string;
+    totalBytes: number;
+    containerBytes: number;
+    logBytes: number | null;
+    volumes: { name: string; sizeBytes: number }[];
+    quotaMb: number | null;
+  }[];
+}
+
+// ---------- sitios web ----------
+
+export interface WebsiteEntry {
+  id: string;
+  name: string;
+  type: 'git' | 'image';
+  image?: string;
+  repoUrl?: string;
+  projectId: string;
+  projectName: string;
+  client: string | null;
+  domains: string[];
+  hostPort: number | null;
+  state: ContainerState;
+  startedAt: string | null;
+  replicas: { running: number; total: number };
+  alerts: number;
+  lastDeploy: { status: DeploymentStatus; created_at: number; finished_at: number | null } | null;
+}
+
+// ---------- consola de base de datos ----------
+
+export interface DbObject {
+  name: string;
+  rows: number | null;
+  sizeBytes: number | null;
+}
+
+export interface DbOverview {
+  engine: 'postgres' | 'mysql' | 'mongo' | 'redis';
+  version: string | null;
+  sizeBytes: number | null;
+  objectLabel: string;
+  objects: DbObject[];
+}
+
+export interface DbSnippet {
+  label: string;
+  query: string;
+  hint?: string;
+}
+
+export interface DbQueryResult {
+  kind: 'table' | 'text';
+  columns?: string[];
+  rows?: string[][];
+  raw?: string;
+  rowCount: number;
+  truncated: boolean;
+  durationMs: number;
+  notice?: string;
+}
+
+// ---------- página de estado pública ----------
+
+export type PublicServiceState = 'operational' | 'degraded' | 'down' | 'unknown';
+
+export interface StatusPageConfig {
+  enabled: boolean;
+  token: string | null;
+  notice: string | null;
+}
+
+export interface PublicStatusService {
+  name: string;
+  type: string;
+  state: PublicServiceState;
+  uptime24h: number | null;
+  uptime7d: number | null;
+  uptime90d: number | null;
+  days: { date: number; pct: number | null }[];
+}
+
+export interface PublicStatus {
+  project: { name: string; client: string | null };
+  overall: PublicServiceState;
+  notice: string | null;
+  services: PublicStatusService[];
+  incidents: {
+    id: string;
+    title: string;
+    startedAt: number;
+    resolvedAt: number | null;
+    severity: AlertSeverity;
+  }[];
+  generatedAt: number;
 }

@@ -72,11 +72,14 @@ const patchSchema = z.object({
       rootDir: z.string().trim().nullable().optional(),
       dockerfilePath: z.string().trim().nullable().optional(),
       startCmd: z.string().trim().nullable().optional(),
-      port: z.coerce.number().int().min(1).max(65535).optional(),
+      // nullable: los servicios de imagen sin puerto interno (workers) envían
+      // null; sin esto, NINGÚN ajuste suyo se podía guardar (Number(null)=0).
+      port: z.coerce.number().int().min(1).max(65535).nullable().optional(),
       domains: z.array(z.string().trim().min(1)).optional(),
       hostPort: z.coerce.number().int().min(1).max(65535).nullable().optional(),
       cpus: z.coerce.number().min(0.1).max(64).nullable().optional(),
       memoryMb: z.coerce.number().int().min(32).max(1024 * 512).nullable().optional(),
+      diskMb: z.coerce.number().int().min(64).max(1024 * 1024).nullable().optional(),
       version: z.string().trim().optional(),
       image: z.string().trim().min(1).optional(),
       healthcheckPath: z.string().trim().max(200).nullable().optional(),
@@ -198,6 +201,8 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         // Campos que no aplican a bases de datos: se ignoran sin efecto.
         if (found.service.type === 'database' && ['replicas', 'healthcheckPath'].includes(key)) continue;
         if (found.service.type !== 'database' && ['backupSchedule', 'backupRetention'].includes(key)) continue;
+        // Un servicio git siempre escucha en un puerto: null no lo borra.
+        if (key === 'port' && value === null && found.service.type === 'git') continue;
         let normalized: unknown = value === null ? undefined : value;
 
         // Los volúmenes llegan como rutas; se conserva el nombre del volumen
