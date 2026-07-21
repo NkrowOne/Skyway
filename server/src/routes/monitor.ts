@@ -138,6 +138,7 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
       .object({
         q: z.string().trim().min(2, 'Escribe al menos 2 caracteres').max(200),
         tail: z.coerce.number().int().min(50).max(1000).default(400),
+        projectId: z.string().trim().optional(),
       })
       .parse(req.query);
     if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
@@ -147,7 +148,8 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
     const results: any[] = [];
     let scanned = 0;
 
-    for (const project of accessibleProjects(req)) {
+    const projects = accessibleProjects(req).filter((p) => !params.projectId || p.id === params.projectId);
+    for (const project of projects) {
       for (const service of listServices(project.id)) {
         const total = configuredReplicas(service);
         for (let i = 1; i <= total; i++) {

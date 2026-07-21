@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
-import { AlertCircle, CheckCircle2, CircleSlash, HelpCircle, Rocket } from 'lucide-react';
+import { AlertCircle, CheckCircle2, CircleSlash, HelpCircle, Megaphone, Rocket } from 'lucide-react';
 import { api } from '../api';
 import { PublicServiceState, PublicStatus } from '../types';
 import { cx } from '../utils';
@@ -131,6 +131,16 @@ export default function PublicStatusPage() {
           {overall.icon}
           <span className="text-[15px] font-semibold">{overall.label}</span>
         </div>
+
+        {data.notice && (
+          <div className="mb-7 flex items-start gap-3 rounded-2xl border border-info/35 bg-info/[.08] px-5 py-4">
+            <Megaphone size={17} className="mt-0.5 shrink-0 text-info" />
+            <div>
+              <p className="text-[12px] font-semibold uppercase tracking-[.08em] text-info">Aviso</p>
+              <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-txt">{data.notice}</p>
+            </div>
+          </div>
+        )}
 
         {open.length > 0 && (
           <section className="mb-7 rounded-2xl border border-err/30 bg-err/[.05] p-5">

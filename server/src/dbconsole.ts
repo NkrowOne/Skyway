@@ -72,7 +72,7 @@ async function requireRunning(project: ProjectRow, service: ServiceRow): Promise
 // ---------- parsers ----------
 
 /** Parser CSV mínimo (salida de `psql --csv`): comillas dobles y saltos dentro de campos. */
-function parseCsv(text: string): string[][] {
+export function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
   let field = '';
@@ -113,7 +113,7 @@ function parseCsv(text: string): string[][] {
 }
 
 /** Salida `mysql --batch`: TSV con \t, \n y \\ escapados dentro de los campos. */
-function parseMysqlBatch(text: string): string[][] {
+export function parseMysqlBatch(text: string): string[][] {
   const unescape = (s: string) =>
     s === 'NULL'
       ? ''
@@ -183,12 +183,18 @@ function assertReadOnly(engine: DbEngine, query: string): void {
 
 // ---------- ejecución por motor ----------
 
+export type BrowseMode = 'data' | 'describe';
+
 interface EngineRunner {
   run: (name: string, query: string, allowWrite: boolean) => Promise<QueryResult>;
   overview: (name: string) => Promise<DbOverview>;
   snippets: DbSnippet[];
-  /** Consulta sugerida al pulsar un objeto del explorador. */
-  browseQuery: (object: string) => string;
+  /**
+   * Consulta sugerida al pulsar un objeto del explorador. 'data' muestra
+   * contenido; 'describe' muestra estructura (columnas, tipo de clave...).
+   * Recibe el contenedor porque algunos motores (Redis) consultan el tipo.
+   */
+  browse: (name: string, object: string, mode: BrowseMode) => Promise<string>;
 }
 
 const PSQL = 'psql -X -U "${POSTGRES_USER:-skyway}" -d "${POSTGRES_DB:-skyway}" -v ON_ERROR_STOP=1 -q';
@@ -299,6 +305,11 @@ async function mongoRun(name: string, query: string): Promise<QueryResult> {
     env: [`SKYWAY_QUERY=${query}`, `SKYWAY_WRAPPER=${MONGO_WRAPPER}`],
   });
   if (res.timedOut) throw new Error('La consulta superó el tiempo máximo (30 s).');
+  if (res.exitCode === 126 || res.exitCode === 127) {
+    throw new Error(
+      'Esta imagen de MongoDB no incluye mongosh (las 4.x y anteriores no lo traen). Sube la versión de la imagen en Ajustes del servicio para usar la consola.',
+    );
+  }
   if (res.exitCode !== 0) throw execError(res.output, 'La consulta falló.');
   const raw = res.output.trim();
   if (raw === '__SKYWAY_OK__') {
@@ -411,11 +422,41 @@ async function redisOverview(name: string): Promise<DbOverview> {
   };
 }
 
+// ---------- consultas de exploración por motor ----------
+
+const pgIdent = (t: string) => `"${t.replace(/"/g, '""')}"`;
+const pgLiteral = (t: string) => `'${t.replace(/'/g, "''")}'`;
+const myIdent = (t: string) => `\`${t.replace(/`/g, '``')}\``;
+/** Clave Redis citada como la entiende el parser de redis-cli. */
+const redisKey = (k: string) => `"${k.replace(/([\\"])/g, '\\$1')}"`;
+
+/** Comando de lectura adecuado al tipo real de la clave Redis. */
+function redisDataQuery(type: string, key: string): string {
+  const k = redisKey(key);
+  switch (type) {
+    case 'string': return `GET ${k}`;
+    case 'hash': return `HGETALL ${k}`;
+    case 'list': return `LRANGE ${k} 0 49`;
+    case 'set': return `SMEMBERS ${k}`;
+    case 'zset': return `ZRANGE ${k} 0 49 WITHSCORES`;
+    case 'stream': return `XRANGE ${k} - + COUNT 20`;
+    default: return `TYPE ${k}`;
+  }
+}
+
+function mongoTarget(object: string): { db: string; coll: string | null } {
+  const [dbName, ...rest] = object.split('.');
+  return { db: dbName, coll: rest.length > 0 ? rest.join('.') : null };
+}
+
 const RUNNERS: Record<DbEngine, EngineRunner> = {
   postgres: {
     run: pgRun,
     overview: pgOverview,
-    browseQuery: (t) => `SELECT * FROM "${t.replace(/"/g, '""')}" LIMIT 50;`,
+    browse: async (_name, t, mode) =>
+      mode === 'describe'
+        ? `SELECT column_name AS columna, data_type AS tipo, is_nullable AS nulable, column_default AS por_defecto\nFROM information_schema.columns WHERE table_name = ${pgLiteral(t)} ORDER BY ordinal_position;`
+        : `SELECT * FROM ${pgIdent(t)} LIMIT 50;`,
     snippets: [
       { label: 'Tablas y tamaño', hint: 'Qué ocupa cada tabla', query: "SELECT c.relname AS tabla, pg_size_pretty(pg_total_relation_size(c.oid)) AS tamano, COALESCE(c.reltuples,0)::bigint AS filas_aprox\nFROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\nWHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')\nORDER BY pg_total_relation_size(c.oid) DESC;" },
       { label: 'Conexiones activas', hint: 'Quién está conectado ahora', query: "SELECT pid, usename, state, query_start, LEFT(query, 80) AS query\nFROM pg_stat_activity WHERE state <> 'idle' ORDER BY query_start;" },
@@ -426,7 +467,8 @@ const RUNNERS: Record<DbEngine, EngineRunner> = {
   mysql: {
     run: mysqlRun,
     overview: mysqlOverview,
-    browseQuery: (t) => `SELECT * FROM \`${t.replace(/`/g, '``')}\` LIMIT 50;`,
+    browse: async (_name, t, mode) =>
+      mode === 'describe' ? `SHOW FULL COLUMNS FROM ${myIdent(t)};` : `SELECT * FROM ${myIdent(t)} LIMIT 50;`,
     snippets: [
       { label: 'Tablas y tamaño', hint: 'Qué ocupa cada tabla', query: "SELECT table_name AS tabla, ROUND((data_length+index_length)/1024/1024, 2) AS mb, table_rows AS filas_aprox\nFROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY (data_length+index_length) DESC;" },
       { label: 'Procesos activos', hint: 'Consultas en ejecución', query: 'SHOW FULL PROCESSLIST;' },
@@ -437,10 +479,13 @@ const RUNNERS: Record<DbEngine, EngineRunner> = {
   mongo: {
     run: (name, query) => mongoRun(name, query),
     overview: mongoOverview,
-    browseQuery: (obj) => {
-      const [dbName, ...rest] = obj.split('.');
-      const coll = rest.join('.');
-      return coll ? `db.getSiblingDB('${dbName}').getCollection('${coll}').find().limit(20)` : `db.getSiblingDB('${dbName}').getCollectionNames()`;
+    browse: async (_name, obj, mode) => {
+      const { db, coll } = mongoTarget(obj);
+      if (!coll) return `db.getSiblingDB(${JSON.stringify(db)}).getCollectionNames()`;
+      const target = `db.getSiblingDB(${JSON.stringify(db)}).getCollection(${JSON.stringify(coll)})`;
+      return mode === 'describe'
+        ? `(() => { const d = ${target}.findOne(); return d ? Object.entries(d).map(([campo, v]) => ({ campo, tipo: Array.isArray(v) ? 'array' : v === null ? 'null' : typeof v })) : []; })()`
+        : `${target}.find().limit(20)`;
     },
     snippets: [
       { label: 'Bases y colecciones', hint: 'Qué hay en el servidor', query: 'db.adminCommand({ listDatabases: 1 })' },
@@ -452,7 +497,13 @@ const RUNNERS: Record<DbEngine, EngineRunner> = {
   redis: {
     run: (name, query) => redisRun(name, query),
     overview: redisOverview,
-    browseQuery: (k) => `GET ${k}`,
+    browse: async (name, key, mode) => {
+      const k = redisKey(key);
+      if (mode === 'describe') return `TYPE ${k}\nTTL ${k}\nMEMORY USAGE ${k}`;
+      // El comando de lectura depende del tipo real: GET sobre un hash falla.
+      const typeRes = await redisRun(name, `TYPE ${k}`);
+      return redisDataQuery((typeRes.raw ?? '').trim().split('\n')[0] ?? '', key);
+    },
     snippets: [
       { label: 'Claves (muestra)', hint: 'SCAN no bloquea el servidor', query: 'SCAN 0 COUNT 100' },
       { label: 'Memoria usada', hint: 'Resumen del uso de memoria', query: 'INFO memory' },
@@ -467,8 +518,17 @@ export function dbSnippets(engine: DbEngine): DbSnippet[] {
   return RUNNERS[engine].snippets;
 }
 
-export function dbBrowseQuery(engine: DbEngine, object: string): string {
-  return RUNNERS[engine].browseQuery(object);
+/** Consulta sugerida para un objeto del explorador (contenido o estructura). */
+export async function getDbBrowseQuery(
+  project: ProjectRow,
+  service: ServiceRow,
+  object: string,
+  mode: BrowseMode,
+): Promise<string> {
+  const engine = dbConsoleEngine(service);
+  if (!engine) throw new Error('Este servicio no tiene consola de consultas.');
+  const name = await requireRunning(project, service);
+  return RUNNERS[engine].browse(name, object, mode);
 }
 
 export async function runDbQuery(

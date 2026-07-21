@@ -106,9 +106,7 @@ async function collect(): Promise<DiskSnapshot> {
   return { ts: Date.now(), services };
 }
 
-/** Uso de disco por servicio, con caché de 60 s compartida. */
-export async function diskUsageByService(force = false): Promise<Map<string, ServiceDiskUsage>> {
-  if (!force && cached && Date.now() - cached.ts < CACHE_MS) return cached.services;
+function refresh(): Promise<DiskSnapshot> {
   if (!inFlight) {
     inFlight = collect()
       .then((snap) => {
@@ -119,5 +117,18 @@ export async function diskUsageByService(force = false): Promise<Map<string, Ser
         inFlight = null;
       });
   }
-  return (await inFlight).services;
+  return inFlight;
+}
+
+/**
+ * Uso de disco por servicio, con caché de 60 s compartida.
+ * Si el caché está caducado se sirve el dato viejo y se refresca en segundo
+ * plano: el Monitor nunca se queda esperando a `docker system df`.
+ */
+export async function diskUsageByService(force = false): Promise<Map<string, ServiceDiskUsage>> {
+  if (cached && !force) {
+    if (Date.now() - cached.ts >= CACHE_MS) void refresh().catch(() => {});
+    return cached.services;
+  }
+  return (await refresh()).services;
 }

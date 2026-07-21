@@ -144,6 +144,7 @@ export function initDb(): void {
   ensureColumn('users', 'session_epoch', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('projects', 'status_token', 'TEXT');
   ensureColumn('projects', 'status_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('projects', 'status_notice', 'TEXT');
 
   // Histórico de disponibilidad agregado por horas (para las páginas de estado):
   // una fila por servicio y hora, con muestras totales y muestras "en marcha".
@@ -315,7 +316,8 @@ export function setSetting(key: string, value: string | null): void {
 // ---------- projects ----------
 export function createProject(name: string, slug: string, client: string | null = null): ProjectRow {
   const row: ProjectRow = {
-    id: id('prj'), name, slug, client, created_at: now(), status_token: null, status_enabled: 0,
+    id: id('prj'), name, slug, client, created_at: now(),
+    status_token: null, status_enabled: 0, status_notice: null,
   };
   db.prepare('INSERT INTO projects (id, name, slug, client, created_at) VALUES (?, ?, ?, ?, ?)').run(
     row.id, row.name, row.slug, row.client, row.created_at,
@@ -357,6 +359,11 @@ export function setProjectStatusPage(projectId: string, enabled: boolean, token?
   } else {
     db.prepare('UPDATE projects SET status_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, projectId);
   }
+}
+
+/** Aviso de mantenimiento que se muestra como banner en la página de estado. */
+export function setProjectStatusNotice(projectId: string, notice: string | null): void {
+  db.prepare('UPDATE projects SET status_notice = ? WHERE id = ?').run(notice, projectId);
 }
 
 // ---------- histórico de disponibilidad ----------

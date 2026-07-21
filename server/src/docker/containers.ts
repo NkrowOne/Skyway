@@ -351,7 +351,7 @@ export async function getStats(name: string): Promise<ServiceStats | null> {
  * cabecera) en texto plano. Si el contenedor corre con TTY el buffer ya es
  * texto crudo, y se devuelve tal cual.
  */
-function demuxLogBuffer(buf: Buffer): string {
+export function demuxLogBuffer(buf: Buffer): string {
   let out = '';
   let offset = 0;
   while (offset + 8 <= buf.length) {

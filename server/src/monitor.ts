@@ -191,7 +191,11 @@ async function checkDiskQuotas(): Promise<void> {
   for (const project of listProjects()) {
     for (const service of listServices(project.id)) {
       const du = usage.get(service.id);
-      if (!du || !du.quotaMb) continue;
+      if (!du || !du.quotaMb) {
+        // Sin cuota (o quitada): cualquier alerta de disco pendiente se cierra.
+        resolveServiceAlerts(service.id, 'disk_quota', false);
+        continue;
+      }
       const quotaBytes = du.quotaMb * 1024 * 1024;
       const pct = (du.totalBytes / quotaBytes) * 100;
       if (pct >= 100) {

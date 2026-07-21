@@ -1,8 +1,9 @@
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, RefreshCw, Signal } from 'lucide-react';
+import { ExternalLink, Megaphone, RefreshCw, Signal } from 'lucide-react';
 import { api } from '../api';
 import { StatusPageConfig } from '../types';
-import { Button, CopyButton, Modal, Skeleton, useToast } from './ui';
+import { Button, CopyButton, Field, Modal, Skeleton, useToast } from './ui';
 
 /**
  * Gestión de la página de estado pública del proyecto: el enlace que se
@@ -21,12 +22,18 @@ export default function StatusPageModal({
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const [notice, setNotice] = useState('');
 
   const config = useQuery({
     queryKey: ['statusPage', projectId],
     queryFn: () => api.get<StatusPageConfig>(`/projects/${projectId}/status-page`),
     enabled: open,
   });
+
+  // Sincroniza el borrador del aviso cuando llega (o cambia) la configuración.
+  useEffect(() => {
+    if (config.data) setNotice(config.data.notice ?? '');
+  }, [config.data]);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['statusPage', projectId] });
 
@@ -35,6 +42,16 @@ export default function StatusPageModal({
     onSuccess: (data) => {
       invalidate();
       toast(data.enabled ? 'Página de estado activada' : 'Página de estado desactivada', 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const saveNotice = useMutation({
+    mutationFn: (value: string) =>
+      api.post<StatusPageConfig>(`/projects/${projectId}/status-page`, { notice: value.trim() || null }),
+    onSuccess: (data) => {
+      invalidate();
+      toast(data.notice ? 'Aviso publicado en la página de estado' : 'Aviso retirado', 'ok');
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -97,7 +114,37 @@ export default function StatusPageModal({
                 </span>
               </div>
               {isAdmin && (
-                <div className="flex items-center justify-between gap-3">
+                <Field
+                  label={
+                    <>
+                      <Megaphone size={12} /> Aviso de mantenimiento
+                    </>
+                  }
+                  hint="Se muestra como banner en la página pública. Vacío = sin aviso."
+                >
+                  <div className="flex flex-col gap-2">
+                    <textarea
+                      className="input min-h-[64px] resize-y py-2 text-[13px] leading-relaxed"
+                      maxLength={500}
+                      placeholder="Ej: Mantenimiento programado el sábado de 02:00 a 03:00 — puede haber cortes breves."
+                      value={notice}
+                      onChange={(e) => setNotice(e.target.value)}
+                    />
+                    {notice.trim() !== (config.data?.notice ?? '') && (
+                      <div className="flex justify-end gap-2">
+                        <Button size="sm" variant="ghost" onClick={() => setNotice(config.data?.notice ?? '')}>
+                          Descartar
+                        </Button>
+                        <Button size="sm" onClick={() => saveNotice.mutate(notice)} loading={saveNotice.isPending}>
+                          {notice.trim() ? 'Publicar aviso' : 'Retirar aviso'}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </Field>
+              )}
+              {isAdmin && (
+                <div className="flex items-center justify-between gap-3 border-t border-line pt-3.5">
                   <p className="text-[11px] leading-relaxed text-subtle">
                     ¿Enlace filtrado o cliente que ya no debe verlo? Genera uno nuevo: el anterior deja de funcionar al
                     instante.

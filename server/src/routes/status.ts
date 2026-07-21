@@ -7,6 +7,7 @@ import {
   getProjectByStatusToken,
   listAlerts,
   listServices,
+  setProjectStatusNotice,
   setProjectStatusPage,
   uptimeDaily,
   uptimePercent,
@@ -103,6 +104,7 @@ async function buildStatusPayload(project: ProjectRow): Promise<any> {
   return {
     project: { name: project.name, client: project.client },
     overall,
+    notice: project.status_notice,
     services,
     incidents,
     generatedAt: Date.now(),
@@ -137,24 +139,38 @@ export async function statusRoutes(app: FastifyInstance): Promise<void> {
       return {
         enabled: !!project.status_enabled,
         token: project.status_enabled ? project.status_token : null,
+        notice: project.status_notice,
       };
     });
 
-    /** Activa o desactiva la página pública (crea el token la primera vez). */
+    /** Activa/desactiva la página pública y gestiona el aviso de mantenimiento. */
     secured.post('/api/projects/:id/status-page', { preHandler: requireAdmin }, async (req, reply) => {
       const { id } = req.params as { id: string };
       const project = getProject(id);
       if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
-      const body = z.object({ enabled: z.boolean() }).parse(req.body);
+      const body = z
+        .object({
+          enabled: z.boolean().optional(),
+          notice: z.string().trim().max(500, 'Máximo 500 caracteres').nullable().optional(),
+        })
+        .parse(req.body);
+
+      const enabled = body.enabled ?? !!project.status_enabled;
       const token = project.status_token ?? randomToken(20);
-      setProjectStatusPage(id, body.enabled, token);
+      if (body.enabled !== undefined) setProjectStatusPage(id, enabled, token);
+      if (body.notice !== undefined) setProjectStatusNotice(id, body.notice || null);
       cache.delete(token);
+
+      const changes: string[] = [];
+      if (body.enabled !== undefined) changes.push(enabled ? 'activada' : 'desactivada');
+      if (body.notice !== undefined) changes.push(body.notice ? 'aviso publicado' : 'aviso retirado');
       audit(req, 'status_page_updated', {
         type: 'project',
         id,
-        detail: `${project.name}: ${body.enabled ? 'activada' : 'desactivada'}`,
+        detail: `${project.name}: ${changes.join(', ') || 'sin cambios'}`,
       });
-      return { enabled: body.enabled, token: body.enabled ? token : null };
+      const fresh = getProject(id)!;
+      return { enabled, token: enabled ? token : null, notice: fresh.status_notice };
     });
 
     /** Rota el token: el enlace anterior deja de funcionar al instante. */

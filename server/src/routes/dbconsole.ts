@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, requireAuth } from '../auth';
 import { audit } from '../audit';
-import { dbBrowseQuery, dbConsoleEngine, dbSnippets, getDbOverview, runDbQuery } from '../dbconsole';
+import { dbConsoleEngine, dbSnippets, getDbBrowseQuery, getDbOverview, runDbQuery } from '../dbconsole';
 import { getProject, getService } from '../db';
 import { dockerAvailable } from '../docker/client';
 import { ProjectRow, ServiceRow } from '../types';
@@ -71,10 +71,21 @@ export async function dbConsoleRoutes(app: FastifyInstance): Promise<void> {
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
-    const engine = dbConsoleEngine(found.service);
-    if (!engine) return reply.code(400).send({ error: 'Este servicio no tiene consola de consultas' });
-    const { object } = req.query as { object?: string };
-    if (!object) return reply.code(400).send({ error: 'Falta el parámetro object' });
-    return { query: dbBrowseQuery(engine, object) };
+    if (!dbConsoleEngine(found.service)) {
+      return reply.code(400).send({ error: 'Este servicio no tiene consola de consultas' });
+    }
+    if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
+    const params = z
+      .object({
+        object: z.string().min(1, 'Falta el parámetro object').max(500),
+        mode: z.enum(['data', 'describe']).default('data'),
+      })
+      .parse(req.query);
+    try {
+      const query = await getDbBrowseQuery(found.project, found.service, params.object, params.mode);
+      return { query };
+    } catch (err: any) {
+      return reply.code(400).send({ error: err?.message || 'No se pudo generar la consulta' });
+    }
   });
 }

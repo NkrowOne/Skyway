@@ -62,6 +62,8 @@ export interface ProjectRow {
   /** Página de estado pública: token de la URL compartible y si está activa. */
   status_token: string | null;
   status_enabled: number;
+  /** Aviso de mantenimiento visible en la página de estado (null = sin aviso). */
+  status_notice: string | null;
 }
 
 export interface ServiceRow {

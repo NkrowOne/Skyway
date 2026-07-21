@@ -1,6 +1,6 @@
 import { countFailedLogins, getSetting, listProjects, listServices } from './db';
 import { channelsConfigured } from './notify';
-import { diskUsage } from './routes/system';
+import { hostDisk } from './disk';
 import { DatabaseConfig, SecurityFinding, ServiceRow } from './types';
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -94,7 +94,7 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
     });
   }
 
-  const disk = await diskUsage();
+  const disk = await hostDisk();
   if (disk && disk.total > 0) {
     const freePct = (disk.free / disk.total) * 100;
     if (freePct < 10) {

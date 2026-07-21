@@ -355,6 +355,7 @@ export type PublicServiceState = 'operational' | 'degraded' | 'down' | 'unknown'
 export interface StatusPageConfig {
   enabled: boolean;
   token: string | null;
+  notice: string | null;
 }
 
 export interface PublicStatusService {
@@ -370,6 +371,7 @@ export interface PublicStatusService {
 export interface PublicStatus {
   project: { name: string; client: string | null };
   overall: PublicServiceState;
+  notice: string | null;
   services: PublicStatusService[];
   incidents: {
     id: string;

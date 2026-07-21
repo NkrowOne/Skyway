@@ -565,14 +565,14 @@ export default function Layout() {
           )}
           <Link
             to="/monitor"
-            className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+            className="hidden rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt sm:block"
             title="Monitor (g m)"
           >
             <Activity size={16} />
           </Link>
           <Link
             to="/sites"
-            className="rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+            className="hidden rounded-lg p-2 leading-none text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt sm:block"
             title="Sitios web (g w)"
           >
             <Globe size={16} />

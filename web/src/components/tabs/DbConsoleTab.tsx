@@ -1,11 +1,47 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { ChevronDown, Database, History, Play, RefreshCw, Table2, TriangleAlert } from 'lucide-react';
+import {
+  ChevronDown,
+  Columns3,
+  Database,
+  Download,
+  History,
+  Play,
+  RefreshCw,
+  Table2,
+  TriangleAlert,
+} from 'lucide-react';
 import { api } from '../../api';
 import { useLocalStorage } from '../../hooks';
 import { DbOverview, DbQueryResult, DbSnippet } from '../../types';
 import { cx, fmtBytes } from '../../utils';
 import { Button, Kbd, Skeleton, useToast } from '../ui';
+
+/** Descarga un contenido como archivo desde el navegador. */
+function downloadFile(filename: string, content: string, mime: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type: mime }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const csvCell = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+
+function resultToCsv(result: DbQueryResult): string {
+  const rows = [result.columns ?? [], ...(result.rows ?? [])];
+  return rows.map((r) => r.map(csvCell).join(',')).join('\n');
+}
+
+function resultToJson(result: DbQueryResult): string {
+  const cols = result.columns ?? [];
+  return JSON.stringify(
+    (result.rows ?? []).map((r) => Object.fromEntries(cols.map((c, i) => [c, r[i] ?? '']))),
+    null,
+    2,
+  );
+}
 
 const ENGINE_LABEL: Record<DbOverview['engine'], string> = {
   postgres: 'PostgreSQL',
@@ -109,8 +145,10 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
   };
 
   const browse = useMutation({
-    mutationFn: (object: string) =>
-      api.get<{ query: string }>(`/services/${serviceId}/db/browse-query?object=${encodeURIComponent(object)}`),
+    mutationFn: ({ object, mode }: { object: string; mode: 'data' | 'describe' }) =>
+      api.get<{ query: string }>(
+        `/services/${serviceId}/db/browse-query?object=${encodeURIComponent(object)}&mode=${mode}`,
+      ),
     onSuccess: (data) => execute(data.query),
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -184,19 +222,30 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
           </p>
           <div className="flex flex-wrap gap-1.5">
             {objects.map((o) => (
-              <button
+              <span
                 key={o.name}
-                onClick={() => browse.mutate(o.name)}
-                className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-line bg-surface px-2 py-1 text-[11.5px] text-sub transition-colors hover:border-acc/50 hover:text-txt"
-                title={`Consultar ${o.name}`}
+                className="inline-flex max-w-full items-stretch overflow-hidden rounded-lg border border-line bg-surface text-[11.5px] text-sub transition-colors focus-within:border-acc/50 hover:border-acc/50"
               >
-                <Table2 size={11} className="shrink-0 text-subtle" />
-                <span className="truncate font-mono">{o.name}</span>
-                {o.rows !== null && <span className="tnum shrink-0 text-[10px] text-subtle">{fmtRows(o.rows)}</span>}
-                {o.sizeBytes !== null && o.sizeBytes > 0 && (
-                  <span className="tnum shrink-0 text-[10px] text-subtle">{fmtBytes(o.sizeBytes)}</span>
-                )}
-              </button>
+                <button
+                  onClick={() => browse.mutate({ object: o.name, mode: 'data' })}
+                  className="inline-flex min-w-0 items-center gap-1.5 px-2 py-1 transition-colors hover:text-txt"
+                  title={`Ver contenido de ${o.name}`}
+                >
+                  <Table2 size={11} className="shrink-0 text-subtle" />
+                  <span className="truncate font-mono">{o.name}</span>
+                  {o.rows !== null && <span className="tnum shrink-0 text-[10px] text-subtle">{fmtRows(o.rows)}</span>}
+                  {o.sizeBytes !== null && o.sizeBytes > 0 && (
+                    <span className="tnum shrink-0 text-[10px] text-subtle">{fmtBytes(o.sizeBytes)}</span>
+                  )}
+                </button>
+                <button
+                  onClick={() => browse.mutate({ object: o.name, mode: 'describe' })}
+                  className="inline-flex items-center border-l border-line px-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+                  title={engine === 'redis' ? `Tipo, TTL y memoria de ${o.name}` : `Estructura de ${o.name}`}
+                >
+                  <Columns3 size={11} />
+                </button>
+              </span>
             ))}
           </div>
         </div>
@@ -307,6 +356,33 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
             <span>·</span>
             <span className="tnum">{result.durationMs} ms</span>
             {result.notice && <span className="text-warn">· {result.notice}</span>}
+            {result.kind === 'table' && (result.rows?.length ?? 0) > 0 && (
+              <span className="ml-auto flex items-center gap-1">
+                <button
+                  onClick={() => downloadFile(`consulta-${Date.now()}.csv`, resultToCsv(result), 'text/csv')}
+                  className="flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-surface2 hover:text-txt"
+                  title="Descargar el resultado como CSV"
+                >
+                  <Download size={11} /> CSV
+                </button>
+                <button
+                  onClick={() => downloadFile(`consulta-${Date.now()}.json`, resultToJson(result), 'application/json')}
+                  className="flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-surface2 hover:text-txt"
+                  title="Descargar el resultado como JSON"
+                >
+                  <Download size={11} /> JSON
+                </button>
+              </span>
+            )}
+            {result.kind === 'text' && !!result.raw && (
+              <button
+                onClick={() => downloadFile(`consulta-${Date.now()}.txt`, result.raw!, 'text/plain')}
+                className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-surface2 hover:text-txt"
+                title="Descargar el resultado"
+              >
+                <Download size={11} /> Descargar
+              </button>
+            )}
           </div>
           {result.kind === 'table' ? (
             <ResultTable result={result} />
