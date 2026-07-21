@@ -26,16 +26,22 @@ FROM node:22-alpine
 RUN apk add --no-cache docker-cli docker-cli-buildx git curl bash ca-certificates
 
 # Nixpacks (builds sin Dockerfile, como Railway). Best-effort: si falla,
-# Skyway sigue funcionando y lo indica en Ajustes → Sistema. Se descarga a
-# fichero (con `curl | bash`, un curl fallido deja a bash sin entrada y sale
-# con 0: la instalación se saltaba sin dejar rastro), se reintenta ante fallos
-# de red y se verifica que el binario instalado de verdad se ejecuta.
-RUN for i in 1 2 3; do \
-      curl -fsSL --retry 3 --retry-delay 2 https://nixpacks.com/install.sh -o /tmp/nixpacks-install.sh \
-      && bash /tmp/nixpacks-install.sh && break; \
-      echo "intento $i de instalar nixpacks falló"; sleep 2; \
-    done; \
-    rm -f /tmp/nixpacks-install.sh; \
+# Skyway sigue funcionando y lo indica en Ajustes → Sistema. Se descarga el
+# binario musl directamente de las releases: el install.sh oficial invoca
+# `tar "" -xzf` (argumento vacío) y el tar de busybox lo rechaza, así que en
+# Alpine ese script no funciona nunca. La versión sale del Cargo.toml del
+# repo (mismo mecanismo que usa el instalador oficial).
+RUN set -x; \
+    case "$(uname -m)" in x86_64) t=x86_64-unknown-linux-musl ;; aarch64) t=aarch64-unknown-linux-musl ;; *) t= ;; esac; \
+    ver="$(curl -fsSL --retry 3 https://raw.githubusercontent.com/railwayapp/nixpacks/master/Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)"; \
+    if [ -n "$t" ] && [ -n "$ver" ]; then \
+      for i in 1 2 3; do \
+        curl -fL --retry 3 --retry-delay 2 -o /tmp/nixpacks.tgz "https://github.com/railwayapp/nixpacks/releases/download/v${ver}/nixpacks-v${ver}-${t}.tar.gz" \
+        && tar -xzf /tmp/nixpacks.tgz -C /usr/local/bin && break; \
+        echo "intento $i de instalar nixpacks falló"; sleep 2; \
+      done; \
+      rm -f /tmp/nixpacks.tgz; \
+    fi; \
     nixpacks --version \
     || echo "AVISO: nixpacks no instalado: los repos sin Dockerfile no se podrán construir (se ve en Ajustes → Sistema)"
 

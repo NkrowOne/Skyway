@@ -201,6 +201,9 @@ async function planService(
     if (!raw.branch) notes.push('Railway no expuso la rama: se asume "main", verifícala en Ajustes.');
     base.rootDir = raw.rootDirectory?.replace(/^\//, '') || undefined;
     base.startCmd = raw.startCommand ?? undefined;
+    if (raw.startCommand) {
+      notes.push('Si el repo trae railway.json con deploy.startCommand, ese manda al desplegar (config-as-code, como en Railway).');
+    }
     base.port = explicitPort ?? 3000;
     if (!explicitPort) notes.push('Puerto interno asumido 3000: ajústalo si tu app escucha en otro.');
     if (raw.buildCommand) {
