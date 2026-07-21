@@ -17,6 +17,26 @@ export async function nixpacksAvailable(): Promise<boolean> {
   return nixpacksCache;
 }
 
+/**
+ * startCommand de config-as-code (railway.json). Railway da prioridad al
+ * fichero del repo sobre el ajuste del panel, y el importador copia el del
+ * panel: si el repo define el suyo (p. ej. un start.sh que levanta procesos
+ * auxiliares), el despliegue debe replicar esa precedencia o el servicio
+ * arrancaría con el comando equivocado.
+ */
+export function readRailwayStartCommand(repoDir: string, rootDir?: string): string | null {
+  for (const dir of [path.resolve(repoDir, rootDir || '.'), path.resolve(repoDir)]) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'railway.json'), 'utf8'));
+      const cmd = parsed?.deploy?.startCommand;
+      if (typeof cmd === 'string' && cmd.trim()) return cmd.trim();
+    } catch {
+      /* sin fichero o inválido: se prueba la siguiente ubicación */
+    }
+  }
+  return null;
+}
+
 let buildxCache: boolean | null = null;
 
 /**

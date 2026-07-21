@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.13.3. Si el código y este documento discrepan,
+> Versión de este documento: 0.13.4. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -109,8 +109,11 @@ web/src/
    - `image` → `docker pull` de la imagen indicada.
    - `git` → clone superficial (`--depth 1 --branch`) + build con **Dockerfile**
      si existe (BuildKit; si el plugin buildx faltara, se degrada al builder
-     clásico con un aviso en el log), o **Nixpacks** si no. El token para
-     clonar se resuelve así: el
+     clásico con un aviso en el log), o **Nixpacks** si no. Si el repo trae
+     `railway.json` con `deploy.startCommand`, ese comando **manda sobre el
+     `startCmd` del servicio** (misma precedencia config-as-code que Railway;
+     el importador copia el del panel y puede contradecir al del repo). El
+     token para clonar se resuelve así: el
      **conector de GitHub** del servicio (`connectorId`, token del cliente) o, en
      su defecto, el token global (`settings.githubToken`); se inyecta en la URL y
      se **enmascara** en los logs. Si el conector referenciado ya no existe, se

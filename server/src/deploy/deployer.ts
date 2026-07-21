@@ -37,7 +37,7 @@ import {
   getRuntime,
 } from '../docker/containers';
 import { ensureNetwork, projectNetworkName, EDGE_NETWORK } from '../docker/networks';
-import { buildImage, cloneRepo, spawnLogged } from './builder';
+import { buildImage, cloneRepo, readRailwayStartCommand, spawnLogged } from './builder';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
 import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
 import { resolveServiceEnv } from '../variables';
@@ -161,6 +161,7 @@ async function runDeployment(deploymentId: string): Promise<void> {
     setStatus('building');
 
     let image: string;
+    let repoStartCmd: string | null = null;
     if (service.type === 'database') {
       image = await prepareDatabaseImage(service, log);
     } else if (service.type === 'image') {
@@ -172,13 +173,15 @@ async function runDeployment(deploymentId: string): Promise<void> {
         throw new Error(`La imagen ${image} ya no existe en el servidor (fue purgada). Haz un despliegue normal.`);
       }
     } else {
-      image = await buildGitImage(project, service, deploymentId, job, log);
+      const built = await buildGitImage(project, service, deploymentId, job, log);
+      image = built.image;
+      repoStartCmd = built.repoStartCmd;
     }
     checkCanceled();
     updateDeployment(deploymentId, { image_tag: image });
 
     setStatus('deploying');
-    await deployContainer(project, service, image, deploymentId, log);
+    await deployContainer(project, service, image, deploymentId, log, repoStartCmd);
     checkCanceled();
 
     setStatus('success');
@@ -374,7 +377,7 @@ async function buildGitImage(
   deploymentId: string,
   job: ActiveJob,
   log: (l: string) => void,
-): Promise<string> {
+): Promise<{ image: string; repoStartCmd: string | null }> {
   const cfg = service.config as GitConfig;
   const image = `skyway/${project.slug}-${service.slug}:${deploymentId.slice(-8)}`;
   const workDir = path.join(config.buildsDir, deploymentId);
@@ -394,6 +397,8 @@ async function buildGitImage(
     if (job.canceled) throw new CanceledError();
     updateDeployment(deploymentId, { commit_sha: info.commitSha, commit_msg: info.commitMsg });
 
+    const repoStartCmd = readRailwayStartCommand(workDir, cfg.rootDir);
+
     await buildImage(
       {
         repoDir: workDir,
@@ -407,7 +412,7 @@ async function buildGitImage(
     );
     if (job.canceled) throw new CanceledError();
     log(`Imagen construida: ${image}`);
-    return image;
+    return { image, repoStartCmd };
   } finally {
     releaseBuildSlot();
     fs.rmSync(workDir, { recursive: true, force: true });
@@ -437,6 +442,7 @@ async function deployContainer(
   image: string,
   deploymentId: string,
   log: (l: string) => void,
+  repoStartCmd: string | null = null,
 ): Promise<void> {
   const netName = projectNetworkName(project);
   await ensureNetwork(netName);
@@ -486,7 +492,14 @@ async function deployContainer(
     cpus = cfg.cpus ?? null;
     memoryMb = cfg.memoryMb ?? null;
     volumes = cfg.volumes || [];
-    if (cfg.startCmd) cmd = ['sh', '-c', cfg.startCmd];
+    // Config-as-code de Railway: el startCommand de railway.json manda sobre
+    // el del servicio (misma precedencia que Railway; el importador copia el
+    // del panel y puede contradecir al del repo).
+    const startCmd = repoStartCmd ?? cfg.startCmd;
+    if (repoStartCmd && cfg.startCmd && repoStartCmd !== cfg.startCmd) {
+      log(`startCommand de railway.json («${repoStartCmd}») tiene prioridad sobre el del servicio, como en Railway.`);
+    }
+    if (startCmd) cmd = ['sh', '-c', startCmd];
     if (!env.PORT) env.PORT = String(internalPort);
   }
 
