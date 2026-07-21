@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.13.1. Si el código y este documento discrepan,
+> Versión de este documento: 0.13.2. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -93,7 +93,19 @@ web/src/
    deploy a la vez por servicio) y limita los builds globales con un semáforo
    (`BUILD_CONCURRENCY`, por defecto 2).
 2. **Build/obtención de imagen**:
-   - `database` → `docker pull` de la imagen de la plantilla.
+   - `database` → `docker pull` de la imagen de la plantilla. La **versión
+     efectiva** (`cfg.version` o el default de la plantilla) decide a la vez el
+     tag y la ruta de montaje del volumen: Postgres <18 monta
+     `/var/lib/postgresql/data` y 18+ monta `/var/lib/postgresql` (la imagen
+     oficial 18+ **se niega a arrancar** con la ruta antigua, aunque el volumen
+     esté vacío). Antes de arrancar Postgres se inspecciona el volumen
+     (best-effort, con busybox): si contiene datos de otra versión mayor u otro
+     layout, el despliegue falla con el remedio concreto en vez de dejar el
+     contenedor en bucle de reinicio. Además, en cada despliegue se completan
+     las variables de conexión de la plantilla que falten (DATABASE_URL, host,
+     credenciales…) sin tocar las existentes, de modo que la URL interna existe
+     siempre aunque el servicio venga de una versión antigua o se borraran a
+     mano.
    - `image` → `docker pull` de la imagen indicada.
    - `git` → clone superficial (`--depth 1 --branch`) + build con **Dockerfile**
      si existe, o **Nixpacks** si no. El token para clonar se resuelve así: el

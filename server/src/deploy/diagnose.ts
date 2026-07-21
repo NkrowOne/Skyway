@@ -110,6 +110,20 @@ const RULES: Rule[] = [
     fix: 'Revisa el Dockerfile y el campo "Directorio raíz" del servicio: las rutas de COPY/ADD son relativas a ese directorio.',
   },
   {
+    id: 'postgres18-volume-layout',
+    test: (e, l) => has(e + l, 'unused mount/volume', 'appears to be PostgreSQL data in', 'docker-library/postgres/pull/1259'),
+    title: 'Postgres 18+ rechaza el volumen (cambio de formato en la 18)',
+    cause: 'Desde la 18, la imagen oficial guarda los datos en un subdirectorio versionado de /var/lib/postgresql y se niega a arrancar si el volumen está montado en la ruta antigua (/var/lib/postgresql/data) — aunque esté vacío — o si encuentra datos con el formato de una versión anterior.',
+    fix: 'Con Skyway 0.13.1+ basta con redesplegar: la ruta de montaje ya se elige según la versión. Si el volumen tiene datos de un Postgres anterior, mantén esa versión en Ajustes (p. ej. 16-alpine) o migra con Backups (volcado con la versión vieja y restauración en la nueva). Para empezar de cero, borra el servicio marcando «borrar también el volumen».',
+  },
+  {
+    id: 'postgres-version-mismatch',
+    test: (e, l) => has(e + l, 'database files are incompatible with server', 'no puede abrir los datos de otra', 'formato antiguo (anterior a 18)', 'formato de Postgres 18+', 'subdirectorio data/'),
+    title: 'La versión de Postgres no coincide con los datos del volumen',
+    cause: 'El volumen fue inicializado por otra versión mayor de PostgreSQL: una versión mayor no puede abrir directamente los datos creados por otra.',
+    fix: 'Vuelve en Ajustes a la versión que creó los datos, o migra: Backup con la versión original → cambia la versión → borra el servicio con su volumen → recréalo → restaura el backup. El propio error del despliegue indica la versión exacta que tiene el volumen.',
+  },
+  {
     id: 'healthcheck-failed',
     test: (e) => has(e, 'no pasó la validación', 'no respondió 2xx', 'Se restauró la versión anterior', 'Se mantuvo la versión anterior'),
     title: 'La versión nueva no superó la validación de salud',
