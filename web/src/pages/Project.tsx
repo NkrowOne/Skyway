@@ -5,6 +5,8 @@ import { FileText, KeyRound, Pencil, Plus, RefreshCw, Signal, Trash2, X } from '
 import { api, openStream } from '../api';
 import { usePresence } from '../hooks';
 import { Button, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } from '../components/ui';
+import ConnectorsModal from '../components/ConnectorsModal';
+import { ModuleLogo } from '../components/ModuleIcon';
 import NewServiceModal from '../components/NewServiceModal';
 import { ImportReport, ImportReportView } from '../components/RailwayImportModal';
 import ServiceCard from '../components/ServiceCard';
@@ -105,6 +107,7 @@ export default function ProjectPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteVolumes, setDeleteVolumes] = useState(false);
   const [sharedOpen, setSharedOpen] = useState(false);
+  const [connectorsOpen, setConnectorsOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
@@ -245,6 +248,15 @@ export default function ProjectPage() {
               variant="secondary"
               size="sm"
               className="max-sm:h-11 max-sm:min-w-11"
+              onClick={() => setConnectorsOpen(true)}
+              title="Conectores de GitHub: cuentas cuyas repos se pueden desplegar aquí"
+            >
+              <ModuleLogo kind="github" size={13} /> <span className="hidden sm:inline">Conectores</span>
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="max-sm:h-11 max-sm:min-w-11"
               onClick={() => setSharedOpen(true)}
               title="Variables compartidas del proyecto"
             >
@@ -360,6 +372,8 @@ export default function ProjectPage() {
       />
 
       <SharedVarsModal open={sharedOpen} onClose={() => setSharedOpen(false)} projectId={proj.id} />
+
+      <ConnectorsModal open={connectorsOpen} onClose={() => setConnectorsOpen(false)} projectId={proj.id} />
 
       <StatusPageModal open={statusOpen} onClose={() => setStatusOpen(false)} projectId={proj.id} isAdmin={!!isAdmin} />
 

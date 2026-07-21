@@ -34,6 +34,28 @@ export interface ApiToken {
   expires_at: number | null;
 }
 
+/** Conector de GitHub de un proyecto: el token queda en el servidor, aquí solo metadatos. */
+export interface GithubConnector {
+  id: string;
+  project_id: string;
+  name: string;
+  gh_login: string;
+  token_type: string;
+  created_by: string;
+  created_at: number;
+  last_used_at: number | null;
+  project_name?: string; // solo en la vista global del admin
+  project_client?: string | null;
+}
+
+export interface GithubRepo {
+  fullName: string;
+  private: boolean;
+  defaultBranch: string;
+  pushedAt: string | null;
+  description: string | null;
+}
+
 export type ContainerState =
   | 'running'
   | 'restarting'
@@ -67,6 +89,7 @@ export interface Project {
 export interface GitConfig {
   repoUrl: string;
   branch: string;
+  connectorId?: string | null;
   rootDir?: string;
   dockerfilePath?: string;
   startCmd?: string;

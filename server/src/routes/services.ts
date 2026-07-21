@@ -7,6 +7,7 @@ import {
   createService,
   deleteService,
   getEnv,
+  getGithubConnector,
   getProject,
   getService,
   latestDeployment,
@@ -39,6 +40,7 @@ const createGitSchema = z.object({
   type: z.literal('git'),
   name: z.string().trim().min(1).max(60),
   repoUrl: z.string().trim().min(3, 'Repositorio requerido'),
+  connectorId: z.string().trim().optional(),
   branch: z.string().trim().min(1).default('main'),
   rootDir: z.string().trim().optional(),
   dockerfilePath: z.string().trim().optional(),
@@ -68,6 +70,7 @@ const patchSchema = z.object({
   config: z
     .object({
       repoUrl: z.string().trim().min(3).optional(),
+      connectorId: z.string().trim().nullable().optional(),
       branch: z.string().trim().min(1).optional(),
       rootDir: z.string().trim().nullable().optional(),
       dockerfilePath: z.string().trim().nullable().optional(),
@@ -95,7 +98,7 @@ const patchSchema = z.object({
 
 /** Campos cuyo cambio requiere recrear el contenedor. */
 const REDEPLOY_FIELDS = [
-  'repoUrl', 'branch', 'rootDir', 'dockerfilePath', 'startCmd', 'port',
+  'repoUrl', 'connectorId', 'branch', 'rootDir', 'dockerfilePath', 'startCmd', 'port',
   'domains', 'hostPort', 'version', 'image', 'buildArgs', 'healthcheckPath', 'volumes', 'replicas',
 ] as const;
 
@@ -133,9 +136,13 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       service = createService(projectId, body.name, slug, 'image', cfg);
     } else if (base.type === 'git') {
       const body = createGitSchema.parse(req.body);
+      if (body.connectorId && getGithubConnector(body.connectorId)?.project_id !== projectId) {
+        return reply.code(400).send({ error: 'Conector de GitHub desconocido en este proyecto' });
+      }
       const slug = uniqueSlug(projectId, body.name);
       const cfg: GitConfig = {
         repoUrl: body.repoUrl,
+        connectorId: body.connectorId || undefined,
         branch: body.branch,
         rootDir: body.rootDir || undefined,
         dockerfilePath: body.dockerfilePath || undefined,
@@ -189,6 +196,9 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     const body = patchSchema.parse(req.body);
+    if (body.config?.connectorId && getGithubConnector(body.config.connectorId)?.project_id !== found.project.id) {
+      return reply.code(400).send({ error: 'Conector de GitHub desconocido en este proyecto' });
+    }
 
     const oldCfg = found.service.config as any;
     const newCfg = { ...oldCfg };
@@ -198,6 +208,8 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (body.config) {
       for (const [key, value] of Object.entries(body.config)) {
         if (value === undefined) continue;
+        // El conector solo tiene sentido en servicios de repositorio.
+        if (key === 'connectorId' && found.service.type !== 'git') continue;
         // Campos que no aplican a bases de datos: se ignoran sin efecto.
         if (found.service.type === 'database' && ['replicas', 'healthcheckPath'].includes(key)) continue;
         if (found.service.type !== 'database' && ['backupSchedule', 'backupRetention'].includes(key)) continue;

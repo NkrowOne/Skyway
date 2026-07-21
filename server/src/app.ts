@@ -6,6 +6,7 @@ import fastifyStatic from '@fastify/static';
 import { ZodError } from 'zod';
 import { config } from './config';
 import { authRoutes } from './routes/auth';
+import { connectorRoutes } from './routes/connectors';
 import { projectRoutes } from './routes/projects';
 import { serviceRoutes } from './routes/services';
 import { deploymentRoutes } from './routes/deployments';
@@ -78,6 +79,7 @@ export function buildApp(): FastifyInstance {
   });
 
   app.register(authRoutes);
+  app.register(connectorRoutes);
   app.register(projectRoutes);
   app.register(serviceRoutes);
   app.register(deploymentRoutes);

@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { Cpu, Globe, HardDrive, Plus, X } from 'lucide-react';
 import { api } from '../../api';
-import { Service } from '../../types';
+import { GithubConnector, Service } from '../../types';
 import { cx } from '../../utils';
 import DomainsEditor from '../DomainsEditor';
 import { ModuleLogo, moduleKind } from '../ModuleIcon';
@@ -43,6 +43,7 @@ function SectionCard({
 interface FormState {
   name: string;
   repoUrl: string;
+  connectorId: string;
   branch: string;
   rootDir: string;
   dockerfilePath: string;
@@ -67,6 +68,7 @@ function formFromService(service: Service): FormState {
   return {
     name: service.name,
     repoUrl: cfg.repoUrl ?? '',
+    connectorId: cfg.connectorId ?? '',
     branch: cfg.branch ?? 'main',
     rootDir: cfg.rootDir ?? '',
     dockerfilePath: cfg.dockerfilePath ?? '',
@@ -113,6 +115,17 @@ export default function ServiceSettingsTab({
   const dirty = useMemo(() => JSON.stringify(form) !== JSON.stringify(baseline), [form, baseline]);
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
 
+  const connectors = useQuery({
+    queryKey: ['connectors', projectId],
+    queryFn: () => api.get<{ connectors: GithubConnector[]; hasGlobalToken: boolean }>(`/projects/${projectId}/connectors`),
+    enabled: isGit,
+    staleTime: 30_000,
+  });
+  const connectorList = connectors.data?.connectors ?? [];
+  // Conector borrado pero aún referenciado: se muestra para poder quitarlo. Solo
+  // se da por colgante con la lista cargada; si no, un guardado lo borraría sin querer.
+  const danglingConnector = !!connectors.data && !!form.connectorId && !connectorList.some((c) => c.id === form.connectorId);
+
   const [saved, flashSaved] = useFlash();
   const save = useMutation({
     mutationFn: () => {
@@ -132,6 +145,8 @@ export default function ServiceSettingsTab({
       };
       if (isGit) {
         Object.assign(config, {
+          // Un id colgante (conector borrado) se limpia al guardar: el servidor lo rechazaría.
+          connectorId: danglingConnector ? null : form.connectorId || null,
           repoUrl: form.repoUrl.trim(),
           branch: form.branch.trim() || 'main',
           rootDir: form.rootDir.trim() || null,
@@ -200,6 +215,27 @@ export default function ServiceSettingsTab({
                 <Field label="Repositorio">
                   <input className="input font-mono text-xs" value={form.repoUrl} onChange={(e) => set('repoUrl', e.target.value)} />
                 </Field>
+                {(connectorList.length > 0 || danglingConnector) && (
+                  <Field
+                    label="Cuenta de GitHub para clonar"
+                    hint="Conector del proyecto (repos del cliente) o el token global del servidor"
+                    error={danglingConnector ? 'El conector elegido ya no existe: se usará el token global hasta que elijas otro' : null}
+                  >
+                    <select className="input" value={form.connectorId} onChange={(e) => set('connectorId', e.target.value)}>
+                      <option value="">Token global del servidor</option>
+                      {connectorList.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} · @{c.gh_login}
+                        </option>
+                      ))}
+                      {danglingConnector && (
+                        <option value={form.connectorId} disabled>
+                          (conector eliminado)
+                        </option>
+                      )}
+                    </select>
+                  </Field>
+                )}
                 <div className="grid grid-cols-2 gap-2.5">
                   <Field label="Rama">
                     <input className="input" value={form.branch} onChange={(e) => set('branch', e.target.value)} />

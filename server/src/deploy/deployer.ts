@@ -5,11 +5,13 @@ import { config } from '../config';
 import {
   createDeployment,
   getDeployment,
+  getGithubConnector,
   getProject,
   getService,
   getSetting,
   setDeploymentDiagnosis,
   successfulDeploymentsBeyond,
+  touchGithubConnector,
   updateDeployment,
 } from '../db';
 import { fireAlert, resolveServiceAlerts } from '../alerts';
@@ -259,7 +261,7 @@ async function buildGitImage(
   const cfg = service.config as GitConfig;
   const image = `skyway/${project.slug}-${service.slug}:${deploymentId.slice(-8)}`;
   const workDir = path.join(config.buildsDir, deploymentId);
-  const token = getSetting('githubToken');
+  const token = resolveCloneToken(project, cfg, log);
   const onSpawn = (p: any) => {
     job.procs.add(p);
     p.on('exit', () => job.procs.delete(p));
@@ -293,6 +295,23 @@ async function buildGitImage(
     releaseBuildSlot();
     fs.rmSync(workDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Token con el que clonar: el conector del proyecto elegido en el servicio
+ * (repos del cliente) o, en su defecto, el token global del admin.
+ */
+function resolveCloneToken(project: ProjectRow, cfg: GitConfig, log: (l: string) => void): string | null {
+  if (cfg.connectorId) {
+    const connector = getGithubConnector(cfg.connectorId);
+    if (connector && connector.project_id === project.id) {
+      touchGithubConnector(connector.id);
+      log(`Clonando con el conector de GitHub «${connector.name}» (@${connector.gh_login})`);
+      return connector.token;
+    }
+    log('⚠ El conector de GitHub de este servicio ya no existe: se usa el token global si está configurado');
+  }
+  return getSetting('githubToken');
 }
 
 async function deployContainer(
