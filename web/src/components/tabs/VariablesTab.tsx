@@ -5,10 +5,16 @@ import { api } from '../../api';
 import { cx } from '../../utils';
 import { Button, CopyButton, Skeleton, useToast } from '../ui';
 
+interface ReferenceGroup {
+  service: string;
+  template: string | null;
+  vars: string[];
+}
+
 interface EnvResponse {
   vars: Record<string, string>;
   resolved: Record<string, string>;
-  references: { service: string; vars: string[] }[];
+  references: ReferenceGroup[];
 }
 
 interface Row {
@@ -21,9 +27,32 @@ const SUGGESTED_VARS: { key: string; value: string; hint: string }[] = [
   { key: 'NODE_ENV', value: 'production', hint: 'Modo de ejecución para apps Node' },
   { key: 'TZ', value: 'Europe/Madrid', hint: 'Zona horaria del contenedor' },
   { key: 'LOG_LEVEL', value: 'info', hint: 'Nivel de logs de la aplicación' },
-  { key: 'DATABASE_URL', value: '${{PostgreSQL.DATABASE_URL}}', hint: 'Conexión a la base de datos del proyecto' },
-  { key: 'REDIS_URL', value: '${{Redis.REDIS_URL}}', hint: 'Conexión al Redis del proyecto' },
 ];
+
+/** Variable de conexión principal que exporta cada plantilla de base de datos. */
+const MAIN_VAR: Record<string, string> = {
+  postgres: 'DATABASE_URL',
+  redis: 'REDIS_URL',
+  mysql: 'MYSQL_URL',
+  mongo: 'MONGO_URL',
+  minio: 'MINIO_ENDPOINT',
+};
+
+const RAILWAY_RE = /railway\.internal|railway\.app|rlwy\.net/i;
+
+/** Deduce a qué tipo de base apunta un valor heredado de Railway (por esquema, luego por clave). */
+const guessTemplate = (key: string, value: string): string | null => {
+  if (/^postgres(?:ql)?:\/\//i.test(value)) return 'postgres';
+  if (/^rediss?:\/\//i.test(value)) return 'redis';
+  if (/^mysql:\/\//i.test(value)) return 'mysql';
+  if (/^mongodb(?:\+srv)?:\/\//i.test(value)) return 'mongo';
+  if (/^(?:DATABASE|PG|POSTGRES)/i.test(key)) return 'postgres';
+  if (/^REDIS/i.test(key)) return 'redis';
+  if (/^MYSQL/i.test(key)) return 'mysql';
+  if (/^MONGO/i.test(key)) return 'mongo';
+  if (/^(?:MINIO|S3)/i.test(key)) return 'minio';
+  return null;
+};
 
 const isReference = (v: string) => v.includes('${{');
 
@@ -96,6 +125,34 @@ export default function VariablesTab({
   const resolved = env.data?.resolved ?? {};
   const hasRefs = useMemo(() => rows.some((r) => isReference(r.value)), [rows]);
 
+  // Variables que siguen apuntando a Railway (tras una importación) y con qué
+  // base de datos interna del proyecto se pueden reconectar en un clic.
+  const railwayPending = useMemo(() => {
+    const out: { index: number; key: string; candidates: ReferenceGroup[] }[] = [];
+    rows.forEach((row, index) => {
+      if (!RAILWAY_RE.test(row.value) || isReference(row.value)) return;
+      const template = guessTemplate(row.key, row.value);
+      const candidates = template
+        ? references.filter((g) => g.template === template && g.vars.includes(MAIN_VAR[template]))
+        : [];
+      out.push({ index, key: row.key, candidates });
+    });
+    return out;
+  }, [rows, references]);
+
+  // Sugerencias: conexiones a las bases de datos reales del proyecto + genéricas.
+  const suggestions = useMemo(() => {
+    const db = references
+      .filter((g) => g.template && MAIN_VAR[g.template] && g.vars.includes(MAIN_VAR[g.template]))
+      .map((g) => ({
+        key: MAIN_VAR[g.template!],
+        value: `\${{${g.service}.${MAIN_VAR[g.template!]}}}`,
+        hint: `Conexión a ${g.service} por la red interna del proyecto`,
+      }));
+    const seen = new Set<string>();
+    return [...db, ...SUGGESTED_VARS].filter((s) => !seen.has(s.key) && seen.add(s.key));
+  }, [references]);
+
   const edit = (i: number, patch: Partial<Row>) => {
     setRows((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)));
     setDirty(true);
@@ -139,6 +196,43 @@ export default function VariablesTab({
           </button>
         </div>
       </div>
+
+      {!raw && railwayPending.length > 0 && (
+        <div className="rounded-xl border border-warn/30 bg-warn/[.06] p-3.5 text-xs">
+          <p className="mb-2 font-semibold text-warn">
+            {railwayPending.length === 1
+              ? '1 variable sigue apuntando a Railway'
+              : `${railwayPending.length} variables siguen apuntando a Railway`}
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {railwayPending.map((p) => (
+              <div key={p.index} className="flex flex-wrap items-center gap-1.5">
+                <span className="font-mono text-[11px] text-txt">{p.key || '(sin clave)'}</span>
+                {p.candidates.length === 0 ? (
+                  <span className="text-subtle">sin equivalente en el proyecto: revísala a mano</span>
+                ) : (
+                  p.candidates.map((g) => {
+                    const token = `\${{${g.service}.${MAIN_VAR[g.template!]}}}`;
+                    return (
+                      <button
+                        key={g.service}
+                        className="rounded-md border border-line bg-bg px-2 py-0.5 font-mono text-[11px] text-info transition-colors duration-150 hover:border-[color-mix(in_oklab,var(--color-info)_50%,var(--color-line))]"
+                        title={`Reconectar con ${g.service} por la red interna del proyecto`}
+                        onClick={() => edit(p.index, { value: token })}
+                      >
+                        usar {token}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] text-subtle">
+            Tras reconectarlas, guarda y redespliega: la conexión pasará por la red interna del proyecto.
+          </p>
+        </div>
+      )}
 
       {raw ? (
         <textarea
@@ -209,7 +303,7 @@ export default function VariablesTab({
 
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
         <span>Sugerencias:</span>
-        {SUGGESTED_VARS.filter((s) => !rows.some((r) => r.key === s.key)).map((s) => (
+        {suggestions.filter((s) => !rows.some((r) => r.key === s.key)).map((s) => (
           <button
             key={s.key}
             className="rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-[11px] text-sub transition-colors duration-150 hover:border-[color-mix(in_oklab,#6e56cf_50%,var(--color-line))] hover:text-txt"

@@ -119,7 +119,7 @@ export async function analyzeRailwayProject(
     );
   }
 
-  return {
+  const plan: ImportPlan = {
     railwayProjectId: detail.id,
     projectName: detail.name,
     environment,
@@ -129,6 +129,15 @@ export async function analyzeRailwayProject(
     warnings,
     _sharedVars: sharedVars,
   };
+
+  // Primero reconectamos a las bases de datos que también se importan; solo lo
+  // que quede sin mapear merece el aviso de "revísala tras importar".
+  reconnectRailwayVars(plan);
+  for (const p of plan.services) {
+    if (p.kind === 'git' || p.kind === 'image') flagRailwayHosts(p._vars ?? {}, p.railwayName, plan.warnings);
+  }
+  flagRailwayHosts(sharedVars, 'compartidas', plan.warnings);
+  return plan;
 }
 
 async function planService(
@@ -171,7 +180,6 @@ async function planService(
     base.port = explicitPort;
     base.startCmd = raw.startCommand ?? undefined;
     if (!explicitPort) notes.push('Sin puerto conocido: configúralo en Ajustes si el servicio sirve HTTP.');
-    flagRailwayHosts(vars, raw.name, warnings);
     return base;
   }
 
@@ -187,7 +195,6 @@ async function planService(
     if (raw.buildCommand) {
       notes.push(`Build command de Railway ("${raw.buildCommand}") no se traslada: Skyway construye con Dockerfile o Nixpacks.`);
     }
-    flagRailwayHosts(vars, raw.name, warnings);
     return base;
   }
 
@@ -200,6 +207,161 @@ function flagRailwayHosts(vars: Record<string, string>, serviceName: string, war
     if (v.includes('${{')) continue; // las referencias se re-resuelven en Skyway
     if (RAILWAY_HOST_RE.test(v)) {
       warnings.push(`Variable ${serviceName}.${k} apunta a infraestructura de Railway: revísala tras importar.`);
+    }
+  }
+}
+
+// ---------- reconexión de variables Railway → servicios nuevos ----------
+
+/** Variables de conexión que exporta cada plantilla, para reconstruir referencias. */
+const TEMPLATE_CONN: Record<string, { main: string; host?: string; port?: string }> = {
+  postgres: { main: 'DATABASE_URL', host: 'PGHOST', port: 'PGPORT' },
+  redis: { main: 'REDIS_URL', host: 'REDIS_HOST', port: 'REDIS_PORT' },
+  mysql: { main: 'MYSQL_URL', host: 'MYSQL_HOST', port: 'MYSQL_PORT' },
+  mongo: { main: 'MONGO_URL', host: 'MONGO_HOST', port: 'MONGO_PORT' },
+  minio: { main: 'MINIO_ENDPOINT' },
+};
+
+/** Esquema de URL → plantilla, para mapear por tipo cuando el host no identifica la base. */
+const SCHEME_TEMPLATE: [RegExp, string][] = [
+  [/^postgres(?:ql)?:\/\//i, 'postgres'],
+  [/^rediss?:\/\//i, 'redis'],
+  [/^mysql:\/\//i, 'mysql'],
+  [/^mongodb(?:\+srv)?:\/\//i, 'mongo'],
+];
+
+// Solo se usa con matchAll (clona el regex): nunca con test/exec, que arrastrarían lastIndex.
+const ENDPOINT_RE = /([a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:railway\.internal|rlwy\.net|railway\.app))(?::(\d+))?/gi;
+
+/** El scope de una referencia solo admite este alfabeto (ver REF_RE en variables.ts). */
+const SAFE_REF_NAME_RE = /^[A-Za-z0-9 _.-]+$/;
+
+interface DbTarget {
+  planned: PlannedService;
+  conn: { main: string; host?: string; port?: string };
+  /** Hosts privados (railway.internal): identifican la base por sí solos. */
+  privateHosts: Set<string>;
+  /** Proxies públicos host:puerto (rlwy.net comparte host entre bases distintas). */
+  publicHostPorts: Set<string>;
+}
+
+function collectDbTargets(services: PlannedService[]): DbTarget[] {
+  const targets: DbTarget[] = [];
+  for (const p of services) {
+    if (p.kind !== 'database' || !p.template) continue;
+    const conn = TEMPLATE_CONN[p.template];
+    if (!conn) continue;
+    const privateHosts = new Set<string>();
+    const publicHostPorts = new Set<string>();
+    for (const v of Object.values(p._vars ?? {})) {
+      for (const m of v.matchAll(ENDPOINT_RE)) {
+        const host = m[1].toLowerCase();
+        if (host.endsWith('railway.internal')) privateHosts.add(host);
+        else if (m[2]) publicHostPorts.add(`${host}:${m[2]}`);
+      }
+    }
+    targets.push({ planned: p, conn, privateHosts, publicHostPorts });
+  }
+  return targets;
+}
+
+function matchTargets(value: string, targets: DbTarget[]): DbTarget[] {
+  const found = new Set<DbTarget>();
+  for (const m of value.matchAll(ENDPOINT_RE)) {
+    const host = m[1].toLowerCase();
+    for (const t of targets) {
+      if (t.privateHosts.has(host)) found.add(t);
+      else if (m[2] && t.publicHostPorts.has(`${host}:${m[2]}`)) found.add(t);
+    }
+  }
+  return [...found];
+}
+
+/**
+ * Reescribe un valor que apunta a una base de datos de Railway como referencia
+ * `${{Base.VAR}}` al servicio nuevo. Devuelve null si no procede (sin match,
+ * match ambiguo, o ya es una referencia).
+ */
+function rewriteValue(value: string, targets: DbTarget[]): string | null {
+  if (value.includes('${{') || !RAILWAY_HOST_RE.test(value)) return null;
+  let matched = matchTargets(value, targets);
+  if (matched.length === 0) {
+    // El host no identifica la base (p. ej. proxy sin puerto conocido): por
+    // esquema, solo si hay exactamente una base de ese tipo en el proyecto.
+    const scheme = SCHEME_TEMPLATE.find(([re]) => re.test(value.trim()));
+    if (scheme) {
+      const ofKind = targets.filter((t) => t.planned.template === scheme[1]);
+      if (ofKind.length === 1) matched = ofKind;
+    }
+  }
+  if (matched.length !== 1) return null;
+
+  const t = matched[0];
+  const name = SAFE_REF_NAME_RE.test(t.planned.railwayName) ? t.planned.railwayName : slugify(t.planned.railwayName);
+  const ref = (v: string) => `\${{${name}.${v}}}`;
+  const trimmed = value.trim();
+
+  // Cadena de conexión completa (esquema o credenciales) → variable principal.
+  // Las credenciales y el nombre de la base cambian al importar, así que se
+  // sustituye el valor entero, no solo el host.
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) || trimmed.includes('@')) return ref(t.conn.main);
+
+  // Valor que es solo `host` o `host:puerto`.
+  const hostLike = /^([a-z0-9.-]+)(?::(\d+))?$/i.exec(trimmed);
+  if (hostLike) {
+    if (hostLike[2] && t.conn.host && t.conn.port) return `${ref(t.conn.host)}:${ref(t.conn.port)}`;
+    if (!hostLike[2] && t.conn.host) return ref(t.conn.host);
+    return ref(t.conn.main);
+  }
+
+  // Host incrustado en un valor mayor (p. ej. jdbc:...): se sustituye solo el endpoint.
+  if (t.conn.host) {
+    let next = value;
+    for (const m of [...value.matchAll(ENDPOINT_RE)]) {
+      if (m[2] && !t.conn.port) continue; // no hay con qué sustituir el puerto
+      const rep = m[2] ? `${ref(t.conn.host)}:${ref(t.conn.port!)}` : ref(t.conn.host);
+      next = next.split(m[0]).join(rep);
+    }
+    if (next !== value) return next;
+  }
+  return null;
+}
+
+const summarizeChanges = (items: string[]): string =>
+  items.length > 4 ? `${items.slice(0, 4).join(', ')} y ${items.length - 4} más` : items.join(', ');
+
+/**
+ * Sustituye en las variables de apps y compartidas los endpoints de Railway de
+ * bases de datos que también se importan por referencias al servicio nuevo,
+ * para que la app llegue por la red interna del proyecto sin tocar nada a mano.
+ */
+function reconnectRailwayVars(plan: ImportPlan): void {
+  const targets = collectDbTargets(plan.services);
+  if (targets.length === 0) return;
+
+  const apply = (vars: Record<string, string>): string[] => {
+    const changed: string[] = [];
+    for (const [k, v] of Object.entries(vars)) {
+      const next = rewriteValue(v, targets);
+      if (next !== null) {
+        vars[k] = next;
+        changed.push(`${k} → ${next}`);
+      }
+    }
+    return changed;
+  };
+
+  for (const p of plan.services) {
+    if ((p.kind !== 'git' && p.kind !== 'image') || !p._vars) continue;
+    const changed = apply(p._vars);
+    if (changed.length > 0) {
+      p.notes.push(`Variables reconectadas a las bases de datos nuevas: ${summarizeChanges(changed)}.`);
+    }
+  }
+  if (plan._sharedVars) {
+    const changed = apply(plan._sharedVars);
+    if (changed.length > 0) {
+      plan.warnings.push(`Variables compartidas reconectadas a las bases de datos nuevas: ${summarizeChanges(changed)}.`);
     }
   }
 }

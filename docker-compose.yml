@@ -31,7 +31,7 @@ services:
       - traefik.http.services.skyway.loadbalancer.server.port=4000
 
   traefik:
-    image: traefik:v3.1
+    image: traefik:v3.7
     container_name: skyway-traefik
     restart: unless-stopped
     command:
