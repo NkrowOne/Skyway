@@ -1,13 +1,15 @@
 import { auditSystem } from './audit';
 import { fireAlert, resolveServiceAlerts } from './alerts';
 import { backupSupported, createBackup, deleteBackup, listBackups } from './backups';
-import { listProjects, listServices } from './db';
+import { listProjects, listServices, resolveAlertsByDedupe } from './db';
 import { dockerAvailable } from './docker/client';
+import { createSystemBackup, listSystemBackups, pruneSystemBackups } from './sysbackup';
 import { DatabaseConfig } from './types';
 
 const TICK_MS = 10 * 60_000;
 /** Hora local a partir de la cual se ejecutan los backups programados. */
 const RUN_AFTER_HOUR = 4;
+const SYSTEM_BACKUP_DEDUPE = 'system:backup';
 
 function isDue(schedule: 'daily' | 'weekly', newestTs: number, now: Date): boolean {
   if (now.getHours() < RUN_AFTER_HOUR) return false;
@@ -18,9 +20,40 @@ function isDue(schedule: 'daily' | 'weekly', newestTs: number, now: Date): boole
   return age > 6.5 * 24 * 3600_000;
 }
 
+/**
+ * Backup diario del propio skyway.db (usuarios, servicios, variables…).
+ * No depende de Docker: aunque el daemon esté caído, el panel se protege.
+ */
+function systemBackupTick(now: Date): void {
+  const newestTs = listSystemBackups()[0]?.createdAt ?? 0;
+  if (!isDue('daily', newestTs, now)) return;
+  try {
+    const entry = createSystemBackup();
+    pruneSystemBackups();
+    auditSystem('system_backup_created', `${entry.file} (programado diario)`);
+    resolveAlertsByDedupe(SYSTEM_BACKUP_DEDUPE);
+  } catch (err: any) {
+    fireAlert({
+      severity: 'warning',
+      type: 'system_backup_failed',
+      title: 'Backup del panel fallido',
+      message: `El backup diario de la base de datos de Skyway falló: ${(err?.message || err).toString().slice(0, 300)}`,
+      explanation:
+        'Sin este backup, una avería del disco perdería usuarios, proyectos y configuración. Causa típica: disco lleno. Puedes lanzarlo manualmente desde Ajustes → Copia de seguridad del panel.',
+      dedupeKey: SYSTEM_BACKUP_DEDUPE,
+    });
+  }
+}
+
 async function tick(): Promise<void> {
+  const nowDate = new Date();
+  try {
+    systemBackupTick(nowDate);
+  } catch {
+    /* nunca debe tumbar el tick de los backups de servicios */
+  }
   if (!(await dockerAvailable())) return;
-  const now = new Date();
+  const now = nowDate;
 
   for (const project of listProjects()) {
     for (const service of listServices(project.id)) {

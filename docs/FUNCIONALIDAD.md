@@ -31,12 +31,13 @@ server/src/
   dbconsole.ts          consola de consultas (psql/mysql/mongosh/redis-cli vía exec)
   files.ts              explorador de archivos por contenedor (tar sobre socket)
   backups.ts            volcado/restauración de BBDD (dump dentro del contenedor)
+  sysbackup.ts          snapshots del propio skyway.db (VACUUM INTO + retención)
   disk.ts               uso de disco por servicio y del host
   domains.ts            IP del servidor + verificación DNS de dominios
   notify.ts             envío a Discord/Telegram/webhook
   alerts.ts             creación/resolución de alertas (con dedupe) + notificación
   monitor.ts            bucle 30 s: caídas, bucles de reinicio, CPU/RAM, uptime, disco
-  scheduler.ts          bucle 10 min: backups programados con retención
+  scheduler.ts          bucle 10 min: backups programados de BBDD + snapshot diario del panel
   events.ts             bus en memoria para logs de despliegue (SSE)
   sse.ts                utilidad Server-Sent Events
   docker/
@@ -227,7 +228,10 @@ Esto reproduce el comportamiento de un *worker* de Railway.
 - **Alertas y notificaciones**: caídas, bucles de reinicio, CPU/RAM sostenidas,
   cuota de disco, deploy y backup fallidos; por Discord/Telegram/webhook y campana.
 - **Backups**: volcado comprimido de postgres/mysql/mongo en un clic o programado
-  con retención; descarga, restauración y borrado.
+  con retención; descarga, restauración y borrado. Además, **snapshot diario del
+  propio `skyway.db`** (usuarios, proyectos, variables) con retención de 7,
+  creación manual y descarga desde Ajustes, y **verificación de integridad** de
+  la BD del panel al arrancar (alerta crítica si falla).
 - **Dominios y TLS**: verificación DNS en vivo, subdominios con comodín, TLS
   automático con Let's Encrypt vía Traefik.
 - **Página de estado pública**: dashboard compartible por token (sin login), con
@@ -347,6 +351,10 @@ distroless), el explorador lo indica y no está disponible.
 | GET | `/system` | auth | versión, docker, nixpacks, host, disco |
 | GET | `/system/docker-usage` | admin | uso de Docker (imágenes/volúmenes/caché) |
 | POST | `/system/prune` | admin | libera imágenes colgantes y caché de build |
+| GET | `/system/backups` | admin | snapshots del propio skyway.db (+ retención) |
+| POST | `/system/backups` | admin | crea un snapshot ahora (VACUUM INTO) |
+| GET | `/system/backups/:file/download` | admin | descarga un snapshot (.db restaurable) |
+| DELETE | `/system/backups/:file` | admin | borra un snapshot |
 | GET | `/settings` | admin | ajustes (secretos como booleanos) |
 | PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas) |
 | POST | `/settings/github/test` | admin | valida el token de GitHub |
@@ -416,6 +424,12 @@ npm run typecheck    # server + web
 # Restablecer contraseña desde el servidor (último recurso):
 docker compose exec skyway node dist/tools/reset-password.js <email> [nueva]
 npm run reset-password -w server -- <email> [nueva]
+
+# Restaurar la BD del panel desde un snapshot (proceso manual a propósito):
+docker compose stop skyway
+docker run --rm -v skyway_skyway-data:/data alpine \
+  sh -c 'cp /data/backups/skyway/<snapshot>.db /data/skyway.db'
+docker compose start skyway
 ```
 
 Despliegue con Docker: ver el `README.md` y el `docker-compose.yml` (incluye

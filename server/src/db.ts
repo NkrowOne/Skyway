@@ -166,6 +166,30 @@ function ensureColumn(table: string, column: string, ddl: string): void {
   }
 }
 
+/**
+ * Copia consistente y compactada de la base de datos del panel en `dest`
+ * (VACUUM INTO): sirve como snapshot de backup incluso con la BD en uso.
+ */
+export function vacuumInto(dest: string): void {
+  db.prepare('VACUUM INTO ?').run(dest);
+}
+
+/**
+ * Comprobación de integridad de la BD del panel. Devuelve null si está sana,
+ * o el detalle del problema. Se ejecuta al arrancar: detectar corrupción
+ * temprano (disco, apagón…) vale más que descubrirla con un fallo raro.
+ */
+export function checkIntegrity(): string | null {
+  try {
+    const rows = db.pragma('integrity_check') as { integrity_check: string }[];
+    const results = rows.map((r) => r.integrity_check);
+    if (results.length === 1 && results[0] === 'ok') return null;
+    return results.join('; ').slice(0, 1000) || 'resultado vacío';
+  } catch (err: any) {
+    return `no se pudo comprobar: ${err?.message || err}`;
+  }
+}
+
 /** Ejecuta varias escrituras de forma atómica (todo o nada). */
 export function transaction<T>(fn: () => T): T {
   return db.transaction(fn)();

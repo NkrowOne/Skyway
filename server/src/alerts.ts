@@ -12,6 +12,8 @@ export interface FireAlertInput {
   explanation?: string | null;
   /** Con dedupe, no se crea otra alerta si ya hay una abierta del mismo tipo. */
   dedupe?: boolean;
+  /** Clave de dedupe explícita para alertas sin servicio (p. ej. de sistema). */
+  dedupeKey?: string;
   /** No enviar a canales externos (solo campana in-app). */
   quiet?: boolean;
 }
@@ -24,7 +26,8 @@ export function fireAlert(input: FireAlertInput): void {
 
   if (service && (service.config as any).alertsMuted) return;
 
-  const dedupeKey = input.dedupe && input.serviceId ? `${input.serviceId}:${input.type}` : null;
+  const dedupeKey =
+    input.dedupeKey ?? (input.dedupe && input.serviceId ? `${input.serviceId}:${input.type}` : null);
   const row = insertAlert({
     severity: input.severity,
     type: input.type,

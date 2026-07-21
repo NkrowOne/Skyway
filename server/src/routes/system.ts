@@ -1,3 +1,4 @@
+import fs from 'fs';
 import os from 'os';
 import { spawn } from 'child_process';
 import { FastifyInstance } from 'fastify';
@@ -11,6 +12,14 @@ import { docker, dockerAvailable } from '../docker/client';
 import { nixpacksAvailable } from '../deploy/builder';
 import { channelsConfigured, dispatchToChannels } from '../notify';
 import { verifyGithubToken } from '../github/client';
+import {
+  SYSTEM_BACKUP_RETENTION,
+  createSystemBackup,
+  deleteSystemBackup,
+  listSystemBackups,
+  pruneSystemBackups,
+  resolveSystemBackupFile,
+} from '../sysbackup';
 
 const SETTINGS_KEYS = [
   'rootDomain',
@@ -149,6 +158,45 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     secured.delete('/api/settings/github', { preHandler: requireAdmin }, async (req) => {
       setSetting('githubToken', null);
       audit(req, 'github_token_removed', { type: 'system', id: 'github' });
+      return { ok: true };
+    });
+
+    // ---------- backups del propio panel (skyway.db) ----------
+    /** Lista los snapshots de la base de datos del panel. */
+    secured.get('/api/system/backups', { preHandler: requireAdmin }, async () => ({
+      backups: listSystemBackups(),
+      retention: SYSTEM_BACKUP_RETENTION,
+      dataDir: config.dataDir,
+    }));
+
+    /** Crea un snapshot ahora (VACUUM INTO, consistente con la BD en uso). */
+    secured.post('/api/system/backups', { preHandler: requireAdmin }, async (req, reply) => {
+      try {
+        const backup = createSystemBackup();
+        pruneSystemBackups();
+        audit(req, 'system_backup_created', { type: 'system', id: 'skyway-db', detail: backup.file });
+        reply.code(201);
+        return { backup };
+      } catch (err: any) {
+        return reply.code(500).send({ error: err?.message || 'No se pudo crear el backup del panel' });
+      }
+    });
+
+    /** Descarga un snapshot (para guardarlo fuera del servidor). */
+    secured.get('/api/system/backups/:file/download', { preHandler: requireAdmin }, async (req, reply) => {
+      const { file } = req.params as { file: string };
+      const full = resolveSystemBackupFile(file);
+      if (!full) return reply.code(404).send({ error: 'Backup no encontrado' });
+      audit(req, 'system_backup_downloaded', { type: 'system', id: 'skyway-db', detail: file });
+      reply.header('Content-Disposition', `attachment; filename="${file}"`);
+      reply.type('application/octet-stream');
+      return reply.send(fs.createReadStream(full));
+    });
+
+    secured.delete('/api/system/backups/:file', { preHandler: requireAdmin }, async (req, reply) => {
+      const { file } = req.params as { file: string };
+      if (!deleteSystemBackup(file)) return reply.code(404).send({ error: 'Backup no encontrado' });
+      audit(req, 'system_backup_deleted', { type: 'system', id: 'skyway-db', detail: file });
       return { ok: true };
     });
 

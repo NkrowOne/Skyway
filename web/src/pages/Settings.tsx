@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { BellRing, CheckCircle2, Cpu, Globe, Trash2 } from 'lucide-react';
+import { BellRing, CheckCircle2, Cpu, DatabaseBackup, Download, Globe, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { ModuleLogo } from '../components/ModuleIcon';
 import { Button, Field, useFlash, useToast } from '../components/ui';
 import { DockerUsage, SystemInfo } from '../types';
-import { cx, fmtBytes } from '../utils';
+import { cx, fmtBytes, fmtDateTime } from '../utils';
+
+interface SystemBackup {
+  file: string;
+  size: number;
+  createdAt: number;
+}
 
 interface Settings {
   rootDomain: string | null;
@@ -135,6 +141,29 @@ export default function SettingsPage() {
       toast(`Espacio liberado: ${res.reclaimed}`, 'ok');
       queryClient.invalidateQueries({ queryKey: ['dockerUsage'] });
       queryClient.invalidateQueries({ queryKey: ['system'] });
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const sysBackups = useQuery({
+    queryKey: ['systemBackups'],
+    queryFn: () => api.get<{ backups: SystemBackup[]; retention: number }>('/system/backups'),
+  });
+
+  const createSysBackup = useMutation({
+    mutationFn: () => api.post<{ backup: SystemBackup }>('/system/backups'),
+    onSuccess: (res) => {
+      toast(`Backup del panel creado: ${res.backup.file}`, 'ok');
+      queryClient.invalidateQueries({ queryKey: ['systemBackups'] });
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const deleteSysBackup = useMutation({
+    mutationFn: (file: string) => api.del(`/system/backups/${encodeURIComponent(file)}`),
+    onSuccess: () => {
+      toast('Backup eliminado', 'ok');
+      queryClient.invalidateQueries({ queryKey: ['systemBackups'] });
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -459,6 +488,62 @@ export default function SettingsPage() {
           </p>
         </SettingsSection>
       )}
+
+      <SettingsSection
+        icon={<DatabaseBackup size={15} />}
+        iconClass="text-ok"
+        title="Copia de seguridad del panel"
+        description={
+          <>
+            Snapshot diario (~04:00) de la base de datos de Skyway — usuarios, proyectos, servicios y variables.
+            Retención: {sysBackups.data?.retention ?? 7} copias. Los backups de cada base de datos de tus proyectos van
+            aparte, en su pestaña Backups.
+          </>
+        }
+        aside={
+          <Button size="sm" variant="secondary" onClick={() => createSysBackup.mutate()} loading={createSysBackup.isPending}>
+            <DatabaseBackup size={13} /> Crear ahora
+          </Button>
+        }
+      >
+        {(sysBackups.data?.backups.length ?? 0) === 0 ? (
+          <p className="rounded-lg border border-dashed border-line px-3.5 py-4 text-center text-xs text-subtle">
+            Aún no hay snapshots. El primero se creará esta madrugada, o pulsa «Crear ahora».
+          </p>
+        ) : (
+          <div className="overflow-hidden rounded-lg border border-line">
+            {sysBackups.data!.backups.map((b) => (
+              <div
+                key={b.file}
+                className="flex items-center gap-3 border-b border-line/60 bg-bg px-3.5 py-2 text-xs last:border-b-0"
+              >
+                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-sub">{b.file}</span>
+                <span className="tnum shrink-0 text-[11px] text-subtle">{fmtDateTime(b.createdAt)}</span>
+                <span className="tnum w-16 shrink-0 text-right text-[11px] text-subtle">{fmtBytes(b.size)}</span>
+                <a
+                  href={`/api/system/backups/${encodeURIComponent(b.file)}/download`}
+                  className="rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+                  title="Descargar (guárdalo fuera del servidor)"
+                >
+                  <Download size={13} />
+                </a>
+                <button
+                  onClick={() => deleteSysBackup.mutate(b.file)}
+                  className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err"
+                  title="Eliminar"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="mt-3 text-[11px] leading-relaxed text-subtle">
+          Para restaurar: para Skyway, sustituye <span className="font-mono">/data/skyway.db</span> por el snapshot y
+          arranca de nuevo. Descarga alguna copia fuera del servidor: un backup en el mismo disco no sobrevive a una
+          avería del disco.
+        </p>
+      </SettingsSection>
 
       <div className="safe-b sticky bottom-0 mt-1 flex items-center justify-end gap-2.5 border-t border-line bg-bg/90 py-3 backdrop-blur-lg">
         <span className="text-xs text-subtle">Los cambios se aplican al guardar</span>
