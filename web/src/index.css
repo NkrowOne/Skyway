@@ -36,7 +36,7 @@
   --color-ok: oklch(74% 0.16 142);
   --color-warn: oklch(80% 0.15 80);
   --color-err: oklch(64% 0.22 25);
-  --color-info: oklch(70% 0.13 220);
+  --color-info: oklch(72% 0.095 250); /* azul periwinkle: en familia con el violeta, sin estridencia */
   --color-term: oklch(11% 0.008 280); /* fondo de terminales/logs */
 
   /*

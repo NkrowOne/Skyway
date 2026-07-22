@@ -41,6 +41,10 @@ export default function ServiceDrawer({
 }) {
   const [tab, setTab] = useState('deployments');
   const [execOpen, setExecOpen] = useState(false);
+  // Cambios guardados (ajustes o variables) que solo surten efecto al redesplegar.
+  // Un aviso persistente vale más que un toast fugaz. Se limpia al desplegar o cambiar de servicio.
+  const [pendingRedeploy, setPendingRedeploy] = useState(false);
+  useEffect(() => setPendingRedeploy(false), [serviceId]);
   const [wide, setWide] = useLocalStorage('skyway.drawerWide', false);
   const fullscreen = useMediaQuery('(max-width: 899px)');
   const toast = useToast();
@@ -81,6 +85,7 @@ export default function ServiceDrawer({
     mutationFn: () => api.post<{ deployment: Deployment }>(`/services/${serviceId}/deploy`),
     onSuccess: () => {
       toast('Despliegue iniciado', 'ok');
+      setPendingRedeploy(false);
       setTab('deployments');
       invalidate();
     },
@@ -284,6 +289,24 @@ export default function ServiceDrawer({
           )}
         </div>
 
+        {pendingRedeploy && (
+          <div className="tab-in mt-3.5 flex items-center gap-2.5 rounded-lg border border-acc/30 bg-acc/[.08] px-3 py-2 text-xs">
+            <Rocket size={14} className="shrink-0 text-acc-soft" />
+            <span className="min-w-0 flex-1 text-sub">
+              <span className="font-medium text-txt">Cambios guardados sin aplicar.</span> Se activan al desplegar de nuevo.
+            </span>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="shrink-0"
+              onClick={() => deploy.mutate()}
+              loading={deploy.isPending}
+            >
+              Desplegar ahora
+            </Button>
+          </div>
+        )}
+
         <Tabs
           tabs={tabs}
           active={tab}
@@ -300,7 +323,14 @@ export default function ServiceDrawer({
         <div key={tab} className="tab-in flex h-full flex-col">
           {tab === 'deployments' && <DeploymentsTab serviceId={serviceId} serviceType={service.type} />}
           {tab === 'db' && <DbConsoleTab serviceId={serviceId} />}
-          {tab === 'variables' && <VariablesTab serviceId={serviceId} onSaved={invalidate} onDeploy={() => deploy.mutate()} />}
+          {tab === 'variables' && (
+            <VariablesTab
+              serviceId={serviceId}
+              onSaved={invalidate}
+              onDeploy={() => deploy.mutate()}
+              onNeedsRedeploy={() => setPendingRedeploy(true)}
+            />
+          )}
           {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
           {tab === 'files' && <FilesTab serviceId={serviceId} />}
           {tab === 'metrics' && <MetricsTab serviceId={serviceId} service={service} latest={latestMetrics} historyRef={historyRef} />}
@@ -310,6 +340,7 @@ export default function ServiceDrawer({
               service={service}
               projectId={projectId}
               onChanged={invalidate}
+              onNeedsRedeploy={() => setPendingRedeploy(true)}
               onDeleted={() => {
                 invalidate();
                 onClose();

@@ -19,7 +19,7 @@ export default {
         ok: 'oklch(74% 0.16 142 / <alpha-value>)',
         warn: 'oklch(80% 0.15 80 / <alpha-value>)',
         err: 'oklch(64% 0.22 25 / <alpha-value>)',
-        info: 'oklch(70% 0.13 220 / <alpha-value>)',
+        info: 'oklch(72% 0.095 250 / <alpha-value>)', // azul periwinkle: en familia con el violeta, sin estridencia
         term: 'oklch(11% 0.008 280 / <alpha-value>)', // fondo de terminales/logs
         term2: 'oklch(15.5% 0.01 280 / <alpha-value>)', // cromo de la consola (cabecera, canalón, barra)
       },

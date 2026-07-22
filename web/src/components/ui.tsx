@@ -83,6 +83,53 @@ export function Field({
   );
 }
 
+// ---------- EditorBar ----------
+/**
+ * Barra de acciones anclada al fondo del panel (sticky): sigue visible por larga
+ * que sea la lista de campos, así el botón de guardar nunca queda «perdido abajo».
+ * Un mismo primitivo para Ajustes y Variables, para que se sientan iguales.
+ */
+export function EditorBar({
+  dirty,
+  saving,
+  saved,
+  onSave,
+  onDiscard,
+  saveLabel = 'Guardar cambios',
+  dirtyLabel = 'Tienes cambios sin guardar',
+}: {
+  dirty: boolean;
+  saving?: boolean;
+  saved?: boolean;
+  onSave: () => void;
+  onDiscard?: () => void;
+  saveLabel?: string;
+  dirtyLabel?: string;
+}) {
+  return (
+    <div className="safe-b sticky bottom-0 z-10 mt-auto flex items-center justify-between gap-3 border-t border-line bg-surface/[.92] px-4 py-2.5 backdrop-blur-lg sm:px-5">
+      {dirty ? (
+        <span className="flex items-center gap-[7px] text-xs text-warn">
+          <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />
+          {dirtyLabel}
+        </span>
+      ) : (
+        <span className="text-xs text-subtle">Sin cambios</span>
+      )}
+      <div className="flex items-center gap-2">
+        {dirty && onDiscard && (
+          <Button variant="ghost" size="sm" onClick={onDiscard}>
+            Descartar
+          </Button>
+        )}
+        <Button size="sm" onClick={onSave} loading={saving} disabled={!dirty} success={saved && !dirty}>
+          {saveLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 // ---------- StatusBadge ----------
 const TONE_BADGE: Record<Tone, string> = {
   ok: 'bg-ok/[.14] text-ok',

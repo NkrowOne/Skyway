@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import { api } from '../../api';
 import { cx } from '../../utils';
-import { Button, CopyButton, Skeleton, useToast } from '../ui';
+import { CopyButton, EditorBar, Skeleton, useToast } from '../ui';
 
 interface ReferenceGroup {
   service: string;
@@ -60,10 +60,13 @@ export default function VariablesTab({
   serviceId,
   onSaved,
   onDeploy,
+  onNeedsRedeploy,
 }: {
   serviceId: string;
   onSaved: () => void;
   onDeploy?: () => void;
+  /** Aviso al panel: las variables guardadas solo surten efecto al redesplegar. */
+  onNeedsRedeploy?: () => void;
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -94,6 +97,7 @@ export default function VariablesTab({
       toast('Variables guardadas. Redespliega el servicio para aplicarlas.', 'ok', {
         action: onDeploy ? { label: 'Desplegar ahora', onClick: onDeploy } : undefined,
       });
+      onNeedsRedeploy?.();
       onSaved();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -119,6 +123,15 @@ export default function VariablesTab({
       }
     }
     save.mutate(vars);
+  };
+
+  // Descartar: vuelve a las variables guardadas y limpia el estado sucio.
+  const discard = () => {
+    if (!env.data) return;
+    const entries = Object.entries(env.data.vars).map(([key, value]) => ({ key, value }));
+    setRows(entries);
+    setRawText(entries.map((r) => `${r.key}=${r.value}`).join('\n'));
+    setDirty(false);
   };
 
   const references = env.data?.references ?? [];
@@ -169,7 +182,8 @@ export default function VariablesTab({
   }
 
   return (
-    <div className="flex flex-col gap-3.5 p-4 sm:px-5">
+    <>
+      <div className="flex flex-col gap-3.5 p-4 pb-0 sm:px-5">
       <div className="flex items-start justify-between gap-2">
         <p className="text-xs text-sub">
           Referencias <span className="font-mono text-[11px] text-info">{'${{Servicio.VAR}}'}</span> ·{' '}
@@ -351,15 +365,16 @@ export default function VariablesTab({
         </div>
       )}
 
-      <div className="flex items-center justify-end gap-2.5">
-        <span className={cx('text-xs', dirty ? 'flex items-center gap-1.5 text-warn' : 'text-subtle')}>
-          {dirty && <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />}
-          {dirty ? 'Cambios sin guardar' : 'Sin cambios'}
-        </span>
-        <Button size="sm" onClick={submit} loading={save.isPending} disabled={!dirty}>
-          Guardar variables
-        </Button>
       </div>
-    </div>
+
+      <EditorBar
+        dirty={dirty}
+        saving={save.isPending}
+        onSave={submit}
+        onDiscard={discard}
+        saveLabel="Guardar variables"
+        dirtyLabel="Cambios sin guardar · se aplican al redesplegar"
+      />
+    </>
   );
 }

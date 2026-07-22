@@ -6,7 +6,7 @@ import { GithubConnector, Service } from '../../types';
 import { cx } from '../../utils';
 import DomainsEditor from '../DomainsEditor';
 import { ModuleLogo, moduleKind } from '../ModuleIcon';
-import { Button, ConfirmModal, CopyButton, Field, useFlash, useToast } from '../ui';
+import { Button, ConfirmModal, CopyButton, EditorBar, Field, useFlash, useToast } from '../ui';
 
 /** Card de sección: el icono anota el título a escala de texto, sin caja. */
 function SectionCard({
@@ -96,11 +96,14 @@ export default function ServiceSettingsTab({
   projectId,
   onChanged,
   onDeleted,
+  onNeedsRedeploy,
 }: {
   service: Service;
   projectId: string;
   onChanged: () => void;
   onDeleted: () => void;
+  /** Aviso al panel de que hay cambios guardados que solo surten efecto al redesplegar. */
+  onNeedsRedeploy?: () => void;
 }) {
   const toast = useToast();
   const isGit = service.type === 'git';
@@ -175,6 +178,7 @@ export default function ServiceSettingsTab({
       setBaseline(form);
       flashSaved();
       toast(data.needsRedeploy ? 'Guardado. Redespliega para aplicar los cambios.' : 'Guardado y aplicado.', 'ok');
+      if (data.needsRedeploy) onNeedsRedeploy?.();
       onChanged();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -250,10 +254,10 @@ export default function ServiceSettingsTab({
                 </div>
                 <div className="grid grid-cols-2 gap-2.5">
                   <Field label="Directorio raíz" hint="vacío = raíz del repo">
-                    <input className="input" value={form.rootDir} onChange={(e) => set('rootDir', e.target.value)} />
+                    <input className="input" placeholder="apps/api" value={form.rootDir} onChange={(e) => set('rootDir', e.target.value)} />
                   </Field>
                   <Field label="Dockerfile" hint="vacío = Dockerfile">
-                    <input className="input" value={form.dockerfilePath} onChange={(e) => set('dockerfilePath', e.target.value)} />
+                    <input className="input" placeholder="Dockerfile" value={form.dockerfilePath} onChange={(e) => set('dockerfilePath', e.target.value)} />
                   </Field>
                 </div>
                 <Field label="Comando de arranque" hint="Opcional: sobreescribe el CMD de la imagen">
@@ -431,7 +435,8 @@ export default function ServiceSettingsTab({
                 <span className="mt-0.5 block text-[11px] leading-relaxed text-subtle">
                   Skyway comprueba la rama cada pocos minutos y, cuando aparece un commit nuevo, redespliega. Sin configurar
                   nada en GitHub: usa el mismo acceso con el que clona (ideal para repos privados o servidores sin dominio). La
-                  primera comprobación solo fija el punto de partida; a partir de ahí, cada commit dispara un despliegue.
+                  primera comprobación solo fija el punto de partida; a partir de ahí, cada commit dispara un despliegue. Este
+                  interruptor manda sobre las dos vías: si lo apagas, ni el sondeo ni el webhook despliegan.
                 </span>
               </span>
             </label>
@@ -457,9 +462,10 @@ export default function ServiceSettingsTab({
                   </span>
                 </div>
                 <p className="text-[11px] text-subtle">
-                  En GitHub: Settings → Webhooks → Add webhook. Content type <span className="font-mono">application/json</span>,
-                  evento <span className="font-mono">push</span>. Despliega en el acto; requiere que GitHub alcance tu servidor
-                  (dominio público). El sondeo de arriba y el webhook no se pisan: nunca despliegan dos veces el mismo commit.
+                  En GitHub: Settings → Webhooks → Add webhook. Content type <span className="font-mono">application/json</span>{' '}
+                  (no <span className="font-mono">x-www-form-urlencoded</span>), evento <span className="font-mono">push</span>.
+                  Despliega en el acto; requiere que GitHub alcance tu servidor (dominio público). Obedece el interruptor de
+                  arriba y no se pisa con el sondeo: nunca se despliega dos veces el mismo commit.
                 </p>
               </div>
             </details>
@@ -479,26 +485,13 @@ export default function ServiceSettingsTab({
         </section>
       </div>
 
-      <div className="safe-b sticky bottom-0 flex items-center justify-between gap-3 border-t border-line bg-surface/[.92] px-4 py-2.5 backdrop-blur-lg sm:px-5">
-        {dirty ? (
-          <span className="flex items-center gap-[7px] text-xs text-warn">
-            <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />
-            Tienes cambios sin guardar
-          </span>
-        ) : (
-          <span className="text-xs text-subtle">Sin cambios</span>
-        )}
-        <div className="flex items-center gap-2">
-          {dirty && (
-            <Button variant="ghost" size="sm" onClick={() => setForm(baseline)}>
-              Descartar
-            </Button>
-          )}
-          <Button size="sm" onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty} success={saved && !dirty}>
-            Guardar cambios
-          </Button>
-        </div>
-      </div>
+      <EditorBar
+        dirty={dirty}
+        saving={save.isPending}
+        saved={saved}
+        onSave={() => save.mutate()}
+        onDiscard={() => setForm(baseline)}
+      />
 
       <ConfirmModal
         open={deleteOpen}
