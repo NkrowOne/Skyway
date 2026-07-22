@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { auditSystem } from '../audit';
-import { getService } from '../db';
+import { noteAutoDeployBaseline } from '../autodeploy';
+import { getService, lastBuiltCommitSha } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
 import { markManualAction } from '../monitor';
 import { GitConfig } from '../types';
@@ -51,7 +52,28 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
         return { ok: true, ignored: `ref ${payload?.ref} (se espera ${expectedRef})` };
       }
 
-      const commit = (payload?.head_commit?.id as string | undefined)?.slice(0, 7);
+      // Borrado de rama (git push --delete): no hay nada que construir.
+      if (payload?.deleted === true) {
+        return { ok: true, ignored: 'rama eliminada' };
+      }
+
+      // La opción de auto-deploy manda en AMBOS caminos (sondeo y webhook): si el
+      // usuario la desactiva, un push no despliega. Ausente = activado (opt-out).
+      if (cfg.autoDeploy === false) {
+        return { ok: true, ignored: 'auto-deploy desactivado en este servicio' };
+      }
+
+      // Cabeza del push (sha completo). Si ya se construyó ese commit —por el
+      // sondeo, un deploy manual o un webhook anterior— no se repite.
+      const head = (payload?.after as string | undefined) || (payload?.head_commit?.id as string | undefined) || null;
+      if (head && head === lastBuiltCommitSha(service.id)) {
+        return { ok: true, ignored: `commit ${head.slice(0, 7)} ya desplegado` };
+      }
+
+      // Sincroniza la línea base del sondeo para que no vuelva a encolar este commit.
+      if (head) noteAutoDeployBaseline(service.id, head);
+
+      const commit = head?.slice(0, 7);
       auditSystem('webhook_push', `${service.name}${commit ? ` @ ${commit}` : ''}`);
       markManualAction(service.id);
       const deployment = triggerDeploy(service.id, 'webhook');

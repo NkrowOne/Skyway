@@ -247,8 +247,9 @@ Esto reproduce el comportamiento de un *worker* de Railway.
   GitHub; la primera comprobación fija la línea base y solo disparan los commits
   posteriores. Se controla con `autoDeploy` (opt-out) en Ajustes del servicio.
   El **webhook** de GitHub (`/api/webhooks/github/:serviceId`, HMAC) sigue
-  disponible para despliegues instantáneos y no se pisa con el sondeo: un commit
-  ya construido no se vuelve a desplegar.
+  disponible para despliegues instantáneos: obedece la misma opción `autoDeploy` y
+  no se pisa con el sondeo (un commit ya construido no se vuelve a desplegar). El
+  interruptor `autoDeploy` manda sobre ambas vías a la vez.
 - **Variables**: por servicio y compartidas por proyecto; referencias
   `${{Servicio.VAR}}` y `${{shared.VAR}}` resueltas al desplegar.
 - **Consola de consultas** (Consultas): explorador de tablas/colecciones/claves,
@@ -454,7 +455,7 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/import/railway/projects` | admin | lista proyectos de Railway (`{token}`) |
 | POST | `/import/railway/analyze` | admin | plan de importación (sin valores de variables) |
 | POST | `/import/railway/run` | admin | ejecuta la importación |
-| POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy instantáneo en push (firma verificada); complementa al sondeo interno de `autodeploy.ts` |
+| POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy instantáneo en push (firma verificada); respeta `autoDeploy` y deduplica contra el último commit construido; complementa al sondeo interno de `autodeploy.ts` |
 
 ---
 

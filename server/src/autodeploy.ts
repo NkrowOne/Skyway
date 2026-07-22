@@ -29,6 +29,16 @@ const IN_PROGRESS = new Set(['queued', 'building', 'deploying']);
  */
 const lastSeen = new Map<string, string>();
 
+/**
+ * El webhook (u otro disparo externo) avisa del commit que va a construir para
+ * que el sondeo no lo vuelva a desplegar: fija la línea base en memoria de este
+ * proceso. Complementa al cotejo contra `lastBuiltCommitSha` cerrando la ventana
+ * entre el push y que el clon registre el `commit_sha`.
+ */
+export function noteAutoDeployBaseline(serviceId: string, sha: string): void {
+  lastSeen.set(serviceId, sha);
+}
+
 function pollMs(): number {
   const raw = Number(getSetting('autoDeployPollSeconds'));
   const secs = Number.isFinite(raw) && raw >= MIN_POLL_SECONDS ? raw : DEFAULT_POLL_SECONDS;
@@ -76,16 +86,25 @@ async function tick(log: { warn: (msg: string) => void }): Promise<void> {
       }
       if (!head) return; // repo/rama inaccesible o sin permisos: se reintenta
 
-      // Ya construido (webhook, manual o un sondeo anterior): nada que hacer.
-      if (head === lastBuiltCommitSha(t.id)) return;
-
-      // Primera vez que este proceso ve el servicio: línea base, sin desplegar.
+      // Primera vez que este proceso ve el servicio: fija la línea base a la
+      // CABEZA ACTUAL y no despliega; solo disparan los commits que lleguen
+      // DESPUÉS (nunca un redespliegue retroactivo al arrancar/activar).
+      // DEBE ir ANTES de cotejar el último commit construido: si no, en el caso
+      // normal (cabeza ya construida) el return temprano dejaba la línea base sin
+      // fijar y el PRIMER commit nuevo se tomaba por línea base y no se desplegaba.
       const seen = lastSeen.get(t.id);
       if (seen === undefined) {
         lastSeen.set(t.id, head);
         return;
       }
       if (head === seen) return; // ya tratado este proceso (evita bucle si el clon falla)
+
+      // Ya construido por otra vía (webhook, deploy manual o un sondeo anterior):
+      // sincroniza la línea base y no repite. Evita duplicar con el webhook.
+      if (head === lastBuiltCommitSha(t.id)) {
+        lastSeen.set(t.id, head);
+        return;
+      }
 
       // Commit nuevo → desplegar. Se marca ANTES de disparar para no re-encolar.
       lastSeen.set(t.id, head);
