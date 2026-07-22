@@ -80,12 +80,20 @@ skyway restart api        # reinicia
 skyway stop api           # detiene (pide confirmación; -y la salta)
 skyway rewind api         # rollback: muestra los despliegues correctos y vuelves al que elijas
 skyway status api         # estado y último despliegue
+skyway update             # actualiza el PROPIO Skyway: git pull + rebuild + reinicio (en el servidor)
 ```
 
 `deploy` siempre redespliega la rama configurada del servicio (habitualmente
 `main`) clonándola de nuevo, así que trae el último commit sin pasos extra. El
 token define qué servicios ves y qué puedes hacer (hereda los permisos del
 usuario). `skyway --help` lista todo.
+
+`skyway update` es distinto: no usa la API ni el token, opera **en local sobre
+el servidor** donde corre Skyway. Hace `git pull` del repo, reconstruye la imagen
+(`docker compose up -d --build`) y comprueba el health. La base de datos vive en
+el volumen `skyway-data`, así que no se toca, y las apps desplegadas siguen
+corriendo (solo parpadea el panel unos segundos). Requiere `git`, `docker` y
+Docker Compose en el servidor.
 
 ### Darle el control a Claude
 

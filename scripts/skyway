@@ -23,6 +23,10 @@
 #
 set -euo pipefail
 
+# Ruta real de este script (resolviendo el symlink de /usr/local/bin): sirve para
+# localizar la raíz del repo en `skyway update`.
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+
 # ---------- presentación ----------
 if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
   C_RESET=$'\033[0m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'
@@ -121,7 +125,8 @@ menu_pick() {
 }
 
 confirm() {
-  [[ "${ASSUME_YES:-0}" == "1" ]] && return 0
+  # SKYWAY_ASSUME_YES sobrevive al re-exec de `skyway update`; ASSUME_YES es el flag -y.
+  { [[ "${ASSUME_YES:-0}" == "1" ]] || [[ "${SKYWAY_ASSUME_YES:-0}" == "1" ]]; } && return 0
   local ans
   printf '%s %s[s/N]%s ' "$1" "$C_DIM" "$C_RESET" >&2
   read -r ans < /dev/tty || return 1
@@ -241,6 +246,70 @@ cmd_rewind() {
   [[ "${FOLLOW:-0}" == "1" ]] && follow_deploy "$id"
 }
 
+# Detecta el comando de Docker Compose disponible (v2 `docker compose` o v1 `docker-compose`).
+compose_cmd() {
+  if docker compose version >/dev/null 2>&1; then echo 'docker compose';
+  elif command -v docker-compose >/dev/null 2>&1; then echo 'docker-compose';
+  else return 1; fi
+}
+
+# Versión declarada en un package.json (sin depender de jq).
+pkg_version() {
+  sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -1
+}
+
+# Actualiza el PROPIO Skyway en el servidor: git pull + reconstruir la imagen +
+# recrear el contenedor. La base de datos vive en el volumen `skyway-data`, así
+# que no se toca. Se ejecuta desde una copia para que `git pull` no reescriba
+# este mismo fichero a mitad de ejecución.
+cmd_update() {
+  if [[ -z "${SKYWAY_UPDATE_REEXEC:-}" ]]; then
+    local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/skyway-update.XXXXXX") || die "No se pudo crear un fichero temporal."
+    cat "$SELF" > "$tmp" && chmod +x "$tmp" || die "No se pudo preparar el actualizador."
+    # SKYWAY_ORIG_SELF conserva la ubicación real (la copia vive en /tmp, no en el repo).
+    SKYWAY_UPDATE_REEXEC=1 SKYWAY_ASSUME_YES="${ASSUME_YES:-0}" SKYWAY_UPDATE_TMP="$tmp" SKYWAY_ORIG_SELF="$SELF" \
+      exec bash "$tmp" update || die "No se pudo re-ejecutar el actualizador."
+  fi
+  trap 'rm -f "${SKYWAY_UPDATE_TMP:-}"' EXIT
+  SELF="${SKYWAY_ORIG_SELF:-$SELF}" # el repo está donde el script original, no en la copia temporal
+
+  need git; need docker; need curl
+  local repo; repo="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd)" || die "No encuentro la raíz del repositorio."
+  [[ -f "$repo/docker-compose.yml" ]] || die "«skyway update» se ejecuta en el servidor donde corre Skyway (no encuentro $repo/docker-compose.yml)."
+  local dc; dc="$(compose_cmd)" || die "Falta Docker Compose (ni «docker compose» ni «docker-compose»)."
+
+  info "Repositorio: ${C_RESET}$repo"
+  confirm "Se actualizará Skyway: git pull + reconstruir imagen + reiniciar el panel (tus datos y apps no se tocan). ¿Seguir?" \
+    || { info "Cancelado."; return 0; }
+
+  info "1/3 · Actualizando el código (git pull)…"
+  git -C "$repo" fetch --quiet origin 2>/dev/null || die "git fetch falló (¿acceso a GitHub desde el servidor?)."
+  if ! git -C "$repo" pull --ff-only >/dev/null 2>&1; then
+    die "git pull no pudo avanzar en limpio. Ponte en main y reintenta:\n    cd $repo && git checkout main && git pull --ff-only"
+  fi
+  local ver_repo; ver_repo="$(pkg_version "$repo/package.json")"
+  ok "Código en la versión ${ver_repo:-?}"
+
+  info "2/3 · Reconstruyendo la imagen y recreando el contenedor (puede tardar unos minutos)…"
+  ( cd "$repo" && $dc up -d --build ) || die "El build/arranque falló. Mira el detalle con:\n    cd $repo && $dc logs skyway"
+  ok "Contenedor recreado"
+
+  info "3/3 · Esperando a que responda…"
+  local url="${SKYWAY_HEALTH_URL:-http://localhost:4000}"
+  local ver='' i
+  for i in $(seq 1 30); do
+    ver="$(curl -fsS "$url/api/health" 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+    [[ -n "$ver" ]] && break
+    sleep 2
+  done
+  if [[ -n "$ver" ]]; then
+    ok "Skyway en marcha · versión $ver"
+    [[ -n "$ver_repo" && "$ver" != "$ver_repo" ]] && warn "La versión que responde ($ver) no coincide con la del repo ($ver_repo): puede seguir arrancando; revisa «$dc logs skyway»."
+  else
+    warn "No respondió $url/api/health en ~60 s. Puede seguir arrancando; míralo con:\n    cd $repo && $dc logs -f skyway"
+  fi
+}
+
 usage() {
   cat >&2 <<EOF
 ${C_BOLD}skyway${C_RESET} — control de Skyway desde la terminal
@@ -252,10 +321,11 @@ ${C_BOLD}skyway${C_RESET} — control de Skyway desde la terminal
   ${C_ACC}skyway rewind${C_RESET}  [servicio] [-f]   Rollback: elige a qué despliegue volver
   ${C_ACC}skyway status${C_RESET}  [servicio]        Estado y último despliegue
   ${C_ACC}skyway ls${C_RESET}                        Lista los servicios accesibles
+  ${C_ACC}skyway update${C_RESET}  [-y]              Actualiza el propio Skyway (git pull + rebuild); en el servidor
 
 Opciones:
   -f, --follow   Sigue el despliegue hasta que termina (deploy, rewind)
-  -y, --yes      No pregunta confirmación (stop, rewind)
+  -y, --yes      No pregunta confirmación (stop, rewind, update)
   -u, --url URL  URL de Skyway (o \$SKYWAY_URL)
   -t, --token T  Token sky_… (o \$SKYWAY_TOKEN)
 
@@ -283,6 +353,13 @@ main() {
   done
 
   [[ -n "$cmd" ]] || { usage; exit 1; }
+
+  # `update` es local (opera sobre Docker en el servidor): no necesita token ni API.
+  if [[ "$cmd" == "update" || "$cmd" == "upgrade" || "$cmd" == "self-update" ]]; then
+    cmd_update
+    return
+  fi
+
   need curl; need jq
 
   : "${SKYWAY_URL:=http://localhost:4000}"
