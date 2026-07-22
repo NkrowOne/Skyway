@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowUpRight, BellRing, ExternalLink, Globe, Lock, RefreshCw, Rocket, Search, Unlock } from 'lucide-react';
+import { ArrowUpRight, BellRing, ExternalLink, Folder, Globe, Lock, RefreshCw, Rocket, Search, Unlock } from 'lucide-react';
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import { Button, Skeleton, StatusBadge, useToast } from '../components/ui';
@@ -40,27 +40,37 @@ function SiteCard({
   return (
     <div className="card card-hover flex flex-col p-4">
       <div className="flex items-start justify-between gap-2">
-        <button
-          onClick={() => navigate(`/projects/${site.projectId}?s=${site.id}`)}
-          className="flex min-w-0 items-center gap-2.5 text-left"
-          title="Abrir el servicio"
-        >
-          <ModuleChip kind={moduleKind({ type: site.type, config: { image: site.image } as any })} size={34} radius={9} />
+        <div className="flex min-w-0 items-center gap-2.5">
+          <button onClick={() => navigate(`/projects/${site.projectId}?s=${site.id}`)} className="shrink-0" title="Abrir el servicio">
+            <ModuleChip kind={moduleKind({ type: site.type, config: { image: site.image } as any })} size={34} radius={9} />
+          </button>
           <div className="min-w-0">
-            <p className="flex items-center gap-1.5 truncate text-[13.5px] font-semibold tracking-[-.01em]">
-              {site.name}
+            <button
+              onClick={() => navigate(`/projects/${site.projectId}?s=${site.id}`)}
+              className="flex max-w-full items-center gap-1.5 text-left"
+              title="Abrir el servicio"
+            >
+              <span className="truncate text-[13.5px] font-semibold tracking-[-.01em]">{site.name}</span>
               {site.alerts > 0 && (
                 <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-err/[.14] px-1.5 py-px text-[10px] font-semibold text-err">
                   <BellRing size={9} /> {site.alerts}
                 </span>
               )}
-            </p>
-            <p className="truncate text-[11px] text-subtle">
-              {site.projectName}
-              {site.client ? ` · ${site.client}` : ''}
-            </p>
+            </button>
+            {/* El proyecto es un enlace propio: un salto directo a su canvas. */}
+            <Link
+              to={`/projects/${site.projectId}`}
+              className="mt-0.5 flex max-w-full items-center gap-1 text-[11px] text-subtle transition-colors hover:text-sub"
+              title={`Ir al proyecto «${site.projectName}»`}
+            >
+              <Folder size={10} className="shrink-0 opacity-70" />
+              <span className="truncate">
+                {site.projectName}
+                {site.client ? ` · ${site.client}` : ''}
+              </span>
+            </Link>
           </div>
-        </button>
+        </div>
         <StatusBadge tone={STATE_TONE[site.state]} label={STATE_LABEL[site.state]} pulse={STATE_PULSE[site.state]} replicas={site.replicas} />
       </div>
 
@@ -198,10 +208,10 @@ export default function SitesPage() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-2.5 text-2xl font-semibold leading-[30px] tracking-[-.02em]">
-            <Globe size={22} className="text-acc-soft" /> Sitios web
+            <Globe size={22} className="text-acc-soft" /> Sitios y servicios
           </h1>
           <p className="mt-1.5 text-sm text-sub">
-            Todas las webs y apps desplegadas en el servidor
+            Webs y servicios accesibles del servidor, con su estado y un salto directo a su proyecto
             {sites.data && (
               <>
                 : {online} en línea, {withDomain} con dominio
@@ -217,7 +227,7 @@ export default function SitesPage() {
             <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
             <input
               className="input h-9 w-56 pl-8 text-xs"
-              placeholder="Buscar sitio, dominio, cliente…"
+              placeholder="Buscar servicio, dominio, proyecto…"
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
@@ -244,7 +254,7 @@ export default function SitesPage() {
       {sites.isError && !sites.data && (
         <div className="card flex flex-col items-center gap-3 py-14 text-center">
           <Globe size={22} className="text-warn" />
-          <p className="max-w-sm text-sm text-sub">No se pudieron cargar los sitios: {(sites.error as Error).message}</p>
+          <p className="max-w-sm text-sm text-sub">No se pudieron cargar los servicios: {(sites.error as Error).message}</p>
           <Button variant="secondary" size="sm" onClick={() => sites.refetch()}>
             <RefreshCw size={13} /> Reintentar
           </Button>
@@ -264,13 +274,13 @@ export default function SitesPage() {
             <circle cx="100" cy="58" r="1.3" fill="currentColor" />
           </svg>
           <p className="max-w-sm text-sm text-sub">
-            Aún no hay sitios desplegados. Crea un servicio de repositorio o imagen en cualquier proyecto y aparecerá aquí.
+            Aún no hay servicios accesibles. Crea un servicio de repositorio o imagen en cualquier proyecto y aparecerá aquí.
           </p>
         </div>
       )}
 
       {filtered.length === 0 && all.length > 0 && (
-        <p className="card px-4 py-10 text-center text-xs text-subtle">Ningún sitio coincide con el filtro.</p>
+        <p className="card px-4 py-10 text-center text-xs text-subtle">Ningún servicio coincide con el filtro.</p>
       )}
 
       <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">

@@ -45,7 +45,7 @@ const PAGE_LABEL: Record<string, string> = {
   '/users': 'Usuarios',
   '/account': 'Mi cuenta',
   '/monitor': 'Monitor',
-  '/sites': 'Sitios web',
+  '/sites': 'Sitios y servicios',
 };
 
 // ---------- Paleta de comandos (⌘K) ----------
@@ -104,8 +104,8 @@ function CommandPalette({ open, onClose, unread, isAdmin }: { open: boolean; onC
         key: 'a-sites',
         group: 'Acciones rápidas',
         icon: <Globe size={15} className="text-subtle" />,
-        label: 'Sitios web desplegados',
-        keywords: 'sitios webs dominios paginas tls https',
+        label: 'Sitios y servicios',
+        keywords: 'sitios webs servicios apps aplicaciones dominios paginas accesos tls https',
         to: '/sites',
       },
       {
@@ -604,7 +604,7 @@ export default function Layout() {
           <Link
             to="/sites"
             className="hidden press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt sm:block"
-            title="Sitios web (g w)"
+            title="Sitios y servicios (g w)"
           >
             <Globe size={16} />
           </Link>
