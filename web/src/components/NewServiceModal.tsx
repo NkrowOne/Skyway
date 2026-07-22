@@ -388,8 +388,9 @@ export default function NewServiceModal({
                 </span>
                 <div className="min-w-0">
                   <h3 className="text-sm font-medium">{tpl.label}</h3>
-                  <p className="truncate text-xs text-sub">
-                    {tpl.description} · <span className="font-mono">{tpl.image}:{tpl.defaultVersion}</span>
+                  <p className="truncate text-xs text-sub">{tpl.description}</p>
+                  <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">
+                    {tpl.image}:{tpl.defaultVersion}
                   </p>
                 </div>
               </button>

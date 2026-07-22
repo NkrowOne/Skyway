@@ -122,7 +122,14 @@ export function EditorBar({
             Descartar
           </Button>
         )}
-        <Button size="sm" onClick={onSave} loading={saving} disabled={!dirty} success={saved && !dirty}>
+        <Button
+          size="sm"
+          variant={dirty ? 'primary' : 'secondary'}
+          onClick={onSave}
+          loading={saving}
+          disabled={!dirty}
+          success={saved && !dirty}
+        >
           {saveLabel}
         </Button>
       </div>

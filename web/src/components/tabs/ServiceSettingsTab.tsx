@@ -432,11 +432,10 @@ export default function ServiceSettingsTab({
               />
               <span className="text-[13px]">
                 <span className="font-medium">Auto-desplegar al hacer push a <span className="font-mono">{form.branch}</span></span>
-                <span className="mt-0.5 block text-[11px] leading-relaxed text-subtle">
-                  Skyway comprueba la rama cada pocos minutos y, cuando aparece un commit nuevo, redespliega. Sin configurar
-                  nada en GitHub: usa el mismo acceso con el que clona (ideal para repos privados o servidores sin dominio). La
-                  primera comprobación solo fija el punto de partida; a partir de ahí, cada commit dispara un despliegue. Este
-                  interruptor manda sobre las dos vías: si lo apagas, ni el sondeo ni el webhook despliegan.
+                <span className="mt-1 block text-[11px] leading-relaxed text-subtle">
+                  Skyway vigila la rama y redespliega al detectar un commit nuevo, sin tocar GitHub (usa el mismo acceso con el
+                  que clona: va bien para repos privados o servidores sin dominio). El interruptor manda sobre las dos vías
+                  —sondeo y webhook—: apágalo y ningún push desplegará.
                 </span>
               </span>
             </label>
