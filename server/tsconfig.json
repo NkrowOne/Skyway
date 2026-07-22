@@ -3,6 +3,9 @@
     "target": "ES2022",
     "module": "CommonJS",
     "moduleResolution": "Node",
+    // TS 5.9 marca como error la resolución «Node» (node10); la mantenemos y silenciamos
+    // el aviso hasta su retirada en TS 7.0. El único valor aceptado por el compilador es "5.0".
+    "ignoreDeprecations": "5.0",
     "lib": ["ES2022"],
     "outDir": "dist",
     "rootDir": "src",
