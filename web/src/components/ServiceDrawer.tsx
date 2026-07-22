@@ -293,8 +293,11 @@ export default function ServiceDrawer({
       </div>
 
       <div className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain" role="tabpanel">
-        {/* La clave por pestaña relanza una aparición breve: se percibe el cambio de contexto sin esperar. */}
-        <div key={tab} className="tab-in flex min-h-full flex-col">
+        {/* h-full (no min-h-full): da altura DEFINIDA a la pestaña de Logs, cuyo visor
+            usa flex-1 para llenar y scrollear por dentro; con min-height no resolvía y
+            el log crecía sin fin. Las pestañas de documento (despliegues, métricas…)
+            desbordan hacia el scroll del cuerpo igual que antes (sus hijos no llevan min-h-0). */}
+        <div key={tab} className="tab-in flex h-full flex-col">
           {tab === 'deployments' && <DeploymentsTab serviceId={serviceId} serviceType={service.type} />}
           {tab === 'db' && <DbConsoleTab serviceId={serviceId} />}
           {tab === 'variables' && <VariablesTab serviceId={serviceId} onSaved={invalidate} onDeploy={() => deploy.mutate()} />}
