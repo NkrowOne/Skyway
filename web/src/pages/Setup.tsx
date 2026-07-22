@@ -38,16 +38,10 @@ export default function Setup() {
       className="relative flex min-h-full items-center justify-center overflow-hidden p-6"
       style={{
         background:
-          'radial-gradient(1200px 600px at 50% -10%, color-mix(in oklab, #6e56cf 14%, transparent), transparent 70%), radial-gradient(700px 380px at 85% 0%, color-mix(in oklab, var(--color-info) 7%, transparent), transparent 62%), var(--color-bg)',
+          'radial-gradient(1200px 560px at 50% -12%, color-mix(in oklab, var(--color-acc) 5%, transparent), transparent 66%), var(--color-bg)',
       }}
     >
-      <span aria-hidden className="estrella-fugaz" />
       <div className="panel-in relative w-full max-w-[400px]">
-        <div
-          aria-hidden
-          className="halo-breathe pointer-events-none absolute -inset-10 -z-10 rounded-[40px] blur-3xl"
-          style={{ background: 'radial-gradient(closest-side, color-mix(in oklab, #6e56cf 16%, transparent), transparent 75%)' }}
-        />
         <div
           key={errorShake}
           className={cx(

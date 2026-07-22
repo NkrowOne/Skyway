@@ -16,7 +16,7 @@ import LogsTab from './tabs/LogsTab';
 import MetricsTab from './tabs/MetricsTab';
 import ServiceSettingsTab from './tabs/ServiceSettingsTab';
 import VariablesTab from './tabs/VariablesTab';
-import { Button, Skeleton, StatusBadge, Tabs, useFlash, useToast } from './ui';
+import { Button, Skeleton, StatusBadge, Tabs, useToast } from './ui';
 
 const BACKUP_TEMPLATES = ['postgres', 'mysql', 'mongo'];
 const CONSOLE_TEMPLATES = ['postgres', 'mysql', 'mongo', 'redis'];
@@ -51,9 +51,6 @@ export default function ServiceDrawer({
     const raf = requestAnimationFrame(() => setEntered(true));
     return () => cancelAnimationFrame(raf);
   }, []);
-  // Momento de la firma: el cohete despega al ordenar un despliegue.
-  const [launching, launch] = useFlash(700);
-
   // Esc cierra el drawer, salvo que haya un modal/paleta abierto por encima.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -221,23 +218,11 @@ export default function ServiceDrawer({
         <div className="mt-3.5 flex flex-wrap items-center gap-2">
           <Button
             size="sm"
-            className={cx('group', fullscreen && 'h-11 flex-1')}
-            onClick={() => {
-              launch();
-              deploy.mutate();
-            }}
+            className={cx(fullscreen && 'h-11 flex-1')}
+            onClick={() => deploy.mutate()}
             loading={deploy.isPending}
           >
-            {/* La maniobra: apunta en hover, despega al ordenar el despliegue. */}
-            <span
-              className={cx(
-                'inline-flex leading-none transition-transform duration-200 ease-out group-hover:translate-x-[1.5px] group-hover:-translate-y-[1.5px]',
-                launching && 'rocket-launch',
-              )}
-            >
-              <Rocket size={13} />
-            </span>
-            Desplegar
+            <Rocket size={13} /> Desplegar
           </Button>
           {isRunning ? (
             <>

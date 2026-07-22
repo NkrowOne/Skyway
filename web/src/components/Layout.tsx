@@ -30,8 +30,8 @@ import { Kbd, StatusBadge } from './ui';
 export function BrandMark({ size = 28, iconSize = 15, radius = 8 }: { size?: number; iconSize?: number; radius?: number }) {
   return (
     <span
-      className="flex shrink-0 items-center justify-center text-white shadow-[0_2px_8px_-2px_color-mix(in_oklab,#6e56cf_60%,transparent)]"
-      style={{ width: size, height: size, borderRadius: radius, background: 'linear-gradient(135deg, #6e56cf, oklch(42% 0.16 295))' }}
+      className="flex shrink-0 items-center justify-center text-white"
+      style={{ width: size, height: size, borderRadius: radius, background: 'var(--color-acc)', boxShadow: '0 1px 2px rgba(0,0,0,.3)' }}
     >
       <Rocket size={iconSize} />
     </span>

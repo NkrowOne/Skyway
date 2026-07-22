@@ -237,7 +237,6 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
                 : 'border-line bg-bg';
         return (
         <div key={d.id} className={cx('relative overflow-hidden rounded-xl border transition-colors duration-300', tint)}>
-          {active && <span aria-hidden className="deploy-sweep" />}
           <button
             onClick={() => toggle(d.id)}
             className="flex w-full items-center justify-between gap-2 px-3.5 py-3 text-left transition-colors duration-150 hover:bg-txt/[.03]"

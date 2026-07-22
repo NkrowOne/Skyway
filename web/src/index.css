@@ -103,11 +103,8 @@ body::before {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1920 420'%3E%3Cg fill='white'%3E%3Ccircle cx='60' cy='40' r='.9' opacity='.18'/%3E%3Ccircle cx='150' cy='120' r='.6' opacity='.10'/%3E%3Ccircle cx='240' cy='60' r='.7' opacity='.14'/%3E%3Ccircle cx='390' cy='180' r='.6' opacity='.08'/%3E%3Ccircle cx='460' cy='90' r='1.1' opacity='.22'/%3E%3Ccircle cx='580' cy='30' r='.6' opacity='.12'/%3E%3Ccircle cx='700' cy='150' r='.8' opacity='.10'/%3E%3Ccircle cx='820' cy='70' r='.6' opacity='.16'/%3E%3Ccircle cx='940' cy='200' r='.7' opacity='.08'/%3E%3Ccircle cx='1030' cy='50' r='1.2' opacity='.20'/%3E%3Ccircle cx='1150' cy='130' r='.6' opacity='.10'/%3E%3Ccircle cx='1240' cy='40' r='.8' opacity='.14'/%3E%3Ccircle cx='1330' cy='170' r='.6' opacity='.08'/%3E%3Ccircle cx='1450' cy='90' r='1' opacity='.18'/%3E%3Ccircle cx='1560' cy='30' r='.6' opacity='.12'/%3E%3Ccircle cx='1650' cy='140' r='.7' opacity='.10'/%3E%3Ccircle cx='1780' cy='60' r='.9' opacity='.16'/%3E%3Ccircle cx='1860' cy='180' r='.6' opacity='.08'/%3E%3Ccircle cx='300' cy='300' r='.6' opacity='.06'/%3E%3Ccircle cx='760' cy='320' r='.7' opacity='.07'/%3E%3Ccircle cx='1200' cy='340' r='.6' opacity='.06'/%3E%3Ccircle cx='1700' cy='300' r='.7' opacity='.07'/%3E%3C/g%3E%3Cg fill='%23b9a7ee'%3E%3Ccircle cx='520' cy='140' r='1.3' opacity='.30'/%3E%3Ccircle cx='890' cy='110' r='1' opacity='.20'/%3E%3Ccircle cx='1390' cy='110' r='1.3' opacity='.26'/%3E%3C/g%3E%3C/svg%3E")
-      top center / 1920px 420px repeat-x,
-    radial-gradient(1000px 520px at 16% -14%, color-mix(in oklab, var(--color-acc) 11%, transparent), transparent 68%),
-    radial-gradient(820px 420px at 84% -20%, color-mix(in oklab, var(--color-info) 6%, transparent), transparent 62%);
+  /* Un único resplandor tenue arriba: profundidad, no un «hero glow». */
+  background: radial-gradient(1100px 460px at 22% -20%, color-mix(in oklab, var(--color-acc) 5%, transparent), transparent 64%);
 }
 #root {
   position: relative;
@@ -405,15 +402,13 @@ details > summary::-webkit-details-marker {
 @keyframes tab-in {
   from {
     opacity: 0;
-    transform: translateY(5px);
   }
   to {
     opacity: 1;
-    transform: none;
   }
 }
 .tab-in {
-  animation: tab-in 0.2s var(--ease-out) both;
+  animation: tab-in 0.13s var(--ease-out) both;
 }
 
 /* Error de formulario: sacudida corta y seca, sin teatro. */
@@ -437,41 +432,6 @@ details > summary::-webkit-details-marker {
 }
 .shake {
   animation: shake 0.32s var(--ease-out);
-}
-
-/*
- * La maniobra de despliegue: el cohete de «Desplegar» despega hacia arriba a la
- * derecha cuando arranca un deploy. Es la firma de la casa — la marca (cohete)
- * ejecutando la acción central del producto.
- */
-@keyframes rocket-launch {
-  0% {
-    transform: none;
-    opacity: 1;
-  }
-  100% {
-    transform: translate(18px, -18px) rotate(8deg) scale(0.85);
-    opacity: 0;
-  }
-}
-.rocket-launch {
-  animation: rocket-launch 0.55s ease-in both;
-}
-
-/* Halo del login: la nebulosa respira despacio detrás de la tarjeta. */
-@keyframes halo-breathe {
-  0%,
-  100% {
-    opacity: 0.75;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.06);
-  }
-}
-.halo-breathe {
-  animation: halo-breathe 9s ease-in-out infinite;
 }
 
 /*
@@ -568,29 +528,6 @@ details[open] > .details-body {
 .collapse-grid > * {
   min-height: 0;
   overflow: hidden;
-}
-
-/*
- * Barrido de progreso indeterminado: un cometa fino recorre el borde superior
- * de la tarjeta del despliegue en curso. Dice «estamos en ello» sin porcentaje.
- */
-@keyframes deploy-sweep {
-  from {
-    transform: translateX(-110%);
-  }
-  to {
-    transform: translateX(360%);
-  }
-}
-.deploy-sweep {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 2px;
-  width: 34%;
-  border-radius: 9999px;
-  background: linear-gradient(90deg, transparent, var(--color-warn), transparent);
-  animation: deploy-sweep 1.5s ease-in-out infinite;
 }
 
 /*
@@ -698,33 +635,6 @@ details[open] > .details-body {
 .page-in {
   animation: page-in 0.2s var(--ease-out);
 }
-/* La estrella fugaz del login: un único destello de bienvenida, nada más aterrizar. */
-@keyframes estrella-fugaz {
-  0% {
-    transform: translate3d(0, 0, 0) rotate(-14deg) scaleX(0.35);
-    opacity: 0;
-  }
-  10% {
-    opacity: 0.85;
-  }
-  70% {
-    opacity: 0.2;
-  }
-  100% {
-    transform: translate3d(52vw, -13vw, 0) rotate(-14deg) scaleX(1);
-    opacity: 0;
-  }
-}
-.estrella-fugaz {
-  position: absolute;
-  top: 22%;
-  left: 10%;
-  width: 130px;
-  height: 1px;
-  pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75), transparent);
-  animation: estrella-fugaz 1.15s ease-out 0.65s both;
-}
 
 @keyframes pop-in {
   from {
@@ -739,17 +649,10 @@ details[open] > .details-body {
 .pop-in {
   animation: pop-in 0.2s var(--ease-pop) both;
 }
+/* Sin cascada escalonada (leía a «revelado IA»): una sola aparición sobria. */
 .stagger > * {
-  animation: page-in 0.28s ease-out backwards;
+  animation: tab-in 0.16s var(--ease-out) backwards;
 }
-.stagger > *:nth-child(1) { animation-delay: 0.03s; }
-.stagger > *:nth-child(2) { animation-delay: 0.06s; }
-.stagger > *:nth-child(3) { animation-delay: 0.09s; }
-.stagger > *:nth-child(4) { animation-delay: 0.12s; }
-.stagger > *:nth-child(5) { animation-delay: 0.15s; }
-.stagger > *:nth-child(6) { animation-delay: 0.18s; }
-.stagger > *:nth-child(7) { animation-delay: 0.21s; }
-.stagger > *:nth-child(8) { animation-delay: 0.24s; }
 
 @media (prefers-reduced-motion: reduce) {
   *,
