@@ -116,6 +116,11 @@ export default function LogViewer({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  // Caché incremental del procesado: los logs crecen por el final, así que
+  // reprocesar TODO el buffer en cada línea nueva (stripAnsi + nivel) ahogaba el
+  // móvil. Aquí se reutiliza lo ya procesado y solo se procesa la cola nueva.
+  const procRef = useRef<{ src: string[] | null; rows: { text: string; lvl: Level }[] }>({ src: null, rows: [] });
+  const scrollRaf = useRef(0);
   // Última posición de scroll: al maximizar/restaurar el cuerpo se reubica, así
   // que se restaura aquí para no perder el sitio de lectura (si no vamos al final).
   const lastTopRef = useRef(0);
@@ -128,11 +133,24 @@ export default function LogViewer({
   const [maximized, setMaximized] = useState(false);
 
   // Los builds reales (npm, docker…) emiten colores ANSI: se limpian una vez aquí
-  // y filtro, niveles, copia y descarga trabajan ya sobre texto legible.
-  const rows = useMemo(
-    () => lines.map((raw) => ({ text: stripAnsi(raw), lvl: detectLevel(raw) as Level })),
-    [lines],
-  );
+  // y filtro, niveles, copia y descarga trabajan ya sobre texto legible. El
+  // procesado es INCREMENTAL: en el caso normal (llega una ráfaga por el final)
+  // se reutiliza lo ya calculado y solo se procesa lo nuevo —clave para que el
+  // móvil no se congele con buffers grandes—; solo se reprocesa entero al arrancar,
+  // cambiar de servicio o recortar el buffer por el frente.
+  const rows = useMemo(() => {
+    const process = (raw: string) => ({ text: stripAnsi(raw), lvl: detectLevel(raw) as Level });
+    const prev = procRef.current;
+    const isAppend =
+      !!prev.src &&
+      prev.src.length > 0 &&
+      lines.length >= prev.src.length &&
+      lines[0] === prev.src[0] &&
+      lines[prev.src.length - 1] === prev.src[prev.src.length - 1];
+    const result = isAppend ? prev.rows.concat(lines.slice(prev.src!.length).map(process)) : lines.map(process);
+    procRef.current = { src: lines, rows: result };
+    return result;
+  }, [lines]);
 
   const counts = useMemo(() => {
     let err = 0;
@@ -211,12 +229,22 @@ export default function LogViewer({
     };
   }, [maximized]);
 
+  // El scroll táctil dispara este evento decenas de veces por gesto; sin acotar,
+  // cada uno forzaba layout + un posible re-render del buffer entero. Se limita a
+  // una lectura por frame (y se cancela al desmontar).
   const onScroll = () => {
-    const el = ref.current;
-    if (!el) return;
-    lastTopRef.current = el.scrollTop;
-    setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+    if (scrollRaf.current) return;
+    scrollRaf.current = requestAnimationFrame(() => {
+      scrollRaf.current = 0;
+      const el = ref.current;
+      if (!el) return;
+      lastTopRef.current = el.scrollTop;
+      setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+    });
   };
+  useEffect(() => () => {
+    if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
+  }, []);
 
   const jump = (to: 'top' | 'bottom') => {
     const el = ref.current;
@@ -392,7 +420,9 @@ export default function LogViewer({
           ref={ref}
           onScroll={onScroll}
           className={cx(
-            'h-full font-mono text-[12.5px] leading-[1.65] text-txt/90',
+            // overscroll-contain: al llegar al borde, el scroll no salta al panel
+            // de detrás (en móvil eso «atrapaba» el gesto y parecía un bloqueo).
+            'h-full overscroll-contain font-mono text-[12.5px] leading-[1.65] text-txt/90',
             maximized && 'text-[13px] leading-[1.7]',
             wrap ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto',
           )}

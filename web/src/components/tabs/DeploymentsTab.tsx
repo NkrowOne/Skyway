@@ -74,7 +74,7 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
       const incoming = pending.splice(0);
       setLines((prev) => {
         const next = prev.length ? prev.concat(incoming) : incoming;
-        return next.length > 20_000 ? next.slice(next.length - 20_000) : next;
+        return next.length > 8_000 ? next.slice(next.length - 8_000) : next;
       });
     };
     const es = openStream(`/deployments/${deployment.id}/logs/stream`);

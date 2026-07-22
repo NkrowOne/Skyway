@@ -74,7 +74,7 @@ function fmtRows(n: number | null): string {
 /** Tabla de resultados con cabecera fija y celdas monoespaciadas. */
 function ResultTable({ result }: { result: DbQueryResult }) {
   return (
-    <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-line">
+    <div className="min-h-0 flex-1 overflow-auto overscroll-contain rounded-lg border border-line">
       <table className="w-full border-collapse text-left">
         <thead className="sticky top-0 z-10">
           <tr>
@@ -293,7 +293,9 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
           spellCheck={false}
           rows={4}
           placeholder={engine ? PLACEHOLDER[engine] : ''}
-          className="w-full resize-y bg-transparent px-3.5 py-3 font-mono text-xs leading-relaxed text-txt outline-none placeholder:text-subtle focus-visible:[outline:none]"
+          // En móvil sin tirador de redimensión (era un «slider» táctil incómodo y
+          // confuso): altura fija cómoda. En escritorio sí se puede estirar.
+          className="w-full resize-none bg-transparent px-3.5 py-3 font-mono text-xs leading-relaxed text-txt outline-none placeholder:text-subtle focus-visible:[outline:none] sm:resize-y"
         />
         <div className="flex flex-wrap items-center gap-2 border-t border-line px-2.5 py-2">
           <Button size="sm" onClick={() => execute()} loading={run.isPending} disabled={!query.trim()}>
@@ -398,7 +400,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
           {result.kind === 'table' ? (
             <ResultTable result={result} />
           ) : result.raw ? (
-            <pre className="min-h-0 flex-1 overflow-auto rounded-lg border border-line bg-bg px-3.5 py-3 font-mono text-[11.5px] leading-relaxed text-txt">
+            <pre className="min-h-0 flex-1 overflow-auto overscroll-contain rounded-lg border border-line bg-bg px-3.5 py-3 font-mono text-[11.5px] leading-relaxed text-txt">
               {result.raw}
             </pre>
           ) : (

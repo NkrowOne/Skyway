@@ -9,8 +9,9 @@ export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string
   useEffect(() => {
     setLines([]);
     setNotice(null);
-    // Buffer holgado (la consola virtualiza) + coalescencia por frame: una ráfaga
-    // de líneas produce un único re-render, no uno por línea.
+    // Buffer de cola acotado + coalescencia por frame: una ráfaga de líneas
+    // produce un único re-render. El tope (8000) mantiene el DOM y el procesado
+    // manejables también en móvil; el visor sigue el final en vivo.
     const pending: string[] = [];
     let raf = 0;
     const flush = () => {
@@ -19,7 +20,7 @@ export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string
       const incoming = pending.splice(0);
       setLines((prev) => {
         const next = prev.length ? prev.concat(incoming) : incoming;
-        return next.length > 50_000 ? next.slice(next.length - 50_000) : next;
+        return next.length > 8_000 ? next.slice(next.length - 8_000) : next;
       });
     };
     const es = openStream(`/services/${serviceId}/logs/stream`);
