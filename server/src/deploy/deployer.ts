@@ -189,9 +189,10 @@ async function runDeployment(deploymentId: string): Promise<void> {
     emitDeploy(deploymentId, { type: 'done', status: 'success' });
     log('✔ Despliegue completado');
 
-    // Un despliegue correcto resuelve las alertas de caída previas.
+    // Un despliegue correcto resuelve las alertas de caída y el fallo de despliegue previo.
     resolveServiceAlerts(service.id, 'service_down', false);
     resolveServiceAlerts(service.id, 'crash_loop', false);
+    resolveServiceAlerts(service.id, 'deploy_failed', false);
 
     if (service.type === 'git' && !deployment.image_tag) {
       await cleanupOldImages(service.id, log);
@@ -222,6 +223,8 @@ async function runDeployment(deploymentId: string): Promise<void> {
         title: `Despliegue fallido: ${service.name}`,
         message: `El despliegue (${deployment.trigger}) de "${service.name}" en ${project.name} falló: ${message.slice(0, 300)}`,
         explanation: diag ? `${diag.title}. ${diag.fix}` : null,
+        // Con dedupe no se apilan reintentos fallidos y un despliegue correcto la cierra.
+        dedupe: true,
       });
     }
   } finally {

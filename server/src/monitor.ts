@@ -108,10 +108,16 @@ async function tick(): Promise<void> {
           dedupe: true,
         });
       }
-      if (runtime.state === 'running' && prev && prev.state !== 'running') {
-        resolveServiceAlerts(service.id, 'service_down', true);
-        entry.cpuHighSince = null;
-        entry.memHighSince = null;
+      if (runtime.state === 'running') {
+        // Resolución por estado, no por flanco: así se limpia también una alerta
+        // anterior a un reinicio de Skyway (con `tracked` vacío no hay transición
+        // observada). La notificación de "recuperado" sí que es solo del flanco.
+        const recovered = !!prev && prev.state !== 'running';
+        resolveServiceAlerts(service.id, 'service_down', recovered);
+        if (recovered) {
+          entry.cpuHighSince = null;
+          entry.memHighSince = null;
+        }
       }
 
       // --- bucle de reinicios ---

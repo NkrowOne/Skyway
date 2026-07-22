@@ -1,4 +1,4 @@
-import { getProject, getService, insertAlert, resolveAlertsByDedupe } from './db';
+import { getProject, getService, insertAlert, resolveOpenServiceAlerts } from './db';
 import { dispatchToChannels } from './notify';
 import { AlertSeverity } from './types';
 
@@ -54,7 +54,7 @@ export function fireAlert(input: FireAlertInput): void {
 
 /** Resuelve las alertas abiertas de un tipo para un servicio (p. ej. al recuperarse). */
 export function resolveServiceAlerts(serviceId: string, type: string, notifyRecovery = false): void {
-  const resolved = resolveAlertsByDedupe(`${serviceId}:${type}`);
+  const resolved = resolveOpenServiceAlerts(serviceId, type);
   if (resolved.length > 0 && notifyRecovery) {
     const service = getService(serviceId);
     const project = service ? getProject(service.project_id) : undefined;

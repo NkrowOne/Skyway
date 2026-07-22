@@ -5,7 +5,7 @@ import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
-import { CopyButton, Skeleton, useToast } from '../ui';
+import { Skeleton, useToast } from '../ui';
 
 /**
  * Acordeón mantequilla: crece y se pliega animando grid-template-rows
@@ -43,7 +43,7 @@ function DiagnosisCard({ raw }: { raw: string | null }) {
     return null;
   }
   return (
-    <div className="mb-2.5 rounded-lg border border-warn/30 bg-warn/[.06] p-3 text-xs">
+    <div className="mb-2.5 rounded-r-lg border-l-2 border-warn bg-warn/[.06] p-3 text-xs">
       <p className="flex items-center gap-1.5 font-semibold text-warn">
         <Lightbulb size={13} /> {diagnosis.title}
       </p>
@@ -63,14 +63,32 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
 
   useEffect(() => {
     setLines([]);
+    // Coalescencia por frame: los builds emiten ráfagas de líneas; agruparlas
+    // evita un re-render por línea sobre un buffer que puede ser grande.
+    const pending: string[] = [];
+    let raf = 0;
+    const flush = () => {
+      raf = 0;
+      if (!pending.length) return;
+      const incoming = pending.splice(0);
+      setLines((prev) => {
+        const next = prev.length ? prev.concat(incoming) : incoming;
+        return next.length > 20_000 ? next.slice(next.length - 20_000) : next;
+      });
+    };
     const es = openStream(`/deployments/${deployment.id}/logs/stream`);
     es.addEventListener('snapshot', (ev) => {
       const data = JSON.parse((ev as MessageEvent).data);
+      pending.length = 0;
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
       setLines(data.logs ? data.logs.split('\n').filter(Boolean) : []);
     });
     es.addEventListener('log', (ev) => {
-      const data = JSON.parse((ev as MessageEvent).data);
-      setLines((prev) => [...prev.slice(-3000), data.line]);
+      pending.push(JSON.parse((ev as MessageEvent).data).line);
+      if (!raf) raf = requestAnimationFrame(flush);
     });
     es.addEventListener('done', () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', deployment.service_id] });
@@ -80,17 +98,20 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
     es.onerror = () => {
       /* si el despliegue terminó, el servidor cierra el stream */
     };
-    return () => es.close();
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      es.close();
+    };
   }, [deployment.id]);
 
   return (
-    <div className="overflow-hidden rounded-lg border border-line">
-      <div className="flex items-center justify-between bg-surface2 px-3 py-1.5">
-        <span className="font-mono text-[10px] uppercase tracking-[.08em] text-subtle">Build &amp; deploy</span>
-        <CopyButton value={lines.join('\n')} title="Copiar logs" className="-my-0.5" />
-      </div>
-      <LogViewer lines={lines} bare className="h-[232px]" />
-    </div>
+    <LogViewer
+      lines={lines}
+      toolbar
+      title="Build & deploy"
+      downloadName={`deploy-${deployment.id}.log`}
+      className="h-[clamp(320px,50vh,600px)]"
+    />
   );
 }
 
@@ -276,7 +297,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
             <Collapse open={open}>
               <div className="border-t border-line p-3">
                 {d.error && (
-                  <p className="mb-2.5 rounded-lg border border-err/35 bg-err/[.08] px-3 py-2.5 text-xs text-err">{d.error}</p>
+                  <p className="mb-2.5 rounded-r-lg border-l-2 border-err bg-err/[.08] px-3 py-2.5 text-xs text-err">{d.error}</p>
                 )}
                 <DiagnosisCard raw={d.diagnosis} />
                 <DeploymentLogs deployment={d} />
