@@ -15,7 +15,7 @@ import { api } from '../../api';
 import { useLocalStorage } from '../../hooks';
 import { DbOverview, DbQueryResult, DbSnippet } from '../../types';
 import { cx, fmtBytes } from '../../utils';
-import { Button, ConfirmModal, Kbd, Skeleton, useToast } from '../ui';
+import { Button, ConfirmModal, CopyButton, Kbd, Skeleton, useToast } from '../ui';
 
 /** Descarga un contenido como archivo desde el navegador. */
 function downloadFile(filename: string, content: string, mime: string): void {
@@ -402,13 +402,16 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
               </span>
             )}
             {result.kind === 'text' && !!result.raw && (
-              <button
-                onClick={() => downloadFile(`consulta-${Date.now()}.txt`, result.raw!, 'text/plain')}
-                className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-surface2 hover:text-txt"
-                title="Descargar el resultado"
-              >
-                <Download size={11} /> Descargar
-              </button>
+              <span className="ml-auto flex items-center gap-1">
+                <CopyButton value={result.raw} title="Copiar el resultado" />
+                <button
+                  onClick={() => downloadFile(`consulta-${Date.now()}.txt`, result.raw!, 'text/plain')}
+                  className="flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-surface2 hover:text-txt"
+                  title="Descargar el resultado"
+                >
+                  <Download size={11} /> Descargar
+                </button>
+              </span>
             )}
           </div>
           {result.kind === 'table' ? (

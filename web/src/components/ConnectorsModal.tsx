@@ -63,6 +63,25 @@ export default function ConnectorsModal({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Ids con prueba en curso: `mutation.variables` solo recordaría la última.
+  const [testing, setTesting] = useState<Set<string>>(new Set());
+  const test = useMutation({
+    mutationFn: (id: string) =>
+      api.post<{ ok: boolean; login: string; tokenType: string; warning: string | null }>(`/connectors/${id}/test`),
+    onMutate: (id) => setTesting((s) => new Set(s).add(id)),
+    onSettled: (_d, _e, id) =>
+      setTesting((s) => {
+        const next = new Set(s);
+        next.delete(id);
+        return next;
+      }),
+    onSuccess: (res) => {
+      toast(`Token válido: @${res.login}`, 'ok');
+      if (res.warning) toast(res.warning, 'info');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
   const list = connectors.data?.connectors ?? [];
 
   return (
@@ -100,13 +119,18 @@ export default function ConnectorsModal({
                     </p>
                   </div>
                 </div>
-                <button
-                  onClick={() => setToDelete(c)}
-                  className="rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err"
-                  title="Eliminar conector"
-                >
-                  <Trash2 size={14} />
-                </button>
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button size="sm" variant="ghost" onClick={() => test.mutate(c.id)} loading={testing.has(c.id)}>
+                    Probar
+                  </Button>
+                  <button
+                    onClick={() => setToDelete(c)}
+                    className="rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err"
+                    title="Eliminar conector"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               </div>
             ))}
           </div>

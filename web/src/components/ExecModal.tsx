@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Terminal } from 'lucide-react';
 import { api } from '../api';
+import { useLocalStorage } from '../hooks';
 import { cx } from '../utils';
-import { Button, ConfirmModal, Modal, useToast } from './ui';
+import { Button, ConfirmModal, CopyButton, Modal, useToast } from './ui';
 
 interface ExecResult {
   output: string;
@@ -35,6 +36,8 @@ export default function ExecModal({
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ExecResult | null>(null);
   const [confirmCmd, setConfirmCmd] = useState<string | null>(null);
+  const [history, setHistory] = useLocalStorage<string[]>(`skyway.execHistory.${serviceId}`, []);
+  const [histIdx, setHistIdx] = useState(-1);
 
   // El comando escrito pasa por aquí: si parece destructivo, confirma antes de correr.
   const submit = (cmd: string) => {
@@ -49,6 +52,8 @@ export default function ExecModal({
   const run = async (cmd: string) => {
     if (!cmd.trim() || running) return;
     setConfirmCmd(null);
+    setHistory([cmd, ...history.filter((x) => x !== cmd)].slice(0, 30));
+    setHistIdx(-1);
     setRunning(true);
     setResult(null);
     try {
@@ -77,7 +82,26 @@ export default function ExecModal({
               className="input pl-9 font-mono text-xs"
               placeholder="npm run migrate"
               value={command}
-              onChange={(e) => setCommand(e.target.value)}
+              onChange={(e) => {
+                setCommand(e.target.value);
+                setHistIdx(-1);
+              }}
+              onKeyDown={(e) => {
+                // Historial estilo terminal: ↑ recupera comandos anteriores, ↓ vuelve.
+                if (e.key === 'ArrowUp') {
+                  if (history.length === 0) return;
+                  e.preventDefault();
+                  const idx = Math.min(histIdx + 1, history.length - 1);
+                  setHistIdx(idx);
+                  setCommand(history[idx]);
+                } else if (e.key === 'ArrowDown') {
+                  if (histIdx < 0) return;
+                  e.preventDefault();
+                  const idx = histIdx - 1;
+                  setHistIdx(idx);
+                  setCommand(idx < 0 ? '' : history[idx]);
+                }
+              }}
               autoFocus
               spellCheck={false}
             />
@@ -118,11 +142,18 @@ export default function ExecModal({
               {result.truncated ? ' · salida truncada' : ''}
             </span>
           )}
+          {result?.output && (
+            <CopyButton
+              value={result.output}
+              title="Copiar la salida"
+              className="absolute bottom-2 right-2 border border-line bg-surface/80 backdrop-blur-sm"
+            />
+          )}
         </div>
         <p className="text-xs text-subtle">
           Útil para migraciones (<span className="font-mono">npm run migrate</span>,{' '}
           <span className="font-mono">npx prisma migrate deploy</span>...). Cada ejecución queda en el registro de
-          actividad. Límite: 60 s.
+          actividad. Límite: 60 s. Pulsa ↑ para recuperar comandos anteriores.
         </p>
       </div>
 
