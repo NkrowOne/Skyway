@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ArrowDownToLine,
@@ -7,6 +7,7 @@ import {
   Copy,
   Download,
   Hash,
+  Loader2,
   Maximize2,
   Minimize2,
   Search,
@@ -101,6 +102,9 @@ export default function LogViewer({
   downloadName,
   statusNote,
   title,
+  onLoadMore,
+  canLoadMore = false,
+  loadingMore = false,
 }: {
   lines: string[];
   className?: string;
@@ -113,6 +117,12 @@ export default function LogViewer({
   statusNote?: string | null;
   /** Título del cromo de la consola (p. ej. «Build & deploy», «Logs en vivo»). */
   title?: string;
+  /** Carga más historial (líneas más antiguas) por el frente. Sin esto no hay botón. */
+  onLoadMore?: () => void;
+  /** Si hay más historial disponible arriba (muestra «Cargar más»). */
+  canLoadMore?: boolean;
+  /** Carga en curso: el botón «Cargar más» se deshabilita y gira. */
+  loadingMore?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -124,6 +134,12 @@ export default function LogViewer({
   // Última posición de scroll: al maximizar/restaurar el cuerpo se reubica, así
   // que se restaura aquí para no perder el sitio de lectura (si no vamos al final).
   const lastTopRef = useRef(0);
+  // «Cargar más» prepende líneas antiguas: se guarda la distancia al fondo antes
+  // de pedirlas y se re-ancla al llegar, para que la vista no salte. La ventana
+  // temporal cubre ráfagas que lleguen en varios frames y luego se libera para
+  // no «perseguir» al vivo.
+  const restoreRef = useRef<number | null>(null);
+  const restoreTimer = useRef(0);
   const [follow, setFollow] = useState(true);
   const [filter, setFilter] = useState('');
   const [level, setLevel] = useState<LevelFilter>('all');
@@ -190,6 +206,16 @@ export default function LogViewer({
     return () => cancelAnimationFrame(raf);
   }, [visible, follow]);
 
+  // Tras «Cargar más» el buffer se reemplaza por un snapshot más profundo (más
+  // líneas antiguas arriba). Se re-ancla por distancia al fondo —invariante a lo
+  // que se añade por arriba— para clavar la línea que el usuario estaba leyendo.
+  // En capa de layout (antes de pintar) para que no se vea el salto.
+  useLayoutEffect(() => {
+    if (restoreRef.current == null) return;
+    const el = ref.current;
+    if (el) el.scrollTop = el.scrollHeight - restoreRef.current;
+  }, [visible]);
+
   // Al maximizar/restaurar el nodo se reubica: si veníamos siguiendo, al final;
   // si el usuario había subido a leer, se recupera su posición (no se salta arriba).
   useEffect(() => {
@@ -244,7 +270,40 @@ export default function LogViewer({
   };
   useEffect(() => () => {
     if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
+    if (restoreTimer.current) clearTimeout(restoreTimer.current);
   }, []);
+
+  // Pide historial antiguo conservando el sitio de lectura: fija la distancia al
+  // fondo (se re-aplica al llegar el snapshot) y pausa el seguimiento del vivo.
+  // La salvaguarda libera el anclaje aunque el snapshot no llegue nunca.
+  const loadMore = () => {
+    if (loadingMore) return;
+    const el = ref.current;
+    if (el) restoreRef.current = el.scrollHeight - el.scrollTop;
+    setFollow(false);
+    if (restoreTimer.current) clearTimeout(restoreTimer.current);
+    restoreTimer.current = window.setTimeout(() => {
+      restoreRef.current = null;
+    }, 3_000);
+    onLoadMore?.();
+  };
+
+  // El anclaje se mantiene mientras `loadingMore` (el snapshot está de camino);
+  // en cuanto llega (true→false) se deja una ventana corta para los flushes de
+  // cola que puedan venir troceados y se libera, para no perseguir el vivo.
+  const wasLoadingRef = useRef(false);
+  useEffect(() => {
+    if (loadingMore) {
+      wasLoadingRef.current = true;
+      return;
+    }
+    if (!wasLoadingRef.current) return;
+    wasLoadingRef.current = false;
+    if (restoreTimer.current) clearTimeout(restoreTimer.current);
+    restoreTimer.current = window.setTimeout(() => {
+      restoreRef.current = null;
+    }, 300);
+  }, [loadingMore]);
 
   const jump = (to: 'top' | 'bottom') => {
     const el = ref.current;
@@ -432,6 +491,19 @@ export default function LogViewer({
           aria-live="off"
           aria-label="Salida de registro"
         >
+          {onLoadMore && canLoadMore && (
+            <div className="flex justify-center px-3 py-2">
+              <button
+                type="button"
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="press inline-flex items-center gap-1.5 rounded-full border border-line bg-surface2 px-3 py-1 text-[11px] font-medium text-sub hover:text-txt disabled:opacity-60"
+              >
+                {loadingMore ? <Loader2 size={12} className="animate-spin" /> : <ArrowUpToLine size={12} />}
+                {loadingMore ? 'Cargando…' : 'Cargar más'}
+              </button>
+            </div>
+          )}
           {visible.length === 0 ? (
             <span className="block px-3 py-3 text-subtle">
               {filtering ? 'Ninguna línea coincide con el filtro.' : 'Sin logs todavía…'}
@@ -473,7 +545,7 @@ export default function LogViewer({
               onClick={() => jump('bottom')}
               className="badge-in press absolute bottom-2.5 right-3 inline-flex items-center gap-1 rounded-full border border-line bg-surface2 px-3 py-1 text-xs text-sub shadow-lvl1 hover:text-txt"
             >
-              <ArrowDownToLine size={12} /> Seguir el final
+              <ArrowDownToLine size={12} /> Bajar al final
             </button>
           )}
       </div>

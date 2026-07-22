@@ -1,5 +1,6 @@
 import os from 'os';
 import { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { assertProjectAccess, requireAuth } from '../auth';
 import { getProject, getService, listServices } from '../db';
 import { dockerAvailable } from '../docker/client';
@@ -16,6 +17,11 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     const project = service ? getProject(service.project_id) : undefined;
     if (!service || !project) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, project.id)) return reply;
+
+    // Profundidad de historial: el visor la sube con «Cargar más» reabriendo el
+    // stream con más cola. Se acota para no ahogar al móvil ni al servidor; un
+    // valor inválido cae al de por defecto en vez de fallar.
+    const { tail } = z.object({ tail: z.coerce.number().int().min(50).max(5000).catch(200) }).parse(req.query);
 
     const channel = sseInit(reply);
     const name = containerName(project, service);
@@ -37,7 +43,7 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
       }
       try {
         channel.send('attached', { state: runtime.state });
-        stopStream = await followLogs(name, (line) => channel.send('log', { line }));
+        stopStream = await followLogs(name, (line) => channel.send('log', { line }), tail);
       } catch {
         retryTimer = setTimeout(attach, 3000);
       }
