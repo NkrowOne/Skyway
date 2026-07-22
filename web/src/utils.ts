@@ -25,7 +25,9 @@ export function timeAgo(ts: number): string {
 export function fmtBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.min(units.length - 1, Math.floor(Math.log2(bytes) / 10));
+  // Acotado a [0, TB]: valores <1 B (p. ej. un caudal de red casi ocioso, 0,4 B/s)
+  // daban un índice negativo → `units[-1]` = undefined y se pintaba «0,4 undefined».
+  const i = Math.min(units.length - 1, Math.max(0, Math.floor(Math.log2(bytes) / 10)));
   const value = bytes / 2 ** (10 * i);
   return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
 }

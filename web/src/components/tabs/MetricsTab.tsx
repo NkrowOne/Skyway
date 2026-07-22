@@ -78,6 +78,22 @@ function LiveView({
   const cpuPctOfLimit = stats && allowance ? (stats.cpuPercent / allowance) * 100 : null;
   const memPct = stats && memLimit ? (stats.memUsage / memLimit) * 100 : null;
 
+  // Caudal de red: netRx/netTx son contadores ACUMULADOS del contenedor, así que
+  // el dato útil («cuánto se descarga/sube ahora») es su derivada. Se calcula el
+  // delta entre muestras consecutivas dividido por el tiempo; se recorta a 0 para
+  // no pintar picos negativos cuando el contador se reinicia (reinicio del contenedor).
+  const netRate: { ts: number; rx: number; tx: number }[] = [];
+  for (let i = 1; i < history.length; i++) {
+    const dt = (history[i].ts - history[i - 1].ts) / 1000;
+    if (dt <= 0) continue;
+    netRate.push({
+      ts: history[i].ts,
+      rx: Math.max(0, history[i].rx - history[i - 1].rx) / dt,
+      tx: Math.max(0, history[i].tx - history[i - 1].tx) / dt,
+    });
+  }
+  const lastRate = netRate.length ? netRate[netRate.length - 1] : null;
+
   return (
     <div className="flex flex-col gap-3.5">
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
@@ -101,8 +117,18 @@ function LiveView({
           sub={memPct !== null ? `${memPct.toFixed(0)}% de ${memoryMb} MB` : memoryMb ? `límite ${memoryMb} MB` : 'sin límite'}
           tone={memPct !== null && memPct > 90 ? 'err' : memPct !== null && memPct > 75 ? 'warn' : 'txt'}
         />
-        <Tile icon={<ArrowDown size={12} className="text-ok" />} label="Red recibida" value={stats ? fmtBytes(stats.netRx) : '—'} sub="acumulado" />
-        <Tile icon={<ArrowUp size={12} className="text-info" />} label="Red enviada" value={stats ? fmtBytes(stats.netTx) : '—'} sub="acumulado" />
+        <Tile
+          icon={<ArrowDown size={12} className="text-ok" />}
+          label="Red · descarga"
+          value={stats && lastRate ? fmtRate(lastRate.rx) : '—'}
+          sub={stats ? `${fmtBytes(stats.netRx)} en total` : 'recopilando…'}
+        />
+        <Tile
+          icon={<ArrowUp size={12} className="text-info" />}
+          label="Red · subida"
+          value={stats && lastRate ? fmtRate(lastRate.tx) : '—'}
+          sub={stats ? `${fmtBytes(stats.netTx)} en total` : 'recopilando…'}
+        />
       </div>
 
       <MetricChart
@@ -120,6 +146,20 @@ function LiveView({
         points={history.map((p) => ({ ts: p.ts, value: p.mem }))}
         format={(v) => fmtBytes(v)}
         fixedMax={memLimit}
+      />
+      <MetricChart
+        title="Red · descarga"
+        color="var(--color-ok)"
+        fillOpacity={0.12}
+        points={netRate.map((p) => ({ ts: p.ts, value: p.rx }))}
+        format={(v) => fmtRate(v)}
+      />
+      <MetricChart
+        title="Red · subida"
+        color="var(--color-info)"
+        fillOpacity={0.12}
+        points={netRate.map((p) => ({ ts: p.ts, value: p.tx }))}
+        format={(v) => fmtRate(v)}
       />
       <p className="text-center text-[11px] text-subtle">
         Muestras cada 2,5 s · ventana de {Math.max(1, Math.round((history.length * 2.5) / 60))} min

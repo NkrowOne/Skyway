@@ -2,6 +2,7 @@ import os from 'os';
 import { fireAlert, resolveServiceAlerts } from './alerts';
 import {
   getSetting,
+  listDeployments,
   listProjects,
   listServices,
   pruneMetrics,
@@ -203,6 +204,16 @@ async function tick(): Promise<void> {
 
       entry.state = runtime.state;
       tracked.set(trackKey, entry);
+      }
+
+      // Reconciliación del fallo de despliegue: si el despliegue VIGENTE es
+      // correcto, no hay un problema de despliegue activo aunque la alerta de
+      // fallo siga abierta (p. ej. se creó antes de existir la auto-resolución,
+      // o el servicio se recuperó sin un despliegue nuevo). Así la campana solo
+      // refleja problemas activos, sin que el usuario tenga que resolver a mano.
+      const latestDeploy = listDeployments(service.id, 1)[0];
+      if (latestDeploy?.status === 'success') {
+        resolveServiceAlerts(service.id, 'deploy_failed', false);
       }
 
       // La telemetría es best-effort: un fallo de escritura (p. ej. disco lleno)

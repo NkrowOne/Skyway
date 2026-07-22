@@ -665,7 +665,11 @@ export default function Layout() {
         onScroll={(e) => setScrolled((e.target as HTMLElement).scrollTop > 8)}
       >
         {/* La clave por ruta reinicia la animación de entrada al navegar (los searchParams no la relanzan). */}
-        <div key={location.pathname} className="page-in min-h-full">
+        {/* h-full (no min-h-full): da una altura DEFINIDA a las páginas de layout
+            partido (Proyecto: lienzo + drawer con scroll propio). Con min-height el
+            `h-full` de esas páginas no resolvía y sus paneles internos no scrolleaban.
+            Las páginas de documento desbordan hacia el scroll de <main> igual que antes. */}
+        <div key={location.pathname} className="page-in h-full">
           <Outlet />
         </div>
       </main>
