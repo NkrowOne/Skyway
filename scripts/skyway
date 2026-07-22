@@ -53,11 +53,19 @@ need() { command -v "$1" >/dev/null 2>&1 || die "Falta «$1». Instálalo (p. ej
 # api METHOD PATH [curl args...] -> imprime el cuerpo; muere con el error del servidor.
 api() {
   local method="$1" path="$2"; shift 2
+  local -a args=("$@")
+  # Fastify rechaza un POST/PUT/PATCH con content-type JSON y cuerpo vacío
+  # («Body cannot be empty…»): si no se pasa cuerpo, se manda {} como el panel web.
+  if [[ "$method" != "GET" ]]; then
+    local has_body=0 a
+    for a in "${args[@]}"; do [[ "$a" == "-d" || "$a" == "--data"* ]] && has_body=1; done
+    (( has_body )) || args+=(--data '{}')
+  fi
   local resp code body
   if ! resp=$(curl -sS -w $'\n%{http_code}' -X "$method" \
       -H "Authorization: Bearer $SKYWAY_TOKEN" \
       -H "Content-Type: application/json" \
-      "$SKYWAY_URL/api$path" "$@" 2>/dev/null); then
+      "$SKYWAY_URL/api$path" "${args[@]}" 2>/dev/null); then
     die "No se pudo conectar a $SKYWAY_URL (¿URL correcta? ¿túnel SSH abierto?)"
   fi
   code="${resp##*$'\n'}"
