@@ -26,8 +26,16 @@ function SiteCard({
   const navigate = useNavigate();
   const scheme = tls ? 'https' : 'http';
   const isRunning = site.state === 'running' || site.state === 'restarting';
-  const deployTone =
-    site.lastDeploy?.status === 'failed' ? 'text-err' : site.lastDeploy?.status === 'success' ? 'text-subtle' : 'text-warn';
+  // El color lo lleva un punto indicador, no toda la línea (coherente con la
+  // píldora de despliegues): un fallo marca en rojo solo el punto.
+  const deployDot =
+    site.lastDeploy?.status === 'failed'
+      ? 'bg-err'
+      : site.lastDeploy?.status === 'success'
+        ? 'bg-ok'
+        : site.lastDeploy
+          ? 'bg-warn'
+          : 'bg-subtle';
 
   return (
     <div className="card card-hover flex flex-col p-4">
@@ -89,10 +97,13 @@ function SiteCard({
       </div>
 
       <div className="mt-auto flex items-center justify-between gap-2 pt-3">
-        <span className={cx('truncate text-[11px]', deployTone)}>
-          {site.lastDeploy
-            ? `${DEPLOY_STATUS_LABEL[site.lastDeploy.status]} ${timeAgo(site.lastDeploy.created_at)}`
-            : 'Sin despliegues'}
+        <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-sub">
+          <span className={cx('h-1.5 w-1.5 shrink-0 rounded-full', deployDot)} />
+          <span className="truncate">
+            {site.lastDeploy
+              ? `${DEPLOY_STATUS_LABEL[site.lastDeploy.status]} ${timeAgo(site.lastDeploy.created_at)}`
+              : 'Sin despliegues'}
+          </span>
         </span>
         <div className="flex shrink-0 items-center gap-1">
           <button

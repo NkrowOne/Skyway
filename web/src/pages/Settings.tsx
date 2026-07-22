@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BellRing, CheckCircle2, Cpu, DatabaseBackup, Download, Globe, Trash2 } from 'lucide-react';
 import { api } from '../api';
@@ -208,6 +208,41 @@ export default function SettingsPage() {
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
+
+  // Igual que en el panel de servicio: el botón de guardar solo se activa si hay
+  // cambios de verdad (incluye escribir un token nuevo, que es opaco).
+  const dirty = useMemo(() => {
+    const s = settings.data?.settings;
+    if (!s) return false;
+    if (githubToken || telegramToken) return true;
+    return (
+      rootDomain !== (s.rootDomain || '') ||
+      letsencryptEmail !== (s.letsencryptEmail || '') ||
+      serverIp !== (s.serverIp || '') ||
+      cpuPct !== (s.alertCpuPercent || '') ||
+      memPct !== (s.alertMemPercent || '') ||
+      sustainMin !== (s.alertSustainMinutes || '') ||
+      webhookUrl !== (s.alertWebhookUrl || '') ||
+      discordUrl !== (s.alertDiscordUrl || '') ||
+      telegramChat !== (s.alertTelegramChat || '')
+    );
+  }, [settings.data, githubToken, telegramToken, rootDomain, letsencryptEmail, serverIp, cpuPct, memPct, sustainMin, webhookUrl, discordUrl, telegramChat]);
+
+  const discardSettings = () => {
+    const s = settings.data?.settings;
+    if (!s) return;
+    setRootDomain(s.rootDomain || '');
+    setLetsencryptEmail(s.letsencryptEmail || '');
+    setServerIp(s.serverIp || '');
+    setCpuPct(s.alertCpuPercent || '');
+    setMemPct(s.alertMemPercent || '');
+    setSustainMin(s.alertSustainMinutes || '');
+    setWebhookUrl(s.alertWebhookUrl || '');
+    setDiscordUrl(s.alertDiscordUrl || '');
+    setTelegramChat(s.alertTelegramChat || '');
+    setGithubToken('');
+    setTelegramToken('');
+  };
 
   const removeGithub = useMutation({
     mutationFn: () => api.del('/settings/github'),
@@ -611,11 +646,32 @@ export default function SettingsPage() {
         </p>
       </SettingsSection>
 
-      <div className="safe-b sticky bottom-0 mt-1 flex items-center justify-end gap-2.5 border-t border-line bg-bg/90 py-3 backdrop-blur-lg">
-        <span className="text-xs text-subtle">Los cambios se aplican al guardar</span>
-        <Button onClick={() => save.mutate()} loading={save.isPending} success={saved}>
-          Guardar ajustes
-        </Button>
+      <div className="safe-b sticky bottom-0 mt-1 flex items-center justify-between gap-2.5 border-t border-line bg-bg/90 py-3 backdrop-blur-lg">
+        {dirty ? (
+          <span className="flex items-center gap-[7px] text-xs text-warn">
+            <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />
+            Cambios sin guardar · se aplican al guardar
+          </span>
+        ) : (
+          <span className="text-xs text-subtle">Sin cambios</span>
+        )}
+        <div className="flex items-center gap-2">
+          {dirty && (
+            <Button variant="ghost" size="sm" onClick={discardSettings}>
+              Descartar
+            </Button>
+          )}
+          <Button
+            variant={dirty ? 'primary' : 'secondary'}
+            size="sm"
+            onClick={() => save.mutate()}
+            loading={save.isPending}
+            disabled={!dirty}
+            success={saved && !dirty}
+          >
+            Guardar ajustes
+          </Button>
+        </div>
       </div>
     </div>
   );
