@@ -109,9 +109,12 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
     <LogViewer
       lines={lines}
       toolbar
-      flow
       title="Build & deploy"
       downloadName={`deploy-${deployment.id}.log`}
+      // Altura acotada cómoda: el log no estira el panel; con muchas líneas
+      // aparece su propio scroll (el cuerpo virtualiza, no pinta todo a la vez)
+      // y al llegar al borde el scroll continúa en el panel.
+      className="h-[min(56vh,460px)]"
     />
   );
 }

@@ -83,17 +83,6 @@ function ToolButton({
   );
 }
 
-/** Ancestro scrolleable más cercano (para saltos del log en modo incrustado). */
-function scrollParent(el: HTMLElement | null): HTMLElement | null {
-  let p = el?.parentElement ?? null;
-  while (p) {
-    const oy = getComputedStyle(p).overflowY;
-    if ((oy === 'auto' || oy === 'scroll') && p.scrollHeight > p.clientHeight) return p;
-    p = p.parentElement;
-  }
-  return null;
-}
-
 /**
  * Consola de logs profesional. Un mismo primitivo para logs de servicio y de
  * despliegue, incrustado o a pantalla completa:
@@ -108,7 +97,6 @@ export default function LogViewer({
   className,
   toolbar = false,
   bare = false,
-  flow = false,
   replicas = 1,
   downloadName,
   statusNote,
@@ -120,13 +108,6 @@ export default function LogViewer({
   toolbar?: boolean;
   /** Sin borde/radio propio: para incrustar bajo otra cabecera. */
   bare?: boolean;
-  /**
-   * Modo incrustado: el log fluye a su altura natural sin scroll propio, para no
-   * crear una segunda superficie de scroll dentro de un panel que ya scrollea (el
-   * ratón sobre el log atrapaba la rueda y el panel no se movía). El botón de
-   * maximizar sigue dando una consola con seguimiento en vivo. Se ignora al maximizar.
-   */
-  flow?: boolean;
   replicas?: number;
   downloadName?: string;
   statusNote?: string | null;
@@ -145,8 +126,6 @@ export default function LogViewer({
   const [gutter, setGutter] = useState(true);
   const [copied, setCopied] = useState(false);
   const [maximized, setMaximized] = useState(false);
-  // Incrustado y sin maximizar: fluye dentro del scroll del panel, sin scroll propio.
-  const inlineFlow = flow && !maximized;
 
   // Los builds reales (npm, docker…) emiten colores ANSI: se limpian una vez aquí
   // y filtro, niveles, copia y descarga trabajan ya sobre texto legible.
@@ -240,8 +219,7 @@ export default function LogViewer({
   };
 
   const jump = (to: 'top' | 'bottom') => {
-    // Incrustado: los saltos mueven el scroll del panel, no un scroll interno inexistente.
-    const el = inlineFlow ? scrollParent(ref.current) : ref.current;
+    const el = ref.current;
     if (!el) return;
     if (to === 'top') {
       setFollow(false);
@@ -300,8 +278,7 @@ export default function LogViewer({
   const shell = (
     <section
       className={cx(
-        'log-shell relative flex min-h-0 flex-col bg-term',
-        inlineFlow ? 'overflow-visible' : 'overflow-hidden',
+        'log-shell relative flex min-h-0 flex-col overflow-hidden bg-term',
         maximized ? 'h-full rounded-none' : cx(!bare && 'rounded-lg border border-line', className),
       )}
       style={{ '--log-line-h': maximized ? '22px' : '21px' } as React.CSSProperties}
@@ -315,12 +292,10 @@ export default function LogViewer({
               </span>
             )}
             <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-subtle">
-              {!inlineFlow && (
-                <span
-                  className={cx('h-[6px] w-[6px] rounded-full', follow ? 'pulse-soft bg-ok' : 'bg-subtle')}
-                  title={follow ? 'En vivo' : 'En pausa (has subido)'}
-                />
-              )}
+              <span
+                className={cx('h-[6px] w-[6px] rounded-full', follow ? 'pulse-soft bg-ok' : 'bg-subtle')}
+                title={follow ? 'En vivo' : 'En pausa (has subido)'}
+              />
               <span className="tnum">{nf.format(rows.length)}</span>
               <span className="hidden sm:inline">líneas</span>
               {replicas > 1 && <span className="hidden text-subtle sm:inline">· réplica 1/{replicas}</span>}
@@ -412,15 +387,14 @@ export default function LogViewer({
         </p>
       )}
 
-      <div className={cx('relative', inlineFlow ? '' : cx('min-h-0', showChrome || toolbar ? 'flex-1' : 'h-full'))}>
+      <div className={cx('relative min-h-0', showChrome || toolbar ? 'flex-1' : 'h-full')}>
         <div
           ref={ref}
           onScroll={onScroll}
           className={cx(
-            'font-mono text-[12.5px] leading-[1.65] text-txt/90',
-            !inlineFlow && 'h-full',
+            'h-full font-mono text-[12.5px] leading-[1.65] text-txt/90',
             maximized && 'text-[13px] leading-[1.7]',
-            inlineFlow ? 'overflow-x-auto' : wrap ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto',
+            wrap ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto',
           )}
           role="log"
           // Sin anuncios en vivo: un flujo rápido saturaría al lector de pantalla.
@@ -456,23 +430,22 @@ export default function LogViewer({
           )}
         </div>
 
-        {!inlineFlow &&
-          (follow
-            ? (toolbar || maximized) && (
-                <span className="badge-in pointer-events-none absolute bottom-2.5 right-3 inline-flex items-center gap-[5px] rounded-full border border-ok/35 bg-[color-mix(in_oklab,var(--color-ok)_16%,var(--color-term))] px-2.5 py-[3px] text-[11px] font-medium text-ok shadow-lvl1">
-                  <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-current" />
-                  En vivo
-                </span>
-              )
-            : (
-              <button
-                type="button"
-                onClick={() => jump('bottom')}
-                className="badge-in press absolute bottom-2.5 right-3 inline-flex items-center gap-1 rounded-full border border-line bg-surface2 px-3 py-1 text-xs text-sub shadow-lvl1 hover:text-txt"
-              >
-                <ArrowDownToLine size={12} /> Seguir el final
-              </button>
-            ))}
+        {follow
+          ? (toolbar || maximized) && (
+              <span className="badge-in pointer-events-none absolute bottom-2.5 right-3 inline-flex items-center gap-[5px] rounded-full border border-ok/35 bg-[color-mix(in_oklab,var(--color-ok)_16%,var(--color-term))] px-2.5 py-[3px] text-[11px] font-medium text-ok shadow-lvl1">
+                <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-current" />
+                En vivo
+              </span>
+            )
+          : (
+            <button
+              type="button"
+              onClick={() => jump('bottom')}
+              className="badge-in press absolute bottom-2.5 right-3 inline-flex items-center gap-1 rounded-full border border-line bg-surface2 px-3 py-1 text-xs text-sub shadow-lvl1 hover:text-txt"
+            >
+              <ArrowDownToLine size={12} /> Seguir el final
+            </button>
+          )}
       </div>
     </section>
   );
