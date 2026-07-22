@@ -120,13 +120,13 @@ function LiveView({
         <Tile
           icon={<ArrowDown size={12} className="text-ok" />}
           label="Red · descarga"
-          value={lastRate ? fmtRate(lastRate.rx) : '—'}
+          value={stats && lastRate ? fmtRate(lastRate.rx) : '—'}
           sub={stats ? `${fmtBytes(stats.netRx)} en total` : 'recopilando…'}
         />
         <Tile
           icon={<ArrowUp size={12} className="text-info" />}
           label="Red · subida"
-          value={lastRate ? fmtRate(lastRate.tx) : '—'}
+          value={stats && lastRate ? fmtRate(lastRate.tx) : '—'}
           sub={stats ? `${fmtBytes(stats.netTx)} en total` : 'recopilando…'}
         />
       </div>
