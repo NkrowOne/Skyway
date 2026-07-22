@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 import { PassThrough, pipeline } from 'stream';
+import { randomBytes } from 'crypto';
 import { config } from './config';
 import { docker } from './docker/client';
 import { containerName, getRuntime } from './docker/containers';
@@ -93,7 +94,10 @@ export async function createBackup(project: ProjectRow, service: ServiceRow): Pr
   const name = await requireRunning(project, service);
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const file = `${cfg.template}-${project.slug}-${service.slug}-${stamp}.${tpl.ext}`;
+  // Sufijo aleatorio: dos backups del mismo servicio en el mismo segundo generarían el
+  // mismo nombre y sus dos escrituras se pisarían (dump corrupto).
+  const suffix = randomBytes(3).toString('hex');
+  const file = `${cfg.template}-${project.slug}-${service.slug}-${stamp}-${suffix}.${tpl.ext}`;
   const dir = backupDir(service.id);
   fs.mkdirSync(dir, { recursive: true });
   const full = path.join(dir, file);

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { BellRing, Building2, Plus, TrainFront } from 'lucide-react';
+import { BellRing, Building2, Plus, RefreshCw, TrainFront, TriangleAlert } from 'lucide-react';
 import { api } from '../api';
 import RailwayImportModal from '../components/RailwayImportModal';
 import { Button, Field, Modal, Skeleton, useToast } from '../components/ui';
@@ -164,6 +164,16 @@ export default function Dashboard() {
       )}
 
       {projects.isLoading && <DashboardSkeleton />}
+
+      {projects.isError && (
+        <div className="card flex flex-col items-center gap-2 py-16 text-center text-sm">
+          <TriangleAlert size={22} className="text-warn" />
+          <p className="max-w-sm text-sub">No se pudieron cargar los proyectos: {(projects.error as Error).message}</p>
+          <Button variant="secondary" size="sm" className="mt-1" onClick={() => projects.refetch()}>
+            <RefreshCw size={13} /> Reintentar
+          </Button>
+        </div>
+      )}
 
       {projects.data && all.length === 0 && (
         <div className="card flex flex-col items-center gap-3 py-16 text-center">

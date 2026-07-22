@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Archive, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket } from 'lucide-react';
+import { Archive, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket, TriangleAlert } from 'lucide-react';
 import { api } from '../api';
 import { Button, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { Alert } from '../types';
@@ -185,7 +185,17 @@ export default function AlertsPage() {
         </div>
       )}
 
-      {!current.isLoading && list.length === 0 && (
+      {current.isError && (
+        <div className="card flex flex-col items-center gap-2 py-14 text-center text-sm">
+          <TriangleAlert size={20} className="text-warn" />
+          <p className="max-w-sm text-sub">No se pudieron cargar las alertas: {(current.error as Error).message}</p>
+          <Button variant="secondary" size="sm" className="mt-1" onClick={() => current.refetch()}>
+            <RefreshCw size={13} /> Reintentar
+          </Button>
+        </div>
+      )}
+
+      {!current.isLoading && !current.isError && list.length === 0 && (
         <div className="card flex flex-col items-center gap-3 py-16 text-center text-sm text-sub">
           {/* El mismo dot de estado del sistema que en la topbar: verde y respirando. */}
           <span
