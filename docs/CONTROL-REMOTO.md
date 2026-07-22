@@ -59,6 +59,34 @@ Notas:
 - Revocar un token (Mi cuenta → papelera) corta el acceso al instante.
 - Ponles caducidad si son para tareas puntuales.
 
+### CLI rápida: el comando `skyway`
+
+Para el día a día hay un script en `scripts/skyway` que envuelve la API: elige el
+servicio de una lista (o por nombre/slug) y actúa, sin recordar ids ni escribir
+`curl`. Necesita `curl` y `jq`.
+
+```bash
+# Instalar (enlace en el PATH) y configurar una vez
+sudo ln -s "$PWD/scripts/skyway" /usr/local/bin/skyway
+mkdir -p ~/.config/skyway && cat > ~/.config/skyway/config <<CFG
+SKYWAY_URL="https://skyway.tudominio.com"   # o http://localhost:4000 por túnel SSH
+SKYWAY_TOKEN="sky_..."
+CFG
+
+skyway ls                 # lista los servicios accesibles con su estado
+skyway deploy             # elige un servicio y despliega (rama configurada, p. ej. main, al último commit)
+skyway deploy api -f      # despliega el servicio «api» y sigue el estado hasta terminar
+skyway restart api        # reinicia
+skyway stop api           # detiene (pide confirmación; -y la salta)
+skyway rewind api         # rollback: muestra los despliegues correctos y vuelves al que elijas
+skyway status api         # estado y último despliegue
+```
+
+`deploy` siempre redespliega la rama configurada del servicio (habitualmente
+`main`) clonándola de nuevo, así que trae el último commit sin pasos extra. El
+token define qué servicios ves y qué puedes hacer (hereda los permisos del
+usuario). `skyway --help` lista todo.
+
 ### Darle el control a Claude
 
 En una sesión de Claude Code (terminal, web o app):

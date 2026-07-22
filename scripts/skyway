@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+#
+# skyway — control de Skyway desde la terminal.
+#
+#   skyway deploy   [servicio] [-f]   Despliega (rama configurada, p. ej. main, al último commit)
+#   skyway restart  [servicio]        Reinicia el contenedor
+#   skyway stop     [servicio] [-y]   Detiene el servicio
+#   skyway start    [servicio]        Arranca el servicio
+#   skyway rewind   [servicio] [-f]   Rollback: elige a qué despliegue volver
+#   skyway status   [servicio]        Estado y último despliegue
+#   skyway ls                         Lista servicios accesibles
+#
+# «servicio» puede ser un id (svc_…), un slug, o parte del nombre. Sin él, se
+# elige de una lista. Todo pasa por la API REST con un token `sky_…`.
+#
+# Configuración (por orden de prioridad): flags -u/-t, variables de entorno,
+# fichero ~/.config/skyway/config o ./.skywayrc con:
+#   SKYWAY_URL="https://skyway.tudominio.com"   # o http://localhost:4000 (túnel SSH)
+#   SKYWAY_TOKEN="sky_..."
+#
+# Instalación: coloca este script en el PATH, p. ej.
+#   sudo ln -s "$PWD/scripts/skyway" /usr/local/bin/skyway
+#
+set -euo pipefail
+
+# ---------- presentación ----------
+if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
+  C_RESET=$'\033[0m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'
+  C_ACC=$'\033[38;5;99m'; C_OK=$'\033[38;5;42m'; C_WARN=$'\033[38;5;214m'; C_ERR=$'\033[38;5;203m'
+else
+  C_RESET=''; C_DIM=''; C_BOLD=''; C_ACC=''; C_OK=''; C_WARN=''; C_ERR=''
+fi
+
+info() { printf '%s\n' "${C_DIM}$*${C_RESET}" >&2; }
+ok()   { printf '%s\n' "${C_OK}✓ $*${C_RESET}" >&2; }
+warn() { printf '%s\n' "${C_WARN}! $*${C_RESET}" >&2; }
+die()  { printf '%s\n' "${C_ERR}✗ $*${C_RESET}" >&2; exit 1; }
+
+# ---------- configuración ----------
+load_config() {
+  local f
+  for f in "${SKYWAY_CONFIG:-$HOME/.config/skyway/config}" "./.skywayrc"; do
+    # shellcheck disable=SC1090
+    if [[ -f "$f" ]]; then source "$f"; fi
+  done
+  return 0  # el último test podría ser falso: no dejes que `set -e` aborte aquí
+}
+
+# ---------- dependencias ----------
+need() { command -v "$1" >/dev/null 2>&1 || die "Falta «$1». Instálalo (p. ej. apt install $1) y reintenta."; }
+
+# ---------- capa HTTP ----------
+# api METHOD PATH [curl args...] -> imprime el cuerpo; muere con el error del servidor.
+api() {
+  local method="$1" path="$2"; shift 2
+  local resp code body
+  if ! resp=$(curl -sS -w $'\n%{http_code}' -X "$method" \
+      -H "Authorization: Bearer $SKYWAY_TOKEN" \
+      -H "Content-Type: application/json" \
+      "$SKYWAY_URL/api$path" "$@" 2>/dev/null); then
+    die "No se pudo conectar a $SKYWAY_URL (¿URL correcta? ¿túnel SSH abierto?)"
+  fi
+  code="${resp##*$'\n'}"
+  body="${resp%$'\n'*}"
+  if [[ ! "$code" =~ ^2 ]]; then
+    local msg; msg=$(printf '%s' "$body" | jq -r '.error // empty' 2>/dev/null || true)
+    [[ "$code" == "401" ]] && msg="${msg:-Token inválido o caducado}"
+    die "API $code — ${msg:-$body}"
+  fi
+  printf '%s' "$body"
+}
+
+# ---------- servicios ----------
+# Traducción de estado de contenedor al español, como función jq reutilizable.
+JQ_ES='def es: if .=="running" then "activo" elif .=="exited" then "detenido" elif .=="restarting" then "reiniciando" elif .=="dead" then "muerto" elif .=="paused" then "pausado" elif .=="created" then "creado" elif .=="removing" then "eliminando" elif .=="not_created" then "sin desplegar" else "desconocido" end;'
+
+# Un objeto JSON por línea (con `label` ya montada) de todos los servicios
+# accesibles. N+1 peticiones (una por proyecto): suficiente para un CLI.
+all_services() {
+  local pids; pids=$(api GET /projects | jq -r '.projects[].id')
+  [[ -n "$pids" ]] || return 0
+  local pid
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    api GET "/projects/$pid" | jq -c --arg dim "$C_DIM" --arg reset "$C_RESET" "
+      $JQ_ES
+      .project as \$p | .services[] |
+      (.runtime.state // \"unknown\") as \$st |
+      {id, name, slug, type, project: \$p.name, state: \$st, state_es: (\$st|es),
+       label: (.name + \"   \" + \$dim + \$p.name + \" · \" + (\$st|es) + \$reset)}"
+  done <<< "$pids"
+}
+
+# Menú numerado. $1 = objetos JSON por línea, $2 = expresión jq de etiqueta,
+# $3 = título. Imprime la línea elegida en stdout; interactúa por /dev/tty.
+menu_pick() {
+  local items="$1" label="$2" title="${3:-Elige:}"
+  local -a arr=()
+  while IFS= read -r line; do [[ -n "$line" ]] && arr+=("$line"); done <<< "$items"
+  (( ${#arr[@]} > 0 )) || die "Nada que elegir."
+  [[ -n "$title" ]] && printf '%s\n' "${C_BOLD}$title${C_RESET}" >&2
+  local i=1 l
+  for line in "${arr[@]}"; do
+    l=$(printf '%s' "$line" | jq -r "$label")
+    printf '  %s%2d%s  %s\n' "$C_ACC" "$i" "$C_RESET" "$l" >&2
+    ((i++))
+  done
+  local sel
+  printf '  %s›%s ' "$C_ACC" "$C_RESET" >&2
+  read -r sel < /dev/tty || die "Cancelado."
+  [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= ${#arr[@]} )) || die "Selección inválida."
+  printf '%s' "${arr[sel-1]}"
+}
+
+confirm() {
+  [[ "${ASSUME_YES:-0}" == "1" ]] && return 0
+  local ans
+  printf '%s %s[s/N]%s ' "$1" "$C_DIM" "$C_RESET" >&2
+  read -r ans < /dev/tty || return 1
+  [[ "$ans" =~ ^[sSyY]$ ]]
+}
+
+# Rellena SVC_ID/SVC_NAME/SVC_TYPE/SVC_PROJECT a partir de $1 (id/slug/nombre) o menú.
+SVC_ID=''; SVC_NAME=''; SVC_TYPE=''; SVC_PROJECT=''
+resolve_service() {
+  local query="${1:-}"
+  local services; services=$(all_services)
+  [[ -n "$services" ]] || die "No hay servicios accesibles con este token."
+  local matches
+  if [[ -n "$query" ]]; then
+    matches=$(printf '%s\n' "$services" | jq -c --arg q "$query" '
+      select((.id == $q)
+        or ((.slug | ascii_downcase) == ($q | ascii_downcase))
+        or ((.name | ascii_downcase) | contains($q | ascii_downcase)))' || true)
+    [[ -n "$matches" ]] || die "Ningún servicio coincide con «$query». Prueba «skyway ls»."
+  else
+    matches="$services"
+  fi
+  local chosen
+  if [[ $(printf '%s\n' "$matches" | grep -c '^{' || true) -eq 1 ]]; then
+    chosen="$matches"
+  else
+    chosen=$(menu_pick "$matches" '.label' "Elige un servicio:")
+  fi
+  SVC_ID=$(printf '%s' "$chosen" | jq -r '.id')
+  SVC_NAME=$(printf '%s' "$chosen" | jq -r '.name')
+  SVC_TYPE=$(printf '%s' "$chosen" | jq -r '.type')
+  SVC_PROJECT=$(printf '%s' "$chosen" | jq -r '.project')
+}
+
+# Sigue un despliegue por sondeo hasta que termina.
+follow_deploy() {
+  local dep_id="$1" last=''
+  info "Siguiendo el despliegue $dep_id (Ctrl-C para dejar de mirar; sigue en el servidor)…"
+  while :; do
+    local d status; d=$(api GET "/deployments/$dep_id")
+    status=$(printf '%s' "$d" | jq -r '.deployment.status')
+    if [[ "$status" != "$last" ]]; then info "estado: ${C_BOLD}$status${C_RESET}${C_DIM}"; last="$status"; fi
+    case "$status" in
+      success) ok "Despliegue completado."; return 0;;
+      failed|canceled)
+        local err; err=$(printf '%s' "$d" | jq -r '.deployment.error // "sin detalle"')
+        die "Despliegue $status — $err";;
+    esac
+    sleep 2
+  done
+}
+
+# ---------- comandos ----------
+cmd_ls() {
+  local services; services=$(all_services)
+  [[ -n "$services" ]] || { info "Sin servicios accesibles."; return 0; }
+  # Se alinea con jq (no depende de `column`, que falta en servidores mínimos).
+  printf '%s\n' "$services" | jq -s -r --arg dim "$C_DIM" --arg reset "$C_RESET" '
+    (map(.name | length) | max) as $w |
+    sort_by(.project, .name)[] |
+    (($w - (.name | length)) as $p | if $p > 0 then " " * $p else "" end) as $pad |
+    "  \(.name)\($pad)   \($dim)\(.project) · \(.state_es) · \(.type)\($reset)   \(.id)"'
+}
+
+cmd_status() {
+  resolve_service "${1:-}"
+  local d; d=$(api GET "/services/$SVC_ID")
+  printf '%s' "$d" | jq -r --arg proj "$SVC_PROJECT" "
+    $JQ_ES
+"'    .service as $s | .runtime as $r | .latestDeployment as $dep |
+    "  \($s.name)   ·   \($proj)   ·   \($s.type)",
+    "  estado: \(($r.state // "unknown") | es)",
+    "  último despliegue: \(if $dep then "\($dep.status)  \(($dep.commit_sha // "")[0:7])  \(($dep.commit_msg // "") | gsub("\n";" "))" else "—" end)"'
+}
+
+cmd_action() {
+  local verb="$1" query="${2:-}"
+  resolve_service "$query"
+  case "$verb" in
+    deploy)
+      local out id
+      out=$(api POST "/services/$SVC_ID/deploy")
+      id=$(printf '%s' "$out" | jq -r '.deployment.id')
+      ok "Despliegue lanzado para «$SVC_NAME» ${C_DIM}(rama configurada al último commit)${C_RESET}"
+      [[ "${FOLLOW:-0}" == "1" ]] && follow_deploy "$id"
+      ;;
+    restart)
+      api POST "/services/$SVC_ID/restart" >/dev/null
+      ok "«$SVC_NAME» reiniciado"
+      ;;
+    start)
+      api POST "/services/$SVC_ID/start" >/dev/null
+      ok "«$SVC_NAME» iniciado"
+      ;;
+    stop)
+      confirm "¿Detener «$SVC_NAME» ($SVC_PROJECT)?" || { info "Cancelado."; return 0; }
+      api POST "/services/$SVC_ID/stop" >/dev/null
+      ok "«$SVC_NAME» detenido"
+      ;;
+  esac
+}
+
+cmd_rewind() {
+  resolve_service "${1:-}"
+  [[ "$SVC_TYPE" == "git" ]] || die "El rollback solo aplica a servicios de repositorio; «$SVC_NAME» es de tipo $SVC_TYPE (los de imagen se redespliegan)."
+  local deps; deps=$(api GET "/services/$SVC_ID/deployments" \
+    | jq -c '.deployments[] | select(.status == "success" and .image_tag != null)' || true)
+  [[ -n "$deps" ]] || die "«$SVC_NAME» no tiene despliegues exitosos a los que volver."
+  local label='"\(.created_at/1000 | gmtime | strftime("%d/%m %H:%M"))   \((.commit_sha // "")[0:7] | if .=="" then "—" else . end)   \((.commit_msg // "") | gsub("\n";" ")[0:52])"'
+  local chosen; chosen=$(menu_pick "$deps" "$label" "Rollback de «$SVC_NAME» — ¿a qué despliegue vuelvo?")
+  local dep_id; dep_id=$(printf '%s' "$chosen" | jq -r '.id')
+  local sha; sha=$(printf '%s' "$chosen" | jq -r '(.commit_sha // "")[0:7]')
+  confirm "¿Volver «$SVC_NAME» al despliegue ${sha:-$dep_id}?" || { info "Cancelado."; return 0; }
+  local out id; out=$(api POST "/deployments/$dep_id/rollback")
+  id=$(printf '%s' "$out" | jq -r '.deployment.id')
+  ok "Rollback lanzado para «$SVC_NAME» ${C_DIM}→ $sha${C_RESET}"
+  [[ "${FOLLOW:-0}" == "1" ]] && follow_deploy "$id"
+}
+
+usage() {
+  cat >&2 <<EOF
+${C_BOLD}skyway${C_RESET} — control de Skyway desde la terminal
+
+  ${C_ACC}skyway deploy${C_RESET}  [servicio] [-f]   Despliega la rama configurada (p. ej. main) al último commit
+  ${C_ACC}skyway restart${C_RESET} [servicio]        Reinicia el contenedor
+  ${C_ACC}skyway stop${C_RESET}    [servicio] [-y]   Detiene el servicio
+  ${C_ACC}skyway start${C_RESET}   [servicio]        Arranca el servicio
+  ${C_ACC}skyway rewind${C_RESET}  [servicio] [-f]   Rollback: elige a qué despliegue volver
+  ${C_ACC}skyway status${C_RESET}  [servicio]        Estado y último despliegue
+  ${C_ACC}skyway ls${C_RESET}                        Lista los servicios accesibles
+
+Opciones:
+  -f, --follow   Sigue el despliegue hasta que termina (deploy, rewind)
+  -y, --yes      No pregunta confirmación (stop, rewind)
+  -u, --url URL  URL de Skyway (o \$SKYWAY_URL)
+  -t, --token T  Token sky_… (o \$SKYWAY_TOKEN)
+
+«servicio» = id (svc_…), slug o parte del nombre. Sin él, se elige de una lista.
+Config persistente en ~/.config/skyway/config o ./.skywayrc (SKYWAY_URL, SKYWAY_TOKEN).
+EOF
+}
+
+# ---------- arranque ----------
+main() {
+  load_config
+  local cmd="" positional=""
+  FOLLOW=0; ASSUME_YES=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f|--follow) FOLLOW=1;;
+      -y|--yes) ASSUME_YES=1;;
+      -u|--url) SKYWAY_URL="${2:-}"; shift;;
+      -t|--token) SKYWAY_TOKEN="${2:-}"; shift;;
+      -h|--help|help) usage; exit 0;;
+      -*) die "Opción desconocida: $1 (prueba «skyway --help»)";;
+      *) if [[ -z "$cmd" ]]; then cmd="$1"; elif [[ -z "$positional" ]]; then positional="$1"; else die "Argumento extra: $1"; fi;;
+    esac
+    shift
+  done
+
+  [[ -n "$cmd" ]] || { usage; exit 1; }
+  need curl; need jq
+
+  : "${SKYWAY_URL:=http://localhost:4000}"
+  SKYWAY_URL="${SKYWAY_URL%/}"
+  [[ -n "${SKYWAY_TOKEN:-}" ]] || die "Falta el token. Exporta SKYWAY_TOKEN=sky_… o usa -t (crea uno en Mi cuenta → Tokens de API)."
+
+  case "$cmd" in
+    deploy|restart|start|stop) cmd_action "$cmd" "$positional";;
+    rewind|rollback)           cmd_rewind "$positional";;
+    status|info)               cmd_status "$positional";;
+    ls|list)                   cmd_ls;;
+    *) die "Comando desconocido: «$cmd» (prueba «skyway --help»).";;
+  esac
+}
+
+main "$@"
