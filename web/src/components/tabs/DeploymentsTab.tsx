@@ -109,9 +109,9 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
     <LogViewer
       lines={lines}
       toolbar
+      flow
       title="Build & deploy"
       downloadName={`deploy-${deployment.id}.log`}
-      className="h-[clamp(320px,50vh,600px)]"
     />
   );
 }
