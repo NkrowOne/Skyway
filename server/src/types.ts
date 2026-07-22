@@ -25,6 +25,13 @@ export interface GitConfig {
   volumes?: VolumeMount[];
   healthcheckPath?: string | null;
   replicas?: number;
+  /**
+   * Auto-desplegar al detectar un commit nuevo en la rama (sondeo periódico de
+   * `git ls-remote`, sin webhook ni URL pública). `false` lo desactiva; ausente
+   * = activado. La primera comprobación fija la línea base y no despliega: solo
+   * disparan los commits posteriores.
+   */
+  autoDeploy?: boolean;
 }
 
 export interface DatabaseConfig {

@@ -29,6 +29,7 @@ const TRIGGER_LABEL: Record<string, string> = {
   initial: 'creación',
   manual: 'manual',
   webhook: 'push',
+  autodeploy: 'auto-deploy',
   rollback: 'rollback',
   import: 'importación',
 };

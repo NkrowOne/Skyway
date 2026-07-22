@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.14.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.15.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -17,7 +17,7 @@
 
 ```
 server/src/
-  index.ts              arranque: initDb, red edge, monitor, scheduler, listen
+  index.ts              arranque: initDb, red edge, monitor, scheduler, auto-deploy, listen
   app.ts                ensamblado Fastify: cabeceras de seguridad, rutas, SPA
   config.ts             configuración por entorno (puertos, dirs, trustProxy)
   db.ts                 esquema y acceso SQLite (better-sqlite3, WAL)
@@ -39,6 +39,7 @@ server/src/
   metrics.ts            deltas de red por réplica + agrupado del histórico de consumo
   monitor.ts            bucle 30 s: caídas, bucles de reinicio, CPU/RAM, uptime, disco, histórico
   scheduler.ts          bucle 10 min: backups programados de BBDD + snapshot diario del panel
+  autodeploy.ts         bucle ~2 min: sondea la cabeza de la rama (git ls-remote) y despliega si cambió
   events.ts             bus en memoria para logs de despliegue (SSE)
   sse.ts                utilidad Server-Sent Events
   docker/
@@ -158,8 +159,8 @@ web/src/
 `config` de servicio (ver `types.ts`): `GitConfig`, `DatabaseConfig`, `ImageConfig`
 comparten `domains`, `hostPort`, `cpus`, `memoryMb`, `diskMb`, `healthcheckPath`,
 `volumes`, `replicas`; git añade `repoUrl`, `connectorId`, `branch`, `rootDir`,
-`dockerfilePath`, `startCmd`, `port`, `buildArgs`, `webhookSecret`; database añade
-`template`, `version`, `backupSchedule`, `backupRetention`.
+`dockerfilePath`, `startCmd`, `port`, `buildArgs`, `webhookSecret`, `autoDeploy`;
+database añade `template`, `version`, `backupSchedule`, `backupRetention`.
 
 ---
 
@@ -225,6 +226,7 @@ aplican **en caliente**.
 | `healthcheckPath` | ✓ | ✓ | — | validación del deploy |
 | `volumes` | ✓ | ✓ | fijo (su volumen) | conserva nombre al editar |
 | `replicas` (1–10) | ✓ | ✓ | 1 | requiere sin volúmenes ni hostPort |
+| `autoDeploy` | ✓ | — | — | sondeo de la rama; despliega al haber commit nuevo (opt-out) |
 | `backupSchedule`, `backupRetention` | — | — | ✓ | diario/semanal ~04:00 |
 | `alertsMuted` | ✓ | ✓ | ✓ | silencia alertas del servicio |
 
@@ -239,6 +241,14 @@ Esto reproduce el comportamiento de un *worker* de Railway.
 
 - **Despliegues**: build en vivo (SSE), historial, cancelación, rollback a
   cualquiera de las 5 imágenes conservadas, diagnóstico de fallos en español.
+- **Auto-deploy** (servicios git): Skyway sondea la cabeza de la rama cada ~2 min
+  con `git ls-remote` (mismo acceso que el clon, sirve para repos privados y para
+  servidores sin dominio) y despliega en cuanto aparece un commit nuevo. Sin tocar
+  GitHub; la primera comprobación fija la línea base y solo disparan los commits
+  posteriores. Se controla con `autoDeploy` (opt-out) en Ajustes del servicio.
+  El **webhook** de GitHub (`/api/webhooks/github/:serviceId`, HMAC) sigue
+  disponible para despliegues instantáneos y no se pisa con el sondeo: un commit
+  ya construido no se vuelve a desplegar.
 - **Variables**: por servicio y compartidas por proyecto; referencias
   `${{Servicio.VAR}}` y `${{shared.VAR}}` resueltas al desplegar.
 - **Consola de consultas** (Consultas): explorador de tablas/colecciones/claves,
@@ -444,7 +454,7 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/import/railway/projects` | admin | lista proyectos de Railway (`{token}`) |
 | POST | `/import/railway/analyze` | admin | plan de importación (sin valores de variables) |
 | POST | `/import/railway/run` | admin | ejecuta la importación |
-| POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy en push (firma verificada) |
+| POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy instantáneo en push (firma verificada); complementa al sondeo interno de `autodeploy.ts` |
 
 ---
 
@@ -464,6 +474,8 @@ distroless), el explorador lo indica y no está disponible.
 
 Ajustes en la UI (tabla `settings`, solo admin): `rootDomain`, `letsencryptEmail`,
 `serverIp`, `githubToken`, umbrales de alerta y canales (Discord/Telegram/webhook).
+Opcional: `autoDeployPollSeconds` afina el intervalo del sondeo de auto-deploy
+(por defecto 120 s, mínimo 30).
 
 ---
 

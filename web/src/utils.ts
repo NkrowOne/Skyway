@@ -165,6 +165,7 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   service_env_updated: 'Variables actualizadas',
   settings_updated: 'Ajustes globales cambiados',
   webhook_push: 'Push recibido (webhook)',
+  autodeploy: 'Auto-deploy (commit nuevo)',
   server_started: 'Servidor iniciado',
   railway_import: 'Proyecto importado de Railway',
   deployment_canceled: 'Despliegue cancelado',

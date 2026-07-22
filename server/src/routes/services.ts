@@ -47,6 +47,7 @@ const createGitSchema = z.object({
   startCmd: z.string().trim().optional(),
   port: z.coerce.number().int().min(1).max(65535).default(3000),
   domains: z.array(z.string().trim().min(1)).default([]),
+  autoDeploy: z.boolean().default(true),
 });
 
 const createDbSchema = z.object({
@@ -88,6 +89,7 @@ const patchSchema = z.object({
       healthcheckPath: z.string().trim().max(200).nullable().optional(),
       buildArgs: z.record(z.string()).optional(),
       alertsMuted: z.boolean().optional(),
+      autoDeploy: z.boolean().optional(),
       volumes: z.array(z.object({ containerPath: z.string().trim().min(1).regex(/^\//, 'Ruta absoluta requerida') })).optional(),
       replicas: z.coerce.number().int().min(1).max(10).optional(),
       backupSchedule: z.enum(['daily', 'weekly']).nullable().optional(),
@@ -149,6 +151,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         startCmd: body.startCmd || undefined,
         port: body.port,
         domains: body.domains,
+        autoDeploy: body.autoDeploy,
         webhookSecret: randomToken(16),
       };
       service = createService(projectId, body.name, slug, 'git', cfg);
@@ -208,8 +211,9 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (body.config) {
       for (const [key, value] of Object.entries(body.config)) {
         if (value === undefined) continue;
-        // El conector solo tiene sentido en servicios de repositorio.
+        // El conector y el auto-deploy solo tienen sentido en servicios de repositorio.
         if (key === 'connectorId' && found.service.type !== 'git') continue;
+        if (key === 'autoDeploy' && found.service.type !== 'git') continue;
         // Campos que no aplican a bases de datos: se ignoran sin efecto.
         if (found.service.type === 'database' && ['replicas', 'healthcheckPath'].includes(key)) continue;
         if (found.service.type !== 'database' && ['backupSchedule', 'backupRetention'].includes(key)) continue;

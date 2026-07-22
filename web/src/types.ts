@@ -103,6 +103,7 @@ export interface GitConfig {
   webhookSecret: string;
   healthcheckPath?: string | null;
   replicas?: number;
+  autoDeploy?: boolean;
 }
 
 export interface DatabaseConfig {

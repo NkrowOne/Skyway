@@ -113,6 +113,47 @@ function withToken(url: string, token: string | null): { url: string; mask: stri
   return { url, mask: [token] };
 }
 
+/**
+ * SHA del commit en la cabeza de una rama remota, sin clonar (`git ls-remote`).
+ * Reutiliza la misma autenticación que el clon, así que sirve para repos
+ * privados con el token del conector. Devuelve null si falla o no existe la rama.
+ */
+export async function remoteHeadSha(
+  repoUrl: string,
+  branch: string,
+  token: string | null,
+  timeoutMs = 20_000,
+): Promise<string | null> {
+  const { url } = withToken(normalizeRepoUrl(repoUrl), token);
+  return new Promise((resolve) => {
+    const p = spawn('git', ['ls-remote', '--heads', url, branch], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let buf = '';
+    const timer = setTimeout(() => {
+      try { p.kill('SIGKILL'); } catch { /* ya terminó */ }
+      resolve(null);
+    }, timeoutMs);
+    p.stdout.on('data', (d) => (buf += d.toString()));
+    p.on('error', () => { clearTimeout(timer); resolve(null); });
+    p.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return resolve(null);
+      // Líneas: "<sha>\trefs/heads/<branch>".
+      const want = `refs/heads/${branch}`;
+      const lines = buf.split('\n').map((l) => l.trim()).filter(Boolean);
+      for (const line of lines) {
+        const [sha, ref] = line.split(/\s+/);
+        if (ref === want && sha) return resolve(sha); // coincidencia exacta
+      }
+      // Una sola rama devuelta: sin ambigüedad, se usa.
+      if (lines.length === 1) return resolve(lines[0].split(/\s+/)[0] || null);
+      resolve(null);
+    });
+  });
+}
+
 export async function cloneRepo(
   opts: { repoUrl: string; branch: string; token: string | null; dest: string; onSpawn?: (p: any) => void },
   log: LogFn,

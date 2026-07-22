@@ -57,6 +57,7 @@ interface FormState {
   memoryMb: string;
   diskMb: string;
   alertsMuted: boolean;
+  autoDeploy: boolean;
   healthcheckPath: string;
   replicas: string;
   volumePaths: string[];
@@ -82,6 +83,8 @@ function formFromService(service: Service): FormState {
     memoryMb: cfg.memoryMb ? String(cfg.memoryMb) : '',
     diskMb: cfg.diskMb ? String(cfg.diskMb) : '',
     alertsMuted: !!(cfg as any).alertsMuted,
+    // Opt-out: ausente = activado (solo `false` lo desactiva).
+    autoDeploy: (cfg as any).autoDeploy !== false,
     healthcheckPath: cfg.healthcheckPath ?? '',
     replicas: String((cfg as any).replicas ?? 1),
     volumePaths: ((cfg as any).volumes ?? []).map((v: { containerPath: string }) => v.containerPath),
@@ -154,6 +157,7 @@ export default function ServiceSettingsTab({
           startCmd: form.startCmd.trim() || null,
           port: Number(form.port) || 3000,
           domains: form.domains,
+          autoDeploy: form.autoDeploy,
         });
       } else if (isImage) {
         Object.assign(config, {
@@ -413,29 +417,52 @@ export default function ServiceSettingsTab({
             icon={<ModuleLogo kind="github" size={14} />}
             iconClass="text-txt"
             title="Auto-deploy"
-            description="Webhook de GitHub — cada push a la rama despliega"
+            description="Despliega solo al detectar un commit nuevo en la rama"
           >
-            <div className="flex flex-col gap-2 text-xs">
-              <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
-                <span className="shrink-0 text-subtle">URL</span>
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <span className="truncate font-mono text-[11px]">{webhookUrl}</span>
-                  <CopyButton value={webhookUrl} />
+            <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line bg-surface px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={form.autoDeploy}
+                onChange={(e) => set('autoDeploy', e.target.checked)}
+                className="mt-0.5 h-[15px] w-[15px] shrink-0 accent-acc"
+              />
+              <span className="text-[13px]">
+                <span className="font-medium">Auto-desplegar al hacer push a <span className="font-mono">{form.branch}</span></span>
+                <span className="mt-0.5 block text-[11px] leading-relaxed text-subtle">
+                  Skyway comprueba la rama cada pocos minutos y, cuando aparece un commit nuevo, redespliega. Sin configurar
+                  nada en GitHub: usa el mismo acceso con el que clona (ideal para repos privados o servidores sin dominio). La
+                  primera comprobación solo fija el punto de partida; a partir de ahí, cada commit dispara un despliegue.
                 </span>
+              </span>
+            </label>
+
+            <details className="group mt-2.5">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] text-subtle transition-colors hover:text-sub">
+                <span className="transition-transform group-open:rotate-90">›</span>
+                ¿Lo quieres instantáneo? Configura además el webhook de GitHub
+              </summary>
+              <div className="details-body mt-2 flex flex-col gap-2 text-xs">
+                <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+                  <span className="shrink-0 text-subtle">URL</span>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate font-mono text-[11px]">{webhookUrl}</span>
+                    <CopyButton value={webhookUrl} />
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+                  <span className="text-subtle">Secreto</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="font-mono text-[11px]">••••••••••••</span>
+                    <CopyButton value={cfg.webhookSecret ?? ''} />
+                  </span>
+                </div>
+                <p className="text-[11px] text-subtle">
+                  En GitHub: Settings → Webhooks → Add webhook. Content type <span className="font-mono">application/json</span>,
+                  evento <span className="font-mono">push</span>. Despliega en el acto; requiere que GitHub alcance tu servidor
+                  (dominio público). El sondeo de arriba y el webhook no se pisan: nunca despliegan dos veces el mismo commit.
+                </p>
               </div>
-              <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
-                <span className="text-subtle">Secreto</span>
-                <span className="flex items-center gap-1.5">
-                  <span className="font-mono text-[11px]">••••••••••••</span>
-                  <CopyButton value={cfg.webhookSecret ?? ''} />
-                </span>
-              </div>
-              <p className="text-[11px] text-subtle">
-                En GitHub: Settings → Webhooks → Add webhook. Content type <span className="font-mono">application/json</span>,
-                evento <span className="font-mono">push</span>. Cada push a <span className="font-mono">{form.branch}</span>{' '}
-                desplegará automáticamente.
-              </p>
-            </div>
+            </details>
           </SectionCard>
         )}
 

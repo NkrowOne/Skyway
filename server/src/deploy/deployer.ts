@@ -423,9 +423,20 @@ async function buildGitImage(
 }
 
 /**
- * Token con el que clonar: el conector del proyecto elegido en el servicio
- * (repos del cliente) o, en su defecto, el token global del admin.
+ * Token con el que clonar/consultar un repo: el conector del proyecto elegido en
+ * el servicio (repos del cliente) o, en su defecto, el token global del admin.
+ * Sin efectos secundarios: úsalo también fuera del despliegue (p. ej. el sondeo
+ * de auto-deploy).
  */
+export function gitTokenFor(project: ProjectRow, cfg: GitConfig): string | null {
+  if (cfg.connectorId) {
+    const connector = getGithubConnector(cfg.connectorId);
+    if (connector && connector.project_id === project.id) return connector.token;
+  }
+  return getSetting('githubToken');
+}
+
+/** Igual que `gitTokenFor` pero registra en el log del despliegue y marca el uso del conector. */
 function resolveCloneToken(project: ProjectRow, cfg: GitConfig, log: (l: string) => void): string | null {
   if (cfg.connectorId) {
     const connector = getGithubConnector(cfg.connectorId);

@@ -669,6 +669,19 @@ export function latestDeployment(serviceId: string): DeploymentRow | undefined {
     .get(serviceId) as DeploymentRow | undefined;
 }
 
+/**
+ * SHA del último commit que Skyway llegó a construir para el servicio (clon
+ * realizado, con éxito o no). Sirve al auto-deploy para no re-desplegar un
+ * commit ya tratado —lo desplegara el webhook, un deploy manual o el propio
+ * sondeo— y evitar duplicados y bucles.
+ */
+export function lastBuiltCommitSha(serviceId: string): string | null {
+  const row = db
+    .prepare('SELECT commit_sha FROM deployments WHERE service_id = ? AND commit_sha IS NOT NULL ORDER BY created_at DESC LIMIT 1')
+    .get(serviceId) as { commit_sha: string } | undefined;
+  return row?.commit_sha ?? null;
+}
+
 export function successfulDeploymentsBeyond(serviceId: string, keep: number): DeploymentRow[] {
   return db
     .prepare(
