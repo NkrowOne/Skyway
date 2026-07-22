@@ -22,7 +22,7 @@ import {
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import { BandPoint, HistoryChart } from '../components/HistoryChart';
-import { Button, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, ConfirmModal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { DiskBreakdown, HostMetricHistory, LogSearchResult, Me, MonitorOverview, MonitorService } from '../types';
 import { cx, fmtBytes, fmtDateTime, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
 
@@ -544,6 +544,8 @@ export default function MonitorPage() {
   // Un Set de ids en curso: `mutation.variables` solo refleja la ÚLTIMA
   // llamada y mentiría al reiniciar dos servicios seguidos.
   const [restarting, setRestarting] = useState<Set<string>>(new Set());
+  // Servicio pendiente de confirmar el reinicio: una lista larga es fácil de pulsar por error.
+  const [confirmRestart, setConfirmRestart] = useState<MonitorService | null>(null);
   const restart = useMutation({
     mutationFn: (serviceId: string) => api.post(`/services/${serviceId}/restart`),
     onMutate: (serviceId) => setRestarting((prev) => new Set(prev).add(serviceId)),
@@ -554,6 +556,7 @@ export default function MonitorPage() {
         return next;
       }),
     onSuccess: () => {
+      setConfirmRestart(null);
       toast('Servicio reiniciado', 'ok');
       queryClient.invalidateQueries({ queryKey: ['monitorOverview'] });
     },
@@ -787,7 +790,7 @@ export default function MonitorPage() {
                       </p>
                     )}
                     {filtered.map((s) => (
-                      <ServiceRow key={s.id} s={s} onRestart={() => restart.mutate(s.id)} restarting={restarting.has(s.id)} />
+                      <ServiceRow key={s.id} s={s} onRestart={() => setConfirmRestart(s)} restarting={restarting.has(s.id)} />
                     ))}
                   </div>
                 </div>
@@ -829,6 +832,17 @@ export default function MonitorPage() {
             : ''}
         </p>
       )}
+
+      <ConfirmModal
+        open={confirmRestart !== null}
+        onClose={() => setConfirmRestart(null)}
+        onConfirm={() => confirmRestart && restart.mutate(confirmRestart.id)}
+        loading={!!confirmRestart && restarting.has(confirmRestart.id)}
+        title={`Reiniciar "${confirmRestart?.name ?? ''}"`}
+        message="El servicio quedará unos segundos sin responder mientras vuelve a arrancar."
+        confirmLabel="Reiniciar"
+        confirmVariant="primary"
+      />
     </div>
   );
 }

@@ -16,7 +16,7 @@ import LogsTab from './tabs/LogsTab';
 import MetricsTab from './tabs/MetricsTab';
 import ServiceSettingsTab from './tabs/ServiceSettingsTab';
 import VariablesTab from './tabs/VariablesTab';
-import { Button, Skeleton, StatusBadge, Tabs, useToast } from './ui';
+import { Button, ConfirmModal, Skeleton, StatusBadge, Tabs, useToast } from './ui';
 
 const BACKUP_TEMPLATES = ['postgres', 'mysql', 'mongo'];
 const CONSOLE_TEMPLATES = ['postgres', 'mysql', 'mongo', 'redis'];
@@ -41,6 +41,8 @@ export default function ServiceDrawer({
 }) {
   const [tab, setTab] = useState('deployments');
   const [execOpen, setExecOpen] = useState(false);
+  // Detener/reiniciar cortan el servicio: confirmamos para evitar clics accidentales.
+  const [confirmVerb, setConfirmVerb] = useState<'stop' | 'restart' | null>(null);
   // Cambios guardados (ajustes o variables) que solo surten efecto al redesplegar.
   // Un aviso persistente vale más que un toast fugaz. Se limpia al desplegar o cambiar de servicio.
   const [pendingRedeploy, setPendingRedeploy] = useState(false);
@@ -94,7 +96,10 @@ export default function ServiceDrawer({
 
   const action = useMutation({
     mutationFn: (verb: 'start' | 'stop' | 'restart') => api.post(`/services/${serviceId}/${verb}`),
-    onSuccess: () => invalidate(),
+    onSuccess: () => {
+      setConfirmVerb(null);
+      invalidate();
+    },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
@@ -235,8 +240,8 @@ export default function ServiceDrawer({
                 size="sm"
                 variant="secondary"
                 className={cx(fullscreen && 'h-11 min-w-11 px-0')}
-                onClick={() => action.mutate('restart')}
-                loading={action.isPending}
+                onClick={() => setConfirmVerb('restart')}
+                loading={action.isPending && confirmVerb === 'restart'}
                 title="Reiniciar"
               >
                 <RefreshCw size={fullscreen ? 16 : 13} /> {!fullscreen && 'Reiniciar'}
@@ -245,8 +250,8 @@ export default function ServiceDrawer({
                 size="sm"
                 variant="secondary"
                 className={cx(fullscreen && 'h-11 min-w-11 px-0')}
-                onClick={() => action.mutate('stop')}
-                loading={action.isPending}
+                onClick={() => setConfirmVerb('stop')}
+                loading={action.isPending && confirmVerb === 'stop'}
                 title="Detener"
               >
                 <Square size={fullscreen ? 16 : 13} /> {!fullscreen && 'Detener'}
@@ -353,6 +358,28 @@ export default function ServiceDrawer({
       </div>
 
       <ExecModal open={execOpen} onClose={() => setExecOpen(false)} serviceId={serviceId} serviceName={service.name} />
+
+      {/* Dos modales con contenido fijo: el texto no cambia mientras uno se desvanece al cerrar. */}
+      <ConfirmModal
+        open={confirmVerb === 'restart'}
+        onClose={() => setConfirmVerb(null)}
+        onConfirm={() => action.mutate('restart')}
+        loading={action.isPending}
+        title={`Reiniciar "${service.name}"`}
+        message="El servicio quedará unos segundos sin responder mientras vuelve a arrancar."
+        confirmLabel="Reiniciar"
+        confirmVariant="primary"
+      />
+      <ConfirmModal
+        open={confirmVerb === 'stop'}
+        onClose={() => setConfirmVerb(null)}
+        onConfirm={() => action.mutate('stop')}
+        loading={action.isPending}
+        title={`Detener "${service.name}"`}
+        message="El servicio dejará de estar disponible hasta que lo vuelvas a iniciar."
+        confirmLabel="Detener"
+        confirmVariant="danger"
+      />
     </aside>
   );
 }

@@ -297,6 +297,8 @@ export function ConfirmModal({
   title,
   message,
   confirmLabel = 'Eliminar',
+  // Por defecto rojo (borrados). Acciones reversibles como reiniciar pasan un tono más sereno.
+  confirmVariant = 'danger',
   loading,
   children,
 }: {
@@ -306,6 +308,7 @@ export function ConfirmModal({
   title: string;
   message: string;
   confirmLabel?: string;
+  confirmVariant?: ButtonProps['variant'];
   loading?: boolean;
   children?: React.ReactNode;
 }) {
@@ -317,7 +320,7 @@ export function ConfirmModal({
         <Button variant="ghost" onClick={onClose}>
           Cancelar
         </Button>
-        <Button variant="danger" onClick={onConfirm} loading={loading}>
+        <Button variant={confirmVariant} onClick={onConfirm} loading={loading}>
           {confirmLabel}
         </Button>
       </div>

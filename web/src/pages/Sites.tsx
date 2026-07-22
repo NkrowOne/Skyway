@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowUpRight, BellRing, ExternalLink, Folder, Globe, Lock, RefreshCw, Rocket, Search, Unlock } from 'lucide-react';
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
-import { Button, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, ConfirmModal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { WebsiteEntry } from '../types';
 import { cx, DEPLOY_STATUS_LABEL, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
 
@@ -171,10 +171,13 @@ export default function SitesPage() {
       }),
   };
 
+  // Sitio pendiente de confirmar el reinicio (evita reinicios por un clic accidental).
+  const [confirmRestart, setConfirmRestart] = useState<WebsiteEntry | null>(null);
   const restart = useMutation({
     mutationFn: (serviceId: string) => api.post(`/services/${serviceId}/restart`),
     ...track,
     onSuccess: () => {
+      setConfirmRestart(null);
       toast('Servicio reiniciado', 'ok');
       queryClient.invalidateQueries({ queryKey: ['websites'] });
     },
@@ -290,12 +293,23 @@ export default function SitesPage() {
             site={s}
             tls={sites.data!.tls}
             serverIp={sites.data!.serverIp}
-            onRestart={() => restart.mutate(s.id)}
+            onRestart={() => setConfirmRestart(s)}
             onDeploy={() => deploy.mutate(s.id)}
             busy={busyIds.has(s.id)}
           />
         ))}
       </div>
+
+      <ConfirmModal
+        open={confirmRestart !== null}
+        onClose={() => setConfirmRestart(null)}
+        onConfirm={() => confirmRestart && restart.mutate(confirmRestart.id)}
+        loading={!!confirmRestart && busyIds.has(confirmRestart.id)}
+        title={`Reiniciar "${confirmRestart?.name ?? ''}"`}
+        message="El servicio quedará unos segundos sin responder mientras vuelve a arrancar."
+        confirmLabel="Reiniciar"
+        confirmVariant="primary"
+      />
     </div>
   );
 }
