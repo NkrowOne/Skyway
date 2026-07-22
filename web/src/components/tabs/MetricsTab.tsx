@@ -114,8 +114,16 @@ function LiveView({
           icon={<MemoryStick size={12} />}
           label="Memoria"
           value={stats ? fmtBytes(stats.memUsage) : '—'}
-          sub={memPct !== null ? `${memPct.toFixed(0)}% de ${memoryMb} MB` : memoryMb ? `límite ${memoryMb} MB` : 'sin límite'}
-          tone={memPct !== null && memPct > 90 ? 'err' : memPct !== null && memPct > 75 ? 'warn' : 'txt'}
+          sub={
+            memoryMb
+              ? memPct !== null
+                ? `${memPct.toFixed(0)}% de ${memoryMb} MB`
+                : `límite ${memoryMb} MB`
+              : memLimit
+                ? `${memPct !== null ? `${memPct.toFixed(0)}% del host` : 'sin límite'}`
+                : 'sin límite'
+          }
+          tone={memoryMb && memPct !== null && memPct > 90 ? 'err' : memoryMb && memPct !== null && memPct > 75 ? 'warn' : 'txt'}
         />
         <Tile
           icon={<ArrowDown size={12} className="text-ok" />}
