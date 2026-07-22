@@ -120,24 +120,27 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
 }
 
 /**
- * Pill de estado del despliegue: el vigente en verde, el histórico en gris.
+ * Pill de estado del despliegue: píldora sobria y neutra; el color lo lleva un
+ * punto indicador, no todo el fondo. Así un «Fallido» marca en rojo solo el
+ * punto —no tiñe la píldora entera— y el conjunto se lee limpio y profesional.
  * Cada transición (En cola → Construyendo → Activo) entra con un pop mínimo.
  */
-function DeployPill({ deployment, isCurrent, isLatest }: { deployment: Deployment; isCurrent: boolean; isLatest: boolean }) {
+function DeployPill({ deployment, isCurrent }: { deployment: Deployment; isCurrent: boolean }) {
   const active = isActiveDeploy(deployment.status);
   const label = isCurrent ? 'Activo' : DEPLOY_STATUS_LABEL[deployment.status];
-  const cls = active
-    ? 'bg-warn/[.13] text-warn pulse-soft'
+  const dot = active
+    ? 'bg-warn'
     : isCurrent
-      ? 'bg-ok/[.14] text-ok'
-      : deployment.status === 'failed' && isLatest
-        ? 'bg-err/[.14] text-err'
-        : 'bg-surface2 text-sub';
+      ? 'bg-ok'
+      : deployment.status === 'failed'
+        ? 'bg-err'
+        : 'bg-subtle';
   return (
     <span
       key={label}
-      className={cx('badge-in inline-flex shrink-0 items-center rounded-full px-2.5 py-[3px] text-[11px] font-semibold', cls)}
+      className="badge-in inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-surface2 px-2.5 py-[3px] text-[11px] font-medium text-sub"
     >
+      <span className={cx('h-[5px] w-[5px] shrink-0 rounded-full', dot, active && 'pulse-soft')} />
       {label}
     </span>
   );
@@ -245,7 +248,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
             className="flex w-full items-center justify-between gap-2 px-3.5 py-3 text-left transition-colors duration-150 hover:bg-txt/[.03]"
           >
             <div className="flex min-w-0 items-center gap-3">
-              <DeployPill deployment={d} isCurrent={d.id === currentId} isLatest={idx === 0} />
+              <DeployPill deployment={d} isCurrent={d.id === currentId} />
               <div className="min-w-0">
                 <p className="truncate text-[13px] font-medium">
                   {d.commit_msg ||

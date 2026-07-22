@@ -28,7 +28,7 @@ export function useFlash(ms = 1600): [boolean, () => void] {
 
 export function Button({ variant = 'primary', size = 'md', loading, success, className, children, disabled, ...rest }: ButtonProps) {
   const base =
-    'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-[background,border-color,color,box-shadow,transform,filter] duration-150 ease-out active:scale-[.98] active:duration-[60ms] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100';
+    'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg font-medium transition-[background,border-color,color,box-shadow,transform,filter] duration-150 ease-out active:scale-[.98] active:duration-[60ms] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100';
   const variants = {
     // Primario con volumen: gradiente vertical + brillo interior arriba; el hover ilumina, no cambia de color.
     primary:

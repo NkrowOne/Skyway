@@ -290,15 +290,17 @@ export default function ServiceDrawer({
         </div>
 
         {pendingRedeploy && (
-          <div className="tab-in mt-3.5 flex items-center gap-2.5 rounded-lg border border-acc/30 bg-acc/[.08] px-3 py-2 text-xs">
-            <Rocket size={14} className="shrink-0 text-acc-soft" />
-            <span className="min-w-0 flex-1 text-sub">
-              <span className="font-medium text-txt">Cambios guardados sin aplicar.</span> Se activan al desplegar de nuevo.
+          <div className="tab-in mt-3.5 flex flex-col gap-2 rounded-lg border border-acc/30 bg-acc/[.08] px-3 py-2.5 text-xs sm:flex-row sm:items-center sm:gap-2.5 sm:py-2">
+            <span className="flex min-w-0 flex-1 items-start gap-2.5 sm:items-center">
+              <Rocket size={14} className="mt-px shrink-0 text-acc-soft sm:mt-0" />
+              <span className="text-sub">
+                <span className="font-medium text-txt">Cambios guardados sin aplicar.</span> Se activan al desplegar de nuevo.
+              </span>
             </span>
             <Button
               size="sm"
               variant="secondary"
-              className="shrink-0"
+              className="w-full shrink-0 sm:w-auto"
               onClick={() => deploy.mutate()}
               loading={deploy.isPending}
             >
