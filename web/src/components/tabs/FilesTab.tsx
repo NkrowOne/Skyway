@@ -16,7 +16,7 @@ import {
 import { api } from '../../api';
 import { DirListing, FileEntry } from '../../types';
 import { cx, fmtBytes } from '../../utils';
-import { Button, ConfirmModal, Skeleton, useToast } from '../ui';
+import { Button, ConfirmModal, Field, Modal, Skeleton, useToast } from '../ui';
 
 /** Une un directorio y un nombre en una ruta absoluta POSIX. */
 function joinPath(dir: string, name: string): string {
@@ -49,6 +49,8 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
   const [deleting, setDeleting] = useState<FileEntry | null>(null);
   const [uploading, setUploading] = useState(false);
   const [pendingUpload, setPendingUpload] = useState<File | null>(null);
+  const [folderOpen, setFolderOpen] = useState(false);
+  const [folderName, setFolderName] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
 
   const listing = useQuery({
@@ -63,6 +65,8 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
     mutationFn: (path: string) => api.post(`/services/${serviceId}/files/mkdir`, { path }),
     onSuccess: () => {
       toast('Carpeta creada', 'ok');
+      setFolderOpen(false);
+      setFolderName('');
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -144,10 +148,10 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
     onUpload(file);
   };
 
-  const newFolder = () => {
-    const name = window.prompt('Nombre de la nueva carpeta:');
-    if (!name || !name.trim()) return;
-    mkdir.mutate(joinPath(dir, name.trim()));
+  const createFolder = () => {
+    const name = folderName.trim();
+    if (!name || name.includes('/')) return;
+    mkdir.mutate(joinPath(dir, name));
   };
 
   return (
@@ -184,7 +188,14 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
         <Button size="sm" variant="secondary" onClick={() => fileInput.current?.click()} loading={uploading}>
           <Upload size={13} /> Subir
         </Button>
-        <Button size="sm" variant="secondary" onClick={newFolder} loading={mkdir.isPending}>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => {
+            setFolderName('');
+            setFolderOpen(true);
+          }}
+        >
           <FolderPlus size={13} /> Nueva carpeta
         </Button>
         <input
@@ -316,6 +327,34 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
         message={`Ya existe «${pendingUpload?.name}» en esta carpeta. Se reemplazará por el que subes y no se puede deshacer.`}
         confirmLabel="Sobrescribir"
       />
+
+      <Modal open={folderOpen} onClose={() => setFolderOpen(false)} title="Nueva carpeta">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            createFolder();
+          }}
+        >
+          <Field label="Nombre" hint="Se crea dentro de la carpeta actual. Sin «/».">
+            <input
+              className="input font-mono text-xs"
+              value={folderName}
+              onChange={(e) => setFolderName(e.target.value)}
+              placeholder="config"
+              autoFocus
+              spellCheck={false}
+            />
+          </Field>
+          <div className="mt-5 flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setFolderOpen(false)}>
+              Cancelar
+            </Button>
+            <Button type="submit" loading={mkdir.isPending} disabled={!folderName.trim() || folderName.includes('/')}>
+              Crear carpeta
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

@@ -101,6 +101,7 @@ export default function SharedVarsModal({
                 setDirty(true);
               }}
               className="rounded-md p-1.5 text-sub hover:bg-surface2 hover:text-err"
+              title="Eliminar variable"
             >
               <Trash2 size={13} />
             </button>
@@ -108,7 +109,7 @@ export default function SharedVarsModal({
         ))}
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           onClick={() => {
             setRows([...rows, { key: '', value: '' }]);
             setDirty(true);

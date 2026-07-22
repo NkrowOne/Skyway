@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import { api } from '../../api';
 import { cx } from '../../utils';
-import { CopyButton, EditorBar, Skeleton, useToast } from '../ui';
+import { CopyButton, EditorBar, Skeleton, useFlash, useToast } from '../ui';
 
 interface ReferenceGroup {
   service: string;
@@ -89,10 +89,12 @@ export default function VariablesTab({
     }
   }, [env.data, dirty]);
 
+  const [saved, flashSaved] = useFlash();
   const save = useMutation({
     mutationFn: (vars: Record<string, string>) => api.put(`/services/${serviceId}/env`, { vars }),
     onSuccess: () => {
       setDirty(false);
+      flashSaved();
       queryClient.invalidateQueries({ queryKey: ['env', serviceId] });
       toast('Variables guardadas. Redespliega el servicio para aplicarlas.', 'ok', {
         action: onDeploy ? { label: 'Desplegar ahora', onClick: onDeploy } : undefined,
@@ -370,6 +372,7 @@ export default function VariablesTab({
       <EditorBar
         dirty={dirty}
         saving={save.isPending}
+        saved={saved}
         onSave={submit}
         onDiscard={discard}
         saveLabel="Guardar variables"
