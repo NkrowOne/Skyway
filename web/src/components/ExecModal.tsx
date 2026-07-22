@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Terminal } from 'lucide-react';
 import { api } from '../api';
 import { cx } from '../utils';
-import { Button, Modal, useToast } from './ui';
+import { Button, ConfirmModal, Modal, useToast } from './ui';
 
 interface ExecResult {
   output: string;
@@ -13,6 +13,10 @@ interface ExecResult {
 }
 
 const QUICK_COMMANDS = ['ls -la', 'env | sort', 'ps aux', 'df -h'];
+
+// Patrones claramente destructivos e irreversibles: piden una confirmación extra antes de correr.
+const DANGEROUS_COMMAND =
+  /\brm\s+-\w*[rf]|\bmkfs|\bdd\b[^|]*\bof=|:\s*\(\)\s*\{|\b(shutdown|reboot|halt|poweroff)\b|\btruncate\s+-s|\bchmod\s+-R\b|\bchown\s+-R\b|\bdrop\s+(database|table)\b|>\s*\/(dev|etc|bin|sbin|usr|var|boot|lib)\b/i;
 
 /** Terminal de un solo comando dentro del contenedor (migraciones, inspección...). */
 export default function ExecModal({
@@ -30,9 +34,21 @@ export default function ExecModal({
   const [command, setCommand] = useState('');
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ExecResult | null>(null);
+  const [confirmCmd, setConfirmCmd] = useState<string | null>(null);
+
+  // El comando escrito pasa por aquí: si parece destructivo, confirma antes de correr.
+  const submit = (cmd: string) => {
+    if (!cmd.trim() || running) return;
+    if (DANGEROUS_COMMAND.test(cmd)) {
+      setConfirmCmd(cmd);
+      return;
+    }
+    run(cmd);
+  };
 
   const run = async (cmd: string) => {
     if (!cmd.trim() || running) return;
+    setConfirmCmd(null);
     setRunning(true);
     setResult(null);
     try {
@@ -52,7 +68,7 @@ export default function ExecModal({
           className="flex gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            run(command);
+            submit(command);
           }}
         >
           <div className="relative flex-1">
@@ -109,6 +125,19 @@ export default function ExecModal({
           actividad. Límite: 60 s.
         </p>
       </div>
+
+      <ConfirmModal
+        open={!!confirmCmd}
+        onClose={() => setConfirmCmd(null)}
+        onConfirm={() => confirmCmd && run(confirmCmd)}
+        title="Ejecutar comando peligroso"
+        message="El comando parece destructivo. Se ejecuta con «sh -c» dentro del contenedor y no se puede deshacer:"
+        confirmLabel="Ejecutar de todas formas"
+      >
+        <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-term p-2.5 font-mono text-[11.5px] text-txt/[.88]">
+          {confirmCmd}
+        </pre>
+      </ConfirmModal>
     </Modal>
   );
 }

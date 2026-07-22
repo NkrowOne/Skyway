@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink, Megaphone, RefreshCw, Signal } from 'lucide-react';
 import { api } from '../api';
 import { StatusPageConfig } from '../types';
-import { Button, CopyButton, Field, Modal, Skeleton, useToast } from './ui';
+import { Button, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } from './ui';
 
 /**
  * Gestión de la página de estado pública del proyecto: el enlace que se
@@ -23,6 +23,7 @@ export default function StatusPageModal({
   const toast = useToast();
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState('');
+  const [confirmRotate, setConfirmRotate] = useState(false);
 
   const config = useQuery({
     queryKey: ['statusPage', projectId],
@@ -62,6 +63,7 @@ export default function StatusPageModal({
   const rotate = useMutation({
     mutationFn: () => api.post<StatusPageConfig>(`/projects/${projectId}/status-page/rotate`),
     onSuccess: () => {
+      setConfirmRotate(false);
       invalidate();
       toast('Enlace rotado: el anterior ya no funciona', 'ok');
     },
@@ -152,7 +154,7 @@ export default function StatusPageModal({
                     ¿Enlace filtrado o cliente que ya no debe verlo? Genera uno nuevo: el anterior deja de funcionar al
                     instante.
                   </p>
-                  <Button size="sm" variant="secondary" onClick={() => rotate.mutate()} loading={rotate.isPending}>
+                  <Button size="sm" variant="secondary" onClick={() => setConfirmRotate(true)} loading={rotate.isPending}>
                     <RefreshCw size={12} /> Rotar enlace
                   </Button>
                 </div>
@@ -165,6 +167,17 @@ export default function StatusPageModal({
           )}
         </div>
       )}
+
+      <ConfirmModal
+        open={confirmRotate}
+        onClose={() => setConfirmRotate(false)}
+        onConfirm={() => rotate.mutate()}
+        loading={rotate.isPending}
+        title="Rotar enlace"
+        message="Se generará un enlace nuevo y el actual dejará de funcionar al instante. Tendrás que reenviar el nuevo a quien deba ver la página."
+        confirmLabel="Rotar enlace"
+        confirmVariant="primary"
+      />
     </Modal>
   );
 }

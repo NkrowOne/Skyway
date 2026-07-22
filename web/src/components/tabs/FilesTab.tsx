@@ -48,6 +48,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
   const [dir, setDir] = useState('/');
   const [deleting, setDeleting] = useState<FileEntry | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [pendingUpload, setPendingUpload] = useState<File | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const listing = useQuery({
@@ -132,6 +133,17 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
     }
   };
 
+  // Antes de subir, avisa si ya hay algo con ese nombre: la subida lo sobrescribe sin más.
+  const chooseUpload = (file: File) => {
+    if (fileInput.current) fileInput.current.value = '';
+    const collision = listing.data?.listing.entries.some((e) => e.name === file.name);
+    if (collision) {
+      setPendingUpload(file);
+      return;
+    }
+    onUpload(file);
+  };
+
   const newFolder = () => {
     const name = window.prompt('Nombre de la nueva carpeta:');
     if (!name || !name.trim()) return;
@@ -181,7 +193,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];
-            if (file) onUpload(file);
+            if (file) chooseUpload(file);
           }}
         />
       </div>
@@ -290,6 +302,19 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
             ? `Se eliminará la carpeta "${deleting?.name}" y todo su contenido dentro del contenedor. Esta acción no se puede deshacer.`
             : `Se eliminará "${deleting?.name}" dentro del contenedor. Esta acción no se puede deshacer.`
         }
+      />
+
+      <ConfirmModal
+        open={!!pendingUpload}
+        onClose={() => setPendingUpload(null)}
+        onConfirm={() => {
+          if (pendingUpload) onUpload(pendingUpload);
+          setPendingUpload(null);
+        }}
+        loading={uploading}
+        title="Sobrescribir archivo"
+        message={`Ya existe «${pendingUpload?.name}» en esta carpeta. Se reemplazará por el que subes y no se puede deshacer.`}
+        confirmLabel="Sobrescribir"
       />
     </div>
   );

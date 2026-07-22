@@ -299,9 +299,11 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
     retry: false,
   });
 
+  const [confirmPrune, setConfirmPrune] = useState(false);
   const prune = useMutation({
     mutationFn: () => api.post<{ ok: boolean; reclaimed: string }>('/system/prune'),
     onSuccess: (res) => {
+      setConfirmPrune(false);
       toast(`Espacio liberado: ${res.reclaimed}. Los volúmenes no se tocan.`, 'ok');
       queryClient.invalidateQueries({ queryKey: ['monitorDisk'] });
     },
@@ -355,7 +357,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => prune.mutate()}
+                onClick={() => setConfirmPrune(true)}
                 loading={prune.isPending}
                 title="Elimina imágenes colgantes y caché de build. Nunca toca volúmenes."
               >
@@ -431,6 +433,17 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
           del servicio → Recursos; al superarla salta una alerta.
         </p>
       </div>
+
+      <ConfirmModal
+        open={confirmPrune}
+        onClose={() => setConfirmPrune(false)}
+        onConfirm={() => prune.mutate()}
+        loading={prune.isPending}
+        title="Liberar espacio"
+        message="Se purgan las imágenes colgantes y la caché de build. No toca los volúmenes ni los datos: lo borrado se reconstruye en el próximo despliegue."
+        confirmLabel="Liberar espacio"
+        confirmVariant="primary"
+      />
     </div>
   );
 }

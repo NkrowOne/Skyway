@@ -5,7 +5,7 @@ import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
-import { Skeleton, useToast } from '../ui';
+import { ConfirmModal, Skeleton, useToast } from '../ui';
 
 /**
  * Acordeón mantequilla: crece y se pliega animando grid-template-rows
@@ -171,9 +171,11 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
     refetchInterval: 4000,
   });
 
+  const [confirmRollback, setConfirmRollback] = useState<Deployment | null>(null);
   const rollback = useMutation({
     mutationFn: (deploymentId: string) => api.post<{ deployment: Deployment }>(`/deployments/${deploymentId}/rollback`),
     onSuccess: (data) => {
+      setConfirmRollback(null);
       toast('Rollback iniciado', 'ok');
       toggle(data.deployment.id);
       queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
@@ -288,9 +290,9 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
                   tabIndex={0}
                   onClick={(e) => {
                     e.stopPropagation();
-                    rollback.mutate(d.id);
+                    setConfirmRollback(d);
                   }}
-                  onKeyDown={(e) => e.key === 'Enter' && rollback.mutate(d.id)}
+                  onKeyDown={(e) => e.key === 'Enter' && setConfirmRollback(d)}
                   className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
                   title="Volver a esta versión"
                 >
@@ -313,6 +315,17 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
         </div>
         );
       })}
+
+      <ConfirmModal
+        open={!!confirmRollback}
+        onClose={() => setConfirmRollback(null)}
+        onConfirm={() => confirmRollback && rollback.mutate(confirmRollback.id)}
+        loading={rollback.isPending}
+        title="Volver a esta versión"
+        message={`Se redesplegará ${confirmRollback?.commit_sha ? `la versión ${confirmRollback.commit_sha.slice(0, 7)}` : 'esta versión'} y reemplazará a la que está en producción ahora.`}
+        confirmLabel="Volver a esta versión"
+        confirmVariant="primary"
+      />
     </div>
   );
 }

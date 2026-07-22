@@ -4,7 +4,7 @@ import { CheckCircle2, ExternalLink, Globe, HelpCircle, Plus, RefreshCw, Sparkle
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { cx, Tone } from '../utils';
-import { Button, CopyButton, useToast } from './ui';
+import { Button, ConfirmModal, CopyButton, useToast } from './ui';
 
 interface DomainCheck {
   domain: string;
@@ -167,6 +167,9 @@ export default function DomainsEditor({
   const queryClient = useQueryClient();
   const [custom, setCustom] = useState('');
   const [newRootDomain, setNewRootDomain] = useState('');
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  // Los dominios añadidos en esta sesión se quitan sin fricción; los ya persistidos piden confirmación.
+  const [sessionAdded, setSessionAdded] = useState<Set<string>>(() => new Set());
 
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => api.get<SettingsData>('/settings') });
   const serverIp = useQuery({
@@ -201,15 +204,24 @@ export default function DomainsEditor({
       return;
     }
     onChange([...domains, domain]);
+    setSessionAdded((s) => new Set(s).add(domain));
     setCustom('');
   };
+
+  const removeDomain = (domain: string) => onChange(domains.filter((x) => x !== domain));
 
   return (
     <div className="flex flex-col gap-2.5">
       {domains.length > 0 && (
         <div className="flex flex-col gap-2">
           {domains.map((d) => (
-            <DomainRow key={d} domain={d} serverIp={ip} tls={tls} onRemove={() => onChange(domains.filter((x) => x !== d))} />
+            <DomainRow
+              key={d}
+              domain={d}
+              serverIp={ip}
+              tls={tls}
+              onRemove={() => (sessionAdded.has(d) ? removeDomain(d) : setConfirmRemove(d))}
+            />
           ))}
         </div>
       )}
@@ -315,6 +327,19 @@ export default function DomainsEditor({
           Los cambios de dominios se aplican al guardar y redesplegar (sin corte).
         </p>
       </div>
+
+      <ConfirmModal
+        open={!!confirmRemove}
+        onClose={() => setConfirmRemove(null)}
+        onConfirm={() => {
+          if (confirmRemove) removeDomain(confirmRemove);
+          setConfirmRemove(null);
+        }}
+        title="Quitar dominio"
+        message={`«${confirmRemove}» dejará de servir este servicio en cuanto guardes y redespliegues.`}
+        confirmLabel="Quitar"
+        confirmVariant="primary"
+      />
     </div>
   );
 }

@@ -107,6 +107,8 @@ export default function ProjectPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteVolumes, setDeleteVolumes] = useState(false);
   const [sharedOpen, setSharedOpen] = useState(false);
+  const [confirmDeployAll, setConfirmDeployAll] = useState(false);
+  const [confirmDismissReport, setConfirmDismissReport] = useState(false);
   const [connectorsOpen, setConnectorsOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -144,6 +146,7 @@ export default function ProjectPage() {
   const dismissReport = useMutation({
     mutationFn: () => api.del(`/projects/${projectId}/import-report`),
     onSuccess: () => {
+      setConfirmDismissReport(false);
       setReportOpen(false);
       queryClient.invalidateQueries({ queryKey: ['importReport', projectId] });
     },
@@ -162,6 +165,7 @@ export default function ProjectPage() {
   const deployAll = useMutation({
     mutationFn: () => api.post<{ count: number }>(`/projects/${projectId}/deploy-all`),
     onSuccess: (res) => {
+      setConfirmDeployAll(false);
       toast(`Desplegando ${res.count} servicio(s)...`, 'ok');
       queryClient.invalidateQueries({ queryKey: ['project', projectId] });
     },
@@ -195,7 +199,8 @@ export default function ProjectPage() {
     else setSearchParams({});
   };
 
-  const hasDeployables = services.some((s) => s.type !== 'database');
+  const deployableCount = services.filter((s) => s.type !== 'database').length;
+  const hasDeployables = deployableCount > 0;
 
   return (
     <div className="flex h-full">
@@ -267,7 +272,7 @@ export default function ProjectPage() {
                 variant="secondary"
                 size="sm"
                 className="max-sm:h-11 max-sm:min-w-11"
-                onClick={() => deployAll.mutate()}
+                onClick={() => setConfirmDeployAll(true)}
                 loading={deployAll.isPending}
                 title="Redespliega todos los servicios de repo e imagen"
               >
@@ -291,7 +296,7 @@ export default function ProjectPage() {
                 Ver informe
               </Button>
               <button
-                onClick={() => dismissReport.mutate()}
+                onClick={() => setConfirmDismissReport(true)}
                 className="rounded-md p-1.5 text-sub hover:bg-surface2 hover:text-txt"
                 title="Descartar informe"
               >
@@ -381,7 +386,7 @@ export default function ProjectPage() {
         <Modal open={reportOpen} onClose={() => setReportOpen(false)} title="Informe de importación de Railway" wide>
           <ImportReportView report={importReport.data.report} />
           <div className="mt-4 flex justify-end">
-            <Button variant="ghost" onClick={() => dismissReport.mutate()} loading={dismissReport.isPending}>
+            <Button variant="ghost" onClick={() => setConfirmDismissReport(true)} loading={dismissReport.isPending}>
               Descartar informe
             </Button>
           </div>
@@ -431,6 +436,27 @@ export default function ProjectPage() {
           Eliminar también los volúmenes (datos de las bases de datos)
         </label>
       </ConfirmModal>
+
+      <ConfirmModal
+        open={confirmDeployAll}
+        onClose={() => setConfirmDeployAll(false)}
+        onConfirm={() => deployAll.mutate()}
+        loading={deployAll.isPending}
+        title="Desplegar todo"
+        message={`Se redesplegarán ${deployableCount} servicio(s) de repo e imagen del proyecto. Los que estén en marcha se reiniciarán al terminar.`}
+        confirmLabel="Desplegar todo"
+        confirmVariant="primary"
+      />
+
+      <ConfirmModal
+        open={confirmDismissReport}
+        onClose={() => setConfirmDismissReport(false)}
+        onConfirm={() => dismissReport.mutate()}
+        loading={dismissReport.isPending}
+        title="Descartar informe"
+        message="El informe de importación —con los comandos de copia de datos y los pasos pendientes— se borrará de forma permanente."
+        confirmLabel="Descartar"
+      />
     </div>
   );
 }

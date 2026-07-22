@@ -135,9 +135,11 @@ export default function SettingsPage() {
     retry: false,
   });
 
+  const [confirmPrune, setConfirmPrune] = useState(false);
   const prune = useMutation({
     mutationFn: () => api.post<{ reclaimed: string }>('/system/prune'),
     onSuccess: (res) => {
+      setConfirmPrune(false);
       toast(`Espacio liberado: ${res.reclaimed}`, 'ok');
       queryClient.invalidateQueries({ queryKey: ['dockerUsage'] });
       queryClient.invalidateQueries({ queryKey: ['system'] });
@@ -159,9 +161,11 @@ export default function SettingsPage() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  const [sysBackupToDelete, setSysBackupToDelete] = useState<string | null>(null);
   const deleteSysBackup = useMutation({
     mutationFn: (file: string) => api.del(`/system/backups/${encodeURIComponent(file)}`),
     onSuccess: () => {
+      setSysBackupToDelete(null);
       toast('Backup eliminado', 'ok');
       queryClient.invalidateQueries({ queryKey: ['systemBackups'] });
     },
@@ -244,9 +248,11 @@ export default function SettingsPage() {
     setTelegramToken('');
   };
 
+  const [confirmRemoveGithub, setConfirmRemoveGithub] = useState(false);
   const removeGithub = useMutation({
     mutationFn: () => api.del('/settings/github'),
     onSuccess: () => {
+      setConfirmRemoveGithub(false);
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       setGithubToken('');
       setGithubTest(null);
@@ -414,7 +420,7 @@ export default function SettingsPage() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => removeGithub.mutate()}
+              onClick={() => setConfirmRemoveGithub(true)}
               loading={removeGithub.isPending}
               className="text-err hover:bg-err/[.1]"
             >
@@ -474,6 +480,37 @@ export default function SettingsPage() {
         message={`«${connectorToRevoke?.name}» (@${connectorToRevoke?.gh_login}) de «${connectorToRevoke?.project_name}» dejará de usarse: sus servicios pasarán al token global en el próximo despliegue.`}
         confirmLabel="Revocar"
         loading={revokeConnector.isPending}
+      />
+
+      <ConfirmModal
+        open={confirmRemoveGithub}
+        onClose={() => setConfirmRemoveGithub(false)}
+        onConfirm={() => removeGithub.mutate()}
+        loading={removeGithub.isPending}
+        title="Eliminar token de GitHub"
+        message="Los servicios que clonan repos privados con el token global perderán acceso en su próximo despliegue."
+        confirmLabel="Eliminar token"
+      />
+
+      <ConfirmModal
+        open={!!sysBackupToDelete}
+        onClose={() => setSysBackupToDelete(null)}
+        onConfirm={() => sysBackupToDelete && deleteSysBackup.mutate(sysBackupToDelete)}
+        loading={deleteSysBackup.isPending}
+        title="Eliminar copia del panel"
+        message={`Se eliminará «${sysBackupToDelete}». Si no la has descargado, no quedará ninguna otra copia.`}
+        confirmLabel="Eliminar"
+      />
+
+      <ConfirmModal
+        open={confirmPrune}
+        onClose={() => setConfirmPrune(false)}
+        onConfirm={() => prune.mutate()}
+        loading={prune.isPending}
+        title="Liberar espacio"
+        message="Se purgan las imágenes colgantes y la caché de build. No toca los volúmenes ni los datos: lo borrado se reconstruye en el próximo despliegue."
+        confirmLabel="Liberar espacio"
+        confirmVariant="primary"
       />
 
       <SettingsSection
@@ -575,7 +612,7 @@ export default function SettingsPage() {
               <Button
                 size="sm"
                 variant="secondary"
-                onClick={() => prune.mutate()}
+                onClick={() => setConfirmPrune(true)}
                 loading={prune.isPending}
                 title="Purga imágenes colgantes y caché de build. Nunca toca volúmenes."
               >
@@ -629,7 +666,7 @@ export default function SettingsPage() {
                   <Download size={13} />
                 </a>
                 <button
-                  onClick={() => deleteSysBackup.mutate(b.file)}
+                  onClick={() => setSysBackupToDelete(b.file)}
                   className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err"
                   title="Eliminar"
                 >

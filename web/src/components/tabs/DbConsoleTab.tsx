@@ -15,7 +15,7 @@ import { api } from '../../api';
 import { useLocalStorage } from '../../hooks';
 import { DbOverview, DbQueryResult, DbSnippet } from '../../types';
 import { cx, fmtBytes } from '../../utils';
-import { Button, Kbd, Skeleton, useToast } from '../ui';
+import { Button, ConfirmModal, Kbd, Skeleton, useToast } from '../ui';
 
 /** Descarga un contenido como archivo desde el navegador. */
 function downloadFile(filename: string, content: string, mime: string): void {
@@ -104,12 +104,21 @@ function ResultTable({ result }: { result: DbQueryResult }) {
   );
 }
 
+// SQL que borra o reescribe datos de forma irreversible: DROP/TRUNCATE, o DELETE/UPDATE sin WHERE (toda la tabla).
+function isDestructiveSql(sql: string): boolean {
+  const s = sql.trim();
+  if (/\b(drop|truncate)\b/i.test(s)) return true;
+  if (/\b(delete\s+from|update)\b/i.test(s) && !/\bwhere\b/i.test(s)) return true;
+  return false;
+}
+
 export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
   const toast = useToast();
   const [query, setQuery] = useState('');
   const [allowWrite, setAllowWrite] = useState(false);
   const [result, setResult] = useState<DbQueryResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirmSql, setConfirmSql] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useLocalStorage<string[]>(`skyway.dbHistory.${serviceId}`, []);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -150,6 +159,11 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
     // dejen en pantalla el resultado de la más lenta (no de la última pedida).
     if (!text || run.isPending) return;
     if (q !== undefined) setQuery(q);
+    // Con escritura permitida, una sentencia destructiva pide confirmación mostrando el SQL.
+    if (allowWrite && isDestructiveSql(text)) {
+      setConfirmSql(text);
+      return;
+    }
     run.mutate(text);
   };
 
@@ -418,6 +432,22 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
           </p>
         </div>
       )}
+
+      <ConfirmModal
+        open={!!confirmSql}
+        onClose={() => setConfirmSql(null)}
+        onConfirm={() => {
+          if (confirmSql) run.mutate(confirmSql);
+          setConfirmSql(null);
+        }}
+        title="Ejecutar sentencia destructiva"
+        message="Con «Permitir escritura» activo, esta consulta modifica o elimina datos y no se puede deshacer:"
+        confirmLabel="Ejecutar"
+      >
+        <pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-bg p-2.5 font-mono text-[11.5px] text-txt/[.88]">
+          {confirmSql}
+        </pre>
+      </ConfirmModal>
     </div>
   );
 }

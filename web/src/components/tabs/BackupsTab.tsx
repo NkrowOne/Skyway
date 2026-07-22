@@ -68,6 +68,7 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
   const toast = useToast();
   const queryClient = useQueryClient();
   const [restoreFile, setRestoreFile] = useState<string | null>(null);
+  const [restoreAck, setRestoreAck] = useState(false);
   const [deleteFile, setDeleteFile] = useState<string | null>(null);
 
   const backups = useQuery({
@@ -91,6 +92,7 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
     onSuccess: () => {
       toast('Backup restaurado', 'ok');
       setRestoreFile(null);
+      setRestoreAck(false);
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -203,13 +205,27 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
 
       <ConfirmModal
         open={!!restoreFile}
-        onClose={() => setRestoreFile(null)}
+        onClose={() => {
+          setRestoreFile(null);
+          setRestoreAck(false);
+        }}
         onConfirm={() => restoreFile && restore.mutate(restoreFile)}
         loading={restore.isPending}
+        confirmDisabled={!restoreAck}
         title="Restaurar backup"
-        confirmLabel="Sí, restaurar"
-        message={`Se sobrescribirán los datos actuales de la base de datos con el contenido de "${restoreFile}". Las aplicaciones conectadas verán el cambio al instante. ¿Continuar?`}
-      />
+        confirmLabel="Restaurar"
+        message={`Se sobrescribirán todos los datos actuales de la base de datos con el contenido de «${restoreFile}». Las aplicaciones conectadas verán el cambio al instante y no se puede deshacer.`}
+      >
+        <label className="mt-3 flex items-center gap-2 text-sm text-sub">
+          <input
+            type="checkbox"
+            checked={restoreAck}
+            onChange={(e) => setRestoreAck(e.target.checked)}
+            className="accent-acc"
+          />
+          Entiendo que se sobrescriben los datos actuales
+        </label>
+      </ConfirmModal>
       <ConfirmModal
         open={!!deleteFile}
         onClose={() => setDeleteFile(null)}
