@@ -746,6 +746,26 @@ export function resolveAlertsByDedupe(dedupeKey: string): AlertRow[] {
 }
 
 /**
+ * Resuelve las alertas abiertas de un servicio para un tipo, por (service_id, type)
+ * en vez de por dedupe_key. Equivale a la clave para las alertas bien formadas
+ * (su dedupe_key es `${serviceId}:${type}`) pero además limpia las heredadas sin
+ * clave (p. ej. `deploy_failed` antiguas), que si no se quedarían abiertas para siempre.
+ */
+export function resolveOpenServiceAlerts(serviceId: string, type: string): AlertRow[] {
+  const open = db
+    .prepare('SELECT * FROM alerts WHERE service_id = ? AND type = ? AND resolved_at IS NULL')
+    .all(serviceId, type) as AlertRow[];
+  if (open.length > 0) {
+    db.prepare('UPDATE alerts SET resolved_at = ? WHERE service_id = ? AND type = ? AND resolved_at IS NULL').run(
+      now(),
+      serviceId,
+      type,
+    );
+  }
+  return open;
+}
+
+/**
  * Incidencias para la página de estado: alertas de los tipos dados, abiertas
  * o resueltas después de `resolvedSince`. Consulta dedicada — pasar por la
  * ventana de listAlerts podía expulsar una incidencia abierta si había >100
