@@ -92,6 +92,125 @@ function resolveProxyKey(req: FastifyRequest, reply: FastifyReply): { key: Works
   return { key, workspace: ws };
 }
 
+type ProxyCtx = { key: WorkspaceApiKeyRow; workspace: WorkspaceRow };
+
+/**
+ * Valida el modelo (allowlist) y el presupuesto de la clave, reanclando el
+ * contador al ciclo actual. Devuelve la clave de Gemini del operador o `null`
+ * (con el error ya enviado). Compartido por generateContent, streaming y OpenAI.
+ */
+function preflight(ctx: ProxyCtx, model: string, reply: FastifyReply): string | null {
+  const keyAllowed = JSON.parse(ctx.key.allowed_models || '[]') as string[];
+  if (!isModelAllowed(model, keyAllowed)) {
+    reply.code(403).send({ error: { code: 403, message: `Modelo no permitido para esta clave: ${model}.` } });
+    return null;
+  }
+  // Presupuesto mensual: reancla el contador al cambiar de ciclo y rechaza si se agotó.
+  const cycleStart = currentCycleStartMs(ctx.workspace.billing_day);
+  if (ctx.key.cycle_anchor !== cycleStart) {
+    resetWorkspaceApiKeyCycle(ctx.key.id, cycleStart);
+    ctx.key.spend_cents_cycle = 0;
+    ctx.key.cycle_anchor = cycleStart;
+  }
+  if (ctx.key.budget_cents_month != null && ctx.key.spend_cents_cycle >= ctx.key.budget_cents_month) {
+    reply.code(402).send({ error: { code: 402, message: 'Presupuesto mensual de la clave agotado.' } });
+    return null;
+  }
+  const geminiKey = getGeminiApiKey();
+  if (!geminiKey) {
+    reply.code(502).send({ error: { code: 502, message: 'El gateway de IA no está configurado (falta la clave de Gemini del operador).' } });
+    return null;
+  }
+  return geminiKey;
+}
+
+/**
+ * Mide SIEMPRE que Google devuelva uso (también en respuestas bloqueadas o
+ * parciales: Google cobra la entrada aunque no haya salida). Registra el consumo
+ * y acumula el gasto tarifado en la clave (guardarraíl del presupuesto).
+ */
+function billUsage(ctx: ProxyCtx, model: string, usageMetadata: any, responseId: string | null): void {
+  if (!usageMetadata) return;
+  const requestId = responseId || randomToken(12);
+  const t = recordGeminiUsage(ctx.workspace.id, model, usageMetadata, requestId);
+  const whole = accrueSpendCents(ctx.key.id, estimateBudgetCostCents(ctx.workspace.id, t));
+  if (whole > 0) incrementWorkspaceApiKeySpend(ctx.key.id, whole);
+}
+
+/** Sintetiza un `usageMetadata` estilo Gemini a partir del `usage` de la API OpenAI-compat. */
+function usageMetadataFromOpenAI(usage: any): any | null {
+  if (!usage) return null;
+  const prompt = Number(usage.prompt_tokens ?? 0) || 0;
+  const completion = Number(usage.completion_tokens ?? 0) || 0;
+  const cached = Number(usage.prompt_tokens_details?.cached_tokens ?? 0) || 0;
+  const total = Number(usage.total_tokens ?? prompt + completion) || 0;
+  return { promptTokenCount: prompt, cachedContentTokenCount: cached, candidatesTokenCount: completion, totalTokenCount: total };
+}
+
+/**
+ * Reenvía un cuerpo SSE de `upstream` al cliente byte a byte y, en paralelo, parsea
+ * las líneas `data:` para quedarse con el ÚLTIMO uso (Google/OpenAI lo emiten al
+ * final). Al cerrar el flujo, `onUsage` recibe ese uso y su id para facturar.
+ * Debe llamarse solo cuando `upstream.ok` y hay cuerpo; toma control de la respuesta.
+ */
+async function pipeSse(
+  upstream: Response,
+  reply: FastifyReply,
+  onUsage: (usage: any, id: string | null) => void,
+  pick: (obj: any) => { usage?: any; id?: string },
+): Promise<void> {
+  reply.hijack();
+  const raw = reply.raw;
+  raw.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no', // desactiva el buffering de proxies intermedios (nginx)
+  });
+  const reader = upstream.body!.getReader();
+  const decoder = new TextDecoder();
+  let pending = '';
+  let lastUsage: any = null;
+  let id: string | null = null;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      raw.write(Buffer.from(value)); // passthrough exacto (bytes) al cliente
+      pending += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, nl).trim();
+        pending = pending.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        try {
+          const picked = pick(JSON.parse(payload));
+          if (picked.usage) lastUsage = picked.usage;
+          if (picked.id) id = picked.id;
+        } catch {
+          /* fragmento aún incompleto: se ignora, la línea completa llega después */
+        }
+      }
+    }
+  } catch {
+    /* corte del upstream o del cliente: cerramos con lo que haya */
+  } finally {
+    try {
+      raw.end();
+    } catch {
+      /* respuesta ya cerrada */
+    }
+    try {
+      await reader.cancel();
+    } catch {
+      /* nada que cancelar */
+    }
+  }
+  onUsage(lastUsage, id);
+}
+
 export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
   // ---- Proxy de IA (auth propia; SIN requireAuth; cuerpo grande) ----
   app.register(async (proxy) => {
@@ -107,35 +226,50 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
       (req as any).proxyCtx = ctx;
     });
 
-    // generateContent (no streaming en esta fase). El modelo y la acción se
-    // construyen en servidor: nunca se reenvía el path del cliente (anti-SSRF).
+    // generateContent y streamGenerateContent. El modelo y la acción se construyen
+    // en servidor: nunca se reenvía el path del cliente (anti-SSRF).
     proxy.post('/gw/v1beta/models/*', { bodyLimit: GW_BODY_LIMIT }, async (req, reply) => {
-      const ctx = (req as any).proxyCtx as { key: WorkspaceApiKeyRow; workspace: WorkspaceRow };
+      const ctx = (req as any).proxyCtx as ProxyCtx;
       const rest = ((req.params as Record<string, string>)['*'] || '').trim();
       const colon = rest.lastIndexOf(':');
       if (colon < 0) return reply.code(404).send({ error: { code: 404, message: 'Ruta no válida.' } });
       const model = rest.slice(0, colon);
       const action = rest.slice(colon + 1);
-      if (action !== 'generateContent') {
-        return reply.code(501).send({ error: { code: 501, message: 'De momento solo se admite generateContent (el streaming llega en la siguiente fase).' } });
+      if (action !== 'generateContent' && action !== 'streamGenerateContent') {
+        return reply.code(501).send({ error: { code: 501, message: `Acción no soportada: ${action}.` } });
       }
-      const keyAllowed = JSON.parse(ctx.key.allowed_models || '[]') as string[];
-      if (!isModelAllowed(model, keyAllowed)) {
-        return reply.code(403).send({ error: { code: 403, message: `Modelo no permitido para esta clave: ${model}.` } });
-      }
-      // Presupuesto mensual: reancla el contador al cambiar de ciclo y rechaza si se agotó.
-      const cycleStart = currentCycleStartMs(ctx.workspace.billing_day);
-      if (ctx.key.cycle_anchor !== cycleStart) {
-        resetWorkspaceApiKeyCycle(ctx.key.id, cycleStart);
-        ctx.key.spend_cents_cycle = 0;
-        ctx.key.cycle_anchor = cycleStart;
-      }
-      if (ctx.key.budget_cents_month != null && ctx.key.spend_cents_cycle >= ctx.key.budget_cents_month) {
-        return reply.code(402).send({ error: { code: 402, message: 'Presupuesto mensual de la clave agotado.' } });
-      }
-      const geminiKey = getGeminiApiKey();
-      if (!geminiKey) return reply.code(502).send({ error: { code: 502, message: 'El gateway de IA no está configurado (falta la clave de Gemini del operador).' } });
+      const geminiKey = preflight(ctx, model, reply);
+      if (!geminiKey) return reply;
 
+      // Streaming: SSE de Google (?alt=sse) reenviado tal cual, midiendo al cerrar.
+      if (action === 'streamGenerateContent') {
+        const url = `${getGeminiBaseUrl()}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
+        let upstream: Response;
+        try {
+          upstream = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
+            body: JSON.stringify(req.body ?? {}),
+            signal: AbortSignal.timeout(300_000),
+          });
+        } catch (err: any) {
+          return reply.code(502).send({ error: { code: 502, message: `No se pudo contactar con Gemini: ${err?.message || 'error de red'}` } });
+        }
+        // Error antes del stream: Google responde JSON (no SSE); se reenvía tal cual.
+        if (!upstream.ok || !upstream.body) {
+          const data = await upstream.json().catch(() => ({}));
+          return reply.code(upstream.status).send(data);
+        }
+        await pipeSse(
+          upstream,
+          reply,
+          (usage, id) => billUsage(ctx, model, usage, id),
+          (obj) => ({ usage: obj.usageMetadata, id: obj.responseId }),
+        );
+        return reply;
+      }
+
+      // generateContent (sin streaming).
       const url = `${getGeminiBaseUrl()}/v1beta/models/${encodeURIComponent(model)}:generateContent`;
       let res: Response;
       let data: any;
@@ -150,23 +284,59 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
       } catch (err: any) {
         return reply.code(502).send({ error: { code: 502, message: `No se pudo contactar con Gemini: ${err?.message || 'error de red'}` } });
       }
-      // Medir SIEMPRE que Google devuelva uso (también en respuestas bloqueadas o
-      // parciales: Google cobra la entrada aunque no haya salida).
-      const requestId = (data?.responseId as string) || randomToken(12);
-      if (data?.usageMetadata) {
-        const t = recordGeminiUsage(ctx.workspace.id, model, data.usageMetadata, requestId);
-        // Acumula el gasto tarifado en la clave (guardarraíl del presupuesto),
-        // sumando fracciones de céntimo para no perder las peticiones pequeñas.
-        const whole = accrueSpendCents(ctx.key.id, estimateBudgetCostCents(ctx.workspace.id, t));
-        if (whole > 0) incrementWorkspaceApiKeySpend(ctx.key.id, whole);
-      }
+      billUsage(ctx, model, data?.usageMetadata, (data?.responseId as string) || null);
       // No se reenvía ninguna cabecera de Google (evita filtrar credenciales/estado).
       return reply.code(res.status).send(data);
     });
 
+    // Compatible con la API de OpenAI (chat/completions): permite reutilizar SDKs de
+    // OpenAI apuntando el baseURL al gateway. El modelo viaja en el cuerpo.
+    proxy.post('/gw/v1beta/openai/chat/completions', { bodyLimit: GW_BODY_LIMIT }, async (req, reply) => {
+      const ctx = (req as any).proxyCtx as ProxyCtx;
+      const body = (req.body ?? {}) as any;
+      const model = String(body.model || '').replace(/^models\//, '').trim();
+      if (!model) return reply.code(400).send({ error: { code: 400, message: 'Falta el modelo en la petición.' } });
+      const geminiKey = preflight(ctx, model, reply);
+      if (!geminiKey) return reply;
+
+      const stream = body.stream === true;
+      const outBody = { ...body, model };
+      // Forzamos el uso en el último chunk del stream para poder facturar.
+      if (stream) outBody.stream_options = { ...(body.stream_options || {}), include_usage: true };
+      const url = `${getGeminiBaseUrl()}/v1beta/openai/chat/completions`;
+      let upstream: Response;
+      try {
+        upstream = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${geminiKey}` },
+          body: JSON.stringify(outBody),
+          signal: AbortSignal.timeout(stream ? 300_000 : 120_000),
+        });
+      } catch (err: any) {
+        return reply.code(502).send({ error: { code: 502, message: `No se pudo contactar con Gemini: ${err?.message || 'error de red'}` } });
+      }
+
+      if (!stream) {
+        const data = await upstream.json().catch(() => ({}));
+        billUsage(ctx, model, usageMetadataFromOpenAI(data?.usage), (data?.id as string) || null);
+        return reply.code(upstream.status).send(data);
+      }
+      if (!upstream.ok || !upstream.body) {
+        const data = await upstream.json().catch(() => ({}));
+        return reply.code(upstream.status).send(data);
+      }
+      await pipeSse(
+        upstream,
+        reply,
+        (usage, id) => billUsage(ctx, model, usageMetadataFromOpenAI(usage), id),
+        (obj) => ({ usage: obj.usage, id: obj.id }),
+      );
+      return reply;
+    });
+
     // Lista de modelos que esta clave puede usar (allowlist del operador ∩ de la clave).
     proxy.get('/gw/v1beta/models', async (req) => {
-      const ctx = (req as any).proxyCtx as { key: WorkspaceApiKeyRow; workspace: WorkspaceRow };
+      const ctx = (req as any).proxyCtx as ProxyCtx;
       const keyAllowed = JSON.parse(ctx.key.allowed_models || '[]') as string[];
       const models = getAllowedModels().filter((m) => keyAllowed.length === 0 || keyAllowed.includes(m));
       return { models: models.map((name) => ({ name: `models/${name}` })) };
