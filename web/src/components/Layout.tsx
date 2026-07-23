@@ -50,6 +50,7 @@ const PAGE_LABEL: Record<string, string> = {
   '/sites': 'Sitios y servicios',
   '/workspaces': 'Cuentas y clientes',
   '/plans': 'Planes',
+  '/catalog': 'Catálogo',
   '/accounting': 'Contabilidad',
 };
 
@@ -162,6 +163,14 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
               label: 'Planes de facturación',
               keywords: 'planes precios cuotas facturacion suscripcion',
               to: '/plans',
+            },
+            {
+              key: 'a-catalog',
+              group: 'Acciones rápidas' as const,
+              icon: <Boxes size={15} className="text-subtle" />,
+              label: 'Catálogo de servicios',
+              keywords: 'catalogo productos servicios web ia hosting bbdd dominio soporte precios uso tramos suscripcion',
+              to: '/catalog',
             },
             {
               key: 'a-users',

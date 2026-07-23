@@ -29,6 +29,7 @@ server/src/
   quota.ts              cuota efectiva, asignación agregada de recursos y módulos por workspace
   company.ts            perfil fiscal de la empresa emisora + claves de Stripe (en settings)
   stripe.ts             cliente mínimo de Stripe (Checkout Session + verificación de firma de webhook)
+  pricing.ts            cálculo de precios por tramos (graduated/volume) del catálogo
   security.ts           escáner de seguridad (hallazgos + nota)
   variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}
   templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio)
@@ -149,6 +150,12 @@ web/src/
 | `workspaces` | `id`, `name`, `slug`, `plan_id`, overrides de cuota (mismos campos, null = hereda del plan), `modules_override` (concesión del admin), `owner_disabled_modules` (acotado del propietario), `status` (`active`/`suspended`), `billing_email`, `billing_tax_id` (NIF/CIF del cliente), `billing_address` (domicilio fiscal del cliente), `billing_day`, `notes` |
 | `workspace_invoices` | `id`, `workspace_id`, `series_id` (FK `invoice_series`), `number` (nº correlativo por serie/ejercicio, p. ej. `FRA-2026-0001`), `invoice_type` (`normal`/`simplificada`/`rectificativa`), `rectifies_invoice_id`+`rectify_reason` (si rectificativa), `period_start/end`, `operation_date` (fecha de operación si difiere de la expedición), `status` (`draft`/`issued`/`paid`/`void`), `currency`, `subtotal_cents` (base imponible), `tax_cents`, `tax_rate` (tipo por defecto), `tax_breakdown` (JSON: bases y cuotas **por tipo de IVA**), `vat_regime` (general/exento/inversión SP…), `legal_mentions`, `irpf_rate`+`irpf_cents` (retención), `total_cents`, `lines` (JSON, con `taxRate` por línea), `plan_name`, `issuer_snapshot` (datos fiscales del emisor congelados al emitir), `client_name`+`client_tax_id`+`client_address` (destinatario congelado al emitir), `payment_method` (`bank_transfer`/`stripe`/`card`/`cash`/`other`), `stripe_session_id`, `stripe_url`, `issued_at`, `paid_at`, `locked` (1 = emitida, inmutable), `notes` |
 | `invoice_series` | `id`, `code`, `year` (ejercicio; reinicio anual), `prefix`, `padding`, `next_seq` (incremento atómico al emitir), `kind` (`ordinaria`/`rectificativa`/`simplificada`), `UNIQUE(code, year)`. Sustituye al contador global; las rectificativas usan serie propia |
+| `catalog_products` | catálogo multimodular: `id`, `name`, `slug`, `category` (`web`/`ia`/`app`/`hosting`/`bbdd`/`dominio`/`soporte`/`custom`), `billing_model` (`flat_one_off`/`subscription`/`metered`/`tiered`), `price_cents`, `currency`, `interval`, `unit`, `meter` (medidor de uso), `tier_mode` (`graduated`/`volume`), `tax_rate`, `irpf_rate`, `tax_exempt`, `modules` (JSON), `description`, `active`, `archived` |
+| `catalog_price_tiers` | tramos de precio de un producto `tiered`: `id`, `product_id`, `up_to` (null = último), `unit_cents`, `flat_cents`, `sort` |
+| `workspace_subscriptions` | suscripciones/add-ons por cuenta: `id`, `workspace_id`, `product_id`, `service_id` (opcional), `qty`, `unit_cents` (congelado al contratar; null = sigue catálogo), `currency`, `interval`, `status` (`active`/`paused`/`cancelled`), `anchor_day`, `started_at`, `cancelled_at` |
+| `pending_charges` | cargos puntuales pendientes del próximo ciclo: `id`, `workspace_id`, `product_id`, `label`, `kind`, `qty`, `unit_cents`, `tax_rate`, `irpf_rate`, `status` (`pending`/`invoiced`/`cancelled`), `invoice_id` |
+| `usage_events` | ingesta cruda de consumo (idempotente): `id`, `idempotency_key` (único), `subject_type` (`workspace`/`service`), `subject_id`, `meter`, `quantity`, `product_id`, `ts`, `metadata` |
+| `usage_meter_hourly` | agregado horario del uso para tarifar: `PK(subject_id, meter, hour)`, `quantity` |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
 | `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven)… |
@@ -396,10 +403,11 @@ tipo** (`tax_breakdown`), no por línea; el IRPF se retiene sobre la base
 imponible; `total = base + IVA − retención`. La numeración es correlativa por
 serie y ejercicio (`invoice_series`), asignada atómicamente al emitir. Una factura
 emitida es **inmutable** y se **conserva** (no se borra ni se puede borrar su
-cuenta si tiene facturas). Reservado para fases siguientes: catálogo multimodular
-(productos web/IA/hosting/BBDD, suscripciones y uso medido), facturas
-rectificativas enlazadas y la estructura Verifactu (cadena de hash, QR, registros
-de alta/anulación y remisión a la AEAT — no obligatoria hasta 2027, RDL 15/2025).
+cuenta si tiene facturas). El catálogo multimodular (productos web/IA/hosting/BBDD,
+suscripciones y uso medido) está descrito en §7.2.2. Reservado para fases
+siguientes: facturas rectificativas enlazadas y la estructura Verifactu (cadena
+de hash, QR, registros de alta/anulación y remisión a la AEAT — no obligatoria
+hasta 2027, RDL 15/2025).
 
 ### 7.2.1 Contabilidad de la empresa y facturación (nosotros como emisor)
 Perfil fiscal, resumen contable y cobros con Stripe. **Solo admin.** Las claves
@@ -413,6 +421,34 @@ booleanos, igual que el token de GitHub).
 | GET | `/accounting/summary?months=` | admin | totales (facturado/cobrado/pendiente/borrador/anulado), serie mensual de ingresos y desglose por cliente |
 | GET | `/accounting/invoices?status=` | admin | todas las facturas de todos los clientes (nº, tipo, NIF, base, IVA, IRPF) |
 | GET | `/accounting/export.csv` | admin | libro registro de facturas emitidas en CSV (nº, tipo, NIF receptor, base, IVA, IRPF, total; guardas anti-inyección de fórmulas) |
+
+### 7.2.2 Catálogo multimodular, suscripciones y uso
+Facturación de servicios (web, IA, hosting, BBDD, dominios, soporte, a medida)
+con distintos modelos de precio. El catálogo lo gestiona el admin; las
+suscripciones y cargos se contratan por cuenta y se ensamblan en el borrador del
+ciclo (`/invoices/generate`).
+
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| GET | `/products` | auth | catálogo de productos (con sus tramos y si están en uso) |
+| POST | `/products` | admin | crea un producto (`{name, category, billingModel, priceCents, meter?, tierMode?, tiers?, taxRate?, …}`) |
+| PATCH | `/products/:id` | admin | edita un producto y sus tramos |
+| DELETE | `/products/:id` | admin | borra el producto; si está contratado se **archiva** (conserva el histórico) |
+| GET | `/workspaces/:id/subscriptions` | manage | suscripciones y cargos pendientes de la cuenta |
+| POST | `/workspaces/:id/subscriptions` | admin | suscribe la cuenta a un producto (`{productId, qty?, unitCents?}`) |
+| PATCH | `/subscriptions/:subId` | admin | cambia cantidad/precio/estado (pausar, cancelar) |
+| DELETE | `/subscriptions/:subId` | admin | elimina la suscripción |
+| POST | `/workspaces/:id/charges` | admin | añade un cargo puntual al próximo ciclo (`{label, qty, unitCents, taxRate?}`) |
+| DELETE | `/charges/:chargeId` | admin | cancela un cargo puntual pendiente |
+| POST | `/usage` | +access | ingesta idempotente de consumo IA/lógico (`{idempotencyKey, subjectType, subjectId, meter, quantity, ts?}`); exige acceso al workspace del sujeto |
+
+**Medición y generación.** Los medidores de infraestructura (`cpu_core_hour`,
+`mem_gb_hour`) se derivan de `service_metrics_hourly`; los lógicos/IA
+(`ai_tokens_in/out`, `ai_requests`, `ai_bytes`, `unit`) se ingieren por `/usage`.
+Al generar el borrador del ciclo se suman: plan + suscripciones activas
+(recurrentes fijas, por uso medido y por tramos graduated/volume) + cargos
+puntuales pendientes; el IVA se desglosa por tipo y los cargos se marcan como
+facturados.
 
 ### 7.3 Proyectos, variables compartidas y conectores de GitHub
 | Método | Ruta | Nivel | Descripción |

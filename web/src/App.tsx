@@ -18,6 +18,7 @@ import UsersPage from './pages/Users';
 import WorkspacesPage from './pages/Workspaces';
 import WorkspacePage from './pages/Workspace';
 import PlansPage from './pages/Plans';
+import CatalogPage from './pages/Catalog';
 import AccountingPage from './pages/Accounting';
 import { Me } from './types';
 
@@ -86,6 +87,7 @@ export default function App() {
         {user?.role === 'admin' && (
           <>
             <Route path="/plans" element={<PlansPage />} />
+            <Route path="/catalog" element={<CatalogPage />} />
             <Route path="/accounting" element={<AccountingPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/security" element={<SecurityPage />} />

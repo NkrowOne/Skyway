@@ -32,6 +32,9 @@ import {
   ModuleDef,
   PaymentMethod,
   Plan,
+  Product,
+  Subscription,
+  SubscriptionsResponse,
   UsageSeries,
   UserRole,
   Workspace,
@@ -742,6 +745,8 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
         )}
       </section>
 
+      {isAdmin && <SubscriptionsSection workspaceId={ws.id} onChanged={invalidate} />}
+
       {isAdmin && <BillingSettings detail={detail} onSaved={onSaved} />}
 
       {viewing && data && <InvoiceView invoice={viewing} issuer={data.issuer} client={data.client} onClose={() => setViewing(null)} />}
@@ -926,6 +931,183 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
         <div className="mt-2 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>Cancelar</Button>
           <Button loading={save.isPending} onClick={() => save.mutate()}>{isNew ? 'Crear factura' : 'Guardar'}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+const SUB_STATUS: Record<Subscription['status'], { tone: 'ok' | 'warn' | 'neutral'; label: string }> = {
+  active: { tone: 'ok', label: 'activa' },
+  paused: { tone: 'warn', label: 'pausada' },
+  cancelled: { tone: 'neutral', label: 'cancelada' },
+};
+
+/** Suscripciones y cargos puntuales que el cliente tiene contratados del catálogo. */
+function SubscriptionsSection({ workspaceId, onChanged }: { workspaceId: string; onChanged: () => void }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const subsQ = useQuery({ queryKey: ['ws-subs', workspaceId], queryFn: () => api.get<SubscriptionsResponse>(`/workspaces/${workspaceId}/subscriptions`) });
+  const productsQ = useQuery({ queryKey: ['products'], queryFn: () => api.get<{ products: Product[] }>('/products'), staleTime: 60_000 });
+  const [adding, setAdding] = useState(false);
+  const [charge, setCharge] = useState(false);
+
+  const invalidate = () => { queryClient.invalidateQueries({ queryKey: ['ws-subs', workspaceId] }); onChanged(); };
+  const setStatus = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) => api.patch(`/subscriptions/${id}`, { status }),
+    onSuccess: () => { toast('Suscripción actualizada', 'ok'); invalidate(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const delSub = useMutation({
+    mutationFn: (id: string) => api.del(`/subscriptions/${id}`),
+    onSuccess: () => { toast('Suscripción eliminada', 'ok'); invalidate(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const delCharge = useMutation({
+    mutationFn: (id: string) => api.del(`/charges/${id}`),
+    onSuccess: () => { toast('Cargo eliminado', 'ok'); invalidate(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const subs = subsQ.data?.subscriptions ?? [];
+  const charges = subsQ.data?.charges ?? [];
+  const activeProducts = (productsQ.data?.products ?? []).filter((p) => !p.archived && p.active);
+
+  return (
+    <section className="card overflow-hidden">
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <h2 className="flex items-center gap-2 text-sm font-semibold"><Boxes size={15} className="text-acc-soft" /> Servicios contratados</h2>
+        <div className="flex gap-2">
+          <Button size="sm" variant="secondary" onClick={() => setCharge(true)}><Plus size={13} /> Cargo puntual</Button>
+          <Button size="sm" onClick={() => setAdding(true)} disabled={activeProducts.length === 0}><Plus size={13} /> Suscribir</Button>
+        </div>
+      </div>
+
+      {subsQ.isLoading ? (
+        <Skeleton className="m-4 h-16" />
+      ) : subs.length === 0 && charges.length === 0 ? (
+        <p className="px-4 py-8 text-center text-xs text-subtle">
+          Sin servicios contratados. {activeProducts.length === 0 ? 'Crea productos en el catálogo primero.' : 'Suscribe al cliente a un producto del catálogo.'}
+        </p>
+      ) : (
+        <>
+          {subs.map((s, i) => (
+            <div key={s.id} className={cx('flex flex-wrap items-center gap-3 px-4 py-3', i > 0 && 'border-t border-line')}>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium">{s.product_name}</span>
+                  <StatusBadge tone={SUB_STATUS[s.status].tone} label={SUB_STATUS[s.status].label} dot={false} className="text-[10px]" />
+                </div>
+                <p className="mt-0.5 text-[11px] text-subtle tnum">
+                  {s.billing_model === 'metered' || s.billing_model === 'tiered'
+                    ? `${fmtMoney(s.unit_cents, s.currency)}/${s.unit || 'ud'} · por uso`
+                    : `${fmtMoney(s.unit_cents, s.currency)} × ${s.qty}/${s.interval === 'yearly' ? 'año' : 'mes'}`}
+                  {s.frozen ? ' · precio fijo' : ' · precio de catálogo'}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                {s.status === 'active' ? (
+                  <button onClick={() => setStatus.mutate({ id: s.id, status: 'paused' })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Pausar"><Pause size={14} /></button>
+                ) : s.status === 'paused' ? (
+                  <button onClick={() => setStatus.mutate({ id: s.id, status: 'active' })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Reanudar"><Play size={14} /></button>
+                ) : null}
+                <button onClick={() => delSub.mutate(s.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Eliminar"><Trash2 size={14} /></button>
+              </div>
+            </div>
+          ))}
+          {charges.map((c) => (
+            <div key={c.id} className="flex flex-wrap items-center gap-3 border-t border-line px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium">{c.label}</span>
+                  <StatusBadge tone="info" label="cargo pendiente" dot={false} className="text-[10px]" />
+                </div>
+                <p className="mt-0.5 text-[11px] text-subtle tnum">{fmtMoney(c.unit_cents, 'EUR')} × {c.qty} · IVA {c.tax_rate}%</p>
+              </div>
+              <button onClick={() => delCharge.mutate(c.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Quitar cargo"><Trash2 size={14} /></button>
+            </div>
+          ))}
+        </>
+      )}
+      <p className="border-t border-line px-4 py-2.5 text-[11px] text-subtle">Al generar la factura del ciclo se incluyen estas suscripciones (con su uso medido) y los cargos pendientes.</p>
+
+      {adding && <AddSubscriptionModal workspaceId={workspaceId} products={activeProducts} onClose={() => setAdding(false)} onSaved={() => { setAdding(false); invalidate(); }} />}
+      {charge && <AddChargeModal workspaceId={workspaceId} onClose={() => setCharge(false)} onSaved={() => { setCharge(false); invalidate(); }} />}
+    </section>
+  );
+}
+
+function AddSubscriptionModal({ workspaceId, products, onClose, onSaved }: { workspaceId: string; products: Product[]; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
+  const [productId, setProductId] = useState(products[0]?.id ?? '');
+  const [qty, setQty] = useState('1');
+  const [customPrice, setCustomPrice] = useState('');
+  const product = products.find((p) => p.id === productId);
+  const metered = product && (product.billing_model === 'metered' || product.billing_model === 'tiered');
+
+  const save = useMutation({
+    mutationFn: () => api.post(`/workspaces/${workspaceId}/subscriptions`, {
+      productId,
+      qty: Number(qty) || 1,
+      unitCents: customPrice.trim() ? Math.round(Number(customPrice) * 100) : undefined,
+    }),
+    onSuccess: () => { toast('Servicio contratado', 'ok'); onSaved(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  return (
+    <Modal open onClose={onClose} title="Suscribir a un producto">
+      <div className="flex flex-col gap-3.5">
+        <Field label="Producto del catálogo">
+          <select className="input" value={productId} onChange={(e) => setProductId(e.target.value)}>
+            {products.map((p) => <option key={p.id} value={p.id}>{p.name} · {fmtMoney(p.price_cents, p.currency)}{p.billing_model === 'subscription' ? `/${p.interval === 'yearly' ? 'año' : 'mes'}` : p.unit ? `/${p.unit}` : ''}</option>)}
+          </select>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Cantidad" hint={metered ? 'multiplica el uso medido' : 'nº de unidades'}><input className="input tnum" type="number" min={0} step="0.5" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
+          <Field label="Precio a medida" hint="vacío = precio del catálogo"><input className="input tnum" type="number" min={0} step="0.01" value={customPrice} onChange={(e) => setCustomPrice(e.target.value)} placeholder={product ? String(product.price_cents / 100) : ''} /></Field>
+        </div>
+        {product?.description && <p className="rounded-md border border-line bg-bg px-3 py-2 text-[12px] text-sub">{product.description}</p>}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+          <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!productId}>Contratar</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function AddChargeModal({ workspaceId, onClose, onSaved }: { workspaceId: string; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
+  const [label, setLabel] = useState('');
+  const [qty, setQty] = useState('1');
+  const [price, setPrice] = useState('0');
+  const [taxRate, setTaxRate] = useState('21');
+
+  const save = useMutation({
+    mutationFn: () => api.post(`/workspaces/${workspaceId}/charges`, {
+      label: label.trim(),
+      qty: Number(qty) || 1,
+      unitCents: Math.round(Number(price) * 100) || 0,
+      taxRate: Number(taxRate) || 0,
+    }),
+    onSuccess: () => { toast('Cargo añadido', 'ok'); onSaved(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  return (
+    <Modal open onClose={onClose} title="Añadir cargo puntual">
+      <div className="flex flex-col gap-3.5">
+        <Field label="Concepto"><input className="input" value={label} onChange={(e) => setLabel(e.target.value)} autoFocus placeholder="Consultoría, migración, dominio…" /></Field>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="Cantidad"><input className="input tnum" type="number" min={0} step="0.5" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
+          <Field label="Precio unidad"><input className="input tnum" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
+          <Field label="IVA (%)"><input className="input tnum" type="number" min={0} max={100} value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></Field>
+        </div>
+        <p className="text-[11px] text-subtle">Se incluirá en la próxima factura del ciclo que generes.</p>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+          <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!label.trim()}>Añadir</Button>
         </div>
       </div>
     </Modal>

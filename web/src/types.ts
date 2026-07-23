@@ -389,6 +389,80 @@ export interface BillingProfileResponse {
   invoiceSeq: number;
 }
 
+// ---------- catálogo multimodular ----------
+
+export type ProductCategory = 'web' | 'ia' | 'app' | 'hosting' | 'bbdd' | 'dominio' | 'soporte' | 'custom';
+export type BillingModel = 'flat_one_off' | 'subscription' | 'metered' | 'tiered';
+export type UsageMeter = 'cpu_core_hour' | 'mem_gb_hour' | 'ai_tokens_in' | 'ai_tokens_out' | 'ai_requests' | 'ai_bytes' | 'unit';
+
+export interface PriceTier {
+  up_to: number | null;
+  unit_cents: number;
+  flat_cents: number;
+}
+
+export interface Product {
+  id: string;
+  name: string;
+  slug: string;
+  category: ProductCategory;
+  billing_model: BillingModel;
+  price_cents: number;
+  currency: string;
+  interval: 'monthly' | 'yearly' | 'one_off' | 'metered';
+  unit: string;
+  meter: UsageMeter | null;
+  tier_mode: 'graduated' | 'volume' | null;
+  tax_rate: number;
+  irpf_rate: number;
+  tax_exempt: number;
+  modules: string[];
+  description: string | null;
+  active: number;
+  archived: number;
+  in_use: boolean;
+  tiers: PriceTier[];
+  created_at: number;
+}
+
+export interface Subscription {
+  id: string;
+  workspace_id: string;
+  product_id: string;
+  product_name: string;
+  category: ProductCategory;
+  billing_model: BillingModel;
+  meter: UsageMeter | null;
+  unit: string;
+  service_id: string | null;
+  qty: number;
+  unit_cents: number;
+  frozen: boolean;
+  currency: string;
+  interval: 'monthly' | 'yearly';
+  status: 'active' | 'paused' | 'cancelled';
+  anchor_day: number;
+  started_at: number;
+  cancelled_at: number | null;
+}
+
+export interface PendingCharge {
+  id: string;
+  label: string;
+  kind: 'product' | 'custom';
+  qty: number;
+  unit_cents: number;
+  tax_rate: number;
+  irpf_rate: number;
+  status: 'pending' | 'invoiced' | 'cancelled';
+  created_at: number;
+}
+
+export interface SubscriptionsResponse {
+  subscriptions: Subscription[];
+  charges: PendingCharge[];
+}
+
 export interface GitConfig {
   repoUrl: string;
   branch: string;
