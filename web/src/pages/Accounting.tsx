@@ -166,6 +166,7 @@ function CompanyProfile() {
       const payload: Record<string, unknown> = {
         companyName: d.companyName, taxId: d.taxId, address: d.address, email: d.email, phone: d.phone,
         currency: d.currency, vatRate: d.vatRate, invoicePrefix: d.invoicePrefix, paymentTermsDays: d.paymentTermsDays,
+        defaultIrpfRate: d.defaultIrpfRate, sifMode: d.sifMode,
         iban: d.iban, bic: d.bic, bankName: d.bankName, footer: d.footer, stripePublishableKey: d.stripePublishableKey,
       };
       // Las claves secretas solo se envían si se han escrito (no se sobreescriben con vacío por error).
@@ -193,10 +194,19 @@ function CompanyProfile() {
           <Field label="Teléfono"><input className="input" value={draft.phone} onChange={(e) => set({ phone: e.target.value })} /></Field>
         </div>
         <Field label="Dirección"><textarea className="input min-h-16" value={draft.address} onChange={(e) => set({ address: e.target.value })} /></Field>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Moneda"><input className="input" maxLength={3} value={draft.currency} onChange={(e) => set({ currency: e.target.value })} /></Field>
-          <Field label="IVA (%)"><input className="input tnum" type="number" min={0} max={100} value={draft.vatRate} onChange={(e) => set({ vatRate: Number(e.target.value) || 0 })} /></Field>
-          <Field label="Prefijo de factura" hint="Ej: FRA"><input className="input" maxLength={12} value={draft.invoicePrefix} onChange={(e) => set({ invoicePrefix: e.target.value })} /></Field>
+          <Field label="Prefijo de serie" hint="Ej: FRA · numeración por ejercicio"><input className="input" maxLength={12} value={draft.invoicePrefix} onChange={(e) => set({ invoicePrefix: e.target.value })} /></Field>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label="IVA por defecto (%)"><input className="input tnum" type="number" min={0} max={100} value={draft.vatRate} onChange={(e) => set({ vatRate: Number(e.target.value) || 0 })} /></Field>
+          <Field label="IRPF por defecto (%)" hint="0 si eres sociedad"><input className="input tnum" type="number" min={0} max={100} value={draft.defaultIrpfRate} onChange={(e) => set({ defaultIrpfRate: Number(e.target.value) || 0 })} /></Field>
+          <Field label="Modo Verifactu" hint="Remisión a la AEAT">
+            <select className="input" value={draft.sifMode} onChange={(e) => set({ sifMode: e.target.value as BillingProfile['sifMode'] })}>
+              <option value="no_verifactu">No Veri*factu (local)</option>
+              <option value="verifactu">Veri*factu (AEAT)</option>
+            </select>
+          </Field>
         </div>
         <Field label="Pie de factura"><textarea className="input min-h-14" value={draft.footer} onChange={(e) => set({ footer: e.target.value })} placeholder="Condiciones, agradecimiento…" /></Field>
       </section>
@@ -231,7 +241,7 @@ function CompanyProfile() {
         </section>
 
         <div className="flex items-center justify-between">
-          <p className="flex items-center gap-1.5 text-[11px] text-subtle"><Receipt size={12} /> Próxima factura nº {q.data.invoiceSeq + 1}</p>
+          <p className="flex items-center gap-1.5 text-[11px] text-subtle"><Receipt size={12} /> Numeración correlativa por serie y ejercicio</p>
           <Button onClick={() => save.mutate()} loading={save.isPending}>Guardar</Button>
         </div>
       </div>

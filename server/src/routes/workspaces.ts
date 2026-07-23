@@ -24,6 +24,7 @@ import {
   updateUserPassword,
   updateUserRole,
   updateWorkspace,
+  workspaceHasInvoices,
   workspaceUsageByProject,
   workspaceUsageRange,
   workspaceUsageSeries,
@@ -58,6 +59,9 @@ const patchWorkspaceSchema = z.object({
   modules: z.array(z.string()).max(50).nullable().optional(), // concesión del admin (null = hereda del plan)
   status: z.enum(['active', 'suspended']).optional(),
   billingEmail: z.string().email().nullable().optional(),
+  // Datos fiscales del cliente (destinatario de la factura).
+  billingTaxId: z.string().trim().max(60).nullable().optional(),
+  billingAddress: z.string().trim().max(400).nullable().optional(),
   billingDay: z.coerce.number().int().min(1).max(28).optional(),
   notes: z.string().trim().max(2000).nullable().optional(),
 });
@@ -85,6 +89,8 @@ function publicWorkspace(ws: WorkspaceRow) {
     status: ws.status,
     plan_id: ws.plan_id,
     billing_email: ws.billing_email,
+    billing_tax_id: ws.billing_tax_id,
+    billing_address: ws.billing_address,
     billing_day: ws.billing_day,
     notes: ws.notes,
     created_at: ws.created_at,
@@ -179,6 +185,8 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     if (body.modules !== undefined) fields.modules_override = body.modules === null ? null : JSON.stringify(sanitizeModules(body.modules));
     if (body.status !== undefined) fields.status = body.status;
     if (body.billingEmail !== undefined) fields.billing_email = body.billingEmail;
+    if (body.billingTaxId !== undefined) fields.billing_tax_id = body.billingTaxId;
+    if (body.billingAddress !== undefined) fields.billing_address = body.billingAddress;
     if (body.billingDay !== undefined) fields.billing_day = body.billingDay;
     if (body.notes !== undefined) fields.notes = body.notes;
 
@@ -211,6 +219,11 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const ws = getWorkspace(id);
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
+    // Conservación fiscal: una cuenta con facturas emitidas NO se borra (la BD
+    // las eliminaría en cascada). Debe suspenderse para preservar el histórico.
+    if (workspaceHasInvoices(id, true)) {
+      return reply.code(409).send({ error: 'La cuenta tiene facturas emitidas y no puede borrarse (conservación fiscal). Suspéndela en su lugar.' });
+    }
     // Los proyectos quedan sin asignar; sus sub-usuarios se eliminan (perderían su ámbito).
     const members = listWorkspaceUsers(id);
     transaction(() => {

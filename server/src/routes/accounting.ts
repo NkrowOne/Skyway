@@ -22,6 +22,8 @@ const profileSchema = z.object({
   vatRate: z.coerce.number().min(0).max(100).optional(),
   invoicePrefix: z.string().trim().max(12).optional(),
   paymentTermsDays: z.coerce.number().int().min(0).max(365).optional(),
+  defaultIrpfRate: z.coerce.number().min(0).max(100).optional(),
+  sifMode: z.enum(['verifactu', 'no_verifactu']).optional(),
   iban: z.string().trim().max(40).optional(),
   bic: z.string().trim().max(20).optional(),
   bankName: z.string().trim().max(120).optional(),
@@ -92,6 +94,8 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
       vatRate: body.vatRate ?? current.vatRate,
       invoicePrefix: body.invoicePrefix ?? current.invoicePrefix,
       paymentTermsDays: body.paymentTermsDays ?? current.paymentTermsDays,
+      defaultIrpfRate: body.defaultIrpfRate ?? current.defaultIrpfRate,
+      sifMode: body.sifMode ?? current.sifMode,
       iban: body.iban ?? current.iban,
       bic: body.bic ?? current.bic,
       bankName: body.bankName ?? current.bankName,
@@ -141,12 +145,15 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
       invoices: listAllInvoices({ status }).map((i) => ({
         id: i.id,
         number: i.number,
+        invoice_type: i.invoice_type,
         workspace_id: i.workspace_id,
         workspace_name: (i as any).workspace_name,
+        client_tax_id: i.client_tax_id,
         status: i.status,
         currency: i.currency,
         subtotal_cents: i.subtotal_cents,
         tax_cents: i.tax_cents,
+        irpf_cents: i.irpf_cents,
         total_cents: i.total_cents,
         payment_method: i.payment_method,
         period_start: i.period_start,
@@ -160,7 +167,9 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
   // Exportación CSV para la contabilidad de la empresa.
   app.get('/api/accounting/export.csv', async (req, reply) => {
     const rows = listAllInvoices();
-    const header = ['numero', 'cliente', 'estado', 'periodo_inicio', 'periodo_fin', 'subtotal', 'iva', 'total', 'moneda', 'metodo_pago', 'emitida', 'pagada'];
+    // Libro registro de facturas emitidas: nº, tipo, NIF del receptor, base, IVA,
+    // IRPF y total, según lo que la AEAT espera para la contabilidad.
+    const header = ['numero', 'tipo', 'cliente', 'nif_cliente', 'estado', 'fecha_expedicion', 'periodo_inicio', 'periodo_fin', 'base_imponible', 'iva', 'irpf', 'total', 'moneda', 'metodo_pago', 'pagada'];
     const iso = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10) : '');
     const money = (c: number) => (c / 100).toFixed(2);
     const lines = [header.join(',')];
@@ -168,16 +177,19 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
       lines.push(
         [
           i.number ?? '',
+          i.invoice_type,
           (i as any).workspace_name ?? '',
+          i.client_tax_id ?? '',
           i.status,
+          iso(i.issued_at),
           iso(i.period_start),
           iso(i.period_end),
           money(i.subtotal_cents),
           money(i.tax_cents),
+          money(i.irpf_cents),
           money(i.total_cents),
           i.currency,
           i.payment_method ?? '',
-          iso(i.issued_at),
           iso(i.paid_at),
         ]
           .map(csvEscape)

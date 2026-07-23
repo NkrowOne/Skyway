@@ -140,6 +140,8 @@ export interface Workspace {
   status: WorkspaceStatus;
   plan_id: string | null;
   billing_email: string | null;
+  billing_tax_id: string | null;
+  billing_address: string | null;
   billing_day: number;
   notes: string | null;
   created_at: number;
@@ -215,33 +217,74 @@ export interface ModuleDef {
 
 export type InvoiceStatus = 'draft' | 'issued' | 'paid' | 'void';
 export type PaymentMethod = 'bank_transfer' | 'stripe' | 'card' | 'cash' | 'other';
+export type InvoiceType = 'normal' | 'simplificada' | 'rectificativa';
+export type VatRegime =
+  | 'general'
+  | 'exento_intracom_art25'
+  | 'exento_export_art21'
+  | 'inversion_sujeto_pasivo'
+  | 'recargo_equivalencia'
+  | 'exento_otros'
+  | 'no_sujeto';
 
 export interface InvoiceLine {
   label: string;
-  kind: 'plan' | 'usage' | 'custom';
+  kind: 'plan' | 'usage' | 'custom' | 'product' | 'subscription' | 'discount';
   qty: number;
   unitCents: number;
   amountCents: number;
+  taxRate?: number;
+}
+
+export interface TaxBreakdownEntry {
+  rate: number;
+  base_cents: number;
+  quota_cents: number;
+  re_rate?: number;
+  re_cents?: number;
+}
+
+export interface IssuerSnapshot {
+  companyName: string;
+  taxId: string;
+  address: string;
+  email: string;
+  phone: string;
 }
 
 export interface Invoice {
   id: string;
   workspace_id: string;
+  series_id: string | null;
   number: string | null;
+  invoice_type: InvoiceType;
+  rectifies_invoice_id: string | null;
+  rectify_reason: string | null;
   period_start: number;
   period_end: number;
+  operation_date: number | null;
   status: InvoiceStatus;
   currency: string;
   subtotal_cents: number;
   tax_cents: number;
   tax_rate: number;
+  tax_breakdown: TaxBreakdownEntry[];
+  vat_regime: VatRegime;
+  legal_mentions: string | null;
+  irpf_rate: number;
+  irpf_cents: number;
   total_cents: number;
   lines: InvoiceLine[];
   plan_name: string | null;
+  issuer_snapshot: IssuerSnapshot | null;
+  client_name: string | null;
+  client_tax_id: string | null;
+  client_address: string | null;
   payment_method: PaymentMethod | null;
   stripe_url: string | null;
   issued_at: number | null;
   paid_at: number | null;
+  locked: number;
   notes: string | null;
   created_at: number;
 }
@@ -257,6 +300,8 @@ export interface BillingProfile {
   vatRate: number;
   invoicePrefix: string;
   paymentTermsDays: number;
+  defaultIrpfRate: number;
+  sifMode: 'verifactu' | 'no_verifactu';
   iban: string;
   bic: string;
   bankName: string;
@@ -266,7 +311,7 @@ export interface BillingProfile {
 export interface InvoicesResponse {
   invoices: Invoice[];
   issuer: BillingProfile;
-  client: { name: string; billing_email: string | null };
+  client: { name: string; billing_email: string | null; billing_tax_id: string | null; billing_address: string | null };
   stripeEnabled: boolean;
 }
 
@@ -321,12 +366,15 @@ export interface AccountingSummary {
 export interface AccountingInvoice {
   id: string;
   number: string | null;
+  invoice_type: InvoiceType;
   workspace_id: string;
   workspace_name: string | null;
+  client_tax_id: string | null;
   status: InvoiceStatus;
   currency: string;
   subtotal_cents: number;
   tax_cents: number;
+  irpf_cents: number;
   total_cents: number;
   payment_method: PaymentMethod | null;
   period_start: number;

@@ -11,6 +11,7 @@ import {
   GithubConnectorRow,
   HostMetricHour,
   InvoiceRow,
+  InvoiceSeriesRow,
   PasskeyRow,
   PlanRow,
   ProjectRow,
@@ -299,6 +300,19 @@ export function initDb(): void {
       notes TEXT,
       created_at INTEGER NOT NULL
     );
+    -- Series de numeración correlativa por ejercicio (sustituyen el contador global).
+    -- Las rectificativas usan obligatoriamente una serie propia (art. 6.1.a RD 1619/2012).
+    CREATE TABLE IF NOT EXISTS invoice_series (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      prefix TEXT NOT NULL DEFAULT '',
+      padding INTEGER NOT NULL DEFAULT 4,
+      next_seq INTEGER NOT NULL DEFAULT 1,
+      kind TEXT NOT NULL DEFAULT 'ordinaria' CHECK (kind IN ('ordinaria', 'rectificativa', 'simplificada')),
+      created_at INTEGER NOT NULL,
+      UNIQUE (code, year)
+    );
     -- Rutas calientes: proyectos por workspace (cuota y listados), usuarios por
     -- workspace (sub-usuarios) y facturas por workspace.
     CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
@@ -313,6 +327,27 @@ export function initDb(): void {
   ensureColumn('workspace_invoices', 'payment_method', 'TEXT');
   ensureColumn('workspace_invoices', 'stripe_session_id', 'TEXT');
   ensureColumn('workspace_invoices', 'stripe_url', 'TEXT');
+  // Conformidad legal española (RD 1619/2012): serie, tipo de factura, rectificativa,
+  // fecha de operación, desglose de IVA por tipo, régimen, IRPF, congelación de
+  // emisor/destinatario e inmutabilidad de la emitida.
+  ensureColumn('workspace_invoices', 'series_id', 'TEXT');
+  ensureColumn('workspace_invoices', 'invoice_type', "TEXT NOT NULL DEFAULT 'normal'");
+  ensureColumn('workspace_invoices', 'rectifies_invoice_id', 'TEXT');
+  ensureColumn('workspace_invoices', 'rectify_reason', 'TEXT');
+  ensureColumn('workspace_invoices', 'operation_date', 'INTEGER');
+  ensureColumn('workspace_invoices', 'tax_breakdown', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn('workspace_invoices', 'vat_regime', "TEXT NOT NULL DEFAULT 'general'");
+  ensureColumn('workspace_invoices', 'legal_mentions', 'TEXT');
+  ensureColumn('workspace_invoices', 'irpf_rate', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn('workspace_invoices', 'irpf_cents', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('workspace_invoices', 'issuer_snapshot', 'TEXT');
+  ensureColumn('workspace_invoices', 'client_name', 'TEXT');
+  ensureColumn('workspace_invoices', 'client_tax_id', 'TEXT');
+  ensureColumn('workspace_invoices', 'client_address', 'TEXT');
+  ensureColumn('workspace_invoices', 'locked', 'INTEGER NOT NULL DEFAULT 0');
+  // Datos fiscales del cliente (destinatario de la factura).
+  ensureColumn('workspaces', 'billing_tax_id', 'TEXT');
+  ensureColumn('workspaces', 'billing_address', 'TEXT');
 
   seedDefaultPlans();
   migrateClientsToWorkspaces();
@@ -1279,13 +1314,15 @@ export function createWorkspaceRow(name: string, init: WorkspaceInit = {}): Work
     owner_disabled_modules: '[]',
     status: 'active',
     billing_email: init.billing_email ?? null,
+    billing_tax_id: null,
+    billing_address: null,
     billing_day: init.billing_day ?? 1,
     notes: init.notes ?? null,
     created_at: now(),
   };
   db.prepare(
-    `INSERT INTO workspaces (id, name, slug, plan_id, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules_override, owner_disabled_modules, status, billing_email, billing_day, notes, created_at)
-     VALUES (@id, @name, @slug, @plan_id, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules_override, @owner_disabled_modules, @status, @billing_email, @billing_day, @notes, @created_at)`,
+    `INSERT INTO workspaces (id, name, slug, plan_id, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules_override, owner_disabled_modules, status, billing_email, billing_tax_id, billing_address, billing_day, notes, created_at)
+     VALUES (@id, @name, @slug, @plan_id, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules_override, @owner_disabled_modules, @status, @billing_email, @billing_tax_id, @billing_address, @billing_day, @notes, @created_at)`,
   ).run(row);
   return row;
 }
@@ -1314,7 +1351,8 @@ export function getWorkspace(workspaceId: string): WorkspaceRow | undefined {
 
 const WORKSPACE_COLUMNS = new Set([
   'name', 'plan_id', 'cpu_cores', 'memory_mb', 'disk_mb', 'max_projects', 'max_services',
-  'max_members', 'modules_override', 'owner_disabled_modules', 'status', 'billing_email', 'billing_day', 'notes',
+  'max_members', 'modules_override', 'owner_disabled_modules', 'status', 'billing_email',
+  'billing_tax_id', 'billing_address', 'billing_day', 'notes',
 ]);
 
 export function updateWorkspace(workspaceId: string, fields: Record<string, unknown>): void {
@@ -1397,18 +1435,45 @@ export function getInvoice(invoiceId: string): InvoiceRow | undefined {
   return db.prepare('SELECT * FROM workspace_invoices WHERE id = ?').get(invoiceId) as InvoiceRow | undefined;
 }
 
-export function createInvoice(row: Omit<InvoiceRow, 'id' | 'created_at'>): InvoiceRow {
-  const full: InvoiceRow = { ...row, id: id('inv'), created_at: now() };
+/** Valores por defecto de las columnas fiscales/opcionales de una factura nueva. */
+const INVOICE_DEFAULTS = {
+  series_id: null, number: null, invoice_type: 'normal', rectifies_invoice_id: null, rectify_reason: null,
+  operation_date: null, tax_breakdown: '[]', vat_regime: 'general', legal_mentions: null,
+  irpf_rate: 0, irpf_cents: 0, issuer_snapshot: null, client_name: null, client_tax_id: null,
+  client_address: null, plan_name: null, payment_method: null, stripe_session_id: null,
+  stripe_url: null, issued_at: null, paid_at: null, locked: 0, notes: null,
+} as const;
+
+type InvoiceCore = Pick<
+  InvoiceRow,
+  'workspace_id' | 'period_start' | 'period_end' | 'status' | 'currency' | 'subtotal_cents' | 'tax_cents' | 'tax_rate' | 'total_cents' | 'lines'
+>;
+
+export function createInvoice(row: InvoiceCore & Partial<InvoiceRow>): InvoiceRow {
+  const full: InvoiceRow = { ...INVOICE_DEFAULTS, ...row, id: id('inv'), created_at: now() };
   db.prepare(
-    `INSERT INTO workspace_invoices (id, workspace_id, number, period_start, period_end, status, currency, subtotal_cents, tax_cents, tax_rate, total_cents, lines, plan_name, payment_method, stripe_session_id, stripe_url, issued_at, paid_at, notes, created_at)
-     VALUES (@id, @workspace_id, @number, @period_start, @period_end, @status, @currency, @subtotal_cents, @tax_cents, @tax_rate, @total_cents, @lines, @plan_name, @payment_method, @stripe_session_id, @stripe_url, @issued_at, @paid_at, @notes, @created_at)`,
+    `INSERT INTO workspace_invoices (
+       id, workspace_id, series_id, number, invoice_type, rectifies_invoice_id, rectify_reason,
+       period_start, period_end, operation_date, status, currency, subtotal_cents, tax_cents, tax_rate,
+       tax_breakdown, vat_regime, legal_mentions, irpf_rate, irpf_cents, total_cents, lines, plan_name,
+       issuer_snapshot, client_name, client_tax_id, client_address, payment_method, stripe_session_id,
+       stripe_url, issued_at, paid_at, locked, notes, created_at)
+     VALUES (
+       @id, @workspace_id, @series_id, @number, @invoice_type, @rectifies_invoice_id, @rectify_reason,
+       @period_start, @period_end, @operation_date, @status, @currency, @subtotal_cents, @tax_cents, @tax_rate,
+       @tax_breakdown, @vat_regime, @legal_mentions, @irpf_rate, @irpf_cents, @total_cents, @lines, @plan_name,
+       @issuer_snapshot, @client_name, @client_tax_id, @client_address, @payment_method, @stripe_session_id,
+       @stripe_url, @issued_at, @paid_at, @locked, @notes, @created_at)`,
   ).run(full);
   return full;
 }
 
 const INVOICE_COLUMNS = new Set([
-  'number', 'period_start', 'period_end', 'status', 'currency', 'subtotal_cents', 'tax_cents', 'tax_rate',
-  'total_cents', 'lines', 'plan_name', 'payment_method', 'stripe_session_id', 'stripe_url', 'issued_at', 'paid_at', 'notes',
+  'series_id', 'number', 'invoice_type', 'rectifies_invoice_id', 'rectify_reason', 'period_start',
+  'period_end', 'operation_date', 'status', 'currency', 'subtotal_cents', 'tax_cents', 'tax_rate',
+  'tax_breakdown', 'vat_regime', 'legal_mentions', 'irpf_rate', 'irpf_cents', 'total_cents', 'lines',
+  'plan_name', 'issuer_snapshot', 'client_name', 'client_tax_id', 'client_address', 'payment_method',
+  'stripe_session_id', 'stripe_url', 'issued_at', 'paid_at', 'locked', 'notes',
 ]);
 
 export function updateInvoice(invoiceId: string, fields: Record<string, unknown>): void {
@@ -1426,18 +1491,49 @@ export function getInvoiceByStripeSession(sessionId: string): InvoiceRow | undef
   return db.prepare('SELECT * FROM workspace_invoices WHERE stripe_session_id = ?').get(sessionId) as InvoiceRow | undefined;
 }
 
+/** ¿Tiene el workspace facturas (opcionalmente solo las que ya no son borrador)? */
+export function workspaceHasInvoices(workspaceId: string, nonDraftOnly = false): boolean {
+  const sql = nonDraftOnly
+    ? "SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND status <> 'draft' LIMIT 1"
+    : 'SELECT 1 FROM workspace_invoices WHERE workspace_id = ? LIMIT 1';
+  return !!db.prepare(sql).get(workspaceId);
+}
+
 /**
- * Siguiente número de factura, atómico: incrementa el contador en `settings` y
- * lo formatea con el prefijo dado y relleno a 4 dígitos (p. ej. «FRA-0001»).
+ * Asigna atómicamente el siguiente número de una serie por ejercicio (crea la
+ * serie si no existe). El número incluye el año para reiniciar la numeración
+ * cada ejercicio (p. ej. «FRA-2026-0001»). Sustituye al antiguo contador global.
  */
-export function nextInvoiceNumber(prefix: string): string {
+export function assignSeriesNumber(opts: {
+  code: string;
+  year: number;
+  prefix: string;
+  kind: InvoiceSeriesRow['kind'];
+  padding?: number;
+}): { seriesId: string; number: string; seq: number } {
   return db.transaction(() => {
-    const cur = parseInt(getSetting('billing.invoiceSeq') || '0', 10) || 0;
-    const next = cur + 1;
-    setSetting('billing.invoiceSeq', String(next));
-    const clean = (prefix || 'F').trim();
-    return `${clean}${clean ? '-' : ''}${String(next).padStart(4, '0')}`;
+    let s = db.prepare('SELECT * FROM invoice_series WHERE code = ? AND year = ?').get(opts.code, opts.year) as
+      | InvoiceSeriesRow
+      | undefined;
+    if (!s) {
+      s = {
+        id: id('ser'), code: opts.code, year: opts.year, prefix: opts.prefix,
+        padding: opts.padding ?? 4, next_seq: 1, kind: opts.kind, created_at: now(),
+      };
+      db.prepare(
+        'INSERT INTO invoice_series (id, code, year, prefix, padding, next_seq, kind, created_at) VALUES (@id, @code, @year, @prefix, @padding, @next_seq, @kind, @created_at)',
+      ).run(s);
+    }
+    const seq = s.next_seq;
+    db.prepare('UPDATE invoice_series SET next_seq = ? WHERE id = ?').run(seq + 1, s.id);
+    const p = (s.prefix || '').trim();
+    const number = `${p}${p ? '-' : ''}${opts.year}-${String(seq).padStart(s.padding, '0')}`;
+    return { seriesId: s.id, number, seq };
   })();
+}
+
+export function listInvoiceSeries(): InvoiceSeriesRow[] {
+  return db.prepare('SELECT * FROM invoice_series ORDER BY year DESC, code ASC').all() as InvoiceSeriesRow[];
 }
 
 /** Todas las facturas de todos los workspaces, con el nombre del cliente, para la contabilidad. */

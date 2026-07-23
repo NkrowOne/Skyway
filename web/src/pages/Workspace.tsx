@@ -706,8 +706,10 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                   <StatusBadge tone={INV_TONE[inv.status]} label={INV_LABEL[inv.status]} dot={false} className="text-[10px]" />
                 </div>
                 <p className="mt-0.5 text-[11px] text-subtle">
+                  {inv.invoice_type === 'rectificativa' ? 'Rectificativa · ' : ''}
                   {fmtDate(inv.period_start)} – {fmtDate(inv.period_end)}
-                  {inv.tax_cents > 0 ? ` · IVA ${inv.tax_rate}%` : ''}
+                  {inv.tax_cents > 0 ? ` · IVA ${fmtMoney(inv.tax_cents, inv.currency)}` : ''}
+                  {inv.irpf_cents > 0 ? ` · IRPF −${fmtMoney(inv.irpf_cents, inv.currency)}` : ''}
                   {inv.paid_at ? ` · pagada ${timeAgo(inv.paid_at)}` : inv.issued_at ? ` · emitida ${timeAgo(inv.issued_at)}` : ''}
                 </p>
               </button>
@@ -718,18 +720,21 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                       <CreditCard size={13} /> Cobrar
                     </Button>
                   )}
-                  <button onClick={() => setEditing(inv)} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Editar líneas">
-                    <Pencil size={14} />
-                  </button>
+                  {/* Una factura emitida es inmutable: solo se editan/borran los borradores. */}
                   {inv.status === 'draft' && (
-                    <Button size="sm" variant="ghost" onClick={() => setStatus.mutate({ id: inv.id, status: 'issued' })}>Emitir</Button>
+                    <>
+                      <button onClick={() => setEditing(inv)} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Editar líneas">
+                        <Pencil size={14} />
+                      </button>
+                      <Button size="sm" variant="ghost" onClick={() => setStatus.mutate({ id: inv.id, status: 'issued' })}>Emitir</Button>
+                      <button onClick={() => remove.mutate(inv.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Eliminar borrador">
+                        <Trash2 size={14} />
+                      </button>
+                    </>
                   )}
-                  {inv.status !== 'paid' && inv.status !== 'void' && (
+                  {inv.status === 'issued' && (
                     <Button size="sm" variant="ghost" onClick={() => setStatus.mutate({ id: inv.id, status: 'paid' })}>Marcar pagada</Button>
                   )}
-                  <button onClick={() => remove.mutate(inv.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Eliminar">
-                    <Trash2 size={14} />
-                  </button>
                 </div>
               )}
             </div>
@@ -746,23 +751,41 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
 }
 
 /** Vista de factura completa: emisor, cliente, líneas, impuestos y método de pago. */
-function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; issuer: BillingProfile; client: { name: string; billing_email: string | null }; onClose: () => void }) {
+function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; issuer: BillingProfile; client: InvoicesResponse['client']; onClose: () => void }) {
+  // Datos congelados al emitir (si existen); en borrador, los vivos del perfil/cliente.
+  const em = invoice.issuer_snapshot ?? { companyName: issuer.companyName, taxId: issuer.taxId, address: issuer.address, email: issuer.email };
+  const clientName = invoice.client_name ?? client.name;
+  const clientTaxId = invoice.client_tax_id ?? client.billing_tax_id;
+  const clientAddress = invoice.client_address ?? client.billing_address;
+  const title = invoice.invoice_type === 'rectificativa' ? 'Factura rectificativa' : invoice.invoice_type === 'simplificada' ? 'Factura simplificada' : 'Factura';
+  // Desglose de IVA; para facturas antiguas sin desglose, se sintetiza uno con el tipo único.
+  const breakdown = invoice.tax_breakdown.length > 0
+    ? invoice.tax_breakdown
+    : invoice.tax_cents !== 0
+      ? [{ rate: invoice.tax_rate, base_cents: invoice.subtotal_cents, quota_cents: invoice.tax_cents }]
+      : [];
   return (
-    <Modal open onClose={onClose} title={invoice.number ? `Factura ${invoice.number}` : 'Factura (borrador)'} wide>
+    <Modal open onClose={onClose} title={invoice.number ? `${title} ${invoice.number}` : `${title} (borrador)`} wide>
       <div className="flex flex-col gap-4 text-[13px]">
         <div className="grid grid-cols-2 gap-4">
           <div>
             <p className="mb-1 text-[10px] font-semibold uppercase tracking-[.08em] text-subtle">Emisor</p>
-            <p className="font-semibold">{issuer.companyName || 'Tu empresa'}</p>
-            {issuer.taxId && <p className="text-subtle">NIF {issuer.taxId}</p>}
-            {issuer.address && <p className="whitespace-pre-line text-subtle">{issuer.address}</p>}
-            {issuer.email && <p className="text-subtle">{issuer.email}</p>}
+            <p className="font-semibold">{em.companyName || 'Tu empresa'}</p>
+            {em.taxId && <p className="text-subtle">NIF {em.taxId}</p>}
+            {em.address && <p className="whitespace-pre-line text-subtle">{em.address}</p>}
+            {em.email && <p className="text-subtle">{em.email}</p>}
           </div>
           <div className="text-right">
             <p className="mb-1 text-[10px] font-semibold uppercase tracking-[.08em] text-subtle">Cliente</p>
-            <p className="font-semibold">{client.name}</p>
-            {client.billing_email && <p className="text-subtle">{client.billing_email}</p>}
-            <p className="mt-2 text-subtle">{fmtDate(invoice.period_start)} – {fmtDate(invoice.period_end)}</p>
+            <p className="font-semibold">{clientName}</p>
+            {clientTaxId && <p className="text-subtle">NIF {clientTaxId}</p>}
+            {clientAddress && <p className="whitespace-pre-line text-subtle">{clientAddress}</p>}
+            {!clientTaxId && <p className="text-[11px] text-warn">Falta el NIF del cliente para una factura completa.</p>}
+            <p className="mt-2 text-subtle">
+              {invoice.issued_at ? `Expedida ${fmtDate(invoice.issued_at)}` : 'Sin emitir'}
+              {invoice.operation_date ? ` · operación ${fmtDate(invoice.operation_date)}` : ''}
+            </p>
+            <p className="text-[11px] text-subtle">Periodo {fmtDate(invoice.period_start)} – {fmtDate(invoice.period_end)}</p>
             <StatusBadge tone={INV_TONE[invoice.status]} label={INV_LABEL[invoice.status]} dot={false} className="mt-1 text-[10px]" />
           </div>
         </div>
@@ -774,6 +797,7 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
                 <th className="px-3 py-1.5 font-medium">Concepto</th>
                 <th className="px-3 py-1.5 text-right font-medium">Cant.</th>
                 <th className="px-3 py-1.5 text-right font-medium">Precio</th>
+                <th className="px-3 py-1.5 text-right font-medium">IVA</th>
                 <th className="px-3 py-1.5 text-right font-medium">Importe</th>
               </tr>
             </thead>
@@ -783,6 +807,7 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
                   <td className="px-3 py-1.5">{l.label}</td>
                   <td className="px-3 py-1.5 text-right text-sub">{l.qty}</td>
                   <td className="px-3 py-1.5 text-right text-sub">{fmtMoney(l.unitCents, invoice.currency)}</td>
+                  <td className="px-3 py-1.5 text-right text-sub">{l.taxRate ?? invoice.tax_rate}%</td>
                   <td className="px-3 py-1.5 text-right">{fmtMoney(l.amountCents, invoice.currency)}</td>
                 </tr>
               ))}
@@ -790,15 +815,26 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
           </table>
         </div>
 
-        <div className="ml-auto w-full max-w-[240px] text-[13px] tnum">
-          <div className="flex justify-between py-0.5 text-sub"><span>Subtotal</span><span>{fmtMoney(invoice.subtotal_cents, invoice.currency)}</span></div>
-          {invoice.tax_cents > 0 && (
-            <div className="flex justify-between py-0.5 text-sub"><span>IVA ({invoice.tax_rate}%)</span><span>{fmtMoney(invoice.tax_cents, invoice.currency)}</span></div>
+        {invoice.legal_mentions && (
+          <p className="rounded-md border border-line bg-bg px-3 py-2 text-[11px] leading-snug text-sub">{invoice.legal_mentions}</p>
+        )}
+
+        <div className="ml-auto w-full max-w-[280px] text-[13px] tnum">
+          <div className="flex justify-between py-0.5 text-sub"><span>Base imponible</span><span>{fmtMoney(invoice.subtotal_cents, invoice.currency)}</span></div>
+          {/* Desglose de IVA por tipo (obligatorio si concurren varios tipos). */}
+          {breakdown.filter((b) => b.quota_cents !== 0 || b.rate > 0).map((b) => (
+            <div key={b.rate} className="flex justify-between py-0.5 text-sub">
+              <span>IVA {b.rate}% (s/ {fmtMoney(b.base_cents, invoice.currency)})</span>
+              <span>{fmtMoney(b.quota_cents, invoice.currency)}</span>
+            </div>
+          ))}
+          {invoice.irpf_cents > 0 && (
+            <div className="flex justify-between py-0.5 text-sub"><span>Retención IRPF ({invoice.irpf_rate}%)</span><span>−{fmtMoney(invoice.irpf_cents, invoice.currency)}</span></div>
           )}
           <div className="mt-1 flex justify-between border-t border-line pt-1.5 text-[15px] font-semibold"><span>Total</span><span>{fmtMoney(invoice.total_cents, invoice.currency)}</span></div>
         </div>
 
-        {invoice.status !== 'paid' && (issuer.iban || invoice.stripe_url) && (
+        {invoice.status !== 'paid' && invoice.status !== 'void' && (issuer.iban || invoice.stripe_url) && (
           <div className="rounded-lg border border-line bg-bg p-3.5">
             <p className="mb-2 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">Cómo pagar</p>
             {issuer.iban && (
@@ -835,10 +871,13 @@ function Stat({ label, value, unit }: { label: string; value: string; unit: stri
 
 function EMPTY_INVOICE(workspaceId: string, currency: string): Invoice {
   return {
-    id: '', workspace_id: workspaceId, number: null, period_start: Date.now(), period_end: Date.now(), status: 'draft', currency,
-    subtotal_cents: 0, tax_cents: 0, tax_rate: 0, total_cents: 0,
+    id: '', workspace_id: workspaceId, series_id: null, number: null, invoice_type: 'normal',
+    rectifies_invoice_id: null, rectify_reason: null, period_start: Date.now(), period_end: Date.now(),
+    operation_date: null, status: 'draft', currency, subtotal_cents: 0, tax_cents: 0, tax_rate: 0,
+    tax_breakdown: [], vat_regime: 'general', legal_mentions: null, irpf_rate: 0, irpf_cents: 0, total_cents: 0,
     lines: [{ label: '', kind: 'custom', qty: 1, unitCents: 0, amountCents: 0 }], plan_name: null,
-    payment_method: null, stripe_url: null, issued_at: null, paid_at: null, notes: null, created_at: Date.now(),
+    issuer_snapshot: null, client_name: null, client_tax_id: null, client_address: null,
+    payment_method: null, stripe_url: null, issued_at: null, paid_at: null, locked: 0, notes: null, created_at: Date.now(),
   };
 }
 
@@ -897,19 +936,37 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
   const toast = useToast();
   const ws = detail.workspace;
   const [email, setEmail] = useState(ws.billing_email ?? '');
+  const [taxId, setTaxId] = useState(ws.billing_tax_id ?? '');
+  const [address, setAddress] = useState(ws.billing_address ?? '');
   const [day, setDay] = useState(String(ws.billing_day));
   const [notes, setNotes] = useState(ws.notes ?? '');
-  const dirty = email !== (ws.billing_email ?? '') || day !== String(ws.billing_day) || notes !== (ws.notes ?? '');
+  const dirty =
+    email !== (ws.billing_email ?? '') ||
+    taxId !== (ws.billing_tax_id ?? '') ||
+    address !== (ws.billing_address ?? '') ||
+    day !== String(ws.billing_day) ||
+    notes !== (ws.notes ?? '');
   const save = useMutation({
-    mutationFn: () => api.patch(`/workspaces/${ws.id}`, { billingEmail: email.trim() || null, billingDay: Number(day) || 1, notes: notes.trim() || null }),
+    mutationFn: () =>
+      api.patch(`/workspaces/${ws.id}`, {
+        billingEmail: email.trim() || null,
+        billingTaxId: taxId.trim() || null,
+        billingAddress: address.trim() || null,
+        billingDay: Number(day) || 1,
+        notes: notes.trim() || null,
+      }),
     onSuccess: () => { toast('Datos de facturación guardados', 'ok'); onSaved(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
   return (
     <section className="card p-5">
-      <h2 className="mb-3 text-sm font-semibold">Datos de facturación</h2>
+      <h2 className="mb-3 text-sm font-semibold">Datos de facturación del cliente</h2>
       <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="NIF / CIF" hint="Obligatorio en factura completa"><input className="input" value={taxId} onChange={(e) => setTaxId(e.target.value)} placeholder="B12345678" /></Field>
         <Field label="Email de facturación"><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="pagos@cliente.com" /></Field>
+      </div>
+      <Field label="Domicilio fiscal"><textarea className="input min-h-14" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Calle, nº · CP Población · Provincia · País" /></Field>
+      <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Día de cobro" hint="1–28"><input className="input tnum" type="number" min={1} max={28} value={day} onChange={(e) => setDay(e.target.value)} /></Field>
       </div>
       <Field label="Notas internas"><textarea className="input min-h-16" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Condiciones, contacto, referencia…" /></Field>
