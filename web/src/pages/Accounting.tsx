@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Building2, Coins, CreditCard, Download, Landmark, Receipt, Sparkles, Trash2 } from 'lucide-react';
 import { api } from '../api';
@@ -194,10 +194,17 @@ function AiGatewaySettings() {
 }
 
 /**
- * Coste del operador por modelo y margen frente al PVP del catálogo. Es informativo:
- * ayuda al operador a fijar precios de venta con margen. Los importes se manejan en
- * € por millón de tokens (lo que publica Google), separando entrada, cache y salida.
+ * «Cuánto ganas por modelo»: calculadora de beneficio para revender IA. El operador
+ * escribe lo que le cuesta cada modelo en Google y el margen que quiere; la tarjeta
+ * muestra el precio de venta y el beneficio, con una barra coste/beneficio. Es una
+ * guía de precios (el PVP real se fija en el catálogo); no interviene en la factura.
  */
+const COST_TYPES = [
+  { key: 'out' as const, label: 'Salida', hint: 'lo que responde el modelo' },
+  { key: 'in' as const, label: 'Entrada', hint: 'el prompt que envías' },
+  { key: 'cache' as const, label: 'Caché', hint: 'contexto cacheado, más barato' },
+];
+
 function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -207,29 +214,24 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
   const save = useMutation({
     mutationFn: (model: string) => {
       const d = drafts[model] ?? EMPTY_DRAFT;
-      // € / M → céntimos / M (×100). Vacío = 0.
       const toCents = (v: string) => Math.max(0, Math.round((parseFloat(v.replace(',', '.')) || 0) * 100 * 100) / 100);
       return api.put(`/ai/gateway/prices/${encodeURIComponent(model)}`, {
         costCentsMtokIn: toCents(d.in), costCentsMtokCache: toCents(d.cache), costCentsMtokOut: toCents(d.out),
         marginPct: Math.max(0, Math.min(95, parseFloat(d.margin.replace(',', '.')) || 0)),
       });
     },
-    onSuccess: () => { toast('Coste y margen del modelo guardados', 'ok'); queryClient.invalidateQueries({ queryKey: ['ai-model-prices'] }); },
+    onSuccess: () => { toast('Precio del modelo guardado', 'ok'); queryClient.invalidateQueries({ queryKey: ['ai-model-prices'] }); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
   const del = useMutation({
     mutationFn: (model: string) => api.del(`/ai/gateway/prices/${encodeURIComponent(model)}`),
-    onSuccess: () => { toast('Coste eliminado', 'ok'); queryClient.invalidateQueries({ queryKey: ['ai-model-prices'] }); },
+    onSuccess: () => { toast('Modelo restablecido', 'ok'); queryClient.invalidateQueries({ queryKey: ['ai-model-prices'] }); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
   if (!q.data) return <Skeleton className="h-40 w-full" />;
   const byModel = new Map(q.data.models.map((m) => [m.model, m]));
-  const sell = q.data.sell_cents_mtok;
   const num = (v: string) => parseFloat(v.replace(',', '.')) || 0;
-  // € por millón desde céntimos por millón.
-  const eurM = (centsM: number) => `${(centsM / 100).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} €/M`;
-  // € por millón desde € por millón (el draft ya está en €/M).
   const eurMd = (perM: number) => `${perM.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} €/M`;
   const draftFor = (model: string): Draft => {
     const d = drafts[model];
@@ -241,64 +243,86 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
   };
   const setDraft = (model: string, patch: Partial<Draft>) =>
     setDrafts((prev) => ({ ...prev, [model]: { ...draftFor(model), ...patch } }));
-  // Margen sobre venta = (PVP − coste) / PVP, calculado con el PVP del catálogo (salida).
-  const marginOut = (costCentsM: number): number | null => (sell.out && sell.out > 0 ? Math.round(((sell.out - costCentsM) / sell.out) * 100) : null);
-  // PVP sugerido (salida) para el margen objetivo: PVP = coste/(1−m/100). En €/M.
-  const suggestedOut = (d: Draft): number | null => {
-    const cost = num(d.out); const m = num(d.margin);
-    return cost > 0 && m > 0 && m < 100 ? cost / (1 - m / 100) : null;
-  };
+  // Precio de venta para un margen sobre venta: precio = coste/(1−m/100). En €/M.
+  const priceOf = (cost: number, margin: number): number | null => (cost > 0 && margin > 0 && margin < 100 ? cost / (1 - margin / 100) : null);
 
   const rows = allowedModels.length ? allowedModels : q.data.models.map((m) => m.model);
   return (
     <section className="card p-5">
-      <h2 className="flex items-center gap-2 text-sm font-semibold"><Coins size={15} className="text-warn" /> Coste por modelo y margen</h2>
-      <p className="mt-1 text-xs text-subtle">
-        Lo que te cuesta cada modelo en Google (€/M tokens) y tu <strong>margen objetivo</strong> sobre venta. El PVP sugerido = coste/(1−margen); cópialo al producto IA del <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>. «Margen actual» compara con tu PVP vigente
-        {sell.out != null ? <> (salida: <span className="font-mono">{eurM(sell.out)}</span>)</> : <> (define un producto IA de salida para verlo)</>}.
+      <h2 className="flex items-center gap-2 text-sm font-semibold"><Coins size={15} className="text-ok" /> Cuánto ganas por modelo</h2>
+      <p className="mt-1 max-w-2xl text-xs text-subtle">
+        Escribe lo que te cuesta cada modelo en Google y el margen que quieres. Te decimos a qué precio venderlo y cuánto ganas por millón de tokens. Después pon ese precio en el producto de IA del <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a> para cobrarlo.
       </p>
-      <div className="mt-4 overflow-x-auto">
-        <table className="w-full text-[12px]">
-          <thead>
-            <tr className="text-left text-subtle">
-              <th className="pb-2 pr-3 font-medium">Modelo</th>
-              <th className="pb-2 pr-3 font-medium">Entrada €/M</th>
-              <th className="pb-2 pr-3 font-medium">Cache €/M</th>
-              <th className="pb-2 pr-3 font-medium">Salida €/M</th>
-              <th className="pb-2 pr-3 font-medium">Margen obj. %</th>
-              <th className="pb-2 pr-3 font-medium">PVP sug. salida</th>
-              <th className="pb-2 pr-3 font-medium">Margen actual</th>
-              <th className="pb-2 font-medium"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((model) => {
-              const d = draftFor(model);
-              const existing = byModel.get(model);
-              const m = existing ? marginOut(existing.cost_cents_mtok_out) : null;
-              const sug = suggestedOut(d);
-              return (
-                <tr key={model} className="border-t border-line/60">
-                  <td className="py-2 pr-3 font-mono">{model}</td>
-                  <td className="py-2 pr-3"><input className="input h-8 w-20 tnum" inputMode="decimal" value={d.in} onChange={(e) => setDraft(model, { in: e.target.value })} placeholder="0" /></td>
-                  <td className="py-2 pr-3"><input className="input h-8 w-20 tnum" inputMode="decimal" value={d.cache} onChange={(e) => setDraft(model, { cache: e.target.value })} placeholder="0" /></td>
-                  <td className="py-2 pr-3"><input className="input h-8 w-20 tnum" inputMode="decimal" value={d.out} onChange={(e) => setDraft(model, { out: e.target.value })} placeholder="0" /></td>
-                  <td className="py-2 pr-3"><input className="input h-8 w-16 tnum" inputMode="decimal" value={d.margin} onChange={(e) => setDraft(model, { margin: e.target.value })} placeholder="0" /></td>
-                  <td className="py-2 pr-3 tnum">{sug == null ? <span className="text-subtle">—</span> : <span className="text-acc-soft">{eurMd(sug)}</span>}</td>
-                  <td className="py-2 pr-3 tnum">
-                    {m == null ? <span className="text-subtle">—</span> : <span className={m >= 0 ? 'text-ok' : 'text-err'}>{m >= 0 ? '+' : ''}{m}%</span>}
-                  </td>
-                  <td className="py-2">
-                    <div className="flex items-center gap-1">
-                      <Button size="sm" variant="ghost" onClick={() => save.mutate(model)} loading={save.isPending && save.variables === model}>Guardar</Button>
-                      {existing && <button className="rounded p-1 text-subtle hover:text-err" title="Eliminar coste" onClick={() => del.mutate(model)}><Trash2 size={13} /></button>}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        {rows.map((model) => {
+          const d = draftFor(model);
+          const existing = byModel.get(model);
+          const margin = num(d.margin);
+          const costOut = num(d.out);
+          const priceOut = priceOf(costOut, margin);
+          const profitOut = priceOut != null ? priceOut - costOut : null;
+          const costFrac = priceOut && priceOut > 0 ? Math.min(1, costOut / priceOut) : 1;
+          return (
+            <div key={model} className="rounded-xl border border-line bg-bg/40 p-4">
+              {/* Cabecera: modelo + beneficio como cifra protagonista. */}
+              <div className="flex items-start justify-between gap-3">
+                <span className="mt-0.5 font-mono text-[13px]">{model}</span>
+                <div className="text-right">
+                  {profitOut != null ? (
+                    <>
+                      <p className="tnum text-lg font-semibold leading-none text-ok">{eurMd(profitOut)}</p>
+                      <p className="mt-1 text-[10px] uppercase tracking-wide text-subtle">ganas en salida</p>
+                    </>
+                  ) : (
+                    <p className="text-[11px] text-subtle">Añade coste y margen</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Barra coste vs beneficio (sobre el precio de salida). */}
+              <div className="mt-3 flex h-2.5 overflow-hidden rounded-full bg-surface2" title="Reparto del precio de salida entre coste y beneficio">
+                <div className="h-full bg-subtle/50" style={{ width: `${costFrac * 100}%` }} />
+                <div className="h-full bg-ok" style={{ width: `${(1 - costFrac) * 100}%` }} />
+              </div>
+              <div className="mt-1 flex justify-between text-[10px] text-subtle">
+                <span>Coste {costOut > 0 ? eurMd(costOut) : '—'}</span>
+                <span className="text-ok">Beneficio {profitOut != null ? eurMd(profitOut) : '—'}</span>
+              </div>
+
+              {/* Margen: deslizador (simple) + valor exacto. */}
+              <div className="mt-4 flex items-center gap-3">
+                <span className="w-16 shrink-0 text-[12px] text-subtle">Margen</span>
+                <input type="range" min={0} max={90} step={1} value={Math.min(90, Math.round(margin))} onChange={(e) => setDraft(model, { margin: e.target.value })} className="h-1.5 flex-1 accent-acc" />
+                <div className="relative">
+                  <input className="input h-8 w-16 tnum pr-6 text-right" inputMode="decimal" value={d.margin} onChange={(e) => setDraft(model, { margin: e.target.value })} placeholder="0" />
+                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-subtle">%</span>
+                </div>
+              </div>
+
+              {/* Coste → precio de venta, por tipo de token. */}
+              <div className="mt-3 grid grid-cols-[64px_1fr_1fr] items-center gap-x-2 gap-y-1.5">
+                <span />
+                <span className="text-[10px] uppercase tracking-wide text-subtle">Te cuesta €/M</span>
+                <span className="text-right text-[10px] uppercase tracking-wide text-subtle">Vendes a</span>
+                {COST_TYPES.map((t) => {
+                  const price = priceOf(num(d[t.key]), margin);
+                  return (
+                    <Fragment key={t.key}>
+                      <span className="text-[12px] text-subtle" title={t.hint}>{t.label}</span>
+                      <input className="input h-8 tnum" inputMode="decimal" value={d[t.key]} onChange={(e) => setDraft(model, { [t.key]: e.target.value })} placeholder="0" />
+                      <span className="tnum text-right text-[13px] text-acc-soft">{price == null ? '—' : eurMd(price)}</span>
+                    </Fragment>
+                  );
+                })}
+              </div>
+
+              <div className="mt-3 flex items-center justify-end gap-1 border-t border-line/60 pt-3">
+                {existing && <button className="mr-auto rounded p-1.5 text-subtle hover:text-err" title="Restablecer este modelo" onClick={() => del.mutate(model)}><Trash2 size={13} /></button>}
+                <Button size="sm" onClick={() => save.mutate(model)} loading={save.isPending && save.variables === model}>Guardar</Button>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
