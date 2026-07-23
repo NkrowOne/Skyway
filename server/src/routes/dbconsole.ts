@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, requireAuth } from '../auth';
+import { assertProjectAccess, moduleGate, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { dbConsoleEngine, dbSnippets, getDbBrowseQuery, getDbOverview, runDbQuery } from '../dbconsole';
 import { getProject, getService } from '../db';
@@ -18,6 +18,8 @@ function load(id: string): { service: ServiceRow; project: ProjectRow } | null {
 /** Consola de consultas de bases de datos: explorador, snippets y ejecución. */
 export async function dbConsoleRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
+  // La consola de datos requiere el módulo 'dbconsole' activo en el workspace (el admin lo traspasa).
+  app.addHook('preHandler', moduleGate('dbconsole'));
 
   app.get('/api/services/:id/db/overview', async (req, reply) => {
     const { id } = req.params as { id: string };

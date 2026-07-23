@@ -11,26 +11,33 @@ import {
   getProject,
   getUser,
   getUserByEmail,
+  getWorkspace,
   listUserProjectIds,
   listUsers,
   setUserProjects,
   transaction,
   updateUserPassword,
   updateUserRole,
+  updateUserWorkspace,
 } from '../db';
 import { hashPassword } from '../util';
 
-const roleSchema = z.enum(['admin', 'member']);
+// Crear desde aquí (nivel plataforma): admin o miembro. Los propietarios se
+// crean desde «Cuentas y clientes», donde llevan su workspace.
+const createRoleSchema = z.enum(['admin', 'member']);
+// Editar acepta también 'owner' para no romper la edición de propietarios ya
+// existentes; ascender A propietario se hace desde su workspace.
+const patchRoleSchema = z.enum(['admin', 'owner', 'member']);
 
 const createSchema = z.object({
   email: z.string().email('Email inválido'),
   password: z.string().min(8, 'La contraseña debe tener al menos 8 caracteres'),
-  role: roleSchema.default('member'),
+  role: createRoleSchema.default('member'),
   projectIds: z.array(z.string()).default([]),
 });
 
 const patchSchema = z.object({
-  role: roleSchema.optional(),
+  role: patchRoleSchema.optional(),
   projectIds: z.array(z.string()).optional(),
   password: z.string().min(8, 'La contraseña debe tener al menos 8 caracteres').optional(),
 });
@@ -45,6 +52,8 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
         email: u.email,
         role: u.role,
         created_at: u.created_at,
+        workspaceId: u.workspace_id,
+        workspaceName: u.workspace_id ? getWorkspace(u.workspace_id)?.name ?? null : null,
         projectIds: listUserProjectIds(u.id),
         passkeys: countPasskeys(u.id),
         tokens: countApiTokens(u.id),
@@ -80,6 +89,10 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
       if (target.role === 'admin' && countAdmins() <= 1) {
         return reply.code(400).send({ error: 'Debe quedar al menos un administrador' });
       }
+      // Ascender A propietario necesita un workspace: se hace desde «Cuentas y clientes».
+      if (roleChange === 'owner') {
+        return reply.code(400).send({ error: 'Los propietarios se gestionan desde «Cuentas y clientes».' });
+      }
     }
     if (body.projectIds) {
       for (const pid of body.projectIds) {
@@ -91,6 +104,8 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     const effectiveRole = roleChange ?? target.role;
     transaction(() => {
       if (roleChange) updateUserRole(id, roleChange);
+      // Un administrador no pertenece a ningún workspace: se desliga al ascender.
+      if (roleChange === 'admin') updateUserWorkspace(id, null);
       // Un admin no tiene asignaciones; un miembro recibe las enviadas (si las hay).
       if (effectiveRole === 'admin') setUserProjects(id, []);
       else if (body.projectIds) setUserProjects(id, body.projectIds);

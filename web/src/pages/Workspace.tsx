@@ -1,0 +1,821 @@
+import { useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import {
+  ArrowLeft,
+  Boxes,
+  Cpu,
+  HardDrive,
+  Layers,
+  MemoryStick,
+  Pause,
+  Pencil,
+  Play,
+  Plus,
+  Receipt,
+  Trash2,
+  Users2,
+} from 'lucide-react';
+import { api } from '../api';
+import { Button, ConfirmModal, EditorBar, Field, Modal, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
+import { QuotaMeter } from '../components/QuotaMeter';
+import {
+  Invoice,
+  Me,
+  ModuleDef,
+  Plan,
+  UserRole,
+  Workspace,
+  WorkspaceMember,
+  WorkspaceProject,
+  WorkspaceUsage,
+} from '../types';
+import { cx, fmtDate, fmtMb, fmtMoney, timeAgo } from '../utils';
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+interface Detail {
+  workspace: Workspace;
+  projects: WorkspaceProject[];
+  members: WorkspaceMember[];
+}
+
+// ---------------- Resumen: cuota con redimensionado en vivo ----------------
+
+type QuotaKey = 'cpuCores' | 'memoryMb' | 'diskMb' | 'maxProjects' | 'maxServices' | 'maxMembers';
+
+const DIMS: {
+  key: QuotaKey;
+  alloc: 'cpuCores' | 'memoryMb' | 'diskMb' | 'projects' | 'services' | 'members';
+  label: string;
+  icon: React.ReactNode;
+  fmt: (n: number) => string;
+  step: number;
+  min: number;
+}[] = [
+  { key: 'cpuCores', alloc: 'cpuCores', label: 'CPU', icon: <Cpu size={14} />, fmt: (n) => `${round2(n)} nú`, step: 0.5, min: 0.1 },
+  { key: 'memoryMb', alloc: 'memoryMb', label: 'Memoria', icon: <MemoryStick size={14} />, fmt: fmtMb, step: 512, min: 128 },
+  { key: 'diskMb', alloc: 'diskMb', label: 'Disco', icon: <HardDrive size={14} />, fmt: fmtMb, step: 1024, min: 256 },
+  { key: 'maxProjects', alloc: 'projects', label: 'Proyectos', icon: <Boxes size={14} />, fmt: (n) => String(n), step: 1, min: 1 },
+  { key: 'maxServices', alloc: 'services', label: 'Servicios', icon: <Layers size={14} />, fmt: (n) => String(n), step: 1, min: 1 },
+  { key: 'maxMembers', alloc: 'members', label: 'Usuarios', icon: <Users2 size={14} />, fmt: (n) => String(n), step: 1, min: 1 },
+];
+
+function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdmin: boolean; plans: Plan[]; onSaved: () => void }) {
+  const toast = useToast();
+  const ws = detail.workspace;
+  type Row = { inherit: boolean; value: number };
+  const initial = useMemo(() => {
+    const rows: Record<QuotaKey, Row> = {} as any;
+    for (const d of DIMS) rows[d.key] = { inherit: (ws.inheriting as any)[d.key], value: (ws.quota as any)[d.key] };
+    return rows;
+  }, [ws]);
+  const [rows, setRows] = useState<Record<QuotaKey, Row>>(initial);
+  const [planId, setPlanId] = useState<string>(ws.plan_id ?? '');
+
+  const dirty =
+    planId !== (ws.plan_id ?? '') ||
+    DIMS.some((d) => rows[d.key].inherit !== initial[d.key].inherit || (!rows[d.key].inherit && rows[d.key].value !== initial[d.key].value));
+
+  const save = useMutation({
+    mutationFn: () => {
+      const payload: Record<string, unknown> = { planId: planId || null };
+      for (const d of DIMS) payload[d.key] = rows[d.key].inherit ? null : rows[d.key].value;
+      return api.patch(`/workspaces/${ws.id}`, payload);
+    },
+    onSuccess: () => {
+      toast('Cuota actualizada', 'ok');
+      onSaved();
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const setRow = (key: QuotaKey, patch: Partial<Row>) => setRows((r) => ({ ...r, [key]: { ...r[key], ...patch } }));
+
+  return (
+    <div className="flex flex-col gap-5">
+      <section className="card p-5">
+        <div className="mb-1 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Cuota de recursos</h2>
+          {isAdmin && (
+            <select
+              className="input h-8 w-auto py-0 text-[13px]"
+              value={planId}
+              onChange={(e) => setPlanId(e.target.value)}
+              aria-label="Plan de la cuenta"
+            >
+              <option value="">Sin plan</option>
+              {plans.filter((p) => !p.archived || p.id === ws.plan_id).map((p) => (
+                <option key={p.id} value={p.id}>Plan {p.name}</option>
+              ))}
+            </select>
+          )}
+        </div>
+        <p className="mb-4 text-xs text-subtle">
+          Acotada a todos los proyectos del cliente en total.{' '}
+          {isAdmin ? 'Amplíala o recórtala en vivo; los límites por servicio ya en marcha se aplican al volver a desplegar.' : 'La define tu proveedor.'}
+        </p>
+
+        <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+          {DIMS.map((d) => {
+            const row = rows[d.key];
+            const used = (ws.allocation as any)[d.alloc] as number;
+            // Al heredar, el techo real lo pone el plan (cambia con él): se muestra el
+            // valor efectivo actual, no el buffer local (que solo importa al fijar override).
+            const effectiveNow = (ws.quota as any)[d.key] as number;
+            const ceiling = row.inherit ? effectiveNow : row.value;
+            return (
+              <div key={d.key}>
+                <QuotaMeter label={d.label} icon={d.icon} used={used} ceiling={ceiling} format={d.fmt} inheriting={row.inherit} />
+                {isAdmin && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <div className="flex items-center overflow-hidden rounded-lg border border-line">
+                      <button
+                        type="button"
+                        disabled={row.inherit}
+                        onClick={() => setRow(d.key, { value: Math.max(d.min, round2(row.value - d.step)) })}
+                        className="press h-8 w-8 text-sub hover:bg-surface2 hover:text-txt disabled:opacity-40"
+                      >
+                        −
+                      </button>
+                      <input
+                        type="number"
+                        disabled={row.inherit}
+                        value={ceiling}
+                        min={d.min}
+                        onChange={(e) => setRow(d.key, { value: Math.max(d.min, Number(e.target.value) || d.min) })}
+                        className="tnum h-8 w-20 border-x border-line bg-bg px-2 text-center text-[13px] text-txt outline-none disabled:opacity-40"
+                      />
+                      <button
+                        type="button"
+                        disabled={row.inherit}
+                        onClick={() => setRow(d.key, { value: round2(row.value + d.step) })}
+                        className="press h-8 w-8 text-sub hover:bg-surface2 hover:text-txt disabled:opacity-40"
+                      >
+                        +
+                      </button>
+                    </div>
+                    <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-subtle">
+                      {/* Al dejar de heredar, el override arranca desde el valor efectivo actual. */}
+                      <input
+                        type="checkbox"
+                        checked={row.inherit}
+                        onChange={(e) => setRow(d.key, e.target.checked ? { inherit: true } : { inherit: false, value: effectiveNow })}
+                        className="accent-acc"
+                      />
+                      heredar del plan
+                    </label>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {(ws.allocation.unlimited.cpu > 0 || ws.allocation.unlimited.memory > 0) && (
+          <p className="mt-4 rounded-lg border border-warn/25 bg-warn/[.08] px-3 py-2 text-[11px] text-warn">
+            Hay servicios sin límite de recursos: no reservan cuota, pero pueden crecer sin tope. Asígnales CPU/RAM en sus ajustes para acotarlos.
+          </p>
+        )}
+        {isAdmin && dirty && (
+          <div className="mt-4">
+            <EditorBar dirty={dirty} saving={save.isPending} onSave={() => save.mutate()} onDiscard={() => { setRows(initial); setPlanId(ws.plan_id ?? ''); }} saveLabel="Aplicar cuota" />
+          </div>
+        )}
+      </section>
+
+      <section className="card p-5">
+        <h2 className="mb-3 text-sm font-semibold">Proyectos del cliente</h2>
+        {detail.projects.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
+            Sin proyectos todavía en esta cuenta.
+          </p>
+        ) : (
+          <div className="flex flex-col divide-y divide-line">
+            {detail.projects.map((p) => (
+              <Link key={p.id} to={`/projects/${p.id}`} className="-mx-2 flex items-center justify-between gap-3 rounded-lg px-2 py-2.5 hover:bg-surface2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{p.name}</p>
+                  <p className="font-mono text-[11px] text-subtle">{p.slug}</p>
+                </div>
+                <span className="shrink-0 text-[11px] text-subtle tnum">{p.serviceCount === 1 ? '1 servicio' : `${p.serviceCount} servicios`}</span>
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ---------------- Módulos ----------------
+
+function ModulosTab({ detail, isAdmin, modules, onSaved }: { detail: Detail; isAdmin: boolean; modules: ModuleDef[]; onSaved: () => void }) {
+  const toast = useToast();
+  const ws = detail.workspace;
+  const [granted, setGranted] = useState<Set<string>>(new Set(ws.modules.granted));
+  const [disabled, setDisabled] = useState<Set<string>>(new Set(ws.modules.disabled));
+
+  const dirtyGrant = isAdmin && !sameSet(granted, new Set(ws.modules.granted));
+  const dirtyDisabled = !sameSet(disabled, new Set(ws.modules.disabled));
+
+  const saveGrant = useMutation({
+    mutationFn: () => api.patch(`/workspaces/${ws.id}`, { modules: [...granted] }),
+    onSuccess: () => { toast('Módulos concedidos actualizados', 'ok'); onSaved(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const saveDisabled = useMutation({
+    mutationFn: () => api.patch(`/workspaces/${ws.id}/modules`, { disabled: [...disabled] }),
+    onSuccess: () => { toast('Módulos actualizados', 'ok'); onSaved(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const groups = useMemo(() => {
+    const map = new Map<string, ModuleDef[]>();
+    for (const m of modules) map.set(m.group, [...(map.get(m.group) ?? []), m]);
+    return [...map.entries()];
+  }, [modules]);
+
+  return (
+    <div className="flex flex-col gap-5">
+      <section className="card p-5">
+        <h2 className="text-sm font-semibold">Módulos</h2>
+        <p className="mt-1 text-xs text-subtle">
+          {isAdmin
+            ? 'Concede o retira los módulos de esta cuenta. El cliente puede acotar (desactivar) los concedidos, nunca ampliarlos.'
+            : 'Activa o desactiva bajo tu cuenta los módulos incluidos en tu plan. No puedes activar los que no tengas concedidos.'}
+        </p>
+        <div className="mt-4 flex flex-col gap-5">
+          {groups.map(([group, mods]) => (
+            <div key={group}>
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">{group}</p>
+              <div className="grid gap-2.5 sm:grid-cols-2">
+                {mods.map((m) => {
+                  const isGranted = granted.has(m.key);
+                  const isDisabled = disabled.has(m.key);
+                  const effective = isGranted && !isDisabled;
+                  // Admin controla la concesión; el propietario, el acotado sobre lo concedido.
+                  const checked = isAdmin ? isGranted : effective;
+                  const toggle = () => {
+                    if (isAdmin) {
+                      setGranted((s) => toggleSet(s, m.key));
+                    } else {
+                      if (!isGranted) return; // no puede activar lo no concedido
+                      setDisabled((s) => toggleSet(s, m.key, /* add when */ effective));
+                    }
+                  };
+                  const locked = !isAdmin && !isGranted;
+                  return (
+                    <button
+                      key={m.key}
+                      type="button"
+                      onClick={toggle}
+                      disabled={locked}
+                      className={cx(
+                        'flex items-start gap-3 rounded-xl border px-3.5 py-3 text-left transition-colors',
+                        checked ? 'border-acc/55 bg-acc/[.08]' : 'border-line bg-bg hover:border-subtle',
+                        locked && 'opacity-45',
+                      )}
+                    >
+                      <span
+                        className={cx(
+                          'mt-0.5 flex h-4.5 w-8 shrink-0 items-center rounded-full p-0.5 transition-colors',
+                          checked ? 'bg-acc' : 'bg-surface2',
+                        )}
+                      >
+                        <span className={cx('h-3.5 w-3.5 rounded-full bg-white transition-transform', checked && 'translate-x-3.5')} />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="flex items-center gap-2 text-[13px] font-semibold">
+                          {m.label}
+                          {isAdmin && isGranted && isDisabled && (
+                            <span className="rounded-full bg-warn/[.14] px-1.5 py-px text-[9px] font-semibold text-warn">acotado por el cliente</span>
+                          )}
+                          {locked && <span className="rounded-full border border-line px-1.5 py-px text-[9px] text-subtle">no incluido</span>}
+                        </span>
+                        <span className="mt-0.5 block text-[11px] leading-snug text-subtle">{m.description}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+        {(dirtyGrant || dirtyDisabled) && (
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={() => { setGranted(new Set(ws.modules.granted)); setDisabled(new Set(ws.modules.disabled)); }}>
+              Descartar
+            </Button>
+            {isAdmin && dirtyGrant && (
+              <Button size="sm" loading={saveGrant.isPending} onClick={() => saveGrant.mutate()}>
+                Guardar concesión
+              </Button>
+            )}
+            {dirtyDisabled && (
+              <Button size="sm" variant={dirtyGrant ? 'secondary' : 'primary'} loading={saveDisabled.isPending} onClick={() => saveDisabled.mutate()}>
+                {isAdmin ? 'Guardar acotado' : 'Guardar cambios'}
+              </Button>
+            )}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function toggleSet(set: Set<string>, key: string, addWhen?: boolean): Set<string> {
+  const next = new Set(set);
+  const shouldAdd = addWhen === undefined ? !next.has(key) : addWhen;
+  if (shouldAdd) next.add(key);
+  else next.delete(key);
+  return next;
+}
+function sameSet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
+}
+
+// ---------------- Usuarios ----------------
+
+interface MemberDraft {
+  id?: string;
+  email: string;
+  password: string;
+  role: UserRole;
+  projectIds: string[];
+}
+
+function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: boolean; onSaved: () => void }) {
+  const toast = useToast();
+  const ws = detail.workspace;
+  const [draft, setDraft] = useState<MemberDraft | null>(null);
+  const [toDelete, setToDelete] = useState<WorkspaceMember | null>(null);
+  const isEdit = !!draft?.id;
+
+  const save = useMutation({
+    mutationFn: () => {
+      const d = draft!;
+      const projectIds = d.role === 'member' ? d.projectIds : [];
+      if (d.id) {
+        return api.patch(`/workspaces/${ws.id}/members/${d.id}`, {
+          ...(isAdmin ? { role: d.role } : {}),
+          projectIds,
+          ...(d.password ? { password: d.password } : {}),
+        });
+      }
+      return api.post(`/workspaces/${ws.id}/members`, { email: d.email.trim(), password: d.password, role: d.role, projectIds });
+    },
+    onSuccess: () => { toast(isEdit ? 'Usuario actualizado' : 'Usuario creado', 'ok'); setDraft(null); onSaved(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.del(`/workspaces/${ws.id}/members/${id}`),
+    onSuccess: () => { toast('Usuario eliminado', 'ok'); setToDelete(null); onSaved(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const projectName = (id: string) => detail.projects.find((p) => p.id === id)?.name ?? id;
+  const toggleProject = (id: string) =>
+    setDraft((d) => (d ? { ...d, projectIds: d.projectIds.includes(id) ? d.projectIds.filter((p) => p !== id) : [...d.projectIds, id] } : d));
+
+  return (
+    <section className="card overflow-hidden">
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <div>
+          <h2 className="text-sm font-semibold">Usuarios de la cuenta</h2>
+          <p className="mt-0.5 text-[11px] text-subtle">
+            {ws.allocation.members} de {ws.quota.maxMembers} · propietarios y miembros con acceso a proyectos de esta cuenta
+          </p>
+        </div>
+        <Button size="sm" onClick={() => setDraft({ email: '', password: '', role: 'member', projectIds: [] })}>
+          <Plus size={13} /> Nuevo usuario
+        </Button>
+      </div>
+      {detail.members.length === 0 ? (
+        <p className="px-4 py-8 text-center text-xs text-subtle">Sin usuarios. Crea uno para dar acceso a esta cuenta.</p>
+      ) : (
+        detail.members.map((m, i) => (
+          <div key={m.id} className={cx('flex flex-wrap items-center gap-3 px-4 py-3', i > 0 && 'border-t border-line')}>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="truncate text-sm font-medium">{m.email}</span>
+                <span className={cx('rounded-full px-2 py-0.5 text-[10px] font-semibold', m.role === 'owner' ? 'bg-acc/[.15] text-acc-soft' : 'bg-txt/[.08] text-sub')}>
+                  {m.role === 'owner' ? 'propietario' : 'miembro'}
+                </span>
+              </div>
+              <p className="mt-0.5 text-[11px] text-subtle">
+                {m.role === 'owner'
+                  ? 'acceso a todos los proyectos de la cuenta'
+                  : m.projectIds.length === 0
+                    ? 'sin proyectos asignados'
+                    : m.projectIds.map(projectName).join(', ')}
+                {' · '}alta {timeAgo(m.created_at)}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <button onClick={() => setDraft({ id: m.id, email: m.email, password: '', role: m.role, projectIds: m.projectIds })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Editar">
+                <Pencil size={14} />
+              </button>
+              <button onClick={() => setToDelete(m)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Eliminar">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+        ))
+      )}
+
+      <Modal open={!!draft} onClose={() => setDraft(null)} title={isEdit ? `Editar ${draft?.email}` : 'Nuevo usuario'}>
+        {draft && (
+          <div className="flex flex-col gap-3.5">
+            {!isEdit && (
+              <Field label="Email">
+                <input className="input" type="email" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} autoFocus />
+              </Field>
+            )}
+            <Field label={isEdit ? 'Nueva contraseña' : 'Contraseña'} hint={isEdit ? 'vacío = no cambiarla' : 'mínimo 8 caracteres'}>
+              <input className="input" type="password" value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
+            </Field>
+            {isAdmin && (
+              <Field label="Rol">
+                <div className="grid grid-cols-2 gap-2">
+                  {(['member', 'owner'] as const).map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setDraft({ ...draft, role: r })}
+                      className={cx('rounded-lg border px-3 py-2.5 text-left transition-colors', draft.role === r ? 'border-acc bg-acc/[.10]' : 'border-line bg-bg hover:border-subtle')}
+                    >
+                      <p className="text-[13px] font-semibold">{r === 'owner' ? 'Propietario' : 'Miembro'}</p>
+                      <p className="mt-0.5 text-[11px] leading-snug text-subtle">
+                        {r === 'owner' ? 'Gestiona la cuenta y sus proyectos' : 'Acceso a los proyectos que le asignes'}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </Field>
+            )}
+            {draft.role === 'member' && (
+              <Field label="Proyectos con acceso" hint={detail.projects.length ? undefined : 'aún no hay proyectos en la cuenta'}>
+                <div className="flex max-h-44 flex-col gap-1 overflow-y-auto rounded-lg border border-line bg-bg p-2">
+                  {detail.projects.map((p) => (
+                    <label key={p.id} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface2">
+                      <input type="checkbox" checked={draft.projectIds.includes(p.id)} onChange={() => toggleProject(p.id)} className="accent-acc" />
+                      <span className="min-w-0 flex-1 truncate text-[13px]">{p.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </Field>
+            )}
+            <div className="mt-1.5 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setDraft(null)}>Cancelar</Button>
+              <Button
+                onClick={() => save.mutate()}
+                loading={save.isPending}
+                disabled={isEdit ? !!draft.password && draft.password.length < 8 : !draft.email.trim() || draft.password.length < 8}
+              >
+                {isEdit ? 'Guardar' : 'Crear usuario'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <ConfirmModal
+        open={!!toDelete}
+        onClose={() => setToDelete(null)}
+        onConfirm={() => toDelete && remove.mutate(toDelete.id)}
+        title="Eliminar usuario"
+        message={`«${toDelete?.email}» perderá el acceso al momento. Sus proyectos y servicios no se tocan.`}
+        loading={remove.isPending}
+      />
+    </section>
+  );
+}
+
+// ---------------- Facturación ----------------
+
+const INV_TONE: Record<string, 'neutral' | 'info' | 'ok' | 'warn'> = {
+  draft: 'neutral',
+  issued: 'info',
+  paid: 'ok',
+  void: 'warn',
+};
+const INV_LABEL: Record<string, string> = { draft: 'borrador', issued: 'emitida', paid: 'pagada', void: 'anulada' };
+
+function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: boolean; onSaved: () => void }) {
+  const toast = useToast();
+  const ws = detail.workspace;
+  const queryClient = useQueryClient();
+  const usage = useQuery({ queryKey: ['ws-usage', ws.id], queryFn: () => api.get<WorkspaceUsage>(`/workspaces/${ws.id}/usage?days=30`) });
+  const invoices = useQuery({ queryKey: ['ws-invoices', ws.id], queryFn: () => api.get<{ invoices: Invoice[] }>(`/workspaces/${ws.id}/invoices`) });
+  const [editing, setEditing] = useState<Invoice | null>(null);
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['ws-invoices', ws.id] });
+
+  const generate = useMutation({
+    mutationFn: () => api.post(`/workspaces/${ws.id}/invoices/generate`),
+    onSuccess: () => { toast('Factura del ciclo generada', 'ok'); invalidate(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const setStatus = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) => api.patch(`/invoices/${id}`, { status }),
+    onSuccess: () => { toast('Factura actualizada', 'ok'); invalidate(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.del(`/invoices/${id}`),
+    onSuccess: () => { toast('Factura eliminada', 'ok'); invalidate(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const u = usage.data;
+  return (
+    <div className="flex flex-col gap-5">
+      <section className="card p-5">
+        <h2 className="mb-3 text-sm font-semibold">Uso de los últimos 30 días</h2>
+        {usage.isLoading ? (
+          <Skeleton className="h-16 w-full" />
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Stat label="CPU" value={u ? `${u.cpuCoreHours}` : '—'} unit="núcleo·h" />
+            <Stat label="Memoria" value={u ? `${u.ramGbHours}` : '—'} unit="GB·h" />
+            <Stat label="Pico CPU" value={u ? `${u.cpuMaxCores}` : '—'} unit="núcleos" />
+            <Stat label="Pico disco" value={u ? `${u.diskMaxGb}` : '—'} unit="GB" />
+          </div>
+        )}
+        <p className="mt-3 text-[11px] text-subtle">
+          Plan {ws.plan ? `${ws.plan.name} · ${ws.plan.price_cents === 0 ? 'gratis' : `${fmtMoney(ws.plan.price_cents, ws.plan.currency)}/${ws.plan.interval === 'yearly' ? 'año' : 'mes'}`}` : 'sin asignar'}. El uso incluido lo cubre el plan; lo que exceda se tarifica en la factura.
+        </p>
+      </section>
+
+      <section className="card overflow-hidden">
+        <div className="flex items-center justify-between border-b border-line px-4 py-3">
+          <h2 className="text-sm font-semibold">Facturas</h2>
+          {isAdmin && (
+            <div className="flex gap-2">
+              <Button size="sm" variant="secondary" onClick={() => setEditing(EMPTY_INVOICE(ws.id, ws.plan?.currency ?? 'EUR'))}>
+                <Plus size={13} /> A medida
+              </Button>
+              <Button size="sm" loading={generate.isPending} onClick={() => generate.mutate()}>
+                <Receipt size={13} /> Generar ciclo
+              </Button>
+            </div>
+          )}
+        </div>
+        {(invoices.data?.invoices ?? []).length === 0 ? (
+          <p className="px-4 py-8 text-center text-xs text-subtle">Sin facturas todavía.</p>
+        ) : (
+          invoices.data!.invoices.map((inv, i) => (
+            <div key={inv.id} className={cx('flex flex-wrap items-center gap-3 px-4 py-3', i > 0 && 'border-t border-line')}>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold tnum">{fmtMoney(inv.total_cents, inv.currency)}</span>
+                  <StatusBadge tone={INV_TONE[inv.status]} label={INV_LABEL[inv.status]} dot={false} className="text-[10px]" />
+                </div>
+                <p className="mt-0.5 text-[11px] text-subtle">
+                  {fmtDate(inv.period_start)} – {fmtDate(inv.period_end)} · {inv.lines.length} línea{inv.lines.length === 1 ? '' : 's'}
+                  {inv.paid_at ? ` · pagada ${timeAgo(inv.paid_at)}` : inv.issued_at ? ` · emitida ${timeAgo(inv.issued_at)}` : ''}
+                </p>
+              </div>
+              {isAdmin && (
+                <div className="flex shrink-0 flex-wrap items-center gap-1">
+                  <button onClick={() => setEditing(inv)} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Editar líneas">
+                    <Pencil size={14} />
+                  </button>
+                  {inv.status === 'draft' && (
+                    <Button size="sm" variant="ghost" onClick={() => setStatus.mutate({ id: inv.id, status: 'issued' })}>Emitir</Button>
+                  )}
+                  {inv.status !== 'paid' && inv.status !== 'void' && (
+                    <Button size="sm" variant="ghost" onClick={() => setStatus.mutate({ id: inv.id, status: 'paid' })}>Marcar pagada</Button>
+                  )}
+                  <button onClick={() => remove.mutate(inv.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Eliminar">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </section>
+
+      {isAdmin && <BillingSettings detail={detail} onSaved={onSaved} />}
+
+      {editing && <InvoiceEditor invoice={editing} workspaceId={ws.id} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); invalidate(); }} />}
+    </div>
+  );
+}
+
+function Stat({ label, value, unit }: { label: string; value: string; unit: string }) {
+  return (
+    <div className="rounded-lg border border-line bg-bg px-3 py-2.5">
+      <p className="text-[11px] text-subtle">{label}</p>
+      <p className="mt-0.5 tnum text-lg font-semibold leading-none">{value}</p>
+      <p className="mt-1 text-[10px] text-subtle">{unit}</p>
+    </div>
+  );
+}
+
+function EMPTY_INVOICE(workspaceId: string, currency: string): Invoice {
+  return {
+    id: '', workspace_id: workspaceId, period_start: Date.now(), period_end: Date.now(), status: 'draft', currency,
+    subtotal_cents: 0, total_cents: 0, lines: [{ label: '', kind: 'custom', qty: 1, unitCents: 0, amountCents: 0 }], plan_name: null,
+    issued_at: null, paid_at: null, notes: null, created_at: Date.now(),
+  };
+}
+
+function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: Invoice; workspaceId: string; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
+  const [lines, setLines] = useState(invoice.lines.map((l) => ({ label: l.label, qty: l.qty, unit: l.unitCents / 100 })));
+  const total = lines.reduce((s, l) => s + Math.round(l.qty * l.unit * 100), 0);
+  const isNew = !invoice.id;
+
+  const save = useMutation({
+    mutationFn: () => {
+      const payload = { lines: lines.filter((l) => l.label.trim()).map((l) => ({ label: l.label.trim(), kind: 'custom', qty: l.qty, unitCents: Math.round(l.unit * 100) })) };
+      return isNew ? api.post(`/workspaces/${workspaceId}/invoices`, payload) : api.patch(`/invoices/${invoice.id}`, payload);
+    },
+    onSuccess: () => { toast(isNew ? 'Factura creada' : 'Factura actualizada', 'ok'); onSaved(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const setLine = (i: number, patch: Partial<{ label: string; qty: number; unit: number }>) =>
+    setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+
+  return (
+    <Modal open onClose={onClose} title={isNew ? 'Nueva factura a medida' : 'Editar factura'} wide>
+      <div className="flex flex-col gap-2">
+        <div className="grid grid-cols-[1fr_70px_90px_90px_28px] items-center gap-2 px-1 text-[11px] font-medium text-subtle">
+          <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">Importe</span><span />
+        </div>
+        {lines.map((l, i) => (
+          <div key={i} className="grid grid-cols-[1fr_70px_90px_90px_28px] items-center gap-2">
+            <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Ej: Plan Pro (mensual)" />
+            <input className="input h-9 tnum text-right" type="number" value={l.qty} min={0} onChange={(e) => setLine(i, { qty: Number(e.target.value) || 0 })} />
+            <input className="input h-9 tnum text-right" type="number" value={l.unit} step="0.01" onChange={(e) => setLine(i, { unit: Number(e.target.value) || 0 })} />
+            <span className="tnum text-right text-[13px]">{fmtMoney(Math.round(l.qty * l.unit * 100), invoice.currency)}</span>
+            <button onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="rounded-md p-1 text-subtle hover:text-err" title="Quitar línea">
+              <Trash2 size={13} />
+            </button>
+          </div>
+        ))}
+        <button onClick={() => setLines((ls) => [...ls, { label: '', qty: 1, unit: 0 }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
+          + Añadir línea
+        </button>
+        <div className="mt-3 flex items-center justify-between border-t border-line pt-3">
+          <span className="text-sm text-sub">Total</span>
+          <span className="tnum text-lg font-semibold">{fmtMoney(total, invoice.currency)}</span>
+        </div>
+        <div className="mt-2 flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+          <Button loading={save.isPending} onClick={() => save.mutate()}>{isNew ? 'Crear factura' : 'Guardar'}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => void }) {
+  const toast = useToast();
+  const ws = detail.workspace;
+  const [email, setEmail] = useState(ws.billing_email ?? '');
+  const [day, setDay] = useState(String(ws.billing_day));
+  const [notes, setNotes] = useState(ws.notes ?? '');
+  const dirty = email !== (ws.billing_email ?? '') || day !== String(ws.billing_day) || notes !== (ws.notes ?? '');
+  const save = useMutation({
+    mutationFn: () => api.patch(`/workspaces/${ws.id}`, { billingEmail: email.trim() || null, billingDay: Number(day) || 1, notes: notes.trim() || null }),
+    onSuccess: () => { toast('Datos de facturación guardados', 'ok'); onSaved(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  return (
+    <section className="card p-5">
+      <h2 className="mb-3 text-sm font-semibold">Datos de facturación</h2>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Email de facturación"><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="pagos@cliente.com" /></Field>
+        <Field label="Día de cobro" hint="1–28"><input className="input tnum" type="number" min={1} max={28} value={day} onChange={(e) => setDay(e.target.value)} /></Field>
+      </div>
+      <Field label="Notas internas"><textarea className="input min-h-16" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Condiciones, contacto, referencia…" /></Field>
+      <div className="mt-3 flex justify-end">
+        <Button size="sm" onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty}>Guardar</Button>
+      </div>
+    </section>
+  );
+}
+
+// ---------------- Página ----------------
+
+export default function WorkspacePage() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [tab, setTab] = useState('resumen');
+  const [toDelete, setToDelete] = useState(false);
+
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
+  const isAdmin = me.data?.user?.role === 'admin';
+
+  const detail = useQuery({ queryKey: ['workspace', id], queryFn: () => api.get<Detail>(`/workspaces/${id}`) });
+  const modules = useQuery({ queryKey: ['modules'], queryFn: () => api.get<{ modules: ModuleDef[] }>('/modules'), staleTime: 300_000 });
+  const plans = useQuery({ queryKey: ['plans'], queryFn: () => api.get<{ plans: Plan[] }>('/plans'), enabled: isAdmin });
+
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['workspace', id] });
+    queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+  };
+
+  const setStatus = useMutation({
+    mutationFn: (status: 'active' | 'suspended') => api.patch(`/workspaces/${id}`, { status }),
+    onSuccess: (_r, status) => { toast(status === 'suspended' ? 'Cuenta suspendida' : 'Cuenta reactivada', 'ok'); refresh(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const remove = useMutation({
+    mutationFn: () => api.del(`/workspaces/${id}`),
+    onSuccess: () => { toast('Cuenta eliminada', 'ok'); queryClient.invalidateQueries({ queryKey: ['workspaces'] }); navigate('/workspaces'); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  if (detail.isLoading) {
+    return (
+      <div className="mx-auto max-w-[900px] px-4 py-8 sm:px-6">
+        <Skeleton className="h-8 w-56" />
+        <Skeleton className="mt-6 h-64 w-full" />
+      </div>
+    );
+  }
+  if (detail.isError || !detail.data) {
+    return <p className="mx-auto max-w-[900px] px-6 py-10 text-sm text-sub">No se pudo cargar la cuenta. {String((detail.error as Error)?.message ?? '')}</p>;
+  }
+
+  const d = detail.data;
+  const ws = d.workspace;
+  const suspended = ws.status === 'suspended';
+
+  const tabs = [
+    { key: 'resumen', label: 'Resumen y cuota' },
+    { key: 'modulos', label: 'Módulos' },
+    { key: 'usuarios', label: 'Usuarios' },
+    { key: 'facturacion', label: 'Facturación' },
+  ];
+
+  return (
+    <div className="mx-auto max-w-[900px] px-4 py-7 sm:px-6 sm:py-9">
+      <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt">
+        <ArrowLeft size={13} /> Cuentas y clientes
+      </Link>
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h1 className="text-2xl font-semibold tracking-[-.02em]">{ws.name}</h1>
+            <StatusBadge tone={suspended ? 'warn' : 'ok'} label={suspended ? 'suspendida' : 'activa'} dot={!suspended} />
+          </div>
+          <p className="mt-1 text-sm text-sub">
+            {ws.plan ? `Plan ${ws.plan.name}` : 'Sin plan'} · {ws.allocation.projects} proyectos · {ws.allocation.members} usuarios
+          </p>
+        </div>
+        {isAdmin && (
+          <div className="flex items-center gap-2">
+            {suspended ? (
+              <Button size="sm" variant="secondary" onClick={() => setStatus.mutate('active')} loading={setStatus.isPending}>
+                <Play size={13} /> Reactivar
+              </Button>
+            ) : (
+              <Button size="sm" variant="secondary" onClick={() => setStatus.mutate('suspended')} loading={setStatus.isPending}>
+                <Pause size={13} /> Suspender
+              </Button>
+            )}
+            <button onClick={() => setToDelete(true)} className="rounded-lg border border-err/35 bg-err/[.10] p-2 text-err hover:bg-err/20" title="Eliminar cuenta">
+              <Trash2 size={15} />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {suspended && (
+        <div className="mb-5 flex items-center gap-2 rounded-xl border border-warn/30 bg-warn/[.09] px-4 py-2.5 text-xs text-warn">
+          <Pause size={14} /> Cuenta suspendida: los despliegues y las operaciones nuevas están detenidos hasta reactivarla. Los servicios en marcha siguen vivos.
+        </div>
+      )}
+
+      <Tabs tabs={tabs} active={tab} onChange={setTab} className="mb-5" />
+      {/* La clave incluye el id: al cambiar de cuenta se remonta el contenido y
+          se reinicia el estado derivado (cuota editable, módulos, borradores). */}
+      <div key={`${ws.id}:${tab}`} className="tab-in">
+        {tab === 'resumen' && <ResumenTab detail={d} isAdmin={!!isAdmin} plans={plans.data?.plans ?? []} onSaved={refresh} />}
+        {tab === 'modulos' && <ModulosTab detail={d} isAdmin={!!isAdmin} modules={modules.data?.modules ?? []} onSaved={refresh} />}
+        {tab === 'usuarios' && <UsuariosTab detail={d} isAdmin={!!isAdmin} onSaved={refresh} />}
+        {tab === 'facturacion' && <FacturacionTab detail={d} isAdmin={!!isAdmin} onSaved={refresh} />}
+      </div>
+
+      <ConfirmModal
+        open={toDelete}
+        onClose={() => setToDelete(false)}
+        onConfirm={() => remove.mutate()}
+        title="Eliminar cuenta"
+        message={`«${ws.name}» y sus ${d.members.length} usuario(s) se eliminan. Sus ${d.projects.length} proyecto(s) quedan sin asignar (no se borran).`}
+        loading={remove.isPending}
+      />
+    </div>
+  );
+}

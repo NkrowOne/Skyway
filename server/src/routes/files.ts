@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, requireAuth } from '../auth';
+import { assertProjectAccess, moduleGate, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { getProject, getService } from '../db';
 import { dockerAvailable } from '../docker/client';
@@ -35,6 +35,8 @@ function safeHeaderName(name: string): string {
 export async function fileRoutes(app: FastifyInstance): Promise<void> {
   app.register(async (scope) => {
     scope.addHook('preHandler', requireAuth);
+    // El explorador de archivos requiere el módulo 'files' activo en el workspace.
+    scope.addHook('preHandler', moduleGate('files'));
 
     /** Lista un directorio del contenedor. */
     scope.get('/api/services/:id/files', async (req, reply) => {

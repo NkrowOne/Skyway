@@ -11,7 +11,8 @@ import {
   signToken,
 } from '../auth';
 import { audit } from '../audit';
-import { countUsers, createUser, getUser, getUserByEmail, updateUserPassword } from '../db';
+import { countUsers, createUser, getUser, getUserByEmail, getWorkspace, updateUserPassword } from '../db';
+import { UserRow } from '../types';
 import { hashPassword, verifyPassword } from '../util';
 
 const credentialsSchema = z.object({
@@ -19,13 +20,25 @@ const credentialsSchema = z.object({
   password: z.string().min(8, 'La contraseña debe tener al menos 8 caracteres'),
 });
 
+/** Vista pública del usuario para la sesión: incluye su workspace (owner/member). */
+function publicUser(user: UserRow) {
+  const workspace = user.workspace_id ? getWorkspace(user.workspace_id) : undefined;
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    workspaceId: user.workspace_id,
+    workspaceName: workspace?.name ?? null,
+  };
+}
+
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/auth/me', async (req) => {
     const needsSetup = countUsers() === 0;
     const user = currentUser(req);
     return {
       needsSetup,
-      user: user ? { id: user.id, email: user.email, role: user.role } : null,
+      user: user ? publicUser(user) : null,
     };
   });
 
@@ -38,7 +51,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const user = createUser(body.email.toLowerCase(), hashPassword(body.password), 'admin');
     setAuthCookie(reply, signToken(user.id), req.protocol === 'https');
     audit(req, 'setup', { type: 'user', id: user.id, detail: user.email }, user.email);
-    return { user: { id: user.id, email: user.email, role: user.role } };
+    return { user: publicUser(user) };
   });
 
   app.post('/api/auth/login', async (req, reply) => {
@@ -56,7 +69,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     clearLoginFailures(req.ip);
     setAuthCookie(reply, signToken(user.id), req.protocol === 'https');
     audit(req, 'login', { type: 'user', id: user.id, detail: user.email }, user.email);
-    return { user: { id: user.id, email: user.email, role: user.role } };
+    return { user: publicUser(user) };
   });
 
   app.post('/api/auth/logout', async (req, reply) => {

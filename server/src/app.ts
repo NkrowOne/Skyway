@@ -7,6 +7,9 @@ import { ZodError } from 'zod';
 import { config } from './config';
 import { authRoutes } from './routes/auth';
 import { connectorRoutes } from './routes/connectors';
+import { workspaceRoutes } from './routes/workspaces';
+import { planRoutes } from './routes/plans';
+import { billingRoutes } from './routes/billing';
 import { projectRoutes } from './routes/projects';
 import { serviceRoutes } from './routes/services';
 import { deploymentRoutes } from './routes/deployments';
@@ -81,6 +84,9 @@ export function buildApp(): FastifyInstance {
 
   app.register(authRoutes);
   app.register(connectorRoutes);
+  app.register(workspaceRoutes);
+  app.register(planRoutes);
+  app.register(billingRoutes);
   app.register(projectRoutes);
   app.register(serviceRoutes);
   app.register(deploymentRoutes);

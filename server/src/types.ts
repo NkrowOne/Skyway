@@ -66,7 +66,15 @@ export interface ProjectRow {
   id: string;
   name: string;
   slug: string;
+  /**
+   * Nombre del cliente, denormalizado desde el workspace para conservar la
+   * agrupación por empresa de la UI existente. Es un reflejo de
+   * `workspaces.name` (o null si el proyecto no está asignado a un workspace):
+   * el origen de verdad es `workspace_id`.
+   */
   client: string | null;
+  /** Workspace (cuenta de cliente) al que pertenece el proyecto. null = sin asignar. */
+  workspace_id: string | null;
   created_at: number;
   /** Página de estado pública: token de la URL compartible y si está activa. */
   status_token: string | null;
@@ -220,7 +228,16 @@ export interface HostMetricHour {
   disk_total_last: number | null;
 }
 
-export type UserRole = 'admin' | 'member';
+/**
+ * Roles del sistema:
+ * - `admin`: administrador de plataforma; controla todo el servidor y todos los
+ *   workspaces. Sin workspace propio.
+ * - `owner`: propietario/administrador de un workspace de cliente. Gestiona los
+ *   proyectos de SU workspace, crea sub-usuarios en él, acota sus módulos y
+ *   consulta su facturación. No toca ajustes del servidor ni otros workspaces.
+ * - `member`: sub-usuario con acceso a proyectos concretos dentro de un workspace.
+ */
+export type UserRole = 'admin' | 'owner' | 'member';
 
 export interface UserRow {
   id: string;
@@ -228,6 +245,100 @@ export interface UserRow {
   password_hash: string;
   role: UserRole;
   session_epoch: number;
+  created_at: number;
+  /** Workspace al que pertenece el usuario (owner/member). null en administradores. */
+  workspace_id: string | null;
+}
+
+// ---------- cuentas de cliente: planes, workspaces y facturación ----------
+
+export type BillingInterval = 'monthly' | 'yearly';
+
+/**
+ * Plan de facturación reutilizable: define los usos incluidos (cuotas y módulos)
+ * y el precio. Un workspace hereda del plan salvo que se le fijen valores a
+ * medida (override) — de ahí «usos incluidos, o totalmente personalizable».
+ */
+export interface PlanRow {
+  id: string;
+  name: string;
+  slug: string;
+  price_cents: number;
+  currency: string;
+  interval: BillingInterval;
+  /** Cuotas incluidas (agregadas a TODOS los proyectos del workspace). */
+  cpu_cores: number;
+  memory_mb: number;
+  disk_mb: number;
+  max_projects: number;
+  max_services: number;
+  max_members: number;
+  /** Claves de módulo incluidas (JSON array de ModuleKey). */
+  modules: string;
+  /** Plan aplicado por defecto a los workspaces nuevos (solo uno lo lleva). */
+  is_default: number;
+  /** Archivado: no se ofrece para nuevos workspaces pero sigue válido para los que ya lo tienen. */
+  archived: number;
+  created_at: number;
+}
+
+export type WorkspaceStatus = 'active' | 'suspended';
+
+/**
+ * Workspace = cuenta de un cliente. Sus proyectos comparten una cuota agregada
+ * de recursos. Los campos de cuota en null heredan del plan; fijados, lo
+ * sobrescriben (a medida). `modules_override` es la concesión del admin; sobre
+ * ella, `owner_disabled_modules` es lo que el propietario acota para sí.
+ */
+export interface WorkspaceRow {
+  id: string;
+  name: string;
+  slug: string;
+  plan_id: string | null;
+  cpu_cores: number | null;
+  memory_mb: number | null;
+  disk_mb: number | null;
+  max_projects: number | null;
+  max_services: number | null;
+  max_members: number | null;
+  /** Concesión de módulos del admin (JSON array). null = hereda los del plan. */
+  modules_override: string | null;
+  /** Módulos que el propietario ha desactivado para su workspace (JSON array). */
+  owner_disabled_modules: string;
+  status: WorkspaceStatus;
+  billing_email: string | null;
+  /** Día del mes (1–28) en que renueva el ciclo de facturación. */
+  billing_day: number;
+  notes: string | null;
+  created_at: number;
+}
+
+export type InvoiceStatus = 'draft' | 'issued' | 'paid' | 'void';
+
+export interface InvoiceLine {
+  label: string;
+  kind: 'plan' | 'usage' | 'custom';
+  qty: number;
+  unitCents: number;
+  amountCents: number;
+}
+
+export interface InvoiceRow {
+  id: string;
+  workspace_id: string;
+  period_start: number;
+  period_end: number;
+  status: InvoiceStatus;
+  currency: string;
+  subtotal_cents: number;
+  total_cents: number;
+  /** Líneas de la factura (JSON InvoiceLine[]). */
+  lines: string;
+  /** Nombre del plan en el momento de emitir (histórico). */
+  plan_name: string | null;
+  issued_at: number | null;
+  paid_at: number | null;
+  notes: string | null;
   created_at: number;
 }
 

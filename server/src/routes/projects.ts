@@ -1,18 +1,23 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, canAccessProject, currentUser, requireAdmin, requireAuth } from '../auth';
+import { assertProjectAccess, assertProjectManage, canAccessProject, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
 import {
+  clearProjectMemberships,
   createProject,
+  countWorkspaceProjects,
   deleteProject,
+  getOrCreateWorkspaceByName,
   getProject,
   getProjectVars,
+  getWorkspace,
   listProjects,
   listServices,
   openAlertCountsByService,
   projectDashboardMeta,
   projectSlugExists,
   setProjectVars,
+  setProjectWorkspace,
   updateProjectMeta,
 } from '../db';
 import { dockerAvailable } from '../docker/client';
@@ -20,12 +25,16 @@ import { containerName, getRuntime, listServiceContainers, removeContainer, remo
 import { projectNetworkName, removeNetwork } from '../docker/networks';
 import { triggerDeploy } from '../deploy/deployer';
 import { markManualAction } from '../monitor';
-import { ServiceRuntime } from '../types';
+import { effectiveQuota, isWorkspaceActive, workspacePlan } from '../quota';
+import { ServiceRuntime, WorkspaceRow } from '../types';
 import { slugify } from '../util';
 
 const projectSchema = z.object({
   name: z.string().trim().min(1, 'Nombre requerido').max(60),
-  client: z.string().trim().max(60).optional(),
+  // Texto de cliente: reutiliza o crea un workspace con ese nombre (compat con el flujo anterior).
+  client: z.string().trim().max(80).optional(),
+  // Asignación explícita a un workspace (admin). null desasigna.
+  workspaceId: z.string().trim().nullable().optional(),
 });
 
 async function serviceWithRuntime(project: any, service: any, docker: boolean) {
@@ -52,13 +61,47 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     };
   });
 
-  app.post('/api/projects', { preHandler: requireAdmin }, async (req, reply) => {
+  app.post('/api/projects', async (req, reply) => {
+    const user = currentUser(req)!;
+    if (user.role === 'member') {
+      return reply.code(403).send({ error: 'Requiere ser administrador o propietario del workspace' });
+    }
     const body = projectSchema.parse(req.body);
+
+    // Resolver el workspace destino según el rol.
+    let workspace: WorkspaceRow | undefined;
+    if (user.role === 'owner') {
+      if (!user.workspace_id) return reply.code(403).send({ error: 'Tu cuenta no tiene un workspace asignado' });
+      workspace = getWorkspace(user.workspace_id);
+      if (!workspace) return reply.code(400).send({ error: 'Workspace no encontrado' });
+    } else if (body.workspaceId) {
+      workspace = getWorkspace(body.workspaceId);
+      if (!workspace) return reply.code(400).send({ error: 'Workspace desconocido' });
+    } else if (body.client && body.client.trim()) {
+      workspace = getOrCreateWorkspaceByName(body.client.trim());
+    }
+
+    if (workspace) {
+      if (!isWorkspaceActive(workspace)) {
+        return reply.code(403).send({ error: 'El workspace está suspendido: no se pueden crear proyectos.' });
+      }
+      const quota = effectiveQuota(workspace, workspacePlan(workspace));
+      if (countWorkspaceProjects(workspace.id) >= quota.maxProjects) {
+        return reply.code(409).send({
+          error: `El workspace ha alcanzado su límite de ${quota.maxProjects} proyectos. Un administrador puede ampliar la cuota.`,
+        });
+      }
+    }
+
     let slug = slugify(body.name);
     let i = 2;
     while (projectSlugExists(slug)) slug = `${slugify(body.name)}-${i++}`;
-    const project = createProject(body.name, slug, body.client?.trim() || null);
-    audit(req, 'project_created', { type: 'project', id: project.id, detail: project.name });
+    const project = createProject(body.name, slug, workspace?.name ?? null, workspace?.id ?? null);
+    audit(req, 'project_created', {
+      type: 'project',
+      id: project.id,
+      detail: workspace ? `${project.name} · ${workspace.name}` : project.name,
+    });
     reply.code(201);
     return { project };
   });
@@ -75,23 +118,51 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     return { project, services, docker, alertCounts: openAlertCountsByService(id) };
   });
 
-  app.patch('/api/projects/:id', { preHandler: requireAdmin }, async (req, reply) => {
+  app.patch('/api/projects/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const project = getProject(id);
     if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectManage(req, reply, id)) return reply;
+    const user = currentUser(req)!;
     const body = projectSchema.partial().parse(req.body);
     const name = body.name ?? project.name;
-    const client = body.client === undefined ? project.client : body.client.trim() || null;
-    updateProjectMeta(id, name, client);
+
+    // Solo el admin puede reasignar el proyecto a otro workspace (o desasignarlo);
+    // el propietario únicamente renombra dentro del suyo.
+    const reassigning = user.role === 'admin' && (body.workspaceId !== undefined || body.client !== undefined);
+    if (reassigning) {
+      let workspace: WorkspaceRow | undefined;
+      if (body.workspaceId) {
+        workspace = getWorkspace(body.workspaceId);
+        if (!workspace) return reply.code(400).send({ error: 'Workspace desconocido' });
+      } else if (body.client && body.client.trim()) {
+        workspace = getOrCreateWorkspaceByName(body.client.trim());
+      }
+      const changingWorkspace = (workspace?.id ?? null) !== project.workspace_id;
+      if (workspace && changingWorkspace) {
+        const quota = effectiveQuota(workspace, workspacePlan(workspace));
+        if (countWorkspaceProjects(workspace.id) >= quota.maxProjects) {
+          return reply.code(409).send({ error: `El workspace destino ha alcanzado su límite de ${quota.maxProjects} proyectos.` });
+        }
+      }
+      updateProjectMeta(id, name, workspace?.name ?? null);
+      setProjectWorkspace(id, workspace?.id ?? null, workspace?.name ?? null);
+      // Al cambiar de workspace, se retiran los accesos de miembros del anterior
+      // (sus asignaciones puntuales ya no corresponden al nuevo cliente).
+      if (changingWorkspace) clearProjectMemberships(id);
+    } else {
+      updateProjectMeta(id, name, project.client);
+    }
     audit(req, 'project_updated', { type: 'project', id, detail: name });
-    return { project: { ...project, name, client } };
+    return { project: getProject(id) };
   });
 
-  app.delete('/api/projects/:id', { preHandler: requireAdmin }, async (req, reply) => {
+  app.delete('/api/projects/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const { volumes } = req.query as { volumes?: string };
     const project = getProject(id);
     if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectManage(req, reply, id)) return reply;
 
     const services = listServices(id);
     if (await dockerAvailable()) {

@@ -17,11 +17,19 @@ interface Draft {
 const EMPTY: Draft = { email: '', password: '', role: 'member', projectIds: [] };
 
 function RoleChip({ role }: { role: UserRole }) {
-  return role === 'admin' ? (
-    <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.15] px-2 py-0.5 text-[10px] font-semibold text-acc-soft">
-      <Shield size={9} /> admin
-    </span>
-  ) : (
+  if (role === 'admin')
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.15] px-2 py-0.5 text-[10px] font-semibold text-acc-soft">
+        <Shield size={9} /> admin
+      </span>
+    );
+  if (role === 'owner')
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.12] px-2 py-0.5 text-[10px] font-semibold text-acc-soft">
+        propietario
+      </span>
+    );
+  return (
     <span className="inline-flex items-center gap-1 rounded-full bg-txt/[.08] px-2 py-0.5 text-[10px] font-semibold text-sub">
       miembro
     </span>
@@ -123,9 +131,13 @@ export default function UsersPage() {
                   <Boxes size={11} />
                   {u.role === 'admin'
                     ? 'todos los workspaces'
-                    : u.projectIds.length === 0
-                      ? 'sin workspaces asignados'
-                      : u.projectIds.map(projectName).join(', ')}
+                    : u.role === 'owner'
+                      ? `propietario de ${u.workspaceName ?? 'su cuenta'}`
+                      : u.projectIds.length === 0
+                        ? u.workspaceName
+                          ? `${u.workspaceName}: sin proyectos`
+                          : 'sin proyectos asignados'
+                        : u.projectIds.map(projectName).join(', ')}
                 </span>
                 <span className="flex items-center gap-1">
                   <Fingerprint size={11} /> {u.passkeys} passkey{u.passkeys === 1 ? '' : 's'}

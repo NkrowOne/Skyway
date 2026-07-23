@@ -1,8 +1,14 @@
-export type UserRole = 'admin' | 'member';
+export type UserRole = 'admin' | 'owner' | 'member';
 
 export interface Me {
   needsSetup: boolean;
-  user: { id: string; email: string; role: UserRole } | null;
+  user: {
+    id: string;
+    email: string;
+    role: UserRole;
+    workspaceId?: string | null;
+    workspaceName?: string | null;
+  } | null;
 }
 
 export interface UserSummary {
@@ -10,6 +16,8 @@ export interface UserSummary {
   email: string;
   role: UserRole;
   created_at: number;
+  workspaceId?: string | null;
+  workspaceName?: string | null;
   projectIds: string[];
   passkeys: number;
   tokens: number;
@@ -80,10 +88,156 @@ export interface Project {
   name: string;
   slug: string;
   client: string | null;
+  workspace_id?: string | null;
   created_at: number;
   serviceCount?: number;
   lastDeployAt?: number | null;
   openAlerts?: number;
+}
+
+// ---------- cuentas de cliente: workspaces, planes, facturación ----------
+
+export type WorkspaceStatus = 'active' | 'suspended';
+export type BillingInterval = 'monthly' | 'yearly';
+
+export interface EffectiveQuota {
+  cpuCores: number;
+  memoryMb: number;
+  diskMb: number;
+  maxProjects: number;
+  maxServices: number;
+  maxMembers: number;
+}
+
+export interface WorkspaceAllocation {
+  cpuCores: number;
+  memoryMb: number;
+  diskMb: number;
+  projects: number;
+  services: number;
+  members: number;
+  unlimited: { cpu: number; memory: number; disk: number };
+}
+
+export interface WorkspaceModules {
+  granted: string[];
+  disabled: string[];
+  effective: string[];
+}
+
+export interface WorkspacePlanRef {
+  id: string;
+  name: string;
+  price_cents: number;
+  currency: string;
+  interval: BillingInterval;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  slug: string;
+  status: WorkspaceStatus;
+  plan_id: string | null;
+  billing_email: string | null;
+  billing_day: number;
+  notes: string | null;
+  created_at: number;
+  plan: WorkspacePlanRef | null;
+  quota: EffectiveQuota;
+  allocation: WorkspaceAllocation;
+  modules: WorkspaceModules;
+  over: { cpu: boolean; memory: boolean; disk: boolean; projects: boolean; services: boolean; members: boolean };
+  inheriting: {
+    cpuCores: boolean;
+    memoryMb: boolean;
+    diskMb: boolean;
+    maxProjects: boolean;
+    maxServices: boolean;
+    maxMembers: boolean;
+    modules: boolean;
+  };
+}
+
+export interface WorkspaceProject {
+  id: string;
+  name: string;
+  slug: string;
+  serviceCount: number;
+  created_at: number;
+}
+
+export interface WorkspaceMember {
+  id: string;
+  email: string;
+  role: UserRole;
+  created_at: number;
+  projectIds: string[];
+}
+
+export interface WorkspaceUsage {
+  days: number;
+  cpuCoreHours: number;
+  ramGbHours: number;
+  cpuMaxCores: number;
+  ramMaxGb: number;
+  diskMaxGb: number;
+}
+
+export interface Plan {
+  id: string;
+  name: string;
+  slug: string;
+  price_cents: number;
+  currency: string;
+  interval: BillingInterval;
+  cpu_cores: number;
+  memory_mb: number;
+  disk_mb: number;
+  max_projects: number;
+  max_services: number;
+  max_members: number;
+  modules: string[];
+  is_default: boolean;
+  archived: boolean;
+  created_at: number;
+  inUse: number;
+}
+
+export type ModuleGroup = 'Cómputo' | 'Datos' | 'Red' | 'Operación';
+
+export interface ModuleDef {
+  key: string;
+  label: string;
+  description: string;
+  group: ModuleGroup;
+}
+
+export type InvoiceStatus = 'draft' | 'issued' | 'paid' | 'void';
+
+export interface InvoiceLine {
+  label: string;
+  kind: 'plan' | 'usage' | 'custom';
+  qty: number;
+  unitCents: number;
+  amountCents: number;
+}
+
+export interface Invoice {
+  id: string;
+  workspace_id: string;
+  period_start: number;
+  period_end: number;
+  status: InvoiceStatus;
+  currency: string;
+  subtotal_cents: number;
+  total_cents: number;
+  lines: InvoiceLine[];
+  plan_name: string | null;
+  issued_at: number | null;
+  paid_at: number | null;
+  notes: string | null;
+  created_at: number;
 }
 
 export interface GitConfig {

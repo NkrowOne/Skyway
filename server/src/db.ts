@@ -10,7 +10,9 @@ import {
   DeploymentStatus,
   GithubConnectorRow,
   HostMetricHour,
+  InvoiceRow,
   PasskeyRow,
+  PlanRow,
   ProjectRow,
   ServiceConfig,
   ServiceMetricHour,
@@ -19,8 +21,27 @@ import {
   ServiceType,
   UserRole,
   UserRow,
+  WorkspaceRow,
 } from './types';
-import { id, now } from './util';
+import { ALL_MODULE_KEYS } from './modules';
+import { id, now, slugify } from './util';
+
+/**
+ * Cuotas y módulos amplios para las cuentas creadas al migrar el campo antiguo
+ * `client`: nunca deben quedar por debajo de lo que un cliente ya tenía en
+ * marcha (si no, al activar las cuotas quedarían congelados). El admin las
+ * ajusta después con un plan real.
+ */
+const MIGRATED_WORKSPACE_INIT = {
+  cpu_cores: 32,
+  memory_mb: 65536,
+  disk_mb: 512000,
+  max_projects: 100,
+  max_services: 500,
+  max_members: 25,
+  modules_override: JSON.stringify(ALL_MODULE_KEYS),
+  notes: 'Cuenta creada al migrar el campo «cliente». Revisa su plan y su cuota.',
+} as const;
 
 let db: Database.Database;
 
@@ -155,6 +176,9 @@ export function initDb(): void {
   ensureColumn('projects', 'status_token', 'TEXT');
   ensureColumn('projects', 'status_enabled', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('projects', 'status_notice', 'TEXT');
+  // Cuentas de cliente: enlace de proyectos y usuarios a su workspace.
+  ensureColumn('projects', 'workspace_id', 'TEXT');
+  ensureColumn('users', 'workspace_id', 'TEXT');
 
   // Histórico de disponibilidad agregado por horas (para las páginas de estado):
   // una fila por servicio y hora, con muestras totales y muestras "en marcha".
@@ -216,6 +240,146 @@ export function initDb(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_github_connectors_project ON github_connectors(project_id);
   `);
+
+  // ---------- cuentas de cliente: planes, workspaces y facturación ----------
+  // Planes (usos incluidos + precio). Un workspace hereda del plan y puede
+  // sobrescribir cualquier cuota a medida. workspaces.plan_id cae a NULL si se
+  // borra el plan (el workspace conserva sus overrides o los valores por defecto).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS plans (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      price_cents INTEGER NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'EUR',
+      interval TEXT NOT NULL DEFAULT 'monthly' CHECK (interval IN ('monthly', 'yearly')),
+      cpu_cores REAL NOT NULL DEFAULT 1,
+      memory_mb INTEGER NOT NULL DEFAULT 1024,
+      disk_mb INTEGER NOT NULL DEFAULT 10240,
+      max_projects INTEGER NOT NULL DEFAULT 3,
+      max_services INTEGER NOT NULL DEFAULT 10,
+      max_members INTEGER NOT NULL DEFAULT 3,
+      modules TEXT NOT NULL DEFAULT '[]',
+      is_default INTEGER NOT NULL DEFAULT 0,
+      archived INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      plan_id TEXT REFERENCES plans(id) ON DELETE SET NULL,
+      cpu_cores REAL,
+      memory_mb INTEGER,
+      disk_mb INTEGER,
+      max_projects INTEGER,
+      max_services INTEGER,
+      max_members INTEGER,
+      modules_override TEXT,
+      owner_disabled_modules TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
+      billing_email TEXT,
+      billing_day INTEGER NOT NULL DEFAULT 1 CHECK (billing_day BETWEEN 1 AND 28),
+      notes TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS workspace_invoices (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      period_start INTEGER NOT NULL,
+      period_end INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'issued', 'paid', 'void')),
+      currency TEXT NOT NULL DEFAULT 'EUR',
+      subtotal_cents INTEGER NOT NULL DEFAULT 0,
+      total_cents INTEGER NOT NULL DEFAULT 0,
+      lines TEXT NOT NULL DEFAULT '[]',
+      plan_name TEXT,
+      issued_at INTEGER,
+      paid_at INTEGER,
+      notes TEXT,
+      created_at INTEGER NOT NULL
+    );
+    -- Rutas calientes: proyectos por workspace (cuota y listados), usuarios por
+    -- workspace (sub-usuarios) y facturas por workspace.
+    CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_users_workspace ON users(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_invoices_workspace ON workspace_invoices(workspace_id, created_at DESC);
+  `);
+
+  seedDefaultPlans();
+  migrateClientsToWorkspaces();
+}
+
+/**
+ * Siembra un catálogo de planes por defecto la primera vez (tabla vacía). Son
+ * un punto de partida editable, no una imposición: el admin los ajusta o crea
+ * los suyos. Idempotente: si ya hay algún plan, no toca nada.
+ */
+function seedDefaultPlans(): void {
+  const count = (db.prepare('SELECT COUNT(*) AS c FROM plans').get() as any).c as number;
+  if (count > 0) return;
+  const base: Omit<PlanRow, 'id' | 'created_at'>[] = [
+    {
+      name: 'Arranque', slug: 'arranque', price_cents: 0, currency: 'EUR', interval: 'monthly',
+      cpu_cores: 1, memory_mb: 1024, disk_mb: 10240, max_projects: 2, max_services: 6, max_members: 2,
+      modules: JSON.stringify(['databases', 'dbconsole', 'metrics', 'domains', 'status_page']),
+      is_default: 1, archived: 0,
+    },
+    {
+      name: 'Pro', slug: 'pro', price_cents: 2900, currency: 'EUR', interval: 'monthly',
+      cpu_cores: 4, memory_mb: 8192, disk_mb: 51200, max_projects: 10, max_services: 30, max_members: 8,
+      modules: JSON.stringify(['databases', 'dbconsole', 'backups', 'files', 'exec', 'metrics', 'replicas', 'domains', 'status_page', 'github']),
+      is_default: 0, archived: 0,
+    },
+    {
+      name: 'Escala', slug: 'escala', price_cents: 9900, currency: 'EUR', interval: 'monthly',
+      cpu_cores: 16, memory_mb: 32768, disk_mb: 256000, max_projects: 50, max_services: 200, max_members: 25,
+      modules: JSON.stringify(['databases', 'dbconsole', 'backups', 'files', 'exec', 'metrics', 'replicas', 'domains', 'status_page', 'github']),
+      is_default: 0, archived: 0,
+    },
+  ];
+  const ins = db.prepare(
+    `INSERT INTO plans (id, name, slug, price_cents, currency, interval, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules, is_default, archived, created_at)
+     VALUES (@id, @name, @slug, @price_cents, @currency, @interval, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules, @is_default, @archived, @created_at)`,
+  );
+  const tx = db.transaction(() => {
+    for (const p of base) ins.run({ ...p, id: id('pln'), created_at: now() });
+  });
+  tx();
+}
+
+/**
+ * Migra el antiguo campo de texto `projects.client` a workspaces reales,
+ * enlazando cada proyecto con el suyo. Una sola vez (flag en settings), e
+ * idempotente por si acaso: agrupa por nombre de cliente (sin distinguir
+ * mayúsculas ni espacios), reutiliza el workspace si ya existe y no reasigna
+ * proyectos ya enlazados. Los proyectos sin cliente quedan sin asignar.
+ */
+function migrateClientsToWorkspaces(): void {
+  if (getSetting('migrations:workspaces_v1') === 'done') return;
+  const rows = db
+    .prepare("SELECT id, client FROM projects WHERE client IS NOT NULL AND TRIM(client) <> '' AND workspace_id IS NULL")
+    .all() as { id: string; client: string }[];
+  const tx = db.transaction(() => {
+    // Índice de workspaces existentes por nombre normalizado (evita duplicados en reejecución).
+    const existing = new Map<string, string>();
+    for (const w of db.prepare('SELECT id, name FROM workspaces').all() as { id: string; name: string }[]) {
+      existing.set(w.name.trim().toLowerCase(), w.id);
+    }
+    for (const row of rows) {
+      const name = row.client.trim();
+      const key = name.toLowerCase();
+      let wsId = existing.get(key);
+      if (!wsId) {
+        const ws = createWorkspaceRow(name, { ...MIGRATED_WORKSPACE_INIT });
+        wsId = ws.id;
+        existing.set(key, wsId);
+      }
+      db.prepare('UPDATE projects SET workspace_id = ? WHERE id = ?').run(wsId, row.id);
+    }
+    setSetting('migrations:workspaces_v1', 'done');
+  });
+  tx();
 }
 
 function ensureColumn(table: string, column: string, ddl: string): void {
@@ -263,12 +427,36 @@ export function countUsers(): number {
   return (db.prepare('SELECT COUNT(*) AS c FROM users').get() as any).c;
 }
 
-export function createUser(email: string, passwordHash: string, role: UserRole = 'admin'): UserRow {
-  const row: UserRow = { id: id('usr'), email, password_hash: passwordHash, role, session_epoch: 0, created_at: now() };
-  db.prepare('INSERT INTO users (id, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)').run(
-    row.id, row.email, row.password_hash, row.role, row.created_at,
+export function createUser(
+  email: string,
+  passwordHash: string,
+  role: UserRole = 'admin',
+  workspaceId: string | null = null,
+): UserRow {
+  const row: UserRow = {
+    id: id('usr'), email, password_hash: passwordHash, role, session_epoch: 0,
+    created_at: now(), workspace_id: workspaceId,
+  };
+  db.prepare('INSERT INTO users (id, email, password_hash, role, workspace_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+    row.id, row.email, row.password_hash, row.role, row.workspace_id, row.created_at,
   );
   return row;
+}
+
+/** Cambia el workspace al que pertenece un usuario (owner/member). null en admins. */
+export function updateUserWorkspace(userId: string, workspaceId: string | null): void {
+  db.prepare('UPDATE users SET workspace_id = ? WHERE id = ?').run(workspaceId, userId);
+}
+
+/** Sub-usuarios (owner/member) de un workspace, en orden de alta. */
+export function listWorkspaceUsers(workspaceId: string): UserRow[] {
+  return db
+    .prepare('SELECT * FROM users WHERE workspace_id = ? ORDER BY created_at ASC')
+    .all(workspaceId) as UserRow[];
+}
+
+export function countWorkspaceMembers(workspaceId: string): number {
+  return (db.prepare('SELECT COUNT(*) AS c FROM users WHERE workspace_id = ?').get(workspaceId) as any).c;
 }
 
 export function listUsers(): UserRow[] {
@@ -305,6 +493,11 @@ export function setUserProjects(userId: string, projectIds: string[]): void {
 
 export function userHasProject(userId: string, projectId: string): boolean {
   return !!db.prepare('SELECT 1 FROM user_projects WHERE user_id = ? AND project_id = ?').get(userId, projectId);
+}
+
+/** Elimina todas las asignaciones de un proyecto (al reasignarlo de workspace, para no dejar accesos colgando). */
+export function clearProjectMemberships(projectId: string): void {
+  db.prepare('DELETE FROM user_projects WHERE project_id = ?').run(projectId);
 }
 
 // ---------- passkeys ----------
@@ -397,15 +590,39 @@ export function setSetting(key: string, value: string | null): void {
 }
 
 // ---------- projects ----------
-export function createProject(name: string, slug: string, client: string | null = null): ProjectRow {
+export function createProject(
+  name: string,
+  slug: string,
+  client: string | null = null,
+  workspaceId: string | null = null,
+): ProjectRow {
   const row: ProjectRow = {
-    id: id('prj'), name, slug, client, created_at: now(),
+    id: id('prj'), name, slug, client, workspace_id: workspaceId, created_at: now(),
     status_token: null, status_enabled: 0, status_notice: null,
   };
-  db.prepare('INSERT INTO projects (id, name, slug, client, created_at) VALUES (?, ?, ?, ?, ?)').run(
-    row.id, row.name, row.slug, row.client, row.created_at,
+  db.prepare('INSERT INTO projects (id, name, slug, client, workspace_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+    row.id, row.name, row.slug, row.client, row.workspace_id, row.created_at,
   );
   return row;
+}
+
+/** Proyectos de un workspace (para cuota agregada y listados del cliente). */
+export function listWorkspaceProjects(workspaceId: string): ProjectRow[] {
+  return db
+    .prepare('SELECT * FROM projects WHERE workspace_id = ? ORDER BY created_at DESC')
+    .all(workspaceId) as ProjectRow[];
+}
+
+export function countWorkspaceProjects(workspaceId: string): number {
+  return (db.prepare('SELECT COUNT(*) AS c FROM projects WHERE workspace_id = ?').get(workspaceId) as any).c;
+}
+
+/**
+ * Asigna (o desasigna) un proyecto a un workspace y mantiene el reflejo
+ * denormalizado `client` que usa la agrupación por empresa de la UI.
+ */
+export function setProjectWorkspace(projectId: string, workspaceId: string | null, clientName: string | null): void {
+  db.prepare('UPDATE projects SET workspace_id = ?, client = ? WHERE id = ?').run(workspaceId, clientName, projectId);
 }
 
 export function listProjects(): ProjectRow[] {
@@ -950,4 +1167,249 @@ export function markStaleDeploymentsFailed(): number {
     )
     .run(now());
   return res.changes;
+}
+
+// ---------- planes de facturación ----------
+export function listPlans(includeArchived = true): PlanRow[] {
+  const sql = includeArchived
+    ? 'SELECT * FROM plans ORDER BY price_cents ASC, created_at ASC'
+    : 'SELECT * FROM plans WHERE archived = 0 ORDER BY price_cents ASC, created_at ASC';
+  return db.prepare(sql).all() as PlanRow[];
+}
+
+export function getPlan(planId: string): PlanRow | undefined {
+  return db.prepare('SELECT * FROM plans WHERE id = ?').get(planId) as PlanRow | undefined;
+}
+
+export function getDefaultPlan(): PlanRow | undefined {
+  return db.prepare('SELECT * FROM plans WHERE is_default = 1 AND archived = 0 ORDER BY created_at ASC LIMIT 1').get() as
+    | PlanRow
+    | undefined;
+}
+
+export function planSlugExists(slug: string): boolean {
+  return !!db.prepare('SELECT 1 FROM plans WHERE slug = ?').get(slug);
+}
+
+type PlanInput = Omit<PlanRow, 'id' | 'slug' | 'created_at'>;
+
+export function createPlan(name: string, fields: Omit<PlanInput, 'name'>): PlanRow {
+  let slug = slugify(name);
+  let i = 2;
+  while (planSlugExists(slug)) slug = `${slugify(name)}-${i++}`;
+  const row: PlanRow = { ...fields, name, id: id('pln'), slug, created_at: now() };
+  db.prepare(
+    `INSERT INTO plans (id, name, slug, price_cents, currency, interval, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules, is_default, archived, created_at)
+     VALUES (@id, @name, @slug, @price_cents, @currency, @interval, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules, @is_default, @archived, @created_at)`,
+  ).run(row);
+  if (row.is_default) clearOtherDefaultPlans(row.id);
+  return row;
+}
+
+const PLAN_COLUMNS = new Set([
+  'name', 'price_cents', 'currency', 'interval', 'cpu_cores', 'memory_mb', 'disk_mb',
+  'max_projects', 'max_services', 'max_members', 'modules', 'is_default', 'archived',
+]);
+
+export function updatePlan(planId: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields).filter((k) => PLAN_COLUMNS.has(k));
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE plans SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), planId);
+  if (fields.is_default === 1) clearOtherDefaultPlans(planId);
+}
+
+function clearOtherDefaultPlans(keepId: string): void {
+  db.prepare('UPDATE plans SET is_default = 0 WHERE id <> ?').run(keepId);
+}
+
+export function deletePlan(planId: string): void {
+  db.prepare('DELETE FROM plans WHERE id = ?').run(planId);
+}
+
+export function countWorkspacesOnPlan(planId: string): number {
+  return (db.prepare('SELECT COUNT(*) AS c FROM workspaces WHERE plan_id = ?').get(planId) as any).c;
+}
+
+// ---------- workspaces (cuentas de cliente) ----------
+function uniqueWorkspaceSlug(name: string): string {
+  const base = slugify(name);
+  let slug = base;
+  let i = 2;
+  while (db.prepare('SELECT 1 FROM workspaces WHERE slug = ?').get(slug)) slug = `${base}-${i++}`;
+  return slug;
+}
+
+export interface WorkspaceInit {
+  plan_id?: string | null;
+  cpu_cores?: number | null;
+  memory_mb?: number | null;
+  disk_mb?: number | null;
+  max_projects?: number | null;
+  max_services?: number | null;
+  max_members?: number | null;
+  modules_override?: string | null;
+  billing_email?: string | null;
+  billing_day?: number;
+  notes?: string | null;
+}
+
+/** Crea un workspace con valores por defecto (las cuotas en null heredan del plan). */
+export function createWorkspaceRow(name: string, init: WorkspaceInit = {}): WorkspaceRow {
+  const row: WorkspaceRow = {
+    id: id('wsp'),
+    name,
+    slug: uniqueWorkspaceSlug(name),
+    plan_id: init.plan_id ?? null,
+    cpu_cores: init.cpu_cores ?? null,
+    memory_mb: init.memory_mb ?? null,
+    disk_mb: init.disk_mb ?? null,
+    max_projects: init.max_projects ?? null,
+    max_services: init.max_services ?? null,
+    max_members: init.max_members ?? null,
+    modules_override: init.modules_override ?? null,
+    owner_disabled_modules: '[]',
+    status: 'active',
+    billing_email: init.billing_email ?? null,
+    billing_day: init.billing_day ?? 1,
+    notes: init.notes ?? null,
+    created_at: now(),
+  };
+  db.prepare(
+    `INSERT INTO workspaces (id, name, slug, plan_id, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules_override, owner_disabled_modules, status, billing_email, billing_day, notes, created_at)
+     VALUES (@id, @name, @slug, @plan_id, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules_override, @owner_disabled_modules, @status, @billing_email, @billing_day, @notes, @created_at)`,
+  ).run(row);
+  return row;
+}
+
+export function listWorkspaces(): WorkspaceRow[] {
+  return db.prepare('SELECT * FROM workspaces ORDER BY name ASC').all() as WorkspaceRow[];
+}
+
+/**
+ * Reutiliza el workspace cuyo nombre coincide (sin distinguir mayúsculas ni
+ * espacios) o crea uno nuevo con el plan por defecto. Fuente única para asignar
+ * un proyecto a un cliente por su nombre (creación e importación de Railway).
+ */
+export function getOrCreateWorkspaceByName(name: string): WorkspaceRow {
+  const key = name.trim().toLowerCase();
+  const existing = (db.prepare('SELECT * FROM workspaces').all() as WorkspaceRow[]).find(
+    (w) => w.name.trim().toLowerCase() === key,
+  );
+  if (existing) return existing;
+  return createWorkspaceRow(name.trim(), { plan_id: getDefaultPlan()?.id ?? null });
+}
+
+export function getWorkspace(workspaceId: string): WorkspaceRow | undefined {
+  return db.prepare('SELECT * FROM workspaces WHERE id = ?').get(workspaceId) as WorkspaceRow | undefined;
+}
+
+const WORKSPACE_COLUMNS = new Set([
+  'name', 'plan_id', 'cpu_cores', 'memory_mb', 'disk_mb', 'max_projects', 'max_services',
+  'max_members', 'modules_override', 'owner_disabled_modules', 'status', 'billing_email', 'billing_day', 'notes',
+]);
+
+export function updateWorkspace(workspaceId: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields).filter((k) => WORKSPACE_COLUMNS.has(k));
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE workspaces SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), workspaceId);
+  // Al renombrar, refresca el reflejo denormalizado en sus proyectos (agrupación de la UI).
+  if (typeof fields.name === 'string') {
+    db.prepare('UPDATE projects SET client = ? WHERE workspace_id = ?').run(fields.name, workspaceId);
+  }
+}
+
+export function deleteWorkspace(workspaceId: string): void {
+  // Los proyectos quedan sin asignar (no se borran): SET NULL manual + limpia el reflejo.
+  db.prepare('UPDATE projects SET workspace_id = NULL, client = NULL WHERE workspace_id = ?').run(workspaceId);
+  // Los sub-usuarios del workspace se quedan huérfanos: se borran en cascada lógica desde la ruta.
+  db.prepare('DELETE FROM workspaces WHERE id = ?').run(workspaceId);
+}
+
+// ---------- cuota agregada del workspace (a todos sus proyectos en total) ----------
+/** Todos los servicios de todos los proyectos de un workspace (para la cuota agregada). */
+export function listWorkspaceServices(workspaceId: string): ServiceRow[] {
+  return (
+    db
+      .prepare(
+        `SELECT s.* FROM services s JOIN projects p ON p.id = s.project_id WHERE p.workspace_id = ? ORDER BY s.created_at ASC`,
+      )
+      .all(workspaceId) as any[]
+  ).map(parseService);
+}
+
+export function countWorkspaceServices(workspaceId: string): number {
+  return (
+    db
+      .prepare('SELECT COUNT(*) AS c FROM services s JOIN projects p ON p.id = s.project_id WHERE p.workspace_id = ?')
+      .get(workspaceId) as any
+  ).c;
+}
+
+/** Suma del histórico de consumo del workspace en un rango horario, para facturación/uso. */
+export function workspaceUsageRange(
+  workspaceId: string,
+  fromHour: number,
+  toHour: number,
+): { buckets: number; cpuCorePctHours: number; memByteHours: number; cpuMax: number; memMax: number; diskMax: number } {
+  const row = db
+    .prepare(
+      `SELECT
+         COUNT(*) AS buckets,
+         COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.cpu_sum * 1.0 / m.samples ELSE 0 END), 0) AS cpuCorePctHours,
+         COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.mem_sum * 1.0 / m.samples ELSE 0 END), 0) AS memByteHours,
+         COALESCE(MAX(m.cpu_max), 0) AS cpuMax,
+         COALESCE(MAX(m.mem_max), 0) AS memMax,
+         COALESCE(MAX(m.disk_last), 0) AS diskMax
+       FROM service_metrics_hourly m
+       JOIN services s ON s.id = m.service_id
+       JOIN projects p ON p.id = s.project_id
+       WHERE p.workspace_id = ? AND m.hour >= ? AND m.hour < ?`,
+    )
+    .get(workspaceId, fromHour, toHour) as any;
+  return {
+    buckets: row.buckets,
+    cpuCorePctHours: row.cpuCorePctHours,
+    memByteHours: row.memByteHours,
+    cpuMax: row.cpuMax,
+    memMax: row.memMax,
+    diskMax: row.diskMax,
+  };
+}
+
+// ---------- facturas ----------
+export function listInvoices(workspaceId: string): InvoiceRow[] {
+  return db
+    .prepare('SELECT * FROM workspace_invoices WHERE workspace_id = ? ORDER BY period_start DESC, created_at DESC')
+    .all(workspaceId) as InvoiceRow[];
+}
+
+export function getInvoice(invoiceId: string): InvoiceRow | undefined {
+  return db.prepare('SELECT * FROM workspace_invoices WHERE id = ?').get(invoiceId) as InvoiceRow | undefined;
+}
+
+export function createInvoice(row: Omit<InvoiceRow, 'id' | 'created_at'>): InvoiceRow {
+  const full: InvoiceRow = { ...row, id: id('inv'), created_at: now() };
+  db.prepare(
+    `INSERT INTO workspace_invoices (id, workspace_id, period_start, period_end, status, currency, subtotal_cents, total_cents, lines, plan_name, issued_at, paid_at, notes, created_at)
+     VALUES (@id, @workspace_id, @period_start, @period_end, @status, @currency, @subtotal_cents, @total_cents, @lines, @plan_name, @issued_at, @paid_at, @notes, @created_at)`,
+  ).run(full);
+  return full;
+}
+
+const INVOICE_COLUMNS = new Set([
+  'period_start', 'period_end', 'status', 'currency', 'subtotal_cents', 'total_cents',
+  'lines', 'plan_name', 'issued_at', 'paid_at', 'notes',
+]);
+
+export function updateInvoice(invoiceId: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields).filter((k) => INVOICE_COLUMNS.has(k));
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE workspace_invoices SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), invoiceId);
+}
+
+export function deleteInvoice(invoiceId: string): void {
+  db.prepare('DELETE FROM workspace_invoices WHERE id = ?').run(invoiceId);
 }

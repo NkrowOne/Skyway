@@ -1,9 +1,10 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, requireAuth } from '../auth';
+import { assertProjectAccess, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { markManualAction } from '../monitor';
 import {
+  countWorkspaceServices,
   createService,
   deleteService,
   getEnv,
@@ -15,6 +16,16 @@ import {
   setEnv,
   updateService,
 } from '../db';
+import {
+  effectiveQuota,
+  isWorkspaceActive,
+  moduleAllowedForProject,
+  quotaMessage,
+  serviceReservation,
+  workspaceAllocation,
+  workspaceOfProject,
+  workspacePlan,
+} from '../quota';
 import { dockerAvailable } from '../docker/client';
 import {
   configuredReplicas,
@@ -124,6 +135,29 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (!assertProjectAccess(req, reply, projectId)) return reply;
 
     const base = z.object({ type: z.enum(['git', 'database', 'image']) }).parse(req.body);
+
+    // Cuota agregada del workspace: suspensión, número de servicios y módulos.
+    const user = currentUser(req)!;
+    const isAdmin = user.role === 'admin';
+    const workspace = workspaceOfProject(projectId);
+    if (workspace) {
+      if (!isWorkspaceActive(workspace)) {
+        return reply.code(403).send({ error: 'El workspace está suspendido: no se pueden crear servicios.' });
+      }
+      const quota = effectiveQuota(workspace, workspacePlan(workspace));
+      if (countWorkspaceServices(workspace.id) >= quota.maxServices) {
+        return reply.code(409).send({
+          error: `El workspace ha alcanzado su límite de ${quota.maxServices} servicios. Un administrador puede ampliar la cuota.`,
+        });
+      }
+    }
+    if (base.type === 'database' && !moduleAllowedForProject(projectId, 'databases', isAdmin)) {
+      return reply.code(403).send({ error: 'El módulo «Bases de datos» no está activo en este workspace.' });
+    }
+    const reqDomains = (req.body as { domains?: unknown })?.domains;
+    if (Array.isArray(reqDomains) && reqDomains.length > 0 && !moduleAllowedForProject(projectId, 'domains', isAdmin)) {
+      return reply.code(403).send({ error: 'El módulo «Dominios y TLS» no está activo en este workspace.' });
+    }
 
     let service: ServiceRow;
     if (base.type === 'image') {
@@ -259,6 +293,47 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         error:
           'Las réplicas requieren un servicio sin volúmenes y sin puerto público: varias copias no pueden compartir el mismo volumen de escritura ni el mismo puerto del host.',
       });
+    }
+
+    // Cuota agregada y módulos del workspace (recursos acotados a todos los proyectos en total).
+    const workspace = workspaceOfProject(found.project.id);
+    if (workspace) {
+      const isAdmin = currentUser(req)!.role === 'admin';
+      if ((newCfg.replicas ?? 1) > 1 && !moduleAllowedForProject(found.project.id, 'replicas', isAdmin)) {
+        return reply.code(403).send({ error: 'El módulo «Escalado horizontal» no está activo en este workspace.' });
+      }
+      // Solo se bloquea AÑADIR dominios o ACTIVAR backups programados (no conservar los existentes).
+      const oldDomains = new Set<string>((oldCfg.domains ?? []) as string[]);
+      if (
+        Array.isArray(newCfg.domains) &&
+        (newCfg.domains as string[]).some((d) => !oldDomains.has(d)) &&
+        !moduleAllowedForProject(found.project.id, 'domains', isAdmin)
+      ) {
+        return reply.code(403).send({ error: 'El módulo «Dominios y TLS» no está activo en este workspace.' });
+      }
+      if (newCfg.backupSchedule && !oldCfg.backupSchedule && !moduleAllowedForProject(found.project.id, 'backups', isAdmin)) {
+        return reply.code(403).send({ error: 'El módulo «Copias de seguridad» no está activo en este workspace.' });
+      }
+      // Se rechaza CUALQUIER dimensión que SUBA su reserva por encima de la cuota;
+      // se comprueban las tres (no solo la primera): subir la RAM no debe colarse
+      // por estar ya la CPU excedida. Mantener o reducir una dimensión ya por encima
+      // (p. ej. tras un «live resize» a la baja del admin) sigue permitido.
+      const quota = effectiveQuota(workspace, workspacePlan(workspace));
+      const alloc = workspaceAllocation(workspace.id);
+      const oldRes = serviceReservation(found.service.type, oldCfg);
+      const newRes = serviceReservation(found.service.type, newCfg);
+      const dims = [
+        { field: 'cpu' as const, old: oldRes.cpuCores, neu: newRes.cpuCores, prospective: Math.round((alloc.cpuCores - oldRes.cpuCores + newRes.cpuCores) * 100) / 100, limit: quota.cpuCores, unit: 'núcleos', eps: 0.001 },
+        { field: 'memory' as const, old: oldRes.memoryMb, neu: newRes.memoryMb, prospective: alloc.memoryMb - oldRes.memoryMb + newRes.memoryMb, limit: quota.memoryMb, unit: 'MB', eps: 0 },
+        { field: 'disk' as const, old: oldRes.diskMb, neu: newRes.diskMb, prospective: alloc.diskMb - oldRes.diskMb + newRes.diskMb, limit: quota.diskMb, unit: 'MB', eps: 0 },
+      ];
+      for (const dm of dims) {
+        if (dm.neu > dm.old + 1e-9 && dm.prospective > dm.limit + dm.eps) {
+          return reply.code(409).send({
+            error: quotaMessage({ field: dm.field, limit: dm.limit, requested: Math.round(dm.prospective * 100) / 100, unit: dm.unit }),
+          });
+        }
+      }
     }
 
     const name = body.name ?? found.service.name;

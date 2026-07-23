@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.15.1. Si el código y este documento discrepan,
+> Versión de este documento: 0.16.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -25,6 +25,8 @@ server/src/
   util.ts               id/token/slug, hashPassword (scrypt), hmac, safeEqual
   auth.ts               sesiones JWT (cookie httpOnly), tokens API, roles, rate-limit
   audit.ts              registro de auditoría (actor, acción, IP)
+  modules.ts            catálogo de módulos (capacidades que un plan/workspace activa)
+  quota.ts              cuota efectiva, asignación agregada de recursos y módulos por workspace
   security.ts           escáner de seguridad (hallazgos + nota)
   variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}
   templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio)
@@ -139,12 +141,15 @@ web/src/
 
 | Tabla | Claves / campos relevantes |
 | --- | --- |
-| `users` | `id`, `email` (único), `password_hash` (scrypt `s2:salt:hash`), `role` (`admin`/`member`), `session_epoch` |
-| `user_projects` | `(user_id, project_id)` — workspaces asignados a un miembro |
+| `users` | `id`, `email` (único), `password_hash` (scrypt `s2:salt:hash`), `role` (`admin`/`owner`/`member`), `workspace_id` (owner/member), `session_epoch` |
+| `user_projects` | `(user_id, project_id)` — proyectos asignados a un miembro |
+| `plans` | `id`, `name`, `slug`, `price_cents`, `currency`, `interval`, cuotas incluidas (`cpu_cores`, `memory_mb`, `disk_mb`, `max_projects`, `max_services`, `max_members`), `modules` (JSON), `is_default`, `archived` |
+| `workspaces` | `id`, `name`, `slug`, `plan_id`, overrides de cuota (mismos campos, null = hereda del plan), `modules_override` (concesión del admin), `owner_disabled_modules` (acotado del propietario), `status` (`active`/`suspended`), `billing_email`, `billing_day`, `notes` |
+| `workspace_invoices` | `id`, `workspace_id`, `period_start/end`, `status` (`draft`/`issued`/`paid`/`void`), `currency`, `subtotal_cents`, `total_cents`, `lines` (JSON), `plan_name`, `issued_at`, `paid_at` |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
 | `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`… |
-| `projects` | `id`, `name`, `slug` (único), `client`, página de estado (`status_token`, `status_enabled`, `status_notice`) |
+| `projects` | `id`, `name`, `slug` (único), `workspace_id` (cuenta de cliente), `client` (reflejo denormalizado del nombre del workspace para la UI), página de estado (`status_token`, `status_enabled`, `status_notice`) |
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
 | `project_vars` | `(project_id, key)` → `value` — variables compartidas |
@@ -178,9 +183,24 @@ database añade `template`, `version`, `backupSchedule`, `backupRetention`.
   revocables y caducables, y quedan auditados. Crear tokens/passkeys exige
   **sesión de navegador** (`requireSession`), no un token: un token robado no
   puede fabricarse acceso persistente.
-- **Roles**: `admin` (control total del servidor) y `member` (limitado a los
-  workspaces asignados; sin ajustes del servidor, seguridad ni otros clientes).
-  `assertProjectAccess` protege cada recurso de proyecto.
+- **Roles**: `admin` (control total del servidor), `owner` (propietario de un
+  workspace: gestiona sus proyectos, crea sub-usuarios en él, acota sus módulos y
+  ve su facturación; nunca toca ajustes del servidor, otros workspaces, su propia
+  cuota ni la concesión de módulos) y `member` (limitado a los proyectos que se le
+  asignan dentro de su workspace). `assertProjectAccess` protege cada recurso de
+  proyecto; `assertProjectManage`/`assertWorkspaceAccess` protegen la estructura y
+  la cuenta. La creación de sub-usuarios exige **sesión de navegador**
+  (`requireSession`), como los tokens/passkeys.
+- **Cuota agregada y módulos**: cada workspace tiene una cuota (CPU, RAM, disco,
+  proyectos, servicios, usuarios) acotada a **todos sus proyectos en total**
+  (`quota.ts`). Se comprueba al crear proyectos/servicios/usuarios y al subir los
+  recursos de un servicio; un workspace **suspendido** detiene despliegues y
+  operaciones nuevas. El admin la amplía/recorta en vivo; el propietario solo
+  **acota** (desactiva) los módulos concedidos, nunca los amplía. La comprobación
+  de cuota es atómica (lectura+escritura síncrona, sin `await` intermedio) y
+  cubre todas las dimensiones. Las gates de módulo se aplican de verdad a
+  propietarios y miembros (el admin las traspasa): bases de datos, consola de
+  datos, archivos, backups, terminal, réplicas, dominios y conectores de GitHub.
 - **Anti fuerza bruta**: límite por IP (8 intentos / 15 min) en login por
   contraseña y por passkey. La IP real se obtiene respetando el proxy **solo**
   de rangos privados/loopback (`config.trustProxy`), de modo que un cliente en
@@ -287,7 +307,16 @@ Esto reproduce el comportamiento de un *worker* de Railway.
   `${{Base.VAR}}` al servicio nuevo (por host privado/proxy público, o por
   esquema si es inequívoco); solo lo no mapeable genera aviso. El token viaja
   solo en memoria.
-- **Multi-empresa y usuarios/roles**: proyectos por cliente; admins y miembros.
+- **Cuentas y clientes, cuotas y facturación**: cada cliente es un **workspace**
+  con una cuota de recursos (CPU, RAM, disco, proyectos, servicios, usuarios)
+  acotada a todos sus proyectos en total, un **plan** de usos incluidos, un
+  conjunto de **módulos** (capacidades) activables, y su **facturación** (facturas
+  del plan o a medida). El admin gestiona todo y redimensiona la cuota en vivo; el
+  **propietario** administra su cuenta (proyectos, sub-usuarios, acotado de
+  módulos) y ve su facturación. Suspender una cuenta detiene despliegues y
+  operaciones nuevas. La UI vive en «Cuentas y clientes» con medidores de cuota en
+  vivo. Detalle de datos en §3, seguridad en §4 y API en §7.2.1.
+- **Multi-empresa y usuarios/roles**: proyectos por cliente; admins, propietarios y miembros.
 - **Conectores de GitHub por proyecto**: cada cliente conecta su cuenta (token)
   y asigna sus repos a los servicios con selector de repo y rama; el admin ve y
   revoca todos los conectores desde Ajustes. Sin conector se usa el token global.
@@ -328,14 +357,40 @@ Los cuerpos son JSON salvo indicación; la subida de archivos es binaria.
 | PATCH | `/users/:id` | admin | cambia rol / workspaces / contraseña |
 | DELETE | `/users/:id` | admin | elimina usuario (deja ≥1 admin) |
 
+### 7.2.1 Cuentas de cliente, planes y facturación
+Niveles: **manage** = admin o propietario del workspace del recurso; **admin** = solo administrador de plataforma.
+
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| GET | `/modules` | auth | catálogo de módulos (capacidades) para las etiquetas de la UI |
+| GET | `/workspaces` | auth | admin: todas; propietario: la suya; miembro: ninguna. Incluye cuota, asignación y módulos |
+| POST | `/workspaces` | admin | crea una cuenta (`{name, planId?, billingEmail?, billingDay?}`) |
+| GET | `/workspaces/:id` | manage | cuenta + proyectos + sub-usuarios |
+| PATCH | `/workspaces/:id` | admin | **live resize**: cuota, plan, concesión de módulos, estado (suspender), facturación |
+| DELETE | `/workspaces/:id` | admin | elimina la cuenta y sus sub-usuarios; sus proyectos quedan sin asignar |
+| PATCH | `/workspaces/:id/modules` | manage | el propietario **acota** (desactiva) módulos concedidos (`{disabled}`) |
+| GET | `/workspaces/:id/usage?days=` | manage | uso agregado (núcleo·h, GB·h, picos) del periodo |
+| POST | `/workspaces/:id/members` | manage (session) | crea un sub-usuario del workspace (el propietario solo crea miembros) |
+| PATCH | `/workspaces/:id/members/:userId` | manage | cambia rol/proyectos/contraseña de un sub-usuario |
+| DELETE | `/workspaces/:id/members/:userId` | manage | elimina un sub-usuario del workspace |
+| GET | `/plans` | admin | lista de planes (con nº de cuentas que lo usan) |
+| POST | `/plans` | admin | crea un plan (usos incluidos + precio) |
+| PATCH | `/plans/:id` | admin | edita un plan |
+| DELETE | `/plans/:id` | admin | borra un plan (bloqueado si alguna cuenta lo usa) |
+| GET | `/workspaces/:id/invoices` | manage | facturas de la cuenta |
+| POST | `/workspaces/:id/invoices/generate` | admin | genera la factura del ciclo (plan + uso) |
+| POST | `/workspaces/:id/invoices` | admin | crea una factura a medida (`{lines}`) |
+| PATCH | `/invoices/:id` | admin | edita líneas / estado (emitir, pagar, anular) |
+| DELETE | `/invoices/:id` | admin | borra una factura |
+
 ### 7.3 Proyectos, variables compartidas y conectores de GitHub
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/projects` | auth | proyectos accesibles (con meta) |
-| POST | `/projects` | admin | crea proyecto (`{name, client?}`) |
+| POST | `/projects` | admin/owner | crea proyecto (`{name, client?, workspaceId?}`); el propietario en su workspace, dentro de la cuota |
 | GET | `/projects/:id` | +access | proyecto + servicios con runtime |
-| PATCH | `/projects/:id` | admin | renombra / cambia cliente |
-| DELETE | `/projects/:id?volumes=true` | admin | elimina proyecto (y volúmenes opcional) |
+| PATCH | `/projects/:id` | manage | renombra; el admin además reasigna de workspace |
+| DELETE | `/projects/:id?volumes=true` | manage | elimina proyecto (y volúmenes opcional) |
 | POST | `/projects/:id/deploy-all` | +access | despliega repos e imágenes del proyecto |
 | GET | `/projects/:id/vars` | +access | variables compartidas |
 | PUT | `/projects/:id/vars` | +access | reemplaza variables compartidas |

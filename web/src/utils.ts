@@ -63,6 +63,25 @@ export function fmtAxisTime(ts: number, hours: number): string {
   return d.toLocaleDateString('es', { day: '2-digit', month: '2-digit' });
 }
 
+/** MB legibles (RAM/disco): reutiliza fmtBytes convirtiendo desde megabytes. */
+export function fmtMb(mb: number): string {
+  return fmtBytes(mb * 1024 * 1024);
+}
+
+/** Importe monetario a partir de céntimos (facturación). */
+export function fmtMoney(cents: number, currency = 'EUR'): string {
+  try {
+    return new Intl.NumberFormat('es', { style: 'currency', currency }).format(cents / 100);
+  } catch {
+    return `${(cents / 100).toFixed(2)} ${currency}`;
+  }
+}
+
+/** Fecha corta (día/mes/año) para periodos de facturación. */
+export function fmtDate(ts: number): string {
+  return new Date(ts).toLocaleDateString('es', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
 /** Fecha+hora completa para tooltips del histórico. */
 export function fmtStamp(ts: number, hours: number): string {
   const d = new Date(ts);
