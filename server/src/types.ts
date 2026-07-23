@@ -315,6 +315,9 @@ export interface WorkspaceRow {
 
 export type InvoiceStatus = 'draft' | 'issued' | 'paid' | 'void';
 
+/** Método de cobro de una factura. */
+export type PaymentMethod = 'bank_transfer' | 'stripe' | 'card' | 'cash' | 'other';
+
 export interface InvoiceLine {
   label: string;
   kind: 'plan' | 'usage' | 'custom';
@@ -326,20 +329,52 @@ export interface InvoiceLine {
 export interface InvoiceRow {
   id: string;
   workspace_id: string;
+  /** Número de factura, asignado al emitir (p. ej. «FRA-0001»). null en borradores. */
+  number: string | null;
   period_start: number;
   period_end: number;
   status: InvoiceStatus;
   currency: string;
   subtotal_cents: number;
+  /** Impuesto (IVA) sobre el subtotal. */
+  tax_cents: number;
+  tax_rate: number;
   total_cents: number;
   /** Líneas de la factura (JSON InvoiceLine[]). */
   lines: string;
   /** Nombre del plan en el momento de emitir (histórico). */
   plan_name: string | null;
+  /** Método de cobro elegido/registrado. */
+  payment_method: PaymentMethod | null;
+  stripe_session_id: string | null;
+  stripe_url: string | null;
   issued_at: number | null;
   paid_at: number | null;
   notes: string | null;
   created_at: number;
+}
+
+/**
+ * Perfil fiscal de la empresa que emite las facturas (nosotros). Se guarda como
+ * JSON en `settings`. Las claves de Stripe se almacenan aparte y enmascaradas.
+ */
+export interface BillingProfile {
+  companyName: string;
+  taxId: string;
+  address: string;
+  email: string;
+  phone: string;
+  currency: string;
+  /** Tipo de IVA por defecto (%), 0 = sin impuesto. */
+  vatRate: number;
+  invoicePrefix: string;
+  paymentTermsDays: number;
+  /** Datos para transferencia bancaria. */
+  iban: string;
+  bic: string;
+  bankName: string;
+  /** Pie de página de la factura (condiciones, agradecimiento…). */
+  footer: string;
 }
 
 export interface PasskeyRow {

@@ -10,6 +10,7 @@ import { connectorRoutes } from './routes/connectors';
 import { workspaceRoutes } from './routes/workspaces';
 import { planRoutes } from './routes/plans';
 import { billingRoutes } from './routes/billing';
+import { accountingRoutes } from './routes/accounting';
 import { projectRoutes } from './routes/projects';
 import { serviceRoutes } from './routes/services';
 import { deploymentRoutes } from './routes/deployments';
@@ -87,6 +88,7 @@ export function buildApp(): FastifyInstance {
   app.register(workspaceRoutes);
   app.register(planRoutes);
   app.register(billingRoutes);
+  app.register(accountingRoutes);
   app.register(projectRoutes);
   app.register(serviceRoutes);
   app.register(deploymentRoutes);

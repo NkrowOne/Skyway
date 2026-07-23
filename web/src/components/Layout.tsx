@@ -11,6 +11,7 @@ import {
   ChevronRight,
   CreditCard,
   Globe,
+  Landmark,
   Keyboard,
   LogOut,
   Rocket,
@@ -49,6 +50,7 @@ const PAGE_LABEL: Record<string, string> = {
   '/sites': 'Sitios y servicios',
   '/workspaces': 'Cuentas y clientes',
   '/plans': 'Planes',
+  '/accounting': 'Contabilidad',
 };
 
 // ---------- Paleta de comandos (⌘K) ----------
@@ -145,6 +147,14 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
         : []),
       ...(isAdmin
         ? [
+            {
+              key: 'a-accounting',
+              group: 'Acciones rápidas' as const,
+              icon: <Landmark size={15} className="text-subtle" />,
+              label: 'Contabilidad de la empresa',
+              keywords: 'contabilidad ingresos facturacion cobros stripe impuestos iva empresa exportar',
+              to: '/accounting',
+            },
             {
               key: 'a-plans',
               group: 'Acciones rápidas' as const,
@@ -646,6 +656,13 @@ export default function Layout() {
           )}
           {isAdmin && (
             <>
+              <Link
+                to="/accounting"
+                className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
+                title="Contabilidad"
+              >
+                <Landmark size={16} />
+              </Link>
               <Link
                 to="/users"
                 className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"

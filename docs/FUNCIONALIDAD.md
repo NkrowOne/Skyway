@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.16.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.17.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -27,6 +27,8 @@ server/src/
   audit.ts              registro de auditoría (actor, acción, IP)
   modules.ts            catálogo de módulos (capacidades que un plan/workspace activa)
   quota.ts              cuota efectiva, asignación agregada de recursos y módulos por workspace
+  company.ts            perfil fiscal de la empresa emisora + claves de Stripe (en settings)
+  stripe.ts             cliente mínimo de Stripe (Checkout Session + verificación de firma de webhook)
   security.ts           escáner de seguridad (hallazgos + nota)
   variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}
   templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio)
@@ -145,10 +147,10 @@ web/src/
 | `user_projects` | `(user_id, project_id)` — proyectos asignados a un miembro |
 | `plans` | `id`, `name`, `slug`, `price_cents`, `currency`, `interval`, cuotas incluidas (`cpu_cores`, `memory_mb`, `disk_mb`, `max_projects`, `max_services`, `max_members`), `modules` (JSON), `is_default`, `archived` |
 | `workspaces` | `id`, `name`, `slug`, `plan_id`, overrides de cuota (mismos campos, null = hereda del plan), `modules_override` (concesión del admin), `owner_disabled_modules` (acotado del propietario), `status` (`active`/`suspended`), `billing_email`, `billing_day`, `notes` |
-| `workspace_invoices` | `id`, `workspace_id`, `period_start/end`, `status` (`draft`/`issued`/`paid`/`void`), `currency`, `subtotal_cents`, `total_cents`, `lines` (JSON), `plan_name`, `issued_at`, `paid_at` |
+| `workspace_invoices` | `id`, `workspace_id`, `number` (nº correlativo al emitir), `period_start/end`, `status` (`draft`/`issued`/`paid`/`void`), `currency`, `subtotal_cents`, `tax_cents`, `tax_rate`, `total_cents`, `lines` (JSON), `plan_name`, `payment_method` (`bank_transfer`/`stripe`/`card`/`cash`/`other`), `stripe_session_id`, `stripe_url`, `issued_at`, `paid_at`, `notes` |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
-| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`… |
+| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal de la empresa emisora, JSON), `billing.invoiceSeq` (contador de nº de factura), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven)… |
 | `projects` | `id`, `name`, `slug` (único), `workspace_id` (cuenta de cliente), `client` (reflejo denormalizado del nombre del workspace para la UI), página de estado (`status_token`, `status_enabled`, `status_notice`) |
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
@@ -211,7 +213,9 @@ database añade `template`, `version`, `backupSchedule`, `backupRetention`.
   `Cross-Origin-Opener-Policy: same-origin`, `Permissions-Policy` restrictiva y
   `Strict-Transport-Security` sobre HTTPS.
 - **Webhooks**: firma **HMAC-SHA256** verificada con comparación en tiempo
-  constante sobre el cuerpo crudo.
+  constante sobre el cuerpo crudo. El webhook de Stripe añade tolerancia temporal
+  (anti-replay) y solo actúa si Stripe confirma `payment_status == paid`; las
+  claves de Stripe se guardan en `settings` y nunca se devuelven en claro.
 - **Consola de BBDD y explorador de archivos**: todo corre **dentro** del
   contenedor con exec; las consultas/rutas viajan como variables de entorno del
   exec, **nunca interpoladas en el shell**. La consola tiene modo solo-lectura
@@ -370,6 +374,7 @@ Niveles: **manage** = admin o propietario del workspace del recurso; **admin** =
 | DELETE | `/workspaces/:id` | admin | elimina la cuenta y sus sub-usuarios; sus proyectos quedan sin asignar |
 | PATCH | `/workspaces/:id/modules` | manage | el propietario **acota** (desactiva) módulos concedidos (`{disabled}`) |
 | GET | `/workspaces/:id/usage?days=` | manage | uso agregado (núcleo·h, GB·h, picos) del periodo |
+| GET | `/workspaces/:id/usage/series?days=` | manage | serie temporal de uso por cubos (para gráficas) + top de proyectos por consumo |
 | POST | `/workspaces/:id/members` | manage (session) | crea un sub-usuario del workspace (el propietario solo crea miembros) |
 | PATCH | `/workspaces/:id/members/:userId` | manage | cambia rol/proyectos/contraseña de un sub-usuario |
 | DELETE | `/workspaces/:id/members/:userId` | manage | elimina un sub-usuario del workspace |
@@ -377,11 +382,25 @@ Niveles: **manage** = admin o propietario del workspace del recurso; **admin** =
 | POST | `/plans` | admin | crea un plan (usos incluidos + precio) |
 | PATCH | `/plans/:id` | admin | edita un plan |
 | DELETE | `/plans/:id` | admin | borra un plan (bloqueado si alguna cuenta lo usa) |
-| GET | `/workspaces/:id/invoices` | manage | facturas de la cuenta |
-| POST | `/workspaces/:id/invoices/generate` | admin | genera la factura del ciclo (plan + uso) |
-| POST | `/workspaces/:id/invoices` | admin | crea una factura a medida (`{lines}`) |
-| PATCH | `/invoices/:id` | admin | edita líneas / estado (emitir, pagar, anular) |
+| GET | `/workspaces/:id/invoices` | manage | facturas de la cuenta + datos del emisor (perfil fiscal), del cliente y si Stripe está activo |
+| POST | `/workspaces/:id/invoices/generate` | admin | genera la factura del ciclo (plan + uso) con el IVA del perfil |
+| POST | `/workspaces/:id/invoices` | admin | crea una factura a medida (`{lines, taxRate?, notes?}`) |
+| PATCH | `/invoices/:id` | admin | edita líneas / IVA / método de pago / estado (emitir, pagar, anular); asigna nº al emitir/pagar |
 | DELETE | `/invoices/:id` | admin | borra una factura |
+| POST | `/invoices/:id/stripe-link` | admin | crea (o reutiliza) el enlace de pago Stripe de la factura; la emite si estaba en borrador |
+
+### 7.2.1 Contabilidad de la empresa y facturación (nosotros como emisor)
+Perfil fiscal, resumen contable y cobros con Stripe. **Solo admin.** Las claves
+secretas de Stripe se guardan en `settings` y nunca se devuelven (se exponen como
+booleanos, igual que el token de GitHub).
+
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| GET | `/billing/profile` | admin | perfil fiscal de la empresa + estado de Stripe (claves como booleanos) + nº de la próxima factura |
+| PUT | `/billing/profile` | admin | actualiza el perfil fiscal; las claves de Stripe se guardan solo si se envían (`''` las borra) |
+| GET | `/accounting/summary?months=` | admin | totales (facturado/cobrado/pendiente/borrador/anulado), serie mensual de ingresos y desglose por cliente |
+| GET | `/accounting/invoices?status=` | admin | todas las facturas de todos los clientes (con nombre del cliente) |
+| GET | `/accounting/export.csv` | admin | exporta toda la contabilidad a CSV (con guardas anti-inyección de fórmulas) |
 
 ### 7.3 Proyectos, variables compartidas y conectores de GitHub
 | Método | Ruta | Nivel | Descripción |
@@ -511,6 +530,7 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/import/railway/analyze` | admin | plan de importación (sin valores de variables) |
 | POST | `/import/railway/run` | admin | ejecuta la importación |
 | POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy instantáneo en push (firma verificada); respeta `autoDeploy` y deduplica contra el último commit construido; complementa al sondeo interno de `autodeploy.ts` |
+| POST | `/webhooks/stripe` | público (firma Stripe) | marca la factura como pagada al confirmarse el cobro; firma `Stripe-Signature` verificada (HMAC-SHA256 con tolerancia temporal anti-replay); exige `payment_status == paid`; idempotente |
 
 ---
 

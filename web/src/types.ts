@@ -214,6 +214,7 @@ export interface ModuleDef {
 }
 
 export type InvoiceStatus = 'draft' | 'issued' | 'paid' | 'void';
+export type PaymentMethod = 'bank_transfer' | 'stripe' | 'card' | 'cash' | 'other';
 
 export interface InvoiceLine {
   label: string;
@@ -226,18 +227,118 @@ export interface InvoiceLine {
 export interface Invoice {
   id: string;
   workspace_id: string;
+  number: string | null;
   period_start: number;
   period_end: number;
   status: InvoiceStatus;
   currency: string;
   subtotal_cents: number;
+  tax_cents: number;
+  tax_rate: number;
   total_cents: number;
   lines: InvoiceLine[];
   plan_name: string | null;
+  payment_method: PaymentMethod | null;
+  stripe_url: string | null;
   issued_at: number | null;
   paid_at: number | null;
   notes: string | null;
   created_at: number;
+}
+
+/** Perfil fiscal de la empresa emisora (nosotros). */
+export interface BillingProfile {
+  companyName: string;
+  taxId: string;
+  address: string;
+  email: string;
+  phone: string;
+  currency: string;
+  vatRate: number;
+  invoicePrefix: string;
+  paymentTermsDays: number;
+  iban: string;
+  bic: string;
+  bankName: string;
+  footer: string;
+}
+
+export interface InvoicesResponse {
+  invoices: Invoice[];
+  issuer: BillingProfile;
+  client: { name: string; billing_email: string | null };
+  stripeEnabled: boolean;
+}
+
+// ---------- series de uso e insights ----------
+
+export interface UsagePoint {
+  t: number;
+  cpuCoreHours: number;
+  ramGbHours: number;
+  diskGb: number;
+  netBytes: number;
+}
+
+export interface UsageByProject {
+  projectId: string;
+  name: string;
+  cpuCoreHours: number;
+  ramGbHours: number;
+}
+
+export interface UsageSeries {
+  days: number;
+  bucketHours: number;
+  series: UsagePoint[];
+  byProject: UsageByProject[];
+}
+
+// ---------- contabilidad de empresa ----------
+
+export interface AccountingTotals {
+  invoiced: number;
+  paid: number;
+  pending: number;
+  draft: number;
+  void: number;
+  count: number;
+}
+
+export interface RevenuePoint {
+  t: number;
+  invoiced: number;
+  paid: number;
+}
+
+export interface AccountingSummary {
+  currency: string;
+  totals: AccountingTotals;
+  series: RevenuePoint[];
+  byClient: { workspaceId: string; name: string; invoiced: number; paid: number }[];
+}
+
+export interface AccountingInvoice {
+  id: string;
+  number: string | null;
+  workspace_id: string;
+  workspace_name: string | null;
+  status: InvoiceStatus;
+  currency: string;
+  subtotal_cents: number;
+  tax_cents: number;
+  total_cents: number;
+  payment_method: PaymentMethod | null;
+  period_start: number;
+  period_end: number;
+  issued_at: number | null;
+  paid_at: number | null;
+}
+
+export interface BillingProfileResponse {
+  profile: BillingProfile;
+  stripe: { hasSecretKey: boolean; hasWebhookSecret: boolean; publishableKey: string };
+  invoiceSeq: number;
 }
 
 export interface GitConfig {

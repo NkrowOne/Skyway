@@ -306,6 +306,14 @@ export function initDb(): void {
     CREATE INDEX IF NOT EXISTS idx_invoices_workspace ON workspace_invoices(workspace_id, created_at DESC);
   `);
 
+  // Facturación de empresa: número, impuestos, método de pago y datos de Stripe.
+  ensureColumn('workspace_invoices', 'number', 'TEXT');
+  ensureColumn('workspace_invoices', 'tax_cents', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('workspace_invoices', 'tax_rate', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn('workspace_invoices', 'payment_method', 'TEXT');
+  ensureColumn('workspace_invoices', 'stripe_session_id', 'TEXT');
+  ensureColumn('workspace_invoices', 'stripe_url', 'TEXT');
+
   seedDefaultPlans();
   migrateClientsToWorkspaces();
 }
@@ -1392,15 +1400,15 @@ export function getInvoice(invoiceId: string): InvoiceRow | undefined {
 export function createInvoice(row: Omit<InvoiceRow, 'id' | 'created_at'>): InvoiceRow {
   const full: InvoiceRow = { ...row, id: id('inv'), created_at: now() };
   db.prepare(
-    `INSERT INTO workspace_invoices (id, workspace_id, period_start, period_end, status, currency, subtotal_cents, total_cents, lines, plan_name, issued_at, paid_at, notes, created_at)
-     VALUES (@id, @workspace_id, @period_start, @period_end, @status, @currency, @subtotal_cents, @total_cents, @lines, @plan_name, @issued_at, @paid_at, @notes, @created_at)`,
+    `INSERT INTO workspace_invoices (id, workspace_id, number, period_start, period_end, status, currency, subtotal_cents, tax_cents, tax_rate, total_cents, lines, plan_name, payment_method, stripe_session_id, stripe_url, issued_at, paid_at, notes, created_at)
+     VALUES (@id, @workspace_id, @number, @period_start, @period_end, @status, @currency, @subtotal_cents, @tax_cents, @tax_rate, @total_cents, @lines, @plan_name, @payment_method, @stripe_session_id, @stripe_url, @issued_at, @paid_at, @notes, @created_at)`,
   ).run(full);
   return full;
 }
 
 const INVOICE_COLUMNS = new Set([
-  'period_start', 'period_end', 'status', 'currency', 'subtotal_cents', 'total_cents',
-  'lines', 'plan_name', 'issued_at', 'paid_at', 'notes',
+  'number', 'period_start', 'period_end', 'status', 'currency', 'subtotal_cents', 'tax_cents', 'tax_rate',
+  'total_cents', 'lines', 'plan_name', 'payment_method', 'stripe_session_id', 'stripe_url', 'issued_at', 'paid_at', 'notes',
 ]);
 
 export function updateInvoice(invoiceId: string, fields: Record<string, unknown>): void {
@@ -1412,4 +1420,114 @@ export function updateInvoice(invoiceId: string, fields: Record<string, unknown>
 
 export function deleteInvoice(invoiceId: string): void {
   db.prepare('DELETE FROM workspace_invoices WHERE id = ?').run(invoiceId);
+}
+
+export function getInvoiceByStripeSession(sessionId: string): InvoiceRow | undefined {
+  return db.prepare('SELECT * FROM workspace_invoices WHERE stripe_session_id = ?').get(sessionId) as InvoiceRow | undefined;
+}
+
+/**
+ * Siguiente número de factura, atómico: incrementa el contador en `settings` y
+ * lo formatea con el prefijo dado y relleno a 4 dígitos (p. ej. «FRA-0001»).
+ */
+export function nextInvoiceNumber(prefix: string): string {
+  return db.transaction(() => {
+    const cur = parseInt(getSetting('billing.invoiceSeq') || '0', 10) || 0;
+    const next = cur + 1;
+    setSetting('billing.invoiceSeq', String(next));
+    const clean = (prefix || 'F').trim();
+    return `${clean}${clean ? '-' : ''}${String(next).padStart(4, '0')}`;
+  })();
+}
+
+/** Todas las facturas de todos los workspaces, con el nombre del cliente, para la contabilidad. */
+export function listAllInvoices(filter: { status?: string; fromMs?: number; toMs?: number } = {}): (InvoiceRow & { workspace_name: string | null })[] {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (filter.status) {
+    where.push('i.status = ?');
+    params.push(filter.status);
+  }
+  if (filter.fromMs !== undefined) {
+    where.push('i.period_start >= ?');
+    params.push(filter.fromMs);
+  }
+  if (filter.toMs !== undefined) {
+    where.push('i.period_start < ?');
+    params.push(filter.toMs);
+  }
+  const sql = `SELECT i.*, w.name AS workspace_name FROM workspace_invoices i
+     LEFT JOIN workspaces w ON w.id = i.workspace_id
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY i.created_at DESC`;
+  return db.prepare(sql).all(...params) as (InvoiceRow & { workspace_name: string | null })[];
+}
+
+/**
+ * Serie de uso agregado del workspace por cubos (para las gráficas): núcleo·h y
+ * GB·h de RAM por cubo, foto de disco y tráfico de red. Rellena la rejilla con
+ * ceros en los cubos sin datos para que el eje temporal sea continuo.
+ */
+export function workspaceUsageSeries(
+  workspaceId: string,
+  fromHour: number,
+  toHour: number,
+  bucketHours: number,
+): { t: number; cpuCoreHours: number; ramGbHours: number; diskGb: number; netBytes: number }[] {
+  const rows = db
+    .prepare(
+      // CAST a INTEGER: la división debe ser entera (cubo por día/hora); si no, la
+      // clave sale fraccionaria y no casa con la rejilla entera del bucle de abajo.
+      `SELECT CAST(m.hour / ? AS INTEGER) AS bucket,
+         COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.cpu_sum * 1.0 / m.samples ELSE 0 END), 0) AS cpuPctHours,
+         COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.mem_sum * 1.0 / m.samples ELSE 0 END), 0) AS memByteHours,
+         COALESCE(MAX(m.disk_last), 0) AS diskLast,
+         COALESCE(SUM(m.net_rx + m.net_tx), 0) AS netBytes
+       FROM service_metrics_hourly m
+       JOIN services s ON s.id = m.service_id
+       JOIN projects p ON p.id = s.project_id
+       WHERE p.workspace_id = ? AND m.hour >= ? AND m.hour < ?
+       GROUP BY bucket`,
+    )
+    .all(bucketHours, workspaceId, fromHour, toHour) as {
+    bucket: number;
+    cpuPctHours: number;
+    memByteHours: number;
+    diskLast: number;
+    netBytes: number;
+  }[];
+  const byBucket = new Map(rows.map((r) => [r.bucket, r]));
+  const out: { t: number; cpuCoreHours: number; ramGbHours: number; diskGb: number; netBytes: number }[] = [];
+  for (let b = Math.floor(fromHour / bucketHours); b < Math.ceil(toHour / bucketHours); b++) {
+    const r = byBucket.get(b);
+    out.push({
+      t: b * bucketHours * 3_600_000,
+      cpuCoreHours: r ? Math.round((r.cpuPctHours / 100) * 100) / 100 : 0,
+      ramGbHours: r ? Math.round((r.memByteHours / 1e9) * 100) / 100 : 0,
+      diskGb: r ? Math.round((r.diskLast / 1e9) * 100) / 100 : 0,
+      netBytes: r ? r.netBytes : 0,
+    });
+  }
+  return out;
+}
+
+/** Consumo por proyecto del workspace en un rango (para el top de consumidores / insights). */
+export function workspaceUsageByProject(
+  workspaceId: string,
+  fromHour: number,
+  toHour: number,
+): { projectId: string; name: string; cpuCoreHours: number; ramGbHours: number }[] {
+  return db
+    .prepare(
+      `SELECT p.id AS projectId, p.name AS name,
+         COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.cpu_sum * 1.0 / m.samples ELSE 0 END), 0) / 100.0 AS cpuCoreHours,
+         COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.mem_sum * 1.0 / m.samples ELSE 0 END), 0) / 1e9 AS ramGbHours
+       FROM service_metrics_hourly m
+       JOIN services s ON s.id = m.service_id
+       JOIN projects p ON p.id = s.project_id
+       WHERE p.workspace_id = ? AND m.hour >= ? AND m.hour < ?
+       GROUP BY p.id
+       ORDER BY cpuCoreHours DESC`,
+    )
+    .all(workspaceId, fromHour, toHour) as { projectId: string; name: string; cpuCoreHours: number; ramGbHours: number }[];
 }

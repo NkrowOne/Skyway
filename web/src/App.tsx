@@ -18,6 +18,7 @@ import UsersPage from './pages/Users';
 import WorkspacesPage from './pages/Workspaces';
 import WorkspacePage from './pages/Workspace';
 import PlansPage from './pages/Plans';
+import AccountingPage from './pages/Accounting';
 import { Me } from './types';
 
 export default function App() {
@@ -85,6 +86,7 @@ export default function App() {
         {user?.role === 'admin' && (
           <>
             <Route path="/plans" element={<PlansPage />} />
+            <Route path="/accounting" element={<AccountingPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/security" element={<SecurityPage />} />
             <Route path="/users" element={<UsersPage />} />

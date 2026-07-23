@@ -4,7 +4,9 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
   Boxes,
+  CreditCard,
   Cpu,
+  Gauge,
   HardDrive,
   Layers,
   MemoryStick,
@@ -13,24 +15,31 @@ import {
   Play,
   Plus,
   Receipt,
+  TrendingDown,
+  TrendingUp,
   Trash2,
   Users2,
 } from 'lucide-react';
 import { api } from '../api';
-import { Button, ConfirmModal, EditorBar, Field, Modal, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
+import { Button, ConfirmModal, CopyButton, EditorBar, Field, Modal, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
 import { QuotaMeter } from '../components/QuotaMeter';
+import { UsageBars } from '../components/BillingCharts';
 import {
+  BillingProfile,
   Invoice,
+  InvoicesResponse,
   Me,
   ModuleDef,
+  PaymentMethod,
   Plan,
+  UsageSeries,
   UserRole,
   Workspace,
   WorkspaceMember,
   WorkspaceProject,
   WorkspaceUsage,
 } from '../types';
-import { cx, fmtDate, fmtMb, fmtMoney, timeAgo } from '../utils';
+import { cx, fmtAxisTime, fmtDate, fmtMb, fmtMoney, timeAgo } from '../utils';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -494,6 +503,120 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
   );
 }
 
+// ---------------- Uso e insights ----------------
+
+function trendPct(vals: number[]): number | null {
+  if (vals.length < 4) return null;
+  const half = Math.floor(vals.length / 2);
+  const first = vals.slice(0, half).reduce((a, b) => a + b, 0);
+  const last = vals.slice(half).reduce((a, b) => a + b, 0);
+  if (first <= 0) return last > 0 ? 100 : null;
+  return Math.round(((last - first) / first) * 100);
+}
+
+function Insight({ label, value, unit, trend, hint }: { label: string; value: string; unit?: string; trend?: number | null; hint?: string }) {
+  return (
+    <div className="rounded-xl border border-line bg-bg px-4 py-3">
+      <p className="text-[11px] text-subtle">{label}</p>
+      <div className="mt-1 flex items-baseline gap-1.5">
+        <span className="tnum text-xl font-semibold leading-none">{value}</span>
+        {unit && <span className="text-[11px] text-subtle">{unit}</span>}
+        {trend != null && trend !== 0 && (
+          <span className={cx('ml-auto flex items-center gap-0.5 text-[11px] font-medium', trend > 0 ? 'text-warn' : 'text-ok')}>
+            {trend > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+            {Math.abs(trend)}%
+          </span>
+        )}
+      </div>
+      {hint && <p className="mt-1 text-[10.5px] leading-snug text-subtle">{hint}</p>}
+    </div>
+  );
+}
+
+const DAY_RANGES = [
+  { days: 7, label: '7 días' },
+  { days: 30, label: '30 días' },
+  { days: 90, label: '90 días' },
+];
+
+function UsoTab({ detail }: { detail: Detail }) {
+  const ws = detail.workspace;
+  const [days, setDays] = useState(30);
+  const usage = useQuery({ queryKey: ['ws-usage-series', ws.id, days], queryFn: () => api.get<UsageSeries>(`/workspaces/${ws.id}/usage/series?days=${days}`) });
+  const data = usage.data;
+  const series = data?.series ?? [];
+  const round1 = (n: number) => Math.round(n * 10) / 10;
+  const cpuTotal = series.reduce((a, p) => a + p.cpuCoreHours, 0);
+  const ramTotal = series.reduce((a, p) => a + p.ramGbHours, 0);
+  const reservedCpuH = ws.quota.cpuCores * days * 24;
+  const util = reservedCpuH > 0 ? Math.round((cpuTotal / reservedCpuH) * 100) : 0;
+  const cpuTrend = trendPct(series.map((p) => p.cpuCoreHours));
+  const ramTrend = trendPct(series.map((p) => p.ramGbHours));
+  const monthlyCpu = days > 0 ? round1((cpuTotal / days) * 30) : 0;
+  const labelFor = (t: number) => fmtAxisTime(t, days * 24);
+  const maxProj = Math.max(1e-9, ...(data?.byProject ?? []).map((p) => p.cpuCoreHours));
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-1.5 text-sm text-sub">
+          <Gauge size={15} className="text-acc-soft" /> Consumo agregado de la cuenta en el tiempo
+        </p>
+        <div className="flex gap-1">
+          {DAY_RANGES.map((r) => (
+            <button
+              key={r.days}
+              onClick={() => setDays(r.days)}
+              className={cx('rounded-lg border px-2.5 py-1 text-xs transition-colors', days === r.days ? 'border-acc/55 bg-acc/[.12] font-medium text-acc-soft' : 'border-line text-sub hover:text-txt')}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {usage.isLoading ? (
+        <Skeleton className="h-48 w-full" />
+      ) : (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Insight label="CPU acumulada" value={String(round1(cpuTotal))} unit="núcleo·h" trend={cpuTrend} />
+            <Insight label="Memoria acumulada" value={String(round1(ramTotal))} unit="GB·h" trend={ramTrend} />
+            <Insight label="Utilización de CPU" value={`${util}%`} hint={`de la reservada (${ws.quota.cpuCores} núcleos)`} />
+            <Insight label="Estimación mensual" value={String(monthlyCpu)} unit="núcleo·h/mes" hint="al ritmo actual" />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <UsageBars title="CPU consumida (núcleo·h)" points={series.map((p) => ({ t: p.t, value: p.cpuCoreHours }))} color="var(--color-acc)" format={(v) => String(round1(v))} labelFor={labelFor} />
+            <UsageBars title="Memoria consumida (GB·h)" points={series.map((p) => ({ t: p.t, value: p.ramGbHours }))} color="var(--color-info)" format={(v) => String(round1(v))} labelFor={labelFor} />
+          </div>
+
+          <section className="card p-5">
+            <h2 className="mb-3 text-sm font-semibold">Proyectos por consumo de CPU</h2>
+            {(data?.byProject ?? []).length === 0 ? (
+              <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
+                Aún no hay datos de consumo por proyecto (necesita histórico del monitor).
+              </p>
+            ) : (
+              <div className="flex flex-col gap-2.5">
+                {data!.byProject.map((p) => (
+                  <div key={p.projectId} className="flex items-center gap-3">
+                    <span className="w-36 shrink-0 truncate text-[13px]">{p.name}</span>
+                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface2">
+                      <div className="h-full rounded-full bg-acc transition-[width] duration-500" style={{ width: `${Math.min(100, (p.cpuCoreHours / maxProj) * 100)}%` }} />
+                    </div>
+                    <span className="w-24 shrink-0 text-right text-[11px] tnum text-sub">{round1(p.cpuCoreHours)} núcleo·h</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ---------------- Facturación ----------------
 
 const INV_TONE: Record<string, 'neutral' | 'info' | 'ok' | 'warn'> = {
@@ -509,8 +632,10 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
   const ws = detail.workspace;
   const queryClient = useQueryClient();
   const usage = useQuery({ queryKey: ['ws-usage', ws.id], queryFn: () => api.get<WorkspaceUsage>(`/workspaces/${ws.id}/usage?days=30`) });
-  const invoices = useQuery({ queryKey: ['ws-invoices', ws.id], queryFn: () => api.get<{ invoices: Invoice[] }>(`/workspaces/${ws.id}/invoices`) });
+  const invoicesQ = useQuery({ queryKey: ['ws-invoices', ws.id], queryFn: () => api.get<InvoicesResponse>(`/workspaces/${ws.id}/invoices`) });
+  const data = invoicesQ.data;
   const [editing, setEditing] = useState<Invoice | null>(null);
+  const [viewing, setViewing] = useState<Invoice | null>(null);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['ws-invoices', ws.id] });
 
@@ -527,6 +652,11 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
   const remove = useMutation({
     mutationFn: (id: string) => api.del(`/invoices/${id}`),
     onSuccess: () => { toast('Factura eliminada', 'ok'); invalidate(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const stripeLink = useMutation({
+    mutationFn: (id: string) => api.post<{ url: string }>(`/invoices/${id}/stripe-link`),
+    onSuccess: (res) => { window.open(res.url, '_blank', 'noopener'); toast('Enlace de pago de Stripe creado', 'ok'); invalidate(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
@@ -546,7 +676,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
           </div>
         )}
         <p className="mt-3 text-[11px] text-subtle">
-          Plan {ws.plan ? `${ws.plan.name} · ${ws.plan.price_cents === 0 ? 'gratis' : `${fmtMoney(ws.plan.price_cents, ws.plan.currency)}/${ws.plan.interval === 'yearly' ? 'año' : 'mes'}`}` : 'sin asignar'}. El uso incluido lo cubre el plan; lo que exceda se tarifica en la factura.
+          Plan {ws.plan ? `${ws.plan.name} · ${ws.plan.price_cents === 0 ? 'gratis' : `${fmtMoney(ws.plan.price_cents, ws.plan.currency)}/${ws.plan.interval === 'yearly' ? 'año' : 'mes'}`}` : 'sin asignar'}. El uso incluido lo cubre el plan; lo que exceda se tarifica en la factura. Detalle en la pestaña «Uso».
         </p>
       </section>
 
@@ -564,23 +694,30 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
             </div>
           )}
         </div>
-        {(invoices.data?.invoices ?? []).length === 0 ? (
+        {(data?.invoices ?? []).length === 0 ? (
           <p className="px-4 py-8 text-center text-xs text-subtle">Sin facturas todavía.</p>
         ) : (
-          invoices.data!.invoices.map((inv, i) => (
+          data!.invoices.map((inv, i) => (
             <div key={inv.id} className={cx('flex flex-wrap items-center gap-3 px-4 py-3', i > 0 && 'border-t border-line')}>
-              <div className="min-w-0 flex-1">
+              <button onClick={() => setViewing(inv)} className="min-w-0 flex-1 text-left">
                 <div className="flex flex-wrap items-center gap-2">
+                  {inv.number && <span className="font-mono text-[11px] text-subtle">{inv.number}</span>}
                   <span className="text-sm font-semibold tnum">{fmtMoney(inv.total_cents, inv.currency)}</span>
                   <StatusBadge tone={INV_TONE[inv.status]} label={INV_LABEL[inv.status]} dot={false} className="text-[10px]" />
                 </div>
                 <p className="mt-0.5 text-[11px] text-subtle">
-                  {fmtDate(inv.period_start)} – {fmtDate(inv.period_end)} · {inv.lines.length} línea{inv.lines.length === 1 ? '' : 's'}
+                  {fmtDate(inv.period_start)} – {fmtDate(inv.period_end)}
+                  {inv.tax_cents > 0 ? ` · IVA ${inv.tax_rate}%` : ''}
                   {inv.paid_at ? ` · pagada ${timeAgo(inv.paid_at)}` : inv.issued_at ? ` · emitida ${timeAgo(inv.issued_at)}` : ''}
                 </p>
-              </div>
+              </button>
               {isAdmin && (
                 <div className="flex shrink-0 flex-wrap items-center gap-1">
+                  {data?.stripeEnabled && inv.status !== 'paid' && inv.status !== 'void' && inv.total_cents > 0 && (
+                    <Button size="sm" variant="ghost" loading={stripeLink.isPending} onClick={() => stripeLink.mutate(inv.id)}>
+                      <CreditCard size={13} /> Cobrar
+                    </Button>
+                  )}
                   <button onClick={() => setEditing(inv)} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Editar líneas">
                     <Pencil size={14} />
                   </button>
@@ -602,8 +739,87 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
 
       {isAdmin && <BillingSettings detail={detail} onSaved={onSaved} />}
 
+      {viewing && data && <InvoiceView invoice={viewing} issuer={data.issuer} client={data.client} onClose={() => setViewing(null)} />}
       {editing && <InvoiceEditor invoice={editing} workspaceId={ws.id} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); invalidate(); }} />}
     </div>
+  );
+}
+
+/** Vista de factura completa: emisor, cliente, líneas, impuestos y método de pago. */
+function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; issuer: BillingProfile; client: { name: string; billing_email: string | null }; onClose: () => void }) {
+  return (
+    <Modal open onClose={onClose} title={invoice.number ? `Factura ${invoice.number}` : 'Factura (borrador)'} wide>
+      <div className="flex flex-col gap-4 text-[13px]">
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-[.08em] text-subtle">Emisor</p>
+            <p className="font-semibold">{issuer.companyName || 'Tu empresa'}</p>
+            {issuer.taxId && <p className="text-subtle">NIF {issuer.taxId}</p>}
+            {issuer.address && <p className="whitespace-pre-line text-subtle">{issuer.address}</p>}
+            {issuer.email && <p className="text-subtle">{issuer.email}</p>}
+          </div>
+          <div className="text-right">
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-[.08em] text-subtle">Cliente</p>
+            <p className="font-semibold">{client.name}</p>
+            {client.billing_email && <p className="text-subtle">{client.billing_email}</p>}
+            <p className="mt-2 text-subtle">{fmtDate(invoice.period_start)} – {fmtDate(invoice.period_end)}</p>
+            <StatusBadge tone={INV_TONE[invoice.status]} label={INV_LABEL[invoice.status]} dot={false} className="mt-1 text-[10px]" />
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-lg border border-line">
+          <table className="w-full text-left text-[12px]">
+            <thead className="bg-surface2 text-subtle">
+              <tr>
+                <th className="px-3 py-1.5 font-medium">Concepto</th>
+                <th className="px-3 py-1.5 text-right font-medium">Cant.</th>
+                <th className="px-3 py-1.5 text-right font-medium">Precio</th>
+                <th className="px-3 py-1.5 text-right font-medium">Importe</th>
+              </tr>
+            </thead>
+            <tbody className="tnum">
+              {invoice.lines.map((l, i) => (
+                <tr key={i} className="border-t border-line/60">
+                  <td className="px-3 py-1.5">{l.label}</td>
+                  <td className="px-3 py-1.5 text-right text-sub">{l.qty}</td>
+                  <td className="px-3 py-1.5 text-right text-sub">{fmtMoney(l.unitCents, invoice.currency)}</td>
+                  <td className="px-3 py-1.5 text-right">{fmtMoney(l.amountCents, invoice.currency)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="ml-auto w-full max-w-[240px] text-[13px] tnum">
+          <div className="flex justify-between py-0.5 text-sub"><span>Subtotal</span><span>{fmtMoney(invoice.subtotal_cents, invoice.currency)}</span></div>
+          {invoice.tax_cents > 0 && (
+            <div className="flex justify-between py-0.5 text-sub"><span>IVA ({invoice.tax_rate}%)</span><span>{fmtMoney(invoice.tax_cents, invoice.currency)}</span></div>
+          )}
+          <div className="mt-1 flex justify-between border-t border-line pt-1.5 text-[15px] font-semibold"><span>Total</span><span>{fmtMoney(invoice.total_cents, invoice.currency)}</span></div>
+        </div>
+
+        {invoice.status !== 'paid' && (issuer.iban || invoice.stripe_url) && (
+          <div className="rounded-lg border border-line bg-bg p-3.5">
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">Cómo pagar</p>
+            {issuer.iban && (
+              <div className="flex items-center justify-between gap-2 text-[12px]">
+                <div>
+                  <p className="text-sub">Transferencia a {issuer.bankName || 'nuestra cuenta'}</p>
+                  <p className="font-mono">{issuer.iban}{issuer.bic ? ` · ${issuer.bic}` : ''}</p>
+                </div>
+                <CopyButton value={issuer.iban} title="Copiar IBAN" />
+              </div>
+            )}
+            {invoice.stripe_url && (
+              <a href={invoice.stripe_url} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-1.5 text-[12px] font-semibold text-acc-soft hover:underline">
+                <CreditCard size={13} /> Pagar con tarjeta (Stripe) →
+              </a>
+            )}
+          </div>
+        )}
+        {issuer.footer && <p className="text-[11px] leading-snug text-subtle">{issuer.footer}</p>}
+      </div>
+    </Modal>
   );
 }
 
@@ -619,9 +835,10 @@ function Stat({ label, value, unit }: { label: string; value: string; unit: stri
 
 function EMPTY_INVOICE(workspaceId: string, currency: string): Invoice {
   return {
-    id: '', workspace_id: workspaceId, period_start: Date.now(), period_end: Date.now(), status: 'draft', currency,
-    subtotal_cents: 0, total_cents: 0, lines: [{ label: '', kind: 'custom', qty: 1, unitCents: 0, amountCents: 0 }], plan_name: null,
-    issued_at: null, paid_at: null, notes: null, created_at: Date.now(),
+    id: '', workspace_id: workspaceId, number: null, period_start: Date.now(), period_end: Date.now(), status: 'draft', currency,
+    subtotal_cents: 0, tax_cents: 0, tax_rate: 0, total_cents: 0,
+    lines: [{ label: '', kind: 'custom', qty: 1, unitCents: 0, amountCents: 0 }], plan_name: null,
+    payment_method: null, stripe_url: null, issued_at: null, paid_at: null, notes: null, created_at: Date.now(),
   };
 }
 
@@ -754,6 +971,7 @@ export default function WorkspacePage() {
 
   const tabs = [
     { key: 'resumen', label: 'Resumen y cuota' },
+    { key: 'uso', label: 'Uso' },
     { key: 'modulos', label: 'Módulos' },
     { key: 'usuarios', label: 'Usuarios' },
     { key: 'facturacion', label: 'Facturación' },
@@ -803,6 +1021,7 @@ export default function WorkspacePage() {
           se reinicia el estado derivado (cuota editable, módulos, borradores). */}
       <div key={`${ws.id}:${tab}`} className="tab-in">
         {tab === 'resumen' && <ResumenTab detail={d} isAdmin={!!isAdmin} plans={plans.data?.plans ?? []} onSaved={refresh} />}
+        {tab === 'uso' && <UsoTab detail={d} />}
         {tab === 'modulos' && <ModulosTab detail={d} isAdmin={!!isAdmin} modules={modules.data?.modules ?? []} onSaved={refresh} />}
         {tab === 'usuarios' && <UsuariosTab detail={d} isAdmin={!!isAdmin} onSaved={refresh} />}
         {tab === 'facturacion' && <FacturacionTab detail={d} isAdmin={!!isAdmin} onSaved={refresh} />}

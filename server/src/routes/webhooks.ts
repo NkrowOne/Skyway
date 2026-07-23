@@ -2,6 +2,9 @@ import { FastifyInstance } from 'fastify';
 import { auditSystem } from '../audit';
 import { noteAutoDeployBaseline } from '../autodeploy';
 import { getService, lastBuiltCommitSha } from '../db';
+import { getStripeWebhookSecret } from '../company';
+import { verifyStripeSignature } from '../stripe';
+import { markInvoicePaidByStripeSession } from './billing';
 import { triggerDeploy } from '../deploy/deployer';
 import { markManualAction } from '../monitor';
 import { GitConfig } from '../types';
@@ -78,6 +81,34 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
       markManualAction(service.id);
       const deployment = triggerDeploy(service.id, 'webhook');
       return { ok: true, deployment: { id: deployment.id, status: deployment.status } };
+    });
+
+    /**
+     * Webhook de Stripe: al completarse el pago de una factura, se marca como
+     * pagada. La firma se verifica con el secreto del endpoint (HMAC + tiempo);
+     * sin firma válida, 401. Configura la URL /api/webhooks/stripe en Stripe.
+     */
+    scope.post('/api/webhooks/stripe', async (req, reply) => {
+      const secret = getStripeWebhookSecret();
+      if (!secret) return reply.code(400).send({ error: 'Webhook de Stripe no configurado' });
+      const rawBody = (req as any).rawBody as string | undefined;
+      const sig = req.headers['stripe-signature'] as string | undefined;
+      if (!rawBody || !verifyStripeSignature(rawBody, sig, secret)) {
+        return reply.code(401).send({ error: 'Firma inválida' });
+      }
+      const event = req.body as any;
+      // `completed` cubre el pago inmediato (tarjeta); `async_payment_succeeded`
+      // cubre los métodos diferidos (p. ej. SEPA) que liquidan después de cerrar
+      // la sesión. En AMBOS exigimos payment_status === 'paid': la sesión puede
+      // cerrarse («complete») sin que el cobro esté aún liquidado.
+      if (event?.type === 'checkout.session.completed' || event?.type === 'checkout.session.async_payment_succeeded') {
+        const session = event.data?.object;
+        const sessionId = session?.id as string | undefined;
+        if (sessionId && session?.payment_status === 'paid') {
+          if (markInvoicePaidByStripeSession(sessionId)) auditSystem('invoice_paid_stripe', sessionId);
+        }
+      }
+      return { received: true };
     });
   });
 }

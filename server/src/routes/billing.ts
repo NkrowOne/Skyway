@@ -6,12 +6,16 @@ import {
   createInvoice,
   deleteInvoice,
   getInvoice,
+  getInvoiceByStripeSession,
   getWorkspace,
   listInvoices,
+  nextInvoiceNumber,
   updateInvoice,
   workspaceUsageRange,
 } from '../db';
+import { getBillingProfile, getStripeSecretKey } from '../company';
 import { workspacePlan } from '../quota';
+import { StripeError, createStripeCheckout } from '../stripe';
 import { InvoiceLine, InvoiceRow } from '../types';
 
 const HOUR_MS = 3_600_000;
@@ -26,8 +30,8 @@ const lineSchema = z.object({
 /** Acota a entero seguro: por encima de 2^53 se perdería precisión al almacenar. */
 const clampSafe = (n: number): number => Math.max(-Number.MAX_SAFE_INTEGER, Math.min(Number.MAX_SAFE_INTEGER, n));
 
-/** Normaliza las líneas y calcula importes y total (el importe se recomputa en servidor). */
-function computeLines(rawLines: z.infer<typeof lineSchema>[]): { lines: InvoiceLine[]; total: number } {
+/** Normaliza líneas + calcula subtotal, impuesto y total (todo se recomputa en servidor). */
+function computeTotals(rawLines: z.infer<typeof lineSchema>[], taxRate: number): { lines: InvoiceLine[]; subtotal: number; tax: number; total: number } {
   const lines: InvoiceLine[] = rawLines.map((l) => ({
     label: l.label,
     kind: l.kind,
@@ -35,8 +39,9 @@ function computeLines(rawLines: z.infer<typeof lineSchema>[]): { lines: InvoiceL
     unitCents: l.unitCents,
     amountCents: clampSafe(Math.round(l.qty * l.unitCents)),
   }));
-  const total = clampSafe(lines.reduce((sum, l) => sum + l.amountCents, 0));
-  return { lines, total };
+  const subtotal = clampSafe(lines.reduce((sum, l) => sum + l.amountCents, 0));
+  const tax = clampSafe(Math.round(subtotal * (taxRate / 100)));
+  return { lines, subtotal, tax, total: clampSafe(subtotal + tax) };
 }
 
 function parseLines(json: string): InvoiceLine[] {
@@ -52,14 +57,19 @@ function publicInvoice(inv: InvoiceRow) {
   return {
     id: inv.id,
     workspace_id: inv.workspace_id,
+    number: inv.number,
     period_start: inv.period_start,
     period_end: inv.period_end,
     status: inv.status,
     currency: inv.currency,
     subtotal_cents: inv.subtotal_cents,
+    tax_cents: inv.tax_cents,
+    tax_rate: inv.tax_rate,
     total_cents: inv.total_cents,
     lines: parseLines(inv.lines),
     plan_name: inv.plan_name,
+    payment_method: inv.payment_method,
+    stripe_url: inv.stripe_url,
     issued_at: inv.issued_at,
     paid_at: inv.paid_at,
     notes: inv.notes,
@@ -76,28 +86,53 @@ function currentCycle(billingDay: number): { start: number; end: number } {
   return { start: start.getTime(), end: end.getTime() };
 }
 
+/** Asigna número de factura al emitir/pagar si aún no lo tiene. */
+function ensureNumber(inv: InvoiceRow, fields: Record<string, unknown>): void {
+  if (!inv.number && !fields.number) fields.number = nextInvoiceNumber(getBillingProfile().invoicePrefix);
+}
+
+/**
+ * Marca una factura como pagada a partir de una sesión de Stripe completada.
+ * La usa el webhook (verificado) de `routes/webhooks.ts`. Idempotente.
+ */
+export function markInvoicePaidByStripeSession(sessionId: string): boolean {
+  const inv = getInvoiceByStripeSession(sessionId);
+  if (!inv) return false;
+  if (inv.status === 'paid') return true;
+  const fields: Record<string, unknown> = { status: 'paid', payment_method: 'stripe', paid_at: Date.now() };
+  if (!inv.issued_at) fields.issued_at = Date.now();
+  ensureNumber(inv, fields);
+  updateInvoice(inv.id, fields);
+  return true;
+}
+
 export async function billingRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
-  // Facturas del workspace: admin o propietario (este último, solo lectura).
+  // Facturas del workspace + datos del emisor (para pintar la factura) + estado de Stripe.
   app.get('/api/workspaces/:id/invoices', async (req, reply) => {
     const { id } = req.params as { id: string };
     const ws = getWorkspace(id);
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
     if (!assertWorkspaceAccess(req, reply, id)) return reply;
-    return { invoices: listInvoices(id).map(publicInvoice) };
+    return {
+      invoices: listInvoices(id).map(publicInvoice),
+      issuer: getBillingProfile(),
+      client: { name: ws.name, billing_email: ws.billing_email },
+      stripeEnabled: !!getStripeSecretKey(),
+    };
   });
 
-  // Genera una factura borrador del ciclo actual: precio del plan (usos incluidos)
-  // + resumen de uso como líneas a coste 0, que el admin puede tarificar.
+  // Genera la factura del ciclo: plan (usos incluidos) + uso, con IVA del perfil.
   app.post('/api/workspaces/:id/invoices/generate', { preHandler: requireAdmin }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const ws = getWorkspace(id);
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
     const plan = workspacePlan(ws);
+    const profile = getBillingProfile();
     const cycle = currentCycle(ws.billing_day);
     const usage = workspaceUsageRange(id, Math.floor(cycle.start / HOUR_MS), Math.floor(cycle.end / HOUR_MS));
-    const currency = plan?.currency ?? 'EUR';
+    const currency = plan?.currency ?? profile.currency;
 
     const rawLines: z.infer<typeof lineSchema>[] = [];
     if (plan) {
@@ -113,17 +148,23 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       { label: 'Memoria consumida (GB·h)', kind: 'usage', qty: Math.round((usage.memByteHours / 1e9) * 100) / 100, unitCents: 0 },
     );
 
-    const { lines, total } = computeLines(rawLines);
+    const { lines, subtotal, tax, total } = computeTotals(rawLines, profile.vatRate);
     const inv = createInvoice({
       workspace_id: id,
+      number: null,
       period_start: cycle.start,
       period_end: cycle.end,
       status: 'draft',
       currency,
-      subtotal_cents: total,
+      subtotal_cents: subtotal,
+      tax_cents: tax,
+      tax_rate: profile.vatRate,
       total_cents: total,
       lines: JSON.stringify(lines),
       plan_name: plan?.name ?? null,
+      payment_method: null,
+      stripe_session_id: null,
+      stripe_url: null,
       issued_at: null,
       paid_at: null,
       notes: null,
@@ -139,6 +180,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const ws = getWorkspace(id);
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
     const plan = workspacePlan(ws);
+    const profile = getBillingProfile();
     const cycle = currentCycle(ws.billing_day);
     const body = z
       .object({
@@ -146,20 +188,28 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
         periodStart: z.coerce.number().int().optional(),
         periodEnd: z.coerce.number().int().optional(),
         currency: z.string().trim().length(3).toUpperCase().optional(),
+        taxRate: z.coerce.number().min(0).max(100).optional(),
         notes: z.string().trim().max(2000).nullable().optional(),
       })
       .parse(req.body);
-    const { lines, total } = computeLines(body.lines);
+    const taxRate = body.taxRate ?? profile.vatRate;
+    const { lines, subtotal, tax, total } = computeTotals(body.lines, taxRate);
     const inv = createInvoice({
       workspace_id: id,
+      number: null,
       period_start: body.periodStart ?? cycle.start,
       period_end: body.periodEnd ?? cycle.end,
       status: 'draft',
-      currency: body.currency ?? plan?.currency ?? 'EUR',
-      subtotal_cents: total,
+      currency: body.currency ?? plan?.currency ?? profile.currency,
+      subtotal_cents: subtotal,
+      tax_cents: tax,
+      tax_rate: taxRate,
       total_cents: total,
       lines: JSON.stringify(lines),
       plan_name: plan?.name ?? null,
+      payment_method: null,
+      stripe_session_id: null,
+      stripe_url: null,
       issued_at: null,
       paid_at: null,
       notes: body.notes ?? null,
@@ -169,7 +219,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     return { invoice: publicInvoice(inv) };
   });
 
-  // Edita una factura: líneas, estado (emitir/pagar/anular) y notas. Solo admin.
+  // Edita una factura: líneas, estado, método de pago y notas. Solo admin.
   app.patch('/api/invoices/:id', { preHandler: requireAdmin }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const inv = getInvoice(id);
@@ -178,28 +228,34 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       .object({
         lines: z.array(lineSchema).max(100).optional(),
         status: z.enum(['draft', 'issued', 'paid', 'void']).optional(),
+        paymentMethod: z.enum(['bank_transfer', 'stripe', 'card', 'cash', 'other']).nullable().optional(),
+        taxRate: z.coerce.number().min(0).max(100).optional(),
         notes: z.string().trim().max(2000).nullable().optional(),
         currency: z.string().trim().length(3).toUpperCase().optional(),
       })
       .parse(req.body);
 
     const fields: Record<string, unknown> = {};
-    if (body.lines) {
-      const { lines, total } = computeLines(body.lines);
+    const taxRate = body.taxRate ?? inv.tax_rate;
+    if (body.lines || body.taxRate !== undefined) {
+      const raw = body.lines ?? parseLines(inv.lines);
+      const { lines, subtotal, tax, total } = computeTotals(raw as z.infer<typeof lineSchema>[], taxRate);
       fields.lines = JSON.stringify(lines);
-      fields.subtotal_cents = total;
+      fields.subtotal_cents = subtotal;
+      fields.tax_cents = tax;
+      fields.tax_rate = taxRate;
       fields.total_cents = total;
     }
     if (body.currency) fields.currency = body.currency;
     if (body.notes !== undefined) fields.notes = body.notes;
+    if (body.paymentMethod !== undefined) fields.payment_method = body.paymentMethod;
     if (body.status && body.status !== inv.status) {
       fields.status = body.status;
-      // Marcas de tiempo al pasar de estado (se conservan si ya existían).
-      if (body.status === 'issued' && !inv.issued_at) fields.issued_at = Date.now();
-      if (body.status === 'paid') {
+      if (body.status === 'issued' || body.status === 'paid') {
         if (!inv.issued_at) fields.issued_at = Date.now();
-        fields.paid_at = Date.now();
+        ensureNumber(inv, fields); // asigna número de factura al emitir/pagar
       }
+      if (body.status === 'paid') fields.paid_at = Date.now();
     }
     updateInvoice(id, fields);
     audit(req, 'invoice_updated', { type: 'invoice', id, detail: body.status ?? 'edición' });
@@ -213,5 +269,44 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     deleteInvoice(id);
     audit(req, 'invoice_deleted', { type: 'invoice', id });
     return { ok: true };
+  });
+
+  // Crea (o reutiliza) un enlace de pago con Stripe para la factura. Solo admin.
+  app.post('/api/invoices/:id/stripe-link', { preHandler: requireAdmin }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const inv = getInvoice(id);
+    if (!inv) return reply.code(404).send({ error: 'Factura no encontrada' });
+    if (inv.status === 'paid') return reply.code(400).send({ error: 'La factura ya está pagada.' });
+    const secret = getStripeSecretKey();
+    if (!secret) return reply.code(400).send({ error: 'Configura primero la clave de Stripe en Contabilidad.' });
+    const ws = getWorkspace(inv.workspace_id);
+    const origin = `${req.protocol}://${req.headers.host}`;
+
+    const fields: Record<string, unknown> = {};
+    if (!inv.number) fields.number = nextInvoiceNumber(getBillingProfile().invoicePrefix);
+    if (!inv.issued_at) fields.issued_at = Date.now();
+    if (inv.status === 'draft') fields.status = 'issued';
+    const number = (fields.number as string) ?? inv.number ?? inv.id;
+
+    try {
+      const session = await createStripeCheckout(secret, {
+        amountCents: inv.total_cents,
+        currency: inv.currency,
+        invoiceNumber: number,
+        invoiceId: inv.id,
+        successUrl: `${origin}/workspaces/${inv.workspace_id}?paid=1`,
+        cancelUrl: `${origin}/workspaces/${inv.workspace_id}`,
+        customerEmail: ws?.billing_email ?? null,
+      });
+      fields.stripe_session_id = session.id;
+      fields.stripe_url = session.url;
+      fields.payment_method = 'stripe';
+      updateInvoice(id, fields);
+      audit(req, 'invoice_stripe_link', { type: 'invoice', id, detail: number });
+      return { url: session.url, invoice: publicInvoice(getInvoice(id)!) };
+    } catch (err: any) {
+      if (err instanceof StripeError) return reply.code(502).send({ error: err.message });
+      throw err;
+    }
   });
 }

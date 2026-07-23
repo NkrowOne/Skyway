@@ -24,7 +24,9 @@ import {
   updateUserPassword,
   updateUserRole,
   updateWorkspace,
+  workspaceUsageByProject,
   workspaceUsageRange,
+  workspaceUsageSeries,
 } from '../db';
 import { grantedModules, workspaceQuotaSummary, workspacePlan } from '../quota';
 import { MODULES, sanitizeModules } from '../modules';
@@ -236,6 +238,28 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
       ramMaxGb: Math.round((usage.memMax / 1e9) * 100) / 100,
       diskMaxGb: Math.round((usage.diskMax / 1e9) * 100) / 100,
     };
+  });
+
+  // Serie temporal de consumo (para las gráficas) + consumo por proyecto (insights).
+  app.get('/api/workspaces/:id/usage/series', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const ws = getWorkspace(id);
+    if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
+    if (!assertWorkspaceAccess(req, reply, id)) return reply;
+    const { days } = z.object({ days: z.coerce.number().int().min(1).max(365).default(30) }).parse(req.query);
+    const nowHour = Math.floor(Date.now() / HOUR_MS);
+    const fromHour = nowHour - days * 24 + 1;
+    const bucketHours = days <= 2 ? 1 : days <= 14 ? 6 : 24;
+    const series = workspaceUsageSeries(id, fromHour, nowHour + 1, bucketHours);
+    const byProject = workspaceUsageByProject(id, fromHour, nowHour + 1)
+      .slice(0, 8)
+      .map((p) => ({
+        projectId: p.projectId,
+        name: p.name,
+        cpuCoreHours: Math.round(p.cpuCoreHours * 100) / 100,
+        ramGbHours: Math.round(p.ramGbHours * 100) / 100,
+      }));
+    return { days, bucketHours, series, byProject };
   });
 
   // ---- sub-usuarios del workspace (requisito 4: crear solo para su workspace) ----
