@@ -8,14 +8,21 @@ import {
   deleteInvoice,
   getInvoice,
   getInvoiceByStripeSession,
+  getProduct,
   getWorkspace,
+  listActiveSubscriptions,
   listInvoices,
+  listPendingCharges,
+  listTiers,
+  markChargesInvoiced,
   transaction,
   updateInvoice,
+  workspaceMeterUsage,
   workspaceUsageRange,
 } from '../db';
 import { getBillingProfile, getStripeSecretKey } from '../company';
 import { workspacePlan } from '../quota';
+import { priceTiers } from '../pricing';
 import { StripeError, createStripeCheckout } from '../stripe';
 import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, TaxBreakdownEntry, VatRegime } from '../types';
 
@@ -189,6 +196,29 @@ function publicInvoice(inv: InvoiceRow) {
   };
 }
 
+/**
+ * Cantidad consumida de un medidor en el ciclo. Los medidores de infraestructura
+ * salen de service_metrics_hourly (ya capturado); el resto (IA/lógicos) de
+ * usage_meter_hourly (ingesta por API).
+ */
+function meterQuantity(
+  meter: string,
+  workspaceId: string,
+  fromHour: number,
+  toHour: number,
+  usage: { cpuCorePctHours: number; memByteHours: number },
+): number {
+  const round2 = (x: number) => Math.round(x * 100) / 100;
+  switch (meter) {
+    case 'cpu_core_hour':
+      return round2(usage.cpuCorePctHours / 100);
+    case 'mem_gb_hour':
+      return round2(usage.memByteHours / 1e9);
+    default:
+      return round2(workspaceMeterUsage(workspaceId, meter, fromHour, toHour));
+  }
+}
+
 /** Ciclo de facturación actual anclado al día de facturación del workspace. */
 function currentCycle(billingDay: number): { start: number; end: number } {
   const now = new Date();
@@ -276,7 +306,8 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     };
   });
 
-  // Genera la factura del ciclo: plan (usos incluidos) + uso, con IVA del perfil.
+  // Genera el borrador del ciclo: plan + suscripciones (con uso medido y tramos) +
+  // cargos puntuales pendientes. Se crea en DRAFT para revisión antes de emitir.
   app.post('/api/workspaces/:id/invoices/generate', { preHandler: requireAdmin }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const ws = getWorkspace(id);
@@ -284,7 +315,9 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const plan = workspacePlan(ws);
     const profile = getBillingProfile();
     const cycle = currentCycle(ws.billing_day);
-    const usage = workspaceUsageRange(id, Math.floor(cycle.start / HOUR_MS), Math.floor(cycle.end / HOUR_MS));
+    const fromHour = Math.floor(cycle.start / HOUR_MS);
+    const toHour = Math.floor(cycle.end / HOUR_MS);
+    const usage = workspaceUsageRange(id, fromHour, toHour);
     const currency = plan?.currency ?? profile.currency;
 
     const rawLines: z.infer<typeof lineSchema>[] = [];
@@ -297,10 +330,38 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
         taxRate: profile.vatRate,
       });
     }
-    rawLines.push(
-      { label: 'CPU consumida (núcleo·h)', kind: 'usage', qty: Math.round((usage.cpuCorePctHours / 100) * 100) / 100, unitCents: 0, taxRate: profile.vatRate },
-      { label: 'Memoria consumida (GB·h)', kind: 'usage', qty: Math.round((usage.memByteHours / 1e9) * 100) / 100, unitCents: 0, taxRate: profile.vatRate },
-    );
+
+    // Suscripciones activas: recurrentes (fijas), medidas por uso y por tramos.
+    for (const sub of listActiveSubscriptions(id)) {
+      const product = getProduct(sub.product_id);
+      if (!product) continue;
+      const unitPrice = sub.unit_cents ?? product.price_cents;
+      const rate = product.tax_exempt ? 0 : product.tax_rate;
+      if ((product.billing_model === 'metered' || product.billing_model === 'tiered') && product.meter) {
+        const qty = meterQuantity(product.meter, id, fromHour, toHour, usage) * sub.qty;
+        if (qty <= 0) continue; // sin consumo, no se factura línea
+        if (product.billing_model === 'tiered') {
+          const amount = priceTiers(listTiers(product.id), qty, product.tier_mode ?? 'graduated');
+          rawLines.push({ label: `${product.name} · ${qty} ${product.unit || 'ud'}`, kind: 'subscription', qty: 1, unitCents: amount, taxRate: rate });
+        } else {
+          rawLines.push({ label: `${product.name} (${product.unit || 'uso'})`, kind: 'usage', qty, unitCents: unitPrice, taxRate: rate });
+        }
+      } else {
+        rawLines.push({
+          label: `${product.name} (${sub.interval === 'yearly' ? 'anual' : 'mensual'})`,
+          kind: 'subscription',
+          qty: sub.qty,
+          unitCents: unitPrice,
+          taxRate: rate,
+        });
+      }
+    }
+
+    // Cargos puntuales pendientes: se incluyen y luego se marcan como facturados.
+    const charges = listPendingCharges(id, 'pending');
+    for (const c of charges) {
+      rawLines.push({ label: c.label, kind: c.kind === 'product' ? 'product' : 'custom', qty: c.qty, unitCents: c.unit_cents, taxRate: c.tax_rate });
+    }
 
     const totals = computeTotals(rawLines, { defaultTaxRate: profile.vatRate, irpfRate: profile.defaultIrpfRate, regime: 'general' });
     const inv = createInvoice({
@@ -321,6 +382,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       lines: JSON.stringify(totals.lines),
       plan_name: plan?.name ?? null,
     });
+    if (charges.length > 0) markChargesInvoiced(charges.map((c) => c.id), inv.id);
     audit(req, 'invoice_generated', { type: 'invoice', id: inv.id, detail: `${ws.name} · ${currency} ${(totals.total / 100).toFixed(2)}` });
     reply.code(201);
     return { invoice: publicInvoice(inv) };

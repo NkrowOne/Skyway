@@ -484,6 +484,116 @@ export interface BillingProfile {
   footer: string;
 }
 
+// ---------- facturación multimodular: catálogo, suscripciones y uso ----------
+
+/** Categoría de un producto/servicio facturable. */
+export type ProductCategory = 'web' | 'ia' | 'app' | 'hosting' | 'bbdd' | 'dominio' | 'soporte' | 'custom';
+
+/** Modelo de precio de un producto del catálogo. */
+export type BillingModel = 'flat_one_off' | 'subscription' | 'metered' | 'tiered';
+
+/**
+ * Medidor de uso. Los de infraestructura salen de `service_metrics_hourly`
+ * (ya capturado); los lógicos/IA de `usage_meter_hourly` (ingesta por API).
+ */
+export type UsageMeter =
+  | 'cpu_core_hour'
+  | 'mem_gb_hour'
+  | 'ai_tokens_in'
+  | 'ai_tokens_out'
+  | 'ai_requests'
+  | 'ai_bytes'
+  | 'unit';
+
+/** Producto/servicio facturable del catálogo (paralelo a `plans`). */
+export interface ProductRow {
+  id: string;
+  name: string;
+  slug: string;
+  category: ProductCategory;
+  billing_model: BillingModel;
+  /** Precio unitario (céntimos) para flat/subscription/metered sin tramos. */
+  price_cents: number;
+  currency: string;
+  /** Periodicidad de la suscripción (monthly/yearly), o one_off/metered. */
+  interval: 'monthly' | 'yearly' | 'one_off' | 'metered';
+  /** Unidad mostrada en la factura (p. ej. «mes», «1k tokens», «hora»). */
+  unit: string;
+  /** Medidor que tarifa el producto (solo billing_model='metered'/'tiered'). */
+  meter: UsageMeter | null;
+  /** Cómo se evalúan los tramos (billing_model='tiered'). */
+  tier_mode: 'graduated' | 'volume' | null;
+  tax_rate: number;
+  irpf_rate: number;
+  tax_exempt: number;
+  /** Módulos que concede al contratarse (JSON array). */
+  modules: string;
+  description: string | null;
+  active: number;
+  archived: number;
+  created_at: number;
+}
+
+/** Tramo de precio para productos con billing_model='tiered'. */
+export interface PriceTierRow {
+  id: string;
+  product_id: string;
+  /** Límite superior del tramo (unidades); null = último tramo (sin tope). */
+  up_to: number | null;
+  unit_cents: number;
+  flat_cents: number;
+  sort: number;
+  created_at: number;
+}
+
+/** Suscripción/add-on recurrente de un workspace a un producto del catálogo. */
+export interface SubscriptionRow {
+  id: string;
+  workspace_id: string;
+  product_id: string;
+  /** Servicio concreto al que se liga el add-on (opcional). */
+  service_id: string | null;
+  qty: number;
+  /** Precio congelado al contratar (céntimos); null = sigue el catálogo. */
+  unit_cents: number | null;
+  currency: string;
+  interval: 'monthly' | 'yearly';
+  status: 'active' | 'paused' | 'cancelled';
+  anchor_day: number;
+  started_at: number;
+  cancelled_at: number | null;
+  created_at: number;
+}
+
+/** Cargo puntual pendiente de incluir en la próxima factura del ciclo. */
+export interface PendingChargeRow {
+  id: string;
+  workspace_id: string;
+  product_id: string | null;
+  label: string;
+  kind: 'product' | 'custom';
+  qty: number;
+  unit_cents: number;
+  tax_rate: number;
+  irpf_rate: number;
+  status: 'pending' | 'invoiced' | 'cancelled';
+  invoice_id: string | null;
+  created_at: number;
+}
+
+/** Evento crudo de consumo (ingesta idempotente); alimenta `usage_meter_hourly`. */
+export interface UsageEventRow {
+  id: string;
+  idempotency_key: string;
+  subject_type: 'workspace' | 'service';
+  subject_id: string;
+  meter: string;
+  quantity: number;
+  product_id: string | null;
+  ts: number;
+  metadata: string | null;
+}
+
 export interface PasskeyRow {
   id: string;
   user_id: string;

@@ -12,6 +12,10 @@ import {
   HostMetricHour,
   InvoiceRow,
   InvoiceSeriesRow,
+  PendingChargeRow,
+  PriceTierRow,
+  ProductRow,
+  SubscriptionRow,
   PasskeyRow,
   PlanRow,
   ProjectRow,
@@ -313,11 +317,96 @@ export function initDb(): void {
       created_at INTEGER NOT NULL,
       UNIQUE (code, year)
     );
+    -- Catálogo multimodular: productos facturables por categoría y modelo de precio.
+    CREATE TABLE IF NOT EXISTS catalog_products (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      category TEXT NOT NULL DEFAULT 'custom' CHECK (category IN ('web','ia','app','hosting','bbdd','dominio','soporte','custom')),
+      billing_model TEXT NOT NULL DEFAULT 'flat_one_off' CHECK (billing_model IN ('flat_one_off','subscription','metered','tiered')),
+      price_cents INTEGER NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'EUR',
+      interval TEXT NOT NULL DEFAULT 'one_off' CHECK (interval IN ('monthly','yearly','one_off','metered')),
+      unit TEXT NOT NULL DEFAULT '',
+      meter TEXT,
+      tier_mode TEXT CHECK (tier_mode IN ('graduated','volume')),
+      tax_rate REAL NOT NULL DEFAULT 21,
+      irpf_rate REAL NOT NULL DEFAULT 0,
+      tax_exempt INTEGER NOT NULL DEFAULT 0,
+      modules TEXT NOT NULL DEFAULT '[]',
+      description TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      archived INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS catalog_price_tiers (
+      id TEXT PRIMARY KEY,
+      product_id TEXT NOT NULL REFERENCES catalog_products(id) ON DELETE CASCADE,
+      up_to INTEGER,
+      unit_cents INTEGER NOT NULL DEFAULT 0,
+      flat_cents INTEGER NOT NULL DEFAULT 0,
+      sort INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    -- Suscripciones/add-ons recurrentes múltiples por workspace.
+    CREATE TABLE IF NOT EXISTS workspace_subscriptions (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      product_id TEXT NOT NULL REFERENCES catalog_products(id) ON DELETE RESTRICT,
+      service_id TEXT REFERENCES services(id) ON DELETE SET NULL,
+      qty REAL NOT NULL DEFAULT 1,
+      unit_cents INTEGER,
+      currency TEXT NOT NULL DEFAULT 'EUR',
+      interval TEXT NOT NULL DEFAULT 'monthly' CHECK (interval IN ('monthly','yearly')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','cancelled')),
+      anchor_day INTEGER NOT NULL DEFAULT 1,
+      started_at INTEGER NOT NULL,
+      cancelled_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    -- Cargos puntuales pendientes de la próxima factura del ciclo.
+    CREATE TABLE IF NOT EXISTS pending_charges (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      product_id TEXT REFERENCES catalog_products(id) ON DELETE SET NULL,
+      label TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'custom' CHECK (kind IN ('product','custom')),
+      qty REAL NOT NULL DEFAULT 1,
+      unit_cents INTEGER NOT NULL DEFAULT 0,
+      tax_rate REAL NOT NULL DEFAULT 21,
+      irpf_rate REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','invoiced','cancelled')),
+      invoice_id TEXT,
+      created_at INTEGER NOT NULL
+    );
+    -- Ingesta cruda de consumo (idempotente) y su agregado horario para tarifar.
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id TEXT PRIMARY KEY,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      subject_type TEXT NOT NULL DEFAULT 'workspace' CHECK (subject_type IN ('workspace','service')),
+      subject_id TEXT NOT NULL,
+      meter TEXT NOT NULL,
+      quantity REAL NOT NULL DEFAULT 0,
+      product_id TEXT,
+      ts INTEGER NOT NULL,
+      metadata TEXT
+    );
+    CREATE TABLE IF NOT EXISTS usage_meter_hourly (
+      subject_type TEXT NOT NULL,
+      subject_id TEXT NOT NULL,
+      meter TEXT NOT NULL,
+      hour INTEGER NOT NULL,
+      quantity REAL NOT NULL DEFAULT 0,
+      PRIMARY KEY (subject_id, meter, hour)
+    );
     -- Rutas calientes: proyectos por workspace (cuota y listados), usuarios por
     -- workspace (sub-usuarios) y facturas por workspace.
     CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
     CREATE INDEX IF NOT EXISTS idx_users_workspace ON users(workspace_id);
     CREATE INDEX IF NOT EXISTS idx_invoices_workspace ON workspace_invoices(workspace_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace ON workspace_subscriptions(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_pending_charges_workspace ON pending_charges(workspace_id, status);
+    CREATE INDEX IF NOT EXISTS idx_usage_meter_lookup ON usage_meter_hourly(subject_id, meter, hour);
   `);
 
   // Facturación de empresa: número, impuestos, método de pago y datos de Stripe.
@@ -1626,4 +1715,209 @@ export function workspaceUsageByProject(
        ORDER BY cpuCoreHours DESC`,
     )
     .all(workspaceId, fromHour, toHour) as { projectId: string; name: string; cpuCoreHours: number; ramGbHours: number }[];
+}
+
+// ---------- catálogo multimodular ----------
+function uniqueProductSlug(name: string): string {
+  const base = slugify(name) || 'producto';
+  let candidate = base;
+  let n = 2;
+  while (db.prepare('SELECT 1 FROM catalog_products WHERE slug = ?').get(candidate)) {
+    candidate = `${base}-${n++}`;
+  }
+  return candidate;
+}
+
+export function listProducts(includeArchived = false): ProductRow[] {
+  const sql = includeArchived
+    ? 'SELECT * FROM catalog_products ORDER BY archived ASC, category ASC, name ASC'
+    : 'SELECT * FROM catalog_products WHERE archived = 0 ORDER BY category ASC, name ASC';
+  return db.prepare(sql).all() as ProductRow[];
+}
+
+export function getProduct(productId: string): ProductRow | undefined {
+  return db.prepare('SELECT * FROM catalog_products WHERE id = ?').get(productId) as ProductRow | undefined;
+}
+
+const PRODUCT_DEFAULTS = {
+  category: 'custom', billing_model: 'flat_one_off', price_cents: 0, currency: 'EUR', interval: 'one_off',
+  unit: '', meter: null, tier_mode: null, tax_rate: 21, irpf_rate: 0, tax_exempt: 0, modules: '[]',
+  description: null, active: 1, archived: 0,
+} as const;
+
+export function createProduct(row: Pick<ProductRow, 'name'> & Partial<ProductRow>): ProductRow {
+  const full: ProductRow = { ...PRODUCT_DEFAULTS, ...row, id: id('prd'), slug: uniqueProductSlug(row.name), created_at: now() };
+  db.prepare(
+    `INSERT INTO catalog_products (id, name, slug, category, billing_model, price_cents, currency, interval, unit, meter, tier_mode, tax_rate, irpf_rate, tax_exempt, modules, description, active, archived, created_at)
+     VALUES (@id, @name, @slug, @category, @billing_model, @price_cents, @currency, @interval, @unit, @meter, @tier_mode, @tax_rate, @irpf_rate, @tax_exempt, @modules, @description, @active, @archived, @created_at)`,
+  ).run(full);
+  return full;
+}
+
+const PRODUCT_COLUMNS = new Set([
+  'name', 'category', 'billing_model', 'price_cents', 'currency', 'interval', 'unit', 'meter', 'tier_mode',
+  'tax_rate', 'irpf_rate', 'tax_exempt', 'modules', 'description', 'active', 'archived',
+]);
+
+export function updateProduct(productId: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields).filter((k) => PRODUCT_COLUMNS.has(k));
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE catalog_products SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), productId);
+}
+
+export function deleteProduct(productId: string): void {
+  db.prepare('DELETE FROM catalog_products WHERE id = ?').run(productId);
+}
+
+/** ¿Hay alguna suscripción (activa o pausada) que use este producto? */
+export function productInUse(productId: string): boolean {
+  return !!db
+    .prepare("SELECT 1 FROM workspace_subscriptions WHERE product_id = ? AND status <> 'cancelled' LIMIT 1")
+    .get(productId);
+}
+
+export function listTiers(productId: string): PriceTierRow[] {
+  return db.prepare('SELECT * FROM catalog_price_tiers WHERE product_id = ? ORDER BY sort ASC').all(productId) as PriceTierRow[];
+}
+
+/** Reemplaza el conjunto de tramos de un producto (todo o nada). */
+export function replaceTiers(productId: string, tiers: { upTo: number | null; unitCents: number; flatCents: number }[]): void {
+  db.transaction(() => {
+    db.prepare('DELETE FROM catalog_price_tiers WHERE product_id = ?').run(productId);
+    const ins = db.prepare(
+      'INSERT INTO catalog_price_tiers (id, product_id, up_to, unit_cents, flat_cents, sort, created_at) VALUES (@id, @product_id, @up_to, @unit_cents, @flat_cents, @sort, @created_at)',
+    );
+    tiers.forEach((t, i) =>
+      ins.run({ id: id('tir'), product_id: productId, up_to: t.upTo, unit_cents: t.unitCents, flat_cents: t.flatCents, sort: i, created_at: now() }),
+    );
+  })();
+}
+
+// ---------- suscripciones ----------
+export function listSubscriptions(workspaceId: string): SubscriptionRow[] {
+  return db
+    .prepare("SELECT * FROM workspace_subscriptions WHERE workspace_id = ? ORDER BY status ASC, created_at DESC")
+    .all(workspaceId) as SubscriptionRow[];
+}
+
+export function listActiveSubscriptions(workspaceId: string): SubscriptionRow[] {
+  return db
+    .prepare("SELECT * FROM workspace_subscriptions WHERE workspace_id = ? AND status = 'active' ORDER BY created_at ASC")
+    .all(workspaceId) as SubscriptionRow[];
+}
+
+export function getSubscription(subId: string): SubscriptionRow | undefined {
+  return db.prepare('SELECT * FROM workspace_subscriptions WHERE id = ?').get(subId) as SubscriptionRow | undefined;
+}
+
+export function createSubscription(row: Omit<SubscriptionRow, 'id' | 'created_at'>): SubscriptionRow {
+  const full: SubscriptionRow = { ...row, id: id('sub'), created_at: now() };
+  db.prepare(
+    `INSERT INTO workspace_subscriptions (id, workspace_id, product_id, service_id, qty, unit_cents, currency, interval, status, anchor_day, started_at, cancelled_at, created_at)
+     VALUES (@id, @workspace_id, @product_id, @service_id, @qty, @unit_cents, @currency, @interval, @status, @anchor_day, @started_at, @cancelled_at, @created_at)`,
+  ).run(full);
+  return full;
+}
+
+const SUBSCRIPTION_COLUMNS = new Set(['service_id', 'qty', 'unit_cents', 'currency', 'interval', 'status', 'anchor_day', 'cancelled_at']);
+
+export function updateSubscription(subId: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields).filter((k) => SUBSCRIPTION_COLUMNS.has(k));
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE workspace_subscriptions SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), subId);
+}
+
+export function deleteSubscription(subId: string): void {
+  db.prepare('DELETE FROM workspace_subscriptions WHERE id = ?').run(subId);
+}
+
+// ---------- cargos puntuales pendientes ----------
+export function listPendingCharges(workspaceId: string, status?: PendingChargeRow['status']): PendingChargeRow[] {
+  if (status) {
+    return db
+      .prepare('SELECT * FROM pending_charges WHERE workspace_id = ? AND status = ? ORDER BY created_at DESC')
+      .all(workspaceId, status) as PendingChargeRow[];
+  }
+  return db.prepare('SELECT * FROM pending_charges WHERE workspace_id = ? ORDER BY created_at DESC').all(workspaceId) as PendingChargeRow[];
+}
+
+export function getPendingCharge(chargeId: string): PendingChargeRow | undefined {
+  return db.prepare('SELECT * FROM pending_charges WHERE id = ?').get(chargeId) as PendingChargeRow | undefined;
+}
+
+export function createPendingCharge(row: Omit<PendingChargeRow, 'id' | 'created_at' | 'status' | 'invoice_id'>): PendingChargeRow {
+  const full: PendingChargeRow = { ...row, id: id('chg'), status: 'pending', invoice_id: null, created_at: now() };
+  db.prepare(
+    `INSERT INTO pending_charges (id, workspace_id, product_id, label, kind, qty, unit_cents, tax_rate, irpf_rate, status, invoice_id, created_at)
+     VALUES (@id, @workspace_id, @product_id, @label, @kind, @qty, @unit_cents, @tax_rate, @irpf_rate, @status, @invoice_id, @created_at)`,
+  ).run(full);
+  return full;
+}
+
+export function cancelPendingCharge(chargeId: string): void {
+  db.prepare("UPDATE pending_charges SET status = 'cancelled' WHERE id = ? AND status = 'pending'").run(chargeId);
+}
+
+/** Marca varios cargos como facturados, enlazándolos a la factura. */
+export function markChargesInvoiced(chargeIds: string[], invoiceId: string): void {
+  if (chargeIds.length === 0) return;
+  const stmt = db.prepare("UPDATE pending_charges SET status = 'invoiced', invoice_id = ? WHERE id = ? AND status = 'pending'");
+  db.transaction(() => {
+    for (const cid of chargeIds) stmt.run(invoiceId, cid);
+  })();
+}
+
+// ---------- ingesta y agregación de uso (IA y contadores lógicos) ----------
+/** Ingesta idempotente de un evento de consumo. Devuelve false si es duplicado. */
+export function ingestUsageEvent(evt: {
+  idempotencyKey: string;
+  subjectType: 'workspace' | 'service';
+  subjectId: string;
+  meter: string;
+  quantity: number;
+  productId?: string | null;
+  ts: number;
+  metadata?: string | null;
+}): boolean {
+  return db.transaction(() => {
+    const res = db
+      .prepare(
+        `INSERT OR IGNORE INTO usage_events (id, idempotency_key, subject_type, subject_id, meter, quantity, product_id, ts, metadata)
+         VALUES (@id, @idempotency_key, @subject_type, @subject_id, @meter, @quantity, @product_id, @ts, @metadata)`,
+      )
+      .run({
+        id: id('use'), idempotency_key: evt.idempotencyKey, subject_type: evt.subjectType, subject_id: evt.subjectId,
+        meter: evt.meter, quantity: evt.quantity, product_id: evt.productId ?? null, ts: evt.ts, metadata: evt.metadata ?? null,
+      });
+    if (res.changes === 0) return false; // idempotency_key ya visto
+    const hour = Math.floor(evt.ts / 3_600_000);
+    db.prepare(
+      `INSERT INTO usage_meter_hourly (subject_type, subject_id, meter, hour, quantity)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(subject_id, meter, hour) DO UPDATE SET quantity = quantity + excluded.quantity`,
+    ).run(evt.subjectType, evt.subjectId, evt.meter, hour, evt.quantity);
+    return true;
+  })();
+}
+
+/**
+ * Consumo agregado de un medidor lógico/IA para un workspace en un rango horario,
+ * sumando tanto los eventos imputados al propio workspace como a sus servicios.
+ */
+export function workspaceMeterUsage(workspaceId: string, meter: string, fromHour: number, toHour: number): number {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(u.quantity), 0) AS total
+       FROM usage_meter_hourly u
+       WHERE u.meter = ? AND u.hour >= ? AND u.hour < ? AND (
+         (u.subject_type = 'workspace' AND u.subject_id = ?)
+         OR (u.subject_type = 'service' AND u.subject_id IN (
+           SELECT s.id FROM services s JOIN projects p ON p.id = s.project_id WHERE p.workspace_id = ?
+         ))
+       )`,
+    )
+    .get(meter, fromHour, toHour, workspaceId, workspaceId) as { total: number };
+  return row.total;
 }
