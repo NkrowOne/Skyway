@@ -217,7 +217,7 @@ export default function UsersPage() {
                         type="checkbox"
                         checked={draft.projectIds.includes(p.id)}
                         onChange={() => toggleProject(p.id)}
-                        className="accent-[#6e56cf]"
+                        className="accent-acc"
                       />
                       <span className="min-w-0 flex-1 truncate text-[13px]">{p.name}</span>
                       {p.client && <span className="shrink-0 text-[11px] text-subtle">{p.client}</span>}

@@ -37,7 +37,7 @@ function ScoreRing({ score, grade }: { score: number; grade: string }) {
           strokeLinecap="round"
           strokeDasharray={C}
           strokeDashoffset={drawn ? offset : C}
-          className="transition-[stroke-dashoffset] duration-700 ease-out"
+          className="transition-[stroke-dashoffset] duration-300 ease-out"
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
@@ -220,7 +220,7 @@ export default function SecurityPage() {
                         <Link
                           key={i.id}
                           to={i.projectId ? `/projects/${i.projectId}${i.serviceId ? `?s=${i.serviceId}` : ''}` : '#'}
-                          className="rounded-full border border-line bg-bg px-2.5 py-[3px] font-mono text-[11px] text-sub transition-colors duration-150 hover:border-[color-mix(in_oklab,#6e56cf_45%,var(--color-line))] hover:text-txt"
+                          className="rounded-full border border-line bg-bg px-2.5 py-[3px] font-mono text-[11px] text-sub transition-colors duration-150 hover:border-[color-mix(in_oklab,var(--color-acc)_45%,var(--color-line))] hover:text-txt"
                         >
                           {i.title.includes(':') ? i.title.split(':').slice(1).join(':').trim() : i.projectName ?? i.title}
                           {i.projectName ? ` · ${i.projectName}` : ''}

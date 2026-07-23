@@ -297,7 +297,7 @@ export default function NewServiceModal({
                         onClick={() => pickRepo(r)}
                         className={cx(
                           'flex w-full items-center gap-2 rounded-md px-2.5 py-[7px] text-left transition-colors',
-                          active ? 'bg-acc/[.14] shadow-[inset_2px_0_0_#6e56cf]' : 'hover:bg-surface2',
+                          active ? 'bg-acc/[.14] shadow-[inset_2px_0_0_var(--color-acc)]' : 'hover:bg-surface2',
                         )}
                       >
                         <span className="min-w-0 flex-1 truncate font-mono text-xs">{r.fullName}</span>

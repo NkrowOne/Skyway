@@ -320,7 +320,7 @@ export default function VariablesTab({
         {suggestions.filter((s) => !rows.some((r) => r.key === s.key)).map((s) => (
           <button
             key={s.key}
-            className="rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-[11px] text-sub transition-colors duration-150 hover:border-[color-mix(in_oklab,#6e56cf_50%,var(--color-line))] hover:text-txt"
+            className="rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-[11px] text-sub transition-colors duration-150 hover:border-[color-mix(in_oklab,var(--color-acc)_50%,var(--color-line))] hover:text-txt"
             title={s.hint}
             onClick={() => {
               setRows([...rows, { key: s.key, value: s.value }]);

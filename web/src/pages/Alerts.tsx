@@ -68,7 +68,7 @@ function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: (
           </p>
           <p className="mt-2 text-[13px] leading-relaxed text-sub">{alert.message}</p>
           {alert.explanation && (
-            <div className="mt-2.5 flex items-start gap-2 rounded-r-md border-l-2 border-warn/45 bg-warn/[.05] py-2 pl-2.5 pr-3 text-xs text-sub">
+            <div className="mt-2.5 flex items-start gap-2 rounded-r-md border-l-2 border-warn/40 bg-warn/[.05] py-2 pl-2.5 pr-3 text-xs text-sub">
               <Lightbulb size={13} className="mt-px shrink-0 text-warn" />
               <p className="leading-relaxed">{alert.explanation}</p>
             </div>

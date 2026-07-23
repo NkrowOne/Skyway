@@ -16,7 +16,7 @@ import {
   ScrollText,
   Search,
   Server,
-  Sparkles,
+  Trash2,
   TriangleAlert,
 } from 'lucide-react';
 import { api } from '../api';
@@ -359,7 +359,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
                 loading={prune.isPending}
                 title="Elimina imágenes colgantes y caché de build. Nunca toca volúmenes."
               >
-                <Sparkles size={13} /> Liberar espacio
+                <Trash2 size={13} /> Liberar espacio
               </Button>
             )}
           </div>
@@ -602,7 +602,7 @@ export default function MonitorPage() {
         'flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-[5px] text-xs transition-colors duration-150',
         stateFilter === key
           ? 'border-acc/55 bg-acc/[.16] font-medium text-acc-soft'
-          : 'border-line bg-surface text-sub hover:border-[color-mix(in_oklab,#6e56cf_40%,var(--color-line))] hover:text-txt',
+          : 'border-line bg-surface text-sub hover:border-[color-mix(in_oklab,var(--color-acc)_40%,var(--color-line))] hover:text-txt',
       )}
     >
       {label}

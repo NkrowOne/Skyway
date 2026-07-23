@@ -272,7 +272,7 @@ export default function SitesPage() {
             <ellipse cx="60" cy="36" rx="7.5" ry="17" stroke="currentColor" strokeWidth="2" />
             <path d="M44 31h32M44 41h32" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
             <ellipse cx="60" cy="38" rx="34" ry="11" stroke="currentColor" strokeWidth="1.5" strokeDasharray="4 5" />
-            <circle cx="88" cy="30" r="2.5" fill="#6e56cf" />
+            <circle cx="88" cy="30" r="2.5" fill="var(--color-acc)" />
             <circle cx="22" cy="14" r="1.3" fill="currentColor" />
             <circle cx="100" cy="58" r="1.3" fill="currentColor" />
           </svg>

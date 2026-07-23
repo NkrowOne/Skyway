@@ -174,13 +174,80 @@ const REDIS_READ = new Set([
   'xlen', 'xrange', 'xrevrange', 'xinfo', 'pfcount', 'geopos', 'geodist', 'sinter', 'sunion', 'sdiff',
 ]);
 
+/**
+ * Divide SQL en statements por `;`, ignorando los `;` que caen dentro de
+ * literales comillados o de comentarios. No es un parser completo, pero basta
+ * para que el guard de solo-lectura valide TODOS los statements (`mysql -e`
+ * ejecuta varios separados por `;`), no solo el primero. Los comentarios
+ * ejecutables de MySQL se conservan como código para que no escondan escrituras.
+ */
+export function splitSqlStatements(sql: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  let quote: string | null = null;
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    const next = sql[i + 1];
+    if (quote) {
+      buf += ch;
+      if (ch === quote) {
+        if (next === quote) {
+          buf += next; // comilla duplicada ('' o ""): sigue dentro del literal
+          i++;
+        } else {
+          quote = null;
+        }
+      } else if (ch === '\\' && quote !== '`' && next !== undefined) {
+        buf += next; // backslash-escape (MySQL): consume el siguiente carácter
+        i++;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      buf += ch;
+      continue;
+    }
+    if (ch === '-' && next === '-') {
+      // comentario de línea: hasta el fin de línea
+      while (i < sql.length && sql[i] !== '\n') i++;
+      buf += '\n';
+      continue;
+    }
+    if (ch === '/' && next === '*' && sql[i + 2] !== '!') {
+      // comentario de bloque inerte (los ejecutables de MySQL empiezan por /*! y
+      // se dejan pasar como código para que el guard los vea)
+      i += 2;
+      while (i < sql.length && !(sql[i] === '*' && sql[i + 1] === '/')) i++;
+      i++; // deja i en el '/'; el for lo saltará
+      buf += ' ';
+      continue;
+    }
+    if (ch === ';') {
+      out.push(buf);
+      buf = '';
+      continue;
+    }
+    buf += ch;
+  }
+  out.push(buf);
+  return out.map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
 /** Lanza si la consulta parece de escritura y el modo escritura no está activo. */
 export function assertReadOnly(engine: DbEngine, query: string): void {
   if (engine === 'postgres' || engine === 'mysql') {
-    if (!SQL_READ_START.test(query)) {
-      throw new Error(
-        'El modo solo lectura únicamente permite consultas SELECT/SHOW/EXPLAIN. Activa "Permitir escritura" para ejecutar cambios.',
-      );
+    // Postgres además lo impone en el motor (default_transaction_read_only). En
+    // MySQL ese cinturón depende de una variable de sesión que las versiones
+    // antiguas (< 5.7) y algunas variantes ignoran, así que aquí exigimos que
+    // NINGÚN statement escriba —no solo el primero—, porque `mysql -e` ejecuta
+    // todos los separados por `;`.
+    for (const stmt of splitSqlStatements(query)) {
+      if (!SQL_READ_START.test(stmt)) {
+        throw new Error(
+          'El modo solo lectura únicamente permite consultas SELECT/SHOW/EXPLAIN. Activa "Permitir escritura" para ejecutar cambios.',
+        );
+      }
     }
     return;
   }
@@ -488,7 +555,14 @@ function pgQualified(object: string): { from: string; schema: string | null; tab
 }
 const myIdent = (t: string) => `\`${t.replace(/`/g, '``')}\``;
 /** Clave Redis citada como la entiende el parser de redis-cli. */
-const redisKey = (k: string) => `"${k.replace(/([\\"])/g, '\\$1')}"`;
+const redisKey = (k: string) => {
+  // redis-cli lee CADA línea como un comando (`printf '%s\n' | redis-cli`): una
+  // clave con salto de línea podría colar comandos arbitrarios (incl. FLUSHALL)
+  // saltándose el modo solo-lectura, ya que el explorador no pasa por
+  // assertReadOnly. Se rechazan las claves con CR/LF (no expresables en una línea).
+  if (/[\r\n]/.test(k)) throw new Error('La clave contiene saltos de línea y no puede explorarse desde la consola.');
+  return `"${k.replace(/([\\"])/g, '\\$1')}"`;
+};
 
 /** Comando de lectura adecuado al tipo real de la clave Redis. */
 function redisDataQuery(type: string, key: string): string {

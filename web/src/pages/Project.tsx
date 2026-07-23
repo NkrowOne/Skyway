@@ -307,7 +307,7 @@ export default function ProjectPage() {
               <rect x="8" y="14" width="46" height="34" rx="8" stroke="currentColor" strokeWidth="2" />
               <rect x="66" y="24" width="46" height="34" rx="8" stroke="currentColor" strokeWidth="2" strokeDasharray="5 5" />
               <path d="M54 31h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              <circle cx="21" cy="27" r="3" fill="#6e56cf" />
+              <circle cx="21" cy="27" r="3" fill="var(--color-acc)" />
               <path d="M30 27h16M17 37h28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
             </svg>
             <p className="max-w-sm text-sm text-sub">

@@ -307,7 +307,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
           <label
             className={cx(
               'flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-colors',
-              allowWrite ? 'border-warn/50 bg-warn/[.1] text-warn' : 'border-line text-sub hover:text-txt',
+              allowWrite ? 'border-warn/40 bg-warn/[.1] text-warn' : 'border-line text-sub hover:text-txt',
             )}
             title="Sin marcar, solo se permiten consultas de lectura"
           >

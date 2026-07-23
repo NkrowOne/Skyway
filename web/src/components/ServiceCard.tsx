@@ -44,7 +44,7 @@ export default function ServiceCard({
       className={cx(
         'relative rounded-xl border bg-surface p-4 text-left',
         selected
-          ? 'border-[color-mix(in_oklab,#6e56cf_70%,var(--color-line))] shadow-card-selected transition-[border-color,box-shadow] duration-[180ms] ease-out'
+          ? 'border-[color-mix(in_oklab,var(--color-acc)_70%,var(--color-line))] shadow-card-selected transition-[border-color,box-shadow] duration-[180ms] ease-out'
           : cx('card-hover', alertCount > 0 ? 'border-[color-mix(in_oklab,var(--color-err)_45%,var(--color-line))] shadow-lvl1' : 'border-line shadow-lvl1'),
       )}
     >

@@ -76,7 +76,7 @@ export default function ExecModal({
           {QUICK_COMMANDS.map((c) => (
             <button
               key={c}
-              className="rounded-md border border-line bg-surface2 px-2 py-0.5 font-mono text-[11px] hover:border-acc/50"
+              className="rounded-md border border-line bg-surface2 px-2 py-0.5 font-mono text-[11px] transition-colors duration-150 hover:border-acc/50"
               onClick={() => {
                 setCommand(c);
                 run(c);

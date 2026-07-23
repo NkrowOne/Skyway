@@ -139,6 +139,12 @@ export function initDb(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts DESC);
     CREATE INDEX IF NOT EXISTS idx_alerts_open ON alerts(dedupe_key) WHERE resolved_at IS NULL;
+    -- Rutas calientes sin cubrir por los índices de arriba: el monitor resuelve
+    -- alertas por service_id en cada refresco y el dashboard/estado cuentan las
+    -- abiertas por project_id en cada render. Sin estos índices era un full-scan
+    -- de una tabla que nunca se poda.
+    CREATE INDEX IF NOT EXISTS idx_alerts_service_open ON alerts(service_id) WHERE resolved_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_alerts_project ON alerts(project_id);
   `);
 
   // Migraciones de columnas para bases de datos ya existentes.

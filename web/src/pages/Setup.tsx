@@ -45,7 +45,7 @@ export default function Setup() {
         <div
           key={errorShake}
           className={cx(
-            'rounded-2xl border border-line bg-surface px-7 py-8 shadow-[0_24px_64px_-24px_rgba(0,0,0,.7),inset_0_1px_0_color-mix(in_oklab,#6e56cf_16%,transparent)]',
+            'rounded-2xl border border-line bg-surface px-7 py-8 shadow-[0_24px_64px_-24px_rgba(0,0,0,.7),inset_0_1px_0_color-mix(in_oklab,var(--color-acc)_16%,transparent)]',
             errorShake > 0 && 'shake',
           )}
         >

@@ -44,7 +44,7 @@ function DiagnosisCard({ raw }: { raw: string | null }) {
     return null;
   }
   return (
-    <div className="mb-2.5 rounded-r-lg border-l-2 border-warn bg-warn/[.06] p-3 text-xs">
+    <div className="mb-2.5 rounded-r-lg border-l-2 border-warn/40 bg-warn/[.06] p-3 text-xs">
       <p className="flex items-center gap-1.5 font-semibold text-warn">
         <Lightbulb size={13} /> {diagnosis.title}
       </p>
@@ -239,7 +239,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
             : isCurrent
               ? 'border-[color-mix(in_oklab,var(--color-ok)_35%,var(--color-line))] bg-ok/[.05]'
               : open
-                ? 'border-[color-mix(in_oklab,#6e56cf_30%,var(--color-line))] bg-bg'
+                ? 'border-[color-mix(in_oklab,var(--color-acc)_30%,var(--color-line))] bg-bg'
                 : 'border-line bg-bg';
         return (
         <div key={d.id} className={cx('relative overflow-hidden rounded-xl border transition-colors duration-300', tint)}>
@@ -303,7 +303,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
             <Collapse open={open}>
               <div className="border-t border-line p-3">
                 {d.error && (
-                  <p className="mb-2.5 rounded-r-lg border-l-2 border-err bg-err/[.08] px-3 py-2.5 text-xs text-err">{d.error}</p>
+                  <p className="mb-2.5 rounded-r-lg border-l-2 border-err/40 bg-err/[.08] px-3 py-2.5 text-xs text-err">{d.error}</p>
                 )}
                 <DiagnosisCard raw={d.diagnosis} />
                 <DeploymentLogs deployment={d} />

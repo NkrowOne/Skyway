@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { BellRing, CheckCircle2, Cpu, DatabaseBackup, Download, Globe, Trash2 } from 'lucide-react';
+import { AlertTriangle, BellRing, CheckCircle2, Cpu, DatabaseBackup, Download, Globe, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { ModuleLogo } from '../components/ModuleIcon';
 import { Button, ConfirmModal, Field, useFlash, useToast } from '../components/ui';
@@ -397,7 +397,9 @@ export default function SettingsPage() {
                     ? `permisos: ${githubTest.scopes.join(', ')}`
                     : 'sin scopes clásicos'}
                 {githubTest.tokenType === 'classic' && !githubTest.scopes.includes('repo') && (
-                  <span className="mt-1 block text-warn">⚠ Falta el permiso «repo»: no podrá clonar repositorios privados.</span>
+                  <span className="mt-1 flex items-start gap-1 text-warn">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0" /> Falta el permiso «repo»: no podrá clonar repositorios privados.
+                  </span>
                 )}
               </>
             ) : (

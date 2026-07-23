@@ -243,7 +243,7 @@ function CommandPalette({ open, onClose, unread, isAdmin }: { open: boolean; onC
                       onMouseMove={() => setSel(idx)}
                       className={cx(
                         'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[9px] text-left',
-                        selected && 'bg-acc/[.14] shadow-[inset_2px_0_0_#6e56cf]',
+                        selected && 'bg-acc/[.14] shadow-[inset_2px_0_0_var(--color-acc)]',
                       )}
                     >
                       {item.icon}
@@ -554,7 +554,7 @@ export default function Layout() {
         {isHome && (
           <button
             onClick={() => setCmdOpen(true)}
-            className="hidden min-w-0 flex-[0_1_300px] items-center gap-2 rounded-lg border border-line bg-bg py-1.5 pl-3 pr-2 text-[13px] text-subtle transition-colors duration-150 hover:border-[color-mix(in_oklab,#6e56cf_45%,var(--color-line))] hover:text-sub sm:flex"
+            className="hidden min-w-0 flex-[0_1_300px] items-center gap-2 rounded-lg border border-line bg-bg py-1.5 pl-3 pr-2 text-[13px] text-subtle transition-colors duration-150 hover:border-[color-mix(in_oklab,var(--color-acc)_45%,var(--color-line))] hover:text-sub sm:flex"
           >
             <Search size={14} className="shrink-0" />
             <span className="flex-1 truncate text-left">Buscar o saltar a…</span>
@@ -566,7 +566,7 @@ export default function Layout() {
           {!isHome && (
             <button
               onClick={() => setCmdOpen(true)}
-              className="mr-1 flex items-center gap-2 rounded-lg border border-line bg-bg px-2.5 py-1.5 text-xs text-subtle transition-colors duration-150 hover:border-[color-mix(in_oklab,#6e56cf_45%,var(--color-line))]"
+              className="mr-1 flex items-center gap-2 rounded-lg border border-line bg-bg px-2.5 py-1.5 text-xs text-subtle transition-colors duration-150 hover:border-[color-mix(in_oklab,var(--color-acc)_45%,var(--color-line))]"
               title="Buscar (⌘K)"
             >
               <Search size={13} />

@@ -68,8 +68,7 @@ function UptimeBars({ days }: { days: { date: number; pct: number | null }[] }) 
         {days.map((d, i) => (
           <div
             key={d.date}
-            className={cx('bar-rise min-w-0 flex-1 rounded-[2px] transition-opacity', dayColor(d.pct), tip && tip.idx !== i && 'opacity-70')}
-            style={{ animationDelay: `${i * 6}ms` }}
+            className={cx('min-w-0 flex-1 rounded-[2px] transition-opacity', dayColor(d.pct), tip && tip.idx !== i && 'opacity-70')}
             onMouseEnter={() => setTip({ idx: i, text: `${fmtDay(d.date)}: ${d.pct === null ? 'sin datos' : fmtPct(d.pct)}` })}
             onMouseLeave={() => setTip(null)}
           />
@@ -238,7 +237,10 @@ export default function PublicStatusPage() {
         <footer className="mt-10 flex items-center justify-between text-[11px] text-subtle">
           <span>Actualizado hace {secondsAgo < 5 ? 'unos segundos' : `${secondsAgo} s`} · se refresca solo</span>
           <span className="flex items-center gap-1.5">
-            <Rocket size={11} /> Skyway
+            <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-[4px] bg-acc text-white">
+              <Rocket size={9} />
+            </span>
+            Skyway
           </span>
         </footer>
       </div>

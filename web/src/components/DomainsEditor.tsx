@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, ExternalLink, Globe, HelpCircle, Plus, RefreshCw, Sparkles, X } from 'lucide-react';
+import { CheckCircle2, ExternalLink, Globe, HelpCircle, Plus, RefreshCw, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { cx, Tone } from '../utils';
@@ -215,12 +215,12 @@ export default function DomainsEditor({
       )}
 
       {/* Subdominio automático */}
-      <div className="rounded-lg border border-dashed border-[color-mix(in_oklab,#6e56cf_40%,var(--color-line))] bg-acc/[.06] p-3">
+      <div className="rounded-lg border border-dashed border-acc/40 bg-acc/[.06] p-3">
         {rootDomain ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="flex min-w-0 items-center gap-2 text-xs text-acc-soft">
-                <Sparkles size={13} className="shrink-0" />
+                <Globe size={13} className="shrink-0" />
                 <span className="truncate font-mono text-xs text-txt">{generated}</span>
               </span>
               <Button
@@ -244,7 +244,7 @@ export default function DomainsEditor({
         ) : (
           <>
             <div className="flex items-center gap-2 text-xs font-medium text-acc-soft">
-              <Sparkles size={13} /> Subdominio automático
+              <Globe size={13} /> Subdominio automático
             </div>
             <div className="mt-2 flex flex-col gap-2 text-xs text-sub">
               <p>

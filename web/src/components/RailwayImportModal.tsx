@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, CheckCircle2, Database, GitBranch, Package, TrainFront } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CheckCircle2, Database, GitBranch, Package, TrainFront } from 'lucide-react';
 import { api } from '../api';
 import { Button, CopyButton, Field, Modal, useToast } from './ui';
 import { cx } from '../utils';
@@ -112,7 +112,10 @@ export function ImportReportView({ report }: { report: ImportReport }) {
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Revisa esto</h3>
           <ul className="space-y-1 text-xs text-warn">
             {report.warnings.map((w, i) => (
-              <li key={i} className="rounded-lg border border-warn/30 bg-warn/5 px-3 py-2">⚠ {w}</li>
+              <li key={i} className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/5 px-3 py-2">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <span>{w}</span>
+              </li>
             ))}
           </ul>
         </div>
@@ -368,7 +371,10 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
             </p>
           )}
           {plan.warnings.map((w, i) => (
-            <p key={i} className="rounded-lg border border-warn/30 bg-warn/5 px-3 py-2 text-xs text-warn">⚠ {w}</p>
+            <p key={i} className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/5 px-3 py-2 text-xs text-warn">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>{w}</span>
+            </p>
           ))}
 
           <div className="flex justify-between">

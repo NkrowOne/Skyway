@@ -32,7 +32,7 @@ export function Button({ variant = 'primary', size = 'md', loading, success, cla
   const variants = {
     // Primario con volumen: gradiente vertical + brillo interior arriba; el hover ilumina, no cambia de color.
     primary:
-      'bg-gradient-to-b from-[#7d66d9] to-[#6a52c9] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.16),0_2px_10px_-2px_color-mix(in_oklab,#6e56cf_55%,transparent)] hover:brightness-[1.07] hover:shadow-[inset_0_1px_0_rgba(255,255,255,.18),0_4px_16px_-6px_color-mix(in_oklab,#6e56cf_70%,transparent)]',
+      'bg-gradient-to-b from-[#7d66d9] to-[#6a52c9] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.16),0_2px_10px_-2px_color-mix(in_oklab,var(--color-acc)_55%,transparent)] hover:brightness-[1.07] hover:shadow-[inset_0_1px_0_rgba(255,255,255,.18),0_4px_16px_-6px_color-mix(in_oklab,var(--color-acc)_70%,transparent)]',
     secondary: 'bg-surface2 text-txt border border-line hover:border-acc/50',
     outline: 'bg-surface2 text-txt border border-line hover:border-acc/50',
     ghost: 'bg-transparent text-sub hover:text-txt hover:bg-surface2',

@@ -124,7 +124,7 @@ export default function Dashboard() {
       'flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3.5 py-[5px] text-xs transition-colors duration-150',
       active
         ? 'border-acc/55 bg-acc/[.16] font-medium text-acc-soft'
-        : 'border-line bg-surface text-sub hover:border-[color-mix(in_oklab,#6e56cf_40%,var(--color-line))] hover:text-txt',
+        : 'border-line bg-surface text-sub hover:border-[color-mix(in_oklab,var(--color-acc)_40%,var(--color-line))] hover:text-txt',
     );
 
   return (
@@ -177,11 +177,11 @@ export default function Dashboard() {
               strokeWidth="2"
               strokeLinejoin="round"
             />
-            <circle cx="60" cy="34" r="3" fill="#6e56cf" />
+            <circle cx="60" cy="34" r="3" fill="var(--color-acc)" />
             <path d="M76 30c8-8 16-13 26-16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 5" />
             <circle cx="30" cy="18" r="1.3" fill="currentColor" />
             <circle cx="94" cy="42" r="1.3" fill="currentColor" />
-            <circle cx="106" cy="10" r="1.6" fill="#b9a7ee" opacity=".7" />
+            <circle cx="106" cy="10" r="1.6" fill="var(--color-acc-soft)" opacity=".7" />
           </svg>
           {isAdmin ? (
             <>

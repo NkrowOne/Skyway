@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Cpu, Globe, HardDrive, Plus, X } from 'lucide-react';
+import { ChevronRight, Cpu, Globe, HardDrive, Plus, X } from 'lucide-react';
 import { api } from '../../api';
 import { GithubConnector, Service } from '../../types';
 import { cx } from '../../utils';
@@ -396,7 +396,7 @@ export default function ServiceSettingsTab({
             pero Skyway lo vigila y te alerta al superarlo. Consúltalo en Monitor.
           </p>
           {!isDb && replicasN > 1 && (
-            <p className="mt-2.5 rounded-lg border border-acc/25 bg-acc/[.07] px-3 py-2.5 text-xs text-sub">
+            <p className="mt-2.5 rounded-lg border border-acc/30 bg-acc/[.08] px-3 py-2.5 text-xs text-sub">
               Con {replicasN} réplicas el tráfico se reparte y los despliegues son rodantes: siempre queda una sirviendo.
               Requiere servicio <strong className="text-txt">sin volúmenes ni puerto público</strong>
               {(form.volumePaths.length > 0 || form.hostPort) && (
@@ -442,7 +442,7 @@ export default function ServiceSettingsTab({
 
             <details className="group mt-2.5">
               <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] text-subtle transition-colors hover:text-sub">
-                <span className="transition-transform group-open:rotate-90">›</span>
+                <ChevronRight size={12} className="shrink-0 text-subtle transition-transform group-open:rotate-90" />
                 ¿Lo quieres instantáneo? Configura además el webhook de GitHub
               </summary>
               <div className="details-body mt-2 flex flex-col gap-2 text-xs">
@@ -471,7 +471,7 @@ export default function ServiceSettingsTab({
           </SectionCard>
         )}
 
-        <section className="mb-3.5 rounded-xl border border-err/30 bg-err/[.04] p-4">
+        <section className="mb-3.5 rounded-xl border border-err/30 bg-err/[.06] p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-[13px] font-semibold text-err">Zona de peligro</h3>

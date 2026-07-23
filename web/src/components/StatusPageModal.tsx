@@ -81,8 +81,8 @@ export default function StatusPageModal({
       ) : (
         <div className="flex flex-col gap-4">
           <p className="text-[13px] leading-relaxed text-sub">
-            Un dashboard público con el estado en vivo de los servicios de este proyecto, su disponibilidad de los
-            últimos 90 días y las incidencias. Sin login: comparte el enlace con tu cliente y listo.
+            Un panel público con el estado en vivo de los servicios de este proyecto, su disponibilidad de los
+            últimos 90 días y las incidencias. Sin necesidad de iniciar sesión: comparte el enlace con tu cliente.
           </p>
 
           <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-line bg-bg px-4 py-3">
@@ -123,7 +123,7 @@ export default function StatusPageModal({
                       <Megaphone size={12} /> Aviso de mantenimiento
                     </>
                   }
-                  hint="Se muestra como banner en la página pública. Vacío = sin aviso."
+                  hint="Se muestra como aviso destacado en la página pública. Vacío = sin aviso."
                 >
                   <div className="flex flex-col gap-2">
                     <textarea
