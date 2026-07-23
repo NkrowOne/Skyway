@@ -4,11 +4,17 @@ import LogViewer from '../LogViewer';
 
 // Vista inicial ligera (primer pintado rápido en móvil). A partir de ahí el
 // historial se pagina hacia atrás bajo demanda con «Cargar más», un bloque cada
-// vez —no se arrastra todo el buffer—, para mejor rendimiento. El tope solo
-// acota la memoria si además el vivo es muy hablador.
+// vez —no se arrastra todo el buffer—, para mejor rendimiento.
 const INITIAL_TAIL = 200;
 const STEP = 200;
-const BUFFER_CAP = 20_000;
+// Tope de líneas en memoria/DOM (seguro en móvil). Se recorta con HISTÉRESIS:
+// solo al pasar de MAX se baja a KEEP, de golpe. Clave para el rendimiento: si
+// recortáramos una línea por fotograma, el frente del buffer cambiaría en cada
+// frame y el visor reprocesaría TODO el buffer (stripAnsi + nivel) por cada
+// línea nueva —eso congelaba la página—. Entre recortes es puro «append»
+// incremental; el recorte (y el reproceso) ocurre una vez cada MAX−KEEP líneas.
+const BUFFER_MAX = 8_000;
+const BUFFER_KEEP = 6_000;
 
 type Entry = { line: string; ts: string | null };
 
@@ -40,13 +46,16 @@ export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string
       const incoming = pending.splice(0);
       setEntries((prev) => {
         const next = prev.length ? prev.concat(incoming) : incoming;
-        return next.length > BUFFER_CAP ? next.slice(next.length - BUFFER_CAP) : next;
+        return next.length > BUFFER_MAX ? next.slice(next.length - BUFFER_KEEP) : next;
       });
     };
     const es = openStream(`/services/${serviceId}/logs/stream?tail=${INITIAL_TAIL}`);
     es.addEventListener('log', (ev) => {
       const data = JSON.parse((ev as MessageEvent).data);
       pending.push({ line: data.line, ts: data.ts ?? null });
+      // Con la pestaña en segundo plano, rAF se pausa y el flush no corre: se
+      // acota la cola pendiente para no acumular memoria sin límite (fuga).
+      if (pending.length > BUFFER_MAX) pending.splice(0, pending.length - BUFFER_KEEP);
       if (!raf) raf = requestAnimationFrame(flush);
     });
     es.addEventListener('notice', (ev) => {
@@ -107,7 +116,7 @@ export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string
         downloadName={`logs-${serviceId}-${new Date().toISOString().slice(0, 19)}.txt`}
         className="min-h-[280px] flex-1"
         onLoadMore={loadMore}
-        canLoadMore={entries.length > 0 && !reachedStart && !!oldestTs}
+        canLoadMore={entries.length > 0 && entries.length < BUFFER_MAX && !reachedStart && !!oldestTs}
         loadingMore={loadingMore}
         loadMoreCount={STEP}
         atStart={reachedStart && entries.length > 0}

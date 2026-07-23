@@ -74,7 +74,10 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
       const incoming = pending.splice(0);
       setLines((prev) => {
         const next = prev.length ? prev.concat(incoming) : incoming;
-        return next.length > 8_000 ? next.slice(next.length - 8_000) : next;
+        // Histéresis: se recorta de 8000 a 6000 de golpe, no una línea por
+        // fotograma. Si no, el frente cambiaría en cada frame y el visor
+        // reprocesaría todo el buffer por línea (la página se congelaba).
+        return next.length > 8_000 ? next.slice(next.length - 6_000) : next;
       });
     };
     const es = openStream(`/deployments/${deployment.id}/logs/stream`);
@@ -89,6 +92,8 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
     });
     es.addEventListener('log', (ev) => {
       pending.push(JSON.parse((ev as MessageEvent).data).line);
+      // En segundo plano rAF se pausa: se acota la cola para no acumular memoria.
+      if (pending.length > 8_000) pending.splice(0, pending.length - 6_000);
       if (!raf) raf = requestAnimationFrame(flush);
     });
     es.addEventListener('done', () => {
