@@ -612,6 +612,16 @@ export interface WorkspaceApiKeyRow {
   revoked_at: number | null;
 }
 
+/** Coste del operador por modelo (micro-céntimos por millón de tokens). Para el margen. */
+export interface AiModelPriceRow {
+  model: string;
+  cost_micros_in: number;
+  cost_micros_cache: number;
+  cost_micros_out: number;
+  currency: string;
+  updated_at: number;
+}
+
 /** Evento crudo de consumo (ingesta idempotente); alimenta `usage_meter_hourly`. */
 export interface UsageEventRow {
   id: string;

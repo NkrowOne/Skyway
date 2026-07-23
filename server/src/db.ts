@@ -26,6 +26,7 @@ import {
   ServiceType,
   UserRole,
   UserRow,
+  AiModelPriceRow,
   WorkspaceApiKeyRow,
   WorkspaceRow,
 } from './types';
@@ -461,6 +462,17 @@ export function initDb(): void {
       revoked_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_ws_api_keys_ws ON workspace_api_keys(workspace_id);
+    -- Coste del operador por modelo (lo que Google nos cobra), para mostrar el
+    -- margen frente al PVP del catálogo. Se guarda en micro-céntimos por millón de
+    -- tokens (entero exacto para los precios de Gemini; dividir entre 1e6 = céntimos/Mtok).
+    CREATE TABLE IF NOT EXISTS ai_model_prices (
+      model TEXT PRIMARY KEY,
+      cost_micros_in INTEGER NOT NULL DEFAULT 0,
+      cost_micros_cache INTEGER NOT NULL DEFAULT 0,
+      cost_micros_out INTEGER NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'EUR',
+      updated_at INTEGER NOT NULL
+    );
     -- Rutas calientes: proyectos por workspace (cuota y listados), usuarios por
     -- workspace (sub-usuarios) y facturas por workspace.
     CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
@@ -2093,4 +2105,38 @@ export function incrementWorkspaceApiKeySpend(keyId: string, cents: number): voi
 /** Reancla el contador de gasto de la clave al inicio del ciclo actual (reset mensual). */
 export function resetWorkspaceApiKeyCycle(keyId: string, cycleStart: number): void {
   db.prepare('UPDATE workspace_api_keys SET spend_cents_cycle = 0, cycle_anchor = ? WHERE id = ?').run(cycleStart, keyId);
+}
+
+// ---------- coste del operador por modelo (margen; Fase 2) ----------
+
+/** Coste registrado del operador por modelo (micro-céntimos por millón de tokens). */
+export function listModelPrices(): AiModelPriceRow[] {
+  return db.prepare('SELECT * FROM ai_model_prices ORDER BY model ASC').all() as AiModelPriceRow[];
+}
+export function getModelPrice(model: string): AiModelPriceRow | undefined {
+  return db.prepare('SELECT * FROM ai_model_prices WHERE model = ?').get(model) as AiModelPriceRow | undefined;
+}
+/** Alta o actualización (upsert) del coste de un modelo. Valores en micro-céntimos por Mtok. */
+export function setModelPrice(p: { model: string; cost_micros_in: number; cost_micros_cache: number; cost_micros_out: number; currency?: string }): AiModelPriceRow {
+  db.prepare(
+    `INSERT INTO ai_model_prices (model, cost_micros_in, cost_micros_cache, cost_micros_out, currency, updated_at)
+     VALUES (@model, @cost_micros_in, @cost_micros_cache, @cost_micros_out, @currency, @updated_at)
+     ON CONFLICT(model) DO UPDATE SET
+       cost_micros_in = excluded.cost_micros_in,
+       cost_micros_cache = excluded.cost_micros_cache,
+       cost_micros_out = excluded.cost_micros_out,
+       currency = excluded.currency,
+       updated_at = excluded.updated_at`,
+  ).run({
+    model: p.model,
+    cost_micros_in: Math.max(0, Math.round(p.cost_micros_in)),
+    cost_micros_cache: Math.max(0, Math.round(p.cost_micros_cache)),
+    cost_micros_out: Math.max(0, Math.round(p.cost_micros_out)),
+    currency: p.currency ?? 'EUR',
+    updated_at: now(),
+  });
+  return getModelPrice(p.model)!;
+}
+export function deleteModelPrice(model: string): number {
+  return db.prepare('DELETE FROM ai_model_prices WHERE model = ?').run(model).changes;
 }

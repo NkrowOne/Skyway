@@ -496,6 +496,20 @@ export interface AiGatewayConfig {
   allowedModels: string[];
 }
 
+/** Coste del operador por modelo (céntimos por millón de tokens) y PVP de referencia. */
+export interface AiModelCost {
+  model: string;
+  currency: string;
+  cost_cents_mtok_in: number;
+  cost_cents_mtok_cache: number;
+  cost_cents_mtok_out: number;
+  updated_at: number;
+}
+export interface AiModelPrices {
+  models: AiModelCost[];
+  sell_cents_mtok: { in: number | null; cache: number | null; out: number | null };
+}
+
 export interface WorkspaceAlert {
   id: string;
   ts: number;

@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Building2, CreditCard, Download, Landmark, Receipt, Sparkles } from 'lucide-react';
+import { Building2, Coins, CreditCard, Download, Landmark, Receipt, Sparkles, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { Button, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { RevenueBars } from '../components/BillingCharts';
-import { AccountingInvoice, AccountingSummary, AiGatewayConfig, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
+import { AccountingInvoice, AccountingSummary, AiGatewayConfig, AiModelPrices, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
 import { cx, fmtDate, fmtMoney } from '../utils';
 
 const INV_TONE: Record<string, 'neutral' | 'info' | 'ok' | 'warn'> = { draft: 'neutral', issued: 'info', paid: 'ok', void: 'warn' };
@@ -169,22 +169,120 @@ function AiGatewaySettings() {
 
   if (!q.data) return <Skeleton className="h-48 w-full" />;
   return (
+    <>
+      <section className="card p-5">
+        <h2 className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} className="text-acc-soft" /> Gateway de IA (Gemini)</h2>
+        <p className="mt-1 text-xs text-subtle">
+          Tu clave de Google Gemini. Skyway proxya las peticiones de los clientes con ella (nunca se expone), mide los tokens y los factura por cuenta. Cada cliente usa una clave <span className="font-mono">skai_…</span> propia, revocable. Admite <span className="font-mono">generateContent</span>, streaming SSE y API compatible con OpenAI.
+        </p>
+        <div className="mt-4 grid gap-3">
+          <Field label="Clave de Gemini (API key de Google AI)" hint={q.data.hasGeminiKey ? 'ya configurada; vacío = no cambiar' : 'necesaria para que el proxy funcione'}>
+            <input className="input font-mono" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={q.data.hasGeminiKey ? '•••••••• configurada' : 'AIza…'} />
+          </Field>
+          <Field label="Modelos permitidos" hint="separados por comas; los de imagen u otros quedan fuera a propósito">
+            <textarea className="input min-h-16 font-mono text-[12px]" value={models} onChange={(e) => setModels(e.target.value)} placeholder="gemini-2.5-flash, gemini-2.5-pro" />
+          </Field>
+        </div>
+        <div className="mt-3 flex items-center justify-between">
+          <p className="text-[11px] text-subtle">Los precios de venta se definen como productos de categoría IA en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>.</p>
+          <Button size="sm" onClick={() => save.mutate()} loading={save.isPending}>Guardar</Button>
+        </div>
+      </section>
+      <ModelCostMargin allowedModels={q.data.allowedModels} />
+    </>
+  );
+}
+
+/**
+ * Coste del operador por modelo y margen frente al PVP del catálogo. Es informativo:
+ * ayuda al operador a fijar precios de venta con margen. Los importes se manejan en
+ * € por millón de tokens (lo que publica Google), separando entrada, cache y salida.
+ */
+function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const q = useQuery({ queryKey: ['ai-model-prices'], queryFn: () => api.get<AiModelPrices>('/ai/gateway/prices') });
+  const [drafts, setDrafts] = useState<Record<string, { in: string; cache: string; out: string }>>({});
+
+  const save = useMutation({
+    mutationFn: (model: string) => {
+      const d = drafts[model] ?? { in: '', cache: '', out: '' };
+      // € / M → céntimos / M (×100). Vacío = 0.
+      const toCents = (v: string) => Math.max(0, Math.round((parseFloat(v.replace(',', '.')) || 0) * 100 * 100) / 100);
+      return api.put(`/ai/gateway/prices/${encodeURIComponent(model)}`, {
+        costCentsMtokIn: toCents(d.in), costCentsMtokCache: toCents(d.cache), costCentsMtokOut: toCents(d.out),
+      });
+    },
+    onSuccess: () => { toast('Coste del modelo guardado', 'ok'); queryClient.invalidateQueries({ queryKey: ['ai-model-prices'] }); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const del = useMutation({
+    mutationFn: (model: string) => api.del(`/ai/gateway/prices/${encodeURIComponent(model)}`),
+    onSuccess: () => { toast('Coste eliminado', 'ok'); queryClient.invalidateQueries({ queryKey: ['ai-model-prices'] }); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  if (!q.data) return <Skeleton className="h-40 w-full" />;
+  const byModel = new Map(q.data.models.map((m) => [m.model, m]));
+  const sell = q.data.sell_cents_mtok;
+  // € por millón desde céntimos por millón.
+  const eurM = (centsM: number) => `${(centsM / 100).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} €/M`;
+  const draftFor = (model: string) => {
+    const d = drafts[model];
+    if (d) return d;
+    const c = byModel.get(model);
+    return { in: c ? String(c.cost_cents_mtok_in / 100) : '', cache: c ? String(c.cost_cents_mtok_cache / 100) : '', out: c ? String(c.cost_cents_mtok_out / 100) : '' };
+  };
+  const setDraft = (model: string, patch: Partial<{ in: string; cache: string; out: string }>) =>
+    setDrafts((prev) => ({ ...prev, [model]: { ...draftFor(model), ...patch } }));
+  // Margen = (PVP − coste) / PVP. Se muestra sobre salida (suele dominar el gasto).
+  const marginOut = (costCentsM: number): number | null => (sell.out && sell.out > 0 ? Math.round(((sell.out - costCentsM) / sell.out) * 100) : null);
+
+  const rows = allowedModels.length ? allowedModels : q.data.models.map((m) => m.model);
+  return (
     <section className="card p-5">
-      <h2 className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} className="text-acc-soft" /> Gateway de IA (Gemini)</h2>
+      <h2 className="flex items-center gap-2 text-sm font-semibold"><Coins size={15} className="text-warn" /> Coste por modelo y margen</h2>
       <p className="mt-1 text-xs text-subtle">
-        Tu clave de Google Gemini. Skyway proxya las peticiones de los clientes con ella (nunca se expone), mide los tokens y los factura por cuenta. Cada cliente usa una clave <span className="font-mono">skai_…</span> propia, revocable.
+        Lo que te cuesta cada modelo en Google (€ por millón de tokens). El margen compara con tu PVP del catálogo
+        {sell.out != null ? <> (salida: <span className="font-mono">{eurM(sell.out)}</span>)</> : <> (define un producto IA de salida para ver el margen)</>}.
       </p>
-      <div className="mt-4 grid gap-3">
-        <Field label="Clave de Gemini (API key de Google AI)" hint={q.data.hasGeminiKey ? 'ya configurada; vacío = no cambiar' : 'necesaria para que el proxy funcione'}>
-          <input className="input font-mono" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={q.data.hasGeminiKey ? '•••••••• configurada' : 'AIza…'} />
-        </Field>
-        <Field label="Modelos permitidos" hint="separados por comas; los de imagen u otros quedan fuera a propósito">
-          <textarea className="input min-h-16 font-mono text-[12px]" value={models} onChange={(e) => setModels(e.target.value)} placeholder="gemini-2.5-flash, gemini-2.5-pro" />
-        </Field>
-      </div>
-      <div className="mt-3 flex items-center justify-between">
-        <p className="text-[11px] text-subtle">Los precios de venta se definen como productos de categoría IA en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>.</p>
-        <Button size="sm" onClick={() => save.mutate()} loading={save.isPending}>Guardar</Button>
+      <div className="mt-4 overflow-x-auto">
+        <table className="w-full text-[12px]">
+          <thead>
+            <tr className="text-left text-subtle">
+              <th className="pb-2 pr-3 font-medium">Modelo</th>
+              <th className="pb-2 pr-3 font-medium">Entrada €/M</th>
+              <th className="pb-2 pr-3 font-medium">Cache €/M</th>
+              <th className="pb-2 pr-3 font-medium">Salida €/M</th>
+              <th className="pb-2 pr-3 font-medium">Margen salida</th>
+              <th className="pb-2 font-medium"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((model) => {
+              const d = draftFor(model);
+              const existing = byModel.get(model);
+              const m = existing ? marginOut(existing.cost_cents_mtok_out) : null;
+              return (
+                <tr key={model} className="border-t border-line/60">
+                  <td className="py-2 pr-3 font-mono">{model}</td>
+                  <td className="py-2 pr-3"><input className="input h-8 w-24 tnum" inputMode="decimal" value={d.in} onChange={(e) => setDraft(model, { in: e.target.value })} placeholder="0" /></td>
+                  <td className="py-2 pr-3"><input className="input h-8 w-24 tnum" inputMode="decimal" value={d.cache} onChange={(e) => setDraft(model, { cache: e.target.value })} placeholder="0" /></td>
+                  <td className="py-2 pr-3"><input className="input h-8 w-24 tnum" inputMode="decimal" value={d.out} onChange={(e) => setDraft(model, { out: e.target.value })} placeholder="0" /></td>
+                  <td className="py-2 pr-3 tnum">
+                    {m == null ? <span className="text-subtle">—</span> : <span className={m >= 0 ? 'text-ok' : 'text-err'}>{m >= 0 ? '+' : ''}{m}%</span>}
+                  </td>
+                  <td className="py-2">
+                    <div className="flex items-center gap-1">
+                      <Button size="sm" variant="ghost" onClick={() => save.mutate(model)} loading={save.isPending && save.variables === model}>Guardar</Button>
+                      {existing && <button className="rounded p-1 text-subtle hover:text-err" title="Eliminar coste" onClick={() => del.mutate(model)}><Trash2 size={13} /></button>}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </section>
   );

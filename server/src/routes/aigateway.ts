@@ -4,12 +4,17 @@ import { assertWorkspaceAccess, currentUser, hashApiToken, requireAdmin, require
 import { audit } from '../audit';
 import {
   createWorkspaceApiKey,
+  deleteModelPrice,
   getWorkspace,
   getWorkspaceApiKey,
   getWorkspaceApiKeyByHash,
   incrementWorkspaceApiKeySpend,
+  listModelPrices,
+  listProducts,
+  listTiers,
   listWorkspaceApiKeys,
   resetWorkspaceApiKeyCycle,
+  setModelPrice,
   touchWorkspaceApiKey,
   updateWorkspaceApiKey,
 } from '../db';
@@ -458,5 +463,74 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
       audit(req, 'ai_gateway_config_updated', { type: 'system', id: 'ai-gateway' });
       return { hasGeminiKey: !!getGeminiApiKey(), baseUrl: getGeminiBaseUrl(), allowedModels: getAllowedModels() };
     });
+
+    // Coste del operador por modelo y margen frente al PVP del catálogo (informativo).
+    // El coste se maneja en la UI como céntimos por millón de tokens (p. ej. 30 = 0,30 €/M);
+    // se persiste en micro-céntimos por Mtok (×1e6) para no perder decimales.
+    mgmt.get('/api/ai/gateway/prices', { preHandler: requireAdmin }, async () => {
+      const toc = (micros: number) => Math.round((micros / 1e6) * 10000) / 10000; // micro-cent/Mtok → cent/Mtok
+      const sell = catalogSellPer1M();
+      return {
+        models: listModelPrices().map((p) => ({
+          model: p.model,
+          currency: p.currency,
+          cost_cents_mtok_in: toc(p.cost_micros_in),
+          cost_cents_mtok_cache: toc(p.cost_micros_cache),
+          cost_cents_mtok_out: toc(p.cost_micros_out),
+          updated_at: p.updated_at,
+        })),
+        // Referencia de venta (céntimos por millón de tokens) tomada del catálogo activo.
+        sell_cents_mtok: sell,
+      };
+    });
+
+    mgmt.put('/api/ai/gateway/prices/:model', { preHandler: requireAdmin }, async (req, reply) => {
+      const { model } = req.params as { model: string };
+      const m = String(model || '').trim();
+      if (!m) return reply.code(400).send({ error: 'Modelo no válido' });
+      const body = z
+        .object({
+          // Céntimos por millón de tokens (admite decimales, p. ej. 7,5 para la cache).
+          costCentsMtokIn: z.coerce.number().min(0).max(1_000_000).default(0),
+          costCentsMtokCache: z.coerce.number().min(0).max(1_000_000).default(0),
+          costCentsMtokOut: z.coerce.number().min(0).max(1_000_000).default(0),
+          currency: z.string().trim().length(3).optional(),
+        })
+        .parse(req.body ?? {});
+      setModelPrice({
+        model: m,
+        cost_micros_in: body.costCentsMtokIn * 1e6,
+        cost_micros_cache: body.costCentsMtokCache * 1e6,
+        cost_micros_out: body.costCentsMtokOut * 1e6,
+        currency: body.currency,
+      });
+      audit(req, 'ai_model_price_set', { type: 'system', id: 'ai-gateway', detail: m });
+      return { ok: true };
+    });
+
+    mgmt.delete('/api/ai/gateway/prices/:model', { preHandler: requireAdmin }, async (req, reply) => {
+      const { model } = req.params as { model: string };
+      deleteModelPrice(String(model || '').trim());
+      audit(req, 'ai_model_price_deleted', { type: 'system', id: 'ai-gateway', detail: String(model) });
+      return reply.send({ ok: true });
+    });
   });
+}
+
+/**
+ * Precio de venta de referencia (céntimos por millón de tokens) por medidor de IA,
+ * tomado del primer producto activo del catálogo que lo tarifa. Sirve para calcular
+ * el margen frente al coste del operador; null si no hay producto para ese medidor.
+ */
+function catalogSellPer1M(): { in: number | null; cache: number | null; out: number | null } {
+  const per1M = (meter: string): number | null => {
+    for (const p of listProducts(false)) {
+      if (!p.active || p.meter !== meter || (p.billing_model !== 'metered' && p.billing_model !== 'tiered')) continue;
+      const size = p.unit_size > 0 ? p.unit_size : 1;
+      const unitCents = p.billing_model === 'tiered' ? listTiers(p.id)[0]?.unit_cents ?? p.price_cents : p.price_cents;
+      return Math.round((unitCents / size) * 1e6 * 100) / 100; // céntimos por 1M tokens
+    }
+    return null;
+  };
+  return { in: per1M('ai_tokens_in'), cache: per1M('ai_tokens_cache_in'), out: per1M('ai_tokens_out') };
 }
