@@ -4,7 +4,15 @@ import { z } from 'zod';
 import { assertProjectAccess, requireAuth } from '../auth';
 import { getProject, getService, listServices } from '../db';
 import { dockerAvailable } from '../docker/client';
-import { configuredReplicas, containerName, followLogs, getRuntime, getStats, replicaName } from '../docker/containers';
+import {
+  configuredReplicas,
+  containerName,
+  fetchLogsBefore,
+  followLogs,
+  getRuntime,
+  getStats,
+  replicaName,
+} from '../docker/containers';
 import { sseInit } from '../sse';
 
 export async function streamRoutes(app: FastifyInstance): Promise<void> {
@@ -18,10 +26,10 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     if (!service || !project) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, project.id)) return reply;
 
-    // Profundidad de historial: el visor la sube con «Cargar más» reabriendo el
-    // stream con más cola. Se acota para no ahogar al móvil ni al servidor; un
-    // valor inválido cae al de por defecto en vez de fallar.
-    const { tail } = z.object({ tail: z.coerce.number().int().min(50).max(5000).catch(200) }).parse(req.query);
+    // Cola inicial del vivo (primer pintado). El historial más antiguo se pagina
+    // aparte con «Cargar más» (GET .../logs/history), no reabriendo el stream. Se
+    // acota para no ahogar al móvil; un valor inválido cae al de por defecto.
+    const { tail } = z.object({ tail: z.coerce.number().int().min(50).max(2000).catch(200) }).parse(req.query);
 
     const channel = sseInit(reply);
     const name = containerName(project, service);
@@ -43,7 +51,18 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
       }
       try {
         channel.send('attached', { state: runtime.state });
-        stopStream = await followLogs(name, (line) => channel.send('log', { line }), tail);
+        stopStream = await followLogs(
+          name,
+          (raw) => {
+            // followLogs entrega «<timestamp> <línea>»: se separa el timestamp de
+            // Docker (cursor de «Cargar más») y se envía la línea limpia para mostrar.
+            const idx = raw.indexOf(' ');
+            const ts = idx > 0 ? raw.slice(0, idx) : null;
+            const line = idx > 0 ? raw.slice(idx + 1) : raw;
+            channel.send('log', { line, ts });
+          },
+          tail,
+        );
       } catch {
         retryTimer = setTimeout(attach, 3000);
       }
@@ -55,6 +74,30 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     });
 
     void attach();
+  });
+
+  /** Historial de logs hacia atrás: bloque de líneas ANTERIORES a `before`, para
+   *  el botón «Cargar más» del visor. Se pagina bajo demanda (no arrastra todo). */
+  app.get('/api/services/:id/logs/history', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const service = getService(id);
+    const project = service ? getProject(service.project_id) : undefined;
+    if (!service || !project) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, project.id)) return reply;
+
+    const { before, limit } = z
+      .object({ before: z.string().min(1), limit: z.coerce.number().int().min(1).max(500).catch(200) })
+      .parse(req.query);
+
+    if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
+    const name = containerName(project, service);
+    const runtime = await getRuntime(name);
+    if (runtime.state === 'not_created') return reply.send({ lines: [], reachedStart: true });
+    try {
+      return reply.send(await fetchLogsBefore(name, before, limit));
+    } catch {
+      return reply.send({ lines: [], reachedStart: false });
+    }
   });
 
   /** Métricas en vivo de todos los servicios de un proyecto (SSE). */

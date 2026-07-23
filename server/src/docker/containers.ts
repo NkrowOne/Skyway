@@ -431,8 +431,10 @@ export async function fetchLogsTail(
 }
 
 /**
- * Sigue los logs de un contenedor y entrega líneas completas.
- * Devuelve una función para detener el stream.
+ * Sigue los logs de un contenedor y entrega líneas completas. Cada línea llega
+ * como «<timestamp> <texto>» (timestamps de Docker activados): quien consume
+ * separa el timestamp —útil como cursor para paginar historial hacia atrás— y
+ * muestra el texto. Devuelve una función para detener el stream.
  */
 export async function followLogs(
   name: string,
@@ -445,7 +447,7 @@ export async function followLogs(
     stdout: true,
     stderr: true,
     tail,
-    timestamps: false,
+    timestamps: true,
   })) as NodeJS.ReadableStream;
 
   const out = new PassThrough();
@@ -463,5 +465,55 @@ export async function followLogs(
     }
   };
   return stop;
+}
+
+/** Convierte un timestamp RFC3339Nano de Docker a «segundos.nanos» para `until`
+ *  (el formato de timestamp Unix que la API de Docker acepta sin ambigüedad). */
+function toDockerUntil(rfc: string): string {
+  const ms = Date.parse(rfc);
+  if (!Number.isFinite(ms)) return rfc; // que lo intente parsear Docker
+  const seconds = Math.floor(ms / 1000);
+  const frac = rfc.match(/\.(\d+)/);
+  const nanos = frac ? frac[1].padEnd(9, '0').slice(0, 9) : '000000000';
+  return `${seconds}.${nanos}`;
+}
+
+/**
+ * Historial hacia atrás: hasta `limit` líneas ANTERIORES a `before` (el
+ * timestamp RFC3339Nano de la línea más antigua ya cargada), en orden
+ * cronológico. Es la base de «Cargar más»: cada bloque se pide bajo demanda en
+ * vez de arrastrar todo el buffer. `until` llega hasta el borde inclusive, así
+ * que se descarta la propia línea del borde (ts === before) para no duplicarla.
+ * Los timestamps de Docker son UTC de anchura fija, así que ordenan y comparan
+ * como cadenas.
+ */
+export async function fetchLogsBefore(
+  name: string,
+  before: string,
+  limit = 200,
+): Promise<{ lines: { ts: string; line: string }[]; reachedStart: boolean }> {
+  const c = docker.getContainer(name);
+  const want = limit + 1; // +1: una de las líneas devueltas es la del borde y se descarta
+  const raw = (await c.logs({
+    follow: false,
+    stdout: true,
+    stderr: true,
+    until: toDockerUntil(before),
+    tail: want,
+    timestamps: true,
+  })) as unknown as Buffer;
+  const text = Buffer.isBuffer(raw) ? demuxLogBuffer(raw) : String(raw);
+  const parsed: { ts: string; line: string }[] = [];
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    if (!line) continue;
+    const idx = line.indexOf(' ');
+    if (idx <= 0) continue;
+    parsed.push({ ts: line.slice(0, idx), line: line.slice(idx + 1) });
+  }
+  // Docker devolvió menos de lo pedido ⇒ no queda nada más arriba del borde.
+  const reachedStart = parsed.length < want;
+  const older = parsed.filter((p) => p.ts < before);
+  return { lines: older.slice(-limit), reachedStart };
 }
 

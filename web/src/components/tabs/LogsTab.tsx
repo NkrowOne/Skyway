@@ -1,73 +1,52 @@
-import { useEffect, useRef, useState } from 'react';
-import { openStream } from '../../api';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { api, openStream } from '../../api';
 import LogViewer from '../LogViewer';
 
-// Historial inicial ligero (primer pintado rápido en móvil) que «Cargar más»
-// va ampliando; tope alineado con el servidor y holgura bajo el buffer del
-// cliente para que cargar todo el historial no recorte por el frente.
+// Vista inicial ligera (primer pintado rápido en móvil). A partir de ahí el
+// historial se pagina hacia atrás bajo demanda con «Cargar más», un bloque cada
+// vez —no se arrastra todo el buffer—, para mejor rendimiento. El tope solo
+// acota la memoria si además el vivo es muy hablador.
 const INITIAL_TAIL = 200;
-const MAX_TAIL = 5_000;
-const BUFFER_CAP = 8_000;
+const STEP = 200;
+const BUFFER_CAP = 20_000;
+
+type Entry = { line: string; ts: string | null };
 
 export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string; replicas?: number }) {
-  const [lines, setLines] = useState<string[]>([]);
+  // Cada línea guarda su timestamp de Docker: es el cursor para pedir el
+  // siguiente bloque más antiguo. Al visor solo le pasamos el texto.
+  const [entries, setEntries] = useState<Entry[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
-  // `tail` = cuántas líneas de historial se piden al contenedor. Crece con
-  // «Cargar más», que reabre el stream con más cola. El primer lote de cada
-  // suscripción REEMPLAZA el buffer (el snapshot ya incluye lo reciente), así
-  // pedir más historia no duplica líneas ni deja la consola en blanco.
-  const [tail, setTail] = useState(INITIAL_TAIL);
   const [loadingMore, setLoadingMore] = useState(false);
   const [reachedStart, setReachedStart] = useState(false);
-  // Línea más antigua ya cargada: si al pedir más cola no cambia, el contenedor
-  // no guarda nada más arriba y se oculta «Cargar más».
-  const oldestRef = useRef<string | undefined>(undefined);
-  const prevServiceRef = useRef<string | null>(null);
+  // Servicio activo: para descartar respuestas de «Cargar más» en vuelo si el
+  // usuario cambia de servicio antes de que lleguen (no mezclar historiales).
+  const serviceRef = useRef(serviceId);
+  serviceRef.current = serviceId;
 
   useEffect(() => {
-    const serviceChanged = prevServiceRef.current !== serviceId;
-    prevServiceRef.current = serviceId;
-    // Al cambiar de servicio se limpia todo; al solo ampliar la cola se conserva
-    // lo visible hasta que el primer lote lo reemplaza (sin parpadeo en blanco).
-    if (serviceChanged) {
-      setLines([]);
-      setNotice(null);
-      setReachedStart(false);
-      oldestRef.current = undefined;
-    }
-
+    setEntries([]);
+    setNotice(null);
+    setReachedStart(false);
+    setLoadingMore(false);
     // Buffer de cola acotado + coalescencia por frame: una ráfaga de líneas
-    // produce un único re-render. El primer flush de esta suscripción reemplaza
-    // el buffer con el snapshot; los siguientes añaden el vivo por el final.
-    let replaceNext = true;
-    const pending: string[] = [];
+    // produce un único re-render. El vivo se añade por el final; «Cargar más»
+    // prepende historial por el frente (más abajo).
+    const pending: Entry[] = [];
     let raf = 0;
     const flush = () => {
       raf = 0;
       if (!pending.length) return;
       const incoming = pending.splice(0);
-      if (replaceNext) {
-        replaceNext = false;
-        // Docker entrega la cola en orden cronológico: incoming[0] es SIEMPRE la
-        // línea más antigua del snapshot, aunque el lote llegue troceado. Si tras
-        // ampliar la cola coincide con la que ya teníamos, no hay nada más arriba.
-        const newOldest = incoming[0];
-        if (!serviceChanged && newOldest !== undefined && newOldest === oldestRef.current) {
-          setReachedStart(true);
-        }
-        oldestRef.current = newOldest;
-        setLines(incoming.length > BUFFER_CAP ? incoming.slice(incoming.length - BUFFER_CAP) : incoming);
-        setLoadingMore(false);
-      } else {
-        setLines((prev) => {
-          const next = prev.length ? prev.concat(incoming) : incoming;
-          return next.length > BUFFER_CAP ? next.slice(next.length - BUFFER_CAP) : next;
-        });
-      }
+      setEntries((prev) => {
+        const next = prev.length ? prev.concat(incoming) : incoming;
+        return next.length > BUFFER_CAP ? next.slice(next.length - BUFFER_CAP) : next;
+      });
     };
-    const es = openStream(`/services/${serviceId}/logs/stream?tail=${tail}`);
+    const es = openStream(`/services/${serviceId}/logs/stream?tail=${INITIAL_TAIL}`);
     es.addEventListener('log', (ev) => {
-      pending.push(JSON.parse((ev as MessageEvent).data).line);
+      const data = JSON.parse((ev as MessageEvent).data);
+      pending.push({ line: data.line, ts: data.ts ?? null });
       if (!raf) raf = requestAnimationFrame(flush);
     });
     es.addEventListener('notice', (ev) => {
@@ -79,19 +58,48 @@ export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string
       if (raf) cancelAnimationFrame(raf);
       es.close();
     };
-  }, [serviceId, tail]);
+  }, [serviceId]);
 
-  // «Cargar más»: sube la profundidad de cola (reabre el stream) hasta el tope.
-  const loadMore = () => {
-    if (loadingMore || reachedStart || tail >= MAX_TAIL) return;
+  // Referencia estable del texto para que el visor conserve su caché incremental
+  // (solo cambia cuando cambian las líneas, no en cada render).
+  const displayLines = useMemo(() => entries.map((e) => e.line), [entries]);
+  // Cursor de paginación: timestamp de la línea más antigua del buffer.
+  const oldestTs = entries.length ? entries[0].ts : null;
+
+  // «Cargar más»: pide UN bloque de líneas anteriores al cursor y lo prepende.
+  // La petición se resuelve rápido (lectura local de Docker) y solo trae `STEP`
+  // líneas, así el visor puede anclar la posición sin saltos.
+  const loadMore = async () => {
+    if (loadingMore || reachedStart || !oldestTs) return;
+    const sid = serviceId;
     setLoadingMore(true);
-    setTail((t) => Math.min(MAX_TAIL, t < 500 ? 1_000 : t * 2));
+    try {
+      const res = await api.get<{ lines: Entry[]; reachedStart: boolean }>(
+        `/services/${sid}/logs/history?before=${encodeURIComponent(oldestTs)}&limit=${STEP}`,
+      );
+      // El usuario cambió de servicio mientras llegaba: se descarta.
+      if (serviceRef.current !== sid) return;
+      if (res.lines.length) {
+        setEntries((prev) => {
+          // Descarta cualquier solape con el frente actual (por si el borde se
+          // repite) y prepende solo lo estrictamente más antiguo.
+          const head = prev.length ? prev[0].ts : null;
+          const older = head ? res.lines.filter((l) => l.ts && l.ts < head) : res.lines;
+          return older.length ? older.concat(prev) : prev;
+        });
+      }
+      if (res.reachedStart || res.lines.length === 0) setReachedStart(true);
+    } catch {
+      // Silencioso: el usuario puede reintentar con el botón.
+    } finally {
+      setLoadingMore(false);
+    }
   };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col p-4 sm:px-5">
       <LogViewer
-        lines={lines}
+        lines={displayLines}
         toolbar
         title="Logs en vivo"
         replicas={replicas}
@@ -99,7 +107,7 @@ export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string
         downloadName={`logs-${serviceId}-${new Date().toISOString().slice(0, 19)}.txt`}
         className="min-h-[280px] flex-1"
         onLoadMore={loadMore}
-        canLoadMore={lines.length > 0 && !reachedStart && tail < MAX_TAIL}
+        canLoadMore={entries.length > 0 && !reachedStart && !!oldestTs}
         loadingMore={loadingMore}
       />
     </div>
