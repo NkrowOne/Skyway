@@ -89,9 +89,18 @@ function resolveProxyKey(req: FastifyRequest, reply: FastifyReply): { key: Works
 export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
   // ---- Proxy de IA (auth propia; SIN requireAuth; cuerpo grande) ----
   app.register(async (proxy) => {
+    // Autenticación en onRequest: se rechaza la clave inválida ANTES de que Fastify
+    // bufferice/parsee el cuerpo (hasta 8 MB), evitando amplificación DoS pre-auth.
+    proxy.addHook('onRequest', async (req, reply) => {
+      const ctx = resolveProxyKey(req, reply);
+      if (!ctx) return reply; // 401/403 ya enviado; corta el ciclo sin leer el cuerpo
+      (req as any).proxyCtx = ctx;
+    });
+
     // generateContent (no streaming en esta fase). El modelo y la acción se
     // construyen en servidor: nunca se reenvía el path del cliente (anti-SSRF).
     proxy.post('/gw/v1beta/models/*', { bodyLimit: GW_BODY_LIMIT }, async (req, reply) => {
+      const ctx = (req as any).proxyCtx as { key: WorkspaceApiKeyRow; workspace: WorkspaceRow };
       const rest = ((req.params as Record<string, string>)['*'] || '').trim();
       const colon = rest.lastIndexOf(':');
       if (colon < 0) return reply.code(404).send({ error: { code: 404, message: 'Ruta no válida.' } });
@@ -100,8 +109,6 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
       if (action !== 'generateContent') {
         return reply.code(501).send({ error: { code: 501, message: 'De momento solo se admite generateContent (el streaming llega en la siguiente fase).' } });
       }
-      const ctx = resolveProxyKey(req, reply);
-      if (!ctx) return reply;
       const keyAllowed = JSON.parse(ctx.key.allowed_models || '[]') as string[];
       if (!isModelAllowed(model, keyAllowed)) {
         return reply.code(403).send({ error: { code: 403, message: `Modelo no permitido para esta clave: ${model}.` } });
@@ -132,9 +139,8 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
     });
 
     // Lista de modelos que esta clave puede usar (allowlist del operador ∩ de la clave).
-    proxy.get('/gw/v1beta/models', async (req, reply) => {
-      const ctx = resolveProxyKey(req, reply);
-      if (!ctx) return reply;
+    proxy.get('/gw/v1beta/models', async (req) => {
+      const ctx = (req as any).proxyCtx as { key: WorkspaceApiKeyRow; workspace: WorkspaceRow };
       const keyAllowed = JSON.parse(ctx.key.allowed_models || '[]') as string[];
       const models = getAllowedModels().filter((m) => keyAllowed.length === 0 || keyAllowed.includes(m));
       return { models: models.map((name) => ({ name: `models/${name}` })) };
