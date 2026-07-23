@@ -17,6 +17,7 @@ import {
   Play,
   Plus,
   Receipt,
+  Sparkles,
   TrendingDown,
   TrendingUp,
   Trash2,
@@ -786,6 +787,8 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
 
       {isAdmin && <AiKeysSection workspaceId={ws.id} currency={ws.plan?.currency ?? 'EUR'} />}
 
+      {isAdmin && <AiPricingSection workspaceId={ws.id} currency={ws.plan?.currency ?? 'EUR'} />}
+
       {isAdmin && <BillingSettings detail={detail} onSaved={onSaved} />}
 
       {viewing && data && <InvoiceView invoice={viewing} issuer={data.issuer} client={data.client} onClose={() => setViewing(null)} />}
@@ -1352,6 +1355,102 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
           <div className="flex justify-end"><Button onClick={() => setSecret(null)}>Listo</Button></div>
         </div>
       </Modal>
+    </section>
+  );
+}
+
+/**
+ * Precios de IA de este cliente: activa (a un clic) la facturación de IA dándolo de
+ * alta a los productos de IA del catálogo al precio global, y permite fijarle un
+ * precio propio por medidor. Vacío = precio global del catálogo. Se apoya en el
+ * override `unit_cents` de la suscripción; no cambia la lógica de facturación.
+ */
+function AiPricingSection({ workspaceId, currency }: { workspaceId: string; currency: string }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const productsQ = useQuery({ queryKey: ['products'], queryFn: () => api.get<{ products: Product[] }>('/products'), staleTime: 60_000 });
+  const subsQ = useQuery({ queryKey: ['ws-subs', workspaceId], queryFn: () => api.get<SubscriptionsResponse>(`/workspaces/${workspaceId}/subscriptions`) });
+  const [drafts, setDrafts] = useState<Record<string, string>>({}); // subId → € por unidad de precio
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['ws-subs', workspaceId] });
+
+  const iaProducts = (productsQ.data?.products ?? []).filter((p) => p.meter?.startsWith('ai_') && p.active && !p.archived && (p.billing_model === 'metered' || p.billing_model === 'tiered'));
+  const iaSubs = (subsQ.data?.subscriptions ?? []).filter((s) => s.meter?.startsWith('ai_'));
+  const productById = new Map(iaProducts.map((p) => [p.id, p]));
+  const assigned = new Set(iaSubs.map((s) => s.product_id));
+  const unassigned = iaProducts.filter((p) => !assigned.has(p.id));
+
+  const assign = useMutation({
+    mutationFn: () => Promise.all(unassigned.map((p) => api.post(`/workspaces/${workspaceId}/subscriptions`, { productId: p.id }))),
+    onSuccess: () => { toast('IA activada para este cliente', 'ok'); invalidate(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const setPrice = useMutation({
+    mutationFn: ({ subId, unitCents }: { subId: string; unitCents: number | null }) => api.patch(`/subscriptions/${subId}`, { unitCents }),
+    onSuccess: () => { toast('Precio del cliente guardado', 'ok'); invalidate(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const clearDraft = (subId: string) => setDrafts((prev) => { const n = { ...prev }; delete n[subId]; return n; });
+
+  if (iaProducts.length === 0 && iaSubs.length === 0) {
+    return (
+      <section className="card p-5">
+        <h2 className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} className="text-acc-soft" /> Precios de IA de este cliente</h2>
+        <p className="mt-2 text-xs text-subtle">Crea primero productos de IA (medidos por tokens) en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>. Luego podrás activarlos para este cliente en un clic y darle un precio propio.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card overflow-hidden">
+      <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
+        <h2 className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} className="text-acc-soft" /> Precios de IA de este cliente</h2>
+        {unassigned.length > 0 && (
+          <Button size="sm" onClick={() => assign.mutate()} loading={assign.isPending}>
+            <Plus size={13} /> {iaSubs.length === 0 ? 'Facturar IA a este cliente' : 'Añadir productos nuevos'}
+          </Button>
+        )}
+      </div>
+
+      {iaSubs.length === 0 ? (
+        <p className="px-4 py-8 text-center text-xs text-subtle">Este cliente aún no factura IA. Actívalo para cobrarle el consumo a los precios del catálogo; después puedes darle un precio propio por medidor.</p>
+      ) : (
+        iaSubs.map((s, i) => {
+          const prod = productById.get(s.product_id);
+          const globalCents = prod?.price_cents ?? s.unit_cents; // PVP global de referencia
+          const val = drafts[s.id] !== undefined ? drafts[s.id] : s.frozen ? String(s.unit_cents / 100) : '';
+          const savePrice = () => {
+            const raw = (drafts[s.id] ?? '').trim();
+            const unitCents = raw === '' ? null : Math.max(0, Math.round((parseFloat(raw.replace(',', '.')) || 0) * 100));
+            setPrice.mutate({ subId: s.id, unitCents });
+            clearDraft(s.id);
+          };
+          return (
+            <div key={s.id} className={cx('flex flex-wrap items-center gap-3 px-4 py-3', i > 0 && 'border-t border-line')}>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">{s.product_name}</span>
+                  <StatusBadge tone={s.frozen ? 'info' : 'neutral'} label={s.frozen ? 'precio propio' : 'precio global'} dot={false} className="text-[10px]" />
+                </div>
+                <p className="mt-0.5 text-[11px] text-subtle tnum">Global {fmtMoney(globalCents, currency)} · por {prod?.unit || 'ud'}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <div className="relative">
+                  <input className="input h-8 w-28 tnum pr-7" inputMode="decimal" value={val} placeholder={String(globalCents / 100)}
+                    onChange={(e) => setDrafts((prev) => ({ ...prev, [s.id]: e.target.value }))} />
+                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-subtle">{currency === 'EUR' ? '€' : currency}</span>
+                </div>
+                <Button size="sm" variant="ghost" loading={setPrice.isPending && setPrice.variables?.subId === s.id} onClick={savePrice}>Guardar</Button>
+                {s.frozen && (
+                  <button className="rounded p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Volver al precio global" onClick={() => { setPrice.mutate({ subId: s.id, unitCents: null }); clearDraft(s.id); }}><Undo2 size={14} /></button>
+                )}
+              </div>
+            </div>
+          );
+        })
+      )}
+      <p className="border-t border-line px-4 py-2.5 text-[11px] text-subtle">
+        Deja el precio vacío para usar el <a href="/catalog" className="text-acc-soft hover:underline">precio global</a> del catálogo. Un precio propio solo afecta a este cliente y no recibe el descuento por cuenta (ya es un precio pactado).
+      </p>
     </section>
   );
 }

@@ -530,6 +530,13 @@ igual que en la vía no-streaming; el presupuesto/límite se comprueban antes de
 el flujo. La `usage` de OpenAI se traduce a un `usageMetadata` sintético
 (`prompt_tokens`→entrada, `cached_tokens`→cache, `completion_tokens`→salida).
 
+**Precios de IA por cliente.** En la ficha del cliente, el panel «Precios de IA de
+este cliente» da de alta en un clic las suscripciones a los productos de IA del
+catálogo (al precio global) y permite fijar un **precio propio por medidor**. Se
+apoya en el override `unit_cents` de la suscripción (vacío = precio global del
+catálogo; restablecer lo vuelve a vaciar). Un precio propio queda excluido del
+descuento por cuenta (ya es un precio pactado). No cambia la lógica de facturación.
+
 **Coste y margen (informativo).** `ai_model_prices` guarda el **coste del operador**
 por modelo (lo que cobra Google, en micro-céntimos por millón de tokens: entrada,
 cache y salida) y un **margen objetivo** sobre venta (`margin_pct`). Contabilidad
