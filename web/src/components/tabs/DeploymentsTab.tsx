@@ -190,17 +190,28 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // El servidor los envía en orden cronológico (el más reciente primero).
   const list = deployments.data?.deployments ?? [];
   // El despliegue "vigente": el éxito más reciente (la versión que sirve ahora).
   const currentId = list.find((d) => d.status === 'success')?.id ?? null;
+  // El más reciente en el tiempo: sirve para teñir en rojo un último intento fallido.
+  const latestId = list[0]?.id ?? null;
 
-  // Abre automáticamente el despliegue activo más reciente.
+  // El vigente («Activo») es el principal y va SIEMPRE arriba del todo, aunque
+  // después haya intentos cancelados o fallidos más recientes. El resto conserva
+  // el orden cronológico —lo que esté en curso queda justo debajo del vigente—.
+  const ordered =
+    currentId && list[0]?.id !== currentId
+      ? [list.find((d) => d.id === currentId)!, ...list.filter((d) => d.id !== currentId)]
+      : list;
+
+  // Abre automáticamente el despliegue en curso; si no hay, el que encabeza la lista.
   useEffect(() => {
-    if (openId === null && list.length > 0) {
-      const active = list.find((d) => isActiveDeploy(d.status));
-      setOpenId(active ? active.id : list[0].id);
+    if (openId === null && ordered.length > 0) {
+      const active = ordered.find((d) => isActiveDeploy(d.status));
+      setOpenId(active ? active.id : ordered[0].id);
     }
-  }, [list.length]);
+  }, [ordered.length]);
 
   if (deployments.isLoading) {
     return (
@@ -223,7 +234,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
 
   return (
     <div className="flex flex-col gap-2.5 p-4 sm:px-5">
-      {list.map((d, idx) => {
+      {ordered.map((d) => {
         const open = openId === d.id;
         const active = isActiveDeploy(d.status);
         const isCurrent = d.id === currentId;
@@ -231,7 +242,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
         // El que sirve tráfico va en verde; el último intento, si falló, en rojo;
         // el que está en curso lleva borde ámbar y cometa de progreso.
         // El histórico queda neutro para que el color siempre signifique «ahora».
-        const isLatestFailed = idx === 0 && d.status === 'failed';
+        const isLatestFailed = d.id === latestId && d.status === 'failed';
         const tint = active
           ? 'border-[color-mix(in_oklab,var(--color-warn)_40%,var(--color-line))] bg-warn/[.04]'
           : isLatestFailed
@@ -282,7 +293,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
                   <XCircle size={14} />
                 </span>
               )}
-              {idx !== 0 && d.status === 'success' && serviceType === 'git' && (
+              {d.id !== currentId && d.status === 'success' && serviceType === 'git' && (
                 <span
                   role="button"
                   tabIndex={0}
