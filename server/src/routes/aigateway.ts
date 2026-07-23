@@ -213,7 +213,13 @@ async function pipeSse(
       /* nada que cancelar */
     }
   }
-  onUsage(lastUsage, id);
+  // La respuesta ya está cerrada: un fallo al medir no debe propagarse (sería un
+  // error sin salida posible). Se registra en la medición idempotente, reintentable.
+  try {
+    onUsage(lastUsage, id);
+  } catch {
+    /* la medición es best-effort tras cerrar el flujo */
+  }
 }
 
 export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
