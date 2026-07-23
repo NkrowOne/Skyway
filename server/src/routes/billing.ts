@@ -537,6 +537,71 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
+  // Crea una factura RECTIFICATIVA (art. 15 RD 1619/2012) que corrige una factura
+  // ya emitida (que es inmutable). Nace en borrador: revierte por completo la
+  // original y añade —si se indican— las líneas correctas, de modo que el neto es
+  // la corrección (rectificación por diferencias); sin líneas correctas es una
+  // anulación total. Al emitirla toma número de la serie REC. La original se
+  // conserva intacta y queda enlazada por `rectifies_invoice_id`.
+  app.post('/api/invoices/:id/rectify', { preHandler: requireAdmin }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const original = getInvoice(id);
+    if (!original) return reply.code(404).send({ error: 'Factura no encontrada' });
+    if (original.status !== 'issued' && original.status !== 'paid') {
+      return reply.code(409).send({ error: 'Solo se rectifican facturas emitidas; un borrador se edita directamente.' });
+    }
+    if (original.invoice_type === 'rectificativa') {
+      return reply.code(409).send({ error: 'Una rectificativa no se rectifica; corrija la factura original.' });
+    }
+    const body = z
+      .object({
+        reason: z.string().trim().min(3).max(500),
+        // Líneas CORRECTAS (lo que la factura debería decir). Vacío = anulación total.
+        lines: z.array(lineSchema).max(100).default([]),
+        operationDate: z.coerce.number().int().nullable().optional(),
+      })
+      .parse(req.body);
+
+    // Reversa de la original (mismas líneas con importe negado) + líneas correctas.
+    const reversal: z.infer<typeof lineSchema>[] = parseLines(original.lines).map((l) => ({
+      label: `Anula: ${l.label}`.slice(0, 120),
+      kind: l.kind,
+      qty: l.qty,
+      unitCents: -l.unitCents,
+      taxRate: l.taxRate,
+    }));
+    const regime = original.vat_regime as VatRegime;
+    const totals = computeTotals([...reversal, ...body.lines], { defaultTaxRate: original.tax_rate, irpfRate: original.irpf_rate, regime });
+
+    const refNote = `Rectifica la factura ${original.number ?? original.id}. Motivo: ${body.reason}`;
+    const mention = legalMention(regime);
+    const inv = createInvoice({
+      workspace_id: original.workspace_id,
+      period_start: original.period_start,
+      period_end: original.period_end,
+      operation_date: body.operationDate ?? original.operation_date ?? null,
+      status: 'draft',
+      invoice_type: 'rectificativa',
+      rectifies_invoice_id: original.id,
+      rectify_reason: body.reason,
+      currency: original.currency,
+      subtotal_cents: totals.subtotal,
+      tax_cents: totals.tax,
+      tax_rate: original.tax_rate,
+      tax_breakdown: JSON.stringify(totals.taxBreakdown),
+      vat_regime: regime,
+      legal_mentions: mention ? `${refNote} · ${mention}` : refNote,
+      irpf_rate: original.irpf_rate,
+      irpf_cents: totals.irpf,
+      total_cents: totals.total,
+      lines: JSON.stringify(totals.lines),
+      plan_name: original.plan_name,
+    });
+    audit(req, 'invoice_rectified', { type: 'invoice', id: inv.id, detail: `rectifica ${original.number ?? original.id}` });
+    reply.code(201);
+    return { invoice: publicInvoice(inv) };
+  });
+
   // Crea (o reutiliza) un enlace de pago con Stripe para la factura. Solo admin.
   app.post('/api/invoices/:id/stripe-link', { preHandler: requireAdmin }, async (req, reply) => {
     const { id } = req.params as { id: string };

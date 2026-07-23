@@ -20,6 +20,7 @@ import {
   TrendingDown,
   TrendingUp,
   Trash2,
+  Undo2,
   Users2,
 } from 'lucide-react';
 import { api } from '../api';
@@ -644,6 +645,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
   const data = invoicesQ.data;
   const [editing, setEditing] = useState<Invoice | null>(null);
   const [viewing, setViewing] = useState<Invoice | null>(null);
+  const [rectifying, setRectifying] = useState<Invoice | null>(null);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['ws-invoices', ws.id] });
 
@@ -767,6 +769,12 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                   {inv.status === 'issued' && (
                     <Button size="sm" variant="ghost" onClick={() => setStatus.mutate({ id: inv.id, status: 'paid' })}>Marcar pagada</Button>
                   )}
+                  {/* Una factura emitida no se edita: se corrige con una rectificativa. */}
+                  {(inv.status === 'issued' || inv.status === 'paid') && inv.invoice_type !== 'rectificativa' && (
+                    <button onClick={() => setRectifying(inv)} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Emitir factura rectificativa">
+                      <Undo2 size={14} />
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -782,7 +790,81 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
 
       {viewing && data && <InvoiceView invoice={viewing} issuer={data.issuer} client={data.client} onClose={() => setViewing(null)} />}
       {editing && <InvoiceEditor invoice={editing} workspaceId={ws.id} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); invalidate(); }} />}
+      {rectifying && <RectifyModal invoice={rectifying} onClose={() => setRectifying(null)} onSaved={() => { setRectifying(null); invalidate(); }} />}
     </div>
+  );
+}
+
+/**
+ * Emite una factura rectificativa sobre una factura ya emitida (inmutable). Por
+ * defecto anula la original por completo; si se corrigen los importes, el sistema
+ * factura la diferencia (revierte la original y aplica las líneas correctas).
+ */
+function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
+  const [reason, setReason] = useState('');
+  const [correct, setCorrect] = useState(false);
+  const [lines, setLines] = useState(invoice.lines.map((l) => ({ label: l.label, qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate })));
+
+  const rectify = useMutation({
+    mutationFn: () => {
+      const payload: Record<string, unknown> = { reason: reason.trim() };
+      if (correct) {
+        payload.lines = lines
+          .filter((l) => l.label.trim())
+          .map((l) => ({ label: l.label.trim(), kind: 'custom', qty: l.qty, unitCents: Math.round(l.unit * 100), taxRate: l.taxRate }));
+      }
+      return api.post(`/invoices/${invoice.id}/rectify`, payload);
+    },
+    onSuccess: () => { toast('Rectificativa creada en borrador', 'ok'); onSaved(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const setLine = (i: number, patch: Partial<{ label: string; qty: number; unit: number; taxRate: number }>) =>
+    setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+
+  return (
+    <Modal open onClose={onClose} title={`Rectificar ${invoice.number ?? 'factura'}`} wide>
+      <div className="flex flex-col gap-3">
+        <p className="text-[12px] text-sub">
+          La factura emitida es inmutable. Se creará una <strong>factura rectificativa</strong> (serie REC) enlazada a la original; nace en borrador para que la revises antes de emitirla.
+        </p>
+        <Field label="Motivo de la rectificación" hint="obligatorio; aparece en la factura">
+          <input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ej: Error en el importe, descuento acordado, pedido cancelado…" />
+        </Field>
+        <label className="flex items-center gap-2 text-[13px]">
+          <input type="checkbox" checked={correct} onChange={(e) => setCorrect(e.target.checked)} />
+          Corregir importes (si no, se anula la factura por completo)
+        </label>
+        {correct && (
+          <div className="flex flex-col gap-2 rounded-lg border border-line p-3">
+            <p className="text-[11px] text-subtle">Importes <strong>correctos</strong> (lo que la factura debería decir). Se facturará la diferencia respecto a la original.</p>
+            <div className="grid grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2 px-1 text-[11px] font-medium text-subtle">
+              <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA%</span><span />
+            </div>
+            {lines.map((l, i) => (
+              <div key={i} className="grid grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2">
+                <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Concepto" />
+                <input className="input h-9 tnum text-right" type="number" value={l.qty} min={0} onChange={(e) => setLine(i, { qty: Number(e.target.value) || 0 })} />
+                <input className="input h-9 tnum text-right" type="number" value={l.unit} step="0.01" onChange={(e) => setLine(i, { unit: Number(e.target.value) || 0 })} />
+                <input className="input h-9 tnum text-right" type="number" value={l.taxRate} min={0} max={100} onChange={(e) => setLine(i, { taxRate: Number(e.target.value) || 0 })} />
+                <button onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="rounded-md p-1 text-subtle hover:text-err" title="Quitar línea">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+            <button onClick={() => setLines((ls) => [...ls, { label: '', qty: 1, unit: 0, taxRate: invoice.tax_rate }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
+              + Añadir línea
+            </button>
+          </div>
+        )}
+        <div className="mt-1 flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+          <Button loading={rectify.isPending} disabled={reason.trim().length < 3} onClick={() => rectify.mutate()}>
+            {correct ? 'Crear rectificativa' : 'Anular con rectificativa'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -864,8 +946,8 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
               <span>{fmtMoney(b.quota_cents, invoice.currency)}</span>
             </div>
           ))}
-          {invoice.irpf_cents > 0 && (
-            <div className="flex justify-between py-0.5 text-sub"><span>Retención IRPF ({invoice.irpf_rate}%)</span><span>−{fmtMoney(invoice.irpf_cents, invoice.currency)}</span></div>
+          {invoice.irpf_cents !== 0 && (
+            <div className="flex justify-between py-0.5 text-sub"><span>Retención IRPF ({invoice.irpf_rate}%)</span><span>{invoice.irpf_cents > 0 ? '−' : '+'}{fmtMoney(Math.abs(invoice.irpf_cents), invoice.currency)}</span></div>
           )}
           <div className="mt-1 flex justify-between border-t border-line pt-1.5 text-[15px] font-semibold"><span>Total</span><span>{fmtMoney(invoice.total_cents, invoice.currency)}</span></div>
         </div>

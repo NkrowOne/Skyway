@@ -402,6 +402,7 @@ Niveles: **manage** = admin o propietario del workspace del recurso; **admin** =
 | POST | `/workspaces/:id/invoices` | admin | crea un borrador a medida (`{lines[], taxRate?, irpfRate?, vatRegime?, operationDate?, notes?}`); cada línea admite su propio `taxRate` |
 | PATCH | `/invoices/:id` | admin | edita el borrador o transiciona el estado. **El contenido fiscal solo es editable en borrador**; una factura emitida es inmutable (409). Al emitir (`issued`/`paid`) congela emisor y destinatario, asigna nº de serie del ejercicio y bloquea (`locked`). Transiciones válidas: `draft→issued→paid`, `→void`; nunca vuelve a borrador |
 | DELETE | `/invoices/:id` | admin | **solo borradores**; una factura emitida se conserva (409): debe anularse o rectificarse, nunca borrarse |
+| POST | `/invoices/:id/rectify` | admin | crea una **factura rectificativa** (borrador, serie REC) que corrige una emitida (`{reason, lines?, operationDate?}`); sin `lines` es anulación total, con `lines` correctas factura la diferencia; enlaza por `rectifies_invoice_id` |
 | POST | `/invoices/:id/stripe-link` | admin | emite la factura (alta antes del cobro) y crea/reutiliza el enlace de pago Stripe |
 
 **Motor de factura conforme (RD 1619/2012).** El total se recomputa siempre en
@@ -411,10 +412,21 @@ imponible; `total = base + IVA − retención`. La numeración es correlativa po
 serie y ejercicio (`invoice_series`), asignada atómicamente al emitir. Una factura
 emitida es **inmutable** y se **conserva** (no se borra ni se puede borrar su
 cuenta si tiene facturas). El catálogo multimodular (productos web/IA/hosting/BBDD,
-suscripciones y uso medido) está descrito en §7.2.2. Reservado para fases
-siguientes: facturas rectificativas enlazadas y la estructura Verifactu (cadena
-de hash, QR, registros de alta/anulación y remisión a la AEAT — no obligatoria
-hasta 2027, RDL 15/2025).
+suscripciones y uso medido) está descrito en §7.2.2.
+
+**Rectificativas y regímenes especiales (art. 15 RD 1619/2012).** Una factura
+emitida solo se corrige emitiendo una **rectificativa** (`invoice_type =
+'rectificativa'`, serie **REC** propia): revierte la original y aplica —si se
+indican— las líneas correctas, de modo que el neto es la corrección (rectificación
+por diferencias); sin líneas correctas, anula la original por completo. Queda
+enlazada por `rectifies_invoice_id`, guarda el `rectify_reason` y una mención legal
+con la factura rectificada; la original permanece intacta. Los **regímenes de IVA**
+(`vat_regime`) aplican la mención legal obligatoria y ponen el IVA a cero cuando
+corresponde: exención por exportación (art. 21) o entrega intracomunitaria
+(art. 25), inversión del sujeto pasivo (art. 84), recargo de equivalencia, no
+sujeción y otras exenciones. Reservado: la estructura Verifactu (cadena de hash,
+QR, registros de alta/anulación y remisión a la AEAT — no obligatoria hasta 2027,
+RDL 15/2025).
 
 ### 7.2.1 Contabilidad de la empresa y facturación (nosotros como emisor)
 Perfil fiscal, resumen contable y cobros con Stripe. **Solo admin.** Las claves
