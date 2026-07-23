@@ -23,8 +23,9 @@ import {
 import { getBillingProfile, getStripeSecretKey } from '../company';
 import { workspacePlan } from '../quota';
 import { priceTiers } from '../pricing';
+import { reactivateWorkspaceIfCurrent } from '../billingauto';
 import { StripeError, createStripeCheckout } from '../stripe';
-import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, TaxBreakdownEntry, VatRegime } from '../types';
+import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, TaxBreakdownEntry, VatRegime, WorkspaceRow } from '../types';
 
 const HOUR_MS = 3_600_000;
 
@@ -281,7 +282,78 @@ export function markInvoicePaidByStripeSession(sessionId: string): boolean {
   if (!inv) return false;
   if (inv.status === 'paid') return true;
   performEmission(inv, 'paid', { payment_method: 'stripe' });
+  reactivateWorkspaceIfCurrent(inv.workspace_id); // levanta el corte por impago si ya no debe nada
   return true;
+}
+
+/**
+ * Ensambla el borrador de factura del ciclo actual del workspace: plan +
+ * suscripciones activas (recurrentes, por uso medido y por tramos) + cargos
+ * puntuales pendientes. Queda en DRAFT (no emite). Lo usan la ruta manual
+ * «Generar ciclo» y la facturación automática del scheduler.
+ */
+export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.billing_day)): InvoiceRow {
+  const plan = workspacePlan(ws);
+  const profile = getBillingProfile();
+  const fromHour = Math.floor(cycle.start / HOUR_MS);
+  const toHour = Math.floor(cycle.end / HOUR_MS);
+  const usage = workspaceUsageRange(ws.id, fromHour, toHour);
+  const currency = plan?.currency ?? profile.currency;
+
+  const rawLines: z.infer<typeof lineSchema>[] = [];
+  if (plan) {
+    rawLines.push({
+      label: `Plan ${plan.name} (${plan.interval === 'yearly' ? 'anual' : 'mensual'})`,
+      kind: 'plan',
+      qty: 1,
+      unitCents: plan.price_cents,
+      taxRate: profile.vatRate,
+    });
+  }
+  for (const sub of listActiveSubscriptions(ws.id)) {
+    const product = getProduct(sub.product_id);
+    if (!product) continue;
+    const unitPrice = sub.unit_cents ?? product.price_cents;
+    const rate = product.tax_exempt ? 0 : product.tax_rate;
+    if ((product.billing_model === 'metered' || product.billing_model === 'tiered') && product.meter) {
+      const qty = meterQuantity(product.meter, ws.id, fromHour, toHour, usage) * sub.qty;
+      if (qty <= 0) continue;
+      if (product.billing_model === 'tiered') {
+        const amount = priceTiers(listTiers(product.id), qty, product.tier_mode ?? 'graduated');
+        rawLines.push({ label: `${product.name} · ${qty} ${product.unit || 'ud'}`, kind: 'subscription', qty: 1, unitCents: amount, taxRate: rate });
+      } else {
+        rawLines.push({ label: `${product.name} (${product.unit || 'uso'})`, kind: 'usage', qty, unitCents: unitPrice, taxRate: rate });
+      }
+    } else {
+      rawLines.push({ label: `${product.name} (${sub.interval === 'yearly' ? 'anual' : 'mensual'})`, kind: 'subscription', qty: sub.qty, unitCents: unitPrice, taxRate: rate });
+    }
+  }
+  const charges = listPendingCharges(ws.id, 'pending');
+  for (const c of charges) {
+    rawLines.push({ label: c.label, kind: c.kind === 'product' ? 'product' : 'custom', qty: c.qty, unitCents: c.unit_cents, taxRate: c.tax_rate });
+  }
+
+  const totals = computeTotals(rawLines, { defaultTaxRate: profile.vatRate, irpfRate: profile.defaultIrpfRate, regime: 'general' });
+  const inv = createInvoice({
+    workspace_id: ws.id,
+    period_start: cycle.start,
+    period_end: cycle.end,
+    status: 'draft',
+    currency,
+    subtotal_cents: totals.subtotal,
+    tax_cents: totals.tax,
+    tax_rate: profile.vatRate,
+    tax_breakdown: JSON.stringify(totals.taxBreakdown),
+    vat_regime: 'general',
+    legal_mentions: legalMention('general'),
+    irpf_rate: profile.defaultIrpfRate,
+    irpf_cents: totals.irpf,
+    total_cents: totals.total,
+    lines: JSON.stringify(totals.lines),
+    plan_name: plan?.name ?? null,
+  });
+  if (charges.length > 0) markChargesInvoiced(charges.map((c) => c.id), inv.id);
+  return inv;
 }
 
 export async function billingRoutes(app: FastifyInstance): Promise<void> {
@@ -306,84 +378,13 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     };
   });
 
-  // Genera el borrador del ciclo: plan + suscripciones (con uso medido y tramos) +
-  // cargos puntuales pendientes. Se crea en DRAFT para revisión antes de emitir.
+  // Genera el borrador del ciclo (plan + suscripciones + cargos). En DRAFT para revisar.
   app.post('/api/workspaces/:id/invoices/generate', { preHandler: requireAdmin }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const ws = getWorkspace(id);
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
-    const plan = workspacePlan(ws);
-    const profile = getBillingProfile();
-    const cycle = currentCycle(ws.billing_day);
-    const fromHour = Math.floor(cycle.start / HOUR_MS);
-    const toHour = Math.floor(cycle.end / HOUR_MS);
-    const usage = workspaceUsageRange(id, fromHour, toHour);
-    const currency = plan?.currency ?? profile.currency;
-
-    const rawLines: z.infer<typeof lineSchema>[] = [];
-    if (plan) {
-      rawLines.push({
-        label: `Plan ${plan.name} (${plan.interval === 'yearly' ? 'anual' : 'mensual'})`,
-        kind: 'plan',
-        qty: 1,
-        unitCents: plan.price_cents,
-        taxRate: profile.vatRate,
-      });
-    }
-
-    // Suscripciones activas: recurrentes (fijas), medidas por uso y por tramos.
-    for (const sub of listActiveSubscriptions(id)) {
-      const product = getProduct(sub.product_id);
-      if (!product) continue;
-      const unitPrice = sub.unit_cents ?? product.price_cents;
-      const rate = product.tax_exempt ? 0 : product.tax_rate;
-      if ((product.billing_model === 'metered' || product.billing_model === 'tiered') && product.meter) {
-        const qty = meterQuantity(product.meter, id, fromHour, toHour, usage) * sub.qty;
-        if (qty <= 0) continue; // sin consumo, no se factura línea
-        if (product.billing_model === 'tiered') {
-          const amount = priceTiers(listTiers(product.id), qty, product.tier_mode ?? 'graduated');
-          rawLines.push({ label: `${product.name} · ${qty} ${product.unit || 'ud'}`, kind: 'subscription', qty: 1, unitCents: amount, taxRate: rate });
-        } else {
-          rawLines.push({ label: `${product.name} (${product.unit || 'uso'})`, kind: 'usage', qty, unitCents: unitPrice, taxRate: rate });
-        }
-      } else {
-        rawLines.push({
-          label: `${product.name} (${sub.interval === 'yearly' ? 'anual' : 'mensual'})`,
-          kind: 'subscription',
-          qty: sub.qty,
-          unitCents: unitPrice,
-          taxRate: rate,
-        });
-      }
-    }
-
-    // Cargos puntuales pendientes: se incluyen y luego se marcan como facturados.
-    const charges = listPendingCharges(id, 'pending');
-    for (const c of charges) {
-      rawLines.push({ label: c.label, kind: c.kind === 'product' ? 'product' : 'custom', qty: c.qty, unitCents: c.unit_cents, taxRate: c.tax_rate });
-    }
-
-    const totals = computeTotals(rawLines, { defaultTaxRate: profile.vatRate, irpfRate: profile.defaultIrpfRate, regime: 'general' });
-    const inv = createInvoice({
-      workspace_id: id,
-      period_start: cycle.start,
-      period_end: cycle.end,
-      status: 'draft',
-      currency,
-      subtotal_cents: totals.subtotal,
-      tax_cents: totals.tax,
-      tax_rate: profile.vatRate,
-      tax_breakdown: JSON.stringify(totals.taxBreakdown),
-      vat_regime: 'general',
-      legal_mentions: legalMention('general'),
-      irpf_rate: profile.defaultIrpfRate,
-      irpf_cents: totals.irpf,
-      total_cents: totals.total,
-      lines: JSON.stringify(totals.lines),
-      plan_name: plan?.name ?? null,
-    });
-    if (charges.length > 0) markChargesInvoiced(charges.map((c) => c.id), inv.id);
-    audit(req, 'invoice_generated', { type: 'invoice', id: inv.id, detail: `${ws.name} · ${currency} ${(totals.total / 100).toFixed(2)}` });
+    const inv = generateCycleDraft(ws);
+    audit(req, 'invoice_generated', { type: 'invoice', id: inv.id, detail: `${ws.name} · ${inv.currency} ${(inv.total_cents / 100).toFixed(2)}` });
     reply.code(201);
     return { invoice: publicInvoice(inv) };
   });
@@ -504,6 +505,8 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       if (target !== inv.status) fields.status = target; // draft/issued → void
       updateInvoice(id, fields);
     }
+    // Cobro manual: levanta el corte por impago si la cuenta ya no debe nada.
+    if (target === 'paid' && inv.status !== 'paid') reactivateWorkspaceIfCurrent(inv.workspace_id);
     audit(req, 'invoice_updated', { type: 'invoice', id, detail: body.status ?? 'edición' });
     return { invoice: publicInvoice(getInvoice(id)!) };
   });

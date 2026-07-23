@@ -144,6 +144,10 @@ export interface Workspace {
   billing_address: string | null;
   billing_day: number;
   notes: string | null;
+  /** Corte del proxy de IA por impago (0/1). */
+  ai_suspended: number;
+  /** Etapa de morosidad: 0 al día · 1 vencida · 2 suspendida · 3 cancelada. */
+  dunning_stage: number;
   created_at: number;
   plan: WorkspacePlanRef | null;
   quota: EffectiveQuota;
@@ -489,6 +493,16 @@ export interface AiGatewayConfig {
   hasGeminiKey: boolean;
   baseUrl: string;
   allowedModels: string[];
+}
+
+export interface WorkspaceAlert {
+  id: string;
+  ts: number;
+  severity: 'info' | 'warning' | 'serious' | 'critical';
+  type: string;
+  title: string;
+  message: string;
+  explanation: string | null;
 }
 
 export interface GitConfig {

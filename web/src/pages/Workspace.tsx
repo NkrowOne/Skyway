@@ -37,6 +37,7 @@ import {
   Product,
   Subscription,
   SubscriptionsResponse,
+  WorkspaceAlert,
   WorkspaceApiKey,
   WorkspaceKeysResponse,
   UsageSeries,
@@ -667,9 +668,33 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  const alertsQ = useQuery({ queryKey: ['ws-alerts', ws.id], queryFn: () => api.get<{ alerts: WorkspaceAlert[] }>(`/workspaces/${ws.id}/alerts`) });
   const u = usage.data;
+  const alerts = alertsQ.data?.alerts ?? [];
+  const dunLabel = ws.dunning_stage >= 3 ? 'Cuenta cancelada por impago' : ws.dunning_stage === 2 ? 'Servicio de IA suspendido por impago' : ws.dunning_stage === 1 ? 'Factura vencida' : null;
   return (
     <div className="flex flex-col gap-5">
+      {dunLabel && (
+        <div className={cx('flex items-center gap-2 rounded-xl border px-4 py-2.5 text-[13px]', ws.dunning_stage >= 2 ? 'border-err/40 bg-err/[.10] text-err' : 'border-warn/40 bg-warn/[.10] text-warn')}>
+          <span className="font-semibold">{dunLabel}.</span>
+          <span className="text-sub">{ws.dunning_stage >= 2 ? 'Se reactivará automáticamente al cobrar las facturas pendientes.' : 'Recordatorio enviado; el servicio se suspenderá si no se paga.'}</span>
+        </div>
+      )}
+      {alerts.length > 0 && (
+        <section className="card overflow-hidden">
+          <h2 className="border-b border-line px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">Avisos de la cuenta</h2>
+          {alerts.slice(0, 5).map((a, i) => (
+            <div key={a.id} className={cx('px-4 py-2.5', i > 0 && 'border-t border-line')}>
+              <div className="flex items-center gap-2">
+                <span className={cx('h-1.5 w-1.5 shrink-0 rounded-full', a.severity === 'critical' || a.severity === 'serious' ? 'bg-err' : a.severity === 'warning' ? 'bg-warn' : 'bg-info')} />
+                <span className="text-[13px] font-medium">{a.title}</span>
+                <span className="ml-auto text-[11px] text-subtle">{timeAgo(a.ts)}</span>
+              </div>
+              <p className="mt-0.5 pl-3.5 text-[11px] text-sub">{a.message}</p>
+            </div>
+          ))}
+        </section>
+      )}
       <section className="card p-5">
         <h2 className="mb-3 text-sm font-semibold">Uso de los últimos 30 días</h2>
         {usage.isLoading ? (

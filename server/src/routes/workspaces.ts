@@ -15,6 +15,7 @@ import {
   getWorkspace,
   listServices,
   listUserProjectIds,
+  listWorkspaceAlerts,
   listWorkspaceProjects,
   listWorkspaceUsers,
   listWorkspaces,
@@ -93,6 +94,9 @@ function publicWorkspace(ws: WorkspaceRow) {
     billing_address: ws.billing_address,
     billing_day: ws.billing_day,
     notes: ws.notes,
+    // Estado de morosidad (corte por impago).
+    ai_suspended: (ws as any).ai_suspended ?? 0,
+    dunning_stage: (ws as any).dunning_stage ?? 0,
     created_at: ws.created_at,
     ...summary,
   };
@@ -273,6 +277,25 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
         ramGbHours: Math.round(p.ramGbHours * 100) / 100,
       }));
     return { days, bucketHours, series, byProject };
+  });
+
+  // Alertas de la cuenta (facturación, uso, morosidad): las ve el propietario.
+  app.get('/api/workspaces/:id/alerts', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const ws = getWorkspace(id);
+    if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
+    if (!assertWorkspaceAccess(req, reply, id)) return reply;
+    return {
+      alerts: listWorkspaceAlerts(id).map((a) => ({
+        id: a.id,
+        ts: a.ts,
+        severity: a.severity,
+        type: a.type,
+        title: a.title,
+        message: a.message,
+        explanation: a.explanation,
+      })),
+    };
   });
 
   // ---- sub-usuarios del workspace (requisito 4: crear solo para su workspace) ----

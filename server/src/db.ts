@@ -498,6 +498,15 @@ export function initDb(): void {
   // Datos fiscales del cliente (destinatario de la factura).
   ensureColumn('workspaces', 'billing_tax_id', 'TEXT');
   ensureColumn('workspaces', 'billing_address', 'TEXT');
+  // Estado de morosidad por cuenta (persistido, para que el corte por impago sea
+  // idempotente y sobreviva a reinicios). ai_suspended = corte del proxy de IA.
+  ensureColumn('workspaces', 'ai_suspended', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('workspaces', 'dunning_stage', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('workspaces', 'dunning_since', 'INTEGER');
+  ensureColumn('workspaces', 'last_dunning_action_at', 'INTEGER');
+  ensureColumn('workspaces', 'dunning_exempt', 'INTEGER NOT NULL DEFAULT 0');
+  // Alertas por cuenta (además de por proyecto/servicio).
+  ensureColumn('alerts', 'workspace_id', 'TEXT');
 
   seedDefaultPlans();
   migrateClientsToWorkspaces();
@@ -1207,6 +1216,7 @@ export function insertAlert(alert: {
   type: string;
   project_id?: string | null;
   service_id?: string | null;
+  workspace_id?: string | null;
   title: string;
   message: string;
   explanation?: string | null;
@@ -1233,10 +1243,18 @@ export function insertAlert(alert: {
     read_at: null,
   };
   db.prepare(
-    `INSERT INTO alerts (id, ts, severity, type, project_id, service_id, title, message, explanation, dedupe_key, resolved_at, read_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(row.id, row.ts, row.severity, row.type, row.project_id, row.service_id, row.title, row.message, row.explanation, row.dedupe_key, row.resolved_at, row.read_at);
+    `INSERT INTO alerts (id, ts, severity, type, project_id, service_id, workspace_id, title, message, explanation, dedupe_key, resolved_at, read_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.id, row.ts, row.severity, row.type, row.project_id, row.service_id, alert.workspace_id ?? null, row.title, row.message, row.explanation, row.dedupe_key, row.resolved_at, row.read_at);
   return row;
+}
+
+/** Alertas por cuenta de cliente, para la vista del workspace. */
+export function listWorkspaceAlerts(workspaceId: string, openOnly = true): AlertRow[] {
+  const sql = openOnly
+    ? 'SELECT * FROM alerts WHERE workspace_id = ? AND resolved_at IS NULL ORDER BY ts DESC LIMIT 50'
+    : 'SELECT * FROM alerts WHERE workspace_id = ? ORDER BY ts DESC LIMIT 50';
+  return db.prepare(sql).all(workspaceId) as AlertRow[];
 }
 
 export function listAlerts(opts: { limit?: number; openOnly?: boolean; projectIds?: string[] } = {}): AlertRow[] {
@@ -1503,6 +1521,7 @@ const WORKSPACE_COLUMNS = new Set([
   'name', 'plan_id', 'cpu_cores', 'memory_mb', 'disk_mb', 'max_projects', 'max_services',
   'max_members', 'modules_override', 'owner_disabled_modules', 'status', 'billing_email',
   'billing_tax_id', 'billing_address', 'billing_day', 'notes',
+  'ai_suspended', 'dunning_stage', 'dunning_since', 'last_dunning_action_at', 'dunning_exempt',
 ]);
 
 export function updateWorkspace(workspaceId: string, fields: Record<string, unknown>): void {
@@ -1892,6 +1911,21 @@ export function updateSubscription(subId: string, fields: Record<string, unknown
 
 export function deleteSubscription(subId: string): void {
   db.prepare('DELETE FROM workspace_subscriptions WHERE id = ?').run(subId);
+}
+
+/** Cambia el estado de todas las suscripciones de un workspace (corte/reactivación). */
+export function setWorkspaceSubscriptionsStatus(workspaceId: string, from: string, to: string): number {
+  return db.prepare('UPDATE workspace_subscriptions SET status = ? WHERE workspace_id = ? AND status = ?').run(to, workspaceId, from).changes;
+}
+
+/** Facturas emitidas y aún no cobradas (candidatas a morosidad). */
+export function listUnpaidIssuedInvoices(): InvoiceRow[] {
+  return db.prepare("SELECT * FROM workspace_invoices WHERE status = 'issued' AND paid_at IS NULL ORDER BY issued_at ASC").all() as InvoiceRow[];
+}
+
+/** ¿Ya existe una factura para ese ciclo del workspace? (idempotencia de la facturación automática). */
+export function invoiceExistsForCycle(workspaceId: string, periodStart: number): boolean {
+  return !!db.prepare('SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? LIMIT 1').get(workspaceId, periodStart);
 }
 
 // ---------- cargos puntuales pendientes ----------
