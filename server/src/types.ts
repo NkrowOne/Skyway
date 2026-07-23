@@ -518,8 +518,10 @@ export interface ProductRow {
   currency: string;
   /** Periodicidad de la suscripción (monthly/yearly), o one_off/metered. */
   interval: 'monthly' | 'yearly' | 'one_off' | 'metered';
-  /** Unidad mostrada en la factura (p. ej. «mes», «1k tokens», «hora»). */
+  /** Unidad mostrada en la factura (p. ej. «mes», «1M tokens», «hora»). */
   unit: string;
+  /** Nº de unidades del medidor por unidad de precio (p. ej. 1000000 → precio por 1M tokens). */
+  unit_size: number;
   /** Medidor que tarifa el producto (solo billing_model='metered'/'tiered'). */
   meter: UsageMeter | null;
   /** Cómo se evalúan los tramos (billing_model='tiered'). */

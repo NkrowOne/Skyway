@@ -7,12 +7,18 @@ import {
   getWorkspace,
   getWorkspaceApiKey,
   getWorkspaceApiKeyByHash,
+  incrementWorkspaceApiKeySpend,
   listWorkspaceApiKeys,
+  resetWorkspaceApiKeyCycle,
   touchWorkspaceApiKey,
   updateWorkspaceApiKey,
 } from '../db';
 import {
   PROXY_KEY_PREFIX,
+  accrueSpendCents,
+  allowRate,
+  currentCycleStartMs,
+  estimateBudgetCostCents,
   getAllowedModels,
   getGeminiApiKey,
   getGeminiBaseUrl,
@@ -94,6 +100,10 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
     proxy.addHook('onRequest', async (req, reply) => {
       const ctx = resolveProxyKey(req, reply);
       if (!ctx) return reply; // 401/403 ya enviado; corta el ciclo sin leer el cuerpo
+      // Límite de ritmo por clave (token-bucket), antes de bufferizar el cuerpo.
+      if (!allowRate(ctx.key.id, ctx.key.rate_limit_rpm)) {
+        return reply.code(429).send({ error: { code: 429, message: 'Límite de peticiones por minuto de la clave superado.' } });
+      }
       (req as any).proxyCtx = ctx;
     });
 
@@ -112,6 +122,16 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
       const keyAllowed = JSON.parse(ctx.key.allowed_models || '[]') as string[];
       if (!isModelAllowed(model, keyAllowed)) {
         return reply.code(403).send({ error: { code: 403, message: `Modelo no permitido para esta clave: ${model}.` } });
+      }
+      // Presupuesto mensual: reancla el contador al cambiar de ciclo y rechaza si se agotó.
+      const cycleStart = currentCycleStartMs(ctx.workspace.billing_day);
+      if (ctx.key.cycle_anchor !== cycleStart) {
+        resetWorkspaceApiKeyCycle(ctx.key.id, cycleStart);
+        ctx.key.spend_cents_cycle = 0;
+        ctx.key.cycle_anchor = cycleStart;
+      }
+      if (ctx.key.budget_cents_month != null && ctx.key.spend_cents_cycle >= ctx.key.budget_cents_month) {
+        return reply.code(402).send({ error: { code: 402, message: 'Presupuesto mensual de la clave agotado.' } });
       }
       const geminiKey = getGeminiApiKey();
       if (!geminiKey) return reply.code(502).send({ error: { code: 502, message: 'El gateway de IA no está configurado (falta la clave de Gemini del operador).' } });
@@ -133,7 +153,13 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
       // Medir SIEMPRE que Google devuelva uso (también en respuestas bloqueadas o
       // parciales: Google cobra la entrada aunque no haya salida).
       const requestId = (data?.responseId as string) || randomToken(12);
-      if (data?.usageMetadata) recordGeminiUsage(ctx.workspace.id, model, data.usageMetadata, requestId);
+      if (data?.usageMetadata) {
+        const t = recordGeminiUsage(ctx.workspace.id, model, data.usageMetadata, requestId);
+        // Acumula el gasto tarifado en la clave (guardarraíl del presupuesto),
+        // sumando fracciones de céntimo para no perder las peticiones pequeñas.
+        const whole = accrueSpendCents(ctx.key.id, estimateBudgetCostCents(ctx.workspace.id, t));
+        if (whole > 0) incrementWorkspaceApiKeySpend(ctx.key.id, whole);
+      }
       // No se reenvía ninguna cabecera de Google (evita filtrar credenciales/estado).
       return reply.code(res.status).send(data);
     });
@@ -170,6 +196,7 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
           name: z.string().trim().min(1).max(60),
           allowedModels: z.array(z.string().trim()).max(50).optional(),
           budgetCentsMonth: z.coerce.number().int().min(0).max(100_000_00).nullable().optional(),
+          rateLimitRpm: z.coerce.number().int().min(1).max(100_000).nullable().optional(),
           expiresDays: z.coerce.number().int().min(1).max(3650).nullable().optional(),
         })
         .parse(req.body);
@@ -181,6 +208,7 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
         prefix: secret.slice(0, PROXY_KEY_PREFIX.length + 8),
         allowed_models: JSON.stringify(body.allowedModels ?? []),
         budget_cents_month: body.budgetCentsMonth ?? null,
+        rate_limit_rpm: body.rateLimitRpm ?? null,
         expires_at: body.expiresDays ? Date.now() + body.expiresDays * 24 * 3600 * 1000 : null,
         created_by: currentUser(req)?.id ?? null,
       });

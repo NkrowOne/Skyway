@@ -329,6 +329,7 @@ export function initDb(): void {
       currency TEXT NOT NULL DEFAULT 'EUR',
       interval TEXT NOT NULL DEFAULT 'one_off' CHECK (interval IN ('monthly','yearly','one_off','metered')),
       unit TEXT NOT NULL DEFAULT '',
+      unit_size INTEGER NOT NULL DEFAULT 1,
       meter TEXT,
       tier_mode TEXT CHECK (tier_mode IN ('graduated','volume')),
       tax_rate REAL NOT NULL DEFAULT 21,
@@ -507,6 +508,9 @@ export function initDb(): void {
   ensureColumn('workspaces', 'dunning_exempt', 'INTEGER NOT NULL DEFAULT 0');
   // Alertas por cuenta (además de por proyecto/servicio).
   ensureColumn('alerts', 'workspace_id', 'TEXT');
+  // Escala del medidor: nº de unidades del medidor por unidad de precio (p. ej.
+  // 1000000 para tarifar por 1M de tokens con céntimos enteros).
+  ensureColumn('catalog_products', 'unit_size', 'INTEGER NOT NULL DEFAULT 1');
 
   seedDefaultPlans();
   migrateClientsToWorkspaces();
@@ -1832,21 +1836,21 @@ export function getProduct(productId: string): ProductRow | undefined {
 
 const PRODUCT_DEFAULTS = {
   category: 'custom', billing_model: 'flat_one_off', price_cents: 0, currency: 'EUR', interval: 'one_off',
-  unit: '', meter: null, tier_mode: null, tax_rate: 21, irpf_rate: 0, tax_exempt: 0, modules: '[]',
+  unit: '', unit_size: 1, meter: null, tier_mode: null, tax_rate: 21, irpf_rate: 0, tax_exempt: 0, modules: '[]',
   description: null, active: 1, archived: 0,
 } as const;
 
 export function createProduct(row: Pick<ProductRow, 'name'> & Partial<ProductRow>): ProductRow {
   const full: ProductRow = { ...PRODUCT_DEFAULTS, ...row, id: id('prd'), slug: uniqueProductSlug(row.name), created_at: now() };
   db.prepare(
-    `INSERT INTO catalog_products (id, name, slug, category, billing_model, price_cents, currency, interval, unit, meter, tier_mode, tax_rate, irpf_rate, tax_exempt, modules, description, active, archived, created_at)
-     VALUES (@id, @name, @slug, @category, @billing_model, @price_cents, @currency, @interval, @unit, @meter, @tier_mode, @tax_rate, @irpf_rate, @tax_exempt, @modules, @description, @active, @archived, @created_at)`,
+    `INSERT INTO catalog_products (id, name, slug, category, billing_model, price_cents, currency, interval, unit, unit_size, meter, tier_mode, tax_rate, irpf_rate, tax_exempt, modules, description, active, archived, created_at)
+     VALUES (@id, @name, @slug, @category, @billing_model, @price_cents, @currency, @interval, @unit, @unit_size, @meter, @tier_mode, @tax_rate, @irpf_rate, @tax_exempt, @modules, @description, @active, @archived, @created_at)`,
   ).run(full);
   return full;
 }
 
 const PRODUCT_COLUMNS = new Set([
-  'name', 'category', 'billing_model', 'price_cents', 'currency', 'interval', 'unit', 'meter', 'tier_mode',
+  'name', 'category', 'billing_model', 'price_cents', 'currency', 'interval', 'unit', 'unit_size', 'meter', 'tier_mode',
   'tax_rate', 'irpf_rate', 'tax_exempt', 'modules', 'description', 'active', 'archived',
 ]);
 
@@ -2078,4 +2082,15 @@ export function touchWorkspaceApiKey(keyId: string, lastUsed: number | null): vo
   const t = now();
   if (lastUsed && t - lastUsed < 60_000) return;
   db.prepare('UPDATE workspace_api_keys SET last_used_at = ? WHERE id = ?').run(t, keyId);
+}
+
+/** Acumula gasto del ciclo en la clave (para el tope de presupuesto). */
+export function incrementWorkspaceApiKeySpend(keyId: string, cents: number): void {
+  if (cents <= 0) return;
+  db.prepare('UPDATE workspace_api_keys SET spend_cents_cycle = spend_cents_cycle + ? WHERE id = ?').run(Math.round(cents), keyId);
+}
+
+/** Reancla el contador de gasto de la clave al inicio del ciclo actual (reset mensual). */
+export function resetWorkspaceApiKeyCycle(keyId: string, cycleStart: number): void {
+  db.prepare('UPDATE workspace_api_keys SET spend_cents_cycle = 0, cycle_anchor = ? WHERE id = ?').run(cycleStart, keyId);
 }

@@ -317,13 +317,15 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.bil
     const unitPrice = sub.unit_cents ?? product.price_cents;
     const rate = product.tax_exempt ? 0 : product.tax_rate;
     if ((product.billing_model === 'metered' || product.billing_model === 'tiered') && product.meter) {
-      const qty = meterQuantity(product.meter, ws.id, fromHour, toHour, usage) * sub.qty;
-      if (qty <= 0) continue;
+      const raw = meterQuantity(product.meter, ws.id, fromHour, toHour, usage) * sub.qty;
+      if (raw <= 0) continue;
+      // Cantidad en unidades de precio (p. ej. 1M tokens): el precio es por unidad.
+      const units = Math.round((product.unit_size > 1 ? raw / product.unit_size : raw) * 1e6) / 1e6;
       if (product.billing_model === 'tiered') {
-        const amount = priceTiers(listTiers(product.id), qty, product.tier_mode ?? 'graduated');
-        rawLines.push({ label: `${product.name} · ${qty} ${product.unit || 'ud'}`, kind: 'subscription', qty: 1, unitCents: amount, taxRate: rate });
+        const amount = priceTiers(listTiers(product.id), units, product.tier_mode ?? 'graduated');
+        rawLines.push({ label: `${product.name} · ${units} ${product.unit || 'ud'}`, kind: 'subscription', qty: 1, unitCents: amount, taxRate: rate });
       } else {
-        rawLines.push({ label: `${product.name} (${product.unit || 'uso'})`, kind: 'usage', qty, unitCents: unitPrice, taxRate: rate });
+        rawLines.push({ label: `${product.name} (${product.unit || 'uso'})`, kind: 'usage', qty: units, unitCents: unitPrice, taxRate: rate });
       }
     } else {
       rawLines.push({ label: `${product.name} (${sub.interval === 'yearly' ? 'anual' : 'mensual'})`, kind: 'subscription', qty: sub.qty, unitCents: unitPrice, taxRate: rate });

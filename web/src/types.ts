@@ -415,6 +415,7 @@ export interface Product {
   currency: string;
   interval: 'monthly' | 'yearly' | 'one_off' | 'metered';
   unit: string;
+  unit_size: number;
   meter: UsageMeter | null;
   tier_mode: 'graduated' | 'volume' | null;
   tax_rate: number;

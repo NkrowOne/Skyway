@@ -776,7 +776,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
 
       {isAdmin && <SubscriptionsSection workspaceId={ws.id} currency={ws.plan?.currency ?? 'EUR'} onChanged={invalidate} />}
 
-      {isAdmin && <AiKeysSection workspaceId={ws.id} />}
+      {isAdmin && <AiKeysSection workspaceId={ws.id} currency={ws.plan?.currency ?? 'EUR'} />}
 
       {isAdmin && <BillingSettings detail={detail} onSaved={onSaved} />}
 
@@ -1152,18 +1152,24 @@ const KEY_STATUS: Record<WorkspaceApiKey['status'], { tone: 'ok' | 'warn' | 'neu
 };
 
 /** Claves de API de IA del cliente: acceso al proxy de Gemini, con corte reversible. */
-function AiKeysSection({ workspaceId }: { workspaceId: string }) {
+function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currency: string }) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const q = useQuery({ queryKey: ['ws-keys', workspaceId], queryFn: () => api.get<WorkspaceKeysResponse>(`/workspaces/${workspaceId}/keys`) });
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
+  const [budget, setBudget] = useState('');
+  const [rpm, setRpm] = useState('');
   const [secret, setSecret] = useState<string | null>(null);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['ws-keys', workspaceId] });
   const create = useMutation({
-    mutationFn: () => api.post<{ key: string }>(`/workspaces/${workspaceId}/keys`, { name: newName.trim() }),
-    onSuccess: (res) => { setSecret(res.key); setCreating(false); setNewName(''); invalidate(); },
+    mutationFn: () => api.post<{ key: string }>(`/workspaces/${workspaceId}/keys`, {
+      name: newName.trim(),
+      budgetCentsMonth: budget.trim() ? Math.round(Number(budget) * 100) : null,
+      rateLimitRpm: rpm.trim() ? Number(rpm) : null,
+    }),
+    onSuccess: (res) => { setSecret(res.key); setCreating(false); setNewName(''); setBudget(''); setRpm(''); invalidate(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
   const block = useMutation({
@@ -1207,8 +1213,20 @@ function AiKeysSection({ workspaceId }: { workspaceId: string }) {
               </div>
               <p className="mt-0.5 text-[11px] text-subtle">
                 {k.allowed_models.length ? `${k.allowed_models.length} modelo(s) · ` : 'todos los modelos · '}
+                {k.rate_limit_rpm ? `${k.rate_limit_rpm}/min · ` : ''}
                 {k.last_used_at ? `último uso ${timeAgo(k.last_used_at)}` : 'sin uso aún'}
               </p>
+              {k.budget_cents_month != null && (
+                <div className="mt-1.5 max-w-[220px]">
+                  <div className="flex items-center justify-between text-[10px] text-subtle tnum">
+                    <span>{fmtMoney(k.spend_cents_cycle, currency)} / {fmtMoney(k.budget_cents_month, currency)}</span>
+                    <span>{Math.min(100, Math.round((k.spend_cents_cycle / Math.max(1, k.budget_cents_month)) * 100))}%</span>
+                  </div>
+                  <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-surface2">
+                    <div className={cx('h-full rounded-full', k.spend_cents_cycle >= k.budget_cents_month ? 'bg-err' : 'bg-acc')} style={{ width: `${Math.min(100, (k.spend_cents_cycle / Math.max(1, k.budget_cents_month)) * 100)}%` }} />
+                  </div>
+                </div>
+              )}
             </div>
             <div className="flex shrink-0 items-center gap-1">
               {k.status === 'active' ? (
@@ -1229,6 +1247,11 @@ function AiKeysSection({ workspaceId }: { workspaceId: string }) {
       <Modal open={creating} onClose={() => setCreating(false)} title="Nueva clave de IA">
         <div className="flex flex-col gap-3.5">
           <Field label="Nombre" hint="para identificarla (p. ej. «Producción»)"><input className="input" value={newName} onChange={(e) => setNewName(e.target.value)} autoFocus placeholder="Producción" /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label={`Presupuesto/mes (${currency})`} hint="vacío = sin tope"><input className="input tnum" type="number" min={0} step="0.01" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="p. ej. 50" /></Field>
+            <Field label="Límite (pet./min)" hint="vacío = sin límite"><input className="input tnum" type="number" min={1} value={rpm} onChange={(e) => setRpm(e.target.value)} placeholder="p. ej. 60" /></Field>
+          </div>
+          <p className="text-[11px] text-subtle">Al superar el presupuesto del ciclo, el proxy rechaza (402) hasta el siguiente periodo; el límite por minuto protege de picos.</p>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setCreating(false)}>Cancelar</Button>
             <Button onClick={() => create.mutate()} loading={create.isPending} disabled={!newName.trim()}>Crear clave</Button>

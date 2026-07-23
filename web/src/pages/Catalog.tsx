@@ -38,6 +38,7 @@ interface Draft {
   currency: string;
   interval: 'monthly' | 'yearly';
   unit: string;
+  unitSize: string;
   meter: UsageMeter | '';
   tierMode: 'graduated' | 'volume';
   taxRate: string;
@@ -50,7 +51,7 @@ interface Draft {
 
 const EMPTY: Draft = {
   name: '', category: 'web', billingModel: 'subscription', priceUnits: '0', currency: 'EUR', interval: 'monthly',
-  unit: 'mes', meter: 'ai_tokens_out', tierMode: 'graduated', taxRate: '21', irpfRate: '0', taxExempt: false,
+  unit: 'mes', unitSize: '1', meter: 'ai_tokens_out', tierMode: 'graduated', taxRate: '21', irpfRate: '0', taxExempt: false,
   description: '', active: true, tiers: [{ upTo: '', unitUnits: '0' }],
 };
 
@@ -58,7 +59,7 @@ function fromProduct(p: Product): Draft {
   return {
     id: p.id, name: p.name, category: p.category, billingModel: p.billing_model,
     priceUnits: String(p.price_cents / 100), currency: p.currency,
-    interval: p.interval === 'yearly' ? 'yearly' : 'monthly', unit: p.unit,
+    interval: p.interval === 'yearly' ? 'yearly' : 'monthly', unit: p.unit, unitSize: String(p.unit_size || 1),
     meter: p.meter ?? 'ai_tokens_out', tierMode: p.tier_mode ?? 'graduated',
     taxRate: String(p.tax_rate), irpfRate: String(p.irpf_rate), taxExempt: !!p.tax_exempt,
     description: p.description ?? '', active: !!p.active,
@@ -87,6 +88,7 @@ export default function CatalogPage() {
         currency: d.currency.trim().toUpperCase() || 'EUR',
         interval: d.billingModel === 'subscription' ? d.interval : d.billingModel === 'flat_one_off' ? 'one_off' : 'metered',
         unit: d.unit.trim(),
+        unitSize: metered ? Number(d.unitSize) || 1 : 1,
         meter: metered ? d.meter || null : null,
         tierMode: d.billingModel === 'tiered' ? d.tierMode : null,
         taxRate: Number(d.taxRate) || 0,
@@ -205,13 +207,14 @@ export default function CatalogPage() {
 
             {metered && (
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <div className="col-span-2">
-                  <Field label="Medidor">
-                    <select className="input" value={draft.meter} onChange={(e) => set({ meter: e.target.value as UsageMeter })}>
-                      {(Object.keys(METERS) as UsageMeter[]).map((m) => <option key={m} value={m}>{METERS[m]}</option>)}
-                    </select>
-                  </Field>
-                </div>
+                <Field label="Medidor">
+                  <select className="input" value={draft.meter} onChange={(e) => set({ meter: e.target.value as UsageMeter })}>
+                    {(Object.keys(METERS) as UsageMeter[]).map((m) => <option key={m} value={m}>{METERS[m]}</option>)}
+                  </select>
+                </Field>
+                <Field label="Precio por cada" hint="unidades del medidor · 1000000 = por 1M tokens">
+                  <input className="input tnum" type="number" min={1} step={1} value={draft.unitSize} onChange={(e) => set({ unitSize: e.target.value })} />
+                </Field>
                 {draft.billingModel === 'tiered' && (
                   <Field label="Modo de tramos">
                     <select className="input" value={draft.tierMode} onChange={(e) => set({ tierMode: e.target.value as 'graduated' | 'volume' })}>

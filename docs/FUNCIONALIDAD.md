@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.19.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.20.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -152,7 +152,7 @@ web/src/
 | `workspaces` | `id`, `name`, `slug`, `plan_id`, overrides de cuota (mismos campos, null = hereda del plan), `modules_override` (concesión del admin), `owner_disabled_modules` (acotado del propietario), `status` (`active`/`suspended`), `billing_email`, `billing_tax_id` (NIF/CIF del cliente), `billing_address` (domicilio fiscal del cliente), `billing_day`, `notes`, y estado de morosidad (`ai_suspended`, `dunning_stage` 0→3, `dunning_since`, `last_dunning_action_at`, `dunning_exempt`) |
 | `workspace_invoices` | `id`, `workspace_id`, `series_id` (FK `invoice_series`), `number` (nº correlativo por serie/ejercicio, p. ej. `FRA-2026-0001`), `invoice_type` (`normal`/`simplificada`/`rectificativa`), `rectifies_invoice_id`+`rectify_reason` (si rectificativa), `period_start/end`, `operation_date` (fecha de operación si difiere de la expedición), `status` (`draft`/`issued`/`paid`/`void`), `currency`, `subtotal_cents` (base imponible), `tax_cents`, `tax_rate` (tipo por defecto), `tax_breakdown` (JSON: bases y cuotas **por tipo de IVA**), `vat_regime` (general/exento/inversión SP…), `legal_mentions`, `irpf_rate`+`irpf_cents` (retención), `total_cents`, `lines` (JSON, con `taxRate` por línea), `plan_name`, `issuer_snapshot` (datos fiscales del emisor congelados al emitir), `client_name`+`client_tax_id`+`client_address` (destinatario congelado al emitir), `payment_method` (`bank_transfer`/`stripe`/`card`/`cash`/`other`), `stripe_session_id`, `stripe_url`, `issued_at`, `paid_at`, `locked` (1 = emitida, inmutable), `notes` |
 | `invoice_series` | `id`, `code`, `year` (ejercicio; reinicio anual), `prefix`, `padding`, `next_seq` (incremento atómico al emitir), `kind` (`ordinaria`/`rectificativa`/`simplificada`), `UNIQUE(code, year)`. Sustituye al contador global; las rectificativas usan serie propia |
-| `catalog_products` | catálogo multimodular: `id`, `name`, `slug`, `category` (`web`/`ia`/`app`/`hosting`/`bbdd`/`dominio`/`soporte`/`custom`), `billing_model` (`flat_one_off`/`subscription`/`metered`/`tiered`), `price_cents`, `currency`, `interval`, `unit`, `meter` (medidor de uso), `tier_mode` (`graduated`/`volume`), `tax_rate`, `irpf_rate`, `tax_exempt`, `modules` (JSON), `description`, `active`, `archived` |
+| `catalog_products` | catálogo multimodular: `id`, `name`, `slug`, `category` (`web`/`ia`/`app`/`hosting`/`bbdd`/`dominio`/`soporte`/`custom`), `billing_model` (`flat_one_off`/`subscription`/`metered`/`tiered`), `price_cents`, `currency`, `interval`, `unit`, `unit_size` (nº de unidades del medidor por unidad de precio; p. ej. 1000000 → precio por 1M tokens con céntimos enteros), `meter` (medidor de uso), `tier_mode` (`graduated`/`volume`), `tax_rate`, `irpf_rate`, `tax_exempt`, `modules` (JSON), `description`, `active`, `archived` |
 | `catalog_price_tiers` | tramos de precio de un producto `tiered`: `id`, `product_id`, `up_to` (null = último), `unit_cents`, `flat_cents`, `sort` |
 | `workspace_subscriptions` | suscripciones/add-ons por cuenta: `id`, `workspace_id`, `product_id`, `service_id` (opcional), `qty`, `unit_cents` (congelado al contratar; null = sigue catálogo), `currency`, `interval`, `status` (`active`/`paused`/`cancelled`), `anchor_day`, `started_at`, `cancelled_at` |
 | `pending_charges` | cargos puntuales pendientes del próximo ciclo: `id`, `workspace_id`, `product_id`, `label`, `kind`, `qty`, `unit_cents`, `tax_rate`, `irpf_rate`, `status` (`pending`/`invoiced`/`cancelled`), `invoice_id` |
@@ -487,12 +487,21 @@ se **reactiva** automáticamente si ya no queda ninguna factura vencida. Las
 alertas por cuenta reutilizan `alerts` (con `workspace_id`).
 
 **Seguridad del gateway.** La clave de cliente usa una vía de autenticación
-separada (`requireProxyKey`, nunca `requireAuth`) y un prefijo que **no** empieza
-por `sky_`, de modo que no puede alcanzar el panel ni el `docker.sock` del host; se
-valida en cada petición (sin caché → suspender surte efecto al instante). La clave
-de Gemini del operador nunca se registra ni se reenvía, y las cabeceras de Google no
-se propagan al cliente. La URL upstream se construye en servidor a partir del modelo
-validado (no se refleja el path del cliente → anti-SSRF).
+separada (`requireProxyKey`, en un hook `onRequest` **antes** de leer el cuerpo,
+nunca `requireAuth`) y un prefijo que **no** empieza por `sky_`, de modo que no
+puede alcanzar el panel ni el `docker.sock` del host; se valida en cada petición
+(sin caché → suspender surte efecto al instante). La clave de Gemini del operador
+nunca se registra ni se reenvía, y las cabeceras de Google no se propagan al
+cliente. La URL upstream se construye en servidor a partir del modelo validado (no
+se refleja el path del cliente → anti-SSRF).
+
+**Presupuesto y límite por clave.** Cada clave admite `budget_cents_month` (tope de
+gasto del ciclo) y `rate_limit_rpm` (peticiones por minuto, token-bucket en
+memoria). El proxy acumula el gasto tarifado del cliente en `spend_cents_cycle`
+(sumando fracciones de céntimo para no perder peticiones pequeñas) y **rechaza**
+con 402 al superar el presupuesto y con 429 al superar el ritmo; el contador se
+reancla al inicio de cada ciclo. Es un guardarraíl (importe aproximado); el importe
+final de factura lo fija el catálogo al cerrar el ciclo.
 
 ### 7.3 Proyectos, variables compartidas y conectores de GitHub
 | Método | Ruta | Nivel | Descripción |

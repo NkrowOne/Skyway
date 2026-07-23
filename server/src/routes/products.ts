@@ -22,6 +22,7 @@ const productSchema = z.object({
   currency: z.string().trim().length(3).toUpperCase().default('EUR'),
   interval: z.enum(['monthly', 'yearly', 'one_off', 'metered']).default('one_off'),
   unit: z.string().trim().max(40).default(''),
+  unitSize: z.coerce.number().int().min(1).max(1_000_000_000).default(1),
   meter: z.enum(['cpu_core_hour', 'mem_gb_hour', 'ai_tokens_in', 'ai_tokens_cache_in', 'ai_tokens_out', 'ai_requests', 'ai_bytes', 'unit']).nullable().default(null),
   tierMode: z.enum(['graduated', 'volume']).nullable().default(null),
   taxRate: z.coerce.number().min(0).max(100).default(21),
@@ -44,6 +45,7 @@ function publicProduct(p: ProductRow, tiers: PriceTierRow[]) {
     currency: p.currency,
     interval: p.interval,
     unit: p.unit,
+    unit_size: p.unit_size,
     meter: p.meter,
     tier_mode: p.tier_mode,
     tax_rate: p.tax_rate,
@@ -69,6 +71,7 @@ function toRowFields(body: Partial<z.infer<typeof productSchema>>): Record<strin
   if (body.currency !== undefined) f.currency = body.currency;
   if (body.interval !== undefined) f.interval = body.interval;
   if (body.unit !== undefined) f.unit = body.unit;
+  if (body.unitSize !== undefined) f.unit_size = body.unitSize;
   if (body.meter !== undefined) f.meter = body.meter;
   if (body.tierMode !== undefined) f.tier_mode = body.tierMode;
   if (body.taxRate !== undefined) f.tax_rate = body.taxRate;
@@ -98,6 +101,7 @@ export async function productRoutes(app: FastifyInstance): Promise<void> {
       currency: body.currency,
       interval: body.interval,
       unit: body.unit,
+      unit_size: body.unitSize,
       meter: body.meter,
       tier_mode: body.tierMode,
       tax_rate: body.taxRate,
