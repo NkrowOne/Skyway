@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.20.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.21.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -30,7 +30,8 @@ server/src/
   company.ts            perfil fiscal de la empresa emisora + claves de Stripe (en settings)
   stripe.ts             cliente mínimo de Stripe (Checkout Session + verificación de firma de webhook)
   pricing.ts            cálculo de precios por tramos (graduated/volume) del catálogo
-  aigateway.ts          gateway de IA: config (clave de Gemini del operador, modelos) y medición de tokens
+  aigateway.ts          gateway de IA: config (clave de Gemini del operador, modelos), medición de tokens,
+                        streaming SSE, API compatible con OpenAI y coste/margen por modelo
   billingauto.ts        automatización: corte por impago (dunning), reactivación y factura automática del ciclo
   security.ts           escáner de seguridad (hallazgos + nota)
   variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}
@@ -161,6 +162,7 @@ web/src/
 | `invoice_ledger` | **reservada** (Verifactu, RD 1007/2023): libro inmutable encadenado por huella SHA-256 — `id`, `seq`, `invoice_id`, `record_type` (`alta`/`anulacion`), `huella`, `huella_anterior`, `qr_url`, `sif_mode`, `estado_remision`… Se crea vacía para no exigir migración al activar Verifactu; la lógica llega en fase posterior |
 | `invoice_events_log` | **reservada** (Verifactu): registro de eventos del SIF encadenado por huella |
 | `workspace_api_keys` | claves de API por cuenta para el proxy de IA: `id`, `workspace_id`, `name`, `key_hash` (sha256, único; el secreto `skai_…` solo se muestra al crear), `prefix`, `provider`, `allowed_models` (JSON), `status` (`active`/`suspended`/`revoked`), `budget_cents_month`, `spend_cents_cycle`, `rate_limit_rpm`, `last_used_at`, `expires_at`, `revoked_at`. El prefijo **no** empieza por `sky_`: nunca se resuelve como token de panel |
+| `ai_model_prices` | coste del operador por modelo (para el margen): `model` (PK), `cost_micros_in`/`cost_micros_cache`/`cost_micros_out` (micro-céntimos por millón de tokens), `currency`, `updated_at`. Informativo; no interviene en la factura |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
 | `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44)… |
@@ -466,6 +468,8 @@ inmediato y reversible: se hace sobre la clave de Skyway, sin tocar Google.
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | POST | `/gw/v1beta/models/<modelo>:generateContent` | clave `skai_` (auth propia) | proxya a Gemini con la clave del operador; valida modelo (allowlist fail-closed), mide `usageMetadata` y registra el uso |
+| POST | `/gw/v1beta/models/<modelo>:streamGenerateContent` | clave `skai_` | igual, en **streaming SSE** (`?alt=sse` reenviado byte a byte); mide el último `usageMetadata` al cerrar |
+| POST | `/gw/v1beta/openai/chat/completions` | clave `skai_` | API **compatible con OpenAI** (streaming y no-streaming); el `usage` se mapea a la medición existente |
 | GET | `/gw/v1beta/models` | clave `skai_` | modelos permitidos para esa clave |
 | GET | `/workspaces/:id/keys` | manage | claves de IA de la cuenta (prefijo, estado, uso; nunca el secreto) |
 | POST | `/workspaces/:id/keys` | manage (session) | emite una clave; el secreto `skai_…` se devuelve **una sola vez** |
@@ -473,6 +477,8 @@ inmediato y reversible: se hace sobre la clave de Skyway, sin tocar Google.
 | POST | `/workspaces/:id/keys/:keyId/block`·`/unblock` | admin | corte / reactivación manual (instantáneo) |
 | DELETE | `/workspaces/:id/keys/:keyId` | manage | revoca la clave (irreversible) |
 | GET·PUT | `/ai/gateway/config` | admin | clave de Gemini (enmascarada), host y modelos permitidos |
+| GET | `/ai/gateway/prices` | admin | coste del operador por modelo (`ai_model_prices`) y PVP de referencia del catálogo, con margen |
+| PUT·DELETE | `/ai/gateway/prices/:model` | admin | fija/borra el coste de un modelo (€/M tokens: entrada, cache, salida) |
 | GET | `/workspaces/:id/alerts` | manage | avisos de la cuenta (facturación, uso, morosidad) |
 
 **Automatización (scheduler, bucle de 10 min → `billingauto.ts`).** En el día de
@@ -502,6 +508,21 @@ memoria). El proxy acumula el gasto tarifado del cliente en `spend_cents_cycle`
 con 402 al superar el presupuesto y con 429 al superar el ritmo; el contador se
 reancla al inicio de cada ciclo. Es un guardarraíl (importe aproximado); el importe
 final de factura lo fija el catálogo al cerrar el ciclo.
+
+**Streaming y compatibilidad.** Además de `generateContent`, el proxy admite
+`streamGenerateContent` (SSE nativo de Gemini, `?alt=sse`, reenviado tal cual al
+cliente) y una **API compatible con OpenAI** (`/gw/v1beta/openai/chat/completions`,
+streaming y no-streaming) para reutilizar SDKs existentes apuntando el `baseURL` al
+gateway. En ambos casos se lee el **último** bloque de uso del flujo y se factura
+igual que en la vía no-streaming; el presupuesto/límite se comprueban antes de abrir
+el flujo. La `usage` de OpenAI se traduce a un `usageMetadata` sintético
+(`prompt_tokens`→entrada, `cached_tokens`→cache, `completion_tokens`→salida).
+
+**Coste y margen (informativo).** `ai_model_prices` guarda el **coste del operador**
+por modelo (lo que cobra Google, en micro-céntimos por millón de tokens: entrada,
+cache y salida). Contabilidad muestra ese coste junto al **PVP de referencia** del
+catálogo (primer producto de IA activo de cada medidor) y el **margen** resultante.
+No interviene en la factura: solo ayuda a fijar precios de venta con margen.
 
 ### 7.3 Proyectos, variables compartidas y conectores de GitHub
 | Método | Ruta | Nivel | Descripción |
