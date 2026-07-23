@@ -1652,8 +1652,19 @@ export function updateInvoice(invoiceId: string, fields: Record<string, unknown>
   db.prepare(`UPDATE workspace_invoices SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), invoiceId);
 }
 
+/**
+ * Devuelve a «pendiente» los cargos puntuales que estaban enlazados a una factura
+ * (al borrarla o anularla), para que no se pierdan y vuelvan a la próxima factura.
+ */
+export function reopenChargesForInvoice(invoiceId: string): void {
+  db.prepare("UPDATE pending_charges SET status = 'pending', invoice_id = NULL WHERE invoice_id = ? AND status = 'invoiced'").run(invoiceId);
+}
+
 export function deleteInvoice(invoiceId: string): void {
-  db.prepare('DELETE FROM workspace_invoices WHERE id = ?').run(invoiceId);
+  db.transaction(() => {
+    reopenChargesForInvoice(invoiceId); // no perder los cargos enlazados
+    db.prepare('DELETE FROM workspace_invoices WHERE id = ?').run(invoiceId);
+  })();
 }
 
 export function getInvoiceByStripeSession(sessionId: string): InvoiceRow | undefined {

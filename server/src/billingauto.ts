@@ -60,20 +60,36 @@ export function reactivateWorkspaceIfCurrent(workspaceId: string): void {
   const nowMs = Date.now();
   const stillOverdue = listUnpaidIssuedInvoices().some((i) => i.workspace_id === workspaceId && invoiceDueMs(i, termsDays) < nowMs);
   if (stillOverdue) return; // sigue debiendo otra factura: no se levanta el corte
+  // La cancelación (etapa 3) es TERMINAL: las claves revocadas y las suscripciones
+  // canceladas no reviven solas; pagar no restaura el servicio, requiere alta manual.
+  const wasCancelled = stage >= 3;
   setWorkspaceKeysStatus(workspaceId, 'suspended', 'active');
   setWorkspaceSubscriptionsStatus(workspaceId, 'paused', 'active');
   updateWorkspace(workspaceId, { dunning_stage: 0, dunning_since: null, ai_suspended: 0, last_dunning_action_at: nowMs });
   resolveAlertsByDedupe(`ws:${workspaceId}:overdue`);
   resolveAlertsByDedupe(`ws:${workspaceId}:suspended`);
-  fireWorkspaceAlert({
-    severity: 'info',
-    workspaceId,
-    type: 'ws_reactivated',
-    title: `Servicio reactivado — ${ws.name}`,
-    message: 'Pago regularizado: se reactivan las claves de IA y las suscripciones suspendidas.',
-    dedupeKey: `ws:${workspaceId}:reactivated:${nowMs}`,
-  });
-  auditSystem('dunning_reactivated', ws.name);
+  resolveAlertsByDedupe(`ws:${workspaceId}:cancelled`);
+  if (wasCancelled) {
+    fireWorkspaceAlert({
+      severity: 'warning',
+      workspaceId,
+      type: 'ws_cancelled_paid',
+      title: `Cuenta cancelada regularizada — ${ws.name}`,
+      message: 'Pago recibido, pero la cuenta estaba cancelada: requiere alta manual (emitir nuevas claves y reactivar las suscripciones).',
+      dedupeKey: `ws:${workspaceId}:cancelled_paid:${nowMs}`,
+    });
+    auditSystem('dunning_cancelled_paid', ws.name);
+  } else {
+    fireWorkspaceAlert({
+      severity: 'info',
+      workspaceId,
+      type: 'ws_reactivated',
+      title: `Servicio reactivado — ${ws.name}`,
+      message: 'Pago regularizado: se reactivan las claves de IA y las suscripciones suspendidas.',
+      dedupeKey: `ws:${workspaceId}:reactivated:${nowMs}`,
+    });
+    auditSystem('dunning_reactivated', ws.name);
+  }
 }
 
 /** Aplica la etapa de dunning que corresponda a un workspace con facturas vencidas. */
@@ -179,6 +195,7 @@ export function billingCycleTick(now: Date): void {
       const cycle = previousCycle(ws.billing_day, now);
       if (invoiceExistsForCycle(ws.id, cycle.start)) continue; // ya generada (idempotente)
       const inv = generateCycleDraft(ws, cycle);
+      if (!inv) continue; // nada que facturar: no se crea un borrador vacío
       auditSystem('invoice_auto_generated', `${ws.name} · ${inv.currency} ${(inv.total_cents / 100).toFixed(2)} (borrador del ciclo)`);
     } catch (err: any) {
       auditSystem('billing_cycle_error', `${ws.id}: ${(err?.message || err).toString().slice(0, 200)}`);

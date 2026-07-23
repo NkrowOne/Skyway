@@ -28,5 +28,8 @@ export function priceTiers(tiers: PriceTierRow[], qty: number, mode: 'graduated'
     prev = cap;
     if (remaining <= 0) break;
   }
+  // Si el último tramo tiene tope finito y la cantidad lo supera, el excedente se
+  // cobra al precio del último tramo (no se factura gratis por un hueco de config).
+  if (remaining > 0) total += Math.round(remaining * sorted[sorted.length - 1].unit_cents);
   return total;
 }

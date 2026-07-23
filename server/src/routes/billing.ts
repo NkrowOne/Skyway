@@ -15,6 +15,7 @@ import {
   listPendingCharges,
   listTiers,
   markChargesInvoiced,
+  reopenChargesForInvoice,
   transaction,
   updateInvoice,
   workspaceMeterUsage,
@@ -292,7 +293,7 @@ export function markInvoicePaidByStripeSession(sessionId: string): boolean {
  * puntuales pendientes. Queda en DRAFT (no emite). Lo usan la ruta manual
  * «Generar ciclo» y la facturación automática del scheduler.
  */
-export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.billing_day)): InvoiceRow {
+export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.billing_day)): InvoiceRow | null {
   const plan = workspacePlan(ws);
   const profile = getBillingProfile();
   const fromHour = Math.floor(cycle.start / HOUR_MS);
@@ -333,27 +334,34 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.bil
     rawLines.push({ label: c.label, kind: c.kind === 'product' ? 'product' : 'custom', qty: c.qty, unitCents: c.unit_cents, taxRate: c.tax_rate });
   }
 
+  // Nada que facturar este ciclo (sin plan, sin suscripciones con consumo, sin
+  // cargos): no se crea un borrador vacío que se acumularía mes a mes.
+  if (rawLines.length === 0) return null;
+
   const totals = computeTotals(rawLines, { defaultTaxRate: profile.vatRate, irpfRate: profile.defaultIrpfRate, regime: 'general' });
-  const inv = createInvoice({
-    workspace_id: ws.id,
-    period_start: cycle.start,
-    period_end: cycle.end,
-    status: 'draft',
-    currency,
-    subtotal_cents: totals.subtotal,
-    tax_cents: totals.tax,
-    tax_rate: profile.vatRate,
-    tax_breakdown: JSON.stringify(totals.taxBreakdown),
-    vat_regime: 'general',
-    legal_mentions: legalMention('general'),
-    irpf_rate: profile.defaultIrpfRate,
-    irpf_cents: totals.irpf,
-    total_cents: totals.total,
-    lines: JSON.stringify(totals.lines),
-    plan_name: plan?.name ?? null,
+  // Factura y marcado de cargos, atómicos: no pueden divergir ante un fallo.
+  return transaction(() => {
+    const inv = createInvoice({
+      workspace_id: ws.id,
+      period_start: cycle.start,
+      period_end: cycle.end,
+      status: 'draft',
+      currency,
+      subtotal_cents: totals.subtotal,
+      tax_cents: totals.tax,
+      tax_rate: profile.vatRate,
+      tax_breakdown: JSON.stringify(totals.taxBreakdown),
+      vat_regime: 'general',
+      legal_mentions: legalMention('general'),
+      irpf_rate: profile.defaultIrpfRate,
+      irpf_cents: totals.irpf,
+      total_cents: totals.total,
+      lines: JSON.stringify(totals.lines),
+      plan_name: plan?.name ?? null,
+    });
+    if (charges.length > 0) markChargesInvoiced(charges.map((c) => c.id), inv.id);
+    return inv;
   });
-  if (charges.length > 0) markChargesInvoiced(charges.map((c) => c.id), inv.id);
-  return inv;
 }
 
 export async function billingRoutes(app: FastifyInstance): Promise<void> {
@@ -384,6 +392,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const ws = getWorkspace(id);
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
     const inv = generateCycleDraft(ws);
+    if (!inv) return reply.code(400).send({ error: 'No hay nada que facturar en este ciclo (sin plan, suscripciones ni cargos).' });
     audit(req, 'invoice_generated', { type: 'invoice', id: inv.id, detail: `${ws.name} · ${inv.currency} ${(inv.total_cents / 100).toFixed(2)}` });
     reply.code(201);
     return { invoice: publicInvoice(inv) };
@@ -504,6 +513,8 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     } else {
       if (target !== inv.status) fields.status = target; // draft/issued → void
       updateInvoice(id, fields);
+      // Al anular, los cargos puntuales enlazados vuelven a pendientes (no se pierden).
+      if (target === 'void' && inv.status !== 'void') reopenChargesForInvoice(id);
     }
     // Cobro manual: levanta el corte por impago si la cuenta ya no debe nada.
     if (target === 'paid' && inv.status !== 'paid') reactivateWorkspaceIfCurrent(inv.workspace_id);

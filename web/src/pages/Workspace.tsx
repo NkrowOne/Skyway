@@ -774,7 +774,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
         )}
       </section>
 
-      {isAdmin && <SubscriptionsSection workspaceId={ws.id} onChanged={invalidate} />}
+      {isAdmin && <SubscriptionsSection workspaceId={ws.id} currency={ws.plan?.currency ?? 'EUR'} onChanged={invalidate} />}
 
       {isAdmin && <AiKeysSection workspaceId={ws.id} />}
 
@@ -975,7 +975,7 @@ const SUB_STATUS: Record<Subscription['status'], { tone: 'ok' | 'warn' | 'neutra
 };
 
 /** Suscripciones y cargos puntuales que el cliente tiene contratados del catálogo. */
-function SubscriptionsSection({ workspaceId, onChanged }: { workspaceId: string; onChanged: () => void }) {
+function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceId: string; currency: string; onChanged: () => void }) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const subsQ = useQuery({ queryKey: ['ws-subs', workspaceId], queryFn: () => api.get<SubscriptionsResponse>(`/workspaces/${workspaceId}/subscriptions`) });
@@ -1053,7 +1053,7 @@ function SubscriptionsSection({ workspaceId, onChanged }: { workspaceId: string;
                   <span className="text-sm font-medium">{c.label}</span>
                   <StatusBadge tone="info" label="cargo pendiente" dot={false} className="text-[10px]" />
                 </div>
-                <p className="mt-0.5 text-[11px] text-subtle tnum">{fmtMoney(c.unit_cents, 'EUR')} × {c.qty} · IVA {c.tax_rate}%</p>
+                <p className="mt-0.5 text-[11px] text-subtle tnum">{fmtMoney(c.unit_cents, currency)} × {c.qty} · IVA {c.tax_rate}%</p>
               </div>
               <button onClick={() => delCharge.mutate(c.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Quitar cargo"><Trash2 size={14} /></button>
             </div>
