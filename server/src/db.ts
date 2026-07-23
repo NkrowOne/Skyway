@@ -26,6 +26,7 @@ import {
   ServiceType,
   UserRole,
   UserRow,
+  WorkspaceApiKeyRow,
   WorkspaceRow,
 } from './types';
 import { ALL_MODULE_KEYS } from './modules';
@@ -437,6 +438,28 @@ export function initDb(): void {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_ledger_invoice ON invoice_ledger(invoice_id, seq);
+    -- Claves de API por cuenta para el proxy de IA (gateway). Hasheadas; el
+    -- prefijo distingue de los tokens de panel (nunca dan acceso al panel).
+    CREATE TABLE IF NOT EXISTS workspace_api_keys (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      prefix TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'gemini',
+      allowed_models TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended','revoked')),
+      budget_cents_month INTEGER,
+      spend_cents_cycle INTEGER NOT NULL DEFAULT 0,
+      cycle_anchor INTEGER,
+      rate_limit_rpm INTEGER,
+      last_used_at INTEGER,
+      expires_at INTEGER,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at INTEGER NOT NULL,
+      revoked_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_ws_api_keys_ws ON workspace_api_keys(workspace_id);
     -- Rutas calientes: proyectos por workspace (cuota y listados), usuarios por
     -- workspace (sub-usuarios) y facturas por workspace.
     CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
@@ -1958,4 +1981,56 @@ export function workspaceMeterUsage(workspaceId: string, meter: string, fromHour
     )
     .get(meter, fromHour, toHour, workspaceId, workspaceId) as { total: number };
   return row.total;
+}
+
+// ---------- claves de API por cuenta (proxy de IA) ----------
+export function createWorkspaceApiKey(
+  row: Pick<WorkspaceApiKeyRow, 'workspace_id' | 'name' | 'key_hash' | 'prefix'> & Partial<WorkspaceApiKeyRow>,
+): WorkspaceApiKeyRow {
+  const full: WorkspaceApiKeyRow = {
+    provider: 'gemini', allowed_models: '[]', status: 'active', budget_cents_month: null, spend_cents_cycle: 0,
+    cycle_anchor: null, rate_limit_rpm: null, last_used_at: null, expires_at: null, created_by: null, revoked_at: null,
+    ...row, id: id('wak'), created_at: now(),
+  };
+  db.prepare(
+    `INSERT INTO workspace_api_keys (id, workspace_id, name, key_hash, prefix, provider, allowed_models, status, budget_cents_month, spend_cents_cycle, cycle_anchor, rate_limit_rpm, last_used_at, expires_at, created_by, created_at, revoked_at)
+     VALUES (@id, @workspace_id, @name, @key_hash, @prefix, @provider, @allowed_models, @status, @budget_cents_month, @spend_cents_cycle, @cycle_anchor, @rate_limit_rpm, @last_used_at, @expires_at, @created_by, @created_at, @revoked_at)`,
+  ).run(full);
+  return full;
+}
+
+export function listWorkspaceApiKeys(workspaceId: string): WorkspaceApiKeyRow[] {
+  return db
+    .prepare("SELECT * FROM workspace_api_keys WHERE workspace_id = ? AND status <> 'revoked' ORDER BY created_at DESC")
+    .all(workspaceId) as WorkspaceApiKeyRow[];
+}
+
+export function getWorkspaceApiKey(keyId: string): WorkspaceApiKeyRow | undefined {
+  return db.prepare('SELECT * FROM workspace_api_keys WHERE id = ?').get(keyId) as WorkspaceApiKeyRow | undefined;
+}
+
+/** Busca una clave por su hash. Se consulta en CADA petición del proxy (sin caché), para que suspender/revocar surta efecto al instante. */
+export function getWorkspaceApiKeyByHash(hash: string): WorkspaceApiKeyRow | undefined {
+  return db.prepare('SELECT * FROM workspace_api_keys WHERE key_hash = ?').get(hash) as WorkspaceApiKeyRow | undefined;
+}
+
+const WS_API_KEY_COLUMNS = new Set(['name', 'allowed_models', 'status', 'budget_cents_month', 'spend_cents_cycle', 'cycle_anchor', 'rate_limit_rpm', 'expires_at', 'revoked_at']);
+
+export function updateWorkspaceApiKey(keyId: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields).filter((k) => WS_API_KEY_COLUMNS.has(k));
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE workspace_api_keys SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), keyId);
+}
+
+/** Cambia el estado de TODAS las claves de un workspace (corte/reactivación por impago). */
+export function setWorkspaceKeysStatus(workspaceId: string, from: string, to: string): number {
+  return db.prepare('UPDATE workspace_api_keys SET status = ? WHERE workspace_id = ? AND status = ?').run(to, workspaceId, from).changes;
+}
+
+/** Actualiza `last_used_at` de forma diferida (como los tokens de panel): solo si pasó >60 s. */
+export function touchWorkspaceApiKey(keyId: string, lastUsed: number | null): void {
+  const t = now();
+  if (lastUsed && t - lastUsed < 60_000) return;
+  db.prepare('UPDATE workspace_api_keys SET last_used_at = ? WHERE id = ?').run(t, keyId);
 }

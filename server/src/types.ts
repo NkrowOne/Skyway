@@ -500,6 +500,7 @@ export type UsageMeter =
   | 'cpu_core_hour'
   | 'mem_gb_hour'
   | 'ai_tokens_in'
+  | 'ai_tokens_cache_in'
   | 'ai_tokens_out'
   | 'ai_requests'
   | 'ai_bytes'
@@ -579,6 +580,34 @@ export interface PendingChargeRow {
   status: 'pending' | 'invoiced' | 'cancelled';
   invoice_id: string | null;
   created_at: number;
+}
+
+/**
+ * Clave de API por cuenta que abre EXCLUSIVAMENTE el proxy de IA (nunca el
+ * panel). Se guarda hasheada; el secreto (`skai_…`) solo se muestra al crearla.
+ * El prefijo NO empieza por `sky_` para que jamás se resuelva como token de panel.
+ */
+export interface WorkspaceApiKeyRow {
+  id: string;
+  workspace_id: string;
+  name: string;
+  key_hash: string;
+  prefix: string;
+  provider: string;
+  /** Modelos permitidos (JSON array); [] = todos los del allowlist global del operador. */
+  allowed_models: string;
+  status: 'active' | 'suspended' | 'revoked';
+  /** Presupuesto mensual (céntimos); null = sin tope. Se aplica en la fase de límites. */
+  budget_cents_month: number | null;
+  /** Gasto acumulado del ciclo (contador cacheado; la verdad está en usage_meter_hourly). */
+  spend_cents_cycle: number;
+  cycle_anchor: number | null;
+  rate_limit_rpm: number | null;
+  last_used_at: number | null;
+  expires_at: number | null;
+  created_by: string | null;
+  created_at: number;
+  revoked_at: number | null;
 }
 
 /** Evento crudo de consumo (ingesta idempotente); alimenta `usage_meter_hourly`. */

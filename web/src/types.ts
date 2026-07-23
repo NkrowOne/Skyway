@@ -393,7 +393,7 @@ export interface BillingProfileResponse {
 
 export type ProductCategory = 'web' | 'ia' | 'app' | 'hosting' | 'bbdd' | 'dominio' | 'soporte' | 'custom';
 export type BillingModel = 'flat_one_off' | 'subscription' | 'metered' | 'tiered';
-export type UsageMeter = 'cpu_core_hour' | 'mem_gb_hour' | 'ai_tokens_in' | 'ai_tokens_out' | 'ai_requests' | 'ai_bytes' | 'unit';
+export type UsageMeter = 'cpu_core_hour' | 'mem_gb_hour' | 'ai_tokens_in' | 'ai_tokens_cache_in' | 'ai_tokens_out' | 'ai_requests' | 'ai_bytes' | 'unit';
 
 export interface PriceTier {
   up_to: number | null;
@@ -461,6 +461,34 @@ export interface PendingCharge {
 export interface SubscriptionsResponse {
   subscriptions: Subscription[];
   charges: PendingCharge[];
+}
+
+// ---------- gateway de IA ----------
+
+export interface WorkspaceApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  provider: string;
+  status: 'active' | 'suspended' | 'revoked';
+  allowed_models: string[];
+  budget_cents_month: number | null;
+  spend_cents_cycle: number;
+  rate_limit_rpm: number | null;
+  last_used_at: number | null;
+  expires_at: number | null;
+  created_at: number;
+}
+
+export interface WorkspaceKeysResponse {
+  keys: WorkspaceApiKey[];
+  geminiConfigured: boolean;
+}
+
+export interface AiGatewayConfig {
+  hasGeminiKey: boolean;
+  baseUrl: string;
+  allowedModels: string[];
 }
 
 export interface GitConfig {

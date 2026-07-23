@@ -22,7 +22,7 @@ const productSchema = z.object({
   currency: z.string().trim().length(3).toUpperCase().default('EUR'),
   interval: z.enum(['monthly', 'yearly', 'one_off', 'metered']).default('one_off'),
   unit: z.string().trim().max(40).default(''),
-  meter: z.enum(['cpu_core_hour', 'mem_gb_hour', 'ai_tokens_in', 'ai_tokens_out', 'ai_requests', 'ai_bytes', 'unit']).nullable().default(null),
+  meter: z.enum(['cpu_core_hour', 'mem_gb_hour', 'ai_tokens_in', 'ai_tokens_cache_in', 'ai_tokens_out', 'ai_requests', 'ai_bytes', 'unit']).nullable().default(null),
   tierMode: z.enum(['graduated', 'volume']).nullable().default(null),
   taxRate: z.coerce.number().min(0).max(100).default(21),
   irpfRate: z.coerce.number().min(0).max(100).default(0),

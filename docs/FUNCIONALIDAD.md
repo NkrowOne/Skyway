@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.18.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.19.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -30,6 +30,7 @@ server/src/
   company.ts            perfil fiscal de la empresa emisora + claves de Stripe (en settings)
   stripe.ts             cliente mínimo de Stripe (Checkout Session + verificación de firma de webhook)
   pricing.ts            cálculo de precios por tramos (graduated/volume) del catálogo
+  aigateway.ts          gateway de IA: config (clave de Gemini del operador, modelos) y medición de tokens
   security.ts           escáner de seguridad (hallazgos + nota)
   variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}
   templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio)
@@ -158,9 +159,10 @@ web/src/
 | `usage_meter_hourly` | agregado horario del uso para tarifar: `PK(subject_id, meter, hour)`, `quantity` |
 | `invoice_ledger` | **reservada** (Verifactu, RD 1007/2023): libro inmutable encadenado por huella SHA-256 — `id`, `seq`, `invoice_id`, `record_type` (`alta`/`anulacion`), `huella`, `huella_anterior`, `qr_url`, `sif_mode`, `estado_remision`… Se crea vacía para no exigir migración al activar Verifactu; la lógica llega en fase posterior |
 | `invoice_events_log` | **reservada** (Verifactu): registro de eventos del SIF encadenado por huella |
+| `workspace_api_keys` | claves de API por cuenta para el proxy de IA: `id`, `workspace_id`, `name`, `key_hash` (sha256, único; el secreto `skai_…` solo se muestra al crear), `prefix`, `provider`, `allowed_models` (JSON), `status` (`active`/`suspended`/`revoked`), `budget_cents_month`, `spend_cents_cycle`, `rate_limit_rpm`, `last_used_at`, `expires_at`, `revoked_at`. El prefijo **no** empieza por `sky_`: nunca se resuelve como token de panel |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
-| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven)… |
+| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`)… |
 | `projects` | `id`, `name`, `slug` (único), `workspace_id` (cuenta de cliente), `client` (reflejo denormalizado del nombre del workspace para la UI), página de estado (`status_token`, `status_enabled`, `status_notice`) |
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
@@ -446,11 +448,38 @@ ciclo (`/invoices/generate`).
 
 **Medición y generación.** Los medidores de infraestructura (`cpu_core_hour`,
 `mem_gb_hour`) se derivan de `service_metrics_hourly`; los lógicos/IA
-(`ai_tokens_in/out`, `ai_requests`, `ai_bytes`, `unit`) se ingieren por `/usage`.
-Al generar el borrador del ciclo se suman: plan + suscripciones activas
-(recurrentes fijas, por uso medido y por tramos graduated/volume) + cargos
-puntuales pendientes; el IVA se desglosa por tipo y los cargos se marcan como
-facturados.
+(`ai_tokens_in`, `ai_tokens_cache_in`, `ai_tokens_out`, `ai_requests`, `ai_bytes`,
+`unit`) se ingieren por `/usage` o por el gateway. Al generar el borrador del
+ciclo se suman: plan + suscripciones activas (recurrentes fijas, por uso medido y
+por tramos graduated/volume) + cargos puntuales pendientes; el IVA se desglosa por
+tipo y los cargos se marcan como facturados.
+
+### 7.2.3 Gateway de IA (Gemini) — proxy con medición por cliente
+Skyway actúa de **proxy multiplexado** ante Gemini: guarda una clave de proyecto
+del operador (en `settings`, nunca expuesta) y emite una clave `skai_…` por cuenta
+que abre **solo** el proxy (jamás el panel). Tras cada respuesta lee `usageMetadata`
+y registra el consumo (`ai_tokens_in`/`ai_tokens_cache_in`/`ai_tokens_out`/`ai_requests`),
+que se factura con los productos de IA del catálogo. El corte (impago o manual) es
+inmediato y reversible: se hace sobre la clave de Skyway, sin tocar Google.
+
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| POST | `/gw/v1beta/models/<modelo>:generateContent` | clave `skai_` (auth propia) | proxya a Gemini con la clave del operador; valida modelo (allowlist fail-closed), mide `usageMetadata` y registra el uso |
+| GET | `/gw/v1beta/models` | clave `skai_` | modelos permitidos para esa clave |
+| GET | `/workspaces/:id/keys` | manage | claves de IA de la cuenta (prefijo, estado, uso; nunca el secreto) |
+| POST | `/workspaces/:id/keys` | manage (session) | emite una clave; el secreto `skai_…` se devuelve **una sola vez** |
+| PATCH | `/workspaces/:id/keys/:keyId` | admin | edita nombre/modelos/presupuesto/límite/caducidad |
+| POST | `/workspaces/:id/keys/:keyId/block`·`/unblock` | admin | corte / reactivación manual (instantáneo) |
+| DELETE | `/workspaces/:id/keys/:keyId` | manage | revoca la clave (irreversible) |
+| GET·PUT | `/ai/gateway/config` | admin | clave de Gemini (enmascarada), host y modelos permitidos |
+
+**Seguridad del gateway.** La clave de cliente usa una vía de autenticación
+separada (`requireProxyKey`, nunca `requireAuth`) y un prefijo que **no** empieza
+por `sky_`, de modo que no puede alcanzar el panel ni el `docker.sock` del host; se
+valida en cada petición (sin caché → suspender surte efecto al instante). La clave
+de Gemini del operador nunca se registra ni se reenvía, y las cabeceras de Google no
+se propagan al cliente. La URL upstream se construye en servidor a partir del modelo
+validado (no se refleja el path del cliente → anti-SSRF).
 
 ### 7.3 Proyectos, variables compartidas y conectores de GitHub
 | Método | Ruta | Nivel | Descripción |

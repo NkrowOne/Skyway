@@ -13,8 +13,8 @@ const CATS: Record<ProductCategory, string> = {
 const CAT_ORDER: ProductCategory[] = ['web', 'ia', 'app', 'hosting', 'bbdd', 'dominio', 'soporte', 'custom'];
 const MODELS: Record<BillingModel, string> = { flat_one_off: 'Puntual', subscription: 'Suscripción', metered: 'Por uso', tiered: 'Por tramos' };
 const METERS: Record<UsageMeter, string> = {
-  cpu_core_hour: 'CPU núcleo·h', mem_gb_hour: 'RAM GB·h', ai_tokens_in: 'IA tokens entrada', ai_tokens_out: 'IA tokens salida',
-  ai_requests: 'IA peticiones', ai_bytes: 'IA bytes', unit: 'Unidad',
+  cpu_core_hour: 'CPU núcleo·h', mem_gb_hour: 'RAM GB·h', ai_tokens_in: 'IA tokens entrada', ai_tokens_cache_in: 'IA tokens entrada (caché)',
+  ai_tokens_out: 'IA tokens salida', ai_requests: 'IA peticiones', ai_bytes: 'IA bytes', unit: 'Unidad',
 };
 
 function priceSummary(p: Product): string {

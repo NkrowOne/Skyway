@@ -14,6 +14,7 @@ import { accountingRoutes } from './routes/accounting';
 import { productRoutes } from './routes/products';
 import { subscriptionRoutes } from './routes/subscriptions';
 import { usageRoutes } from './routes/usage';
+import { aiGatewayRoutes } from './routes/aigateway';
 import { projectRoutes } from './routes/projects';
 import { serviceRoutes } from './routes/services';
 import { deploymentRoutes } from './routes/deployments';
@@ -95,6 +96,7 @@ export function buildApp(): FastifyInstance {
   app.register(productRoutes);
   app.register(subscriptionRoutes);
   app.register(usageRoutes);
+  app.register(aiGatewayRoutes);
   app.register(projectRoutes);
   app.register(serviceRoutes);
   app.register(deploymentRoutes);

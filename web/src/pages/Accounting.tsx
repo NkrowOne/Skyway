@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Building2, CreditCard, Download, Landmark, Receipt } from 'lucide-react';
+import { Building2, CreditCard, Download, Landmark, Receipt, Sparkles } from 'lucide-react';
 import { api } from '../api';
 import { Button, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { RevenueBars } from '../components/BillingCharts';
-import { AccountingInvoice, AccountingSummary, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
+import { AccountingInvoice, AccountingSummary, AiGatewayConfig, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
 import { cx, fmtDate, fmtMoney } from '../utils';
 
 const INV_TONE: Record<string, 'neutral' | 'info' | 'ok' | 'warn'> = { draft: 'neutral', issued: 'info', paid: 'ok', void: 'warn' };
@@ -139,7 +139,54 @@ export default function AccountingPage() {
       <div className="mt-5">
         <CompanyProfile />
       </div>
+
+      <div className="mt-5">
+        <AiGatewaySettings />
+      </div>
     </div>
+  );
+}
+
+/** Configuración del gateway de IA: clave de Gemini del operador y modelos permitidos. */
+function AiGatewaySettings() {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const q = useQuery({ queryKey: ['ai-gateway-config'], queryFn: () => api.get<AiGatewayConfig>('/ai/gateway/config') });
+  const [key, setKey] = useState('');
+  const [models, setModels] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  if (q.data && !loaded) { setModels(q.data.allowedModels.join(', ')); setLoaded(true); }
+
+  const save = useMutation({
+    mutationFn: () => {
+      const payload: Record<string, unknown> = { allowedModels: models.split(',').map((m) => m.trim()).filter(Boolean) };
+      if (key.trim()) payload.geminiApiKey = key.trim();
+      return api.put('/ai/gateway/config', payload);
+    },
+    onSuccess: () => { toast('Gateway de IA guardado', 'ok'); setKey(''); queryClient.invalidateQueries({ queryKey: ['ai-gateway-config'] }); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  if (!q.data) return <Skeleton className="h-48 w-full" />;
+  return (
+    <section className="card p-5">
+      <h2 className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} className="text-acc-soft" /> Gateway de IA (Gemini)</h2>
+      <p className="mt-1 text-xs text-subtle">
+        Tu clave de Google Gemini. Skyway proxya las peticiones de los clientes con ella (nunca se expone), mide los tokens y los factura por cuenta. Cada cliente usa una clave <span className="font-mono">skai_…</span> propia, revocable.
+      </p>
+      <div className="mt-4 grid gap-3">
+        <Field label="Clave de Gemini (API key de Google AI)" hint={q.data.hasGeminiKey ? 'ya configurada; vacío = no cambiar' : 'necesaria para que el proxy funcione'}>
+          <input className="input font-mono" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={q.data.hasGeminiKey ? '•••••••• configurada' : 'AIza…'} />
+        </Field>
+        <Field label="Modelos permitidos" hint="separados por comas; los de imagen u otros quedan fuera a propósito">
+          <textarea className="input min-h-16 font-mono text-[12px]" value={models} onChange={(e) => setModels(e.target.value)} placeholder="gemini-2.5-flash, gemini-2.5-pro" />
+        </Field>
+      </div>
+      <div className="mt-3 flex items-center justify-between">
+        <p className="text-[11px] text-subtle">Los precios de venta se definen como productos de categoría IA en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>.</p>
+        <Button size="sm" onClick={() => save.mutate()} loading={save.isPending}>Guardar</Button>
+      </div>
+    </section>
   );
 }
 

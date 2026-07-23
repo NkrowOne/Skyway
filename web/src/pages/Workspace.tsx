@@ -8,8 +8,10 @@ import {
   Cpu,
   Gauge,
   HardDrive,
+  KeyRound,
   Layers,
   MemoryStick,
+  Ban,
   Pause,
   Pencil,
   Play,
@@ -35,6 +37,8 @@ import {
   Product,
   Subscription,
   SubscriptionsResponse,
+  WorkspaceApiKey,
+  WorkspaceKeysResponse,
   UsageSeries,
   UserRole,
   Workspace,
@@ -747,6 +751,8 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
 
       {isAdmin && <SubscriptionsSection workspaceId={ws.id} onChanged={invalidate} />}
 
+      {isAdmin && <AiKeysSection workspaceId={ws.id} />}
+
       {isAdmin && <BillingSettings detail={detail} onSaved={onSaved} />}
 
       {viewing && data && <InvoiceView invoice={viewing} issuer={data.issuer} client={data.client} onClose={() => setViewing(null)} />}
@@ -1111,6 +1117,112 @@ function AddChargeModal({ workspaceId, onClose, onSaved }: { workspaceId: string
         </div>
       </div>
     </Modal>
+  );
+}
+
+const KEY_STATUS: Record<WorkspaceApiKey['status'], { tone: 'ok' | 'warn' | 'neutral'; label: string }> = {
+  active: { tone: 'ok', label: 'activa' },
+  suspended: { tone: 'warn', label: 'suspendida' },
+  revoked: { tone: 'neutral', label: 'revocada' },
+};
+
+/** Claves de API de IA del cliente: acceso al proxy de Gemini, con corte reversible. */
+function AiKeysSection({ workspaceId }: { workspaceId: string }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const q = useQuery({ queryKey: ['ws-keys', workspaceId], queryFn: () => api.get<WorkspaceKeysResponse>(`/workspaces/${workspaceId}/keys`) });
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [secret, setSecret] = useState<string | null>(null);
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['ws-keys', workspaceId] });
+  const create = useMutation({
+    mutationFn: () => api.post<{ key: string }>(`/workspaces/${workspaceId}/keys`, { name: newName.trim() }),
+    onSuccess: (res) => { setSecret(res.key); setCreating(false); setNewName(''); invalidate(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const block = useMutation({
+    mutationFn: ({ id, on }: { id: string; on: boolean }) => api.post(`/workspaces/${workspaceId}/keys/${id}/${on ? 'block' : 'unblock'}`),
+    onSuccess: () => { toast('Clave actualizada', 'ok'); invalidate(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const revoke = useMutation({
+    mutationFn: (id: string) => api.del(`/workspaces/${workspaceId}/keys/${id}`),
+    onSuccess: () => { toast('Clave revocada', 'ok'); invalidate(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const keys = q.data?.keys ?? [];
+
+  return (
+    <section className="card overflow-hidden">
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <h2 className="flex items-center gap-2 text-sm font-semibold"><KeyRound size={15} className="text-acc-soft" /> Claves de IA (Gemini)</h2>
+        <Button size="sm" onClick={() => setCreating(true)}><Plus size={13} /> Nueva clave</Button>
+      </div>
+
+      {q.data && !q.data.geminiConfigured && (
+        <p className="border-b border-line bg-warn/[.08] px-4 py-2 text-[11px] text-warn">
+          El gateway de IA aún no tiene configurada la clave de Gemini (en Contabilidad → Gateway de IA). Las claves emitidas no funcionarán hasta entonces.
+        </p>
+      )}
+
+      {q.isLoading ? (
+        <Skeleton className="m-4 h-14" />
+      ) : keys.length === 0 ? (
+        <p className="px-4 py-8 text-center text-xs text-subtle">Sin claves. Emite una para que el cliente consuma Gemini por el proxy y se le facture el uso.</p>
+      ) : (
+        keys.map((k, i) => (
+          <div key={k.id} className={cx('flex flex-wrap items-center gap-3 px-4 py-3', i > 0 && 'border-t border-line')}>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium">{k.name}</span>
+                <span className="font-mono text-[11px] text-subtle">{k.prefix}…</span>
+                <StatusBadge tone={KEY_STATUS[k.status].tone} label={KEY_STATUS[k.status].label} dot={false} className="text-[10px]" />
+              </div>
+              <p className="mt-0.5 text-[11px] text-subtle">
+                {k.allowed_models.length ? `${k.allowed_models.length} modelo(s) · ` : 'todos los modelos · '}
+                {k.last_used_at ? `último uso ${timeAgo(k.last_used_at)}` : 'sin uso aún'}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              {k.status === 'active' ? (
+                <button onClick={() => block.mutate({ id: k.id, on: true })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Suspender (corte manual)"><Ban size={14} /></button>
+              ) : k.status === 'suspended' ? (
+                <button onClick={() => block.mutate({ id: k.id, on: false })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Reactivar"><Play size={14} /></button>
+              ) : null}
+              <button onClick={() => revoke.mutate(k.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Revocar (irreversible)"><Trash2 size={14} /></button>
+            </div>
+          </div>
+        ))
+      )}
+      <p className="border-t border-line px-4 py-2.5 text-[11px] text-subtle">
+        El cliente usa la clave contra <span className="font-mono">/gw/v1beta/models/&lt;modelo&gt;:generateContent</span>. El consumo se mide y se factura con los productos de IA del catálogo. El corte por impago es automático.
+      </p>
+
+      {/* Modal: crear clave */}
+      <Modal open={creating} onClose={() => setCreating(false)} title="Nueva clave de IA">
+        <div className="flex flex-col gap-3.5">
+          <Field label="Nombre" hint="para identificarla (p. ej. «Producción»)"><input className="input" value={newName} onChange={(e) => setNewName(e.target.value)} autoFocus placeholder="Producción" /></Field>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setCreating(false)}>Cancelar</Button>
+            <Button onClick={() => create.mutate()} loading={create.isPending} disabled={!newName.trim()}>Crear clave</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal: mostrar el secreto una sola vez */}
+      <Modal open={!!secret} onClose={() => setSecret(null)} title="Copia la clave ahora">
+        <div className="flex flex-col gap-3">
+          <p className="text-[13px] text-sub">Esta es la única vez que se muestra la clave. Guárdala en un lugar seguro; no podrás volver a verla.</p>
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-bg px-3 py-2.5">
+            <code className="min-w-0 flex-1 truncate font-mono text-[12px]">{secret}</code>
+            {secret && <CopyButton value={secret} title="Copiar clave" />}
+          </div>
+          <div className="flex justify-end"><Button onClick={() => setSecret(null)}>Listo</Button></div>
+        </div>
+      </Modal>
+    </section>
   );
 }
 
