@@ -4,6 +4,7 @@ import {
   ArrowDownToLine,
   ArrowUpToLine,
   Check,
+  ChevronUp,
   Copy,
   Download,
   Hash,
@@ -105,6 +106,8 @@ export default function LogViewer({
   onLoadMore,
   canLoadMore = false,
   loadingMore = false,
+  loadMoreCount,
+  atStart = false,
 }: {
   lines: string[];
   className?: string;
@@ -119,10 +122,14 @@ export default function LogViewer({
   title?: string;
   /** Carga más historial (líneas más antiguas) por el frente. Sin esto no hay botón. */
   onLoadMore?: () => void;
-  /** Si hay más historial disponible arriba (muestra «Cargar más»). */
+  /** Si hay más historial disponible arriba (muestra el borde «Cargar más»). */
   canLoadMore?: boolean;
-  /** Carga en curso: el botón «Cargar más» se deshabilita y gira. */
+  /** Carga en curso: el borde se deshabilita y gira. */
   loadingMore?: boolean;
+  /** Tamaño del bloque que trae cada carga (para rotular «Cargar N líneas…»). */
+  loadMoreCount?: number;
+  /** Ya se llegó al principio del registro: se muestra el remate «inicio del registro». */
+  atStart?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -491,18 +498,44 @@ export default function LogViewer({
           aria-live="off"
           aria-label="Salida de registro"
         >
-          {onLoadMore && canLoadMore && (
-            <div className="flex justify-center px-3 py-2">
-              <button
-                type="button"
-                onClick={loadMore}
-                disabled={loadingMore}
-                className="press inline-flex items-center gap-1.5 rounded-full border border-line bg-surface2 px-3 py-1 text-[11px] font-medium text-sub hover:text-txt disabled:opacity-60"
+          {/* Borde superior del buffer: cuando hay historial arriba es la acción
+              «Cargar N líneas anteriores» (el marcador va en la columna del
+              canalón, como un «antes de la línea 1»); cuando ya no queda nada,
+              un remate sobrio «inicio del registro» cierra el recorrido. */}
+          {onLoadMore && canLoadMore ? (
+            <button
+              type="button"
+              onClick={loadMore}
+              disabled={loadingMore}
+              aria-label={loadMoreCount ? `Cargar ${nf.format(loadMoreCount)} líneas anteriores` : 'Cargar líneas anteriores'}
+              className="group flex w-full items-center border-b border-line bg-term2 py-2 text-left transition-colors hover:bg-surface2 active:bg-surface2 disabled:opacity-55"
+            >
+              <span
+                className={cx(
+                  'flex shrink-0 items-center text-subtle transition-colors group-hover:text-acc-soft',
+                  gutter ? 'justify-end px-2.5' : 'justify-center pl-3',
+                )}
+                style={gutter ? { minWidth: '3.5ch' } : undefined}
               >
-                {loadingMore ? <Loader2 size={12} className="animate-spin" /> : <ArrowUpToLine size={12} />}
-                {loadingMore ? 'Cargando…' : 'Cargar más'}
-              </button>
-            </div>
+                {loadingMore ? <Loader2 size={13} className="animate-spin" /> : <ChevronUp size={14} strokeWidth={2.25} />}
+              </span>
+              <span className={cx('font-mono text-[11px] text-sub transition-colors group-hover:text-txt', gutter ? 'pl-2' : 'pl-2.5')}>
+                {loadingMore
+                  ? 'Cargando líneas anteriores…'
+                  : loadMoreCount
+                    ? `Cargar ${nf.format(loadMoreCount)} líneas anteriores`
+                    : 'Cargar líneas anteriores'}
+              </span>
+            </button>
+          ) : (
+            onLoadMore &&
+            atStart && (
+              <div className="flex select-none items-center gap-2.5 border-b border-line/70 px-3 py-1.5 text-subtle">
+                <span className="h-px flex-1 bg-line" />
+                <span className="shrink-0 font-mono text-[10px] uppercase tracking-[.12em]">inicio del registro</span>
+                <span className="h-px flex-1 bg-line" />
+              </div>
+            )
           )}
           {visible.length === 0 ? (
             <span className="block px-3 py-3 text-subtle">

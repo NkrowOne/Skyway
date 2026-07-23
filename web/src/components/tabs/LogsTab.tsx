@@ -109,6 +109,8 @@ export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string
         onLoadMore={loadMore}
         canLoadMore={entries.length > 0 && !reachedStart && !!oldestTs}
         loadingMore={loadingMore}
+        loadMoreCount={STEP}
+        atStart={reachedStart && entries.length > 0}
       />
     </div>
   );
