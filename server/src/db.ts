@@ -399,6 +399,44 @@ export function initDb(): void {
       quantity REAL NOT NULL DEFAULT 0,
       PRIMARY KEY (subject_id, meter, hour)
     );
+    -- Libro de facturación de Verifactu (RD 1007/2023): registro inmutable
+    -- encadenado por huella SHA-256. Esquema RESERVADO ("puertas abiertas"): se
+    -- crea vacío para que activar Verifactu no exija reconstruir tablas pobladas.
+    -- La lógica de huella/QR/remisión a la AEAT se implementa en una fase posterior
+    -- (no obligatorio hasta 2027, RDL 15/2025).
+    CREATE TABLE IF NOT EXISTS invoice_ledger (
+      id TEXT PRIMARY KEY,
+      seq INTEGER NOT NULL,
+      invoice_id TEXT NOT NULL REFERENCES workspace_invoices(id) ON DELETE RESTRICT,
+      record_type TEXT NOT NULL CHECK (record_type IN ('alta','anulacion')),
+      emisor_nif TEXT,
+      num_serie_factura TEXT,
+      fecha_expedicion INTEGER,
+      tipo_factura TEXT,
+      cuota_total_cents INTEGER,
+      importe_total_cents INTEGER,
+      fecha_hora_gen TEXT,
+      huella TEXT NOT NULL,
+      huella_anterior TEXT,
+      sif_mode TEXT CHECK (sif_mode IN ('verifactu','no_verifactu')),
+      firma TEXT,
+      qr_url TEXT,
+      estado_remision TEXT,
+      csv_aeat TEXT,
+      version_sif TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS invoice_events_log (
+      id TEXT PRIMARY KEY,
+      seq INTEGER NOT NULL,
+      tipo_evento TEXT NOT NULL,
+      ts TEXT,
+      detalle TEXT,
+      huella_evento TEXT,
+      huella_evento_anterior TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ledger_invoice ON invoice_ledger(invoice_id, seq);
     -- Rutas calientes: proyectos por workspace (cuota y listados), usuarios por
     -- workspace (sub-usuarios) y facturas por workspace.
     CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
