@@ -279,6 +279,8 @@ export interface PlanRow {
   is_default: number;
   /** Archivado: no se ofrece para nuevos workspaces pero sigue válido para los que ya lo tienen. */
   archived: number;
+  /** Descuento comercial (%) aplicado a las facturas de las cuentas de este plan. */
+  discount_pct: number;
   created_at: number;
 }
 
@@ -313,6 +315,8 @@ export interface WorkspaceRow {
   billing_address: string | null;
   /** Día del mes (1–28) en que renueva el ciclo de facturación. */
   billing_day: number;
+  /** Descuento comercial (%) de la cuenta; null = hereda el del plan. */
+  discount_pct: number | null;
   notes: string | null;
   created_at: number;
 }
@@ -618,6 +622,8 @@ export interface AiModelPriceRow {
   cost_micros_in: number;
   cost_micros_cache: number;
   cost_micros_out: number;
+  /** Margen objetivo sobre venta (%); guía el PVP sugerido = coste/(1−m/100). */
+  margin_pct: number;
   currency: string;
   updated_at: number;
 }

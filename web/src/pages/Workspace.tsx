@@ -1363,12 +1363,15 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
   const [taxId, setTaxId] = useState(ws.billing_tax_id ?? '');
   const [address, setAddress] = useState(ws.billing_address ?? '');
   const [day, setDay] = useState(String(ws.billing_day));
+  const initDisc = ws.discount_pct == null ? '' : String(ws.discount_pct);
+  const [disc, setDisc] = useState(initDisc);
   const [notes, setNotes] = useState(ws.notes ?? '');
   const dirty =
     email !== (ws.billing_email ?? '') ||
     taxId !== (ws.billing_tax_id ?? '') ||
     address !== (ws.billing_address ?? '') ||
     day !== String(ws.billing_day) ||
+    disc !== initDisc ||
     notes !== (ws.notes ?? '');
   const save = useMutation({
     mutationFn: () =>
@@ -1377,6 +1380,8 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
         billingTaxId: taxId.trim() || null,
         billingAddress: address.trim() || null,
         billingDay: Number(day) || 1,
+        // Vacío = hereda el descuento del plan (null); un número lo sobreescribe.
+        discountPct: disc.trim() === '' ? null : Math.max(0, Math.min(100, Number(disc) || 0)),
         notes: notes.trim() || null,
       }),
     onSuccess: () => { toast('Datos de facturación guardados', 'ok'); onSaved(); },
@@ -1392,6 +1397,7 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
       <Field label="Domicilio fiscal"><textarea className="input min-h-14" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Calle, nº · CP Población · Provincia · País" /></Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Día de cobro" hint="1–28"><input className="input tnum" type="number" min={1} max={28} value={day} onChange={(e) => setDay(e.target.value)} /></Field>
+        <Field label="Descuento (%)" hint="vacío = hereda el del plan"><input className="input tnum" type="number" min={0} max={100} step="0.5" value={disc} onChange={(e) => setDisc(e.target.value)} placeholder="del plan" /></Field>
       </div>
       <Field label="Notas internas"><textarea className="input min-h-16" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Condiciones, contacto, referencia…" /></Field>
       <div className="mt-3 flex justify-end">

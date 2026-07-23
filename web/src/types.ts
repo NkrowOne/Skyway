@@ -143,6 +143,8 @@ export interface Workspace {
   billing_tax_id: string | null;
   billing_address: string | null;
   billing_day: number;
+  /** Descuento comercial (%) de la cuenta; null = hereda el del plan. */
+  discount_pct: number | null;
   notes: string | null;
   /** Corte del proxy de IA por impago (0/1). */
   ai_suspended: number;
@@ -206,6 +208,8 @@ export interface Plan {
   modules: string[];
   is_default: boolean;
   archived: boolean;
+  /** Descuento comercial (%) aplicado a las facturas de las cuentas de este plan. */
+  discount_pct: number;
   created_at: number;
   inUse: number;
 }
@@ -500,9 +504,15 @@ export interface AiGatewayConfig {
 export interface AiModelCost {
   model: string;
   currency: string;
+  /** Margen objetivo sobre venta (%); guía el PVP sugerido. */
+  margin_pct: number;
   cost_cents_mtok_in: number;
   cost_cents_mtok_cache: number;
   cost_cents_mtok_out: number;
+  /** PVP sugerido (céntimos/Mtok) = coste/(1−margen/100); null si margen 0. */
+  pvp_cents_mtok_in: number | null;
+  pvp_cents_mtok_cache: number | null;
+  pvp_cents_mtok_out: number | null;
   updated_at: number;
 }
 export interface AiModelPrices {

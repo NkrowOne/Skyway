@@ -52,6 +52,48 @@ const lineSchema = z.object({
 /** Acota a entero seguro: por encima de 2^53 se perdería precisión al almacenar. */
 const clampSafe = (n: number): number => Math.max(-Number.MAX_SAFE_INTEGER, Math.min(Number.MAX_SAFE_INTEGER, n));
 
+/**
+ * Línea de trabajo del borrador de ciclo. `discountable` es transitorio (no viaja
+ * en lineSchema ni se persiste): marca qué líneas admite el descuento comercial.
+ * Se fija en el bucle de suscripciones porque en `rawLines` ya se ha perdido el
+ * vínculo con la suscripción (tramos y cuota fija comparten kind:'subscription').
+ */
+type LineDraft = z.infer<typeof lineSchema> & { discountable?: boolean };
+
+/**
+ * Aplica el descuento comercial de la cuenta/plan (%) empujando UNA línea de
+ * descuento por cada tipo de IVA presente entre las líneas descontables. Así el
+ * desglose por tipo sigue cuadrando: computeTotals agrupa por taxRate y redondea
+ * la cuota una vez sobre la base ya descontada. Se excluyen las líneas con precio
+ * negociado por cliente (unit_cents) para no descontar dos veces. El clamp por
+ * tipo evita bases negativas.
+ */
+function applyAccountDiscount(rawLines: LineDraft[], pct: number): void {
+  if (!(pct > 0)) return;
+  const clamped = Math.min(100, pct);
+  const baseByRate = new Map<number, number>();
+  for (const l of rawLines) {
+    if (!l.discountable) continue;
+    const amount = Math.round(l.qty * l.unitCents);
+    if (amount <= 0) continue; // solo se descuenta sobre importes positivos
+    const rate = l.taxRate ?? 0;
+    baseByRate.set(rate, (baseByRate.get(rate) ?? 0) + amount);
+  }
+  const multiRate = baseByRate.size > 1;
+  for (const [rate, base] of baseByRate) {
+    if (base <= 0) continue;
+    const disc = Math.min(base, Math.round((base * clamped) / 100)); // nunca supera la base del tipo
+    if (disc <= 0) continue;
+    rawLines.push({
+      label: `Descuento ${clamped}%${multiRate ? ` (IVA ${rate}%)` : ''}`,
+      kind: 'discount',
+      qty: 1,
+      unitCents: -disc,
+      taxRate: rate,
+    });
+  }
+}
+
 /** Transiciones de estado permitidas: una factura emitida no vuelve a borrador. */
 const ALLOWED_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
   draft: ['draft', 'issued', 'paid', 'void'],
@@ -301,7 +343,7 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.bil
   const usage = workspaceUsageRange(ws.id, fromHour, toHour);
   const currency = plan?.currency ?? profile.currency;
 
-  const rawLines: z.infer<typeof lineSchema>[] = [];
+  const rawLines: LineDraft[] = [];
   if (plan) {
     rawLines.push({
       label: `Plan ${plan.name} (${plan.interval === 'yearly' ? 'anual' : 'mensual'})`,
@@ -309,11 +351,13 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.bil
       qty: 1,
       unitCents: plan.price_cents,
       taxRate: profile.vatRate,
+      discountable: true,
     });
   }
   for (const sub of listActiveSubscriptions(ws.id)) {
     const product = getProduct(sub.product_id);
     if (!product) continue;
+    const negotiated = sub.unit_cents != null; // precio pactado por cliente: no se le suma el descuento
     const unitPrice = sub.unit_cents ?? product.price_cents;
     const rate = product.tax_exempt ? 0 : product.tax_rate;
     if ((product.billing_model === 'metered' || product.billing_model === 'tiered') && product.meter) {
@@ -323,18 +367,23 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.bil
       const units = Math.round((product.unit_size > 1 ? raw / product.unit_size : raw) * 1e6) / 1e6;
       if (product.billing_model === 'tiered') {
         const amount = priceTiers(listTiers(product.id), units, product.tier_mode ?? 'graduated');
-        rawLines.push({ label: `${product.name} · ${units} ${product.unit || 'ud'}`, kind: 'subscription', qty: 1, unitCents: amount, taxRate: rate });
+        // Los tramos no admiten override unit_cents: el precio es de tarifa → descontable.
+        rawLines.push({ label: `${product.name} · ${units} ${product.unit || 'ud'}`, kind: 'subscription', qty: 1, unitCents: amount, taxRate: rate, discountable: true });
       } else {
-        rawLines.push({ label: `${product.name} (${product.unit || 'uso'})`, kind: 'usage', qty: units, unitCents: unitPrice, taxRate: rate });
+        rawLines.push({ label: `${product.name} (${product.unit || 'uso'})`, kind: 'usage', qty: units, unitCents: unitPrice, taxRate: rate, discountable: !negotiated });
       }
     } else {
-      rawLines.push({ label: `${product.name} (${sub.interval === 'yearly' ? 'anual' : 'mensual'})`, kind: 'subscription', qty: sub.qty, unitCents: unitPrice, taxRate: rate });
+      rawLines.push({ label: `${product.name} (${sub.interval === 'yearly' ? 'anual' : 'mensual'})`, kind: 'subscription', qty: sub.qty, unitCents: unitPrice, taxRate: rate, discountable: !negotiated });
     }
   }
   const charges = listPendingCharges(ws.id, 'pending');
   for (const c of charges) {
-    rawLines.push({ label: c.label, kind: c.kind === 'product' ? 'product' : 'custom', qty: c.qty, unitCents: c.unit_cents, taxRate: c.tax_rate });
+    rawLines.push({ label: c.label, kind: c.kind === 'product' ? 'product' : 'custom', qty: c.qty, unitCents: c.unit_cents, taxRate: c.tax_rate, discountable: true });
   }
+
+  // Descuento comercial de la cuenta (override) o, si no lo tiene, del plan.
+  const discountPct = ws.discount_pct ?? plan?.discount_pct ?? 0;
+  applyAccountDiscount(rawLines, discountPct);
 
   // Nada que facturar este ciclo (sin plan, sin suscripciones con consumo, sin
   // cargos): no se crea un borrador vacío que se acumularía mes a mes.

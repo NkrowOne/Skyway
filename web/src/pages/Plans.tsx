@@ -19,6 +19,7 @@ interface Draft {
   max_projects: string;
   max_services: string;
   max_members: string;
+  discount_pct: string;
   modules: string[];
   is_default: boolean;
   archived: boolean;
@@ -27,7 +28,7 @@ interface Draft {
 const EMPTY: Draft = {
   name: '', priceUnits: '0', currency: 'EUR', interval: 'monthly',
   cpu_cores: '2', memory_mb: '2048', disk_mb: '20480', max_projects: '5', max_services: '15', max_members: '5',
-  modules: [], is_default: false, archived: false,
+  discount_pct: '0', modules: [], is_default: false, archived: false,
 };
 
 function fromPlan(p: Plan): Draft {
@@ -35,7 +36,7 @@ function fromPlan(p: Plan): Draft {
     id: p.id, name: p.name, priceUnits: String(p.price_cents / 100), currency: p.currency, interval: p.interval,
     cpu_cores: String(p.cpu_cores), memory_mb: String(p.memory_mb), disk_mb: String(p.disk_mb),
     max_projects: String(p.max_projects), max_services: String(p.max_services), max_members: String(p.max_members),
-    modules: [...p.modules], is_default: p.is_default, archived: p.archived,
+    discount_pct: String(p.discount_pct ?? 0), modules: [...p.modules], is_default: p.is_default, archived: p.archived,
   };
 }
 
@@ -63,6 +64,7 @@ export default function PlansPage() {
         max_projects: Number(d.max_projects) || 1,
         max_services: Number(d.max_services) || 1,
         max_members: Number(d.max_members) || 1,
+        discount_pct: Math.max(0, Math.min(100, Number(d.discount_pct) || 0)),
         modules: d.modules,
         is_default: d.is_default,
         archived: d.archived,
@@ -163,6 +165,7 @@ export default function PlansPage() {
               <Field label="Proyectos"><input className="input tnum" type="number" min={1} value={draft.max_projects} onChange={(e) => setDraft({ ...draft, max_projects: e.target.value })} /></Field>
               <Field label="Servicios"><input className="input tnum" type="number" min={1} value={draft.max_services} onChange={(e) => setDraft({ ...draft, max_services: e.target.value })} /></Field>
               <Field label="Usuarios"><input className="input tnum" type="number" min={1} value={draft.max_members} onChange={(e) => setDraft({ ...draft, max_members: e.target.value })} /></Field>
+              <Field label="Descuento (%)" hint="rebaja las facturas de sus cuentas"><input className="input tnum" type="number" min={0} max={100} step="0.5" value={draft.discount_pct} onChange={(e) => setDraft({ ...draft, discount_pct: e.target.value })} /></Field>
             </div>
             <Field label="Módulos incluidos">
               <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">

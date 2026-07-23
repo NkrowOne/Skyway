@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.21.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.22.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -149,8 +149,8 @@ web/src/
 | --- | --- |
 | `users` | `id`, `email` (único), `password_hash` (scrypt `s2:salt:hash`), `role` (`admin`/`owner`/`member`), `workspace_id` (owner/member), `session_epoch` |
 | `user_projects` | `(user_id, project_id)` — proyectos asignados a un miembro |
-| `plans` | `id`, `name`, `slug`, `price_cents`, `currency`, `interval`, cuotas incluidas (`cpu_cores`, `memory_mb`, `disk_mb`, `max_projects`, `max_services`, `max_members`), `modules` (JSON), `is_default`, `archived` |
-| `workspaces` | `id`, `name`, `slug`, `plan_id`, overrides de cuota (mismos campos, null = hereda del plan), `modules_override` (concesión del admin), `owner_disabled_modules` (acotado del propietario), `status` (`active`/`suspended`), `billing_email`, `billing_tax_id` (NIF/CIF del cliente), `billing_address` (domicilio fiscal del cliente), `billing_day`, `notes`, y estado de morosidad (`ai_suspended`, `dunning_stage` 0→3, `dunning_since`, `last_dunning_action_at`, `dunning_exempt`) |
+| `plans` | `id`, `name`, `slug`, `price_cents`, `currency`, `interval`, cuotas incluidas (`cpu_cores`, `memory_mb`, `disk_mb`, `max_projects`, `max_services`, `max_members`), `modules` (JSON), `is_default`, `archived`, `discount_pct` (descuento comercial % de las cuentas del plan) |
+| `workspaces` | `id`, `name`, `slug`, `plan_id`, overrides de cuota (mismos campos, null = hereda del plan), `modules_override` (concesión del admin), `owner_disabled_modules` (acotado del propietario), `status` (`active`/`suspended`), `billing_email`, `billing_tax_id` (NIF/CIF del cliente), `billing_address` (domicilio fiscal del cliente), `billing_day`, `discount_pct` (descuento % de la cuenta; null = hereda del plan), `notes`, y estado de morosidad (`ai_suspended`, `dunning_stage` 0→3, `dunning_since`, `last_dunning_action_at`, `dunning_exempt`) |
 | `workspace_invoices` | `id`, `workspace_id`, `series_id` (FK `invoice_series`), `number` (nº correlativo por serie/ejercicio, p. ej. `FRA-2026-0001`), `invoice_type` (`normal`/`simplificada`/`rectificativa`), `rectifies_invoice_id`+`rectify_reason` (si rectificativa), `period_start/end`, `operation_date` (fecha de operación si difiere de la expedición), `status` (`draft`/`issued`/`paid`/`void`), `currency`, `subtotal_cents` (base imponible), `tax_cents`, `tax_rate` (tipo por defecto), `tax_breakdown` (JSON: bases y cuotas **por tipo de IVA**), `vat_regime` (general/exento/inversión SP…), `legal_mentions`, `irpf_rate`+`irpf_cents` (retención), `total_cents`, `lines` (JSON, con `taxRate` por línea), `plan_name`, `issuer_snapshot` (datos fiscales del emisor congelados al emitir), `client_name`+`client_tax_id`+`client_address` (destinatario congelado al emitir), `payment_method` (`bank_transfer`/`stripe`/`card`/`cash`/`other`), `stripe_session_id`, `stripe_url`, `issued_at`, `paid_at`, `locked` (1 = emitida, inmutable), `notes` |
 | `invoice_series` | `id`, `code`, `year` (ejercicio; reinicio anual), `prefix`, `padding`, `next_seq` (incremento atómico al emitir), `kind` (`ordinaria`/`rectificativa`/`simplificada`), `UNIQUE(code, year)`. Sustituye al contador global; las rectificativas usan serie propia |
 | `catalog_products` | catálogo multimodular: `id`, `name`, `slug`, `category` (`web`/`ia`/`app`/`hosting`/`bbdd`/`dominio`/`soporte`/`custom`), `billing_model` (`flat_one_off`/`subscription`/`metered`/`tiered`), `price_cents`, `currency`, `interval`, `unit`, `unit_size` (nº de unidades del medidor por unidad de precio; p. ej. 1000000 → precio por 1M tokens con céntimos enteros), `meter` (medidor de uso), `tier_mode` (`graduated`/`volume`), `tax_rate`, `irpf_rate`, `tax_exempt`, `modules` (JSON), `description`, `active`, `archived` |
@@ -162,7 +162,7 @@ web/src/
 | `invoice_ledger` | **reservada** (Verifactu, RD 1007/2023): libro inmutable encadenado por huella SHA-256 — `id`, `seq`, `invoice_id`, `record_type` (`alta`/`anulacion`), `huella`, `huella_anterior`, `qr_url`, `sif_mode`, `estado_remision`… Se crea vacía para no exigir migración al activar Verifactu; la lógica llega en fase posterior |
 | `invoice_events_log` | **reservada** (Verifactu): registro de eventos del SIF encadenado por huella |
 | `workspace_api_keys` | claves de API por cuenta para el proxy de IA: `id`, `workspace_id`, `name`, `key_hash` (sha256, único; el secreto `skai_…` solo se muestra al crear), `prefix`, `provider`, `allowed_models` (JSON), `status` (`active`/`suspended`/`revoked`), `budget_cents_month`, `spend_cents_cycle`, `rate_limit_rpm`, `last_used_at`, `expires_at`, `revoked_at`. El prefijo **no** empieza por `sky_`: nunca se resuelve como token de panel |
-| `ai_model_prices` | coste del operador por modelo (para el margen): `model` (PK), `cost_micros_in`/`cost_micros_cache`/`cost_micros_out` (micro-céntimos por millón de tokens), `currency`, `updated_at`. Informativo; no interviene en la factura |
+| `ai_model_prices` | coste del operador por modelo y margen objetivo: `model` (PK), `cost_micros_in`/`cost_micros_cache`/`cost_micros_out` (micro-céntimos por millón de tokens), `margin_pct` (margen objetivo s/ venta, guía el PVP sugerido), `currency`, `updated_at`. Informativo; no interviene en la factura |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
 | `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44)… |
@@ -394,7 +394,7 @@ Niveles: **manage** = admin o propietario del workspace del recurso; **admin** =
 | PATCH | `/workspaces/:id/members/:userId` | manage | cambia rol/proyectos/contraseña de un sub-usuario |
 | DELETE | `/workspaces/:id/members/:userId` | manage | elimina un sub-usuario del workspace |
 | GET | `/plans` | admin | lista de planes (con nº de cuentas que lo usan) |
-| POST | `/plans` | admin | crea un plan (usos incluidos + precio) |
+| POST | `/plans` | admin | crea un plan (usos incluidos + precio + `discount_pct` opcional) |
 | PATCH | `/plans/:id` | admin | edita un plan |
 | DELETE | `/plans/:id` | admin | borra un plan (bloqueado si alguna cuenta lo usa) |
 | GET | `/workspaces/:id/invoices` | manage | facturas de la cuenta + datos del emisor (perfil fiscal), del cliente y si Stripe está activo |
@@ -489,8 +489,8 @@ inmediato y reversible: se hace sobre la clave de Skyway, sin tocar Google.
 | POST | `/workspaces/:id/keys/:keyId/block`·`/unblock` | admin | corte / reactivación manual (instantáneo) |
 | DELETE | `/workspaces/:id/keys/:keyId` | manage | revoca la clave (irreversible) |
 | GET·PUT | `/ai/gateway/config` | admin | clave de Gemini (enmascarada), host y modelos permitidos |
-| GET | `/ai/gateway/prices` | admin | coste del operador por modelo (`ai_model_prices`) y PVP de referencia del catálogo, con margen |
-| PUT·DELETE | `/ai/gateway/prices/:model` | admin | fija/borra el coste de un modelo (€/M tokens: entrada, cache, salida) |
+| GET | `/ai/gateway/prices` | admin | coste del operador por modelo (`ai_model_prices`), margen objetivo, **PVP sugerido** (coste/(1−margen)) y PVP de referencia del catálogo con el margen actual |
+| PUT·DELETE | `/ai/gateway/prices/:model` | admin | fija/borra coste (€/M: entrada, cache, salida) y `marginPct` (margen objetivo s/ venta) de un modelo |
 | GET | `/workspaces/:id/alerts` | manage | avisos de la cuenta (facturación, uso, morosidad) |
 
 **Automatización (scheduler, bucle de 10 min → `billingauto.ts`).** En el día de
@@ -532,9 +532,22 @@ el flujo. La `usage` de OpenAI se traduce a un `usageMetadata` sintético
 
 **Coste y margen (informativo).** `ai_model_prices` guarda el **coste del operador**
 por modelo (lo que cobra Google, en micro-céntimos por millón de tokens: entrada,
-cache y salida). Contabilidad muestra ese coste junto al **PVP de referencia** del
-catálogo (primer producto de IA activo de cada medidor) y el **margen** resultante.
-No interviene en la factura: solo ayuda a fijar precios de venta con margen.
+cache y salida) y un **margen objetivo** sobre venta (`margin_pct`). Contabilidad
+muestra ese coste, el **PVP sugerido** = coste/(1−margen/100) (para copiarlo al
+producto de IA del catálogo) y el **margen actual** frente al PVP de referencia del
+catálogo (primer producto de IA activo de cada medidor). Es una guía de precios: no
+interviene en la factura; el PVP real lo fija el catálogo por medidor.
+
+**Descuento comercial por plan y por cuenta.** Los planes llevan un `discount_pct`
+que rebaja las facturas de todas sus cuentas; cada cuenta puede fijar su propio
+`discount_pct` (null = hereda el del plan). Al generar el borrador del ciclo, el
+descuento efectivo (`cuenta ?? plan ?? 0`) se aplica **sobre la base antes del IVA**
+empujando una línea de descuento **por cada tipo impositivo** presente, de modo que
+el desglose de IVA sigue cuadrando (la cuota se redondea una vez sobre la base ya
+descontada) y ninguna base queda negativa. Se excluyen del descuento las líneas con
+**precio negociado por cliente** (`unit_cents` de la suscripción), para no rebajar
+dos veces un precio ya pactado. En una factura a medida el descuento se añade a mano
+como línea negativa; una factura emitida es inmutable y conserva su descuento.
 
 ### 7.3 Proyectos, variables compartidas y conectores de GitHub
 | Método | Ruta | Nivel | Descripción |

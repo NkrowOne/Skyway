@@ -64,6 +64,8 @@ const patchWorkspaceSchema = z.object({
   billingTaxId: z.string().trim().max(60).nullable().optional(),
   billingAddress: z.string().trim().max(400).nullable().optional(),
   billingDay: z.coerce.number().int().min(1).max(28).optional(),
+  // Descuento comercial de la cuenta (%); null = hereda el del plan.
+  discountPct: z.coerce.number().min(0).max(100).nullable().optional(),
   notes: z.string().trim().max(2000).nullable().optional(),
 });
 
@@ -93,6 +95,7 @@ function publicWorkspace(ws: WorkspaceRow) {
     billing_tax_id: ws.billing_tax_id,
     billing_address: ws.billing_address,
     billing_day: ws.billing_day,
+    discount_pct: ws.discount_pct,
     notes: ws.notes,
     // Estado de morosidad (corte por impago).
     ai_suspended: (ws as any).ai_suspended ?? 0,
@@ -192,6 +195,7 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     if (body.billingTaxId !== undefined) fields.billing_tax_id = body.billingTaxId;
     if (body.billingAddress !== undefined) fields.billing_address = body.billingAddress;
     if (body.billingDay !== undefined) fields.billing_day = body.billingDay;
+    if (body.discountPct !== undefined) fields.discount_pct = body.discountPct;
     if (body.notes !== undefined) fields.notes = body.notes;
 
     updateWorkspace(id, fields);

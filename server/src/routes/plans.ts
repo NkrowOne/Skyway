@@ -29,6 +29,7 @@ const planSchema = z.object({
   modules: modulesSchema.default([]),
   is_default: z.boolean().default(false),
   archived: z.boolean().default(false),
+  discount_pct: z.coerce.number().min(0).max(100).default(0),
 });
 
 function publicPlan(p: PlanRow) {
@@ -48,6 +49,7 @@ function publicPlan(p: PlanRow) {
     modules: sanitizeModules(safeParse(p.modules)),
     is_default: !!p.is_default,
     archived: !!p.archived,
+    discount_pct: p.discount_pct,
     created_at: p.created_at,
     inUse: countWorkspacesOnPlan(p.id),
   };
@@ -83,6 +85,7 @@ export async function planRoutes(app: FastifyInstance): Promise<void> {
       modules: JSON.stringify(body.modules),
       is_default: body.is_default ? 1 : 0,
       archived: body.archived ? 1 : 0,
+      discount_pct: body.discount_pct,
     });
     audit(req, 'plan_created', { type: 'plan', id: plan.id, detail: plan.name });
     reply.code(201);
@@ -108,6 +111,7 @@ export async function planRoutes(app: FastifyInstance): Promise<void> {
     if (body.modules !== undefined) fields.modules = JSON.stringify(body.modules);
     if (body.is_default !== undefined) fields.is_default = body.is_default ? 1 : 0;
     if (body.archived !== undefined) fields.archived = body.archived ? 1 : 0;
+    if (body.discount_pct !== undefined) fields.discount_pct = body.discount_pct;
     updatePlan(id, fields);
     audit(req, 'plan_updated', { type: 'plan', id, detail: getPlan(id)!.name });
     return { plan: publicPlan(getPlan(id)!) };

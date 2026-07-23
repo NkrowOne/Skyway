@@ -269,6 +269,7 @@ export function initDb(): void {
       modules TEXT NOT NULL DEFAULT '[]',
       is_default INTEGER NOT NULL DEFAULT 0,
       archived INTEGER NOT NULL DEFAULT 0,
+      discount_pct REAL NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS workspaces (
@@ -470,6 +471,7 @@ export function initDb(): void {
       cost_micros_in INTEGER NOT NULL DEFAULT 0,
       cost_micros_cache INTEGER NOT NULL DEFAULT 0,
       cost_micros_out INTEGER NOT NULL DEFAULT 0,
+      margin_pct REAL NOT NULL DEFAULT 0,
       currency TEXT NOT NULL DEFAULT 'EUR',
       updated_at INTEGER NOT NULL
     );
@@ -523,6 +525,12 @@ export function initDb(): void {
   // Escala del medidor: nº de unidades del medidor por unidad de precio (p. ej.
   // 1000000 para tarifar por 1M de tokens con céntimos enteros).
   ensureColumn('catalog_products', 'unit_size', 'INTEGER NOT NULL DEFAULT 1');
+  // Descuento comercial: por plan (aplica a todas sus cuentas) y override por cuenta
+  // (nullable → hereda del plan). Se aplica sobre la base antes del IVA al facturar.
+  ensureColumn('plans', 'discount_pct', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn('workspaces', 'discount_pct', 'REAL');
+  // Margen objetivo (s/ venta) por modelo de IA: guía el PVP sugerido = coste/(1−m).
+  ensureColumn('ai_model_prices', 'margin_pct', 'REAL NOT NULL DEFAULT 0');
 
   seedDefaultPlans();
   migrateClientsToWorkspaces();
@@ -541,19 +549,19 @@ function seedDefaultPlans(): void {
       name: 'Arranque', slug: 'arranque', price_cents: 0, currency: 'EUR', interval: 'monthly',
       cpu_cores: 1, memory_mb: 1024, disk_mb: 10240, max_projects: 2, max_services: 6, max_members: 2,
       modules: JSON.stringify(['databases', 'dbconsole', 'metrics', 'domains', 'status_page']),
-      is_default: 1, archived: 0,
+      is_default: 1, archived: 0, discount_pct: 0,
     },
     {
       name: 'Pro', slug: 'pro', price_cents: 2900, currency: 'EUR', interval: 'monthly',
       cpu_cores: 4, memory_mb: 8192, disk_mb: 51200, max_projects: 10, max_services: 30, max_members: 8,
       modules: JSON.stringify(['databases', 'dbconsole', 'backups', 'files', 'exec', 'metrics', 'replicas', 'domains', 'status_page', 'github']),
-      is_default: 0, archived: 0,
+      is_default: 0, archived: 0, discount_pct: 0,
     },
     {
       name: 'Escala', slug: 'escala', price_cents: 9900, currency: 'EUR', interval: 'monthly',
       cpu_cores: 16, memory_mb: 32768, disk_mb: 256000, max_projects: 50, max_services: 200, max_members: 25,
       modules: JSON.stringify(['databases', 'dbconsole', 'backups', 'files', 'exec', 'metrics', 'replicas', 'domains', 'status_page', 'github']),
-      is_default: 0, archived: 0,
+      is_default: 0, archived: 0, discount_pct: 0,
     },
   ];
   const ins = db.prepare(
@@ -1426,8 +1434,8 @@ export function createPlan(name: string, fields: Omit<PlanInput, 'name'>): PlanR
   while (planSlugExists(slug)) slug = `${slugify(name)}-${i++}`;
   const row: PlanRow = { ...fields, name, id: id('pln'), slug, created_at: now() };
   db.prepare(
-    `INSERT INTO plans (id, name, slug, price_cents, currency, interval, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules, is_default, archived, created_at)
-     VALUES (@id, @name, @slug, @price_cents, @currency, @interval, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules, @is_default, @archived, @created_at)`,
+    `INSERT INTO plans (id, name, slug, price_cents, currency, interval, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules, is_default, archived, discount_pct, created_at)
+     VALUES (@id, @name, @slug, @price_cents, @currency, @interval, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules, @is_default, @archived, @discount_pct, @created_at)`,
   ).run(row);
   if (row.is_default) clearOtherDefaultPlans(row.id);
   return row;
@@ -1435,7 +1443,7 @@ export function createPlan(name: string, fields: Omit<PlanInput, 'name'>): PlanR
 
 const PLAN_COLUMNS = new Set([
   'name', 'price_cents', 'currency', 'interval', 'cpu_cores', 'memory_mb', 'disk_mb',
-  'max_projects', 'max_services', 'max_members', 'modules', 'is_default', 'archived',
+  'max_projects', 'max_services', 'max_members', 'modules', 'is_default', 'archived', 'discount_pct',
 ]);
 
 export function updatePlan(planId: string, fields: Record<string, unknown>): void {
@@ -1501,6 +1509,7 @@ export function createWorkspaceRow(name: string, init: WorkspaceInit = {}): Work
     billing_tax_id: null,
     billing_address: null,
     billing_day: init.billing_day ?? 1,
+    discount_pct: null, // hereda el descuento del plan mientras no se fije uno propio
     notes: init.notes ?? null,
     created_at: now(),
   };
@@ -1536,7 +1545,7 @@ export function getWorkspace(workspaceId: string): WorkspaceRow | undefined {
 const WORKSPACE_COLUMNS = new Set([
   'name', 'plan_id', 'cpu_cores', 'memory_mb', 'disk_mb', 'max_projects', 'max_services',
   'max_members', 'modules_override', 'owner_disabled_modules', 'status', 'billing_email',
-  'billing_tax_id', 'billing_address', 'billing_day', 'notes',
+  'billing_tax_id', 'billing_address', 'billing_day', 'discount_pct', 'notes',
   'ai_suspended', 'dunning_stage', 'dunning_since', 'last_dunning_action_at', 'dunning_exempt',
 ]);
 
@@ -2117,14 +2126,15 @@ export function getModelPrice(model: string): AiModelPriceRow | undefined {
   return db.prepare('SELECT * FROM ai_model_prices WHERE model = ?').get(model) as AiModelPriceRow | undefined;
 }
 /** Alta o actualización (upsert) del coste de un modelo. Valores en micro-céntimos por Mtok. */
-export function setModelPrice(p: { model: string; cost_micros_in: number; cost_micros_cache: number; cost_micros_out: number; currency?: string }): AiModelPriceRow {
+export function setModelPrice(p: { model: string; cost_micros_in: number; cost_micros_cache: number; cost_micros_out: number; margin_pct?: number; currency?: string }): AiModelPriceRow {
   db.prepare(
-    `INSERT INTO ai_model_prices (model, cost_micros_in, cost_micros_cache, cost_micros_out, currency, updated_at)
-     VALUES (@model, @cost_micros_in, @cost_micros_cache, @cost_micros_out, @currency, @updated_at)
+    `INSERT INTO ai_model_prices (model, cost_micros_in, cost_micros_cache, cost_micros_out, margin_pct, currency, updated_at)
+     VALUES (@model, @cost_micros_in, @cost_micros_cache, @cost_micros_out, @margin_pct, @currency, @updated_at)
      ON CONFLICT(model) DO UPDATE SET
        cost_micros_in = excluded.cost_micros_in,
        cost_micros_cache = excluded.cost_micros_cache,
        cost_micros_out = excluded.cost_micros_out,
+       margin_pct = excluded.margin_pct,
        currency = excluded.currency,
        updated_at = excluded.updated_at`,
   ).run({
@@ -2132,6 +2142,8 @@ export function setModelPrice(p: { model: string; cost_micros_in: number; cost_m
     cost_micros_in: Math.max(0, Math.round(p.cost_micros_in)),
     cost_micros_cache: Math.max(0, Math.round(p.cost_micros_cache)),
     cost_micros_out: Math.max(0, Math.round(p.cost_micros_out)),
+    // Margen s/ venta en [0,95): PVP = coste/(1−m/100); tope <100 evita división por 0.
+    margin_pct: Math.max(0, Math.min(95, p.margin_pct ?? 0)),
     currency: p.currency ?? 'EUR',
     updated_at: now(),
   });

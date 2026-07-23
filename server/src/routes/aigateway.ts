@@ -475,14 +475,22 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
     // se persiste en micro-céntimos por Mtok (×1e6) para no perder decimales.
     mgmt.get('/api/ai/gateway/prices', { preHandler: requireAdmin }, async () => {
       const toc = (micros: number) => Math.round((micros / 1e6) * 10000) / 10000; // micro-cent/Mtok → cent/Mtok
+      // PVP sugerido para un margen objetivo sobre venta: PVP = coste/(1−m/100).
+      // Coherente con el margen que muestra la UI (beneficio/venta). null si m=0.
+      const sug = (centsM: number, m: number) => (m > 0 && m < 100 ? Math.round((centsM / (1 - m / 100)) * 10000) / 10000 : null);
       const sell = catalogSellPer1M();
       return {
         models: listModelPrices().map((p) => ({
           model: p.model,
           currency: p.currency,
+          margin_pct: p.margin_pct,
           cost_cents_mtok_in: toc(p.cost_micros_in),
           cost_cents_mtok_cache: toc(p.cost_micros_cache),
           cost_cents_mtok_out: toc(p.cost_micros_out),
+          // PVP sugerido (céntimos/Mtok) según el margen objetivo del modelo.
+          pvp_cents_mtok_in: sug(toc(p.cost_micros_in), p.margin_pct),
+          pvp_cents_mtok_cache: sug(toc(p.cost_micros_cache), p.margin_pct),
+          pvp_cents_mtok_out: sug(toc(p.cost_micros_out), p.margin_pct),
           updated_at: p.updated_at,
         })),
         // Referencia de venta (céntimos por millón de tokens) tomada del catálogo activo.
@@ -500,6 +508,8 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
           costCentsMtokIn: z.coerce.number().min(0).max(1_000_000).default(0),
           costCentsMtokCache: z.coerce.number().min(0).max(1_000_000).default(0),
           costCentsMtokOut: z.coerce.number().min(0).max(1_000_000).default(0),
+          // Margen objetivo sobre venta (%); tope <100 para no dividir por cero.
+          marginPct: z.coerce.number().min(0).max(95).default(0),
           currency: z.string().trim().length(3).optional(),
         })
         .parse(req.body ?? {});
@@ -508,6 +518,7 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
         cost_micros_in: body.costCentsMtokIn * 1e6,
         cost_micros_cache: body.costCentsMtokCache * 1e6,
         cost_micros_out: body.costCentsMtokOut * 1e6,
+        margin_pct: body.marginPct,
         currency: body.currency,
       });
       audit(req, 'ai_model_price_set', { type: 'system', id: 'ai-gateway', detail: m });
