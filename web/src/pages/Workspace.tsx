@@ -6,6 +6,7 @@ import {
   Boxes,
   CreditCard,
   Cpu,
+  Download,
   Gauge,
   HardDrive,
   KeyRound,
@@ -17,6 +18,7 @@ import {
   Play,
   Plus,
   Receipt,
+  Send,
   Sparkles,
   TrendingDown,
   TrendingUp,
@@ -659,6 +661,11 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
     queryClient.invalidateQueries({ queryKey: ['ws-subs', ws.id] });
   };
 
+  const email = useMutation({
+    mutationFn: (id: string) => api.post(`/invoices/${id}/email`),
+    onSuccess: () => toast('Factura enviada al cliente', 'ok'),
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
   const generate = useMutation({
     mutationFn: () => api.post(`/workspaces/${ws.id}/invoices/generate`),
     onSuccess: () => { toast('Factura del ciclo generada', 'ok'); invalidate(); },
@@ -765,6 +772,26 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                     <Button size="sm" variant="ghost" loading={stripeLink.isPending} onClick={() => stripeLink.mutate(inv.id)}>
                       <CreditCard size={13} /> Cobrar
                     </Button>
+                  )}
+                  {/* La factura en PDF: descargable siempre, también en borrador
+                      (sale marcada como tal), para revisarla antes de emitir. */}
+                  <a
+                    href={`/api/invoices/${inv.id}/pdf`}
+                    download
+                    className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt"
+                    title="Descargar la factura en PDF"
+                  >
+                    <Download size={14} />
+                  </a>
+                  {inv.status !== 'draft' && inv.status !== 'void' && (
+                    <button
+                      onClick={() => email.mutate(inv.id)}
+                      disabled={email.isPending}
+                      className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt disabled:opacity-50"
+                      title="Enviar la factura al email de facturación del cliente"
+                    >
+                      <Send size={14} />
+                    </button>
                   )}
                   {/* Una factura emitida es inmutable: solo se editan/borran los borradores. */}
                   {inv.status === 'draft' && (

@@ -15,8 +15,9 @@ aritmética monetaria, integridad transaccional, control de acceso, ciclo de
 facturación, medición de consumo, pagos, esquema de datos y panel web), cada
 hallazgo sometido después a una verificación adversarial que intentaba refutarlo
 leyendo el código. De 89 hallazgos brutos, **18 se descartaron** por no
-sostenerse y 71 se confirmaron; consolidados y deduplicados quedan en **34
-defectos reales corregidos** y **13 carencias pendientes**.
+sostenerse y 71 se confirmaron; consolidados y deduplicados quedan en **43
+defectos reales corregidos** (34 en la auditoría y 9 en la segunda tanda) y **4
+carencias pendientes**.
 
 **Veredicto general**: el diseño fiscal es serio —numeración por serie y
 ejercicio, congelación del emisor y del destinatario al emitir, inmutabilidad de
@@ -130,10 +131,43 @@ descartar un hallazgo que no se sostenía:
 
 ---
 
-## 3. Pendiente (requiere migración de esquema o decisión de producto)
+## 3. Segunda tanda: lo que exigía migrar esquema o decidir política
 
-Defectos reales confirmados que **no** se han corregido aquí porque exigen migrar
-datos o fijar antes una política comercial. Ordenados por impacto.
+Resuelto después de la auditoría, con el esquema migrado y las decisiones
+comerciales tomadas (prorrateo por días; solo régimen general español).
+
+| # | Área | Hallazgo | Corrección |
+| --- | --- | --- | --- |
+| 35 | Consumo | **Borrar un servicio borraba retroactivamente su consumo sin facturar**, y **reasignar un proyecto trasladaba todo su histórico** a la cuenta nueva: la atribución se resolvía con un `JOIN` vivo servicio → proyecto → workspace. | `service_metrics_hourly` y `usage_meter_hourly` congelan el titular en el momento de medir (con relleno único de las filas existentes). La poda deja de borrar las métricas de servicios eliminados —eran consumo real pendiente de cobro— y caducan por antigüedad como el resto; de paso se podan `usage_events` y `usage_meter_hourly`, que no caducaban. |
+| 36 | Ciclo | **Cambiar el día de facturación refacturaba el tramo solapado o dejaba un hueco**, y si el servidor estaba caído el día de cierre **ese ciclo se perdía para siempre**. | `workspaces.last_billed_period_end` ancla el periodo: se factura de lo último facturado al último corte vencido, sin depender del día del mes. El ancla solo avanza con periodos cerrados (una previsión del periodo en curso no consume el ciclo), y borrar o anular la factura que cerraba un periodo lo devuelve. |
+| 37 | Devengo | **Un alta a mitad de ciclo pagaba el mes completo** y **una baja a mitad de ciclo no pagaba nada** del periodo prestado. | Prorrateo por días de altas y bajas, escalando contra el **mes nominal** y no contra el ciclo ya recortado (escalar contra el ciclo devolvía factor 1 justo en el alta, que es el caso que se quería arreglar). Las cuotas anuales no se prorratean: se devengan enteras en su aniversario. |
+| 38 | Datos | Una suscripción cancelada o pausada **no se podía prorratear**: el corte masivo por impago cambia el estado sin escribir `cancelled_at`. | `workspace_subscriptions.status_changed_at` registra cada cambio de estado, y `listBillableSubscriptions` incluye en el ciclo las bajas ocurridas dentro de él. |
+| 39 | Ciclo | **Los cargos puntuales se perdían al quitar su línea del borrador**: quedaban `invoiced` en una factura que ya no los contenía. | La línea guarda el `chargeId` del que procede y viaja de vuelta con el editor; al guardar, los cargos que ya no figuran vuelven a «pendiente». |
+| 40 | Morosidad | **Reactivar al pagar revivía claves y suscripciones que el operador había cortado a mano.** | `suspended_by` / `paused_by` distinguen el corte por morosidad del manual; solo revive el primero. |
+| 41 | Factura | **No existía documento de factura ni forma de remitirla al cliente.** | PDF de la factura generado a mano (sin dependencias, como el cliente de Stripe del repositorio): A4, WinAnsi con acentos y €, desglose de IVA por tipo, IRPF, paginación con la cabecera repetida y los totales siempre en la última hoja. Descargable por el admin **y por la propia cuenta**. Se añade un cliente SMTP propio y el envío de la factura al emitirla (opt-in `emailOnIssue`), con prueba de conexión en Ajustes. Un fallo de correo nunca deshace la emisión: se audita y se alerta. |
+| 42 | Acceso | La ingesta de consumo facturable **no dejaba traza**, y el **catálogo comercial completo** lo leía cualquier usuario autenticado, incluido un miembro de proyecto. | `POST /api/usage` se audita; el catálogo exige admin o propietario de cuenta. |
+| 43 | Fiscal | El selector **«Modo Veri*factu (AEAT)»** sugería una funcionalidad inexistente. | Rotulado como preparado pero no operativo, hasta implementar huella, QR y remisión. |
+
+### Sigue pendiente
+
+1. **Cada cubo horario se factura como hora completa**, aunque el servicio solo
+   haya corrido unos minutos dentro de esa hora.
+2. **El recargo de equivalencia no se calcula.** El régimen es seleccionable y
+   `InvoiceLine.reRate` existe, pero nadie lo rellena ni lo suma.
+3. **No se puede registrar el régimen de IVA ni el país del cliente**, así que la
+   facturación recurrente a un cliente intracomunitario o extranjero no sale
+   correcta sin editar la factura a mano.
+4. **Verifactu**: el registro encadenado (`invoice_ledger`, `invoice_events_log`)
+   está creado como reserva, sin huella, QR ni remisión a la AEAT.
+
+Los puntos 2 y 3 se dejan conscientemente fuera: el negocio factura hoy solo en
+régimen general español.
+
+---
+
+## 3.bis Estado original de estos puntos (para trazabilidad)
+
+Así se documentaron al cerrar la auditoría, antes de la segunda tanda.
 
 1. **La atribución del consumo no está materializada** (`db.ts`,
    `service_metrics_hourly`). El consumo de infraestructura se atribuye por un
@@ -236,3 +270,15 @@ en verde:
 | Cobro con importe distinto al facturado | no marca pagada |
 | Cobro con un enlace antiguo | concilia por el id de factura |
 | Cobro sobre factura anulada | no resucita; se audita y alerta |
+| Alta el día 16 de un mes de 31 | cuota prorrateada 16/31, no completa |
+| Baja el día 16 de un mes de 31 | se cobra el periodo prestado, no cero |
+| Ciclo completo | sin prorrateo |
+| Cambio del día de facturación de 10 a 15 | una sola factura, 10-jul → 15-jul |
+| Servidor caído el día de cierre | el ciclo se recupera en el tick siguiente |
+| Consumo tras borrar el servicio | sigue atribuido al titular congelado |
+| Línea de cargo eliminada del borrador | el cargo vuelve a pendiente; el resto no |
+| PDF de 62 líneas con 3 tipos de IVA | 3 páginas, xref válida, TOTAL en la última |
+| PDF de una rectificativa | conserva el signo negativo |
+| Envío de la factura | PDF adjunto válido y descodificable en el correo |
+| Inyección de un CRLF en el remitente o el destinatario | rechazada antes del sobre SMTP |
+| Credenciales SMTP rechazadas | error accionable, sin filtrar la contraseña |

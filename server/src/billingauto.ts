@@ -9,7 +9,7 @@ import { auditSystem } from './audit';
 import { fireWorkspaceAlert } from './alerts';
 import { getBillingAutomation } from './billingsettings';
 import { getBillingProfile } from './company';
-import { BillingError, cycleAnchor, generateCycleDraft, issueInvoice, lastCutoff } from './routes/billing';
+import { BillingError, cycleAnchor, generateCycleDraft, issueInvoice, lastCutoff, sendInvoiceEmail } from './routes/billing';
 import {
   deleteInvoice,
   getWorkspace,
@@ -220,6 +220,9 @@ export function billingCycleTick(now: Date): void {
       if (auto.autoIssue) {
         const issued = issueInvoice(inv.id) ?? inv;
         auditSystem('invoice_auto_issued', `${ws.name} · ${issued.number ?? issued.id} · ${money} (emitida automáticamente)`);
+        // Envío al cliente, si está activado. Best-effort: el fallo se audita y
+        // alerta dentro de sendInvoiceEmail, y nunca deshace la emisión.
+        if (auto.emailOnIssue) void sendInvoiceEmail(issued);
         fireWorkspaceAlert({
           severity: 'info',
           workspaceId: ws.id,

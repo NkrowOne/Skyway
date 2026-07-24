@@ -1,6 +1,6 @@
 import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, Sparkles, Trash2, Zap } from 'lucide-react';
+import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, Send, Sparkles, Trash2, Zap } from 'lucide-react';
 import { api } from '../api';
 import { Button, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { RevenueBars } from '../components/BillingCharts';
@@ -234,6 +234,16 @@ function BillingAutomationSettings() {
             <p className="mt-1 text-[12px] text-subtle">Además de generarla, la <b>emite</b>: le asigna número de serie y la bloquea (inmutable). La emisión es un acto legal irreversible; actívalo solo si quieres que cada ciclo se numere y emita sin revisión previa. Apagado: revisas el borrador y lo emites tú.</p>
           </div>
           <Toggle checked={draft.autoIssue} disabled={!draft.autoGenerate} onChange={(v) => set({ autoIssue: v })} />
+        </div>
+        <div className="flex items-start justify-between gap-4 border-t border-line p-3.5">
+          <div className="min-w-0">
+            <p className="flex items-center gap-2 text-[13px] font-medium"><Send size={14} className="text-info" /> Enviar la factura al cliente al emitirla</p>
+            <p className="mt-1 text-[12px] text-subtle">
+              Manda la factura en PDF al email de facturación de la cuenta, en cuanto se emite (a mano o automáticamente).
+              Requiere el servidor de correo configurado en «Datos de la empresa». Siempre puedes reenviarla desde la ficha de la cuenta.
+            </p>
+          </div>
+          <Toggle checked={draft.emailOnIssue} onChange={(v) => set({ emailOnIssue: v })} />
         </div>
       </div>
 
@@ -486,6 +496,13 @@ interface ProfileDraft extends BillingProfile {
   stripeSecretKey: string;
   stripeWebhookSecret: string;
   stripePublishableKey: string;
+  smtpHost: string;
+  smtpPort: number;
+  smtpSecure: boolean;
+  smtpUser: string;
+  smtpPass: string;
+  smtpFrom: string;
+  smtpFromName: string;
 }
 
 function CompanyProfile() {
@@ -496,8 +513,29 @@ function CompanyProfile() {
 
   // Sincroniza el borrador local cuando llegan los datos (una vez).
   if (q.data && !draft) {
-    setDraft({ ...q.data.profile, stripeSecretKey: '', stripeWebhookSecret: '', stripePublishableKey: q.data.stripe.publishableKey });
+    setDraft({
+      ...q.data.profile,
+      stripeSecretKey: '', stripeWebhookSecret: '', stripePublishableKey: q.data.stripe.publishableKey,
+      smtpHost: q.data.smtp.host, smtpPort: q.data.smtp.port, smtpSecure: q.data.smtp.secure,
+      smtpUser: q.data.smtp.user, smtpPass: '', smtpFrom: q.data.smtp.from, smtpFromName: q.data.smtp.fromName,
+    });
   }
+
+  const test = useMutation({
+    mutationFn: () => {
+      const d = draft!;
+      // Se prueba lo que hay EN PANTALLA, para poder validar antes de guardar; la
+      // contraseña vacía significa «usa la ya guardada», no «sin contraseña».
+      const payload: Record<string, unknown> = {
+        host: d.smtpHost, port: d.smtpPort, secure: d.smtpSecure, user: d.smtpUser,
+        from: d.smtpFrom, fromName: d.smtpFromName,
+      };
+      if (d.smtpPass.trim()) payload.pass = d.smtpPass.trim();
+      return api.post('/billing/smtp/test', payload);
+    },
+    onSuccess: () => toast('Conexión con el servidor de correo correcta', 'ok'),
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
 
   const save = useMutation({
     mutationFn: () => {
@@ -507,10 +545,13 @@ function CompanyProfile() {
         currency: d.currency, vatRate: d.vatRate, invoicePrefix: d.invoicePrefix, paymentTermsDays: d.paymentTermsDays,
         defaultIrpfRate: d.defaultIrpfRate, sifMode: d.sifMode,
         iban: d.iban, bic: d.bic, bankName: d.bankName, footer: d.footer, stripePublishableKey: d.stripePublishableKey,
+        smtpHost: d.smtpHost, smtpPort: d.smtpPort, smtpSecure: d.smtpSecure, smtpUser: d.smtpUser,
+        smtpFrom: d.smtpFrom, smtpFromName: d.smtpFromName,
       };
       // Las claves secretas solo se envían si se han escrito (no se sobreescriben con vacío por error).
       if (d.stripeSecretKey.trim()) payload.stripeSecretKey = d.stripeSecretKey.trim();
       if (d.stripeWebhookSecret.trim()) payload.stripeWebhookSecret = d.stripeWebhookSecret.trim();
+      if (d.smtpPass.trim()) payload.smtpPass = d.smtpPass.trim();
       return api.put('/billing/profile', payload);
     },
     onSuccess: () => { toast('Datos de la empresa guardados', 'ok'); queryClient.invalidateQueries({ queryKey: ['billing-profile'] }); },
@@ -579,6 +620,37 @@ function CompanyProfile() {
               <input className="input font-mono" type="password" value={draft.stripeWebhookSecret} onChange={(e) => set({ stripeWebhookSecret: e.target.value })} placeholder={stripe.hasWebhookSecret ? '•••••••• configurado' : 'whsec_…'} />
             </Field>
             <Field label="Clave publicable (pk_…)"><input className="input font-mono" value={draft.stripePublishableKey} onChange={(e) => set({ stripePublishableKey: e.target.value })} placeholder="pk_live_…" /></Field>
+          </div>
+        </section>
+
+        <section className="card p-5">
+          <h2 className="flex items-center gap-2 text-sm font-semibold"><Send size={15} className="text-info" /> Correo saliente (envío de facturas)</h2>
+          <p className="mt-1 text-xs text-subtle">
+            Servidor SMTP con el que se envía la factura en PDF al email de facturación del cliente.
+          </p>
+          <div className="mt-4 grid gap-3">
+            <div className="grid gap-3 sm:grid-cols-[1fr_100px]">
+              <Field label="Servidor"><input className="input" value={draft.smtpHost} onChange={(e) => set({ smtpHost: e.target.value })} placeholder="smtp.tuproveedor.com" /></Field>
+              <Field label="Puerto"><input className="input tnum" type="number" min={1} max={65535} value={draft.smtpPort} onChange={(e) => set({ smtpPort: Number(e.target.value) || 587 })} /></Field>
+            </div>
+            <label className="flex items-center gap-2 text-[13px]">
+              <input type="checkbox" checked={draft.smtpSecure} onChange={(e) => set({ smtpSecure: e.target.checked })} />
+              <span>TLS directo (puerto 465). Desmarcado usa STARTTLS si el servidor lo ofrece.</span>
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Usuario"><input className="input" value={draft.smtpUser} onChange={(e) => set({ smtpUser: e.target.value })} /></Field>
+              <Field label="Contraseña" hint={q.data.smtp.hasPassword ? 'ya configurada; vacío = no cambiar' : ''}>
+                <input className="input font-mono" type="password" value={draft.smtpPass} onChange={(e) => set({ smtpPass: e.target.value })} placeholder={q.data.smtp.hasPassword ? '•••••••• configurada' : ''} />
+              </Field>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Remitente" hint="Debe estar autorizado por el servidor"><input className="input" type="email" value={draft.smtpFrom} onChange={(e) => set({ smtpFrom: e.target.value })} placeholder="facturacion@tuempresa.com" /></Field>
+              <Field label="Nombre del remitente"><input className="input" value={draft.smtpFromName} onChange={(e) => set({ smtpFromName: e.target.value })} placeholder="Facturación Skyway" /></Field>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] text-subtle">La prueba conecta y autentica, sin enviar ningún correo.</p>
+              <Button size="sm" variant="secondary" loading={test.isPending} onClick={() => test.mutate()}>Probar conexión</Button>
+            </div>
           </div>
         </section>
 

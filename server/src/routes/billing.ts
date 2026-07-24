@@ -26,7 +26,11 @@ import {
   workspaceMeterUsage,
   workspaceUsageRange,
 } from '../db';
-import { getBillingProfile, getStripeSecretKey } from '../company';
+import { getBillingProfile, getSmtpSettings, getStripeSecretKey } from '../company';
+import { fireWorkspaceAlert } from '../alerts';
+import { InvoicePdfData, renderInvoicePdf } from '../invoicepdf';
+import { MailError, sendMail } from '../mailer';
+import { getBillingAutomation } from '../billingsettings';
 import { priceTiers } from '../pricing';
 import { reactivateWorkspaceIfCurrent } from '../billingauto';
 import { StripeError, createStripeCheckout, stripeAmount } from '../stripe';
@@ -284,6 +288,103 @@ function rewindAnchorIfLast(inv: InvoiceRow): void {
   const ws = getWorkspace(inv.workspace_id);
   if (!ws || ws.last_billed_period_end !== inv.period_end) return;
   updateWorkspace(ws.id, { last_billed_period_end: inv.period_start });
+}
+
+/** Reúne la factura y sus datos congelados en el modelo que pinta el PDF. */
+function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
+  const profile = getBillingProfile();
+  const ws = getWorkspace(inv.workspace_id);
+  // Emisor y destinatario: los CONGELADOS al emitir mandan sobre los vivos. Un
+  // borrador aún no los tiene, así que se cae a los actuales (es una previsión).
+  const snap = inv.issuer_snapshot ? (JSON.parse(inv.issuer_snapshot) as IssuerSnapshot) : null;
+  return {
+    number: inv.number ?? 'BORRADOR',
+    invoiceType: inv.invoice_type === 'rectificativa' ? 'rectificativa' : inv.invoice_type === 'simplificada' ? 'simplificada' : 'normal',
+    issuedAt: inv.issued_at,
+    operationDate: inv.operation_date,
+    periodStart: inv.period_start,
+    periodEnd: inv.period_end,
+    dueAt: inv.issued_at ? inv.issued_at + profile.paymentTermsDays * 86_400_000 : null,
+    currency: inv.currency,
+    issuer: {
+      companyName: snap?.companyName ?? profile.companyName,
+      taxId: snap?.taxId ?? profile.taxId,
+      address: snap?.address ?? profile.address,
+      email: snap?.email ?? profile.email,
+      phone: snap?.phone ?? profile.phone,
+    },
+    client: {
+      name: inv.client_name ?? ws?.name ?? '',
+      taxId: inv.client_tax_id ?? ws?.billing_tax_id ?? null,
+      address: inv.client_address ?? ws?.billing_address ?? null,
+    },
+    lines: parseLines(inv.lines),
+    subtotalCents: inv.subtotal_cents,
+    taxBreakdown: parseBreakdown(inv.tax_breakdown),
+    taxCents: inv.tax_cents,
+    irpfRate: inv.irpf_rate,
+    irpfCents: inv.irpf_cents,
+    totalCents: inv.total_cents,
+    legalMentions: inv.legal_mentions,
+    notes: inv.notes,
+    paymentMethod: inv.payment_method,
+    bank: { iban: profile.iban, bic: profile.bic, bankName: profile.bankName },
+    footer: profile.footer,
+  };
+}
+
+/** Nombre del fichero con el que se descarga o se adjunta la factura. */
+function invoiceFilename(inv: InvoiceRow): string {
+  return `factura-${(inv.number ?? inv.id).replace(/[^A-Za-z0-9._-]/g, '-')}.pdf`;
+}
+
+/**
+ * Envía la factura al cliente con el PDF adjunto. Best-effort y aislado: un fallo
+ * del correo NUNCA debe tumbar la emisión, que ya es un hecho legal consumado; se
+ * audita y se alerta para que el operador la reenvíe a mano.
+ */
+export async function sendInvoiceEmail(inv: InvoiceRow, opts: { manual?: boolean } = {}): Promise<{ ok: boolean; error?: string }> {
+  const smtp = getSmtpSettings();
+  const ws = getWorkspace(inv.workspace_id);
+  const destino = ws?.billing_email?.trim();
+  if (!smtp) return { ok: false, error: 'No hay servidor de correo configurado en Contabilidad.' };
+  if (!destino) return { ok: false, error: `La cuenta «${ws?.name ?? inv.workspace_id}» no tiene email de facturación.` };
+  const profile = getBillingProfile();
+  const numero = inv.number ?? inv.id;
+  const importe = `${(inv.total_cents / 100).toFixed(2)} ${inv.currency}`;
+  try {
+    await sendMail(smtp, {
+      to: destino,
+      replyTo: profile.email || undefined,
+      subject: `Factura ${numero} · ${profile.companyName || 'Skyway'}`,
+      text:
+        `Hola:\n\nAdjuntamos la factura ${numero} por ${importe}.\n` +
+        (profile.paymentTermsDays > 0 ? `Vencimiento: ${profile.paymentTermsDays} días desde la fecha de expedición.\n` : '') +
+        (profile.iban ? `\nPuedes pagarla por transferencia a ${profile.iban}${profile.bankName ? ` (${profile.bankName})` : ''}.\n` : '') +
+        (inv.stripe_url ? `\nO pagarla con tarjeta aquí: ${inv.stripe_url}\n` : '') +
+        `\nUn saludo,\n${profile.companyName || 'Skyway'}\n`,
+      attachments: [{ filename: invoiceFilename(inv), contentType: 'application/pdf', content: renderInvoicePdf(invoicePdfData(inv)) }],
+    });
+    auditSystem('invoice_emailed', `${numero} → ${destino}`);
+    return { ok: true };
+  } catch (err: any) {
+    const detalle = err instanceof MailError ? err.message : (err?.message || 'error desconocido');
+    auditSystem('invoice_email_failed', `${numero} → ${destino}: ${detalle.slice(0, 200)}`);
+    // En el envío manual el operador ya ve el error en pantalla; en el automático
+    // no hay nadie mirando, así que se alerta para que no pase inadvertido.
+    if (!opts.manual) {
+      fireWorkspaceAlert({
+        severity: 'warning',
+        workspaceId: inv.workspace_id,
+        type: 'invoice_email_failed',
+        title: `No se pudo enviar la factura ${numero}`,
+        message: detalle.slice(0, 300),
+        explanation: 'La factura está emitida y es válida; solo ha fallado el envío. Reenvíala desde la ficha de la cuenta.',
+        dedupeKey: `invoice:${inv.id}:email_failed`,
+      });
+    }
+    return { ok: false, error: detalle };
+  }
 }
 
 function issuerSnapshot(profile: BillingProfile): IssuerSnapshot {
@@ -904,6 +1005,13 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     if ((target === 'paid' && inv.status !== 'paid') || (target === 'void' && inv.status !== 'void')) {
       reactivateWorkspaceIfCurrent(inv.workspace_id);
     }
+    // Envío al cliente al emitir, si el operador lo ha activado. No se espera al
+    // correo para responder: la emisión ya está hecha y un SMTP lento no debe
+    // dejar al operador mirando un spinner (los fallos se auditan y alertan).
+    if (inv.status === 'draft' && (target === 'issued' || target === 'paid') && getBillingAutomation().emailOnIssue) {
+      const emitida = getInvoice(id);
+      if (emitida) void sendInvoiceEmail(emitida);
+    }
     audit(req, 'invoice_updated', { type: 'invoice', id, detail: body.status ?? 'edición' });
     return { invoice: publicInvoice(getInvoice(id)!) };
   });
@@ -919,6 +1027,33 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     deleteInvoice(id); // devuelve además sus cargos puntuales a 'pending'
     rewindAnchorIfLast(inv);
     audit(req, 'invoice_deleted', { type: 'invoice', id });
+    return { ok: true };
+  });
+
+  // Documento PDF de la factura. Lo puede descargar la propia cuenta, no solo el
+  // admin: es SU factura. Un borrador se descarga marcado como tal.
+  app.get('/api/invoices/:id/pdf', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const inv = getInvoice(id);
+    if (!inv) return reply.code(404).send({ error: 'Factura no encontrada' });
+    if (!assertWorkspaceAccess(req, reply, inv.workspace_id)) return reply;
+    const pdf = renderInvoicePdf(invoicePdfData(inv));
+    reply.header('Content-Disposition', `attachment; filename="${invoiceFilename(inv)}"`);
+    reply.type('application/pdf');
+    return reply.send(pdf);
+  });
+
+  // Envía (o reenvía) la factura al email de facturación del cliente. Solo admin.
+  app.post('/api/invoices/:id/email', { preHandler: requireAdmin }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const inv = getInvoice(id);
+    if (!inv) return reply.code(404).send({ error: 'Factura no encontrada' });
+    if (inv.status === 'draft') {
+      return reply.code(409).send({ error: 'Es un borrador: emítela antes de enviarla al cliente.' });
+    }
+    const res = await sendInvoiceEmail(inv, { manual: true });
+    if (!res.ok) return reply.code(502).send({ error: res.error });
+    audit(req, 'invoice_emailed', { type: 'invoice', id, detail: inv.number ?? id });
     return { ok: true };
   });
 

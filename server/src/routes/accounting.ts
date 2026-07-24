@@ -13,6 +13,7 @@ import {
   setBillingProfile,
   setSmtpSettings,
 } from '../company';
+import { MailError, verifySmtp } from '../mailer';
 import { BillingProfile, InvoiceRow } from '../types';
 
 const profileSchema = z.object({
@@ -170,9 +171,49 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
     if (merged.dunningCancelDays < merged.dunningGraceDays) {
       return reply.code(400).send({ error: 'Los días para cancelar deben ser ≥ los días para suspender.' });
     }
+    // Activar el envío sin servidor de correo dejaría a cada emisión fallando en
+    // silencio: se corta aquí, donde el operador puede leerlo.
+    if (merged.emailOnIssue && !getSmtpSettings()) {
+      return reply.code(400).send({ error: 'Configura primero el servidor de correo saliente para poder enviar las facturas.' });
+    }
     const automation = setBillingAutomation(body);
     audit(req, 'billing_automation_updated', { type: 'system', id: 'billing', detail: `auto-emisión ${automation.autoIssue ? 'on' : 'off'}` });
     return { ok: true, automation };
+  });
+
+  // Prueba de conexión con el servidor de correo: conecta y autentica sin enviar
+  // nada. Acepta una configuración de prueba en el cuerpo para poder validarla
+  // ANTES de guardarla (la contraseña, si se omite, sale de la ya guardada).
+  app.post('/api/billing/smtp/test', async (req, reply) => {
+    const body = z
+      .object({
+        host: z.string().trim().max(200).optional(),
+        port: z.coerce.number().int().min(1).max(65535).optional(),
+        secure: z.boolean().optional(),
+        user: z.string().trim().max(200).optional(),
+        pass: z.string().optional(),
+        from: z.union([z.string().trim().email(), z.literal('')]).optional(),
+        fromName: z.string().trim().max(120).optional(),
+      })
+      .parse(req.body ?? {});
+    const guardada = getSmtpSettings();
+    const cfg = {
+      host: body.host ?? guardada?.host ?? '',
+      port: body.port ?? guardada?.port ?? 587,
+      secure: body.secure ?? guardada?.secure ?? false,
+      user: body.user ?? guardada?.user ?? '',
+      pass: body.pass || guardada?.pass || '',
+      from: body.from ?? guardada?.from ?? '',
+      fromName: body.fromName ?? guardada?.fromName ?? '',
+    };
+    try {
+      await verifySmtp(cfg);
+      audit(req, 'smtp_tested', { type: 'system', id: 'billing', detail: cfg.host });
+      return { ok: true };
+    } catch (err: any) {
+      const detalle = err instanceof MailError ? err.message : (err?.message || 'error desconocido');
+      return reply.code(502).send({ error: detalle });
+    }
   });
 
   // Resumen de contabilidad de la empresa: totales, serie mensual y por cliente.

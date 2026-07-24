@@ -406,6 +406,8 @@ export interface AccountingInvoice {
 export interface BillingProfileResponse {
   profile: BillingProfile;
   stripe: { hasSecretKey: boolean; hasWebhookSecret: boolean; publishableKey: string };
+  /** Servidor de correo saliente. La contraseña nunca viaja: solo si la hay. */
+  smtp: { configured: boolean; host: string; port: number; secure: boolean; user: string; from: string; fromName: string; hasPassword: boolean };
   invoiceSeq: number;
 }
 
@@ -414,6 +416,8 @@ export interface BillingAutomation {
   autoIssue: boolean;
   dunningGraceDays: number;
   dunningCancelDays: number;
+  /** Enviar la factura en PDF al cliente al emitirla. Requiere SMTP configurado. */
+  emailOnIssue: boolean;
 }
 
 // ---------- catálogo multimodular ----------
