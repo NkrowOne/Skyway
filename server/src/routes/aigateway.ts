@@ -93,6 +93,12 @@ function resolveProxyKey(req: FastifyRequest, reply: FastifyReply): { key: Works
     reply.code(403).send({ error: { code: 403, message: 'Cuenta suspendida.' } });
     return null;
   }
+  // El corte por impago se comprueba por CUENTA, no solo por clave: si no, basta
+  // con emitir una clave nueva (nace 'active') para seguir consumiendo sin pagar.
+  if (ws.ai_suspended) {
+    reply.code(403).send({ error: { code: 403, message: 'Cuenta suspendida por impago. Regulariza el pago para reanudar el servicio.' } });
+    return null;
+  }
   touchWorkspaceApiKey(key.id, key.last_used_at);
   return { key, workspace: ws };
 }
@@ -372,6 +378,11 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
       const ws = getWorkspace(id);
       if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
       if (!assertWorkspaceAccess(req, reply, id)) return reply;
+      // Defensa en profundidad del corte por impago: no se emiten claves nuevas
+      // mientras la cuenta esté suspendida (el proxy también lo comprueba).
+      if (ws.ai_suspended) {
+        return reply.code(409).send({ error: 'La cuenta está suspendida por impago: no se pueden emitir claves nuevas hasta regularizar el pago.' });
+      }
       const body = z
         .object({
           name: z.string().trim().min(1).max(60),

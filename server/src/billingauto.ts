@@ -11,10 +11,12 @@ import { getBillingAutomation } from './billingsettings';
 import { getBillingProfile } from './company';
 import { generateCycleDraft, issueInvoice } from './routes/billing';
 import {
+  deleteInvoice,
   getWorkspace,
   invoiceExistsForCycle,
   listUnpaidIssuedInvoices,
   listWorkspaces,
+  openDraftForCycle,
   resolveAlertsByDedupe,
   setWorkspaceKeysStatus,
   setWorkspaceSubscriptionsStatus,
@@ -36,8 +38,21 @@ function invoiceDueMs(inv: InvoiceRow, termsDays: number): number {
 }
 
 /**
- * Reactiva una cuenta cortada por impago SOLO si ya no tiene ninguna factura
- * vencida. Idempotente; el webhook de pago siempre gana la carrera pago-vs-corte.
+ * Saldo vencido de una cuenta, en céntimos. Suma las facturas de CARGO vencidas y
+ * resta los ABONOS emitidos y no cobrados (rectificativas a la baja, con
+ * `total_cents` negativo). Un abono no es una deuda: sin esta compensación, emitir
+ * una rectificativa metía al cliente en mora por el importe que se le devolvía.
+ */
+function overdueBalance(invoices: InvoiceRow[], workspaceId: string, termsDays: number, nowMs: number): { saldo: number; vencidas: InvoiceRow[] } {
+  const propias = invoices.filter((i) => i.workspace_id === workspaceId);
+  const vencidas = propias.filter((i) => i.total_cents > 0 && invoiceDueMs(i, termsDays) < nowMs);
+  const abonos = propias.filter((i) => i.total_cents <= 0).reduce((s, i) => s + i.total_cents, 0);
+  return { saldo: vencidas.reduce((s, i) => s + i.total_cents, 0) + abonos, vencidas };
+}
+
+/**
+ * Reactiva una cuenta cortada por impago SOLO si ya no tiene saldo vencido.
+ * Idempotente; el webhook de pago siempre gana la carrera pago-vs-corte.
  * Las claves REVOCADAS (cancelación) no vuelven: eso es terminal.
  */
 export function reactivateWorkspaceIfCurrent(workspaceId: string): void {
@@ -47,8 +62,8 @@ export function reactivateWorkspaceIfCurrent(workspaceId: string): void {
   if (stage === 0 && !ws.ai_suspended) return; // no estaba en mora
   const termsDays = paymentTermsDays();
   const nowMs = Date.now();
-  const stillOverdue = listUnpaidIssuedInvoices().some((i) => i.workspace_id === workspaceId && invoiceDueMs(i, termsDays) < nowMs);
-  if (stillOverdue) return; // sigue debiendo otra factura: no se levanta el corte
+  const { saldo } = overdueBalance(listUnpaidIssuedInvoices(), workspaceId, termsDays, nowMs);
+  if (saldo > 0) return; // sigue debiendo: no se levanta el corte
   // La cancelación (etapa 3) es TERMINAL: las claves revocadas y las suscripciones
   // canceladas no reviven solas; pagar no restaura el servicio, requiere alta manual.
   const wasCancelled = stage >= 3;
@@ -147,16 +162,18 @@ function dunningForWorkspace(workspaceId: string, overdue: InvoiceRow[], graceDa
 export function dunningTick(nowMs: number): void {
   const termsDays = paymentTermsDays();
   const { dunningGraceDays: graceDays, dunningCancelDays: cancelDays } = getBillingAutomation();
-  const byWs = new Map<string, InvoiceRow[]>();
-  for (const inv of listUnpaidIssuedInvoices()) {
-    if (invoiceDueMs(inv, termsDays) >= nowMs) continue; // aún no vencida
-    const list = byWs.get(inv.workspace_id) ?? [];
-    list.push(inv);
-    byWs.set(inv.workspace_id, list);
-  }
-  for (const [workspaceId, overdue] of byWs) {
+  const pendientes = listUnpaidIssuedInvoices();
+  const workspaceIds = new Set(pendientes.map((i) => i.workspace_id));
+  for (const workspaceId of workspaceIds) {
     try {
-      dunningForWorkspace(workspaceId, overdue, graceDays, cancelDays, nowMs, termsDays);
+      // Solo entra en mora quien tiene saldo vencido NETO: las rectificativas y
+      // demás abonos emitidos compensan la deuda antes de cortar el servicio.
+      const { saldo, vencidas } = overdueBalance(pendientes, workspaceId, termsDays, nowMs);
+      if (saldo <= 0 || vencidas.length === 0) {
+        reactivateWorkspaceIfCurrent(workspaceId); // deshace un corte anterior ya compensado
+        continue;
+      }
+      dunningForWorkspace(workspaceId, vencidas, graceDays, cancelDays, nowMs, termsDays);
     } catch (err: any) {
       auditSystem('dunning_error', `${workspaceId}: ${(err?.message || err).toString().slice(0, 200)}`);
     }
@@ -184,7 +201,17 @@ export function billingCycleTick(now: Date): void {
     try {
       if (ws.billing_day !== day || ws.status !== 'active') continue;
       const cycle = previousCycle(ws.billing_day, now);
-      if (invoiceExistsForCycle(ws.id, cycle.start)) continue; // ya generada (idempotente)
+      // Idempotencia sobre el ciclo YA CERRADO: un borrador creado a mitad de mes
+      // (una previsión del operador) no cuenta como facturado, porque le falta el
+      // consumo del resto del periodo. Se sustituye por el definitivo.
+      if (invoiceExistsForCycle(ws.id, cycle.start, cycle.end)) continue;
+      const previo = openDraftForCycle(ws.id, cycle.start);
+      // `deleteInvoice` devuelve sus cargos puntuales a 'pending', así que el
+      // borrador nuevo vuelve a incluirlos: no se pierde nada por el camino.
+      if (previo) {
+        deleteInvoice(previo.id);
+        auditSystem('invoice_draft_replaced', `${ws.name} · borrador parcial sustituido por la factura del ciclo cerrado`);
+      }
       const inv = generateCycleDraft(ws, cycle);
       if (!inv) continue; // nada que facturar: no se crea un borrador vacío
       const money = `${inv.currency} ${(inv.total_cents / 100).toFixed(2)}`;

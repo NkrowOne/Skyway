@@ -148,6 +148,8 @@ export interface Workspace {
   notes: string | null;
   /** Corte del proxy de IA por impago (0/1). */
   ai_suspended: number;
+  /** Cuenta exenta del corte automático por impago. */
+  dunning_exempt?: number;
   /** Etapa de morosidad: 0 al día · 1 vencida · 2 suspendida · 3 cancelada. */
   dunning_stage: number;
   created_at: number;
@@ -365,10 +367,13 @@ export interface RevenuePoint {
 }
 
 export interface AccountingSummary {
+  /** Moneda de la empresa emisora: la de `totals` y la de la serie mensual. */
   currency: string;
   totals: AccountingTotals;
+  /** Totales desglosados POR MONEDA (no se suman entre sí). */
+  byCurrency?: (AccountingTotals & { currency: string })[];
   series: RevenuePoint[];
-  byClient: { workspaceId: string; name: string; invoiced: number; paid: number }[];
+  byClient: { workspaceId: string; name: string; currency: string; invoiced: number; paid: number }[];
 }
 
 export interface AccountingInvoice {

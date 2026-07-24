@@ -21,7 +21,14 @@ const profileSchema = z.object({
   phone: z.string().trim().max(60).optional(),
   currency: z.string().trim().length(3).toUpperCase().optional(),
   vatRate: z.coerce.number().min(0).max(100).optional(),
-  invoicePrefix: z.string().trim().max(12).optional(),
+  // «REC» está reservado para la serie de rectificativas (art. 6.1.a RD 1619/2012):
+  // usarlo como prefijo ordinario mezclaría ambas series correlativas.
+  invoicePrefix: z
+    .string()
+    .trim()
+    .max(12)
+    .refine((v) => v.toUpperCase() !== 'REC', { message: 'El prefijo «REC» está reservado para la serie de facturas rectificativas.' })
+    .optional(),
   paymentTermsDays: z.coerce.number().int().min(0).max(365).optional(),
   defaultIrpfRate: z.coerce.number().min(0).max(100).optional(),
   sifMode: z.enum(['verifactu', 'no_verifactu']).optional(),
@@ -135,29 +142,40 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // Resumen de contabilidad de la empresa: totales, serie mensual y por cliente.
+  // Los importes se agrupan POR MONEDA: sumar céntimos de divisas distintas en un
+  // mismo total (y etiquetarlo con la moneda del emisor) da una cifra falsa.
   app.get('/api/accounting/summary', async (req) => {
     const { months } = z.object({ months: z.coerce.number().int().min(1).max(36).default(12) }).parse(req.query);
     const all = listAllInvoices();
-    const totals = { invoiced: 0, paid: 0, pending: 0, draft: 0, void: 0, count: all.length };
-    const byClient = new Map<string, { workspaceId: string; name: string; invoiced: number; paid: number }>();
+    const principal = getBillingProfile().currency.toUpperCase();
+    const emptyTotals = () => ({ invoiced: 0, paid: 0, pending: 0, draft: 0, void: 0, count: 0 });
+    const porMoneda = new Map<string, ReturnType<typeof emptyTotals>>();
+    const byClient = new Map<string, { workspaceId: string; name: string; currency: string; invoiced: number; paid: number }>();
     for (const inv of all) {
-      if (inv.status === 'issued' || inv.status === 'paid') totals.invoiced += inv.total_cents;
-      if (inv.status === 'paid') totals.paid += inv.total_cents;
-      if (inv.status === 'issued') totals.pending += inv.total_cents;
-      if (inv.status === 'draft') totals.draft += inv.total_cents;
-      if (inv.status === 'void') totals.void += inv.total_cents;
+      const cur = inv.currency.toUpperCase();
+      const t = porMoneda.get(cur) ?? emptyTotals();
+      t.count += 1;
+      if (inv.status === 'issued' || inv.status === 'paid') t.invoiced += inv.total_cents;
+      if (inv.status === 'paid') t.paid += inv.total_cents;
+      if (inv.status === 'issued') t.pending += inv.total_cents;
+      if (inv.status === 'draft') t.draft += inv.total_cents;
+      if (inv.status === 'void') t.void += inv.total_cents;
+      porMoneda.set(cur, t);
       if (inv.status === 'issued' || inv.status === 'paid') {
-        const key = inv.workspace_id;
-        const e = byClient.get(key) ?? { workspaceId: key, name: (inv as any).workspace_name ?? 'Sin cuenta', invoiced: 0, paid: 0 };
+        const key = `${inv.workspace_id}|${cur}`;
+        const e = byClient.get(key) ?? { workspaceId: inv.workspace_id, name: (inv as any).workspace_name ?? 'Sin cuenta', currency: cur, invoiced: 0, paid: 0 };
         e.invoiced += inv.total_cents;
         if (inv.status === 'paid') e.paid += inv.total_cents;
         byClient.set(key, e);
       }
     }
     return {
-      currency: getBillingProfile().currency,
-      totals,
-      series: revenueSeries(all, months),
+      currency: principal,
+      // `totals` sigue siendo el de la moneda del emisor (lo que ya pintaba la UI);
+      // `byCurrency` expone el resto para que ninguna factura quede fuera del cuadro.
+      totals: porMoneda.get(principal) ?? emptyTotals(),
+      byCurrency: [...porMoneda.entries()].map(([currency, t]) => ({ currency, ...t })).sort((a, b) => (a.currency === principal ? -1 : b.currency === principal ? 1 : b.invoiced - a.invoiced)),
+      series: revenueSeries(all.filter((i) => i.currency.toUpperCase() === principal), months),
       byClient: [...byClient.values()].sort((a, b) => b.invoiced - a.invoiced).slice(0, 12),
     };
   });
@@ -190,7 +208,12 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
 
   // Exportación CSV para la contabilidad de la empresa.
   app.get('/api/accounting/export.csv', async (req, reply) => {
-    const rows = listAllInvoices();
+    // El libro registro recoge las facturas EXPEDIDAS: los borradores no lo son
+    // (no tienen número ni fecha de expedición) y colarlos descuadra el libro.
+    // Las anuladas sí constan, con su número, para justificar el hueco en la serie.
+    const rows = listAllInvoices()
+      .filter((i) => i.status !== 'draft')
+      .sort((a, b) => (a.issued_at ?? a.created_at) - (b.issued_at ?? b.created_at) || (a.number ?? '').localeCompare(b.number ?? ''));
     // Libro registro de facturas emitidas: nº, tipo, NIF del receptor, base, IVA,
     // IRPF y total, según lo que la AEAT espera para la contabilidad.
     const header = ['numero', 'tipo', 'cliente', 'nif_cliente', 'estado', 'fecha_expedicion', 'periodo_inicio', 'periodo_fin', 'base_imponible', 'iva', 'irpf', 'total', 'moneda', 'metodo_pago', 'pagada'];

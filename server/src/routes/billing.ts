@@ -1,18 +1,21 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertWorkspaceAccess, requireAdmin, requireAuth } from '../auth';
-import { audit } from '../audit';
+import { audit, auditSystem } from '../audit';
 import {
   assignSeriesNumber,
   createInvoice,
   deleteInvoice,
   getInvoice,
   getInvoiceByStripeSession,
+  getPlan,
   getProduct,
   getWorkspace,
+  invoiceExistsForCycle,
   listActiveSubscriptions,
   listInvoices,
   listPendingCharges,
+  listRectificationsOf,
   listTiers,
   markChargesInvoiced,
   reopenChargesForInvoice,
@@ -22,13 +25,20 @@ import {
   workspaceUsageRange,
 } from '../db';
 import { getBillingProfile, getStripeSecretKey } from '../company';
-import { workspacePlan } from '../quota';
 import { priceTiers } from '../pricing';
 import { reactivateWorkspaceIfCurrent } from '../billingauto';
-import { StripeError, createStripeCheckout } from '../stripe';
-import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, TaxBreakdownEntry, VatRegime, WorkspaceRow } from '../types';
+import { StripeError, createStripeCheckout, stripeAmount } from '../stripe';
+import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, PlanRow, TaxBreakdownEntry, VatRegime, WorkspaceRow } from '../types';
 
 const HOUR_MS = 3_600_000;
+
+/** Error de negocio de facturación: la ruta lo traduce a 400 con su mensaje. */
+export class BillingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BillingError';
+  }
+}
 
 const VAT_REGIMES: [VatRegime, ...VatRegime[]] = [
   'general',
@@ -47,6 +57,9 @@ const lineSchema = z.object({
   unitCents: z.coerce.number().int().min(-100_000_00).max(100_000_00).default(0),
   // Tipo de IVA (%) de la línea; permite facturas con varios tipos. Ausente = el de la factura.
   taxRate: z.coerce.number().min(0).max(100).optional(),
+  // Tipo de retención de IRPF (%) de la línea: solo algunos conceptos (servicios
+  // profesionales) retienen. Ausente = el tipo por defecto de la factura.
+  irpfRate: z.coerce.number().min(0).max(100).optional(),
 });
 
 /** Acota a entero seguro: por encima de 2^53 se perdería precisión al almacenar. */
@@ -62,34 +75,40 @@ type LineDraft = z.infer<typeof lineSchema> & { discountable?: boolean };
 
 /**
  * Aplica el descuento comercial de la cuenta/plan (%) empujando UNA línea de
- * descuento por cada tipo de IVA presente entre las líneas descontables. Así el
- * desglose por tipo sigue cuadrando: computeTotals agrupa por taxRate y redondea
- * la cuota una vez sobre la base ya descontada. Se excluyen las líneas con precio
- * negociado por cliente (unit_cents) para no descontar dos veces. El clamp por
- * tipo evita bases negativas.
+ * descuento por cada combinación de (tipo de IVA, tipo de IRPF) presente entre las
+ * líneas descontables. Así los dos desgloses siguen cuadrando: computeTotals
+ * agrupa por tipo y redondea la cuota una vez sobre cada base ya descontada. Se
+ * agrupa también por IRPF porque, si no, el descuento reduciría la base de un tipo
+ * de retención distinto al de la línea descontada. Se excluyen las líneas con
+ * precio negociado por cliente (unit_cents) para no descontar dos veces. El clamp
+ * por grupo evita bases negativas.
  */
 function applyAccountDiscount(rawLines: LineDraft[], pct: number): void {
   if (!(pct > 0)) return;
   const clamped = Math.min(100, pct);
-  const baseByRate = new Map<number, number>();
+  const baseByRate = new Map<string, { taxRate: number; irpfRate: number | undefined; base: number }>();
   for (const l of rawLines) {
     if (!l.discountable) continue;
     const amount = Math.round(l.qty * l.unitCents);
     if (amount <= 0) continue; // solo se descuenta sobre importes positivos
-    const rate = l.taxRate ?? 0;
-    baseByRate.set(rate, (baseByRate.get(rate) ?? 0) + amount);
+    const taxRate = l.taxRate ?? 0;
+    const key = `${taxRate}|${l.irpfRate ?? ''}`;
+    const entry = baseByRate.get(key) ?? { taxRate, irpfRate: l.irpfRate, base: 0 };
+    entry.base += amount;
+    baseByRate.set(key, entry);
   }
   const multiRate = baseByRate.size > 1;
-  for (const [rate, base] of baseByRate) {
+  for (const { taxRate, irpfRate, base } of baseByRate.values()) {
     if (base <= 0) continue;
-    const disc = Math.min(base, Math.round((base * clamped) / 100)); // nunca supera la base del tipo
+    const disc = Math.min(base, Math.round((base * clamped) / 100)); // nunca supera la base del grupo
     if (disc <= 0) continue;
     rawLines.push({
-      label: `Descuento ${clamped}%${multiRate ? ` (IVA ${rate}%)` : ''}`,
+      label: `Descuento ${clamped}%${multiRate ? ` (IVA ${taxRate}%)` : ''}`,
       kind: 'discount',
       qty: 1,
       unitCents: -disc,
-      taxRate: rate,
+      taxRate,
+      irpfRate,
     });
   }
 }
@@ -131,14 +150,17 @@ interface Totals {
   taxBreakdown: TaxBreakdownEntry[];
   tax: number;
   irpf: number;
+  /** Tipo de retención a guardar en la factura: el único si es uniforme, o el efectivo. */
+  irpfRate: number;
   total: number;
 }
 
 /**
  * Normaliza líneas y calcula el total conforme a la normativa española: la cuota
  * de IVA se agrupa por tipo impositivo y se redondea UNA sola vez por cada base
- * (no por línea), el IRPF se retiene sobre la base imponible y el total es
- * base + IVA − retención. Todo se recomputa siempre en el servidor.
+ * (no por línea), la retención de IRPF se agrupa igual por tipo de retención (una
+ * misma factura puede llevar conceptos sujetos a retención y otros no) y el total
+ * es base + IVA − retención. Todo se recomputa siempre en el servidor.
  */
 function computeTotals(
   rawLines: z.infer<typeof lineSchema>[],
@@ -152,6 +174,7 @@ function computeTotals(
     unitCents: l.unitCents,
     amountCents: clampSafe(Math.round(l.qty * l.unitCents)),
     taxRate: zeroVat ? 0 : l.taxRate ?? opts.defaultTaxRate,
+    irpfRate: l.irpfRate ?? opts.irpfRate,
   }));
   const subtotal = clampSafe(lines.reduce((sum, l) => sum + l.amountCents, 0));
   // Bases agrupadas por tipo; la cuota se redondea una vez sobre la base del tipo.
@@ -168,9 +191,23 @@ function computeTotals(
       quota_cents: clampSafe(Math.round(base * (rate / 100))),
     }));
   const tax = clampSafe(taxBreakdown.reduce((sum, b) => sum + b.quota_cents, 0));
-  const irpf = clampSafe(Math.round(subtotal * (opts.irpfRate / 100)));
+  // Retención por tipo: solo los conceptos sujetos (p. ej. servicios profesionales)
+  // retienen, y cada base se redondea una sola vez.
+  const byIrpf = new Map<number, number>();
+  for (const l of lines) {
+    const rate = l.irpfRate ?? 0;
+    byIrpf.set(rate, (byIrpf.get(rate) ?? 0) + l.amountCents);
+  }
+  let irpf = 0;
+  for (const [rate, base] of byIrpf) irpf += Math.round(base * (rate / 100));
+  irpf = clampSafe(irpf);
+  // Tipo a guardar en la cabecera: el único si todas las líneas comparten
+  // retención; si no, el efectivo sobre la base (solo informativo: el importe
+  // bueno es `irpf`, calculado por tramos).
+  const rates = [...byIrpf.keys()];
+  const irpfRate = rates.length === 1 ? rates[0] : subtotal !== 0 ? Math.round((irpf / subtotal) * 10000) / 100 : opts.irpfRate;
   const total = clampSafe(subtotal + tax - irpf);
-  return { lines, subtotal, taxBreakdown, tax, irpf, total };
+  return { lines, subtotal, taxBreakdown, tax, irpf, irpfRate, total };
 }
 
 function parseLines(json: string): InvoiceLine[] {
@@ -189,6 +226,46 @@ function parseBreakdown(json: string): TaxBreakdownEntry[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Referencia obligatoria a la factura corregida (art. 15.2 RD 1619/2012). Se usa
+ * al crear la rectificativa y al reconstruir sus menciones tras editar el
+ * borrador, para que no se pierda por el camino.
+ */
+function rectifyNote(inv: InvoiceRow): string | null {
+  if (inv.invoice_type !== 'rectificativa' || !inv.rectifies_invoice_id) return null;
+  const original = getInvoice(inv.rectifies_invoice_id);
+  const ref = original?.number ?? inv.rectifies_invoice_id;
+  return `Rectifica la factura ${ref}. Motivo: ${inv.rectify_reason ?? 'sin especificar'}`;
+}
+
+/** Menciones legales completas de una factura: referencia rectificativa + régimen. */
+function invoiceMentions(inv: InvoiceRow, regime: VatRegime): string | null {
+  const mention = legalMention(regime);
+  const ref = rectifyNote(inv);
+  if (!ref) return mention;
+  return mention ? `${ref} · ${mention}` : ref;
+}
+
+/**
+ * Comprueba los datos que una factura completa debe llevar por normativa antes de
+ * numerarla (art. 6 RD 1619/2012): identificación fiscal del emisor y, salvo en la
+ * simplificada, también del destinatario. Devuelve el motivo del bloqueo o null.
+ * Solo lo aplican los caminos de emisión deliberados: el webhook de cobro nunca
+ * debe quedarse sin marcar un pago ya realizado por un dato de configuración.
+ */
+function fiscalBlocker(inv: InvoiceRow, profile: BillingProfile, ws: WorkspaceRow | undefined): string | null {
+  if (!profile.companyName.trim() || !profile.taxId.trim()) {
+    return 'Falta la razón social o el NIF del emisor. Complétalos en Contabilidad → Datos de la empresa antes de emitir.';
+  }
+  if (inv.invoice_type !== 'simplificada') {
+    const taxId = inv.client_tax_id ?? ws?.billing_tax_id ?? '';
+    if (!taxId.trim()) {
+      return 'Falta el NIF/CIF del cliente, obligatorio en una factura completa. Rellénalo en la ficha de la cuenta o emítela como simplificada.';
+    }
+  }
+  return null;
 }
 
 function issuerSnapshot(profile: BillingProfile): IssuerSnapshot {
@@ -263,6 +340,33 @@ function meterQuantity(
   }
 }
 
+/**
+ * El plan CONTRATADO por la cuenta. A diferencia de `workspacePlan` (quota.ts),
+ * que cae al plan por defecto como respaldo informativo de cuotas, aquí no hay
+ * respaldo: una cuenta sin plan asignado no se factura ningún plan.
+ */
+function contractedPlan(ws: WorkspaceRow): PlanRow | undefined {
+  return ws.plan_id ? getPlan(ws.plan_id) : undefined;
+}
+
+/**
+ * ¿Toca cobrar en este ciclo una cuota ANUAL contratada en `sinceMs`?
+ *
+ * El ciclo de facturación es mensual, así que una cuota anual solo se devenga en
+ * el ciclo que contiene su aniversario (o el del alta, la primera vez). Sin esto,
+ * una cuota anual se cobraría íntegra los doce meses.
+ */
+function annualDueInCycle(sinceMs: number, cycle: { start: number; end: number }): boolean {
+  if (sinceMs >= cycle.end) return false; // contratado después de este ciclo
+  if (sinceMs >= cycle.start) return true; // alta dentro del ciclo: primera anualidad
+  const since = new Date(sinceMs);
+  for (const year of [new Date(cycle.start).getFullYear(), new Date(cycle.end).getFullYear()]) {
+    const anniversary = new Date(year, since.getMonth(), since.getDate()).getTime();
+    if (anniversary >= cycle.start && anniversary < cycle.end) return true;
+  }
+  return false;
+}
+
 /** Ciclo de facturación actual anclado al día de facturación del workspace. */
 function currentCycle(billingDay: number): { start: number; end: number } {
   const now = new Date();
@@ -278,9 +382,13 @@ function currentCycle(billingDay: number): { start: number; end: number } {
  * bloquea (inmutable). Idempotente sobre lo ya congelado/numerado; sirve para los
  * tres caminos de emisión (edición de estado, enlace de Stripe y webhook de pago).
  */
-function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Record<string, unknown> = {}): InvoiceRow {
+function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Record<string, unknown> = {}, opts: { requireFiscalData?: boolean } = {}): InvoiceRow {
   const profile = getBillingProfile();
   const ws = getWorkspace(inv.workspace_id);
+  if (opts.requireFiscalData && !inv.issued_at) {
+    const blocker = fiscalBlocker(inv, profile, ws);
+    if (blocker) throw new BillingError(blocker);
+  }
   return transaction(() => {
     const fields: Record<string, unknown> = { ...extra };
     const issuedAt = (extra.issued_at as number | undefined) ?? inv.issued_at ?? Date.now();
@@ -315,30 +423,67 @@ function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Reco
   });
 }
 
+/** Datos del `checkout.session` de Stripe que necesita la conciliación del cobro. */
+export interface StripeSessionRef {
+  id: string;
+  client_reference_id?: string | null;
+  metadata?: { invoiceId?: string } | null;
+  amount_total?: number | null;
+  currency?: string | null;
+}
+
+export type StripePaymentOutcome =
+  | { result: 'pagada'; invoice: InvoiceRow }
+  | { result: 'ya_pagada'; invoice: InvoiceRow }
+  | { result: 'sin_factura' }
+  | { result: 'anulada'; invoice: InvoiceRow }
+  | { result: 'importe_no_cuadra'; invoice: InvoiceRow; detail: string };
+
 /**
- * Marca una factura como pagada a partir de una sesión de Stripe completada.
- * La usa el webhook (verificado) de `routes/webhooks.ts`. Idempotente y, si por
- * lo que fuera la factura no estaba emitida, la emite (alta antes del cobro).
+ * Concilia un cobro de Stripe con su factura y la marca como pagada.
+ * La usa el webhook (verificado) de `routes/webhooks.ts`. Idempotente.
+ *
+ * La factura se busca PRIMERO por el identificador propio que viaja en la sesión
+ * (`metadata.invoiceId` / `client_reference_id`, puestos en `stripe.ts`) y solo
+ * después por `stripe_session_id`: si se regeneró el enlace de cobro, la columna
+ * apunta a la última sesión y un pago hecho con un enlace anterior quedaría
+ * huérfano. Antes de dar por cobrada la factura se comprueba que el importe y la
+ * moneda coinciden, y una factura ANULADA nunca resucita: es un estado terminal
+ * (el dinero está en Stripe y hay que devolverlo a mano).
  */
-export function markInvoicePaidByStripeSession(sessionId: string): boolean {
-  const inv = getInvoiceByStripeSession(sessionId);
-  if (!inv) return false;
-  if (inv.status === 'paid') return true;
-  performEmission(inv, 'paid', { payment_method: 'stripe' });
+export function markInvoicePaidByStripeSession(session: StripeSessionRef): StripePaymentOutcome {
+  const byRef = session.metadata?.invoiceId ?? session.client_reference_id ?? null;
+  const inv = (byRef ? getInvoice(byRef) : undefined) ?? getInvoiceByStripeSession(session.id);
+  if (!inv) return { result: 'sin_factura' };
+  if (inv.status === 'paid') return { result: 'ya_pagada', invoice: inv };
+  if (inv.status === 'void') return { result: 'anulada', invoice: inv };
+  if (session.amount_total != null) {
+    const esperado = stripeAmount(inv.total_cents, inv.currency);
+    const monedaOk = !session.currency || session.currency.toLowerCase() === inv.currency.toLowerCase();
+    if (session.amount_total !== esperado || !monedaOk) {
+      return {
+        result: 'importe_no_cuadra',
+        invoice: inv,
+        detail: `cobrado ${session.amount_total} ${session.currency ?? '?'} · facturado ${esperado} ${inv.currency}`,
+      };
+    }
+  }
+  const paid = performEmission(inv, 'paid', { payment_method: 'stripe', stripe_session_id: session.id });
   reactivateWorkspaceIfCurrent(inv.workspace_id); // levanta el corte por impago si ya no debe nada
-  return true;
+  return { result: 'pagada', invoice: paid };
 }
 
 /**
  * Emite (numera y bloquea) un borrador. La usa la facturación automática cuando el
  * operador activa la auto-emisión; idempotente (si ya está emitida, la devuelve).
- * Devuelve null si la factura no existe.
+ * Devuelve null si la factura no existe. Lanza `BillingError` si falta un dato
+ * fiscal obligatorio (la auto-emisión lo audita y deja el borrador intacto).
  */
 export function issueInvoice(invoiceId: string): InvoiceRow | null {
   const inv = getInvoice(invoiceId);
   if (!inv) return null;
   if (inv.status !== 'draft') return inv;
-  return performEmission(inv, 'issued');
+  return performEmission(inv, 'issued', {}, { requireFiscalData: true });
 }
 
 /**
@@ -348,31 +493,57 @@ export function issueInvoice(invoiceId: string): InvoiceRow | null {
  * «Generar ciclo» y la facturación automática del scheduler.
  */
 export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.billing_day)): InvoiceRow | null {
-  const plan = workspacePlan(ws);
+  const plan = contractedPlan(ws);
   const profile = getBillingProfile();
   const fromHour = Math.floor(cycle.start / HOUR_MS);
   const toHour = Math.floor(cycle.end / HOUR_MS);
   const usage = workspaceUsageRange(ws.id, fromHour, toHour);
   const currency = plan?.currency ?? profile.currency;
+  // Una factura tiene UNA moneda: no se pueden sumar céntimos de divisas
+  // distintas. Se recogen las divergencias para abortar con un error accionable
+  // en vez de emitir un importe sin sentido.
+  const otherCurrencies = new Set<string>();
+  const checkCurrency = (c: string | null | undefined, concepto: string): boolean => {
+    if (c && c.toUpperCase() !== currency.toUpperCase()) {
+      otherCurrencies.add(`${concepto} (${c.toUpperCase()})`);
+      return false;
+    }
+    return true;
+  };
 
   const rawLines: LineDraft[] = [];
   if (plan) {
-    rawLines.push({
-      label: `Plan ${plan.name} (${plan.interval === 'yearly' ? 'anual' : 'mensual'})`,
-      kind: 'plan',
-      qty: 1,
-      unitCents: plan.price_cents,
-      taxRate: profile.vatRate,
-      discountable: true,
-    });
+    // Una cuota anual se devenga una vez al año, en el ciclo de su aniversario.
+    const anual = plan.interval === 'yearly';
+    if (!anual || annualDueInCycle(ws.plan_since ?? ws.created_at, cycle)) {
+      rawLines.push({
+        label: `Plan ${plan.name} (${anual ? 'anual' : 'mensual'})`,
+        kind: 'plan',
+        qty: 1,
+        unitCents: plan.price_cents,
+        taxRate: profile.vatRate,
+        discountable: true,
+      });
+    }
   }
+  // Un medidor se factura UNA sola vez por ciclo: dos suscripciones a productos
+  // que comparten medidor (o dos suscripciones al mismo producto) cobrarían el
+  // mismo consumo dos veces. Tarifa la suscripción más antigua, que es también la
+  // que usa el guardarraíl de presupuesto del gateway (`meterUnitPrice`).
+  const meteredDone = new Set<string>();
   for (const sub of listActiveSubscriptions(ws.id)) {
     const product = getProduct(sub.product_id);
     if (!product) continue;
     const negotiated = sub.unit_cents != null; // precio pactado por cliente: no se le suma el descuento
     const unitPrice = sub.unit_cents ?? product.price_cents;
     const rate = product.tax_exempt ? 0 : product.tax_rate;
+    const irpf = product.irpf_rate || 0;
+    // La moneda efectiva es la del precio que se aplica: la congelada en la
+    // suscripción si hay precio pactado, la del producto si sigue la tarifa.
+    if (!checkCurrency(negotiated ? sub.currency : product.currency, product.name)) continue;
     if ((product.billing_model === 'metered' || product.billing_model === 'tiered') && product.meter) {
+      if (meteredDone.has(product.meter)) continue;
+      meteredDone.add(product.meter);
       const raw = meterQuantity(product.meter, ws.id, fromHour, toHour, usage) * sub.qty;
       if (raw <= 0) continue;
       // Cantidad en unidades de precio (p. ej. 1M tokens): el precio es por unidad.
@@ -380,17 +551,24 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.bil
       if (product.billing_model === 'tiered') {
         const amount = priceTiers(listTiers(product.id), units, product.tier_mode ?? 'graduated');
         // Los tramos no admiten override unit_cents: el precio es de tarifa → descontable.
-        rawLines.push({ label: `${product.name} · ${units} ${product.unit || 'ud'}`, kind: 'subscription', qty: 1, unitCents: amount, taxRate: rate, discountable: true });
+        rawLines.push({ label: `${product.name} · ${units} ${product.unit || 'ud'}`, kind: 'subscription', qty: 1, unitCents: amount, taxRate: rate, irpfRate: irpf, discountable: true });
       } else {
-        rawLines.push({ label: `${product.name} (${product.unit || 'uso'})`, kind: 'usage', qty: units, unitCents: unitPrice, taxRate: rate, discountable: !negotiated });
+        rawLines.push({ label: `${product.name} (${product.unit || 'uso'})`, kind: 'usage', qty: units, unitCents: unitPrice, taxRate: rate, irpfRate: irpf, discountable: !negotiated });
       }
     } else {
-      rawLines.push({ label: `${product.name} (${sub.interval === 'yearly' ? 'anual' : 'mensual'})`, kind: 'subscription', qty: sub.qty, unitCents: unitPrice, taxRate: rate, discountable: !negotiated });
+      const anual = sub.interval === 'yearly';
+      if (anual && !annualDueInCycle(sub.started_at, cycle)) continue;
+      rawLines.push({ label: `${product.name} (${anual ? 'anual' : 'mensual'})`, kind: 'subscription', qty: sub.qty, unitCents: unitPrice, taxRate: rate, irpfRate: irpf, discountable: !negotiated });
     }
   }
   const charges = listPendingCharges(ws.id, 'pending');
   for (const c of charges) {
-    rawLines.push({ label: c.label, kind: c.kind === 'product' ? 'product' : 'custom', qty: c.qty, unitCents: c.unit_cents, taxRate: c.tax_rate, discountable: true });
+    rawLines.push({ label: c.label, kind: c.kind === 'product' ? 'product' : 'custom', qty: c.qty, unitCents: c.unit_cents, taxRate: c.tax_rate, irpfRate: c.irpf_rate || 0, discountable: true });
+  }
+  if (otherCurrencies.size > 0) {
+    throw new BillingError(
+      `No se puede facturar: hay conceptos en una moneda distinta de la de la cuenta (${currency}): ${[...otherCurrencies].join(', ')}. Unifica la moneda del catálogo y del plan.`,
+    );
   }
 
   // Descuento comercial de la cuenta (override) o, si no lo tiene, del plan.
@@ -416,7 +594,7 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.bil
       tax_breakdown: JSON.stringify(totals.taxBreakdown),
       vat_regime: 'general',
       legal_mentions: legalMention('general'),
-      irpf_rate: profile.defaultIrpfRate,
+      irpf_rate: totals.irpfRate,
       irpf_cents: totals.irpf,
       total_cents: totals.total,
       lines: JSON.stringify(totals.lines),
@@ -454,7 +632,19 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const ws = getWorkspace(id);
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
-    const inv = generateCycleDraft(ws);
+    // Idempotencia: sin esto, dos pulsaciones seguidas crean dos facturas del
+    // mismo periodo (con el plan y los cargos duplicados en la segunda).
+    const cycle = currentCycle(ws.billing_day);
+    if (invoiceExistsForCycle(id, cycle.start)) {
+      return reply.code(409).send({ error: 'Ya existe una factura para el ciclo en curso de esta cuenta. Edítala o anúlala antes de generar otra.' });
+    }
+    let inv: InvoiceRow | null;
+    try {
+      inv = generateCycleDraft(ws, cycle);
+    } catch (err) {
+      if (err instanceof BillingError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
     if (!inv) return reply.code(400).send({ error: 'No hay nada que facturar en este ciclo (sin plan, suscripciones ni cargos).' });
     audit(req, 'invoice_generated', { type: 'invoice', id: inv.id, detail: `${ws.name} · ${inv.currency} ${(inv.total_cents / 100).toFixed(2)}` });
     reply.code(201);
@@ -466,7 +656,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const ws = getWorkspace(id);
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
-    const plan = workspacePlan(ws);
+    const plan = contractedPlan(ws);
     const profile = getBillingProfile();
     const cycle = currentCycle(ws.billing_day);
     const body = z
@@ -499,7 +689,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       tax_breakdown: JSON.stringify(totals.taxBreakdown),
       vat_regime: regime,
       legal_mentions: legalMention(regime),
-      irpf_rate: irpfRate,
+      irpf_rate: totals.irpfRate,
       irpf_cents: totals.irpf,
       total_cents: totals.total,
       lines: JSON.stringify(totals.lines),
@@ -560,8 +750,10 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       fields.tax_rate = defaultTaxRate;
       fields.tax_breakdown = JSON.stringify(totals.taxBreakdown);
       fields.vat_regime = regime;
-      fields.legal_mentions = legalMention(regime);
-      fields.irpf_rate = irpfRate;
+      // Recalcular las menciones SIN perder la referencia a la factura rectificada:
+      // es obligatoria (art. 15.2 RD 1619/2012) y antes se borraba al editar.
+      fields.legal_mentions = invoiceMentions(inv, regime);
+      fields.irpf_rate = totals.irpfRate;
       fields.irpf_cents = totals.irpf;
       fields.total_cents = totals.total;
       if (body.currency) fields.currency = body.currency;
@@ -572,7 +764,12 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
 
     // Aplicar la transición de estado.
     if ((target === 'issued' || target === 'paid') && (inv.status === 'draft' || inv.status === 'issued')) {
-      performEmission(inv, target, fields);
+      try {
+        performEmission(inv, target, fields, { requireFiscalData: true });
+      } catch (err) {
+        if (err instanceof BillingError) return reply.code(409).send({ error: err.message });
+        throw err;
+      }
     } else {
       if (target !== inv.status) fields.status = target; // draft/issued → void
       updateInvoice(id, fields);
@@ -580,7 +777,11 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       if (target === 'void' && inv.status !== 'void') reopenChargesForInvoice(id);
     }
     // Cobro manual: levanta el corte por impago si la cuenta ya no debe nada.
-    if (target === 'paid' && inv.status !== 'paid') reactivateWorkspaceIfCurrent(inv.workspace_id);
+    // Anular la factura también salda la deuda: sin esto, una factura vencida que
+    // se anula (o se sustituye por una rectificativa) dejaba al cliente cortado.
+    if ((target === 'paid' && inv.status !== 'paid') || (target === 'void' && inv.status !== 'void')) {
+      reactivateWorkspaceIfCurrent(inv.workspace_id);
+    }
     audit(req, 'invoice_updated', { type: 'invoice', id, detail: body.status ?? 'edición' });
     return { invoice: publicInvoice(getInvoice(id)!) };
   });
@@ -614,6 +815,17 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     if (original.invoice_type === 'rectificativa') {
       return reply.code(409).send({ error: 'Una rectificativa no se rectifica; corrija la factura original.' });
     }
+    // Esta rectificativa revierte ÍNTEGRAMENTE la original. Emitir una segunda
+    // sobre la misma factura abonaría dos veces la misma operación (base e IVA en
+    // negativo por duplicado). Si de verdad hay que volver a corregir, primero se
+    // anula la rectificativa anterior.
+    const previas = listRectificationsOf(original.id);
+    if (previas.length > 0) {
+      const ref = previas[0].number ?? previas[0].id;
+      return reply.code(409).send({
+        error: `Esta factura ya está rectificada por ${ref}, que revierte su importe completo. Anula esa rectificativa antes de emitir otra, o corrígela por diferencias sobre ella.`,
+      });
+    }
     const body = z
       .object({
         reason: z.string().trim().min(3).max(500),
@@ -623,13 +835,17 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       })
       .parse(req.body);
 
-    // Reversa de la original (mismas líneas con importe negado) + líneas correctas.
+    // Reversa de la original: se niega el IMPORTE ya calculado de cada línea, no
+    // el precio unitario. Negar `unitCents` y volver a multiplicar por `qty`
+    // reintroduce el redondeo con signo contrario y deja céntimos residuales que
+    // impiden que una anulación total neteé exactamente cero.
     const reversal: z.infer<typeof lineSchema>[] = parseLines(original.lines).map((l) => ({
       label: `Anula: ${l.label}`.slice(0, 120),
       kind: l.kind,
-      qty: l.qty,
-      unitCents: -l.unitCents,
+      qty: 1,
+      unitCents: -(l.amountCents ?? Math.round(l.qty * l.unitCents)),
       taxRate: l.taxRate,
+      irpfRate: l.irpfRate,
     }));
     const regime = original.vat_regime as VatRegime;
     const totals = computeTotals([...reversal, ...body.lines], { defaultTaxRate: original.tax_rate, irpfRate: original.irpf_rate, regime });
@@ -652,7 +868,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       tax_breakdown: JSON.stringify(totals.taxBreakdown),
       vat_regime: regime,
       legal_mentions: mention ? `${refNote} · ${mention}` : refNote,
-      irpf_rate: original.irpf_rate,
+      irpf_rate: totals.irpfRate,
       irpf_cents: totals.irpf,
       total_cents: totals.total,
       lines: JSON.stringify(totals.lines),
@@ -675,9 +891,23 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const ws = getWorkspace(inv.workspace_id);
     const origin = `${req.protocol}://${req.headers.host}`;
 
+    // Reutilizar el enlace vigente en vez de crear otra sesión: cada sesión nueva
+    // sobrescribía `stripe_session_id` y el cobro hecho con el enlace anterior
+    // quedaba sin factura a la que imputarse. (El webhook concilia además por el
+    // id de factura, así que un enlace viejo tampoco se pierde.)
+    if (inv.stripe_url && inv.stripe_session_id) {
+      return { url: inv.stripe_url, invoice: publicInvoice(inv), reused: true };
+    }
+
     // Emitir la factura antes de cobrar (alta antes del pago): asigna número/serie
     // y la congela. Si ya estaba emitida, no reasigna nada.
-    const issued = inv.status === 'draft' ? performEmission(inv, 'issued') : inv;
+    let issued: InvoiceRow;
+    try {
+      issued = inv.status === 'draft' ? performEmission(inv, 'issued', {}, { requireFiscalData: true }) : inv;
+    } catch (err) {
+      if (err instanceof BillingError) return reply.code(409).send({ error: err.message });
+      throw err;
+    }
     const number = issued.number ?? issued.id;
 
     try {

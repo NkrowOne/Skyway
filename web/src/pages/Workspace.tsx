@@ -651,7 +651,13 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
   const [viewing, setViewing] = useState<Invoice | null>(null);
   const [rectifying, setRectifying] = useState<Invoice | null>(null);
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['ws-invoices', ws.id] });
+  // Generar, anular o borrar una factura mueve también los CARGOS PUNTUALES (pasan
+  // a facturados o vuelven a pendientes), así que hay que refrescar las dos listas:
+  // si no, «Servicios contratados» sigue ofreciendo eliminar un cargo ya facturado.
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ['ws-invoices', ws.id] });
+    queryClient.invalidateQueries({ queryKey: ['ws-subs', ws.id] });
+  };
 
   const generate = useMutation({
     mutationFn: () => api.post(`/workspaces/${ws.id}/invoices/generate`),
@@ -746,8 +752,10 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                 <p className="mt-0.5 text-[11px] text-subtle">
                   {inv.invoice_type === 'rectificativa' ? 'Rectificativa · ' : ''}
                   {fmtDate(inv.period_start)} – {fmtDate(inv.period_end)}
-                  {inv.tax_cents > 0 ? ` · IVA ${fmtMoney(inv.tax_cents, inv.currency)}` : ''}
-                  {inv.irpf_cents > 0 ? ` · IRPF −${fmtMoney(inv.irpf_cents, inv.currency)}` : ''}
+                  {/* !== 0: en una rectificativa el IVA y el IRPF son NEGATIVOS y
+                      con «> 0» desaparecían de la línea. */}
+                  {inv.tax_cents !== 0 ? ` · IVA ${fmtMoney(inv.tax_cents, inv.currency)}` : ''}
+                  {inv.irpf_cents !== 0 ? ` · IRPF ${inv.irpf_cents > 0 ? '−' : '+'}${fmtMoney(Math.abs(inv.irpf_cents), inv.currency)}` : ''}
                   {inv.paid_at ? ` · pagada ${timeAgo(inv.paid_at)}` : inv.issued_at ? ` · emitida ${timeAgo(inv.issued_at)}` : ''}
                 </p>
               </button>
@@ -764,14 +772,38 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                       <button onClick={() => setEditing(inv)} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Editar líneas">
                         <Pencil size={14} />
                       </button>
-                      <Button size="sm" variant="ghost" onClick={() => setStatus.mutate({ id: inv.id, status: 'issued' })}>Emitir</Button>
+                      {/* Emitir es un acto legal IRREVERSIBLE: numera la factura en
+                          la serie y la congela. A partir de ahí solo se corrige con
+                          una rectificativa, así que se confirma antes. */}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          if (confirm(`Se va a EMITIR esta factura por ${fmtMoney(inv.total_cents, inv.currency)}.\n\nAl emitirla toma número de serie y queda bloqueada: ya no podrá editarse ni borrarse, solo corregirse con una factura rectificativa.\n\n¿Emitir?`)) {
+                            setStatus.mutate({ id: inv.id, status: 'issued' });
+                          }
+                        }}
+                      >
+                        Emitir
+                      </Button>
                       <button onClick={() => remove.mutate(inv.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Eliminar borrador">
                         <Trash2 size={14} />
                       </button>
                     </>
                   )}
                   {inv.status === 'issued' && (
-                    <Button size="sm" variant="ghost" onClick={() => setStatus.mutate({ id: inv.id, status: 'paid' })}>Marcar pagada</Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        // «Pagada» es un estado terminal: no admite vuelta atrás.
+                        if (confirm(`Marcar como COBRADA la factura ${inv.number ?? ''} por ${fmtMoney(inv.total_cents, inv.currency)}.\n\nEs un estado definitivo: no se puede deshacer.\n\n¿Continuar?`)) {
+                          setStatus.mutate({ id: inv.id, status: 'paid' });
+                        }
+                      }}
+                    >
+                      Marcar pagada
+                    </Button>
                   )}
                   {/* Una factura emitida no se edita: se corrige con una rectificativa. */}
                   {(inv.status === 'issued' || inv.status === 'paid') && inv.invoice_type !== 'rectificativa' && (
@@ -1007,46 +1039,60 @@ function EMPTY_INVOICE(workspaceId: string, currency: string): Invoice {
 
 function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: Invoice; workspaceId: string; onClose: () => void; onSaved: () => void }) {
   const toast = useToast();
-  const [lines, setLines] = useState(invoice.lines.map((l) => ({ label: l.label, qty: l.qty, unit: l.unitCents / 100 })));
-  const total = lines.reduce((s, l) => s + Math.round(l.qty * l.unit * 100), 0);
+  // Se conservan el TIPO de IVA y la NATURALEZA de cada línea: el servidor
+  // recompone la factura con lo que llega, así que omitirlos aplicaba el tipo por
+  // defecto a todo y una línea exenta pasaba a tributar al 21 %.
+  const [lines, setLines] = useState(
+    invoice.lines.map((l) => ({ label: l.label, kind: l.kind ?? 'custom', qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate })),
+  );
+  const base = lines.reduce((s, l) => s + Math.round(l.qty * l.unit * 100), 0);
   const isNew = !invoice.id;
 
   const save = useMutation({
     mutationFn: () => {
-      const payload = { lines: lines.filter((l) => l.label.trim()).map((l) => ({ label: l.label.trim(), kind: 'custom', qty: l.qty, unitCents: Math.round(l.unit * 100) })) };
+      const payload = {
+        lines: lines
+          .filter((l) => l.label.trim())
+          .map((l) => ({ label: l.label.trim(), kind: l.kind, qty: l.qty, unitCents: Math.round(l.unit * 100), taxRate: l.taxRate })),
+      };
       return isNew ? api.post(`/workspaces/${workspaceId}/invoices`, payload) : api.patch(`/invoices/${invoice.id}`, payload);
     },
     onSuccess: () => { toast(isNew ? 'Factura creada' : 'Factura actualizada', 'ok'); onSaved(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  const setLine = (i: number, patch: Partial<{ label: string; qty: number; unit: number }>) =>
+  const setLine = (i: number, patch: Partial<{ label: string; qty: number; unit: number; taxRate: number }>) =>
     setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
 
   return (
     <Modal open onClose={onClose} title={isNew ? 'Nueva factura a medida' : 'Editar factura'} wide>
       <div className="flex flex-col gap-2">
-        <div className="grid grid-cols-[1fr_70px_90px_90px_28px] items-center gap-2 px-1 text-[11px] font-medium text-subtle">
-          <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">Importe</span><span />
+        <div className="grid grid-cols-[1fr_70px_90px_70px_90px_28px] items-center gap-2 px-1 text-[11px] font-medium text-subtle">
+          <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA %</span><span className="text-right">Importe</span><span />
         </div>
         {lines.map((l, i) => (
-          <div key={i} className="grid grid-cols-[1fr_70px_90px_90px_28px] items-center gap-2">
+          <div key={i} className="grid grid-cols-[1fr_70px_90px_70px_90px_28px] items-center gap-2">
             <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Ej: Plan Pro (mensual)" />
             <input className="input h-9 tnum text-right" type="number" value={l.qty} min={0} onChange={(e) => setLine(i, { qty: Number(e.target.value) || 0 })} />
             <input className="input h-9 tnum text-right" type="number" value={l.unit} step="0.01" onChange={(e) => setLine(i, { unit: Number(e.target.value) || 0 })} />
+            <input className="input h-9 tnum text-right" type="number" value={l.taxRate} min={0} max={100} onChange={(e) => setLine(i, { taxRate: Number(e.target.value) || 0 })} />
             <span className="tnum text-right text-[13px]">{fmtMoney(Math.round(l.qty * l.unit * 100), invoice.currency)}</span>
             <button onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="rounded-md p-1 text-subtle hover:text-err" title="Quitar línea">
               <Trash2 size={13} />
             </button>
           </div>
         ))}
-        <button onClick={() => setLines((ls) => [...ls, { label: '', qty: 1, unit: 0 }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
+        <button onClick={() => setLines((ls) => [...ls, { label: '', kind: 'custom', qty: 1, unit: 0, taxRate: invoice.tax_rate }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
           + Añadir línea
         </button>
+        {/* La suma de las líneas es la BASE IMPONIBLE, no el total: rotularla
+            «Total» hacía creer que era el importe que se cobra. El total con IVA e
+            IRPF lo calcula el servidor al guardar. */}
         <div className="mt-3 flex items-center justify-between border-t border-line pt-3">
-          <span className="text-sm text-sub">Total</span>
-          <span className="tnum text-lg font-semibold">{fmtMoney(total, invoice.currency)}</span>
+          <span className="text-sm text-sub">Base imponible</span>
+          <span className="tnum text-lg font-semibold">{fmtMoney(base, invoice.currency)}</span>
         </div>
+        <p className="text-[11px] text-subtle">El IVA, la retención de IRPF y el total los recalcula el servidor al guardar.</p>
         <div className="mt-2 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>Cancelar</Button>
           <Button loading={save.isPending} onClick={() => save.mutate()}>{isNew ? 'Crear factura' : 'Guardar'}</Button>
@@ -1448,7 +1494,10 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
           const globalCents = prod?.price_cents ?? s.unit_cents; // PVP global de referencia
           const val = drafts[s.id] !== undefined ? drafts[s.id] : s.frozen ? String(s.unit_cents / 100) : '';
           const savePrice = () => {
-            const raw = (drafts[s.id] ?? '').trim();
+            // Se guarda lo que MUESTRA el campo (`val`), no solo el borrador: si el
+            // operador pulsaba Guardar sin tocar nada, `drafts[s.id]` estaba vacío y
+            // el precio pactado se borraba volviendo al del catálogo.
+            const raw = val.trim();
             const unitCents = raw === '' ? null : Math.max(0, Math.round((parseFloat(raw.replace(',', '.')) || 0) * 100));
             setPrice.mutate({ subId: s.id, unitCents });
             clearDraft(s.id);
@@ -1462,17 +1511,26 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
                 </div>
                 <p className="mt-0.5 text-[11px] text-subtle tnum">Global {fmtMoney(globalCents, currency)} · por {prod?.unit || 'ud'}</p>
               </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <div className="relative">
-                  <input className="input h-8 w-28 tnum pr-7" inputMode="decimal" value={val} placeholder={String(globalCents / 100)}
-                    onChange={(e) => setDrafts((prev) => ({ ...prev, [s.id]: e.target.value }))} />
-                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-subtle">{currency === 'EUR' ? '€' : currency}</span>
+              {/* Un producto por TRAMOS se tarifa siempre con su tabla de tramos:
+                  el precio por cuenta no lo aplica el motor de facturación, así que
+                  no se ofrece aquí (prometía un descuento que no se cobraría). */}
+              {prod?.billing_model === 'tiered' ? (
+                <p className="shrink-0 text-[11px] text-subtle">
+                  Precio por tramos: se edita en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>.
+                </p>
+              ) : (
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <div className="relative">
+                    <input className="input h-8 w-28 tnum pr-7" inputMode="decimal" value={val} placeholder={String(globalCents / 100)}
+                      onChange={(e) => setDrafts((prev) => ({ ...prev, [s.id]: e.target.value }))} />
+                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-subtle">{currency === 'EUR' ? '€' : currency}</span>
+                  </div>
+                  <Button size="sm" variant="ghost" loading={setPrice.isPending && setPrice.variables?.subId === s.id} onClick={savePrice}>Guardar</Button>
+                  {s.frozen && (
+                    <button className="rounded p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Volver al precio global" onClick={() => { setPrice.mutate({ subId: s.id, unitCents: null }); clearDraft(s.id); }}><Undo2 size={14} /></button>
+                  )}
                 </div>
-                <Button size="sm" variant="ghost" loading={setPrice.isPending && setPrice.variables?.subId === s.id} onClick={savePrice}>Guardar</Button>
-                {s.frozen && (
-                  <button className="rounded p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Volver al precio global" onClick={() => { setPrice.mutate({ subId: s.id, unitCents: null }); clearDraft(s.id); }}><Undo2 size={14} /></button>
-                )}
-              </div>
+              )}
             </div>
           );
         })

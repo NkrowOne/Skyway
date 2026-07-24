@@ -5,6 +5,11 @@ de ataque externa) y del flujo de despliegue, con las correcciones aplicadas y
 las recomendaciones pendientes. Alcance: todo `server/src/`, el `Dockerfile` y el
 `docker-compose.yml`.
 
+> El dominio de **clientes y facturación** (planes, catálogo, suscripciones,
+> consumo medido, facturas, IVA/IRPF, series, rectificativas, morosidad y cobro
+> por Stripe) tiene su propia auditoría, más profunda que el resumen del §2 de
+> este documento: **[AUDITORIA-FACTURACION.md](AUDITORIA-FACTURACION.md)**.
+
 **Veredicto general**: base sólida. El hashing de contraseñas, la gestión de
 sesiones, el aislamiento por proyecto y el diseño de la consola/exec (sin
 inyección de shell) están bien resueltos. Esta auditoría **corrigió** la falta de
@@ -58,16 +63,21 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   (nombre, `@login`, quién lo conectó), nunca el token.
 - **Superficie de red**: el `docker-compose` publica la UI solo en
   `127.0.0.1:4000`; el acceso público va por dominio+TLS a través de Traefik.
-- **Facturación y automatización**: las rutas de catálogo, suscripciones, cargos y
-  automatización (`/billing/automation`, `/products`, `/workspaces/:id/subscriptions`
-  y `/charges`) exigen sesión y rol **admin** (`requireAdmin`), validan el cuerpo con
-  **zod** y auditan las acciones sensibles. La **auto-emisión** de facturas es
-  *opt-in* (off por defecto): reutiliza la misma vía atómica que la emisión manual
-  (`performEmission`: congela emisor/destinatario, numera por serie/ejercicio y
-  bloquea), es idempotente y no toca facturas ya emitidas. Los productos de **pago
-  único** no pueden contratarse como suscripción recurrente (evita cobrarlos cada
-  ciclo). El endpoint valida `dunningGraceDays ≤ dunningCancelDays`. (`routes/subscriptions.ts`,
+- **Facturación y automatización** (control de acceso): las rutas de catálogo,
+  suscripciones, cargos y automatización (`/billing/automation`, `/products`,
+  `/workspaces/:id/subscriptions` y `/charges`) exigen sesión y rol **admin**
+  (`requireAdmin`), validan el cuerpo con **zod** y auditan las acciones sensibles.
+  La **auto-emisión** de facturas es *opt-in* (off por defecto): reutiliza la misma
+  vía atómica que la emisión manual (`performEmission`: congela emisor/destinatario,
+  numera por serie/ejercicio y bloquea), es idempotente y no toca facturas ya
+  emitidas. Los productos de **pago único** no pueden contratarse como suscripción
+  recurrente (evita cobrarlos cada ciclo). El endpoint valida
+  `dunningGraceDays ≤ dunningCancelDays`. (`routes/subscriptions.ts`,
   `routes/accounting.ts`, `billingauto.ts`, `billingsettings.ts`)
+  **Nota**: esto cubre la superficie de acceso, no el motor de devengo. La
+  auditoría específica del cálculo (qué se cobra, cuántas veces y a quién) está en
+  [AUDITORIA-FACTURACION.md](AUDITORIA-FACTURACION.md), que corrigió 34 defectos —
+  dos de ellos críticos— y deja 13 puntos pendientes.
 
 ---
 

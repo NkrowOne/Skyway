@@ -16,9 +16,20 @@ import {
   listSubscriptions,
   updateSubscription,
 } from '../db';
-import { PendingChargeRow, ProductRow, SubscriptionRow } from '../types';
+import { getBillingProfile } from '../company';
+import { workspacePlan } from '../quota';
+import { PendingChargeRow, ProductRow, SubscriptionRow, WorkspaceRow } from '../types';
 
 const MONEY = 100_000_00;
+
+/**
+ * Moneda de facturación de la cuenta: la de su plan o, sin plan, la del emisor.
+ * Una factura tiene una sola moneda, así que contratar un producto en otra divisa
+ * sumaría céntimos de monedas distintas sin conversión.
+ */
+function workspaceCurrency(ws: WorkspaceRow): string {
+  return (workspacePlan(ws)?.currency ?? getBillingProfile().currency).toUpperCase();
+}
 
 function publicSubscription(s: SubscriptionRow, product: ProductRow | undefined) {
   return {
@@ -95,6 +106,10 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
     if (product.billing_model === 'flat_one_off') {
       return reply.code(400).send({ error: 'Es un producto de pago único: añádelo como cargo puntual, no como suscripción (se cobraría cada ciclo).' });
     }
+    const currency = workspaceCurrency(ws);
+    if (product.currency.toUpperCase() !== currency) {
+      return reply.code(400).send({ error: `El producto está en ${product.currency.toUpperCase()} y esta cuenta factura en ${currency}. Una factura no puede mezclar monedas.` });
+    }
     const interval: SubscriptionRow['interval'] = product.interval === 'yearly' ? 'yearly' : 'monthly';
     const sub = createSubscription({
       workspace_id: id,
@@ -166,6 +181,10 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
     const product = body.productId ? getProduct(body.productId) : undefined;
     if (body.productId && (!product || product.archived)) {
       return reply.code(400).send({ error: 'Producto del catálogo no válido' });
+    }
+    const currency = workspaceCurrency(ws);
+    if (product && product.currency.toUpperCase() !== currency) {
+      return reply.code(400).send({ error: `El producto está en ${product.currency.toUpperCase()} y esta cuenta factura en ${currency}. Una factura no puede mezclar monedas.` });
     }
     // Con producto: concepto, precio e IVA salen del catálogo (editables). Sin
     // producto: cargo libre, que exige un concepto. El precio pactado por línea

@@ -99,14 +99,18 @@ export function recordGeminiUsage(workspaceId: string, model: string, usageMetad
   const t = tokensFromUsageMetadata(usageMetadata);
   const ts = Date.now();
   const meta = JSON.stringify({ model, estimated, breakdown: t });
+  // Prefijo «gw:»: el espacio de nombres de la medición interna está separado del
+  // de la ingesta por API (`routes/usage.ts`, prefijo «api:»). El id de respuesta
+  // del que deriva la clave lo ve el cliente en el propio flujo SSE, así que sin
+  // esta separación podría ocupar la clave con cantidad 0 y anular su consumo.
   const emit = (meter: string, quantity: number) => {
     if (quantity <= 0) return;
-    ingestUsageEvent({ idempotencyKey: `gemini:${requestId}:${meter}`, subjectType: 'workspace', subjectId: workspaceId, meter, quantity, productId: null, ts, metadata: meta });
+    ingestUsageEvent({ idempotencyKey: `gw:gemini:${requestId}:${meter}`, subjectType: 'workspace', subjectId: workspaceId, meter, quantity, productId: null, ts, metadata: meta });
   };
   emit('ai_tokens_in', t.in);
   emit('ai_tokens_cache_in', t.cacheIn);
   emit('ai_tokens_out', t.out);
-  ingestUsageEvent({ idempotencyKey: `gemini:${requestId}:req`, subjectType: 'workspace', subjectId: workspaceId, meter: 'ai_requests', quantity: 1, productId: null, ts, metadata: meta });
+  ingestUsageEvent({ idempotencyKey: `gw:gemini:${requestId}:req`, subjectType: 'workspace', subjectId: workspaceId, meter: 'ai_requests', quantity: 1, productId: null, ts, metadata: meta });
   return t;
 }
 

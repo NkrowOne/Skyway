@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { auditSystem } from '../audit';
+import { fireAlert, fireWorkspaceAlert } from '../alerts';
 import { noteAutoDeployBaseline } from '../autodeploy';
 import { getService, lastBuiltCommitSha } from '../db';
 import { getStripeWebhookSecret } from '../company';
@@ -105,7 +106,58 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
         const session = event.data?.object;
         const sessionId = session?.id as string | undefined;
         if (sessionId && session?.payment_status === 'paid') {
-          if (markInvoicePaidByStripeSession(sessionId)) auditSystem('invoice_paid_stripe', sessionId);
+          const outcome = markInvoicePaidByStripeSession({
+            id: sessionId,
+            client_reference_id: session.client_reference_id ?? null,
+            metadata: session.metadata ?? null,
+            amount_total: session.amount_total ?? null,
+            currency: session.currency ?? null,
+          });
+          // Un cobro que no se puede imputar a una factura NUNCA debe pasar en
+          // silencio: el dinero ya está en Stripe y alguien tiene que actuar.
+          switch (outcome.result) {
+            case 'pagada':
+              auditSystem('invoice_paid_stripe', `${outcome.invoice.number ?? outcome.invoice.id} · ${sessionId}`);
+              break;
+            case 'ya_pagada':
+              break; // reenvío del mismo evento: idempotente
+            case 'anulada':
+              auditSystem('invoice_paid_anulada', `${outcome.invoice.number ?? outcome.invoice.id} · ${sessionId}`);
+              fireWorkspaceAlert({
+                severity: 'critical',
+                workspaceId: outcome.invoice.workspace_id,
+                type: 'stripe_pago_factura_anulada',
+                title: 'Cobro sobre una factura anulada',
+                message: `Stripe ha cobrado la sesión ${sessionId} de la factura ${outcome.invoice.number ?? outcome.invoice.id}, que está ANULADA.`,
+                explanation:
+                  'Una factura anulada es un estado terminal y no se marca como pagada. Revisa el cobro en Stripe: normalmente procede devolverlo, o imputarlo a la factura que sustituyó a la anulada.',
+                dedupeKey: `stripe:anulada:${sessionId}`,
+              });
+              break;
+            case 'importe_no_cuadra':
+              auditSystem('invoice_paid_descuadre', `${outcome.invoice.number ?? outcome.invoice.id} · ${outcome.detail}`);
+              fireWorkspaceAlert({
+                severity: 'critical',
+                workspaceId: outcome.invoice.workspace_id,
+                type: 'stripe_importe_descuadrado',
+                title: 'Cobro de Stripe con importe distinto al facturado',
+                message: `Sesión ${sessionId}: ${outcome.detail}.`,
+                explanation: 'La factura NO se ha marcado como pagada. Comprueba el cobro en Stripe antes de darla por cobrada a mano.',
+                dedupeKey: `stripe:descuadre:${sessionId}`,
+              });
+              break;
+            case 'sin_factura':
+              auditSystem('invoice_paid_huerfano', sessionId);
+              fireAlert({
+                severity: 'critical',
+                type: 'stripe_pago_huerfano',
+                title: 'Cobro de Stripe sin factura asociada',
+                message: `La sesión ${sessionId} se ha cobrado pero no corresponde a ninguna factura de Skyway.`,
+                explanation: 'Puede ser un enlace de una factura borrada o un cobro ajeno a Skyway. Revísalo en el panel de Stripe.',
+                dedupeKey: `stripe:huerfano:${sessionId}`,
+              });
+              break;
+          }
         }
       }
       return { received: true };
