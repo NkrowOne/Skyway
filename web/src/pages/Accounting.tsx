@@ -205,6 +205,23 @@ const COST_TYPES = [
   { key: 'cache' as const, label: 'Caché', hint: 'contexto cacheado, más barato' },
 ];
 
+/**
+ * Precios de LISTA de Google (USD por millón de tokens) a modo de referencia para
+ * comparar con tu coste real. Orientativos y con fecha: los precios cambian y tu
+ * coste puede variar por moneda o volumen. Verifica en la web de precios de Gemini.
+ */
+const GEMINI_LIST_DATE = '2025';
+const GEMINI_LIST_USD: Record<string, { in: number; cache: number; out: number }> = {
+  'gemini-2.5-pro': { in: 1.25, cache: 0.31, out: 10 },
+  'gemini-2.5-flash': { in: 0.3, cache: 0.075, out: 2.5 },
+  'gemini-2.5-flash-lite': { in: 0.1, cache: 0.025, out: 0.4 },
+  'gemini-2.0-flash': { in: 0.1, cache: 0.025, out: 0.4 },
+  'gemini-2.0-flash-lite': { in: 0.075, cache: 0, out: 0.3 },
+  'gemini-1.5-pro': { in: 1.25, cache: 0.3125, out: 5 },
+  'gemini-1.5-flash': { in: 0.075, cache: 0.01875, out: 0.3 },
+};
+const usdM = (n: number) => n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+
 function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -262,6 +279,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
           const priceOut = priceOf(costOut, margin);
           const profitOut = priceOut != null ? priceOut - costOut : null;
           const costFrac = priceOut && priceOut > 0 ? Math.min(1, costOut / priceOut) : 1;
+          const ref = GEMINI_LIST_USD[model];
           return (
             <div key={model} className="rounded-xl border border-line bg-bg/40 p-4">
               {/* Cabecera: modelo + beneficio como cifra protagonista. */}
@@ -316,6 +334,15 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                 })}
               </div>
 
+              {/* Precio de lista de Google (referencia en USD) para comparar con tu coste. */}
+              {ref && (
+                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-subtle">
+                  <span className="uppercase tracking-wide">Lista Google · $/M</span>
+                  <span className="tnum">entrada {usdM(ref.in)} · caché {usdM(ref.cache)} · salida {usdM(ref.out)}</span>
+                  <button className="text-acc-soft hover:underline" title="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" onClick={() => setDraft(model, { in: String(ref.in), cache: String(ref.cache), out: String(ref.out) })}>usar</button>
+                </div>
+              )}
+
               <div className="mt-3 flex items-center justify-end gap-1 border-t border-line/60 pt-3">
                 {existing && <button className="mr-auto rounded p-1.5 text-subtle hover:text-err" title="Restablecer este modelo" onClick={() => del.mutate(model)}><Trash2 size={13} /></button>}
                 <Button size="sm" onClick={() => save.mutate(model)} loading={save.isPending && save.variables === model}>Guardar</Button>
@@ -324,6 +351,9 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
           );
         })}
       </div>
+      <p className="mt-3 text-[11px] text-subtle">
+        «Lista Google» son precios de lista orientativos (USD, ref. {GEMINI_LIST_DATE}) para comparar; tu coste real puede variar por moneda y volumen. Consulta el precio vigente en <a href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank" rel="noopener noreferrer" className="text-acc-soft hover:underline">ai.google.dev</a>.
+      </p>
     </section>
   );
 }
