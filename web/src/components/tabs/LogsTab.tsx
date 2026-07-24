@@ -160,6 +160,7 @@ export default function LogsTab({ serviceId, replicas = 1 }: { serviceId: string
       <LogViewer
         lines={lines}
         toolbar
+        tailAnchor
         title="Logs en vivo"
         replicas={replicas}
         statusNote={notice}

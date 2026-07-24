@@ -157,6 +157,7 @@ export default function LogViewer({
   reachedStart = false,
   onDownload,
   onFollowChange,
+  tailAnchor = false,
 }: {
   lines: string[];
   className?: string;
@@ -181,6 +182,9 @@ export default function LogViewer({
   onDownload?: () => void;
   /** Notifica al contenedor si el visor sigue el final (para su política de recorte). */
   onFollowChange?: (follow: boolean) => void;
+  /** Ancla el contenido al fondo cuando aún no llena la vista: el registro más
+   *  nuevo queda abajo del todo (estilo terminal). Para los logs en vivo. */
+  tailAnchor?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -598,6 +602,9 @@ export default function LogViewer({
           aria-live="off"
           aria-label="Salida de registro"
         >
+          {/* Ancla al fondo: con pocas líneas, el registro más nuevo queda abajo del
+              todo (estilo terminal); con muchas, desborda y scrollea con normalidad. */}
+          <div className={cx(tailAnchor && 'flex min-h-full flex-col justify-end')}>
           {onLoadOlder && (loadingOlder || canLoadOlder || reachedStart) && (
             <div className="flex items-center justify-center gap-2 border-b border-line/60 px-3 py-2 text-[11px] text-subtle">
               {loadingOlder ? (
@@ -633,6 +640,7 @@ export default function LogViewer({
               </div>
             ))
           )}
+          </div>
         </div>
 
         {/* El estado del flujo (En vivo / Seguir el final) vive en la barra de
