@@ -58,6 +58,16 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   (nombre, `@login`, quién lo conectó), nunca el token.
 - **Superficie de red**: el `docker-compose` publica la UI solo en
   `127.0.0.1:4000`; el acceso público va por dominio+TLS a través de Traefik.
+- **Facturación y automatización**: las rutas de catálogo, suscripciones, cargos y
+  automatización (`/billing/automation`, `/products`, `/workspaces/:id/subscriptions`
+  y `/charges`) exigen sesión y rol **admin** (`requireAdmin`), validan el cuerpo con
+  **zod** y auditan las acciones sensibles. La **auto-emisión** de facturas es
+  *opt-in* (off por defecto): reutiliza la misma vía atómica que la emisión manual
+  (`performEmission`: congela emisor/destinatario, numera por serie/ejercicio y
+  bloquea), es idempotente y no toca facturas ya emitidas. Los productos de **pago
+  único** no pueden contratarse como suscripción recurrente (evita cobrarlos cada
+  ciclo). El endpoint valida `dunningGraceDays ≤ dunningCancelDays`. (`routes/subscriptions.ts`,
+  `routes/accounting.ts`, `billingauto.ts`, `billingsettings.ts`)
 
 ---
 

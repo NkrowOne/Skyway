@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { getSetting, listAllInvoices, setSetting } from '../db';
+import { getBillingAutomation, setBillingAutomation } from '../billingsettings';
 import {
   getBillingProfile,
   getStripePublishableKey,
@@ -108,6 +109,29 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
     if (body.stripePublishableKey !== undefined) setSetting('stripePublishableKey', body.stripePublishableKey || null);
     audit(req, 'billing_profile_updated', { type: 'system', id: 'billing' });
     return { ok: true, profile: next };
+  });
+
+  // Automatización de la facturación: generación/emisión automática del ciclo y
+  // umbrales de morosidad (los honra el scheduler en `billingauto.ts`).
+  app.get('/api/billing/automation', async () => ({ automation: getBillingAutomation() }));
+
+  app.put('/api/billing/automation', async (req, reply) => {
+    const body = z
+      .object({
+        autoGenerate: z.boolean().optional(),
+        autoIssue: z.boolean().optional(),
+        dunningGraceDays: z.coerce.number().int().min(0).max(365).optional(),
+        dunningCancelDays: z.coerce.number().int().min(0).max(365).optional(),
+      })
+      .parse(req.body ?? {});
+    // La cancelación nunca puede preceder a la suspensión: se validan los valores ya fusionados.
+    const merged = { ...getBillingAutomation(), ...body };
+    if (merged.dunningCancelDays < merged.dunningGraceDays) {
+      return reply.code(400).send({ error: 'Los días para cancelar deben ser ≥ los días para suspender.' });
+    }
+    const automation = setBillingAutomation(body);
+    audit(req, 'billing_automation_updated', { type: 'system', id: 'billing', detail: `auto-emisión ${automation.autoIssue ? 'on' : 'off'}` });
+    return { ok: true, automation };
   });
 
   // Resumen de contabilidad de la empresa: totales, serie mensual y por cliente.

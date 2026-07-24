@@ -330,6 +330,18 @@ export function markInvoicePaidByStripeSession(sessionId: string): boolean {
 }
 
 /**
+ * Emite (numera y bloquea) un borrador. La usa la facturación automática cuando el
+ * operador activa la auto-emisión; idempotente (si ya está emitida, la devuelve).
+ * Devuelve null si la factura no existe.
+ */
+export function issueInvoice(invoiceId: string): InvoiceRow | null {
+  const inv = getInvoice(invoiceId);
+  if (!inv) return null;
+  if (inv.status !== 'draft') return inv;
+  return performEmission(inv, 'issued');
+}
+
+/**
  * Ensambla el borrador de factura del ciclo actual del workspace: plan +
  * suscripciones activas (recurrentes, por uso medido y por tramos) + cargos
  * puntuales pendientes. Queda en DRAFT (no emite). Lo usan la ruta manual

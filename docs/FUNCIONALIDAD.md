@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.22.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.23.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -33,6 +33,7 @@ server/src/
   aigateway.ts          gateway de IA: config (clave de Gemini del operador, modelos), medición de tokens,
                         streaming SSE, API compatible con OpenAI y coste/margen por modelo
   billingauto.ts        automatización: corte por impago (dunning), reactivación y factura automática del ciclo
+  billingsettings.ts    ajustes de automatización (auto-generar/auto-emitir el ciclo, umbrales de morosidad)
   security.ts           escáner de seguridad (hallazgos + nota)
   variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}
   templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio)
@@ -437,6 +438,7 @@ booleanos, igual que el token de GitHub).
 | --- | --- | --- | --- |
 | GET | `/billing/profile` | admin | perfil fiscal del emisor (IVA/IRPF por defecto, modo Verifactu) + estado de Stripe (claves como booleanos) |
 | PUT | `/billing/profile` | admin | actualiza el perfil fiscal (incl. `defaultIrpfRate`, `sifMode`); las claves de Stripe se guardan solo si se envían (`''` las borra) |
+| GET·PUT | `/billing/automation` | admin | automatización: `autoGenerate` (generar el borrador del ciclo), `autoIssue` (emitirlo automáticamente; opt-in, off por defecto) y umbrales de morosidad (`dunningGraceDays` ≤ `dunningCancelDays`) |
 | GET | `/accounting/summary?months=` | admin | totales (facturado/cobrado/pendiente/borrador/anulado), serie mensual de ingresos y desglose por cliente |
 | GET | `/accounting/invoices?status=` | admin | todas las facturas de todos los clientes (nº, tipo, NIF, base, IVA, IRPF) |
 | GET | `/accounting/export.csv` | admin | libro registro de facturas emitidas en CSV (nº, tipo, NIF receptor, base, IVA, IRPF, total; guardas anti-inyección de fórmulas) |
@@ -454,10 +456,10 @@ ciclo (`/invoices/generate`).
 | PATCH | `/products/:id` | admin | edita un producto y sus tramos |
 | DELETE | `/products/:id` | admin | borra el producto; si está contratado se **archiva** (conserva el histórico) |
 | GET | `/workspaces/:id/subscriptions` | manage | suscripciones y cargos pendientes de la cuenta |
-| POST | `/workspaces/:id/subscriptions` | admin | suscribe la cuenta a un producto (`{productId, qty?, unitCents?}`) |
+| POST | `/workspaces/:id/subscriptions` | admin | suscribe la cuenta a un producto recurrente/por uso (`{productId, qty?, unitCents?}`); **rechaza los de pago único** (`flat_one_off`), que se añaden como cargo |
 | PATCH | `/subscriptions/:subId` | admin | cambia cantidad/precio/estado (pausar, cancelar) |
 | DELETE | `/subscriptions/:subId` | admin | elimina la suscripción |
-| POST | `/workspaces/:id/charges` | admin | añade un cargo puntual al próximo ciclo (`{label, qty, unitCents, taxRate?}`) |
+| POST | `/workspaces/:id/charges` | admin | añade un pago único al próximo ciclo (`{label?, qty?, unitCents?, taxRate?, productId?}`); con `productId` de catálogo autocompleta concepto, precio e IVA (una sola vez, no recurrente) |
 | DELETE | `/charges/:chargeId` | admin | cancela un cargo puntual pendiente |
 | POST | `/usage` | +access | ingesta idempotente de consumo IA/lógico (`{idempotencyKey, subjectType, subjectId, meter, quantity, ts?}`); exige acceso al workspace del sujeto |
 
@@ -493,10 +495,15 @@ inmediato y reversible: se hace sobre la clave de Skyway, sin tocar Google.
 | PUT·DELETE | `/ai/gateway/prices/:model` | admin | fija/borra coste (€/M: entrada, cache, salida) y `marginPct` (margen objetivo s/ venta) de un modelo |
 | GET | `/workspaces/:id/alerts` | manage | avisos de la cuenta (facturación, uso, morosidad) |
 
-**Automatización (scheduler, bucle de 10 min → `billingauto.ts`).** En el día de
+**Automatización (scheduler, bucle de 10 min → `billingauto.ts`, ajustes en
+`billingsettings.ts`).** Si `autoGenerate` está activo (por defecto), en el día de
 facturación de cada cuenta se **genera el borrador** del ciclo completo anterior
-(idempotente por `(workspace, period_start)`; no emite —eso lo confirma un humano—).
-Después se evalúa la **morosidad**: una factura emitida y no cobrada pasa a
+(idempotente por `(workspace, period_start)`). Por defecto **no se emite** —la emisión
+es un acto legal irreversible y la confirma un humano—; si el operador activa
+`autoIssue` (opt-in, off por defecto) el borrador se **emite** solo (número de serie +
+bloqueo) y se avisa por alerta. Todo es configurable desde Contabilidad →
+«Automatización de facturación». Después se evalúa la **morosidad**: una factura
+emitida y no cobrada pasa a
 vencida a los `paymentTermsDays`, dispara recordatorio, y a los `dunningGraceDays`
 **suspende** las claves de IA y pausa las suscripciones (alerta crítica), y a los
 `dunningCancelDays` las **revoca**/cancela. Todo es idempotente (solo avanza de

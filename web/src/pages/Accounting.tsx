@@ -1,10 +1,10 @@
 import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Building2, Coins, CreditCard, Download, Landmark, Receipt, Sparkles, Trash2 } from 'lucide-react';
+import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, Sparkles, Trash2, Zap } from 'lucide-react';
 import { api } from '../api';
 import { Button, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { RevenueBars } from '../components/BillingCharts';
-import { AccountingInvoice, AccountingSummary, AiGatewayConfig, AiModelPrices, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
+import { AccountingInvoice, AccountingSummary, AiGatewayConfig, AiModelPrices, BillingAutomation, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
 import { cx, fmtDate, fmtMoney } from '../utils';
 
 const INV_TONE: Record<string, 'neutral' | 'info' | 'ok' | 'warn'> = { draft: 'neutral', issued: 'info', paid: 'ok', void: 'warn' };
@@ -141,9 +141,113 @@ export default function AccountingPage() {
       </div>
 
       <div className="mt-5">
+        <BillingAutomationSettings />
+      </div>
+
+      <div className="mt-5">
         <AiGatewaySettings />
       </div>
     </div>
+  );
+}
+
+/** Interruptor accesible y compacto, en el estilo del panel. */
+function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={cx(
+        'relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acc',
+        checked ? 'bg-acc' : 'bg-surface2',
+        disabled && 'cursor-not-allowed opacity-50',
+      )}
+    >
+      <span className={cx('inline-block h-[16px] w-[16px] rounded-full bg-white shadow transition-transform duration-200', checked ? 'translate-x-[19px]' : 'translate-x-[3px]')} />
+    </button>
+  );
+}
+
+/**
+ * Automatización de la facturación: cuánto hace Skyway solo (generar el borrador
+ * del ciclo, emitirlo) y la política de morosidad. Explicativo a propósito: cada
+ * opción dice qué pasa y cuándo. Los valores por defecto son seguros (genera pero
+ * no emite sin intervención).
+ */
+function BillingAutomationSettings() {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const q = useQuery({ queryKey: ['billing-automation'], queryFn: () => api.get<{ automation: BillingAutomation }>('/billing/automation') });
+  const profile = useQuery({ queryKey: ['billing-profile'], queryFn: () => api.get<BillingProfileResponse>('/billing/profile') });
+  const [draft, setDraft] = useState<BillingAutomation | null>(null);
+  if (q.data && !draft) setDraft(q.data.automation);
+
+  const save = useMutation({
+    mutationFn: () => api.put('/billing/automation', draft),
+    onSuccess: () => { toast('Automatización guardada', 'ok'); queryClient.invalidateQueries({ queryKey: ['billing-automation'] }); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  if (!draft) return <Skeleton className="h-72 w-full" />;
+  const set = (patch: Partial<BillingAutomation>) => setDraft((d) => (d ? { ...d, ...patch } : d));
+  const terms = profile.data?.profile.paymentTermsDays ?? 30;
+  const invalid = draft.dunningCancelDays < draft.dunningGraceDays;
+
+  return (
+    <section className="card p-5">
+      <h2 className="flex items-center gap-2 text-sm font-semibold"><CalendarClock size={15} className="text-acc-soft" /> Automatización de facturación</h2>
+      <p className="mt-1 max-w-2xl text-xs text-subtle">
+        Skyway lleva la facturación recurrente por ti. Aquí decides cuánto hace solo —desde preparar el borrador hasta emitirlo— y qué ocurre cuando un cliente no paga. El scheduler lo revisa cada 10 minutos.
+      </p>
+
+      <div className="mt-4 flex flex-col divide-y divide-line rounded-xl border border-line">
+        <div className="flex items-start justify-between gap-4 p-3.5">
+          <div className="min-w-0">
+            <p className="flex items-center gap-2 text-[13px] font-medium"><CalendarClock size={14} className="text-subtle" /> Generar el borrador del ciclo automáticamente</p>
+            <p className="mt-1 text-[12px] text-subtle">En el día de facturación de cada cuenta, Skyway reúne el plan, las suscripciones, el uso medido y los pagos únicos pendientes en un borrador de factura (no lo emite).</p>
+          </div>
+          <Toggle checked={draft.autoGenerate} onChange={(v) => set({ autoGenerate: v })} />
+        </div>
+        <div className={cx('flex items-start justify-between gap-4 p-3.5', !draft.autoGenerate && 'opacity-60')}>
+          <div className="min-w-0">
+            <p className="flex items-center gap-2 text-[13px] font-medium"><Zap size={14} className="text-warn" /> Emitir la factura automáticamente</p>
+            <p className="mt-1 text-[12px] text-subtle">Además de generarla, la <b>emite</b>: le asigna número de serie y la bloquea (inmutable). La emisión es un acto legal irreversible; actívalo solo si quieres que cada ciclo se numere y emita sin revisión previa. Apagado: revisas el borrador y lo emites tú.</p>
+          </div>
+          <Toggle checked={draft.autoIssue} disabled={!draft.autoGenerate} onChange={(v) => set({ autoIssue: v })} />
+        </div>
+      </div>
+
+      <h3 className="mt-5 flex items-center gap-2 text-[13px] font-medium"><Ban size={14} className="text-err" /> Impago (corte progresivo)</h3>
+      <p className="mt-1 text-[12px] text-subtle">
+        Una factura emitida y no cobrada vence a los <b className="tnum text-sub">{terms}</b> días (condiciones de pago, en «Datos de la empresa»). Contando desde ese vencimiento:
+      </p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <Field label="Días para suspender el servicio" hint="suspende las claves de IA y pausa las suscripciones; reversible al pagar">
+          <input className="input tnum" type="number" min={0} max={365} value={draft.dunningGraceDays} onChange={(e) => set({ dunningGraceDays: Number(e.target.value) || 0 })} />
+        </Field>
+        <Field label="Días para cancelar la cuenta" hint="revoca las claves y cancela las suscripciones; requiere alta manual">
+          <input className={cx('input tnum', invalid && 'border-err')} type="number" min={0} max={365} value={draft.dunningCancelDays} onChange={(e) => set({ dunningCancelDays: Number(e.target.value) || 0 })} />
+        </Field>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-subtle">
+        <span className="rounded bg-surface2 px-2 py-0.5">Vence a +{terms}d</span>
+        <span className="text-line">→</span>
+        <span className="rounded bg-warn/[.15] px-2 py-0.5 text-warn">Aviso al vencer</span>
+        <span className="text-line">→</span>
+        <span className="rounded bg-warn/[.15] px-2 py-0.5 text-warn">Suspensión +{draft.dunningGraceDays}d</span>
+        <span className="text-line">→</span>
+        <span className="rounded bg-err/[.15] px-2 py-0.5 text-err">Cancelación +{draft.dunningCancelDays}d</span>
+      </div>
+      {invalid && <p className="mt-2 text-[12px] text-err">Los días para cancelar deben ser ≥ los días para suspender.</p>}
+
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <p className="text-[11px] text-subtle">Al cobrarse una factura vencida, el servicio se reactiva solo (salvo cuentas ya canceladas, que requieren alta manual).</p>
+        <Button size="sm" onClick={() => save.mutate()} loading={save.isPending} disabled={invalid}>Guardar</Button>
+      </div>
+    </section>
   );
 }
 

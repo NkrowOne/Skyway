@@ -397,6 +397,13 @@ export interface BillingProfileResponse {
   invoiceSeq: number;
 }
 
+export interface BillingAutomation {
+  autoGenerate: boolean;
+  autoIssue: boolean;
+  dunningGraceDays: number;
+  dunningCancelDays: number;
+}
+
 // ---------- catálogo multimodular ----------
 
 export type ProductCategory = 'web' | 'ia' | 'app' | 'hosting' | 'bbdd' | 'dominio' | 'soporte' | 'custom';
