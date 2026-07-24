@@ -454,10 +454,15 @@ export default function LogViewer({
               </span>
             )}
             <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-subtle">
-              <span
-                className={cx('h-[6px] w-[6px] rounded-full', follow ? 'pulse-soft bg-ok' : 'bg-subtle')}
-                title={follow ? 'En vivo' : 'En pausa (has subido)'}
-              />
+              {/* Sin barra de indicaciones (consola sin `toolbar`), el punto vivo/pausa
+                  vive aquí; con `toolbar`, el estado del flujo lo lleva el pie —evita
+                  duplicar el indicador. */}
+              {!toolbar && (
+                <span
+                  className={cx('h-[6px] w-[6px] rounded-full', follow ? 'pulse-soft bg-ok' : 'bg-subtle')}
+                  title={follow ? 'En vivo' : 'En pausa (has subido)'}
+                />
+              )}
               <span className="tnum">{NF.format(rows.length)}</span>
               <span className="hidden sm:inline">líneas</span>
               {replicas > 1 && <span className="hidden text-subtle sm:inline">· réplica 1/{replicas}</span>}
@@ -535,22 +540,42 @@ export default function LogViewer({
       )}
 
       {toolbar && (
-        <p className="flex shrink-0 flex-wrap items-center gap-x-2 border-b border-line bg-term2 px-3 py-1.5 text-[11px] text-subtle">
-          {statusNote ? (
-            <span className="text-warn">{statusNote}</span>
+        <div className="flex shrink-0 items-center gap-2.5 border-b border-line bg-term2 px-3 py-2 text-[11px] text-subtle">
+          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+            {statusNote ? (
+              <span className="text-warn">{statusNote}</span>
+            ) : (
+              <>
+                <span>
+                  <span className="tnum text-sub">{NF.format(visible.length)}</span>
+                  {filtering ? ` de ${NF.format(rows.length)} líneas` : ' líneas'}
+                </span>
+                <span className="text-line">·</span>
+                <span>
+                  <span className="text-err">error</span> y <span className="text-warn">warn</span> resaltados
+                </span>
+              </>
+            )}
+          </span>
+          {/* Estado del flujo. Antes flotaba sobre los logs y los tapaba; ahora se
+              ancla al pie de las indicaciones, como cierre de la barra: «En vivo»
+              mientras se sigue el final; si el usuario ha subido a leer, un botón
+              sobrio para reengancharse. */}
+          {follow ? (
+            <span className="badge-in inline-flex shrink-0 items-center gap-1.5 rounded-full border border-ok/25 bg-[color-mix(in_oklab,var(--color-ok)_12%,var(--color-term2))] px-2.5 py-1 font-medium text-ok">
+              <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-current" />
+              En vivo
+            </span>
           ) : (
-            <>
-              <span>
-                <span className="tnum text-sub">{NF.format(visible.length)}</span>
-                {filtering ? ` de ${NF.format(rows.length)} líneas` : ' líneas'}
-              </span>
-              <span className="text-line">·</span>
-              <span>
-                <span className="text-err">error</span> y <span className="text-warn">warn</span> resaltados
-              </span>
-            </>
+            <button
+              type="button"
+              onClick={() => jump('bottom')}
+              className="press badge-in inline-flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface2 px-2.5 py-1 font-medium text-sub hover:text-txt"
+            >
+              <ArrowDownToLine size={12} /> Seguir el final
+            </button>
           )}
-        </p>
+        </div>
       )}
 
       <div className={cx('relative min-h-0', showChrome || toolbar ? 'flex-1' : 'h-full')}>
@@ -558,9 +583,12 @@ export default function LogViewer({
           ref={ref}
           onScroll={onScroll}
           className={cx(
+            // log-body: capa de composición propia + aislamiento de pintado, para que
+            // el scroll de un panel ANCESTRO (o la barra de URL del móvil) traslade la
+            // capa en vez de repintar miles de filas (lo que congelaba la página).
             // overscroll-contain: al llegar al borde, el scroll no salta al panel
             // de detrás (en móvil eso «atrapaba» el gesto y parecía un bloqueo).
-            'h-full overscroll-contain font-mono text-[12.5px] leading-[1.65] text-txt/90',
+            'log-body h-full overscroll-contain font-mono text-[12.5px] leading-[1.65] text-txt/90',
             maximized && 'text-[13px] leading-[1.7]',
             wrap ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto',
           )}
@@ -607,22 +635,18 @@ export default function LogViewer({
           )}
         </div>
 
-        {follow
-          ? (toolbar || maximized) && (
-              <span className="badge-in pointer-events-none absolute bottom-2.5 right-3 inline-flex items-center gap-[5px] rounded-full border border-ok/35 bg-[color-mix(in_oklab,var(--color-ok)_16%,var(--color-term))] px-2.5 py-[3px] text-[11px] font-medium text-ok shadow-lvl1">
-                <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-current" />
-                En vivo
-              </span>
-            )
-          : (
-            <button
-              type="button"
-              onClick={() => jump('bottom')}
-              className="badge-in press absolute bottom-2.5 right-3 inline-flex items-center gap-1 rounded-full border border-line bg-surface2 px-3 py-1 text-xs text-sub shadow-lvl1 hover:text-txt"
-            >
-              <ArrowDownToLine size={12} /> Seguir el final
-            </button>
-          )}
+        {/* El estado del flujo (En vivo / Seguir el final) vive en la barra de
+            indicaciones cuando hay `toolbar`, para no tapar los logs. Sin esa barra
+            (consola mínima) se conserva aquí el botón flotante para reengancharse. */}
+        {!toolbar && !follow && (
+          <button
+            type="button"
+            onClick={() => jump('bottom')}
+            className="badge-in press absolute bottom-2.5 right-3 inline-flex items-center gap-1 rounded-full border border-line bg-surface2 px-3 py-1 text-xs text-sub shadow-lvl1 hover:text-txt"
+          >
+            <ArrowDownToLine size={12} /> Seguir el final
+          </button>
+        )}
       </div>
     </section>
   );

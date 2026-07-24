@@ -528,6 +528,17 @@ details[open] > .details-body {
    * ya pintado, para que la barra de scroll no salte al reaparecer el bloque. */
   contain-intrinsic-size: auto calc(var(--rows, 64) * var(--log-line-h, 21px));
 }
+/*
+ * El cuerpo del log es su PROPIA capa de composición y aísla su pintado/maquetado.
+ * Así, cuando el usuario arrastra FUERA del log —el scroll de un panel ancestro o
+ * el mostrar/ocultar la barra de URL del móvil mueve la vista— el navegador solo
+ * traslada la capa, en vez de reevaluar y repintar los miles de bloques del buffer.
+ * Ese repintado era lo que dejaba la página sin responder unos segundos en el móvil.
+ */
+.log-body {
+  contain: content;
+  transform: translateZ(0);
+}
 /* Canalón de numeración: se queda pegado a la izquierda al hacer scroll horizontal. */
 .log-gutter {
   position: sticky;
