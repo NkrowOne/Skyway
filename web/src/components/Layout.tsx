@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import {
@@ -27,7 +27,7 @@ import { api } from '../api';
 import { isEditableTarget, usePresence } from '../hooks';
 import { Alert, Me, Project, Service, SystemInfo } from '../types';
 import { cx, fmtBytes, SEVERITY_TONE, timeAgo } from '../utils';
-import { Kbd, StatusBadge } from './ui';
+import { Kbd, Spinner, StatusBadge } from './ui';
 
 /** Logo de Skyway: chip con gradiente de marca. */
 export function BrandMark({ size = 28, iconSize = 15, radius = 8 }: { size?: number; iconSize?: number; radius?: number }) {
@@ -855,7 +855,9 @@ export default function Layout() {
             `h-full` de esas páginas no resolvía y sus paneles internos no scrolleaban.
             Las páginas de documento desbordan hacia el scroll de <main> igual que antes. */}
         <div key={location.pathname} className="page-in h-full">
-          <Outlet />
+          <Suspense fallback={<div className="flex h-full items-center justify-center"><Spinner /></div>}>
+            <Outlet />
+          </Suspense>
         </div>
       </main>
 

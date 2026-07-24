@@ -1,26 +1,36 @@
+import { lazy, Suspense } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { api } from './api';
 import { Spinner } from './components/ui';
 import Layout from './components/Layout';
-import AccountPage from './pages/Account';
-import AlertsPage from './pages/Alerts';
-import Dashboard from './pages/Dashboard';
-import Login from './pages/Login';
-import MonitorPage from './pages/Monitor';
-import ProjectPage from './pages/Project';
-import PublicStatusPage from './pages/PublicStatus';
-import SecurityPage from './pages/Security';
-import SettingsPage from './pages/Settings';
-import Setup from './pages/Setup';
-import SitesPage from './pages/Sites';
-import UsersPage from './pages/Users';
-import WorkspacesPage from './pages/Workspaces';
-import WorkspacePage from './pages/Workspace';
-import PlansPage from './pages/Plans';
-import CatalogPage from './pages/Catalog';
-import AccountingPage from './pages/Accounting';
 import { Me } from './types';
+
+// Carga diferida por ruta: el arranque solo trae el marco (Layout) y cada página
+// llega en su propio chunk al visitarla. Reduce mucho el bundle inicial.
+const AccountPage = lazy(() => import('./pages/Account'));
+const AlertsPage = lazy(() => import('./pages/Alerts'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Login = lazy(() => import('./pages/Login'));
+const MonitorPage = lazy(() => import('./pages/Monitor'));
+const ProjectPage = lazy(() => import('./pages/Project'));
+const PublicStatusPage = lazy(() => import('./pages/PublicStatus'));
+const SecurityPage = lazy(() => import('./pages/Security'));
+const SettingsPage = lazy(() => import('./pages/Settings'));
+const Setup = lazy(() => import('./pages/Setup'));
+const SitesPage = lazy(() => import('./pages/Sites'));
+const UsersPage = lazy(() => import('./pages/Users'));
+const WorkspacesPage = lazy(() => import('./pages/Workspaces'));
+const WorkspacePage = lazy(() => import('./pages/Workspace'));
+const PlansPage = lazy(() => import('./pages/Plans'));
+const CatalogPage = lazy(() => import('./pages/Catalog'));
+const AccountingPage = lazy(() => import('./pages/Accounting'));
+
+const pageFallback = (
+  <div className="flex h-full items-center justify-center">
+    <Spinner />
+  </div>
+);
 
 export default function App() {
   const location = useLocation();
@@ -35,11 +45,13 @@ export default function App() {
 
   if (isPublic) {
     return (
-      <Routes>
-        <Route path="/status/:token" element={<PublicStatusPage />} />
-        {/* /status/ sin token: al panel (que pedirá login si toca). */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <Suspense fallback={pageFallback}>
+        <Routes>
+          <Route path="/status/:token" element={<PublicStatusPage />} />
+          {/* /status/ sin token: al panel (que pedirá login si toca). */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
     );
   }
 
@@ -67,35 +79,37 @@ export default function App() {
   if (user && (location.pathname === '/login' || location.pathname === '/setup')) return <Navigate to="/" replace />;
 
   return (
-    <Routes>
-      <Route path="/setup" element={<Setup />} />
-      <Route path="/login" element={<Login />} />
-      <Route element={<Layout />}>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/projects/:projectId" element={<ProjectPage />} />
-        <Route path="/monitor" element={<MonitorPage />} />
-        <Route path="/sites" element={<SitesPage />} />
-        <Route path="/account" element={<AccountPage />} />
-        <Route path="/alerts" element={<AlertsPage />} />
-        {/* Cuentas de cliente: admin (todas) y propietario (la suya). */}
-        {(user?.role === 'admin' || user?.role === 'owner') && (
-          <>
-            <Route path="/workspaces" element={<WorkspacesPage />} />
-            <Route path="/workspaces/:id" element={<WorkspacePage />} />
-          </>
-        )}
-        {user?.role === 'admin' && (
-          <>
-            <Route path="/plans" element={<PlansPage />} />
-            <Route path="/catalog" element={<CatalogPage />} />
-            <Route path="/accounting" element={<AccountingPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/security" element={<SecurityPage />} />
-            <Route path="/users" element={<UsersPage />} />
-          </>
-        )}
-      </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <Suspense fallback={pageFallback}>
+      <Routes>
+        <Route path="/setup" element={<Setup />} />
+        <Route path="/login" element={<Login />} />
+        <Route element={<Layout />}>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/projects/:projectId" element={<ProjectPage />} />
+          <Route path="/monitor" element={<MonitorPage />} />
+          <Route path="/sites" element={<SitesPage />} />
+          <Route path="/account" element={<AccountPage />} />
+          <Route path="/alerts" element={<AlertsPage />} />
+          {/* Cuentas de cliente: admin (todas) y propietario (la suya). */}
+          {(user?.role === 'admin' || user?.role === 'owner') && (
+            <>
+              <Route path="/workspaces" element={<WorkspacesPage />} />
+              <Route path="/workspaces/:id" element={<WorkspacePage />} />
+            </>
+          )}
+          {user?.role === 'admin' && (
+            <>
+              <Route path="/plans" element={<PlansPage />} />
+              <Route path="/catalog" element={<CatalogPage />} />
+              <Route path="/accounting" element={<AccountingPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/security" element={<SecurityPage />} />
+              <Route path="/users" element={<UsersPage />} />
+            </>
+          )}
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   );
 }
