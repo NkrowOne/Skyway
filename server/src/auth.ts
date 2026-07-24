@@ -2,7 +2,9 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from './config';
-import { getApiTokenByHash, getSetting, getUser, setSetting, touchApiToken, userHasProject } from './db';
+import { getApiTokenByHash, getProject, getService, getSetting, getUser, setSetting, touchApiToken, userHasProject } from './db';
+import { MODULE_LABEL, ModuleKey } from './modules';
+import { moduleEnabled, workspaceOfProject, workspacePlan } from './quota';
 import { UserRow } from './types';
 import { randomToken } from './util';
 
@@ -200,8 +202,40 @@ export async function requireAdmin(req: FastifyRequest, reply: FastifyReply): Pr
   }
 }
 
+/**
+ * preHandler que exige poder gestionar algún workspace: administrador de
+ * plataforma o propietario de un workspace. Corta a los miembros de entrada;
+ * el acceso al workspace concreto se comprueba después con assertWorkspaceAccess.
+ */
+export async function requireManager(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  const user = currentUser(req);
+  if (!user) {
+    reply.code(401).send({ error: 'No autenticado' });
+    return;
+  }
+  if (user.role !== 'admin' && !(user.role === 'owner' && user.workspace_id)) {
+    reply.code(403).send({ error: 'Requiere ser administrador o propietario de un workspace' });
+  }
+}
+
+export function isPlatformAdmin(user: UserRow): boolean {
+  return user.role === 'admin';
+}
+
+/** El usuario administra el workspace: admin de plataforma o su propietario. */
+export function canManageWorkspace(user: UserRow, workspaceId: string): boolean {
+  return user.role === 'admin' || (user.role === 'owner' && user.workspace_id === workspaceId);
+}
+
 export function canAccessProject(user: UserRow, projectId: string): boolean {
-  return user.role === 'admin' || userHasProject(user.id, projectId);
+  if (user.role === 'admin') return true;
+  // Un propietario ve y opera todos los proyectos de su workspace.
+  if (user.role === 'owner' && user.workspace_id) {
+    const project = getProject(projectId);
+    if (project && project.workspace_id === user.workspace_id) return true;
+  }
+  // Un miembro accede a los proyectos que se le han asignado.
+  return userHasProject(user.id, projectId);
 }
 
 /**
@@ -213,4 +247,53 @@ export function assertProjectAccess(req: FastifyRequest, reply: FastifyReply, pr
   if (canAccessProject(user, projectId)) return true;
   reply.code(403).send({ error: 'No tienes acceso a este workspace' });
   return false;
+}
+
+/**
+ * Comprueba que el usuario puede GESTIONAR el proyecto (estructura: renombrar,
+ * borrar, página de estado): administrador o propietario del workspace del
+ * proyecto. Los miembros pueden operar servicios pero no la estructura.
+ */
+export function assertProjectManage(req: FastifyRequest, reply: FastifyReply, projectId: string): boolean {
+  const user = currentUser(req)!;
+  if (user.role === 'admin') return true;
+  if (user.role === 'owner' && user.workspace_id) {
+    const project = getProject(projectId);
+    if (project && project.workspace_id === user.workspace_id) return true;
+  }
+  reply.code(403).send({ error: 'Requiere ser administrador o propietario del workspace' });
+  return false;
+}
+
+/**
+ * Comprueba acceso a un workspace; si no lo tiene responde 403 y devuelve false.
+ * Admin de plataforma o propietario del workspace.
+ */
+export function assertWorkspaceAccess(req: FastifyRequest, reply: FastifyReply, workspaceId: string): boolean {
+  const user = currentUser(req)!;
+  if (canManageWorkspace(user, workspaceId)) return true;
+  reply.code(403).send({ error: 'No tienes acceso a este workspace' });
+  return false;
+}
+
+/**
+ * preHandler que exige que el módulo esté activo en el workspace del servicio de
+ * la ruta (param `:id`). Los administradores lo traspasan siempre. Un servicio
+ * sin workspace (proyecto sin asignar) no tiene gates. Si el servicio no existe,
+ * deja pasar para que la ruta responda su 404 propio.
+ */
+export function moduleGate(moduleKey: ModuleKey) {
+  return async function (req: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const user = currentUser(req);
+    if (!user || user.role === 'admin') return;
+    const serviceId = (req.params as { id?: string })?.id;
+    if (!serviceId) return;
+    const service = getService(serviceId);
+    if (!service) return;
+    const ws = workspaceOfProject(service.project_id);
+    if (!ws) return;
+    if (!moduleEnabled(ws, workspacePlan(ws), moduleKey)) {
+      reply.code(403).send({ error: `El módulo «${MODULE_LABEL[moduleKey]}» no está activo en este workspace.` });
+    }
+  };
 }

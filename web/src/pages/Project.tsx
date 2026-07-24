@@ -169,7 +169,8 @@ export default function ProjectPage() {
   });
 
   const updateProject = useMutation({
-    mutationFn: () => api.patch(`/projects/${projectId}`, { name: editName, client: editClient }),
+    // Solo el admin reasigna de empresa/workspace; el propietario únicamente renombra.
+    mutationFn: () => api.patch(`/projects/${projectId}`, { name: editName, ...(isAdmin ? { client: editClient } : {}) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['project', projectId] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -185,6 +186,10 @@ export default function ProjectPage() {
   }
 
   const { project: proj, services, alertCounts } = project.data;
+  // Gestión de estructura (renombrar/eliminar): admin o propietario del workspace del proyecto.
+  const isManager =
+    isAdmin ||
+    (me.data?.user?.role === 'owner' && !!me.data?.user?.workspaceId && proj.workspace_id === me.data?.user?.workspaceId);
   const selected = services.find((s) => s.id === selectedId) ?? null;
   if (selected) lastServiceRef.current = selected;
   // Durante la salida el drawer pinta el último servicio visto.
@@ -213,7 +218,7 @@ export default function ProjectPage() {
             </p>
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-            {isAdmin && (
+            {isManager && (
               <>
                 <button
                   onClick={() => {
@@ -222,7 +227,7 @@ export default function ProjectPage() {
                     setEditOpen(true);
                   }}
                   className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
-                  title="Renombrar / empresa"
+                  title={isAdmin ? 'Renombrar / empresa' : 'Renombrar'}
                 >
                   <Pencil size={14} />
                 </button>
@@ -399,9 +404,11 @@ export default function ProjectPage() {
           <Field label="Nombre">
             <input className="input" value={editName} onChange={(e) => setEditName(e.target.value)} required />
           </Field>
-          <Field label="Empresa / cliente" hint="Vacío = sin empresa. Agrupa proyectos en el panel principal.">
-            <input className="input" value={editClient} onChange={(e) => setEditClient(e.target.value)} placeholder="Acme S.L." />
-          </Field>
+          {isAdmin && (
+            <Field label="Empresa / cliente" hint="Vacío = sin empresa. Reasigna el proyecto a la cuenta de ese cliente.">
+              <input className="input" value={editClient} onChange={(e) => setEditClient(e.target.value)} placeholder="Acme S.L." />
+            </Field>
+          )}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" type="button" onClick={() => setEditOpen(false)}>
               Cancelar

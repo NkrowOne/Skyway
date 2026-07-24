@@ -1,7 +1,8 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, requireAdmin, requireAuth } from '../auth';
+import { assertProjectAccess, currentUser, requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
+import { moduleAllowedForProject } from '../quota';
 import {
   countGithubConnectors,
   deleteGithubConnector,
@@ -67,6 +68,9 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
     const { projectId } = req.params as { projectId: string };
     if (!getProject(projectId)) return reply.code(404).send({ error: 'Proyecto no encontrado' });
     if (!assertProjectAccess(req, reply, projectId)) return reply;
+    if (!moduleAllowedForProject(projectId, 'github', currentUser(req)!.role === 'admin')) {
+      return reply.code(403).send({ error: 'El módulo «Conectores de GitHub» no está activo en este workspace.' });
+    }
     if (countGithubConnectors(projectId) >= MAX_CONNECTORS_PER_PROJECT) {
       return reply.code(400).send({ error: `Máximo ${MAX_CONNECTORS_PER_PROJECT} conectores por proyecto` });
     }

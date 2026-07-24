@@ -9,7 +9,9 @@ import {
   Boxes,
   Building2,
   ChevronRight,
+  CreditCard,
   Globe,
+  Landmark,
   Keyboard,
   LogOut,
   Rocket,
@@ -46,6 +48,10 @@ const PAGE_LABEL: Record<string, string> = {
   '/account': 'Mi cuenta',
   '/monitor': 'Monitor',
   '/sites': 'Sitios y servicios',
+  '/workspaces': 'Cuentas y clientes',
+  '/plans': 'Planes',
+  '/catalog': 'Catálogo',
+  '/accounting': 'Contabilidad',
 };
 
 // ---------- Paleta de comandos (⌘K) ----------
@@ -60,7 +66,7 @@ interface PaletteItem {
   to: string;
 }
 
-function CommandPalette({ open, onClose, unread, isAdmin }: { open: boolean; onClose: () => void; unread: number; isAdmin: boolean }) {
+function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: boolean; onClose: () => void; unread: number; isAdmin: boolean; isManager: boolean }) {
   const navigate = useNavigate();
   const { mounted, closing } = usePresence(open, 180);
   const [query, setQuery] = useState('');
@@ -128,8 +134,44 @@ function CommandPalette({ open, onClose, unread, isAdmin }: { open: boolean; onC
         keywords: 'cuenta passkey token contraseña api',
         to: '/account',
       },
+      ...(isManager
+        ? [
+            {
+              key: 'a-workspaces',
+              group: 'Acciones rápidas' as const,
+              icon: <Building2 size={15} className="text-subtle" />,
+              label: 'Cuentas y clientes',
+              keywords: 'cuentas clientes workspaces cuota recursos facturacion planes empresa',
+              to: '/workspaces',
+            },
+          ]
+        : []),
       ...(isAdmin
         ? [
+            {
+              key: 'a-accounting',
+              group: 'Acciones rápidas' as const,
+              icon: <Landmark size={15} className="text-subtle" />,
+              label: 'Contabilidad de la empresa',
+              keywords: 'contabilidad ingresos facturacion cobros stripe impuestos iva empresa exportar',
+              to: '/accounting',
+            },
+            {
+              key: 'a-plans',
+              group: 'Acciones rápidas' as const,
+              icon: <CreditCard size={15} className="text-subtle" />,
+              label: 'Planes de facturación',
+              keywords: 'planes precios cuotas facturacion suscripcion',
+              to: '/plans',
+            },
+            {
+              key: 'a-catalog',
+              group: 'Acciones rápidas' as const,
+              icon: <Boxes size={15} className="text-subtle" />,
+              label: 'Catálogo de servicios',
+              keywords: 'catalogo productos servicios web ia hosting bbdd dominio soporte precios uso tramos suscripcion',
+              to: '/catalog',
+            },
             {
               key: 'a-users',
               group: 'Acciones rápidas' as const,
@@ -160,7 +202,7 @@ function CommandPalette({ open, onClose, unread, isAdmin }: { open: boolean; onC
     const q = query.trim().toLowerCase();
     const all = [...list, ...actions];
     return q ? all.filter((i) => i.keywords.includes(q)) : all;
-  }, [projects.data, query, unread, isAdmin]);
+  }, [projects.data, query, unread, isAdmin, isManager]);
 
   useEffect(() => {
     setSel((s) => Math.min(s, Math.max(0, items.length - 1)));
@@ -444,7 +486,9 @@ export default function Layout() {
     queryFn: () => api.get<Me>('/auth/me'),
     staleTime: 60_000,
   });
-  const isAdmin = me.data?.user?.role === 'admin';
+  const role = me.data?.user?.role;
+  const isAdmin = role === 'admin';
+  const isManager = isAdmin || role === 'owner';
 
   const system = useQuery({
     queryKey: ['system'],
@@ -610,8 +654,24 @@ export default function Layout() {
           </Link>
           <span aria-hidden className="mx-1 hidden h-4 w-px bg-line sm:block" />
           <AlertBell />
+          {isManager && (
+            <Link
+              to="/workspaces"
+              className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
+              title="Cuentas y clientes"
+            >
+              <Building2 size={16} />
+            </Link>
+          )}
           {isAdmin && (
             <>
+              <Link
+                to="/accounting"
+                className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
+                title="Contabilidad"
+              >
+                <Landmark size={16} />
+              </Link>
               <Link
                 to="/users"
                 className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
@@ -674,7 +734,7 @@ export default function Layout() {
         </div>
       </main>
 
-      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} unread={bell.data?.unread ?? 0} isAdmin={isAdmin} />
+      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} unread={bell.data?.unread ?? 0} isAdmin={isAdmin} isManager={isManager} />
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );

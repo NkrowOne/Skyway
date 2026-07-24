@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, requireAuth } from '../auth';
+import { assertProjectAccess, currentUser, moduleGate, requireAuth } from '../auth';
 import { audit } from '../audit';
 import {
   backupSupported,
@@ -14,6 +14,7 @@ import {
 import { getProject, getService } from '../db';
 import { dockerAvailable } from '../docker/client';
 import { containerName, execInContainer, getRuntime } from '../docker/containers';
+import { isWorkspaceActive, moduleAllowedForProject, workspaceOfProject } from '../quota';
 import { ProjectRow, ServiceRow } from '../types';
 
 function load(id: string): { service: ServiceRow; project: ProjectRow } | null {
@@ -35,6 +36,16 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
 
+    // Cuenta suspendida o módulo de terminal no concedido: se bloquea (el admin traspasa).
+    const isAdmin = currentUser(req)!.role === 'admin';
+    const workspace = workspaceOfProject(found.project.id);
+    if (workspace && !isWorkspaceActive(workspace)) {
+      return reply.code(403).send({ error: 'El workspace está suspendido: las operaciones están detenidas hasta reactivarlo.' });
+    }
+    if (!moduleAllowedForProject(found.project.id, 'exec', isAdmin)) {
+      return reply.code(403).send({ error: 'El módulo «Terminal de comandos» no está activo en este workspace.' });
+    }
+
     const body = z.object({ command: z.string().trim().min(1, 'Comando requerido').max(2000) }).parse(req.body);
     const name = containerName(found.project, found.service);
     const runtime = await getRuntime(name);
@@ -52,7 +63,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ---------- backups de bases de datos ----------
-  app.get('/api/services/:id/backups', async (req, reply) => {
+  app.get('/api/services/:id/backups', { preHandler: moduleGate('backups') }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
@@ -60,7 +71,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     return { supported: backupSupported(found.service), backups: listBackups(id) };
   });
 
-  app.post('/api/services/:id/backups', async (req, reply) => {
+  app.post('/api/services/:id/backups', { preHandler: moduleGate('backups') }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
@@ -79,7 +90,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  app.get('/api/services/:id/backups/:file/download', async (req, reply) => {
+  app.get('/api/services/:id/backups/:file/download', { preHandler: moduleGate('backups') }, async (req, reply) => {
     const { id, file } = req.params as { id: string; file: string };
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
@@ -92,7 +103,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     return reply.send(fs.createReadStream(full));
   });
 
-  app.post('/api/services/:id/backups/:file/restore', async (req, reply) => {
+  app.post('/api/services/:id/backups/:file/restore', { preHandler: moduleGate('backups') }, async (req, reply) => {
     const { id, file } = req.params as { id: string; file: string };
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
@@ -109,7 +120,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  app.delete('/api/services/:id/backups/:file', async (req, reply) => {
+  app.delete('/api/services/:id/backups/:file', { preHandler: moduleGate('backups') }, async (req, reply) => {
     const { id, file } = req.params as { id: string; file: string };
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });

@@ -2,6 +2,7 @@ import {
   createProject,
   createService,
   getEnv,
+  getOrCreateWorkspaceByName,
   listServices,
   projectSlugExists,
   setEnv,
@@ -414,7 +415,10 @@ export async function runRailwayImport(
   let slug = slugify(name);
   let i = 2;
   while (projectSlugExists(slug)) slug = `${slugify(name)}-${i++}`;
-  const project = createProject(name, slug, opts.client?.trim() || null);
+  // Un cliente indicado crea/reutiliza su workspace, para que el proyecto
+  // importado quede sujeto a su cuota y facturación (no huérfano).
+  const workspace = opts.client?.trim() ? getOrCreateWorkspaceByName(opts.client.trim()) : undefined;
+  const project = createProject(name, slug, workspace?.name ?? null, workspace?.id ?? null);
 
   if (plan._sharedVars && Object.keys(plan._sharedVars).length > 0) {
     setProjectVars(project.id, plan._sharedVars);

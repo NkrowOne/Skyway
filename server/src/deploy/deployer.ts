@@ -37,6 +37,7 @@ import {
   getRuntime,
 } from '../docker/containers';
 import { ensureNetwork, projectNetworkName, EDGE_NETWORK } from '../docker/networks';
+import { isWorkspaceActive, workspaceOfProject } from '../quota';
 import { buildImage, cloneRepo, readRailwayStartCommand, spawnLogged } from './builder';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
 import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
@@ -153,6 +154,11 @@ async function runDeployment(deploymentId: string): Promise<void> {
 
   try {
     if (!service || !project) throw new Error('El servicio ya no existe');
+    // Cuenta suspendida: se detienen los despliegues (los servicios ya en marcha siguen vivos).
+    const workspace = workspaceOfProject(project.id);
+    if (workspace && !isWorkspaceActive(workspace)) {
+      throw new Error(`El workspace «${workspace.name}» está suspendido: los despliegues están detenidos hasta reactivarlo.`);
+    }
     if (!(await dockerAvailable(true))) {
       throw new Error('Docker no está disponible. Comprueba que el daemon está corriendo y que Skyway tiene acceso a /var/run/docker.sock');
     }

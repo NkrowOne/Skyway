@@ -15,6 +15,11 @@ import SettingsPage from './pages/Settings';
 import Setup from './pages/Setup';
 import SitesPage from './pages/Sites';
 import UsersPage from './pages/Users';
+import WorkspacesPage from './pages/Workspaces';
+import WorkspacePage from './pages/Workspace';
+import PlansPage from './pages/Plans';
+import CatalogPage from './pages/Catalog';
+import AccountingPage from './pages/Accounting';
 import { Me } from './types';
 
 export default function App() {
@@ -72,8 +77,18 @@ export default function App() {
         <Route path="/sites" element={<SitesPage />} />
         <Route path="/account" element={<AccountPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
+        {/* Cuentas de cliente: admin (todas) y propietario (la suya). */}
+        {(user?.role === 'admin' || user?.role === 'owner') && (
+          <>
+            <Route path="/workspaces" element={<WorkspacesPage />} />
+            <Route path="/workspaces/:id" element={<WorkspacePage />} />
+          </>
+        )}
         {user?.role === 'admin' && (
           <>
+            <Route path="/plans" element={<PlansPage />} />
+            <Route path="/catalog" element={<CatalogPage />} />
+            <Route path="/accounting" element={<AccountingPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/security" element={<SecurityPage />} />
             <Route path="/users" element={<UsersPage />} />

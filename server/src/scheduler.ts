@@ -1,5 +1,6 @@
 import { auditSystem } from './audit';
 import { fireAlert, resolveServiceAlerts } from './alerts';
+import { billingAutomationTick } from './billingauto';
 import { backupSupported, createBackup, deleteBackup, listBackups } from './backups';
 import { listProjects, listServices, resolveAlertsByDedupe } from './db';
 import { dockerAvailable } from './docker/client';
@@ -51,6 +52,12 @@ async function tick(): Promise<void> {
     systemBackupTick(nowDate);
   } catch {
     /* nunca debe tumbar el tick de los backups de servicios */
+  }
+  try {
+    // Facturación automática del ciclo + corte por impago (no dependen de Docker).
+    billingAutomationTick(nowDate);
+  } catch {
+    /* aislado: un fallo de facturación no debe tumbar el resto del tick */
   }
   if (!(await dockerAvailable())) return;
   const now = nowDate;

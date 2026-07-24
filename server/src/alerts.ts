@@ -52,6 +52,40 @@ export function fireAlert(input: FireAlertInput): void {
   }
 }
 
+/** Crea una alerta ligada a una CUENTA de cliente (facturación, uso, morosidad). */
+export function fireWorkspaceAlert(input: {
+  severity: AlertSeverity;
+  workspaceId: string;
+  type: string;
+  title: string;
+  message: string;
+  explanation?: string | null;
+  /** Clave de dedupe (incluye el ciclo para que se reevalúe cada periodo). */
+  dedupeKey: string;
+  quiet?: boolean;
+}): void {
+  const row = insertAlert({
+    severity: input.severity,
+    type: input.type,
+    workspace_id: input.workspaceId,
+    title: input.title,
+    message: input.message,
+    explanation: input.explanation ?? null,
+    dedupe_key: input.dedupeKey,
+  });
+  if (!row) return; // ya había una abierta idéntica
+  if (!input.quiet) {
+    void dispatchToChannels({
+      severity: input.severity,
+      title: input.title,
+      message: input.message,
+      explanation: input.explanation,
+      project: null,
+      service: null,
+    }).catch(() => {});
+  }
+}
+
 /** Resuelve las alertas abiertas de un tipo para un servicio (p. ej. al recuperarse). */
 export function resolveServiceAlerts(serviceId: string, type: string, notifyRecovery = false): void {
   const resolved = resolveOpenServiceAlerts(serviceId, type);

@@ -90,6 +90,8 @@ export default function Dashboard() {
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
   const isAdmin = me.data?.user?.role === 'admin';
+  // El propietario también crea proyectos (en su workspace, asignado por el servidor).
+  const isManager = isAdmin || me.data?.user?.role === 'owner';
 
   const create = useMutation({
     mutationFn: () => api.post<{ project: Project }>('/projects', { name, ...(client.trim() ? { client } : {}) }),
@@ -134,12 +136,14 @@ export default function Dashboard() {
           <h1 className="text-2xl font-semibold leading-[30px] tracking-[-.02em]">Proyectos</h1>
           <p className="mt-1.5 text-sm text-sub">Cada proyecto agrupa servicios que comparten una red privada</p>
         </div>
-        {isAdmin && (
+        {isManager && (
           <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={() => setImportOpen(true)} title="Migra un proyecto desde Railway">
-              <TrainFront size={15} /> <span className="hidden sm:inline">Importar de Railway</span>
-              <span className="sm:hidden">Importar</span>
-            </Button>
+            {isAdmin && (
+              <Button variant="secondary" onClick={() => setImportOpen(true)} title="Migra un proyecto desde Railway">
+                <TrainFront size={15} /> <span className="hidden sm:inline">Importar de Railway</span>
+                <span className="sm:hidden">Importar</span>
+              </Button>
+            )}
             <Button onClick={() => setCreateOpen(true)}>
               <Plus size={15} /> Nuevo proyecto
             </Button>
@@ -238,14 +242,16 @@ export default function Dashboard() {
           <Field label="Nombre" hint="Ej: web corporativa, api interna...">
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} autoFocus required />
           </Field>
-          <Field label="Empresa / cliente (opcional)" hint="Agrupa los proyectos por empresa en el panel">
-            <input className="input" list="clients-list" value={client} onChange={(e) => setClient(e.target.value)} placeholder="Acme S.L." />
-            <datalist id="clients-list">
-              {clients.map((c) => (
-                <option key={c} value={c} />
-              ))}
-            </datalist>
-          </Field>
+          {isAdmin && (
+            <Field label="Empresa / cliente (opcional)" hint="Asigna el proyecto a la cuenta de ese cliente (crea la cuenta si no existe)">
+              <input className="input" list="clients-list" value={client} onChange={(e) => setClient(e.target.value)} placeholder="Acme S.L." />
+              <datalist id="clients-list">
+                {clients.map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
+            </Field>
+          )}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" type="button" onClick={() => setCreateOpen(false)}>
               Cancelar

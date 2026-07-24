@@ -10,7 +10,14 @@ import {
   DeploymentStatus,
   GithubConnectorRow,
   HostMetricHour,
+  InvoiceRow,
+  InvoiceSeriesRow,
+  PendingChargeRow,
+  PriceTierRow,
+  ProductRow,
+  SubscriptionRow,
   PasskeyRow,
+  PlanRow,
   ProjectRow,
   ServiceConfig,
   ServiceMetricHour,
@@ -19,8 +26,29 @@ import {
   ServiceType,
   UserRole,
   UserRow,
+  AiModelPriceRow,
+  WorkspaceApiKeyRow,
+  WorkspaceRow,
 } from './types';
-import { id, now } from './util';
+import { ALL_MODULE_KEYS } from './modules';
+import { id, now, slugify } from './util';
+
+/**
+ * Cuotas y módulos amplios para las cuentas creadas al migrar el campo antiguo
+ * `client`: nunca deben quedar por debajo de lo que un cliente ya tenía en
+ * marcha (si no, al activar las cuotas quedarían congelados). El admin las
+ * ajusta después con un plan real.
+ */
+const MIGRATED_WORKSPACE_INIT = {
+  cpu_cores: 32,
+  memory_mb: 65536,
+  disk_mb: 512000,
+  max_projects: 100,
+  max_services: 500,
+  max_members: 25,
+  modules_override: JSON.stringify(ALL_MODULE_KEYS),
+  notes: 'Cuenta creada al migrar el campo «cliente». Revisa su plan y su cuota.',
+} as const;
 
 let db: Database.Database;
 
@@ -155,6 +183,9 @@ export function initDb(): void {
   ensureColumn('projects', 'status_token', 'TEXT');
   ensureColumn('projects', 'status_enabled', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('projects', 'status_notice', 'TEXT');
+  // Cuentas de cliente: enlace de proyectos y usuarios a su workspace.
+  ensureColumn('projects', 'workspace_id', 'TEXT');
+  ensureColumn('users', 'workspace_id', 'TEXT');
 
   // Histórico de disponibilidad agregado por horas (para las páginas de estado):
   // una fila por servicio y hora, con muestras totales y muestras "en marcha".
@@ -216,6 +247,365 @@ export function initDb(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_github_connectors_project ON github_connectors(project_id);
   `);
+
+  // ---------- cuentas de cliente: planes, workspaces y facturación ----------
+  // Planes (usos incluidos + precio). Un workspace hereda del plan y puede
+  // sobrescribir cualquier cuota a medida. workspaces.plan_id cae a NULL si se
+  // borra el plan (el workspace conserva sus overrides o los valores por defecto).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS plans (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      price_cents INTEGER NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'EUR',
+      interval TEXT NOT NULL DEFAULT 'monthly' CHECK (interval IN ('monthly', 'yearly')),
+      cpu_cores REAL NOT NULL DEFAULT 1,
+      memory_mb INTEGER NOT NULL DEFAULT 1024,
+      disk_mb INTEGER NOT NULL DEFAULT 10240,
+      max_projects INTEGER NOT NULL DEFAULT 3,
+      max_services INTEGER NOT NULL DEFAULT 10,
+      max_members INTEGER NOT NULL DEFAULT 3,
+      modules TEXT NOT NULL DEFAULT '[]',
+      is_default INTEGER NOT NULL DEFAULT 0,
+      archived INTEGER NOT NULL DEFAULT 0,
+      discount_pct REAL NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      plan_id TEXT REFERENCES plans(id) ON DELETE SET NULL,
+      cpu_cores REAL,
+      memory_mb INTEGER,
+      disk_mb INTEGER,
+      max_projects INTEGER,
+      max_services INTEGER,
+      max_members INTEGER,
+      modules_override TEXT,
+      owner_disabled_modules TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
+      billing_email TEXT,
+      billing_day INTEGER NOT NULL DEFAULT 1 CHECK (billing_day BETWEEN 1 AND 28),
+      notes TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS workspace_invoices (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      period_start INTEGER NOT NULL,
+      period_end INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'issued', 'paid', 'void')),
+      currency TEXT NOT NULL DEFAULT 'EUR',
+      subtotal_cents INTEGER NOT NULL DEFAULT 0,
+      total_cents INTEGER NOT NULL DEFAULT 0,
+      lines TEXT NOT NULL DEFAULT '[]',
+      plan_name TEXT,
+      issued_at INTEGER,
+      paid_at INTEGER,
+      notes TEXT,
+      created_at INTEGER NOT NULL
+    );
+    -- Series de numeración correlativa por ejercicio (sustituyen el contador global).
+    -- Las rectificativas usan obligatoriamente una serie propia (art. 6.1.a RD 1619/2012).
+    CREATE TABLE IF NOT EXISTS invoice_series (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      prefix TEXT NOT NULL DEFAULT '',
+      padding INTEGER NOT NULL DEFAULT 4,
+      next_seq INTEGER NOT NULL DEFAULT 1,
+      kind TEXT NOT NULL DEFAULT 'ordinaria' CHECK (kind IN ('ordinaria', 'rectificativa', 'simplificada')),
+      created_at INTEGER NOT NULL,
+      UNIQUE (code, year)
+    );
+    -- Catálogo multimodular: productos facturables por categoría y modelo de precio.
+    CREATE TABLE IF NOT EXISTS catalog_products (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      category TEXT NOT NULL DEFAULT 'custom' CHECK (category IN ('web','ia','app','hosting','bbdd','dominio','soporte','custom')),
+      billing_model TEXT NOT NULL DEFAULT 'flat_one_off' CHECK (billing_model IN ('flat_one_off','subscription','metered','tiered')),
+      price_cents INTEGER NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'EUR',
+      interval TEXT NOT NULL DEFAULT 'one_off' CHECK (interval IN ('monthly','yearly','one_off','metered')),
+      unit TEXT NOT NULL DEFAULT '',
+      unit_size INTEGER NOT NULL DEFAULT 1,
+      meter TEXT,
+      tier_mode TEXT CHECK (tier_mode IN ('graduated','volume')),
+      tax_rate REAL NOT NULL DEFAULT 21,
+      irpf_rate REAL NOT NULL DEFAULT 0,
+      tax_exempt INTEGER NOT NULL DEFAULT 0,
+      modules TEXT NOT NULL DEFAULT '[]',
+      description TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      archived INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS catalog_price_tiers (
+      id TEXT PRIMARY KEY,
+      product_id TEXT NOT NULL REFERENCES catalog_products(id) ON DELETE CASCADE,
+      up_to INTEGER,
+      unit_cents INTEGER NOT NULL DEFAULT 0,
+      flat_cents INTEGER NOT NULL DEFAULT 0,
+      sort INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    -- Suscripciones/add-ons recurrentes múltiples por workspace.
+    CREATE TABLE IF NOT EXISTS workspace_subscriptions (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      product_id TEXT NOT NULL REFERENCES catalog_products(id) ON DELETE RESTRICT,
+      service_id TEXT REFERENCES services(id) ON DELETE SET NULL,
+      qty REAL NOT NULL DEFAULT 1,
+      unit_cents INTEGER,
+      currency TEXT NOT NULL DEFAULT 'EUR',
+      interval TEXT NOT NULL DEFAULT 'monthly' CHECK (interval IN ('monthly','yearly')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','cancelled')),
+      anchor_day INTEGER NOT NULL DEFAULT 1,
+      started_at INTEGER NOT NULL,
+      cancelled_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    -- Cargos puntuales pendientes de la próxima factura del ciclo.
+    CREATE TABLE IF NOT EXISTS pending_charges (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      product_id TEXT REFERENCES catalog_products(id) ON DELETE SET NULL,
+      label TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'custom' CHECK (kind IN ('product','custom')),
+      qty REAL NOT NULL DEFAULT 1,
+      unit_cents INTEGER NOT NULL DEFAULT 0,
+      tax_rate REAL NOT NULL DEFAULT 21,
+      irpf_rate REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','invoiced','cancelled')),
+      invoice_id TEXT,
+      created_at INTEGER NOT NULL
+    );
+    -- Ingesta cruda de consumo (idempotente) y su agregado horario para tarifar.
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id TEXT PRIMARY KEY,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      subject_type TEXT NOT NULL DEFAULT 'workspace' CHECK (subject_type IN ('workspace','service')),
+      subject_id TEXT NOT NULL,
+      meter TEXT NOT NULL,
+      quantity REAL NOT NULL DEFAULT 0,
+      product_id TEXT,
+      ts INTEGER NOT NULL,
+      metadata TEXT
+    );
+    CREATE TABLE IF NOT EXISTS usage_meter_hourly (
+      subject_type TEXT NOT NULL,
+      subject_id TEXT NOT NULL,
+      meter TEXT NOT NULL,
+      hour INTEGER NOT NULL,
+      quantity REAL NOT NULL DEFAULT 0,
+      PRIMARY KEY (subject_id, meter, hour)
+    );
+    -- Libro de facturación de Verifactu (RD 1007/2023): registro inmutable
+    -- encadenado por huella SHA-256. Esquema RESERVADO ("puertas abiertas"): se
+    -- crea vacío para que activar Verifactu no exija reconstruir tablas pobladas.
+    -- La lógica de huella/QR/remisión a la AEAT se implementa en una fase posterior
+    -- (no obligatorio hasta 2027, RDL 15/2025).
+    CREATE TABLE IF NOT EXISTS invoice_ledger (
+      id TEXT PRIMARY KEY,
+      seq INTEGER NOT NULL,
+      invoice_id TEXT NOT NULL REFERENCES workspace_invoices(id) ON DELETE RESTRICT,
+      record_type TEXT NOT NULL CHECK (record_type IN ('alta','anulacion')),
+      emisor_nif TEXT,
+      num_serie_factura TEXT,
+      fecha_expedicion INTEGER,
+      tipo_factura TEXT,
+      cuota_total_cents INTEGER,
+      importe_total_cents INTEGER,
+      fecha_hora_gen TEXT,
+      huella TEXT NOT NULL,
+      huella_anterior TEXT,
+      sif_mode TEXT CHECK (sif_mode IN ('verifactu','no_verifactu')),
+      firma TEXT,
+      qr_url TEXT,
+      estado_remision TEXT,
+      csv_aeat TEXT,
+      version_sif TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS invoice_events_log (
+      id TEXT PRIMARY KEY,
+      seq INTEGER NOT NULL,
+      tipo_evento TEXT NOT NULL,
+      ts TEXT,
+      detalle TEXT,
+      huella_evento TEXT,
+      huella_evento_anterior TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ledger_invoice ON invoice_ledger(invoice_id, seq);
+    -- Claves de API por cuenta para el proxy de IA (gateway). Hasheadas; el
+    -- prefijo distingue de los tokens de panel (nunca dan acceso al panel).
+    CREATE TABLE IF NOT EXISTS workspace_api_keys (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      prefix TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'gemini',
+      allowed_models TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended','revoked')),
+      budget_cents_month INTEGER,
+      spend_cents_cycle INTEGER NOT NULL DEFAULT 0,
+      cycle_anchor INTEGER,
+      rate_limit_rpm INTEGER,
+      last_used_at INTEGER,
+      expires_at INTEGER,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at INTEGER NOT NULL,
+      revoked_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_ws_api_keys_ws ON workspace_api_keys(workspace_id);
+    -- Coste del operador por modelo (lo que Google nos cobra), para mostrar el
+    -- margen frente al PVP del catálogo. Se guarda en micro-céntimos por millón de
+    -- tokens (entero exacto para los precios de Gemini; dividir entre 1e6 = céntimos/Mtok).
+    CREATE TABLE IF NOT EXISTS ai_model_prices (
+      model TEXT PRIMARY KEY,
+      cost_micros_in INTEGER NOT NULL DEFAULT 0,
+      cost_micros_cache INTEGER NOT NULL DEFAULT 0,
+      cost_micros_out INTEGER NOT NULL DEFAULT 0,
+      margin_pct REAL NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'EUR',
+      updated_at INTEGER NOT NULL
+    );
+    -- Rutas calientes: proyectos por workspace (cuota y listados), usuarios por
+    -- workspace (sub-usuarios) y facturas por workspace.
+    CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_users_workspace ON users(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_invoices_workspace ON workspace_invoices(workspace_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace ON workspace_subscriptions(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_pending_charges_workspace ON pending_charges(workspace_id, status);
+    CREATE INDEX IF NOT EXISTS idx_usage_meter_lookup ON usage_meter_hourly(subject_id, meter, hour);
+  `);
+
+  // Facturación de empresa: número, impuestos, método de pago y datos de Stripe.
+  ensureColumn('workspace_invoices', 'number', 'TEXT');
+  ensureColumn('workspace_invoices', 'tax_cents', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('workspace_invoices', 'tax_rate', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn('workspace_invoices', 'payment_method', 'TEXT');
+  ensureColumn('workspace_invoices', 'stripe_session_id', 'TEXT');
+  ensureColumn('workspace_invoices', 'stripe_url', 'TEXT');
+  // Conformidad legal española (RD 1619/2012): serie, tipo de factura, rectificativa,
+  // fecha de operación, desglose de IVA por tipo, régimen, IRPF, congelación de
+  // emisor/destinatario e inmutabilidad de la emitida.
+  ensureColumn('workspace_invoices', 'series_id', 'TEXT');
+  ensureColumn('workspace_invoices', 'invoice_type', "TEXT NOT NULL DEFAULT 'normal'");
+  ensureColumn('workspace_invoices', 'rectifies_invoice_id', 'TEXT');
+  ensureColumn('workspace_invoices', 'rectify_reason', 'TEXT');
+  ensureColumn('workspace_invoices', 'operation_date', 'INTEGER');
+  ensureColumn('workspace_invoices', 'tax_breakdown', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn('workspace_invoices', 'vat_regime', "TEXT NOT NULL DEFAULT 'general'");
+  ensureColumn('workspace_invoices', 'legal_mentions', 'TEXT');
+  ensureColumn('workspace_invoices', 'irpf_rate', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn('workspace_invoices', 'irpf_cents', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('workspace_invoices', 'issuer_snapshot', 'TEXT');
+  ensureColumn('workspace_invoices', 'client_name', 'TEXT');
+  ensureColumn('workspace_invoices', 'client_tax_id', 'TEXT');
+  ensureColumn('workspace_invoices', 'client_address', 'TEXT');
+  ensureColumn('workspace_invoices', 'locked', 'INTEGER NOT NULL DEFAULT 0');
+  // Datos fiscales del cliente (destinatario de la factura).
+  ensureColumn('workspaces', 'billing_tax_id', 'TEXT');
+  ensureColumn('workspaces', 'billing_address', 'TEXT');
+  // Estado de morosidad por cuenta (persistido, para que el corte por impago sea
+  // idempotente y sobreviva a reinicios). ai_suspended = corte del proxy de IA.
+  ensureColumn('workspaces', 'ai_suspended', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('workspaces', 'dunning_stage', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('workspaces', 'dunning_since', 'INTEGER');
+  ensureColumn('workspaces', 'last_dunning_action_at', 'INTEGER');
+  ensureColumn('workspaces', 'dunning_exempt', 'INTEGER NOT NULL DEFAULT 0');
+  // Alertas por cuenta (además de por proyecto/servicio).
+  ensureColumn('alerts', 'workspace_id', 'TEXT');
+  // Escala del medidor: nº de unidades del medidor por unidad de precio (p. ej.
+  // 1000000 para tarifar por 1M de tokens con céntimos enteros).
+  ensureColumn('catalog_products', 'unit_size', 'INTEGER NOT NULL DEFAULT 1');
+  // Descuento comercial: por plan (aplica a todas sus cuentas) y override por cuenta
+  // (nullable → hereda del plan). Se aplica sobre la base antes del IVA al facturar.
+  ensureColumn('plans', 'discount_pct', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn('workspaces', 'discount_pct', 'REAL');
+  // Margen objetivo (s/ venta) por modelo de IA: guía el PVP sugerido = coste/(1−m).
+  ensureColumn('ai_model_prices', 'margin_pct', 'REAL NOT NULL DEFAULT 0');
+
+  seedDefaultPlans();
+  migrateClientsToWorkspaces();
+}
+
+/**
+ * Siembra un catálogo de planes por defecto la primera vez (tabla vacía). Son
+ * un punto de partida editable, no una imposición: el admin los ajusta o crea
+ * los suyos. Idempotente: si ya hay algún plan, no toca nada.
+ */
+function seedDefaultPlans(): void {
+  const count = (db.prepare('SELECT COUNT(*) AS c FROM plans').get() as any).c as number;
+  if (count > 0) return;
+  const base: Omit<PlanRow, 'id' | 'created_at'>[] = [
+    {
+      name: 'Arranque', slug: 'arranque', price_cents: 0, currency: 'EUR', interval: 'monthly',
+      cpu_cores: 1, memory_mb: 1024, disk_mb: 10240, max_projects: 2, max_services: 6, max_members: 2,
+      modules: JSON.stringify(['databases', 'dbconsole', 'metrics', 'domains', 'status_page']),
+      is_default: 1, archived: 0, discount_pct: 0,
+    },
+    {
+      name: 'Pro', slug: 'pro', price_cents: 2900, currency: 'EUR', interval: 'monthly',
+      cpu_cores: 4, memory_mb: 8192, disk_mb: 51200, max_projects: 10, max_services: 30, max_members: 8,
+      modules: JSON.stringify(['databases', 'dbconsole', 'backups', 'files', 'exec', 'metrics', 'replicas', 'domains', 'status_page', 'github']),
+      is_default: 0, archived: 0, discount_pct: 0,
+    },
+    {
+      name: 'Escala', slug: 'escala', price_cents: 9900, currency: 'EUR', interval: 'monthly',
+      cpu_cores: 16, memory_mb: 32768, disk_mb: 256000, max_projects: 50, max_services: 200, max_members: 25,
+      modules: JSON.stringify(['databases', 'dbconsole', 'backups', 'files', 'exec', 'metrics', 'replicas', 'domains', 'status_page', 'github']),
+      is_default: 0, archived: 0, discount_pct: 0,
+    },
+  ];
+  const ins = db.prepare(
+    `INSERT INTO plans (id, name, slug, price_cents, currency, interval, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules, is_default, archived, created_at)
+     VALUES (@id, @name, @slug, @price_cents, @currency, @interval, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules, @is_default, @archived, @created_at)`,
+  );
+  const tx = db.transaction(() => {
+    for (const p of base) ins.run({ ...p, id: id('pln'), created_at: now() });
+  });
+  tx();
+}
+
+/**
+ * Migra el antiguo campo de texto `projects.client` a workspaces reales,
+ * enlazando cada proyecto con el suyo. Una sola vez (flag en settings), e
+ * idempotente por si acaso: agrupa por nombre de cliente (sin distinguir
+ * mayúsculas ni espacios), reutiliza el workspace si ya existe y no reasigna
+ * proyectos ya enlazados. Los proyectos sin cliente quedan sin asignar.
+ */
+function migrateClientsToWorkspaces(): void {
+  if (getSetting('migrations:workspaces_v1') === 'done') return;
+  const rows = db
+    .prepare("SELECT id, client FROM projects WHERE client IS NOT NULL AND TRIM(client) <> '' AND workspace_id IS NULL")
+    .all() as { id: string; client: string }[];
+  const tx = db.transaction(() => {
+    // Índice de workspaces existentes por nombre normalizado (evita duplicados en reejecución).
+    const existing = new Map<string, string>();
+    for (const w of db.prepare('SELECT id, name FROM workspaces').all() as { id: string; name: string }[]) {
+      existing.set(w.name.trim().toLowerCase(), w.id);
+    }
+    for (const row of rows) {
+      const name = row.client.trim();
+      const key = name.toLowerCase();
+      let wsId = existing.get(key);
+      if (!wsId) {
+        const ws = createWorkspaceRow(name, { ...MIGRATED_WORKSPACE_INIT });
+        wsId = ws.id;
+        existing.set(key, wsId);
+      }
+      db.prepare('UPDATE projects SET workspace_id = ? WHERE id = ?').run(wsId, row.id);
+    }
+    setSetting('migrations:workspaces_v1', 'done');
+  });
+  tx();
 }
 
 function ensureColumn(table: string, column: string, ddl: string): void {
@@ -263,12 +653,36 @@ export function countUsers(): number {
   return (db.prepare('SELECT COUNT(*) AS c FROM users').get() as any).c;
 }
 
-export function createUser(email: string, passwordHash: string, role: UserRole = 'admin'): UserRow {
-  const row: UserRow = { id: id('usr'), email, password_hash: passwordHash, role, session_epoch: 0, created_at: now() };
-  db.prepare('INSERT INTO users (id, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)').run(
-    row.id, row.email, row.password_hash, row.role, row.created_at,
+export function createUser(
+  email: string,
+  passwordHash: string,
+  role: UserRole = 'admin',
+  workspaceId: string | null = null,
+): UserRow {
+  const row: UserRow = {
+    id: id('usr'), email, password_hash: passwordHash, role, session_epoch: 0,
+    created_at: now(), workspace_id: workspaceId,
+  };
+  db.prepare('INSERT INTO users (id, email, password_hash, role, workspace_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+    row.id, row.email, row.password_hash, row.role, row.workspace_id, row.created_at,
   );
   return row;
+}
+
+/** Cambia el workspace al que pertenece un usuario (owner/member). null en admins. */
+export function updateUserWorkspace(userId: string, workspaceId: string | null): void {
+  db.prepare('UPDATE users SET workspace_id = ? WHERE id = ?').run(workspaceId, userId);
+}
+
+/** Sub-usuarios (owner/member) de un workspace, en orden de alta. */
+export function listWorkspaceUsers(workspaceId: string): UserRow[] {
+  return db
+    .prepare('SELECT * FROM users WHERE workspace_id = ? ORDER BY created_at ASC')
+    .all(workspaceId) as UserRow[];
+}
+
+export function countWorkspaceMembers(workspaceId: string): number {
+  return (db.prepare('SELECT COUNT(*) AS c FROM users WHERE workspace_id = ?').get(workspaceId) as any).c;
 }
 
 export function listUsers(): UserRow[] {
@@ -305,6 +719,11 @@ export function setUserProjects(userId: string, projectIds: string[]): void {
 
 export function userHasProject(userId: string, projectId: string): boolean {
   return !!db.prepare('SELECT 1 FROM user_projects WHERE user_id = ? AND project_id = ?').get(userId, projectId);
+}
+
+/** Elimina todas las asignaciones de un proyecto (al reasignarlo de workspace, para no dejar accesos colgando). */
+export function clearProjectMemberships(projectId: string): void {
+  db.prepare('DELETE FROM user_projects WHERE project_id = ?').run(projectId);
 }
 
 // ---------- passkeys ----------
@@ -397,15 +816,39 @@ export function setSetting(key: string, value: string | null): void {
 }
 
 // ---------- projects ----------
-export function createProject(name: string, slug: string, client: string | null = null): ProjectRow {
+export function createProject(
+  name: string,
+  slug: string,
+  client: string | null = null,
+  workspaceId: string | null = null,
+): ProjectRow {
   const row: ProjectRow = {
-    id: id('prj'), name, slug, client, created_at: now(),
+    id: id('prj'), name, slug, client, workspace_id: workspaceId, created_at: now(),
     status_token: null, status_enabled: 0, status_notice: null,
   };
-  db.prepare('INSERT INTO projects (id, name, slug, client, created_at) VALUES (?, ?, ?, ?, ?)').run(
-    row.id, row.name, row.slug, row.client, row.created_at,
+  db.prepare('INSERT INTO projects (id, name, slug, client, workspace_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+    row.id, row.name, row.slug, row.client, row.workspace_id, row.created_at,
   );
   return row;
+}
+
+/** Proyectos de un workspace (para cuota agregada y listados del cliente). */
+export function listWorkspaceProjects(workspaceId: string): ProjectRow[] {
+  return db
+    .prepare('SELECT * FROM projects WHERE workspace_id = ? ORDER BY created_at DESC')
+    .all(workspaceId) as ProjectRow[];
+}
+
+export function countWorkspaceProjects(workspaceId: string): number {
+  return (db.prepare('SELECT COUNT(*) AS c FROM projects WHERE workspace_id = ?').get(workspaceId) as any).c;
+}
+
+/**
+ * Asigna (o desasigna) un proyecto a un workspace y mantiene el reflejo
+ * denormalizado `client` que usa la agrupación por empresa de la UI.
+ */
+export function setProjectWorkspace(projectId: string, workspaceId: string | null, clientName: string | null): void {
+  db.prepare('UPDATE projects SET workspace_id = ?, client = ? WHERE id = ?').run(workspaceId, clientName, projectId);
 }
 
 export function listProjects(): ProjectRow[] {
@@ -797,6 +1240,7 @@ export function insertAlert(alert: {
   type: string;
   project_id?: string | null;
   service_id?: string | null;
+  workspace_id?: string | null;
   title: string;
   message: string;
   explanation?: string | null;
@@ -823,10 +1267,18 @@ export function insertAlert(alert: {
     read_at: null,
   };
   db.prepare(
-    `INSERT INTO alerts (id, ts, severity, type, project_id, service_id, title, message, explanation, dedupe_key, resolved_at, read_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(row.id, row.ts, row.severity, row.type, row.project_id, row.service_id, row.title, row.message, row.explanation, row.dedupe_key, row.resolved_at, row.read_at);
+    `INSERT INTO alerts (id, ts, severity, type, project_id, service_id, workspace_id, title, message, explanation, dedupe_key, resolved_at, read_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.id, row.ts, row.severity, row.type, row.project_id, row.service_id, alert.workspace_id ?? null, row.title, row.message, row.explanation, row.dedupe_key, row.resolved_at, row.read_at);
   return row;
+}
+
+/** Alertas por cuenta de cliente, para la vista del workspace. */
+export function listWorkspaceAlerts(workspaceId: string, openOnly = true): AlertRow[] {
+  const sql = openOnly
+    ? 'SELECT * FROM alerts WHERE workspace_id = ? AND resolved_at IS NULL ORDER BY ts DESC LIMIT 50'
+    : 'SELECT * FROM alerts WHERE workspace_id = ? ORDER BY ts DESC LIMIT 50';
+  return db.prepare(sql).all(workspaceId) as AlertRow[];
 }
 
 export function listAlerts(opts: { limit?: number; openOnly?: boolean; projectIds?: string[] } = {}): AlertRow[] {
@@ -950,4 +1402,753 @@ export function markStaleDeploymentsFailed(): number {
     )
     .run(now());
   return res.changes;
+}
+
+// ---------- planes de facturación ----------
+export function listPlans(includeArchived = true): PlanRow[] {
+  const sql = includeArchived
+    ? 'SELECT * FROM plans ORDER BY price_cents ASC, created_at ASC'
+    : 'SELECT * FROM plans WHERE archived = 0 ORDER BY price_cents ASC, created_at ASC';
+  return db.prepare(sql).all() as PlanRow[];
+}
+
+export function getPlan(planId: string): PlanRow | undefined {
+  return db.prepare('SELECT * FROM plans WHERE id = ?').get(planId) as PlanRow | undefined;
+}
+
+export function getDefaultPlan(): PlanRow | undefined {
+  return db.prepare('SELECT * FROM plans WHERE is_default = 1 AND archived = 0 ORDER BY created_at ASC LIMIT 1').get() as
+    | PlanRow
+    | undefined;
+}
+
+export function planSlugExists(slug: string): boolean {
+  return !!db.prepare('SELECT 1 FROM plans WHERE slug = ?').get(slug);
+}
+
+type PlanInput = Omit<PlanRow, 'id' | 'slug' | 'created_at'>;
+
+export function createPlan(name: string, fields: Omit<PlanInput, 'name'>): PlanRow {
+  let slug = slugify(name);
+  let i = 2;
+  while (planSlugExists(slug)) slug = `${slugify(name)}-${i++}`;
+  const row: PlanRow = { ...fields, name, id: id('pln'), slug, created_at: now() };
+  db.prepare(
+    `INSERT INTO plans (id, name, slug, price_cents, currency, interval, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules, is_default, archived, discount_pct, created_at)
+     VALUES (@id, @name, @slug, @price_cents, @currency, @interval, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules, @is_default, @archived, @discount_pct, @created_at)`,
+  ).run(row);
+  if (row.is_default) clearOtherDefaultPlans(row.id);
+  return row;
+}
+
+const PLAN_COLUMNS = new Set([
+  'name', 'price_cents', 'currency', 'interval', 'cpu_cores', 'memory_mb', 'disk_mb',
+  'max_projects', 'max_services', 'max_members', 'modules', 'is_default', 'archived', 'discount_pct',
+]);
+
+export function updatePlan(planId: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields).filter((k) => PLAN_COLUMNS.has(k));
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE plans SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), planId);
+  if (fields.is_default === 1) clearOtherDefaultPlans(planId);
+}
+
+function clearOtherDefaultPlans(keepId: string): void {
+  db.prepare('UPDATE plans SET is_default = 0 WHERE id <> ?').run(keepId);
+}
+
+export function deletePlan(planId: string): void {
+  db.prepare('DELETE FROM plans WHERE id = ?').run(planId);
+}
+
+export function countWorkspacesOnPlan(planId: string): number {
+  return (db.prepare('SELECT COUNT(*) AS c FROM workspaces WHERE plan_id = ?').get(planId) as any).c;
+}
+
+// ---------- workspaces (cuentas de cliente) ----------
+function uniqueWorkspaceSlug(name: string): string {
+  const base = slugify(name);
+  let slug = base;
+  let i = 2;
+  while (db.prepare('SELECT 1 FROM workspaces WHERE slug = ?').get(slug)) slug = `${base}-${i++}`;
+  return slug;
+}
+
+export interface WorkspaceInit {
+  plan_id?: string | null;
+  cpu_cores?: number | null;
+  memory_mb?: number | null;
+  disk_mb?: number | null;
+  max_projects?: number | null;
+  max_services?: number | null;
+  max_members?: number | null;
+  modules_override?: string | null;
+  billing_email?: string | null;
+  billing_day?: number;
+  notes?: string | null;
+}
+
+/** Crea un workspace con valores por defecto (las cuotas en null heredan del plan). */
+export function createWorkspaceRow(name: string, init: WorkspaceInit = {}): WorkspaceRow {
+  const row: WorkspaceRow = {
+    id: id('wsp'),
+    name,
+    slug: uniqueWorkspaceSlug(name),
+    plan_id: init.plan_id ?? null,
+    cpu_cores: init.cpu_cores ?? null,
+    memory_mb: init.memory_mb ?? null,
+    disk_mb: init.disk_mb ?? null,
+    max_projects: init.max_projects ?? null,
+    max_services: init.max_services ?? null,
+    max_members: init.max_members ?? null,
+    modules_override: init.modules_override ?? null,
+    owner_disabled_modules: '[]',
+    status: 'active',
+    billing_email: init.billing_email ?? null,
+    billing_tax_id: null,
+    billing_address: null,
+    billing_day: init.billing_day ?? 1,
+    discount_pct: null, // hereda el descuento del plan mientras no se fije uno propio
+    notes: init.notes ?? null,
+    created_at: now(),
+  };
+  db.prepare(
+    `INSERT INTO workspaces (id, name, slug, plan_id, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules_override, owner_disabled_modules, status, billing_email, billing_tax_id, billing_address, billing_day, notes, created_at)
+     VALUES (@id, @name, @slug, @plan_id, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules_override, @owner_disabled_modules, @status, @billing_email, @billing_tax_id, @billing_address, @billing_day, @notes, @created_at)`,
+  ).run(row);
+  return row;
+}
+
+export function listWorkspaces(): WorkspaceRow[] {
+  return db.prepare('SELECT * FROM workspaces ORDER BY name ASC').all() as WorkspaceRow[];
+}
+
+/**
+ * Reutiliza el workspace cuyo nombre coincide (sin distinguir mayúsculas ni
+ * espacios) o crea uno nuevo con el plan por defecto. Fuente única para asignar
+ * un proyecto a un cliente por su nombre (creación e importación de Railway).
+ */
+export function getOrCreateWorkspaceByName(name: string): WorkspaceRow {
+  const key = name.trim().toLowerCase();
+  const existing = (db.prepare('SELECT * FROM workspaces').all() as WorkspaceRow[]).find(
+    (w) => w.name.trim().toLowerCase() === key,
+  );
+  if (existing) return existing;
+  return createWorkspaceRow(name.trim(), { plan_id: getDefaultPlan()?.id ?? null });
+}
+
+export function getWorkspace(workspaceId: string): WorkspaceRow | undefined {
+  return db.prepare('SELECT * FROM workspaces WHERE id = ?').get(workspaceId) as WorkspaceRow | undefined;
+}
+
+const WORKSPACE_COLUMNS = new Set([
+  'name', 'plan_id', 'cpu_cores', 'memory_mb', 'disk_mb', 'max_projects', 'max_services',
+  'max_members', 'modules_override', 'owner_disabled_modules', 'status', 'billing_email',
+  'billing_tax_id', 'billing_address', 'billing_day', 'discount_pct', 'notes',
+  'ai_suspended', 'dunning_stage', 'dunning_since', 'last_dunning_action_at', 'dunning_exempt',
+]);
+
+export function updateWorkspace(workspaceId: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields).filter((k) => WORKSPACE_COLUMNS.has(k));
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE workspaces SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), workspaceId);
+  // Al renombrar, refresca el reflejo denormalizado en sus proyectos (agrupación de la UI).
+  if (typeof fields.name === 'string') {
+    db.prepare('UPDATE projects SET client = ? WHERE workspace_id = ?').run(fields.name, workspaceId);
+  }
+}
+
+export function deleteWorkspace(workspaceId: string): void {
+  // Los proyectos quedan sin asignar (no se borran): SET NULL manual + limpia el reflejo.
+  db.prepare('UPDATE projects SET workspace_id = NULL, client = NULL WHERE workspace_id = ?').run(workspaceId);
+  // Los sub-usuarios del workspace se quedan huérfanos: se borran en cascada lógica desde la ruta.
+  db.prepare('DELETE FROM workspaces WHERE id = ?').run(workspaceId);
+}
+
+// ---------- cuota agregada del workspace (a todos sus proyectos en total) ----------
+/** Todos los servicios de todos los proyectos de un workspace (para la cuota agregada). */
+export function listWorkspaceServices(workspaceId: string): ServiceRow[] {
+  return (
+    db
+      .prepare(
+        `SELECT s.* FROM services s JOIN projects p ON p.id = s.project_id WHERE p.workspace_id = ? ORDER BY s.created_at ASC`,
+      )
+      .all(workspaceId) as any[]
+  ).map(parseService);
+}
+
+export function countWorkspaceServices(workspaceId: string): number {
+  return (
+    db
+      .prepare('SELECT COUNT(*) AS c FROM services s JOIN projects p ON p.id = s.project_id WHERE p.workspace_id = ?')
+      .get(workspaceId) as any
+  ).c;
+}
+
+/** Suma del histórico de consumo del workspace en un rango horario, para facturación/uso. */
+export function workspaceUsageRange(
+  workspaceId: string,
+  fromHour: number,
+  toHour: number,
+): { buckets: number; cpuCorePctHours: number; memByteHours: number; cpuMax: number; memMax: number; diskMax: number } {
+  const row = db
+    .prepare(
+      `SELECT
+         COUNT(*) AS buckets,
+         COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.cpu_sum * 1.0 / m.samples ELSE 0 END), 0) AS cpuCorePctHours,
+         COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.mem_sum * 1.0 / m.samples ELSE 0 END), 0) AS memByteHours,
+         COALESCE(MAX(m.cpu_max), 0) AS cpuMax,
+         COALESCE(MAX(m.mem_max), 0) AS memMax,
+         COALESCE(MAX(m.disk_last), 0) AS diskMax
+       FROM service_metrics_hourly m
+       JOIN services s ON s.id = m.service_id
+       JOIN projects p ON p.id = s.project_id
+       WHERE p.workspace_id = ? AND m.hour >= ? AND m.hour < ?`,
+    )
+    .get(workspaceId, fromHour, toHour) as any;
+  return {
+    buckets: row.buckets,
+    cpuCorePctHours: row.cpuCorePctHours,
+    memByteHours: row.memByteHours,
+    cpuMax: row.cpuMax,
+    memMax: row.memMax,
+    diskMax: row.diskMax,
+  };
+}
+
+// ---------- facturas ----------
+export function listInvoices(workspaceId: string): InvoiceRow[] {
+  return db
+    .prepare('SELECT * FROM workspace_invoices WHERE workspace_id = ? ORDER BY period_start DESC, created_at DESC')
+    .all(workspaceId) as InvoiceRow[];
+}
+
+export function getInvoice(invoiceId: string): InvoiceRow | undefined {
+  return db.prepare('SELECT * FROM workspace_invoices WHERE id = ?').get(invoiceId) as InvoiceRow | undefined;
+}
+
+/** Valores por defecto de las columnas fiscales/opcionales de una factura nueva. */
+const INVOICE_DEFAULTS = {
+  series_id: null, number: null, invoice_type: 'normal', rectifies_invoice_id: null, rectify_reason: null,
+  operation_date: null, tax_breakdown: '[]', vat_regime: 'general', legal_mentions: null,
+  irpf_rate: 0, irpf_cents: 0, issuer_snapshot: null, client_name: null, client_tax_id: null,
+  client_address: null, plan_name: null, payment_method: null, stripe_session_id: null,
+  stripe_url: null, issued_at: null, paid_at: null, locked: 0, notes: null,
+} as const;
+
+type InvoiceCore = Pick<
+  InvoiceRow,
+  'workspace_id' | 'period_start' | 'period_end' | 'status' | 'currency' | 'subtotal_cents' | 'tax_cents' | 'tax_rate' | 'total_cents' | 'lines'
+>;
+
+export function createInvoice(row: InvoiceCore & Partial<InvoiceRow>): InvoiceRow {
+  const full: InvoiceRow = { ...INVOICE_DEFAULTS, ...row, id: id('inv'), created_at: now() };
+  db.prepare(
+    `INSERT INTO workspace_invoices (
+       id, workspace_id, series_id, number, invoice_type, rectifies_invoice_id, rectify_reason,
+       period_start, period_end, operation_date, status, currency, subtotal_cents, tax_cents, tax_rate,
+       tax_breakdown, vat_regime, legal_mentions, irpf_rate, irpf_cents, total_cents, lines, plan_name,
+       issuer_snapshot, client_name, client_tax_id, client_address, payment_method, stripe_session_id,
+       stripe_url, issued_at, paid_at, locked, notes, created_at)
+     VALUES (
+       @id, @workspace_id, @series_id, @number, @invoice_type, @rectifies_invoice_id, @rectify_reason,
+       @period_start, @period_end, @operation_date, @status, @currency, @subtotal_cents, @tax_cents, @tax_rate,
+       @tax_breakdown, @vat_regime, @legal_mentions, @irpf_rate, @irpf_cents, @total_cents, @lines, @plan_name,
+       @issuer_snapshot, @client_name, @client_tax_id, @client_address, @payment_method, @stripe_session_id,
+       @stripe_url, @issued_at, @paid_at, @locked, @notes, @created_at)`,
+  ).run(full);
+  return full;
+}
+
+const INVOICE_COLUMNS = new Set([
+  'series_id', 'number', 'invoice_type', 'rectifies_invoice_id', 'rectify_reason', 'period_start',
+  'period_end', 'operation_date', 'status', 'currency', 'subtotal_cents', 'tax_cents', 'tax_rate',
+  'tax_breakdown', 'vat_regime', 'legal_mentions', 'irpf_rate', 'irpf_cents', 'total_cents', 'lines',
+  'plan_name', 'issuer_snapshot', 'client_name', 'client_tax_id', 'client_address', 'payment_method',
+  'stripe_session_id', 'stripe_url', 'issued_at', 'paid_at', 'locked', 'notes',
+]);
+
+export function updateInvoice(invoiceId: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields).filter((k) => INVOICE_COLUMNS.has(k));
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE workspace_invoices SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), invoiceId);
+}
+
+/**
+ * Devuelve a «pendiente» los cargos puntuales que estaban enlazados a una factura
+ * (al borrarla o anularla), para que no se pierdan y vuelvan a la próxima factura.
+ */
+export function reopenChargesForInvoice(invoiceId: string): void {
+  db.prepare("UPDATE pending_charges SET status = 'pending', invoice_id = NULL WHERE invoice_id = ? AND status = 'invoiced'").run(invoiceId);
+}
+
+export function deleteInvoice(invoiceId: string): void {
+  db.transaction(() => {
+    reopenChargesForInvoice(invoiceId); // no perder los cargos enlazados
+    db.prepare('DELETE FROM workspace_invoices WHERE id = ?').run(invoiceId);
+  })();
+}
+
+export function getInvoiceByStripeSession(sessionId: string): InvoiceRow | undefined {
+  return db.prepare('SELECT * FROM workspace_invoices WHERE stripe_session_id = ?').get(sessionId) as InvoiceRow | undefined;
+}
+
+/** ¿Tiene el workspace facturas (opcionalmente solo las que ya no son borrador)? */
+export function workspaceHasInvoices(workspaceId: string, nonDraftOnly = false): boolean {
+  const sql = nonDraftOnly
+    ? "SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND status <> 'draft' LIMIT 1"
+    : 'SELECT 1 FROM workspace_invoices WHERE workspace_id = ? LIMIT 1';
+  return !!db.prepare(sql).get(workspaceId);
+}
+
+/**
+ * Asigna atómicamente el siguiente número de una serie por ejercicio (crea la
+ * serie si no existe). El número incluye el año para reiniciar la numeración
+ * cada ejercicio (p. ej. «FRA-2026-0001»). Sustituye al antiguo contador global.
+ */
+export function assignSeriesNumber(opts: {
+  code: string;
+  year: number;
+  prefix: string;
+  kind: InvoiceSeriesRow['kind'];
+  padding?: number;
+}): { seriesId: string; number: string; seq: number } {
+  return db.transaction(() => {
+    let s = db.prepare('SELECT * FROM invoice_series WHERE code = ? AND year = ?').get(opts.code, opts.year) as
+      | InvoiceSeriesRow
+      | undefined;
+    if (!s) {
+      s = {
+        id: id('ser'), code: opts.code, year: opts.year, prefix: opts.prefix,
+        padding: opts.padding ?? 4, next_seq: 1, kind: opts.kind, created_at: now(),
+      };
+      db.prepare(
+        'INSERT INTO invoice_series (id, code, year, prefix, padding, next_seq, kind, created_at) VALUES (@id, @code, @year, @prefix, @padding, @next_seq, @kind, @created_at)',
+      ).run(s);
+    }
+    const seq = s.next_seq;
+    db.prepare('UPDATE invoice_series SET next_seq = ? WHERE id = ?').run(seq + 1, s.id);
+    const p = (s.prefix || '').trim();
+    const number = `${p}${p ? '-' : ''}${opts.year}-${String(seq).padStart(s.padding, '0')}`;
+    return { seriesId: s.id, number, seq };
+  })();
+}
+
+export function listInvoiceSeries(): InvoiceSeriesRow[] {
+  return db.prepare('SELECT * FROM invoice_series ORDER BY year DESC, code ASC').all() as InvoiceSeriesRow[];
+}
+
+/** Todas las facturas de todos los workspaces, con el nombre del cliente, para la contabilidad. */
+export function listAllInvoices(filter: { status?: string; fromMs?: number; toMs?: number } = {}): (InvoiceRow & { workspace_name: string | null })[] {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (filter.status) {
+    where.push('i.status = ?');
+    params.push(filter.status);
+  }
+  if (filter.fromMs !== undefined) {
+    where.push('i.period_start >= ?');
+    params.push(filter.fromMs);
+  }
+  if (filter.toMs !== undefined) {
+    where.push('i.period_start < ?');
+    params.push(filter.toMs);
+  }
+  const sql = `SELECT i.*, w.name AS workspace_name FROM workspace_invoices i
+     LEFT JOIN workspaces w ON w.id = i.workspace_id
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY i.created_at DESC`;
+  return db.prepare(sql).all(...params) as (InvoiceRow & { workspace_name: string | null })[];
+}
+
+/**
+ * Serie de uso agregado del workspace por cubos (para las gráficas): núcleo·h y
+ * GB·h de RAM por cubo, foto de disco y tráfico de red. Rellena la rejilla con
+ * ceros en los cubos sin datos para que el eje temporal sea continuo.
+ */
+export function workspaceUsageSeries(
+  workspaceId: string,
+  fromHour: number,
+  toHour: number,
+  bucketHours: number,
+): { t: number; cpuCoreHours: number; ramGbHours: number; diskGb: number; netBytes: number }[] {
+  const rows = db
+    .prepare(
+      // CAST a INTEGER: la división debe ser entera (cubo por día/hora); si no, la
+      // clave sale fraccionaria y no casa con la rejilla entera del bucle de abajo.
+      `SELECT CAST(m.hour / ? AS INTEGER) AS bucket,
+         COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.cpu_sum * 1.0 / m.samples ELSE 0 END), 0) AS cpuPctHours,
+         COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.mem_sum * 1.0 / m.samples ELSE 0 END), 0) AS memByteHours,
+         COALESCE(MAX(m.disk_last), 0) AS diskLast,
+         COALESCE(SUM(m.net_rx + m.net_tx), 0) AS netBytes
+       FROM service_metrics_hourly m
+       JOIN services s ON s.id = m.service_id
+       JOIN projects p ON p.id = s.project_id
+       WHERE p.workspace_id = ? AND m.hour >= ? AND m.hour < ?
+       GROUP BY bucket`,
+    )
+    .all(bucketHours, workspaceId, fromHour, toHour) as {
+    bucket: number;
+    cpuPctHours: number;
+    memByteHours: number;
+    diskLast: number;
+    netBytes: number;
+  }[];
+  const byBucket = new Map(rows.map((r) => [r.bucket, r]));
+  const out: { t: number; cpuCoreHours: number; ramGbHours: number; diskGb: number; netBytes: number }[] = [];
+  for (let b = Math.floor(fromHour / bucketHours); b < Math.ceil(toHour / bucketHours); b++) {
+    const r = byBucket.get(b);
+    out.push({
+      t: b * bucketHours * 3_600_000,
+      cpuCoreHours: r ? Math.round((r.cpuPctHours / 100) * 100) / 100 : 0,
+      ramGbHours: r ? Math.round((r.memByteHours / 1e9) * 100) / 100 : 0,
+      diskGb: r ? Math.round((r.diskLast / 1e9) * 100) / 100 : 0,
+      netBytes: r ? r.netBytes : 0,
+    });
+  }
+  return out;
+}
+
+/** Consumo por proyecto del workspace en un rango (para el top de consumidores / insights). */
+export function workspaceUsageByProject(
+  workspaceId: string,
+  fromHour: number,
+  toHour: number,
+): { projectId: string; name: string; cpuCoreHours: number; ramGbHours: number }[] {
+  return db
+    .prepare(
+      `SELECT p.id AS projectId, p.name AS name,
+         COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.cpu_sum * 1.0 / m.samples ELSE 0 END), 0) / 100.0 AS cpuCoreHours,
+         COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.mem_sum * 1.0 / m.samples ELSE 0 END), 0) / 1e9 AS ramGbHours
+       FROM service_metrics_hourly m
+       JOIN services s ON s.id = m.service_id
+       JOIN projects p ON p.id = s.project_id
+       WHERE p.workspace_id = ? AND m.hour >= ? AND m.hour < ?
+       GROUP BY p.id
+       ORDER BY cpuCoreHours DESC`,
+    )
+    .all(workspaceId, fromHour, toHour) as { projectId: string; name: string; cpuCoreHours: number; ramGbHours: number }[];
+}
+
+// ---------- catálogo multimodular ----------
+function uniqueProductSlug(name: string): string {
+  const base = slugify(name) || 'producto';
+  let candidate = base;
+  let n = 2;
+  while (db.prepare('SELECT 1 FROM catalog_products WHERE slug = ?').get(candidate)) {
+    candidate = `${base}-${n++}`;
+  }
+  return candidate;
+}
+
+export function listProducts(includeArchived = false): ProductRow[] {
+  const sql = includeArchived
+    ? 'SELECT * FROM catalog_products ORDER BY archived ASC, category ASC, name ASC'
+    : 'SELECT * FROM catalog_products WHERE archived = 0 ORDER BY category ASC, name ASC';
+  return db.prepare(sql).all() as ProductRow[];
+}
+
+export function getProduct(productId: string): ProductRow | undefined {
+  return db.prepare('SELECT * FROM catalog_products WHERE id = ?').get(productId) as ProductRow | undefined;
+}
+
+const PRODUCT_DEFAULTS = {
+  category: 'custom', billing_model: 'flat_one_off', price_cents: 0, currency: 'EUR', interval: 'one_off',
+  unit: '', unit_size: 1, meter: null, tier_mode: null, tax_rate: 21, irpf_rate: 0, tax_exempt: 0, modules: '[]',
+  description: null, active: 1, archived: 0,
+} as const;
+
+export function createProduct(row: Pick<ProductRow, 'name'> & Partial<ProductRow>): ProductRow {
+  const full: ProductRow = { ...PRODUCT_DEFAULTS, ...row, id: id('prd'), slug: uniqueProductSlug(row.name), created_at: now() };
+  db.prepare(
+    `INSERT INTO catalog_products (id, name, slug, category, billing_model, price_cents, currency, interval, unit, unit_size, meter, tier_mode, tax_rate, irpf_rate, tax_exempt, modules, description, active, archived, created_at)
+     VALUES (@id, @name, @slug, @category, @billing_model, @price_cents, @currency, @interval, @unit, @unit_size, @meter, @tier_mode, @tax_rate, @irpf_rate, @tax_exempt, @modules, @description, @active, @archived, @created_at)`,
+  ).run(full);
+  return full;
+}
+
+const PRODUCT_COLUMNS = new Set([
+  'name', 'category', 'billing_model', 'price_cents', 'currency', 'interval', 'unit', 'unit_size', 'meter', 'tier_mode',
+  'tax_rate', 'irpf_rate', 'tax_exempt', 'modules', 'description', 'active', 'archived',
+]);
+
+export function updateProduct(productId: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields).filter((k) => PRODUCT_COLUMNS.has(k));
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE catalog_products SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), productId);
+}
+
+export function deleteProduct(productId: string): void {
+  db.prepare('DELETE FROM catalog_products WHERE id = ?').run(productId);
+}
+
+/** ¿Hay alguna suscripción (activa o pausada) que use este producto? */
+export function productInUse(productId: string): boolean {
+  return !!db
+    .prepare("SELECT 1 FROM workspace_subscriptions WHERE product_id = ? AND status <> 'cancelled' LIMIT 1")
+    .get(productId);
+}
+
+export function listTiers(productId: string): PriceTierRow[] {
+  return db.prepare('SELECT * FROM catalog_price_tiers WHERE product_id = ? ORDER BY sort ASC').all(productId) as PriceTierRow[];
+}
+
+/** Reemplaza el conjunto de tramos de un producto (todo o nada). */
+export function replaceTiers(productId: string, tiers: { upTo: number | null; unitCents: number; flatCents: number }[]): void {
+  db.transaction(() => {
+    db.prepare('DELETE FROM catalog_price_tiers WHERE product_id = ?').run(productId);
+    const ins = db.prepare(
+      'INSERT INTO catalog_price_tiers (id, product_id, up_to, unit_cents, flat_cents, sort, created_at) VALUES (@id, @product_id, @up_to, @unit_cents, @flat_cents, @sort, @created_at)',
+    );
+    tiers.forEach((t, i) =>
+      ins.run({ id: id('tir'), product_id: productId, up_to: t.upTo, unit_cents: t.unitCents, flat_cents: t.flatCents, sort: i, created_at: now() }),
+    );
+  })();
+}
+
+// ---------- suscripciones ----------
+export function listSubscriptions(workspaceId: string): SubscriptionRow[] {
+  return db
+    .prepare("SELECT * FROM workspace_subscriptions WHERE workspace_id = ? ORDER BY status ASC, created_at DESC")
+    .all(workspaceId) as SubscriptionRow[];
+}
+
+export function listActiveSubscriptions(workspaceId: string): SubscriptionRow[] {
+  return db
+    .prepare("SELECT * FROM workspace_subscriptions WHERE workspace_id = ? AND status = 'active' ORDER BY created_at ASC")
+    .all(workspaceId) as SubscriptionRow[];
+}
+
+export function getSubscription(subId: string): SubscriptionRow | undefined {
+  return db.prepare('SELECT * FROM workspace_subscriptions WHERE id = ?').get(subId) as SubscriptionRow | undefined;
+}
+
+export function createSubscription(row: Omit<SubscriptionRow, 'id' | 'created_at'>): SubscriptionRow {
+  const full: SubscriptionRow = { ...row, id: id('sub'), created_at: now() };
+  db.prepare(
+    `INSERT INTO workspace_subscriptions (id, workspace_id, product_id, service_id, qty, unit_cents, currency, interval, status, anchor_day, started_at, cancelled_at, created_at)
+     VALUES (@id, @workspace_id, @product_id, @service_id, @qty, @unit_cents, @currency, @interval, @status, @anchor_day, @started_at, @cancelled_at, @created_at)`,
+  ).run(full);
+  return full;
+}
+
+const SUBSCRIPTION_COLUMNS = new Set(['service_id', 'qty', 'unit_cents', 'currency', 'interval', 'status', 'anchor_day', 'cancelled_at']);
+
+export function updateSubscription(subId: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields).filter((k) => SUBSCRIPTION_COLUMNS.has(k));
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE workspace_subscriptions SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), subId);
+}
+
+export function deleteSubscription(subId: string): void {
+  db.prepare('DELETE FROM workspace_subscriptions WHERE id = ?').run(subId);
+}
+
+/** Cambia el estado de todas las suscripciones de un workspace (corte/reactivación). */
+export function setWorkspaceSubscriptionsStatus(workspaceId: string, from: string, to: string): number {
+  return db.prepare('UPDATE workspace_subscriptions SET status = ? WHERE workspace_id = ? AND status = ?').run(to, workspaceId, from).changes;
+}
+
+/** Facturas emitidas y aún no cobradas (candidatas a morosidad). */
+export function listUnpaidIssuedInvoices(): InvoiceRow[] {
+  return db.prepare("SELECT * FROM workspace_invoices WHERE status = 'issued' AND paid_at IS NULL ORDER BY issued_at ASC").all() as InvoiceRow[];
+}
+
+/** ¿Ya existe una factura para ese ciclo del workspace? (idempotencia de la facturación automática). */
+export function invoiceExistsForCycle(workspaceId: string, periodStart: number): boolean {
+  return !!db.prepare('SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? LIMIT 1').get(workspaceId, periodStart);
+}
+
+// ---------- cargos puntuales pendientes ----------
+export function listPendingCharges(workspaceId: string, status?: PendingChargeRow['status']): PendingChargeRow[] {
+  if (status) {
+    return db
+      .prepare('SELECT * FROM pending_charges WHERE workspace_id = ? AND status = ? ORDER BY created_at DESC')
+      .all(workspaceId, status) as PendingChargeRow[];
+  }
+  return db.prepare('SELECT * FROM pending_charges WHERE workspace_id = ? ORDER BY created_at DESC').all(workspaceId) as PendingChargeRow[];
+}
+
+export function getPendingCharge(chargeId: string): PendingChargeRow | undefined {
+  return db.prepare('SELECT * FROM pending_charges WHERE id = ?').get(chargeId) as PendingChargeRow | undefined;
+}
+
+export function createPendingCharge(row: Omit<PendingChargeRow, 'id' | 'created_at' | 'status' | 'invoice_id'>): PendingChargeRow {
+  const full: PendingChargeRow = { ...row, id: id('chg'), status: 'pending', invoice_id: null, created_at: now() };
+  db.prepare(
+    `INSERT INTO pending_charges (id, workspace_id, product_id, label, kind, qty, unit_cents, tax_rate, irpf_rate, status, invoice_id, created_at)
+     VALUES (@id, @workspace_id, @product_id, @label, @kind, @qty, @unit_cents, @tax_rate, @irpf_rate, @status, @invoice_id, @created_at)`,
+  ).run(full);
+  return full;
+}
+
+export function cancelPendingCharge(chargeId: string): void {
+  db.prepare("UPDATE pending_charges SET status = 'cancelled' WHERE id = ? AND status = 'pending'").run(chargeId);
+}
+
+/** Marca varios cargos como facturados, enlazándolos a la factura. */
+export function markChargesInvoiced(chargeIds: string[], invoiceId: string): void {
+  if (chargeIds.length === 0) return;
+  const stmt = db.prepare("UPDATE pending_charges SET status = 'invoiced', invoice_id = ? WHERE id = ? AND status = 'pending'");
+  db.transaction(() => {
+    for (const cid of chargeIds) stmt.run(invoiceId, cid);
+  })();
+}
+
+// ---------- ingesta y agregación de uso (IA y contadores lógicos) ----------
+/** Ingesta idempotente de un evento de consumo. Devuelve false si es duplicado. */
+export function ingestUsageEvent(evt: {
+  idempotencyKey: string;
+  subjectType: 'workspace' | 'service';
+  subjectId: string;
+  meter: string;
+  quantity: number;
+  productId?: string | null;
+  ts: number;
+  metadata?: string | null;
+}): boolean {
+  return db.transaction(() => {
+    const res = db
+      .prepare(
+        `INSERT OR IGNORE INTO usage_events (id, idempotency_key, subject_type, subject_id, meter, quantity, product_id, ts, metadata)
+         VALUES (@id, @idempotency_key, @subject_type, @subject_id, @meter, @quantity, @product_id, @ts, @metadata)`,
+      )
+      .run({
+        id: id('use'), idempotency_key: evt.idempotencyKey, subject_type: evt.subjectType, subject_id: evt.subjectId,
+        meter: evt.meter, quantity: evt.quantity, product_id: evt.productId ?? null, ts: evt.ts, metadata: evt.metadata ?? null,
+      });
+    if (res.changes === 0) return false; // idempotency_key ya visto
+    const hour = Math.floor(evt.ts / 3_600_000);
+    db.prepare(
+      `INSERT INTO usage_meter_hourly (subject_type, subject_id, meter, hour, quantity)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(subject_id, meter, hour) DO UPDATE SET quantity = quantity + excluded.quantity`,
+    ).run(evt.subjectType, evt.subjectId, evt.meter, hour, evt.quantity);
+    return true;
+  })();
+}
+
+/**
+ * Consumo agregado de un medidor lógico/IA para un workspace en un rango horario,
+ * sumando tanto los eventos imputados al propio workspace como a sus servicios.
+ */
+export function workspaceMeterUsage(workspaceId: string, meter: string, fromHour: number, toHour: number): number {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(u.quantity), 0) AS total
+       FROM usage_meter_hourly u
+       WHERE u.meter = ? AND u.hour >= ? AND u.hour < ? AND (
+         (u.subject_type = 'workspace' AND u.subject_id = ?)
+         OR (u.subject_type = 'service' AND u.subject_id IN (
+           SELECT s.id FROM services s JOIN projects p ON p.id = s.project_id WHERE p.workspace_id = ?
+         ))
+       )`,
+    )
+    .get(meter, fromHour, toHour, workspaceId, workspaceId) as { total: number };
+  return row.total;
+}
+
+// ---------- claves de API por cuenta (proxy de IA) ----------
+export function createWorkspaceApiKey(
+  row: Pick<WorkspaceApiKeyRow, 'workspace_id' | 'name' | 'key_hash' | 'prefix'> & Partial<WorkspaceApiKeyRow>,
+): WorkspaceApiKeyRow {
+  const full: WorkspaceApiKeyRow = {
+    provider: 'gemini', allowed_models: '[]', status: 'active', budget_cents_month: null, spend_cents_cycle: 0,
+    cycle_anchor: null, rate_limit_rpm: null, last_used_at: null, expires_at: null, created_by: null, revoked_at: null,
+    ...row, id: id('wak'), created_at: now(),
+  };
+  db.prepare(
+    `INSERT INTO workspace_api_keys (id, workspace_id, name, key_hash, prefix, provider, allowed_models, status, budget_cents_month, spend_cents_cycle, cycle_anchor, rate_limit_rpm, last_used_at, expires_at, created_by, created_at, revoked_at)
+     VALUES (@id, @workspace_id, @name, @key_hash, @prefix, @provider, @allowed_models, @status, @budget_cents_month, @spend_cents_cycle, @cycle_anchor, @rate_limit_rpm, @last_used_at, @expires_at, @created_by, @created_at, @revoked_at)`,
+  ).run(full);
+  return full;
+}
+
+export function listWorkspaceApiKeys(workspaceId: string): WorkspaceApiKeyRow[] {
+  return db
+    .prepare("SELECT * FROM workspace_api_keys WHERE workspace_id = ? AND status <> 'revoked' ORDER BY created_at DESC")
+    .all(workspaceId) as WorkspaceApiKeyRow[];
+}
+
+export function getWorkspaceApiKey(keyId: string): WorkspaceApiKeyRow | undefined {
+  return db.prepare('SELECT * FROM workspace_api_keys WHERE id = ?').get(keyId) as WorkspaceApiKeyRow | undefined;
+}
+
+/** Busca una clave por su hash. Se consulta en CADA petición del proxy (sin caché), para que suspender/revocar surta efecto al instante. */
+export function getWorkspaceApiKeyByHash(hash: string): WorkspaceApiKeyRow | undefined {
+  return db.prepare('SELECT * FROM workspace_api_keys WHERE key_hash = ?').get(hash) as WorkspaceApiKeyRow | undefined;
+}
+
+const WS_API_KEY_COLUMNS = new Set(['name', 'allowed_models', 'status', 'budget_cents_month', 'spend_cents_cycle', 'cycle_anchor', 'rate_limit_rpm', 'expires_at', 'revoked_at']);
+
+export function updateWorkspaceApiKey(keyId: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields).filter((k) => WS_API_KEY_COLUMNS.has(k));
+  if (keys.length === 0) return;
+  const sets = keys.map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE workspace_api_keys SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), keyId);
+}
+
+/** Cambia el estado de TODAS las claves de un workspace (corte/reactivación por impago). */
+export function setWorkspaceKeysStatus(workspaceId: string, from: string, to: string): number {
+  return db.prepare('UPDATE workspace_api_keys SET status = ? WHERE workspace_id = ? AND status = ?').run(to, workspaceId, from).changes;
+}
+
+/** Actualiza `last_used_at` de forma diferida (como los tokens de panel): solo si pasó >60 s. */
+export function touchWorkspaceApiKey(keyId: string, lastUsed: number | null): void {
+  const t = now();
+  if (lastUsed && t - lastUsed < 60_000) return;
+  db.prepare('UPDATE workspace_api_keys SET last_used_at = ? WHERE id = ?').run(t, keyId);
+}
+
+/** Acumula gasto del ciclo en la clave (para el tope de presupuesto). */
+export function incrementWorkspaceApiKeySpend(keyId: string, cents: number): void {
+  if (cents <= 0) return;
+  db.prepare('UPDATE workspace_api_keys SET spend_cents_cycle = spend_cents_cycle + ? WHERE id = ?').run(Math.round(cents), keyId);
+}
+
+/** Reancla el contador de gasto de la clave al inicio del ciclo actual (reset mensual). */
+export function resetWorkspaceApiKeyCycle(keyId: string, cycleStart: number): void {
+  db.prepare('UPDATE workspace_api_keys SET spend_cents_cycle = 0, cycle_anchor = ? WHERE id = ?').run(cycleStart, keyId);
+}
+
+// ---------- coste del operador por modelo (margen; Fase 2) ----------
+
+/** Coste registrado del operador por modelo (micro-céntimos por millón de tokens). */
+export function listModelPrices(): AiModelPriceRow[] {
+  return db.prepare('SELECT * FROM ai_model_prices ORDER BY model ASC').all() as AiModelPriceRow[];
+}
+export function getModelPrice(model: string): AiModelPriceRow | undefined {
+  return db.prepare('SELECT * FROM ai_model_prices WHERE model = ?').get(model) as AiModelPriceRow | undefined;
+}
+/** Alta o actualización (upsert) del coste de un modelo. Valores en micro-céntimos por Mtok. */
+export function setModelPrice(p: { model: string; cost_micros_in: number; cost_micros_cache: number; cost_micros_out: number; margin_pct?: number; currency?: string }): AiModelPriceRow {
+  db.prepare(
+    `INSERT INTO ai_model_prices (model, cost_micros_in, cost_micros_cache, cost_micros_out, margin_pct, currency, updated_at)
+     VALUES (@model, @cost_micros_in, @cost_micros_cache, @cost_micros_out, @margin_pct, @currency, @updated_at)
+     ON CONFLICT(model) DO UPDATE SET
+       cost_micros_in = excluded.cost_micros_in,
+       cost_micros_cache = excluded.cost_micros_cache,
+       cost_micros_out = excluded.cost_micros_out,
+       margin_pct = excluded.margin_pct,
+       currency = excluded.currency,
+       updated_at = excluded.updated_at`,
+  ).run({
+    model: p.model,
+    cost_micros_in: Math.max(0, Math.round(p.cost_micros_in)),
+    cost_micros_cache: Math.max(0, Math.round(p.cost_micros_cache)),
+    cost_micros_out: Math.max(0, Math.round(p.cost_micros_out)),
+    // Margen s/ venta en [0,95): PVP = coste/(1−m/100); tope <100 evita división por 0.
+    margin_pct: Math.max(0, Math.min(95, p.margin_pct ?? 0)),
+    currency: p.currency ?? 'EUR',
+    updated_at: now(),
+  });
+  return getModelPrice(p.model)!;
+}
+export function deleteModelPrice(model: string): number {
+  return db.prepare('DELETE FROM ai_model_prices WHERE model = ?').run(model).changes;
 }

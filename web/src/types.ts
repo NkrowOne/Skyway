@@ -1,8 +1,14 @@
-export type UserRole = 'admin' | 'member';
+export type UserRole = 'admin' | 'owner' | 'member';
 
 export interface Me {
   needsSetup: boolean;
-  user: { id: string; email: string; role: UserRole } | null;
+  user: {
+    id: string;
+    email: string;
+    role: UserRole;
+    workspaceId?: string | null;
+    workspaceName?: string | null;
+  } | null;
 }
 
 export interface UserSummary {
@@ -10,6 +16,8 @@ export interface UserSummary {
   email: string;
   role: UserRole;
   created_at: number;
+  workspaceId?: string | null;
+  workspaceName?: string | null;
   projectIds: string[];
   passkeys: number;
   tokens: number;
@@ -80,10 +88,446 @@ export interface Project {
   name: string;
   slug: string;
   client: string | null;
+  workspace_id?: string | null;
   created_at: number;
   serviceCount?: number;
   lastDeployAt?: number | null;
   openAlerts?: number;
+}
+
+// ---------- cuentas de cliente: workspaces, planes, facturación ----------
+
+export type WorkspaceStatus = 'active' | 'suspended';
+export type BillingInterval = 'monthly' | 'yearly';
+
+export interface EffectiveQuota {
+  cpuCores: number;
+  memoryMb: number;
+  diskMb: number;
+  maxProjects: number;
+  maxServices: number;
+  maxMembers: number;
+}
+
+export interface WorkspaceAllocation {
+  cpuCores: number;
+  memoryMb: number;
+  diskMb: number;
+  projects: number;
+  services: number;
+  members: number;
+  unlimited: { cpu: number; memory: number; disk: number };
+}
+
+export interface WorkspaceModules {
+  granted: string[];
+  disabled: string[];
+  effective: string[];
+}
+
+export interface WorkspacePlanRef {
+  id: string;
+  name: string;
+  price_cents: number;
+  currency: string;
+  interval: BillingInterval;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  slug: string;
+  status: WorkspaceStatus;
+  plan_id: string | null;
+  billing_email: string | null;
+  billing_tax_id: string | null;
+  billing_address: string | null;
+  billing_day: number;
+  /** Descuento comercial (%) de la cuenta; null = hereda el del plan. */
+  discount_pct: number | null;
+  notes: string | null;
+  /** Corte del proxy de IA por impago (0/1). */
+  ai_suspended: number;
+  /** Etapa de morosidad: 0 al día · 1 vencida · 2 suspendida · 3 cancelada. */
+  dunning_stage: number;
+  created_at: number;
+  plan: WorkspacePlanRef | null;
+  quota: EffectiveQuota;
+  allocation: WorkspaceAllocation;
+  modules: WorkspaceModules;
+  over: { cpu: boolean; memory: boolean; disk: boolean; projects: boolean; services: boolean; members: boolean };
+  inheriting: {
+    cpuCores: boolean;
+    memoryMb: boolean;
+    diskMb: boolean;
+    maxProjects: boolean;
+    maxServices: boolean;
+    maxMembers: boolean;
+    modules: boolean;
+  };
+}
+
+export interface WorkspaceProject {
+  id: string;
+  name: string;
+  slug: string;
+  serviceCount: number;
+  created_at: number;
+}
+
+export interface WorkspaceMember {
+  id: string;
+  email: string;
+  role: UserRole;
+  created_at: number;
+  projectIds: string[];
+}
+
+export interface WorkspaceUsage {
+  days: number;
+  cpuCoreHours: number;
+  ramGbHours: number;
+  cpuMaxCores: number;
+  ramMaxGb: number;
+  diskMaxGb: number;
+}
+
+export interface Plan {
+  id: string;
+  name: string;
+  slug: string;
+  price_cents: number;
+  currency: string;
+  interval: BillingInterval;
+  cpu_cores: number;
+  memory_mb: number;
+  disk_mb: number;
+  max_projects: number;
+  max_services: number;
+  max_members: number;
+  modules: string[];
+  is_default: boolean;
+  archived: boolean;
+  /** Descuento comercial (%) aplicado a las facturas de las cuentas de este plan. */
+  discount_pct: number;
+  created_at: number;
+  inUse: number;
+}
+
+export type ModuleGroup = 'Cómputo' | 'Datos' | 'Red' | 'Operación';
+
+export interface ModuleDef {
+  key: string;
+  label: string;
+  description: string;
+  group: ModuleGroup;
+}
+
+export type InvoiceStatus = 'draft' | 'issued' | 'paid' | 'void';
+export type PaymentMethod = 'bank_transfer' | 'stripe' | 'card' | 'cash' | 'other';
+export type InvoiceType = 'normal' | 'simplificada' | 'rectificativa';
+export type VatRegime =
+  | 'general'
+  | 'exento_intracom_art25'
+  | 'exento_export_art21'
+  | 'inversion_sujeto_pasivo'
+  | 'recargo_equivalencia'
+  | 'exento_otros'
+  | 'no_sujeto';
+
+export interface InvoiceLine {
+  label: string;
+  kind: 'plan' | 'usage' | 'custom' | 'product' | 'subscription' | 'discount';
+  qty: number;
+  unitCents: number;
+  amountCents: number;
+  taxRate?: number;
+}
+
+export interface TaxBreakdownEntry {
+  rate: number;
+  base_cents: number;
+  quota_cents: number;
+  re_rate?: number;
+  re_cents?: number;
+}
+
+export interface IssuerSnapshot {
+  companyName: string;
+  taxId: string;
+  address: string;
+  email: string;
+  phone: string;
+}
+
+export interface Invoice {
+  id: string;
+  workspace_id: string;
+  series_id: string | null;
+  number: string | null;
+  invoice_type: InvoiceType;
+  rectifies_invoice_id: string | null;
+  rectify_reason: string | null;
+  period_start: number;
+  period_end: number;
+  operation_date: number | null;
+  status: InvoiceStatus;
+  currency: string;
+  subtotal_cents: number;
+  tax_cents: number;
+  tax_rate: number;
+  tax_breakdown: TaxBreakdownEntry[];
+  vat_regime: VatRegime;
+  legal_mentions: string | null;
+  irpf_rate: number;
+  irpf_cents: number;
+  total_cents: number;
+  lines: InvoiceLine[];
+  plan_name: string | null;
+  issuer_snapshot: IssuerSnapshot | null;
+  client_name: string | null;
+  client_tax_id: string | null;
+  client_address: string | null;
+  payment_method: PaymentMethod | null;
+  stripe_url: string | null;
+  issued_at: number | null;
+  paid_at: number | null;
+  locked: number;
+  notes: string | null;
+  created_at: number;
+}
+
+/** Perfil fiscal de la empresa emisora (nosotros). */
+export interface BillingProfile {
+  companyName: string;
+  taxId: string;
+  address: string;
+  email: string;
+  phone: string;
+  currency: string;
+  vatRate: number;
+  invoicePrefix: string;
+  paymentTermsDays: number;
+  defaultIrpfRate: number;
+  sifMode: 'verifactu' | 'no_verifactu';
+  iban: string;
+  bic: string;
+  bankName: string;
+  footer: string;
+}
+
+export interface InvoicesResponse {
+  invoices: Invoice[];
+  issuer: BillingProfile;
+  client: { name: string; billing_email: string | null; billing_tax_id: string | null; billing_address: string | null };
+  stripeEnabled: boolean;
+}
+
+// ---------- series de uso e insights ----------
+
+export interface UsagePoint {
+  t: number;
+  cpuCoreHours: number;
+  ramGbHours: number;
+  diskGb: number;
+  netBytes: number;
+}
+
+export interface UsageByProject {
+  projectId: string;
+  name: string;
+  cpuCoreHours: number;
+  ramGbHours: number;
+}
+
+export interface UsageSeries {
+  days: number;
+  bucketHours: number;
+  series: UsagePoint[];
+  byProject: UsageByProject[];
+}
+
+// ---------- contabilidad de empresa ----------
+
+export interface AccountingTotals {
+  invoiced: number;
+  paid: number;
+  pending: number;
+  draft: number;
+  void: number;
+  count: number;
+}
+
+export interface RevenuePoint {
+  t: number;
+  invoiced: number;
+  paid: number;
+}
+
+export interface AccountingSummary {
+  currency: string;
+  totals: AccountingTotals;
+  series: RevenuePoint[];
+  byClient: { workspaceId: string; name: string; invoiced: number; paid: number }[];
+}
+
+export interface AccountingInvoice {
+  id: string;
+  number: string | null;
+  invoice_type: InvoiceType;
+  workspace_id: string;
+  workspace_name: string | null;
+  client_tax_id: string | null;
+  status: InvoiceStatus;
+  currency: string;
+  subtotal_cents: number;
+  tax_cents: number;
+  irpf_cents: number;
+  total_cents: number;
+  payment_method: PaymentMethod | null;
+  period_start: number;
+  period_end: number;
+  issued_at: number | null;
+  paid_at: number | null;
+}
+
+export interface BillingProfileResponse {
+  profile: BillingProfile;
+  stripe: { hasSecretKey: boolean; hasWebhookSecret: boolean; publishableKey: string };
+  invoiceSeq: number;
+}
+
+// ---------- catálogo multimodular ----------
+
+export type ProductCategory = 'web' | 'ia' | 'app' | 'hosting' | 'bbdd' | 'dominio' | 'soporte' | 'custom';
+export type BillingModel = 'flat_one_off' | 'subscription' | 'metered' | 'tiered';
+export type UsageMeter = 'cpu_core_hour' | 'mem_gb_hour' | 'ai_tokens_in' | 'ai_tokens_cache_in' | 'ai_tokens_out' | 'ai_requests' | 'ai_bytes' | 'unit';
+
+export interface PriceTier {
+  up_to: number | null;
+  unit_cents: number;
+  flat_cents: number;
+}
+
+export interface Product {
+  id: string;
+  name: string;
+  slug: string;
+  category: ProductCategory;
+  billing_model: BillingModel;
+  price_cents: number;
+  currency: string;
+  interval: 'monthly' | 'yearly' | 'one_off' | 'metered';
+  unit: string;
+  unit_size: number;
+  meter: UsageMeter | null;
+  tier_mode: 'graduated' | 'volume' | null;
+  tax_rate: number;
+  irpf_rate: number;
+  tax_exempt: number;
+  modules: string[];
+  description: string | null;
+  active: number;
+  archived: number;
+  in_use: boolean;
+  tiers: PriceTier[];
+  created_at: number;
+}
+
+export interface Subscription {
+  id: string;
+  workspace_id: string;
+  product_id: string;
+  product_name: string;
+  category: ProductCategory;
+  billing_model: BillingModel;
+  meter: UsageMeter | null;
+  unit: string;
+  service_id: string | null;
+  qty: number;
+  unit_cents: number;
+  frozen: boolean;
+  currency: string;
+  interval: 'monthly' | 'yearly';
+  status: 'active' | 'paused' | 'cancelled';
+  anchor_day: number;
+  started_at: number;
+  cancelled_at: number | null;
+}
+
+export interface PendingCharge {
+  id: string;
+  label: string;
+  kind: 'product' | 'custom';
+  qty: number;
+  unit_cents: number;
+  tax_rate: number;
+  irpf_rate: number;
+  status: 'pending' | 'invoiced' | 'cancelled';
+  created_at: number;
+}
+
+export interface SubscriptionsResponse {
+  subscriptions: Subscription[];
+  charges: PendingCharge[];
+}
+
+// ---------- gateway de IA ----------
+
+export interface WorkspaceApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  provider: string;
+  status: 'active' | 'suspended' | 'revoked';
+  allowed_models: string[];
+  budget_cents_month: number | null;
+  spend_cents_cycle: number;
+  rate_limit_rpm: number | null;
+  last_used_at: number | null;
+  expires_at: number | null;
+  created_at: number;
+}
+
+export interface WorkspaceKeysResponse {
+  keys: WorkspaceApiKey[];
+  geminiConfigured: boolean;
+}
+
+export interface AiGatewayConfig {
+  hasGeminiKey: boolean;
+  baseUrl: string;
+  allowedModels: string[];
+}
+
+/** Coste del operador por modelo (céntimos por millón de tokens) y PVP de referencia. */
+export interface AiModelCost {
+  model: string;
+  currency: string;
+  /** Margen objetivo sobre venta (%); guía el PVP sugerido. */
+  margin_pct: number;
+  cost_cents_mtok_in: number;
+  cost_cents_mtok_cache: number;
+  cost_cents_mtok_out: number;
+  /** PVP sugerido (céntimos/Mtok) = coste/(1−margen/100); null si margen 0. */
+  pvp_cents_mtok_in: number | null;
+  pvp_cents_mtok_cache: number | null;
+  pvp_cents_mtok_out: number | null;
+  updated_at: number;
+}
+export interface AiModelPrices {
+  models: AiModelCost[];
+  sell_cents_mtok: { in: number | null; cache: number | null; out: number | null };
+}
+
+export interface WorkspaceAlert {
+  id: string;
+  ts: number;
+  severity: 'info' | 'warning' | 'serious' | 'critical';
+  type: string;
+  title: string;
+  message: string;
+  explanation: string | null;
 }
 
 export interface GitConfig {

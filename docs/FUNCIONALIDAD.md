@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.15.1. Si el código y este documento discrepan,
+> Versión de este documento: 0.22.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -25,6 +25,14 @@ server/src/
   util.ts               id/token/slug, hashPassword (scrypt), hmac, safeEqual
   auth.ts               sesiones JWT (cookie httpOnly), tokens API, roles, rate-limit
   audit.ts              registro de auditoría (actor, acción, IP)
+  modules.ts            catálogo de módulos (capacidades que un plan/workspace activa)
+  quota.ts              cuota efectiva, asignación agregada de recursos y módulos por workspace
+  company.ts            perfil fiscal de la empresa emisora + claves de Stripe (en settings)
+  stripe.ts             cliente mínimo de Stripe (Checkout Session + verificación de firma de webhook)
+  pricing.ts            cálculo de precios por tramos (graduated/volume) del catálogo
+  aigateway.ts          gateway de IA: config (clave de Gemini del operador, modelos), medición de tokens,
+                        streaming SSE, API compatible con OpenAI y coste/margen por modelo
+  billingauto.ts        automatización: corte por impago (dunning), reactivación y factura automática del ciclo
   security.ts           escáner de seguridad (hallazgos + nota)
   variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}
   templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio)
@@ -139,12 +147,26 @@ web/src/
 
 | Tabla | Claves / campos relevantes |
 | --- | --- |
-| `users` | `id`, `email` (único), `password_hash` (scrypt `s2:salt:hash`), `role` (`admin`/`member`), `session_epoch` |
-| `user_projects` | `(user_id, project_id)` — workspaces asignados a un miembro |
+| `users` | `id`, `email` (único), `password_hash` (scrypt `s2:salt:hash`), `role` (`admin`/`owner`/`member`), `workspace_id` (owner/member), `session_epoch` |
+| `user_projects` | `(user_id, project_id)` — proyectos asignados a un miembro |
+| `plans` | `id`, `name`, `slug`, `price_cents`, `currency`, `interval`, cuotas incluidas (`cpu_cores`, `memory_mb`, `disk_mb`, `max_projects`, `max_services`, `max_members`), `modules` (JSON), `is_default`, `archived`, `discount_pct` (descuento comercial % de las cuentas del plan) |
+| `workspaces` | `id`, `name`, `slug`, `plan_id`, overrides de cuota (mismos campos, null = hereda del plan), `modules_override` (concesión del admin), `owner_disabled_modules` (acotado del propietario), `status` (`active`/`suspended`), `billing_email`, `billing_tax_id` (NIF/CIF del cliente), `billing_address` (domicilio fiscal del cliente), `billing_day`, `discount_pct` (descuento % de la cuenta; null = hereda del plan), `notes`, y estado de morosidad (`ai_suspended`, `dunning_stage` 0→3, `dunning_since`, `last_dunning_action_at`, `dunning_exempt`) |
+| `workspace_invoices` | `id`, `workspace_id`, `series_id` (FK `invoice_series`), `number` (nº correlativo por serie/ejercicio, p. ej. `FRA-2026-0001`), `invoice_type` (`normal`/`simplificada`/`rectificativa`), `rectifies_invoice_id`+`rectify_reason` (si rectificativa), `period_start/end`, `operation_date` (fecha de operación si difiere de la expedición), `status` (`draft`/`issued`/`paid`/`void`), `currency`, `subtotal_cents` (base imponible), `tax_cents`, `tax_rate` (tipo por defecto), `tax_breakdown` (JSON: bases y cuotas **por tipo de IVA**), `vat_regime` (general/exento/inversión SP…), `legal_mentions`, `irpf_rate`+`irpf_cents` (retención), `total_cents`, `lines` (JSON, con `taxRate` por línea), `plan_name`, `issuer_snapshot` (datos fiscales del emisor congelados al emitir), `client_name`+`client_tax_id`+`client_address` (destinatario congelado al emitir), `payment_method` (`bank_transfer`/`stripe`/`card`/`cash`/`other`), `stripe_session_id`, `stripe_url`, `issued_at`, `paid_at`, `locked` (1 = emitida, inmutable), `notes` |
+| `invoice_series` | `id`, `code`, `year` (ejercicio; reinicio anual), `prefix`, `padding`, `next_seq` (incremento atómico al emitir), `kind` (`ordinaria`/`rectificativa`/`simplificada`), `UNIQUE(code, year)`. Sustituye al contador global; las rectificativas usan serie propia |
+| `catalog_products` | catálogo multimodular: `id`, `name`, `slug`, `category` (`web`/`ia`/`app`/`hosting`/`bbdd`/`dominio`/`soporte`/`custom`), `billing_model` (`flat_one_off`/`subscription`/`metered`/`tiered`), `price_cents`, `currency`, `interval`, `unit`, `unit_size` (nº de unidades del medidor por unidad de precio; p. ej. 1000000 → precio por 1M tokens con céntimos enteros), `meter` (medidor de uso), `tier_mode` (`graduated`/`volume`), `tax_rate`, `irpf_rate`, `tax_exempt`, `modules` (JSON), `description`, `active`, `archived` |
+| `catalog_price_tiers` | tramos de precio de un producto `tiered`: `id`, `product_id`, `up_to` (null = último), `unit_cents`, `flat_cents`, `sort` |
+| `workspace_subscriptions` | suscripciones/add-ons por cuenta: `id`, `workspace_id`, `product_id`, `service_id` (opcional), `qty`, `unit_cents` (congelado al contratar; null = sigue catálogo), `currency`, `interval`, `status` (`active`/`paused`/`cancelled`), `anchor_day`, `started_at`, `cancelled_at` |
+| `pending_charges` | cargos puntuales pendientes del próximo ciclo: `id`, `workspace_id`, `product_id`, `label`, `kind`, `qty`, `unit_cents`, `tax_rate`, `irpf_rate`, `status` (`pending`/`invoiced`/`cancelled`), `invoice_id` |
+| `usage_events` | ingesta cruda de consumo (idempotente): `id`, `idempotency_key` (único), `subject_type` (`workspace`/`service`), `subject_id`, `meter`, `quantity`, `product_id`, `ts`, `metadata` |
+| `usage_meter_hourly` | agregado horario del uso para tarifar: `PK(subject_id, meter, hour)`, `quantity` |
+| `invoice_ledger` | **reservada** (Verifactu, RD 1007/2023): libro inmutable encadenado por huella SHA-256 — `id`, `seq`, `invoice_id`, `record_type` (`alta`/`anulacion`), `huella`, `huella_anterior`, `qr_url`, `sif_mode`, `estado_remision`… Se crea vacía para no exigir migración al activar Verifactu; la lógica llega en fase posterior |
+| `invoice_events_log` | **reservada** (Verifactu): registro de eventos del SIF encadenado por huella |
+| `workspace_api_keys` | claves de API por cuenta para el proxy de IA: `id`, `workspace_id`, `name`, `key_hash` (sha256, único; el secreto `skai_…` solo se muestra al crear), `prefix`, `provider`, `allowed_models` (JSON), `status` (`active`/`suspended`/`revoked`), `budget_cents_month`, `spend_cents_cycle`, `rate_limit_rpm`, `last_used_at`, `expires_at`, `revoked_at`. El prefijo **no** empieza por `sky_`: nunca se resuelve como token de panel |
+| `ai_model_prices` | coste del operador por modelo y margen objetivo: `model` (PK), `cost_micros_in`/`cost_micros_cache`/`cost_micros_out` (micro-céntimos por millón de tokens), `margin_pct` (margen objetivo s/ venta, guía el PVP sugerido), `currency`, `updated_at`. Informativo; no interviene en la factura |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
-| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`… |
-| `projects` | `id`, `name`, `slug` (único), `client`, página de estado (`status_token`, `status_enabled`, `status_notice`) |
+| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44)… |
+| `projects` | `id`, `name`, `slug` (único), `workspace_id` (cuenta de cliente), `client` (reflejo denormalizado del nombre del workspace para la UI), página de estado (`status_token`, `status_enabled`, `status_notice`) |
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
 | `project_vars` | `(project_id, key)` → `value` — variables compartidas |
@@ -178,9 +200,24 @@ database añade `template`, `version`, `backupSchedule`, `backupRetention`.
   revocables y caducables, y quedan auditados. Crear tokens/passkeys exige
   **sesión de navegador** (`requireSession`), no un token: un token robado no
   puede fabricarse acceso persistente.
-- **Roles**: `admin` (control total del servidor) y `member` (limitado a los
-  workspaces asignados; sin ajustes del servidor, seguridad ni otros clientes).
-  `assertProjectAccess` protege cada recurso de proyecto.
+- **Roles**: `admin` (control total del servidor), `owner` (propietario de un
+  workspace: gestiona sus proyectos, crea sub-usuarios en él, acota sus módulos y
+  ve su facturación; nunca toca ajustes del servidor, otros workspaces, su propia
+  cuota ni la concesión de módulos) y `member` (limitado a los proyectos que se le
+  asignan dentro de su workspace). `assertProjectAccess` protege cada recurso de
+  proyecto; `assertProjectManage`/`assertWorkspaceAccess` protegen la estructura y
+  la cuenta. La creación de sub-usuarios exige **sesión de navegador**
+  (`requireSession`), como los tokens/passkeys.
+- **Cuota agregada y módulos**: cada workspace tiene una cuota (CPU, RAM, disco,
+  proyectos, servicios, usuarios) acotada a **todos sus proyectos en total**
+  (`quota.ts`). Se comprueba al crear proyectos/servicios/usuarios y al subir los
+  recursos de un servicio; un workspace **suspendido** detiene despliegues y
+  operaciones nuevas. El admin la amplía/recorta en vivo; el propietario solo
+  **acota** (desactiva) los módulos concedidos, nunca los amplía. La comprobación
+  de cuota es atómica (lectura+escritura síncrona, sin `await` intermedio) y
+  cubre todas las dimensiones. Las gates de módulo se aplican de verdad a
+  propietarios y miembros (el admin las traspasa): bases de datos, consola de
+  datos, archivos, backups, terminal, réplicas, dominios y conectores de GitHub.
 - **Anti fuerza bruta**: límite por IP (8 intentos / 15 min) en login por
   contraseña y por passkey. La IP real se obtiene respetando el proxy **solo**
   de rangos privados/loopback (`config.trustProxy`), de modo que un cliente en
@@ -191,7 +228,9 @@ database añade `template`, `version`, `backupSchedule`, `backupRetention`.
   `Cross-Origin-Opener-Policy: same-origin`, `Permissions-Policy` restrictiva y
   `Strict-Transport-Security` sobre HTTPS.
 - **Webhooks**: firma **HMAC-SHA256** verificada con comparación en tiempo
-  constante sobre el cuerpo crudo.
+  constante sobre el cuerpo crudo. El webhook de Stripe añade tolerancia temporal
+  (anti-replay) y solo actúa si Stripe confirma `payment_status == paid`; las
+  claves de Stripe se guardan en `settings` y nunca se devuelven en claro.
 - **Consola de BBDD y explorador de archivos**: todo corre **dentro** del
   contenedor con exec; las consultas/rutas viajan como variables de entorno del
   exec, **nunca interpoladas en el shell**. La consola tiene modo solo-lectura
@@ -287,7 +326,16 @@ Esto reproduce el comportamiento de un *worker* de Railway.
   `${{Base.VAR}}` al servicio nuevo (por host privado/proxy público, o por
   esquema si es inequívoco); solo lo no mapeable genera aviso. El token viaja
   solo en memoria.
-- **Multi-empresa y usuarios/roles**: proyectos por cliente; admins y miembros.
+- **Cuentas y clientes, cuotas y facturación**: cada cliente es un **workspace**
+  con una cuota de recursos (CPU, RAM, disco, proyectos, servicios, usuarios)
+  acotada a todos sus proyectos en total, un **plan** de usos incluidos, un
+  conjunto de **módulos** (capacidades) activables, y su **facturación** (facturas
+  del plan o a medida). El admin gestiona todo y redimensiona la cuota en vivo; el
+  **propietario** administra su cuenta (proyectos, sub-usuarios, acotado de
+  módulos) y ve su facturación. Suspender una cuenta detiene despliegues y
+  operaciones nuevas. La UI vive en «Cuentas y clientes» con medidores de cuota en
+  vivo. Detalle de datos en §3, seguridad en §4 y API en §7.2.1.
+- **Multi-empresa y usuarios/roles**: proyectos por cliente; admins, propietarios y miembros.
 - **Conectores de GitHub por proyecto**: cada cliente conecta su cuenta (token)
   y asigna sus repos a los servicios con selector de repo y rama; el admin ve y
   revoca todos los conectores desde Ajustes. Sin conector se usa el token global.
@@ -328,14 +376,194 @@ Los cuerpos son JSON salvo indicación; la subida de archivos es binaria.
 | PATCH | `/users/:id` | admin | cambia rol / workspaces / contraseña |
 | DELETE | `/users/:id` | admin | elimina usuario (deja ≥1 admin) |
 
+### 7.2.1 Cuentas de cliente, planes y facturación
+Niveles: **manage** = admin o propietario del workspace del recurso; **admin** = solo administrador de plataforma.
+
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| GET | `/modules` | auth | catálogo de módulos (capacidades) para las etiquetas de la UI |
+| GET | `/workspaces` | auth | admin: todas; propietario: la suya; miembro: ninguna. Incluye cuota, asignación y módulos |
+| POST | `/workspaces` | admin | crea una cuenta (`{name, planId?, billingEmail?, billingDay?}`) |
+| GET | `/workspaces/:id` | manage | cuenta + proyectos + sub-usuarios |
+| PATCH | `/workspaces/:id` | admin | **live resize**: cuota, plan, concesión de módulos, estado (suspender), facturación |
+| DELETE | `/workspaces/:id` | admin | elimina la cuenta y sus sub-usuarios; sus proyectos quedan sin asignar |
+| PATCH | `/workspaces/:id/modules` | manage | el propietario **acota** (desactiva) módulos concedidos (`{disabled}`) |
+| GET | `/workspaces/:id/usage?days=` | manage | uso agregado (núcleo·h, GB·h, picos) del periodo |
+| GET | `/workspaces/:id/usage/series?days=` | manage | serie temporal de uso por cubos (para gráficas) + top de proyectos por consumo |
+| POST | `/workspaces/:id/members` | manage (session) | crea un sub-usuario del workspace (el propietario solo crea miembros) |
+| PATCH | `/workspaces/:id/members/:userId` | manage | cambia rol/proyectos/contraseña de un sub-usuario |
+| DELETE | `/workspaces/:id/members/:userId` | manage | elimina un sub-usuario del workspace |
+| GET | `/plans` | admin | lista de planes (con nº de cuentas que lo usan) |
+| POST | `/plans` | admin | crea un plan (usos incluidos + precio + `discount_pct` opcional) |
+| PATCH | `/plans/:id` | admin | edita un plan |
+| DELETE | `/plans/:id` | admin | borra un plan (bloqueado si alguna cuenta lo usa) |
+| GET | `/workspaces/:id/invoices` | manage | facturas de la cuenta + datos del emisor (perfil fiscal), del cliente y si Stripe está activo |
+| POST | `/workspaces/:id/invoices/generate` | admin | genera la factura del ciclo (plan + uso) con el IVA del perfil |
+| POST | `/workspaces/:id/invoices` | admin | crea un borrador a medida (`{lines[], taxRate?, irpfRate?, vatRegime?, operationDate?, notes?}`); cada línea admite su propio `taxRate` |
+| PATCH | `/invoices/:id` | admin | edita el borrador o transiciona el estado. **El contenido fiscal solo es editable en borrador**; una factura emitida es inmutable (409). Al emitir (`issued`/`paid`) congela emisor y destinatario, asigna nº de serie del ejercicio y bloquea (`locked`). Transiciones válidas: `draft→issued→paid`, `→void`; nunca vuelve a borrador |
+| DELETE | `/invoices/:id` | admin | **solo borradores**; una factura emitida se conserva (409): debe anularse o rectificarse, nunca borrarse |
+| POST | `/invoices/:id/rectify` | admin | crea una **factura rectificativa** (borrador, serie REC) que corrige una emitida (`{reason, lines?, operationDate?}`); sin `lines` es anulación total, con `lines` correctas factura la diferencia; enlaza por `rectifies_invoice_id` |
+| POST | `/invoices/:id/stripe-link` | admin | emite la factura (alta antes del cobro) y crea/reutiliza el enlace de pago Stripe |
+
+**Motor de factura conforme (RD 1619/2012).** El total se recomputa siempre en
+servidor: la cuota de IVA se agrupa por tipo y se redondea **una vez por base de
+tipo** (`tax_breakdown`), no por línea; el IRPF se retiene sobre la base
+imponible; `total = base + IVA − retención`. La numeración es correlativa por
+serie y ejercicio (`invoice_series`), asignada atómicamente al emitir. Una factura
+emitida es **inmutable** y se **conserva** (no se borra ni se puede borrar su
+cuenta si tiene facturas). El catálogo multimodular (productos web/IA/hosting/BBDD,
+suscripciones y uso medido) está descrito en §7.2.2.
+
+**Rectificativas y regímenes especiales (art. 15 RD 1619/2012).** Una factura
+emitida solo se corrige emitiendo una **rectificativa** (`invoice_type =
+'rectificativa'`, serie **REC** propia): revierte la original y aplica —si se
+indican— las líneas correctas, de modo que el neto es la corrección (rectificación
+por diferencias); sin líneas correctas, anula la original por completo. Queda
+enlazada por `rectifies_invoice_id`, guarda el `rectify_reason` y una mención legal
+con la factura rectificada; la original permanece intacta. Los **regímenes de IVA**
+(`vat_regime`) aplican la mención legal obligatoria y ponen el IVA a cero cuando
+corresponde: exención por exportación (art. 21) o entrega intracomunitaria
+(art. 25), inversión del sujeto pasivo (art. 84), recargo de equivalencia, no
+sujeción y otras exenciones. Reservado: la estructura Verifactu (cadena de hash,
+QR, registros de alta/anulación y remisión a la AEAT — no obligatoria hasta 2027,
+RDL 15/2025).
+
+### 7.2.1 Contabilidad de la empresa y facturación (nosotros como emisor)
+Perfil fiscal, resumen contable y cobros con Stripe. **Solo admin.** Las claves
+secretas de Stripe se guardan en `settings` y nunca se devuelven (se exponen como
+booleanos, igual que el token de GitHub).
+
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| GET | `/billing/profile` | admin | perfil fiscal del emisor (IVA/IRPF por defecto, modo Verifactu) + estado de Stripe (claves como booleanos) |
+| PUT | `/billing/profile` | admin | actualiza el perfil fiscal (incl. `defaultIrpfRate`, `sifMode`); las claves de Stripe se guardan solo si se envían (`''` las borra) |
+| GET | `/accounting/summary?months=` | admin | totales (facturado/cobrado/pendiente/borrador/anulado), serie mensual de ingresos y desglose por cliente |
+| GET | `/accounting/invoices?status=` | admin | todas las facturas de todos los clientes (nº, tipo, NIF, base, IVA, IRPF) |
+| GET | `/accounting/export.csv` | admin | libro registro de facturas emitidas en CSV (nº, tipo, NIF receptor, base, IVA, IRPF, total; guardas anti-inyección de fórmulas) |
+
+### 7.2.2 Catálogo multimodular, suscripciones y uso
+Facturación de servicios (web, IA, hosting, BBDD, dominios, soporte, a medida)
+con distintos modelos de precio. El catálogo lo gestiona el admin; las
+suscripciones y cargos se contratan por cuenta y se ensamblan en el borrador del
+ciclo (`/invoices/generate`).
+
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| GET | `/products` | auth | catálogo de productos (con sus tramos y si están en uso) |
+| POST | `/products` | admin | crea un producto (`{name, category, billingModel, priceCents, meter?, tierMode?, tiers?, taxRate?, …}`) |
+| PATCH | `/products/:id` | admin | edita un producto y sus tramos |
+| DELETE | `/products/:id` | admin | borra el producto; si está contratado se **archiva** (conserva el histórico) |
+| GET | `/workspaces/:id/subscriptions` | manage | suscripciones y cargos pendientes de la cuenta |
+| POST | `/workspaces/:id/subscriptions` | admin | suscribe la cuenta a un producto (`{productId, qty?, unitCents?}`) |
+| PATCH | `/subscriptions/:subId` | admin | cambia cantidad/precio/estado (pausar, cancelar) |
+| DELETE | `/subscriptions/:subId` | admin | elimina la suscripción |
+| POST | `/workspaces/:id/charges` | admin | añade un cargo puntual al próximo ciclo (`{label, qty, unitCents, taxRate?}`) |
+| DELETE | `/charges/:chargeId` | admin | cancela un cargo puntual pendiente |
+| POST | `/usage` | +access | ingesta idempotente de consumo IA/lógico (`{idempotencyKey, subjectType, subjectId, meter, quantity, ts?}`); exige acceso al workspace del sujeto |
+
+**Medición y generación.** Los medidores de infraestructura (`cpu_core_hour`,
+`mem_gb_hour`) se derivan de `service_metrics_hourly`; los lógicos/IA
+(`ai_tokens_in`, `ai_tokens_cache_in`, `ai_tokens_out`, `ai_requests`, `ai_bytes`,
+`unit`) se ingieren por `/usage` o por el gateway. Al generar el borrador del
+ciclo se suman: plan + suscripciones activas (recurrentes fijas, por uso medido y
+por tramos graduated/volume) + cargos puntuales pendientes; el IVA se desglosa por
+tipo y los cargos se marcan como facturados.
+
+### 7.2.3 Gateway de IA (Gemini) — proxy con medición por cliente
+Skyway actúa de **proxy multiplexado** ante Gemini: guarda una clave de proyecto
+del operador (en `settings`, nunca expuesta) y emite una clave `skai_…` por cuenta
+que abre **solo** el proxy (jamás el panel). Tras cada respuesta lee `usageMetadata`
+y registra el consumo (`ai_tokens_in`/`ai_tokens_cache_in`/`ai_tokens_out`/`ai_requests`),
+que se factura con los productos de IA del catálogo. El corte (impago o manual) es
+inmediato y reversible: se hace sobre la clave de Skyway, sin tocar Google.
+
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| POST | `/gw/v1beta/models/<modelo>:generateContent` | clave `skai_` (auth propia) | proxya a Gemini con la clave del operador; valida modelo (allowlist fail-closed), mide `usageMetadata` y registra el uso |
+| POST | `/gw/v1beta/models/<modelo>:streamGenerateContent` | clave `skai_` | igual, en **streaming SSE** (`?alt=sse` reenviado byte a byte); mide el último `usageMetadata` al cerrar |
+| POST | `/gw/v1beta/openai/chat/completions` | clave `skai_` | API **compatible con OpenAI** (streaming y no-streaming); el `usage` se mapea a la medición existente |
+| GET | `/gw/v1beta/models` | clave `skai_` | modelos permitidos para esa clave |
+| GET | `/workspaces/:id/keys` | manage | claves de IA de la cuenta (prefijo, estado, uso; nunca el secreto) |
+| POST | `/workspaces/:id/keys` | manage (session) | emite una clave; el secreto `skai_…` se devuelve **una sola vez** |
+| PATCH | `/workspaces/:id/keys/:keyId` | admin | edita nombre/modelos/presupuesto/límite/caducidad |
+| POST | `/workspaces/:id/keys/:keyId/block`·`/unblock` | admin | corte / reactivación manual (instantáneo) |
+| DELETE | `/workspaces/:id/keys/:keyId` | manage | revoca la clave (irreversible) |
+| GET·PUT | `/ai/gateway/config` | admin | clave de Gemini (enmascarada), host y modelos permitidos |
+| GET | `/ai/gateway/prices` | admin | coste del operador por modelo (`ai_model_prices`), margen objetivo, **PVP sugerido** (coste/(1−margen)) y PVP de referencia del catálogo con el margen actual |
+| PUT·DELETE | `/ai/gateway/prices/:model` | admin | fija/borra coste (€/M: entrada, cache, salida) y `marginPct` (margen objetivo s/ venta) de un modelo |
+| GET | `/workspaces/:id/alerts` | manage | avisos de la cuenta (facturación, uso, morosidad) |
+
+**Automatización (scheduler, bucle de 10 min → `billingauto.ts`).** En el día de
+facturación de cada cuenta se **genera el borrador** del ciclo completo anterior
+(idempotente por `(workspace, period_start)`; no emite —eso lo confirma un humano—).
+Después se evalúa la **morosidad**: una factura emitida y no cobrada pasa a
+vencida a los `paymentTermsDays`, dispara recordatorio, y a los `dunningGraceDays`
+**suspende** las claves de IA y pausa las suscripciones (alerta crítica), y a los
+`dunningCancelDays` las **revoca**/cancela. Todo es idempotente (solo avanza de
+etapa) y se aísla por cuenta. Al **cobrarse** (webhook de Stripe o marca manual)
+se **reactiva** automáticamente si ya no queda ninguna factura vencida. Las
+alertas por cuenta reutilizan `alerts` (con `workspace_id`).
+
+**Seguridad del gateway.** La clave de cliente usa una vía de autenticación
+separada (`requireProxyKey`, en un hook `onRequest` **antes** de leer el cuerpo,
+nunca `requireAuth`) y un prefijo que **no** empieza por `sky_`, de modo que no
+puede alcanzar el panel ni el `docker.sock` del host; se valida en cada petición
+(sin caché → suspender surte efecto al instante). La clave de Gemini del operador
+nunca se registra ni se reenvía, y las cabeceras de Google no se propagan al
+cliente. La URL upstream se construye en servidor a partir del modelo validado (no
+se refleja el path del cliente → anti-SSRF).
+
+**Presupuesto y límite por clave.** Cada clave admite `budget_cents_month` (tope de
+gasto del ciclo) y `rate_limit_rpm` (peticiones por minuto, token-bucket en
+memoria). El proxy acumula el gasto tarifado del cliente en `spend_cents_cycle`
+(sumando fracciones de céntimo para no perder peticiones pequeñas) y **rechaza**
+con 402 al superar el presupuesto y con 429 al superar el ritmo; el contador se
+reancla al inicio de cada ciclo. Es un guardarraíl (importe aproximado); el importe
+final de factura lo fija el catálogo al cerrar el ciclo.
+
+**Streaming y compatibilidad.** Además de `generateContent`, el proxy admite
+`streamGenerateContent` (SSE nativo de Gemini, `?alt=sse`, reenviado tal cual al
+cliente) y una **API compatible con OpenAI** (`/gw/v1beta/openai/chat/completions`,
+streaming y no-streaming) para reutilizar SDKs existentes apuntando el `baseURL` al
+gateway. En ambos casos se lee el **último** bloque de uso del flujo y se factura
+igual que en la vía no-streaming; el presupuesto/límite se comprueban antes de abrir
+el flujo. La `usage` de OpenAI se traduce a un `usageMetadata` sintético
+(`prompt_tokens`→entrada, `cached_tokens`→cache, `completion_tokens`→salida).
+
+**Precios de IA por cliente.** En la ficha del cliente, el panel «Precios de IA de
+este cliente» da de alta en un clic las suscripciones a los productos de IA del
+catálogo (al precio global) y permite fijar un **precio propio por medidor**. Se
+apoya en el override `unit_cents` de la suscripción (vacío = precio global del
+catálogo; restablecer lo vuelve a vaciar). Un precio propio queda excluido del
+descuento por cuenta (ya es un precio pactado). No cambia la lógica de facturación.
+
+**Coste y margen (informativo).** `ai_model_prices` guarda el **coste del operador**
+por modelo (lo que cobra Google, en micro-céntimos por millón de tokens: entrada,
+cache y salida) y un **margen objetivo** sobre venta (`margin_pct`). Contabilidad
+muestra ese coste, el **PVP sugerido** = coste/(1−margen/100) (para copiarlo al
+producto de IA del catálogo) y el **margen actual** frente al PVP de referencia del
+catálogo (primer producto de IA activo de cada medidor). Es una guía de precios: no
+interviene en la factura; el PVP real lo fija el catálogo por medidor.
+
+**Descuento comercial por plan y por cuenta.** Los planes llevan un `discount_pct`
+que rebaja las facturas de todas sus cuentas; cada cuenta puede fijar su propio
+`discount_pct` (null = hereda el del plan). Al generar el borrador del ciclo, el
+descuento efectivo (`cuenta ?? plan ?? 0`) se aplica **sobre la base antes del IVA**
+empujando una línea de descuento **por cada tipo impositivo** presente, de modo que
+el desglose de IVA sigue cuadrando (la cuota se redondea una vez sobre la base ya
+descontada) y ninguna base queda negativa. Se excluyen del descuento las líneas con
+**precio negociado por cliente** (`unit_cents` de la suscripción), para no rebajar
+dos veces un precio ya pactado. En una factura a medida el descuento se añade a mano
+como línea negativa; una factura emitida es inmutable y conserva su descuento.
+
 ### 7.3 Proyectos, variables compartidas y conectores de GitHub
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/projects` | auth | proyectos accesibles (con meta) |
-| POST | `/projects` | admin | crea proyecto (`{name, client?}`) |
+| POST | `/projects` | admin/owner | crea proyecto (`{name, client?, workspaceId?}`); el propietario en su workspace, dentro de la cuota |
 | GET | `/projects/:id` | +access | proyecto + servicios con runtime |
-| PATCH | `/projects/:id` | admin | renombra / cambia cliente |
-| DELETE | `/projects/:id?volumes=true` | admin | elimina proyecto (y volúmenes opcional) |
+| PATCH | `/projects/:id` | manage | renombra; el admin además reasigna de workspace |
+| DELETE | `/projects/:id?volumes=true` | manage | elimina proyecto (y volúmenes opcional) |
 | POST | `/projects/:id/deploy-all` | +access | despliega repos e imágenes del proyecto |
 | GET | `/projects/:id/vars` | +access | variables compartidas |
 | PUT | `/projects/:id/vars` | +access | reemplaza variables compartidas |
@@ -456,6 +684,7 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/import/railway/analyze` | admin | plan de importación (sin valores de variables) |
 | POST | `/import/railway/run` | admin | ejecuta la importación |
 | POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy instantáneo en push (firma verificada); respeta `autoDeploy` y deduplica contra el último commit construido; complementa al sondeo interno de `autodeploy.ts` |
+| POST | `/webhooks/stripe` | público (firma Stripe) | marca la factura como pagada al confirmarse el cobro; firma `Stripe-Signature` verificada (HMAC-SHA256 con tolerancia temporal anti-replay); exige `payment_status == paid`; idempotente |
 
 ---
 
