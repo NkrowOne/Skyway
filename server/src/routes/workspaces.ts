@@ -66,6 +66,8 @@ const patchWorkspaceSchema = z.object({
   billingDay: z.coerce.number().int().min(1).max(28).optional(),
   // Descuento comercial de la cuenta (%); null = hereda el del plan.
   discountPct: z.coerce.number().min(0).max(100).nullable().optional(),
+  // Exime a la cuenta del corte automático por impago (clientes de trato especial).
+  dunningExempt: z.boolean().optional(),
   notes: z.string().trim().max(2000).nullable().optional(),
 });
 
@@ -98,8 +100,9 @@ function publicWorkspace(ws: WorkspaceRow) {
     discount_pct: ws.discount_pct,
     notes: ws.notes,
     // Estado de morosidad (corte por impago).
-    ai_suspended: (ws as any).ai_suspended ?? 0,
-    dunning_stage: (ws as any).dunning_stage ?? 0,
+    ai_suspended: ws.ai_suspended ?? 0,
+    dunning_stage: ws.dunning_stage ?? 0,
+    dunning_exempt: ws.dunning_exempt ?? 0,
     created_at: ws.created_at,
     ...summary,
   };
@@ -182,7 +185,13 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
 
     const fields: Record<string, unknown> = {};
     if (body.name !== undefined) fields.name = body.name;
-    if (body.planId !== undefined) fields.plan_id = body.planId || null; // '' → sin plan (no rompe la FK)
+    if (body.planId !== undefined) {
+      fields.plan_id = body.planId || null; // '' → sin plan (no rompe la FK)
+      // Cambiar de plan reancla el aniversario de la cuota anual: si no, un plan
+      // anual nuevo heredaría la fecha del anterior y podría cobrarse dos veces
+      // en el mismo año natural.
+      if ((body.planId || null) !== ws.plan_id) fields.plan_since = body.planId ? Date.now() : null;
+    }
     if (body.cpuCores !== undefined) fields.cpu_cores = body.cpuCores;
     if (body.memoryMb !== undefined) fields.memory_mb = body.memoryMb;
     if (body.diskMb !== undefined) fields.disk_mb = body.diskMb;
@@ -196,6 +205,7 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     if (body.billingAddress !== undefined) fields.billing_address = body.billingAddress;
     if (body.billingDay !== undefined) fields.billing_day = body.billingDay;
     if (body.discountPct !== undefined) fields.discount_pct = body.discountPct;
+    if (body.dunningExempt !== undefined) fields.dunning_exempt = body.dunningExempt ? 1 : 0;
     if (body.notes !== undefined) fields.notes = body.notes;
 
     updateWorkspace(id, fields);

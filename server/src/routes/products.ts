@@ -14,6 +14,26 @@ const tierSchema = z.object({
   flatCents: z.coerce.number().int().min(0).max(MONEY).default(0),
 });
 
+/**
+ * Los tramos se tarifan en el orden en que llegan (`pricing.ts` los ordena por
+ * `sort`, que es ese mismo orden): con topes no ascendentes o con más de un tramo
+ * «sin tope» el reparto por tramos sale mal y nadie lo detectaría hasta ver la
+ * factura. Se valida al guardarlos.
+ */
+function tiersError(tiers: { upTo: number | null; unitCents: number; flatCents: number }[]): string | null {
+  let prev = 0;
+  for (let i = 0; i < tiers.length; i++) {
+    const { upTo } = tiers[i];
+    if (upTo === null) {
+      if (i !== tiers.length - 1) return 'Solo el ÚLTIMO tramo puede quedar sin tope; los anteriores deben tener un límite.';
+      continue;
+    }
+    if (upTo <= prev) return `Los topes de los tramos deben ser crecientes: ${upTo} no supera a ${prev}.`;
+    prev = upTo;
+  }
+  return null;
+}
+
 const productSchema = z.object({
   name: z.string().trim().min(1).max(120),
   category: z.enum(['web', 'ia', 'app', 'hosting', 'bbdd', 'dominio', 'soporte', 'custom']).default('custom'),
@@ -93,6 +113,8 @@ export async function productRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/api/products', { preHandler: requireAdmin }, async (req, reply) => {
     const body = productSchema.parse(req.body);
+    const tiersBad = body.tiers ? tiersError(body.tiers) : null;
+    if (tiersBad) return reply.code(400).send({ error: tiersBad });
     const p = createProduct({
       name: body.name,
       category: body.category,
@@ -122,6 +144,13 @@ export async function productRoutes(app: FastifyInstance): Promise<void> {
     const p = getProduct(id);
     if (!p) return reply.code(404).send({ error: 'Producto no encontrado' });
     const body = productSchema.partial().parse(req.body);
+    const tiersBad = body.tiers ? tiersError(body.tiers) : null;
+    if (tiersBad) return reply.code(400).send({ error: tiersBad });
+    // La moneda de un producto ya contratado no puede cambiar: las suscripciones
+    // vivas la tienen congelada y la factura acabaría mezclando divisas.
+    if (body.currency && body.currency.toUpperCase() !== p.currency.toUpperCase() && productInUse(id)) {
+      return reply.code(409).send({ error: 'El producto está contratado: no se puede cambiar su moneda. Archívalo y crea uno nuevo.' });
+    }
     updateProduct(id, toRowFields(body));
     if (body.tiers !== undefined) replaceTiers(id, body.tiers);
     audit(req, 'product_updated', { type: 'product', id });

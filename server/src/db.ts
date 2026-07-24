@@ -520,6 +520,11 @@ export function initDb(): void {
   ensureColumn('workspaces', 'dunning_since', 'INTEGER');
   ensureColumn('workspaces', 'last_dunning_action_at', 'INTEGER');
   ensureColumn('workspaces', 'dunning_exempt', 'INTEGER NOT NULL DEFAULT 0');
+  // Fecha de contratación del plan actual: ancla el aniversario de las cuotas
+  // ANUALES (una cuota anual solo se factura en el ciclo que contiene su
+  // aniversario, no en cada ciclo mensual). Se refresca al cambiar de plan, así
+  // que un cambio de plan anual no vuelve a cobrar la anualidad del anterior.
+  ensureColumn('workspaces', 'plan_since', 'INTEGER');
   // Alertas por cuenta (además de por proyecto/servicio).
   ensureColumn('alerts', 'workspace_id', 'TEXT');
   // Escala del medidor: nº de unidades del medidor por unidad de precio (p. ej.
@@ -1510,12 +1515,19 @@ export function createWorkspaceRow(name: string, init: WorkspaceInit = {}): Work
     billing_address: null,
     billing_day: init.billing_day ?? 1,
     discount_pct: null, // hereda el descuento del plan mientras no se fije uno propio
+    // Ancla del aniversario de las cuotas anuales: la contratación del plan.
+    plan_since: init.plan_id ? now() : null,
+    dunning_stage: 0,
+    dunning_since: null,
+    last_dunning_action_at: null,
+    dunning_exempt: 0,
+    ai_suspended: 0,
     notes: init.notes ?? null,
     created_at: now(),
   };
   db.prepare(
-    `INSERT INTO workspaces (id, name, slug, plan_id, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules_override, owner_disabled_modules, status, billing_email, billing_tax_id, billing_address, billing_day, notes, created_at)
-     VALUES (@id, @name, @slug, @plan_id, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules_override, @owner_disabled_modules, @status, @billing_email, @billing_tax_id, @billing_address, @billing_day, @notes, @created_at)`,
+    `INSERT INTO workspaces (id, name, slug, plan_id, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules_override, owner_disabled_modules, status, billing_email, billing_tax_id, billing_address, billing_day, plan_since, notes, created_at)
+     VALUES (@id, @name, @slug, @plan_id, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules_override, @owner_disabled_modules, @status, @billing_email, @billing_tax_id, @billing_address, @billing_day, @plan_since, @notes, @created_at)`,
   ).run(row);
   return row;
 }
@@ -1728,6 +1740,13 @@ export function assignSeriesNumber(opts: {
       db.prepare(
         'INSERT INTO invoice_series (id, code, year, prefix, padding, next_seq, kind, created_at) VALUES (@id, @code, @year, @prefix, @padding, @next_seq, @kind, @created_at)',
       ).run(s);
+    } else if (s.kind !== opts.kind) {
+      // Las rectificativas exigen serie propia (art. 6.1.a RD 1619/2012). Si el
+      // código pedido ya existe con otra naturaleza, numerar aquí mezclaría ambas
+      // en la misma serie correlativa: se corta antes de asignar número.
+      throw new Error(
+        `La serie «${opts.code}» del ejercicio ${opts.year} ya está en uso para facturas de tipo «${s.kind}» y no puede compartirse con «${opts.kind}». Cambia el prefijo de factura en Contabilidad.`,
+      );
     }
     const seq = s.next_seq;
     db.prepare('UPDATE invoice_series SET next_seq = ? WHERE id = ?').run(seq + 1, s.id);
@@ -1887,10 +1906,14 @@ export function deleteProduct(productId: string): void {
 }
 
 /** ¿Hay alguna suscripción (activa o pausada) que use este producto? */
+/**
+ * ¿Hay alguna suscripción que referencie el producto? Cuenta TAMBIÉN las
+ * canceladas: la clave foránea es `ON DELETE RESTRICT`, así que una suscripción
+ * cancelada impide igualmente borrar el producto. Filtrar por estado hacía que la
+ * UI ofreciera un borrado que la BD rechazaba con un 500 opaco.
+ */
 export function productInUse(productId: string): boolean {
-  return !!db
-    .prepare("SELECT 1 FROM workspace_subscriptions WHERE product_id = ? AND status <> 'cancelled' LIMIT 1")
-    .get(productId);
+  return !!db.prepare('SELECT 1 FROM workspace_subscriptions WHERE product_id = ? LIMIT 1').get(productId);
 }
 
 export function listTiers(productId: string): PriceTierRow[] {
@@ -1959,9 +1982,42 @@ export function listUnpaidIssuedInvoices(): InvoiceRow[] {
   return db.prepare("SELECT * FROM workspace_invoices WHERE status = 'issued' AND paid_at IS NULL ORDER BY issued_at ASC").all() as InvoiceRow[];
 }
 
-/** ¿Ya existe una factura para ese ciclo del workspace? (idempotencia de la facturación automática). */
-export function invoiceExistsForCycle(workspaceId: string, periodStart: number): boolean {
-  return !!db.prepare('SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? LIMIT 1').get(workspaceId, periodStart);
+/**
+ * ¿Ya existe la factura DEFINITIVA de ese ciclo? (idempotencia de la facturación
+ * automática y de la generación manual).
+ *
+ * Solo cuenta la factura que cubre el ciclo YA CERRADO: la emitida/cobrada, o el
+ * borrador creado después de `periodEnd`. Un borrador creado a mitad de ciclo —el
+ * que produce «Generar ciclo» cuando el operador quiere una previsión— NO bloquea:
+ * si lo hiciera, el consumo desde esa previsión hasta el cierre no se facturaría
+ * nunca. Las anuladas tampoco cuentan: el periodo vuelve a estar pendiente.
+ */
+export function invoiceExistsForCycle(workspaceId: string, periodStart: number, periodEnd?: number): boolean {
+  if (periodEnd === undefined) {
+    return !!db.prepare("SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? AND status <> 'void' LIMIT 1").get(workspaceId, periodStart);
+  }
+  return !!db
+    .prepare(
+      `SELECT 1 FROM workspace_invoices
+       WHERE workspace_id = ? AND period_start = ? AND status <> 'void'
+         AND (status <> 'draft' OR created_at >= ?)
+       LIMIT 1`,
+    )
+    .get(workspaceId, periodStart, periodEnd);
+}
+
+/** Borrador (no cerrado) de un ciclo del workspace, para regenerarlo al vencer el periodo. */
+export function openDraftForCycle(workspaceId: string, periodStart: number): InvoiceRow | undefined {
+  return db
+    .prepare("SELECT * FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? AND status = 'draft' ORDER BY created_at DESC LIMIT 1")
+    .get(workspaceId, periodStart) as InvoiceRow | undefined;
+}
+
+/** Rectificativas vivas (no anuladas) que corrigen una factura dada. */
+export function listRectificationsOf(invoiceId: string): InvoiceRow[] {
+  return db
+    .prepare("SELECT * FROM workspace_invoices WHERE rectifies_invoice_id = ? AND status <> 'void' ORDER BY created_at ASC")
+    .all(invoiceId) as InvoiceRow[];
 }
 
 // ---------- cargos puntuales pendientes ----------

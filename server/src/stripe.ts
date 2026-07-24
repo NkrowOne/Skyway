@@ -27,6 +27,25 @@ export interface StripeCheckoutOpts {
   customerEmail?: string | null;
 }
 
+/**
+ * Monedas SIN subdivisión decimal: su unidad mínima es la unidad, no la centésima.
+ * Stripe siempre espera el importe en la unidad mínima, así que para estas hay que
+ * enviar euros/yenes enteros; mandar los «céntimos» cobraría 100 veces la factura.
+ * (Lista de Stripe: zero-decimal currencies.)
+ */
+const ZERO_DECIMAL = new Set([
+  'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
+]);
+
+/**
+ * Convierte el importe interno (siempre en céntimos) a la unidad mínima que espera
+ * Stripe para esa moneda. Se usa tanto al crear el cobro como al conciliar el
+ * webhook, para comparar peras con peras.
+ */
+export function stripeAmount(cents: number, currency: string): number {
+  return ZERO_DECIMAL.has(currency.toUpperCase()) ? Math.round(cents / 100) : Math.round(cents);
+}
+
 /** Crea una Checkout Session de pago único para una factura. Devuelve {id, url}. */
 export async function createStripeCheckout(secretKey: string, opts: StripeCheckoutOpts): Promise<{ id: string; url: string }> {
   if (!secretKey) throw new StripeError('No hay ninguna clave secreta de Stripe configurada.');
@@ -39,7 +58,7 @@ export async function createStripeCheckout(secretKey: string, opts: StripeChecko
   params.set('metadata[invoiceId]', opts.invoiceId);
   params.set('line_items[0][quantity]', '1');
   params.set('line_items[0][price_data][currency]', opts.currency.toLowerCase());
-  params.set('line_items[0][price_data][unit_amount]', String(Math.round(opts.amountCents)));
+  params.set('line_items[0][price_data][unit_amount]', String(stripeAmount(opts.amountCents, opts.currency)));
   params.set('line_items[0][price_data][product_data][name]', `Factura ${opts.invoiceNumber}`);
   if (opts.customerEmail) params.set('customer_email', opts.customerEmail);
 
@@ -76,17 +95,24 @@ export function verifyStripeSignature(
   toleranceSec = 300,
 ): boolean {
   if (!sigHeader || !secret) return false;
-  const parts: Record<string, string> = {};
+  let t: string | undefined;
+  // Durante una rotación del secreto de firma, Stripe manda VARIAS firmas `v1` en
+  // la misma cabecera (una por secreto activo). Quedarse con la última descarta la
+  // válida y rechaza webhooks legítimos: se aceptan todas las candidatas.
+  const signatures: string[] = [];
   for (const seg of sigHeader.split(',')) {
     const i = seg.indexOf('=');
-    if (i > 0) parts[seg.slice(0, i).trim()] = seg.slice(i + 1).trim();
+    if (i <= 0) continue;
+    const key = seg.slice(0, i).trim();
+    const value = seg.slice(i + 1).trim();
+    if (key === 't') t = value;
+    else if (key === 'v1') signatures.push(value);
   }
-  const t = parts['t'];
-  const v1 = parts['v1'];
-  if (!t || !v1) return false;
+  if (!t || signatures.length === 0) return false;
   const ts = parseInt(t, 10);
   if (!Number.isFinite(ts)) return false;
   if (Math.abs(Date.now() / 1000 - ts) > toleranceSec) return false;
   const expected = hmacSha256(secret, `${t}.${rawBody}`);
-  return safeEqual(v1, expected);
+  // safeEqual sobre TODAS: no se corta al primer acierto para no filtrar por tiempo.
+  return signatures.reduce((ok, sig) => safeEqual(sig, expected) || ok, false);
 }

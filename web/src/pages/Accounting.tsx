@@ -63,6 +63,23 @@ export default function AccountingPage() {
             <Kpi label="Facturas" value={String(s!.totals.count)} />
           </div>
 
+          {/* Los importes NO se suman entre divisas: los totales de arriba son los de
+              la moneda de la empresa y el resto se desglosa aparte. */}
+          {(s!.byCurrency ?? []).filter((b) => b.currency !== cur).length > 0 && (
+            <section className="card mt-3 px-4 py-3">
+              <h2 className="text-[13px] font-semibold">Facturación en otras monedas</h2>
+              <p className="mt-0.5 text-[11px] text-subtle">No se suman a los totales de arriba: cada divisa se contabiliza por separado.</p>
+              <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1.5">
+                {s!.byCurrency!.filter((b) => b.currency !== cur).map((b) => (
+                  <span key={b.currency} className="text-[12px] tnum">
+                    <span className="font-semibold">{b.currency}</span>
+                    <span className="text-sub"> · facturado {fmtMoney(b.invoiced, b.currency)} · cobrado {fmtMoney(b.paid, b.currency)} · {b.count} fact.</span>
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+
           <div className="mt-5">
             <RevenueBars points={s!.series} format={money} labelFor={monthLabel} />
           </div>
@@ -78,12 +95,12 @@ export default function AccountingPage() {
                 s!.byClient.map((c, i) => {
                   const pct = c.invoiced > 0 ? Math.round((c.paid / c.invoiced) * 100) : 0;
                   return (
-                    <div key={c.workspaceId} className={cx('px-4 py-3', i > 0 && 'border-t border-line')}>
+                    <div key={`${c.workspaceId}-${c.currency ?? cur}`} className={cx('px-4 py-3', i > 0 && 'border-t border-line')}>
                       <div className="flex items-center justify-between gap-2">
                         <span className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium">
                           <Building2 size={12} className="shrink-0 text-subtle" /> {c.name}
                         </span>
-                        <span className="shrink-0 text-[13px] font-semibold tnum">{money(c.invoiced)}</span>
+                        <span className="shrink-0 text-[13px] font-semibold tnum">{fmtMoney(c.invoiced, c.currency ?? cur)}</span>
                       </div>
                       <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface2">
                         <div className="h-full rounded-full bg-ok" style={{ width: `${pct}%` }} />

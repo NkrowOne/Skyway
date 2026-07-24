@@ -39,8 +39,14 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
 
     // La marca temporal no puede caer en el futuro (evita adelantar consumo a ciclos venideros).
     const ts = Math.min(body.ts ?? Date.now(), Date.now());
+    // La clave llega del cliente y `usage_events.idempotency_key` es única GLOBAL:
+    // sin acotarla, un cliente podría adivinar (o leer, del `responseId` que él
+    // mismo recibe) la clave que usará el medidor interno del gateway y ocupar su
+    // sitio con cantidad 0, de modo que su consumo real se descartase por
+    // duplicado. Se separan los espacios de nombres —«api:» aquí, «gw:» en
+    // `aigateway.ts`— y se acota además al sujeto.
     const fresh = ingestUsageEvent({
-      idempotencyKey: body.idempotencyKey,
+      idempotencyKey: `api:${body.subjectType}:${body.subjectId}:${body.idempotencyKey}`,
       subjectType: body.subjectType,
       subjectId: body.subjectId,
       meter: body.meter,

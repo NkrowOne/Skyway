@@ -317,6 +317,22 @@ export interface WorkspaceRow {
   billing_day: number;
   /** Descuento comercial (%) de la cuenta; null = hereda el del plan. */
   discount_pct: number | null;
+  /**
+   * Fecha de contratación del plan actual. Ancla el aniversario de las cuotas
+   * ANUALES: una cuota anual solo se devenga en el ciclo que la contiene. Null en
+   * cuentas anteriores a esta columna; entonces se usa `created_at`.
+   */
+  plan_since: number | null;
+  /** Etapa de morosidad alcanzada: 0 al corriente, 1 aviso, 2 suspensión, 3 cancelación. */
+  dunning_stage: number;
+  /** Momento en que empezó la mora actual. */
+  dunning_since: number | null;
+  /** Última acción de morosidad ejecutada (para trazar el avance de etapas). */
+  last_dunning_action_at: number | null;
+  /** Cuenta exenta del corte automático por impago (clientes de trato especial). */
+  dunning_exempt: number;
+  /** Servicio de IA cortado por impago. */
+  ai_suspended: number;
   notes: string | null;
   created_at: number;
 }
@@ -354,6 +370,13 @@ export interface InvoiceLine {
    * factura al recomputar.
    */
   taxRate?: number;
+  /**
+   * Tipo de retención de IRPF (%) de esta línea. Permite facturas que mezclan
+   * conceptos sujetos a retención (servicios profesionales) con otros que no
+   * (hosting, licencias). Si falta (líneas antiguas), se usa el tipo por defecto
+   * de la factura al recomputar.
+   */
+  irpfRate?: number;
   /** Tipo de recargo de equivalencia (%) de la línea, cuando aplica. */
   reRate?: number;
 }
