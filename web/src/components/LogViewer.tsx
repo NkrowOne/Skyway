@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ArrowDownToLine,
+  ArrowUp,
   ArrowUpToLine,
   Check,
   Copy,
   Download,
   Hash,
+  Loader2,
   Maximize2,
   Minimize2,
   Search,
@@ -21,6 +23,9 @@ type LevelFilter = 'all' | 'err' | 'warn';
 /** Formateador de miles reutilizable (locale fija): crearlo en cada render es caro
  *  y LogViewer re-renderiza por cada lote de líneas durante el streaming en vivo. */
 const NF = new Intl.NumberFormat('es');
+
+/** Filas agrupadas en tramos para virtualizar por bloque (ver index.css). */
+const CHUNK = 64;
 
 /** Heurística de niveles: error/fatal/panic → err; warn → warn; resto neutro. */
 function detectLevel(line: string): Level {
@@ -55,6 +60,47 @@ function highlight(line: string, q: string): React.ReactNode {
   }
   return out;
 }
+
+/**
+ * Una fila de log, memoizada: cuando llegan líneas nuevas por el final, las
+ * filas previas conservan sus props y React se salta su re-render (clave para
+ * que el streaming no reconcilie todo el buffer). El resaltado se computa aquí.
+ */
+const LogRow = memo(function LogRow({
+  n,
+  text,
+  lvl,
+  wrap,
+  gutter,
+  query,
+}: {
+  n: number;
+  text: string;
+  lvl: Level;
+  wrap: boolean;
+  gutter: boolean;
+  query: string;
+}) {
+  return (
+    <div
+      className={cx(
+        'log-row flex',
+        wrap ? 'w-full' : 'w-max min-w-full',
+        lvl === 'err' && 'log-row-err',
+        lvl === 'warn' && 'log-row-warn',
+      )}
+    >
+      {gutter && (
+        <span className="log-gutter tnum select-none px-2.5 text-right text-[11px] tabular-nums" style={{ minWidth: '3.5ch' }}>
+          {n}
+        </span>
+      )}
+      <span className={cx('py-[1px] pr-3', gutter ? 'pl-2' : 'pl-3', wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre')}>
+        {highlight(text, query)}
+      </span>
+    </div>
+  );
+});
 
 function ToolButton({
   title,
@@ -105,6 +151,12 @@ export default function LogViewer({
   downloadName,
   statusNote,
   title,
+  onLoadOlder,
+  canLoadOlder = false,
+  loadingOlder = false,
+  reachedStart = false,
+  onDownload,
+  onFollowChange,
 }: {
   lines: string[];
   className?: string;
@@ -117,14 +169,40 @@ export default function LogViewer({
   statusNote?: string | null;
   /** Título del cromo de la consola (p. ej. «Build & deploy», «Logs en vivo»). */
   title?: string;
+  /** Si se pasa, activa la carga de historial al subir (paginación hacia atrás). */
+  onLoadOlder?: () => void;
+  /** Hay líneas más antiguas por cargar (muestra el botón y arma el auto-scroll). */
+  canLoadOlder?: boolean;
+  /** Una carga de historial está en curso. */
+  loadingOlder?: boolean;
+  /** Se ha llegado al principio del registro (no hay más historial). */
+  reachedStart?: boolean;
+  /** Descarga a medida (p. ej. el log completo desde el servidor); reemplaza a la local. */
+  onDownload?: () => void;
+  /** Notifica al contenedor si el visor sigue el final (para su política de recorte). */
+  onFollowChange?: (follow: boolean) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
-  // Caché incremental del procesado: los logs crecen por el final, así que
-  // reprocesar TODO el buffer en cada línea nueva (stripAnsi + nivel) ahogaba el
-  // móvil. Aquí se reutiliza lo ya procesado y solo se procesa la cola nueva.
-  const procRef = useRef<{ src: string[] | null; rows: { text: string; lvl: Level }[] }>({ src: null, rows: [] });
+  // Caché del procesado por texto de línea: stripAnsi + nivel son funciones puras
+  // de la línea, así que se memorizan y solo se computa lo nuevo. Se reconstruye
+  // el mapa con las líneas vigentes en cada pasada (memoria acotada), lo que hace
+  // el procesado O(n) barato y robusto tanto si el buffer crece por el final
+  // (streaming) como por el frente (cargar historial) o se recorta —clave para
+  // que el móvil no se ahogue con buffers grandes.
+  const procRef = useRef(new Map<string, { text: string; lvl: Level }>());
   const scrollRaf = useRef(0);
+  // Ancla para conservar el sitio de lectura al anteponer historial: alto y
+  // scroll del cuerpo justo antes de pedir el tramo. Al llegar, se desplaza el
+  // scroll por el alto EXACTO añadido por el frente (newScrollHeight − alto
+  // guardado), así el contenido visible no se mueve sea cual sea la estimación
+  // de alto de las filas nuevas fuera de pantalla.
+  const anchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  // Evita re-disparar la carga de historial mientras una está en curso.
+  const olderRequestedRef = useRef(false);
+  // Detección de crecimiento por el frente (prepend) entre renders.
+  const prevFirstRef = useRef<string | undefined>(undefined);
+  const prevLenRef = useRef(0);
   // Última posición de scroll: al maximizar/restaurar el cuerpo se reubica, así
   // que se restaura aquí para no perder el sitio de lectura (si no vamos al final).
   const lastTopRef = useRef(0);
@@ -137,22 +215,17 @@ export default function LogViewer({
   const [maximized, setMaximized] = useState(false);
 
   // Los builds reales (npm, docker…) emiten colores ANSI: se limpian una vez aquí
-  // y filtro, niveles, copia y descarga trabajan ya sobre texto legible. El
-  // procesado es INCREMENTAL: en el caso normal (llega una ráfaga por el final)
-  // se reutiliza lo ya calculado y solo se procesa lo nuevo —clave para que el
-  // móvil no se congele con buffers grandes—; solo se reprocesa entero al arrancar,
-  // cambiar de servicio o recortar el buffer por el frente.
+  // y filtro, niveles, copia y descarga trabajan ya sobre texto legible.
   const rows = useMemo(() => {
-    const process = (raw: string) => ({ text: stripAnsi(raw), lvl: detectLevel(raw) as Level });
     const prev = procRef.current;
-    const isAppend =
-      !!prev.src &&
-      prev.src.length > 0 &&
-      lines.length >= prev.src.length &&
-      lines[0] === prev.src[0] &&
-      lines[prev.src.length - 1] === prev.src[prev.src.length - 1];
-    const result = isAppend ? prev.rows.concat(lines.slice(prev.src!.length).map(process)) : lines.map(process);
-    procRef.current = { src: lines, rows: result };
+    const next = new Map<string, { text: string; lvl: Level }>();
+    const result = lines.map((raw) => {
+      let r = next.get(raw) ?? prev.get(raw);
+      if (!r) r = { text: stripAnsi(raw), lvl: detectLevel(raw) };
+      next.set(raw, r);
+      return r;
+    });
+    procRef.current = next;
     return result;
   }, [lines]);
 
@@ -180,6 +253,19 @@ export default function LogViewer({
     return out;
   }, [rows, filter, level]);
 
+  // Se agrupan las filas en tramos: cada tramo lleva content-visibility (ver
+  // index.css), de modo que el navegador evalúa la visibilidad de pocos bloques
+  // en vez de miles de filas. La clave del tramo es el nº de su primera fila:
+  // estable al añadir por el final (los tramos previos no se remontan).
+  const chunks = useMemo(() => {
+    const out: { key: number; rows: typeof visible }[] = [];
+    for (let i = 0; i < visible.length; i += CHUNK) {
+      const slice = visible.slice(i, i + CHUNK);
+      out.push({ key: slice[0].n, rows: slice });
+    }
+    return out;
+  }, [visible]);
+
   useEffect(() => {
     if (!follow) return;
     const el = ref.current;
@@ -193,6 +279,34 @@ export default function LogViewer({
     });
     return () => cancelAnimationFrame(raf);
   }, [visible, follow]);
+
+  // Informa al contenedor de si seguimos el final: lo usa para no recortar el
+  // frente del buffer (el historial que el usuario lee) mientras está arriba.
+  useEffect(() => {
+    onFollowChange?.(follow);
+  }, [follow, onFollowChange]);
+
+  // Rearma la carga de historial cuando termina la anterior.
+  useEffect(() => {
+    if (!loadingOlder) olderRequestedRef.current = false;
+  }, [loadingOlder]);
+
+  // Al anteponer historial (el buffer crece por el FRENTE) se conserva el punto
+  // de lectura desplazando el scroll por el alto añadido arriba. Un append por el
+  // final no cambia el frente y no ancla nada.
+  useLayoutEffect(() => {
+    const first = lines[0];
+    const grewFront =
+      prevFirstRef.current !== undefined && first !== prevFirstRef.current && lines.length > prevLenRef.current;
+    if (grewFront && anchorRef.current) {
+      const el = ref.current;
+      const a = anchorRef.current;
+      if (el) el.scrollTop = a.scrollTop + (el.scrollHeight - a.scrollHeight);
+      anchorRef.current = null;
+    }
+    prevFirstRef.current = first;
+    prevLenRef.current = lines.length;
+  }, [lines]);
 
   // Al maximizar/restaurar el nodo se reubica: si veníamos siguiendo, al final;
   // si el usuario había subido a leer, se recupera su posición (no se salta arriba).
@@ -233,6 +347,20 @@ export default function LogViewer({
     };
   }, [maximized]);
 
+  // Guarda alto y scroll del cuerpo justo antes de pedir historial, para reponer
+  // el sitio de lectura cuando el buffer crezca por el frente.
+  const captureAnchor = () => {
+    const el = ref.current;
+    if (el) anchorRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+  };
+
+  const triggerLoadOlder = () => {
+    if (!onLoadOlder || loadingOlder || !canLoadOlder || olderRequestedRef.current) return;
+    olderRequestedRef.current = true;
+    captureAnchor();
+    onLoadOlder();
+  };
+
   // El scroll táctil dispara este evento decenas de veces por gesto; sin acotar,
   // cada uno forzaba layout + un posible re-render del buffer entero. Se limita a
   // una lectura por frame (y se cancela al desmontar).
@@ -244,6 +372,9 @@ export default function LogViewer({
       if (!el) return;
       lastTopRef.current = el.scrollTop;
       setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+      // Scroll infinito hacia arriba: al acercarse al frente carga historial,
+      // solo si hay recorrido real (si el log cabe en pantalla, se usa el botón).
+      if (el.scrollTop < 120 && el.scrollHeight - el.clientHeight > 200) triggerLoadOlder();
     });
   };
   useEffect(() => () => {
@@ -392,7 +523,11 @@ export default function LogViewer({
             <ToolButton title="Copiar líneas visibles" onClick={copyAll} disabled={visible.length === 0}>
               {copied ? <Check size={14} className="pop-in text-ok" /> : <Copy size={14} />}
             </ToolButton>
-            <ToolButton title="Descargar" onClick={download} disabled={visible.length === 0}>
+            <ToolButton
+              title={onDownload ? 'Descargar log completo' : 'Descargar'}
+              onClick={onDownload ?? download}
+              disabled={!onDownload && visible.length === 0}
+            >
               <Download size={14} />
             </ToolButton>
           </div>
@@ -435,29 +570,38 @@ export default function LogViewer({
           aria-live="off"
           aria-label="Salida de registro"
         >
+          {onLoadOlder && (loadingOlder || canLoadOlder || reachedStart) && (
+            <div className="flex items-center justify-center gap-2 border-b border-line/60 px-3 py-2 text-[11px] text-subtle">
+              {loadingOlder ? (
+                <>
+                  <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
+                  Cargando líneas anteriores…
+                </>
+              ) : canLoadOlder ? (
+                <button
+                  type="button"
+                  onClick={triggerLoadOlder}
+                  className="press inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface2 px-3 py-1 font-medium text-sub hover:text-txt"
+                >
+                  <ArrowUp size={12} /> Cargar líneas anteriores
+                </button>
+              ) : (
+                <span className="inline-flex items-center gap-2 text-subtle">
+                  <span className="h-px w-6 bg-line" /> Inicio del registro <span className="h-px w-6 bg-line" />
+                </span>
+              )}
+            </div>
+          )}
           {visible.length === 0 ? (
             <span className="block px-3 py-3 text-subtle">
               {filtering ? 'Ninguna línea coincide con el filtro.' : 'Sin logs todavía…'}
             </span>
           ) : (
-            visible.map((v) => (
-              <div
-                key={v.n}
-                className={cx(
-                  'log-row flex',
-                  wrap ? 'w-full' : 'w-max min-w-full',
-                  v.lvl === 'err' && 'log-row-err',
-                  v.lvl === 'warn' && 'log-row-warn',
-                )}
-              >
-                {gutter && (
-                  <span className="log-gutter tnum select-none px-2.5 text-right text-[11px] tabular-nums" style={{ minWidth: '3.5ch' }}>
-                    {v.n}
-                  </span>
-                )}
-                <span className={cx('py-[1px] pr-3', gutter ? 'pl-2' : 'pl-3', wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre')}>
-                  {highlight(v.text, filter.trim())}
-                </span>
+            chunks.map((ch) => (
+              <div key={ch.key} className="log-chunk" style={{ '--rows': ch.rows.length } as React.CSSProperties}>
+                {ch.rows.map((v) => (
+                  <LogRow key={v.n} n={v.n} text={v.text} lvl={v.lvl} wrap={wrap} gutter={gutter} query={filter.trim()} />
+                ))}
               </div>
             ))
           )}

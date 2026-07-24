@@ -516,13 +516,17 @@ details[open] > .details-body {
 /*
  * ── Consola de logs profesional ───────────────────────────────────────────
  * Un mismo primitivo sirve para logs de servicio y de despliegue, incrustado
- * o a pantalla completa. El cuerpo virtualiza con content-visibility: las
- * filas fuera de pantalla no maquetan ni pintan, así el buffer puede ser enorme
- * (decenas de miles de líneas) sin ahogar el hilo principal.
+ * o a pantalla completa. El cuerpo virtualiza por TRAMOS: las filas se agrupan
+ * en bloques y es el bloque el que lleva content-visibility. Así el navegador
+ * evalúa la visibilidad de ~cientos de bloques en vez de decenas de miles de
+ * filas —el coste que congelaba el móvil al hacer scroll de la página—, y las
+ * filas de un bloque fuera de pantalla no maquetan ni pintan.
  */
-.log-row {
+.log-chunk {
   content-visibility: auto;
-  contain-intrinsic-size: auto var(--log-line-h, 21px);
+  /* Reserva de alto = nº de filas × alto de línea. `auto` recuerda el alto real
+   * ya pintado, para que la barra de scroll no salte al reaparecer el bloque. */
+  contain-intrinsic-size: auto calc(var(--rows, 64) * var(--log-line-h, 21px));
 }
 /* Canalón de numeración: se queda pegado a la izquierda al hacer scroll horizontal. */
 .log-gutter {

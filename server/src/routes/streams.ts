@@ -1,9 +1,19 @@
 import os from 'os';
 import { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { assertProjectAccess, requireAuth } from '../auth';
 import { getProject, getService, listServices } from '../db';
 import { dockerAvailable } from '../docker/client';
-import { configuredReplicas, containerName, followLogs, getRuntime, getStats, replicaName } from '../docker/containers';
+import {
+  configuredReplicas,
+  containerName,
+  fetchLogsBefore,
+  fetchLogsText,
+  followLogs,
+  getRuntime,
+  getStats,
+  replicaName,
+} from '../docker/containers';
 import { sseInit } from '../sse';
 
 export async function streamRoutes(app: FastifyInstance): Promise<void> {
@@ -37,7 +47,9 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
       }
       try {
         channel.send('attached', { state: runtime.state });
-        stopStream = await followLogs(name, (line) => channel.send('log', { line }));
+        // Cada línea viaja con su cursor (sello de tiempo); el visor lo oculta
+        // pero lo usa como punto de partida para pedir líneas más antiguas.
+        stopStream = await followLogs(name, (row) => channel.send('log', row));
       } catch {
         retryTimer = setTimeout(attach, 3000);
       }
@@ -49,6 +61,60 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     });
 
     void attach();
+  });
+
+  /**
+   * Página hacia atrás en los logs de ejecución: devuelve líneas ANTERIORES al
+   * cursor dado, para que el visor cargue historial al subir. Fuera del stream
+   * en vivo por ser puntual (una petición por «cargar anteriores»).
+   */
+  app.get('/api/services/:id/logs/tail', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const service = getService(id);
+    const project = service ? getProject(service.project_id) : undefined;
+    if (!service || !project) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, project.id)) return reply;
+
+    const q = z
+      .object({
+        limit: z.coerce.number().int().min(1).max(1000).default(300),
+        before: z.string().min(1).max(40).optional(),
+      })
+      .parse(req.query);
+
+    if (!(await dockerAvailable())) return { lines: [], hasMore: false };
+    const name = containerName(project, service);
+    const runtime = await getRuntime(name);
+    if (runtime.state === 'not_created') return { lines: [], hasMore: false };
+
+    const lines = await fetchLogsBefore(name, q.limit, q.before ?? null);
+    // Si Docker devuelve la página completa es que probablemente hay más atrás.
+    return { lines, hasMore: lines.length >= q.limit };
+  });
+
+  /**
+   * Descarga íntegra de los logs de ejecución (todo el buffer del contenedor,
+   * no solo lo que el visor tiene en memoria). Se sirve como adjunto de texto.
+   */
+  app.get('/api/services/:id/logs/download', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const service = getService(id);
+    const project = service ? getProject(service.project_id) : undefined;
+    if (!service || !project) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, project.id)) return reply;
+
+    const q = z.object({ timestamps: z.string().optional() }).parse(req.query);
+
+    if (!(await dockerAvailable())) return reply.code(409).send({ error: 'Docker no está disponible' });
+    const name = containerName(project, service);
+    const runtime = await getRuntime(name);
+    if (runtime.state === 'not_created') return reply.code(409).send({ error: 'El contenedor aún no existe' });
+
+    const text = await fetchLogsText(name, 'all', q.timestamps === '1');
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    reply.header('Content-Type', 'text/plain; charset=utf-8');
+    reply.header('Content-Disposition', `attachment; filename="logs-${service.slug}-${stamp}.txt"`);
+    return text;
   });
 
   /** Métricas en vivo de todos los servicios de un proyecto (SSE). */

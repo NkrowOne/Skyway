@@ -609,7 +609,9 @@ nunca se devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/deployments/:id/cancel` | +access | cancela uno en curso |
 | POST | `/deployments/:id/rollback` | +access | redespliega una imagen anterior (solo git) |
 | GET | `/deployments/:id/logs/stream` | +access | **SSE** de build/deploy |
-| GET | `/services/:id/logs/stream` | +access | **SSE** de logs de ejecución |
+| GET | `/services/:id/logs/stream` | +access | **SSE** de logs de ejecución (cada línea con su cursor de tiempo) |
+| GET | `/services/:id/logs/tail` | +access | páginado hacia atrás: líneas anteriores a un cursor (`?limit=&before=`) para cargar historial al subir |
+| GET | `/services/:id/logs/download` | +access | descarga íntegra del log del contenedor como adjunto de texto (`?timestamps=1` para incluir sellos) |
 | GET | `/projects/:id/metrics/stream` | +access | **SSE** de métricas en vivo del proyecto |
 | GET | `/services/:id/metrics/history` | +access | histórico de consumo del servicio (`?hours=`): CPU/RAM (media y pico), red y disco |
 
