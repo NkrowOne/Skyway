@@ -6,10 +6,12 @@ import { getSetting, listAllInvoices, setSetting } from '../db';
 import { getBillingAutomation, setBillingAutomation } from '../billingsettings';
 import {
   getBillingProfile,
+  getSmtpSettings,
   getStripePublishableKey,
   getStripeSecretKey,
   getStripeWebhookSecret,
   setBillingProfile,
+  setSmtpSettings,
 } from '../company';
 import { BillingProfile, InvoiceRow } from '../types';
 
@@ -40,6 +42,15 @@ const profileSchema = z.object({
   stripeSecretKey: z.string().trim().optional(),
   stripeWebhookSecret: z.string().trim().optional(),
   stripePublishableKey: z.string().trim().optional(),
+  // Correo saliente para enviar la factura al cliente. La contraseña se guarda
+  // pero nunca se devuelve (igual que las claves de Stripe).
+  smtpHost: z.string().trim().max(200).optional(),
+  smtpPort: z.coerce.number().int().min(1).max(65535).optional(),
+  smtpSecure: z.boolean().optional(),
+  smtpUser: z.string().trim().max(200).optional(),
+  smtpPass: z.string().optional(),
+  smtpFrom: z.union([z.string().trim().email(), z.literal('')]).optional(),
+  smtpFromName: z.string().trim().max(120).optional(),
 });
 
 /** Agrupa las facturas por mes de su periodo, sumando facturado y cobrado. */
@@ -87,6 +98,19 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
       publishableKey: getStripePublishableKey() ?? '',
     },
     invoiceSeq: parseInt(getSetting('billing.invoiceSeq') || '0', 10) || 0,
+    smtp: (() => {
+      const cfg = getSmtpSettings();
+      return {
+        configured: !!cfg,
+        host: cfg?.host ?? '',
+        port: cfg?.port ?? 587,
+        secure: cfg?.secure ?? false,
+        user: cfg?.user ?? '',
+        from: cfg?.from ?? '',
+        fromName: cfg?.fromName ?? '',
+        hasPassword: !!cfg?.pass,
+      };
+    })(),
   }));
 
   app.put('/api/billing/profile', async (req) => {
@@ -114,6 +138,15 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
     if (body.stripeSecretKey !== undefined) setSetting('stripeSecretKey', body.stripeSecretKey || null);
     if (body.stripeWebhookSecret !== undefined) setSetting('stripeWebhookSecret', body.stripeWebhookSecret || null);
     if (body.stripePublishableKey !== undefined) setSetting('stripePublishableKey', body.stripePublishableKey || null);
+    setSmtpSettings({
+      host: body.smtpHost,
+      port: body.smtpPort,
+      secure: body.smtpSecure,
+      user: body.smtpUser,
+      pass: body.smtpPass,
+      from: body.smtpFrom,
+      fromName: body.smtpFromName,
+    });
     audit(req, 'billing_profile_updated', { type: 'system', id: 'billing' });
     return { ok: true, profile: next };
   });
@@ -129,6 +162,7 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
         autoIssue: z.boolean().optional(),
         dunningGraceDays: z.coerce.number().int().min(0).max(365).optional(),
         dunningCancelDays: z.coerce.number().int().min(0).max(365).optional(),
+        emailOnIssue: z.boolean().optional(),
       })
       .parse(req.body ?? {});
     // La cancelación nunca puede preceder a la suspensión: se validan los valores ya fusionados.
