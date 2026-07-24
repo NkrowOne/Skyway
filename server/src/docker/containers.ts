@@ -431,12 +431,91 @@ export async function fetchLogsTail(
 }
 
 /**
- * Sigue los logs de un contenedor y entrega líneas completas.
- * Devuelve una función para detener el stream.
+ * Separa el prefijo de tiempo que añade Docker con `timestamps: true`
+ * (`2024-05-01T12:00:00.123456789Z <línea>`). El cursor RFC3339 es ordenable
+ * lexicográficamente y con precisión de nanosegundos: sirve de identidad de la
+ * línea para paginar hacia atrás (filtro `until`) y deduplicar en el cliente.
+ */
+export function splitTimestamp(raw: string): { cursor: string | null; line: string } {
+  const idx = raw.indexOf(' ');
+  // El sello de Docker ocupa ≥20 caracteres y lleva un guion en la 5ª posición
+  // (año-mes). Comprobarlo evita confundir la 1ª palabra de un log sin sello.
+  if (idx >= 20 && raw[4] === '-' && Number.isFinite(Date.parse(raw.slice(0, idx)))) {
+    return { cursor: raw.slice(0, idx), line: raw.slice(idx + 1) };
+  }
+  return { cursor: null, line: raw };
+}
+
+/** Cursor RFC3339 → segundos Unix, para el filtro `until` de Docker. */
+function cursorToUnixSeconds(cursor: string): number | null {
+  const ms = Date.parse(cursor);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+/**
+ * Paginación hacia atrás: como mucho `limit` líneas ANTERIORES al cursor dado
+ * (o las últimas si no hay cursor), en orden cronológico y con su cursor.
+ * `until` se redondea al alza al segundo entero —Docker filtra por segundos—,
+ * así que se incluye todo ese segundo (sin huecos) y el solape lo descarta el
+ * cliente por cursor. Con muchas líneas en el mismo segundo puede devolver
+ * alguna repetida; deduplicar es responsabilidad de quien consume.
+ */
+export async function fetchLogsBefore(
+  name: string,
+  limit: number,
+  before: string | null,
+): Promise<{ cursor: string | null; line: string }[]> {
+  const c = docker.getContainer(name);
+  // `until` (segundos Unix) no está en los tipos de dockerode pero sí en la API
+  // de Docker; se fija `follow: false` como literal para elegir la sobrecarga.
+  const opts: Docker.ContainerLogsOptions & { follow: false; until?: number } = {
+    follow: false,
+    stdout: true,
+    stderr: true,
+    timestamps: true,
+    tail: limit,
+  };
+  if (before) {
+    const secs = cursorToUnixSeconds(before);
+    if (secs !== null) opts.until = secs + 1;
+  }
+  const raw = (await c.logs(opts)) as unknown as Buffer;
+  const text = Buffer.isBuffer(raw) ? demuxLogBuffer(raw) : String(raw);
+  const out: { cursor: string | null; line: string }[] = [];
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    if (line) out.push(splitTimestamp(line));
+  }
+  return out;
+}
+
+/**
+ * Texto completo del log de un contenedor (para la descarga íntegra). El buffer
+ * está acotado por la rotación (`max-size`·`max-file`), así que cargarlo entero
+ * es asumible. Con `timestamps` se antepone el sello de tiempo a cada línea.
+ */
+export async function fetchLogsText(
+  name: string,
+  tail: number | 'all' = 'all',
+  timestamps = false,
+): Promise<string> {
+  const c = docker.getContainer(name);
+  // `tail: 'all'` lo acepta la API de Docker aunque los tipos de dockerode solo
+  // admitan number: se castea en esta frontera para pedir el buffer completo.
+  const opts = { follow: false as const, stdout: true, stderr: true, tail, timestamps };
+  const raw = (await c.logs(opts as unknown as Docker.ContainerLogsOptions & { follow: false })) as unknown as Buffer;
+  return Buffer.isBuffer(raw) ? demuxLogBuffer(raw) : String(raw);
+}
+
+/**
+ * Sigue los logs de un contenedor y entrega líneas completas con su cursor.
+ * Devuelve una función para detener el stream. Se piden con `timestamps` para
+ * que cada línea lleve cursor (el visor lo oculta) y así el frente del buffer
+ * en vivo sirve de punto de partida para paginar hacia atrás.
  */
 export async function followLogs(
   name: string,
-  onLine: (line: string) => void,
+  onLine: (row: { line: string; cursor: string | null }) => void,
   tail = 200,
 ): Promise<() => void> {
   const c = docker.getContainer(name);
@@ -445,12 +524,12 @@ export async function followLogs(
     stdout: true,
     stderr: true,
     tail,
-    timestamps: false,
+    timestamps: true,
   })) as NodeJS.ReadableStream;
 
   const out = new PassThrough();
   const err = new PassThrough();
-  const feed = lineSplitter(onLine);
+  const feed = lineSplitter((raw) => onLine(splitTimestamp(raw)));
   out.on('data', feed);
   err.on('data', feed);
   docker.modem.demuxStream(stream, out, err);
