@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import {
@@ -21,10 +21,14 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
-import { BandPoint, HistoryChart } from '../components/HistoryChart';
+import type { BandPoint } from '../components/HistoryChart';
 import { Button, ConfirmModal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { DiskBreakdown, HostMetricHistory, LogSearchResult, Me, MonitorOverview, MonitorService } from '../types';
 import { cx, fmtBytes, fmtDateTime, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
+
+// El histórico del host solo se ve en la vista «host» (la vista por defecto es
+// «services»), así que su gráfico se carga bajo demanda al abrirla.
+const HistoryChart = lazy(() => import('../components/HistoryChart').then((m) => ({ default: m.HistoryChart })));
 
 type StateFilter = 'all' | 'running' | 'down' | 'stopped';
 type SortKey = 'default' | 'cpu' | 'mem' | 'disk';
@@ -452,12 +456,19 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
   });
 
   const points = q.data?.points ?? [];
-  const memTotal = [...points].reverse().find((p) => p.memTotal)?.memTotal ?? null;
-  const diskTotal = [...points].reverse().find((p) => p.diskTotal)?.diskTotal ?? null;
-
-  const loadPoints: BandPoint[] = points.map((p) => ({ t: p.t, avg: p.loadAvg, max: p.loadMax }));
-  const memPoints: BandPoint[] = points.map((p) => ({ t: p.t, avg: p.memUsedAvg, max: p.memUsedMax }));
-  const diskPoints: BandPoint[] = points.map((p) => ({ t: p.t, avg: p.diskUsed, max: p.diskUsed }));
+  // Derivaciones memoizadas: el panel re-renderiza cada 6 s (overview del padre)
+  // pero el histórico solo cambia cada 60 s; sin memo se recalculaban 3 map + 2
+  // reverse en cada render y se desestabilizaban las props de los HistoryChart.
+  const { memTotal, diskTotal, loadPoints, memPoints, diskPoints } = useMemo(
+    () => ({
+      memTotal: [...points].reverse().find((p) => p.memTotal)?.memTotal ?? null,
+      diskTotal: [...points].reverse().find((p) => p.diskTotal)?.diskTotal ?? null,
+      loadPoints: points.map((p) => ({ t: p.t, avg: p.loadAvg, max: p.loadMax })) as BandPoint[],
+      memPoints: points.map((p) => ({ t: p.t, avg: p.memUsedAvg, max: p.memUsedMax })) as BandPoint[],
+      diskPoints: points.map((p) => ({ t: p.t, avg: p.diskUsed, max: p.diskUsed })) as BandPoint[],
+    }),
+    [points],
+  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -487,7 +498,15 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
           <TriangleAlert size={14} /> {(q.error as Error).message}
         </p>
       ) : (
-        <>
+        <Suspense
+          fallback={
+            <div aria-busy className="flex flex-col gap-3.5">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-[208px] w-full rounded-xl" />
+              ))}
+            </div>
+          }
+        >
           <HistoryChart
             title={`Carga del sistema${cpus ? ` · ${cpus} núcleos` : ''}`}
             points={loadPoints}
@@ -518,7 +537,7 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
             La carga del sistema es el número medio de procesos esperando CPU; si supera el número de núcleos, el servidor va
             saturado. La banda va de la media al pico de cada periodo.
           </p>
-        </>
+        </Suspense>
       )}
     </div>
   );

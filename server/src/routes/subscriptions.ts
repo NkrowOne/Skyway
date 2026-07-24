@@ -89,6 +89,12 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
       .parse(req.body);
     const product = getProduct(body.productId);
     if (!product || product.archived) return reply.code(400).send({ error: 'Producto del catálogo no válido' });
+    // Un producto de pago único NO es una suscripción: como línea recurrente se
+    // cobraría en cada ciclo. Se contrata como cargo puntual (`/charges`), que lo
+    // incluye una sola vez en la próxima factura.
+    if (product.billing_model === 'flat_one_off') {
+      return reply.code(400).send({ error: 'Es un producto de pago único: añádelo como cargo puntual, no como suscripción (se cobraría cada ciclo).' });
+    }
     const interval: SubscriptionRow['interval'] = product.interval === 'yearly' ? 'yearly' : 'monthly';
     const sub = createSubscription({
       workspace_id: id,
@@ -148,26 +154,36 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
     const body = z
       .object({
+        // Producto del catálogo (p. ej. de pago único): autocompleta concepto, precio e impuestos.
         productId: z.string().trim().nullable().optional(),
-        label: z.string().trim().min(1).max(120),
+        label: z.string().trim().min(1).max(120).optional(),
         qty: z.coerce.number().min(0).max(1_000_000).default(1),
-        unitCents: z.coerce.number().int().min(-MONEY).max(MONEY).default(0),
+        unitCents: z.coerce.number().int().min(-MONEY).max(MONEY).optional(),
         taxRate: z.coerce.number().min(0).max(100).optional(),
         irpfRate: z.coerce.number().min(0).max(100).optional(),
       })
       .parse(req.body);
     const product = body.productId ? getProduct(body.productId) : undefined;
+    if (body.productId && (!product || product.archived)) {
+      return reply.code(400).send({ error: 'Producto del catálogo no válido' });
+    }
+    // Con producto: concepto, precio e IVA salen del catálogo (editables). Sin
+    // producto: cargo libre, que exige un concepto. El precio pactado por línea
+    // (unitCents) siempre prevalece sobre el del catálogo.
+    const label = (body.label ?? product?.name ?? '').trim();
+    if (!label) return reply.code(400).send({ error: 'Indica un concepto para el cargo.' });
+    const defaultRate = product ? (product.tax_exempt ? 0 : product.tax_rate) : 21;
     const charge = createPendingCharge({
       workspace_id: id,
       product_id: product?.id ?? null,
-      label: body.label,
+      label,
       kind: product ? 'product' : 'custom',
       qty: body.qty,
-      unit_cents: body.unitCents,
-      tax_rate: body.taxRate ?? product?.tax_rate ?? 21,
+      unit_cents: body.unitCents ?? product?.price_cents ?? 0,
+      tax_rate: body.taxRate ?? defaultRate,
       irpf_rate: body.irpfRate ?? product?.irpf_rate ?? 0,
     });
-    audit(req, 'charge_added', { type: 'workspace', id, detail: body.label });
+    audit(req, 'charge_added', { type: 'workspace', id, detail: label });
     reply.code(201);
     return { charge: publicCharge(charge) };
   });

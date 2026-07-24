@@ -1,10 +1,14 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { BellRing, Building2, Plus, TrainFront } from 'lucide-react';
 import { api } from '../api';
-import RailwayImportModal from '../components/RailwayImportModal';
+import { useLatch } from '../hooks';
 import { Button, Field, Modal, Skeleton, useToast } from '../components/ui';
+
+// El asistente de importación de Railway solo se abre desde un botón: se carga
+// (React.lazy) en su 1ª apertura, no al entrar al panel.
+const RailwayImportModal = lazy(() => import('../components/RailwayImportModal'));
 import { Me, Project } from '../types';
 import { cx, timeAgo } from '../utils';
 
@@ -77,6 +81,7 @@ function DashboardSkeleton() {
 export default function Dashboard() {
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const importLatched = useLatch(importOpen);
   const [name, setName] = useState('');
   const [client, setClient] = useState('');
   const [filter, setFilter] = useState<string | null>(null);
@@ -229,7 +234,11 @@ export default function Dashboard() {
         </div>
       )}
 
-      <RailwayImportModal open={importOpen} onClose={() => setImportOpen(false)} />
+      {importLatched && (
+        <Suspense fallback={null}>
+          <RailwayImportModal open={importOpen} onClose={() => setImportOpen(false)} />
+        </Suspense>
+      )}
 
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Nuevo proyecto">
         <form

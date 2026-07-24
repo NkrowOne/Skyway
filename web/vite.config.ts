@@ -15,5 +15,14 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // El framework (poco cambiante) va en un chunk aparte para cachearse entre
+        // despliegues; cada página tiene su propio chunk por la carga diferida.
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom', '@tanstack/react-query'],
+        },
+      },
+    },
   },
 });

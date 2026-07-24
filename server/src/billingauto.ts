@@ -7,10 +7,10 @@
  */
 import { auditSystem } from './audit';
 import { fireWorkspaceAlert } from './alerts';
+import { getBillingAutomation } from './billingsettings';
 import { getBillingProfile } from './company';
-import { generateCycleDraft } from './routes/billing';
+import { generateCycleDraft, issueInvoice } from './routes/billing';
 import {
-  getSetting,
   getWorkspace,
   invoiceExistsForCycle,
   listUnpaidIssuedInvoices,
@@ -24,17 +24,6 @@ import { InvoiceRow } from './types';
 
 const DAY = 86_400_000;
 
-/** Lee un entero de settings admitiendo el valor 0 (no lo confunde con «sin valor»). */
-function settingInt(key: string, fallback: number): number {
-  const n = parseInt(getSetting(key) ?? '', 10);
-  return Number.isFinite(n) ? n : fallback;
-}
-function getDunningGraceDays(): number {
-  return settingInt('billing.dunningGraceDays', 14);
-}
-function getDunningCancelDays(): number {
-  return settingInt('billing.dunningCancelDays', 44);
-}
 /** Condiciones de pago del perfil, admitiendo 0 (vencimiento en la expedición). */
 function paymentTermsDays(): number {
   const n = getBillingProfile().paymentTermsDays;
@@ -157,8 +146,7 @@ function dunningForWorkspace(workspaceId: string, overdue: InvoiceRow[], graceDa
 /** Recorre las facturas vencidas y avanza la etapa de dunning de cada cuenta. */
 export function dunningTick(nowMs: number): void {
   const termsDays = paymentTermsDays();
-  const graceDays = getDunningGraceDays();
-  const cancelDays = getDunningCancelDays();
+  const { dunningGraceDays: graceDays, dunningCancelDays: cancelDays } = getBillingAutomation();
   const byWs = new Map<string, InvoiceRow[]>();
   for (const inv of listUnpaidIssuedInvoices()) {
     if (invoiceDueMs(inv, termsDays) >= nowMs) continue; // aún no vencida
@@ -185,9 +173,12 @@ function previousCycle(billingDay: number, now: Date): { start: number; end: num
 /**
  * En el día de facturación de cada cuenta, genera el borrador del ciclo COMPLETO
  * anterior (plan + suscripciones + uso medido + cargos) si aún no existe. Se crea
- * en DRAFT: la emisión (acto legal irreversible) la confirma un humano.
+ * en DRAFT y, SOLO si el operador ha activado la auto-emisión, se emite (numera y
+ * bloquea): la emisión es un acto legal irreversible, por eso es opt-in.
  */
 export function billingCycleTick(now: Date): void {
+  const auto = getBillingAutomation();
+  if (!auto.autoGenerate) return; // generación automática desactivada por el operador
   const day = now.getDate();
   for (const ws of listWorkspaces()) {
     try {
@@ -196,7 +187,22 @@ export function billingCycleTick(now: Date): void {
       if (invoiceExistsForCycle(ws.id, cycle.start)) continue; // ya generada (idempotente)
       const inv = generateCycleDraft(ws, cycle);
       if (!inv) continue; // nada que facturar: no se crea un borrador vacío
-      auditSystem('invoice_auto_generated', `${ws.name} · ${inv.currency} ${(inv.total_cents / 100).toFixed(2)} (borrador del ciclo)`);
+      const money = `${inv.currency} ${(inv.total_cents / 100).toFixed(2)}`;
+      if (auto.autoIssue) {
+        const issued = issueInvoice(inv.id) ?? inv;
+        auditSystem('invoice_auto_issued', `${ws.name} · ${issued.number ?? issued.id} · ${money} (emitida automáticamente)`);
+        fireWorkspaceAlert({
+          severity: 'info',
+          workspaceId: ws.id,
+          type: 'invoice_auto_issued',
+          title: `Factura emitida automáticamente — ${ws.name}`,
+          message: `Factura ${issued.number ?? issued.id} por ${money}.`,
+          explanation: 'Auto-emisión activada: revísala en la cuenta y envía el enlace de pago si procede.',
+          dedupeKey: `ws:${ws.id}:auto_issued:${issued.id}`,
+        });
+      } else {
+        auditSystem('invoice_auto_generated', `${ws.name} · ${money} (borrador del ciclo)`);
+      }
     } catch (err: any) {
       auditSystem('billing_cycle_error', `${ws.id}: ${(err?.message || err).toString().slice(0, 200)}`);
     }

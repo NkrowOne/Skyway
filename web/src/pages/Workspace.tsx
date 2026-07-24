@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -27,7 +27,8 @@ import {
 import { api } from '../api';
 import { Button, ConfirmModal, CopyButton, EditorBar, Field, Modal, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
 import { QuotaMeter } from '../components/QuotaMeter';
-import { UsageBars } from '../components/BillingCharts';
+// Gráficos de la pestaña «Uso» (no es la pestaña por defecto): carga diferida.
+const UsageBars = lazy(() => import('../components/BillingCharts').then((m) => ({ default: m.UsageBars })));
 import {
   BillingProfile,
   Invoice,
@@ -597,8 +598,10 @@ function UsoTab({ detail }: { detail: Detail }) {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <UsageBars title="CPU consumida (núcleo·h)" points={series.map((p) => ({ t: p.t, value: p.cpuCoreHours }))} color="var(--color-acc)" format={(v) => String(round1(v))} labelFor={labelFor} />
-            <UsageBars title="Memoria consumida (GB·h)" points={series.map((p) => ({ t: p.t, value: p.ramGbHours }))} color="var(--color-info)" format={(v) => String(round1(v))} labelFor={labelFor} />
+            <Suspense fallback={<><Skeleton className="h-56 w-full" /><Skeleton className="h-56 w-full" /></>}>
+              <UsageBars title="CPU consumida (núcleo·h)" points={series.map((p) => ({ t: p.t, value: p.cpuCoreHours }))} color="var(--color-acc)" format={(v) => String(round1(v))} labelFor={labelFor} />
+              <UsageBars title="Memoria consumida (GB·h)" points={series.map((p) => ({ t: p.t, value: p.ramGbHours }))} color="var(--color-info)" format={(v) => String(round1(v))} labelFor={labelFor} />
+            </Suspense>
           </div>
 
           <section className="card p-5">
@@ -1088,14 +1091,18 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
   const subs = subsQ.data?.subscriptions ?? [];
   const charges = subsQ.data?.charges ?? [];
   const activeProducts = (productsQ.data?.products ?? []).filter((p) => !p.archived && p.active);
+  // Un producto de pago único se contrata como cargo puntual (una vez), no como
+  // suscripción recurrente; el resto (recurrentes, por uso, por tramos) sí se suscribe.
+  const subscribable = activeProducts.filter((p) => p.billing_model !== 'flat_one_off');
+  const oneOffProducts = activeProducts.filter((p) => p.billing_model === 'flat_one_off');
 
   return (
     <section className="card overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
         <h2 className="flex items-center gap-2 text-sm font-semibold"><Boxes size={15} className="text-acc-soft" /> Servicios contratados</h2>
         <div className="flex gap-2">
-          <Button size="sm" variant="secondary" onClick={() => setCharge(true)}><Plus size={13} /> Cargo puntual</Button>
-          <Button size="sm" onClick={() => setAdding(true)} disabled={activeProducts.length === 0}><Plus size={13} /> Suscribir</Button>
+          <Button size="sm" variant="secondary" onClick={() => setCharge(true)}><Plus size={13} /> Pago único</Button>
+          <Button size="sm" onClick={() => setAdding(true)} disabled={subscribable.length === 0}><Plus size={13} /> Suscribir</Button>
         </div>
       </div>
 
@@ -1103,7 +1110,7 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
         <Skeleton className="m-4 h-16" />
       ) : subs.length === 0 && charges.length === 0 ? (
         <p className="px-4 py-8 text-center text-xs text-subtle">
-          Sin servicios contratados. {activeProducts.length === 0 ? 'Crea productos en el catálogo primero.' : 'Suscribe al cliente a un producto del catálogo.'}
+          Sin servicios contratados. {activeProducts.length === 0 ? 'Crea productos en el catálogo primero.' : 'Suscribe a un producto recurrente o añade un pago único del catálogo.'}
         </p>
       ) : (
         <>
@@ -1145,10 +1152,10 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
           ))}
         </>
       )}
-      <p className="border-t border-line px-4 py-2.5 text-[11px] text-subtle">Al generar la factura del ciclo se incluyen estas suscripciones (con su uso medido) y los cargos pendientes.</p>
+      <p className="border-t border-line px-4 py-2.5 text-[11px] text-subtle">Al generar la factura del ciclo se incluyen estas suscripciones (con su uso medido) y los pagos únicos pendientes (una sola vez).</p>
 
-      {adding && <AddSubscriptionModal workspaceId={workspaceId} products={activeProducts} onClose={() => setAdding(false)} onSaved={() => { setAdding(false); invalidate(); }} />}
-      {charge && <AddChargeModal workspaceId={workspaceId} onClose={() => setCharge(false)} onSaved={() => { setCharge(false); invalidate(); }} />}
+      {adding && <AddSubscriptionModal workspaceId={workspaceId} products={subscribable} onClose={() => setAdding(false)} onSaved={() => { setAdding(false); invalidate(); }} />}
+      {charge && <AddChargeModal workspaceId={workspaceId} products={oneOffProducts} onClose={() => setCharge(false)} onSaved={() => { setCharge(false); invalidate(); }} />}
     </section>
   );
 }
@@ -1193,34 +1200,56 @@ function AddSubscriptionModal({ workspaceId, products, onClose, onSaved }: { wor
   );
 }
 
-function AddChargeModal({ workspaceId, onClose, onSaved }: { workspaceId: string; onClose: () => void; onSaved: () => void }) {
+function AddChargeModal({ workspaceId, products, onClose, onSaved }: { workspaceId: string; products: Product[]; onClose: () => void; onSaved: () => void }) {
   const toast = useToast();
+  const [productId, setProductId] = useState(''); // '' = cargo libre a medida
   const [label, setLabel] = useState('');
   const [qty, setQty] = useState('1');
   const [price, setPrice] = useState('0');
   const [taxRate, setTaxRate] = useState('21');
 
+  // Al elegir un producto de pago único del catálogo, autocompleta concepto,
+  // precio e IVA (siguen siendo editables por si hay que ajustarlos).
+  const pickProduct = (id: string) => {
+    setProductId(id);
+    const p = products.find((x) => x.id === id);
+    if (p) {
+      setLabel(p.name);
+      setPrice(String(p.price_cents / 100));
+      setTaxRate(String(p.tax_exempt ? 0 : p.tax_rate));
+    }
+  };
+
   const save = useMutation({
     mutationFn: () => api.post(`/workspaces/${workspaceId}/charges`, {
+      productId: productId || undefined,
       label: label.trim(),
       qty: Number(qty) || 1,
       unitCents: Math.round(Number(price) * 100) || 0,
       taxRate: Number(taxRate) || 0,
     }),
-    onSuccess: () => { toast('Cargo añadido', 'ok'); onSaved(); },
+    onSuccess: () => { toast('Pago único añadido', 'ok'); onSaved(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
   return (
-    <Modal open onClose={onClose} title="Añadir cargo puntual">
+    <Modal open onClose={onClose} title="Añadir pago único">
       <div className="flex flex-col gap-3.5">
+        {products.length > 0 && (
+          <Field label="Producto de pago único (catálogo)" hint="autocompleta concepto y precio; o déjalo en «cargo libre»">
+            <select className="input" value={productId} onChange={(e) => pickProduct(e.target.value)}>
+              <option value="">— Cargo libre (a medida) —</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name} · {fmtMoney(p.price_cents, p.currency)}</option>)}
+            </select>
+          </Field>
+        )}
         <Field label="Concepto"><input className="input" value={label} onChange={(e) => setLabel(e.target.value)} autoFocus placeholder="Consultoría, migración, dominio…" /></Field>
         <div className="grid grid-cols-3 gap-3">
           <Field label="Cantidad"><input className="input tnum" type="number" min={0} step="0.5" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
           <Field label="Precio unidad"><input className="input tnum" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
           <Field label="IVA (%)"><input className="input tnum" type="number" min={0} max={100} value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></Field>
         </div>
-        <p className="text-[11px] text-subtle">Se incluirá en la próxima factura del ciclo que generes.</p>
+        <p className="text-[11px] text-subtle">Se cobra una sola vez en la próxima factura del ciclo que generes (no se repite).</p>
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>Cancelar</Button>
           <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!label.trim()}>Añadir</Button>

@@ -11,7 +11,14 @@ const CATS: Record<ProductCategory, string> = {
   web: 'Web', ia: 'IA', app: 'App', hosting: 'Hosting', bbdd: 'BBDD', dominio: 'Dominio', soporte: 'Soporte', custom: 'A medida',
 };
 const CAT_ORDER: ProductCategory[] = ['web', 'ia', 'app', 'hosting', 'bbdd', 'dominio', 'soporte', 'custom'];
-const MODELS: Record<BillingModel, string> = { flat_one_off: 'Puntual', subscription: 'Suscripción', metered: 'Por uso', tiered: 'Por tramos' };
+const MODELS: Record<BillingModel, string> = { flat_one_off: 'Pago único', subscription: 'Suscripción', metered: 'Por uso', tiered: 'Por tramos' };
+/** Explicación de cada modelo de precio (se muestra bajo el selector, para que quede claro cómo se cobra). */
+const MODEL_HELP: Record<BillingModel, string> = {
+  flat_one_off: 'Pago único: se cobra una sola vez. En una cuenta se añade con «Pago único» y aparece una vez en la próxima factura (no se repite).',
+  subscription: 'Suscripción: cuota fija recurrente que se cobra cada mes o cada año mientras esté activa.',
+  metered: 'Por uso: se cobra según el consumo medido en el ciclo (tokens de IA, CPU·h, unidades…), con un precio por unidad.',
+  tiered: 'Por tramos: el precio por unidad cambia según el volumen consumido (progresivo o por volumen).',
+};
 const METERS: Record<UsageMeter, string> = {
   cpu_core_hour: 'CPU núcleo·h', mem_gb_hour: 'RAM GB·h', ai_tokens_in: 'IA tokens entrada', ai_tokens_cache_in: 'IA tokens entrada (caché)',
   ai_tokens_out: 'IA tokens salida', ai_requests: 'IA peticiones', ai_bytes: 'IA bytes', unit: 'Unidad',
@@ -21,7 +28,7 @@ function priceSummary(p: Product): string {
   if (p.billing_model === 'subscription') return `${fmtMoney(p.price_cents, p.currency)}/${p.interval === 'yearly' ? 'año' : 'mes'}`;
   if (p.billing_model === 'metered') return `${fmtMoney(p.price_cents, p.currency)}/${p.unit || 'ud'}`;
   if (p.billing_model === 'tiered') return `por tramos · ${p.unit || 'ud'}`;
-  return `${fmtMoney(p.price_cents, p.currency)} puntual`;
+  return `${fmtMoney(p.price_cents, p.currency)} · pago único`;
 }
 
 interface TierDraft {
@@ -188,6 +195,8 @@ export default function CatalogPage() {
                 </select>
               </Field>
             </div>
+
+            <p className="rounded-md border border-line bg-bg px-3 py-2 text-[12px] text-sub">{MODEL_HELP[draft.billingModel]}</p>
 
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {draft.billingModel !== 'tiered' && (

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import {
@@ -14,6 +14,7 @@ import {
   Landmark,
   Keyboard,
   LogOut,
+  Menu,
   Rocket,
   Search,
   Settings,
@@ -26,7 +27,7 @@ import { api } from '../api';
 import { isEditableTarget, usePresence } from '../hooks';
 import { Alert, Me, Project, Service, SystemInfo } from '../types';
 import { cx, fmtBytes, SEVERITY_TONE, timeAgo } from '../utils';
-import { Kbd, StatusBadge } from './ui';
+import { Kbd, Spinner, StatusBadge } from './ui';
 
 /** Logo de Skyway: chip con gradiente de marca. */
 export function BrandMark({ size = 28, iconSize = 15, radius = 8 }: { size?: number; iconSize?: number; radius?: number }) {
@@ -469,6 +470,184 @@ function AlertBell() {
   );
 }
 
+// ---------- Menú principal (☰) ----------
+
+const ROLE_LABEL: Record<string, string> = { admin: 'Administrador', owner: 'Propietario', member: 'Miembro' };
+
+interface MenuItem {
+  to: string;
+  icon: React.ReactNode;
+  label: string;
+  meta?: React.ReactNode;
+}
+
+/**
+ * Menú de tres rayas: agrupa la navegación por lo que es cada destino
+ * (Plataforma / Negocio / Administración / Sesión) para descargar la topbar, que
+ * solo conserva los accesos de uso y mantenimiento diarios. Reutiliza el patrón de
+ * menú del panel (usePresence + menu-in, cierre con clic fuera y Esc) y marca la
+ * ruta actual, de modo que también es la navegación completa en móvil.
+ */
+function MainMenu({
+  user,
+  isAdmin,
+  isManager,
+  unread,
+  onLogout,
+}: {
+  user: Me['user'];
+  isAdmin: boolean;
+  isManager: boolean;
+  unread: number;
+  onLogout: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const menu = usePresence(open, 160);
+  const ref = useRef<HTMLDivElement>(null);
+  const location = useLocation();
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('mousedown', onClick);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onClick);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const groups: { label: string; items: MenuItem[] }[] = [
+    {
+      label: 'Plataforma',
+      items: [
+        { to: '/monitor', icon: <Activity size={16} />, label: 'Monitor' },
+        { to: '/sites', icon: <Globe size={16} />, label: 'Sitios y servicios' },
+        {
+          to: '/alerts',
+          icon: <BellRing size={16} />,
+          label: 'Alertas',
+          meta:
+            unread > 0 ? (
+              <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-err/[.15] px-1.5 text-[10px] font-semibold text-err">
+                {unread > 9 ? '9+' : unread}
+              </span>
+            ) : undefined,
+        },
+      ],
+    },
+  ];
+
+  const negocio: MenuItem[] = [];
+  if (isManager) negocio.push({ to: '/workspaces', icon: <Building2 size={16} />, label: 'Cuentas y clientes' });
+  if (isAdmin)
+    negocio.push(
+      { to: '/catalog', icon: <Boxes size={16} />, label: 'Catálogo' },
+      { to: '/plans', icon: <CreditCard size={16} />, label: 'Planes' },
+      { to: '/accounting', icon: <Landmark size={16} />, label: 'Contabilidad' },
+    );
+  if (negocio.length) groups.push({ label: 'Negocio', items: negocio });
+
+  if (isAdmin)
+    groups.push({
+      label: 'Administración',
+      items: [
+        { to: '/users', icon: <Users2 size={16} />, label: 'Usuarios' },
+        { to: '/security', icon: <ShieldCheck size={16} />, label: 'Seguridad' },
+        { to: '/settings', icon: <Settings size={16} />, label: 'Ajustes' },
+      ],
+    });
+
+  const Row = ({ item }: { item: MenuItem }) => {
+    const active = location.pathname === item.to;
+    return (
+      <Link
+        to={item.to}
+        role="menuitem"
+        onClick={() => setOpen(false)}
+        className={cx(
+          'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm',
+          active ? 'bg-acc/[.14] text-txt shadow-[inset_2px_0_0_var(--color-acc)]' : 'text-sub hover:bg-surface2 hover:text-txt',
+        )}
+      >
+        <span className={active ? 'text-acc-soft' : 'text-subtle'}>{item.icon}</span>
+        <span className="flex-1 truncate">{item.label}</span>
+        {item.meta}
+      </Link>
+    );
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
+        title="Menú"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <Menu size={16} />
+      </button>
+      {menu.mounted && (
+        <div
+          role="menu"
+          aria-label="Menú principal"
+          className={cx(
+            'absolute right-0 top-11 z-50 w-[288px] max-w-[calc(100vw-24px)] origin-top-right overflow-hidden rounded-xl border border-line bg-surface shadow-lvl3',
+            menu.closing ? 'menu-out' : 'menu-in',
+          )}
+        >
+          {user && (
+            <div className="flex items-center gap-2.5 border-b border-line px-3.5 py-3">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-acc/[.15] text-acc-soft">
+                <UserRound size={15} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-medium text-txt">{user.email}</span>
+                <span className="block truncate text-[11px] text-subtle">
+                  {ROLE_LABEL[user.role] ?? user.role}
+                  {user.workspaceName ? ` · ${user.workspaceName}` : ''}
+                </span>
+              </span>
+            </div>
+          )}
+          <div className="max-h-[min(70vh,520px)] overflow-y-auto p-2">
+            {groups.map((g) => (
+              <div key={g.label} className="mb-1 last:mb-0">
+                <p className="mx-2 mb-1 mt-1.5 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">{g.label}</p>
+                {g.items.map((it) => (
+                  <Row key={it.to} item={it} />
+                ))}
+              </div>
+            ))}
+          </div>
+          <div className="border-t border-line p-2">
+            <Row item={{ to: '/account', icon: <UserRound size={16} />, label: 'Mi cuenta' }} />
+            <button
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onLogout();
+              }}
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-sub hover:bg-err/[.12] hover:text-err"
+            >
+              <span className="text-subtle">
+                <LogOut size={16} />
+              </span>
+              <span className="flex-1 truncate">Cerrar sesión</span>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- Layout ----------
 
 export default function Layout() {
@@ -654,62 +833,8 @@ export default function Layout() {
           </Link>
           <span aria-hidden className="mx-1 hidden h-4 w-px bg-line sm:block" />
           <AlertBell />
-          {isManager && (
-            <Link
-              to="/workspaces"
-              className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
-              title="Cuentas y clientes"
-            >
-              <Building2 size={16} />
-            </Link>
-          )}
-          {isAdmin && (
-            <>
-              <Link
-                to="/accounting"
-                className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
-                title="Contabilidad"
-              >
-                <Landmark size={16} />
-              </Link>
-              <Link
-                to="/users"
-                className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
-                title="Usuarios"
-              >
-                <Users2 size={16} />
-              </Link>
-              <Link
-                to="/security"
-                className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
-                title="Panel de seguridad"
-              >
-                <ShieldCheck size={16} />
-              </Link>
-              <Link
-                to="/settings"
-                className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
-                title="Ajustes"
-              >
-                <Settings size={16} />
-              </Link>
-            </>
-          )}
-          <span aria-hidden className="mx-1 hidden h-4 w-px bg-line sm:block" />
-          <Link
-            to="/account"
-            className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
-            title="Mi cuenta"
-          >
-            <UserRound size={16} />
-          </Link>
-          <button
-            onClick={logout}
-            className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
-            title="Cerrar sesión"
-          >
-            <LogOut size={16} />
-          </button>
+          <span aria-hidden className="mx-0.5 h-4 w-px bg-line" />
+          <MainMenu user={me.data?.user ?? null} isAdmin={isAdmin} isManager={isManager} unread={bell.data?.unread ?? 0} onLogout={logout} />
         </div>
       </header>
 
@@ -730,7 +855,9 @@ export default function Layout() {
             `h-full` de esas páginas no resolvía y sus paneles internos no scrolleaban.
             Las páginas de documento desbordan hacia el scroll de <main> igual que antes. */}
         <div key={location.pathname} className="page-in h-full">
-          <Outlet />
+          <Suspense fallback={<div className="flex h-full items-center justify-center"><Spinner /></div>}>
+            <Outlet />
+          </Suspense>
         </div>
       </main>
 

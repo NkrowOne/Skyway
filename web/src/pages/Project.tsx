@@ -1,19 +1,23 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { FileText, KeyRound, Pencil, Plus, RefreshCw, Signal, Trash2, X } from 'lucide-react';
 import { api, openStream } from '../api';
-import { usePresence } from '../hooks';
+import { useLatch, usePresence } from '../hooks';
 import { Button, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } from '../components/ui';
-import ConnectorsModal from '../components/ConnectorsModal';
 import { ModuleLogo } from '../components/ModuleIcon';
-import NewServiceModal from '../components/NewServiceModal';
-import { ImportReport, ImportReportView } from '../components/RailwayImportModal';
 import ServiceCard from '../components/ServiceCard';
-import ServiceDrawer from '../components/ServiceDrawer';
-import SharedVarsModal from '../components/SharedVarsModal';
-import StatusPageModal from '../components/StatusPageModal';
+import type { ImportReport } from '../components/RailwayImportModal';
 import { Me, MetricsSnapshot, Project, Service } from '../types';
+
+// Carga diferida: el drawer del servicio (con sus 8 pestañas y modales) y los
+// modales de cabecera solo se descargan al abrirlos, no al entrar al proyecto.
+const ServiceDrawer = lazy(() => import('../components/ServiceDrawer'));
+const NewServiceModal = lazy(() => import('../components/NewServiceModal'));
+const SharedVarsModal = lazy(() => import('../components/SharedVarsModal'));
+const ConnectorsModal = lazy(() => import('../components/ConnectorsModal'));
+const StatusPageModal = lazy(() => import('../components/StatusPageModal'));
+const ImportReportView = lazy(() => import('../components/RailwayImportModal').then((m) => ({ default: m.ImportReportView })));
 
 export interface MetricPoint {
   ts: number;
@@ -118,6 +122,13 @@ export default function ProjectPage() {
   // Presencia del drawer: sigue montado durante su animación de despedida.
   const drawer = usePresence(!!selectedId, 240);
   const lastServiceRef = useRef<Service | null>(null);
+
+  // Cerrojos de montaje: cada modal se descarga (React.lazy) en su 1ª apertura y,
+  // una vez montado, permanece para conservar su animación de cierre.
+  const newLatched = useLatch(newOpen);
+  const sharedLatched = useLatch(sharedOpen);
+  const connectorsLatched = useLatch(connectorsOpen);
+  const statusLatched = useLatch(statusOpen);
 
   const project = useQuery({
     queryKey: ['project', projectId],
@@ -353,38 +364,58 @@ export default function ProjectPage() {
       </div>
 
       {drawer.mounted && drawerService && (
-        <ServiceDrawer
-          key={drawerService.id}
-          serviceId={drawerService.id}
-          projectId={proj.id}
-          projectName={proj.name}
-          latestMetrics={latest}
-          historyRef={historyRef}
-          closing={drawer.closing}
-          onClose={() => openService(null)}
-        />
+        <Suspense fallback={null}>
+          <ServiceDrawer
+            key={drawerService.id}
+            serviceId={drawerService.id}
+            projectId={proj.id}
+            projectName={proj.name}
+            latestMetrics={latest}
+            historyRef={historyRef}
+            closing={drawer.closing}
+            onClose={() => openService(null)}
+          />
+        </Suspense>
       )}
 
-      <NewServiceModal
-        open={newOpen}
-        onClose={() => setNewOpen(false)}
-        projectId={proj.id}
-        onCreated={(serviceId) => {
-          setNewOpen(false);
-          queryClient.invalidateQueries({ queryKey: ['project', projectId] });
-          openService(serviceId);
-        }}
-      />
+      {newLatched && (
+        <Suspense fallback={null}>
+          <NewServiceModal
+            open={newOpen}
+            onClose={() => setNewOpen(false)}
+            projectId={proj.id}
+            onCreated={(serviceId) => {
+              setNewOpen(false);
+              queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+              openService(serviceId);
+            }}
+          />
+        </Suspense>
+      )}
 
-      <SharedVarsModal open={sharedOpen} onClose={() => setSharedOpen(false)} projectId={proj.id} />
+      {sharedLatched && (
+        <Suspense fallback={null}>
+          <SharedVarsModal open={sharedOpen} onClose={() => setSharedOpen(false)} projectId={proj.id} />
+        </Suspense>
+      )}
 
-      <ConnectorsModal open={connectorsOpen} onClose={() => setConnectorsOpen(false)} projectId={proj.id} />
+      {connectorsLatched && (
+        <Suspense fallback={null}>
+          <ConnectorsModal open={connectorsOpen} onClose={() => setConnectorsOpen(false)} projectId={proj.id} />
+        </Suspense>
+      )}
 
-      <StatusPageModal open={statusOpen} onClose={() => setStatusOpen(false)} projectId={proj.id} isAdmin={!!isAdmin} />
+      {statusLatched && (
+        <Suspense fallback={null}>
+          <StatusPageModal open={statusOpen} onClose={() => setStatusOpen(false)} projectId={proj.id} isAdmin={!!isAdmin} />
+        </Suspense>
+      )}
 
       {importReport.data?.report && (
         <Modal open={reportOpen} onClose={() => setReportOpen(false)} title="Informe de importación de Railway" wide>
-          <ImportReportView report={importReport.data.report} />
+          <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+            <ImportReportView report={importReport.data.report} />
+          </Suspense>
           <div className="mt-4 flex justify-end">
             <Button variant="ghost" onClick={() => dismissReport.mutate()} loading={dismissReport.isPending}>
               Descartar informe

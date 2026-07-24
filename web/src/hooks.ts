@@ -25,6 +25,20 @@ export function usePresence(open: boolean, exitMs = 200): { mounted: boolean; cl
   return { mounted: state !== 'closed', closing: state === 'closing' };
 }
 
+/**
+ * «Cerrojo de montaje»: pasa a true la primera vez que `active` es true y ya no
+ * vuelve a false. Permite diferir la carga de un modal/panel pesado (React.lazy)
+ * hasta su primera apertura SIN perder su animación de cierre: una vez montado
+ * permanece montado, así que sus props open/close animan igual que antes.
+ */
+export function useLatch(active: boolean): boolean {
+  const [latched, setLatched] = useState(active);
+  useEffect(() => {
+    if (active) setLatched(true);
+  }, [active]);
+  return latched;
+}
+
 /** true cuando la media query se cumple; se actualiza en vivo. */
 export function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
