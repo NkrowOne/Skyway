@@ -313,6 +313,8 @@ export interface WorkspaceRow {
   billing_tax_id: string | null;
   /** Domicilio fiscal del cliente (destinatario de la factura). */
   billing_address: string | null;
+  /** País del cliente en ISO 3166-1 alfa-2. «ES» por defecto. */
+  billing_country: string;
   /** Día del mes (1–28) en que renueva el ciclo de facturación. */
   billing_day: number;
   /** Descuento comercial (%) de la cuenta; null = hereda el del plan. */
@@ -456,6 +458,8 @@ export interface InvoiceRow {
   client_tax_id: string | null;
   /** Domicilio del destinatario congelado al emitir. */
   client_address: string | null;
+  /** País del destinatario (ISO alfa-2) congelado al emitir. */
+  client_country: string | null;
   /** Método de cobro elegido/registrado. */
   payment_method: PaymentMethod | null;
   stripe_session_id: string | null;

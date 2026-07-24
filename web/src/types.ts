@@ -142,6 +142,8 @@ export interface Workspace {
   billing_email: string | null;
   billing_tax_id: string | null;
   billing_address: string | null;
+  /** País del cliente (ISO 3166-1 alfa-2). «ES» por defecto. */
+  billing_country?: string;
   billing_day: number;
   /** Descuento comercial (%) de la cuenta; null = hereda el del plan. */
   discount_pct: number | null;
@@ -297,6 +299,7 @@ export interface Invoice {
   client_name: string | null;
   client_tax_id: string | null;
   client_address: string | null;
+  client_country?: string | null;
   payment_method: PaymentMethod | null;
   stripe_url: string | null;
   issued_at: number | null;
@@ -328,7 +331,7 @@ export interface BillingProfile {
 export interface InvoicesResponse {
   invoices: Invoice[];
   issuer: BillingProfile;
-  client: { name: string; billing_email: string | null; billing_tax_id: string | null; billing_address: string | null };
+  client: { name: string; billing_email: string | null; billing_tax_id: string | null; billing_address: string | null; billing_country?: string };
   stripeEnabled: boolean;
 }
 

@@ -27,6 +27,7 @@ import {
   workspaceUsageRange,
 } from '../db';
 import { getBillingProfile, getSmtpSettings, getStripeSecretKey } from '../company';
+import { DEFAULT_COUNTRY, countryName } from '../countries';
 import { fireWorkspaceAlert } from '../alerts';
 import { InvoicePdfData, renderInvoicePdf } from '../invoicepdf';
 import { MailError, sendMail } from '../mailer';
@@ -317,6 +318,7 @@ function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
       name: inv.client_name ?? ws?.name ?? '',
       taxId: inv.client_tax_id ?? ws?.billing_tax_id ?? null,
       address: inv.client_address ?? ws?.billing_address ?? null,
+      country: countryName(inv.client_country ?? ws?.billing_country),
     },
     lines: parseLines(inv.lines),
     subtotalCents: inv.subtotal_cents,
@@ -426,6 +428,7 @@ function publicInvoice(inv: InvoiceRow) {
     client_name: inv.client_name,
     client_tax_id: inv.client_tax_id,
     client_address: inv.client_address,
+    client_country: inv.client_country,
     payment_method: inv.payment_method,
     stripe_url: inv.stripe_url,
     issued_at: inv.issued_at,
@@ -578,6 +581,7 @@ function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Reco
         fields.client_name = ws.name;
         fields.client_tax_id = ws.billing_tax_id;
         fields.client_address = ws.billing_address;
+        fields.client_country = ws.billing_country ?? DEFAULT_COUNTRY;
       }
     }
     // Asignar el número de serie si aún no lo tiene (una vez por factura).
@@ -829,6 +833,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
         billing_email: ws.billing_email,
         billing_tax_id: ws.billing_tax_id,
         billing_address: ws.billing_address,
+        billing_country: ws.billing_country ?? DEFAULT_COUNTRY,
       },
       stripeEnabled: !!getStripeSecretKey(),
     };

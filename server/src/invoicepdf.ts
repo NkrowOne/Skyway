@@ -24,7 +24,8 @@ export interface InvoicePdfData {
   dueAt: number | null;
   currency: string;             // 'EUR'
   issuer: { companyName: string; taxId: string; address: string; email: string; phone: string };
-  client: { name: string; taxId: string | null; address: string | null };
+  /** `country` ya viene resuelto a nombre legible («España»), no como código ISO. */
+  client: { name: string; taxId: string | null; address: string | null; country?: string | null };
   lines: { label: string; qty: number; unitCents: number; amountCents: number; taxRate?: number }[];
   subtotalCents: number;
   taxBreakdown: { rate: number; base_cents: number; quota_cents: number }[];
@@ -399,6 +400,11 @@ export function renderInvoicePdf(data: InvoicePdfData): Buffer {
       dibujaTexto(MARGEN, yIzq, l, 9, false, GRIS_TEXTO);
       yIzq -= 11;
     }
+  }
+  // El país cierra el domicilio del destinatario, como en cualquier factura.
+  if (data.client.country) {
+    dibujaTexto(MARGEN, yIzq, truncar(data.client.country, 270, 9, false), 9, false, GRIS_TEXTO);
+    yIzq -= 11;
   }
 
   dibujaTextoDer(X_DERECHA, yDer, `${fmtFecha(data.periodStart)} – ${fmtFecha(data.periodEnd)}`, 9.5, false);

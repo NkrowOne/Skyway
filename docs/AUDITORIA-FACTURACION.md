@@ -15,8 +15,8 @@ aritmética monetaria, integridad transaccional, control de acceso, ciclo de
 facturación, medición de consumo, pagos, esquema de datos y panel web), cada
 hallazgo sometido después a una verificación adversarial que intentaba refutarlo
 leyendo el código. De 89 hallazgos brutos, **18 se descartaron** por no
-sostenerse y 71 se confirmaron; consolidados y deduplicados quedan en **43
-defectos reales corregidos** (34 en la auditoría y 9 en la segunda tanda) y **4
+sostenerse y 71 se confirmaron; consolidados y deduplicados quedan en **44
+defectos reales corregidos** (34 en la auditoría y 10 en la segunda tanda) y **4
 carencias pendientes**.
 
 **Veredicto general**: el diseño fiscal es serio —numeración por serie y
@@ -146,7 +146,8 @@ comerciales tomadas (prorrateo por días; solo régimen general español).
 | 40 | Morosidad | **Reactivar al pagar revivía claves y suscripciones que el operador había cortado a mano.** | `suspended_by` / `paused_by` distinguen el corte por morosidad del manual; solo revive el primero. |
 | 41 | Factura | **No existía documento de factura ni forma de remitirla al cliente.** | PDF de la factura generado a mano (sin dependencias, como el cliente de Stripe del repositorio): A4, WinAnsi con acentos y €, desglose de IVA por tipo, IRPF, paginación con la cabecera repetida y los totales siempre en la última hoja. Descargable por el admin **y por la propia cuenta**. Se añade un cliente SMTP propio y el envío de la factura al emitirla (opt-in `emailOnIssue`), con prueba de conexión en Ajustes. Un fallo de correo nunca deshace la emisión: se audita y se alerta. |
 | 42 | Acceso | La ingesta de consumo facturable **no dejaba traza**, y el **catálogo comercial completo** lo leía cualquier usuario autenticado, incluido un miembro de proyecto. | `POST /api/usage` se audita; el catálogo exige admin o propietario de cuenta. |
-| 43 | Fiscal | El selector **«Modo Veri*factu (AEAT)»** sugería una funcionalidad inexistente. | Rotulado como preparado pero no operativo, hasta implementar huella, QR y remisión. |
+| 43 | Fiscal | El selector **«Modo Verifactu (AEAT)»** sugería una funcionalidad inexistente. | Rotulado como preparado pero no operativo, hasta implementar huella, QR y remisión. |
+| 44 | Fiscal | **El país del cliente no se registraba en ninguna parte**, pese a ser lo que determina el régimen de IVA de la operación. | `workspaces.billing_country` en ISO 3166-1 alfa-2 con **España por defecto**, seleccionable en la ficha de la cuenta, congelado en la factura al emitir (`client_country`) e impreso en el PDF junto al domicilio del destinatario. |
 
 ### Sigue pendiente
 
@@ -154,9 +155,12 @@ comerciales tomadas (prorrateo por días; solo régimen general español).
    haya corrido unos minutos dentro de esa hora.
 2. **El recargo de equivalencia no se calcula.** El régimen es seleccionable y
    `InvoiceLine.reRate` existe, pero nadie lo rellena ni lo suma.
-3. **No se puede registrar el régimen de IVA ni el país del cliente**, así que la
-   facturación recurrente a un cliente intracomunitario o extranjero no sale
-   correcta sin editar la factura a mano.
+3. **No se puede registrar el régimen de IVA del cliente**, así que la facturación
+   recurrente a un cliente intracomunitario o extranjero no sale correcta sin
+   editar la factura a mano. El **país** sí se registra ya (`workspaces.billing_country`,
+   ISO 3166-1 alfa-2, España por defecto): se congela al emitir y consta en la
+   factura y en el PDF, de modo que cuando se implemente el régimen por país el
+   dato ya estará.
 4. **Verifactu**: el registro encadenado (`invoice_ledger`, `invoice_events_log`)
    está creado como reserva, sin huella, QR ni remisión a la AEAT.
 
@@ -216,7 +220,7 @@ Así se documentaron al cerrar la auditoría, antes de la segunda tanda.
    cortado a mano**: no se distingue una suspensión por morosidad de una manual.
 10. **No existe documento de factura (PDF) ni forma de remitirla al cliente**
     desde el panel; solo la vista en pantalla.
-11. **El selector «Modo Veri*factu (AEAT)» no activa nada.** El esquema del
+11. **El selector «Modo Verifactu (AEAT)» no activa nada.** El esquema del
     registro encadenado (`invoice_ledger`, `invoice_events_log`) está creado a
     propósito como reserva —así activarlo no exigirá reconstruir tablas
     pobladas—, pero el selector del panel sugiere una funcionalidad que aún no

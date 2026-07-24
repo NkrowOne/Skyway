@@ -586,8 +586,8 @@ function CompanyProfile() {
               selector solo deja constancia de la intención, no activa nada. */}
           <Field label="Modo Verifactu" hint="Preparado, aún no operativo">
             <select className="input" value={draft.sifMode} onChange={(e) => set({ sifMode: e.target.value as BillingProfile['sifMode'] })}>
-              <option value="no_verifactu">No Veri*factu (local)</option>
-              <option value="verifactu">Veri*factu (AEAT) — pendiente de activar</option>
+              <option value="no_verifactu">No Verifactu (local)</option>
+              <option value="verifactu">Verifactu (AEAT) — pendiente de activar</option>
             </select>
           </Field>
         </div>

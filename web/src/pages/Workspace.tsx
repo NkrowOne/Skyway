@@ -27,6 +27,7 @@ import {
   Users2,
 } from 'lucide-react';
 import { api } from '../api';
+import { COUNTRY_OPTIONS, DEFAULT_COUNTRY, countryName } from '../countries';
 import { Button, ConfirmModal, CopyButton, EditorBar, Field, Modal, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
 import { QuotaMeter } from '../components/QuotaMeter';
 // Gráficos de la pestaña «Uso» (no es la pestaña por defecto): carga diferida.
@@ -940,6 +941,7 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
   const clientName = invoice.client_name ?? client.name;
   const clientTaxId = invoice.client_tax_id ?? client.billing_tax_id;
   const clientAddress = invoice.client_address ?? client.billing_address;
+  const clientCountry = countryName(invoice.client_country ?? client.billing_country);
   const title = invoice.invoice_type === 'rectificativa' ? 'Factura rectificativa' : invoice.invoice_type === 'simplificada' ? 'Factura simplificada' : 'Factura';
   // Desglose de IVA; para facturas antiguas sin desglose, se sintetiza uno con el tipo único.
   const breakdown = invoice.tax_breakdown.length > 0
@@ -963,6 +965,7 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
             <p className="font-semibold">{clientName}</p>
             {clientTaxId && <p className="text-subtle">NIF {clientTaxId}</p>}
             {clientAddress && <p className="whitespace-pre-line text-subtle">{clientAddress}</p>}
+            <p className="text-subtle">{clientCountry}</p>
             {!clientTaxId && <p className="text-[11px] text-warn">Falta el NIF del cliente para una factura completa.</p>}
             <p className="mt-2 text-subtle">
               {invoice.issued_at ? `Expedida ${fmtDate(invoice.issued_at)}` : 'Sin emitir'}
@@ -1577,6 +1580,7 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
   const [email, setEmail] = useState(ws.billing_email ?? '');
   const [taxId, setTaxId] = useState(ws.billing_tax_id ?? '');
   const [address, setAddress] = useState(ws.billing_address ?? '');
+  const [country, setCountry] = useState(ws.billing_country ?? DEFAULT_COUNTRY);
   const [day, setDay] = useState(String(ws.billing_day));
   const initDisc = ws.discount_pct == null ? '' : String(ws.discount_pct);
   const [disc, setDisc] = useState(initDisc);
@@ -1585,6 +1589,7 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
     email !== (ws.billing_email ?? '') ||
     taxId !== (ws.billing_tax_id ?? '') ||
     address !== (ws.billing_address ?? '') ||
+    country !== (ws.billing_country ?? DEFAULT_COUNTRY) ||
     day !== String(ws.billing_day) ||
     disc !== initDisc ||
     notes !== (ws.notes ?? '');
@@ -1594,6 +1599,7 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
         billingEmail: email.trim() || null,
         billingTaxId: taxId.trim() || null,
         billingAddress: address.trim() || null,
+        billingCountry: country,
         billingDay: Number(day) || 1,
         // Vacío = hereda el descuento del plan (null); un número lo sobreescribe.
         discountPct: disc.trim() === '' ? null : Math.max(0, Math.min(100, Number(disc) || 0)),
@@ -1609,7 +1615,14 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
         <Field label="NIF / CIF" hint="Obligatorio en factura completa"><input className="input" value={taxId} onChange={(e) => setTaxId(e.target.value)} placeholder="B12345678" /></Field>
         <Field label="Email de facturación"><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="pagos@cliente.com" /></Field>
       </div>
-      <Field label="Domicilio fiscal"><textarea className="input min-h-14" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Calle, nº · CP Población · Provincia · País" /></Field>
+      <Field label="Domicilio fiscal"><textarea className="input min-h-14" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Calle, nº · CP Población · Provincia" /></Field>
+      <Field label="País" hint="Determina el régimen de IVA aplicable">
+        <select className="input" value={country} onChange={(e) => setCountry(e.target.value)}>
+          {COUNTRY_OPTIONS.map((c) => (
+            <option key={c.code} value={c.code}>{c.name}</option>
+          ))}
+        </select>
+      </Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Día de cobro" hint="1–28"><input className="input tnum" type="number" min={1} max={28} value={day} onChange={(e) => setDay(e.target.value)} /></Field>
         <Field label="Descuento (%)" hint="vacío = hereda el del plan"><input className="input tnum" type="number" min={0} max={100} step="0.5" value={disc} onChange={(e) => setDisc(e.target.value)} placeholder="del plan" /></Field>

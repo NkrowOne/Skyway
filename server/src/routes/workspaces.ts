@@ -31,6 +31,7 @@ import {
   workspaceUsageSeries,
 } from '../db';
 import { grantedModules, workspaceQuotaSummary, workspacePlan } from '../quota';
+import { DEFAULT_COUNTRY, normalizeCountry } from '../countries';
 import { MODULES, sanitizeModules } from '../modules';
 import { UserRow, WorkspaceRow } from '../types';
 import { hashPassword } from '../util';
@@ -63,6 +64,8 @@ const patchWorkspaceSchema = z.object({
   // Datos fiscales del cliente (destinatario de la factura).
   billingTaxId: z.string().trim().max(60).nullable().optional(),
   billingAddress: z.string().trim().max(400).nullable().optional(),
+  // País del cliente en ISO 3166-1 alfa-2; vacío o inválido cae a España.
+  billingCountry: z.string().trim().length(2).toUpperCase().optional(),
   billingDay: z.coerce.number().int().min(1).max(28).optional(),
   // Descuento comercial de la cuenta (%); null = hereda el del plan.
   discountPct: z.coerce.number().min(0).max(100).nullable().optional(),
@@ -96,6 +99,7 @@ function publicWorkspace(ws: WorkspaceRow) {
     billing_email: ws.billing_email,
     billing_tax_id: ws.billing_tax_id,
     billing_address: ws.billing_address,
+    billing_country: ws.billing_country ?? DEFAULT_COUNTRY,
     billing_day: ws.billing_day,
     discount_pct: ws.discount_pct,
     notes: ws.notes,
@@ -203,6 +207,7 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     if (body.billingEmail !== undefined) fields.billing_email = body.billingEmail;
     if (body.billingTaxId !== undefined) fields.billing_tax_id = body.billingTaxId;
     if (body.billingAddress !== undefined) fields.billing_address = body.billingAddress;
+    if (body.billingCountry !== undefined) fields.billing_country = normalizeCountry(body.billingCountry);
     if (body.billingDay !== undefined) fields.billing_day = body.billingDay;
     if (body.discountPct !== undefined) fields.discount_pct = body.discountPct;
     if (body.dunningExempt !== undefined) fields.dunning_exempt = body.dunningExempt ? 1 : 0;

@@ -30,6 +30,7 @@ import {
   WorkspaceApiKeyRow,
   WorkspaceRow,
 } from './types';
+import { DEFAULT_COUNTRY } from './countries';
 import { ALL_MODULE_KEYS } from './modules';
 import { id, now, slugify } from './util';
 
@@ -509,10 +510,15 @@ export function initDb(): void {
   ensureColumn('workspace_invoices', 'client_name', 'TEXT');
   ensureColumn('workspace_invoices', 'client_tax_id', 'TEXT');
   ensureColumn('workspace_invoices', 'client_address', 'TEXT');
+  // El país del destinatario se congela al emitir, como el resto de sus datos.
+  ensureColumn('workspace_invoices', 'client_country', 'TEXT');
   ensureColumn('workspace_invoices', 'locked', 'INTEGER NOT NULL DEFAULT 0');
   // Datos fiscales del cliente (destinatario de la factura).
   ensureColumn('workspaces', 'billing_tax_id', 'TEXT');
   ensureColumn('workspaces', 'billing_address', 'TEXT');
+  // País del destinatario (ISO 3166-1 alfa-2). España por defecto: es el caso
+  // normal del negocio y evita que las cuentas ya existentes queden sin país.
+  ensureColumn('workspaces', 'billing_country', "TEXT NOT NULL DEFAULT 'ES'");
   // Estado de morosidad por cuenta (persistido, para que el corte por impago sea
   // idempotente y sobreviva a reinicios). ai_suspended = corte del proxy de IA.
   ensureColumn('workspaces', 'ai_suspended', 'INTEGER NOT NULL DEFAULT 0');
@@ -1568,6 +1574,7 @@ export function createWorkspaceRow(name: string, init: WorkspaceInit = {}): Work
     billing_email: init.billing_email ?? null,
     billing_tax_id: null,
     billing_address: null,
+    billing_country: DEFAULT_COUNTRY,
     billing_day: init.billing_day ?? 1,
     discount_pct: null, // hereda el descuento del plan mientras no se fije uno propio
     // Ancla del aniversario de las cuotas anuales: la contratación del plan.
@@ -1583,8 +1590,8 @@ export function createWorkspaceRow(name: string, init: WorkspaceInit = {}): Work
     created_at: now(),
   };
   db.prepare(
-    `INSERT INTO workspaces (id, name, slug, plan_id, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules_override, owner_disabled_modules, status, billing_email, billing_tax_id, billing_address, billing_day, plan_since, last_billed_period_end, notes, created_at)
-     VALUES (@id, @name, @slug, @plan_id, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules_override, @owner_disabled_modules, @status, @billing_email, @billing_tax_id, @billing_address, @billing_day, @plan_since, @last_billed_period_end, @notes, @created_at)`,
+    `INSERT INTO workspaces (id, name, slug, plan_id, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules_override, owner_disabled_modules, status, billing_email, billing_tax_id, billing_address, billing_country, billing_day, plan_since, last_billed_period_end, notes, created_at)
+     VALUES (@id, @name, @slug, @plan_id, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules_override, @owner_disabled_modules, @status, @billing_email, @billing_tax_id, @billing_address, @billing_country, @billing_day, @plan_since, @last_billed_period_end, @notes, @created_at)`,
   ).run(row);
   return row;
 }
@@ -1614,7 +1621,7 @@ export function getWorkspace(workspaceId: string): WorkspaceRow | undefined {
 const WORKSPACE_COLUMNS = new Set([
   'name', 'plan_id', 'cpu_cores', 'memory_mb', 'disk_mb', 'max_projects', 'max_services',
   'max_members', 'modules_override', 'owner_disabled_modules', 'status', 'billing_email',
-  'billing_tax_id', 'billing_address', 'billing_day', 'discount_pct', 'notes',
+  'billing_tax_id', 'billing_address', 'billing_country', 'billing_day', 'discount_pct', 'notes',
   'ai_suspended', 'dunning_stage', 'dunning_since', 'last_dunning_action_at', 'dunning_exempt',
   'plan_since', 'last_billed_period_end',
 ]);
@@ -1702,7 +1709,7 @@ const INVOICE_DEFAULTS = {
   series_id: null, number: null, invoice_type: 'normal', rectifies_invoice_id: null, rectify_reason: null,
   operation_date: null, tax_breakdown: '[]', vat_regime: 'general', legal_mentions: null,
   irpf_rate: 0, irpf_cents: 0, issuer_snapshot: null, client_name: null, client_tax_id: null,
-  client_address: null, plan_name: null, payment_method: null, stripe_session_id: null,
+  client_address: null, client_country: null, plan_name: null, payment_method: null, stripe_session_id: null,
   stripe_url: null, issued_at: null, paid_at: null, locked: 0, notes: null,
 } as const;
 
@@ -1718,13 +1725,13 @@ export function createInvoice(row: InvoiceCore & Partial<InvoiceRow>): InvoiceRo
        id, workspace_id, series_id, number, invoice_type, rectifies_invoice_id, rectify_reason,
        period_start, period_end, operation_date, status, currency, subtotal_cents, tax_cents, tax_rate,
        tax_breakdown, vat_regime, legal_mentions, irpf_rate, irpf_cents, total_cents, lines, plan_name,
-       issuer_snapshot, client_name, client_tax_id, client_address, payment_method, stripe_session_id,
+       issuer_snapshot, client_name, client_tax_id, client_address, client_country, payment_method, stripe_session_id,
        stripe_url, issued_at, paid_at, locked, notes, created_at)
      VALUES (
        @id, @workspace_id, @series_id, @number, @invoice_type, @rectifies_invoice_id, @rectify_reason,
        @period_start, @period_end, @operation_date, @status, @currency, @subtotal_cents, @tax_cents, @tax_rate,
        @tax_breakdown, @vat_regime, @legal_mentions, @irpf_rate, @irpf_cents, @total_cents, @lines, @plan_name,
-       @issuer_snapshot, @client_name, @client_tax_id, @client_address, @payment_method, @stripe_session_id,
+       @issuer_snapshot, @client_name, @client_tax_id, @client_address, @client_country, @payment_method, @stripe_session_id,
        @stripe_url, @issued_at, @paid_at, @locked, @notes, @created_at)`,
   ).run(full);
   return full;
@@ -1734,7 +1741,7 @@ const INVOICE_COLUMNS = new Set([
   'series_id', 'number', 'invoice_type', 'rectifies_invoice_id', 'rectify_reason', 'period_start',
   'period_end', 'operation_date', 'status', 'currency', 'subtotal_cents', 'tax_cents', 'tax_rate',
   'tax_breakdown', 'vat_regime', 'legal_mentions', 'irpf_rate', 'irpf_cents', 'total_cents', 'lines',
-  'plan_name', 'issuer_snapshot', 'client_name', 'client_tax_id', 'client_address', 'payment_method',
+  'plan_name', 'issuer_snapshot', 'client_name', 'client_tax_id', 'client_address', 'client_country', 'payment_method',
   'stripe_session_id', 'stripe_url', 'issued_at', 'paid_at', 'locked', 'notes',
 ]);
 
