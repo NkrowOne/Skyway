@@ -1,22 +1,25 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ExternalLink, MoveHorizontal, Play, RefreshCw, Rocket, Square, Terminal, X } from 'lucide-react';
 import { api } from '../api';
-import { useLocalStorage, useMediaQuery } from '../hooks';
+import { useLatch, useLocalStorage, useMediaQuery } from '../hooks';
 import { MetricPoint } from '../pages/Project';
 import { Deployment, MetricsSnapshot, Project, Runtime, Service } from '../types';
 import { cx, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
-import ExecModal from './ExecModal';
 import { ModuleChip, moduleKind } from './ModuleIcon';
-import BackupsTab from './tabs/BackupsTab';
-import DbConsoleTab from './tabs/DbConsoleTab';
 import DeploymentsTab from './tabs/DeploymentsTab';
-import FilesTab from './tabs/FilesTab';
-import LogsTab from './tabs/LogsTab';
-import MetricsTab from './tabs/MetricsTab';
-import ServiceSettingsTab from './tabs/ServiceSettingsTab';
-import VariablesTab from './tabs/VariablesTab';
-import { Button, ConfirmModal, Skeleton, StatusBadge, Tabs, useToast } from './ui';
+import { Button, ConfirmModal, Skeleton, Spinner, StatusBadge, Tabs, useToast } from './ui';
+
+// La pestaña de Despliegues (por defecto) viaja con el drawer; el resto de pestañas
+// y el terminal se cargan al abrirlos, para no descargar las 8 pestañas de una vez.
+const ExecModal = lazy(() => import('./ExecModal'));
+const BackupsTab = lazy(() => import('./tabs/BackupsTab'));
+const DbConsoleTab = lazy(() => import('./tabs/DbConsoleTab'));
+const FilesTab = lazy(() => import('./tabs/FilesTab'));
+const LogsTab = lazy(() => import('./tabs/LogsTab'));
+const MetricsTab = lazy(() => import('./tabs/MetricsTab'));
+const ServiceSettingsTab = lazy(() => import('./tabs/ServiceSettingsTab'));
+const VariablesTab = lazy(() => import('./tabs/VariablesTab'));
 
 const BACKUP_TEMPLATES = ['postgres', 'mysql', 'mongo'];
 const CONSOLE_TEMPLATES = ['postgres', 'mysql', 'mongo', 'redis'];
@@ -41,6 +44,9 @@ export default function ServiceDrawer({
 }) {
   const [tab, setTab] = useState('deployments');
   const [execOpen, setExecOpen] = useState(false);
+  // El terminal (ExecModal) se descarga en su 1ª apertura; el cerrojo lo mantiene
+  // montado luego para conservar su animación de cierre.
+  const execLatched = useLatch(execOpen);
   // Detener/reiniciar cortan el servicio: confirmamos para evitar clics accidentales.
   const [confirmVerb, setConfirmVerb] = useState<'stop' | 'restart' | null>(null);
   // Cambios guardados (ajustes o variables) que solo surten efecto al redesplegar.
@@ -328,36 +334,44 @@ export default function ServiceDrawer({
             el log crecía sin fin. Las pestañas de documento (despliegues, métricas…)
             desbordan hacia el scroll del cuerpo igual que antes (sus hijos no llevan min-h-0). */}
         <div key={tab} className="tab-in flex h-full flex-col">
-          {tab === 'deployments' && <DeploymentsTab serviceId={serviceId} serviceType={service.type} />}
-          {tab === 'db' && <DbConsoleTab serviceId={serviceId} />}
-          {tab === 'variables' && (
-            <VariablesTab
-              serviceId={serviceId}
-              onSaved={invalidate}
-              onDeploy={() => deploy.mutate()}
-              onNeedsRedeploy={() => setPendingRedeploy(true)}
-            />
-          )}
-          {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
-          {tab === 'files' && <FilesTab serviceId={serviceId} />}
-          {tab === 'metrics' && <MetricsTab serviceId={serviceId} service={service} latest={latestMetrics} historyRef={historyRef} />}
-          {tab === 'logs' && <LogsTab serviceId={serviceId} replicas={(service.config as any).replicas ?? 1} />}
-          {tab === 'settings' && (
-            <ServiceSettingsTab
-              service={service}
-              projectId={projectId}
-              onChanged={invalidate}
-              onNeedsRedeploy={() => setPendingRedeploy(true)}
-              onDeleted={() => {
-                invalidate();
-                onClose();
-              }}
-            />
-          )}
+          {/* La pestaña activa (salvo Despliegues) se carga bajo demanda; Suspense
+              solo muestra el spinner la 1ª vez que se abre una pestaña diferida. */}
+          <Suspense fallback={<div className="flex flex-1 items-center justify-center p-8"><Spinner /></div>}>
+            {tab === 'deployments' && <DeploymentsTab serviceId={serviceId} serviceType={service.type} />}
+            {tab === 'db' && <DbConsoleTab serviceId={serviceId} />}
+            {tab === 'variables' && (
+              <VariablesTab
+                serviceId={serviceId}
+                onSaved={invalidate}
+                onDeploy={() => deploy.mutate()}
+                onNeedsRedeploy={() => setPendingRedeploy(true)}
+              />
+            )}
+            {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
+            {tab === 'files' && <FilesTab serviceId={serviceId} />}
+            {tab === 'metrics' && <MetricsTab serviceId={serviceId} service={service} latest={latestMetrics} historyRef={historyRef} />}
+            {tab === 'logs' && <LogsTab serviceId={serviceId} replicas={(service.config as any).replicas ?? 1} />}
+            {tab === 'settings' && (
+              <ServiceSettingsTab
+                service={service}
+                projectId={projectId}
+                onChanged={invalidate}
+                onNeedsRedeploy={() => setPendingRedeploy(true)}
+                onDeleted={() => {
+                  invalidate();
+                  onClose();
+                }}
+              />
+            )}
+          </Suspense>
         </div>
       </div>
 
-      <ExecModal open={execOpen} onClose={() => setExecOpen(false)} serviceId={serviceId} serviceName={service.name} />
+      {execLatched && (
+        <Suspense fallback={null}>
+          <ExecModal open={execOpen} onClose={() => setExecOpen(false)} serviceId={serviceId} serviceName={service.name} />
+        </Suspense>
+      )}
 
       {/* Dos modales con contenido fijo: el texto no cambia mientras uno se desvanece al cerrar. */}
       <ConfirmModal

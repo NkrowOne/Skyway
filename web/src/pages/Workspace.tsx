@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -27,7 +27,8 @@ import {
 import { api } from '../api';
 import { Button, ConfirmModal, CopyButton, EditorBar, Field, Modal, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
 import { QuotaMeter } from '../components/QuotaMeter';
-import { UsageBars } from '../components/BillingCharts';
+// Gráficos de la pestaña «Uso» (no es la pestaña por defecto): carga diferida.
+const UsageBars = lazy(() => import('../components/BillingCharts').then((m) => ({ default: m.UsageBars })));
 import {
   BillingProfile,
   Invoice,
@@ -597,8 +598,10 @@ function UsoTab({ detail }: { detail: Detail }) {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <UsageBars title="CPU consumida (núcleo·h)" points={series.map((p) => ({ t: p.t, value: p.cpuCoreHours }))} color="var(--color-acc)" format={(v) => String(round1(v))} labelFor={labelFor} />
-            <UsageBars title="Memoria consumida (GB·h)" points={series.map((p) => ({ t: p.t, value: p.ramGbHours }))} color="var(--color-info)" format={(v) => String(round1(v))} labelFor={labelFor} />
+            <Suspense fallback={<><Skeleton className="h-56 w-full" /><Skeleton className="h-56 w-full" /></>}>
+              <UsageBars title="CPU consumida (núcleo·h)" points={series.map((p) => ({ t: p.t, value: p.cpuCoreHours }))} color="var(--color-acc)" format={(v) => String(round1(v))} labelFor={labelFor} />
+              <UsageBars title="Memoria consumida (GB·h)" points={series.map((p) => ({ t: p.t, value: p.ramGbHours }))} color="var(--color-info)" format={(v) => String(round1(v))} labelFor={labelFor} />
+            </Suspense>
           </div>
 
           <section className="card p-5">

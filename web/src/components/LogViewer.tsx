@@ -18,6 +18,10 @@ import { cx, stripAnsi } from '../utils';
 type Level = 'err' | 'warn' | 'plain';
 type LevelFilter = 'all' | 'err' | 'warn';
 
+/** Formateador de miles reutilizable (locale fija): crearlo en cada render es caro
+ *  y LogViewer re-renderiza por cada lote de líneas durante el streaming en vivo. */
+const NF = new Intl.NumberFormat('es');
+
 /** Heurística de niveles: error/fatal/panic → err; warn → warn; resto neutro. */
 function detectLevel(line: string): Level {
   const l = line.toLowerCase();
@@ -277,7 +281,6 @@ export default function LogViewer({
     URL.revokeObjectURL(url);
   };
 
-  const nf = new Intl.NumberFormat('es');
   const filtering = level !== 'all' || filter.trim().length > 0;
   const showChrome = toolbar || !!title || maximized;
 
@@ -299,7 +302,7 @@ export default function LogViewer({
     >
       {tone && <span className={cx('h-[6px] w-[6px] rounded-full', tone === 'err' ? 'bg-err' : 'bg-warn')} />}
       {label}
-      {n !== undefined && n > 0 && <span className="tnum opacity-80">{nf.format(n)}</span>}
+      {n !== undefined && n > 0 && <span className="tnum opacity-80">{NF.format(n)}</span>}
     </button>
   );
 
@@ -324,7 +327,7 @@ export default function LogViewer({
                 className={cx('h-[6px] w-[6px] rounded-full', follow ? 'pulse-soft bg-ok' : 'bg-subtle')}
                 title={follow ? 'En vivo' : 'En pausa (has subido)'}
               />
-              <span className="tnum">{nf.format(rows.length)}</span>
+              <span className="tnum">{NF.format(rows.length)}</span>
               <span className="hidden sm:inline">líneas</span>
               {replicas > 1 && <span className="hidden text-subtle sm:inline">· réplica 1/{replicas}</span>}
             </span>
@@ -403,8 +406,8 @@ export default function LogViewer({
           ) : (
             <>
               <span>
-                <span className="tnum text-sub">{nf.format(visible.length)}</span>
-                {filtering ? ` de ${nf.format(rows.length)} líneas` : ' líneas'}
+                <span className="tnum text-sub">{NF.format(visible.length)}</span>
+                {filtering ? ` de ${NF.format(rows.length)} líneas` : ' líneas'}
               </span>
               <span className="text-line">·</span>
               <span>

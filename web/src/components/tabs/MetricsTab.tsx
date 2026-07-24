@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, Cpu, HardDrive, MemoryStick, Network } from 'lucide-react';
 import { api } from '../../api';
@@ -188,6 +188,36 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
     retry: false,
   });
 
+  // Agregados y series memoizados: el drawer re-renderiza con cada snapshot SSE
+  // (~2,5 s) pero el histórico solo cambia cada 60 s. El hook va ANTES de los
+  // returns tempranos (reglas de hooks); `points` es [] mientras carga.
+  const points = q.data?.points ?? [];
+  const { cpuAvg, cpuMax, memAvg, memMax, rxTotal, txTotal, diskLast, diskDelta, cpuPoints, memPoints, netPoints, diskPoints } = useMemo(() => {
+    // Media del periodo PONDERADA por muestras: un cubo parcial del borde (con una
+    // sola muestra) no debe pesar igual que uno lleno, o el número se dispara.
+    const cpuValid = points.filter((p) => p.cpuAvg !== null);
+    const memValid = points.filter((p) => p.memAvg !== null);
+    const cpuSamples = cpuValid.reduce((a, p) => a + p.samples, 0);
+    const memSamples = memValid.reduce((a, p) => a + p.samples, 0);
+    const diskPts = points.filter((p) => p.disk !== null);
+    const dLast = diskPts.length ? diskPts[diskPts.length - 1].disk : null;
+    const dFirst = diskPts.length ? diskPts[0].disk : null;
+    return {
+      cpuAvg: cpuSamples ? cpuValid.reduce((a, p) => a + (p.cpuAvg ?? 0) * p.samples, 0) / cpuSamples : null,
+      cpuMax: points.reduce((a, p) => Math.max(a, p.cpuMax ?? 0), 0),
+      memAvg: memSamples ? memValid.reduce((a, p) => a + (p.memAvg ?? 0) * p.samples, 0) / memSamples : null,
+      memMax: points.reduce((a, p) => Math.max(a, p.memMax ?? 0), 0),
+      rxTotal: points.reduce((a, p) => a + p.netRx, 0),
+      txTotal: points.reduce((a, p) => a + p.netTx, 0),
+      diskLast: dLast,
+      diskDelta: dLast !== null && dFirst !== null ? dLast - dFirst : null,
+      cpuPoints: points.map((p) => ({ t: p.t, avg: p.cpuAvg === null ? null : p.cpuAvg / 100, max: p.cpuMax === null ? null : p.cpuMax / 100 })) as BandPoint[],
+      memPoints: points.map((p) => ({ t: p.t, avg: p.memAvg, max: p.memMax })) as BandPoint[],
+      netPoints: points.map((p) => ({ t: p.t, rx: p.netRx, tx: p.netTx })) as NetPoint[],
+      diskPoints: points.map((p) => ({ t: p.t, avg: p.disk, max: p.disk })) as BandPoint[],
+    };
+  }, [points]);
+
   if (q.isLoading) {
     return (
       <div aria-busy className="flex flex-col gap-3.5">
@@ -202,35 +232,8 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
     return <p className="p-6 text-center text-sm text-warn">No se pudo cargar el histórico: {(q.error as Error).message}</p>;
   }
 
-  const points = q.data?.points ?? [];
-  // Media del periodo PONDERADA por muestras: un cubo parcial del borde (con una
-  // sola muestra) no debe pesar igual que uno lleno, o el número se dispara.
-  const cpuValid = points.filter((p) => p.cpuAvg !== null);
-  const memValid = points.filter((p) => p.memAvg !== null);
-  const cpuSamples = cpuValid.reduce((a, p) => a + p.samples, 0);
-  const memSamples = memValid.reduce((a, p) => a + p.samples, 0);
-  const cpuAvg = cpuSamples ? cpuValid.reduce((a, p) => a + (p.cpuAvg ?? 0) * p.samples, 0) / cpuSamples : null;
-  const cpuMax = points.reduce((a, p) => Math.max(a, p.cpuMax ?? 0), 0);
-  const memAvg = memSamples ? memValid.reduce((a, p) => a + (p.memAvg ?? 0) * p.samples, 0) / memSamples : null;
-  const memMax = points.reduce((a, p) => Math.max(a, p.memMax ?? 0), 0);
-  const rxTotal = points.reduce((a, p) => a + p.netRx, 0);
-  const txTotal = points.reduce((a, p) => a + p.netTx, 0);
-  const diskPts = points.filter((p) => p.disk !== null);
-  const diskLast = diskPts.length ? diskPts[diskPts.length - 1].disk : null;
-  const diskFirst = diskPts.length ? diskPts[0].disk : null;
-  const diskDelta = diskLast !== null && diskFirst !== null ? diskLast - diskFirst : null;
-
   const memLimitBytes = memoryMb ? memoryMb * 1024 * 1024 : null;
   const quotaBytes = diskMb ? diskMb * 1024 * 1024 : null;
-
-  const cpuPoints: BandPoint[] = points.map((p) => ({
-    t: p.t,
-    avg: p.cpuAvg === null ? null : p.cpuAvg / 100,
-    max: p.cpuMax === null ? null : p.cpuMax / 100,
-  }));
-  const memPoints: BandPoint[] = points.map((p) => ({ t: p.t, avg: p.memAvg, max: p.memMax }));
-  const netPoints: NetPoint[] = points.map((p) => ({ t: p.t, rx: p.netRx, tx: p.netTx }));
-  const diskPoints: BandPoint[] = points.map((p) => ({ t: p.t, avg: p.disk, max: p.disk }));
 
   return (
     <div className="flex flex-col gap-3.5">
