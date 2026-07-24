@@ -244,6 +244,13 @@ export interface InvoiceLine {
   unitCents: number;
   amountCents: number;
   taxRate?: number;
+  /** Tipo de retención de IRPF (%) de la línea. */
+  irpfRate?: number;
+  /**
+   * Cargo puntual del que nace la línea. Viaja de vuelta al editar: es lo que
+   * permite al servidor devolver a «pendiente» el cargo cuya línea se elimina.
+   */
+  chargeId?: string;
 }
 
 export interface TaxBreakdownEntry {

@@ -9,7 +9,7 @@ import { auditSystem } from './audit';
 import { fireWorkspaceAlert } from './alerts';
 import { getBillingAutomation } from './billingsettings';
 import { getBillingProfile } from './company';
-import { generateCycleDraft, issueInvoice } from './routes/billing';
+import { BillingError, cycleAnchor, generateCycleDraft, issueInvoice, lastCutoff } from './routes/billing';
 import {
   deleteInvoice,
   getWorkspace,
@@ -18,6 +18,8 @@ import {
   listWorkspaces,
   openDraftForCycle,
   resolveAlertsByDedupe,
+  reviveDunningKeys,
+  reviveDunningSubscriptions,
   setWorkspaceKeysStatus,
   setWorkspaceSubscriptionsStatus,
   updateWorkspace,
@@ -67,8 +69,10 @@ export function reactivateWorkspaceIfCurrent(workspaceId: string): void {
   // La cancelación (etapa 3) es TERMINAL: las claves revocadas y las suscripciones
   // canceladas no reviven solas; pagar no restaura el servicio, requiere alta manual.
   const wasCancelled = stage >= 3;
-  setWorkspaceKeysStatus(workspaceId, 'suspended', 'active');
-  setWorkspaceSubscriptionsStatus(workspaceId, 'paused', 'active');
+  // Solo revive lo que cortó la MOROSIDAD: si el operador había suspendido una
+  // clave o pausado una suscripción a mano, pagar no debe deshacer su decisión.
+  reviveDunningKeys(workspaceId, 'suspended');
+  reviveDunningSubscriptions(workspaceId, 'paused');
   updateWorkspace(workspaceId, { dunning_stage: 0, dunning_since: null, ai_suspended: 0, last_dunning_action_at: nowMs });
   resolveAlertsByDedupe(`ws:${workspaceId}:overdue`);
   resolveAlertsByDedupe(`ws:${workspaceId}:suspended`);
@@ -180,27 +184,25 @@ export function dunningTick(nowMs: number): void {
   }
 }
 
-/** Ciclo COMPLETO anterior anclado al día de facturación (el que se factura al llegar ese día). */
-function previousCycle(billingDay: number, now: Date): { start: number; end: number } {
-  const start = new Date(now.getFullYear(), now.getMonth() - 1, billingDay);
-  const end = new Date(now.getFullYear(), now.getMonth(), billingDay);
-  return { start: start.getTime(), end: end.getTime() };
-}
-
 /**
- * En el día de facturación de cada cuenta, genera el borrador del ciclo COMPLETO
- * anterior (plan + suscripciones + uso medido + cargos) si aún no existe. Se crea
- * en DRAFT y, SOLO si el operador ha activado la auto-emisión, se emite (numera y
- * bloquea): la emisión es un acto legal irreversible, por eso es opt-in.
+ * Genera el borrador del periodo CERRADO que quede pendiente en cada cuenta (plan
+ * + suscripciones + uso medido + cargos). Se crea en DRAFT y, SOLO si el operador
+ * ha activado la auto-emisión, se emite (numera y bloquea): la emisión es un acto
+ * legal irreversible, por eso es opt-in.
+ *
+ * El periodo va del ANCLA persistente (fin de lo último facturado) al último corte
+ * vencido, no del día del mes. Así, cambiar el día de facturación no refactura el
+ * tramo solapado, y si el servidor estuvo caído el día de cierre el ciclo se
+ * recupera en el primer tick que corra, en vez de perderse para siempre.
  */
 export function billingCycleTick(now: Date): void {
   const auto = getBillingAutomation();
   if (!auto.autoGenerate) return; // generación automática desactivada por el operador
-  const day = now.getDate();
   for (const ws of listWorkspaces()) {
     try {
-      if (ws.billing_day !== day || ws.status !== 'active') continue;
-      const cycle = previousCycle(ws.billing_day, now);
+      if (ws.status !== 'active') continue;
+      const cycle = { start: cycleAnchor(ws, now), end: lastCutoff(ws.billing_day, now) };
+      if (cycle.end <= cycle.start) continue; // no hay ningún periodo cerrado pendiente
       // Idempotencia sobre el ciclo YA CERRADO: un borrador creado a mitad de mes
       // (una previsión del operador) no cuenta como facturado, porque le falta el
       // consumo del resto del periodo. Se sustituye por el definitivo.
@@ -231,7 +233,11 @@ export function billingCycleTick(now: Date): void {
         auditSystem('invoice_auto_generated', `${ws.name} · ${money} (borrador del ciclo)`);
       }
     } catch (err: any) {
-      auditSystem('billing_cycle_error', `${ws.id}: ${(err?.message || err).toString().slice(0, 200)}`);
+      // Un error de negocio (moneda mezclada, dato fiscal ausente) es accionable
+      // por el operador: se audita con su mensaje y NO avanza el ancla, así que el
+      // periodo se reintenta en el tick siguiente una vez corregido.
+      const prefijo = err instanceof BillingError ? 'revisar' : 'error';
+      auditSystem('billing_cycle_error', `${ws.name}: [${prefijo}] ${(err?.message || err).toString().slice(0, 200)}`);
     }
   }
 }

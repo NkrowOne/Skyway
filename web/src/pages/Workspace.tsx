@@ -1043,7 +1043,7 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
   // recompone la factura con lo que llega, así que omitirlos aplicaba el tipo por
   // defecto a todo y una línea exenta pasaba a tributar al 21 %.
   const [lines, setLines] = useState(
-    invoice.lines.map((l) => ({ label: l.label, kind: l.kind ?? 'custom', qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate })),
+    invoice.lines.map((l) => ({ label: l.label, kind: l.kind ?? 'custom', qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate, chargeId: l.chargeId })),
   );
   const base = lines.reduce((s, l) => s + Math.round(l.qty * l.unit * 100), 0);
   const isNew = !invoice.id;
@@ -1053,7 +1053,9 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
       const payload = {
         lines: lines
           .filter((l) => l.label.trim())
-          .map((l) => ({ label: l.label.trim(), kind: l.kind, qty: l.qty, unitCents: Math.round(l.unit * 100), taxRate: l.taxRate })),
+          // `chargeId` viaja de vuelta: es lo que dice al servidor qué cargos
+          // puntuales siguen en la factura y cuáles vuelven a estar pendientes.
+          .map((l) => ({ label: l.label.trim(), kind: l.kind, qty: l.qty, unitCents: Math.round(l.unit * 100), taxRate: l.taxRate, chargeId: l.chargeId })),
       };
       return isNew ? api.post(`/workspaces/${workspaceId}/invoices`, payload) : api.patch(`/invoices/${invoice.id}`, payload);
     },
@@ -1082,7 +1084,7 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
             </button>
           </div>
         ))}
-        <button onClick={() => setLines((ls) => [...ls, { label: '', kind: 'custom', qty: 1, unit: 0, taxRate: invoice.tax_rate }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
+        <button onClick={() => setLines((ls) => [...ls, { label: '', kind: 'custom', qty: 1, unit: 0, taxRate: invoice.tax_rate, chargeId: undefined }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
           + Añadir línea
         </button>
         {/* La suma de las líneas es la BASE IMPONIBLE, no el total: rotularla

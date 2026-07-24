@@ -323,6 +323,13 @@ export interface WorkspaceRow {
    * cuentas anteriores a esta columna; entonces se usa `created_at`.
    */
   plan_since: number | null;
+  /**
+   * Fin del último periodo facturado: el ancla desde la que arranca el siguiente.
+   * Sustituye a derivar el ciclo de `billing_day`, que refacturaba el tramo
+   * solapado al cambiar el día y perdía el ciclo si el servidor estaba caído justo
+   * el día de cierre. Null en cuentas anteriores a la columna.
+   */
+  last_billed_period_end: number | null;
   /** Etapa de morosidad alcanzada: 0 al corriente, 1 aviso, 2 suspensión, 3 cancelación. */
   dunning_stage: number;
   /** Momento en que empezó la mora actual. */
@@ -379,6 +386,13 @@ export interface InvoiceLine {
   irpfRate?: number;
   /** Tipo de recargo de equivalencia (%) de la línea, cuando aplica. */
   reRate?: number;
+  /**
+   * Cargo puntual del que nace la línea. Es el vínculo que permite devolver el
+   * cargo a «pendiente» si se elimina su línea del borrador: sin él, quitar la
+   * línea dejaba el cargo marcado como facturado en una factura que ya no lo
+   * contiene, y no volvía a facturarse nunca.
+   */
+  chargeId?: string;
 }
 
 /** Desglose de bases y cuotas por tipo impositivo (obligatorio si concurren varios tipos). */
@@ -592,6 +606,13 @@ export interface SubscriptionRow {
   anchor_day: number;
   started_at: number;
   cancelled_at: number | null;
+  /**
+   * Momento del último cambio de estado. Es lo que permite prorratear una baja:
+   * el corte masivo por impago cambia el estado sin escribir `cancelled_at`.
+   */
+  status_changed_at: number | null;
+  /** Quién la pausó/canceló: 'dunning' (impago) o 'manual' (el operador). */
+  paused_by: 'dunning' | 'manual' | null;
   created_at: number;
 }
 
@@ -626,6 +647,8 @@ export interface WorkspaceApiKeyRow {
   /** Modelos permitidos (JSON array); [] = todos los del allowlist global del operador. */
   allowed_models: string;
   status: 'active' | 'suspended' | 'revoked';
+  /** Quién la suspendió: 'dunning' (impago) o 'manual' (el operador). */
+  suspended_by?: 'dunning' | 'manual' | null;
   /** Presupuesto mensual (céntimos); null = sin tope. Se aplica en la fase de límites. */
   budget_cents_month: number | null;
   /** Gasto acumulado del ciclo (contador cacheado; la verdad está en usage_meter_hourly). */

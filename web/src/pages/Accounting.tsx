@@ -540,10 +540,13 @@ function CompanyProfile() {
         <div className="grid gap-3 sm:grid-cols-3">
           <Field label="IVA por defecto (%)"><input className="input tnum" type="number" min={0} max={100} value={draft.vatRate} onChange={(e) => set({ vatRate: Number(e.target.value) || 0 })} /></Field>
           <Field label="IRPF por defecto (%)" hint="0 si eres sociedad"><input className="input tnum" type="number" min={0} max={100} value={draft.defaultIrpfRate} onChange={(e) => set({ defaultIrpfRate: Number(e.target.value) || 0 })} /></Field>
-          <Field label="Modo Verifactu" hint="Remisión a la AEAT">
+          {/* El registro encadenado (invoice_ledger) está creado como reserva, pero
+              la huella, el QR y la remisión a la AEAT aún no se implementan: el
+              selector solo deja constancia de la intención, no activa nada. */}
+          <Field label="Modo Verifactu" hint="Preparado, aún no operativo">
             <select className="input" value={draft.sifMode} onChange={(e) => set({ sifMode: e.target.value as BillingProfile['sifMode'] })}>
               <option value="no_verifactu">No Veri*factu (local)</option>
-              <option value="verifactu">Veri*factu (AEAT)</option>
+              <option value="verifactu">Veri*factu (AEAT) — pendiente de activar</option>
             </select>
           </Field>
         </div>

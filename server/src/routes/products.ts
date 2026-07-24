@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { requireAdmin, requireAuth } from '../auth';
+import { requireAdmin, requireAuth, requireManager } from '../auth';
 import { audit } from '../audit';
 import { createProduct, deleteProduct, getProduct, listProducts, listTiers, productInUse, replaceTiers, updateProduct } from '../db';
 import { sanitizeModules } from '../modules';
@@ -106,8 +106,10 @@ function toRowFields(body: Partial<z.infer<typeof productSchema>>): Record<strin
 export async function productRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
-  // El catálogo lo consultan admin (gestión) y propietarios (para ver qué contratan).
-  app.get('/api/products', async () => ({
+  // El catálogo lo consultan admin (gestión) y propietarios (para ver qué
+  // contratan). Un miembro de proyecto no tiene nada que hacer aquí: son los
+  // precios y tramos comerciales de todo el negocio.
+  app.get('/api/products', { preHandler: requireManager }, async () => ({
     products: listProducts(true).map((p) => publicProduct(p, listTiers(p.id))),
   }));
 

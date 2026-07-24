@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertWorkspaceAccess, requireAuth } from '../auth';
+import { audit } from '../audit';
 import { getProject, getService, ingestUsageEvent } from '../db';
 
 /**
@@ -55,6 +56,12 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
       ts,
       metadata: body.metadata ? JSON.stringify(body.metadata) : null,
     });
+    // El consumo ingerido por API acaba en una factura: queda traza de quién lo
+    // inyectó. Los duplicados no se auditan (son reintentos legítimos del cliente)
+    // y el gateway de IA no pasa por aquí, así que el volumen es bajo.
+    if (fresh) {
+      audit(req, 'usage_ingested', { type: 'workspace', id: workspaceId, detail: `${body.meter} +${body.quantity}` });
+    }
     return { ok: true, duplicate: !fresh };
   });
 }
