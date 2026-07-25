@@ -1,3 +1,4 @@
+import { aiPricesTick } from './aiprices';
 import { auditSystem } from './audit';
 import { fireAlert, resolveServiceAlerts } from './alerts';
 import { billingAutomationTick } from './billingauto';
@@ -58,6 +59,13 @@ async function tick(): Promise<void> {
     billingAutomationTick(nowDate);
   } catch {
     /* aislado: un fallo de facturación no debe tumbar el resto del tick */
+  }
+  try {
+    // Tarifa de Gemini al día (una vez al día): el margen se calcula sobre el
+    // coste real, no sobre el que había cuando se configuró el gateway.
+    await aiPricesTick(nowDate);
+  } catch {
+    /* la sincronización de precios es best-effort: sin red, se reintenta en el próximo tick */
   }
   if (!(await dockerAvailable())) return;
   const now = nowDate;

@@ -5,6 +5,7 @@ import { audit } from '../audit';
 import {
   createWorkspaceApiKey,
   deleteModelPrice,
+  getModelPrice,
   getWorkspace,
   getWorkspaceApiKey,
   getWorkspaceApiKeyByHash,
@@ -33,6 +34,7 @@ import {
   setGeminiApiKey,
   setGeminiBaseUrl,
 } from '../aigateway';
+import { GEMINI_LIST_DATE, GEMINI_LIST_USD, getPricesConfig, getSyncState, setPricesConfig, syncAiModelPrices } from '../aiprices';
 import { WorkspaceApiKeyRow, WorkspaceRow } from '../types';
 import { randomToken } from '../util';
 
@@ -493,6 +495,8 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
       // Coherente con el margen que muestra la UI (beneficio/venta). null si m=0.
       const sug = (centsM: number, m: number) => (m > 0 && m < 100 ? Math.round((centsM / (1 - m / 100)) * 10000) / 10000 : null);
       const sell = catalogSellPer1M();
+      const cfg = getPricesConfig();
+      const state = getSyncState();
       return {
         models: listModelPrices().map((p) => ({
           model: p.model,
@@ -505,11 +509,44 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
           pvp_cents_mtok_in: sug(toc(p.cost_micros_in), p.margin_pct),
           pvp_cents_mtok_cache: sug(toc(p.cost_micros_cache), p.margin_pct),
           pvp_cents_mtok_out: sug(toc(p.cost_micros_out), p.margin_pct),
+          source: p.source,
+          synced_at: p.synced_at,
           updated_at: p.updated_at,
         })),
         // Referencia de venta (céntimos por millón de tokens) tomada del catálogo activo.
         sell_cents_mtok: sell,
+        // Autoactualización con la tarifa de Google: ajustes y resultado del último pase.
+        sync: { ...cfg, lastAt: state.lastAt, last: state.last, catalogDate: GEMINI_LIST_DATE },
+        // Tarifa de lista de Google (USD/Mtok) conocida, para comparar con el coste real.
+        list_usd: GEMINI_LIST_USD,
       };
+    });
+
+    // Refresco de la tarifa bajo demanda («Actualizar ahora»). Sale a internet, así
+    // que exige sesión de navegador además de admin (no se dispara con un token).
+    mgmt.post('/api/ai/gateway/prices/sync', { preHandler: [requireAdmin, requireSession] }, async (req) => {
+      const result = await syncAiModelPrices('manual');
+      audit(req, 'ai_prices_sync', { type: 'system', id: 'ai-gateway', detail: result.ok ? `fuente ${result.source}` : result.error ?? 'error' });
+      return result;
+    });
+
+    // Ajustes de la autoactualización (periodicidad fija: una vez al día).
+    mgmt.put('/api/ai/gateway/prices/config', { preHandler: requireAdmin }, async (req) => {
+      const body = z
+        .object({
+          auto: z.boolean().optional(),
+          // Fuente propia (JSON con `{modelo: {in,cache,out}}` en USD/Mtok); vacío = página oficial.
+          url: z.string().trim().url().or(z.literal('')).optional(),
+          currency: z.string().trim().length(3).optional(),
+          // Cambio USD → moneda del operador, por si no hay salida a internet.
+          fxRate: z.coerce.number().min(0).max(100).optional(),
+          defaultMarginPct: z.coerce.number().min(0).max(95).optional(),
+          autoAllow: z.boolean().optional(),
+        })
+        .parse(req.body ?? {});
+      setPricesConfig(body);
+      audit(req, 'ai_prices_config_updated', { type: 'system', id: 'ai-gateway' });
+      return { sync: getPricesConfig() };
     });
 
     mgmt.put('/api/ai/gateway/prices/:model', { preHandler: requireAdmin }, async (req, reply) => {
@@ -527,13 +564,28 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
           currency: z.string().trim().length(3).optional(),
         })
         .parse(req.body ?? {});
+      const cost = {
+        in: Math.round(body.costCentsMtokIn * 1e6),
+        cache: Math.round(body.costCentsMtokCache * 1e6),
+        out: Math.round(body.costCentsMtokOut * 1e6),
+      };
+      // Cambiar SOLO el margen no rompe la autoactualización: la fila sigue siendo
+      // `auto` mientras el coste enviado sea el que puso la última sincronización.
+      // Tocar el coste sí la fija a mano (para volver al automático, se borra la fila).
+      // El panel redondea a la centésima de céntimo, así que la comparación tolera
+      // esa granularidad y conserva el coste exacto que guardó la sincronización.
+      const prev = getModelPrice(m);
+      const near = (a: number, b: number) => Math.abs(a - b) <= 1e4;
+      const untouched = !!prev && prev.source === 'auto' && near(prev.cost_micros_in, cost.in) && near(prev.cost_micros_cache, cost.cache) && near(prev.cost_micros_out, cost.out);
       setModelPrice({
         model: m,
-        cost_micros_in: body.costCentsMtokIn * 1e6,
-        cost_micros_cache: body.costCentsMtokCache * 1e6,
-        cost_micros_out: body.costCentsMtokOut * 1e6,
+        cost_micros_in: untouched ? prev.cost_micros_in : cost.in,
+        cost_micros_cache: untouched ? prev.cost_micros_cache : cost.cache,
+        cost_micros_out: untouched ? prev.cost_micros_out : cost.out,
         margin_pct: body.marginPct,
-        currency: body.currency,
+        currency: body.currency ?? prev?.currency,
+        source: untouched ? 'auto' : 'manual',
+        synced_at: untouched ? prev?.synced_at ?? null : null,
       });
       audit(req, 'ai_model_price_set', { type: 'system', id: 'ai-gateway', detail: m });
       return { ok: true };
