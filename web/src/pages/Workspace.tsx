@@ -57,10 +57,23 @@ import { cx, fmtAxisTime, fmtDate, fmtMb, fmtMoney, timeAgo } from '../utils';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/** Tramo del historial de plan de la cuenta. `to` en null es el vigente. */
+interface PlanPeriod {
+  id: string;
+  planId: string | null;
+  planName: string | null;
+  priceCents: number | null;
+  currency: string | null;
+  interval: string | null;
+  from: number;
+  to: number | null;
+}
+
 interface Detail {
   workspace: Workspace;
   projects: WorkspaceProject[];
   members: WorkspaceMember[];
+  planHistory?: PlanPeriod[];
 }
 
 // ---------------- Resumen: cuota con redimensionado en vivo ----------------
@@ -643,6 +656,38 @@ const INV_TONE: Record<string, 'neutral' | 'info' | 'ok' | 'warn'> = {
 };
 const INV_LABEL: Record<string, string> = { draft: 'borrador', issued: 'emitida', paid: 'pagada', void: 'anulada' };
 
+/**
+ * Historial de plan por tramos. Explica por qué una factura reparte el mes entre
+ * dos planes: cada tramo se cobra por los días servidos a su propio precio. Solo
+ * se pinta si ha habido algún cambio (con un único tramo no aporta nada).
+ */
+function HistorialPlan({ detail }: { detail: Detail }) {
+  const tramos = detail.planHistory ?? [];
+  if (tramos.length < 2) return null;
+  const ancla = detail.workspace.last_billed_period_end;
+  return (
+    <section className="card overflow-hidden">
+      <h2 className="border-b border-line px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">Historial de plan</h2>
+      {tramos.map((t, i) => (
+        <div key={t.id} className={cx('flex flex-wrap items-baseline gap-x-2 px-4 py-2.5 text-[13px]', i > 0 && 'border-t border-line')}>
+          <span className="font-medium">{t.planName ?? 'Sin plan'}</span>
+          {t.priceCents != null && t.currency && (
+            <span className="text-[11px] text-sub">{fmtMoney(t.priceCents, t.currency)}/{t.interval === 'yearly' ? 'año' : 'mes'}</span>
+          )}
+          {t.to === null && <span className="rounded-full bg-ok/15 px-1.5 py-0.5 text-[10px] font-medium text-ok">vigente</span>}
+          <span className="ml-auto text-[11px] text-subtle">
+            {fmtDate(t.from)} → {t.to === null ? 'hoy' : fmtDate(t.to)}
+          </span>
+        </div>
+      ))}
+      <p className="border-t border-line px-4 py-2 text-[11px] text-subtle">
+        Cada tramo se factura por los días servidos a su propio precio.
+        {ancla != null && ` Facturado hasta el ${fmtDate(ancla)}.`}
+      </p>
+    </section>
+  );
+}
+
 function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: boolean; onSaved: () => void }) {
   const toast = useToast();
   const ws = detail.workspace;
@@ -731,6 +776,8 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
           Plan {ws.plan ? `${ws.plan.name} · ${ws.plan.price_cents === 0 ? 'gratis' : `${fmtMoney(ws.plan.price_cents, ws.plan.currency)}/${ws.plan.interval === 'yearly' ? 'año' : 'mes'}`}` : 'sin asignar'}. El uso incluido lo cubre el plan; lo que exceda se tarifica en la factura. Detalle en la pestaña «Uso».
         </p>
       </section>
+
+      <HistorialPlan detail={detail} />
 
       <section className="card overflow-hidden">
         <div className="flex items-center justify-between border-b border-line px-4 py-3">

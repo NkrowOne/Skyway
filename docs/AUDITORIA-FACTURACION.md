@@ -15,9 +15,10 @@ aritmética monetaria, integridad transaccional, control de acceso, ciclo de
 facturación, medición de consumo, pagos, esquema de datos y panel web), cada
 hallazgo sometido después a una verificación adversarial que intentaba refutarlo
 leyendo el código. De 89 hallazgos brutos, **18 se descartaron** por no
-sostenerse y 71 se confirmaron; consolidados y deduplicados quedan en **44
+sostenerse y 71 se confirmaron; consolidados y deduplicados quedan en **46
 defectos reales corregidos** (34 en la auditoría, 10 en la segunda tanda, 14 en
-la verificación adversarial y 7 en la cuarta) y **4 carencias pendientes**.
+la verificación adversarial, 7 en la cuarta y 2 en la quinta) y **4 carencias
+pendientes**, todas conscientemente fuera de alcance.
 
 **Veredicto general**: el diseño fiscal es serio —numeración por serie y
 ejercicio, congelación del emisor y del destinatario al emitir, inmutabilidad de
@@ -195,15 +196,41 @@ Ninguno de los cuatro se integró: las correcciones se reescribieron sobre la ba
 correcta aprovechando su diseño y, sobre todo, las trampas que la revisión
 destapó.
 
+### Quinta tanda: historial de plan por tramos y rebobinado del ancla
+
+Los dos defectos que la cuarta tanda dejaba abiertos, ya corregidos:
+
+| # | Hallazgo | Corrección |
+| --- | --- | --- |
+| 66 | **Cambiar de plan a mitad de ciclo perdía el tramo del plan anterior**: solo se facturaba el plan vigente prorrateado desde `plan_since`, así que pasar de Pro a Básico el día 25 cobraba el mes entero a 10 €/mes y regalaba 24 días de Pro (y al revés, subir de plan cobraba el mes entero al precio caro). | Tabla `workspace_plan_periods`: un tramo por cada intervalo con un plan, abierto en el alta y partido en cada cambio, dentro de la misma transacción que el `plan_id` de la cuenta. `generateCycleDraft` factura **cada tramo a su precio**, prorrateado por los días servidos contra el mes nominal: 24 días de Pro (77,42) + 7 de Básico (2,26) = **79,68 €**. |
+| 67 | **El ancla no se rebobinaba si la factura anulada no era la última**: `rewindAnchorIfLast` exigía `last_billed_period_end === period_end`, así que anular la factura de mayo con junio y julio ya facturados dejaba mayo sin facturar para siempre. | Rebobina siempre que el ancla esté por delante del inicio del periodo. Los ciclos posteriores no se duplican porque el tick los salta (`invoiceExistsForCycle`) y **vuelve a empujar el ancla al pasar por ellos**; además la empuja cuando un periodo no tiene nada que facturar, que antes la dejaba clavada y hacía crecer el hueco mes a mes. |
+
+Decisiones de diseño del historial, y las trampas que evitan:
+
+- **La tarifa viva manda mientras el plan exista**; el tramo guarda una copia
+  congelada (nombre, precio, divisa, intervalo) que solo se usa si el plan se
+  borró del catálogo. Así editar un precio sigue afectando a lo no facturado y el
+  histórico se puede facturar igualmente. Borrar un plan sigue bloqueado solo si
+  alguna cuenta lo tiene **contratado**: figurar en un historial no lo bloquea.
+- **El aniversario de una cuota anual se ancla en la primera contratación de ese
+  plan**, no en el tramo. Irse y volver al mismo plan dentro del año no devenga
+  una segunda anualidad; pasar de un plan anual a otro devenga solo la del nuevo.
+- **Un tramo de minutos no genera línea**: se descarta si su importe redondea a
+  cero (un plan gratuito sí conserva la suya, porque ahí el cero es el precio).
+  Sin esto, un cambio de plan justo antes del cierre podía sumar un céntimo de más.
+- **Un cambio de divisa no bloquea el ciclo**: partirlo mezclaría monedas en una
+  factura, y abortar dejaría el ancla clavada y la cuenta sin facturar para
+  siempre. Se factura el mes completo al plan vigente —el comportamiento
+  anterior— y se levanta una alerta para que el operador rectifique.
+- **El descuento comercial no se trocea por tramos**: es una condición del
+  acuerdo con el cliente, no una propiedad de la tarifa, y se aplica a toda la
+  factura (consumo y cargos incluidos), no solo a la cuota.
+- El historial se ve en la pestaña «Facturación» de la cuenta, con el precio de
+  cada tramo y hasta dónde está facturada.
+
 ### Sigue pendiente
 
-1. **Cambiar de plan a mitad de ciclo pierde el tramo del plan anterior**: solo se
-   factura el plan actual prorrateado desde `plan_since`, así que una subida o
-   bajada el día 25 deja sin cobrar los 24 días del plan saliente. Arreglarlo bien
-   exige un historial de plan por tramos; el atajo (crear un cargo puntual con el
-   tramo saliente al cambiar de plan) necesita recortar por el ancla y conocer el
-   mes nominal del ciclo que cerrará.
-2. **Cada cubo horario se factura como hora completa**, aunque el servicio solo
+1. **Cada cubo horario se factura como hora completa**, aunque el servicio solo
    haya corrido unos minutos dentro de esa hora.
 2. **El recargo de equivalencia no se calcula.** El régimen es seleccionable y
    `InvoiceLine.reRate` existe, pero nadie lo rellena ni lo suma.
@@ -327,6 +354,15 @@ en verde:
 | Cobro con un enlace antiguo | concilia por el id de factura |
 | Cobro sobre factura anulada | no resucita; se audita y alerta |
 | Alta el día 16 de un mes de 31 | cuota prorrateada 16/31, no completa |
+| Cambio de Pro a Básico el día 25 de un mes de 31 | dos líneas: 24/31 de Pro + 7/31 de Básico = 79,68 € |
+| Tres tramos de plan en el mismo ciclo | tres líneas; la suma nunca supera el mes del plan más caro |
+| Plan anual con ida y vuelta al mismo plan en un ciclo | ninguna anualidad extra |
+| Paso de un plan anual a otro | solo la anualidad del nuevo |
+| Tramo de un plan ya borrado del catálogo | se factura con su tarifa congelada |
+| Cambio de plan a otra divisa a mitad de ciclo | el ciclo no se bloquea; alerta al operador |
+| Cambio de plan a un minuto del cierre | sin línea de 0,00 € ni céntimo de más |
+| Anular la factura de mayo con junio y julio facturados | mayo se refactura una vez; junio y julio no se duplican |
+| Periodo sin nada que facturar | el ancla avanza igualmente, sin factura vacía |
 | Baja el día 16 de un mes de 31 | se cobra el periodo prestado, no cero |
 | Ciclo completo | sin prorrateo |
 | Cambio del día de facturación de 10 a 15 | una sola factura, 10-jul → 15-jul |

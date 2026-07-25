@@ -17,6 +17,7 @@ import {
   ProductRow,
   SubscriptionRow,
   PasskeyRow,
+  PlanPeriodRow,
   PlanRow,
   ProjectRow,
   ServiceConfig,
@@ -344,6 +345,25 @@ export function initDb(): void {
       archived INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     );
+    -- Historial de plan por tramos: qué plan tuvo la cuenta y entre qué fechas.
+    -- Sin él, cambiar de plan a mitad de mes facturaba el ciclo ENTERO al plan
+    -- nuevo (o al viejo), nunca cada tramo a su precio. El precio y el nombre se
+    -- congelan en el tramo para que el histórico siga siendo facturable aunque el
+    -- plan se borre del catálogo; mientras el plan exista manda su ficha viva, que
+    -- es el comportamiento que ya tenía editar una tarifa.
+    CREATE TABLE IF NOT EXISTS workspace_plan_periods (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      plan_id TEXT,
+      plan_name TEXT,
+      price_cents INTEGER,
+      currency TEXT,
+      interval TEXT,
+      from_ms INTEGER NOT NULL,
+      to_ms INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_wpp_ws ON workspace_plan_periods(workspace_id, from_ms);
     CREATE TABLE IF NOT EXISTS catalog_price_tiers (
       id TEXT PRIMARY KEY,
       product_id TEXT NOT NULL REFERENCES catalog_products(id) ON DELETE CASCADE,
@@ -583,6 +603,9 @@ export function initDb(): void {
   migrateClientsToWorkspaces();
   backfillUsageAttribution();
   backfillDunningActor();
+  // Después de la migración de clientes: los workspaces que crea también necesitan
+  // su primer tramo de historial de plan.
+  backfillPlanPeriods();
 }
 
 /**
@@ -1660,6 +1683,8 @@ export function createWorkspaceRow(name: string, init: WorkspaceInit = {}): Work
     `INSERT INTO workspaces (id, name, slug, plan_id, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules_override, owner_disabled_modules, status, billing_email, billing_tax_id, billing_address, billing_country, billing_day, plan_since, last_billed_period_end, notes, created_at)
      VALUES (@id, @name, @slug, @plan_id, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules_override, @owner_disabled_modules, @status, @billing_email, @billing_tax_id, @billing_address, @billing_country, @billing_day, @plan_since, @last_billed_period_end, @notes, @created_at)`,
   ).run(row);
+  // Primer tramo del historial de plan: desde la contratación (o el alta si no hay plan).
+  recordPlanChange(row.id, row.plan_id, row.plan_since ?? row.created_at);
   return row;
 }
 
@@ -1709,6 +1734,97 @@ export function deleteWorkspace(workspaceId: string): void {
   db.prepare('UPDATE projects SET workspace_id = NULL, client = NULL WHERE workspace_id = ?').run(workspaceId);
   // Los sub-usuarios del workspace se quedan huérfanos: se borran en cascada lógica desde la ruta.
   db.prepare('DELETE FROM workspaces WHERE id = ?').run(workspaceId);
+}
+
+// ---------- historial de plan por tramos ----------
+/**
+ * Abre un tramo nuevo en el historial de plan y cierra el vigente. Idempotente
+ * frente a un PATCH que no toca el plan: si el tramo abierto ya es de ese plan, no
+ * parte nada (si no, editar el nombre de la cuenta trocearía el historial).
+ */
+export function recordPlanChange(workspaceId: string, planId: string | null, atMs = now()): void {
+  const abierto = db
+    .prepare('SELECT * FROM workspace_plan_periods WHERE workspace_id = ? AND to_ms IS NULL ORDER BY from_ms DESC LIMIT 1')
+    .get(workspaceId) as PlanPeriodRow | undefined;
+  if (abierto && abierto.plan_id === planId) return;
+  const plan = planId ? getPlan(planId) : undefined;
+  db.transaction(() => {
+    if (abierto) {
+      // Un tramo que se cerraría en su propio instante de apertura (dos cambios de
+      // plan seguidos) no cubre nada y solo ensuciaría el historial: se descarta.
+      if (abierto.from_ms >= atMs) db.prepare('DELETE FROM workspace_plan_periods WHERE id = ?').run(abierto.id);
+      else db.prepare('UPDATE workspace_plan_periods SET to_ms = ? WHERE id = ?').run(atMs, abierto.id);
+    }
+    db.prepare(
+      `INSERT INTO workspace_plan_periods (id, workspace_id, plan_id, plan_name, price_cents, currency, interval, from_ms, to_ms, created_at)
+       VALUES (@id, @workspace_id, @plan_id, @plan_name, @price_cents, @currency, @interval, @from_ms, NULL, @created_at)`,
+    ).run({
+      id: id('wpp'),
+      workspace_id: workspaceId,
+      plan_id: planId,
+      plan_name: plan?.name ?? null,
+      price_cents: plan?.price_cents ?? null,
+      currency: plan?.currency ?? null,
+      interval: plan?.interval ?? null,
+      from_ms: atMs,
+      created_at: now(),
+    });
+  })();
+}
+
+/**
+ * Tramos del historial que solapan `[from, to)`, del más antiguo al más reciente.
+ * Devuelve vacío si la cuenta no tiene historial; quien factura decide entonces el
+ * respaldo (el plan vigente para todo el ciclo, que es lo que se hacía antes).
+ */
+export function listPlanPeriodsInRange(workspaceId: string, from: number, to: number): PlanPeriodRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM workspace_plan_periods
+        WHERE workspace_id = ? AND from_ms < ? AND (to_ms IS NULL OR to_ms > ?)
+        ORDER BY from_ms ASC`,
+    )
+    .all(workspaceId, to, from) as PlanPeriodRow[];
+}
+
+/** Historial completo de una cuenta, del más reciente al más antiguo (ficha y auditoría). */
+export function listPlanPeriods(workspaceId: string): PlanPeriodRow[] {
+  return db
+    .prepare('SELECT * FROM workspace_plan_periods WHERE workspace_id = ? ORDER BY from_ms DESC')
+    .all(workspaceId) as PlanPeriodRow[];
+}
+
+/**
+ * Primera vez que la cuenta contrató ese plan. Ancla el aniversario de una cuota
+ * ANUAL: anclarlo en el tramo haría que irse y volver al mismo plan dentro del año
+ * devengara una segunda anualidad ya cobrada.
+ */
+export function planContractedSince(workspaceId: string, planId: string): number | null {
+  const row = db
+    .prepare('SELECT MIN(from_ms) AS m FROM workspace_plan_periods WHERE workspace_id = ? AND plan_id = ?')
+    .get(workspaceId, planId) as { m: number | null };
+  return row.m ?? null;
+}
+
+/**
+ * Abre el primer tramo de las cuentas que aún no tienen historial, en la fecha de
+ * contratación del plan (o el alta). Sin esto, el primer ciclo tras el despliegue
+ * caería al respaldo «plan vigente todo el ciclo» para siempre. Se reintenta
+ * mientras queden cuentas sin tramo, y `createWorkspaceRow` abre el suyo, así que
+ * las nuevas nunca dependen de esta migración.
+ */
+function backfillPlanPeriods(): void {
+  if (getSetting('migrations:plan_periods_v1') === 'done') return;
+  db.transaction(() => {
+    const sinHistorial = db
+      .prepare(
+        `SELECT w.id, w.plan_id, w.plan_since, w.created_at FROM workspaces w
+          WHERE NOT EXISTS (SELECT 1 FROM workspace_plan_periods p WHERE p.workspace_id = w.id)`,
+      )
+      .all() as { id: string; plan_id: string | null; plan_since: number | null; created_at: number }[];
+    for (const w of sinHistorial) recordPlanChange(w.id, w.plan_id, w.plan_since ?? w.created_at);
+    setSetting('migrations:plan_periods_v1', 'done');
+  })();
 }
 
 // ---------- cuota agregada del workspace (a todos sus proyectos en total) ----------
@@ -2184,6 +2300,17 @@ export function invoiceExistsForCycle(workspaceId: string, periodStart: number, 
        LIMIT 1`,
     )
     .get(workspaceId, periodStart, periodEnd);
+}
+
+/**
+ * ¿El periodo tiene ya una factura EXPEDIDA viva (emitida, cobrada o vencida)?
+ * Un borrador no cuenta: mientras no se emita, el periodo sigue sin facturar y el
+ * ancla no debe darlo por cerrado (`performEmission` la avanza al expedir).
+ */
+export function issuedInvoiceExistsForCycle(workspaceId: string, periodStart: number): boolean {
+  return !!db
+    .prepare("SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? AND status NOT IN ('void','draft') LIMIT 1")
+    .get(workspaceId, periodStart);
 }
 
 /**

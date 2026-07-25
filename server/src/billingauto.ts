@@ -14,6 +14,7 @@ import {
   deleteInvoice,
   getWorkspace,
   invoiceExistsForCycle,
+  issuedInvoiceExistsForCycle,
   listUnpaidIssuedInvoices,
   listWorkspaces,
   openDraftForCycle,
@@ -212,6 +213,24 @@ export function dunningTick(nowMs: number): void {
 }
 
 /**
+ * Da por cerrado un periodo que el tick no va a facturar: o no había nada que
+ * cobrar, o ya tiene factura expedida. Sin esto el ancla se quedaba clavada en el
+ * primer periodo saltado, el hueco de `pendingPeriods` crecía mes a mes y la
+ * previsión del ciclo en curso volvía a incluir periodos ya facturados.
+ *
+ * Solo empuja si el ancla está exactamente al inicio del periodo: así un ciclo
+ * anterior bloqueado por un error de negocio no se salta sin más. Un BORRADOR no
+ * cierra nada —el periodo sigue sin facturar hasta que se expida—, que es la misma
+ * regla que sigue `performEmission` al avanzar el ancla.
+ */
+function cerrarAncla(workspaceId: string, cycle: { start: number; end: number }, exigirExpedida = false): void {
+  if (exigirExpedida && !issuedInvoiceExistsForCycle(workspaceId, cycle.start)) return;
+  const actual = getWorkspace(workspaceId);
+  if (!actual || actual.last_billed_period_end !== cycle.start) return;
+  updateWorkspace(workspaceId, { last_billed_period_end: cycle.end });
+}
+
+/**
  * Genera el borrador del periodo CERRADO que quede pendiente en cada cuenta (plan
  * + suscripciones + uso medido + cargos). Se crea en DRAFT y, SOLO si el operador
  * ha activado la auto-emisión, se emite (numera y bloquea): la emisión es un acto
@@ -236,7 +255,10 @@ export function billingCycleTick(now: Date): void {
         // Idempotencia sobre el ciclo YA CERRADO: un borrador creado a mitad de mes
         // (una previsión del operador) no cuenta como facturado, porque le falta el
         // consumo del resto del periodo. Se sustituye por el definitivo.
-        if (invoiceExistsForCycle(ws.id, cycle.start, cycle.end)) continue;
+        if (invoiceExistsForCycle(ws.id, cycle.start, cycle.end)) {
+          cerrarAncla(ws.id, cycle, true);
+          continue;
+        }
         // Solo se sustituye un borrador que generó el propio ciclo: una factura a
         // medida o una rectificativa en borrador pueden compartir `period_start` y
         // borrarlas se llevaría por delante el trabajo del operador.
@@ -248,7 +270,13 @@ export function billingCycleTick(now: Date): void {
           auditSystem('invoice_draft_replaced', `${ws.name} · borrador parcial sustituido por la factura del ciclo cerrado`);
         }
         const inv = generateCycleDraft(ws, cycle);
-        if (!inv) continue; // nada que facturar: no se crea un borrador vacío
+        if (!inv) {
+          // Nada que facturar (sin plan, sin consumo, sin cargos): el periodo queda
+          // cerrado igualmente. Si el ancla no avanzara, el hueco crecería mes a mes
+          // y la previsión del ciclo en curso arrastraría periodos ya vistos.
+          cerrarAncla(ws.id, cycle);
+          continue;
+        }
         const money = `${inv.currency} ${(inv.total_cents / 100).toFixed(2)}`;
         if (auto.autoIssue) {
           const issued = issueInvoice(inv.id) ?? inv;

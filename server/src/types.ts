@@ -346,6 +346,26 @@ export interface WorkspaceRow {
   created_at: number;
 }
 
+/**
+ * Tramo del historial de plan de una cuenta: qué plan tuvo y entre qué fechas.
+ * `to_ms` en null es el tramo VIGENTE. La tarifa se congela al abrirlo para poder
+ * facturar el histórico aunque el plan desaparezca del catálogo; mientras el plan
+ * exista, manda su ficha viva.
+ */
+export interface PlanPeriodRow {
+  id: string;
+  workspace_id: string;
+  /** Plan del tramo. Null = la cuenta estuvo sin plan en ese intervalo. */
+  plan_id: string | null;
+  plan_name: string | null;
+  price_cents: number | null;
+  currency: string | null;
+  interval: string | null;
+  from_ms: number;
+  to_ms: number | null;
+  created_at: number;
+}
+
 export type InvoiceStatus = 'draft' | 'issued' | 'paid' | 'void';
 
 /** Método de cobro de una factura. */

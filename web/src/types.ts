@@ -147,6 +147,10 @@ export interface Workspace {
   billing_day: number;
   /** Descuento comercial (%) de la cuenta; null = hereda el del plan. */
   discount_pct: number | null;
+  /** Contratación del plan vigente: ancla del aniversario de las cuotas anuales. */
+  plan_since?: number | null;
+  /** Facturado hasta aquí: desde este instante arranca el próximo ciclo. */
+  last_billed_period_end?: number | null;
   notes: string | null;
   /** Corte del proxy de IA por impago (0/1). */
   ai_suspended: number;

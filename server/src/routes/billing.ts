@@ -15,9 +15,11 @@ import {
   listBillableSubscriptions,
   listInvoices,
   listPendingCharges,
+  listPlanPeriodsInRange,
   listRectificationsOf,
   listTiers,
   markChargesInvoiced,
+  planContractedSince,
   reopenChargesForInvoice,
   reopenChargesNotIn,
   transaction,
@@ -305,10 +307,19 @@ function fiscalBlocker(inv: InvoiceRow, profile: BillingProfile, ws: WorkspaceRo
  * cerraba desaparece (se borra el borrador) o se anula. Sin esto, ese periodo
  * quedaría facturado «según el ancla» pero sin ninguna factura viva: nadie lo
  * volvería a facturar.
+ *
+ * Rebobina aunque el ancla haya avanzado MÁS ALLÁ del periodo anulado —hay ciclos
+ * posteriores ya facturados—: comprobar solo el último dejaba el hueco sin
+ * facturar para siempre. Los periodos posteriores no se duplican porque el tick
+ * salta los que ya tienen factura viva (`invoiceExistsForCycle`) y vuelve a
+ * empujar el ancla al pasar por ellos.
  */
 function rewindAnchorIfLast(inv: InvoiceRow): void {
   const ws = getWorkspace(inv.workspace_id);
-  if (!ws || ws.last_billed_period_end !== inv.period_end) return;
+  if (!ws || ws.last_billed_period_end == null) return;
+  // El ancla solo retrocede: si ya está en el inicio del periodo (o antes), ese
+  // periodo ya consta como pendiente y no hay nada que devolver.
+  if (ws.last_billed_period_end <= inv.period_start) return;
   updateWorkspace(ws.id, { last_billed_period_end: inv.period_start });
 }
 
@@ -502,6 +513,84 @@ function meterQuantity(
  */
 function contractedPlan(ws: WorkspaceRow): PlanRow | undefined {
   return ws.plan_id ? getPlan(ws.plan_id) : undefined;
+}
+
+/** Tramo de plan de un ciclo, ya recortado a él y con su tarifa efectiva. */
+interface PlanSegment {
+  planId: string;
+  name: string;
+  priceCents: number;
+  currency: string;
+  interval: string;
+  /** Inicio del tramo dentro del ciclo. */
+  from: number;
+  /** Fin del tramo dentro del ciclo. */
+  to: number;
+  /** Primera contratación de ESE plan: ancla del aniversario de la cuota anual. */
+  since: number;
+}
+
+/**
+ * El plan vigente cubriendo todo el ciclo, que es como se facturaba antes de los
+ * tramos. Es el respaldo cuando no hay historial aprovechable.
+ *
+ * El ancla del aniversario sale del historial si el plan figura en él, y solo cae
+ * a `plan_since` cuando no: mezclar ambos criterios entre ciclos de una misma
+ * cuenta podría devengar dos veces la misma anualidad.
+ */
+function segmentoUnico(ws: WorkspaceRow, plan: PlanRow, cycle: { start: number; end: number }): PlanSegment {
+  const desde = ws.plan_since ?? ws.created_at;
+  return {
+    planId: plan.id,
+    name: plan.name,
+    priceCents: plan.price_cents,
+    currency: plan.currency,
+    interval: plan.interval,
+    from: Math.max(desde, cycle.start),
+    to: cycle.end,
+    since: planContractedSince(ws.id, plan.id) ?? desde,
+  };
+}
+
+/**
+ * Tramos de plan que solapan el ciclo, cada uno con la tarifa que le corresponde.
+ * Es lo que permite que cambiar de plan a mitad de mes cobre cada tramo a su
+ * precio en vez del mes entero al plan que quede vigente.
+ *
+ * La tarifa VIVA del catálogo manda mientras el plan exista (editar el precio de
+ * un plan afecta a lo que aún no se ha facturado, como hasta ahora); la congelada
+ * en el tramo es el respaldo para un plan ya borrado, para que el histórico se
+ * pueda facturar igualmente. Sin historial (cuentas anteriores a la tabla que la
+ * migración no pudo reconstruir) se cae al comportamiento previo: el plan vigente
+ * durante todo el ciclo.
+ */
+function planSegments(ws: WorkspaceRow, cycle: { start: number; end: number }): PlanSegment[] {
+  const tramos = listPlanPeriodsInRange(ws.id, cycle.start, cycle.end);
+  if (tramos.length === 0) {
+    const plan = contractedPlan(ws);
+    return plan ? [segmentoUnico(ws, plan, cycle)] : [];
+  }
+  const segmentos: PlanSegment[] = [];
+  for (const t of tramos) {
+    if (!t.plan_id) continue; // tramo sin plan contratado: no se factura cuota
+    const vivo = getPlan(t.plan_id);
+    const priceCents = vivo?.price_cents ?? t.price_cents;
+    if (priceCents == null) continue; // plan borrado y sin tarifa congelada: nada que cobrar
+    segmentos.push({
+      planId: t.plan_id,
+      name: vivo?.name ?? t.plan_name ?? 'Plan',
+      priceCents,
+      currency: vivo?.currency ?? t.currency ?? 'EUR',
+      interval: vivo?.interval ?? t.interval ?? 'monthly',
+      from: Math.max(t.from_ms, cycle.start),
+      to: Math.min(t.to_ms ?? cycle.end, cycle.end),
+      // El aniversario se ancla en la PRIMERA contratación del plan, no en el
+      // tramo: si no, irse y volver al mismo plan dentro del año cobraría una
+      // segunda anualidad ya devengada.
+      since: planContractedSince(ws.id, t.plan_id) ?? t.from_ms,
+    });
+  }
+  return segmentos;
 }
 
 /**
@@ -790,26 +879,65 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
   };
 
   const rawLines: LineDraft[] = [];
-  const planDesde = ws.plan_since ?? ws.created_at;
   // Denominador del prorrateo: el mes completo que cierra este ciclo.
   const nominalMs = nominalPeriodMs(cycle.end, ws.billing_day);
-  if (plan) {
-    // Una cuota anual se devenga una vez al año, en el ciclo de su aniversario, y
-    // se cobra entera (la anualidad cubre los doce meses siguientes). La mensual
-    // se prorratea por los días efectivamente servidos dentro del ciclo.
-    const anual = plan.interval === 'yearly';
-    const factor = anual ? (annualDueInCycle(planDesde, cycle) ? 1 : 0) : prorationFactor(planDesde, cycle.end, cycle, nominalMs);
-    if (factor > 0) {
-      rawLines.push({
-        label: `Plan ${plan.name} (${anual ? 'anual' : 'mensual'})${factor < 1 ? prorationLabel(factor, nominalMs) : ''}`.slice(0, 120),
-        kind: 'plan',
-        qty: 1,
-        unitCents: Math.round(plan.price_cents * factor),
-        taxRate: profile.vatRate,
-        irpfRate: 0, // la cuota de un plan no está sujeta a retención
-        discountable: true,
-      });
+  // El plan se factura por TRAMOS: cada intervalo del ciclo con su plan y su
+  // precio. Cambiar de plan a mitad de mes cobra los días de cada uno, no el mes
+  // entero al que quede vigente.
+  let segmentos = planSegments(ws, cycle);
+  // Una factura tiene UNA moneda. Si algún tramo está en otra (cambio de plan a
+  // uno en otra divisa), partir el ciclo mezclaría divisas: se cae al
+  // comportamiento anterior —el plan vigente durante todo el ciclo— y se avisa,
+  // porque abortar dejaría el ancla clavada y la cuenta sin facturar para siempre.
+  if (segmentos.some((s) => s.currency.toUpperCase() !== currency.toUpperCase())) {
+    const divisas = [...new Set(segmentos.map((s) => s.currency.toUpperCase()))].join(', ');
+    segmentos = plan ? [segmentoUnico(ws, plan, cycle)] : [];
+    fireWorkspaceAlert({
+      severity: 'warning',
+      workspaceId: ws.id,
+      type: 'billing_plan_currency_mixed',
+      title: `Cambio de divisa en el plan — ${ws.name}`,
+      message: `El ciclo tiene tramos de plan en varias divisas (${divisas}); se ha facturado el mes completo al plan vigente (${currency}).`,
+      explanation: 'Revisa la factura: si el tramo anterior debía cobrarse en su divisa, emítelo como factura aparte y rectifica esta.',
+      dedupeKey: `ws:${ws.id}:divisa_plan:${cycle.start}`,
+    });
+  }
+  // Una anualidad se devenga UNA vez por ciclo aunque el plan aparezca en varios
+  // tramos (alta, baja y alta del mismo plan dentro del mes).
+  const anualidadesCobradas = new Set<string>();
+  // Planes que han llegado a producir línea: es lo que se resume en `plan_name`.
+  // Un tramo descartado (de minutos, o una anualidad ya devengada) no debe figurar
+  // en el encabezado de una factura que no lo cobra.
+  const planesFacturados: string[] = [];
+  for (const seg of segmentos) {
+    // Una cuota anual se devenga una vez al año, en el tramo que contiene su
+    // aniversario, y se cobra entera (la anualidad cubre los doce meses
+    // siguientes). La mensual se prorratea por los días servidos en el tramo.
+    const anual = seg.interval === 'yearly';
+    let factor: number;
+    if (anual) {
+      if (anualidadesCobradas.has(seg.planId)) continue;
+      if (!annualDueInCycle(seg.since, { start: seg.from, end: seg.to })) continue;
+      anualidadesCobradas.add(seg.planId);
+      factor = 1;
+    } else {
+      factor = prorationFactor(seg.from, seg.to, cycle, nominalMs);
     }
+    if (factor <= 0) continue;
+    const importe = Math.round(seg.priceCents * factor);
+    // Un tramo de minutos redondea a cero: no ensucia la factura con una línea de
+    // 0,00 € (un plan gratuito sí la conserva, porque ahí el cero es el precio).
+    if (importe === 0 && seg.priceCents > 0) continue;
+    if (!planesFacturados.includes(seg.name)) planesFacturados.push(seg.name);
+    rawLines.push({
+      label: `Plan ${seg.name} (${anual ? 'anual' : 'mensual'})${factor < 1 ? prorationLabel(factor, nominalMs) : ''}`.slice(0, 120),
+      kind: 'plan',
+      qty: 1,
+      unitCents: importe,
+      taxRate: profile.vatRate,
+      irpfRate: 0, // la cuota de un plan no está sujeta a retención
+      discountable: true,
+    });
   }
   // Un medidor se factura UNA sola vez por ciclo: dos suscripciones a productos
   // que comparten medidor (o dos suscripciones al mismo producto) cobrarían el
@@ -879,7 +1007,10 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
     );
   }
 
-  // Descuento comercial de la cuenta (override) o, si no lo tiene, del plan.
+  // Descuento comercial de la cuenta (override) o, si no lo tiene, del plan
+  // VIGENTE. Es deliberado que no se trocee por tramos: el descuento es una
+  // condición del acuerdo con el cliente, no una propiedad de la tarifa, y se
+  // aplica a toda la factura (consumo y cargos incluidos), no solo a la cuota.
   const discountPct = ws.discount_pct ?? plan?.discount_pct ?? 0;
   applyAccountDiscount(rawLines, discountPct, profile.defaultIrpfRate);
 
@@ -906,7 +1037,10 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
       irpf_cents: totals.irpf,
       total_cents: totals.total,
       lines: JSON.stringify(totals.lines),
-      plan_name: plan?.name ?? null,
+      // Con varios tramos, el nombre refleja el recorrido del ciclo («Pro → Básico»).
+      // Sin líneas de plan (una anualidad ya devengada) queda el plan vigente como
+      // contexto informativo, que es lo que había antes de los tramos.
+      plan_name: planesFacturados.length > 0 ? planesFacturados.join(' → ').slice(0, 120) : plan?.name ?? null,
       origin: 'cycle',
     });
     if (charges.length > 0) markChargesInvoiced(charges.map((c) => c.id), inv.id);
