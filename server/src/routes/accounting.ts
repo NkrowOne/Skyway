@@ -6,11 +6,14 @@ import { getSetting, listAllInvoices, setSetting } from '../db';
 import { getBillingAutomation, setBillingAutomation } from '../billingsettings';
 import {
   getBillingProfile,
+  getSmtpSettings,
   getStripePublishableKey,
   getStripeSecretKey,
   getStripeWebhookSecret,
   setBillingProfile,
+  setSmtpSettings,
 } from '../company';
+import { MailError, verifySmtp } from '../mailer';
 import { BillingProfile, InvoiceRow } from '../types';
 
 const profileSchema = z.object({
@@ -40,6 +43,15 @@ const profileSchema = z.object({
   stripeSecretKey: z.string().trim().optional(),
   stripeWebhookSecret: z.string().trim().optional(),
   stripePublishableKey: z.string().trim().optional(),
+  // Correo saliente para enviar la factura al cliente. La contraseña se guarda
+  // pero nunca se devuelve (igual que las claves de Stripe).
+  smtpHost: z.string().trim().max(200).optional(),
+  smtpPort: z.coerce.number().int().min(1).max(65535).optional(),
+  smtpSecure: z.boolean().optional(),
+  smtpUser: z.string().trim().max(200).optional(),
+  smtpPass: z.string().optional(),
+  smtpFrom: z.union([z.string().trim().email(), z.literal('')]).optional(),
+  smtpFromName: z.string().trim().max(120).optional(),
 });
 
 /** Agrupa las facturas por mes de su periodo, sumando facturado y cobrado. */
@@ -87,6 +99,19 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
       publishableKey: getStripePublishableKey() ?? '',
     },
     invoiceSeq: parseInt(getSetting('billing.invoiceSeq') || '0', 10) || 0,
+    smtp: (() => {
+      const cfg = getSmtpSettings();
+      return {
+        configured: !!cfg,
+        host: cfg?.host ?? '',
+        port: cfg?.port ?? 587,
+        secure: cfg?.secure ?? false,
+        user: cfg?.user ?? '',
+        from: cfg?.from ?? '',
+        fromName: cfg?.fromName ?? '',
+        hasPassword: !!cfg?.pass,
+      };
+    })(),
   }));
 
   app.put('/api/billing/profile', async (req) => {
@@ -114,6 +139,21 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
     if (body.stripeSecretKey !== undefined) setSetting('stripeSecretKey', body.stripeSecretKey || null);
     if (body.stripeWebhookSecret !== undefined) setSetting('stripeWebhookSecret', body.stripeWebhookSecret || null);
     if (body.stripePublishableKey !== undefined) setSetting('stripePublishableKey', body.stripePublishableKey || null);
+    // Quitar el servidor de correo apaga el envío automático: dejarlo activo haría
+    // que cada emisión fallara en silencio (solo una alerta que nadie pidió).
+    if (body.smtpHost !== undefined && !body.smtpHost.trim() && getBillingAutomation().emailOnIssue) {
+      setBillingAutomation({ emailOnIssue: false });
+      audit(req, 'billing_email_on_issue_off', { type: 'system', id: 'billing', detail: 'sin servidor de correo' });
+    }
+    setSmtpSettings({
+      host: body.smtpHost,
+      port: body.smtpPort,
+      secure: body.smtpSecure,
+      user: body.smtpUser,
+      pass: body.smtpPass,
+      from: body.smtpFrom,
+      fromName: body.smtpFromName,
+    });
     audit(req, 'billing_profile_updated', { type: 'system', id: 'billing' });
     return { ok: true, profile: next };
   });
@@ -129,6 +169,7 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
         autoIssue: z.boolean().optional(),
         dunningGraceDays: z.coerce.number().int().min(0).max(365).optional(),
         dunningCancelDays: z.coerce.number().int().min(0).max(365).optional(),
+        emailOnIssue: z.boolean().optional(),
       })
       .parse(req.body ?? {});
     // La cancelación nunca puede preceder a la suspensión: se validan los valores ya fusionados.
@@ -136,9 +177,49 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
     if (merged.dunningCancelDays < merged.dunningGraceDays) {
       return reply.code(400).send({ error: 'Los días para cancelar deben ser ≥ los días para suspender.' });
     }
+    // Activar el envío sin servidor de correo dejaría a cada emisión fallando en
+    // silencio: se corta aquí, donde el operador puede leerlo.
+    if (merged.emailOnIssue && !getSmtpSettings()) {
+      return reply.code(400).send({ error: 'Configura primero el servidor de correo saliente para poder enviar las facturas.' });
+    }
     const automation = setBillingAutomation(body);
     audit(req, 'billing_automation_updated', { type: 'system', id: 'billing', detail: `auto-emisión ${automation.autoIssue ? 'on' : 'off'}` });
     return { ok: true, automation };
+  });
+
+  // Prueba de conexión con el servidor de correo: conecta y autentica sin enviar
+  // nada. Acepta una configuración de prueba en el cuerpo para poder validarla
+  // ANTES de guardarla (la contraseña, si se omite, sale de la ya guardada).
+  app.post('/api/billing/smtp/test', async (req, reply) => {
+    const body = z
+      .object({
+        host: z.string().trim().max(200).optional(),
+        port: z.coerce.number().int().min(1).max(65535).optional(),
+        secure: z.boolean().optional(),
+        user: z.string().trim().max(200).optional(),
+        pass: z.string().optional(),
+        from: z.union([z.string().trim().email(), z.literal('')]).optional(),
+        fromName: z.string().trim().max(120).optional(),
+      })
+      .parse(req.body ?? {});
+    const guardada = getSmtpSettings();
+    const cfg = {
+      host: body.host ?? guardada?.host ?? '',
+      port: body.port ?? guardada?.port ?? 587,
+      secure: body.secure ?? guardada?.secure ?? false,
+      user: body.user ?? guardada?.user ?? '',
+      pass: body.pass || guardada?.pass || '',
+      from: body.from ?? guardada?.from ?? '',
+      fromName: body.fromName ?? guardada?.fromName ?? '',
+    };
+    try {
+      await verifySmtp(cfg);
+      audit(req, 'smtp_tested', { type: 'system', id: 'billing', detail: cfg.host });
+      return { ok: true };
+    } catch (err: any) {
+      const detalle = err instanceof MailError ? err.message : (err?.message || 'error desconocido');
+      return reply.code(502).send({ error: detalle });
+    }
   });
 
   // Resumen de contabilidad de la empresa: totales, serie mensual y por cliente.
@@ -212,7 +293,9 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
     // (no tienen número ni fecha de expedición) y colarlos descuadra el libro.
     // Las anuladas sí constan, con su número, para justificar el hueco en la serie.
     const rows = listAllInvoices()
-      .filter((i) => i.status !== 'draft')
+      // Expedida = tiene fecha de expedición. Filtrar solo por estado colaba los
+      // borradores ANULADOS, que entran sin número ni fecha pero con base e IVA.
+      .filter((i) => i.status !== 'draft' && i.issued_at != null)
       .sort((a, b) => (a.issued_at ?? a.created_at) - (b.issued_at ?? b.created_at) || (a.number ?? '').localeCompare(b.number ?? ''));
     // Libro registro de facturas emitidas: nº, tipo, NIF del receptor, base, IVA,
     // IRPF y total, según lo que la AEAT espera para la contabilidad.

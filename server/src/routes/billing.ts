@@ -12,19 +12,28 @@ import {
   getProduct,
   getWorkspace,
   invoiceExistsForCycle,
-  listActiveSubscriptions,
+  listBillableSubscriptions,
   listInvoices,
   listPendingCharges,
+  listPlanPeriodsInRange,
   listRectificationsOf,
   listTiers,
   markChargesInvoiced,
+  planContractedSince,
   reopenChargesForInvoice,
+  reopenChargesNotIn,
   transaction,
   updateInvoice,
+  updateWorkspace,
   workspaceMeterUsage,
   workspaceUsageRange,
 } from '../db';
-import { getBillingProfile, getStripeSecretKey } from '../company';
+import { getBillingProfile, getSmtpSettings, getStripeSecretKey } from '../company';
+import { DEFAULT_COUNTRY, countryName } from '../countries';
+import { fireWorkspaceAlert } from '../alerts';
+import { InvoicePdfData, renderInvoicePdf } from '../invoicepdf';
+import { MailError, sendMail } from '../mailer';
+import { getBillingAutomation } from '../billingsettings';
 import { priceTiers } from '../pricing';
 import { reactivateWorkspaceIfCurrent } from '../billingauto';
 import { StripeError, createStripeCheckout, stripeAmount } from '../stripe';
@@ -60,6 +69,9 @@ const lineSchema = z.object({
   // Tipo de retención de IRPF (%) de la línea: solo algunos conceptos (servicios
   // profesionales) retienen. Ausente = el tipo por defecto de la factura.
   irpfRate: z.coerce.number().min(0).max(100).optional(),
+  // Cargo puntual del que procede la línea; viaja de ida y vuelta con el editor
+  // para poder reabrir el cargo si se elimina su línea.
+  chargeId: z.string().trim().max(60).optional(),
 });
 
 /** Acota a entero seguro: por encima de 2^53 se perdería precisión al almacenar. */
@@ -83,27 +95,39 @@ type LineDraft = z.infer<typeof lineSchema> & { discountable?: boolean };
  * precio negociado por cliente (unit_cents) para no descontar dos veces. El clamp
  * por grupo evita bases negativas.
  */
-function applyAccountDiscount(rawLines: LineDraft[], pct: number): void {
+function applyAccountDiscount(rawLines: LineDraft[], pct: number, defaultIrpf: number): void {
   if (!(pct > 0)) return;
   const clamped = Math.min(100, pct);
-  const baseByRate = new Map<string, { taxRate: number; irpfRate: number | undefined; base: number }>();
+  const baseByRate = new Map<string, { taxRate: number; irpfRate: number; base: number }>();
   for (const l of rawLines) {
     if (!l.discountable) continue;
     const amount = Math.round(l.qty * l.unitCents);
     if (amount <= 0) continue; // solo se descuenta sobre importes positivos
     const taxRate = l.taxRate ?? 0;
-    const key = `${taxRate}|${l.irpfRate ?? ''}`;
-    const entry = baseByRate.get(key) ?? { taxRate, irpfRate: l.irpfRate, base: 0 };
+    // El IRPF se normaliza con el MISMO criterio que `computeTotals` (ausente = el
+    // tipo por defecto de la factura). Agrupar por el valor crudo separaba en dos
+    // grupos las líneas con `undefined` y las que traen ese mismo tipo explícito,
+    // produciendo dos descuentos con la etiqueta idéntica.
+    const irpfRate = l.irpfRate ?? defaultIrpf;
+    const key = `${taxRate}|${irpfRate}`;
+    const entry = baseByRate.get(key) ?? { taxRate, irpfRate, base: 0 };
     entry.base += amount;
     baseByRate.set(key, entry);
   }
-  const multiRate = baseByRate.size > 1;
-  for (const { taxRate, irpfRate, base } of baseByRate.values()) {
+  // El desdoble puede venir del IVA, del IRPF o de ambos. Anotar siempre el IVA
+  // dejaba DOS líneas rotuladas exactamente igual con importes distintos cuando lo
+  // que variaba era la retención: la factura resultaba incomprensible aunque los
+  // importes fueran correctos. Se nombra solo la dimensión que de verdad varía.
+  const grupos = [...baseByRate.values()];
+  const multiVat = new Set(grupos.map((g) => g.taxRate)).size > 1;
+  const multiIrpf = new Set(grupos.map((g) => g.irpfRate)).size > 1;
+  for (const { taxRate, irpfRate, base } of grupos) {
     if (base <= 0) continue;
     const disc = Math.min(base, Math.round((base * clamped) / 100)); // nunca supera la base del grupo
     if (disc <= 0) continue;
+    const matices = [multiVat ? `IVA ${taxRate}%` : '', multiIrpf ? `IRPF ${irpfRate}%` : ''].filter(Boolean);
     rawLines.push({
-      label: `Descuento ${clamped}%${multiRate ? ` (IVA ${taxRate}%)` : ''}`,
+      label: `Descuento ${clamped}%${matices.length > 0 ? ` (${matices.join(', ')})` : ''}`,
       kind: 'discount',
       qty: 1,
       unitCents: -disc,
@@ -152,6 +176,8 @@ interface Totals {
   irpf: number;
   /** Tipo de retención a guardar en la factura: el único si es uniforme, o el efectivo. */
   irpfRate: number;
+  /** La factura mezcla varios tipos de retención: `irpfRate` es solo orientativo. */
+  irpfMixed: boolean;
   total: number;
 }
 
@@ -167,20 +193,27 @@ function computeTotals(
   opts: { defaultTaxRate: number; irpfRate: number; regime: VatRegime },
 ): Totals {
   const zeroVat = isZeroVatRegime(opts.regime);
+  // El tipo REAL de cada línea se conserva siempre; la exención se aplica solo al
+  // calcular el desglose. Persistir un 0 en la línea era irreversible: al volver de
+  // un régimen exento a «general», el fallback ya no se activaba (0 no es
+  // undefined) y la factura se quedaba con base entera y 0,00 € de IVA.
   const lines: InvoiceLine[] = rawLines.map((l) => ({
     label: l.label,
     kind: l.kind,
     qty: l.qty,
     unitCents: l.unitCents,
     amountCents: clampSafe(Math.round(l.qty * l.unitCents)),
-    taxRate: zeroVat ? 0 : l.taxRate ?? opts.defaultTaxRate,
+    taxRate: l.taxRate ?? opts.defaultTaxRate,
     irpfRate: l.irpfRate ?? opts.irpfRate,
+    ...(l.chargeId ? { chargeId: l.chargeId } : {}),
   }));
+  /** Tipo que se REPERCUTE: cero en los regímenes exentos, el de la línea si no. */
+  const tipoEfectivo = (l: InvoiceLine): number => (zeroVat ? 0 : l.taxRate ?? 0);
   const subtotal = clampSafe(lines.reduce((sum, l) => sum + l.amountCents, 0));
   // Bases agrupadas por tipo; la cuota se redondea una vez sobre la base del tipo.
   const byRate = new Map<number, number>();
   for (const l of lines) {
-    const rate = l.taxRate ?? 0;
+    const rate = tipoEfectivo(l);
     byRate.set(rate, (byRate.get(rate) ?? 0) + l.amountCents);
   }
   const taxBreakdown: TaxBreakdownEntry[] = [...byRate.entries()]
@@ -205,9 +238,10 @@ function computeTotals(
   // retención; si no, el efectivo sobre la base (solo informativo: el importe
   // bueno es `irpf`, calculado por tramos).
   const rates = [...byIrpf.keys()];
-  const irpfRate = rates.length === 1 ? rates[0] : subtotal !== 0 ? Math.round((irpf / subtotal) * 10000) / 100 : opts.irpfRate;
+  const irpfMixed = rates.length > 1;
+  const irpfRate = !irpfMixed ? rates[0] ?? opts.irpfRate : subtotal !== 0 ? Math.round((irpf / subtotal) * 10000) / 100 : opts.irpfRate;
   const total = clampSafe(subtotal + tax - irpf);
-  return { lines, subtotal, taxBreakdown, tax, irpf, irpfRate, total };
+  return { lines, subtotal, taxBreakdown, tax, irpf, irpfRate, irpfMixed, total };
 }
 
 function parseLines(json: string): InvoiceLine[] {
@@ -268,6 +302,137 @@ function fiscalBlocker(inv: InvoiceRow, profile: BillingProfile, ws: WorkspaceRo
   return null;
 }
 
+/**
+ * Devuelve el ancla de facturación al inicio del periodo cuando la factura que lo
+ * cerraba desaparece (se borra el borrador) o se anula. Sin esto, ese periodo
+ * quedaría facturado «según el ancla» pero sin ninguna factura viva: nadie lo
+ * volvería a facturar.
+ *
+ * Rebobina aunque el ancla haya avanzado MÁS ALLÁ del periodo anulado —hay ciclos
+ * posteriores ya facturados—: comprobar solo el último dejaba el hueco sin
+ * facturar para siempre. Los periodos posteriores no se duplican porque el tick
+ * salta los que ya tienen factura viva (`invoiceExistsForCycle`) y vuelve a
+ * empujar el ancla al pasar por ellos.
+ */
+function rewindAnchorIfLast(inv: InvoiceRow): void {
+  const ws = getWorkspace(inv.workspace_id);
+  if (!ws || ws.last_billed_period_end == null) return;
+  // El ancla solo retrocede: si ya está en el inicio del periodo (o antes), ese
+  // periodo ya consta como pendiente y no hay nada que devolver.
+  if (ws.last_billed_period_end <= inv.period_start) return;
+  updateWorkspace(ws.id, { last_billed_period_end: inv.period_start });
+}
+
+/** Reúne la factura y sus datos congelados en el modelo que pinta el PDF. */
+function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
+  const profile = getBillingProfile();
+  const ws = getWorkspace(inv.workspace_id);
+  // Emisor y destinatario: los CONGELADOS al emitir mandan sobre los vivos. Un
+  // borrador aún no los tiene, así que se cae a los actuales (es una previsión).
+  const snap = inv.issuer_snapshot ? (JSON.parse(inv.issuer_snapshot) as IssuerSnapshot) : null;
+  return {
+    number: inv.number ?? 'BORRADOR',
+    status: inv.status,
+    invoiceType: inv.invoice_type === 'rectificativa' ? 'rectificativa' : inv.invoice_type === 'simplificada' ? 'simplificada' : 'normal',
+    issuedAt: inv.issued_at,
+    operationDate: inv.operation_date,
+    periodStart: inv.period_start,
+    periodEnd: inv.period_end,
+    // El congelado manda; las facturas anteriores a la columna caen al perfil vivo.
+    dueAt: inv.due_at ?? (inv.issued_at ? inv.issued_at + profile.paymentTermsDays * 86_400_000 : null),
+    currency: inv.currency,
+    issuer: {
+      companyName: snap?.companyName ?? profile.companyName,
+      taxId: snap?.taxId ?? profile.taxId,
+      address: snap?.address ?? profile.address,
+      email: snap?.email ?? profile.email,
+      phone: snap?.phone ?? profile.phone,
+    },
+    client: {
+      name: inv.client_name ?? ws?.name ?? '',
+      taxId: inv.client_tax_id ?? ws?.billing_tax_id ?? null,
+      address: inv.client_address ?? ws?.billing_address ?? null,
+      country: countryName(inv.client_country ?? ws?.billing_country),
+    },
+    lines: parseLines(inv.lines),
+    subtotalCents: inv.subtotal_cents,
+    taxBreakdown: parseBreakdown(inv.tax_breakdown),
+    taxCents: inv.tax_cents,
+    irpfRate: inv.irpf_rate,
+    // Si las líneas no comparten retención, el tipo de cabecera es orientativo.
+    irpfMixed: new Set(parseLines(inv.lines).map((l) => l.irpfRate ?? 0)).size > 1,
+    irpfCents: inv.irpf_cents,
+    totalCents: inv.total_cents,
+    legalMentions: inv.legal_mentions,
+    notes: inv.notes,
+    paymentMethod: inv.payment_method,
+    bank: { iban: profile.iban, bic: profile.bic, bankName: profile.bankName },
+    footer: profile.footer,
+  };
+}
+
+/** Nombre del fichero con el que se descarga o se adjunta la factura. */
+function invoiceFilename(inv: InvoiceRow): string {
+  return `factura-${(inv.number ?? inv.id).replace(/[^A-Za-z0-9._-]/g, '-')}.pdf`;
+}
+
+/**
+ * Envía la factura al cliente con el PDF adjunto. Best-effort y aislado: un fallo
+ * del correo NUNCA debe tumbar la emisión, que ya es un hecho legal consumado; se
+ * audita y se alerta para que el operador la reenvíe a mano.
+ */
+export async function sendInvoiceEmail(inv: InvoiceRow, opts: { manual?: boolean } = {}): Promise<{ ok: boolean; error?: string }> {
+  const smtp = getSmtpSettings();
+  const ws = getWorkspace(inv.workspace_id);
+  const destino = ws?.billing_email?.trim();
+  const numero = inv.number ?? inv.id;
+  /**
+   * Único camino de fallo. Antes los dos cortes de configuración salían ANTES del
+   * try y no auditaban ni alertaban: como los llamantes automáticos descartan el
+   * resultado (`void sendInvoiceEmail`), una cuenta sin email de facturación
+   * dejaba la factura sin enviar y sin ninguna traza.
+   */
+  const fallo = (detalle: string): { ok: false; error: string } => {
+    auditSystem('invoice_email_failed', `${numero} → ${destino ?? 'sin destinatario'}: ${detalle.slice(0, 200)}`);
+    if (!opts.manual) {
+      fireWorkspaceAlert({
+        severity: 'warning',
+        workspaceId: inv.workspace_id,
+        type: 'invoice_email_failed',
+        title: `No se pudo enviar la factura ${numero}`,
+        message: detalle.slice(0, 300),
+        explanation: 'La factura está emitida y es válida; solo ha fallado el envío. Reenvíala desde la ficha de la cuenta.',
+        dedupeKey: `invoice:${inv.id}:email_failed`,
+      });
+    }
+    return { ok: false, error: detalle };
+  };
+  if (!smtp) return fallo('No hay servidor de correo configurado en Contabilidad.');
+  if (!destino) return fallo(`La cuenta «${ws?.name ?? inv.workspace_id}» no tiene email de facturación.`);
+  const profile = getBillingProfile();
+  const importe = `${(inv.total_cents / 100).toFixed(2)} ${inv.currency}`;
+  try {
+    await sendMail(smtp, {
+      to: destino,
+      replyTo: profile.email || undefined,
+      subject: `Factura ${numero} · ${profile.companyName || 'Skyway'}`,
+      text:
+        `Hola:\n\nAdjuntamos la factura ${numero} por ${importe}.\n` +
+        (profile.paymentTermsDays > 0 ? `Vencimiento: ${profile.paymentTermsDays} días desde la fecha de expedición.\n` : '') +
+        (profile.iban ? `\nPuedes pagarla por transferencia a ${profile.iban}${profile.bankName ? ` (${profile.bankName})` : ''}.\n` : '') +
+        (inv.stripe_url ? `\nO pagarla con tarjeta aquí: ${inv.stripe_url}\n` : '') +
+        `\nUn saludo,\n${profile.companyName || 'Skyway'}\n`,
+      attachments: [{ filename: invoiceFilename(inv), contentType: 'application/pdf', content: renderInvoicePdf(invoicePdfData(inv)) }],
+    });
+    auditSystem('invoice_emailed', `${numero} → ${destino}`);
+    return { ok: true };
+  } catch (err: any) {
+    // En el envío manual el operador ya ve el error en pantalla; en el automático
+    // no hay nadie mirando, así que `fallo` alerta para que no pase inadvertido.
+    return fallo(err instanceof MailError ? err.message : err?.message || 'error desconocido');
+  }
+}
+
 function issuerSnapshot(profile: BillingProfile): IssuerSnapshot {
   return {
     companyName: profile.companyName,
@@ -307,6 +472,7 @@ function publicInvoice(inv: InvoiceRow) {
     client_name: inv.client_name,
     client_tax_id: inv.client_tax_id,
     client_address: inv.client_address,
+    client_country: inv.client_country,
     payment_method: inv.payment_method,
     stripe_url: inv.stripe_url,
     issued_at: inv.issued_at,
@@ -349,6 +515,84 @@ function contractedPlan(ws: WorkspaceRow): PlanRow | undefined {
   return ws.plan_id ? getPlan(ws.plan_id) : undefined;
 }
 
+/** Tramo de plan de un ciclo, ya recortado a él y con su tarifa efectiva. */
+interface PlanSegment {
+  planId: string;
+  name: string;
+  priceCents: number;
+  currency: string;
+  interval: string;
+  /** Inicio del tramo dentro del ciclo. */
+  from: number;
+  /** Fin del tramo dentro del ciclo. */
+  to: number;
+  /** Primera contratación de ESE plan: ancla del aniversario de la cuota anual. */
+  since: number;
+}
+
+/**
+ * El plan vigente cubriendo todo el ciclo, que es como se facturaba antes de los
+ * tramos. Es el respaldo cuando no hay historial aprovechable.
+ *
+ * El ancla del aniversario sale del historial si el plan figura en él, y solo cae
+ * a `plan_since` cuando no: mezclar ambos criterios entre ciclos de una misma
+ * cuenta podría devengar dos veces la misma anualidad.
+ */
+function segmentoUnico(ws: WorkspaceRow, plan: PlanRow, cycle: { start: number; end: number }): PlanSegment {
+  const desde = ws.plan_since ?? ws.created_at;
+  return {
+    planId: plan.id,
+    name: plan.name,
+    priceCents: plan.price_cents,
+    currency: plan.currency,
+    interval: plan.interval,
+    from: Math.max(desde, cycle.start),
+    to: cycle.end,
+    since: planContractedSince(ws.id, plan.id) ?? desde,
+  };
+}
+
+/**
+ * Tramos de plan que solapan el ciclo, cada uno con la tarifa que le corresponde.
+ * Es lo que permite que cambiar de plan a mitad de mes cobre cada tramo a su
+ * precio en vez del mes entero al plan que quede vigente.
+ *
+ * La tarifa VIVA del catálogo manda mientras el plan exista (editar el precio de
+ * un plan afecta a lo que aún no se ha facturado, como hasta ahora); la congelada
+ * en el tramo es el respaldo para un plan ya borrado, para que el histórico se
+ * pueda facturar igualmente. Sin historial (cuentas anteriores a la tabla que la
+ * migración no pudo reconstruir) se cae al comportamiento previo: el plan vigente
+ * durante todo el ciclo.
+ */
+function planSegments(ws: WorkspaceRow, cycle: { start: number; end: number }): PlanSegment[] {
+  const tramos = listPlanPeriodsInRange(ws.id, cycle.start, cycle.end);
+  if (tramos.length === 0) {
+    const plan = contractedPlan(ws);
+    return plan ? [segmentoUnico(ws, plan, cycle)] : [];
+  }
+  const segmentos: PlanSegment[] = [];
+  for (const t of tramos) {
+    if (!t.plan_id) continue; // tramo sin plan contratado: no se factura cuota
+    const vivo = getPlan(t.plan_id);
+    const priceCents = vivo?.price_cents ?? t.price_cents;
+    if (priceCents == null) continue; // plan borrado y sin tarifa congelada: nada que cobrar
+    segmentos.push({
+      planId: t.plan_id,
+      name: vivo?.name ?? t.plan_name ?? 'Plan',
+      priceCents,
+      currency: vivo?.currency ?? t.currency ?? 'EUR',
+      interval: vivo?.interval ?? t.interval ?? 'monthly',
+      from: Math.max(t.from_ms, cycle.start),
+      to: Math.min(t.to_ms ?? cycle.end, cycle.end),
+      // El aniversario se ancla en la PRIMERA contratación del plan, no en el
+      // tramo: si no, irse y volver al mismo plan dentro del año cobraría una
+      // segunda anualidad ya devengada.
+      since: planContractedSince(ws.id, t.plan_id) ?? t.from_ms,
+    });
+  }
+  return segmentos;
+}
+
 /**
  * ¿Toca cobrar en este ciclo una cuota ANUAL contratada en `sinceMs`?
  *
@@ -367,13 +611,109 @@ function annualDueInCycle(sinceMs: number, cycle: { start: number; end: number }
   return false;
 }
 
-/** Ciclo de facturación actual anclado al día de facturación del workspace. */
-function currentCycle(billingDay: number): { start: number; end: number } {
-  const now = new Date();
-  let start = new Date(now.getFullYear(), now.getMonth(), billingDay);
-  if (now < start) start = new Date(now.getFullYear(), now.getMonth() - 1, billingDay);
-  const end = new Date(start.getFullYear(), start.getMonth() + 1, billingDay);
-  return { start: start.getTime(), end: end.getTime() };
+/**
+ * Corte de facturación más reciente YA VENCIDO, anclado al día de facturación.
+ * Es el fin del último periodo cerrado.
+ */
+export function lastCutoff(billingDay: number, now = new Date()): number {
+  let cut = new Date(now.getFullYear(), now.getMonth(), billingDay);
+  if (cut.getTime() > now.getTime()) cut = new Date(now.getFullYear(), now.getMonth() - 1, billingDay);
+  return cut.getTime();
+}
+
+/** Próximo corte de facturación (fin del periodo en curso). */
+function nextCutoff(billingDay: number, now = new Date()): number {
+  let cut = new Date(now.getFullYear(), now.getMonth(), billingDay);
+  if (cut.getTime() <= now.getTime()) cut = new Date(now.getFullYear(), now.getMonth() + 1, billingDay);
+  return cut.getTime();
+}
+
+/**
+ * Corte inmediatamente POSTERIOR a un instante dado. Es lo que permite recorrer
+ * los periodos pendientes de uno en uno cuando el ancla se ha quedado varios
+ * meses atrás (servidor parado, cuenta suspendida, un ciclo bloqueado por un
+ * error de negocio): facturar el hueco entero de una vez cobraría un solo mes por
+ * todos los servidos, porque la cuota mensual se prorratea contra UN mes.
+ */
+export function cutoffAfter(from: number, billingDay: number): number {
+  const d = new Date(from);
+  let cut = new Date(d.getFullYear(), d.getMonth(), billingDay);
+  if (cut.getTime() <= from) cut = new Date(d.getFullYear(), d.getMonth() + 1, billingDay);
+  return cut.getTime();
+}
+
+/**
+ * Periodos mensuales CERRADOS que quedan pendientes de facturar, del ancla al
+ * último corte vencido. Normalmente es uno; son varios cuando se ha perdido algún
+ * ciclo. El tope evita un bucle desbocado si un dato corrupto deja el ancla en una
+ * fecha absurda (12 años de periodos es ya un caso a revisar a mano).
+ */
+export function pendingPeriods(ws: WorkspaceRow, now = new Date()): { start: number; end: number }[] {
+  const cierre = lastCutoff(ws.billing_day, now);
+  const periodos: { start: number; end: number }[] = [];
+  let inicio = cycleAnchor(ws, now);
+  for (let i = 0; i < 144 && inicio < cierre; i++) {
+    const fin = Math.min(cutoffAfter(inicio, ws.billing_day), cierre);
+    if (fin <= inicio) break;
+    periodos.push({ start: inicio, end: fin });
+    inicio = fin;
+  }
+  return periodos;
+}
+
+/**
+ * Inicio del periodo a facturar: el ANCLA persistente (fin de lo último
+ * facturado). Derivarlo de `billing_day` como se hacía antes refacturaba el tramo
+ * solapado al cambiar el día de facturación y perdía el ciclo entero si el
+ * servidor estaba caído justo el día de cierre. Sin ancla (cuentas anteriores a
+ * la columna) se cae al comportamiento previo.
+ */
+export function cycleAnchor(ws: WorkspaceRow, now = new Date()): number {
+  if (ws.last_billed_period_end != null) return ws.last_billed_period_end;
+  const cut = lastCutoff(ws.billing_day, now);
+  const prev = new Date(cut);
+  return new Date(prev.getFullYear(), prev.getMonth() - 1, ws.billing_day).getTime();
+}
+
+/** Periodo EN CURSO del workspace: desde lo último facturado hasta el próximo corte. */
+function currentCycle(ws: WorkspaceRow, now = new Date()): { start: number; end: number } {
+  return { start: cycleAnchor(ws, now), end: nextCutoff(ws.billing_day, now) };
+}
+
+/**
+ * Duración del periodo mensual COMPLETO que cierra en `end`, anclado al día de
+ * facturación. Es el denominador del prorrateo: una cuota mensual cubre un mes
+ * entero, así que hay que escalarla contra el mes, nunca contra un ciclo ya
+ * recortado (si no, un alta a mitad de mes pagaría la cuota completa por medio mes).
+ */
+function nominalPeriodMs(end: number, billingDay: number): number {
+  const e = new Date(end);
+  const inicio = new Date(e.getFullYear(), e.getMonth() - 1, billingDay).getTime();
+  return Math.max(1, end - inicio);
+}
+
+/**
+ * Fracción de MES realmente servida dentro del ciclo, para prorratear por días.
+ * Devuelve 1 (sin prorrateo) cuando se cubre el mes entero, y 0 si no se sirvió nada.
+ */
+function prorationFactor(from: number, to: number, cycle: { start: number; end: number }, nominalMs: number): number {
+  const desde = Math.max(from, cycle.start);
+  const hasta = Math.min(to, cycle.end);
+  if (hasta <= desde) return 0;
+  const f = (hasta - desde) / nominalMs;
+  // Tolerancia SOLO hacia arriba y solo cerca de 1: un mes completo no debe
+  // marcarse como «prorrateado» por unos milisegundos. Ojo con capar a 1 sin más:
+  // un periodo que abarca varios meses (ancla atrasada) daría factor 2,9 y se
+  // cobraría un solo mes. Eso ya no puede ocurrir porque los periodos se facturan
+  // de uno en uno (`pendingPeriods`), pero el factor tampoco se recorta aquí.
+  return f > 0.9995 && f < 1 ? 1 : Math.round(f * 1e6) / 1e6;
+}
+
+/** Sufijo de la línea prorrateada, con los días servidos, para que el cliente lo entienda. */
+function prorationLabel(factor: number, nominalMs: number): string {
+  const total = Math.max(1, Math.round(nominalMs / 86_400_000));
+  const dias = Math.max(1, Math.round((nominalMs * factor) / 86_400_000));
+  return ` · prorrateado ${dias}/${total} días`;
 }
 
 /**
@@ -395,11 +735,15 @@ function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Reco
     // Congelar emisor y destinatario la primera vez que se emite.
     if (!inv.issued_at) {
       fields.issued_at = issuedAt;
+      // El vencimiento se resuelve AQUÍ y se congela: es lo que se imprime en la
+      // factura y lo que la morosidad usa para contar los días de impago.
+      fields.due_at = issuedAt + profile.paymentTermsDays * 86_400_000;
       fields.issuer_snapshot = JSON.stringify(issuerSnapshot(profile));
       if (ws) {
         fields.client_name = ws.name;
         fields.client_tax_id = ws.billing_tax_id;
         fields.client_address = ws.billing_address;
+        fields.client_country = ws.billing_country ?? DEFAULT_COUNTRY;
       }
     }
     // Asignar el número de serie si aún no lo tiene (una vez por factura).
@@ -419,6 +763,17 @@ function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Reco
     fields.locked = 1;
     if (target === 'paid' && !inv.paid_at) fields.paid_at = (extra.paid_at as number | undefined) ?? Date.now();
     updateInvoice(inv.id, fields);
+    // Emitir es un hecho legal: el cliente queda facturado hasta `period_end`, así
+    // que el ancla avanza aunque el periodo aún no hubiera cerrado (el operador ha
+    // decidido conscientemente facturar por adelantado). Sin esto, emitir la
+    // previsión del ciclo EN CURSO dejaba el ancla clavada en un periodo que el
+    // tick ya consideraba facturado, y la cuenta no se volvía a facturar nunca.
+    // Solo avanza si la factura CONTINÚA la línea temporal de facturación
+    // (`period_start` = ancla): una factura a medida con un periodo arbitrario no
+    // debe empujar el ancla ni saltarse periodos pendientes.
+    if (ws && inv.period_start === ws.last_billed_period_end && inv.period_end > inv.period_start) {
+      updateWorkspace(ws.id, { last_billed_period_end: inv.period_end });
+    }
     return getInvoice(inv.id)!;
   });
 }
@@ -435,6 +790,7 @@ export interface StripeSessionRef {
 export type StripePaymentOutcome =
   | { result: 'pagada'; invoice: InvoiceRow }
   | { result: 'ya_pagada'; invoice: InvoiceRow }
+  | { result: 'cobro_duplicado'; invoice: InvoiceRow; detail: string }
   | { result: 'sin_factura' }
   | { result: 'anulada'; invoice: InvoiceRow }
   | { result: 'importe_no_cuadra'; invoice: InvoiceRow; detail: string };
@@ -455,7 +811,18 @@ export function markInvoicePaidByStripeSession(session: StripeSessionRef): Strip
   const byRef = session.metadata?.invoiceId ?? session.client_reference_id ?? null;
   const inv = (byRef ? getInvoice(byRef) : undefined) ?? getInvoiceByStripeSession(session.id);
   if (!inv) return { result: 'sin_factura' };
-  if (inv.status === 'paid') return { result: 'ya_pagada', invoice: inv };
+  if (inv.status === 'paid') {
+    // Cortar por estado a secas escondía un cobro REAL: si la factura ya se saldó
+    // por otra vía (transferencia marcada a mano) o con OTRA sesión de Stripe, este
+    // segundo pago es dinero cobrado dos veces, no un reenvío del mismo evento.
+    const mismoCobro = inv.stripe_session_id === session.id && inv.payment_method === 'stripe';
+    if (mismoCobro) return { result: 'ya_pagada', invoice: inv };
+    return {
+      result: 'cobro_duplicado',
+      invoice: inv,
+      detail: `ya estaba cobrada por «${inv.payment_method ?? 'sin método'}»${inv.stripe_session_id && inv.stripe_session_id !== session.id ? ` (sesión ${inv.stripe_session_id})` : ''}`,
+    };
+  }
   if (inv.status === 'void') return { result: 'anulada', invoice: inv };
   if (session.amount_total != null) {
     const esperado = stripeAmount(inv.total_cents, inv.currency);
@@ -492,7 +859,7 @@ export function issueInvoice(invoiceId: string): InvoiceRow | null {
  * puntuales pendientes. Queda en DRAFT (no emite). Lo usan la ruta manual
  * «Generar ciclo» y la facturación automática del scheduler.
  */
-export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.billing_day)): InvoiceRow | null {
+export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): InvoiceRow | null {
   const plan = contractedPlan(ws);
   const profile = getBillingProfile();
   const fromHour = Math.floor(cycle.start / HOUR_MS);
@@ -512,28 +879,86 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.bil
   };
 
   const rawLines: LineDraft[] = [];
-  if (plan) {
-    // Una cuota anual se devenga una vez al año, en el ciclo de su aniversario.
-    const anual = plan.interval === 'yearly';
-    if (!anual || annualDueInCycle(ws.plan_since ?? ws.created_at, cycle)) {
-      rawLines.push({
-        label: `Plan ${plan.name} (${anual ? 'anual' : 'mensual'})`,
-        kind: 'plan',
-        qty: 1,
-        unitCents: plan.price_cents,
-        taxRate: profile.vatRate,
-        discountable: true,
-      });
+  // Denominador del prorrateo: el mes completo que cierra este ciclo.
+  const nominalMs = nominalPeriodMs(cycle.end, ws.billing_day);
+  // El plan se factura por TRAMOS: cada intervalo del ciclo con su plan y su
+  // precio. Cambiar de plan a mitad de mes cobra los días de cada uno, no el mes
+  // entero al que quede vigente.
+  let segmentos = planSegments(ws, cycle);
+  // Una factura tiene UNA moneda. Si algún tramo está en otra (cambio de plan a
+  // uno en otra divisa), partir el ciclo mezclaría divisas: se cae al
+  // comportamiento anterior —el plan vigente durante todo el ciclo— y se avisa,
+  // porque abortar dejaría el ancla clavada y la cuenta sin facturar para siempre.
+  if (segmentos.some((s) => s.currency.toUpperCase() !== currency.toUpperCase())) {
+    const divisas = [...new Set(segmentos.map((s) => s.currency.toUpperCase()))].join(', ');
+    segmentos = plan ? [segmentoUnico(ws, plan, cycle)] : [];
+    fireWorkspaceAlert({
+      severity: 'warning',
+      workspaceId: ws.id,
+      type: 'billing_plan_currency_mixed',
+      title: `Cambio de divisa en el plan — ${ws.name}`,
+      message: `El ciclo tiene tramos de plan en varias divisas (${divisas}); se ha facturado el mes completo al plan vigente (${currency}).`,
+      explanation: 'Revisa la factura: si el tramo anterior debía cobrarse en su divisa, emítelo como factura aparte y rectifica esta.',
+      dedupeKey: `ws:${ws.id}:divisa_plan:${cycle.start}`,
+    });
+  }
+  // Una anualidad se devenga UNA vez por ciclo aunque el plan aparezca en varios
+  // tramos (alta, baja y alta del mismo plan dentro del mes).
+  const anualidadesCobradas = new Set<string>();
+  // Planes que han llegado a producir línea: es lo que se resume en `plan_name`.
+  // Un tramo descartado (de minutos, o una anualidad ya devengada) no debe figurar
+  // en el encabezado de una factura que no lo cobra.
+  const planesFacturados: string[] = [];
+  for (const seg of segmentos) {
+    // Una cuota anual se devenga una vez al año, en el tramo que contiene su
+    // aniversario, y se cobra entera (la anualidad cubre los doce meses
+    // siguientes). La mensual se prorratea por los días servidos en el tramo.
+    const anual = seg.interval === 'yearly';
+    let factor: number;
+    if (anual) {
+      if (anualidadesCobradas.has(seg.planId)) continue;
+      if (!annualDueInCycle(seg.since, { start: seg.from, end: seg.to })) continue;
+      anualidadesCobradas.add(seg.planId);
+      factor = 1;
+    } else {
+      factor = prorationFactor(seg.from, seg.to, cycle, nominalMs);
     }
+    if (factor <= 0) continue;
+    const importe = Math.round(seg.priceCents * factor);
+    // Un tramo de minutos redondea a cero: no ensucia la factura con una línea de
+    // 0,00 € (un plan gratuito sí la conserva, porque ahí el cero es el precio).
+    if (importe === 0 && seg.priceCents > 0) continue;
+    if (!planesFacturados.includes(seg.name)) planesFacturados.push(seg.name);
+    rawLines.push({
+      label: `Plan ${seg.name} (${anual ? 'anual' : 'mensual'})${factor < 1 ? prorationLabel(factor, nominalMs) : ''}`.slice(0, 120),
+      kind: 'plan',
+      qty: 1,
+      unitCents: importe,
+      taxRate: profile.vatRate,
+      irpfRate: 0, // la cuota de un plan no está sujeta a retención
+      discountable: true,
+    });
   }
   // Un medidor se factura UNA sola vez por ciclo: dos suscripciones a productos
   // que comparten medidor (o dos suscripciones al mismo producto) cobrarían el
   // mismo consumo dos veces. Tarifa la suscripción más antigua, que es también la
   // que usa el guardarraíl de presupuesto del gateway (`meterUnitPrice`).
   const meteredDone = new Set<string>();
-  for (const sub of listActiveSubscriptions(ws.id)) {
+  // Incluye las bajas y pausas ocurridas DENTRO del ciclo: el servicio se prestó
+  // hasta ese momento y se cobra prorrateado.
+  for (const sub of listBillableSubscriptions(ws.id, cycle.start)) {
     const product = getProduct(sub.product_id);
     if (!product) continue;
+    // Fin del servicio: el cambio de estado si dejó de estar activa, o el cierre
+    // del ciclo. `status_changed_at` cae de nuevo en `cancelled_at` para las
+    // suscripciones anteriores a esa columna.
+    const hasta = sub.status === 'active' ? cycle.end : sub.status_changed_at ?? sub.cancelled_at ?? cycle.end;
+    // Una suscripción reactivada dentro del ciclo (p. ej. al pagar tras un corte
+    // por impago) se cobra desde la reanudación, no desde el alta original: si no,
+    // se facturaba el mes entero por unos días de servicio. Limitación conocida: si
+    // la pausa y la reanudación caen en el MISMO ciclo, solo se cobra el tramo
+    // posterior a la reanudación (haría falta un historial de estados completo).
+    const desde = sub.status === 'active' ? Math.max(sub.started_at, sub.status_changed_at ?? 0) : sub.started_at;
     const negotiated = sub.unit_cents != null; // precio pactado por cliente: no se le suma el descuento
     const unitPrice = sub.unit_cents ?? product.price_cents;
     const rate = product.tax_exempt ? 0 : product.tax_rate;
@@ -556,14 +981,25 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.bil
         rawLines.push({ label: `${product.name} (${product.unit || 'uso'})`, kind: 'usage', qty: units, unitCents: unitPrice, taxRate: rate, irpfRate: irpf, discountable: !negotiated });
       }
     } else {
+      // Cuota fija: anual una vez al año (entera), mensual prorrateada por los días
+      // servidos entre el alta (o el inicio del ciclo) y la baja (o su cierre).
       const anual = sub.interval === 'yearly';
-      if (anual && !annualDueInCycle(sub.started_at, cycle)) continue;
-      rawLines.push({ label: `${product.name} (${anual ? 'anual' : 'mensual'})`, kind: 'subscription', qty: sub.qty, unitCents: unitPrice, taxRate: rate, irpfRate: irpf, discountable: !negotiated });
+      const factor = anual ? (annualDueInCycle(sub.started_at, cycle) ? 1 : 0) : prorationFactor(desde, hasta, cycle, nominalMs);
+      if (factor <= 0) continue;
+      rawLines.push({
+        label: `${product.name} (${anual ? 'anual' : 'mensual'})${factor < 1 ? prorationLabel(factor, nominalMs) : ''}`.slice(0, 120),
+        kind: 'subscription',
+        qty: sub.qty,
+        unitCents: Math.round(unitPrice * factor),
+        taxRate: rate,
+        irpfRate: irpf,
+        discountable: !negotiated,
+      });
     }
   }
   const charges = listPendingCharges(ws.id, 'pending');
   for (const c of charges) {
-    rawLines.push({ label: c.label, kind: c.kind === 'product' ? 'product' : 'custom', qty: c.qty, unitCents: c.unit_cents, taxRate: c.tax_rate, irpfRate: c.irpf_rate || 0, discountable: true });
+    rawLines.push({ label: c.label, kind: c.kind === 'product' ? 'product' : 'custom', qty: c.qty, unitCents: c.unit_cents, taxRate: c.tax_rate, irpfRate: c.irpf_rate || 0, chargeId: c.id, discountable: true });
   }
   if (otherCurrencies.size > 0) {
     throw new BillingError(
@@ -571,9 +1007,12 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.bil
     );
   }
 
-  // Descuento comercial de la cuenta (override) o, si no lo tiene, del plan.
+  // Descuento comercial de la cuenta (override) o, si no lo tiene, del plan
+  // VIGENTE. Es deliberado que no se trocee por tramos: el descuento es una
+  // condición del acuerdo con el cliente, no una propiedad de la tarifa, y se
+  // aplica a toda la factura (consumo y cargos incluidos), no solo a la cuota.
   const discountPct = ws.discount_pct ?? plan?.discount_pct ?? 0;
-  applyAccountDiscount(rawLines, discountPct);
+  applyAccountDiscount(rawLines, discountPct, profile.defaultIrpfRate);
 
   // Nada que facturar este ciclo (sin plan, sin suscripciones con consumo, sin
   // cargos): no se crea un borrador vacío que se acumularía mes a mes.
@@ -598,9 +1037,19 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws.bil
       irpf_cents: totals.irpf,
       total_cents: totals.total,
       lines: JSON.stringify(totals.lines),
-      plan_name: plan?.name ?? null,
+      // Con varios tramos, el nombre refleja el recorrido del ciclo («Pro → Básico»).
+      // Sin líneas de plan (una anualidad ya devengada) queda el plan vigente como
+      // contexto informativo, que es lo que había antes de los tramos.
+      plan_name: planesFacturados.length > 0 ? planesFacturados.join(' → ').slice(0, 120) : plan?.name ?? null,
+      origin: 'cycle',
     });
     if (charges.length > 0) markChargesInvoiced(charges.map((c) => c.id), inv.id);
+    // El ancla solo avanza con periodos CERRADOS. Una previsión del periodo en
+    // curso no debe consumir el ciclo: si lo hiciera, el consumo desde la
+    // previsión hasta el cierre no se facturaría nunca.
+    if (cycle.end <= Date.now() && cycle.end > (ws.last_billed_period_end ?? 0)) {
+      updateWorkspace(ws.id, { last_billed_period_end: cycle.end });
+    }
     return inv;
   });
 }
@@ -622,6 +1071,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
         billing_email: ws.billing_email,
         billing_tax_id: ws.billing_tax_id,
         billing_address: ws.billing_address,
+        billing_country: ws.billing_country ?? DEFAULT_COUNTRY,
       },
       stripeEnabled: !!getStripeSecretKey(),
     };
@@ -632,11 +1082,17 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const ws = getWorkspace(id);
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
+    // Si hay un periodo ya CERRADO sin facturar, se factura ese (es el que toca y
+    // el que avanza el ancla); si no, se genera la previsión del periodo en curso.
+    // Sin esta distinción, una previsión que se solapa con el periodo cerrado
+    // bloquearía después la facturación automática de ese ciclo.
+    const anchor = cycleAnchor(ws);
+    const cerrado = lastCutoff(ws.billing_day);
+    const cycle = cerrado > anchor ? { start: anchor, end: cerrado } : currentCycle(ws);
     // Idempotencia: sin esto, dos pulsaciones seguidas crean dos facturas del
     // mismo periodo (con el plan y los cargos duplicados en la segunda).
-    const cycle = currentCycle(ws.billing_day);
     if (invoiceExistsForCycle(id, cycle.start)) {
-      return reply.code(409).send({ error: 'Ya existe una factura para el ciclo en curso de esta cuenta. Edítala o anúlala antes de generar otra.' });
+      return reply.code(409).send({ error: 'Ya existe una factura para este periodo. Edítala o anúlala antes de generar otra.' });
     }
     let inv: InvoiceRow | null;
     try {
@@ -658,7 +1114,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
     const plan = contractedPlan(ws);
     const profile = getBillingProfile();
-    const cycle = currentCycle(ws.billing_day);
+    const cycle = currentCycle(ws);
     const body = z
       .object({
         lines: z.array(lineSchema).max(100).default([]),
@@ -758,6 +1214,12 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       fields.total_cents = totals.total;
       if (body.currency) fields.currency = body.currency;
       if (body.operationDate !== undefined) fields.operation_date = body.operationDate;
+      // Si el operador ha quitado la línea de un cargo puntual, ese cargo vuelve a
+      // «pendiente» y entra en el ciclo siguiente. Antes se quedaba marcado como
+      // facturado en una factura que ya no lo contenía: se perdía sin traza.
+      if (body.lines !== undefined) {
+        reopenChargesNotIn(id, totals.lines.map((l) => l.chargeId).filter((c): c is string => !!c));
+      }
     }
     if (body.notes !== undefined) fields.notes = body.notes;
     if (body.paymentMethod !== undefined) fields.payment_method = body.paymentMethod;
@@ -773,14 +1235,25 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     } else {
       if (target !== inv.status) fields.status = target; // draft/issued → void
       updateInvoice(id, fields);
-      // Al anular, los cargos puntuales enlazados vuelven a pendientes (no se pierden).
-      if (target === 'void' && inv.status !== 'void') reopenChargesForInvoice(id);
+      // Al anular, los cargos puntuales enlazados vuelven a pendientes (no se
+      // pierden) y el periodo vuelve a estar sin facturar.
+      if (target === 'void' && inv.status !== 'void') {
+        reopenChargesForInvoice(id);
+        rewindAnchorIfLast(inv);
+      }
     }
     // Cobro manual: levanta el corte por impago si la cuenta ya no debe nada.
     // Anular la factura también salda la deuda: sin esto, una factura vencida que
     // se anula (o se sustituye por una rectificativa) dejaba al cliente cortado.
     if ((target === 'paid' && inv.status !== 'paid') || (target === 'void' && inv.status !== 'void')) {
       reactivateWorkspaceIfCurrent(inv.workspace_id);
+    }
+    // Envío al cliente al emitir, si el operador lo ha activado. No se espera al
+    // correo para responder: la emisión ya está hecha y un SMTP lento no debe
+    // dejar al operador mirando un spinner (los fallos se auditan y alertan).
+    if (inv.status === 'draft' && (target === 'issued' || target === 'paid') && getBillingAutomation().emailOnIssue) {
+      const emitida = getInvoice(id);
+      if (emitida) void sendInvoiceEmail(emitida);
     }
     audit(req, 'invoice_updated', { type: 'invoice', id, detail: body.status ?? 'edición' });
     return { invoice: publicInvoice(getInvoice(id)!) };
@@ -794,8 +1267,36 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     if (inv.status !== 'draft') {
       return reply.code(409).send({ error: 'Solo se pueden borrar borradores. Una factura emitida debe anularse o rectificarse, nunca borrarse.' });
     }
-    deleteInvoice(id);
+    deleteInvoice(id); // devuelve además sus cargos puntuales a 'pending'
+    rewindAnchorIfLast(inv);
     audit(req, 'invoice_deleted', { type: 'invoice', id });
+    return { ok: true };
+  });
+
+  // Documento PDF de la factura. Lo puede descargar la propia cuenta, no solo el
+  // admin: es SU factura. Un borrador se descarga marcado como tal.
+  app.get('/api/invoices/:id/pdf', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const inv = getInvoice(id);
+    if (!inv) return reply.code(404).send({ error: 'Factura no encontrada' });
+    if (!assertWorkspaceAccess(req, reply, inv.workspace_id)) return reply;
+    const pdf = renderInvoicePdf(invoicePdfData(inv));
+    reply.header('Content-Disposition', `attachment; filename="${invoiceFilename(inv)}"`);
+    reply.type('application/pdf');
+    return reply.send(pdf);
+  });
+
+  // Envía (o reenvía) la factura al email de facturación del cliente. Solo admin.
+  app.post('/api/invoices/:id/email', { preHandler: requireAdmin }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const inv = getInvoice(id);
+    if (!inv) return reply.code(404).send({ error: 'Factura no encontrada' });
+    if (inv.status === 'draft') {
+      return reply.code(409).send({ error: 'Es un borrador: emítela antes de enviarla al cliente.' });
+    }
+    const res = await sendInvoiceEmail(inv, { manual: true });
+    if (!res.ok) return reply.code(502).send({ error: res.error });
+    audit(req, 'invoice_emailed', { type: 'invoice', id, detail: inv.number ?? id });
     return { ok: true };
   });
 

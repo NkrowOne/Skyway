@@ -17,6 +17,7 @@ import {
   ProductRow,
   SubscriptionRow,
   PasskeyRow,
+  PlanPeriodRow,
   PlanRow,
   ProjectRow,
   ServiceConfig,
@@ -30,6 +31,7 @@ import {
   WorkspaceApiKeyRow,
   WorkspaceRow,
 } from './types';
+import { DEFAULT_COUNTRY } from './countries';
 import { ALL_MODULE_KEYS } from './modules';
 import { id, now, slugify } from './util';
 
@@ -343,6 +345,25 @@ export function initDb(): void {
       archived INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     );
+    -- Historial de plan por tramos: qué plan tuvo la cuenta y entre qué fechas.
+    -- Sin él, cambiar de plan a mitad de mes facturaba el ciclo ENTERO al plan
+    -- nuevo (o al viejo), nunca cada tramo a su precio. El precio y el nombre se
+    -- congelan en el tramo para que el histórico siga siendo facturable aunque el
+    -- plan se borre del catálogo; mientras el plan exista manda su ficha viva, que
+    -- es el comportamiento que ya tenía editar una tarifa.
+    CREATE TABLE IF NOT EXISTS workspace_plan_periods (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      plan_id TEXT,
+      plan_name TEXT,
+      price_cents INTEGER,
+      currency TEXT,
+      interval TEXT,
+      from_ms INTEGER NOT NULL,
+      to_ms INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_wpp_ws ON workspace_plan_periods(workspace_id, from_ms);
     CREATE TABLE IF NOT EXISTS catalog_price_tiers (
       id TEXT PRIMARY KEY,
       product_id TEXT NOT NULL REFERENCES catalog_products(id) ON DELETE CASCADE,
@@ -509,10 +530,25 @@ export function initDb(): void {
   ensureColumn('workspace_invoices', 'client_name', 'TEXT');
   ensureColumn('workspace_invoices', 'client_tax_id', 'TEXT');
   ensureColumn('workspace_invoices', 'client_address', 'TEXT');
+  // El país del destinatario se congela al emitir, como el resto de sus datos.
+  ensureColumn('workspace_invoices', 'client_country', 'TEXT');
+  // Origen de la factura: 'cycle' la genera el ciclo (y el tick puede sustituir su
+  // borrador por el definitivo), 'manual' la escribe el operador y NADIE la toca.
+  // Por defecto 'manual': lo conservador para las filas anteriores a la columna.
+  ensureColumn('workspace_invoices', 'origin', "TEXT NOT NULL DEFAULT 'manual'");
+  // Vencimiento resuelto AL EMITIR. Antes se derivaba del perfil vivo, así que
+  // cambiar las condiciones de pago hacía que el duplicado de una factura ya
+  // expedida dijese otra fecha: dos documentos distintos con el mismo número.
+  // Además la morosidad usa esta misma fecha, para que lo impreso y lo que dispara
+  // la suspensión no puedan divergir.
+  ensureColumn('workspace_invoices', 'due_at', 'INTEGER');
   ensureColumn('workspace_invoices', 'locked', 'INTEGER NOT NULL DEFAULT 0');
   // Datos fiscales del cliente (destinatario de la factura).
   ensureColumn('workspaces', 'billing_tax_id', 'TEXT');
   ensureColumn('workspaces', 'billing_address', 'TEXT');
+  // País del destinatario (ISO 3166-1 alfa-2). España por defecto: es el caso
+  // normal del negocio y evita que las cuentas ya existentes queden sin país.
+  ensureColumn('workspaces', 'billing_country', "TEXT NOT NULL DEFAULT 'ES'");
   // Estado de morosidad por cuenta (persistido, para que el corte por impago sea
   // idempotente y sobreviva a reinicios). ai_suspended = corte del proxy de IA.
   ensureColumn('workspaces', 'ai_suspended', 'INTEGER NOT NULL DEFAULT 0');
@@ -536,9 +572,94 @@ export function initDb(): void {
   ensureColumn('workspaces', 'discount_pct', 'REAL');
   // Margen objetivo (s/ venta) por modelo de IA: guía el PVP sugerido = coste/(1−m).
   ensureColumn('ai_model_prices', 'margin_pct', 'REAL NOT NULL DEFAULT 0');
+  // ATRIBUCIÓN MATERIALIZADA DEL CONSUMO. Antes se resolvía con un JOIN vivo
+  // servicio → proyecto → workspace, así que borrar un servicio borraba su consumo
+  // aún no facturado y reasignar un proyecto trasladaba todo su histórico a la
+  // cuenta nueva. Se congela el titular en el momento de medir.
+  ensureColumn('service_metrics_hourly', 'workspace_id', 'TEXT');
+  ensureColumn('usage_meter_hourly', 'workspace_id', 'TEXT');
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_service_metrics_ws ON service_metrics_hourly(workspace_id, hour);
+    CREATE INDEX IF NOT EXISTS idx_usage_meter_ws ON usage_meter_hourly(workspace_id, meter, hour);
+  `);
+  // Ancla de facturación: fin del último periodo facturado. Sustituye a derivar el
+  // ciclo de `billing_day`, que refacturaba el tramo solapado al cambiar el día y
+  // perdía el ciclo entero si el servidor estaba caído justo el día de cierre.
+  ensureColumn('workspaces', 'last_billed_period_end', 'INTEGER');
+  // Momento del último cambio de estado de una suscripción: sin él, prorratear una
+  // baja es imposible (`setWorkspaceSubscriptionsStatus` no escribe `cancelled_at`).
+  ensureColumn('workspace_subscriptions', 'status_changed_at', 'INTEGER');
+  // Suspensión MANUAL del operador, distinta del corte por impago: al regularizar
+  // el pago no debe revivir lo que se cortó a mano.
+  ensureColumn('workspace_api_keys', 'suspended_by', 'TEXT');
+  ensureColumn('workspace_subscriptions', 'paused_by', 'TEXT');
 
   seedDefaultPlans();
+  // El orden importa: `migrateClientsToWorkspaces` es quien rellena
+  // `projects.workspace_id`, y el backfill de atribución resuelve el titular del
+  // consumo con un JOIN sobre esa columna. Al revés, una instalación que salte
+  // desde antes de las cuentas escribiría NULL en todo el histórico y marcaría la
+  // migración como hecha, perdiendo la atribución para siempre.
   migrateClientsToWorkspaces();
+  backfillUsageAttribution();
+  backfillDunningActor();
+  // Después de la migración de clientes: los workspaces que crea también necesitan
+  // su primer tramo de historial de plan.
+  backfillPlanPeriods();
+}
+
+/**
+ * Marca como cortadas «por morosidad» las claves y suscripciones que la versión
+ * anterior suspendió sin dejar constancia de quién lo hizo. Sin esto,
+ * `reviveDunningKeys` no las reconoce y una cuenta que paga queda reactivada a
+ * medias: sin deuda pero con el servicio cortado. Solo toca las cuentas que están
+ * efectivamente en mora, para no revivir un bloqueo manual ajeno al impago.
+ */
+function backfillDunningActor(): void {
+  if (getSetting('migrations:dunning_actor_v1') === 'done') return;
+  db.transaction(() => {
+    db.exec(`
+      UPDATE workspace_api_keys SET suspended_by = 'dunning'
+       WHERE status = 'suspended' AND suspended_by IS NULL
+         AND workspace_id IN (SELECT id FROM workspaces WHERE dunning_stage > 0 OR ai_suspended = 1);
+      UPDATE workspace_subscriptions SET paused_by = 'dunning'
+       WHERE status = 'paused' AND paused_by IS NULL
+         AND workspace_id IN (SELECT id FROM workspaces WHERE dunning_stage > 0 OR ai_suspended = 1);
+    `);
+    setSetting('migrations:dunning_actor_v1', 'done');
+  })();
+}
+
+/**
+ * Rellena una sola vez el titular de las filas de consumo ya existentes, con el
+ * JOIN que se usaba hasta ahora. Sin esto, el primer ciclo tras el despliegue
+ * facturaría cero por todo el histórico anterior a la migración.
+ */
+function backfillUsageAttribution(): void {
+  if (getSetting('migrations:usage_attribution_v1') === 'done') return;
+  db.transaction(() => {
+    db.exec(`
+      UPDATE service_metrics_hourly SET workspace_id = (
+        SELECT p.workspace_id FROM services s JOIN projects p ON p.id = s.project_id WHERE s.id = service_id
+      ) WHERE workspace_id IS NULL;
+      UPDATE usage_meter_hourly SET workspace_id = CASE
+        WHEN subject_type = 'workspace' THEN subject_id
+        ELSE (SELECT p.workspace_id FROM services s JOIN projects p ON p.id = s.project_id WHERE s.id = subject_id)
+      END WHERE workspace_id IS NULL;
+    `);
+    // Solo se da por hecha cuando ya no queda ninguna fila sin titular resoluble:
+    // así una instalación que se actualizó antes de tiempo lo reintenta al
+    // arrancar, en vez de quedarse con el histórico sin atribuir para siempre.
+    const pendientes = (db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM service_metrics_hourly m
+         WHERE m.workspace_id IS NULL
+           AND EXISTS (SELECT 1 FROM services s JOIN projects p ON p.id = s.project_id
+                        WHERE s.id = m.service_id AND p.workspace_id IS NOT NULL)`,
+      )
+      .get() as { c: number }).c;
+    if (pendientes === 0) setSetting('migrations:usage_attribution_v1', 'done');
+  })();
 }
 
 /**
@@ -853,7 +974,25 @@ export function countWorkspaceProjects(workspaceId: string): number {
  * denormalizado `client` que usa la agrupación por empresa de la UI.
  */
 export function setProjectWorkspace(projectId: string, workspaceId: string | null, clientName: string | null): void {
-  db.prepare('UPDATE projects SET workspace_id = ?, client = ? WHERE id = ?').run(workspaceId, clientName, projectId);
+  db.transaction(() => {
+    db.prepare('UPDATE projects SET workspace_id = ?, client = ? WHERE id = ?').run(workspaceId, clientName, projectId);
+    if (!workspaceId) return;
+    // El alta normal crea el proyecto SIN cuenta, despliega los servicios y asigna
+    // el cliente días después: durante ese tiempo los cubos horarios se escriben
+    // con `workspace_id` NULL y ese consumo no se facturaba nunca. Al asignar la
+    // cuenta se adopta el consumo aún SIN TITULAR de sus servicios. El filtro
+    // `workspace_id IS NULL` es lo que impide que una reasignación entre cuentas
+    // se lleve consigo el consumo ya atribuido (y ya facturado) a la anterior.
+    db.prepare(
+      `UPDATE service_metrics_hourly SET workspace_id = ?
+       WHERE workspace_id IS NULL AND service_id IN (SELECT id FROM services WHERE project_id = ?)`,
+    ).run(workspaceId, projectId);
+    db.prepare(
+      `UPDATE usage_meter_hourly SET workspace_id = ?
+       WHERE workspace_id IS NULL AND subject_type = 'service'
+         AND subject_id IN (SELECT id FROM services WHERE project_id = ?)`,
+    ).run(workspaceId, projectId);
+  })();
 }
 
 export function listProjects(): ProjectRow[] {
@@ -941,12 +1080,15 @@ export function pruneUptime(keepDays = 92): void {
  * dividen luego entre `samples` para la media; los máximos guardan el pico real
  * de la hora, que una media aplasta y es justo lo que delata un problema.
  */
-export function recordServiceMetrics(serviceId: string, s: ServiceMetricSample): void {
+export function recordServiceMetrics(serviceId: string, s: ServiceMetricSample, workspaceId: string | null = null): void {
   const hour = Math.floor(now() / 3_600_000);
+  // `workspace_id` solo se fija al CREAR el cubo: el titular de una hora ya
+  // empezada no cambia a media hora. Una reasignación de proyecto surte efecto
+  // desde el cubo siguiente (granularidad de una hora, la del propio medidor).
   db.prepare(
     `INSERT INTO service_metrics_hourly
-       (service_id, hour, samples, cpu_sum, cpu_max, mem_sum, mem_max, mem_limit_last, net_rx, net_tx)
-     VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+       (service_id, hour, workspace_id, samples, cpu_sum, cpu_max, mem_sum, mem_max, mem_limit_last, net_rx, net_tx)
+     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(service_id, hour) DO UPDATE SET
        samples = samples + 1,
        cpu_sum = cpu_sum + excluded.cpu_sum,
@@ -955,17 +1097,20 @@ export function recordServiceMetrics(serviceId: string, s: ServiceMetricSample):
        mem_max = MAX(mem_max, excluded.mem_max),
        mem_limit_last = excluded.mem_limit_last,
        net_rx = net_rx + excluded.net_rx,
-       net_tx = net_tx + excluded.net_tx`,
-  ).run(serviceId, hour, s.cpuPercent, s.cpuPercent, s.memUsage, s.memUsage, s.memLimit, s.netRxDelta, s.netTxDelta);
+       net_tx = net_tx + excluded.net_tx,
+       workspace_id = COALESCE(workspace_id, excluded.workspace_id)`,
+  ).run(serviceId, hour, workspaceId, s.cpuPercent, s.cpuPercent, s.memUsage, s.memUsage, s.memLimit, s.netRxDelta, s.netTxDelta);
 }
 
 /** Registra la foto de disco de un servicio en el cubo horario actual (sobrescribe). */
-export function recordServiceDisk(serviceId: string, totalBytes: number): void {
+export function recordServiceDisk(serviceId: string, totalBytes: number, workspaceId: string | null = null): void {
   const hour = Math.floor(now() / 3_600_000);
   db.prepare(
-    `INSERT INTO service_metrics_hourly (service_id, hour, disk_last) VALUES (?, ?, ?)
-     ON CONFLICT(service_id, hour) DO UPDATE SET disk_last = excluded.disk_last`,
-  ).run(serviceId, hour, totalBytes);
+    `INSERT INTO service_metrics_hourly (service_id, hour, workspace_id, disk_last) VALUES (?, ?, ?, ?)
+     ON CONFLICT(service_id, hour) DO UPDATE SET
+       disk_last = excluded.disk_last,
+       workspace_id = COALESCE(workspace_id, excluded.workspace_id)`,
+  ).run(serviceId, hour, workspaceId, totalBytes);
 }
 
 /** Acumula una muestra de carga y RAM del host en su cubo horario. */
@@ -1010,12 +1155,18 @@ export function hostMetricsRange(hours: number): HostMetricHour[] {
     .all(from) as HostMetricHour[];
 }
 
-/** Poda el histórico de consumo viejo y el de servicios eliminados. */
+/**
+ * Poda el histórico de consumo viejo. NO se borran las filas de servicios
+ * eliminados: son consumo real que puede estar aún sin facturar, y borrarlas
+ * hacía que quien borrase un servicio a fin de mes no pagara lo consumido. Caducan
+ * igual por antigüedad (`keepDays`), muy por encima de cualquier ciclo.
+ */
 export function pruneMetrics(keepDays = 90): void {
   const cutoff = Math.floor(now() / 3_600_000) - keepDays * 24;
   db.prepare('DELETE FROM service_metrics_hourly WHERE hour < ?').run(cutoff);
-  db.prepare('DELETE FROM service_metrics_hourly WHERE service_id NOT IN (SELECT id FROM services)').run();
   db.prepare('DELETE FROM host_metrics_hourly WHERE hour < ?').run(cutoff);
+  db.prepare('DELETE FROM usage_meter_hourly WHERE hour < ?').run(cutoff);
+  db.prepare('DELETE FROM usage_events WHERE ts < ?').run(cutoff * 3_600_000);
 }
 
 // ---------- services ----------
@@ -1513,10 +1664,13 @@ export function createWorkspaceRow(name: string, init: WorkspaceInit = {}): Work
     billing_email: init.billing_email ?? null,
     billing_tax_id: null,
     billing_address: null,
+    billing_country: DEFAULT_COUNTRY,
     billing_day: init.billing_day ?? 1,
     discount_pct: null, // hereda el descuento del plan mientras no se fije uno propio
     // Ancla del aniversario de las cuotas anuales: la contratación del plan.
     plan_since: init.plan_id ? now() : null,
+    // La facturación arranca en el alta: el primer ciclo se prorratea desde aquí.
+    last_billed_period_end: now(),
     dunning_stage: 0,
     dunning_since: null,
     last_dunning_action_at: null,
@@ -1526,9 +1680,11 @@ export function createWorkspaceRow(name: string, init: WorkspaceInit = {}): Work
     created_at: now(),
   };
   db.prepare(
-    `INSERT INTO workspaces (id, name, slug, plan_id, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules_override, owner_disabled_modules, status, billing_email, billing_tax_id, billing_address, billing_day, plan_since, notes, created_at)
-     VALUES (@id, @name, @slug, @plan_id, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules_override, @owner_disabled_modules, @status, @billing_email, @billing_tax_id, @billing_address, @billing_day, @plan_since, @notes, @created_at)`,
+    `INSERT INTO workspaces (id, name, slug, plan_id, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules_override, owner_disabled_modules, status, billing_email, billing_tax_id, billing_address, billing_country, billing_day, plan_since, last_billed_period_end, notes, created_at)
+     VALUES (@id, @name, @slug, @plan_id, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules_override, @owner_disabled_modules, @status, @billing_email, @billing_tax_id, @billing_address, @billing_country, @billing_day, @plan_since, @last_billed_period_end, @notes, @created_at)`,
   ).run(row);
+  // Primer tramo del historial de plan: desde la contratación (o el alta si no hay plan).
+  recordPlanChange(row.id, row.plan_id, row.plan_since ?? row.created_at);
   return row;
 }
 
@@ -1557,8 +1713,9 @@ export function getWorkspace(workspaceId: string): WorkspaceRow | undefined {
 const WORKSPACE_COLUMNS = new Set([
   'name', 'plan_id', 'cpu_cores', 'memory_mb', 'disk_mb', 'max_projects', 'max_services',
   'max_members', 'modules_override', 'owner_disabled_modules', 'status', 'billing_email',
-  'billing_tax_id', 'billing_address', 'billing_day', 'discount_pct', 'notes',
+  'billing_tax_id', 'billing_address', 'billing_country', 'billing_day', 'discount_pct', 'notes',
   'ai_suspended', 'dunning_stage', 'dunning_since', 'last_dunning_action_at', 'dunning_exempt',
+  'plan_since', 'last_billed_period_end',
 ]);
 
 export function updateWorkspace(workspaceId: string, fields: Record<string, unknown>): void {
@@ -1577,6 +1734,97 @@ export function deleteWorkspace(workspaceId: string): void {
   db.prepare('UPDATE projects SET workspace_id = NULL, client = NULL WHERE workspace_id = ?').run(workspaceId);
   // Los sub-usuarios del workspace se quedan huérfanos: se borran en cascada lógica desde la ruta.
   db.prepare('DELETE FROM workspaces WHERE id = ?').run(workspaceId);
+}
+
+// ---------- historial de plan por tramos ----------
+/**
+ * Abre un tramo nuevo en el historial de plan y cierra el vigente. Idempotente
+ * frente a un PATCH que no toca el plan: si el tramo abierto ya es de ese plan, no
+ * parte nada (si no, editar el nombre de la cuenta trocearía el historial).
+ */
+export function recordPlanChange(workspaceId: string, planId: string | null, atMs = now()): void {
+  const abierto = db
+    .prepare('SELECT * FROM workspace_plan_periods WHERE workspace_id = ? AND to_ms IS NULL ORDER BY from_ms DESC LIMIT 1')
+    .get(workspaceId) as PlanPeriodRow | undefined;
+  if (abierto && abierto.plan_id === planId) return;
+  const plan = planId ? getPlan(planId) : undefined;
+  db.transaction(() => {
+    if (abierto) {
+      // Un tramo que se cerraría en su propio instante de apertura (dos cambios de
+      // plan seguidos) no cubre nada y solo ensuciaría el historial: se descarta.
+      if (abierto.from_ms >= atMs) db.prepare('DELETE FROM workspace_plan_periods WHERE id = ?').run(abierto.id);
+      else db.prepare('UPDATE workspace_plan_periods SET to_ms = ? WHERE id = ?').run(atMs, abierto.id);
+    }
+    db.prepare(
+      `INSERT INTO workspace_plan_periods (id, workspace_id, plan_id, plan_name, price_cents, currency, interval, from_ms, to_ms, created_at)
+       VALUES (@id, @workspace_id, @plan_id, @plan_name, @price_cents, @currency, @interval, @from_ms, NULL, @created_at)`,
+    ).run({
+      id: id('wpp'),
+      workspace_id: workspaceId,
+      plan_id: planId,
+      plan_name: plan?.name ?? null,
+      price_cents: plan?.price_cents ?? null,
+      currency: plan?.currency ?? null,
+      interval: plan?.interval ?? null,
+      from_ms: atMs,
+      created_at: now(),
+    });
+  })();
+}
+
+/**
+ * Tramos del historial que solapan `[from, to)`, del más antiguo al más reciente.
+ * Devuelve vacío si la cuenta no tiene historial; quien factura decide entonces el
+ * respaldo (el plan vigente para todo el ciclo, que es lo que se hacía antes).
+ */
+export function listPlanPeriodsInRange(workspaceId: string, from: number, to: number): PlanPeriodRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM workspace_plan_periods
+        WHERE workspace_id = ? AND from_ms < ? AND (to_ms IS NULL OR to_ms > ?)
+        ORDER BY from_ms ASC`,
+    )
+    .all(workspaceId, to, from) as PlanPeriodRow[];
+}
+
+/** Historial completo de una cuenta, del más reciente al más antiguo (ficha y auditoría). */
+export function listPlanPeriods(workspaceId: string): PlanPeriodRow[] {
+  return db
+    .prepare('SELECT * FROM workspace_plan_periods WHERE workspace_id = ? ORDER BY from_ms DESC')
+    .all(workspaceId) as PlanPeriodRow[];
+}
+
+/**
+ * Primera vez que la cuenta contrató ese plan. Ancla el aniversario de una cuota
+ * ANUAL: anclarlo en el tramo haría que irse y volver al mismo plan dentro del año
+ * devengara una segunda anualidad ya cobrada.
+ */
+export function planContractedSince(workspaceId: string, planId: string): number | null {
+  const row = db
+    .prepare('SELECT MIN(from_ms) AS m FROM workspace_plan_periods WHERE workspace_id = ? AND plan_id = ?')
+    .get(workspaceId, planId) as { m: number | null };
+  return row.m ?? null;
+}
+
+/**
+ * Abre el primer tramo de las cuentas que aún no tienen historial, en la fecha de
+ * contratación del plan (o el alta). Sin esto, el primer ciclo tras el despliegue
+ * caería al respaldo «plan vigente todo el ciclo» para siempre. Se reintenta
+ * mientras queden cuentas sin tramo, y `createWorkspaceRow` abre el suyo, así que
+ * las nuevas nunca dependen de esta migración.
+ */
+function backfillPlanPeriods(): void {
+  if (getSetting('migrations:plan_periods_v1') === 'done') return;
+  db.transaction(() => {
+    const sinHistorial = db
+      .prepare(
+        `SELECT w.id, w.plan_id, w.plan_since, w.created_at FROM workspaces w
+          WHERE NOT EXISTS (SELECT 1 FROM workspace_plan_periods p WHERE p.workspace_id = w.id)`,
+      )
+      .all() as { id: string; plan_id: string | null; plan_since: number | null; created_at: number }[];
+    for (const w of sinHistorial) recordPlanChange(w.id, w.plan_id, w.plan_since ?? w.created_at);
+    setSetting('migrations:plan_periods_v1', 'done');
+  })();
 }
 
 // ---------- cuota agregada del workspace (a todos sus proyectos en total) ----------
@@ -1615,9 +1863,7 @@ export function workspaceUsageRange(
          COALESCE(MAX(m.mem_max), 0) AS memMax,
          COALESCE(MAX(m.disk_last), 0) AS diskMax
        FROM service_metrics_hourly m
-       JOIN services s ON s.id = m.service_id
-       JOIN projects p ON p.id = s.project_id
-       WHERE p.workspace_id = ? AND m.hour >= ? AND m.hour < ?`,
+       WHERE m.workspace_id = ? AND m.hour >= ? AND m.hour < ?`,
     )
     .get(workspaceId, fromHour, toHour) as any;
   return {
@@ -1646,8 +1892,8 @@ const INVOICE_DEFAULTS = {
   series_id: null, number: null, invoice_type: 'normal', rectifies_invoice_id: null, rectify_reason: null,
   operation_date: null, tax_breakdown: '[]', vat_regime: 'general', legal_mentions: null,
   irpf_rate: 0, irpf_cents: 0, issuer_snapshot: null, client_name: null, client_tax_id: null,
-  client_address: null, plan_name: null, payment_method: null, stripe_session_id: null,
-  stripe_url: null, issued_at: null, paid_at: null, locked: 0, notes: null,
+  client_address: null, client_country: null, origin: 'manual', plan_name: null, payment_method: null, stripe_session_id: null,
+  stripe_url: null, issued_at: null, due_at: null, paid_at: null, locked: 0, notes: null,
 } as const;
 
 type InvoiceCore = Pick<
@@ -1662,14 +1908,14 @@ export function createInvoice(row: InvoiceCore & Partial<InvoiceRow>): InvoiceRo
        id, workspace_id, series_id, number, invoice_type, rectifies_invoice_id, rectify_reason,
        period_start, period_end, operation_date, status, currency, subtotal_cents, tax_cents, tax_rate,
        tax_breakdown, vat_regime, legal_mentions, irpf_rate, irpf_cents, total_cents, lines, plan_name,
-       issuer_snapshot, client_name, client_tax_id, client_address, payment_method, stripe_session_id,
-       stripe_url, issued_at, paid_at, locked, notes, created_at)
+       issuer_snapshot, client_name, client_tax_id, client_address, client_country, origin, payment_method, stripe_session_id,
+       stripe_url, issued_at, due_at, paid_at, locked, notes, created_at)
      VALUES (
        @id, @workspace_id, @series_id, @number, @invoice_type, @rectifies_invoice_id, @rectify_reason,
        @period_start, @period_end, @operation_date, @status, @currency, @subtotal_cents, @tax_cents, @tax_rate,
        @tax_breakdown, @vat_regime, @legal_mentions, @irpf_rate, @irpf_cents, @total_cents, @lines, @plan_name,
-       @issuer_snapshot, @client_name, @client_tax_id, @client_address, @payment_method, @stripe_session_id,
-       @stripe_url, @issued_at, @paid_at, @locked, @notes, @created_at)`,
+       @issuer_snapshot, @client_name, @client_tax_id, @client_address, @client_country, @origin, @payment_method, @stripe_session_id,
+       @stripe_url, @issued_at, @due_at, @paid_at, @locked, @notes, @created_at)`,
   ).run(full);
   return full;
 }
@@ -1678,8 +1924,8 @@ const INVOICE_COLUMNS = new Set([
   'series_id', 'number', 'invoice_type', 'rectifies_invoice_id', 'rectify_reason', 'period_start',
   'period_end', 'operation_date', 'status', 'currency', 'subtotal_cents', 'tax_cents', 'tax_rate',
   'tax_breakdown', 'vat_regime', 'legal_mentions', 'irpf_rate', 'irpf_cents', 'total_cents', 'lines',
-  'plan_name', 'issuer_snapshot', 'client_name', 'client_tax_id', 'client_address', 'payment_method',
-  'stripe_session_id', 'stripe_url', 'issued_at', 'paid_at', 'locked', 'notes',
+  'plan_name', 'issuer_snapshot', 'client_name', 'client_tax_id', 'client_address', 'client_country', 'payment_method',
+  'stripe_session_id', 'stripe_url', 'issued_at', 'due_at', 'paid_at', 'locked', 'notes',
 ]);
 
 export function updateInvoice(invoiceId: string, fields: Record<string, unknown>): void {
@@ -1695,6 +1941,19 @@ export function updateInvoice(invoiceId: string, fields: Record<string, unknown>
  */
 export function reopenChargesForInvoice(invoiceId: string): void {
   db.prepare("UPDATE pending_charges SET status = 'pending', invoice_id = NULL WHERE invoice_id = ? AND status = 'invoiced'").run(invoiceId);
+}
+
+/**
+ * Devuelve a «pendiente» los cargos enlazados a una factura que ya NO figuran
+ * entre sus líneas (el operador los quitó al editar el borrador), para que entren
+ * en el ciclo siguiente. Los que siguen presentes no se tocan.
+ */
+export function reopenChargesNotIn(invoiceId: string, keepIds: string[]): void {
+  const marcadores = keepIds.map(() => '?').join(',');
+  const sql = keepIds.length
+    ? `UPDATE pending_charges SET status = 'pending', invoice_id = NULL WHERE invoice_id = ? AND status = 'invoiced' AND id NOT IN (${marcadores})`
+    : "UPDATE pending_charges SET status = 'pending', invoice_id = NULL WHERE invoice_id = ? AND status = 'invoiced'";
+  db.prepare(sql).run(invoiceId, ...keepIds);
 }
 
 export function deleteInvoice(invoiceId: string): void {
@@ -1804,9 +2063,7 @@ export function workspaceUsageSeries(
          COALESCE(MAX(m.disk_last), 0) AS diskLast,
          COALESCE(SUM(m.net_rx + m.net_tx), 0) AS netBytes
        FROM service_metrics_hourly m
-       JOIN services s ON s.id = m.service_id
-       JOIN projects p ON p.id = s.project_id
-       WHERE p.workspace_id = ? AND m.hour >= ? AND m.hour < ?
+       WHERE m.workspace_id = ? AND m.hour >= ? AND m.hour < ?
        GROUP BY bucket`,
     )
     .all(bucketHours, workspaceId, fromHour, toHour) as {
@@ -1831,7 +2088,13 @@ export function workspaceUsageSeries(
   return out;
 }
 
-/** Consumo por proyecto del workspace en un rango (para el top de consumidores / insights). */
+/**
+ * Consumo por proyecto del workspace en un rango (top de consumidores / insights).
+ * Se filtra por el titular CONGELADO, igual que la facturación, para que el
+ * desglose cuadre con el total y con la factura. El JOIN se conserva solo para
+ * poner el nombre del proyecto: el consumo de un servicio ya borrado sigue
+ * contando en el total pero no aparece aquí (no hay proyecto que nombrar).
+ */
 export function workspaceUsageByProject(
   workspaceId: string,
   fromHour: number,
@@ -1845,7 +2108,7 @@ export function workspaceUsageByProject(
        FROM service_metrics_hourly m
        JOIN services s ON s.id = m.service_id
        JOIN projects p ON p.id = s.project_id
-       WHERE p.workspace_id = ? AND m.hour >= ? AND m.hour < ?
+       WHERE m.workspace_id = ? AND m.hour >= ? AND m.hour < ?
        GROUP BY p.id
        ORDER BY cpuCoreHours DESC`,
     )
@@ -1946,22 +2209,41 @@ export function listActiveSubscriptions(workspaceId: string): SubscriptionRow[] 
     .all(workspaceId) as SubscriptionRow[];
 }
 
+/**
+ * Suscripciones que hay que FACTURAR en un ciclo: las activas y, además, las que
+ * se cancelaron o pausaron DENTRO del ciclo, porque el servicio se prestó hasta
+ * ese momento y se cobra prorrateado. Filtrar solo por `status='active'` regalaba
+ * el periodo servido de toda baja a mitad de mes.
+ */
+export function listBillableSubscriptions(workspaceId: string, cycleStart: number): SubscriptionRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM workspace_subscriptions
+       WHERE workspace_id = ?
+         AND (status = 'active' OR (status IN ('cancelled','paused') AND COALESCE(status_changed_at, cancelled_at) >= ?))
+       ORDER BY created_at ASC`,
+    )
+    .all(workspaceId, cycleStart) as SubscriptionRow[];
+}
+
 export function getSubscription(subId: string): SubscriptionRow | undefined {
   return db.prepare('SELECT * FROM workspace_subscriptions WHERE id = ?').get(subId) as SubscriptionRow | undefined;
 }
 
-export function createSubscription(row: Omit<SubscriptionRow, 'id' | 'created_at'>): SubscriptionRow {
-  const full: SubscriptionRow = { ...row, id: id('sub'), created_at: now() };
+export function createSubscription(row: Omit<SubscriptionRow, 'id' | 'created_at' | 'status_changed_at' | 'paused_by'>): SubscriptionRow {
+  const full: SubscriptionRow = { ...row, id: id('sub'), status_changed_at: row.started_at, paused_by: null, created_at: now() };
   db.prepare(
-    `INSERT INTO workspace_subscriptions (id, workspace_id, product_id, service_id, qty, unit_cents, currency, interval, status, anchor_day, started_at, cancelled_at, created_at)
-     VALUES (@id, @workspace_id, @product_id, @service_id, @qty, @unit_cents, @currency, @interval, @status, @anchor_day, @started_at, @cancelled_at, @created_at)`,
+    `INSERT INTO workspace_subscriptions (id, workspace_id, product_id, service_id, qty, unit_cents, currency, interval, status, anchor_day, started_at, cancelled_at, status_changed_at, paused_by, created_at)
+     VALUES (@id, @workspace_id, @product_id, @service_id, @qty, @unit_cents, @currency, @interval, @status, @anchor_day, @started_at, @cancelled_at, @status_changed_at, @paused_by, @created_at)`,
   ).run(full);
   return full;
 }
 
-const SUBSCRIPTION_COLUMNS = new Set(['service_id', 'qty', 'unit_cents', 'currency', 'interval', 'status', 'anchor_day', 'cancelled_at']);
+const SUBSCRIPTION_COLUMNS = new Set(['service_id', 'qty', 'unit_cents', 'currency', 'interval', 'status', 'anchor_day', 'cancelled_at', 'status_changed_at', 'paused_by']);
 
 export function updateSubscription(subId: string, fields: Record<string, unknown>): void {
+  // Todo cambio de estado deja fecha: el prorrateo de la baja depende de saberla.
+  if (fields.status !== undefined && fields.status_changed_at === undefined) fields = { ...fields, status_changed_at: now() };
   const keys = Object.keys(fields).filter((k) => SUBSCRIPTION_COLUMNS.has(k));
   if (keys.length === 0) return;
   const sets = keys.map((k) => `${k} = ?`).join(', ');
@@ -1973,8 +2255,22 @@ export function deleteSubscription(subId: string): void {
 }
 
 /** Cambia el estado de todas las suscripciones de un workspace (corte/reactivación). */
-export function setWorkspaceSubscriptionsStatus(workspaceId: string, from: string, to: string): number {
-  return db.prepare('UPDATE workspace_subscriptions SET status = ? WHERE workspace_id = ? AND status = ?').run(to, workspaceId, from).changes;
+/**
+ * Cambio de estado masivo de las suscripciones de una cuenta. `actor` distingue el
+ * corte automático por impago ('dunning') de la pausa MANUAL del operador: al
+ * regularizar el pago solo revive lo que cortó la morosidad.
+ */
+export function setWorkspaceSubscriptionsStatus(workspaceId: string, from: string, to: string, actor: 'dunning' | 'manual' = 'dunning'): number {
+  return db
+    .prepare('UPDATE workspace_subscriptions SET status = ?, status_changed_at = ?, paused_by = ? WHERE workspace_id = ? AND status = ?')
+    .run(to, now(), to === 'active' ? null : actor, workspaceId, from).changes;
+}
+
+/** Reactiva solo las suscripciones que cortó la morosidad, no las pausadas a mano. */
+export function reviveDunningSubscriptions(workspaceId: string, from: string): number {
+  return db
+    .prepare("UPDATE workspace_subscriptions SET status = 'active', status_changed_at = ?, paused_by = NULL WHERE workspace_id = ? AND status = ? AND paused_by = 'dunning'")
+    .run(now(), workspaceId, from).changes;
 }
 
 /** Facturas emitidas y aún no cobradas (candidatas a morosidad). */
@@ -2006,10 +2302,31 @@ export function invoiceExistsForCycle(workspaceId: string, periodStart: number, 
     .get(workspaceId, periodStart, periodEnd);
 }
 
-/** Borrador (no cerrado) de un ciclo del workspace, para regenerarlo al vencer el periodo. */
+/**
+ * ¿El periodo tiene ya una factura EXPEDIDA viva (emitida, cobrada o vencida)?
+ * Un borrador no cuenta: mientras no se emita, el periodo sigue sin facturar y el
+ * ancla no debe darlo por cerrado (`performEmission` la avanza al expedir).
+ */
+export function issuedInvoiceExistsForCycle(workspaceId: string, periodStart: number): boolean {
+  return !!db
+    .prepare("SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? AND status NOT IN ('void','draft') LIMIT 1")
+    .get(workspaceId, periodStart);
+}
+
+/**
+ * Borrador GENERADO POR EL CICLO para un periodo, que el tick puede sustituir por
+ * la factura definitiva al vencer. Se exige `origin = 'cycle'` e `invoice_type`
+ * ordinaria: una factura a medida o una rectificativa en borrador pueden compartir
+ * `period_start` y borrarlas se llevaría por delante el trabajo del operador.
+ */
 export function openDraftForCycle(workspaceId: string, periodStart: number): InvoiceRow | undefined {
   return db
-    .prepare("SELECT * FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? AND status = 'draft' ORDER BY created_at DESC LIMIT 1")
+    .prepare(
+      `SELECT * FROM workspace_invoices
+       WHERE workspace_id = ? AND period_start = ? AND status = 'draft'
+         AND origin = 'cycle' AND invoice_type = 'normal'
+       ORDER BY created_at DESC LIMIT 1`,
+    )
     .get(workspaceId, periodStart) as InvoiceRow | undefined;
 }
 
@@ -2068,6 +2385,14 @@ export function ingestUsageEvent(evt: {
   ts: number;
   metadata?: string | null;
 }): boolean {
+  // Titular resuelto AHORA y congelado en el cubo horario: la factura no puede
+  // depender de a qué cuenta pertenezca el servicio dentro de tres meses.
+  const workspaceId =
+    evt.subjectType === 'workspace'
+      ? evt.subjectId
+      : ((db
+          .prepare('SELECT p.workspace_id AS ws FROM services s JOIN projects p ON p.id = s.project_id WHERE s.id = ?')
+          .get(evt.subjectId) as { ws: string | null } | undefined)?.ws ?? null);
   return db.transaction(() => {
     const res = db
       .prepare(
@@ -2081,31 +2406,30 @@ export function ingestUsageEvent(evt: {
     if (res.changes === 0) return false; // idempotency_key ya visto
     const hour = Math.floor(evt.ts / 3_600_000);
     db.prepare(
-      `INSERT INTO usage_meter_hourly (subject_type, subject_id, meter, hour, quantity)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(subject_id, meter, hour) DO UPDATE SET quantity = quantity + excluded.quantity`,
-    ).run(evt.subjectType, evt.subjectId, evt.meter, hour, evt.quantity);
+      `INSERT INTO usage_meter_hourly (subject_type, subject_id, meter, hour, quantity, workspace_id)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(subject_id, meter, hour) DO UPDATE SET
+         quantity = quantity + excluded.quantity,
+         workspace_id = COALESCE(workspace_id, excluded.workspace_id)`,
+    ).run(evt.subjectType, evt.subjectId, evt.meter, hour, evt.quantity, workspaceId);
     return true;
   })();
 }
 
 /**
- * Consumo agregado de un medidor lógico/IA para un workspace en un rango horario,
- * sumando tanto los eventos imputados al propio workspace como a sus servicios.
+ * Consumo agregado de un medidor lógico/IA para un workspace en un rango horario.
+ * Se filtra por el titular CONGELADO en el momento de medir (`workspace_id`), no
+ * por la pertenencia actual del servicio: si no, borrar el servicio o mover el
+ * proyecto de cuenta cambiaría retroactivamente lo ya consumido.
  */
 export function workspaceMeterUsage(workspaceId: string, meter: string, fromHour: number, toHour: number): number {
   const row = db
     .prepare(
       `SELECT COALESCE(SUM(u.quantity), 0) AS total
        FROM usage_meter_hourly u
-       WHERE u.meter = ? AND u.hour >= ? AND u.hour < ? AND (
-         (u.subject_type = 'workspace' AND u.subject_id = ?)
-         OR (u.subject_type = 'service' AND u.subject_id IN (
-           SELECT s.id FROM services s JOIN projects p ON p.id = s.project_id WHERE p.workspace_id = ?
-         ))
-       )`,
+       WHERE u.meter = ? AND u.hour >= ? AND u.hour < ? AND u.workspace_id = ?`,
     )
-    .get(meter, fromHour, toHour, workspaceId, workspaceId) as { total: number };
+    .get(meter, fromHour, toHour, workspaceId) as { total: number };
   return row.total;
 }
 
@@ -2140,7 +2464,10 @@ export function getWorkspaceApiKeyByHash(hash: string): WorkspaceApiKeyRow | und
   return db.prepare('SELECT * FROM workspace_api_keys WHERE key_hash = ?').get(hash) as WorkspaceApiKeyRow | undefined;
 }
 
-const WS_API_KEY_COLUMNS = new Set(['name', 'allowed_models', 'status', 'budget_cents_month', 'spend_cents_cycle', 'cycle_anchor', 'rate_limit_rpm', 'expires_at', 'revoked_at']);
+// `suspended_by` entra en la lista blanca: sin él, desbloquear una clave a mano
+// dejaba la marca 'dunning' pegada, y al pagar una factura la clave revivía sola
+// deshaciendo la decisión del operador.
+const WS_API_KEY_COLUMNS = new Set(['name', 'allowed_models', 'status', 'suspended_by', 'budget_cents_month', 'spend_cents_cycle', 'cycle_anchor', 'rate_limit_rpm', 'expires_at', 'revoked_at']);
 
 export function updateWorkspaceApiKey(keyId: string, fields: Record<string, unknown>): void {
   const keys = Object.keys(fields).filter((k) => WS_API_KEY_COLUMNS.has(k));
@@ -2150,8 +2477,17 @@ export function updateWorkspaceApiKey(keyId: string, fields: Record<string, unkn
 }
 
 /** Cambia el estado de TODAS las claves de un workspace (corte/reactivación por impago). */
-export function setWorkspaceKeysStatus(workspaceId: string, from: string, to: string): number {
-  return db.prepare('UPDATE workspace_api_keys SET status = ? WHERE workspace_id = ? AND status = ?').run(to, workspaceId, from).changes;
+export function setWorkspaceKeysStatus(workspaceId: string, from: string, to: string, actor: 'dunning' | 'manual' = 'dunning'): number {
+  return db
+    .prepare('UPDATE workspace_api_keys SET status = ?, suspended_by = ? WHERE workspace_id = ? AND status = ?')
+    .run(to, to === 'active' ? null : actor, workspaceId, from).changes;
+}
+
+/** Reactiva solo las claves que suspendió la morosidad, no las cortadas a mano. */
+export function reviveDunningKeys(workspaceId: string, from: string): number {
+  return db
+    .prepare("UPDATE workspace_api_keys SET status = 'active', suspended_by = NULL WHERE workspace_id = ? AND status = ? AND suspended_by = 'dunning'")
+    .run(workspaceId, from).changes;
 }
 
 /** Actualiza `last_used_at` de forma diferida (como los tokens de panel): solo si pasó >60 s. */

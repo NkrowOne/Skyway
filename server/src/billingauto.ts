@@ -9,15 +9,18 @@ import { auditSystem } from './audit';
 import { fireWorkspaceAlert } from './alerts';
 import { getBillingAutomation } from './billingsettings';
 import { getBillingProfile } from './company';
-import { generateCycleDraft, issueInvoice } from './routes/billing';
+import { BillingError, generateCycleDraft, issueInvoice, pendingPeriods, sendInvoiceEmail } from './routes/billing';
 import {
   deleteInvoice,
   getWorkspace,
   invoiceExistsForCycle,
+  issuedInvoiceExistsForCycle,
   listUnpaidIssuedInvoices,
   listWorkspaces,
   openDraftForCycle,
   resolveAlertsByDedupe,
+  reviveDunningKeys,
+  reviveDunningSubscriptions,
   setWorkspaceKeysStatus,
   setWorkspaceSubscriptionsStatus,
   updateWorkspace,
@@ -32,9 +35,14 @@ function paymentTermsDays(): number {
   return Number.isFinite(n) ? n : 30;
 }
 
-/** Fecha de vencimiento de una factura = expedición + condiciones de pago del perfil. */
+/**
+ * Fecha de vencimiento de una factura. Manda la CONGELADA al emitir: si se
+ * recalculara con el perfil vivo, cambiar las condiciones de pago movería el
+ * vencimiento de facturas ya expedidas y la fecha impresa dejaría de coincidir con
+ * la que dispara la suspensión. Las anteriores a la columna caen al cálculo previo.
+ */
 function invoiceDueMs(inv: InvoiceRow, termsDays: number): number {
-  return (inv.issued_at ?? inv.created_at) + termsDays * DAY;
+  return inv.due_at ?? (inv.issued_at ?? inv.created_at) + termsDays * DAY;
 }
 
 /**
@@ -45,9 +53,31 @@ function invoiceDueMs(inv: InvoiceRow, termsDays: number): number {
  */
 function overdueBalance(invoices: InvoiceRow[], workspaceId: string, termsDays: number, nowMs: number): { saldo: number; vencidas: InvoiceRow[] } {
   const propias = invoices.filter((i) => i.workspace_id === workspaceId);
-  const vencidas = propias.filter((i) => i.total_cents > 0 && invoiceDueMs(i, termsDays) < nowMs);
-  const abonos = propias.filter((i) => i.total_cents <= 0).reduce((s, i) => s + i.total_cents, 0);
-  return { saldo: vencidas.reduce((s, i) => s + i.total_cents, 0) + abonos, vencidas };
+  // Los abonos se imputan contra las vencidas MÁS ANTIGUAS (FIFO), como en
+  // cualquier cuenta corriente. No basta con restar el saldo global: la etapa de
+  // morosidad se decide con la vencida más antigua que quede viva, y devolver la
+  // lista en bruto cancelaba cuentas por una factura que un abono ya había saldado
+  // mientras la única deuda real seguía dentro del periodo de gracia.
+  const vencidas = propias
+    .filter((i) => i.total_cents > 0 && invoiceDueMs(i, termsDays) < nowMs)
+    .sort((a, b) => invoiceDueMs(a, termsDays) - invoiceDueMs(b, termsDays));
+  let credito = -propias.filter((i) => i.total_cents <= 0).reduce((s, i) => s + i.total_cents, 0);
+  const vivas: InvoiceRow[] = [];
+  let saldo = 0;
+  for (const inv of vencidas) {
+    const aplicado = Math.min(credito, inv.total_cents);
+    credito -= aplicado;
+    const resto = inv.total_cents - aplicado;
+    // Una factura parcialmente abonada sigue viva por el remanente, y conserva su
+    // vencimiento: es deuda real y con su antigüedad.
+    if (resto > 0) {
+      vivas.push(inv);
+      saldo += resto;
+    }
+  }
+  // El crédito sobrante (abonos por encima de lo vencido) deja saldo negativo:
+  // la cuenta no debe nada y `reactivateWorkspaceIfCurrent` puede levantar el corte.
+  return { saldo: saldo - credito, vencidas: vivas };
 }
 
 /**
@@ -67,8 +97,10 @@ export function reactivateWorkspaceIfCurrent(workspaceId: string): void {
   // La cancelación (etapa 3) es TERMINAL: las claves revocadas y las suscripciones
   // canceladas no reviven solas; pagar no restaura el servicio, requiere alta manual.
   const wasCancelled = stage >= 3;
-  setWorkspaceKeysStatus(workspaceId, 'suspended', 'active');
-  setWorkspaceSubscriptionsStatus(workspaceId, 'paused', 'active');
+  // Solo revive lo que cortó la MOROSIDAD: si el operador había suspendido una
+  // clave o pausado una suscripción a mano, pagar no debe deshacer su decisión.
+  reviveDunningKeys(workspaceId, 'suspended');
+  reviveDunningSubscriptions(workspaceId, 'paused');
   updateWorkspace(workspaceId, { dunning_stage: 0, dunning_since: null, ai_suspended: 0, last_dunning_action_at: nowMs });
   resolveAlertsByDedupe(`ws:${workspaceId}:overdue`);
   resolveAlertsByDedupe(`ws:${workspaceId}:suspended`);
@@ -180,58 +212,97 @@ export function dunningTick(nowMs: number): void {
   }
 }
 
-/** Ciclo COMPLETO anterior anclado al día de facturación (el que se factura al llegar ese día). */
-function previousCycle(billingDay: number, now: Date): { start: number; end: number } {
-  const start = new Date(now.getFullYear(), now.getMonth() - 1, billingDay);
-  const end = new Date(now.getFullYear(), now.getMonth(), billingDay);
-  return { start: start.getTime(), end: end.getTime() };
+/**
+ * Da por cerrado un periodo que el tick no va a facturar: o no había nada que
+ * cobrar, o ya tiene factura expedida. Sin esto el ancla se quedaba clavada en el
+ * primer periodo saltado, el hueco de `pendingPeriods` crecía mes a mes y la
+ * previsión del ciclo en curso volvía a incluir periodos ya facturados.
+ *
+ * Solo empuja si el ancla está exactamente al inicio del periodo: así un ciclo
+ * anterior bloqueado por un error de negocio no se salta sin más. Un BORRADOR no
+ * cierra nada —el periodo sigue sin facturar hasta que se expida—, que es la misma
+ * regla que sigue `performEmission` al avanzar el ancla.
+ */
+function cerrarAncla(workspaceId: string, cycle: { start: number; end: number }, exigirExpedida = false): void {
+  if (exigirExpedida && !issuedInvoiceExistsForCycle(workspaceId, cycle.start)) return;
+  const actual = getWorkspace(workspaceId);
+  if (!actual || actual.last_billed_period_end !== cycle.start) return;
+  updateWorkspace(workspaceId, { last_billed_period_end: cycle.end });
 }
 
 /**
- * En el día de facturación de cada cuenta, genera el borrador del ciclo COMPLETO
- * anterior (plan + suscripciones + uso medido + cargos) si aún no existe. Se crea
- * en DRAFT y, SOLO si el operador ha activado la auto-emisión, se emite (numera y
- * bloquea): la emisión es un acto legal irreversible, por eso es opt-in.
+ * Genera el borrador del periodo CERRADO que quede pendiente en cada cuenta (plan
+ * + suscripciones + uso medido + cargos). Se crea en DRAFT y, SOLO si el operador
+ * ha activado la auto-emisión, se emite (numera y bloquea): la emisión es un acto
+ * legal irreversible, por eso es opt-in.
+ *
+ * El periodo va del ANCLA persistente (fin de lo último facturado) al último corte
+ * vencido, no del día del mes. Así, cambiar el día de facturación no refactura el
+ * tramo solapado, y si el servidor estuvo caído el día de cierre el ciclo se
+ * recupera en el primer tick que corra, en vez de perderse para siempre.
  */
 export function billingCycleTick(now: Date): void {
   const auto = getBillingAutomation();
   if (!auto.autoGenerate) return; // generación automática desactivada por el operador
-  const day = now.getDate();
   for (const ws of listWorkspaces()) {
     try {
-      if (ws.billing_day !== day || ws.status !== 'active') continue;
-      const cycle = previousCycle(ws.billing_day, now);
-      // Idempotencia sobre el ciclo YA CERRADO: un borrador creado a mitad de mes
-      // (una previsión del operador) no cuenta como facturado, porque le falta el
-      // consumo del resto del periodo. Se sustituye por el definitivo.
-      if (invoiceExistsForCycle(ws.id, cycle.start, cycle.end)) continue;
-      const previo = openDraftForCycle(ws.id, cycle.start);
-      // `deleteInvoice` devuelve sus cargos puntuales a 'pending', así que el
-      // borrador nuevo vuelve a incluirlos: no se pierde nada por el camino.
-      if (previo) {
-        deleteInvoice(previo.id);
-        auditSystem('invoice_draft_replaced', `${ws.name} · borrador parcial sustituido por la factura del ciclo cerrado`);
-      }
-      const inv = generateCycleDraft(ws, cycle);
-      if (!inv) continue; // nada que facturar: no se crea un borrador vacío
-      const money = `${inv.currency} ${(inv.total_cents / 100).toFixed(2)}`;
-      if (auto.autoIssue) {
-        const issued = issueInvoice(inv.id) ?? inv;
-        auditSystem('invoice_auto_issued', `${ws.name} · ${issued.number ?? issued.id} · ${money} (emitida automáticamente)`);
-        fireWorkspaceAlert({
-          severity: 'info',
-          workspaceId: ws.id,
-          type: 'invoice_auto_issued',
-          title: `Factura emitida automáticamente — ${ws.name}`,
-          message: `Factura ${issued.number ?? issued.id} por ${money}.`,
-          explanation: 'Auto-emisión activada: revísala en la cuenta y envía el enlace de pago si procede.',
-          dedupeKey: `ws:${ws.id}:auto_issued:${issued.id}`,
-        });
-      } else {
-        auditSystem('invoice_auto_generated', `${ws.name} · ${money} (borrador del ciclo)`);
+      if (ws.status !== 'active') continue;
+      // Los periodos pendientes se facturan de UNO EN UNO. Si el ancla se ha
+      // quedado varios meses atrás (servidor parado, cuenta suspendida, un ciclo
+      // bloqueado por un error de negocio), facturar el hueco entero de una vez
+      // cobraría una sola cuota por todos los meses servidos.
+      for (const cycle of pendingPeriods(ws, now)) {
+        // Idempotencia sobre el ciclo YA CERRADO: un borrador creado a mitad de mes
+        // (una previsión del operador) no cuenta como facturado, porque le falta el
+        // consumo del resto del periodo. Se sustituye por el definitivo.
+        if (invoiceExistsForCycle(ws.id, cycle.start, cycle.end)) {
+          cerrarAncla(ws.id, cycle, true);
+          continue;
+        }
+        // Solo se sustituye un borrador que generó el propio ciclo: una factura a
+        // medida o una rectificativa en borrador pueden compartir `period_start` y
+        // borrarlas se llevaría por delante el trabajo del operador.
+        const previo = openDraftForCycle(ws.id, cycle.start);
+        // `deleteInvoice` devuelve sus cargos puntuales a 'pending', así que el
+        // borrador nuevo vuelve a incluirlos: no se pierde nada por el camino.
+        if (previo) {
+          deleteInvoice(previo.id);
+          auditSystem('invoice_draft_replaced', `${ws.name} · borrador parcial sustituido por la factura del ciclo cerrado`);
+        }
+        const inv = generateCycleDraft(ws, cycle);
+        if (!inv) {
+          // Nada que facturar (sin plan, sin consumo, sin cargos): el periodo queda
+          // cerrado igualmente. Si el ancla no avanzara, el hueco crecería mes a mes
+          // y la previsión del ciclo en curso arrastraría periodos ya vistos.
+          cerrarAncla(ws.id, cycle);
+          continue;
+        }
+        const money = `${inv.currency} ${(inv.total_cents / 100).toFixed(2)}`;
+        if (auto.autoIssue) {
+          const issued = issueInvoice(inv.id) ?? inv;
+          auditSystem('invoice_auto_issued', `${ws.name} · ${issued.number ?? issued.id} · ${money} (emitida automáticamente)`);
+          // Envío al cliente, si está activado. Best-effort: el fallo se audita y
+          // alerta dentro de sendInvoiceEmail, y nunca deshace la emisión.
+          if (auto.emailOnIssue) void sendInvoiceEmail(issued);
+          fireWorkspaceAlert({
+            severity: 'info',
+            workspaceId: ws.id,
+            type: 'invoice_auto_issued',
+            title: `Factura emitida automáticamente — ${ws.name}`,
+            message: `Factura ${issued.number ?? issued.id} por ${money}.`,
+            explanation: 'Auto-emisión activada: revísala en la cuenta y envía el enlace de pago si procede.',
+            dedupeKey: `ws:${ws.id}:auto_issued:${issued.id}`,
+          });
+        } else {
+          auditSystem('invoice_auto_generated', `${ws.name} · ${money} (borrador del ciclo)`);
+        }
       }
     } catch (err: any) {
-      auditSystem('billing_cycle_error', `${ws.id}: ${(err?.message || err).toString().slice(0, 200)}`);
+      // Un error de negocio (moneda mezclada, dato fiscal ausente) es accionable
+      // por el operador: se audita con su mensaje y NO avanza el ancla, así que el
+      // periodo se reintenta en el tick siguiente una vez corregido.
+      const prefijo = err instanceof BillingError ? 'revisar' : 'error';
+      auditSystem('billing_cycle_error', `${ws.name}: [${prefijo}] ${(err?.message || err).toString().slice(0, 200)}`);
     }
   }
 }

@@ -145,6 +145,9 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
     if (body.unitCents !== undefined) fields.unit_cents = body.unitCents;
     if (body.status !== undefined) {
       fields.status = body.status;
+      // Igual que en las claves: el cambio hecho a mano se marca como manual, para
+      // que el pago de una factura no lo deshaga al revivir lo que cortó la mora.
+      fields.paused_by = body.status === 'active' ? null : 'manual';
       if (body.status === 'cancelled') fields.cancelled_at = Date.now();
     }
     updateSubscription(subId, fields);

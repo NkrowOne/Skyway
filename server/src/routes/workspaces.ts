@@ -15,10 +15,12 @@ import {
   getWorkspace,
   listServices,
   listUserProjectIds,
+  listPlanPeriods,
   listWorkspaceAlerts,
   listWorkspaceProjects,
   listWorkspaceUsers,
   listWorkspaces,
+  recordPlanChange,
   setProjectWorkspace,
   setUserProjects,
   transaction,
@@ -31,6 +33,7 @@ import {
   workspaceUsageSeries,
 } from '../db';
 import { grantedModules, workspaceQuotaSummary, workspacePlan } from '../quota';
+import { DEFAULT_COUNTRY, normalizeCountry } from '../countries';
 import { MODULES, sanitizeModules } from '../modules';
 import { UserRow, WorkspaceRow } from '../types';
 import { hashPassword } from '../util';
@@ -63,6 +66,8 @@ const patchWorkspaceSchema = z.object({
   // Datos fiscales del cliente (destinatario de la factura).
   billingTaxId: z.string().trim().max(60).nullable().optional(),
   billingAddress: z.string().trim().max(400).nullable().optional(),
+  // País del cliente en ISO 3166-1 alfa-2; vacío o inválido cae a España.
+  billingCountry: z.string().trim().length(2).toUpperCase().optional(),
   billingDay: z.coerce.number().int().min(1).max(28).optional(),
   // Descuento comercial de la cuenta (%); null = hereda el del plan.
   discountPct: z.coerce.number().min(0).max(100).nullable().optional(),
@@ -96,8 +101,13 @@ function publicWorkspace(ws: WorkspaceRow) {
     billing_email: ws.billing_email,
     billing_tax_id: ws.billing_tax_id,
     billing_address: ws.billing_address,
+    billing_country: ws.billing_country ?? DEFAULT_COUNTRY,
     billing_day: ws.billing_day,
     discount_pct: ws.discount_pct,
+    /** Contratación del plan vigente: ancla del aniversario de las cuotas anuales. */
+    plan_since: ws.plan_since,
+    /** Facturado hasta aquí: desde este instante arranca el próximo ciclo. */
+    last_billed_period_end: ws.last_billed_period_end,
     notes: ws.notes,
     // Estado de morosidad (corte por impago).
     ai_suspended: ws.ai_suspended ?? 0,
@@ -172,7 +182,22 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
       created_at: p.created_at,
     }));
     const members = listWorkspaceUsers(id).map(publicMember);
-    return { workspace: publicWorkspace(ws), projects, members };
+    // Historial de plan: explica por qué una factura reparte el mes entre dos
+    // planes. Se devuelve el nombre congelado en el tramo si el plan ya no existe.
+    const planHistory = listPlanPeriods(id).map((p) => {
+      const vivo = p.plan_id ? getPlan(p.plan_id) : undefined;
+      return {
+        id: p.id,
+        planId: p.plan_id,
+        planName: p.plan_id ? vivo?.name ?? p.plan_name : null,
+        priceCents: p.plan_id ? vivo?.price_cents ?? p.price_cents : null,
+        currency: p.plan_id ? vivo?.currency ?? p.currency : null,
+        interval: p.plan_id ? vivo?.interval ?? p.interval : null,
+        from: p.from_ms,
+        to: p.to_ms,
+      };
+    });
+    return { workspace: publicWorkspace(ws), projects, members, planHistory };
   });
 
   // Live resize + gestión del workspace (cuotas, plan, concesión de módulos, estado, facturación). Solo admin.
@@ -184,13 +209,18 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     if (body.planId && !getPlan(body.planId)) return reply.code(400).send({ error: 'Plan desconocido' });
 
     const fields: Record<string, unknown> = {};
+    // Instante único para el cambio de plan: el `plan_since` de la cuenta y el
+    // corte del historial por tramos tienen que caer en el MISMO milisegundo, o el
+    // ciclo dejaría un hueco (o un solape) de unos milisegundos entre ambos.
+    const ahora = Date.now();
+    const cambiaPlan = body.planId !== undefined && (body.planId || null) !== ws.plan_id;
     if (body.name !== undefined) fields.name = body.name;
     if (body.planId !== undefined) {
       fields.plan_id = body.planId || null; // '' → sin plan (no rompe la FK)
       // Cambiar de plan reancla el aniversario de la cuota anual: si no, un plan
       // anual nuevo heredaría la fecha del anterior y podría cobrarse dos veces
       // en el mismo año natural.
-      if ((body.planId || null) !== ws.plan_id) fields.plan_since = body.planId ? Date.now() : null;
+      if (cambiaPlan) fields.plan_since = body.planId ? ahora : null;
     }
     if (body.cpuCores !== undefined) fields.cpu_cores = body.cpuCores;
     if (body.memoryMb !== undefined) fields.memory_mb = body.memoryMb;
@@ -203,12 +233,23 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     if (body.billingEmail !== undefined) fields.billing_email = body.billingEmail;
     if (body.billingTaxId !== undefined) fields.billing_tax_id = body.billingTaxId;
     if (body.billingAddress !== undefined) fields.billing_address = body.billingAddress;
+    if (body.billingCountry !== undefined) fields.billing_country = normalizeCountry(body.billingCountry);
     if (body.billingDay !== undefined) fields.billing_day = body.billingDay;
     if (body.discountPct !== undefined) fields.discount_pct = body.discountPct;
     if (body.dunningExempt !== undefined) fields.dunning_exempt = body.dunningExempt ? 1 : 0;
     if (body.notes !== undefined) fields.notes = body.notes;
 
-    updateWorkspace(id, fields);
+    // El plan de la cuenta y su historial se mueven juntos: si el tramo no se
+    // cerrara, el ciclo facturaría el mes entero al plan que ya no está vigente.
+    transaction(() => {
+      updateWorkspace(id, fields);
+      if (cambiaPlan) recordPlanChange(id, (body.planId || null) as string | null, ahora);
+    });
+    if (cambiaPlan) {
+      const antes = ws.plan_id ? getPlan(ws.plan_id)?.name ?? ws.plan_id : 'sin plan';
+      const despues = body.planId ? getPlan(body.planId)?.name ?? body.planId : 'sin plan';
+      audit(req, 'workspace_plan_changed', { type: 'workspace', id, detail: `${antes} → ${despues}` });
+    }
     if (body.status === 'suspended') {
       audit(req, 'workspace_suspended', { type: 'workspace', id, detail: ws.name });
     } else {

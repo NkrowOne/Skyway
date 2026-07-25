@@ -146,6 +146,20 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
                 dedupeKey: `stripe:descuadre:${sessionId}`,
               });
               break;
+            case 'cobro_duplicado':
+              // La factura ya estaba saldada por otra vía o con otra sesión: este
+              // cobro es dinero de más que hay que devolver, no un reenvío.
+              auditSystem('invoice_paid_duplicado', `${outcome.invoice.number ?? outcome.invoice.id} · ${sessionId} · ${outcome.detail}`);
+              fireWorkspaceAlert({
+                severity: 'critical',
+                workspaceId: outcome.invoice.workspace_id,
+                type: 'stripe_cobro_duplicado',
+                title: 'Posible cobro duplicado en Stripe',
+                message: `Sesión ${sessionId} sobre la factura ${outcome.invoice.number ?? outcome.invoice.id}, que ${outcome.detail}.`,
+                explanation: 'La factura NO se ha vuelto a marcar como pagada. Comprueba en Stripe si procede devolver este cobro.',
+                dedupeKey: `stripe:duplicado:${sessionId}`,
+              });
+              break;
             case 'sin_factura':
               auditSystem('invoice_paid_huerfano', sessionId);
               fireAlert({

@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertWorkspaceAccess, requireAuth } from '../auth';
+import { audit } from '../audit';
 import { getProject, getService, ingestUsageEvent } from '../db';
 
 /**
@@ -19,6 +20,9 @@ const usageSchema = z.object({
   ts: z.coerce.number().int().optional(),
   metadata: z.record(z.unknown()).optional(),
 });
+
+/** (cuenta, medidor, día) ya trazados, para no auditar cada evento suelto. */
+const trazaVista = new Set<string>();
 
 export async function usageRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
@@ -55,6 +59,19 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
       ts,
       metadata: body.metadata ? JSON.stringify(body.metadata) : null,
     });
+    // El consumo ingerido por API acaba en una factura, así que interesa saber
+    // quién lo inyecta. Pero una fila de auditoría por evento inunda una tabla que
+    // no se poda: se deja traza UNA vez por (cuenta, medidor, día), que es lo que
+    // de verdad sirve para investigar, y el volumen queda acotado.
+    if (fresh) {
+      const dia = Math.floor(ts / 86_400_000);
+      const clave = `${workspaceId}:${body.meter}:${dia}`;
+      if (!trazaVista.has(clave)) {
+        if (trazaVista.size > 2000) trazaVista.clear(); // tope de memoria; se vuelve a trazar
+        trazaVista.add(clave);
+        audit(req, 'usage_ingested', { type: 'workspace', id: workspaceId, detail: `${body.meter} (primera ingesta del día)` });
+      }
+    }
     return { ok: true, duplicate: !fresh };
   });
 }

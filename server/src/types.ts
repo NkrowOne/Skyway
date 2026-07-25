@@ -313,6 +313,8 @@ export interface WorkspaceRow {
   billing_tax_id: string | null;
   /** Domicilio fiscal del cliente (destinatario de la factura). */
   billing_address: string | null;
+  /** País del cliente en ISO 3166-1 alfa-2. «ES» por defecto. */
+  billing_country: string;
   /** Día del mes (1–28) en que renueva el ciclo de facturación. */
   billing_day: number;
   /** Descuento comercial (%) de la cuenta; null = hereda el del plan. */
@@ -323,6 +325,13 @@ export interface WorkspaceRow {
    * cuentas anteriores a esta columna; entonces se usa `created_at`.
    */
   plan_since: number | null;
+  /**
+   * Fin del último periodo facturado: el ancla desde la que arranca el siguiente.
+   * Sustituye a derivar el ciclo de `billing_day`, que refacturaba el tramo
+   * solapado al cambiar el día y perdía el ciclo si el servidor estaba caído justo
+   * el día de cierre. Null en cuentas anteriores a la columna.
+   */
+  last_billed_period_end: number | null;
   /** Etapa de morosidad alcanzada: 0 al corriente, 1 aviso, 2 suspensión, 3 cancelación. */
   dunning_stage: number;
   /** Momento en que empezó la mora actual. */
@@ -334,6 +343,26 @@ export interface WorkspaceRow {
   /** Servicio de IA cortado por impago. */
   ai_suspended: number;
   notes: string | null;
+  created_at: number;
+}
+
+/**
+ * Tramo del historial de plan de una cuenta: qué plan tuvo y entre qué fechas.
+ * `to_ms` en null es el tramo VIGENTE. La tarifa se congela al abrirlo para poder
+ * facturar el histórico aunque el plan desaparezca del catálogo; mientras el plan
+ * exista, manda su ficha viva.
+ */
+export interface PlanPeriodRow {
+  id: string;
+  workspace_id: string;
+  /** Plan del tramo. Null = la cuenta estuvo sin plan en ese intervalo. */
+  plan_id: string | null;
+  plan_name: string | null;
+  price_cents: number | null;
+  currency: string | null;
+  interval: string | null;
+  from_ms: number;
+  to_ms: number | null;
   created_at: number;
 }
 
@@ -379,6 +408,13 @@ export interface InvoiceLine {
   irpfRate?: number;
   /** Tipo de recargo de equivalencia (%) de la línea, cuando aplica. */
   reRate?: number;
+  /**
+   * Cargo puntual del que nace la línea. Es el vínculo que permite devolver el
+   * cargo a «pendiente» si se elimina su línea del borrador: sin él, quitar la
+   * línea dejaba el cargo marcado como facturado en una factura que ya no lo
+   * contiene, y no volvía a facturarse nunca.
+   */
+  chargeId?: string;
 }
 
 /** Desglose de bases y cuotas por tipo impositivo (obligatorio si concurren varios tipos). */
@@ -442,6 +478,19 @@ export interface InvoiceRow {
   client_tax_id: string | null;
   /** Domicilio del destinatario congelado al emitir. */
   client_address: string | null;
+  /** País del destinatario (ISO alfa-2) congelado al emitir. */
+  client_country: string | null;
+  /**
+   * Quién la creó: 'cycle' la generó la facturación del ciclo (su borrador es
+   * sustituible por el definitivo), 'manual' la escribió el operador (intocable).
+   */
+  origin: 'cycle' | 'manual';
+  /**
+   * Vencimiento congelado al emitir (expedición + condiciones de pago de ese
+   * momento). Null en facturas anteriores a la columna: entonces se recalcula con
+   * el perfil vivo, como antes.
+   */
+  due_at: number | null;
   /** Método de cobro elegido/registrado. */
   payment_method: PaymentMethod | null;
   stripe_session_id: string | null;
@@ -592,6 +641,13 @@ export interface SubscriptionRow {
   anchor_day: number;
   started_at: number;
   cancelled_at: number | null;
+  /**
+   * Momento del último cambio de estado. Es lo que permite prorratear una baja:
+   * el corte masivo por impago cambia el estado sin escribir `cancelled_at`.
+   */
+  status_changed_at: number | null;
+  /** Quién la pausó/canceló: 'dunning' (impago) o 'manual' (el operador). */
+  paused_by: 'dunning' | 'manual' | null;
   created_at: number;
 }
 
@@ -626,6 +682,8 @@ export interface WorkspaceApiKeyRow {
   /** Modelos permitidos (JSON array); [] = todos los del allowlist global del operador. */
   allowed_models: string;
   status: 'active' | 'suspended' | 'revoked';
+  /** Quién la suspendió: 'dunning' (impago) o 'manual' (el operador). */
+  suspended_by?: 'dunning' | 'manual' | null;
   /** Presupuesto mensual (céntimos); null = sin tope. Se aplica en la fase de límites. */
   budget_cents_month: number | null;
   /** Gasto acumulado del ciclo (contador cacheado; la verdad está en usage_meter_hourly). */

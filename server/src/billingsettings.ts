@@ -15,6 +15,8 @@ export interface BillingAutomation {
   dunningGraceDays: number;
   /** Días de impago (desde el vencimiento) para cancelar la cuenta. */
   dunningCancelDays: number;
+  /** Enviar la factura en PDF al cliente por email al emitirla. Requiere SMTP. */
+  emailOnIssue: boolean;
 }
 
 export const DEFAULT_AUTOMATION: BillingAutomation = {
@@ -22,6 +24,7 @@ export const DEFAULT_AUTOMATION: BillingAutomation = {
   autoIssue: false,
   dunningGraceDays: 14,
   dunningCancelDays: 44,
+  emailOnIssue: false,
 };
 
 /** Lee un booleano de settings admitiendo «1»/«true»; ausente = valor por defecto. */
@@ -43,6 +46,7 @@ export function getBillingAutomation(): BillingAutomation {
     autoIssue: boolSetting('billing.autoIssue', DEFAULT_AUTOMATION.autoIssue),
     dunningGraceDays: intSetting('billing.dunningGraceDays', DEFAULT_AUTOMATION.dunningGraceDays),
     dunningCancelDays: intSetting('billing.dunningCancelDays', DEFAULT_AUTOMATION.dunningCancelDays),
+    emailOnIssue: boolSetting('billing.emailOnIssue', DEFAULT_AUTOMATION.emailOnIssue),
   };
 }
 
@@ -51,5 +55,6 @@ export function setBillingAutomation(patch: Partial<BillingAutomation>): Billing
   if (patch.autoIssue !== undefined) setSetting('billing.autoIssue', patch.autoIssue ? '1' : '0');
   if (patch.dunningGraceDays !== undefined) setSetting('billing.dunningGraceDays', String(patch.dunningGraceDays));
   if (patch.dunningCancelDays !== undefined) setSetting('billing.dunningCancelDays', String(patch.dunningCancelDays));
+  if (patch.emailOnIssue !== undefined) setSetting('billing.emailOnIssue', patch.emailOnIssue ? '1' : '0');
   return getBillingAutomation();
 }

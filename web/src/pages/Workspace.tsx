@@ -6,6 +6,7 @@ import {
   Boxes,
   CreditCard,
   Cpu,
+  Download,
   Gauge,
   HardDrive,
   KeyRound,
@@ -17,6 +18,7 @@ import {
   Play,
   Plus,
   Receipt,
+  Send,
   Sparkles,
   TrendingDown,
   TrendingUp,
@@ -25,6 +27,7 @@ import {
   Users2,
 } from 'lucide-react';
 import { api } from '../api';
+import { COUNTRY_OPTIONS, DEFAULT_COUNTRY, countryName } from '../countries';
 import { Button, ConfirmModal, CopyButton, EditorBar, Field, Modal, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
 import { QuotaMeter } from '../components/QuotaMeter';
 // Gráficos de la pestaña «Uso» (no es la pestaña por defecto): carga diferida.
@@ -54,10 +57,23 @@ import { cx, fmtAxisTime, fmtDate, fmtMb, fmtMoney, timeAgo } from '../utils';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/** Tramo del historial de plan de la cuenta. `to` en null es el vigente. */
+interface PlanPeriod {
+  id: string;
+  planId: string | null;
+  planName: string | null;
+  priceCents: number | null;
+  currency: string | null;
+  interval: string | null;
+  from: number;
+  to: number | null;
+}
+
 interface Detail {
   workspace: Workspace;
   projects: WorkspaceProject[];
   members: WorkspaceMember[];
+  planHistory?: PlanPeriod[];
 }
 
 // ---------------- Resumen: cuota con redimensionado en vivo ----------------
@@ -640,6 +656,38 @@ const INV_TONE: Record<string, 'neutral' | 'info' | 'ok' | 'warn'> = {
 };
 const INV_LABEL: Record<string, string> = { draft: 'borrador', issued: 'emitida', paid: 'pagada', void: 'anulada' };
 
+/**
+ * Historial de plan por tramos. Explica por qué una factura reparte el mes entre
+ * dos planes: cada tramo se cobra por los días servidos a su propio precio. Solo
+ * se pinta si ha habido algún cambio (con un único tramo no aporta nada).
+ */
+function HistorialPlan({ detail }: { detail: Detail }) {
+  const tramos = detail.planHistory ?? [];
+  if (tramos.length < 2) return null;
+  const ancla = detail.workspace.last_billed_period_end;
+  return (
+    <section className="card overflow-hidden">
+      <h2 className="border-b border-line px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">Historial de plan</h2>
+      {tramos.map((t, i) => (
+        <div key={t.id} className={cx('flex flex-wrap items-baseline gap-x-2 px-4 py-2.5 text-[13px]', i > 0 && 'border-t border-line')}>
+          <span className="font-medium">{t.planName ?? 'Sin plan'}</span>
+          {t.priceCents != null && t.currency && (
+            <span className="text-[11px] text-sub">{fmtMoney(t.priceCents, t.currency)}/{t.interval === 'yearly' ? 'año' : 'mes'}</span>
+          )}
+          {t.to === null && <span className="rounded-full bg-ok/15 px-1.5 py-0.5 text-[10px] font-medium text-ok">vigente</span>}
+          <span className="ml-auto text-[11px] text-subtle">
+            {fmtDate(t.from)} → {t.to === null ? 'hoy' : fmtDate(t.to)}
+          </span>
+        </div>
+      ))}
+      <p className="border-t border-line px-4 py-2 text-[11px] text-subtle">
+        Cada tramo se factura por los días servidos a su propio precio.
+        {ancla != null && ` Facturado hasta el ${fmtDate(ancla)}.`}
+      </p>
+    </section>
+  );
+}
+
 function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: boolean; onSaved: () => void }) {
   const toast = useToast();
   const ws = detail.workspace;
@@ -659,6 +707,11 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
     queryClient.invalidateQueries({ queryKey: ['ws-subs', ws.id] });
   };
 
+  const email = useMutation({
+    mutationFn: (id: string) => api.post(`/invoices/${id}/email`),
+    onSuccess: () => toast('Factura enviada al cliente', 'ok'),
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
   const generate = useMutation({
     mutationFn: () => api.post(`/workspaces/${ws.id}/invoices/generate`),
     onSuccess: () => { toast('Factura del ciclo generada', 'ok'); invalidate(); },
@@ -724,6 +777,8 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
         </p>
       </section>
 
+      <HistorialPlan detail={detail} />
+
       <section className="card overflow-hidden">
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <h2 className="text-sm font-semibold">Facturas</h2>
@@ -759,12 +814,34 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                   {inv.paid_at ? ` · pagada ${timeAgo(inv.paid_at)}` : inv.issued_at ? ` · emitida ${timeAgo(inv.issued_at)}` : ''}
                 </p>
               </button>
+              <div className="flex shrink-0 flex-wrap items-center gap-1">
+                {/* La factura en PDF la descarga TAMBIÉN el cliente: es suya. El
+                    resto de acciones (cobrar, emitir, rectificar) son del admin. */}
+                <a
+                  href={`/api/invoices/${inv.id}/pdf`}
+                  download
+                  className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt"
+                  title="Descargar la factura en PDF"
+                >
+                  <Download size={14} />
+                </a>
+              </div>
               {isAdmin && (
                 <div className="flex shrink-0 flex-wrap items-center gap-1">
                   {data?.stripeEnabled && inv.status !== 'paid' && inv.status !== 'void' && inv.total_cents > 0 && (
                     <Button size="sm" variant="ghost" loading={stripeLink.isPending} onClick={() => stripeLink.mutate(inv.id)}>
                       <CreditCard size={13} /> Cobrar
                     </Button>
+                  )}
+                  {inv.status !== 'draft' && inv.status !== 'void' && (
+                    <button
+                      onClick={() => email.mutate(inv.id)}
+                      disabled={email.isPending}
+                      className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt disabled:opacity-50"
+                      title="Enviar la factura al email de facturación del cliente"
+                    >
+                      <Send size={14} />
+                    </button>
                   )}
                   {/* Una factura emitida es inmutable: solo se editan/borran los borradores. */}
                   {inv.status === 'draft' && (
@@ -842,7 +919,7 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
   const toast = useToast();
   const [reason, setReason] = useState('');
   const [correct, setCorrect] = useState(false);
-  const [lines, setLines] = useState(invoice.lines.map((l) => ({ label: l.label, qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate })));
+  const [lines, setLines] = useState(invoice.lines.map((l) => ({ label: l.label, qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate, irpfRate: l.irpfRate ?? 0 })));
 
   const rectify = useMutation({
     mutationFn: () => {
@@ -850,14 +927,14 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
       if (correct) {
         payload.lines = lines
           .filter((l) => l.label.trim())
-          .map((l) => ({ label: l.label.trim(), kind: 'custom', qty: l.qty, unitCents: Math.round(l.unit * 100), taxRate: l.taxRate }));
+          .map((l) => ({ label: l.label.trim(), kind: 'custom', qty: l.qty, unitCents: Math.round(l.unit * 100), taxRate: l.taxRate, irpfRate: l.irpfRate }));
       }
       return api.post(`/invoices/${invoice.id}/rectify`, payload);
     },
     onSuccess: () => { toast('Rectificativa creada en borrador', 'ok'); onSaved(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
-  const setLine = (i: number, patch: Partial<{ label: string; qty: number; unit: number; taxRate: number }>) =>
+  const setLine = (i: number, patch: Partial<{ label: string; qty: number; unit: number; taxRate: number; irpfRate: number }>) =>
     setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
 
   return (
@@ -890,7 +967,7 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
                 </button>
               </div>
             ))}
-            <button onClick={() => setLines((ls) => [...ls, { label: '', qty: 1, unit: 0, taxRate: invoice.tax_rate }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
+            <button onClick={() => setLines((ls) => [...ls, { label: '', qty: 1, unit: 0, taxRate: invoice.tax_rate, irpfRate: 0 }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
               + Añadir línea
             </button>
           </div>
@@ -913,6 +990,7 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
   const clientName = invoice.client_name ?? client.name;
   const clientTaxId = invoice.client_tax_id ?? client.billing_tax_id;
   const clientAddress = invoice.client_address ?? client.billing_address;
+  const clientCountry = countryName(invoice.client_country ?? client.billing_country);
   const title = invoice.invoice_type === 'rectificativa' ? 'Factura rectificativa' : invoice.invoice_type === 'simplificada' ? 'Factura simplificada' : 'Factura';
   // Desglose de IVA; para facturas antiguas sin desglose, se sintetiza uno con el tipo único.
   const breakdown = invoice.tax_breakdown.length > 0
@@ -936,6 +1014,7 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
             <p className="font-semibold">{clientName}</p>
             {clientTaxId && <p className="text-subtle">NIF {clientTaxId}</p>}
             {clientAddress && <p className="whitespace-pre-line text-subtle">{clientAddress}</p>}
+            <p className="text-subtle">{clientCountry}</p>
             {!clientTaxId && <p className="text-[11px] text-warn">Falta el NIF del cliente para una factura completa.</p>}
             <p className="mt-2 text-subtle">
               {invoice.issued_at ? `Expedida ${fmtDate(invoice.issued_at)}` : 'Sin emitir'}
@@ -1043,7 +1122,13 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
   // recompone la factura con lo que llega, así que omitirlos aplicaba el tipo por
   // defecto a todo y una línea exenta pasaba a tributar al 21 %.
   const [lines, setLines] = useState(
-    invoice.lines.map((l) => ({ label: l.label, kind: l.kind ?? 'custom', qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate })),
+    // El IRPF viaja por línea igual que el IVA: omitirlo hacía que el servidor
+    // aplicara el tipo EFECTIVO de la cabecera a todas las líneas, retenciones
+    // incluidas donde no las había.
+    invoice.lines.map((l) => ({
+      label: l.label, kind: l.kind ?? 'custom', qty: l.qty, unit: l.unitCents / 100,
+      taxRate: l.taxRate ?? invoice.tax_rate, irpfRate: l.irpfRate ?? 0, chargeId: l.chargeId,
+    })),
   );
   const base = lines.reduce((s, l) => s + Math.round(l.qty * l.unit * 100), 0);
   const isNew = !invoice.id;
@@ -1053,7 +1138,9 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
       const payload = {
         lines: lines
           .filter((l) => l.label.trim())
-          .map((l) => ({ label: l.label.trim(), kind: l.kind, qty: l.qty, unitCents: Math.round(l.unit * 100), taxRate: l.taxRate })),
+          // `chargeId` viaja de vuelta: es lo que dice al servidor qué cargos
+          // puntuales siguen en la factura y cuáles vuelven a estar pendientes.
+          .map((l) => ({ label: l.label.trim(), kind: l.kind, qty: l.qty, unitCents: Math.round(l.unit * 100), taxRate: l.taxRate, irpfRate: l.irpfRate, chargeId: l.chargeId })),
       };
       return isNew ? api.post(`/workspaces/${workspaceId}/invoices`, payload) : api.patch(`/invoices/${invoice.id}`, payload);
     },
@@ -1061,28 +1148,29 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  const setLine = (i: number, patch: Partial<{ label: string; qty: number; unit: number; taxRate: number }>) =>
+  const setLine = (i: number, patch: Partial<{ label: string; qty: number; unit: number; taxRate: number; irpfRate: number }>) =>
     setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
 
   return (
     <Modal open onClose={onClose} title={isNew ? 'Nueva factura a medida' : 'Editar factura'} wide>
       <div className="flex flex-col gap-2">
-        <div className="grid grid-cols-[1fr_70px_90px_70px_90px_28px] items-center gap-2 px-1 text-[11px] font-medium text-subtle">
-          <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA %</span><span className="text-right">Importe</span><span />
+        <div className="grid grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2 px-1 text-[11px] font-medium text-subtle">
+          <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA %</span><span className="text-right">IRPF %</span><span className="text-right">Importe</span><span />
         </div>
         {lines.map((l, i) => (
-          <div key={i} className="grid grid-cols-[1fr_70px_90px_70px_90px_28px] items-center gap-2">
+          <div key={i} className="grid grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2">
             <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Ej: Plan Pro (mensual)" />
             <input className="input h-9 tnum text-right" type="number" value={l.qty} min={0} onChange={(e) => setLine(i, { qty: Number(e.target.value) || 0 })} />
             <input className="input h-9 tnum text-right" type="number" value={l.unit} step="0.01" onChange={(e) => setLine(i, { unit: Number(e.target.value) || 0 })} />
             <input className="input h-9 tnum text-right" type="number" value={l.taxRate} min={0} max={100} onChange={(e) => setLine(i, { taxRate: Number(e.target.value) || 0 })} />
+            <input className="input h-9 tnum text-right" type="number" value={l.irpfRate} min={0} max={100} onChange={(e) => setLine(i, { irpfRate: Number(e.target.value) || 0 })} />
             <span className="tnum text-right text-[13px]">{fmtMoney(Math.round(l.qty * l.unit * 100), invoice.currency)}</span>
             <button onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="rounded-md p-1 text-subtle hover:text-err" title="Quitar línea">
               <Trash2 size={13} />
             </button>
           </div>
         ))}
-        <button onClick={() => setLines((ls) => [...ls, { label: '', kind: 'custom', qty: 1, unit: 0, taxRate: invoice.tax_rate }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
+        <button onClick={() => setLines((ls) => [...ls, { label: '', kind: 'custom', qty: 1, unit: 0, taxRate: invoice.tax_rate, irpfRate: 0, chargeId: undefined }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
           + Añadir línea
         </button>
         {/* La suma de las líneas es la BASE IMPONIBLE, no el total: rotularla
@@ -1548,6 +1636,7 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
   const [email, setEmail] = useState(ws.billing_email ?? '');
   const [taxId, setTaxId] = useState(ws.billing_tax_id ?? '');
   const [address, setAddress] = useState(ws.billing_address ?? '');
+  const [country, setCountry] = useState(ws.billing_country ?? DEFAULT_COUNTRY);
   const [day, setDay] = useState(String(ws.billing_day));
   const initDisc = ws.discount_pct == null ? '' : String(ws.discount_pct);
   const [disc, setDisc] = useState(initDisc);
@@ -1556,6 +1645,7 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
     email !== (ws.billing_email ?? '') ||
     taxId !== (ws.billing_tax_id ?? '') ||
     address !== (ws.billing_address ?? '') ||
+    country !== (ws.billing_country ?? DEFAULT_COUNTRY) ||
     day !== String(ws.billing_day) ||
     disc !== initDisc ||
     notes !== (ws.notes ?? '');
@@ -1565,6 +1655,7 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
         billingEmail: email.trim() || null,
         billingTaxId: taxId.trim() || null,
         billingAddress: address.trim() || null,
+        billingCountry: country,
         billingDay: Number(day) || 1,
         // Vacío = hereda el descuento del plan (null); un número lo sobreescribe.
         discountPct: disc.trim() === '' ? null : Math.max(0, Math.min(100, Number(disc) || 0)),
@@ -1580,7 +1671,14 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
         <Field label="NIF / CIF" hint="Obligatorio en factura completa"><input className="input" value={taxId} onChange={(e) => setTaxId(e.target.value)} placeholder="B12345678" /></Field>
         <Field label="Email de facturación"><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="pagos@cliente.com" /></Field>
       </div>
-      <Field label="Domicilio fiscal"><textarea className="input min-h-14" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Calle, nº · CP Población · Provincia · País" /></Field>
+      <Field label="Domicilio fiscal"><textarea className="input min-h-14" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Calle, nº · CP Población · Provincia" /></Field>
+      <Field label="País" hint="Determina el régimen de IVA aplicable">
+        <select className="input" value={country} onChange={(e) => setCountry(e.target.value)}>
+          {COUNTRY_OPTIONS.map((c) => (
+            <option key={c.code} value={c.code}>{c.name}</option>
+          ))}
+        </select>
+      </Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Día de cobro" hint="1–28"><input className="input tnum" type="number" min={1} max={28} value={day} onChange={(e) => setDay(e.target.value)} /></Field>
         <Field label="Descuento (%)" hint="vacío = hereda el del plan"><input className="input tnum" type="number" min={0} max={100} step="0.5" value={disc} onChange={(e) => setDisc(e.target.value)} placeholder="del plan" /></Field>

@@ -142,9 +142,15 @@ export interface Workspace {
   billing_email: string | null;
   billing_tax_id: string | null;
   billing_address: string | null;
+  /** País del cliente (ISO 3166-1 alfa-2). «ES» por defecto. */
+  billing_country?: string;
   billing_day: number;
   /** Descuento comercial (%) de la cuenta; null = hereda el del plan. */
   discount_pct: number | null;
+  /** Contratación del plan vigente: ancla del aniversario de las cuotas anuales. */
+  plan_since?: number | null;
+  /** Facturado hasta aquí: desde este instante arranca el próximo ciclo. */
+  last_billed_period_end?: number | null;
   notes: string | null;
   /** Corte del proxy de IA por impago (0/1). */
   ai_suspended: number;
@@ -244,6 +250,13 @@ export interface InvoiceLine {
   unitCents: number;
   amountCents: number;
   taxRate?: number;
+  /** Tipo de retención de IRPF (%) de la línea. */
+  irpfRate?: number;
+  /**
+   * Cargo puntual del que nace la línea. Viaja de vuelta al editar: es lo que
+   * permite al servidor devolver a «pendiente» el cargo cuya línea se elimina.
+   */
+  chargeId?: string;
 }
 
 export interface TaxBreakdownEntry {
@@ -290,6 +303,7 @@ export interface Invoice {
   client_name: string | null;
   client_tax_id: string | null;
   client_address: string | null;
+  client_country?: string | null;
   payment_method: PaymentMethod | null;
   stripe_url: string | null;
   issued_at: number | null;
@@ -321,7 +335,7 @@ export interface BillingProfile {
 export interface InvoicesResponse {
   invoices: Invoice[];
   issuer: BillingProfile;
-  client: { name: string; billing_email: string | null; billing_tax_id: string | null; billing_address: string | null };
+  client: { name: string; billing_email: string | null; billing_tax_id: string | null; billing_address: string | null; billing_country?: string };
   stripeEnabled: boolean;
 }
 
@@ -399,6 +413,8 @@ export interface AccountingInvoice {
 export interface BillingProfileResponse {
   profile: BillingProfile;
   stripe: { hasSecretKey: boolean; hasWebhookSecret: boolean; publishableKey: string };
+  /** Servidor de correo saliente. La contraseña nunca viaja: solo si la hay. */
+  smtp: { configured: boolean; host: string; port: number; secure: boolean; user: string; from: string; fromName: string; hasPassword: boolean };
   invoiceSeq: number;
 }
 
@@ -407,6 +423,8 @@ export interface BillingAutomation {
   autoIssue: boolean;
   dunningGraceDays: number;
   dunningCancelDays: number;
+  /** Enviar la factura en PDF al cliente al emitirla. Requiere SMTP configurado. */
+  emailOnIssue: boolean;
 }
 
 // ---------- catálogo multimodular ----------

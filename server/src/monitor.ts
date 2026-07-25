@@ -234,7 +234,7 @@ async function tick(): Promise<void> {
             netRxDelta += d.rx;
             netTxDelta += d.tx;
           }
-          recordServiceMetrics(service.id, { ...agg, netRxDelta, netTxDelta });
+          recordServiceMetrics(service.id, { ...agg, netRxDelta, netTxDelta }, project.workspace_id);
         }
       } catch {
         /* histórico best-effort: se reintenta en el siguiente tick */
@@ -271,7 +271,7 @@ async function checkDiskQuotas(): Promise<void> {
     for (const service of listServices(project.id)) {
       const du = usage.get(service.id);
       // Foto de disco del servicio para el histórico (aunque no tenga cuota).
-      if (du) recordServiceDisk(service.id, du.totalBytes);
+      if (du) recordServiceDisk(service.id, du.totalBytes, project.workspace_id);
       if (!du || !du.quotaMb) {
         // Sin cuota (o quitada): cualquier alerta de disco pendiente se cierra.
         resolveServiceAlerts(service.id, 'disk_quota', false);
