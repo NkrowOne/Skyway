@@ -6,3 +6,5 @@ data/
 .env.local
 .DS_Store
 data-dev/
+# Worktrees temporales de las herramientas de agente: espacio de trabajo, no código.
+.claude/worktrees/
