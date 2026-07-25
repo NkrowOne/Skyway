@@ -706,6 +706,10 @@ export interface AiModelPriceRow {
   /** Margen objetivo sobre venta (%); guía el PVP sugerido = coste/(1−m/100). */
   margin_pct: number;
   currency: string;
+  /** `auto` = lo mantiene la sincronización con la tarifa de Google; `manual` = lo fijó el operador y no se pisa. */
+  source: 'auto' | 'manual';
+  /** Última vez que la sincronización escribió este coste (null si nunca). */
+  synced_at: number | null;
   updated_at: number;
 }
 

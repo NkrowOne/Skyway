@@ -32,6 +32,9 @@ server/src/
   pricing.ts            cálculo de precios por tramos (graduated/volume) del catálogo
   aigateway.ts          gateway de IA: config (clave de Gemini del operador, modelos), medición de tokens,
                         streaming SSE, API compatible con OpenAI y coste/margen por modelo
+  aiprices.ts           autoactualización de la tarifa de Gemini: lee la tarifa vigente (fuente propia,
+                        página de Google o catálogo interno), la convierte a la moneda del operador y
+                        refresca `ai_model_prices` conservando el margen de cada modelo
   billingauto.ts        automatización: corte por impago (dunning), reactivación y factura automática del ciclo
   billingsettings.ts    ajustes de automatización (auto-generar/auto-emitir el ciclo, umbrales de morosidad)
   security.ts           escáner de seguridad (hallazgos + nota)
@@ -164,10 +167,10 @@ web/src/
 | `invoice_ledger` | **reservada** (Verifactu, RD 1007/2023): libro inmutable encadenado por huella SHA-256 — `id`, `seq`, `invoice_id`, `record_type` (`alta`/`anulacion`), `huella`, `huella_anterior`, `qr_url`, `sif_mode`, `estado_remision`… Se crea vacía para no exigir migración al activar Verifactu; la lógica llega en fase posterior |
 | `invoice_events_log` | **reservada** (Verifactu): registro de eventos del SIF encadenado por huella |
 | `workspace_api_keys` | claves de API por cuenta para el proxy de IA: `id`, `workspace_id`, `name`, `key_hash` (sha256, único; el secreto `skai_…` solo se muestra al crear), `prefix`, `provider`, `allowed_models` (JSON), `status` (`active`/`suspended`/`revoked`), `budget_cents_month`, `spend_cents_cycle`, `rate_limit_rpm`, `last_used_at`, `expires_at`, `revoked_at`. El prefijo **no** empieza por `sky_`: nunca se resuelve como token de panel |
-| `ai_model_prices` | coste del operador por modelo y margen objetivo: `model` (PK), `cost_micros_in`/`cost_micros_cache`/`cost_micros_out` (micro-céntimos por millón de tokens), `margin_pct` (margen objetivo s/ venta, guía el PVP sugerido), `currency`, `updated_at`. Informativo; no interviene en la factura |
+| `ai_model_prices` | coste del operador por modelo y margen objetivo: `model` (PK), `cost_micros_in`/`cost_micros_cache`/`cost_micros_out` (micro-céntimos por millón de tokens), `margin_pct` (margen objetivo s/ venta, guía el PVP sugerido), `currency`, `source` (`auto` = lo mantiene la sincronización con la tarifa de Google, `manual` = fijado por el operador y respetado), `synced_at`, `updated_at`. Informativo; no interviene en la factura |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
-| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44)… |
+| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44)… |
 | `projects` | `id`, `name`, `slug` (único), `workspace_id` (cuenta de cliente), `client` (reflejo denormalizado del nombre del workspace para la UI), página de estado (`status_token`, `status_enabled`, `status_notice`) |
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
@@ -492,8 +495,10 @@ inmediato y reversible: se hace sobre la clave de Skyway, sin tocar Google.
 | POST | `/workspaces/:id/keys/:keyId/block`·`/unblock` | admin | corte / reactivación manual (instantáneo) |
 | DELETE | `/workspaces/:id/keys/:keyId` | manage | revoca la clave (irreversible) |
 | GET·PUT | `/ai/gateway/config` | admin | clave de Gemini (enmascarada), host y modelos permitidos |
-| GET | `/ai/gateway/prices` | admin | coste del operador por modelo (`ai_model_prices`), margen objetivo, **PVP sugerido** (coste/(1−margen)) y PVP de referencia del catálogo con el margen actual |
-| PUT·DELETE | `/ai/gateway/prices/:model` | admin | fija/borra coste (€/M: entrada, cache, salida) y `marginPct` (margen objetivo s/ venta) de un modelo |
+| GET | `/ai/gateway/prices` | admin | coste del operador por modelo (`ai_model_prices`), margen objetivo, **PVP sugerido** (coste/(1−margen)), PVP de referencia del catálogo, estado de la autoactualización (`sync`) y tarifa de lista conocida (`list_usd`) |
+| PUT·DELETE | `/ai/gateway/prices/:model` | admin | fija/borra coste (€/M: entrada, cache, salida) y `marginPct` (margen objetivo s/ venta) de un modelo. Tocar el coste marca la fila `manual`; cambiar solo el margen la deja en `auto`; borrarla la devuelve al automático |
+| POST | `/ai/gateway/prices/sync` | admin+sesión | refresca la tarifa contra Google ahora mismo y devuelve el resultado (altas, actualizados, respetados a mano, sin tarifa, modelos nuevos detectados) |
+| PUT | `/ai/gateway/prices/config` | admin | ajustes de la autoactualización: `auto`, `url` (fuente propia), `currency`, `fxRate`, `defaultMarginPct`, `autoAllow` |
 | GET | `/workspaces/:id/alerts` | manage | avisos de la cuenta (facturación, uso, morosidad) |
 
 **Automatización (scheduler, bucle de 10 min → `billingauto.ts`, ajustes en
@@ -552,6 +557,34 @@ muestra ese coste, el **PVP sugerido** = coste/(1−margen/100) (para copiarlo a
 producto de IA del catálogo) y el **margen actual** frente al PVP de referencia del
 catálogo (primer producto de IA activo de cada medidor). Es una guía de precios: no
 interviene en la factura; el PVP real lo fija el catálogo por medidor.
+
+**Autoactualización de la tarifa (`aiprices.ts`).** El coste no se teclea: Skyway lo
+trae de la tarifa vigente de Google **una vez al día** (tic del `scheduler`, o
+«Actualizar ahora» en Contabilidad) y recalcula el PVP sugerido con el margen que ya
+tuviera cada modelo. Detalles del pase:
+
+- **Fuentes, por orden**: la que configure el operador (`ai.prices.url`, un JSON
+  `{modelo: {in, cache, out}}` en USD/Mtok), la **página oficial** de precios y el
+  **catálogo interno** con fecha (red de seguridad sin conexión). El catálogo solo
+  rellena huecos de una lectura parcial; nunca la pisa. De la página se toma la
+  tarifa *estándar* (no batch) y, en los precios por tramo, la del contexto corto.
+- **Nunca inventa un precio**: el modelo sin tarifa en ninguna fuente se deja como
+  esté y se reporta en `missing` (p. ej. un modelo permitido que Google no tarifa
+  por token). Una lectura de la página con menos de tres modelos se descarta entera.
+- **Moneda**: Google tarifa en USD y el coste se guarda en `ai.prices.currency`
+  (EUR por defecto) usando la referencia del BCE, cacheada en `ai.prices.fx`. Sin
+  cambio fiable la sincronización **falla con aviso** en vez de guardar dólares como
+  si fueran euros; el operador puede fijar el cambio a mano. Cambiar de moneda
+  descarta el cambio guardado.
+- **El margen es del operador**: se conserva intacto en cada pase y solo se estrena
+  (`ai.prices.defaultMarginPct`) en un modelo que aparece por primera vez.
+- **Manual manda**: editar el coste de un modelo marca su fila `manual` y la
+  sincronización deja de tocarla (borrarla la devuelve al automático). Cambiar solo
+  el margen la mantiene en `auto`.
+- **Altas de Google**: se listan los modelos que la clave del operador ya puede usar
+  y tienen tarifa conocida, pero **no** se permiten solos salvo que se active
+  `ai.prices.autoAllow` (fail-closed: permitir un modelo sin tarifa sería tarifar a
+  ciegas). Cada pase queda en auditoría (`ai_prices_synced`).
 
 **Descuento comercial por plan y por cuenta.** Los planes llevan un `discount_pct`
 que rebaja las facturas de todas sus cuentas; cada cuenta puede fijar su propio

@@ -543,11 +543,49 @@ export interface AiModelCost {
   pvp_cents_mtok_in: number | null;
   pvp_cents_mtok_cache: number | null;
   pvp_cents_mtok_out: number | null;
+  /** `auto` = lo mantiene al día la tarifa de Google; `manual` = fijado por el operador. */
+  source: 'auto' | 'manual';
+  synced_at: number | null;
   updated_at: number;
 }
+
+/** Resultado del último pase de autoactualización de la tarifa. */
+export interface AiPriceSync {
+  ok: boolean;
+  at: number;
+  /** De dónde salió la tarifa: fuente propia, Google o el catálogo interno. */
+  source: 'propia' | 'google' | 'catálogo';
+  currency: string;
+  fxRate: number | null;
+  added: string[];
+  updated: string[];
+  unchanged: string[];
+  manual: string[];
+  missing: string[];
+  discovered: string[];
+  error: string | null;
+}
+
+/** Ajustes de la autoactualización + resultado del último pase. */
+export interface AiPriceSyncState {
+  auto: boolean;
+  url: string | null;
+  currency: string;
+  fxRate: number | null;
+  fxAt: number | null;
+  defaultMarginPct: number;
+  autoAllow: boolean;
+  lastAt: number | null;
+  last: AiPriceSync | null;
+  catalogDate: string;
+}
+
 export interface AiModelPrices {
   models: AiModelCost[];
   sell_cents_mtok: { in: number | null; cache: number | null; out: number | null };
+  sync: AiPriceSyncState;
+  /** Tarifa de lista de Google conocida (USD por millón de tokens). */
+  list_usd: Record<string, { in: number; cache: number; out: number }>;
 }
 
 export interface WorkspaceAlert {

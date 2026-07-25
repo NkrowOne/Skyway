@@ -1,11 +1,11 @@
 import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, Send, Sparkles, Trash2, Zap } from 'lucide-react';
+import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, RefreshCw, Send, Sparkles, Trash2, Zap } from 'lucide-react';
 import { api } from '../api';
 import { Button, Field, NumberInput, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { RevenueBars } from '../components/BillingCharts';
-import { AccountingInvoice, AccountingSummary, AiGatewayConfig, AiModelPrices, BillingAutomation, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
-import { cx, fmtDate, fmtMoney } from '../utils';
+import { AccountingInvoice, AccountingSummary, AiGatewayConfig, AiModelPrices, AiPriceSync, AiPriceSyncState, BillingAutomation, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
+import { cx, fmtDate, fmtMoney, timeAgo } from '../utils';
 
 const INV_TONE: Record<string, 'neutral' | 'info' | 'ok' | 'warn'> = { draft: 'neutral', issued: 'info', paid: 'ok', void: 'warn' };
 const INV_LABEL: Record<string, string> = { draft: 'borrador', issued: 'emitida', paid: 'pagada', void: 'anulada' };
@@ -336,22 +336,8 @@ const COST_TYPES = [
   { key: 'cache' as const, label: 'Caché', hint: 'contexto cacheado, más barato' },
 ];
 
-/**
- * Precios de LISTA de Google (USD por millón de tokens) a modo de referencia para
- * comparar con tu coste real. Orientativos y con fecha: los precios cambian y tu
- * coste puede variar por moneda o volumen. Verifica en la web de precios de Gemini.
- */
-const GEMINI_LIST_DATE = '2025';
-const GEMINI_LIST_USD: Record<string, { in: number; cache: number; out: number }> = {
-  'gemini-2.5-pro': { in: 1.25, cache: 0.31, out: 10 },
-  'gemini-2.5-flash': { in: 0.3, cache: 0.075, out: 2.5 },
-  'gemini-2.5-flash-lite': { in: 0.1, cache: 0.025, out: 0.4 },
-  'gemini-2.0-flash': { in: 0.1, cache: 0.025, out: 0.4 },
-  'gemini-2.0-flash-lite': { in: 0.075, cache: 0, out: 0.3 },
-  'gemini-1.5-pro': { in: 1.25, cache: 0.3125, out: 5 },
-  'gemini-1.5-flash': { in: 0.075, cache: 0.01875, out: 0.3 },
-};
 const usdM = (n: number) => n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+const CUR_SYM: Record<string, string> = { EUR: '€', USD: '$', GBP: '£' };
 
 function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
   const toast = useToast();
@@ -373,20 +359,48 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
   });
   const del = useMutation({
     mutationFn: (model: string) => api.del(`/ai/gateway/prices/${encodeURIComponent(model)}`),
-    onSuccess: () => { toast('Modelo restablecido', 'ok'); queryClient.invalidateQueries({ queryKey: ['ai-model-prices'] }); },
+    onSuccess: (_r, model: string) => {
+      toast('Modelo restablecido: vuelve a la tarifa automática', 'ok');
+      setDrafts((prev) => { const next = { ...prev }; delete next[model]; return next; });
+      queryClient.invalidateQueries({ queryKey: ['ai-model-prices'] });
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  // Refresco de la tarifa: al terminar se tiran los borradores locales, porque si
+  // no las tarjetas seguirían enseñando el coste viejo que el operador tecleó.
+  const sync = useMutation({
+    mutationFn: () => api.post<AiPriceSync>('/ai/gateway/prices/sync', {}),
+    onSuccess: (r) => {
+      setDrafts({});
+      queryClient.invalidateQueries({ queryKey: ['ai-model-prices'] });
+      if (!r.ok) return toast(r.error || 'No se pudo actualizar la tarifa', 'err');
+      const changed = r.added.length + r.updated.length;
+      toast(changed ? `Tarifa actualizada (${changed} modelo${changed > 1 ? 's' : ''}, fuente ${r.source})` : 'La tarifa ya estaba al día', 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const cfg = useMutation({
+    mutationFn: (patch: Record<string, unknown>) => api.put('/ai/gateway/prices/config', patch),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ai-model-prices'] }),
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
   if (!q.data) return <Skeleton className="h-40 w-full" />;
+  const s = q.data.sync;
   const byModel = new Map(q.data.models.map((m) => [m.model, m]));
   const num = (v: string) => parseFloat(v.replace(',', '.')) || 0;
-  const eurMd = (perM: number) => `${perM.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} €/M`;
+  const cur = (currency: string) => CUR_SYM[currency] ?? currency;
+  const eurMd = (perM: number, currency = s.currency) =>
+    `${perM.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} ${cur(currency)}/M`;
   const draftFor = (model: string): Draft => {
     const d = drafts[model];
     if (d) return d;
     const c = byModel.get(model);
+    // céntimos/Mtok → unidades/Mtok redondeando a la millonésima: dividir entre 100
+    // en coma flotante deja restos («0,0263689999…») en el campo de texto.
+    const perM = (cents: number) => String(Math.round(cents * 1e4) / 1e6);
     return c
-      ? { in: String(c.cost_cents_mtok_in / 100), cache: String(c.cost_cents_mtok_cache / 100), out: String(c.cost_cents_mtok_out / 100), margin: c.margin_pct ? String(c.margin_pct) : '' }
+      ? { in: perM(c.cost_cents_mtok_in), cache: perM(c.cost_cents_mtok_cache), out: perM(c.cost_cents_mtok_out), margin: c.margin_pct ? String(c.margin_pct) : '' }
       : { ...EMPTY_DRAFT };
   };
   const setDraft = (model: string, patch: Partial<Draft>) =>
@@ -399,8 +413,17 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
     <section className="card p-5">
       <h2 className="flex items-center gap-2 text-sm font-semibold"><Coins size={15} className="text-ok" /> Cuánto ganas por modelo</h2>
       <p className="mt-1 max-w-2xl text-xs text-subtle">
-        Escribe lo que te cuesta cada modelo en Google y el margen que quieres. Te decimos a qué precio venderlo y cuánto ganas por millón de tokens. Después pon ese precio en el producto de IA del <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a> para cobrarlo.
+        Skyway trae el coste de cada modelo desde la tarifa vigente de Google; tú pones el margen que quieres. Te decimos a qué precio venderlo y cuánto ganas por millón de tokens. Después pon ese precio en el producto de IA del <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a> para cobrarlo.
       </p>
+
+      <PriceSyncBar
+        sync={s}
+        onRefresh={() => sync.mutate()}
+        refreshing={sync.isPending}
+        onConfig={(patch) => cfg.mutate(patch)}
+        savingConfig={cfg.isPending}
+      />
+
       <div className="mt-4 grid gap-3 lg:grid-cols-2">
         {rows.map((model) => {
           const d = draftFor(model);
@@ -410,16 +433,31 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
           const priceOut = priceOf(costOut, margin);
           const profitOut = priceOut != null ? priceOut - costOut : null;
           const costFrac = priceOut && priceOut > 0 ? Math.min(1, costOut / priceOut) : 1;
-          const ref = GEMINI_LIST_USD[model];
+          const ref = q.data.list_usd[model];
+          const currency = existing?.currency ?? s.currency;
           return (
             <div key={model} className="rounded-xl border border-line bg-bg/40 p-4">
               {/* Cabecera: modelo + beneficio como cifra protagonista. */}
               <div className="flex items-start justify-between gap-3">
-                <span className="mt-0.5 font-mono text-[13px]">{model}</span>
+                <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5">
+                  <span className="font-mono text-[13px]">{model}</span>
+                  {existing && (
+                    <span
+                      className={cx('rounded px-1.5 py-0.5 text-[10px] leading-none', existing.source === 'auto' ? 'bg-info/[.15] text-info' : 'bg-surface2 text-subtle')}
+                      title={
+                        existing.source === 'auto'
+                          ? `Coste tomado de la tarifa de Google${existing.synced_at ? ` (${timeAgo(existing.synced_at)})` : ''}. Si lo editas, pasa a manual.`
+                          : 'Coste fijado por ti: la actualización automática no lo toca. Restablece el modelo para volver al automático.'
+                      }
+                    >
+                      {existing.source === 'auto' ? 'auto' : 'manual'}
+                    </span>
+                  )}
+                </span>
                 <div className="text-right">
                   {profitOut != null ? (
                     <>
-                      <p className="tnum text-lg font-semibold leading-none text-ok">{eurMd(profitOut)}</p>
+                      <p className="tnum text-lg font-semibold leading-none text-ok">{eurMd(profitOut, currency)}</p>
                       <p className="mt-1 text-[10px] uppercase tracking-wide text-subtle">ganas en salida</p>
                     </>
                   ) : (
@@ -434,8 +472,8 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                 <div className="h-full bg-ok" style={{ width: `${(1 - costFrac) * 100}%` }} />
               </div>
               <div className="mt-1 flex justify-between text-[10px] text-subtle">
-                <span>Coste {costOut > 0 ? eurMd(costOut) : '—'}</span>
-                <span className="text-ok">Beneficio {profitOut != null ? eurMd(profitOut) : '—'}</span>
+                <span>Coste {costOut > 0 ? eurMd(costOut, currency) : '—'}</span>
+                <span className="text-ok">Beneficio {profitOut != null ? eurMd(profitOut, currency) : '—'}</span>
               </div>
 
               {/* Margen: deslizador (simple) + valor exacto. */}
@@ -451,7 +489,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
               {/* Coste → precio de venta, por tipo de token. */}
               <div className="mt-3 grid grid-cols-[64px_1fr_1fr] items-center gap-x-2 gap-y-1.5">
                 <span />
-                <span className="text-[10px] uppercase tracking-wide text-subtle">Te cuesta €/M</span>
+                <span className="text-[10px] uppercase tracking-wide text-subtle">Te cuesta {cur(currency)}/M</span>
                 <span className="text-right text-[10px] uppercase tracking-wide text-subtle">Vendes a</span>
                 {COST_TYPES.map((t) => {
                   const price = priceOf(num(d[t.key]), margin);
@@ -459,7 +497,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                     <Fragment key={t.key}>
                       <span className="text-[12px] text-subtle" title={t.hint}>{t.label}</span>
                       <input className="input h-8 tnum" inputMode="decimal" value={d[t.key]} onChange={(e) => setDraft(model, { [t.key]: e.target.value })} placeholder="0" />
-                      <span className="tnum text-right text-[13px] text-acc-soft">{price == null ? '—' : eurMd(price)}</span>
+                      <span className="tnum text-right text-[13px] text-acc-soft">{price == null ? '—' : eurMd(price, currency)}</span>
                     </Fragment>
                   );
                 })}
@@ -475,7 +513,15 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
               )}
 
               <div className="mt-3 flex items-center justify-end gap-1 border-t border-line/60 pt-3">
-                {existing && <button className="mr-auto rounded p-1.5 text-subtle hover:text-err" title="Restablecer este modelo" onClick={() => del.mutate(model)}><Trash2 size={13} /></button>}
+                {existing && (
+                  <button
+                    className="mr-auto rounded p-1.5 text-subtle hover:text-err"
+                    title={existing.source === 'manual' ? 'Descartar tu coste y volver a la tarifa automática de Google' : 'Borrar el coste guardado (la próxima actualización lo repone)'}
+                    onClick={() => del.mutate(model)}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
                 <Button size="sm" onClick={() => save.mutate(model)} loading={save.isPending && save.variables === model}>Guardar</Button>
               </div>
             </div>
@@ -483,9 +529,131 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
         })}
       </div>
       <p className="mt-3 text-[11px] text-subtle">
-        «Lista Google» son precios de lista orientativos (USD, ref. {GEMINI_LIST_DATE}) para comparar; tu coste real puede variar por moneda y volumen. Consulta el precio vigente en <a href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank" rel="noopener noreferrer" className="text-acc-soft hover:underline">ai.google.dev</a>.
+        «Lista Google» es la tarifa publicada en USD, antes de convertir a {s.currency}; tu coste real puede variar por volumen o por acuerdos con Google. Consulta el precio vigente en <a href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank" rel="noopener noreferrer" className="text-acc-soft hover:underline">ai.google.dev</a>.
       </p>
     </section>
+  );
+}
+
+/**
+ * Estado de la autoactualización de la tarifa: cuándo se miró por última vez, de
+ * dónde salió el precio y qué se quedó fuera. Lo que no se puede resolver solo
+ * (un modelo sin tarifa publicada, un cambio de divisa sin red) se dice aquí en
+ * vez de dejar que el margen mienta en silencio.
+ */
+function PriceSyncBar({
+  sync,
+  onRefresh,
+  refreshing,
+  onConfig,
+  savingConfig,
+}: {
+  sync: AiPriceSyncState;
+  onRefresh: () => void;
+  refreshing: boolean;
+  onConfig: (patch: Record<string, unknown>) => void;
+  savingConfig: boolean;
+}) {
+  // Ambos campos se escriben en un borrador y se envían al salir: cada tecla no
+  // puede ser un PUT.
+  const [fx, setFx] = useState('');
+  const [margin, setMargin] = useState('');
+  const last = sync.last;
+  const failed = !!last && !last.ok;
+  return (
+    <div className="mt-4 rounded-xl border border-line bg-bg/40 p-3.5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 text-[13px] font-medium">
+            <RefreshCw size={14} className={cx('text-info', refreshing && 'animate-spin')} /> Tarifa de Google al día
+          </p>
+          <p className="mt-1 text-[12px] text-subtle">
+            {sync.lastAt ? (
+              <>
+                Última comprobación {timeAgo(sync.lastAt)}
+                {last && last.ok && (
+                  <>
+                    {' '}· fuente <span className="text-sub">{last.source}</span>
+                    {/* Sin salida a internet el coste viene del catálogo interno: su fecha dice cómo de viejo es. */}
+                    {last.source === 'catálogo' && <> ({sync.catalogDate})</>}
+                  </>
+                )}
+                {sync.auto && <> · se repite sola cada día</>}
+              </>
+            ) : (
+              <>Todavía sin comprobar. Se hará sola en cuanto arranque el ciclo diario, o púlsalo ahora.</>
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Toggle checked={sync.auto} onChange={(v) => onConfig({ auto: v })} />
+          <Button size="sm" variant="secondary" onClick={onRefresh} loading={refreshing}>Actualizar ahora</Button>
+        </div>
+      </div>
+
+      {failed && <p className="mt-2 text-[12px] text-err">{last?.error}</p>}
+
+      {last && last.ok && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-subtle">
+          {!!last.updated.length && <span className="rounded bg-ok/[.15] px-2 py-0.5 text-ok">{last.updated.length} actualizado(s)</span>}
+          {!!last.added.length && <span className="rounded bg-info/[.15] px-2 py-0.5 text-info">{last.added.length} nuevo(s)</span>}
+          {!!last.manual.length && <span className="rounded bg-surface2 px-2 py-0.5" title={last.manual.join(', ')}>{last.manual.length} a mano (respetado)</span>}
+          {!!last.missing.length && (
+            <span className="rounded bg-warn/[.15] px-2 py-0.5 text-warn" title="Google no publica tarifa por token para estos modelos; su coste se queda como esté">
+              sin tarifa: {last.missing.join(', ')}
+            </span>
+          )}
+        </div>
+      )}
+
+      {!!last?.discovered.length && (
+        <p className="mt-2 text-[11px] text-warn">
+          Modelos nuevos en Google con tarifa conocida: <span className="font-mono">{last.discovered.join(', ')}</span>. Añádelos arriba en «Modelos permitidos» si quieres venderlos.
+        </p>
+      )}
+
+      <label className="mt-2 flex items-center gap-2 text-[11px] text-subtle">
+        <input type="checkbox" className="accent-acc" checked={sync.autoAllow} onChange={(e) => onConfig({ autoAllow: e.target.checked })} disabled={savingConfig} />
+        Permitir solos los modelos nuevos que Google publique con tarifa conocida (si no, solo se avisa)
+      </label>
+
+      {/* Los dos ajustes que la automatización no puede adivinar. */}
+      <div className="mt-3 grid gap-3 border-t border-line/60 pt-3 sm:grid-cols-2">
+        <Field label={`Cambio 1 USD → ${sync.currency}`} hint={sync.fxAt ? `referencia del BCE, ${timeAgo(sync.fxAt)}` : 'sin cambio guardado: fíjalo si el servidor no sale a internet'}>
+          <input
+            className="input h-8 tnum"
+            inputMode="decimal"
+            value={fx}
+            onChange={(e) => setFx(e.target.value)}
+            onBlur={() => {
+              const v = parseFloat(fx.replace(',', '.'));
+              if (fx.trim() && v > 0) onConfig({ fxRate: v });
+              setFx('');
+            }}
+            placeholder={sync.fxRate ? String(sync.fxRate) : '0,92'}
+            disabled={savingConfig}
+          />
+        </Field>
+        <Field label="Margen para modelos nuevos" hint="el que se estrena cuando aparece un modelo; los que ya tienen margen lo conservan">
+          <div className="relative">
+            <input
+              className="input h-8 tnum pr-6"
+              inputMode="decimal"
+              value={margin}
+              onChange={(e) => setMargin(e.target.value)}
+              onBlur={() => {
+                const v = parseFloat(margin.replace(',', '.'));
+                if (margin.trim() && v >= 0 && v <= 95 && v !== sync.defaultMarginPct) onConfig({ defaultMarginPct: v });
+                setMargin('');
+              }}
+              placeholder={String(sync.defaultMarginPct)}
+              disabled={savingConfig}
+            />
+            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-subtle">%</span>
+          </div>
+        </Field>
+      </div>
+    </div>
   );
 }
 

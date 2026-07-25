@@ -572,6 +572,11 @@ export function initDb(): void {
   ensureColumn('workspaces', 'discount_pct', 'REAL');
   // Margen objetivo (s/ venta) por modelo de IA: guía el PVP sugerido = coste/(1−m).
   ensureColumn('ai_model_prices', 'margin_pct', 'REAL NOT NULL DEFAULT 0');
+  // Procedencia del coste: 'auto' lo mantiene al día la sincronización con la
+  // tarifa de Google; 'manual' lo escribió el operador y la sincronización lo
+  // respeta. Las filas anteriores a la sincronización se escribieron a mano.
+  ensureColumn('ai_model_prices', 'source', "TEXT NOT NULL DEFAULT 'manual'");
+  ensureColumn('ai_model_prices', 'synced_at', 'INTEGER');
   // ATRIBUCIÓN MATERIALIZADA DEL CONSUMO. Antes se resolvía con un JOIN vivo
   // servicio → proyecto → workspace, así que borrar un servicio borraba su consumo
   // aún no facturado y reasignar un proyecto trasladaba todo su histórico a la
@@ -2518,16 +2523,27 @@ export function getModelPrice(model: string): AiModelPriceRow | undefined {
   return db.prepare('SELECT * FROM ai_model_prices WHERE model = ?').get(model) as AiModelPriceRow | undefined;
 }
 /** Alta o actualización (upsert) del coste de un modelo. Valores en micro-céntimos por Mtok. */
-export function setModelPrice(p: { model: string; cost_micros_in: number; cost_micros_cache: number; cost_micros_out: number; margin_pct?: number; currency?: string }): AiModelPriceRow {
+export function setModelPrice(p: {
+  model: string;
+  cost_micros_in: number;
+  cost_micros_cache: number;
+  cost_micros_out: number;
+  margin_pct?: number;
+  currency?: string;
+  source?: 'auto' | 'manual';
+  synced_at?: number | null;
+}): AiModelPriceRow {
   db.prepare(
-    `INSERT INTO ai_model_prices (model, cost_micros_in, cost_micros_cache, cost_micros_out, margin_pct, currency, updated_at)
-     VALUES (@model, @cost_micros_in, @cost_micros_cache, @cost_micros_out, @margin_pct, @currency, @updated_at)
+    `INSERT INTO ai_model_prices (model, cost_micros_in, cost_micros_cache, cost_micros_out, margin_pct, currency, source, synced_at, updated_at)
+     VALUES (@model, @cost_micros_in, @cost_micros_cache, @cost_micros_out, @margin_pct, @currency, @source, @synced_at, @updated_at)
      ON CONFLICT(model) DO UPDATE SET
        cost_micros_in = excluded.cost_micros_in,
        cost_micros_cache = excluded.cost_micros_cache,
        cost_micros_out = excluded.cost_micros_out,
        margin_pct = excluded.margin_pct,
        currency = excluded.currency,
+       source = excluded.source,
+       synced_at = excluded.synced_at,
        updated_at = excluded.updated_at`,
   ).run({
     model: p.model,
@@ -2537,6 +2553,8 @@ export function setModelPrice(p: { model: string; cost_micros_in: number; cost_m
     // Margen s/ venta en [0,95): PVP = coste/(1−m/100); tope <100 evita división por 0.
     margin_pct: Math.max(0, Math.min(95, p.margin_pct ?? 0)),
     currency: p.currency ?? 'EUR',
+    source: p.source === 'auto' ? 'auto' : 'manual',
+    synced_at: p.synced_at ?? null,
     updated_at: now(),
   });
   return getModelPrice(p.model)!;
