@@ -549,9 +549,20 @@ function extensiones(respuesta: RespuestaSmtp): Map<string, string[]> {
   return mapa;
 }
 
+/**
+ * Texto del servidor apto para un mensaje de error, un registro de auditoría o una
+ * alerta. Muchos relés repiten el comando que no entendieron
+ * («500 5.5.1 Command unrecognized: "AUTH PLAIN AGZ...="»), así que su respuesta
+ * puede traer de vuelta la credencial en base64: se enmascara cualquier bloque
+ * largo de base64 antes de dejarlo salir de aquí.
+ */
+function textoSeguro(texto: string): string {
+  return texto.replace(/[A-Za-z0-9+/]{16,}={0,2}/g, '***').slice(0, 300);
+}
+
 function exigir(respuesta: RespuestaSmtp, aceptados: number[], contexto: string): void {
   if (aceptados.includes(Math.floor(respuesta.code / 100))) return;
-  throw new MailError(`${contexto}: el servidor respondió ${respuesta.code} ${respuesta.text}`);
+  throw new MailError(`${contexto}: el servidor respondió ${respuesta.code} ${textoSeguro(respuesta.text)}`);
 }
 
 function validarConfig(cfg: SmtpConfig): void {
@@ -643,7 +654,7 @@ async function autenticar(sesion: SesionSmtp, cfg: SmtpConfig, ext: Map<string, 
     exigir(inicio, [3], 'El servidor SMTP rechazó AUTH LOGIN');
     sesion.escribir(`${Buffer.from(cfg.user, 'utf8').toString('base64')}${CRLF}`);
     const paso = await sesion.leer();
-    exigir(paso, [3], 'El servidor SMTP rechazó el usuario SMTP');
+    exigir(paso, [3], 'El servidor SMTP rechazó el usuario SMTP'); // textoSeguro enmascara el eco del base64
     sesion.escribir(`${Buffer.from(cfg.pass, 'utf8').toString('base64')}${CRLF}`);
     respuesta = await sesion.leer();
   } else {
@@ -652,7 +663,7 @@ async function autenticar(sesion: SesionSmtp, cfg: SmtpConfig, ext: Map<string, 
   if (Math.floor(respuesta.code / 100) !== 2) {
     // «AUTH …» va enmascarado: la credencial nunca debe acabar en un log ni en la UI.
     throw new MailError(
-      `El servidor SMTP rechazó las credenciales (AUTH ***): ${respuesta.code} ${respuesta.text}. ` +
+      `El servidor SMTP rechazó las credenciales (AUTH ***): ${respuesta.code} ${textoSeguro(respuesta.text)}. ` +
         'Revisa el usuario y la contraseña de correo en Ajustes.',
     );
   }

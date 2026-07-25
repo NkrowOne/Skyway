@@ -139,6 +139,12 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
     if (body.stripeSecretKey !== undefined) setSetting('stripeSecretKey', body.stripeSecretKey || null);
     if (body.stripeWebhookSecret !== undefined) setSetting('stripeWebhookSecret', body.stripeWebhookSecret || null);
     if (body.stripePublishableKey !== undefined) setSetting('stripePublishableKey', body.stripePublishableKey || null);
+    // Quitar el servidor de correo apaga el envío automático: dejarlo activo haría
+    // que cada emisión fallara en silencio (solo una alerta que nadie pidió).
+    if (body.smtpHost !== undefined && !body.smtpHost.trim() && getBillingAutomation().emailOnIssue) {
+      setBillingAutomation({ emailOnIssue: false });
+      audit(req, 'billing_email_on_issue_off', { type: 'system', id: 'billing', detail: 'sin servidor de correo' });
+    }
     setSmtpSettings({
       host: body.smtpHost,
       port: body.smtpPort,
@@ -287,7 +293,9 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
     // (no tienen número ni fecha de expedición) y colarlos descuadra el libro.
     // Las anuladas sí constan, con su número, para justificar el hueco en la serie.
     const rows = listAllInvoices()
-      .filter((i) => i.status !== 'draft')
+      // Expedida = tiene fecha de expedición. Filtrar solo por estado colaba los
+      // borradores ANULADOS, que entran sin número ni fecha pero con base e IVA.
+      .filter((i) => i.status !== 'draft' && i.issued_at != null)
       .sort((a, b) => (a.issued_at ?? a.created_at) - (b.issued_at ?? b.created_at) || (a.number ?? '').localeCompare(b.number ?? ''));
     // Libro registro de facturas emitidas: nº, tipo, NIF del receptor, base, IVA,
     // IRPF y total, según lo que la AEAT espera para la contabilidad.

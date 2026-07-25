@@ -460,6 +460,11 @@ export interface InvoiceRow {
   client_address: string | null;
   /** País del destinatario (ISO alfa-2) congelado al emitir. */
   client_country: string | null;
+  /**
+   * Quién la creó: 'cycle' la generó la facturación del ciclo (su borrador es
+   * sustituible por el definitivo), 'manual' la escribió el operador (intocable).
+   */
+  origin: 'cycle' | 'manual';
   /** Método de cobro elegido/registrado. */
   payment_method: PaymentMethod | null;
   stripe_session_id: string | null;

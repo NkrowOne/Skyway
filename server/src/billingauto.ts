@@ -9,7 +9,7 @@ import { auditSystem } from './audit';
 import { fireWorkspaceAlert } from './alerts';
 import { getBillingAutomation } from './billingsettings';
 import { getBillingProfile } from './company';
-import { BillingError, cycleAnchor, generateCycleDraft, issueInvoice, lastCutoff, sendInvoiceEmail } from './routes/billing';
+import { BillingError, generateCycleDraft, issueInvoice, pendingPeriods, sendInvoiceEmail } from './routes/billing';
 import {
   deleteInvoice,
   getWorkspace,
@@ -47,9 +47,31 @@ function invoiceDueMs(inv: InvoiceRow, termsDays: number): number {
  */
 function overdueBalance(invoices: InvoiceRow[], workspaceId: string, termsDays: number, nowMs: number): { saldo: number; vencidas: InvoiceRow[] } {
   const propias = invoices.filter((i) => i.workspace_id === workspaceId);
-  const vencidas = propias.filter((i) => i.total_cents > 0 && invoiceDueMs(i, termsDays) < nowMs);
-  const abonos = propias.filter((i) => i.total_cents <= 0).reduce((s, i) => s + i.total_cents, 0);
-  return { saldo: vencidas.reduce((s, i) => s + i.total_cents, 0) + abonos, vencidas };
+  // Los abonos se imputan contra las vencidas MÁS ANTIGUAS (FIFO), como en
+  // cualquier cuenta corriente. No basta con restar el saldo global: la etapa de
+  // morosidad se decide con la vencida más antigua que quede viva, y devolver la
+  // lista en bruto cancelaba cuentas por una factura que un abono ya había saldado
+  // mientras la única deuda real seguía dentro del periodo de gracia.
+  const vencidas = propias
+    .filter((i) => i.total_cents > 0 && invoiceDueMs(i, termsDays) < nowMs)
+    .sort((a, b) => invoiceDueMs(a, termsDays) - invoiceDueMs(b, termsDays));
+  let credito = -propias.filter((i) => i.total_cents <= 0).reduce((s, i) => s + i.total_cents, 0);
+  const vivas: InvoiceRow[] = [];
+  let saldo = 0;
+  for (const inv of vencidas) {
+    const aplicado = Math.min(credito, inv.total_cents);
+    credito -= aplicado;
+    const resto = inv.total_cents - aplicado;
+    // Una factura parcialmente abonada sigue viva por el remanente, y conserva su
+    // vencimiento: es deuda real y con su antigüedad.
+    if (resto > 0) {
+      vivas.push(inv);
+      saldo += resto;
+    }
+  }
+  // El crédito sobrante (abonos por encima de lo vencido) deja saldo negativo:
+  // la cuenta no debe nada y `reactivateWorkspaceIfCurrent` puede levantar el corte.
+  return { saldo: saldo - credito, vencidas: vivas };
 }
 
 /**
@@ -201,39 +223,46 @@ export function billingCycleTick(now: Date): void {
   for (const ws of listWorkspaces()) {
     try {
       if (ws.status !== 'active') continue;
-      const cycle = { start: cycleAnchor(ws, now), end: lastCutoff(ws.billing_day, now) };
-      if (cycle.end <= cycle.start) continue; // no hay ningún periodo cerrado pendiente
-      // Idempotencia sobre el ciclo YA CERRADO: un borrador creado a mitad de mes
-      // (una previsión del operador) no cuenta como facturado, porque le falta el
-      // consumo del resto del periodo. Se sustituye por el definitivo.
-      if (invoiceExistsForCycle(ws.id, cycle.start, cycle.end)) continue;
-      const previo = openDraftForCycle(ws.id, cycle.start);
-      // `deleteInvoice` devuelve sus cargos puntuales a 'pending', así que el
-      // borrador nuevo vuelve a incluirlos: no se pierde nada por el camino.
-      if (previo) {
-        deleteInvoice(previo.id);
-        auditSystem('invoice_draft_replaced', `${ws.name} · borrador parcial sustituido por la factura del ciclo cerrado`);
-      }
-      const inv = generateCycleDraft(ws, cycle);
-      if (!inv) continue; // nada que facturar: no se crea un borrador vacío
-      const money = `${inv.currency} ${(inv.total_cents / 100).toFixed(2)}`;
-      if (auto.autoIssue) {
-        const issued = issueInvoice(inv.id) ?? inv;
-        auditSystem('invoice_auto_issued', `${ws.name} · ${issued.number ?? issued.id} · ${money} (emitida automáticamente)`);
-        // Envío al cliente, si está activado. Best-effort: el fallo se audita y
-        // alerta dentro de sendInvoiceEmail, y nunca deshace la emisión.
-        if (auto.emailOnIssue) void sendInvoiceEmail(issued);
-        fireWorkspaceAlert({
-          severity: 'info',
-          workspaceId: ws.id,
-          type: 'invoice_auto_issued',
-          title: `Factura emitida automáticamente — ${ws.name}`,
-          message: `Factura ${issued.number ?? issued.id} por ${money}.`,
-          explanation: 'Auto-emisión activada: revísala en la cuenta y envía el enlace de pago si procede.',
-          dedupeKey: `ws:${ws.id}:auto_issued:${issued.id}`,
-        });
-      } else {
-        auditSystem('invoice_auto_generated', `${ws.name} · ${money} (borrador del ciclo)`);
+      // Los periodos pendientes se facturan de UNO EN UNO. Si el ancla se ha
+      // quedado varios meses atrás (servidor parado, cuenta suspendida, un ciclo
+      // bloqueado por un error de negocio), facturar el hueco entero de una vez
+      // cobraría una sola cuota por todos los meses servidos.
+      for (const cycle of pendingPeriods(ws, now)) {
+        // Idempotencia sobre el ciclo YA CERRADO: un borrador creado a mitad de mes
+        // (una previsión del operador) no cuenta como facturado, porque le falta el
+        // consumo del resto del periodo. Se sustituye por el definitivo.
+        if (invoiceExistsForCycle(ws.id, cycle.start, cycle.end)) continue;
+        // Solo se sustituye un borrador que generó el propio ciclo: una factura a
+        // medida o una rectificativa en borrador pueden compartir `period_start` y
+        // borrarlas se llevaría por delante el trabajo del operador.
+        const previo = openDraftForCycle(ws.id, cycle.start);
+        // `deleteInvoice` devuelve sus cargos puntuales a 'pending', así que el
+        // borrador nuevo vuelve a incluirlos: no se pierde nada por el camino.
+        if (previo) {
+          deleteInvoice(previo.id);
+          auditSystem('invoice_draft_replaced', `${ws.name} · borrador parcial sustituido por la factura del ciclo cerrado`);
+        }
+        const inv = generateCycleDraft(ws, cycle);
+        if (!inv) continue; // nada que facturar: no se crea un borrador vacío
+        const money = `${inv.currency} ${(inv.total_cents / 100).toFixed(2)}`;
+        if (auto.autoIssue) {
+          const issued = issueInvoice(inv.id) ?? inv;
+          auditSystem('invoice_auto_issued', `${ws.name} · ${issued.number ?? issued.id} · ${money} (emitida automáticamente)`);
+          // Envío al cliente, si está activado. Best-effort: el fallo se audita y
+          // alerta dentro de sendInvoiceEmail, y nunca deshace la emisión.
+          if (auto.emailOnIssue) void sendInvoiceEmail(issued);
+          fireWorkspaceAlert({
+            severity: 'info',
+            workspaceId: ws.id,
+            type: 'invoice_auto_issued',
+            title: `Factura emitida automáticamente — ${ws.name}`,
+            message: `Factura ${issued.number ?? issued.id} por ${money}.`,
+            explanation: 'Auto-emisión activada: revísala en la cuenta y envía el enlace de pago si procede.',
+            dedupeKey: `ws:${ws.id}:auto_issued:${issued.id}`,
+          });
+        } else {
+          auditSystem('invoice_auto_generated', `${ws.name} · ${money} (borrador del ciclo)`);
+        }
       }
     } catch (err: any) {
       // Un error de negocio (moneda mezclada, dato fiscal ausente) es accionable

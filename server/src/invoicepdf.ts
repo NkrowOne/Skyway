@@ -31,6 +31,8 @@ export interface InvoicePdfData {
   taxBreakdown: { rate: number; base_cents: number; quota_cents: number }[];
   taxCents: number;
   irpfRate: number;
+  /** La factura mezcla varios tipos de retención: no se imprime ningún porcentaje. */
+  irpfMixed?: boolean;
   irpfCents: number;
   totalCents: number;
   legalMentions: string | null;
@@ -446,7 +448,13 @@ export function renderInvoicePdf(data: InvoicePdfData): Buffer {
   }
   // El IRPF retenido resta del total, así que se imprime con el signo cambiado.
   if (data.irpfCents !== 0) {
-    filasTotales.push({ etiqueta: `Retención IRPF ${fmtTipo(data.irpfRate)}%`, importe: -data.irpfCents });
+    // Con varios tipos de retención en la misma factura, el «tipo» de cabecera es
+    // solo el efectivo redondeado y no reproduce el importe: mejor no imprimirlo
+    // que imprimir un porcentaje que no cuadra al recalcularlo.
+    filasTotales.push({
+      etiqueta: data.irpfMixed ? 'Retención IRPF' : `Retención IRPF ${fmtTipo(data.irpfRate)}%`,
+      importe: -data.irpfCents,
+    });
   }
 
   // --- bloques finales de texto libre ---

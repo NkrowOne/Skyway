@@ -162,6 +162,8 @@ interface Totals {
   irpf: number;
   /** Tipo de retención a guardar en la factura: el único si es uniforme, o el efectivo. */
   irpfRate: number;
+  /** La factura mezcla varios tipos de retención: `irpfRate` es solo orientativo. */
+  irpfMixed: boolean;
   total: number;
 }
 
@@ -177,21 +179,27 @@ function computeTotals(
   opts: { defaultTaxRate: number; irpfRate: number; regime: VatRegime },
 ): Totals {
   const zeroVat = isZeroVatRegime(opts.regime);
+  // El tipo REAL de cada línea se conserva siempre; la exención se aplica solo al
+  // calcular el desglose. Persistir un 0 en la línea era irreversible: al volver de
+  // un régimen exento a «general», el fallback ya no se activaba (0 no es
+  // undefined) y la factura se quedaba con base entera y 0,00 € de IVA.
   const lines: InvoiceLine[] = rawLines.map((l) => ({
     label: l.label,
     kind: l.kind,
     qty: l.qty,
     unitCents: l.unitCents,
     amountCents: clampSafe(Math.round(l.qty * l.unitCents)),
-    taxRate: zeroVat ? 0 : l.taxRate ?? opts.defaultTaxRate,
+    taxRate: l.taxRate ?? opts.defaultTaxRate,
     irpfRate: l.irpfRate ?? opts.irpfRate,
     ...(l.chargeId ? { chargeId: l.chargeId } : {}),
   }));
+  /** Tipo que se REPERCUTE: cero en los regímenes exentos, el de la línea si no. */
+  const tipoEfectivo = (l: InvoiceLine): number => (zeroVat ? 0 : l.taxRate ?? 0);
   const subtotal = clampSafe(lines.reduce((sum, l) => sum + l.amountCents, 0));
   // Bases agrupadas por tipo; la cuota se redondea una vez sobre la base del tipo.
   const byRate = new Map<number, number>();
   for (const l of lines) {
-    const rate = l.taxRate ?? 0;
+    const rate = tipoEfectivo(l);
     byRate.set(rate, (byRate.get(rate) ?? 0) + l.amountCents);
   }
   const taxBreakdown: TaxBreakdownEntry[] = [...byRate.entries()]
@@ -216,9 +224,10 @@ function computeTotals(
   // retención; si no, el efectivo sobre la base (solo informativo: el importe
   // bueno es `irpf`, calculado por tramos).
   const rates = [...byIrpf.keys()];
-  const irpfRate = rates.length === 1 ? rates[0] : subtotal !== 0 ? Math.round((irpf / subtotal) * 10000) / 100 : opts.irpfRate;
+  const irpfMixed = rates.length > 1;
+  const irpfRate = !irpfMixed ? rates[0] ?? opts.irpfRate : subtotal !== 0 ? Math.round((irpf / subtotal) * 10000) / 100 : opts.irpfRate;
   const total = clampSafe(subtotal + tax - irpf);
-  return { lines, subtotal, taxBreakdown, tax, irpf, irpfRate, total };
+  return { lines, subtotal, taxBreakdown, tax, irpf, irpfRate, irpfMixed, total };
 }
 
 function parseLines(json: string): InvoiceLine[] {
@@ -325,6 +334,8 @@ function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
     taxBreakdown: parseBreakdown(inv.tax_breakdown),
     taxCents: inv.tax_cents,
     irpfRate: inv.irpf_rate,
+    // Si las líneas no comparten retención, el tipo de cabecera es orientativo.
+    irpfMixed: new Set(parseLines(inv.lines).map((l) => l.irpfRate ?? 0)).size > 1,
     irpfCents: inv.irpf_cents,
     totalCents: inv.total_cents,
     legalMentions: inv.legal_mentions,
@@ -507,6 +518,39 @@ function nextCutoff(billingDay: number, now = new Date()): number {
 }
 
 /**
+ * Corte inmediatamente POSTERIOR a un instante dado. Es lo que permite recorrer
+ * los periodos pendientes de uno en uno cuando el ancla se ha quedado varios
+ * meses atrás (servidor parado, cuenta suspendida, un ciclo bloqueado por un
+ * error de negocio): facturar el hueco entero de una vez cobraría un solo mes por
+ * todos los servidos, porque la cuota mensual se prorratea contra UN mes.
+ */
+export function cutoffAfter(from: number, billingDay: number): number {
+  const d = new Date(from);
+  let cut = new Date(d.getFullYear(), d.getMonth(), billingDay);
+  if (cut.getTime() <= from) cut = new Date(d.getFullYear(), d.getMonth() + 1, billingDay);
+  return cut.getTime();
+}
+
+/**
+ * Periodos mensuales CERRADOS que quedan pendientes de facturar, del ancla al
+ * último corte vencido. Normalmente es uno; son varios cuando se ha perdido algún
+ * ciclo. El tope evita un bucle desbocado si un dato corrupto deja el ancla en una
+ * fecha absurda (12 años de periodos es ya un caso a revisar a mano).
+ */
+export function pendingPeriods(ws: WorkspaceRow, now = new Date()): { start: number; end: number }[] {
+  const cierre = lastCutoff(ws.billing_day, now);
+  const periodos: { start: number; end: number }[] = [];
+  let inicio = cycleAnchor(ws, now);
+  for (let i = 0; i < 144 && inicio < cierre; i++) {
+    const fin = Math.min(cutoffAfter(inicio, ws.billing_day), cierre);
+    if (fin <= inicio) break;
+    periodos.push({ start: inicio, end: fin });
+    inicio = fin;
+  }
+  return periodos;
+}
+
+/**
  * Inicio del periodo a facturar: el ANCLA persistente (fin de lo último
  * facturado). Derivarlo de `billing_day` como se hacía antes refacturaba el tramo
  * solapado al cambiar el día de facturación y perdía el ciclo entero si el
@@ -546,8 +590,12 @@ function prorationFactor(from: number, to: number, cycle: { start: number; end: 
   const hasta = Math.min(to, cycle.end);
   if (hasta <= desde) return 0;
   const f = (hasta - desde) / nominalMs;
-  // Tolerancia para no marcar como «prorrateado» un mes completo por unos ms.
-  return f >= 0.9995 ? Math.min(1, f) : Math.round(f * 1e6) / 1e6;
+  // Tolerancia SOLO hacia arriba y solo cerca de 1: un mes completo no debe
+  // marcarse como «prorrateado» por unos milisegundos. Ojo con capar a 1 sin más:
+  // un periodo que abarca varios meses (ancla atrasada) daría factor 2,9 y se
+  // cobraría un solo mes. Eso ya no puede ocurrir porque los periodos se facturan
+  // de uno en uno (`pendingPeriods`), pero el factor tampoco se recorta aquí.
+  return f > 0.9995 && f < 1 ? 1 : Math.round(f * 1e6) / 1e6;
 }
 
 /** Sufijo de la línea prorrateada, con los días servidos, para que el cliente lo entienda. */
@@ -601,6 +649,17 @@ function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Reco
     fields.locked = 1;
     if (target === 'paid' && !inv.paid_at) fields.paid_at = (extra.paid_at as number | undefined) ?? Date.now();
     updateInvoice(inv.id, fields);
+    // Emitir es un hecho legal: el cliente queda facturado hasta `period_end`, así
+    // que el ancla avanza aunque el periodo aún no hubiera cerrado (el operador ha
+    // decidido conscientemente facturar por adelantado). Sin esto, emitir la
+    // previsión del ciclo EN CURSO dejaba el ancla clavada en un periodo que el
+    // tick ya consideraba facturado, y la cuenta no se volvía a facturar nunca.
+    // Solo avanza si la factura CONTINÚA la línea temporal de facturación
+    // (`period_start` = ancla): una factura a medida con un periodo arbitrario no
+    // debe empujar el ancla ni saltarse periodos pendientes.
+    if (ws && inv.period_start === ws.last_billed_period_end && inv.period_end > inv.period_start) {
+      updateWorkspace(ws.id, { last_billed_period_end: inv.period_end });
+    }
     return getInvoice(inv.id)!;
   });
 }
@@ -728,6 +787,12 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
     // del ciclo. `status_changed_at` cae de nuevo en `cancelled_at` para las
     // suscripciones anteriores a esa columna.
     const hasta = sub.status === 'active' ? cycle.end : sub.status_changed_at ?? sub.cancelled_at ?? cycle.end;
+    // Una suscripción reactivada dentro del ciclo (p. ej. al pagar tras un corte
+    // por impago) se cobra desde la reanudación, no desde el alta original: si no,
+    // se facturaba el mes entero por unos días de servicio. Limitación conocida: si
+    // la pausa y la reanudación caen en el MISMO ciclo, solo se cobra el tramo
+    // posterior a la reanudación (haría falta un historial de estados completo).
+    const desde = sub.status === 'active' ? Math.max(sub.started_at, sub.status_changed_at ?? 0) : sub.started_at;
     const negotiated = sub.unit_cents != null; // precio pactado por cliente: no se le suma el descuento
     const unitPrice = sub.unit_cents ?? product.price_cents;
     const rate = product.tax_exempt ? 0 : product.tax_rate;
@@ -753,7 +818,7 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
       // Cuota fija: anual una vez al año (entera), mensual prorrateada por los días
       // servidos entre el alta (o el inicio del ciclo) y la baja (o su cierre).
       const anual = sub.interval === 'yearly';
-      const factor = anual ? (annualDueInCycle(sub.started_at, cycle) ? 1 : 0) : prorationFactor(sub.started_at, hasta, cycle, nominalMs);
+      const factor = anual ? (annualDueInCycle(sub.started_at, cycle) ? 1 : 0) : prorationFactor(desde, hasta, cycle, nominalMs);
       if (factor <= 0) continue;
       rawLines.push({
         label: `${product.name} (${anual ? 'anual' : 'mensual'})${factor < 1 ? prorationLabel(factor, nominalMs) : ''}`.slice(0, 120),
@@ -804,6 +869,7 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
       total_cents: totals.total,
       lines: JSON.stringify(totals.lines),
       plan_name: plan?.name ?? null,
+      origin: 'cycle',
     });
     if (charges.length > 0) markChargesInvoiced(charges.map((c) => c.id), inv.id);
     // El ancla solo avanza con periodos CERRADOS. Una previsión del periodo en

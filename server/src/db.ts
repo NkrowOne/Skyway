@@ -512,6 +512,10 @@ export function initDb(): void {
   ensureColumn('workspace_invoices', 'client_address', 'TEXT');
   // El país del destinatario se congela al emitir, como el resto de sus datos.
   ensureColumn('workspace_invoices', 'client_country', 'TEXT');
+  // Origen de la factura: 'cycle' la genera el ciclo (y el tick puede sustituir su
+  // borrador por el definitivo), 'manual' la escribe el operador y NADIE la toca.
+  // Por defecto 'manual': lo conservador para las filas anteriores a la columna.
+  ensureColumn('workspace_invoices', 'origin', "TEXT NOT NULL DEFAULT 'manual'");
   ensureColumn('workspace_invoices', 'locked', 'INTEGER NOT NULL DEFAULT 0');
   // Datos fiscales del cliente (destinatario de la factura).
   ensureColumn('workspaces', 'billing_tax_id', 'TEXT');
@@ -552,7 +556,6 @@ export function initDb(): void {
     CREATE INDEX IF NOT EXISTS idx_service_metrics_ws ON service_metrics_hourly(workspace_id, hour);
     CREATE INDEX IF NOT EXISTS idx_usage_meter_ws ON usage_meter_hourly(workspace_id, meter, hour);
   `);
-  backfillUsageAttribution();
   // Ancla de facturación: fin del último periodo facturado. Sustituye a derivar el
   // ciclo de `billing_day`, que refacturaba el tramo solapado al cambiar el día y
   // perdía el ciclo entero si el servidor estaba caído justo el día de cierre.
@@ -566,7 +569,36 @@ export function initDb(): void {
   ensureColumn('workspace_subscriptions', 'paused_by', 'TEXT');
 
   seedDefaultPlans();
+  // El orden importa: `migrateClientsToWorkspaces` es quien rellena
+  // `projects.workspace_id`, y el backfill de atribución resuelve el titular del
+  // consumo con un JOIN sobre esa columna. Al revés, una instalación que salte
+  // desde antes de las cuentas escribiría NULL en todo el histórico y marcaría la
+  // migración como hecha, perdiendo la atribución para siempre.
   migrateClientsToWorkspaces();
+  backfillUsageAttribution();
+  backfillDunningActor();
+}
+
+/**
+ * Marca como cortadas «por morosidad» las claves y suscripciones que la versión
+ * anterior suspendió sin dejar constancia de quién lo hizo. Sin esto,
+ * `reviveDunningKeys` no las reconoce y una cuenta que paga queda reactivada a
+ * medias: sin deuda pero con el servicio cortado. Solo toca las cuentas que están
+ * efectivamente en mora, para no revivir un bloqueo manual ajeno al impago.
+ */
+function backfillDunningActor(): void {
+  if (getSetting('migrations:dunning_actor_v1') === 'done') return;
+  db.transaction(() => {
+    db.exec(`
+      UPDATE workspace_api_keys SET suspended_by = 'dunning'
+       WHERE status = 'suspended' AND suspended_by IS NULL
+         AND workspace_id IN (SELECT id FROM workspaces WHERE dunning_stage > 0 OR ai_suspended = 1);
+      UPDATE workspace_subscriptions SET paused_by = 'dunning'
+       WHERE status = 'paused' AND paused_by IS NULL
+         AND workspace_id IN (SELECT id FROM workspaces WHERE dunning_stage > 0 OR ai_suspended = 1);
+    `);
+    setSetting('migrations:dunning_actor_v1', 'done');
+  })();
 }
 
 /**
@@ -586,7 +618,18 @@ function backfillUsageAttribution(): void {
         ELSE (SELECT p.workspace_id FROM services s JOIN projects p ON p.id = s.project_id WHERE s.id = subject_id)
       END WHERE workspace_id IS NULL;
     `);
-    setSetting('migrations:usage_attribution_v1', 'done');
+    // Solo se da por hecha cuando ya no queda ninguna fila sin titular resoluble:
+    // así una instalación que se actualizó antes de tiempo lo reintenta al
+    // arrancar, en vez de quedarse con el histórico sin atribuir para siempre.
+    const pendientes = (db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM service_metrics_hourly m
+         WHERE m.workspace_id IS NULL
+           AND EXISTS (SELECT 1 FROM services s JOIN projects p ON p.id = s.project_id
+                        WHERE s.id = m.service_id AND p.workspace_id IS NOT NULL)`,
+      )
+      .get() as { c: number }).c;
+    if (pendientes === 0) setSetting('migrations:usage_attribution_v1', 'done');
   })();
 }
 
@@ -1709,7 +1752,7 @@ const INVOICE_DEFAULTS = {
   series_id: null, number: null, invoice_type: 'normal', rectifies_invoice_id: null, rectify_reason: null,
   operation_date: null, tax_breakdown: '[]', vat_regime: 'general', legal_mentions: null,
   irpf_rate: 0, irpf_cents: 0, issuer_snapshot: null, client_name: null, client_tax_id: null,
-  client_address: null, client_country: null, plan_name: null, payment_method: null, stripe_session_id: null,
+  client_address: null, client_country: null, origin: 'manual', plan_name: null, payment_method: null, stripe_session_id: null,
   stripe_url: null, issued_at: null, paid_at: null, locked: 0, notes: null,
 } as const;
 
@@ -1725,13 +1768,13 @@ export function createInvoice(row: InvoiceCore & Partial<InvoiceRow>): InvoiceRo
        id, workspace_id, series_id, number, invoice_type, rectifies_invoice_id, rectify_reason,
        period_start, period_end, operation_date, status, currency, subtotal_cents, tax_cents, tax_rate,
        tax_breakdown, vat_regime, legal_mentions, irpf_rate, irpf_cents, total_cents, lines, plan_name,
-       issuer_snapshot, client_name, client_tax_id, client_address, client_country, payment_method, stripe_session_id,
+       issuer_snapshot, client_name, client_tax_id, client_address, client_country, origin, payment_method, stripe_session_id,
        stripe_url, issued_at, paid_at, locked, notes, created_at)
      VALUES (
        @id, @workspace_id, @series_id, @number, @invoice_type, @rectifies_invoice_id, @rectify_reason,
        @period_start, @period_end, @operation_date, @status, @currency, @subtotal_cents, @tax_cents, @tax_rate,
        @tax_breakdown, @vat_regime, @legal_mentions, @irpf_rate, @irpf_cents, @total_cents, @lines, @plan_name,
-       @issuer_snapshot, @client_name, @client_tax_id, @client_address, @client_country, @payment_method, @stripe_session_id,
+       @issuer_snapshot, @client_name, @client_tax_id, @client_address, @client_country, @origin, @payment_method, @stripe_session_id,
        @stripe_url, @issued_at, @paid_at, @locked, @notes, @created_at)`,
   ).run(full);
   return full;
@@ -1905,7 +1948,13 @@ export function workspaceUsageSeries(
   return out;
 }
 
-/** Consumo por proyecto del workspace en un rango (para el top de consumidores / insights). */
+/**
+ * Consumo por proyecto del workspace en un rango (top de consumidores / insights).
+ * Se filtra por el titular CONGELADO, igual que la facturación, para que el
+ * desglose cuadre con el total y con la factura. El JOIN se conserva solo para
+ * poner el nombre del proyecto: el consumo de un servicio ya borrado sigue
+ * contando en el total pero no aparece aquí (no hay proyecto que nombrar).
+ */
 export function workspaceUsageByProject(
   workspaceId: string,
   fromHour: number,
@@ -1919,7 +1968,7 @@ export function workspaceUsageByProject(
        FROM service_metrics_hourly m
        JOIN services s ON s.id = m.service_id
        JOIN projects p ON p.id = s.project_id
-       WHERE p.workspace_id = ? AND m.hour >= ? AND m.hour < ?
+       WHERE m.workspace_id = ? AND m.hour >= ? AND m.hour < ?
        GROUP BY p.id
        ORDER BY cpuCoreHours DESC`,
     )
@@ -2113,10 +2162,20 @@ export function invoiceExistsForCycle(workspaceId: string, periodStart: number, 
     .get(workspaceId, periodStart, periodEnd);
 }
 
-/** Borrador (no cerrado) de un ciclo del workspace, para regenerarlo al vencer el periodo. */
+/**
+ * Borrador GENERADO POR EL CICLO para un periodo, que el tick puede sustituir por
+ * la factura definitiva al vencer. Se exige `origin = 'cycle'` e `invoice_type`
+ * ordinaria: una factura a medida o una rectificativa en borrador pueden compartir
+ * `period_start` y borrarlas se llevaría por delante el trabajo del operador.
+ */
 export function openDraftForCycle(workspaceId: string, periodStart: number): InvoiceRow | undefined {
   return db
-    .prepare("SELECT * FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? AND status = 'draft' ORDER BY created_at DESC LIMIT 1")
+    .prepare(
+      `SELECT * FROM workspace_invoices
+       WHERE workspace_id = ? AND period_start = ? AND status = 'draft'
+         AND origin = 'cycle' AND invoice_type = 'normal'
+       ORDER BY created_at DESC LIMIT 1`,
+    )
     .get(workspaceId, periodStart) as InvoiceRow | undefined;
 }
 

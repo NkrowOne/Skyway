@@ -767,6 +767,18 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                   {inv.paid_at ? ` · pagada ${timeAgo(inv.paid_at)}` : inv.issued_at ? ` · emitida ${timeAgo(inv.issued_at)}` : ''}
                 </p>
               </button>
+              <div className="flex shrink-0 flex-wrap items-center gap-1">
+                {/* La factura en PDF la descarga TAMBIÉN el cliente: es suya. El
+                    resto de acciones (cobrar, emitir, rectificar) son del admin. */}
+                <a
+                  href={`/api/invoices/${inv.id}/pdf`}
+                  download
+                  className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt"
+                  title="Descargar la factura en PDF"
+                >
+                  <Download size={14} />
+                </a>
+              </div>
               {isAdmin && (
                 <div className="flex shrink-0 flex-wrap items-center gap-1">
                   {data?.stripeEnabled && inv.status !== 'paid' && inv.status !== 'void' && inv.total_cents > 0 && (
@@ -774,16 +786,6 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                       <CreditCard size={13} /> Cobrar
                     </Button>
                   )}
-                  {/* La factura en PDF: descargable siempre, también en borrador
-                      (sale marcada como tal), para revisarla antes de emitir. */}
-                  <a
-                    href={`/api/invoices/${inv.id}/pdf`}
-                    download
-                    className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt"
-                    title="Descargar la factura en PDF"
-                  >
-                    <Download size={14} />
-                  </a>
                   {inv.status !== 'draft' && inv.status !== 'void' && (
                     <button
                       onClick={() => email.mutate(inv.id)}
@@ -870,7 +872,7 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
   const toast = useToast();
   const [reason, setReason] = useState('');
   const [correct, setCorrect] = useState(false);
-  const [lines, setLines] = useState(invoice.lines.map((l) => ({ label: l.label, qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate })));
+  const [lines, setLines] = useState(invoice.lines.map((l) => ({ label: l.label, qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate, irpfRate: l.irpfRate ?? 0 })));
 
   const rectify = useMutation({
     mutationFn: () => {
@@ -878,14 +880,14 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
       if (correct) {
         payload.lines = lines
           .filter((l) => l.label.trim())
-          .map((l) => ({ label: l.label.trim(), kind: 'custom', qty: l.qty, unitCents: Math.round(l.unit * 100), taxRate: l.taxRate }));
+          .map((l) => ({ label: l.label.trim(), kind: 'custom', qty: l.qty, unitCents: Math.round(l.unit * 100), taxRate: l.taxRate, irpfRate: l.irpfRate }));
       }
       return api.post(`/invoices/${invoice.id}/rectify`, payload);
     },
     onSuccess: () => { toast('Rectificativa creada en borrador', 'ok'); onSaved(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
-  const setLine = (i: number, patch: Partial<{ label: string; qty: number; unit: number; taxRate: number }>) =>
+  const setLine = (i: number, patch: Partial<{ label: string; qty: number; unit: number; taxRate: number; irpfRate: number }>) =>
     setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
 
   return (
@@ -918,7 +920,7 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
                 </button>
               </div>
             ))}
-            <button onClick={() => setLines((ls) => [...ls, { label: '', qty: 1, unit: 0, taxRate: invoice.tax_rate }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
+            <button onClick={() => setLines((ls) => [...ls, { label: '', qty: 1, unit: 0, taxRate: invoice.tax_rate, irpfRate: 0 }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
               + Añadir línea
             </button>
           </div>
@@ -1073,7 +1075,13 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
   // recompone la factura con lo que llega, así que omitirlos aplicaba el tipo por
   // defecto a todo y una línea exenta pasaba a tributar al 21 %.
   const [lines, setLines] = useState(
-    invoice.lines.map((l) => ({ label: l.label, kind: l.kind ?? 'custom', qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate, chargeId: l.chargeId })),
+    // El IRPF viaja por línea igual que el IVA: omitirlo hacía que el servidor
+    // aplicara el tipo EFECTIVO de la cabecera a todas las líneas, retenciones
+    // incluidas donde no las había.
+    invoice.lines.map((l) => ({
+      label: l.label, kind: l.kind ?? 'custom', qty: l.qty, unit: l.unitCents / 100,
+      taxRate: l.taxRate ?? invoice.tax_rate, irpfRate: l.irpfRate ?? 0, chargeId: l.chargeId,
+    })),
   );
   const base = lines.reduce((s, l) => s + Math.round(l.qty * l.unit * 100), 0);
   const isNew = !invoice.id;
@@ -1085,7 +1093,7 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
           .filter((l) => l.label.trim())
           // `chargeId` viaja de vuelta: es lo que dice al servidor qué cargos
           // puntuales siguen en la factura y cuáles vuelven a estar pendientes.
-          .map((l) => ({ label: l.label.trim(), kind: l.kind, qty: l.qty, unitCents: Math.round(l.unit * 100), taxRate: l.taxRate, chargeId: l.chargeId })),
+          .map((l) => ({ label: l.label.trim(), kind: l.kind, qty: l.qty, unitCents: Math.round(l.unit * 100), taxRate: l.taxRate, irpfRate: l.irpfRate, chargeId: l.chargeId })),
       };
       return isNew ? api.post(`/workspaces/${workspaceId}/invoices`, payload) : api.patch(`/invoices/${invoice.id}`, payload);
     },
@@ -1093,28 +1101,29 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  const setLine = (i: number, patch: Partial<{ label: string; qty: number; unit: number; taxRate: number }>) =>
+  const setLine = (i: number, patch: Partial<{ label: string; qty: number; unit: number; taxRate: number; irpfRate: number }>) =>
     setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
 
   return (
     <Modal open onClose={onClose} title={isNew ? 'Nueva factura a medida' : 'Editar factura'} wide>
       <div className="flex flex-col gap-2">
-        <div className="grid grid-cols-[1fr_70px_90px_70px_90px_28px] items-center gap-2 px-1 text-[11px] font-medium text-subtle">
-          <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA %</span><span className="text-right">Importe</span><span />
+        <div className="grid grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2 px-1 text-[11px] font-medium text-subtle">
+          <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA %</span><span className="text-right">IRPF %</span><span className="text-right">Importe</span><span />
         </div>
         {lines.map((l, i) => (
-          <div key={i} className="grid grid-cols-[1fr_70px_90px_70px_90px_28px] items-center gap-2">
+          <div key={i} className="grid grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2">
             <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Ej: Plan Pro (mensual)" />
             <input className="input h-9 tnum text-right" type="number" value={l.qty} min={0} onChange={(e) => setLine(i, { qty: Number(e.target.value) || 0 })} />
             <input className="input h-9 tnum text-right" type="number" value={l.unit} step="0.01" onChange={(e) => setLine(i, { unit: Number(e.target.value) || 0 })} />
             <input className="input h-9 tnum text-right" type="number" value={l.taxRate} min={0} max={100} onChange={(e) => setLine(i, { taxRate: Number(e.target.value) || 0 })} />
+            <input className="input h-9 tnum text-right" type="number" value={l.irpfRate} min={0} max={100} onChange={(e) => setLine(i, { irpfRate: Number(e.target.value) || 0 })} />
             <span className="tnum text-right text-[13px]">{fmtMoney(Math.round(l.qty * l.unit * 100), invoice.currency)}</span>
             <button onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="rounded-md p-1 text-subtle hover:text-err" title="Quitar línea">
               <Trash2 size={13} />
             </button>
           </div>
         ))}
-        <button onClick={() => setLines((ls) => [...ls, { label: '', kind: 'custom', qty: 1, unit: 0, taxRate: invoice.tax_rate, chargeId: undefined }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
+        <button onClick={() => setLines((ls) => [...ls, { label: '', kind: 'custom', qty: 1, unit: 0, taxRate: invoice.tax_rate, irpfRate: 0, chargeId: undefined }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
           + Añadir línea
         </button>
         {/* La suma de las líneas es la BASE IMPONIBLE, no el total: rotularla

@@ -16,8 +16,9 @@ facturación, medición de consumo, pagos, esquema de datos y panel web), cada
 hallazgo sometido después a una verificación adversarial que intentaba refutarlo
 leyendo el código. De 89 hallazgos brutos, **18 se descartaron** por no
 sostenerse y 71 se confirmaron; consolidados y deduplicados quedan en **44
-defectos reales corregidos** (34 en la auditoría y 10 en la segunda tanda) y **4
-carencias pendientes**.
+defectos reales corregidos** (34 en la auditoría, 10 en la segunda tanda y 14 en
+la verificación posterior) y **4 carencias pendientes**, más 14 defectos menores
+confirmados y documentados en el §3.ter.
 
 **Veredicto general**: el diseño fiscal es serio —numeración por serie y
 ejercicio, congelación del emisor y del destinatario al emitir, inmutabilidad de
@@ -149,9 +150,40 @@ comerciales tomadas (prorrateo por días; solo régimen general español).
 | 43 | Fiscal | El selector **«Modo Verifactu (AEAT)»** sugería una funcionalidad inexistente. | Rotulado como preparado pero no operativo, hasta implementar huella, QR y remisión. |
 | 44 | Fiscal | **El país del cliente no se registraba en ninguna parte**, pese a ser lo que determina el régimen de IVA de la operación. | `workspaces.billing_country` en ISO 3166-1 alfa-2 con **España por defecto**, seleccionable en la ficha de la cuenta, congelado en la factura al emitir (`client_country`) e impreso en el PDF junto al domicilio del destinatario. |
 
+## 3.ter Tercera tanda: verificación adversarial de la reforma
+
+Terminada la reforma, todo el diff se sometió a una **revisión adversarial en seis
+frentes** (devengo, consumo, fiscal, pagos, rutas HTTP y documento), con cada
+defecto sometido después a un refutador que debía **reproducirlo ejecutando
+código**. De 38 defectos en bruto, 10 se descartaron y **28 se confirmaron, todos
+reproducidos**. Los 14 de más impacto están corregidos:
+
+| # | Gravedad | Hallazgo | Corrección |
+| --- | --- | --- | --- |
+| 45 | **Crítica** | **Emitir la previsión del ciclo EN CURSO congelaba el ancla y la cuenta no se volvía a facturar nunca.** El ancla solo avanzaba con periodos cerrados, pero `invoiceExistsForCycle` sí daba por facturado el periodo en cuanto la factura dejaba de ser borrador: 200 ticks después, cero facturas nuevas. Regresión introducida por la propia reforma. | El ancla avanza al **emitir**, no solo al cerrar el periodo: emitir es un hecho legal y el cliente queda facturado hasta `period_end`. Solo avanza si la factura continúa la línea temporal (`period_start` = ancla), para que una factura a medida con periodo arbitrario no se salte periodos pendientes. |
+| 46 | Alta | **Un hueco de varios meses se cobraba como un solo mes.** `prorationFactor` capaba el factor a 1, así que recuperar un ciclo atrasado de 3 meses facturaba una cuota y el ancla saltaba al final: los otros dos no se facturaban jamás. | El tick recorre los periodos pendientes **de uno en uno** (`pendingPeriods`), con su prorrateo y su idempotencia por periodo. La tolerancia de `prorationFactor` ya solo redondea hacia arriba lo que roza 1, sin recortar factores mayores. |
+| 47 | Alta | **El tick borraba cualquier borrador con el mismo `period_start`**, incluidas las facturas escritas a mano y las rectificativas en borrador. | Columna `workspace_invoices.origin`: solo se sustituye el borrador que generó el propio ciclo (`origin='cycle'`, tipo ordinario). |
+| 48 | Alta | **El editor del panel destruía la retención de IRPF por línea**: no devolvía `irpfRate`, así que el servidor aplicaba el tipo EFECTIVO de la cabecera a todas las líneas (150,00 € de retención pasaban a 75,00 €). | El editor y la rectificativa conservan el IRPF por línea y lo exponen en una columna «IRPF %». Una línea nueva nace sin retención, no con el tipo agregado. |
+| 49 | Alta | **La morosidad usaba la factura vencida más antigua aunque un abono ya la hubiera saldado**: cancelaba cuentas cuya única deuda real seguía dentro del periodo de gracia. | Los abonos se imputan **FIFO** contra las vencidas más antiguas; solo entran en la etapa las que conservan deuda. |
+| 50 | Media | **Cambiar el régimen de IVA a uno exento machacaba los tipos por línea de forma irreversible**: al volver a «general» la factura quedaba con base entera y 0,00 € de IVA. | El tipo real de la línea se conserva siempre; la exención se aplica solo al calcular el desglose. |
+| 51 | Media | **El backfill de atribución corría ANTES de la migración de clientes→workspaces**: una instalación que saltara versiones perdía la atribución de todo su histórico, y la marcaba como hecha. | Se ejecuta después, y solo se da por hecha cuando no queda ninguna fila con titular resoluble sin resolver. |
+| 52 | Media | **Las claves y suscripciones cortadas por la versión anterior nunca revivían al pagar** (`suspended_by` NULL): la cuenta quedaba reactivada a medias. | Migración `dunning_actor_v1` que las marca como cortadas por morosidad, acotada a las cuentas efectivamente en mora. |
+| 53 | Media | **La contraseña SMTP acababa en claro (base64) en la auditoría y en las alertas** cuando el relé repite el comando no reconocido. | Todo texto del servidor pasa por un saneador que enmascara los bloques largos de base64 antes de salir del módulo. |
+| 54 | Media | **Reanudar una suscripción pausada cobraba el mes entero** por unos días de servicio (asimétrico con la baja, que sí se prorrateaba). | Se cobra desde la reanudación (`status_changed_at`). Limitación conocida: si la pausa y la reanudación caen en el mismo ciclo, solo se cobra el tramo posterior. |
+| 55 | Media | **El PDF imprimía un tipo de retención inventado** cuando la factura mezclaba conceptos con y sin IRPF (13,86 % sobre una base que no da ese importe). | Con tipos mezclados se imprime «Retención IRPF» sin porcentaje; el tipo solo se muestra cuando es uniforme. |
+| 56 | Baja | `workspaceUsageByProject` se quedó sin migrar: el desglose por proyecto no cuadraba con el total ni con la factura. | Filtra por el titular congelado, como el resto. |
+| 57 | Baja | La traza de `POST /api/usage` escribía una fila de auditoría **por evento**. | Una traza por (cuenta, medidor, día). |
+| 58 | Baja | El CSV del libro registro colaba **borradores anulados**, sin número ni fecha pero con base e IVA. Y el cliente no podía descargar su propia factura (el botón estaba bajo `isAdmin`). | El libro exige fecha de expedición; el botón de descarga sale del bloque de admin (la ruta ya lo permitía). |
+
 ### Sigue pendiente
 
-1. **Cada cubo horario se factura como hora completa**, aunque el servicio solo
+1. **Cambiar de plan a mitad de ciclo pierde el tramo del plan anterior**: solo se
+   factura el plan actual prorrateado desde `plan_since`, así que una subida o
+   bajada el día 25 deja sin cobrar los 24 días del plan saliente. Arreglarlo bien
+   exige un historial de plan por tramos; el atajo (crear un cargo puntual con el
+   tramo saliente al cambiar de plan) necesita recortar por el ancla y conocer el
+   mes nominal del ciclo que cerrará.
+2. **Cada cubo horario se factura como hora completa**, aunque el servicio solo
    haya corrido unos minutos dentro de esa hora.
 2. **El recargo de equivalencia no se calcula.** El régimen es seleccionable y
    `InvoiceLine.reRate` existe, pero nadie lo rellena ni lo suma.
