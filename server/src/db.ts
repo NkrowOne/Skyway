@@ -516,6 +516,12 @@ export function initDb(): void {
   // borrador por el definitivo), 'manual' la escribe el operador y NADIE la toca.
   // Por defecto 'manual': lo conservador para las filas anteriores a la columna.
   ensureColumn('workspace_invoices', 'origin', "TEXT NOT NULL DEFAULT 'manual'");
+  // Vencimiento resuelto AL EMITIR. Antes se derivaba del perfil vivo, así que
+  // cambiar las condiciones de pago hacía que el duplicado de una factura ya
+  // expedida dijese otra fecha: dos documentos distintos con el mismo número.
+  // Además la morosidad usa esta misma fecha, para que lo impreso y lo que dispara
+  // la suspensión no puedan divergir.
+  ensureColumn('workspace_invoices', 'due_at', 'INTEGER');
   ensureColumn('workspace_invoices', 'locked', 'INTEGER NOT NULL DEFAULT 0');
   // Datos fiscales del cliente (destinatario de la factura).
   ensureColumn('workspaces', 'billing_tax_id', 'TEXT');
@@ -945,7 +951,25 @@ export function countWorkspaceProjects(workspaceId: string): number {
  * denormalizado `client` que usa la agrupación por empresa de la UI.
  */
 export function setProjectWorkspace(projectId: string, workspaceId: string | null, clientName: string | null): void {
-  db.prepare('UPDATE projects SET workspace_id = ?, client = ? WHERE id = ?').run(workspaceId, clientName, projectId);
+  db.transaction(() => {
+    db.prepare('UPDATE projects SET workspace_id = ?, client = ? WHERE id = ?').run(workspaceId, clientName, projectId);
+    if (!workspaceId) return;
+    // El alta normal crea el proyecto SIN cuenta, despliega los servicios y asigna
+    // el cliente días después: durante ese tiempo los cubos horarios se escriben
+    // con `workspace_id` NULL y ese consumo no se facturaba nunca. Al asignar la
+    // cuenta se adopta el consumo aún SIN TITULAR de sus servicios. El filtro
+    // `workspace_id IS NULL` es lo que impide que una reasignación entre cuentas
+    // se lleve consigo el consumo ya atribuido (y ya facturado) a la anterior.
+    db.prepare(
+      `UPDATE service_metrics_hourly SET workspace_id = ?
+       WHERE workspace_id IS NULL AND service_id IN (SELECT id FROM services WHERE project_id = ?)`,
+    ).run(workspaceId, projectId);
+    db.prepare(
+      `UPDATE usage_meter_hourly SET workspace_id = ?
+       WHERE workspace_id IS NULL AND subject_type = 'service'
+         AND subject_id IN (SELECT id FROM services WHERE project_id = ?)`,
+    ).run(workspaceId, projectId);
+  })();
 }
 
 export function listProjects(): ProjectRow[] {
@@ -1753,7 +1777,7 @@ const INVOICE_DEFAULTS = {
   operation_date: null, tax_breakdown: '[]', vat_regime: 'general', legal_mentions: null,
   irpf_rate: 0, irpf_cents: 0, issuer_snapshot: null, client_name: null, client_tax_id: null,
   client_address: null, client_country: null, origin: 'manual', plan_name: null, payment_method: null, stripe_session_id: null,
-  stripe_url: null, issued_at: null, paid_at: null, locked: 0, notes: null,
+  stripe_url: null, issued_at: null, due_at: null, paid_at: null, locked: 0, notes: null,
 } as const;
 
 type InvoiceCore = Pick<
@@ -1769,13 +1793,13 @@ export function createInvoice(row: InvoiceCore & Partial<InvoiceRow>): InvoiceRo
        period_start, period_end, operation_date, status, currency, subtotal_cents, tax_cents, tax_rate,
        tax_breakdown, vat_regime, legal_mentions, irpf_rate, irpf_cents, total_cents, lines, plan_name,
        issuer_snapshot, client_name, client_tax_id, client_address, client_country, origin, payment_method, stripe_session_id,
-       stripe_url, issued_at, paid_at, locked, notes, created_at)
+       stripe_url, issued_at, due_at, paid_at, locked, notes, created_at)
      VALUES (
        @id, @workspace_id, @series_id, @number, @invoice_type, @rectifies_invoice_id, @rectify_reason,
        @period_start, @period_end, @operation_date, @status, @currency, @subtotal_cents, @tax_cents, @tax_rate,
        @tax_breakdown, @vat_regime, @legal_mentions, @irpf_rate, @irpf_cents, @total_cents, @lines, @plan_name,
        @issuer_snapshot, @client_name, @client_tax_id, @client_address, @client_country, @origin, @payment_method, @stripe_session_id,
-       @stripe_url, @issued_at, @paid_at, @locked, @notes, @created_at)`,
+       @stripe_url, @issued_at, @due_at, @paid_at, @locked, @notes, @created_at)`,
   ).run(full);
   return full;
 }
@@ -1785,7 +1809,7 @@ const INVOICE_COLUMNS = new Set([
   'period_end', 'operation_date', 'status', 'currency', 'subtotal_cents', 'tax_cents', 'tax_rate',
   'tax_breakdown', 'vat_regime', 'legal_mentions', 'irpf_rate', 'irpf_cents', 'total_cents', 'lines',
   'plan_name', 'issuer_snapshot', 'client_name', 'client_tax_id', 'client_address', 'client_country', 'payment_method',
-  'stripe_session_id', 'stripe_url', 'issued_at', 'paid_at', 'locked', 'notes',
+  'stripe_session_id', 'stripe_url', 'issued_at', 'due_at', 'paid_at', 'locked', 'notes',
 ]);
 
 export function updateInvoice(invoiceId: string, fields: Record<string, unknown>): void {
@@ -2313,7 +2337,10 @@ export function getWorkspaceApiKeyByHash(hash: string): WorkspaceApiKeyRow | und
   return db.prepare('SELECT * FROM workspace_api_keys WHERE key_hash = ?').get(hash) as WorkspaceApiKeyRow | undefined;
 }
 
-const WS_API_KEY_COLUMNS = new Set(['name', 'allowed_models', 'status', 'budget_cents_month', 'spend_cents_cycle', 'cycle_anchor', 'rate_limit_rpm', 'expires_at', 'revoked_at']);
+// `suspended_by` entra en la lista blanca: sin él, desbloquear una clave a mano
+// dejaba la marca 'dunning' pegada, y al pagar una factura la clave revivía sola
+// deshaciendo la decisión del operador.
+const WS_API_KEY_COLUMNS = new Set(['name', 'allowed_models', 'status', 'suspended_by', 'budget_cents_month', 'spend_cents_cycle', 'cycle_anchor', 'rate_limit_rpm', 'expires_at', 'revoked_at']);
 
 export function updateWorkspaceApiKey(keyId: string, fields: Record<string, unknown>): void {
   const keys = Object.keys(fields).filter((k) => WS_API_KEY_COLUMNS.has(k));

@@ -465,6 +465,12 @@ export interface InvoiceRow {
    * sustituible por el definitivo), 'manual' la escribió el operador (intocable).
    */
   origin: 'cycle' | 'manual';
+  /**
+   * Vencimiento congelado al emitir (expedición + condiciones de pago de ese
+   * momento). Null en facturas anteriores a la columna: entonces se recalcula con
+   * el perfil vivo, como antes.
+   */
+  due_at: number | null;
   /** Método de cobro elegido/registrado. */
   payment_method: PaymentMethod | null;
   stripe_session_id: string | null;

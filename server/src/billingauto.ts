@@ -34,9 +34,14 @@ function paymentTermsDays(): number {
   return Number.isFinite(n) ? n : 30;
 }
 
-/** Fecha de vencimiento de una factura = expedición + condiciones de pago del perfil. */
+/**
+ * Fecha de vencimiento de una factura. Manda la CONGELADA al emitir: si se
+ * recalculara con el perfil vivo, cambiar las condiciones de pago movería el
+ * vencimiento de facturas ya expedidas y la fecha impresa dejaría de coincidir con
+ * la que dispara la suspensión. Las anteriores a la columna caen al cálculo previo.
+ */
 function invoiceDueMs(inv: InvoiceRow, termsDays: number): number {
-  return (inv.issued_at ?? inv.created_at) + termsDays * DAY;
+  return inv.due_at ?? (inv.issued_at ?? inv.created_at) + termsDays * DAY;
 }
 
 /**

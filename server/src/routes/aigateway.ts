@@ -440,7 +440,10 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
       const key = getWorkspaceApiKey(keyId);
       if (!key || key.workspace_id !== id) return reply.code(404).send({ error: 'Clave no encontrada' });
       if (key.status === 'revoked') return reply.code(409).send({ error: 'La clave está revocada.' });
-      updateWorkspaceApiKey(keyId, { status });
+      // El actor se reescribe SIEMPRE: un corte manual queda marcado como tal (y no
+      // revive al pagar), y un desbloqueo manual limpia la marca de morosidad para
+      // que un bloqueo posterior no herede el 'dunning' de hace meses.
+      updateWorkspaceApiKey(keyId, { status, suspended_by: status === 'active' ? null : 'manual' });
       audit(req, status === 'suspended' ? 'ws_api_key_block' : 'ws_api_key_unblock', { type: 'workspace', id });
       return { apiKey: publicKey(getWorkspaceApiKey(keyId)!) };
     };

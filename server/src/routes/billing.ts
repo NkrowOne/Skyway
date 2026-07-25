@@ -93,27 +93,39 @@ type LineDraft = z.infer<typeof lineSchema> & { discountable?: boolean };
  * precio negociado por cliente (unit_cents) para no descontar dos veces. El clamp
  * por grupo evita bases negativas.
  */
-function applyAccountDiscount(rawLines: LineDraft[], pct: number): void {
+function applyAccountDiscount(rawLines: LineDraft[], pct: number, defaultIrpf: number): void {
   if (!(pct > 0)) return;
   const clamped = Math.min(100, pct);
-  const baseByRate = new Map<string, { taxRate: number; irpfRate: number | undefined; base: number }>();
+  const baseByRate = new Map<string, { taxRate: number; irpfRate: number; base: number }>();
   for (const l of rawLines) {
     if (!l.discountable) continue;
     const amount = Math.round(l.qty * l.unitCents);
     if (amount <= 0) continue; // solo se descuenta sobre importes positivos
     const taxRate = l.taxRate ?? 0;
-    const key = `${taxRate}|${l.irpfRate ?? ''}`;
-    const entry = baseByRate.get(key) ?? { taxRate, irpfRate: l.irpfRate, base: 0 };
+    // El IRPF se normaliza con el MISMO criterio que `computeTotals` (ausente = el
+    // tipo por defecto de la factura). Agrupar por el valor crudo separaba en dos
+    // grupos las líneas con `undefined` y las que traen ese mismo tipo explícito,
+    // produciendo dos descuentos con la etiqueta idéntica.
+    const irpfRate = l.irpfRate ?? defaultIrpf;
+    const key = `${taxRate}|${irpfRate}`;
+    const entry = baseByRate.get(key) ?? { taxRate, irpfRate, base: 0 };
     entry.base += amount;
     baseByRate.set(key, entry);
   }
-  const multiRate = baseByRate.size > 1;
-  for (const { taxRate, irpfRate, base } of baseByRate.values()) {
+  // El desdoble puede venir del IVA, del IRPF o de ambos. Anotar siempre el IVA
+  // dejaba DOS líneas rotuladas exactamente igual con importes distintos cuando lo
+  // que variaba era la retención: la factura resultaba incomprensible aunque los
+  // importes fueran correctos. Se nombra solo la dimensión que de verdad varía.
+  const grupos = [...baseByRate.values()];
+  const multiVat = new Set(grupos.map((g) => g.taxRate)).size > 1;
+  const multiIrpf = new Set(grupos.map((g) => g.irpfRate)).size > 1;
+  for (const { taxRate, irpfRate, base } of grupos) {
     if (base <= 0) continue;
     const disc = Math.min(base, Math.round((base * clamped) / 100)); // nunca supera la base del grupo
     if (disc <= 0) continue;
+    const matices = [multiVat ? `IVA ${taxRate}%` : '', multiIrpf ? `IRPF ${irpfRate}%` : ''].filter(Boolean);
     rawLines.push({
-      label: `Descuento ${clamped}%${multiRate ? ` (IVA ${taxRate}%)` : ''}`,
+      label: `Descuento ${clamped}%${matices.length > 0 ? ` (${matices.join(', ')})` : ''}`,
       kind: 'discount',
       qty: 1,
       unitCents: -disc,
@@ -309,12 +321,14 @@ function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
   const snap = inv.issuer_snapshot ? (JSON.parse(inv.issuer_snapshot) as IssuerSnapshot) : null;
   return {
     number: inv.number ?? 'BORRADOR',
+    status: inv.status,
     invoiceType: inv.invoice_type === 'rectificativa' ? 'rectificativa' : inv.invoice_type === 'simplificada' ? 'simplificada' : 'normal',
     issuedAt: inv.issued_at,
     operationDate: inv.operation_date,
     periodStart: inv.period_start,
     periodEnd: inv.period_end,
-    dueAt: inv.issued_at ? inv.issued_at + profile.paymentTermsDays * 86_400_000 : null,
+    // El congelado manda; las facturas anteriores a la columna caen al perfil vivo.
+    dueAt: inv.due_at ?? (inv.issued_at ? inv.issued_at + profile.paymentTermsDays * 86_400_000 : null),
     currency: inv.currency,
     issuer: {
       companyName: snap?.companyName ?? profile.companyName,
@@ -360,10 +374,31 @@ export async function sendInvoiceEmail(inv: InvoiceRow, opts: { manual?: boolean
   const smtp = getSmtpSettings();
   const ws = getWorkspace(inv.workspace_id);
   const destino = ws?.billing_email?.trim();
-  if (!smtp) return { ok: false, error: 'No hay servidor de correo configurado en Contabilidad.' };
-  if (!destino) return { ok: false, error: `La cuenta «${ws?.name ?? inv.workspace_id}» no tiene email de facturación.` };
-  const profile = getBillingProfile();
   const numero = inv.number ?? inv.id;
+  /**
+   * Único camino de fallo. Antes los dos cortes de configuración salían ANTES del
+   * try y no auditaban ni alertaban: como los llamantes automáticos descartan el
+   * resultado (`void sendInvoiceEmail`), una cuenta sin email de facturación
+   * dejaba la factura sin enviar y sin ninguna traza.
+   */
+  const fallo = (detalle: string): { ok: false; error: string } => {
+    auditSystem('invoice_email_failed', `${numero} → ${destino ?? 'sin destinatario'}: ${detalle.slice(0, 200)}`);
+    if (!opts.manual) {
+      fireWorkspaceAlert({
+        severity: 'warning',
+        workspaceId: inv.workspace_id,
+        type: 'invoice_email_failed',
+        title: `No se pudo enviar la factura ${numero}`,
+        message: detalle.slice(0, 300),
+        explanation: 'La factura está emitida y es válida; solo ha fallado el envío. Reenvíala desde la ficha de la cuenta.',
+        dedupeKey: `invoice:${inv.id}:email_failed`,
+      });
+    }
+    return { ok: false, error: detalle };
+  };
+  if (!smtp) return fallo('No hay servidor de correo configurado en Contabilidad.');
+  if (!destino) return fallo(`La cuenta «${ws?.name ?? inv.workspace_id}» no tiene email de facturación.`);
+  const profile = getBillingProfile();
   const importe = `${(inv.total_cents / 100).toFixed(2)} ${inv.currency}`;
   try {
     await sendMail(smtp, {
@@ -381,22 +416,9 @@ export async function sendInvoiceEmail(inv: InvoiceRow, opts: { manual?: boolean
     auditSystem('invoice_emailed', `${numero} → ${destino}`);
     return { ok: true };
   } catch (err: any) {
-    const detalle = err instanceof MailError ? err.message : (err?.message || 'error desconocido');
-    auditSystem('invoice_email_failed', `${numero} → ${destino}: ${detalle.slice(0, 200)}`);
     // En el envío manual el operador ya ve el error en pantalla; en el automático
-    // no hay nadie mirando, así que se alerta para que no pase inadvertido.
-    if (!opts.manual) {
-      fireWorkspaceAlert({
-        severity: 'warning',
-        workspaceId: inv.workspace_id,
-        type: 'invoice_email_failed',
-        title: `No se pudo enviar la factura ${numero}`,
-        message: detalle.slice(0, 300),
-        explanation: 'La factura está emitida y es válida; solo ha fallado el envío. Reenvíala desde la ficha de la cuenta.',
-        dedupeKey: `invoice:${inv.id}:email_failed`,
-      });
-    }
-    return { ok: false, error: detalle };
+    // no hay nadie mirando, así que `fallo` alerta para que no pase inadvertido.
+    return fallo(err instanceof MailError ? err.message : err?.message || 'error desconocido');
   }
 }
 
@@ -624,6 +646,9 @@ function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Reco
     // Congelar emisor y destinatario la primera vez que se emite.
     if (!inv.issued_at) {
       fields.issued_at = issuedAt;
+      // El vencimiento se resuelve AQUÍ y se congela: es lo que se imprime en la
+      // factura y lo que la morosidad usa para contar los días de impago.
+      fields.due_at = issuedAt + profile.paymentTermsDays * 86_400_000;
       fields.issuer_snapshot = JSON.stringify(issuerSnapshot(profile));
       if (ws) {
         fields.client_name = ws.name;
@@ -676,6 +701,7 @@ export interface StripeSessionRef {
 export type StripePaymentOutcome =
   | { result: 'pagada'; invoice: InvoiceRow }
   | { result: 'ya_pagada'; invoice: InvoiceRow }
+  | { result: 'cobro_duplicado'; invoice: InvoiceRow; detail: string }
   | { result: 'sin_factura' }
   | { result: 'anulada'; invoice: InvoiceRow }
   | { result: 'importe_no_cuadra'; invoice: InvoiceRow; detail: string };
@@ -696,7 +722,18 @@ export function markInvoicePaidByStripeSession(session: StripeSessionRef): Strip
   const byRef = session.metadata?.invoiceId ?? session.client_reference_id ?? null;
   const inv = (byRef ? getInvoice(byRef) : undefined) ?? getInvoiceByStripeSession(session.id);
   if (!inv) return { result: 'sin_factura' };
-  if (inv.status === 'paid') return { result: 'ya_pagada', invoice: inv };
+  if (inv.status === 'paid') {
+    // Cortar por estado a secas escondía un cobro REAL: si la factura ya se saldó
+    // por otra vía (transferencia marcada a mano) o con OTRA sesión de Stripe, este
+    // segundo pago es dinero cobrado dos veces, no un reenvío del mismo evento.
+    const mismoCobro = inv.stripe_session_id === session.id && inv.payment_method === 'stripe';
+    if (mismoCobro) return { result: 'ya_pagada', invoice: inv };
+    return {
+      result: 'cobro_duplicado',
+      invoice: inv,
+      detail: `ya estaba cobrada por «${inv.payment_method ?? 'sin método'}»${inv.stripe_session_id && inv.stripe_session_id !== session.id ? ` (sesión ${inv.stripe_session_id})` : ''}`,
+    };
+  }
   if (inv.status === 'void') return { result: 'anulada', invoice: inv };
   if (session.amount_total != null) {
     const esperado = stripeAmount(inv.total_cents, inv.currency);
@@ -769,6 +806,7 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
         qty: 1,
         unitCents: Math.round(plan.price_cents * factor),
         taxRate: profile.vatRate,
+        irpfRate: 0, // la cuota de un plan no está sujeta a retención
         discountable: true,
       });
     }
@@ -843,7 +881,7 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
 
   // Descuento comercial de la cuenta (override) o, si no lo tiene, del plan.
   const discountPct = ws.discount_pct ?? plan?.discount_pct ?? 0;
-  applyAccountDiscount(rawLines, discountPct);
+  applyAccountDiscount(rawLines, discountPct, profile.defaultIrpfRate);
 
   // Nada que facturar este ciclo (sin plan, sin suscripciones con consumo, sin
   // cargos): no se crea un borrador vacío que se acumularía mes a mes.

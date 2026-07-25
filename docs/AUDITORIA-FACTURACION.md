@@ -16,9 +16,8 @@ facturación, medición de consumo, pagos, esquema de datos y panel web), cada
 hallazgo sometido después a una verificación adversarial que intentaba refutarlo
 leyendo el código. De 89 hallazgos brutos, **18 se descartaron** por no
 sostenerse y 71 se confirmaron; consolidados y deduplicados quedan en **44
-defectos reales corregidos** (34 en la auditoría, 10 en la segunda tanda y 14 en
-la verificación posterior) y **4 carencias pendientes**, más 14 defectos menores
-confirmados y documentados en el §3.ter.
+defectos reales corregidos** (34 en la auditoría, 10 en la segunda tanda, 14 en
+la verificación adversarial y 7 en la cuarta) y **4 carencias pendientes**.
 
 **Veredicto general**: el diseño fiscal es serio —numeración por serie y
 ejercicio, congelación del emisor y del destinatario al emitir, inmutabilidad de
@@ -174,6 +173,27 @@ reproducidos**. Los 14 de más impacto están corregidos:
 | 56 | Baja | `workspaceUsageByProject` se quedó sin migrar: el desglose por proyecto no cuadraba con el total ni con la factura. | Filtra por el titular congelado, como el resto. |
 | 57 | Baja | La traza de `POST /api/usage` escribía una fila de auditoría **por evento**. | Una traza por (cuenta, medidor, día). |
 | 58 | Baja | El CSV del libro registro colaba **borradores anulados**, sin número ni fecha pero con base e IVA. Y el cliente no podía descargar su propia factura (el botón estaba bajo `isAdmin`). | El libro exige fecha de expedición; el botón de descarga sale del bloque de admin (la ruta ya lo permitía). |
+
+### Cuarta tanda: el resto de los defectos confirmados
+
+Los 8 defectos menores que el §3.ter dejaba documentados, ya corregidos:
+
+| # | Hallazgo | Corrección |
+| --- | --- | --- |
+| 59 | **Dos líneas de descuento con la etiqueta idéntica** e importes distintos: el desdoble lo causaba el IRPF pero la etiqueta solo nombraba el IVA. La causa de fondo era que `undefined` y el tipo por defecto formaban grupos separados. | El IRPF se normaliza al agrupar con el mismo criterio que `computeTotals`, la línea del plan declara su retención (0: una cuota de plan no está sujeta) y la etiqueta nombra solo la dimensión que de verdad varía. |
+| 60 | **El envío de la factura fallaba sin dejar traza** cuando no había SMTP o la cuenta no tenía email: los dos cortes salían antes del `try` y los llamantes automáticos descartan el resultado. | Un único camino de fallo que audita y alerta también en esos dos casos. |
+| 61 | **Un cobro por segunda vía pasaba en silencio**: `markInvoicePaidByStripeSession` cortaba por estado antes de mirar con qué sesión y con qué método se había cobrado. | Desenlace nuevo `cobro_duplicado` cuando la factura ya estaba saldada por otro medio o con otra sesión; el webhook lo audita y lanza alerta crítica. El reenvío del mismo evento sigue siendo idempotente y silencioso. |
+| 62 | **El PDF de una factura ANULADA era idéntico al de una válida**: mismo número, misma fecha, mismo total. | El título lo rotula: «FACTURA ANULADA» / «FACTURA RECTIFICATIVA ANULADA». |
+| 63 | **El duplicado de una factura emitida cambiaba solo**: el vencimiento salía del perfil vivo, así que ampliar las condiciones de pago alteraba un documento ya expedido. | Columna `due_at`, congelada al emitir. La morosidad usa **la misma** fecha, para que lo impreso y lo que dispara la suspensión no puedan divergir. |
+| 64 | **Asignar la cuenta a un proyecto creado sin ella perdía el consumo acumulado** — el flujo de alta habitual: crear el proyecto, desplegar, asignar el cliente días después. | `setProjectWorkspace` adopta, en la misma transacción, el consumo **aún sin titular** de sus servicios. El filtro `workspace_id IS NULL` impide que una reasignación entre cuentas se lleve lo ya atribuido. |
+| 65 | **Una clave bloqueada a mano revivía sola al pagar**: `suspended_by` no estaba en la lista blanca, así que desbloquearla dejaba pegada la marca `dunning`. | `suspended_by` es escribible y el actor se reescribe en cada cambio manual, tanto en claves como en suscripciones. |
+
+Sobre los parches de esta tanda: se generaron en worktrees aislados, pero **dos
+de los cuatro se crearon desde `main`** y por tanto ignoraban las reformas
+anteriores; sus revisores detectaron que habrían revertido trabajo ya verificado.
+Ninguno de los cuatro se integró: las correcciones se reescribieron sobre la base
+correcta aprovechando su diseño y, sobre todo, las trampas que la revisión
+destapó.
 
 ### Sigue pendiente
 

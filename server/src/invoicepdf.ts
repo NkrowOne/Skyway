@@ -17,6 +17,8 @@ import { deflateSync } from 'node:zlib';
 export interface InvoicePdfData {
   number: string;
   invoiceType: 'normal' | 'simplificada' | 'rectificativa';
+  /** Estado de la factura: una ANULADA se rotula como tal, o el duplicado engaña. */
+  status?: 'draft' | 'issued' | 'paid' | 'void';
   issuedAt: number | null;      // ms epoch
   operationDate: number | null; // ms epoch
   periodStart: number;
@@ -292,7 +294,11 @@ interface Pagina {
 /** Documento PDF de la factura, listo para descargar o adjuntar a un correo. */
 export function renderInvoicePdf(data: InvoicePdfData): Buffer {
   const moneda = (data.currency || 'EUR').toUpperCase();
-  const titulo = TITULOS[data.invoiceType] ?? TITULOS.normal;
+  // Una factura ANULADA lleva la marca en el propio título: sin ella su duplicado
+  // era indistinguible de una viva (mismo número, misma fecha, mismo total) y el
+  // cliente no tenía forma de saber que ya no vale. Texto y no banda diagonal: el
+  // generador es manual y así la marca se extrae también al copiar el PDF.
+  const titulo = `${TITULOS[data.invoiceType] ?? TITULOS.normal}${data.status === 'void' ? ' ANULADA' : ''}`;
 
   // --- estado de maquetación (local: la función es reentrante) ---
   const paginas: Pagina[] = [];
