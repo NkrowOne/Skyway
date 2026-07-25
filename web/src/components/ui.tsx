@@ -83,6 +83,55 @@ export function Field({
   );
 }
 
+// ---------- NumberInput ----------
+type NumberInputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'type'> & {
+  value: number;
+  onChange: (value: number) => void;
+  /** Qué número se emite mientras el campo está vacío (por defecto 0). */
+  emptyValue?: number;
+};
+
+/**
+ * Campo numérico controlado que **se puede vaciar**. Un `<input type="number">`
+ * atado directamente a un número se rellena solo al borrarlo (`Number('') || 0`
+ * vuelve a 0), y obliga a escribir encima del valor anterior. Aquí el texto vive
+ * en un estado propio: se puede dejar en blanco mientras se teclea y solo se
+ * normaliza al salir del campo.
+ */
+export function NumberInput({ value, onChange, emptyValue = 0, onFocus, onBlur, ...rest }: NumberInputProps) {
+  const [text, setText] = useState(() => String(value));
+  const editing = useRef(false);
+
+  // Los cambios que vienen de fuera (carga de datos, descartar cambios, un
+  // clamp del padre) refrescan el texto, pero nunca mientras se está escribiendo.
+  useEffect(() => {
+    if (!editing.current) setText(String(value));
+  }, [value]);
+
+  return (
+    <input
+      {...rest}
+      type="number"
+      value={text}
+      onFocus={(e) => {
+        editing.current = true;
+        onFocus?.(e);
+      }}
+      onChange={(e) => {
+        const raw = e.target.value;
+        setText(raw);
+        const n = Number(raw);
+        onChange(raw.trim() === '' || Number.isNaN(n) ? emptyValue : n);
+      }}
+      onBlur={(e) => {
+        editing.current = false;
+        setText(String(value));
+        onBlur?.(e);
+      }}
+    />
+  );
+}
+
 // ---------- EditorBar ----------
 /**
  * Barra de acciones anclada al fondo del panel (sticky): sigue visible por larga

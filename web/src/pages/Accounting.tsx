@@ -2,7 +2,7 @@ import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, Send, Sparkles, Trash2, Zap } from 'lucide-react';
 import { api } from '../api';
-import { Button, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Field, NumberInput, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { RevenueBars } from '../components/BillingCharts';
 import { AccountingInvoice, AccountingSummary, AiGatewayConfig, AiModelPrices, BillingAutomation, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
 import { cx, fmtDate, fmtMoney } from '../utils';
@@ -253,10 +253,10 @@ function BillingAutomationSettings() {
       </p>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <Field label="Días para suspender el servicio" hint="suspende las claves de IA y pausa las suscripciones; reversible al pagar">
-          <input className="input tnum" type="number" min={0} max={365} value={draft.dunningGraceDays} onChange={(e) => set({ dunningGraceDays: Number(e.target.value) || 0 })} />
+          <NumberInput className="input tnum" min={0} max={365} value={draft.dunningGraceDays} onChange={(v) => set({ dunningGraceDays: v })} />
         </Field>
         <Field label="Días para cancelar la cuenta" hint="revoca las claves y cancela las suscripciones; requiere alta manual">
-          <input className={cx('input tnum', invalid && 'border-err')} type="number" min={0} max={365} value={draft.dunningCancelDays} onChange={(e) => set({ dunningCancelDays: Number(e.target.value) || 0 })} />
+          <NumberInput className={cx('input tnum', invalid && 'border-err')} min={0} max={365} value={draft.dunningCancelDays} onChange={(v) => set({ dunningCancelDays: v })} />
         </Field>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-subtle">
@@ -579,8 +579,8 @@ function CompanyProfile() {
           <Field label="Prefijo de serie" hint="Ej: FRA · numeración por ejercicio"><input className="input" maxLength={12} value={draft.invoicePrefix} onChange={(e) => set({ invoicePrefix: e.target.value })} /></Field>
         </div>
         <div className="grid gap-3 sm:grid-cols-3">
-          <Field label="IVA por defecto (%)"><input className="input tnum" type="number" min={0} max={100} value={draft.vatRate} onChange={(e) => set({ vatRate: Number(e.target.value) || 0 })} /></Field>
-          <Field label="IRPF por defecto (%)" hint="0 si eres sociedad"><input className="input tnum" type="number" min={0} max={100} value={draft.defaultIrpfRate} onChange={(e) => set({ defaultIrpfRate: Number(e.target.value) || 0 })} /></Field>
+          <Field label="IVA por defecto (%)"><NumberInput className="input tnum" min={0} max={100} value={draft.vatRate} onChange={(v) => set({ vatRate: v })} /></Field>
+          <Field label="IRPF por defecto (%)" hint="0 si eres sociedad"><NumberInput className="input tnum" min={0} max={100} value={draft.defaultIrpfRate} onChange={(v) => set({ defaultIrpfRate: v })} /></Field>
           {/* El registro encadenado (invoice_ledger) está creado como reserva, pero
               la huella, el QR y la remisión a la AEAT aún no se implementan: el
               selector solo deja constancia de la intención, no activa nada. */}
@@ -631,7 +631,7 @@ function CompanyProfile() {
           <div className="mt-4 grid gap-3">
             <div className="grid gap-3 sm:grid-cols-[1fr_100px]">
               <Field label="Servidor"><input className="input" value={draft.smtpHost} onChange={(e) => set({ smtpHost: e.target.value })} placeholder="smtp.tuproveedor.com" /></Field>
-              <Field label="Puerto"><input className="input tnum" type="number" min={1} max={65535} value={draft.smtpPort} onChange={(e) => set({ smtpPort: Number(e.target.value) || 587 })} /></Field>
+              <Field label="Puerto"><NumberInput className="input tnum" min={1} max={65535} value={draft.smtpPort} emptyValue={587} onChange={(v) => set({ smtpPort: v })} /></Field>
             </div>
             <label className="flex items-center gap-2 text-[13px]">
               <input type="checkbox" checked={draft.smtpSecure} onChange={(e) => set({ smtpSecure: e.target.checked })} />

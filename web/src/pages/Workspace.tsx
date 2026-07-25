@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import { COUNTRY_OPTIONS, DEFAULT_COUNTRY, countryName } from '../countries';
-import { Button, ConfirmModal, CopyButton, EditorBar, Field, Modal, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
+import { Button, ConfirmModal, CopyButton, EditorBar, Field, Modal, NumberInput, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
 import { QuotaMeter } from '../components/QuotaMeter';
 // Gráficos de la pestaña «Uso» (no es la pestaña por defecto): carga diferida.
 const UsageBars = lazy(() => import('../components/BillingCharts').then((m) => ({ default: m.UsageBars })));
@@ -174,12 +174,12 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
                       >
                         −
                       </button>
-                      <input
-                        type="number"
+                      <NumberInput
                         disabled={row.inherit}
                         value={ceiling}
                         min={d.min}
-                        onChange={(e) => setRow(d.key, { value: Math.max(d.min, Number(e.target.value) || d.min) })}
+                        emptyValue={d.min}
+                        onChange={(v) => setRow(d.key, { value: Math.max(d.min, v) })}
                         className="tnum h-8 w-20 border-x border-line bg-bg px-2 text-center text-[13px] text-txt outline-none disabled:opacity-40"
                       />
                       <button
@@ -959,9 +959,9 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
             {lines.map((l, i) => (
               <div key={i} className="grid grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2">
                 <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Concepto" />
-                <input className="input h-9 tnum text-right" type="number" value={l.qty} min={0} onChange={(e) => setLine(i, { qty: Number(e.target.value) || 0 })} />
-                <input className="input h-9 tnum text-right" type="number" value={l.unit} step="0.01" onChange={(e) => setLine(i, { unit: Number(e.target.value) || 0 })} />
-                <input className="input h-9 tnum text-right" type="number" value={l.taxRate} min={0} max={100} onChange={(e) => setLine(i, { taxRate: Number(e.target.value) || 0 })} />
+                <NumberInput className="input h-9 tnum text-right" value={l.qty} min={0} onChange={(v) => setLine(i, { qty: v })} />
+                <NumberInput className="input h-9 tnum text-right" value={l.unit} step="0.01" onChange={(v) => setLine(i, { unit: v })} />
+                <NumberInput className="input h-9 tnum text-right" value={l.taxRate} min={0} max={100} onChange={(v) => setLine(i, { taxRate: v })} />
                 <button onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="rounded-md p-1 text-subtle hover:text-err" title="Quitar línea">
                   <Trash2 size={13} />
                 </button>
@@ -1160,10 +1160,10 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
         {lines.map((l, i) => (
           <div key={i} className="grid grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2">
             <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Ej: Plan Pro (mensual)" />
-            <input className="input h-9 tnum text-right" type="number" value={l.qty} min={0} onChange={(e) => setLine(i, { qty: Number(e.target.value) || 0 })} />
-            <input className="input h-9 tnum text-right" type="number" value={l.unit} step="0.01" onChange={(e) => setLine(i, { unit: Number(e.target.value) || 0 })} />
-            <input className="input h-9 tnum text-right" type="number" value={l.taxRate} min={0} max={100} onChange={(e) => setLine(i, { taxRate: Number(e.target.value) || 0 })} />
-            <input className="input h-9 tnum text-right" type="number" value={l.irpfRate} min={0} max={100} onChange={(e) => setLine(i, { irpfRate: Number(e.target.value) || 0 })} />
+            <NumberInput className="input h-9 tnum text-right" value={l.qty} min={0} onChange={(v) => setLine(i, { qty: v })} />
+            <NumberInput className="input h-9 tnum text-right" value={l.unit} step="0.01" onChange={(v) => setLine(i, { unit: v })} />
+            <NumberInput className="input h-9 tnum text-right" value={l.taxRate} min={0} max={100} onChange={(v) => setLine(i, { taxRate: v })} />
+            <NumberInput className="input h-9 tnum text-right" value={l.irpfRate} min={0} max={100} onChange={(v) => setLine(i, { irpfRate: v })} />
             <span className="tnum text-right text-[13px]">{fmtMoney(Math.round(l.qty * l.unit * 100), invoice.currency)}</span>
             <button onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="rounded-md p-1 text-subtle hover:text-err" title="Quitar línea">
               <Trash2 size={13} />
