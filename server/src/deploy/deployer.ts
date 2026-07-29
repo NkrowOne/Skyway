@@ -489,6 +489,20 @@ async function deployContainer(
 
   if (service.type === 'database') ensureDatabaseEnv(service, log);
   const env = resolveServiceEnv(service);
+  // Una referencia que no resuelve se queda como texto literal dentro del
+  // contenedor, y la aplicación arranca con ella sin quejarse: una cadena de
+  // conexión inválida, o —peor— un secreto que pasa a ser una constante pública.
+  // No se aborta el despliegue (romperlo por una variable de adorno sería peor),
+  // pero tiene que verse.
+  const sinResolver = Object.entries(env)
+    .filter(([, value]) => /\$\{\{[^}]+\}\}/.test(value))
+    .map(([key]) => key);
+  if (sinResolver.length > 0) {
+    log(
+      `⚠ Referencias sin resolver en ${sinResolver.join(', ')}: la variable apuntada ya no existe. ` +
+        'El contenedor arrancará con el texto literal ${{...}} como valor.',
+    );
+  }
   let internalPort: number | null = null;
   let domains: string[] = [];
   let cmd: string[] | null = null;
