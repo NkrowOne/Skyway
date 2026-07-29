@@ -98,7 +98,8 @@ web/src/
   - `skyway-edge`: compartida con Traefik; se conectan aquí los servicios con
     dominio para que Traefik les enrute tráfico.
   - `skyway-<proyecto>`: red privada por proyecto; los servicios se resuelven
-    entre sí por su *slug* (`postgres:5432`, `redis:6379`…).
+    entre sí por su *slug* (`postgres:5432`, `redis:6379`…). Cada servicio
+    anuncia la suya en **Ajustes → Dirección interna**, con el puerto ya puesto.
 - **Traefik** (en el `docker-compose`): enruta por dominio y emite TLS con
   Let's Encrypt. Se activa por *labels* que Skyway pone en cada contenedor. Con
   TLS configurado, el puerto 80 no sirve contenido: redirige a HTTPS con un 301.
