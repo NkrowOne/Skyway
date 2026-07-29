@@ -7,11 +7,9 @@ import {
   countWorkspaceServices,
   createService,
   getProject,
-  getProjectVars,
   getSetting,
   serviceSlugExists,
   setEnv,
-  setProjectVars,
 } from '../db';
 import {
   effectiveQuota,
@@ -33,6 +31,7 @@ const createSchema = z.object({
   domain: z
     .string()
     .trim()
+    .toLowerCase()
     .max(253)
     .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i, 'Dominio no válido')
     .optional(),
@@ -40,9 +39,8 @@ const createSchema = z.object({
 
 /**
  * Prefijo libre en el proyecto: si ya existe un servicio con alguno de los
- * nombres que generaría la pila, se numera el prefijo entero. Así los slugs, el
- * nombre de los volúmenes y el de las variables compartidas de una instancia
- * siguen siendo coherentes entre sí.
+ * nombres que generaría la pila, se numera el prefijo entero. Así los slugs y
+ * los nombres de volumen de una instancia siguen siendo coherentes entre sí.
  */
 function uniquePrefix(projectId: string, base: string, keys: string[]): string {
   let prefix = base;
@@ -95,10 +93,6 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
       slugify(body.prefix || stack.defaultPrefix) || stack.key,
       stack.services.map((s) => s.key),
     );
-    // Nombre de variable válido: el editor de variables rechaza las que no
-    // empiezan por letra o guion bajo, y una sola inválida bloquearía el guardado
-    // de TODAS las compartidas del proyecto.
-    const sharedPrefix = prefix.toUpperCase().replace(/-/g, '_').replace(/^(?=[0-9])/, '_');
     const slugs = Object.fromEntries(stack.services.map((s) => [s.key, `${prefix}-${s.key}`]));
 
     const entry = stack.services.find((s) => s.public) ?? stack.services[stack.services.length - 1];
@@ -111,34 +105,26 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
 
     const ctx: StackRenderCtx = {
       slugs,
-      sharedName: (key) => `${sharedPrefix}_${key}`,
+      secretsSlug: slugs[stack.secretsService],
       publicUrl,
       domain: body.domain ?? null,
     };
 
-    // Los secretos van a las variables COMPARTIDAS del proyecto (una sola copia,
-    // rotables desde el panel). Se fusionan con las existentes porque
-    // setProjectVars reemplaza el mapa entero, y se CONSERVA el valor que ya
-    // hubiera con ese nombre: si se recrea una pila borrada sin sus volúmenes,
-    // los datos siguen cifrados y autenticados con los secretos viejos, así que
-    // generar otros nuevos dejaría la pila inservible (mismo criterio que
-    // `makeEnv(slug, existing)` en las plantillas de base de datos).
-    const sharedVars = stack.makeSharedVars();
-    if (Object.keys(sharedVars).length > 0) {
-      const existing = getProjectVars(projectId);
-      const merged = { ...existing };
-      for (const [key, value] of Object.entries(sharedVars)) {
-        const name = ctx.sharedName(key);
-        if (merged[name] === undefined) merged[name] = value;
-      }
-      setProjectVars(projectId, merged);
-    }
+    // Los secretos se guardan en las variables del servicio ancla de la pila (no
+    // en las compartidas del proyecto, que se inyectan en TODOS los contenedores
+    // del proyecto, incluidos los que el usuario despliegue después).
+    const secrets = stack.makeSecrets();
 
     const created: ServiceRow[] = [];
     const steps: StackStep[] = [];
     for (const def of stack.services) {
       const slug = slugs[def.key];
       const domains = def.public && body.domain ? [body.domain] : [];
+      // Los secretos ganan sobre el entorno renderizado: en el propio servicio
+      // ancla, un `{{secret:X}}` se habría convertido en una referencia a su
+      // propia variable X, que sin el valor literal detrás no resolvería nada.
+      const own = (env: Record<string, string>) =>
+        def.key === stack.secretsService ? { ...env, ...secrets } : env;
       let service: ServiceRow;
 
       if (def.template) {
@@ -152,7 +138,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
         service = createService(projectId, slug, slug, 'database', cfg);
         // Credenciales generadas por la plantilla, como en una base suelta: el
         // resto de la pila las referencia con ${{servicio.VARIABLE}}.
-        setEnv(service.id, template.makeEnv(slug));
+        setEnv(service.id, own(template.makeEnv(slug)));
       } else {
         const cfg: ImageConfig & { icon?: string; stack?: string } = {
           image: def.image!,
@@ -162,17 +148,21 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
           stack: stack.key,
         };
         if (def.volumes?.length) {
-          // Sufijo `-vol` a propósito: los volúmenes que crea Skyway por su
-          // cuenta terminan en `-data`/`-dataN`, así que este espacio de nombres
-          // no puede chocar con ellos. Dos servicios con la misma clave lógica
-          // comparten volumen, que es justo lo que necesitan storage e imgproxy.
+          // Separador `__` a propósito. Con guiones, el nombre sería AMBIGUO:
+          // proyecto «acme-prod» + prefijo «supabase» y proyecto «acme» +
+          // prefijo «prod-supabase» darían el mismo, y Docker adjunta el volumen
+          // existente sin mirar de quién es — los datos de otro workspace. Ni
+          // los slugs de proyecto ni los prefijos pueden contener `_`, así que
+          // con este separador la descomposición es única. Dos servicios con la
+          // misma clave lógica comparten volumen: storage e imgproxy lo
+          // necesitan.
           cfg.volumes = def.volumes.map((v) => ({
-            name: `skyway-${project.slug}-${prefix}-${v.key}-vol`,
+            name: `skyway-${project.slug}__${prefix}__${v.key}`,
             containerPath: v.path,
           }));
         }
         service = createService(projectId, slug, slug, 'image', cfg);
-        if (def.env) setEnv(service.id, renderStackEnv(def.env, ctx));
+        setEnv(service.id, own(def.env ? renderStackEnv(def.env, ctx) : {}));
       }
 
       // El monitor no debe interpretar los arranques de la pila como caídas.

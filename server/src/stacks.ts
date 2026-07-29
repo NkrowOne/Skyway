@@ -5,13 +5,13 @@ import jwt from 'jsonwebtoken';
  * Pilas de aplicaciones: plantillas que despliegan VARIOS servicios coordinados
  * (como el catálogo de bases de datos, pero para aplicaciones completas).
  *
- * Cada pila declara sus servicios, los secretos que hay que generar una vez
- * —van a las variables compartidas del proyecto— y el orden de arranque. Los
- * valores se escriben con marcadores que se resuelven al crear la pila:
+ * Cada pila declara sus servicios, los secretos que hay que generar una vez y el
+ * orden de arranque. Los valores se escriben con marcadores que se resuelven al
+ * crear la pila:
  *
  *   {{svc:clave}}       → slug real del servicio hermano (su nombre DNS en la red)
- *   {{shared:CLAVE}}    → referencia `${{shared.PREFIJO_CLAVE}}` a la variable
- *                         compartida del proyecto (Skyway la expande al desplegar)
+ *   {{secret:CLAVE}}    → referencia `${{slugAncla.CLAVE}}` a un secreto de la
+ *                         pila (Skyway la expande al desplegar)
  *   {{ref:clave.VAR}}   → referencia `${{slug.VAR}}` a una variable de otro
  *                         servicio de la pila (p. ej. la contraseña que generó
  *                         la plantilla de base de datos)
@@ -19,9 +19,13 @@ import jwt from 'jsonwebtoken';
  *   {{domain}}          → dominio público; si no hay dominio, la variable que lo
  *                         use se omite en vez de quedarse vacía
  *
- * La doble indirección es deliberada: los secretos viven UNA vez en las
- * variables compartidas, así que rotarlos es editarlos ahí y redesplegar, sin
- * perseguirlos servicio a servicio.
+ * La doble indirección es deliberada: los secretos viven UNA sola vez, en las
+ * variables de un servicio «ancla» de la propia pila, y el resto los referencia.
+ * Rotar uno es editarlo ahí y redesplegar. NO van a las variables compartidas
+ * del proyecto: esas se inyectan en el entorno de TODOS los servicios, también
+ * en los que el usuario despliegue después, y una clave `service_role` (que se
+ * salta el RLS) o la contraseña de superusuario de Postgres no tienen por qué
+ * acabar dentro de una imagen de terceros.
  */
 
 /** Marca con la que la UI pinta cada servicio (clave de ModuleIcon en el front). */
@@ -76,8 +80,14 @@ export interface StackDef {
   /** Prefijo por defecto de los nombres de servicio. */
   defaultPrefix: string;
   services: StackServiceDef[];
-  /** Secretos y ajustes comunes que van a las variables compartidas (sin prefijo). */
-  makeSharedVars: () => Record<string, string>;
+  /** Secretos y ajustes comunes de la pila, generados una vez al crearla. */
+  makeSecrets: () => Record<string, string>;
+  /**
+   * Clave del servicio que guarda esos secretos en SUS variables. Es el que
+   * los referencia todo el mundo con `{{secret:...}}`, así que conviene el más
+   * confiable de la pila (la base de datos) y el que nunca falta.
+   */
+  secretsService: string;
   /**
    * SQL que se aplica una vez la base esté aceptando conexiones. Se ejecuta con
    * psql DENTRO del contenedor, así que puede leer sus propias variables de
@@ -117,8 +127,8 @@ function supabaseApiKey(jwtSecret: string, role: 'anon' | 'service_role'): strin
 export interface StackRenderCtx {
   /** Slug real de cada servicio de la pila, por clave. */
   slugs: Record<string, string>;
-  /** Nombre completo de una variable compartida (con el prefijo de la instancia). */
-  sharedName: (key: string) => string;
+  /** Slug del servicio que guarda los secretos. */
+  secretsSlug: string;
   publicUrl: string;
   domain: string | null;
 }
@@ -129,7 +139,7 @@ function renderStackValue(value: string, ctx: StackRenderCtx): string {
       ctx.slugs[key] ? `\${{${ctx.slugs[key]}.${varName}}}` : m,
     )
     .replace(/\{\{svc:([a-z0-9-]+)\}\}/g, (m, key) => ctx.slugs[key] ?? m)
-    .replace(/\{\{shared:([A-Z0-9_]+)\}\}/g, (_m, key) => `\${{shared.${ctx.sharedName(key)}}}`)
+    .replace(/\{\{secret:([A-Z0-9_]+)\}\}/g, (_m, key) => `\${{${ctx.secretsSlug}.${key}}}`)
     .replace(/\{\{url\}\}/g, ctx.publicUrl)
     .replace(/\{\{domain\}\}/g, ctx.domain ?? '');
 }
@@ -159,6 +169,12 @@ export function renderStackEnv(env: Record<string, string>, ctx: StackRenderCtx)
  * Se omiten las rutas de Edge Functions y de analytics (esos servicios no
  * forman parte de la pila) y las transformaciones Lua de las claves opacas
  * `sb_`, que solo aplican al esquema de claves asimétricas.
+ *
+ * Los secretos van en escalares de bloque (`|-`) y no entrecomillados: su valor
+ * se sustituye al desplegar, cuando ya no hay ocasión de escaparlo, y ahí una
+ * comilla en una contraseña rotada a mano rompería el YAML —o peor, colaría
+ * entradas nuevas en la configuración—. En un bloque literal no hay nada que
+ * escapar.
  */
 const SUPABASE_KONG_YML = `_format_version: '2.1'
 _transform: true
@@ -167,10 +183,12 @@ consumers:
   - username: DASHBOARD
   - username: anon
     keyauth_credentials:
-      - key: '{{shared:ANON_KEY}}'
+      - key: |-
+          {{secret:ANON_KEY}}
   - username: service_role
     keyauth_credentials:
-      - key: '{{shared:SERVICE_ROLE_KEY}}'
+      - key: |-
+          {{secret:SERVICE_ROLE_KEY}}
 
 acls:
   - consumer: anon
@@ -180,8 +198,10 @@ acls:
 
 basicauth_credentials:
   - consumer: DASHBOARD
-    username: '{{shared:DASHBOARD_USERNAME}}'
-    password: '{{shared:DASHBOARD_PASSWORD}}'
+    username: |-
+      {{secret:DASHBOARD_USERNAME}}
+    password: |-
+      {{secret:DASHBOARD_PASSWORD}}
 
 services:
   - name: auth-v1-open
@@ -409,11 +429,11 @@ const SUPABASE: StackDef = {
   notes: [
     'Son 9 contenedores: cuenta con unos 4 GB de RAM libres y varios GB de disco.',
     'El Studio y toda la API salen por el servicio «kong»: es el único que lleva dominio.',
-    'El acceso al Studio va protegido con usuario y contraseña (variables DASHBOARD_* del proyecto).',
-    'Las altas por correo se confirman solas hasta que configures SMTP en el servicio «auth».',
+    'El acceso al Studio va protegido con usuario y contraseña: las variables DASHBOARD_* del servicio «db».',
+    'El alta pública de usuarios viene CERRADA: créalos desde el Studio, o pon GOTRUE_DISABLE_SIGNUP a false en el servicio «auth» cuando tu aplicación lo necesite.',
     'No incluye Edge Functions (necesita montar el código de las funciones), el pooler ni analytics: se conecta directo a la base.',
   ],
-  makeSharedVars: () => {
+  makeSecrets: () => {
     // El secreto JWT firma las claves de API: debe generarse antes que ellas.
     const jwtSecret = alnum(48);
     return {
@@ -432,6 +452,7 @@ const SUPABASE: StackDef = {
       S3_PROTOCOL_ACCESS_KEY_SECRET: alnum(64),
     };
   },
+  secretsService: 'db',
   postInit: {
     service: 'db',
     // supabase_admin, NO postgres: la imagen degrada a postgres a NOSUPERUSER
@@ -462,12 +483,12 @@ const SUPABASE: StackDef = {
         POSTGRES_HOST: '/var/run/postgresql',
         PGPORT: '5432',
         POSTGRES_PORT: '5432',
-        PGPASSWORD: '{{shared:POSTGRES_PASSWORD}}',
-        POSTGRES_PASSWORD: '{{shared:POSTGRES_PASSWORD}}',
+        PGPASSWORD: '{{secret:POSTGRES_PASSWORD}}',
+        POSTGRES_PASSWORD: '{{secret:POSTGRES_PASSWORD}}',
         PGDATABASE: 'postgres',
         POSTGRES_DB: 'postgres',
-        JWT_SECRET: '{{shared:JWT_SECRET}}',
-        JWT_EXP: '{{shared:JWT_EXPIRY}}',
+        JWT_SECRET: '{{secret:JWT_SECRET}}',
+        JWT_EXP: '{{secret:JWT_EXPIRY}}',
       },
     },
     {
@@ -478,15 +499,15 @@ const SUPABASE: StackDef = {
       port: 3000,
       stage: 1,
       env: {
-        PGRST_DB_URI: 'postgres://authenticator:{{shared:POSTGRES_PASSWORD}}@{{svc:db}}:5432/postgres',
+        PGRST_DB_URI: 'postgres://authenticator:{{secret:POSTGRES_PASSWORD}}@{{svc:db}}:5432/postgres',
         PGRST_DB_SCHEMAS: 'public,graphql_public',
         PGRST_DB_ANON_ROLE: 'anon',
         PGRST_DB_MAX_ROWS: '1000',
         PGRST_DB_EXTRA_SEARCH_PATH: 'public',
-        PGRST_JWT_SECRET: '{{shared:JWT_SECRET}}',
+        PGRST_JWT_SECRET: '{{secret:JWT_SECRET}}',
         PGRST_DB_USE_LEGACY_GUCS: 'false',
-        PGRST_APP_SETTINGS_JWT_SECRET: '{{shared:JWT_SECRET}}',
-        PGRST_APP_SETTINGS_JWT_EXP: '{{shared:JWT_EXPIRY}}',
+        PGRST_APP_SETTINGS_JWT_SECRET: '{{secret:JWT_SECRET}}',
+        PGRST_APP_SETTINGS_JWT_EXP: '{{secret:JWT_EXPIRY}}',
         PGRST_ADMIN_SERVER_PORT: '3001',
         PGRST_ADMIN_SERVER_HOST: 'localhost',
       },
@@ -504,15 +525,19 @@ const SUPABASE: StackDef = {
         API_EXTERNAL_URL: '{{url}}/auth/v1',
         GOTRUE_DB_DRIVER: 'postgres',
         GOTRUE_DB_DATABASE_URL:
-          'postgres://supabase_auth_admin:{{shared:POSTGRES_PASSWORD}}@{{svc:db}}:5432/postgres',
+          'postgres://supabase_auth_admin:{{secret:POSTGRES_PASSWORD}}@{{svc:db}}:5432/postgres',
         GOTRUE_SITE_URL: '{{url}}',
         GOTRUE_URI_ALLOW_LIST: '',
-        GOTRUE_DISABLE_SIGNUP: 'false',
+        // El endpoint /auth/v1/signup queda publicado en internet en cuanto la
+        // pila tiene dominio: abierto de fábrica, cualquiera se daría de alta
+        // con el correo que quisiera (y autoconfirmado, ya verificado de cara a
+        // las políticas RLS). Se abre a conciencia, no por defecto.
+        GOTRUE_DISABLE_SIGNUP: 'true',
         GOTRUE_JWT_ADMIN_ROLES: 'service_role',
         GOTRUE_JWT_AUD: 'authenticated',
         GOTRUE_JWT_DEFAULT_GROUP_NAME: 'authenticated',
-        GOTRUE_JWT_EXP: '{{shared:JWT_EXPIRY}}',
-        GOTRUE_JWT_SECRET: '{{shared:JWT_SECRET}}',
+        GOTRUE_JWT_EXP: '{{secret:JWT_EXPIRY}}',
+        GOTRUE_JWT_SECRET: '{{secret:JWT_SECRET}}',
         GOTRUE_JWT_ISSUER: '{{url}}/auth/v1',
         GOTRUE_EXTERNAL_EMAIL_ENABLED: 'true',
         GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: 'false',
@@ -545,13 +570,13 @@ const SUPABASE: StackDef = {
         DB_HOST: '{{svc:db}}',
         DB_PORT: '5432',
         DB_USER: 'supabase_admin',
-        DB_PASSWORD: '{{shared:POSTGRES_PASSWORD}}',
+        DB_PASSWORD: '{{secret:POSTGRES_PASSWORD}}',
         DB_NAME: 'postgres',
         DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime',
-        DB_ENC_KEY: '{{shared:REALTIME_DB_ENC_KEY}}',
-        API_JWT_SECRET: '{{shared:JWT_SECRET}}',
-        METRICS_JWT_SECRET: '{{shared:JWT_SECRET}}',
-        SECRET_KEY_BASE: '{{shared:SECRET_KEY_BASE}}',
+        DB_ENC_KEY: '{{secret:REALTIME_DB_ENC_KEY}}',
+        API_JWT_SECRET: '{{secret:JWT_SECRET}}',
+        METRICS_JWT_SECRET: '{{secret:JWT_SECRET}}',
+        SECRET_KEY_BASE: '{{secret:SECRET_KEY_BASE}}',
         ERL_AFLAGS: '-proto_dist inet_tcp',
         DNS_NODES: "''",
         RLIMIT_NOFILE: '10000',
@@ -579,8 +604,8 @@ const SUPABASE: StackDef = {
         PG_META_DB_PORT: '5432',
         PG_META_DB_NAME: 'postgres',
         PG_META_DB_USER: 'postgres',
-        PG_META_DB_PASSWORD: '{{shared:POSTGRES_PASSWORD}}',
-        CRYPTO_KEY: '{{shared:PG_META_CRYPTO_KEY}}',
+        PG_META_DB_PASSWORD: '{{secret:POSTGRES_PASSWORD}}',
+        CRYPTO_KEY: '{{secret:PG_META_CRYPTO_KEY}}',
       },
     },
     {
@@ -609,12 +634,12 @@ const SUPABASE: StackDef = {
       // El mismo volumen que imgproxy: uno escribe los ficheros y el otro los lee.
       volumes: [{ key: 'storage', path: '/var/lib/storage' }],
       env: {
-        ANON_KEY: '{{shared:ANON_KEY}}',
-        SERVICE_KEY: '{{shared:SERVICE_ROLE_KEY}}',
+        ANON_KEY: '{{secret:ANON_KEY}}',
+        SERVICE_KEY: '{{secret:SERVICE_ROLE_KEY}}',
         POSTGREST_URL: 'http://{{svc:rest}}:3000',
-        AUTH_JWT_SECRET: '{{shared:JWT_SECRET}}',
+        AUTH_JWT_SECRET: '{{secret:JWT_SECRET}}',
         DATABASE_URL:
-          'postgres://supabase_storage_admin:{{shared:POSTGRES_PASSWORD}}@{{svc:db}}:5432/postgres',
+          'postgres://supabase_storage_admin:{{secret:POSTGRES_PASSWORD}}@{{svc:db}}:5432/postgres',
         STORAGE_PUBLIC_URL: '{{url}}',
         REQUEST_ALLOW_X_FORWARDED_PATH: 'true',
         FILE_SIZE_LIMIT: '52428800',
@@ -625,8 +650,8 @@ const SUPABASE: StackDef = {
         REGION: 'stub',
         ENABLE_IMAGE_TRANSFORMATION: 'true',
         IMGPROXY_URL: 'http://{{svc:imgproxy}}:5001',
-        S3_PROTOCOL_ACCESS_KEY_ID: '{{shared:S3_PROTOCOL_ACCESS_KEY_ID}}',
-        S3_PROTOCOL_ACCESS_KEY_SECRET: '{{shared:S3_PROTOCOL_ACCESS_KEY_SECRET}}',
+        S3_PROTOCOL_ACCESS_KEY_ID: '{{secret:S3_PROTOCOL_ACCESS_KEY_ID}}',
+        S3_PROTOCOL_ACCESS_KEY_SECRET: '{{secret:S3_PROTOCOL_ACCESS_KEY_SECRET}}',
       },
     },
     {
@@ -642,9 +667,9 @@ const SUPABASE: StackDef = {
         POSTGRES_HOST: '{{svc:db}}',
         POSTGRES_PORT: '5432',
         POSTGRES_DB: 'postgres',
-        POSTGRES_PASSWORD: '{{shared:POSTGRES_PASSWORD}}',
+        POSTGRES_PASSWORD: '{{secret:POSTGRES_PASSWORD}}',
         POSTGRES_USER_READ_WRITE: 'postgres',
-        PG_META_CRYPTO_KEY: '{{shared:PG_META_CRYPTO_KEY}}',
+        PG_META_CRYPTO_KEY: '{{secret:PG_META_CRYPTO_KEY}}',
         PGRST_DB_SCHEMAS: 'public,graphql_public',
         PGRST_DB_MAX_ROWS: '1000',
         PGRST_DB_EXTRA_SEARCH_PATH: 'public',
@@ -652,9 +677,9 @@ const SUPABASE: StackDef = {
         DEFAULT_PROJECT_NAME: 'Default Project',
         SUPABASE_URL: 'http://{{svc:kong}}:8000',
         SUPABASE_PUBLIC_URL: '{{url}}',
-        SUPABASE_ANON_KEY: '{{shared:ANON_KEY}}',
-        SUPABASE_SERVICE_KEY: '{{shared:SERVICE_ROLE_KEY}}',
-        AUTH_JWT_SECRET: '{{shared:JWT_SECRET}}',
+        SUPABASE_ANON_KEY: '{{secret:ANON_KEY}}',
+        SUPABASE_SERVICE_KEY: '{{secret:SERVICE_ROLE_KEY}}',
+        AUTH_JWT_SECRET: '{{secret:JWT_SECRET}}',
         ENABLED_FEATURES_LOGS_ALL: 'false',
       },
     },
@@ -700,7 +725,8 @@ const WORDPRESS: StackDef = {
     'La base de datos es un servicio de Skyway: tiene copias de seguridad y consola de datos.',
     'Los ficheros de WordPress (temas, plugins, subidas) viven en un volumen propio.',
   ],
-  makeSharedVars: () => ({}),
+  makeSecrets: () => ({}),
+  secretsService: 'app',
   services: [
     {
       key: 'db',
@@ -743,7 +769,8 @@ const GHOST: StackDef = {
     'Ghost necesita saber su URL pública: si cambias el dominio, actualiza la variable «url» y redespliega.',
     'Para enviar correos hay que configurar las variables mail__* del servicio.',
   ],
-  makeSharedVars: () => ({}),
+  makeSecrets: () => ({}),
+  secretsService: 'app',
   services: [
     {
       key: 'db',
@@ -790,7 +817,8 @@ const N8N: StackDef = {
     'La clave de cifrado de credenciales se genera al crear la pila: si la pierdes, las credenciales guardadas dejan de poder descifrarse.',
     'Los webhooks usan la URL pública: sin dominio, solo funcionan dentro del proyecto.',
   ],
-  makeSharedVars: () => ({ ENCRYPTION_KEY: alnum(48) }),
+  makeSecrets: () => ({ ENCRYPTION_KEY: alnum(48) }),
+  secretsService: 'app',
   services: [
     {
       key: 'db',
@@ -819,7 +847,7 @@ const N8N: StackDef = {
         DB_POSTGRESDB_DATABASE: '{{ref:db.POSTGRES_DB}}',
         DB_POSTGRESDB_USER: '{{ref:db.POSTGRES_USER}}',
         DB_POSTGRESDB_PASSWORD: '{{ref:db.POSTGRES_PASSWORD}}',
-        N8N_ENCRYPTION_KEY: '{{shared:ENCRYPTION_KEY}}',
+        N8N_ENCRYPTION_KEY: '{{secret:ENCRYPTION_KEY}}',
         N8N_PORT: '5678',
         N8N_PROTOCOL: 'http',
         N8N_HOST: '{{domain}}',
@@ -844,7 +872,8 @@ const METABASE: StackDef = {
     'El Postgres de la pila es el almacén interno de Metabase, no la fuente de datos que vas a analizar.',
     'El primer arranque tarda un par de minutos: Metabase crea su esquema antes de responder.',
   ],
-  makeSharedVars: () => ({}),
+  makeSecrets: () => ({}),
+  secretsService: 'app',
   services: [
     {
       key: 'db',

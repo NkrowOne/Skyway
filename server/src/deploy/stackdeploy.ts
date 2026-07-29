@@ -76,7 +76,7 @@ async function applyPostInit(
   container: string,
   stack: StackDef,
   log: (line: string) => void,
-): Promise<void> {
+): Promise<boolean> {
   const postInit = stack.postInit!;
   log(`Aplicando la inicialización de ${stack.label} (${postInit.description})...`);
   // El SQL viaja por variable de entorno del exec y NUNCA se interpola en el
@@ -89,11 +89,16 @@ async function applyPostInit(
   );
   if (res.exitCode === 0) {
     log('Inicialización aplicada.');
-    return;
+    return true;
   }
+  // Este SQL es el que pone las contraseñas reales de los roles de la pila: sin
+  // él se quedan con las que trae la imagen, que son públicas. Dar el despliegue
+  // por bueno dejaría una base accesible con credenciales conocidas y el panel
+  // en verde, así que se marca en rojo y la pila no sigue.
   log(`✖ La inicialización falló (código ${res.exitCode ?? 'n/a'}):`);
   for (const line of res.output.trim().split('\n').slice(-15)) log(`  ${line}`);
-  log('La pila puede quedar a medias: revisa el error y vuelve a desplegar este servicio.');
+  log('Los roles conservan la contraseña de la imagen: corrige el error y vuelve a desplegar este servicio.');
+  return false;
 }
 
 /**
@@ -153,7 +158,13 @@ export async function runStackDeploy(stack: StackDef, steps: StackStep[]): Promi
             const container = containerName(project, service);
             if (step.readyCmd && !(await waitUntilReady(container, step.readyCmd, log))) return false;
             if (stack.postInit && stack.postInit.service === step.key) {
-              await applyPostInit(container, stack, log);
+              if (!(await applyPostInit(container, stack, log))) {
+                updateDeployment(deployment.id, {
+                  status: 'failed',
+                  error: `No se pudo aplicar la inicialización de ${stack.label}: ${stack.postInit.description}`,
+                });
+                return false;
+              }
             }
             return true;
           } catch (err: any) {

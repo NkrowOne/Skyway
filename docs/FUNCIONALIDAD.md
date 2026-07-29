@@ -306,9 +306,12 @@ Cómo funciona:
   alguno de esos nombres ya existe, así que dos instancias no se pisan.
 - **Secretos**: los genera el servidor (contraseña de Postgres, `JWT_SECRET`, las
   claves `ANON_KEY`/`SERVICE_ROLE_KEY` firmadas HS256 con ese secreto, credenciales
-  del Studio…) y viven **una sola vez** en las variables compartidas del proyecto,
-  con el prefijo de la instancia (`SUPABASE_JWT_SECRET`). Cada servicio las
-  referencia con `${{shared.…}}`: rotarlas es editarlas ahí y redesplegar.
+  del Studio…) y viven **una sola vez**, en las variables del servicio *ancla* de
+  la pila (el `db` en Supabase). El resto los referencia con `${{<ancla>.CLAVE}}`:
+  rotar uno es editarlo ahí y redesplegar. **No** van a las variables compartidas
+  del proyecto a propósito: esas se inyectan en el entorno de *todos* los
+  servicios, incluidos los que se desplieguen después, y una clave `service_role`
+  —que se salta el RLS— no tiene por qué acabar dentro de una imagen de terceros.
 - **Bases de datos**: cuando la pila usa un motor estándar, el servicio es un
   `database` normal de Skyway, con sus copias de seguridad y su consola de datos.
   La de Supabase es una imagen propia (`supabase/postgres`), no una plantilla.
@@ -325,6 +328,13 @@ Cómo funciona:
   `https://<dominio>` (o `http://` si no hay TLS configurado) y lo recibe el
   servicio de entrada. Sin dominio, apuntan al alias interno del proyecto y la pila
   solo es accesible desde dentro.
+
+La pila de Supabase se crea con el **alta pública de usuarios cerrada**
+(`GOTRUE_DISABLE_SIGNUP=true`): con dominio, `/auth/v1/signup` queda expuesto a
+internet, y como no hay SMTP configurado las altas se autoconfirman, así que
+abrirlo de fábrica permitiría registrarse con cualquier correo ajeno ya
+«verificado». Se abre cuando la aplicación lo necesite, desde las variables del
+servicio `auth`.
 
 Lo que la pila de Supabase **no** incluye: **Edge Functions** (requiere montar el
 código de las funciones dentro del contenedor), el pooler **supavisor** (se conecta
