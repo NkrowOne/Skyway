@@ -1,5 +1,5 @@
 import { containerName, execInContainer, getRuntime } from './docker/containers';
-import { DatabaseConfig, ProjectRow, ServiceRow } from './types';
+import { DatabaseConfig, ImageConfig, ProjectRow, ServiceRow } from './types';
 
 /**
  * Consola de consultas para los servicios de base de datos.
@@ -54,7 +54,36 @@ export interface DbOverview {
   objects: DbObject[];
 }
 
+/**
+ * Nombres de imagen que SON un PostgreSQL. Se compara el último segmento, sin
+ * registro ni etiqueta, y contra una lista cerrada: `postgrest/postgrest` no es
+ * PostgreSQL —ni `mi-org/postgres-backup`—, y con un `includes('postgres')` los
+ * dos lo serían.
+ */
+const IMAGENES_POSTGRES = new Set(['postgres', 'postgresql', 'postgis', 'pgvector', 'timescaledb']);
+
+/**
+ * Motor de un servicio de tipo imagen.
+ *
+ * Las bases de una pila (el `db` de Supabase, las plantillas de Railway) son
+ * servicios de tipo `image`, no de tipo `database`: sin esto se quedan sin
+ * consola y la única vía para tocarlas es psql a mano en la terminal, con su
+ * límite de 60 s y de 2000 caracteres por comando. Solo PostgreSQL: es el
+ * motor cuyas credenciales por defecto son las mismas en la imagen oficial y
+ * en las derivadas, así que es el único que puedo dar por bueno sin conocer
+ * cómo arranca cada imagen.
+ */
+function motorDeLaImagen(config: ImageConfig): DbEngine | null {
+  // El icono lo rellena el catálogo de pilas justamente porque el nombre de la
+  // imagen no siempre basta; cuando está, manda.
+  if (config.icon === 'postgres') return 'postgres';
+  const sinDigest = config.image.split('@')[0] ?? '';
+  const nombre = (sinDigest.replace(/:[^:/]*$/, '').split('/').pop() ?? '').toLowerCase();
+  return IMAGENES_POSTGRES.has(nombre) ? 'postgres' : null;
+}
+
 export function dbConsoleEngine(service: ServiceRow): DbEngine | null {
+  if (service.type === 'image') return motorDeLaImagen(service.config as ImageConfig);
   if (service.type !== 'database') return null;
   const tpl = (service.config as DatabaseConfig).template;
   return tpl === 'postgres' || tpl === 'mysql' || tpl === 'mongo' || tpl === 'redis' ? tpl : null;
@@ -291,7 +320,16 @@ interface EngineRunner {
   browse: (name: string, object: string, mode: BrowseMode) => Promise<string>;
 }
 
-const PSQL = 'psql -X -U "${POSTGRES_USER:-skyway}" -d "${POSTGRES_DB:-skyway}" -v ON_ERROR_STOP=1 -q';
+/**
+ * El usuario y la base salen del entorno del propio contenedor. Las bases que
+ * crea Skyway siempre traen POSTGRES_USER/POSTGRES_DB; las de una pila o una
+ * imagen suelta no tienen por qué, y ahí el valor bueno es el de la imagen
+ * oficial: sin POSTGRES_USER, `postgres` es el superusuario que crea al
+ * inicializarse. La contraseña, si el pg_hba la pide, ya viaja en PGPASSWORD
+ * dentro del contenedor.
+ */
+const PSQL =
+  'psql -X -U "${POSTGRES_USER:-${PGUSER:-postgres}}" -d "${POSTGRES_DB:-${PGDATABASE:-postgres}}" -v ON_ERROR_STOP=1 -q';
 
 /**
  * PGOPTIONS: statement_timeout hace que Postgres MATE la consulta al vencer

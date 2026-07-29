@@ -4,7 +4,7 @@ import { ChevronLeft, ExternalLink, MoveHorizontal, Play, RefreshCw, Rocket, Squ
 import { api } from '../api';
 import { useLatch, useLocalStorage, useMediaQuery } from '../hooks';
 import { MetricPoint } from '../pages/Project';
-import { Deployment, MetricsSnapshot, Project, Runtime, Service } from '../types';
+import { Deployment, DbOverview, MetricsSnapshot, Project, Runtime, Service } from '../types';
 import { cx, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import DeploymentsTab from './tabs/DeploymentsTab';
@@ -22,7 +22,6 @@ const ServiceSettingsTab = lazy(() => import('./tabs/ServiceSettingsTab'));
 const VariablesTab = lazy(() => import('./tabs/VariablesTab'));
 
 const BACKUP_TEMPLATES = ['postgres', 'mysql', 'mongo'];
-const CONSOLE_TEMPLATES = ['postgres', 'mysql', 'mongo', 'redis'];
 
 export default function ServiceDrawer({
   serviceId,
@@ -77,9 +76,14 @@ export default function ServiceDrawer({
   const detail = useQuery({
     queryKey: ['service', serviceId],
     queryFn: () =>
-      api.get<{ service: Service; project: Project; runtime: Runtime; latestDeployment: Deployment | null }>(
-        `/services/${serviceId}`,
-      ),
+      api.get<{
+        service: Service;
+        project: Project;
+        runtime: Runtime;
+        latestDeployment: Deployment | null;
+        /** Motor de la consola de consultas, o null si este servicio no tiene. */
+        dbConsole: DbOverview['engine'] | null;
+      }>(`/services/${serviceId}`),
     refetchInterval: 4000,
   });
 
@@ -154,7 +158,7 @@ export default function ServiceDrawer({
   const replicas = latestMetrics?.services[serviceId]?.replicas;
   const isRunning = state === 'running' || state === 'restarting';
   const hasBackups = service.type === 'database' && BACKUP_TEMPLATES.includes(service.config.template);
-  const hasDbConsole = service.type === 'database' && CONSOLE_TEMPLATES.includes(service.config.template);
+  const hasDbConsole = !!detail.data.dbConsole;
   const tabs = [
     { key: 'deployments', label: 'Despliegues' },
     ...(hasDbConsole ? [{ key: 'db', label: 'Consultas' }] : []),
