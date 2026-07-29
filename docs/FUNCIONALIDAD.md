@@ -100,7 +100,8 @@ web/src/
   - `skyway-<proyecto>`: red privada por proyecto; los servicios se resuelven
     entre sí por su *slug* (`postgres:5432`, `redis:6379`…).
 - **Traefik** (en el `docker-compose`): enruta por dominio y emite TLS con
-  Let's Encrypt. Se activa por *labels* que Skyway pone en cada contenedor.
+  Let's Encrypt. Se activa por *labels* que Skyway pone en cada contenedor. Con
+  TLS configurado, el puerto 80 no sirve contenido: redirige a HTTPS con un 301.
 
 ### Pipeline de despliegue (deploy/deployer.ts)
 
@@ -421,7 +422,8 @@ del Studio, que viene desactivada.
   creación manual y descarga desde Ajustes, y **verificación de integridad** de
   la BD del panel al arrancar (alerta crítica si falla).
 - **Dominios y TLS**: verificación DNS en vivo, subdominios con comodín, TLS
-  automático con Let's Encrypt vía Traefik.
+  automático con Let's Encrypt vía Traefik y redirección de HTTP a HTTPS en todo
+  servicio con dominio.
 - **Página de estado pública**: dashboard compartible por token (sin login), con
   disponibilidad 90 días, incidencias y aviso de mantenimiento; token rotable.
 - **Importador de Railway**: analiza un proyecto por la API oficial y recrea

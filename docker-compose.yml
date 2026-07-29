@@ -25,6 +25,12 @@ services:
       - traefik.docker.network=skyway-edge
       - traefik.http.routers.skyway.rule=Host(`${SKYWAY_DOMAIN:-skyway.localhost}`)
       - traefik.http.routers.skyway.entrypoints=web
+      # El puerto 80 solo redirige: la contrasena y la cookie de sesion del panel
+      # no viajan en claro. Sin dominio propio el acceso es por el tunel SSH de
+      # arriba (127.0.0.1:4000), que no pasa por Traefik.
+      - traefik.http.middlewares.skyway-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.skyway-https.redirectscheme.permanent=true
+      - traefik.http.routers.skyway.middlewares=skyway-https
       - traefik.http.routers.skyway-secure.rule=Host(`${SKYWAY_DOMAIN:-skyway.localhost}`)
       - traefik.http.routers.skyway-secure.entrypoints=websecure
       - traefik.http.routers.skyway-secure.tls.certresolver=le
