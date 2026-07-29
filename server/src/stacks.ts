@@ -82,8 +82,9 @@ export interface StackDef {
    * SQL que se aplica una vez la base esté aceptando conexiones. Se ejecuta con
    * psql DENTRO del contenedor, así que puede leer sus propias variables de
    * entorno (`\set x \`echo "$VAR"\``) y ningún secreto sale del contenedor.
+   * `user` es el rol con el que conectar: no siempre vale el obvio.
    */
-  postInit?: { service: string; sql: string; description: string };
+  postInit?: { service: string; user: string; sql: string; description: string };
 }
 
 // ---------- generación de secretos ----------
@@ -433,6 +434,11 @@ const SUPABASE: StackDef = {
   },
   postInit: {
     service: 'db',
+    // supabase_admin, NO postgres: la imagen degrada a postgres a NOSUPERUSER
+    // durante su propia inicialización, y supautils prohíbe a quien no sea
+    // superusuario tocar los roles reservados (authenticator, supabase_*).
+    // El pg_hba de la imagen confía en supabase_admin por el socket local.
+    user: 'supabase_admin',
     sql: SUPABASE_INIT_SQL,
     description: 'roles de Supabase, esquema _realtime y ajustes de JWT',
   },

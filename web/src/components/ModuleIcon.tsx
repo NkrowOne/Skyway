@@ -97,13 +97,18 @@ const CHIP: Record<ModuleKind, { bg: string; fg: string }> = {
 
 const KINDS = new Set<string>([...Object.keys(SVGS), 'generic']);
 
+/** ¿Es una marca que este bundle sabe pintar? (el servidor las manda como texto). */
+export function isModuleKind(value: string): value is ModuleKind {
+  return KINDS.has(value);
+}
+
 /** Deduce el módulo a partir del servicio (repo, plantilla de BD o nombre de imagen). */
 export function moduleKind(service: Pick<Service, 'type' | 'config'>): ModuleKind {
   if (service.type === 'git') return 'github';
   // Las pilas de aplicaciones declaran el logo de cada servicio: adivinarlo por
   // el nombre de la imagen falla justo donde importa (postgrest no es Postgres).
   const declared = service.config.icon;
-  if (declared && KINDS.has(declared)) return declared as ModuleKind;
+  if (declared && isModuleKind(declared)) return declared;
   if (service.type === 'database') {
     const t = service.config.template;
     if (t === 'postgres' || t === 'redis' || t === 'mysql' || t === 'mongo' || t === 'minio') return t;
@@ -111,10 +116,11 @@ export function moduleKind(service: Pick<Service, 'type' | 'config'>): ModuleKin
   }
   const image = (service.config.image ?? '').toLowerCase();
   // Antes que Postgres: `supabase/postgres-meta` y `postgrest/postgrest`
-  // contienen «postgres» pero no son la base de datos.
-  if (/^supabase\/postgres(:|$)/.test(image)) return 'postgres';
+  // contienen «postgres» pero no son la base de datos. Se admite prefijo de
+  // registro (ghcr.io/…) porque la imagen la escribe el usuario a mano.
+  if (/(^|\/)supabase\/postgres(:|$)/.test(image)) return 'postgres';
   if (image.includes('supabase/') || image.includes('postgrest') || image.includes('gotrue')) return 'supabase';
-  if (image.startsWith('kong:') || image.includes('kong/kong')) return 'kong';
+  if (/(^|\/)kong(\/kong)?(:|$)/.test(image)) return 'kong';
   if (image.includes('metabase')) return 'metabase';
   if (image.includes('wordpress')) return 'wordpress';
   if (image.includes('n8n')) return 'n8n';

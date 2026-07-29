@@ -84,7 +84,7 @@ async function applyPostInit(
   // las lee psql del propio entorno del contenedor.
   const res = await execInContainer(
     container,
-    'printf "%s" "$SKYWAY_STACK_SQL" | psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres -f -',
+    `printf "%s" "$SKYWAY_STACK_SQL" | psql -X -v ON_ERROR_STOP=1 -U ${postInit.user} -d postgres -f -`,
     { env: [`SKYWAY_STACK_SQL=${postInit.sql}`], timeoutMs: 120_000 },
   );
   if (res.exitCode === 0) {

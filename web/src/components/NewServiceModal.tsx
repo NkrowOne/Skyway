@@ -4,7 +4,7 @@ import { ExternalLink, Lock, Search } from 'lucide-react';
 import { api } from '../api';
 import { DbTemplate, Deployment, GithubConnector, GithubRepo, Service, Stack } from '../types';
 import { cx } from '../utils';
-import { ModuleKind, ModuleLogo, moduleFg, moduleKind } from './ModuleIcon';
+import { ModuleKind, ModuleLogo, isModuleKind, moduleFg, moduleKind } from './ModuleIcon';
 import { Button, Field, Modal, Spinner, useToast } from './ui';
 
 /** Los logos reales de lo que vas a desplegar: informan, no decoran. */
@@ -31,8 +31,23 @@ const TEMPLATE_KIND: Record<string, ModuleKind> = {
   minio: 'minio',
 };
 
-/** El catálogo manda claves de logo; las desconocidas caen en genérico. */
-const asKind = (icon: string): ModuleKind => icon as ModuleKind;
+/**
+ * El catálogo de pilas manda claves de logo como texto. Una clave que este
+ * bundle no conozca (servidor más nuevo que la web) no puede reventar la
+ * página: cae en el icono genérico.
+ */
+const asKind = (icon: string): ModuleKind => (isModuleKind(icon) ? icon : 'generic');
+
+/** Misma normalización que hace el servidor, para que la vista previa no mienta. */
+const slugPreview = (value: string): string =>
+  value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32)
+    .replace(/-+$/g, '');
 
 export default function NewServiceModal({
   open,
@@ -246,6 +261,7 @@ export default function NewServiceModal({
             {stacks.data?.stacks.map((s) => (
               <button
                 key={s.key}
+                type="button"
                 onClick={() => {
                   setStackKey(s.key);
                   setStackPrefix(s.defaultPrefix);
@@ -294,16 +310,23 @@ export default function NewServiceModal({
 
           <div className="rounded-lg border border-line bg-bg p-1.5">
             {selectedStack.services.map((svc) => (
-              <div key={svc.key} className="flex items-center gap-2.5 px-2.5 py-[7px]">
-                <span className="shrink-0" style={{ color: moduleFg(asKind(svc.icon)) }}>
-                  <ModuleLogo kind={asKind(svc.icon)} size={15} />
+              <div
+                key={svc.key}
+                className="flex flex-col gap-0.5 px-2.5 py-[7px] sm:flex-row sm:items-center sm:gap-2.5"
+              >
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <span className="shrink-0" style={{ color: moduleFg(asKind(svc.icon)) }}>
+                    <ModuleLogo kind={asKind(svc.icon)} size={15} />
+                  </span>
+                  <span className="truncate font-mono text-[11px] sm:w-28 sm:shrink-0">
+                    {slugPreview(stackPrefix) || selectedStack.defaultPrefix}-{svc.key}
+                  </span>
                 </span>
-                <span className="w-28 shrink-0 truncate font-mono text-[11px]">
-                  {(stackPrefix.trim() || selectedStack.defaultPrefix)}-{svc.key}
+                <span className="min-w-0 flex-1 truncate pl-[25px] text-[11px] text-sub sm:pl-0">
+                  {svc.description}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-[11px] text-sub">{svc.description}</span>
                 {svc.public && (
-                  <span className="shrink-0 rounded-full bg-surface2 px-1.5 py-0.5 text-[10px] text-sub">
+                  <span className="ml-[25px] w-fit shrink-0 rounded-full bg-surface2 px-1.5 py-0.5 text-[10px] text-sub sm:ml-0">
                     entrada pública
                   </span>
                 )}
@@ -343,7 +366,14 @@ export default function NewServiceModal({
           </ul>
 
           <div className="flex justify-between pt-1">
-            <Button type="button" variant="ghost" onClick={() => setStackKey(null)}>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setStackKey(null);
+                setStackDomain('');
+              }}
+            >
               Atrás
             </Button>
             <Button type="submit" loading={createStack.isPending}>
