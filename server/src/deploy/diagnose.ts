@@ -96,8 +96,19 @@ const RULES: Rule[] = [
     fix: 'Revisa el "Comando de arranque" en Ajustes del servicio (¿está instalada esa herramienta en la imagen?) o déjalo vacío para usar el CMD del Dockerfile.',
   },
   {
+    id: 'build-typescript',
+    test: (e, l) => has(e, 'terminó con código') && /error TS\d+/.test(l),
+    title: 'El compilador de TypeScript falló',
+    cause:
+      'El build no llegó a empaquetar nada: `tsc` encontró errores de tipos. Ojo con el más habitual, «Cannot find module X»: casi nunca es un error de tipos, es que esa dependencia no está en la imagen. `npm ci` instala EXACTAMENTE lo que dice el package-lock.json de la raíz, así que un paquete que en tu máquina está en node_modules pero no declarado —o el package.json de un subproyecto que no es un workspace— aquí no existe. Los «implicitly has an any type» que salen detrás suelen ser el eco del módulo que falta, no errores independientes.',
+    fix:
+      'Reproduce el build limpio en local: borra node_modules, `npm ci` y `npm run build`. Si falla igual, falta declarar la dependencia (`npm i -S paquete`, commiteando también el package-lock). Si el error viene de un subdirectorio que se despliega por su cuenta (un worker, una función), sácalo del build de la web quitándolo de las «references» del tsconfig raíz. Y revisa la versión de Node: si el log trae avisos EBADENGINE, fija la que necesitas con «engines.node» en package.json o con el build arg NIXPACKS_NODE_VERSION.',
+  },
+  {
     id: 'build-npm',
-    test: (e, l) => has(e, 'docker terminó con código') && has(l, 'npm err', 'yarn error', 'pnpm err'),
+    // «terminó con código» a secas: el fallo del gestor de paquetes es el mismo
+    // se construya con Dockerfile o con Nixpacks, y antes solo casaba el primero.
+    test: (e, l) => has(e, 'terminó con código') && has(l, 'npm err', 'yarn error', 'pnpm err'),
     title: 'El build de Node.js falló',
     cause: 'El gestor de paquetes falló durante la construcción de la imagen: suele ser una dependencia que no instala, un script de build que falla o una versión de Node incompatible.',
     fix: 'Mira las últimas líneas del log (el error concreto de npm/yarn/pnpm está ahí). Comprueba que `npm run build` funciona en local con la misma versión de Node que usa tu Dockerfile.',
