@@ -160,202 +160,123 @@ export function renderStackEnv(env: Record<string, string>, ctx: StackRenderCtx)
  * forman parte de la pila) y las transformaciones Lua de las claves opacas
  * `sb_`, que solo aplican al esquema de claves asimétricas.
  *
- * Los secretos van en escalares de bloque (`|-`) y no entrecomillados: su valor
- * se sustituye al desplegar, cuando ya no hay ocasión de escaparlo, y ahí una
- * comilla en una contraseña rotada a mano rompería el YAML —o peor, colaría
- * entradas nuevas en la configuración—. En un bloque literal no hay nada que
- * escapar.
+ * Va como objeto y se serializa a JSON en una sola línea, no como YAML
+ * indentado: `kong prepare` vuelca la configuración efectiva en
+ * `/usr/local/kong/.kong_env`, que es un fichero plano `clave = valor` de una
+ * línea por entrada. Un valor multilínea se corta ahí en la primera línea, así
+ * que Kong arrancaba con una configuración de solo `_format_version` —sin
+ * servicios, sin rutas y sin consumidores— y respondía 404 «no Route matched»
+ * a todo. JSON es YAML válido para Kong y cabe en una línea.
+ *
+ * Los valores de los secretos se sustituyen al desplegar, ya dentro de la
+ * cadena JSON, cuando no queda ocasión de escaparlos: por eso se generan
+ * alfanuméricos (`alnum`) o como JWT, sin comillas ni barras invertidas que
+ * romperían el JSON.
  */
-const SUPABASE_KONG_YML = `_format_version: '2.1'
-_transform: true
 
-consumers:
-  - username: DASHBOARD
-  - username: anon
-    keyauth_credentials:
-      - key: |-
-          {{secret:ANON_KEY}}
-  - username: service_role
-    keyauth_credentials:
-      - key: |-
-          {{secret:SERVICE_ROLE_KEY}}
+/** Plugins de las rutas que exigen clave de API y pertenencia a anon/admin. */
+function kongApiPlugins(hideCredentials: boolean, extra: unknown[] = []): unknown[] {
+  return [
+    { name: 'cors' },
+    { name: 'key-auth', config: { hide_credentials: hideCredentials } },
+    ...extra,
+    { name: 'acl', config: { hide_groups_header: true, allow: ['admin', 'anon'] } },
+  ];
+}
 
-acls:
-  - consumer: anon
-    group: anon
-  - consumer: service_role
-    group: admin
+/** Ruta abierta de auth (verify/callback/authorize): sin clave, solo CORS. */
+function kongAuthOpenRoute(nombre: string, ruta: string): unknown {
+  return {
+    name: `auth-v1-open${nombre}`,
+    url: `http://{{svc:auth}}:9999/${ruta}`,
+    routes: [{ name: `auth-v1-open${nombre}`, strip_path: true, paths: [`/auth/v1/${ruta}`] }],
+    plugins: [{ name: 'cors' }],
+  };
+}
 
-basicauth_credentials:
-  - consumer: DASHBOARD
-    username: |-
-      {{secret:DASHBOARD_USERNAME}}
-    password: |-
-      {{secret:DASHBOARD_PASSWORD}}
+const SUPABASE_KONG_CONFIG = {
+  _format_version: '2.1',
+  _transform: true,
+  consumers: [
+    { username: 'DASHBOARD' },
+    { username: 'anon', keyauth_credentials: [{ key: '{{secret:ANON_KEY}}' }] },
+    { username: 'service_role', keyauth_credentials: [{ key: '{{secret:SERVICE_ROLE_KEY}}' }] },
+  ],
+  acls: [
+    { consumer: 'anon', group: 'anon' },
+    { consumer: 'service_role', group: 'admin' },
+  ],
+  basicauth_credentials: [
+    {
+      consumer: 'DASHBOARD',
+      username: '{{secret:DASHBOARD_USERNAME}}',
+      password: '{{secret:DASHBOARD_PASSWORD}}',
+    },
+  ],
+  services: [
+    kongAuthOpenRoute('', 'verify'),
+    kongAuthOpenRoute('-callback', 'callback'),
+    kongAuthOpenRoute('-authorize', 'authorize'),
+    {
+      name: 'auth-v1',
+      url: 'http://{{svc:auth}}:9999/',
+      routes: [{ name: 'auth-v1-all', strip_path: true, paths: ['/auth/v1/'] }],
+      plugins: kongApiPlugins(false),
+    },
+    {
+      name: 'rest-v1',
+      url: 'http://{{svc:rest}}:3000/',
+      routes: [{ name: 'rest-v1-all', strip_path: true, paths: ['/rest/v1/'] }],
+      plugins: kongApiPlugins(true),
+    },
+    {
+      name: 'graphql-v1',
+      url: 'http://{{svc:rest}}:3000/rpc/graphql',
+      routes: [{ name: 'graphql-v1-all', strip_path: true, paths: ['/graphql/v1'] }],
+      plugins: kongApiPlugins(true, [
+        { name: 'request-transformer', config: { add: { headers: ['Content-Profile: graphql_public'] } } },
+      ]),
+    },
+    {
+      name: 'realtime-v1-ws',
+      url: 'http://{{svc:realtime}}:4000/socket',
+      protocol: 'ws',
+      routes: [{ name: 'realtime-v1-ws', strip_path: true, paths: ['/realtime/v1/'] }],
+      plugins: kongApiPlugins(false),
+    },
+    {
+      name: 'realtime-v1-rest',
+      url: 'http://{{svc:realtime}}:4000/api',
+      protocol: 'http',
+      routes: [{ name: 'realtime-v1-rest', strip_path: true, paths: ['/realtime/v1/api'] }],
+      plugins: kongApiPlugins(false),
+    },
+    {
+      name: 'storage-v1',
+      url: 'http://{{svc:storage}}:5000/',
+      routes: [{ name: 'storage-v1-all', strip_path: true, paths: ['/storage/v1/'] }],
+      plugins: [{ name: 'cors' }],
+    },
+    {
+      name: 'meta',
+      url: 'http://{{svc:meta}}:8080/',
+      routes: [{ name: 'meta-all', strip_path: true, paths: ['/pg/'] }],
+      plugins: [
+        { name: 'key-auth', config: { hide_credentials: false } },
+        { name: 'acl', config: { hide_groups_header: true, allow: ['admin'] } },
+      ],
+    },
+    // El Studio se queda en la raíz: es la última ruta y la más laxa.
+    {
+      name: 'dashboard',
+      url: 'http://{{svc:studio}}:3000/',
+      routes: [{ name: 'dashboard-all', strip_path: true, paths: ['/'] }],
+      plugins: [{ name: 'cors' }, { name: 'basic-auth', config: { hide_credentials: true } }],
+    },
+  ],
+};
 
-services:
-  - name: auth-v1-open
-    url: http://{{svc:auth}}:9999/verify
-    routes:
-      - name: auth-v1-open
-        strip_path: true
-        paths:
-          - /auth/v1/verify
-    plugins:
-      - name: cors
-  - name: auth-v1-open-callback
-    url: http://{{svc:auth}}:9999/callback
-    routes:
-      - name: auth-v1-open-callback
-        strip_path: true
-        paths:
-          - /auth/v1/callback
-    plugins:
-      - name: cors
-  - name: auth-v1-open-authorize
-    url: http://{{svc:auth}}:9999/authorize
-    routes:
-      - name: auth-v1-open-authorize
-        strip_path: true
-        paths:
-          - /auth/v1/authorize
-    plugins:
-      - name: cors
-  - name: auth-v1
-    url: http://{{svc:auth}}:9999/
-    routes:
-      - name: auth-v1-all
-        strip_path: true
-        paths:
-          - /auth/v1/
-    plugins:
-      - name: cors
-      - name: key-auth
-        config:
-          hide_credentials: false
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-            - anon
-  - name: rest-v1
-    url: http://{{svc:rest}}:3000/
-    routes:
-      - name: rest-v1-all
-        strip_path: true
-        paths:
-          - /rest/v1/
-    plugins:
-      - name: cors
-      - name: key-auth
-        config:
-          hide_credentials: true
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-            - anon
-  - name: graphql-v1
-    url: http://{{svc:rest}}:3000/rpc/graphql
-    routes:
-      - name: graphql-v1-all
-        strip_path: true
-        paths:
-          - /graphql/v1
-    plugins:
-      - name: cors
-      - name: key-auth
-        config:
-          hide_credentials: true
-      - name: request-transformer
-        config:
-          add:
-            headers:
-              - 'Content-Profile: graphql_public'
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-            - anon
-  - name: realtime-v1-ws
-    url: http://{{svc:realtime}}:4000/socket
-    protocol: ws
-    routes:
-      - name: realtime-v1-ws
-        strip_path: true
-        paths:
-          - /realtime/v1/
-    plugins:
-      - name: cors
-      - name: key-auth
-        config:
-          hide_credentials: false
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-            - anon
-  - name: realtime-v1-rest
-    url: http://{{svc:realtime}}:4000/api
-    protocol: http
-    routes:
-      - name: realtime-v1-rest
-        strip_path: true
-        paths:
-          - /realtime/v1/api
-    plugins:
-      - name: cors
-      - name: key-auth
-        config:
-          hide_credentials: false
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-            - anon
-  - name: storage-v1
-    url: http://{{svc:storage}}:5000/
-    routes:
-      - name: storage-v1-all
-        strip_path: true
-        paths:
-          - /storage/v1/
-    plugins:
-      - name: cors
-  - name: meta
-    url: http://{{svc:meta}}:8080/
-    routes:
-      - name: meta-all
-        strip_path: true
-        paths:
-          - /pg/
-    plugins:
-      - name: key-auth
-        config:
-          hide_credentials: false
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-  - name: dashboard
-    url: http://{{svc:studio}}:3000/
-    routes:
-      - name: dashboard-all
-        strip_path: true
-        paths:
-          - /
-    plugins:
-      - name: cors
-      - name: basic-auth
-        config:
-          hide_credentials: true
-`;
+const SUPABASE_KONG_YML = JSON.stringify(SUPABASE_KONG_CONFIG);
 
 /**
  * Equivalente a los `volumes/db/*.sql` del compose oficial que SÍ hacen falta
@@ -512,7 +433,9 @@ const SUPABASE: StackDef = {
       env: {
         GOTRUE_API_HOST: '0.0.0.0',
         GOTRUE_API_PORT: '9999',
-        API_EXTERNAL_URL: '{{url}}/auth/v1',
+        // Sin `/auth/v1`: GoTrue le concatena los GOTRUE_MAILER_URLPATHS_*, que ya
+        // empiezan por esa ruta, y los enlaces de los correos salían duplicados.
+        API_EXTERNAL_URL: '{{url}}',
         GOTRUE_DB_DRIVER: 'postgres',
         GOTRUE_DB_DATABASE_URL:
           'postgres://supabase_auth_admin:{{secret:POSTGRES_PASSWORD}}@{{svc:db}}:5432/postgres',
