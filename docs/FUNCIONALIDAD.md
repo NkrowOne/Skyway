@@ -336,6 +336,31 @@ abrirlo de fábrica permitiría registrarse con cualquier correo ajeno ya
 «verificado». Se abre cuando la aplicación lo necesite, desde las variables del
 servicio `auth`.
 
+### 5.2 Plantillas de Railway dentro de un proyecto
+
+Además del catálogo propio, se puede instalar **cualquier plantilla del catálogo
+público de Railway** dentro de un proyecto existente, pegando su URL
+(`railway.com/new/template/<código>`) o su código. El catálogo de Railway es
+público: no hace falta token.
+
+- **Se respeta lo que dice la plantilla**: cada servicio se crea con la imagen o
+  el repositorio que declara. A diferencia de la importación de un proyecto
+  ajeno, aquí **no** se sustituye una imagen por una base de datos gestionada de
+  Skyway: el «Postgres» de una plantilla suele ser una imagen propia con sus
+  roles y extensiones, y cambiarlo rompería todo lo que cuelga de él.
+- **Se adapta el cableado**: las variables mágicas de Railway se traducen igual
+  que en la importación de proyectos (§6), y las referencias entre servicios se
+  reescriben al **slug** del destino — el nombre original puede llevar espacios o
+  comillas (`${{"Supabase Studio".JWT_SECRET}}`), que el resolutor de Skyway no
+  admite, y además los servicios se renombran con el prefijo de la instalación.
+- **Orden de arranque**: bases de datos primero (con sondeo real de arranque),
+  después las aplicaciones y la puerta de entrada al final. No se deduce del
+  grafo de referencias: en una plantilla real ese grafo es cíclico, porque las
+  variables sirven para cablear, no para ordenar.
+- **Lo que no tiene equivalente se dice antes de crear nada**: buckets de
+  almacenamiento de Railway, variables que la plantilla deja en tu mano, servicios
+  que exponen más de un dominio, o referencias a servicios que no existen.
+
 Lo que la pila de Supabase **no** incluye: **Edge Functions** (requiere montar el
 código de las funciones dentro del contenedor), el pooler **supavisor** (se conecta
 directamente a Postgres) y **analytics/logflare** — y por tanto la pestaña de Logs
@@ -702,6 +727,8 @@ nunca se devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | GET | `/templates` | auth | plantillas de BBDD disponibles |
 | GET | `/stacks` | auth | catálogo de pilas de aplicaciones (§5.1) |
 | POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[]}` |
+| POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada) |
+| POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2) |
 | POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image) |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy |
 | PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente) |

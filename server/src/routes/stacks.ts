@@ -19,10 +19,12 @@ import {
   workspacePlan,
 } from '../quota';
 import { runStackDeploy, StackStep } from '../deploy/stackdeploy';
+import { parseTemplateCode } from '../railway/client';
+import { planRailwayTemplate, rewriteTemplateRefs } from '../railway/template';
 import { getStack, renderStackEnv, stackList, StackRenderCtx } from '../stacks';
 import { getTemplate } from '../templates';
-import { DatabaseConfig, ImageConfig, ServiceRow } from '../types';
-import { slugify } from '../util';
+import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from '../types';
+import { randomToken, slugify } from '../util';
 
 const createSchema = z.object({
   stack: z.string().trim().min(1),
@@ -51,10 +53,54 @@ function uniquePrefix(projectId: string, base: string, keys: string[]): string {
   return prefix;
 }
 
+const templateSchema = z.object({
+  template: z.string().trim().min(1, 'Indica la plantilla de Railway'),
+  prefix: z.string().trim().min(1).max(40).optional(),
+  domain: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .max(253)
+    .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i, 'Dominio no válido')
+    .optional(),
+});
+
 export async function stackRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
   app.get('/api/stacks', async () => ({ stacks: stackList() }));
+
+  /**
+   * Vista previa de una plantilla del catálogo de Railway: qué servicios saldrían
+   * y qué avisos hay. No crea nada, así que basta con estar autenticado.
+   */
+  app.post('/api/railway-templates/preview', async (req, reply) => {
+    const body = z.object({ template: z.string().trim().min(1), prefix: z.string().trim().max(40).optional() }).parse(req.body);
+    const code = parseTemplateCode(body.template);
+    if (!code) return reply.code(400).send({ error: 'No reconozco esa plantilla: pega su URL de Railway o su código.' });
+    const plan = await planRailwayTemplate(code, { prefix: body.prefix, projectName: '' });
+    return {
+      plan: {
+        code: plan.code,
+        name: plan.name,
+        description: plan.description,
+        prefix: plan.prefix,
+        warnings: plan.warnings,
+        services: plan.services.map((s) => ({
+          templateName: s.templateName,
+          slug: s.slug,
+          kind: s.kind,
+          image: s.image ?? s.repoUrl ?? '',
+          port: s.port,
+          public: s.public,
+          stage: s.stage,
+          varCount: Object.keys(s.env).length,
+          volumes: s.volumes,
+          notes: s.notes,
+        })),
+      },
+    };
+  });
 
   app.post('/api/projects/:projectId/stacks', async (req, reply) => {
     const { projectId } = req.params as { projectId: string };
@@ -185,5 +231,109 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
 
     reply.code(201);
     return { stack: stack.key, prefix, publicUrl, services: created };
+  });
+
+  /**
+   * Instala una plantilla de Railway DENTRO de este proyecto, traduciendo su
+   * cableado. Mismas puertas que crear una pila del catálogo.
+   */
+  app.post('/api/projects/:projectId/railway-templates', async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    const project = getProject(projectId);
+    if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectAccess(req, reply, projectId)) return reply;
+
+    const body = templateSchema.parse(req.body);
+    const code = parseTemplateCode(body.template);
+    if (!code) return reply.code(400).send({ error: 'No reconozco esa plantilla: pega su URL de Railway o su código.' });
+
+    const isAdmin = currentUser(req)!.role === 'admin';
+    if (body.domain && !moduleAllowedForProject(projectId, 'domains', isAdmin)) {
+      return reply.code(403).send({ error: 'El módulo «Dominios y TLS» no está activo en este workspace.' });
+    }
+
+    const plan = await planRailwayTemplate(code, { prefix: body.prefix, projectName: project.name });
+
+    const workspace = workspaceOfProject(projectId);
+    if (workspace) {
+      if (!isWorkspaceActive(workspace)) {
+        return reply.code(403).send({ error: 'El workspace está suspendido: no se pueden crear servicios.' });
+      }
+      const quota = effectiveQuota(workspace, workspacePlan(workspace));
+      const used = countWorkspaceServices(workspace.id);
+      if (used + plan.services.length > quota.maxServices) {
+        return reply.code(409).send({
+          error: `La plantilla «${plan.name}» son ${plan.services.length} servicios y el workspace tiene ${used} de ${quota.maxServices}. Un administrador puede ampliar la cuota.`,
+        });
+      }
+    }
+
+    // El prefijo se numera si algún nombre ya existe, igual que en las pilas.
+    const finalPrefix = uniquePrefix(
+      projectId,
+      plan.prefix,
+      plan.services.map((s) => s.slug.slice(plan.prefix.length + 1)),
+    );
+    if (finalPrefix !== plan.prefix) {
+      for (const s of plan.services) {
+        s.slug = `${finalPrefix}${s.slug.slice(plan.prefix.length)}`;
+        s.name = s.slug;
+      }
+    }
+    rewriteTemplateRefs(plan, { projectName: project.name, domain: body.domain ?? null });
+
+    const created: ServiceRow[] = [];
+    const steps: StackStep[] = [];
+    for (const svc of plan.services) {
+      const domains = svc.public && body.domain ? [body.domain] : [];
+      const volumes = svc.volumes.map((path, idx) => ({
+        name: `skyway-${project.slug}__${finalPrefix}__${slugify(svc.templateName)}${idx === 0 ? '' : idx + 1}`,
+        containerPath: path,
+      }));
+      const common = {
+        domains,
+        startCmd: svc.startCmd,
+        healthcheckPath: svc.healthcheckPath,
+        volumes: volumes.length ? volumes : undefined,
+        stack: `railway:${plan.code}`,
+      };
+      const cfg =
+        svc.kind === 'image'
+          ? ({ ...common, image: svc.image!, port: svc.port ?? null } as ImageConfig & { stack?: string })
+          : ({
+              ...common,
+              repoUrl: svc.repoUrl!,
+              branch: 'main',
+              rootDir: svc.rootDir,
+              port: svc.port ?? 3000,
+              webhookSecret: randomToken(16),
+            } as GitConfig & { stack?: string });
+
+      const service = createService(projectId, svc.name, svc.slug, svc.kind, cfg);
+      setEnv(service.id, svc.env);
+      markManualAction(service.id);
+      created.push(service);
+      steps.push({ serviceId: service.id, key: svc.templateName, stage: svc.stage, readyCmd: svc.readyCmd });
+    }
+
+    audit(req, 'railway_template_imported', {
+      type: 'project',
+      id: projectId,
+      detail: `${plan.name} (${plan.code}) → ${created.length} servicios`,
+    });
+
+    void runStackDeploy({ key: `railway:${plan.code}`, label: plan.name }, steps).catch((err) => {
+      req.log.error({ err, template: plan.code }, 'fallo desplegando la plantilla de Railway');
+    });
+
+    reply.code(201);
+    return {
+      template: plan.code,
+      name: plan.name,
+      prefix: finalPrefix,
+      warnings: plan.warnings,
+      services: created,
+      notes: plan.services.flatMap((s) => s.notes.map((n) => `${s.templateName}: ${n}`)),
+    };
   });
 }

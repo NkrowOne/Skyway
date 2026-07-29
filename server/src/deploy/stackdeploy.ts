@@ -6,6 +6,12 @@ import { now } from '../util';
 import { awaitDeployment, triggerDeploy } from './deployer';
 
 /**
+ * Lo mínimo que la orquestación necesita saber de lo que despliega. Lo cumplen
+ * tanto las pilas del catálogo como una plantilla de Railway instanciada.
+ */
+export type DeployableStack = Pick<StackDef, 'key' | 'label'> & Partial<Pick<StackDef, 'postInit'>>;
+
+/**
  * Despliegue coordinado de una pila. Los servicios NO se pueden lanzar todos a
  * la vez: el que depende de la base de datos se cae en bucle si la base aún no
  * acepta conexiones, y Skyway daría por fallido ese primer despliegue. Así que
@@ -74,7 +80,7 @@ async function waitUntilReady(
 /** Aplica el SQL de inicialización de la pila dentro del contenedor de la base. */
 async function applyPostInit(
   container: string,
-  stack: StackDef,
+  stack: DeployableStack,
   log: (line: string) => void,
 ): Promise<boolean> {
   const postInit = stack.postInit!;
@@ -121,7 +127,7 @@ function markSkipped(serviceId: string, reason: string): void {
  * Despliega los servicios de una pila por etapas. Se ejecuta en segundo plano:
  * cada servicio tiene su propio despliegue con su log, como cualquier otro.
  */
-export async function runStackDeploy(stack: StackDef, steps: StackStep[]): Promise<void> {
+export async function runStackDeploy(stack: DeployableStack, steps: StackStep[]): Promise<void> {
   const stages = [...new Set(steps.map((s) => s.stage))].sort((a, b) => a - b);
   let aborted: string | null = null;
 

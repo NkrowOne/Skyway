@@ -792,6 +792,30 @@ export interface StackServiceInfo {
   public: boolean;
 }
 
+/** Servicio de una plantilla de Railway, ya traducido a lo que Skyway crearía. */
+export interface RailwayTemplateServicePlan {
+  templateName: string;
+  slug: string;
+  kind: 'image' | 'git';
+  image: string;
+  port: number | null;
+  public: boolean;
+  stage: number;
+  varCount: number;
+  volumes: string[];
+  notes: string[];
+}
+
+/** Vista previa de una plantilla pública del catálogo de Railway. */
+export interface RailwayTemplatePlan {
+  code: string;
+  name: string;
+  description: string | null;
+  prefix: string;
+  warnings: string[];
+  services: RailwayTemplateServicePlan[];
+}
+
 /** Pila de aplicaciones: plantilla que despliega varios servicios a la vez. */
 export interface Stack {
   key: string;

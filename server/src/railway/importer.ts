@@ -357,11 +357,16 @@ const summarizeChanges = (items: string[]): string =>
  */
 const REF_RE = /\$\{\{\s*([^{}]+?)\s*\}\}/g;
 
-/** Parte una referencia en ámbito y clave, con el mismo criterio que variables.ts. */
-function splitRef(inner: string): { scope: string | null; key: string } {
+/**
+ * Parte una referencia en ámbito y clave. Railway entrecomilla los nombres de
+ * servicio con espacios (`${{"Supabase Studio".JWT_SECRET}}`), y esas comillas
+ * hay que quitarlas: el resolutor de Skyway no las admite en el ámbito.
+ */
+export function splitRef(inner: string): { scope: string | null; key: string } {
   const dot = inner.lastIndexOf('.');
-  if (dot <= 0) return { scope: null, key: inner };
-  return { scope: inner.slice(0, dot).trim(), key: inner.slice(dot + 1).trim() };
+  if (dot <= 0) return { scope: null, key: inner.trim() };
+  const scope = inner.slice(0, dot).trim().replace(/^["']|["']$/g, '');
+  return { scope, key: inner.slice(dot + 1).trim() };
 }
 
 export interface RailwayRefCtx {
@@ -442,13 +447,16 @@ export function rewriteRailwayRefs(
         unresolved.push(`${varName} → ${match} (no hay ningún servicio «${scope ?? selfName}» en el proyecto)`);
         return match;
       }
-      // Referencia normal entre servicios: Skyway la resuelve igual, pero solo
-      // si el servicio destino exporta de verdad esa variable. Si no, avisamos
-      // ahora en vez de dejar que el contenedor arranque con el literal.
+      // Referencia normal entre servicios. Se reescribe el ámbito al SLUG del
+      // destino: el nombre original puede llevar espacios o comillas (que el
+      // resolutor no admite) y, si el servicio se renombra al instalarlo, un
+      // ámbito por nombre dejaría de resolver. El slug es su nombre DNS y no
+      // cambia.
       if (!target.vars.has(key)) {
         unresolved.push(`${varName} → ${match} (${scope ?? selfName} no exporta «${key}» en Skyway)`);
+        return match;
       }
-      return match;
+      return `\${{${target.slug}.${key}}}`;
     });
 
     if (next !== value) {
