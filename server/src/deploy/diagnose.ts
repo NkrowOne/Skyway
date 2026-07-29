@@ -138,6 +138,17 @@ const RULES: Rule[] = [
     fix: 'Abre la pestaña Logs del servicio para ver el error exacto de tu aplicación. Comprueba las Variables (¿faltan credenciales?) y que el "Puerto interno" coincide con el que escucha tu app.',
   },
   {
+    id: 'nixpacks-misdetect',
+    test: (e, l) =>
+      has(e, 'nixpacks terminó con código') &&
+      has(l, 'Relative import path', 'deno cache', 'error: Module not found', 'no lockfile found', 'no start command could be found'),
+    title: 'Nixpacks detectó mal qué hay que construir',
+    cause:
+      'El repositorio no tiene Dockerfile, así que Skyway recurre a Nixpacks, que adivina el tipo de proyecto mirando los ficheros del repo. En monorepos con varias apps y lenguajes mezclados (ejemplos de Deno, paquetes de Node, docs…) esa adivinanza falla: elige el runtime equivocado o un fichero de entrada que no es el de ninguna app real, y el build revienta con un error que no tiene que ver con tu código.',
+    fix:
+      'Apunta el build a UNA aplicación concreta: pon el "Directorio raíz" del servicio al subdirectorio de esa app (p. ej. `apps/web`), y si esa app trae su propio Dockerfile indícalo en "Ruta del Dockerfile" (es relativa al directorio raíz). Ojo: los repos que en realidad son una pila de varios contenedores (Supabase, Mastodon, n8n con sus dependencias…) no se despliegan como un servicio único de Skyway; usa su docker-compose oficial o crea un servicio por imagen para cada pieza.',
+  },
+  {
     id: 'build-generic',
     test: (e) => has(e, 'docker terminó con código', 'nixpacks terminó con código'),
     title: 'La construcción de la imagen falló',
