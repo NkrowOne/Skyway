@@ -160,6 +160,18 @@ const RULES: Rule[] = [
       'Apunta el build a UNA aplicación concreta: pon el "Directorio raíz" del servicio al subdirectorio de esa app (p. ej. `apps/web`), y si esa app trae su propio Dockerfile indícalo en "Ruta del Dockerfile" (es relativa al directorio raíz). Ojo: los repos que en realidad son una pila de varios contenedores (Supabase, Mastodon, n8n con sus dependencias…) no se despliegan como un servicio único de Skyway; usa su docker-compose oficial o crea un servicio por imagen para cada pieza.',
   },
   {
+    id: 'build-node-version',
+    // Va casi al final: los avisos EBADENGINE salen también en builds que van
+    // bien, así que solo se apunta este diagnóstico cuando no ha casado ninguna
+    // causa más concreta y el build sí ha fallado.
+    test: (e, l) => has(e, 'terminó con código') && has(l, 'EBADENGINE', 'Unsupported engine'),
+    title: 'La versión de Node no es la que piden tus dependencias',
+    cause:
+      'El log trae avisos «Unsupported engine»: alguna dependencia exige una versión de Node mayor que la que se usó para construir. Cuando el repositorio no dice qué versión quiere, Nixpacks elige una por defecto que se queda corta con paquetes recientes (Vite 7, supabase-js…), y el fallo aparece más tarde, al ejecutar el build, con un error que no menciona la versión.',
+    fix:
+      'Declara la versión en el propio repositorio, que es lo que Nixpacks mira: «engines»: { "node": ">=22" } en package.json, o un fichero .nvmrc. Si prefieres no tocar el repo, añade en Ajustes → Build del servicio el argumento NIXPACKS_NODE_VERSION con el número mayor (por ejemplo 22). Las versiones disponibles son las que trae el Nixpacks instalado: si necesitas una muy reciente, actualiza Skyway para que se reinstale.',
+  },
+  {
     id: 'build-generic',
     test: (e) => has(e, 'docker terminó con código', 'nixpacks terminó con código'),
     title: 'La construcción de la imagen falló',
