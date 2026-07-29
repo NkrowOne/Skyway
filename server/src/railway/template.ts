@@ -95,6 +95,92 @@ function readyCmdFor(
 }
 
 /**
+ * Aplicaciones a las que sabemos activarles el almacenamiento en ficheros.
+ *
+ * Cuando una plantilla pide un bucket, lo mejor no es traducir el bucket sino
+ * quitarlo: si la aplicación sabe guardar en disco, se le dice que lo haga y nos
+ * ahorramos un contenedor entero y una pieza más que puede fallar. Solo se hace
+ * con lo que la propia aplicación documenta; para todo lo demás no hay forma
+ * genérica de saber cómo se desactiva S3, y ahí MinIO sigue siendo la respuesta.
+ */
+const FILE_BACKENDS: {
+  label: string;
+  matches: (image: string) => boolean;
+  volume: string;
+  env: () => Record<string, string>;
+  /** Variables del backend S3 que sobran (las de la API que EXPONE, no). */
+  drops: RegExp;
+}[] = [
+  {
+    label: 'Supabase Storage',
+    matches: (image) => image.includes('storage-api'),
+    volume: '/var/lib/storage',
+    env: () => ({
+      STORAGE_BACKEND: 'file',
+      FILE_STORAGE_BACKEND_PATH: '/var/lib/storage',
+      // Inertes con el backend de ficheros, pero el compose oficial de Supabase
+      // las sigue pasando y la imagen las lee al arrancar.
+      GLOBAL_S3_BUCKET: 'stub',
+      REGION: 'stub',
+      // Credenciales del endpoint S3 que Storage OFRECE a sus clientes: no
+      // tienen nada que ver con dónde guarda: la plantilla las derivaba de las
+      // claves del bucket, que dejan de existir.
+      S3_PROTOCOL_ACCESS_KEY_ID: randomAlnum(20),
+      S3_PROTOCOL_ACCESS_KEY_SECRET: randomAlnum(40),
+    }),
+    drops: /^(AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|REGION)$|STORAGE_S3_|GLOBAL_S3_)/,
+  },
+];
+
+/**
+ * Pasa a ficheros locales los servicios que referencian un bucket y saben
+ * hacerlo. Devuelve true si NADIE sigue necesitando el bucket, en cuyo caso no
+ * hace falta levantar nada para servirlo.
+ */
+function useLocalFiles(
+  services: TemplateServicePlan[],
+  bucketName: string,
+  warnings: string[],
+): boolean {
+  const wanted = bucketName.toLowerCase();
+  const usaElBucket = (svc: TemplateServicePlan) =>
+    Object.values(svc.env).some((v) =>
+      [...v.matchAll(/\$\{\{\s*([^{}]+?)\s*\}\}/g)].some((m) => splitRef(m[1]).scope?.toLowerCase() === wanted),
+    );
+
+  for (const svc of services.filter(usaElBucket)) {
+    const backend = FILE_BACKENDS.find((b) => b.matches((svc.image ?? '').toLowerCase()));
+    if (!backend) continue;
+
+    for (const key of Object.keys(svc.env)) {
+      if (backend.drops.test(key)) delete svc.env[key];
+    }
+    Object.assign(svc.env, backend.env());
+    if (!svc.volumes.includes(backend.volume)) svc.volumes.push(backend.volume);
+
+    // Una variable que apuntaba a otra recién borrada del mismo servicio se
+    // quedaría con el texto `${{...}}` dentro del contenedor.
+    for (const [key, value] of Object.entries(svc.env)) {
+      const rota = [...value.matchAll(/\$\{\{\s*([^{}]+?)\s*\}\}/g)].some((m) => {
+        const { scope, key: apuntada } = splitRef(m[1]);
+        const propia = !scope || scope.toLowerCase() === svc.templateName.toLowerCase();
+        return propia && svc.env[apuntada] === undefined;
+      });
+      if (rota) {
+        delete svc.env[key];
+        warnings.push(`«${svc.templateName}»: se quita ${key}, que dependía de una variable del bucket.`);
+      }
+    }
+
+    svc.notes.push(
+      `Guarda los ficheros en un volumen propio (${backend.volume}) en vez de en el bucket «${bucketName}»: almacenamiento local, sin servidor de objetos de por medio.`,
+    );
+  }
+
+  return !services.some(usaElBucket);
+}
+
+/**
  * Un bucket de Railway es almacenamiento gestionado que aquí no existe. En vez
  * de dejar las variables colgando, se levanta un **MinIO** en el propio proyecto
  * y se rellenan con sus credenciales: la plantilla queda funcional sin depender
@@ -305,14 +391,20 @@ export async function planRailwayTemplate(
 
   if (services.length === 0) throw new Error('La plantilla no tiene ningún servicio que Skyway pueda crear.');
 
-  // Cada bucket de Railway se materializa como un MinIO del propio proyecto.
+  // Los buckets de Railway no existen aquí. Primero se intenta lo simple: que
+  // quien los usa guarde en disco. Solo si alguien sigue necesitando hablar S3
+  // se levanta un MinIO que lo sirva desde un volumen local.
   for (const bucketName of tpl.buckets) {
     if (services.some((s) => s.templateName.toLowerCase() === bucketName.toLowerCase())) continue;
+    if (useLocalFiles(services, bucketName, warnings)) {
+      warnings.push(
+        `El bucket «${bucketName}» de Railway no hacía falta: los servicios que lo usaban guardan ahora en un volumen de este servidor.`,
+      );
+      continue;
+    }
     services.push(minioForBucket(bucketName, prefix, services, warnings));
-  }
-  if (tpl.buckets.length > 0) {
     warnings.push(
-      `La plantilla usa ${tpl.buckets.length} bucket(s) de almacenamiento de Railway (${tpl.buckets.join(', ')}). Skyway no los provee, así que se añade un MinIO por cada uno con el bucket creado y las credenciales ya cableadas: queda funcional, guardando los ficheros en un volumen de este servidor.`,
+      `Para el bucket «${bucketName}» se añade un MinIO con el bucket ya creado y las credenciales cableadas: algún servicio necesita hablar S3 y no sé desactivárselo. Los ficheros viven igualmente en un volumen de este servidor, nada sale de él.`,
     );
   }
 

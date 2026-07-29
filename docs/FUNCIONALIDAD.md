@@ -357,12 +357,17 @@ público: no hace falta token.
   después las aplicaciones y la puerta de entrada al final. No se deduce del
   grafo de referencias: en una plantilla real ese grafo es cíclico, porque las
   variables sirven para cablear, no para ordenar.
-- **Los buckets de Railway se sustituyen por un MinIO**: la plantilla que da por
-  provisto un bucket de almacenamiento gestionado recibe un servicio MinIO en el
-  propio proyecto, con el bucket ya creado en su volumen y las credenciales
-  cableadas en las variables que la plantilla referencia (`${{S3.ACCESS_KEY_ID}}`
-  y compañía). Los nombres de esas variables se leen de la propia plantilla, no se
-  adivinan. Queda funcional y local, sin depender de nada externo.
+- **Los buckets de Railway se resuelven en local**, y por este orden. Primero se
+  intenta lo simple: si la aplicación que usa el bucket sabe guardar en disco, se
+  le activa ese modo y se le monta un volumen — el bucket deja de hacer falta y
+  hay un contenedor menos. Hoy se conoce el de **Supabase Storage**
+  (`STORAGE_BACKEND=file`); ampliar la lista es añadir una entrada a
+  `FILE_BACKENDS` en `railway/template.ts`. Si alguien sigue necesitando hablar S3
+  —porque no sabemos desactivárselo—, entonces se levanta un **MinIO** en el
+  proyecto, con el bucket ya creado en su volumen y las credenciales cableadas en
+  las variables que la plantilla referencia (`${{S3.ACCESS_KEY_ID}}` y compañía),
+  cuyos nombres se leen de la plantilla en vez de adivinarse. En los dos casos los
+  ficheros acaban en un volumen del servidor y nada sale de él.
 - **Lo que no tiene equivalente se dice antes de crear nada**: variables que la
   plantilla deja en tu mano, servicios que exponen más de un dominio, o
   referencias a servicios que no existen.
