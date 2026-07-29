@@ -134,6 +134,25 @@ export function triggerDeploy(
   return deployment;
 }
 
+/**
+ * Espera a que un despliegue llegue a estado final. Lo usan las pilas de
+ * aplicaciones, que necesitan encadenar servicios por etapas (la base primero,
+ * lo que depende de ella después) sin acoplarse a la cola interna.
+ */
+export async function awaitDeployment(
+  deploymentId: string,
+  timeoutMs = 30 * 60_000,
+): Promise<DeploymentRow | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const row = getDeployment(deploymentId);
+    if (!row) return undefined;
+    if (!['queued', 'building', 'deploying'].includes(row.status)) return row;
+    if (Date.now() > deadline) return row;
+    await sleep(1000);
+  }
+}
+
 async function runDeployment(deploymentId: string): Promise<void> {
   const deployment = getDeployment(deploymentId);
   if (!deployment || deployment.status !== 'queued') return;

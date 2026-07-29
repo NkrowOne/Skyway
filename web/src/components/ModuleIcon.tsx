@@ -5,7 +5,9 @@ import dockerSvg from '../assets/icons/docker.svg?raw';
 import ghostSvg from '../assets/icons/ghost.svg?raw';
 import githubSvg from '../assets/icons/github.svg?raw';
 import grafanaSvg from '../assets/icons/grafana.svg?raw';
+import kongSvg from '../assets/icons/kong.svg?raw';
 import mariadbSvg from '../assets/icons/mariadb.svg?raw';
+import metabaseSvg from '../assets/icons/metabase.svg?raw';
 import minioSvg from '../assets/icons/minio.svg?raw';
 import mongodbSvg from '../assets/icons/mongodb.svg?raw';
 import mysqlSvg from '../assets/icons/mysql.svg?raw';
@@ -14,6 +16,7 @@ import nginxSvg from '../assets/icons/nginx.svg?raw';
 import plausibleSvg from '../assets/icons/plausible.svg?raw';
 import postgresqlSvg from '../assets/icons/postgresql.svg?raw';
 import redisSvg from '../assets/icons/redis.svg?raw';
+import supabaseSvg from '../assets/icons/supabase.svg?raw';
 import traefikSvg from '../assets/icons/traefik.svg?raw';
 import uptimekumaSvg from '../assets/icons/uptimekuma.svg?raw';
 import wordpressSvg from '../assets/icons/wordpress.svg?raw';
@@ -41,6 +44,9 @@ export type ModuleKind =
   | 'grafana'
   | 'nginx'
   | 'traefik'
+  | 'supabase'
+  | 'kong'
+  | 'metabase'
   | 'generic';
 
 const SVGS: Record<Exclude<ModuleKind, 'generic'>, string> = {
@@ -60,6 +66,9 @@ const SVGS: Record<Exclude<ModuleKind, 'generic'>, string> = {
   grafana: grafanaSvg,
   nginx: nginxSvg,
   traefik: traefikSvg,
+  supabase: supabaseSvg,
+  kong: kongSvg,
+  metabase: metabaseSvg,
 };
 
 /** Colores de chip por módulo (logos oficiales sobre tinte de su marca). */
@@ -80,18 +89,33 @@ const CHIP: Record<ModuleKind, { bg: string; fg: string }> = {
   grafana: { bg: 'rgba(244,104,0,.15)', fg: '#f6a468' }, // oficial #F46800
   nginx: { bg: 'rgba(0,150,57,.16)', fg: '#69c288' }, // oficial #009639
   traefik: { bg: 'rgba(36,161,193,.16)', fg: '#7dc7da' }, // oficial #24A1C1
+  supabase: { bg: 'rgba(63,207,142,.15)', fg: '#5fd8a0' }, // oficial #3FCF8E
+  kong: { bg: 'rgba(0,52,89,.35)', fg: '#7fb3d5' }, // oficial #003459: muy oscuro, se aclara para leerse
+  metabase: { bg: 'rgba(80,158,227,.16)', fg: '#8cc0ef' }, // oficial #509EE3
   generic: { bg: 'color-mix(in oklab, var(--color-warn) 13%, transparent)', fg: 'var(--color-warn)' },
 };
+
+const KINDS = new Set<string>([...Object.keys(SVGS), 'generic']);
 
 /** Deduce el módulo a partir del servicio (repo, plantilla de BD o nombre de imagen). */
 export function moduleKind(service: Pick<Service, 'type' | 'config'>): ModuleKind {
   if (service.type === 'git') return 'github';
+  // Las pilas de aplicaciones declaran el logo de cada servicio: adivinarlo por
+  // el nombre de la imagen falla justo donde importa (postgrest no es Postgres).
+  const declared = service.config.icon;
+  if (declared && KINDS.has(declared)) return declared as ModuleKind;
   if (service.type === 'database') {
     const t = service.config.template;
     if (t === 'postgres' || t === 'redis' || t === 'mysql' || t === 'mongo' || t === 'minio') return t;
     return 'docker';
   }
   const image = (service.config.image ?? '').toLowerCase();
+  // Antes que Postgres: `supabase/postgres-meta` y `postgrest/postgrest`
+  // contienen «postgres» pero no son la base de datos.
+  if (/^supabase\/postgres(:|$)/.test(image)) return 'postgres';
+  if (image.includes('supabase/') || image.includes('postgrest') || image.includes('gotrue')) return 'supabase';
+  if (image.startsWith('kong:') || image.includes('kong/kong')) return 'kong';
+  if (image.includes('metabase')) return 'metabase';
   if (image.includes('wordpress')) return 'wordpress';
   if (image.includes('n8n')) return 'n8n';
   if (image.includes('postgres')) return 'postgres';

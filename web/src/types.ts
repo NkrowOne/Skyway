@@ -635,7 +635,7 @@ export interface Service {
   name: string;
   slug: string;
   type: 'git' | 'database' | 'image';
-  config: GitConfig & DatabaseConfig & { image?: string };
+  config: GitConfig & DatabaseConfig & { image?: string; icon?: string; stack?: string };
   created_at: number;
   runtime?: Runtime;
 }
@@ -781,6 +781,29 @@ export interface DbTemplate {
   image: string;
   defaultVersion: string;
   port: number;
+}
+
+/** Servicio de una pila de aplicaciones, tal y como lo describe el catálogo. */
+export interface StackServiceInfo {
+  key: string;
+  description: string;
+  icon: string;
+  image: string;
+  public: boolean;
+}
+
+/** Pila de aplicaciones: plantilla que despliega varios servicios a la vez. */
+export interface Stack {
+  key: string;
+  label: string;
+  description: string;
+  icon: string;
+  logos: string[];
+  docsUrl: string;
+  memoryHintMb: number;
+  notes: string[];
+  defaultPrefix: string;
+  services: StackServiceInfo[];
 }
 
 export interface SystemInfo {

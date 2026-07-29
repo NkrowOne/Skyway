@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Lock, Search } from 'lucide-react';
+import { ExternalLink, Lock, Search } from 'lucide-react';
 import { api } from '../api';
-import { DbTemplate, Deployment, GithubConnector, GithubRepo, Service } from '../types';
+import { DbTemplate, Deployment, GithubConnector, GithubRepo, Service, Stack } from '../types';
 import { cx } from '../utils';
 import { ModuleKind, ModuleLogo, moduleFg, moduleKind } from './ModuleIcon';
 import { Button, Field, Modal, Spinner, useToast } from './ui';
@@ -20,7 +20,7 @@ function LogoRow({ kinds, size = 20 }: { kinds: ModuleKind[]; size?: number }) {
   );
 }
 
-type Step = 'pick' | 'git' | 'database' | 'image';
+type Step = 'pick' | 'git' | 'database' | 'image' | 'stack';
 
 /** Logo real por plantilla de BD (las no mapeadas caen en genérico). */
 const TEMPLATE_KIND: Record<string, ModuleKind> = {
@@ -31,16 +31,21 @@ const TEMPLATE_KIND: Record<string, ModuleKind> = {
   minio: 'minio',
 };
 
+/** El catálogo manda claves de logo; las desconocidas caen en genérico. */
+const asKind = (icon: string): ModuleKind => icon as ModuleKind;
+
 export default function NewServiceModal({
   open,
   onClose,
   projectId,
   onCreated,
+  onStackCreated,
 }: {
   open: boolean;
   onClose: () => void;
   projectId: string;
   onCreated: (serviceId: string) => void;
+  onStackCreated?: () => void;
 }) {
   const toast = useToast();
   const [step, setStep] = useState<Step>('pick');
@@ -54,10 +59,20 @@ export default function NewServiceModal({
   const [imagePort, setImagePort] = useState('');
   const [connectorId, setConnectorId] = useState('');
   const [repoFilter, setRepoFilter] = useState('');
+  const [stackKey, setStackKey] = useState<string | null>(null);
+  const [stackPrefix, setStackPrefix] = useState('');
+  const [stackDomain, setStackDomain] = useState('');
 
   const templates = useQuery({
     queryKey: ['templates'],
     queryFn: () => api.get<{ templates: DbTemplate[] }>('/templates'),
+    enabled: open,
+    staleTime: Infinity,
+  });
+
+  const stacks = useQuery({
+    queryKey: ['stacks'],
+    queryFn: () => api.get<{ stacks: Stack[] }>('/stacks'),
     enabled: open,
     staleTime: Infinity,
   });
@@ -99,6 +114,9 @@ export default function NewServiceModal({
     setImagePort('');
     setConnectorId('');
     setRepoFilter('');
+    setStackKey(null);
+    setStackPrefix('');
+    setStackDomain('');
   };
 
   const close = () => {
@@ -116,6 +134,29 @@ export default function NewServiceModal({
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
+
+  const createStack = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api.post<{ services: Service[] }>(`/projects/${projectId}/stacks`, body),
+    onSuccess: (data) => {
+      toast(`Pila creada: desplegando ${data.services.length} servicios...`, 'ok');
+      reset();
+      onStackCreated ? onStackCreated() : onClose();
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const selectedStack = stacks.data?.stacks.find((s) => s.key === stackKey) ?? null;
+
+  const submitStack = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedStack) return;
+    createStack.mutate({
+      stack: selectedStack.key,
+      ...(stackPrefix.trim() ? { prefix: stackPrefix.trim() } : {}),
+      ...(stackDomain.trim() ? { domain: stackDomain.trim().toLowerCase() } : {}),
+    });
+  };
 
   const submitGit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -147,7 +188,7 @@ export default function NewServiceModal({
   return (
     <Modal open={open} onClose={close} title="Nuevo servicio" wide>
       {step === 'pick' && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
             onClick={() => setStep('git')}
             className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-acc/60"
@@ -171,16 +212,142 @@ export default function NewServiceModal({
             </div>
           </button>
           <button
+            onClick={() => setStep('stack')}
+            className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-ok/60"
+          >
+            <LogoRow kinds={['supabase', 'wordpress', 'n8n', 'ghost']} size={19} />
+            <div>
+              <h3 className="text-sm font-medium group-hover:text-ok">Aplicación completa</h3>
+              <p className="mt-1 text-xs text-sub">
+                Supabase, WordPress, Ghost, n8n o Metabase con todos sus servicios y su base de datos
+              </p>
+            </div>
+          </button>
+          <button
             onClick={() => setStep('image')}
             className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-warn/60"
           >
             <LogoRow kinds={['docker']} size={24} />
             <div>
               <h3 className="text-sm font-medium group-hover:text-warn">Imagen Docker</h3>
-              <p className="mt-1 text-xs text-sub">Cualquier imagen pública: n8n, Plausible, Uptime Kuma...</p>
+              <p className="mt-1 text-xs text-sub">Cualquier imagen pública: Plausible, Uptime Kuma, Grafana...</p>
             </div>
           </button>
         </div>
+      )}
+
+      {step === 'stack' && !selectedStack && (
+        <div>
+          {stacks.isLoading && <Spinner label="Cargando aplicaciones…" />}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {stacks.data?.stacks.map((s) => (
+              <button
+                key={s.key}
+                onClick={() => {
+                  setStackKey(s.key);
+                  setStackPrefix(s.defaultPrefix);
+                }}
+                className="card group flex flex-col items-start gap-3 p-4 text-left transition-all hover:border-ok/60"
+              >
+                <LogoRow kinds={s.logos.map(asKind)} size={19} />
+                <div className="min-w-0">
+                  <h3 className="text-sm font-medium group-hover:text-ok">{s.label}</h3>
+                  <p className="mt-1 text-xs text-sub">{s.description}</p>
+                  <p className="mt-1.5 text-[11px] text-subtle">
+                    {s.services.length === 1 ? '1 servicio' : `${s.services.length} servicios`} ·{' '}
+                    {Math.round(s.memoryHintMb / 1024)} GB de RAM recomendados
+                  </p>
+                </div>
+              </button>
+            ))}
+          </div>
+          <div className="mt-4 flex justify-between">
+            <Button type="button" variant="ghost" onClick={() => setStep('pick')}>
+              Atrás
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === 'stack' && selectedStack && (
+        <form onSubmit={submitStack} className="space-y-4">
+          <div className="flex items-start gap-3">
+            <span style={{ color: moduleFg(asKind(selectedStack.icon)) }}>
+              <ModuleLogo kind={asKind(selectedStack.icon)} size={26} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-sm font-medium">{selectedStack.label}</h3>
+              <p className="mt-0.5 text-xs text-sub">{selectedStack.description}</p>
+            </div>
+            <a
+              href={selectedStack.docsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="flex shrink-0 items-center gap-1 text-[11px] text-sub hover:text-txt"
+            >
+              Documentación <ExternalLink size={11} />
+            </a>
+          </div>
+
+          <div className="rounded-lg border border-line bg-bg p-1.5">
+            {selectedStack.services.map((svc) => (
+              <div key={svc.key} className="flex items-center gap-2.5 px-2.5 py-[7px]">
+                <span className="shrink-0" style={{ color: moduleFg(asKind(svc.icon)) }}>
+                  <ModuleLogo kind={asKind(svc.icon)} size={15} />
+                </span>
+                <span className="w-28 shrink-0 truncate font-mono text-[11px]">
+                  {(stackPrefix.trim() || selectedStack.defaultPrefix)}-{svc.key}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-sub">{svc.description}</span>
+                {svc.public && (
+                  <span className="shrink-0 rounded-full bg-surface2 px-1.5 py-0.5 text-[10px] text-sub">
+                    entrada pública
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Prefijo de los servicios" hint="Da nombre a cada servicio de la pila">
+              <input
+                className="input font-mono"
+                value={stackPrefix}
+                onChange={(e) => setStackPrefix(e.target.value)}
+                placeholder={selectedStack.defaultPrefix}
+              />
+            </Field>
+            <Field
+              label="Dominio (opcional)"
+              hint="Sin dominio la pila solo es accesible dentro del proyecto; puedes añadirlo después"
+            >
+              <input
+                className="input font-mono"
+                placeholder="app.midominio.com"
+                value={stackDomain}
+                onChange={(e) => setStackDomain(e.target.value)}
+              />
+            </Field>
+          </div>
+
+          <ul className="space-y-1 text-[11px] text-subtle">
+            {selectedStack.notes.map((note) => (
+              <li key={note} className="flex gap-1.5">
+                <span aria-hidden>·</span>
+                <span>{note}</span>
+              </li>
+            ))}
+          </ul>
+
+          <div className="flex justify-between pt-1">
+            <Button type="button" variant="ghost" onClick={() => setStackKey(null)}>
+              Atrás
+            </Button>
+            <Button type="submit" loading={createStack.isPending}>
+              Crear y desplegar {selectedStack.services.length} servicios
+            </Button>
+          </div>
+        </form>
       )}
 
       {step === 'image' && (

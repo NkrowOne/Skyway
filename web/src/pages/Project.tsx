@@ -389,6 +389,12 @@ export default function ProjectPage() {
               queryClient.invalidateQueries({ queryKey: ['project', projectId] });
               openService(serviceId);
             }}
+            onStackCreated={() => {
+              // Una pila son varios servicios: se muestra la rejilla entera en
+              // vez de abrir el panel de uno solo.
+              setNewOpen(false);
+              queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+            }}
           />
         </Suspense>
       )}
