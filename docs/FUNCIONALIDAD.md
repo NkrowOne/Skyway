@@ -357,9 +357,15 @@ público: no hace falta token.
   después las aplicaciones y la puerta de entrada al final. No se deduce del
   grafo de referencias: en una plantilla real ese grafo es cíclico, porque las
   variables sirven para cablear, no para ordenar.
-- **Lo que no tiene equivalente se dice antes de crear nada**: buckets de
-  almacenamiento de Railway, variables que la plantilla deja en tu mano, servicios
-  que exponen más de un dominio, o referencias a servicios que no existen.
+- **Los buckets de Railway se sustituyen por un MinIO**: la plantilla que da por
+  provisto un bucket de almacenamiento gestionado recibe un servicio MinIO en el
+  propio proyecto, con el bucket ya creado en su volumen y las credenciales
+  cableadas en las variables que la plantilla referencia (`${{S3.ACCESS_KEY_ID}}`
+  y compañía). Los nombres de esas variables se leen de la propia plantilla, no se
+  adivinan. Queda funcional y local, sin depender de nada externo.
+- **Lo que no tiene equivalente se dice antes de crear nada**: variables que la
+  plantilla deja en tu mano, servicios que exponen más de un dominio, o
+  referencias a servicios que no existen.
 
 Lo que la pila de Supabase **no** incluye: **Edge Functions** (requiere montar el
 código de las funciones dentro del contenedor), el pooler **supavisor** (se conecta

@@ -8,6 +8,20 @@ export function randomToken(bytes = 24): string {
   return crypto.randomBytes(bytes).toString('hex');
 }
 
+const ALNUM = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+
+/**
+ * Cadena alfanumérica de longitud EXACTA. Hay secretos con longitud obligatoria
+ * (claves de cifrado) y otros que viajan dentro de URLs, donde un carácter
+ * reservado obligaría a escapar.
+ */
+export function randomAlnum(length: number): string {
+  const bytes = crypto.randomBytes(length);
+  let out = '';
+  for (let i = 0; i < length; i++) out += ALNUM[bytes[i] % ALNUM.length];
+  return out;
+}
+
 export function randomPassword(bytes = 16): string {
   // Alfanumérico para que funcione sin escapes en URLs de conexión.
   return crypto.randomBytes(bytes).toString('base64url').replace(/[-_]/g, '').slice(0, 24) || randomToken(12);

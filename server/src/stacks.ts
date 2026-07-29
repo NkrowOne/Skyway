@@ -1,5 +1,5 @@
-import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import { randomAlnum as alnum } from './util';
 
 /**
  * Pilas de aplicaciones: plantillas que despliegan VARIOS servicios coordinados
@@ -98,16 +98,6 @@ export interface StackDef {
 }
 
 // ---------- generación de secretos ----------
-
-const ALPHABET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-
-/** Cadena alfanumérica de longitud EXACTA (hay secretos con longitud obligatoria). */
-function alnum(length: number): string {
-  const bytes = crypto.randomBytes(length);
-  let out = '';
-  for (let i = 0; i < length; i++) out += ALPHABET[bytes[i] % ALPHABET.length];
-  return out;
-}
 
 const TEN_YEARS_SECONDS = 60 * 60 * 24 * 365 * 10;
 
