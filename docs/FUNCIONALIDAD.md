@@ -395,6 +395,16 @@ del Studio, que viene desactivada.
   `${{Base.VAR}}` al servicio nuevo (por host privado/proxy público, o por
   esquema si es inequívoco); solo lo no mapeable genera aviso. El token viaja
   solo en memoria.
+  Las **variables mágicas de Railway** que las plantillas usan para cablear sus
+  servicios entre sí se traducen a lo que existe aquí: `RAILWAY_PRIVATE_DOMAIN`
+  y `RAILWAY_TCP_PROXY_DOMAIN` → el slug del servicio destino (su nombre DNS en
+  la red del proyecto), `RAILWAY_TCP_PROXY_PORT` y `PORT` → su puerto interno,
+  `RAILWAY_PUBLIC_DOMAIN`/`RAILWAY_STATIC_URL` → su dominio, `RAILWAY_PROJECT_NAME`
+  y `RAILWAY_ENVIRONMENT` → los de aquí, y `${{secret(n)}}` → un secreto generado.
+  Las referencias que **no** van a resolver —un servicio que no se importó, una
+  variable que la plantilla de base de datos de Skyway no exporta, un destino sin
+  dominio— se avisan una a una en el informe: sin eso el contenedor arrancaría con
+  el texto `${{...}}` literal como host, sin que nada fallase.
 - **Cuentas y clientes, cuotas y facturación**: cada cliente es un **workspace**
   con una cuota de recursos (CPU, RAM, disco, proyectos, servicios, usuarios)
   acotada a todos sus proyectos en total, un **plan** de usos incluidos, un

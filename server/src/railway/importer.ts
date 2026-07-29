@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import {
   createProject,
   createService,
@@ -345,6 +346,121 @@ function rewriteValue(value: string, targets: DbTarget[]): string | null {
 const summarizeChanges = (items: string[]): string =>
   items.length > 4 ? `${items.slice(0, 4).join(', ')} y ${items.length - 4} más` : items.join(', ');
 
+// ---------- referencias `${{...}}`: variables mágicas de Railway ----------
+
+/**
+ * Las plantillas de Railway cablean sus servicios entre sí con variables que
+ * Railway inyecta sola —`${{Postgres.RAILWAY_PRIVATE_DOMAIN}}` y compañía— y que
+ * aquí no existe nadie que rellene. La sintaxis de referencia es la misma que la
+ * de Skyway, así que sin tocarlas el despliegue no falla: el contenedor arranca
+ * con el texto `${{...}}` literal como host. Se traducen a lo que sí hay.
+ */
+const REF_RE = /\$\{\{\s*([^{}]+?)\s*\}\}/g;
+
+/** Parte una referencia en ámbito y clave, con el mismo criterio que variables.ts. */
+function splitRef(inner: string): { scope: string | null; key: string } {
+  const dot = inner.lastIndexOf('.');
+  if (dot <= 0) return { scope: null, key: inner };
+  return { scope: inner.slice(0, dot).trim(), key: inner.slice(dot + 1).trim() };
+}
+
+export interface RailwayRefCtx {
+  /** Datos del servicio ya planificado, por nombre de Railway en minúsculas. */
+  byName: Map<string, { slug: string; port: number | null; domains: string[]; vars: Set<string> }>;
+  sharedVars: Set<string>;
+  projectName: string;
+  environmentName: string;
+}
+
+/** Genera el valor de `${{secret(n[, "alfabeto"])}}` de las plantillas de Railway. */
+function railwaySecret(expr: string): string | null {
+  const m = /^secret\(\s*(\d+)?\s*(?:,\s*(?:'([^']*)'|"([^"]*)")\s*)?\)$/.exec(expr);
+  if (!m) return null;
+  const length = Math.min(Math.max(Number(m[1] ?? 32), 1), 256);
+  const alphabet = m[2] || m[3] || 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const bytes = crypto.randomBytes(length);
+  let out = '';
+  for (let i = 0; i < length; i++) out += alphabet[bytes[i] % alphabet.length];
+  return out;
+}
+
+/**
+ * Reescribe las referencias de un servicio y avisa de las que van a quedarse
+ * sin resolver. Devuelve las líneas para las notas del informe.
+ */
+export function rewriteRailwayRefs(
+  selfName: string,
+  vars: Record<string, string>,
+  ctx: RailwayRefCtx,
+): { changed: string[]; unresolved: string[] } {
+  const changed: string[] = [];
+  const unresolved: string[] = [];
+  const self = ctx.byName.get(selfName.toLowerCase());
+
+  for (const [varName, value] of Object.entries(vars)) {
+    const next = value.replace(REF_RE, (match, inner: string) => {
+      const secret = railwaySecret(inner.trim());
+      if (secret !== null) return secret;
+
+      const { scope, key } = splitRef(inner);
+      const target = scope ? ctx.byName.get(scope.toLowerCase()) : self;
+
+      // Ámbito de variables compartidas: Skyway lo entiende igual.
+      if (scope && ['shared', 'proyecto', 'project'].includes(scope.toLowerCase())) {
+        if (!ctx.sharedVars.has(key)) unresolved.push(`${varName} → ${match} (no hay una variable compartida «${key}»)`);
+        return match;
+      }
+
+      switch (key) {
+        case 'RAILWAY_PRIVATE_DOMAIN':
+        case 'RAILWAY_TCP_PROXY_DOMAIN':
+          // El nombre DNS de un servicio dentro del proyecto es su slug.
+          if (target) return target.slug;
+          break;
+        case 'RAILWAY_TCP_PROXY_PORT':
+        case 'PORT':
+          if (target?.port) return String(target.port);
+          break;
+        case 'RAILWAY_PUBLIC_DOMAIN':
+        case 'RAILWAY_STATIC_URL':
+          if (target?.domains[0]) return target.domains[0];
+          unresolved.push(`${varName} → ${match} (ese servicio no tiene dominio propio: añádeselo y sustituye a mano)`);
+          return match;
+        case 'RAILWAY_SERVICE_NAME':
+          if (target) return target.slug;
+          break;
+        case 'RAILWAY_PROJECT_NAME':
+          return ctx.projectName;
+        case 'RAILWAY_ENVIRONMENT':
+        case 'RAILWAY_ENVIRONMENT_NAME':
+          return ctx.environmentName;
+        default:
+          break;
+      }
+
+      if (!target) {
+        unresolved.push(`${varName} → ${match} (no hay ningún servicio «${scope ?? selfName}» en el proyecto)`);
+        return match;
+      }
+      // Referencia normal entre servicios: Skyway la resuelve igual, pero solo
+      // si el servicio destino exporta de verdad esa variable. Si no, avisamos
+      // ahora en vez de dejar que el contenedor arranque con el literal.
+      if (!target.vars.has(key)) {
+        unresolved.push(`${varName} → ${match} (${scope ?? selfName} no exporta «${key}» en Skyway)`);
+      }
+      return match;
+    });
+
+    if (next !== value) {
+      vars[varName] = next;
+      // Solo el nombre: el valor nuevo puede ser un secreto recién generado y el
+      // informe de importación se guarda y se enseña en el panel.
+      changed.push(varName);
+    }
+  }
+  return { changed, unresolved };
+}
+
 /**
  * Sustituye en las variables de apps y compartidas los endpoints de Railway de
  * bases de datos que también se importan por referencias al servicio nuevo,
@@ -420,10 +536,6 @@ export async function runRailwayImport(
   const workspace = opts.client?.trim() ? getOrCreateWorkspaceByName(opts.client.trim()) : undefined;
   const project = createProject(name, slug, workspace?.name ?? null, workspace?.id ?? null);
 
-  if (plan._sharedVars && Object.keys(plan._sharedVars).length > 0) {
-    setProjectVars(project.id, plan._sharedVars);
-  }
-
   const report: ImportReport = {
     ts: Date.now(),
     railwayProject: plan.projectName,
@@ -447,6 +559,48 @@ export async function runRailwayImport(
     return s;
   };
 
+  // Los slugs se reparten ANTES de crear nada: las referencias entre servicios
+  // necesitan saber el nombre DNS del destino, y ese destino puede estar más
+  // abajo en la lista.
+  const slugOf = new Map<string, string>();
+  for (const planned of plan.services) {
+    if (planned.kind !== 'skipped') slugOf.set(planned.railwayName, uniqueSlug(planned.railwayName));
+  }
+
+  const refCtx: RailwayRefCtx = {
+    byName: new Map(
+      plan.services
+        .filter((p) => p.kind !== 'skipped')
+        .map((p) => [
+          p.railwayName.toLowerCase(),
+          {
+            slug: slugOf.get(p.railwayName)!,
+            port: p.port ?? null,
+            domains: p.domains,
+            // Una base gestionada exporta lo que genere su plantilla, no lo que
+            // traía de Railway: es contra eso contra lo que hay que validar.
+            vars: new Set(
+              p.kind === 'database' && p.template
+                ? Object.keys(getTemplate(p.template)!.makeEnv(slugOf.get(p.railwayName)!))
+                : Object.keys(p._vars ?? {}),
+            ),
+          },
+        ]),
+    ),
+    sharedVars: new Set(Object.keys(plan._sharedVars ?? {})),
+    projectName: name,
+    environmentName: plan.environment.name,
+  };
+
+  if (plan._sharedVars && Object.keys(plan._sharedVars).length > 0) {
+    const { changed, unresolved } = rewriteRailwayRefs('compartidas', plan._sharedVars, refCtx);
+    if (changed.length > 0) {
+      report.warnings.push(`Variables compartidas con referencias de Railway traducidas: ${summarizeChanges(changed)}.`);
+    }
+    for (const u of unresolved) report.warnings.push(`Variable compartida sin resolver: ${u}`);
+    setProjectVars(project.id, plan._sharedVars);
+  }
+
   const toDeploy: string[] = [];
 
   for (const planned of plan.services) {
@@ -454,7 +608,16 @@ export async function runRailwayImport(
       report.skipped.push({ name: planned.railwayName, notes: planned.notes });
       continue;
     }
-    const svcSlug = uniqueSlug(planned.railwayName);
+    const svcSlug = slugOf.get(planned.railwayName)!;
+    if (planned._vars) {
+      const { changed, unresolved } = rewriteRailwayRefs(planned.railwayName, planned._vars, refCtx);
+      if (changed.length > 0) {
+        planned.notes.push(`Referencias de Railway traducidas a esta instalación: ${summarizeChanges(changed)}.`);
+      }
+      for (const u of unresolved) {
+        planned.notes.push(`⚠ Referencia sin resolver, quedará como texto literal: ${u}`);
+      }
+    }
     const volumes: VolumeMount[] = planned.volumeMounts.map((mountPath, idx) => ({
       name: `skyway-${project.slug}-${svcSlug}-data${idx === 0 ? '' : idx + 1}`,
       containerPath: mountPath,
