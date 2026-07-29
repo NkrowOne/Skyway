@@ -150,6 +150,14 @@ export function traefikLabels(
     labels[`traefik.http.routers.${router}-secure.rule`] = rule;
     labels[`traefik.http.routers.${router}-secure.entrypoints`] = 'websecure';
     labels[`traefik.http.routers.${router}-secure.tls.certresolver`] = 'le';
+    // Con HTTPS disponible, el router de texto en claro deja de servir contenido
+    // y solo redirige: si no, el puerto 80 seguiría entregando la web —y con
+    // ella cookies de sesión o claves de API— sin cifrar, para siempre. El reto
+    // HTTP-01 de Let's Encrypt no se ve afectado: Traefik lo atiende en un
+    // router interno propio, con prioridad por encima de este.
+    labels[`traefik.http.middlewares.${router}-https.redirectscheme.scheme`] = 'https';
+    labels[`traefik.http.middlewares.${router}-https.redirectscheme.permanent`] = 'true';
+    labels[`traefik.http.routers.${router}.middlewares`] = `${router}-https`;
   }
   labels[`traefik.http.services.${router}.loadbalancer.server.port`] = String(port);
   return labels;
