@@ -98,7 +98,8 @@ web/src/
   - `skyway-edge`: compartida con Traefik; se conectan aquí los servicios con
     dominio para que Traefik les enrute tráfico.
   - `skyway-<proyecto>`: red privada por proyecto; los servicios se resuelven
-    entre sí por su *slug* (`postgres:5432`, `redis:6379`…).
+    entre sí por su *slug* (`postgres:5432`, `redis:6379`…). Cada servicio
+    anuncia la suya en **Ajustes → Dirección interna**, con el puerto ya puesto.
 - **Traefik** (en el `docker-compose`): enruta por dominio y emite TLS con
   Let's Encrypt. Se activa por *labels* que Skyway pone en cada contenedor. Con
   TLS configurado, el puerto 80 no sirve contenido: redirige a HTTPS con un 301.
@@ -766,6 +767,13 @@ nunca se devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | GET | `/services/:id/metrics/history` | +access | histórico de consumo del servicio (`?hours=`): CPU/RAM (media y pico), red y disco |
 
 ### 7.6 Consola de base de datos
+La tienen las bases que crea Skyway (postgres, mysql, mongo, redis) y, además,
+los servicios de tipo imagen que **son** un PostgreSQL —el `db` de la pila
+Supabase, un `postgres:16` suelto, una plantilla de Railway—, reconocidos por el
+icono que declara la pila o por el nombre de la imagen. El detalle del servicio
+(`GET /services/:id`) lo dice en `dbConsole`, y el panel enseña la pestaña según
+eso.
+
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/services/:id/db/overview` | +access | esquema, tamaños y snippets |

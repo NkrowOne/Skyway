@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
+import { dbConsoleEngine } from '../dbconsole';
 import { markManualAction } from '../monitor';
 import {
   countWorkspaceServices,
@@ -225,6 +226,10 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       project: found.project,
       runtime,
       latestDeployment: latestDeployment(id) ?? null,
+      // Quién tiene consola lo decide el servidor: el panel no puede saber si
+      // una imagen cualquiera es una base de datos sin repetir aquí la tabla de
+      // imágenes conocidas, y dos copias de esa tabla se separan a la primera.
+      dbConsole: dbConsoleEngine(found.service),
     };
   });
 

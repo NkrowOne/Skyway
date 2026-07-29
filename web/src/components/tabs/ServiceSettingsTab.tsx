@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { ChevronRight, Cpu, Globe, HardDrive, Plus, X } from 'lucide-react';
+import { ChevronRight, Cpu, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
 import { api } from '../../api';
-import { GithubConnector, Service } from '../../types';
+import { DbTemplate, GithubConnector, Service } from '../../types';
 import { cx } from '../../utils';
 import DomainsEditor from '../DomainsEditor';
 import { ModuleLogo, moduleKind } from '../ModuleIcon';
@@ -131,6 +131,26 @@ export default function ServiceSettingsTab({
   // Conector borrado pero aún referenciado: se muestra para poder quitarlo. Solo
   // se da por colgante con la lista cargada; si no, un guardado lo borraría sin querer.
   const danglingConnector = !!connectors.data && !!form.connectorId && !connectorList.some((c) => c.id === form.connectorId);
+
+  // El puerto interno de una base de datos lo fija su plantilla, no el
+  // formulario: hay que preguntarlo para poder anunciar la dirección completa.
+  const dbTemplates = useQuery({
+    queryKey: ['templates'],
+    queryFn: () => api.get<{ templates: DbTemplate[] }>('/templates'),
+    enabled: isDb,
+    staleTime: 300_000,
+  });
+
+  /**
+   * Dirección del servicio dentro de la red del proyecto: el alias de red es su
+   * slug (`runContainer` en `docker/containers.ts`). Se toma de la configuración
+   * guardada y no del formulario, porque un puerto a medio escribir todavía no
+   * es la dirección por la que se llega.
+   */
+  const internalPort = isDb
+    ? dbTemplates.data?.templates.find((t) => t.key === cfg.template)?.port
+    : cfg.port;
+  const internalAddress = internalPort ? `${service.slug}:${internalPort}` : service.slug;
 
   const [saved, flashSaved] = useFlash();
   const save = useMutation({
@@ -308,6 +328,27 @@ export default function ServiceSettingsTab({
               </Field>
             )}
           </div>
+        </SectionCard>
+
+        <SectionCard
+          icon={<Network size={14} />}
+          iconClass="text-ok"
+          title="Dirección interna"
+          description="Con esto llegan los demás servicios del proyecto, sin salir a Internet"
+        >
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate font-mono text-xs">{internalAddress}</span>
+              <CopyButton value={internalAddress} />
+            </span>
+            {!internalPort && <span className="shrink-0 text-[11px] text-subtle">sin puerto HTTP</span>}
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-subtle">
+            El nombre es el slug del servicio y solo resuelve dentro de la red privada de este proyecto. Es lo que va en
+            las variables de los servicios hermanos: con el dominio público en su lugar, la petición sale a Internet y
+            vuelve a entrar por Traefik, que responde <span className="font-mono">404 page not found</span> a todo
+            nombre sin ruta —y la aplicación lo verá como un error raro de su cliente HTTP, no como un 404.
+          </p>
         </SectionCard>
 
         {hasDomains && (
