@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.23.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.24.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -40,6 +40,7 @@ server/src/
   security.ts           escáner de seguridad (hallazgos + nota)
   variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}
   templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio)
+  stacks.ts             pilas de aplicaciones multi-servicio (Supabase, WordPress, Ghost, n8n, Metabase)
   dbconsole.ts          consola de consultas (psql/mysql/mongosh/redis-cli vía exec)
   files.ts              explorador de archivos por contenedor (tar sobre socket)
   backups.ts            volcado/restauración de BBDD (dump dentro del contenedor)
@@ -62,6 +63,7 @@ server/src/
     builder.ts          clone (git) + build (Dockerfile o Nixpacks), enmascara secretos
     deployer.ts         orquestador: build → swap sin corte → validación → rollback
     queue.ts            cola serializada por servicio + semáforo de builds
+    stackdeploy.ts      despliegue por etapas de una pila: espera de arranque + SQL de inicialización
     diagnose.ts         diagnóstico de fallos y explicación de códigos de salida
   github/client.ts      API de GitHub: validar tokens, listar repos y ramas (solo lectura)
   railway/client.ts     cliente GraphQL de Railway (solo en memoria)
@@ -279,6 +281,102 @@ proceso no escucha) corre en segundo plano; sin puerto no se crea router de
 Traefik y la validación del deploy usa el periodo de gracia en vez del healthcheck.
 Esto reproduce el comportamiento de un *worker* de Railway.
 
+Los servicios `image` admiten además dos campos que rellenan las pilas y que la
+API devuelve tal cual: `icon` (marca con la que el panel pinta el servicio, en vez
+de adivinarla por el nombre de la imagen) y `stack` (pila de la que salió).
+
+### 5.1 Pilas de aplicaciones (`stacks.ts`)
+
+Una **pila** es una plantilla que crea **varios servicios coordinados de una vez**,
+igual que el catálogo de bases de datos pero para aplicaciones completas. Se elige
+en «Nuevo servicio → Aplicación completa».
+
+| Pila | Servicios | Entrada pública |
+| --- | --- | --- |
+| **Supabase** | `db` (supabase/postgres), `rest` (PostgREST), `auth` (GoTrue), `realtime`, `meta` (postgres-meta), `imgproxy`, `storage`, `studio`, `kong` | `kong` (API + Studio) |
+| **WordPress + MySQL** | `db` (MySQL gestionado), `app` | `app` |
+| **Ghost + MySQL** | `db` (MySQL gestionado), `app` | `app` |
+| **n8n + PostgreSQL** | `db` (Postgres gestionado), `app` | `app` |
+| **Metabase + PostgreSQL** | `db` (Postgres gestionado), `app` | `app` |
+
+Cómo funciona:
+
+- **Nombres**: todos los servicios se llaman `<prefijo>-<clave>` (`supabase-db`,
+  `supabase-kong`…). El prefijo se elige al crear la pila y se numera entero si
+  alguno de esos nombres ya existe, así que dos instancias no se pisan.
+- **Secretos**: los genera el servidor (contraseña de Postgres, `JWT_SECRET`, las
+  claves `ANON_KEY`/`SERVICE_ROLE_KEY` firmadas HS256 con ese secreto, credenciales
+  del Studio…) y viven **una sola vez**, en las variables del servicio *ancla* de
+  la pila (el `db` en Supabase). El resto los referencia con `${{<ancla>.CLAVE}}`:
+  rotar uno es editarlo ahí y redesplegar. **No** van a las variables compartidas
+  del proyecto a propósito: esas se inyectan en el entorno de *todos* los
+  servicios, incluidos los que se desplieguen después, y una clave `service_role`
+  —que se salta el RLS— no tiene por qué acabar dentro de una imagen de terceros.
+- **Bases de datos**: cuando la pila usa un motor estándar, el servicio es un
+  `database` normal de Skyway, con sus copias de seguridad y su consola de datos.
+  La de Supabase es una imagen propia (`supabase/postgres`), no una plantilla.
+- **Ficheros de configuración**: no hay bind mounts, así que lo que el compose
+  oficial montaría como fichero (la configuración declarativa de Kong) viaja en una
+  variable de entorno y el comando de arranque la escribe antes de levantar el
+  proceso.
+- **Orden de arranque**: los servicios se despliegan **por etapas**; entre una y
+  otra Skyway espera a que la base acepte conexiones de verdad (sondeo con
+  `pg_isready`/`mysqladmin ping` dentro del contenedor) y aplica el SQL de
+  inicialización que la pila necesite. Sin eso, lo que cuelga de la base arrancaría
+  en bucle y su primer despliegue se daría por fallido.
+- **Dominio**: es opcional. Con dominio, las URLs públicas de la pila son
+  `https://<dominio>` (o `http://` si no hay TLS configurado) y lo recibe el
+  servicio de entrada. Sin dominio, apuntan al alias interno del proyecto y la pila
+  solo es accesible desde dentro.
+
+La pila de Supabase se crea con el **alta pública de usuarios cerrada**
+(`GOTRUE_DISABLE_SIGNUP=true`): con dominio, `/auth/v1/signup` queda expuesto a
+internet, y como no hay SMTP configurado las altas se autoconfirman, así que
+abrirlo de fábrica permitiría registrarse con cualquier correo ajeno ya
+«verificado». Se abre cuando la aplicación lo necesite, desde las variables del
+servicio `auth`.
+
+### 5.2 Plantillas de Railway dentro de un proyecto
+
+Además del catálogo propio, se puede instalar **cualquier plantilla del catálogo
+público de Railway** dentro de un proyecto existente, pegando su URL
+(`railway.com/new/template/<código>`) o su código. El catálogo de Railway es
+público: no hace falta token.
+
+- **Se respeta lo que dice la plantilla**: cada servicio se crea con la imagen o
+  el repositorio que declara. A diferencia de la importación de un proyecto
+  ajeno, aquí **no** se sustituye una imagen por una base de datos gestionada de
+  Skyway: el «Postgres» de una plantilla suele ser una imagen propia con sus
+  roles y extensiones, y cambiarlo rompería todo lo que cuelga de él.
+- **Se adapta el cableado**: las variables mágicas de Railway se traducen igual
+  que en la importación de proyectos (§6), y las referencias entre servicios se
+  reescriben al **slug** del destino — el nombre original puede llevar espacios o
+  comillas (`${{"Supabase Studio".JWT_SECRET}}`), que el resolutor de Skyway no
+  admite, y además los servicios se renombran con el prefijo de la instalación.
+- **Orden de arranque**: bases de datos primero (con sondeo real de arranque),
+  después las aplicaciones y la puerta de entrada al final. No se deduce del
+  grafo de referencias: en una plantilla real ese grafo es cíclico, porque las
+  variables sirven para cablear, no para ordenar.
+- **Los buckets de Railway se resuelven en local**, y por este orden. Primero se
+  intenta lo simple: si la aplicación que usa el bucket sabe guardar en disco, se
+  le activa ese modo y se le monta un volumen — el bucket deja de hacer falta y
+  hay un contenedor menos. Hoy se conoce el de **Supabase Storage**
+  (`STORAGE_BACKEND=file`); ampliar la lista es añadir una entrada a
+  `FILE_BACKENDS` en `railway/template.ts`. Si alguien sigue necesitando hablar S3
+  —porque no sabemos desactivárselo—, entonces se levanta un **MinIO** en el
+  proyecto, con el bucket ya creado en su volumen y las credenciales cableadas en
+  las variables que la plantilla referencia (`${{S3.ACCESS_KEY_ID}}` y compañía),
+  cuyos nombres se leen de la plantilla en vez de adivinarse. En los dos casos los
+  ficheros acaban en un volumen del servidor y nada sale de él.
+- **Lo que no tiene equivalente se dice antes de crear nada**: variables que la
+  plantilla deja en tu mano, servicios que exponen más de un dominio, o
+  referencias a servicios que no existen.
+
+Lo que la pila de Supabase **no** incluye: **Edge Functions** (requiere montar el
+código de las funciones dentro del contenedor), el pooler **supavisor** (se conecta
+directamente a Postgres) y **analytics/logflare** — y por tanto la pestaña de Logs
+del Studio, que viene desactivada.
+
 ---
 
 ## 6. Áreas funcionales (resumen)
@@ -296,6 +394,8 @@ Esto reproduce el comportamiento de un *worker* de Railway.
   interruptor `autoDeploy` manda sobre ambas vías a la vez.
 - **Variables**: por servicio y compartidas por proyecto; referencias
   `${{Servicio.VAR}}` y `${{shared.VAR}}` resueltas al desplegar.
+- **Pilas de aplicaciones**: Supabase, WordPress, Ghost, n8n y Metabase con todos
+  sus servicios, secretos generados y arranque ordenado (§5.1).
 - **Consola de consultas** (Consultas): explorador de tablas/colecciones/claves,
   ejecución con export CSV/JSON, snippets, historial, solo-lectura por defecto.
 - **Explorador de archivos** (Archivos): navegar, descargar, subir, crear
@@ -331,6 +431,16 @@ Esto reproduce el comportamiento de un *worker* de Railway.
   `${{Base.VAR}}` al servicio nuevo (por host privado/proxy público, o por
   esquema si es inequívoco); solo lo no mapeable genera aviso. El token viaja
   solo en memoria.
+  Las **variables mágicas de Railway** que las plantillas usan para cablear sus
+  servicios entre sí se traducen a lo que existe aquí: `RAILWAY_PRIVATE_DOMAIN`
+  y `RAILWAY_TCP_PROXY_DOMAIN` → el slug del servicio destino (su nombre DNS en
+  la red del proyecto), `RAILWAY_TCP_PROXY_PORT` y `PORT` → su puerto interno,
+  `RAILWAY_PUBLIC_DOMAIN`/`RAILWAY_STATIC_URL` → su dominio, `RAILWAY_PROJECT_NAME`
+  y `RAILWAY_ENVIRONMENT` → los de aquí, y `${{secret(n)}}` → un secreto generado.
+  Las referencias que **no** van a resolver —un servicio que no se importó, una
+  variable que la plantilla de base de datos de Skyway no exporta, un destino sin
+  dominio— se avisan una a una en el informe: sin eso el contenedor arrancaría con
+  el texto `${{...}}` literal como host, sin que nada fallase.
 - **Cuentas y clientes, cuotas y facturación**: cada cliente es un **workspace**
   con una cuota de recursos (CPU, RAM, disco, proyectos, servicios, usuarios)
   acotada a todos sus proyectos en total, un **plan** de usos incluidos, un
@@ -626,6 +736,10 @@ nunca se devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/templates` | auth | plantillas de BBDD disponibles |
+| GET | `/stacks` | auth | catálogo de pilas de aplicaciones (§5.1) |
+| POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[]}` |
+| POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada) |
+| POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2) |
 | POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image) |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy |
 | PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente) |

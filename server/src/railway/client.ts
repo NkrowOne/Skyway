@@ -21,7 +21,7 @@ export class RailwayError extends Error {
   }
 }
 
-async function gql<T>(token: string, query: string, variables: Record<string, unknown> = {}): Promise<T> {
+async function gql<T>(token: string | null, query: string, variables: Record<string, unknown> = {}): Promise<T> {
   let lastError: Error | null = null;
   for (const endpoint of ENDPOINTS) {
     try {
@@ -29,7 +29,8 @@ async function gql<T>(token: string, query: string, variables: Record<string, un
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          // El catálogo de plantillas es público: se consulta sin token.
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({ query, variables }),
         signal: AbortSignal.timeout(20_000),
@@ -217,4 +218,72 @@ export async function getRailwayVariables(
     // Las variables compartidas pueden no existir; no es fatal.
     return {};
   }
+}
+
+// ---------- plantillas públicas ----------
+
+export interface RailwayTemplateService {
+  icon?: string;
+  name?: string;
+  source?: { image?: string; repo?: string; rootDirectory?: string };
+  deploy?: { startCommand?: string | null; healthcheckPath?: string | null };
+  variables?: Record<string, { defaultValue?: string | null; isOptional?: boolean; description?: string }>;
+  networking?: {
+    serviceDomains?: Record<string, { port?: number }>;
+    tcpProxies?: Record<string, unknown>;
+  };
+  volumeMounts?: Record<string, { mountPath?: string }>;
+}
+
+export interface RailwayTemplate {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  services: RailwayTemplateService[];
+  /** Buckets de almacenamiento que la plantilla da por provistos (Skyway no los tiene). */
+  buckets: string[];
+}
+
+/**
+ * Extrae el código de una plantilla de una URL de Railway. Admite las formas
+ * que la gente copia y pega: railway.com/new/template/CODE, /template/CODE, o
+ * el código a secas.
+ */
+export function parseTemplateCode(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const url = /(?:railway\.(?:com|app))\/(?:new\/)?template\/([A-Za-z0-9_-]+)/i.exec(trimmed);
+  const code = url ? url[1] : trimmed;
+  return /^[A-Za-z0-9_-]{1,64}$/.test(code) ? code : null;
+}
+
+/** Plantilla pública del catálogo de Railway (no requiere token). */
+export async function getRailwayTemplate(code: string): Promise<RailwayTemplate> {
+  const data = await gql<any>(
+    null,
+    `query ($code: String!) {
+      template(code: $code) { id code name description serializedConfig }
+    }`,
+    { code },
+  );
+  const tpl = data?.template;
+  if (!tpl) throw new RailwayError(`Railway no conoce ninguna plantilla con el código «${code}».`);
+  const raw = tpl.serializedConfig?.services;
+  const services: RailwayTemplateService[] = raw && typeof raw === 'object' ? Object.values(raw) : [];
+  if (services.length === 0) {
+    throw new RailwayError(`La plantilla «${tpl.name ?? code}» no declara ningún servicio.`);
+  }
+  const rawBuckets = tpl.serializedConfig?.buckets;
+  return {
+    id: String(tpl.id ?? ''),
+    code: String(tpl.code ?? code),
+    name: String(tpl.name ?? code),
+    description: tpl.description ?? null,
+    services,
+    buckets:
+      rawBuckets && typeof rawBuckets === 'object'
+        ? Object.values(rawBuckets as Record<string, any>).map((b) => String(b?.name ?? 'bucket'))
+        : [],
+  };
 }

@@ -32,6 +32,9 @@ const LOGOS = {
   grafana: 'siGrafana',
   nginx: 'siNginx',
   traefik: 'siTraefikproxy',
+  supabase: 'siSupabase',
+  kong: 'siKong',
+  metabase: 'siMetabase',
 };
 
 const dir = new URL('../src/assets/icons/', import.meta.url);

@@ -49,6 +49,12 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/j
 # Último despliegue con logs
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/deployments/DEP_ID"
 
+# Catálogo de pilas de aplicaciones y creación de una entera (Supabase, WordPress…)
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/stacks"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"stack":"supabase","domain":"supabase.midominio.com"}' \
+  "$BASE/api/projects/PROJ_ID/stacks"
+
 # Salud y versión (sin auth)
 curl -s "$BASE/api/health"
 ```

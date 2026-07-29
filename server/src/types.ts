@@ -37,6 +37,8 @@ export interface GitConfig {
 export interface DatabaseConfig {
   template: string;
   version: string;
+  /** Pila de aplicaciones de la que salió este servicio (clave de STACKS). */
+  stack?: string;
   domains?: string[];
   hostPort?: number | null;
   cpus?: number | null;
@@ -50,6 +52,14 @@ export interface ImageConfig {
   image: string;
   port?: number | null;
   startCmd?: string;
+  /**
+   * Marca con la que el panel pinta el servicio. La rellenan las pilas de
+   * aplicaciones, donde adivinar por el nombre de la imagen no vale
+   * (`postgrest/postgrest` no es PostgreSQL, `kong/kong` no es genérico).
+   */
+  icon?: string;
+  /** Pila de aplicaciones de la que salió este servicio (clave de STACKS). */
+  stack?: string;
   domains: string[];
   hostPort?: number | null;
   cpus?: number | null;

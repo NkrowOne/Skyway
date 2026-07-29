@@ -17,6 +17,7 @@ import { usageRoutes } from './routes/usage';
 import { aiGatewayRoutes } from './routes/aigateway';
 import { projectRoutes } from './routes/projects';
 import { serviceRoutes } from './routes/services';
+import { stackRoutes } from './routes/stacks';
 import { deploymentRoutes } from './routes/deployments';
 import { streamRoutes } from './routes/streams';
 import { systemRoutes } from './routes/system';
@@ -99,6 +100,7 @@ export function buildApp(): FastifyInstance {
   app.register(aiGatewayRoutes);
   app.register(projectRoutes);
   app.register(serviceRoutes);
+  app.register(stackRoutes);
   app.register(deploymentRoutes);
   app.register(streamRoutes);
   app.register(systemRoutes);

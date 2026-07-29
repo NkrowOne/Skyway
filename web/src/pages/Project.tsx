@@ -327,7 +327,8 @@ export default function ProjectPage() {
               <path d="M30 27h16M17 37h28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
             </svg>
             <p className="max-w-sm text-sm text-sub">
-              Este proyecto está vacío. Despliega un repositorio de GitHub o añade una base de datos.
+              Este proyecto está vacío. Despliega un repositorio de GitHub, una aplicación completa
+              (Supabase, WordPress…) o una base de datos.
             </p>
             <Button onClick={() => setNewOpen(true)}>
               <Plus size={15} /> Añadir servicio
@@ -388,6 +389,12 @@ export default function ProjectPage() {
               setNewOpen(false);
               queryClient.invalidateQueries({ queryKey: ['project', projectId] });
               openService(serviceId);
+            }}
+            onStackCreated={() => {
+              // Una pila son varios servicios: se muestra la rejilla entera en
+              // vez de abrir el panel de uno solo.
+              setNewOpen(false);
+              queryClient.invalidateQueries({ queryKey: ['project', projectId] });
             }}
           />
         </Suspense>

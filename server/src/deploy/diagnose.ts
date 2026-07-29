@@ -96,8 +96,19 @@ const RULES: Rule[] = [
     fix: 'Revisa el "Comando de arranque" en Ajustes del servicio (¿está instalada esa herramienta en la imagen?) o déjalo vacío para usar el CMD del Dockerfile.',
   },
   {
+    id: 'build-typescript',
+    test: (e, l) => has(e, 'terminó con código') && /error TS\d+/.test(l),
+    title: 'El compilador de TypeScript falló',
+    cause:
+      'El build no llegó a empaquetar nada: `tsc` encontró errores de tipos. Ojo con el más habitual, «Cannot find module X»: casi nunca es un error de tipos, es que esa dependencia no está en la imagen. `npm ci` instala EXACTAMENTE lo que dice el package-lock.json de la raíz, así que un paquete que en tu máquina está en node_modules pero no declarado —o el package.json de un subproyecto que no es un workspace— aquí no existe. Los «implicitly has an any type» que salen detrás suelen ser el eco del módulo que falta, no errores independientes.',
+    fix:
+      'Reproduce el build limpio en local: borra node_modules, `npm ci` y `npm run build`. Si falla igual, falta declarar la dependencia (`npm i -S paquete`, commiteando también el package-lock). Si el error viene de un subdirectorio que se despliega por su cuenta (un worker, una función), sácalo del build de la web quitándolo de las «references» del tsconfig raíz. Y revisa la versión de Node: si el log trae avisos EBADENGINE, fija la que necesitas con «engines.node» en package.json o con el build arg NIXPACKS_NODE_VERSION.',
+  },
+  {
     id: 'build-npm',
-    test: (e, l) => has(e, 'docker terminó con código') && has(l, 'npm err', 'yarn error', 'pnpm err'),
+    // «terminó con código» a secas: el fallo del gestor de paquetes es el mismo
+    // se construya con Dockerfile o con Nixpacks, y antes solo casaba el primero.
+    test: (e, l) => has(e, 'terminó con código') && has(l, 'npm err', 'yarn error', 'pnpm err'),
     title: 'El build de Node.js falló',
     cause: 'El gestor de paquetes falló durante la construcción de la imagen: suele ser una dependencia que no instala, un script de build que falla o una versión de Node incompatible.',
     fix: 'Mira las últimas líneas del log (el error concreto de npm/yarn/pnpm está ahí). Comprueba que `npm run build` funciona en local con la misma versión de Node que usa tu Dockerfile.',
@@ -136,6 +147,29 @@ const RULES: Rule[] = [
     title: 'La aplicación arrancó pero se cerró enseguida',
     cause: 'La imagen se construyó bien, pero el proceso murió nada más arrancar: suele ser una variable de entorno que falta (p. ej. DATABASE_URL), un error de conexión a la base de datos, o un puerto interno mal configurado.',
     fix: 'Abre la pestaña Logs del servicio para ver el error exacto de tu aplicación. Comprueba las Variables (¿faltan credenciales?) y que el "Puerto interno" coincide con el que escucha tu app.',
+  },
+  {
+    id: 'nixpacks-misdetect',
+    test: (e, l) =>
+      has(e, 'nixpacks terminó con código') &&
+      has(l, 'Relative import path', 'deno cache', 'error: Module not found', 'no lockfile found', 'no start command could be found'),
+    title: 'Nixpacks detectó mal qué hay que construir',
+    cause:
+      'El repositorio no tiene Dockerfile, así que Skyway recurre a Nixpacks, que adivina el tipo de proyecto mirando los ficheros del repo. En monorepos con varias apps y lenguajes mezclados (ejemplos de Deno, paquetes de Node, docs…) esa adivinanza falla: elige el runtime equivocado o un fichero de entrada que no es el de ninguna app real, y el build revienta con un error que no tiene que ver con tu código.',
+    fix:
+      'Apunta el build a UNA aplicación concreta: pon el "Directorio raíz" del servicio al subdirectorio de esa app (p. ej. `apps/web`), y si esa app trae su propio Dockerfile indícalo en "Ruta del Dockerfile" (es relativa al directorio raíz). Ojo: los repos que en realidad son una pila de varios contenedores (Supabase, Mastodon, n8n con sus dependencias…) no se despliegan como un servicio único de Skyway; usa su docker-compose oficial o crea un servicio por imagen para cada pieza.',
+  },
+  {
+    id: 'build-node-version',
+    // Va casi al final: los avisos EBADENGINE salen también en builds que van
+    // bien, así que solo se apunta este diagnóstico cuando no ha casado ninguna
+    // causa más concreta y el build sí ha fallado.
+    test: (e, l) => has(e, 'terminó con código') && has(l, 'EBADENGINE', 'Unsupported engine'),
+    title: 'La versión de Node no es la que piden tus dependencias',
+    cause:
+      'El log trae avisos «Unsupported engine»: alguna dependencia exige una versión de Node mayor que la que se usó para construir. Cuando el repositorio no dice qué versión quiere, Nixpacks elige una por defecto que se queda corta con paquetes recientes (Vite 7, supabase-js…), y el fallo aparece más tarde, al ejecutar el build, con un error que no menciona la versión.',
+    fix:
+      'Declara la versión en el propio repositorio, que es lo que Nixpacks mira: «engines»: { "node": ">=22" } en package.json, o un fichero .nvmrc. Si prefieres no tocar el repo, añade en Ajustes → Build del servicio el argumento NIXPACKS_NODE_VERSION con el número mayor (por ejemplo 22). Las versiones disponibles son las que trae el Nixpacks instalado: si necesitas una muy reciente, actualiza Skyway para que se reinstale.',
   },
   {
     id: 'build-generic',

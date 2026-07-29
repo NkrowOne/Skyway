@@ -134,6 +134,25 @@ export function triggerDeploy(
   return deployment;
 }
 
+/**
+ * Espera a que un despliegue llegue a estado final. Lo usan las pilas de
+ * aplicaciones, que necesitan encadenar servicios por etapas (la base primero,
+ * lo que depende de ella después) sin acoplarse a la cola interna.
+ */
+export async function awaitDeployment(
+  deploymentId: string,
+  timeoutMs = 30 * 60_000,
+): Promise<DeploymentRow | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const row = getDeployment(deploymentId);
+    if (!row) return undefined;
+    if (!['queued', 'building', 'deploying'].includes(row.status)) return row;
+    if (Date.now() > deadline) return row;
+    await sleep(1000);
+  }
+}
+
 async function runDeployment(deploymentId: string): Promise<void> {
   const deployment = getDeployment(deploymentId);
   if (!deployment || deployment.status !== 'queued') return;
@@ -470,6 +489,20 @@ async function deployContainer(
 
   if (service.type === 'database') ensureDatabaseEnv(service, log);
   const env = resolveServiceEnv(service);
+  // Una referencia que no resuelve se queda como texto literal dentro del
+  // contenedor, y la aplicación arranca con ella sin quejarse: una cadena de
+  // conexión inválida, o —peor— un secreto que pasa a ser una constante pública.
+  // No se aborta el despliegue (romperlo por una variable de adorno sería peor),
+  // pero tiene que verse.
+  const sinResolver = Object.entries(env)
+    .filter(([, value]) => /\$\{\{[^}]+\}\}/.test(value))
+    .map(([key]) => key);
+  if (sinResolver.length > 0) {
+    log(
+      `⚠ Referencias sin resolver en ${sinResolver.join(', ')}: la variable apuntada ya no existe. ` +
+        'El contenedor arrancará con el texto literal ${{...}} como valor.',
+    );
+  }
   let internalPort: number | null = null;
   let domains: string[] = [];
   let cmd: string[] | null = null;
