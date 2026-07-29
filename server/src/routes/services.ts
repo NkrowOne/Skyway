@@ -12,6 +12,7 @@ import {
   getProject,
   getService,
   latestDeployment,
+  listServices,
   serviceSlugExists,
   setEnv,
   updateService,
@@ -374,9 +375,19 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         /* best-effort */
       }
       if (volumes === 'true') {
+        // Un volumen puede estar compartido con otro servicio del proyecto (las
+        // pilas lo hacen: storage e imgproxy leen y escriben el mismo). Borrar
+        // uno vivo se llevaría por delante los datos del que se queda.
+        const enUso = new Set<string>();
+        for (const sibling of listServices(found.project.id)) {
+          if (sibling.id === id) continue;
+          for (const vol of ((sibling.config as any).volumes ?? []) as { name: string }[]) {
+            enUso.add(vol.name);
+          }
+        }
         await removeVolume(volumeName(found.project, found.service));
         for (const vol of ((found.service.config as any).volumes ?? []) as { name: string }[]) {
-          await removeVolume(vol.name);
+          if (!enUso.has(vol.name)) await removeVolume(vol.name);
         }
       }
     }

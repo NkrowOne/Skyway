@@ -37,6 +37,8 @@ export interface GitConfig {
 export interface DatabaseConfig {
   template: string;
   version: string;
+  /** Pila de aplicaciones de la que salió este servicio (clave de STACKS). */
+  stack?: string;
   domains?: string[];
   hostPort?: number | null;
   cpus?: number | null;

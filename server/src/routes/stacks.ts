@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
+import { markManualAction } from '../monitor';
 import {
   countWorkspaceServices,
   createService,
@@ -94,7 +95,10 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
       slugify(body.prefix || stack.defaultPrefix) || stack.key,
       stack.services.map((s) => s.key),
     );
-    const sharedPrefix = prefix.toUpperCase().replace(/-/g, '_');
+    // Nombre de variable válido: el editor de variables rechaza las que no
+    // empiezan por letra o guion bajo, y una sola inválida bloquearía el guardado
+    // de TODAS las compartidas del proyecto.
+    const sharedPrefix = prefix.toUpperCase().replace(/-/g, '_').replace(/^(?=[0-9])/, '_');
     const slugs = Object.fromEntries(stack.services.map((s) => [s.key, `${prefix}-${s.key}`]));
 
     const entry = stack.services.find((s) => s.public) ?? stack.services[stack.services.length - 1];
@@ -114,13 +118,19 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
 
     // Los secretos van a las variables COMPARTIDAS del proyecto (una sola copia,
     // rotables desde el panel). Se fusionan con las existentes porque
-    // setProjectVars reemplaza el mapa entero; los nombres llevan el prefijo de
-    // esta instancia, así que no chocan con los de otra pila del proyecto.
+    // setProjectVars reemplaza el mapa entero, y se CONSERVA el valor que ya
+    // hubiera con ese nombre: si se recrea una pila borrada sin sus volúmenes,
+    // los datos siguen cifrados y autenticados con los secretos viejos, así que
+    // generar otros nuevos dejaría la pila inservible (mismo criterio que
+    // `makeEnv(slug, existing)` en las plantillas de base de datos).
     const sharedVars = stack.makeSharedVars();
     if (Object.keys(sharedVars).length > 0) {
       const existing = getProjectVars(projectId);
       const merged = { ...existing };
-      for (const [key, value] of Object.entries(sharedVars)) merged[ctx.sharedName(key)] = value;
+      for (const [key, value] of Object.entries(sharedVars)) {
+        const name = ctx.sharedName(key);
+        if (merged[name] === undefined) merged[name] = value;
+      }
       setProjectVars(projectId, merged);
     }
 
@@ -134,7 +144,11 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
       if (def.template) {
         const template = getTemplate(def.template);
         if (!template) return reply.code(500).send({ error: `Plantilla desconocida: ${def.template}` });
-        const cfg: DatabaseConfig = { template: template.key, version: def.version || template.defaultVersion };
+        const cfg: DatabaseConfig = {
+          template: template.key,
+          version: def.version || template.defaultVersion,
+          stack: stack.key,
+        };
         service = createService(projectId, slug, slug, 'database', cfg);
         // Credenciales generadas por la plantilla, como en una base suelta: el
         // resto de la pila las referencia con ${{servicio.VARIABLE}}.
@@ -148,8 +162,12 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
           stack: stack.key,
         };
         if (def.volumes?.length) {
+          // Sufijo `-vol` a propósito: los volúmenes que crea Skyway por su
+          // cuenta terminan en `-data`/`-dataN`, así que este espacio de nombres
+          // no puede chocar con ellos. Dos servicios con la misma clave lógica
+          // comparten volumen, que es justo lo que necesitan storage e imgproxy.
           cfg.volumes = def.volumes.map((v) => ({
-            name: `skyway-${project.slug}-${prefix}-${v.key}`,
+            name: `skyway-${project.slug}-${prefix}-${v.key}-vol`,
             containerPath: v.path,
           }));
         }
@@ -157,6 +175,8 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
         if (def.env) setEnv(service.id, renderStackEnv(def.env, ctx));
       }
 
+      // El monitor no debe interpretar los arranques de la pila como caídas.
+      markManualAction(service.id);
       created.push(service);
       steps.push({ serviceId: service.id, key: def.key, stage: def.stage, readyCmd: def.readyCmd });
     }
@@ -169,7 +189,9 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
 
     // El despliegue va por etapas y tarda minutos: se responde ya y el panel
     // sigue el progreso servicio a servicio, como en cualquier otro despliegue.
-    void runStackDeploy(stack, steps);
+    void runStackDeploy(stack, steps).catch((err) => {
+      req.log.error({ err, stack: stack.key }, 'fallo desplegando la pila');
+    });
 
     reply.code(201);
     return { stack: stack.key, prefix, publicUrl, services: created };

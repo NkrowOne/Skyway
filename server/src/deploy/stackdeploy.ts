@@ -1,7 +1,8 @@
-import { getDeployment, getProject, getService, updateDeployment } from '../db';
+import { createDeployment, getDeployment, getProject, getService, updateDeployment } from '../db';
 import { emitDeploy } from '../events';
 import { containerName, execInContainer } from '../docker/containers';
 import { StackDef } from '../stacks';
+import { now } from '../util';
 import { awaitDeployment, triggerDeploy } from './deployer';
 
 /**
@@ -22,6 +23,15 @@ export interface StackStep {
   stage: number;
   readyCmd?: string;
 }
+
+/**
+ * Margen para que el logger del despliegue vuelque su búfer. Ese volcado
+ * REESCRIBE la columna entera de logs, así que escribir antes de que ocurra
+ * perdería estas líneas.
+ */
+const LOG_SETTLE_MS = 1_500;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Escribe en el log del despliegue ya terminado. Las esperas y el SQL de
@@ -55,7 +65,7 @@ async function waitUntilReady(
     } catch (err: any) {
       lastError = err?.message || String(err);
     }
-    await new Promise((r) => setTimeout(r, READY_INTERVAL_MS));
+    await sleep(READY_INTERVAL_MS);
   }
   log(`✖ Sigue sin aceptar conexiones tras ${READY_TIMEOUT_MS / 60_000} min (${lastError}).`);
   return false;
@@ -87,35 +97,76 @@ async function applyPostInit(
 }
 
 /**
+ * Marca un servicio como no desplegado con el motivo. Sin esto, los servicios de
+ * las etapas que no llegan a ejecutarse se quedarían en el panel sin contenedor
+ * y sin ninguna explicación de por qué.
+ */
+function markSkipped(serviceId: string, reason: string): void {
+  const deployment = createDeployment(serviceId, 'stack');
+  updateDeployment(deployment.id, {
+    status: 'failed',
+    error: reason,
+    logs: `${new Date().toISOString().slice(11, 19)} ✖ ${reason}\n`,
+    finished_at: now(),
+  });
+  emitDeploy(deployment.id, { type: 'done', status: 'failed', error: reason });
+}
+
+/**
  * Despliega los servicios de una pila por etapas. Se ejecuta en segundo plano:
  * cada servicio tiene su propio despliegue con su log, como cualquier otro.
  */
 export async function runStackDeploy(stack: StackDef, steps: StackStep[]): Promise<void> {
   const stages = [...new Set(steps.map((s) => s.stage))].sort((a, b) => a - b);
+  let aborted: string | null = null;
 
   for (const stage of stages) {
-    await Promise.all(
-      steps
-        .filter((s) => s.stage === stage)
+    const stageSteps = steps.filter((s) => s.stage === stage);
+
+    // Una etapa fallida invalida las siguientes: lo que cuelga de una base que
+    // no arrancó solo conseguiría un bucle de reinicios y otro despliegue en
+    // rojo. Se dice por qué en vez de dejar servicios fantasma.
+    if (aborted) {
+      for (const step of stageSteps) markSkipped(step.serviceId, aborted);
+      continue;
+    }
+
+    const results = await Promise.all(
+      stageSteps
         .map(async (step) => {
-          const service = getService(step.serviceId);
-          const project = service ? getProject(service.project_id) : undefined;
-          if (!service || !project) return;
+          // Nada de lo que pase con un servicio puede tumbar la pila entera: sin
+          // este try, un rechazo aquí sería un unhandledRejection (el proceso se
+          // lanza en segundo plano) y se llevaría por delante el servidor.
+          let deploymentId: string | null = null;
+          try {
+            const service = getService(step.serviceId);
+            const project = service ? getProject(service.project_id) : undefined;
+            if (!service || !project) return false;
 
-          const deployment = triggerDeploy(step.serviceId, 'stack');
-          const finished = await awaitDeployment(deployment.id);
-          const log = (line: string) => appendLog(deployment.id, line);
-          if (finished?.status !== 'success') return; // su propio log ya explica el fallo
+            const deployment = triggerDeploy(step.serviceId, 'stack');
+            deploymentId = deployment.id;
+            const finished = await awaitDeployment(deployment.id);
+            if (finished?.status !== 'success') return false; // su propio log ya explica el fallo
 
-          const container = containerName(project, service);
-          if (step.readyCmd) {
-            const ready = await waitUntilReady(container, step.readyCmd, log);
-            if (!ready) return;
-          }
-          if (stack.postInit && stack.postInit.service === step.key) {
-            await applyPostInit(container, stack, log);
+            await sleep(LOG_SETTLE_MS);
+            const log = (line: string) => appendLog(deployment.id, line);
+            const container = containerName(project, service);
+            if (step.readyCmd && !(await waitUntilReady(container, step.readyCmd, log))) return false;
+            if (stack.postInit && stack.postInit.service === step.key) {
+              await applyPostInit(container, stack, log);
+            }
+            return true;
+          } catch (err: any) {
+            const detail = err?.message || String(err);
+            if (deploymentId) appendLog(deploymentId, `✖ Error preparando la pila: ${detail}`);
+            console.error(`[pila ${stack.key}] fallo inesperado en «${step.key}»: ${detail}`);
+            return false;
           }
         }),
     );
+
+    if (results.some((ok) => !ok)) {
+      aborted = `La pila «${stack.label}» se detuvo: un servicio del que este depende no llegó a arrancar. Arréglalo y despliega este servicio.`;
+    }
   }
 }

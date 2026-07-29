@@ -239,6 +239,9 @@ export default function NewServiceModal({
       {step === 'stack' && !selectedStack && (
         <div>
           {stacks.isLoading && <Spinner label="Cargando aplicaciones…" />}
+          {stacks.isError && (
+            <p className="px-2.5 py-4 text-center text-xs text-err">{(stacks.error as Error).message}</p>
+          )}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {stacks.data?.stacks.map((s) => (
               <button
