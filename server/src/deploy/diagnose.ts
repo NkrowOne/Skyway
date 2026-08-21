@@ -183,6 +183,22 @@ const RULES: Rule[] = [
     fix: 'Vuelve en Ajustes a la versión que creó los datos, o migra: Backup con la versión original → cambia la versión → borra el servicio con su volumen → recréalo → restaura el backup. El propio error del despliegue indica la versión exacta que tiene el volumen.',
   },
   {
+    // Va antes que 'healthcheck-failed': el mensaje contiene ambas señales y
+    // salir con 0 tiene una causa muy concreta que merece decirse aparte.
+    id: 'exited-clean',
+    test: (e) => has(e, 'terminó enseguida') && has(e, 'código 0'),
+    title: 'El proceso terminó por su cuenta, sin error',
+    cause:
+      'Código de salida 0 significa que el comando de arranque hizo su trabajo y terminó, no que se estrellara. Skyway ' +
+      'espera un proceso que se quede vivo: si el comando lanza la app en segundo plano y devuelve, o el script llega al ' +
+      'final, el contenedor se para y el despliegue se da por fallido.',
+    fix:
+      'Que el comando de arranque SEA el proceso que se queda: `exec python main.py` en vez de lanzarlo en segundo plano, ' +
+      'o `wait` al final del script si de verdad lanzas varias cosas. Si esto empezó al reconstruir y el commit es el ' +
+      'mismo, mira las dependencias: sin versiones fijadas, cada build resuelve las últimas y la de hoy puede no ser la ' +
+      'de la imagen que sigue corriendo.',
+  },
+  {
     id: 'healthcheck-failed',
     test: (e) => has(e, 'no pasó la validación', 'no respondió 2xx', 'Se restauró la versión anterior', 'Se mantuvo la versión anterior'),
     title: 'La versión nueva no superó la validación de salud',

@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.26.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.26.1. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -129,6 +129,17 @@ tirones.
   antigüedad tolera (2 s el stream de métricas, 4 s las fichas, 5 s las vistas
   de conjunto, 15 s el monitor) y si la foto vigente sirve, se la lleva sin
   tocar Docker.
+- **El consumo es opcional** (`{ stats: true }`). `inspect` cuesta decenas de
+  milisegundos y `stats` cerca de un segundo por contenedor, así que solo lo
+  piden los tres que lo miran: el stream de métricas, la vista de Monitor y el
+  vigilante de fondo. Las fichas de proyecto y servicio, Sitios y la página de
+  estado solo enseñan estados; hacerlas esperar al consumo de todo el servidor
+  las volvía lentísimas. Hay dos cachés, porque una foto con consumo vale para
+  todo pero una sin consumo no vale a quien lo necesita.
+- **Nunca bloquea con la caché caliente**: si la foto está pasada pero sirve, se
+  entrega al instante y el muestreo se lanza por detrás. Solo se espera en el
+  arranque en frío y justo después de una acción que invalidó la foto, que es
+  cuando el usuario sí quiere el estado recién mirado.
 - **Con coalescencia**: las peticiones que llegan mientras hay un muestreo en
   marcha se enganchan a él. Da igual cuántas pestañas haya abiertas.
 - **Invalidación explícita**: desplegar, arrancar, parar, reiniciar o borrar

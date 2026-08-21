@@ -1079,24 +1079,51 @@ function probeOnce(netName: string, host: string, port: number, path: string): P
 }
 
 /** Añade al log del despliegue las últimas líneas del contenedor fallido. */
+/**
+ * Deshace el multiplexado de Docker.
+ *
+ * El flujo viene en tramas de 8 bytes de cabecera —tipo, tres ceros y el tamaño
+ * en 4 bytes— seguidas de su carga, y una sola trama puede traer varias líneas.
+ * Cortar 8 caracteres a CADA línea, como se hacía antes, se comía los primeros
+ * caracteres de todas menos la primera; y con el contenedor en modo TTY no hay
+ * cabecera ninguna, así que se cargaba el principio de todas. Si el primer byte
+ * no parece una cabecera, se devuelve tal cual: es texto plano.
+ */
+function demuxDockerLog(buf: Buffer): string {
+  const parts: string[] = [];
+  let i = 0;
+  while (i + 8 <= buf.length) {
+    if (buf[i] > 2 || buf[i + 1] !== 0 || buf[i + 2] !== 0 || buf[i + 3] !== 0) {
+      return buf.toString('utf8');
+    }
+    const size = buf.readUInt32BE(i + 4);
+    parts.push(buf.toString('utf8', i + 8, i + 8 + size));
+    i += 8 + size;
+  }
+  return parts.length > 0 ? parts.join('') : buf.toString('utf8');
+}
+
 async function appendContainerTail(name: string, log: (l: string) => void): Promise<void> {
   try {
     const info = await findContainer(name);
     if (!info) return;
     const container = docker.getContainer(name);
-    const buf = (await container.logs({ stdout: true, stderr: true, tail: 15, follow: false })) as unknown as Buffer;
-    const text = buf
-      .toString('utf8')
+    const buf = (await container.logs({ stdout: true, stderr: true, tail: 20, follow: false })) as unknown as Buffer;
+    const text = demuxDockerLog(Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf)))
       .split('\n')
-      .map((l) => l.slice(8)) // cabecera de multiplexado de docker
       .filter((l) => l.trim())
-      .slice(-15);
+      .slice(-20);
     if (text.length > 0) {
       log('— Últimas líneas del contenedor fallido —');
       for (const line of text) log(`  ${line}`);
+      return;
     }
-  } catch {
-    /* best-effort */
+    // El silencio también es un dato, y de los buenos: si la app no llegó ni a
+    // escribir una línea, el fallo está antes de su código —el comando de
+    // arranque, el intérprete, un fichero que no existe—, no dentro de ella.
+    log('— El contenedor no escribió nada antes de salir —');
+  } catch (err: any) {
+    log(`— No se pudieron leer los logs del contenedor fallido (${err?.message || err}) —`);
   }
 }
 
