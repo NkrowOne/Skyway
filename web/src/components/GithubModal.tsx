@@ -6,6 +6,7 @@ import { GithubAppStatus, GithubConnector, GithubInstallation } from '../types';
 import { timeAgo } from '../utils';
 import { ModuleLogo } from './ModuleIcon';
 import { Button, ConfirmModal, Field, Modal, Skeleton, useToast } from './ui';
+import { useCreateGithubApp } from './useGithubApp';
 
 /**
  * Conexiones de GitHub del proyecto.
@@ -30,6 +31,9 @@ export default function GithubModal({
   const [addingToken, setAddingToken] = useState(false);
   const [name, setName] = useState('');
   const [token, setToken] = useState('');
+  const createApp = useCreateGithubApp();
+  const [appOrg, setAppOrg] = useState('');
+  const [orgOpen, setOrgOpen] = useState(false);
   const [toDelete, setToDelete] = useState<{ kind: 'app' | 'pat'; id: string; label: string } | null>(null);
 
   const appStatus = useQuery({
@@ -213,19 +217,62 @@ export default function GithubModal({
                   )}
                 </>
               ) : (
-                <div className="rounded-xl border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-sub">
+                <div className="rounded-xl border border-dashed border-line bg-bg px-4 py-6 text-center">
+                  <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-surface2 text-txt">
+                    <ModuleLogo kind="github" size={20} />
+                  </span>
                   {canConfigureApp ? (
                     <>
-                      Este servidor aún no tiene GitHub App. Créala en{' '}
-                      <a href="/settings" className="font-medium text-acc-soft hover:underline">
-                        Ajustes → GitHub
-                      </a>{' '}
-                      (un clic) y tus clientes podrán conectar sus repos sin tokens ni webhooks.
+                      {/* El botón va aquí, no un enlace a Ajustes: este es el momento
+                          en que hace falta la App, y mandar a buscarla a otra página
+                          es donde la gente se rendía y se quedaba con los tokens. */}
+                      <p className="mt-3 text-sm font-medium">Conecta GitHub sin tokens</p>
+                      <p className="mx-auto mt-1 max-w-md text-xs text-sub">
+                        Primero se crea la App de este servidor: se hace una sola vez y GitHub abre un formulario ya
+                        relleno, solo hay que confirmarlo. Después, cada cuenta —la tuya o la de un cliente— se conecta
+                        con un clic, elige qué repositorios ve Skyway y no caduca nunca.
+                      </p>
+                      <Button className="mt-4" onClick={() => createApp.create(appOrg)} loading={createApp.pending}>
+                        <ModuleLogo kind="github" size={14} /> Crear la App en GitHub
+                      </Button>
+                      <div className="mt-3 text-[11px] text-subtle">
+                        {orgOpen ? (
+                          <div className="mx-auto flex max-w-xs items-center gap-2">
+                            <input
+                              className="input h-8 text-xs"
+                              placeholder="mi-organizacion"
+                              value={appOrg}
+                              onChange={(e) => setAppOrg(e.target.value)}
+                              aria-label="Organización de GitHub"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOrgOpen(false);
+                                setAppOrg('');
+                              }}
+                              className="shrink-0 hover:text-txt"
+                            >
+                              cancelar
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            Se creará en tu cuenta personal.{' '}
+                            <button type="button" onClick={() => setOrgOpen(true)} className="font-medium text-acc-soft hover:underline">
+                              ¿En una organización?
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </>
                   ) : (
                     <>
-                      Este servidor aún no tiene GitHub App: pide al administrador que la cree para conectar repos sin
-                      tokens. Mientras tanto puedes usar un token personal.
+                      <p className="mt-3 text-sm font-medium">Este servidor aún no tiene GitHub App</p>
+                      <p className="mx-auto mt-1 max-w-md text-xs text-sub">
+                        Pídele al administrador que la cree y podrás conectar repositorios sin tokens. Mientras tanto,
+                        usa un token personal.
+                      </p>
                     </>
                   )}
                 </div>
@@ -233,7 +280,7 @@ export default function GithubModal({
             </div>
 
             {/* --- Tokens personales: el camino de antes, secundario --- */}
-            <details className="group mt-4" open={pats.length > 0}>
+            <details className="group mt-4" open={pats.length > 0 && !appConfigured}>
               <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-sub hover:text-txt">
                 <KeyRound size={13} />
                 Tokens personales
