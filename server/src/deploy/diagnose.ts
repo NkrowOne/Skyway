@@ -15,6 +15,30 @@ const has = (haystack: string, ...needles: string[]) => {
 };
 
 /**
+ * Qué mirar cuando el proceso sale con 0. Si en el log consta que se cambió de
+ * constructor, eso va primero: es la causa que más veces explica «falla algo
+ * que llevaba meses funcionando» sin que nadie tocara el repo.
+ */
+function cleanExitFix(_error: string, logs: string): string {
+  const base =
+    'Que el comando de arranque SEA el proceso que se queda: `exec python main.py` en vez de lanzarlo en segundo ' +
+    'plano, o `wait` al final del script si de verdad lanzas varias cosas.';
+  if (has(logs, 'se ignora el Dockerfile')) {
+    return (
+      'El repositorio tiene Dockerfile, pero railway.json pide Nixpacks y Skyway lo respeta, así que el comando de ' +
+      'arranque ya NO es el CMD del Dockerfile sino el que infiere Nixpacks — y ese es el que termina enseguida. ' +
+      'Si lo que funcionaba era el Dockerfile, pon "builder": "DOCKERFILE" en railway.json. ' +
+      base
+    );
+  }
+  return (
+    base +
+    ' Si esto empezó al reconstruir y el commit es el mismo, mira también las dependencias: sin versiones fijadas, ' +
+    'cada build resuelve las últimas y la de hoy puede no ser la de la imagen que sigue corriendo.'
+  );
+}
+
+/**
  * Qué hacer cuando GitHub rechaza la credencial. El remedio no es el mismo
  * según con qué se intentó clonar, y el log lo dice: `resolveGitAuth` deja
  * escrito cuál eligió antes de intentarlo.
@@ -192,11 +216,7 @@ const RULES: Rule[] = [
       'Código de salida 0 significa que el comando de arranque hizo su trabajo y terminó, no que se estrellara. Skyway ' +
       'espera un proceso que se quede vivo: si el comando lanza la app en segundo plano y devuelve, o el script llega al ' +
       'final, el contenedor se para y el despliegue se da por fallido.',
-    fix:
-      'Que el comando de arranque SEA el proceso que se queda: `exec python main.py` en vez de lanzarlo en segundo plano, ' +
-      'o `wait` al final del script si de verdad lanzas varias cosas. Si esto empezó al reconstruir y el commit es el ' +
-      'mismo, mira las dependencias: sin versiones fijadas, cada build resuelve las últimas y la de hoy puede no ser la ' +
-      'de la imagen que sigue corriendo.',
+    fix: cleanExitFix,
   },
   {
     id: 'healthcheck-failed',

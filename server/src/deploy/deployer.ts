@@ -17,6 +17,7 @@ import {
   setEnv,
   successfulDeploymentsBeyond,
   updateDeployment,
+  listDeployments,
 } from '../db';
 import { fireAlert, resolveServiceAlerts } from '../alerts';
 import { diagnose } from './diagnose';
@@ -508,6 +509,7 @@ async function buildGitImage(
     const repoConfig = readRailwayRepoConfig(workDir, cfg.rootDir);
     if (hasRailwayConfig(repoConfig) && repoConfig.source) {
       log(`Configuración del repositorio leída de ${repoConfig.source} (config-as-code de Railway).`);
+      warnBuilderChange(service.id, repoConfig, log);
     }
     updateDeployment(deploymentId, {
       commit_sha: info.commitSha,
@@ -580,6 +582,36 @@ async function resolveCloneToken(project: ProjectRow, cfg: GitConfig, log: (l: s
 }
 
 /** Config-as-code guardada en el despliegue (JSON), tolerante a basura. */
+/**
+ * Avisa si este despliegue va a construirse de otra forma que el último que
+ * funcionó.
+ *
+ * Cambiar de constructor cambia el comando de arranque: el del Dockerfile no es
+ * el que infiere Nixpacks. Un servicio que llevaba meses bien puede empezar a
+ * fallar sin que nadie haya tocado el repo, solo porque Skyway pasó a respetar
+ * el `builder` de railway.json. Sin decirlo, la única pista es una línea suelta
+ * entre cien de log, y el usuario ve «falla algo que está funcionando».
+ */
+function warnBuilderChange(
+  serviceId: string,
+  repoConfig: RailwayRepoConfig,
+  log: (l: string) => void,
+): void {
+  const ahora = (repoConfig.builder || '').toUpperCase();
+  if (!ahora) return;
+  const previo = listDeployments(serviceId, 25).find((d) => d.status === 'success');
+  if (!previo) return;
+  const antes = (parseRepoConfig(previo.repo_config)?.builder || '').toUpperCase();
+  if (antes === ahora) return;
+  log(
+    antes
+      ? `⚠ El último despliegue correcto se construyó con ${antes} y este usa ${ahora}: el comando de arranque puede no ser el mismo.`
+      : `⚠ El último despliegue correcto es anterior a que Skyway leyera ${repoConfig.source}, así que se construyó ` +
+        `con el Dockerfile del repo. Este usa ${ahora}, que infiere su propio comando de arranque: si la app no arranca, ` +
+        `es lo primero que hay que mirar.`,
+  );
+}
+
 function parseRepoConfig(raw: string | null): RailwayRepoConfig | null {
   if (!raw) return null;
   try {
