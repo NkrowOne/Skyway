@@ -38,6 +38,7 @@ import {
   stopContainer,
   volumeName,
   getRuntime,
+  runArgsFor,
   startCommandSpec,
 } from '../docker/containers';
 import { ensureNetwork, projectNetworkName, EDGE_NETWORK } from '../docker/networks';
@@ -712,7 +713,11 @@ async function runPreDeploy(
   log(`Ejecutando el comando previo al despliegue: ${command}`);
   const args = ['run', '--rm', '--network', projectNetworkName(project)];
   for (const key of Object.keys(env)) args.push('--env', key);
-  args.push('--env', 'SKYWAY_PREDEPLOY_CMD', image, 'sh', '-c', 'eval "$SKYWAY_PREDEPLOY_CMD"');
+  args.push('--env', 'SKYWAY_PREDEPLOY_CMD');
+  // Cómo se le entrega la orden depende del ENTRYPOINT de la imagen, igual que
+  // el comando de arranque: con el de Nixpacks, un `sh -c` acababa arrancando
+  // un shell vacío que salía con 0 —y esto se habría dado por ejecutado—.
+  args.push(...(await runArgsFor(image, 'eval "$SKYWAY_PREDEPLOY_CMD"')));
   const onSpawn = job
     ? (p: any) => {
         job.procs.add(p);

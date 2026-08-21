@@ -150,6 +150,19 @@ export async function startCommandSpec(
   return { cmd: ['sh', '-c', startCmd], entrypoint: [], replacedEntrypoint: entry };
 }
 
+/**
+ * Lo mismo, en forma de argumentos de `docker run`: todo lo que va a partir de
+ * las opciones. Lo usa quien lanza un contenedor efímero con la imagen del
+ * usuario —el comando previo al despliegue, sin ir más lejos—, que tropezaba
+ * con el mismo entrypoint y, peor, se daba por bueno: la migración no corría y
+ * el despliegue seguía como si hubiera ido bien.
+ */
+export async function runArgsFor(image: string, command: string): Promise<string[]> {
+  const spec = await startCommandSpec(image, command);
+  // entrypoint definido = hay que apartarlo, y en la CLI eso es --entrypoint.
+  return spec.entrypoint ? ['--entrypoint', 'sh', image, ...spec.cmd.slice(1)] : [image, ...spec.cmd];
+}
+
 /** `["/bin/bash","-l","-c"]`, `["/bin/sh","-c"]`… es decir: ya envuelve un comando. */
 function isShellEntrypoint(entry: string[]): boolean {
   if (entry[entry.length - 1] !== '-c') return false;
