@@ -25,9 +25,10 @@ function cleanExitFix(_error: string, logs: string): string {
     'plano, o `wait` al final del script si de verdad lanzas varias cosas.';
   if (has(logs, 'se ignora el Dockerfile')) {
     return (
-      'El repositorio tiene Dockerfile, pero railway.json pide Nixpacks y Skyway lo respeta, así que el comando de ' +
-      'arranque ya NO es el CMD del Dockerfile sino el que infiere Nixpacks — y ese es el que termina enseguida. ' +
-      'Si lo que funcionaba era el Dockerfile, pon "builder": "DOCKERFILE" en railway.json. ' +
+      'Este despliegue no se construyó como el que estaba funcionando: railway.json pide Nixpacks y se ignoró el ' +
+      'Dockerfile, así que el comando de arranque es otro. Comprueba que el comando que infiere Nixpacks (o el ' +
+      '`startCommand` de railway.json) es de verdad el proceso que se queda vivo. Si lo que funcionaba era el ' +
+      'Dockerfile, pon "builder": "DOCKERFILE" en railway.json. ' +
       base
     );
   }

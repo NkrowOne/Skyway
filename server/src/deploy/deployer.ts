@@ -38,6 +38,7 @@ import {
   stopContainer,
   volumeName,
   getRuntime,
+  startCommandSpec,
 } from '../docker/containers';
 import { ensureNetwork, projectNetworkName, EDGE_NETWORK } from '../docker/networks';
 import { invalidateDockerSnapshot } from '../docker/sampler';
@@ -760,6 +761,7 @@ async function deployContainer(
   let internalPort: number | null = null;
   let domains: string[] = [];
   let cmd: string[] | null = null;
+  let entrypoint: string[] | null = null;
   let volumes: { name: string; containerPath: string }[] = [];
   let hostPort: number | null = null;
   let cpus: number | null = null;
@@ -789,7 +791,14 @@ async function deployContainer(
     cpus = cfg.cpus ?? null;
     memoryMb = cfg.memoryMb ?? null;
     volumes = cfg.volumes || [];
-    if (cfg.startCmd) cmd = ['sh', '-c', cfg.startCmd];
+    if (cfg.startCmd) {
+      const spec = await startCommandSpec(image, cfg.startCmd);
+      cmd = spec.cmd;
+      entrypoint = spec.entrypoint ?? null;
+      if (spec.replacedEntrypoint) {
+        log(`ℹ La imagen trae ENTRYPOINT «${spec.replacedEntrypoint.join(' ')}»; se aparta para ejecutar el comando de arranque.`);
+      }
+    }
     if (internalPort && !env.PORT) env.PORT = String(internalPort);
   } else {
     const cfg = service.config as GitConfig;
@@ -807,7 +816,15 @@ async function deployContainer(
     if (repoStartCmd && cfg.startCmd && repoStartCmd !== cfg.startCmd) {
       log(`startCommand de ${repoConfig?.source ?? 'la configuración del repo'} («${repoStartCmd}») tiene prioridad sobre el del servicio, como en Railway.`);
     }
-    if (startCmd) cmd = ['sh', '-c', startCmd];
+    if (startCmd) {
+      // Cómo se entrega depende del ENTRYPOINT de la imagen: ver startCommandSpec.
+      const spec = await startCommandSpec(image, startCmd);
+      cmd = spec.cmd;
+      entrypoint = spec.entrypoint ?? null;
+      if (spec.replacedEntrypoint) {
+        log(`ℹ La imagen trae ENTRYPOINT «${spec.replacedEntrypoint.join(' ')}»; se aparta para ejecutar el comando de arranque.`);
+      }
+    }
     if (!env.PORT) env.PORT = String(internalPort);
   }
 
@@ -838,6 +855,7 @@ async function deployContainer(
     cpus,
     memoryMb,
     cmd,
+    ...(entrypoint ? { entrypoint } : {}),
     volumes,
     ...(restartPolicy ? { restartPolicy } : {}),
   };
