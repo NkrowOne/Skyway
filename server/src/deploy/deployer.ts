@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
@@ -7,14 +8,13 @@ import {
   deploymentSummary,
   getDeployment,
   getEnv,
-  getGithubConnector,
   getProject,
   getService,
-  getSetting,
+  lastSuccessfulImage,
+  reusableBuild,
   setDeploymentDiagnosis,
   setEnv,
   successfulDeploymentsBeyond,
-  touchGithubConnector,
   updateDeployment,
 } from '../db';
 import { fireAlert, resolveServiceAlerts } from '../alerts';
@@ -38,8 +38,10 @@ import {
   getRuntime,
 } from '../docker/containers';
 import { ensureNetwork, projectNetworkName, EDGE_NETWORK } from '../docker/networks';
+import { apiHeadSha, parseGithubSlug } from '../github/client';
+import { resolveGitAuth } from '../github/resolve';
 import { isWorkspaceActive, workspaceOfProject } from '../quota';
-import { buildImage, cloneRepo, readRailwayStartCommand, spawnLogged } from './builder';
+import { buildImage, cloneRepo, normalizeRepoUrl, readRailwayStartCommand, spawnLogged } from './builder';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
 import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
 import { resolveServiceEnv } from '../variables';
@@ -143,9 +145,9 @@ function makeLogger(deploymentId: string): DeployContext['log'] & { buffer: () =
 export function triggerDeploy(
   serviceId: string,
   trigger: string,
-  opts: { imageTag?: string } = {},
+  opts: { imageTag?: string; forceBuild?: boolean } = {},
 ): DeploymentRow {
-  const deployment = createDeployment(serviceId, trigger, opts.imageTag ?? null);
+  const deployment = createDeployment(serviceId, trigger, opts.imageTag ?? null, { forceBuild: opts.forceBuild });
   // Se anuncia YA, en cola: el aviso de «versión nueva en camino» no puede
   // esperar a que haya un hueco de build libre.
   publishFeed(deployment.id);
@@ -422,6 +424,21 @@ async function assertPostgresVolumeCompatible(
   }
 }
 
+/**
+ * Huella de TODO lo que entra en la imagen aparte del código: si cambia, el
+ * commit ya construido no vale y hay que recompilar. Sin esto, tocar el
+ * rootDir o un build-arg dejaría al servicio sirviendo la imagen vieja.
+ */
+function buildKeyFor(cfg: GitConfig): string {
+  const args = Object.entries(cfg.buildArgs || {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}=${v}`);
+  return createHash('sha256')
+    .update(JSON.stringify([normalizeRepoUrl(cfg.repoUrl), cfg.rootDir || '.', cfg.dockerfilePath || 'Dockerfile', args]))
+    .digest('hex')
+    .slice(0, 32);
+}
+
 async function buildGitImage(
   project: ProjectRow,
   service: ServiceRow,
@@ -432,11 +449,31 @@ async function buildGitImage(
   const cfg = service.config as GitConfig;
   const image = `skyway/${project.slug}-${service.slug}:${deploymentId.slice(-8)}`;
   const workDir = path.join(config.buildsDir, deploymentId);
-  const token = resolveCloneToken(project, cfg, log);
+  const token = await resolveCloneToken(project, cfg, log);
+  const buildKey = buildKeyFor(cfg);
+  const forceBuild = getDeployment(deploymentId)?.force_build === 1;
   const onSpawn = (p: any) => {
     job.procs.add(p);
     p.on('exit', () => job.procs.delete(p));
   };
+
+  // Atajo: si la cabeza de la rama ya se construyó con ÉXITO y con las mismas
+  // entradas, la imagen resultante sería idéntica bit a bit. Redesplegar tras
+  // cambiar una variable —el caso más frecuente— pasa de clonar y compilar
+  // entero a no hacer nada. Se consulta la cabeza por API (barato) antes de
+  // pedir hueco de build, así que ni siquiera ocupa un slot de compilación.
+  if (!forceBuild) {
+    const reused = await reuseBuiltImage(service.id, cfg, token, buildKey, log);
+    if (reused) {
+      updateDeployment(deploymentId, {
+        commit_sha: reused.commit_sha,
+        commit_msg: reused.commit_msg,
+        build_key: buildKey,
+        repo_start_cmd: reused.repo_start_cmd,
+      });
+      return { image: reused.image_tag!, repoStartCmd: reused.repo_start_cmd };
+    }
+  }
 
   await acquireBuildSlot();
   try {
@@ -446,9 +483,13 @@ async function buildGitImage(
       log,
     );
     if (job.canceled) throw new CanceledError();
-    updateDeployment(deploymentId, { commit_sha: info.commitSha, commit_msg: info.commitMsg });
-
     const repoStartCmd = readRailwayStartCommand(workDir, cfg.rootDir);
+    updateDeployment(deploymentId, {
+      commit_sha: info.commitSha,
+      commit_msg: info.commitMsg,
+      build_key: buildKey,
+      repo_start_cmd: repoStartCmd,
+    });
 
     await buildImage(
       {
@@ -457,6 +498,10 @@ async function buildGitImage(
         dockerfilePath: cfg.dockerfilePath,
         imageTag: image,
         buildArgs: cfg.buildArgs,
+        // Capas de la última imagen correcta como caché: si el daemon purgó su
+        // caché de build (o la imagen se construyó antes de un reinicio), esto
+        // evita rehacer install de dependencias y compilaciones ya hechas.
+        cacheFrom: lastSuccessfulImage(service.id),
         onSpawn,
       },
       log,
@@ -471,31 +516,38 @@ async function buildGitImage(
 }
 
 /**
- * Token con el que clonar/consultar un repo: el conector del proyecto elegido en
- * el servicio (repos del cliente) o, en su defecto, el token global del admin.
- * Sin efectos secundarios: úsalo también fuera del despliegue (p. ej. el sondeo
- * de auto-deploy).
+ * Busca un despliegue anterior cuya imagen sirva tal cual para la cabeza actual
+ * de la rama. Devuelve la fila reutilizable, o null si hay que compilar. Todo
+ * el camino es best-effort: si no se puede saber la cabeza o la imagen ya no
+ * está en el disco, se compila como siempre.
  */
-export function gitTokenFor(project: ProjectRow, cfg: GitConfig): string | null {
-  if (cfg.connectorId) {
-    const connector = getGithubConnector(cfg.connectorId);
-    if (connector && connector.project_id === project.id) return connector.token;
-  }
-  return getSetting('githubToken');
+async function reuseBuiltImage(
+  serviceId: string,
+  cfg: GitConfig,
+  token: string | null,
+  buildKey: string,
+  log: (l: string) => void,
+): Promise<DeploymentRow | null> {
+  const slug = parseGithubSlug(cfg.repoUrl);
+  if (!slug) return null; // sin API que preguntar, clonar es la única forma de saber la cabeza
+  const head = await apiHeadSha(token ?? '', slug.owner, slug.repo, cfg.branch || 'main');
+  if (!head) return null;
+  const previous = reusableBuild(serviceId, head, buildKey);
+  if (!previous?.image_tag) return null;
+  if (!(await imageExists(previous.image_tag))) return null;
+  log(
+    `El commit ${head.slice(0, 7)} ya está construido con esta configuración: se reutiliza la imagen ${previous.image_tag} ` +
+      '(sin clonar ni compilar). Usa «Reconstruir» si quieres forzar una compilación limpia.',
+  );
+  return previous;
 }
 
-/** Igual que `gitTokenFor` pero registra en el log del despliegue y marca el uso del conector. */
-function resolveCloneToken(project: ProjectRow, cfg: GitConfig, log: (l: string) => void): string | null {
-  if (cfg.connectorId) {
-    const connector = getGithubConnector(cfg.connectorId);
-    if (connector && connector.project_id === project.id) {
-      touchGithubConnector(connector.id);
-      log(`Clonando con el conector de GitHub «${connector.name}» (@${connector.gh_login})`);
-      return connector.token;
-    }
-    log('⚠ El conector de GitHub de este servicio ya no existe: se usa el token global si está configurado');
-  }
-  return getSetting('githubToken');
+/** Resuelve la credencial de clonado y deja constancia en el log del despliegue. */
+async function resolveCloneToken(project: ProjectRow, cfg: GitConfig, log: (l: string) => void): Promise<string | null> {
+  const auth = await resolveGitAuth(project, cfg);
+  if (auth.warning) log(`⚠ ${auth.warning}`);
+  if (auth.detail) log(auth.detail);
+  return auth.token;
 }
 
 async function deployContainer(
@@ -651,8 +703,10 @@ async function deployContainer(
       if (hadOld) await renameContainer(rn, rPrev);
       try {
         await runServiceContainer({ ...spec, nameOverride: rn });
-        await sleep(3000);
-        const runtime = await getRuntime(rn);
+        // Ventana corta de asentamiento: con oldExists la versión ya pasó la
+        // validación completa en `--next`, así que aquí solo se comprueba que
+        // esta copia concreta no se cae nada más nacer.
+        const runtime = await settleContainer(rn, SETTLE_MS);
         if (runtime.state !== 'running') {
           throw new Error(`estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'}`);
         }
@@ -751,8 +805,30 @@ async function recoverStaleSwap(serviceId: string, log: (l: string) => void): Pr
 }
 
 const PROBE_TIMEOUT_MS = 60_000;
-const PROBE_INTERVAL_MS = 2500;
+// Sondeo ágil: cada intento cuesta un `docker run busybox` (~0,3 s), así que
+// bajar el intervalo apenas añade carga y recorta segundos de la ventana entre
+// «el proceso ya responde» y «Skyway se entera».
+const PROBE_INTERVAL_MS = 1200;
 const GRACE_MS = 5000;
+/** Cada cuánto se mira si el contenedor murió durante el periodo de gracia. */
+const GRACE_CHECK_MS = 500;
+/** Ventana de asentamiento de cada réplica en la actualización rodante. */
+const SETTLE_MS = 1500;
+
+/**
+ * Observa el contenedor durante `ms` y devuelve su estado. Corta en cuanto deja
+ * de estar en marcha: un arranque fallido no tiene por qué agotar la ventana.
+ */
+async function settleContainer(name: string, ms: number): Promise<Awaited<ReturnType<typeof getRuntime>>> {
+  const until = Date.now() + ms;
+  let runtime = await getRuntime(name);
+  while (Date.now() < until) {
+    await sleep(GRACE_CHECK_MS);
+    runtime = await getRuntime(name);
+    if (runtime.state !== 'running') return runtime;
+  }
+  return runtime;
+}
 
 /**
  * Valida un contenedor recién arrancado: sonda HTTP al healthcheck si está
@@ -774,7 +850,8 @@ async function validateContainer(
     }
     const deadline = Date.now() + PROBE_TIMEOUT_MS;
     let attempts = 0;
-    await sleep(1000);
+    // Sin espera previa: hay procesos que ya responden al instante y esperar
+    // un segundo «por si acaso» se lo cobraba a TODOS los despliegues.
     while (Date.now() < deadline) {
       attempts += 1;
       const state = await getRuntime(containerRef);
@@ -790,11 +867,18 @@ async function validateContainer(
     return { ok: false, reason: `el healthcheck ${path} no respondió 2xx en ${PROBE_TIMEOUT_MS / 1000}s` };
   }
 
+  // Sin healthcheck no hay forma de saber que la versión nueva está bien: solo
+  // se puede comprobar que no se muere enseguida. Se vigila cada poco en vez de
+  // dormir el periodo entero, para que un arranque fallido corte YA y el
+  // usuario vea el error (y la versión anterior vuelva) sin esperar en balde.
   log(`Sin healthcheck configurado: periodo de gracia de ${GRACE_MS / 1000}s...`);
-  await sleep(GRACE_MS);
-  const runtime = await getRuntime(containerRef);
-  if (runtime.state !== 'running') {
-    return { ok: false, reason: `el proceso terminó enseguida (estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'})` };
+  const graceUntil = Date.now() + GRACE_MS;
+  while (Date.now() < graceUntil) {
+    await sleep(GRACE_CHECK_MS);
+    const runtime = await getRuntime(containerRef);
+    if (runtime.state !== 'running') {
+      return { ok: false, reason: `el proceso terminó enseguida (estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'})` };
+    }
   }
   return { ok: true, reason: 'ok' };
 }

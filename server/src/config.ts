@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'));
 
@@ -22,6 +23,13 @@ function parseTrustProxy(raw: string | undefined): boolean | number | string[] {
   return value.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+function defaultBuildConcurrency(): number {
+  const cpus = os.cpus()?.length || 2;
+  // Techo de 4: más builds a la vez saturan disco y red antes que CPU, y
+  // alargan TODOS los despliegues en vez de acelerar alguno.
+  return Math.max(2, Math.min(4, cpus - 1));
+}
+
 export const config = {
   port: Number(process.env.PORT || 4000),
   host: process.env.HOST || '0.0.0.0',
@@ -31,7 +39,10 @@ export const config = {
     ? path.resolve(process.env.WEB_DIST)
     : path.resolve(__dirname, '../../web/dist'),
   jwtSecretEnv: process.env.JWT_SECRET || null,
-  buildConcurrency: Number(process.env.BUILD_CONCURRENCY || 2),
+  // Builds en paralelo. Por defecto se reparte según los núcleos del servidor
+  // dejando uno libre para el propio panel y los servicios en marcha: en una
+  // máquina holgada dos despliegues simultáneos ya no hacen cola detrás de uno.
+  buildConcurrency: Math.max(1, Number(process.env.BUILD_CONCURRENCY) || defaultBuildConcurrency()),
   trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
   version: '0.24.0',
 };

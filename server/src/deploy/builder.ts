@@ -165,7 +165,19 @@ export async function cloneRepo(
   log(`Clonando ${normalized} (rama ${opts.branch})...`);
   await spawnLogged(
     'git',
-    ['clone', '--depth', '1', '--branch', opts.branch, '--single-branch', url, opts.dest],
+    [
+      '-c', 'protocol.version=2',
+      '-c', 'advice.detachedHead=false',
+      'clone',
+      '--depth', '1',
+      '--branch', opts.branch,
+      '--single-branch',
+      // Un repo con años de tags trae miles de objetos que la compilación no
+      // mira: no pedirlos recorta el clon sin cambiar el contenido construido.
+      '--no-tags',
+      url,
+      opts.dest,
+    ],
     { env: { GIT_TERMINAL_PROMPT: '0' }, mask, onSpawn: opts.onSpawn },
     log,
   );
@@ -189,7 +201,18 @@ export interface BuildOpts {
   dockerfilePath?: string;
   imageTag: string;
   buildArgs?: Record<string, string>;
+  /** Imagen anterior de la que reaprovechar capas (BuildKit `--cache-from`). */
+  cacheFrom?: string | null;
   onSpawn?: (p: any) => void;
+}
+
+/** ¿Existe la imagen en el daemon local? (para no pasar un --cache-from muerto). */
+function localImageExists(tag: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const p = spawn('docker', ['image', 'inspect', tag], { stdio: 'ignore' });
+    p.on('error', () => resolve(false));
+    p.on('exit', (code) => resolve(code === 0));
+  });
 }
 
 /** Construye la imagen: Dockerfile si existe; si no, Nixpacks (como Railway). */
@@ -214,9 +237,20 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
     if (!buildkit) {
       log('⚠ docker buildx no está disponible: se usa el builder clásico. Reconstruye la imagen de Skyway para builds con BuildKit.');
     }
+    // La imagen anterior lleva incrustados los metadatos de caché
+    // (BUILDKIT_INLINE_CACHE) y sirve de origen de capas para esta: las etapas
+    // que no han cambiado —instalar dependencias, sobre todo— se saltan aunque
+    // el daemon haya purgado su caché de build entre despliegues.
+    const cacheFlags: string[] = [];
+    if (buildkit) {
+      cacheFlags.push('--build-arg', 'BUILDKIT_INLINE_CACHE=1');
+      if (opts.cacheFrom && opts.cacheFrom !== opts.imageTag && (await localImageExists(opts.cacheFrom))) {
+        cacheFlags.push('--cache-from', opts.cacheFrom);
+      }
+    }
     await spawnLogged(
       'docker',
-      ['build', '-t', opts.imageTag, '-f', dockerfile, ...argFlags, context],
+      ['build', '-t', opts.imageTag, '-f', dockerfile, ...cacheFlags, ...argFlags, context],
       { env: { DOCKER_BUILDKIT: buildkit ? '1' : '0' }, onSpawn: opts.onSpawn },
       log,
     );

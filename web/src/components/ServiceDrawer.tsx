@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, ExternalLink, MoveHorizontal, Play, RefreshCw, Rocket, Square, Terminal, X } from 'lucide-react';
+import { ChevronLeft, ExternalLink, Hammer, MoveHorizontal, Play, RefreshCw, Rocket, Square, Terminal, X } from 'lucide-react';
 import { api } from '../api';
 import { useLatch, useLocalStorage, useMediaQuery } from '../hooks';
 import { MetricPoint } from '../pages/Project';
@@ -93,10 +93,17 @@ export default function ServiceDrawer({
     queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
   };
 
+  /**
+   * Despliegue. Sin `force`, si el commit y la configuración de build no han
+   * cambiado se reutiliza la imagen ya construida (que es lo que se quiere al
+   * redesplegar por variables); con `force` se recompila desde cero, para
+   * cuando lo que cambió está fuera del repo (imagen base, un paquete).
+   */
   const deploy = useMutation({
-    mutationFn: () => api.post<{ deployment: Deployment }>(`/services/${serviceId}/deploy`),
-    onSuccess: () => {
-      toast('Despliegue iniciado', 'ok');
+    mutationFn: (force?: boolean) =>
+      api.post<{ deployment: Deployment }>(`/services/${serviceId}/deploy`, force ? { force: true } : {}),
+    onSuccess: (_data, force) => {
+      toast(force ? 'Reconstruyendo desde cero…' : 'Despliegue iniciado', 'ok');
       setPendingRedeploy(false);
       setTab('deployments');
       invalidate();
@@ -252,11 +259,22 @@ export default function ServiceDrawer({
           <Button
             size="sm"
             className={cx(fullscreen && 'h-11 flex-1')}
-            onClick={() => deploy.mutate()}
+            onClick={() => deploy.mutate(undefined)}
             loading={deploy.isPending}
           >
             <Rocket size={13} /> Desplegar
           </Button>
+          {service.type === 'git' && (
+            <Button
+              size="sm"
+              variant="secondary"
+              className={cx(fullscreen && 'h-11 min-w-11 px-0')}
+              onClick={() => deploy.mutate(true)}
+              title="Reconstruir la imagen desde cero, sin reutilizar la del commit ya construido"
+            >
+              <Hammer size={fullscreen ? 16 : 13} /> {!fullscreen && 'Reconstruir'}
+            </Button>
+          )}
           {isRunning ? (
             <>
               <Button
@@ -329,7 +347,7 @@ export default function ServiceDrawer({
               size="sm"
               variant="secondary"
               className="w-full shrink-0 sm:w-auto"
-              onClick={() => deploy.mutate()}
+              onClick={() => deploy.mutate(undefined)}
               loading={deploy.isPending}
             >
               Desplegar ahora
@@ -360,7 +378,7 @@ export default function ServiceDrawer({
               <VariablesTab
                 serviceId={serviceId}
                 onSaved={invalidate}
-                onDeploy={() => deploy.mutate()}
+                onDeploy={() => deploy.mutate(undefined)}
                 onNeedsRedeploy={() => setPendingRedeploy(true)}
               />
             )}

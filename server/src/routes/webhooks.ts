@@ -2,14 +2,58 @@ import { FastifyInstance } from 'fastify';
 import { auditSystem } from '../audit';
 import { fireAlert, fireWorkspaceAlert } from '../alerts';
 import { noteAutoDeployBaseline } from '../autodeploy';
-import { getService, lastBuiltCommitSha } from '../db';
+import {
+  deleteGithubInstallationsByNumber,
+  getService,
+  lastBuiltCommitSha,
+  latestDeployment,
+  listGithubInstallationsByNumber,
+  listGithubInstallationsForProject,
+  listProjects,
+  listServices,
+  setGithubInstallationSuspended,
+} from '../db';
 import { getStripeWebhookSecret } from '../company';
 import { verifyStripeSignature } from '../stripe';
 import { markInvoicePaidByStripeSession } from './billing';
 import { triggerDeploy } from '../deploy/deployer';
+import { githubAppConfig } from '../github/app';
+import { parseGithubSlug } from '../github/client';
 import { markManualAction } from '../monitor';
-import { GitConfig } from '../types';
+import { GitConfig, ServiceRow } from '../types';
 import { hmacSha256, safeEqual } from '../util';
+
+/** Estados no terminales: con uno vivo no se encola otro despliegue encima. */
+const IN_PROGRESS = new Set(['queued', 'building', 'deploying']);
+
+/**
+ * Servicios que hay que desplegar por un push a `owner/repo#rama`.
+ *
+ * El filtro de autorización es la instalación: solo se despliegan servicios de
+ * proyectos que TIENEN conectada esa instalación (propia o global). Sin eso,
+ * cualquiera que instalase la App en un repo con el mismo nombre podría
+ * disparar despliegues en el proyecto de otro cliente.
+ */
+function servicesForPush(fullName: string, branch: string, installationId: number): { service: ServiceRow; name: string }[] {
+  const wanted = fullName.toLowerCase();
+  const out: { service: ServiceRow; name: string }[] = [];
+  for (const project of listProjects()) {
+    const entitled = listGithubInstallationsForProject(project.id).some(
+      (row) => row.installation_id === installationId,
+    );
+    if (!entitled) continue;
+    for (const service of listServices(project.id)) {
+      if (service.type !== 'git') continue;
+      const cfg = service.config as GitConfig;
+      if (cfg.autoDeploy === false) continue;
+      if ((cfg.branch || 'main').toLowerCase() !== branch.toLowerCase()) continue;
+      const slug = parseGithubSlug(cfg.repoUrl);
+      if (!slug || `${slug.owner}/${slug.repo}`.toLowerCase() !== wanted) continue;
+      out.push({ service, name: `${project.name}/${service.name}` });
+    }
+  }
+  return out;
+}
 
 /**
  * Webhook de GitHub para auto-deploy en push.
@@ -26,6 +70,94 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
       } catch (err) {
         done(err as Error, undefined);
       }
+    });
+
+    /**
+     * Webhook ÚNICO de la GitHub App. La App lo registra sola al crearse, así
+     * que a partir de ahí cualquier repo conectado despliega al hacer push sin
+     * tocar nada en GitHub: ni URL, ni secreto, ni un webhook por servicio.
+     * Es el camino rápido —el push llega en el mismo segundo— y deja el sondeo
+     * como red de seguridad.
+     *
+     * La ruta es estática y gana a `/:serviceId` en el enrutador, así que no
+     * puede colisionar con un servicio que se llamara «app».
+     */
+    scope.post('/api/webhooks/github/app', async (req, reply) => {
+      const cfg = githubAppConfig();
+      if (!cfg || !cfg.webhookSecret) {
+        return reply.code(404).send({ error: 'La GitHub App no está configurada' });
+      }
+      const signature = req.headers['x-hub-signature-256'] as string | undefined;
+      const rawBody = (req as any).rawBody as string | undefined;
+      if (!signature || !rawBody) return reply.code(401).send({ error: 'Firma requerida' });
+      if (!safeEqual(signature, `sha256=${hmacSha256(cfg.webhookSecret, rawBody)}`)) {
+        return reply.code(401).send({ error: 'Firma inválida' });
+      }
+
+      const event = req.headers['x-github-event'];
+      const payload = req.body as any;
+      if (event === 'ping') return { ok: true, pong: true };
+
+      // Cambios de la propia instalación: mantener la BD al día evita ofrecer
+      // conexiones que en GitHub ya no existen.
+      if (event === 'installation') {
+        const installationId = Number(payload?.installation?.id);
+        if (!Number.isInteger(installationId)) return { ok: true, ignored: 'instalación sin id' };
+        const action = payload?.action;
+        if (action === 'deleted') {
+          const removed = deleteGithubInstallationsByNumber(installationId);
+          if (removed > 0) auditSystem('github_installation_deleted', `instalación ${installationId}`);
+        } else if (action === 'suspend' || action === 'unsuspend') {
+          setGithubInstallationSuspended(installationId, action === 'suspend');
+          auditSystem('github_installation_suspended', `instalación ${installationId}: ${action}`);
+        }
+        return { ok: true, action };
+      }
+
+      if (event !== 'push') return { ok: true, ignored: `evento ${event}` };
+
+      const installationId = Number(payload?.installation?.id);
+      if (!Number.isInteger(installationId) || listGithubInstallationsByNumber(installationId).length === 0) {
+        return { ok: true, ignored: 'instalación no conectada en este servidor' };
+      }
+      if (payload?.deleted === true) return { ok: true, ignored: 'rama eliminada' };
+
+      const ref = String(payload?.ref ?? '');
+      if (!ref.startsWith('refs/heads/')) return { ok: true, ignored: `ref ${ref}` };
+      const branch = ref.slice('refs/heads/'.length);
+      const fullName = String(payload?.repository?.full_name ?? '');
+      if (!fullName) return { ok: true, ignored: 'push sin repositorio' };
+
+      const head = (payload?.after as string | undefined) || (payload?.head_commit?.id as string | undefined) || null;
+      const matches = servicesForPush(fullName, branch, installationId);
+      const started: string[] = [];
+      const skipped: string[] = [];
+
+      for (const { service, name } of matches) {
+        if (head && head === lastBuiltCommitSha(service.id)) {
+          skipped.push(name);
+          continue;
+        }
+        // Con un despliegue vivo no se encola otro: el que está en marcha ya
+        // clonará la cabeza actual, y apilarlos solo alarga la cola.
+        const latest = latestDeployment(service.id);
+        if (latest && IN_PROGRESS.has(latest.status)) {
+          skipped.push(name);
+          continue;
+        }
+        if (head) noteAutoDeployBaseline(service.id, head);
+        markManualAction(service.id);
+        triggerDeploy(service.id, 'webhook');
+        started.push(name);
+      }
+
+      if (started.length > 0) {
+        auditSystem(
+          'webhook_push',
+          `${fullName}@${branch}${head ? ` ${head.slice(0, 7)}` : ''} → ${started.join(', ')}`,
+        );
+      }
+      return { ok: true, repo: fullName, branch, deployed: started, skipped };
     });
 
     scope.post('/api/webhooks/github/:serviceId', async (req, reply) => {

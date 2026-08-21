@@ -9,6 +9,7 @@ import {
   DeploymentRow,
   DeploymentStatus,
   GithubConnectorRow,
+  GithubInstallationRow,
   HostMetricHour,
   InvoiceRow,
   InvoiceSeriesRow,
@@ -180,6 +181,15 @@ export function initDb(): void {
   // Migraciones de columnas para bases de datos ya existentes.
   ensureColumn('projects', 'client', 'TEXT');
   ensureColumn('deployments', 'diagnosis', 'TEXT');
+  // Huella de las entradas de compilación (repo, rootDir, Dockerfile, buildArgs):
+  // permite reutilizar la imagen de un commit ya construido solo si se
+  // construiría exactamente igual.
+  ensureColumn('deployments', 'build_key', 'TEXT');
+  // startCommand que traía railway.json en ese commit: al reutilizar la imagen
+  // no se clona, y sin esto el servicio arrancaría con el comando equivocado.
+  ensureColumn('deployments', 'repo_start_cmd', 'TEXT');
+  // 1 = el usuario pidió reconstruir sin reutilizar imagen.
+  ensureColumn('deployments', 'force_build', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'role', "TEXT NOT NULL DEFAULT 'admin'"); // los usuarios previos eran el dueño
   ensureColumn('users', 'session_epoch', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('projects', 'status_token', 'TEXT');
@@ -248,6 +258,27 @@ export function initDb(): void {
       last_used_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_github_connectors_project ON github_connectors(project_id);
+  `);
+
+  // Instalaciones de la GitHub App. Aquí NO vive ninguna credencial: el token
+  // de clonado se emite bajo demanda contra GitHub y caduca en una hora, así
+  // que lo persistente es solo el número de instalación. project_id NULL =
+  // instalación global del administrador, visible desde todos los proyectos.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS github_installations (
+      id TEXT PRIMARY KEY,
+      installation_id INTEGER NOT NULL,
+      account_login TEXT NOT NULL,
+      account_type TEXT NOT NULL,
+      repo_selection TEXT NOT NULL DEFAULT 'selected',
+      project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+      created_by TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER,
+      suspended INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_github_installations_project ON github_installations(project_id);
+    CREATE INDEX IF NOT EXISTS idx_github_installations_number ON github_installations(installation_id);
   `);
 
   // ---------- cuentas de cliente: planes, workspaces y facturación ----------
@@ -1230,7 +1261,12 @@ export function setEnv(serviceId: string, vars: Record<string, string>): void {
 }
 
 // ---------- deployments ----------
-export function createDeployment(serviceId: string, trigger: string, imageTag?: string | null): DeploymentRow {
+export function createDeployment(
+  serviceId: string,
+  trigger: string,
+  imageTag?: string | null,
+  opts: { forceBuild?: boolean } = {},
+): DeploymentRow {
   const row: DeploymentRow = {
     id: id('dep'),
     service_id: serviceId,
@@ -1242,19 +1278,27 @@ export function createDeployment(serviceId: string, trigger: string, imageTag?: 
     logs: '',
     error: null,
     diagnosis: null,
+    build_key: null,
+    repo_start_cmd: null,
+    force_build: opts.forceBuild ? 1 : 0,
     created_at: now(),
     finished_at: null,
   };
   db.prepare(
-    `INSERT INTO deployments (id, service_id, status, trigger, commit_sha, commit_msg, image_tag, logs, error, created_at, finished_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(row.id, row.service_id, row.status, row.trigger, row.commit_sha, row.commit_msg, row.image_tag, row.logs, row.error, row.created_at, row.finished_at);
+    `INSERT INTO deployments (id, service_id, status, trigger, commit_sha, commit_msg, image_tag, logs, error, force_build, created_at, finished_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.id, row.service_id, row.status, row.trigger, row.commit_sha, row.commit_msg, row.image_tag, row.logs, row.error, row.force_build, row.created_at, row.finished_at);
   return row;
 }
 
 export function updateDeployment(
   deploymentId: string,
-  fields: Partial<Pick<DeploymentRow, 'status' | 'commit_sha' | 'commit_msg' | 'image_tag' | 'logs' | 'error' | 'finished_at'>>,
+  fields: Partial<
+    Pick<
+      DeploymentRow,
+      'status' | 'commit_sha' | 'commit_msg' | 'image_tag' | 'logs' | 'error' | 'finished_at' | 'build_key' | 'repo_start_cmd'
+    >
+  >,
 ): void {
   const keys = Object.keys(fields);
   if (keys.length === 0) return;
@@ -1273,7 +1317,8 @@ export function getDeployment(deploymentId: string): DeploymentRow | undefined {
 export function deploymentSummary(deploymentId: string): DeploymentRow | undefined {
   const row = db
     .prepare(
-      `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis, created_at, finished_at
+      `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
+              build_key, repo_start_cmd, force_build, created_at, finished_at
          FROM deployments WHERE id = ?`,
     )
     .get(deploymentId) as Omit<DeploymentRow, 'logs'> | undefined;
@@ -1282,9 +1327,43 @@ export function deploymentSummary(deploymentId: string): DeploymentRow | undefin
 
 export function listDeployments(serviceId: string, limit = 20): DeploymentRow[] {
   return db
-    .prepare('SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis, created_at, finished_at FROM deployments WHERE service_id = ? ORDER BY created_at DESC LIMIT ?')
+    .prepare(
+      `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
+              build_key, repo_start_cmd, force_build, created_at, finished_at
+         FROM deployments WHERE service_id = ? ORDER BY created_at DESC LIMIT ?`,
+    )
     .all(serviceId, limit)
     .map((r: any) => ({ ...r, logs: '' })) as DeploymentRow[];
+}
+
+/**
+ * Despliegue anterior del que se puede reutilizar la imagen: mismo commit y
+ * mismas entradas de compilación. Sin esto, redesplegar tras tocar una variable
+ * volvía a clonar el repo y a compilar la imagen entera para acabar con
+ * exactamente los mismos bits.
+ */
+export function reusableBuild(serviceId: string, commitSha: string, buildKey: string): DeploymentRow | undefined {
+  return db
+    .prepare(
+      `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
+              build_key, repo_start_cmd, force_build, created_at, finished_at
+         FROM deployments
+        WHERE service_id = ? AND commit_sha = ? AND build_key = ? AND status = 'success' AND image_tag IS NOT NULL
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(serviceId, commitSha, buildKey) as DeploymentRow | undefined;
+}
+
+/** Imagen del último despliegue correcto: sirve de caché de capas para el build. */
+export function lastSuccessfulImage(serviceId: string): string | null {
+  const row = db
+    .prepare(
+      `SELECT image_tag FROM deployments
+        WHERE service_id = ? AND status = 'success' AND image_tag IS NOT NULL
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(serviceId) as { image_tag: string } | undefined;
+  return row?.image_tag ?? null;
 }
 
 export function latestDeployment(serviceId: string): DeploymentRow | undefined {
@@ -1305,7 +1384,7 @@ export function activeDeploymentsByProject(projectId: string): Record<string, De
   const rows = db
     .prepare(
       `SELECT d.id, d.service_id, d.status, d.trigger, d.commit_sha, d.commit_msg, d.image_tag,
-              d.error, d.diagnosis, d.created_at, d.finished_at
+              d.error, d.diagnosis, d.build_key, d.repo_start_cmd, d.force_build, d.created_at, d.finished_at
          FROM deployments d JOIN services s ON s.id = d.service_id
         WHERE s.project_id = ? AND d.status IN ('queued', 'building', 'deploying')
         ORDER BY d.created_at ASC`,
@@ -1404,6 +1483,112 @@ export function countGithubConnectors(projectId: string): number {
 
 export function touchGithubConnector(connectorId: string): void {
   db.prepare('UPDATE github_connectors SET last_used_at = ? WHERE id = ?').run(now(), connectorId);
+}
+
+// ---------- instalaciones de la GitHub App ----------
+
+/**
+ * Alta idempotente: reinstalar la misma cuenta sobre el mismo ámbito actualiza
+ * la fila en vez de duplicarla (GitHub reutiliza el installation_id).
+ */
+export function upsertGithubInstallation(row: {
+  installation_id: number;
+  account_login: string;
+  account_type: string;
+  repo_selection: string;
+  project_id: string | null;
+  created_by: string;
+  suspended?: boolean;
+}): GithubInstallationRow {
+  const existing = db
+    .prepare(
+      row.project_id === null
+        ? 'SELECT * FROM github_installations WHERE installation_id = ? AND project_id IS NULL'
+        : 'SELECT * FROM github_installations WHERE installation_id = ? AND project_id = ?',
+    )
+    .get(...(row.project_id === null ? [row.installation_id] : [row.installation_id, row.project_id])) as
+    | GithubInstallationRow
+    | undefined;
+
+  if (existing) {
+    db.prepare(
+      `UPDATE github_installations
+          SET account_login = ?, account_type = ?, repo_selection = ?, suspended = ?
+        WHERE id = ?`,
+    ).run(row.account_login, row.account_type, row.repo_selection, row.suspended ? 1 : 0, existing.id);
+    return { ...existing, ...row, project_id: row.project_id, suspended: row.suspended ? 1 : 0 };
+  }
+
+  const full: GithubInstallationRow = {
+    id: id('ghi'),
+    installation_id: row.installation_id,
+    account_login: row.account_login,
+    account_type: row.account_type,
+    repo_selection: row.repo_selection,
+    project_id: row.project_id,
+    created_by: row.created_by,
+    created_at: now(),
+    last_used_at: null,
+    suspended: row.suspended ? 1 : 0,
+  };
+  db.prepare(
+    `INSERT INTO github_installations
+       (id, installation_id, account_login, account_type, repo_selection, project_id, created_by, created_at, last_used_at, suspended)
+     VALUES (@id, @installation_id, @account_login, @account_type, @repo_selection, @project_id, @created_by, @created_at, @last_used_at, @suspended)`,
+  ).run(full);
+  return full;
+}
+
+/** Instalaciones utilizables desde un proyecto: las suyas y las globales. */
+export function listGithubInstallationsForProject(projectId: string): GithubInstallationRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM github_installations
+        WHERE project_id = ? OR project_id IS NULL
+        ORDER BY project_id IS NULL, account_login`,
+    )
+    .all(projectId) as GithubInstallationRow[];
+}
+
+export function listAllGithubInstallations(): (GithubInstallationRow & { project_name: string | null })[] {
+  return db
+    .prepare(
+      `SELECT i.*, p.name AS project_name
+         FROM github_installations i LEFT JOIN projects p ON p.id = i.project_id
+        ORDER BY i.created_at DESC`,
+    )
+    .all() as (GithubInstallationRow & { project_name: string | null })[];
+}
+
+export function getGithubInstallation(rowId: string): GithubInstallationRow | undefined {
+  return db.prepare('SELECT * FROM github_installations WHERE id = ?').get(rowId) as GithubInstallationRow | undefined;
+}
+
+/** Filas (posiblemente varias, una por proyecto) de un número de instalación. */
+export function listGithubInstallationsByNumber(installationId: number): GithubInstallationRow[] {
+  return db
+    .prepare('SELECT * FROM github_installations WHERE installation_id = ?')
+    .all(installationId) as GithubInstallationRow[];
+}
+
+export function touchGithubInstallation(rowId: string): void {
+  db.prepare('UPDATE github_installations SET last_used_at = ? WHERE id = ?').run(now(), rowId);
+}
+
+export function setGithubInstallationSuspended(installationId: number, suspended: boolean): void {
+  db.prepare('UPDATE github_installations SET suspended = ? WHERE installation_id = ?').run(
+    suspended ? 1 : 0,
+    installationId,
+  );
+}
+
+export function deleteGithubInstallation(rowId: string): boolean {
+  return db.prepare('DELETE FROM github_installations WHERE id = ?').run(rowId).changes > 0;
+}
+
+/** Borra todas las filas de una instalación (la desinstalaron desde GitHub). */
+export function deleteGithubInstallationsByNumber(installationId: number): number {
+  return db.prepare('DELETE FROM github_installations WHERE installation_id = ?').run(installationId).changes;
 }
 
 export function deleteGithubConnector(connectorId: string): boolean {

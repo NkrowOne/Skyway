@@ -1,9 +1,17 @@
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { ExternalLink, Lock, Search } from 'lucide-react';
+import { ExternalLink } from 'lucide-react';
 import { api } from '../api';
-import { DbTemplate, Deployment, GithubConnector, GithubRepo, RailwayTemplatePlan, Service, Stack } from '../types';
+import { DbTemplate, Deployment, GithubRepo, RailwayTemplatePlan, Service, Stack } from '../types';
 import { cx } from '../utils';
+import {
+  GithubRepoPicker,
+  GithubSource,
+  GithubSourceSelect,
+  NO_SOURCE,
+  useGithubBranches,
+  useGithubSources,
+} from './GithubSource';
 import { ModuleKind, ModuleLogo, isModuleKind, moduleFg, moduleKind } from './ModuleIcon';
 import { Button, Field, Modal, Spinner, useToast } from './ui';
 
@@ -72,7 +80,7 @@ export default function NewServiceModal({
   const [template, setTemplate] = useState<string | null>(null);
   const [image, setImage] = useState('');
   const [imagePort, setImagePort] = useState('');
-  const [connectorId, setConnectorId] = useState('');
+  const [source, setSource] = useState<GithubSource>(NO_SOURCE);
   const [repoFilter, setRepoFilter] = useState('');
   const [stackKey, setStackKey] = useState<string | null>(null);
   const [tplInput, setTplInput] = useState('');
@@ -94,30 +102,13 @@ export default function NewServiceModal({
     staleTime: Infinity,
   });
 
-  const connectors = useQuery({
-    queryKey: ['connectors', projectId],
-    queryFn: () => api.get<{ connectors: GithubConnector[]; hasGlobalToken: boolean }>(`/projects/${projectId}/connectors`),
-    enabled: open,
-    staleTime: 30_000,
-  });
+  // Cuentas de GitHub del proyecto: instalaciones de la App y tokens personales.
+  const sources = useGithubSources(projectId, open);
+  const hasSources = sources.installations.length > 0 || sources.connectors.length > 0;
 
-  // Con un conector elegido, el repo se escoge de la cuenta conectada en vez de pegar la URL.
-  const repos = useQuery({
-    queryKey: ['connectorRepos', connectorId],
-    queryFn: () => api.get<{ repos: GithubRepo[] }>(`/connectors/${connectorId}/repos`),
-    enabled: open && step === 'git' && !!connectorId,
-    staleTime: 60_000,
-    retry: false,
-  });
-
+  // Con una cuenta elegida, el repo se escoge de su lista en vez de pegar la URL.
   const selectedRepo = repoUrl.replace(/^https:\/\/github\.com\//, '');
-  const branches = useQuery({
-    queryKey: ['connectorBranches', connectorId, selectedRepo],
-    queryFn: () => api.get<{ branches: string[] }>(`/connectors/${connectorId}/branches?repo=${encodeURIComponent(selectedRepo)}`),
-    enabled: open && step === 'git' && !!connectorId && /^[\w.-]+\/[\w.-]+$/.test(selectedRepo),
-    staleTime: 60_000,
-    retry: false,
-  });
+  const branches = useGithubBranches(source, selectedRepo, open && step === 'git');
 
   const reset = () => {
     setStep('pick');
@@ -129,7 +120,7 @@ export default function NewServiceModal({
     setTemplate(null);
     setImage('');
     setImagePort('');
-    setConnectorId('');
+    setSource(NO_SOURCE);
     setRepoFilter('');
     setStackKey(null);
     setStackPrefix('');
@@ -213,7 +204,8 @@ export default function NewServiceModal({
       branch: branch.trim() || 'main',
       port: Number(port) || 3000,
       ...(rootDir.trim() ? { rootDir: rootDir.trim() } : {}),
-      ...(connectorId ? { connectorId } : {}),
+      ...(source.kind === 'app' ? { githubInstallationId: source.id } : {}),
+      ...(source.kind === 'pat' ? { connectorId: source.id } : {}),
     });
   };
 
@@ -221,10 +213,6 @@ export default function NewServiceModal({
     setRepoUrl(`https://github.com/${r.fullName}`);
     setBranch(r.defaultBranch);
   };
-
-  const filteredRepos = (repos.data?.repos ?? []).filter((r) =>
-    r.fullName.toLowerCase().includes(repoFilter.trim().toLowerCase()),
-  );
 
   const submitDb = (tpl: DbTemplate) => {
     create.mutate({ type: 'database', template: tpl.key });
@@ -615,78 +603,45 @@ export default function NewServiceModal({
 
       {step === 'git' && (
         <form onSubmit={submitGit} className="space-y-4">
-          {(connectors.data?.connectors.length ?? 0) > 0 && (
-            <Field label="Cuenta de GitHub" hint="Con un conector eliges el repo de esa cuenta; «URL manual» clona con el token global del servidor">
-              <select
-                className="input"
-                value={connectorId}
-                onChange={(e) => {
-                  setConnectorId(e.target.value);
+          {hasSources ? (
+            <Field
+              label="Cuenta de GitHub"
+              hint="Eliges el repo de la cuenta conectada; «URL manual» clona con el token global del servidor"
+            >
+              <GithubSourceSelect
+                sources={sources}
+                value={source}
+                onChange={(next) => {
+                  setSource(next);
                   // Al cambiar de cuenta, el repo elegido deja de tener sentido.
                   setRepoUrl('');
                   setRepoFilter('');
                   setBranch('main');
                 }}
-              >
-                <option value="">URL manual (token global)</option>
-                {connectors.data!.connectors.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} · @{c.gh_login}
-                  </option>
-                ))}
-              </select>
+              />
             </Field>
+          ) : (
+            <p className="rounded-lg border border-dashed border-line bg-bg px-3.5 py-2.5 text-[11px] text-sub">
+              Aún no hay ninguna cuenta de GitHub conectada a este proyecto. Conéctala con el botón <b>GitHub</b> de la
+              cabecera y podrás elegir tus repos privados de una lista, sin pegar URLs ni tokens.
+            </p>
           )}
 
-          {connectorId ? (
+          {source.kind !== 'none' ? (
             <Field label="Repositorio" hint={selectedRepo ? undefined : 'Elige un repo de la cuenta conectada'}>
-              <div className="rounded-lg border border-line bg-bg">
-                <div className="flex items-center gap-2 border-b border-line px-3 py-2">
-                  <Search size={13} className="shrink-0 text-subtle" />
-                  <input
-                    className="w-full bg-transparent text-xs outline-none placeholder:text-subtle"
-                    placeholder="Filtrar repos…"
-                    value={repoFilter}
-                    onChange={(e) => setRepoFilter(e.target.value)}
-                    autoFocus
-                  />
-                </div>
-                <div className="max-h-44 overflow-y-auto p-1.5">
-                  {repos.isLoading && <Spinner label="Cargando repos…" />}
-                  {repos.isError && (
-                    <p className="px-2.5 py-4 text-center text-xs text-err">{(repos.error as Error).message}</p>
-                  )}
-                  {repos.data && filteredRepos.length === 0 && (
-                    <p className="px-2.5 py-4 text-center text-xs text-subtle">Sin repos que coincidan con «{repoFilter}»</p>
-                  )}
-                  {filteredRepos.map((r) => {
-                    const active = selectedRepo === r.fullName;
-                    return (
-                      <button
-                        key={r.fullName}
-                        type="button"
-                        onClick={() => pickRepo(r)}
-                        className={cx(
-                          'flex w-full items-center gap-2 rounded-md px-2.5 py-[7px] text-left transition-colors',
-                          active ? 'bg-acc/[.14] shadow-[inset_2px_0_0_var(--color-acc)]' : 'hover:bg-surface2',
-                        )}
-                      >
-                        <span className="min-w-0 flex-1 truncate font-mono text-xs">{r.fullName}</span>
-                        {r.private && (
-                          <span className="flex shrink-0 items-center gap-1 rounded-full bg-surface2 px-1.5 py-0.5 text-[10px] text-sub">
-                            <Lock size={9} /> privado
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+              <GithubRepoPicker
+                source={source}
+                selected={selectedRepo}
+                filter={repoFilter}
+                onFilter={setRepoFilter}
+                onPick={pickRepo}
+                enabled={open && step === 'git'}
+              />
             </Field>
           ) : (
             <Field
               label="Repositorio"
-              hint="URL completa o atajo owner/repo. Para repos privados usa un conector del proyecto o el token de Ajustes."
+              hint="URL completa o atajo owner/repo. Para repos privados conecta una cuenta de GitHub o usa el token de Ajustes."
             >
               <input
                 className="input font-mono"
@@ -700,7 +655,7 @@ export default function NewServiceModal({
           )}
           <div className="grid grid-cols-2 gap-3">
             <Field label="Rama">
-              {connectorId && (branches.data?.branches.length ?? 0) > 0 ? (
+              {source.kind !== 'none' && (branches.data?.branches.length ?? 0) > 0 ? (
                 <select className="input" value={branch} onChange={(e) => setBranch(e.target.value)}>
                   {branches.data!.branches.map((b) => (
                     <option key={b} value={b}>

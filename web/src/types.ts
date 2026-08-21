@@ -56,6 +56,34 @@ export interface GithubConnector {
   project_client?: string | null;
 }
 
+/**
+ * Instalación de la GitHub App sobre una cuenta u organización. No caduca y no
+ * guarda credenciales: el token de clonado lo emite Skyway al desplegar.
+ * `projectId` null = conexión global del administrador.
+ */
+export interface GithubInstallation {
+  id: string;
+  installationId: number;
+  accountLogin: string;
+  accountType: string;
+  /** 'all' (toda la cuenta) o 'selected' (solo los repos elegidos en GitHub). */
+  repoSelection: string;
+  projectId: string | null;
+  projectName: string | null;
+  createdBy: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+  suspended: boolean;
+  manageUrl: string | null;
+}
+
+export interface GithubAppStatus {
+  configured: boolean;
+  canConfigure: boolean;
+  app: { slug: string; name: string; htmlUrl: string } | null;
+  webhookUrl: string;
+}
+
 export interface GithubRepo {
   fullName: string;
   private: boolean;

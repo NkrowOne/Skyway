@@ -10,6 +10,13 @@ export interface GitConfig {
   branch: string;
   /** Conector de GitHub del proyecto con cuyo token se clona (null/ausente = token global). */
   connectorId?: string | null;
+  /**
+   * Instalación de la GitHub App con la que clonar (fila de
+   * `github_installations`, no el número de instalación de GitHub). Tiene
+   * prioridad sobre `connectorId`. Ausente y sin conector, Skyway busca una
+   * instalación que ya vea la cuenta del repo antes de caer al token global.
+   */
+  githubInstallationId?: string | null;
   rootDir?: string;
   dockerfilePath?: string;
   startCmd?: string;
@@ -129,6 +136,16 @@ export interface DeploymentRow {
   logs: string;
   error: string | null;
   diagnosis: string | null;
+  /**
+   * Huella de las entradas de compilación (repo, rootDir, Dockerfile,
+   * buildArgs). Un despliegue posterior del MISMO commit con la misma huella
+   * puede reutilizar la imagen en vez de clonar y compilar otra vez.
+   */
+  build_key: string | null;
+  /** startCommand de railway.json en ese commit, para no perderlo al reutilizar. */
+  repo_start_cmd: string | null;
+  /** 1 = reconstruir sin reutilizar imagen, aunque el commit ya esté construido. */
+  force_build: number;
   created_at: number;
   finished_at: number | null;
 }
@@ -777,4 +794,28 @@ export interface GithubConnectorRow {
   created_by: string; // email de quien lo conectó (auditoría y control del admin)
   created_at: number;
   last_used_at: number | null;
+}
+
+/**
+ * Instalación de la GitHub App sobre una cuenta u organización. A diferencia
+ * del conector con token personal, aquí NO se guarda ninguna credencial: el
+ * token de clonado se emite bajo demanda y caduca en una hora, así que lo único
+ * persistente es el número de instalación.
+ *
+ * `project_id` null = instalación global del administrador, visible desde todos
+ * los proyectos. Con proyecto, solo desde ese (mismo modelo que los conectores).
+ */
+export interface GithubInstallationRow {
+  id: string;
+  installation_id: number;
+  account_login: string;
+  account_type: string;
+  /** 'all' o 'selected': si la App ve toda la cuenta o solo los repos elegidos. */
+  repo_selection: string;
+  project_id: string | null;
+  created_by: string;
+  created_at: number;
+  last_used_at: number | null;
+  /** 1 si GitHub la tiene suspendida (la App sigue instalada pero sin acceso). */
+  suspended: number;
 }

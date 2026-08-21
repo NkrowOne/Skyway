@@ -9,6 +9,7 @@ import { ModuleLogo } from '../components/ModuleIcon';
 import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
 import { DeployLine } from '../components/DeployBadge';
+import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { ActiveDeploy, Me, MetricsSnapshot, Project, Service } from '../types';
 import { isActiveDeploy } from '../utils';
 
@@ -17,7 +18,7 @@ import { isActiveDeploy } from '../utils';
 const ServiceDrawer = lazy(() => import('../components/ServiceDrawer'));
 const NewServiceModal = lazy(() => import('../components/NewServiceModal'));
 const SharedVarsModal = lazy(() => import('../components/SharedVarsModal'));
-const ConnectorsModal = lazy(() => import('../components/ConnectorsModal'));
+const GithubModal = lazy(() => import('../components/GithubModal'));
 const StatusPageModal = lazy(() => import('../components/StatusPageModal'));
 const ImportReportView = lazy(() => import('../components/RailwayImportModal').then((m) => ({ default: m.ImportReportView })));
 
@@ -154,11 +155,13 @@ export default function ProjectPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useToast();
+  // Vuelta de github.com tras instalar la App en una cuenta.
+  useGithubReturnNotice();
   const [newOpen, setNewOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteVolumes, setDeleteVolumes] = useState(false);
   const [sharedOpen, setSharedOpen] = useState(false);
-  const [connectorsOpen, setConnectorsOpen] = useState(false);
+  const [githubOpen, setGithubOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
@@ -174,7 +177,7 @@ export default function ProjectPage() {
   // una vez montado, permanece para conservar su animación de cierre.
   const newLatched = useLatch(newOpen);
   const sharedLatched = useLatch(sharedOpen);
-  const connectorsLatched = useLatch(connectorsOpen);
+  const githubLatched = useLatch(githubOpen);
   const statusLatched = useLatch(statusOpen);
 
   const project = useQuery({
@@ -320,10 +323,10 @@ export default function ProjectPage() {
               variant="secondary"
               size="sm"
               className="max-sm:h-11 max-sm:min-w-11"
-              onClick={() => setConnectorsOpen(true)}
-              title="Conectores de GitHub: cuentas cuyas repos se pueden desplegar aquí"
+              onClick={() => setGithubOpen(true)}
+              title="Cuentas de GitHub cuyos repositorios se pueden desplegar aquí"
             >
-              <ModuleLogo kind="github" size={13} /> <span className="hidden sm:inline">Conectores</span>
+              <ModuleLogo kind="github" size={13} /> <span className="hidden sm:inline">GitHub</span>
             </Button>
             <Button
               variant="secondary"
@@ -495,9 +498,9 @@ export default function ProjectPage() {
         </Suspense>
       )}
 
-      {connectorsLatched && (
+      {githubLatched && (
         <Suspense fallback={null}>
-          <ConnectorsModal open={connectorsOpen} onClose={() => setConnectorsOpen(false)} projectId={proj.id} />
+          <GithubModal open={githubOpen} onClose={() => setGithubOpen(false)} projectId={proj.id} />
         </Suspense>
       )}
 

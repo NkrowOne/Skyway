@@ -1,13 +1,18 @@
 import { auditSystem } from './audit';
 import { getSetting, lastBuiltCommitSha, latestDeployment, listProjects, listServices } from './db';
 import { remoteHeadSha } from './deploy/builder';
-import { gitTokenFor, triggerDeploy } from './deploy/deployer';
+import { triggerDeploy } from './deploy/deployer';
+import { apiHeadSha, parseGithubSlug } from './github/client';
+import { resolveGitToken } from './github/resolve';
 import { dockerAvailable } from './docker/client';
 import { markManualAction } from './monitor';
-import { GitConfig } from './types';
+import { GitConfig, ProjectRow } from './types';
 
-const DEFAULT_POLL_SECONDS = 120;
-const MIN_POLL_SECONDS = 30;
+// El sondeo por API con ETag es tan barato (un 304 no consume cuota ni arranca
+// un proceso) que se puede mirar cada minuto sin coste apreciable: un push sin
+// webhook tarda como mucho un minuto en salir, no dos.
+const DEFAULT_POLL_SECONDS = 60;
+const MIN_POLL_SECONDS = 15;
 /** Despliegues aún en marcha: no se encola otro encima. */
 const IN_PROGRESS = new Set(['queued', 'building', 'deploying']);
 
@@ -45,13 +50,31 @@ function pollMs(): number {
   return secs * 1000;
 }
 
+/**
+ * Cabeza de la rama, por el camino más barato disponible.
+ *
+ * Con una credencial y un repo de GitHub se pregunta a la API con ETag: la
+ * respuesta habitual es un 304 de unos pocos bytes que ni consume cuota ni
+ * arranca un proceso. `git ls-remote` cuesta un fork + un handshake TLS
+ * completo por servicio y ciclo, así que queda como respaldo: repos que no son
+ * de GitHub, sin credencial, o cuando la API no contesta.
+ */
+async function headSha(repoUrl: string, branch: string, token: string | null): Promise<string | null> {
+  const slug = parseGithubSlug(repoUrl);
+  if (slug && token) {
+    const sha = await apiHeadSha(token, slug.owner, slug.repo, branch);
+    if (sha) return sha;
+  }
+  return remoteHeadSha(repoUrl, branch, token);
+}
+
 async function tick(log: { warn: (msg: string) => void }): Promise<void> {
   // Sin Docker el despliegue fallaría; se salta el ciclo y se reintenta luego
   // (no se fija línea base, para no perder un commit que llegue con Docker caído).
   if (!(await dockerAvailable())) return;
 
   // Servicios de repositorio con auto-deploy activo (ausente = activo).
-  const targets: { id: string; name: string; branch: string; repoUrl: string; token: string | null }[] = [];
+  const targets: { id: string; name: string; branch: string; repoUrl: string; project: ProjectRow; cfg: GitConfig }[] = [];
   const active = new Set<string>();
   for (const project of listProjects()) {
     for (const service of listServices(project.id)) {
@@ -64,7 +87,8 @@ async function tick(log: { warn: (msg: string) => void }): Promise<void> {
         name: service.name,
         branch: cfg.branch || 'main',
         repoUrl: cfg.repoUrl,
-        token: gitTokenFor(project, cfg),
+        project,
+        cfg,
       });
     }
   }
@@ -79,7 +103,8 @@ async function tick(log: { warn: (msg: string) => void }): Promise<void> {
 
       let head: string | null = null;
       try {
-        head = await remoteHeadSha(t.repoUrl, t.branch, t.token);
+        const token = await resolveGitToken(t.project, t.cfg);
+        head = await headSha(t.repoUrl, t.branch, token);
       } catch (err: any) {
         log.warn(`autodeploy ${t.name}: ${err?.message || err}`);
         return;
