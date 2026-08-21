@@ -6,6 +6,26 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Aviso de sesión caducada.
+ *
+ * Un 401 no es un error de la pantalla que lo recibe: es que la sesión ya no
+ * vale. Sin tratarlo en un sitio, cada consulta fallaba por su cuenta y el
+ * panel se quedaba lleno de errores rojos en vez de llevar al login —que es lo
+ * único que se puede hacer—. El manejador lo registra `main.tsx`.
+ */
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(fn: () => void): void {
+  onUnauthorized = fn;
+}
+
+/**
+ * Las rutas de sesión devuelven 401 como respuesta legítima (contraseña
+ * incorrecta, passkey rechazada); ahí el 401 lo trata la propia pantalla.
+ */
+const AUTH_PATHS = /^\/auth\//;
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api${path}`, {
     credentials: 'same-origin',
@@ -22,6 +42,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     }
   }
   if (!res.ok) {
+    if (res.status === 401 && !AUTH_PATHS.test(path)) onUnauthorized?.();
     throw new ApiError(res.status, body?.error || `Error ${res.status}`);
   }
   return body as T;

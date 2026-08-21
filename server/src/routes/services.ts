@@ -44,11 +44,15 @@ import {
   updateResources,
   volumeName,
 } from '../docker/containers';
+import { invalidateDockerSnapshot, sampledRuntime } from '../docker/sampler';
 import { triggerDeploy } from '../deploy/deployer';
 import { getTemplate, templateList } from '../templates';
 import { availableReferences, resolveServiceEnv } from '../variables';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from '../types';
 import { randomToken, slugify } from '../util';
+
+/** Antigüedad tolerada de la foto de Docker en las lecturas del panel. */
+const PANEL_MAX_AGE_MS = 4000;
 
 const createGitSchema = z.object({
   type: z.literal('git'),
@@ -238,8 +242,10 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     const docker = await dockerAvailable();
+    // Lectura de panel: se sirve de la foto compartida (el drawer la repite
+    // cada 4 s) en vez de lanzar su propio inspect contra el socket.
     const runtime = docker
-      ? await getRuntime(containerName(found.project, found.service))
+      ? await sampledRuntime(id, PANEL_MAX_AGE_MS)
       : { state: 'unknown', startedAt: null, exitCode: null, restartCount: 0, image: null };
     return {
       service: found.service,
@@ -422,6 +428,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
     }
     deleteService(id);
+    invalidateDockerSnapshot();
     audit(req, 'service_deleted', {
       type: 'service',
       id,
@@ -474,6 +481,9 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(500).send({ error: err?.message || 'Operación fallida' });
       }
       audit(req, `service_${action}`, { type: 'service', id, detail: found.service.name });
+      // La acción acaba de cambiar los contenedores: la foto compartida ya no
+      // vale y aquí se lee la verdad, no la caché.
+      invalidateDockerSnapshot();
       return { ok: true, runtime: await getRuntime(containerName(found.project, found.service)) };
     });
   }

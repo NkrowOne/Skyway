@@ -802,6 +802,20 @@ export function checkIntegrity(): string | null {
   }
 }
 
+/**
+ * Cierra la base de datos ordenadamente al apagar. Con WAL, cerrar hace el
+ * checkpoint final: sin él, el `-wal` queda con escrituras que solo se
+ * recuperan al abrir de nuevo, y un apagado seguido de una copia del fichero
+ * se llevaría una base incompleta.
+ */
+export function closeDb(): void {
+  try {
+    db.close();
+  } catch {
+    /* ya cerrada o nunca abierta */
+  }
+}
+
 /** Ejecuta varias escrituras de forma atómica (todo o nada). */
 export function transaction<T>(fn: () => T): T {
   return db.transaction(fn)();
