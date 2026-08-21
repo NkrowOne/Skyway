@@ -184,7 +184,7 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
       if (channel.closed || ticking) return;
       ticking = true;
       try {
-        const snap = await dockerSnapshot(SAMPLE_MAX_AGE_MS);
+        const snap = await dockerSnapshot(SAMPLE_MAX_AGE_MS, { stats: true });
         if (channel.closed) return;
         if (!snap.docker) {
           channel.send('metrics', { ts: snap.at, docker: false, services: {} });

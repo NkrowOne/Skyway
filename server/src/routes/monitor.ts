@@ -48,7 +48,7 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
     // Una sola foto para toda la vista: antes cada servicio pedía su inspect y
     // su stats por separado, y `stats` cuesta ~1 s por contenedor. Es la foto
     // quien dice si Docker respondía (ver la nota en websites.ts).
-    const snap = await dockerSnapshot(OVERVIEW_MAX_AGE_MS);
+    const snap = await dockerSnapshot(OVERVIEW_MAX_AGE_MS, { stats: true });
     const dockerUp = snap.docker;
     const disk = dockerUp ? await diskUsageByService().catch(() => null) : null;
 

@@ -65,7 +65,7 @@ async function tick(): Promise<void> {
   // Una sola foto para todo el ciclo. Antes se preguntaba a Docker contenedor
   // a contenedor y en serie: con `stats` tardando ~1 s, un servidor con treinta
   // servicios no llegaba a terminar el ciclo dentro de su propio intervalo.
-  const snap = await dockerSnapshot(SAMPLE_MAX_AGE_MS);
+  const snap = await dockerSnapshot(SAMPLE_MAX_AGE_MS, { stats: true });
 
   const cpuThreshold = num('alertCpuPercent', 90);
   const memThreshold = num('alertMemPercent', 90);
