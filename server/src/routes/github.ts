@@ -167,15 +167,15 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
     const state = verifyState(query.state, 'manifest');
     const user = currentUser(req)!;
     if (!query.code || !state || state.userId !== user.id) {
-      return redirectToPanel(reply, '/settings?github=estado_invalido');
+      return redirectToPanel(reply, '/settings?github=estado_invalido#github');
     }
     try {
       const cfg = await convertManifestCode(query.code);
       audit(req, 'github_app_created', { type: 'settings', id: cfg.appId, detail: cfg.name });
-      return redirectToPanel(reply, '/settings?github=creada');
+      return redirectToPanel(reply, '/settings?github=creada#github');
     } catch (err: any) {
       req.log.error(err);
-      return redirectToPanel(reply, '/settings?github=error');
+      return redirectToPanel(reply, '/settings?github=error#github');
     }
   });
 

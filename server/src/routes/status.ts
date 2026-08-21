@@ -12,8 +12,8 @@ import {
   uptimeDaily,
   uptimePercent,
 } from '../db';
-import { dockerAvailable } from '../docker/client';
-import { aggregateReplicaState, configuredReplicas, getRuntime, replicaName } from '../docker/containers';
+import { aggregateReplicaState, configuredReplicas } from '../docker/containers';
+import { dockerSnapshot } from '../docker/sampler';
 import { ContainerState, ProjectRow } from '../types';
 import { randomToken } from '../util';
 
@@ -34,7 +34,11 @@ const CACHE_MS = 10_000;
 const CACHE_MAX = 500;
 
 async function buildStatusPayload(project: ProjectRow): Promise<any> {
-  const dockerUp = await dockerAvailable();
+  // Una sola foto de Docker para toda la vista, y es ella quien dice si el
+  // daemon respondía (ver la nota en websites.ts). Importa más aquí: esta
+  // respuesta se cachea 10 s, así que una lectura en falso se queda pegada.
+  const snap = await dockerSnapshot(5000);
+  const dockerUp = snap.docker;
   const services: any[] = [];
 
   for (const service of listServices(project.id)) {
@@ -42,14 +46,10 @@ async function buildStatusPayload(project: ProjectRow): Promise<any> {
     let running = 0;
     const states: ContainerState[] = [];
     if (dockerUp) {
-      for (let i = 1; i <= total; i++) {
-        try {
-          const runtime = await getRuntime(replicaName(project, service, i));
-          states.push(runtime.state);
-          if (runtime.state === 'running') running += 1;
-        } catch {
-          /* réplica ilocalizable */
-        }
+      for (const replica of snap.byService.get(service.id)?.perReplica ?? []) {
+        if (replica.unreachable) continue; // réplica ilocalizable
+        states.push(replica.runtime.state);
+        if (replica.runtime.state === 'running') running += 1;
       }
     }
     const aggState = aggregateReplicaState(states);

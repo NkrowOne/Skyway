@@ -39,6 +39,7 @@ import {
   getRuntime,
 } from '../docker/containers';
 import { ensureNetwork, projectNetworkName, EDGE_NETWORK } from '../docker/networks';
+import { invalidateDockerSnapshot } from '../docker/sampler';
 import { apiHeadSha, parseGithubSlug } from '../github/client';
 import { resolveGitAuth } from '../github/resolve';
 import { isWorkspaceActive, workspaceOfProject } from '../quota';
@@ -242,6 +243,10 @@ async function runDeployment(deploymentId: string): Promise<void> {
     await deployContainer(project, service, image, deploymentId, log, repoConfig, job);
     checkCanceled();
 
+    // El intercambio acaba de cambiar los contenedores: se tira la foto
+    // compartida para que el panel enseñe el estado nuevo en la lectura
+    // siguiente, no el de la versión que acaba de irse.
+    invalidateDockerSnapshot();
     setStatus('success');
     updateDeployment(deploymentId, { finished_at: now() });
     emitDeploy(deploymentId, { type: 'done', status: 'success' });
@@ -264,6 +269,9 @@ async function runDeployment(deploymentId: string): Promise<void> {
       publishFeed(deploymentId);
       return;
     }
+    // Un despliegue fallido también deja contenedores tocados (el intento
+    // nuevo retirado, el anterior restaurado): la foto vieja ya no vale.
+    invalidateDockerSnapshot();
     const message = err?.message || String(err);
     log(`✖ Error: ${message}`);
     updateDeployment(deploymentId, { status: 'failed', error: message, finished_at: now() });

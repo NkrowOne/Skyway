@@ -23,7 +23,8 @@ import {
 } from '../db';
 import { toDeployFeedItem } from '../events';
 import { dockerAvailable } from '../docker/client';
-import { containerName, getRuntime, listServiceContainers, removeContainer, removeVolume, stopContainer, volumeName } from '../docker/containers';
+import { containerName, listServiceContainers, removeContainer, removeVolume, stopContainer, volumeName } from '../docker/containers';
+import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
 import { projectNetworkName, removeNetwork } from '../docker/networks';
 import { triggerDeploy } from '../deploy/deployer';
 import { markManualAction } from '../monitor';
@@ -39,10 +40,15 @@ const projectSchema = z.object({
   workspaceId: z.string().trim().nullable().optional(),
 });
 
-async function serviceWithRuntime(project: any, service: any, docker: boolean) {
-  const runtime: ServiceRuntime = docker
-    ? await getRuntime(containerName(project, service))
-    : { state: 'unknown', startedAt: null, exitCode: null, restartCount: 0, image: null };
+/**
+ * Antigüedad tolerada de la foto de Docker en las lecturas del panel. El panel
+ * repite estas consultas cada pocos segundos: sin foto compartida, cada una
+ * lanzaba un `inspect` por servicio contra el socket.
+ */
+const PANEL_MAX_AGE_MS = 4000;
+
+function serviceWithRuntime(service: any, snap: Snapshot) {
+  const runtime: ServiceRuntime = runtimeIn(snap, service.id);
   return { ...service, runtime };
 }
 
@@ -114,10 +120,12 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     const project = getProject(id);
     if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
     if (!assertProjectAccess(req, reply, id)) return reply;
-    const docker = await dockerAvailable();
-    const services = await Promise.all(
-      listServices(id).map((s) => serviceWithRuntime(project, s, docker)),
-    );
+    // Una sola foto para todo el proyecto, y es ella quien dice si Docker
+    // respondía: así el `docker` que se devuelve no puede contradecir a los
+    // estados que lo acompañan.
+    const snap = await dockerSnapshot(PANEL_MAX_AGE_MS);
+    const docker = snap.docker;
+    const services = listServices(id).map((s) => serviceWithRuntime(s, snap));
     // activeDeploys va en la carga inicial para que la rejilla ya pinte «hay
     // una versión saliendo» en el primer render, sin esperar al stream.
     const active = activeDeploymentsByProject(id);
@@ -199,6 +207,7 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
       await removeNetwork(projectNetworkName(project));
     }
     deleteProject(id);
+    invalidateDockerSnapshot();
     audit(req, 'project_deleted', {
       type: 'project',
       id,

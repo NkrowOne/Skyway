@@ -44,11 +44,15 @@ import {
   updateResources,
   volumeName,
 } from '../docker/containers';
+import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
 import { triggerDeploy } from '../deploy/deployer';
 import { getTemplate, templateList } from '../templates';
 import { availableReferences, resolveServiceEnv } from '../variables';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from '../types';
 import { randomToken, slugify } from '../util';
+
+/** Antigüedad tolerada de la foto de Docker en las lecturas del panel. */
+const PANEL_MAX_AGE_MS = 4000;
 
 const createGitSchema = z.object({
   type: z.literal('git'),
@@ -237,10 +241,12 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
-    const docker = await dockerAvailable();
-    const runtime = docker
-      ? await getRuntime(containerName(found.project, found.service))
-      : { state: 'unknown', startedAt: null, exitCode: null, restartCount: 0, image: null };
+    // Lectura de panel: se sirve de la foto compartida (el drawer la repite
+    // cada 4 s) en vez de lanzar su propio inspect contra el socket. La foto es
+    // también quien dice si Docker respondía, para no dar dos verdades.
+    const snap = await dockerSnapshot(PANEL_MAX_AGE_MS);
+    const docker = snap.docker;
+    const runtime = runtimeIn(snap, id);
     return {
       service: found.service,
       project: found.project,
@@ -422,6 +428,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
     }
     deleteService(id);
+    invalidateDockerSnapshot();
     audit(req, 'service_deleted', {
       type: 'service',
       id,
@@ -474,6 +481,9 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(500).send({ error: err?.message || 'Operación fallida' });
       }
       audit(req, `service_${action}`, { type: 'service', id, detail: found.service.name });
+      // La acción acaba de cambiar los contenedores: la foto compartida ya no
+      // vale y aquí se lee la verdad, no la caché.
+      invalidateDockerSnapshot();
       return { ok: true, runtime: await getRuntime(containerName(found.project, found.service)) };
     });
   }

@@ -5,13 +5,36 @@ interface Rule {
   test: (error: string, logs: string) => boolean;
   title: string;
   cause: string;
-  fix: string;
+  /** Texto fijo, o una función cuando el remedio depende de lo que diga el log. */
+  fix: string | ((error: string, logs: string) => string);
 }
 
 const has = (haystack: string, ...needles: string[]) => {
   const lower = haystack.toLowerCase();
   return needles.some((n) => lower.includes(n.toLowerCase()));
 };
+
+/**
+ * Qué hacer cuando GitHub rechaza la credencial. El remedio no es el mismo
+ * según con qué se intentó clonar, y el log lo dice: `resolveGitAuth` deja
+ * escrito cuál eligió antes de intentarlo.
+ */
+function credentialFix(_error: string, logs: string): string {
+  if (has(logs, 'conector de GitHub')) {
+    return (
+      'El token de ese conector ya no vale. Bórralo y vuelve a crearlo con un token nuevo en Ajustes del servicio → GitHub. ' +
+      'Mejor todavía: conecta la GitHub App al proyecto y elige esa conexión en el servicio — emite un token por despliegue ' +
+      'y no caduca, así que no vuelve a pasar.'
+    );
+  }
+  if (has(logs, 'GitHub App')) {
+    return (
+      'La instalación de la GitHub App ya no autoriza este repositorio: puede que se desinstalara, se suspendiera o se le ' +
+      'quitara el repo. Revísala en Ajustes → GitHub y, si hace falta, vuelve a instalarla en la cuenta.'
+    );
+  }
+  return 'El token global de GitHub ya no vale. Actualízalo en Ajustes → GitHub (necesita permiso `repo` para repos privados).';
+}
 
 /**
  * Reglas de diagnóstico de fallos de despliegue, evaluadas en orden.
@@ -25,12 +48,37 @@ const RULES: Rule[] = [
     cause: 'El daemon de Docker no responde en el socket configurado. Sin él no se puede construir ni arrancar nada.',
     fix: 'Comprueba en el servidor que Docker está corriendo (`systemctl status docker`) y que el contenedor de Skyway monta `/var/run/docker.sock` (así viene en el docker-compose incluido).',
   },
+  // Las tres formas de fallar al clonar se separan a propósito: mandan a sitios
+  // distintos y juntarlas hacía que un token caducado te dijera «configura un
+  // token», que es justo lo que ya tenías hecho.
+  {
+    id: 'git-auth-rejected',
+    test: (e, l) => has(e + l, 'invalid username or token', 'authentication failed', 'bad credentials'),
+    title: 'GitHub rechazó la credencial',
+    cause:
+      'Skyway sí envió una credencial, pero GitHub no la aceptó. Un token que funcionaba y deja de hacerlo está caducado, ' +
+      'revocado o se rotó en GitHub sin actualizarlo aquí (los tokens personales clásicos caducan solos).',
+    fix: credentialFix,
+  },
+  {
+    id: 'git-no-credentials',
+    test: (e, l) => has(e + l, 'could not read username', 'terminal prompts disabled'),
+    title: 'El repositorio es privado y no hay credencial',
+    cause: 'GitHub pidió autenticación y Skyway no tenía ninguna credencial que ofrecer para este servicio.',
+    fix:
+      'Conecta la GitHub App al proyecto (Ajustes → GitHub): es la opción que no caduca. Como alternativa, añade un token ' +
+      'personal en el conector del servicio o un token global en Ajustes → GitHub.',
+  },
   {
     id: 'repo-not-found',
-    test: (e, l) => has(e + l, 'repository not found', 'could not read username', 'authentication failed', 'invalid username or token'),
+    test: (e, l) => has(e + l, 'repository not found'),
     title: 'No se pudo clonar el repositorio',
-    cause: 'La URL no existe o el repositorio es privado y Skyway no tiene credenciales válidas para leerlo.',
-    fix: 'Revisa la URL del repo. Si es privado, configura un token de GitHub (con permiso `repo`) en Ajustes → GitHub y vuelve a desplegar.',
+    cause:
+      'La URL no existe, o la credencial es válida pero no alcanza a ESTE repositorio. GitHub responde lo mismo en ambos ' +
+      'casos para no revelar si un repo privado existe.',
+    fix:
+      'Comprueba la URL. Si es correcta: con la GitHub App, añade el repositorio a la instalación en GitHub; con un token ' +
+      'personal de alcance fino, dale acceso a este repositorio; con uno clásico, necesita el permiso `repo`.',
   },
   {
     id: 'branch-not-found',
@@ -185,7 +233,8 @@ export function diagnose(error: string | null, logs: string): Diagnosis | null {
   const tail = logs.slice(-6000);
   for (const rule of RULES) {
     if (rule.test(error, tail)) {
-      return { id: rule.id, title: rule.title, cause: rule.cause, fix: rule.fix };
+      const fix = typeof rule.fix === 'function' ? rule.fix(error, tail) : rule.fix;
+      return { id: rule.id, title: rule.title, cause: rule.cause, fix };
     }
   }
   return {

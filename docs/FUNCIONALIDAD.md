@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.25.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.26.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -60,6 +60,8 @@ server/src/
     client.ts           instancia dockerode + ping cacheado
     networks.ts         red edge (Traefik) y red privada por proyecto
     containers.ts       crear/arrancar/parar, stats, logs, exec, réplicas, labels
+    sampler.ts          muestreador único de Docker: una foto compartida (bajo demanda, con
+                        coalescencia) que consumen panel, streams, monitor y vistas de estado
   deploy/
     builder.ts          clone (git) + build (Dockerfile o Nixpacks), enmascara secretos
     deployer.ts         orquestador: build → swap sin corte → validación → rollback
@@ -112,6 +114,58 @@ web/src/
 - **Traefik** (en el `docker-compose`): enruta por dominio y emite TLS con
   Let's Encrypt. Se activa por *labels* que Skyway pone en cada contenedor. Con
   TLS configurado, el puerto 80 no sirve contenido: redirige a HTTPS con un 301.
+
+### Muestreo de Docker (docker/sampler.ts)
+
+Todo lo que necesita saber el estado real de los contenedores —la ficha del
+proyecto, la del servicio, el stream de métricas de cada pestaña, el monitor, la
+vista de Monitor, la página de estado y la de webs— lee de **una sola foto
+compartida**, no pregunta a Docker por su cuenta. Importa porque `stats` tarda
+alrededor de un segundo por contenedor: con varios consumidores en paralelo el
+socket de Docker se convertía en el cuello de botella y el panel se movía a
+tirones.
+
+- **Bajo demanda**: no hay temporizador de fondo. Cada consumidor dice cuánta
+  antigüedad tolera (2 s el stream de métricas, 4 s las fichas, 5 s las vistas
+  de conjunto, 15 s el monitor) y si la foto vigente sirve, se la lleva sin
+  tocar Docker.
+- **Con coalescencia**: las peticiones que llegan mientras hay un muestreo en
+  marcha se enganchan a él. Da igual cuántas pestañas haya abiertas.
+- **Invalidación explícita**: desplegar, arrancar, parar, reiniciar o borrar
+  descarta la foto para que el cambio se vea en la lectura siguiente y no al
+  caducar. Un muestreo que arrancó antes de la invalidación no la pisa al
+  terminar.
+- **Un fallo de Docker no es un cambio de estado**: si el daemon no responde por
+  una réplica, se marca inalcanzable y el monitor salta ese ciclo en vez de
+  disparar una alerta de caída falsa.
+- **Con tope de tiempo**: el cliente de Docker se construye sin `timeout` y una
+  llamada al socket puede no volver nunca. Cada consulta tiene 8 s y el muestreo
+  entero 20 s; al vencer se devuelve una foto vacía marcada como «Docker no
+  disponible». Es lo que impide que un solo cuelgue —de un contenedor de un
+  proyecto— deje sin panel a todos los demás de forma permanente.
+- **Una foto sin datos no se guarda**: si el daemon no respondía, la foto no se
+  cachea, para que la lectura siguiente vuelva a intentarlo en cuanto se
+  recupere en vez de esperar a que caduque.
+- **Una sola verdad por respuesta**: quien pinta varios servicios pide la foto
+  una vez y saca de ella tanto los estados como el indicador de «Docker
+  disponible». Preguntarlo por separado daba respuestas que se contradecían.
+
+La foto se fecha **al empezar** a muestrear, no al terminar: un muestreo tarda
+lo suyo y, fechándolo al final, se serviría como recién hecho y quien pide datos
+cada 2,5 s recibiría dos veces la misma lectura.
+
+El stream de métricas, además, **no solapa ciclos**: si uno tarda más que el
+intervalo, el siguiente se descarta en lugar de apilarse encima.
+
+### Apagado ordenado (index.ts)
+
+`SIGTERM`/`SIGINT` cierran en orden: primero los streams SSE —que por definición
+no terminan solos y dejarían a `fastify.close()` esperando—, luego las
+peticiones en vuelo y por último la base de datos, cuyo cierre hace el
+*checkpoint* final del WAL. Hay un margen de 10 s tras el cual se sale a la
+fuerza. Un rechazo de promesa sin capturar se registra con su traza y el
+servidor sigue en pie; una excepción sin capturar se registra como fatal y sale
+con código 1, que es lo que permite a Docker levantarlo limpio.
 
 ### Pipeline de despliegue (deploy/deployer.ts)
 
@@ -171,10 +225,11 @@ web/src/
 
 **Feed de despliegues.** Cada cambio de fase (encolado, construyendo,
 desplegando, terminado) se publica en un bus en memoria (`events.ts`) que
-alimenta `GET /api/projects/:id/deploys/stream`. El panel lo usa para anunciar
-«hay una versión nueva saliendo» en la rejilla de servicios, en la cabecera del
-proyecto y en las tarjetas del panel general, sin esperar al refresco periódico.
-En el historial del servicio, **lo que está saliendo va por encima del activo**.
+alimenta `GET /api/projects/:id/deploys/stream` y viaja también por el stream de
+métricas del proyecto (§7.5). El panel lo usa para anunciar «hay una versión
+nueva saliendo» en la rejilla de servicios, en la cabecera del proyecto y en las
+tarjetas del panel general, sin esperar al refresco periódico. En el historial
+del servicio, **lo que está saliendo va por encima del activo**.
 
 ---
 
@@ -913,11 +968,11 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/deployments/:id/cancel` | +access | cancela uno en curso |
 | POST | `/deployments/:id/rollback` | +access | redespliega una imagen anterior (solo git) |
 | GET | `/deployments/:id/logs/stream` | +access | **SSE** de build/deploy |
-| GET | `/projects/:id/deploys/stream` | +access | **SSE** del feed de despliegues del proyecto (instantánea + cada cambio de fase) |
+| GET | `/projects/:id/deploys/stream` | +access | **SSE** del feed de despliegues del proyecto (evento `snapshot` + un `deploy` por cambio de fase). Independiente: pensado para agentes y automatizaciones que solo quieren los despliegues |
 | GET | `/services/:id/logs/stream` | +access | **SSE** de logs de ejecución (cada línea con su cursor de tiempo) |
 | GET | `/services/:id/logs/tail` | +access | páginado hacia atrás: líneas anteriores a un cursor (`?limit=&before=`) para cargar historial al subir |
 | GET | `/services/:id/logs/download` | +access | descarga íntegra del log del contenedor como adjunto de texto (`?timestamps=1` para incluir sellos) |
-| GET | `/projects/:id/metrics/stream` | +access | **SSE** de métricas en vivo del proyecto |
+| GET | `/projects/:id/metrics/stream` | +access | **SSE** de métricas en vivo del proyecto: `metrics` cada 2,5 s y, por la misma conexión, los despliegues (`deploys` al conectar + un `deploy` por cambio de fase). El panel abre solo esta, no las dos |
 | GET | `/services/:id/metrics/history` | +access | histórico de consumo del servicio (`?hours=`): CPU/RAM (media y pico), red y disco |
 
 ### 7.5.1 Copia de datos desde una base externa (§5.6)

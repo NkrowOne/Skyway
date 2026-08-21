@@ -1,8 +1,8 @@
 import { FastifyInstance } from 'fastify';
 import { canAccessProject, currentUser, requireAuth } from '../auth';
 import { getSetting, listDeployments, listProjects, listServices, openAlertCountsByService } from '../db';
-import { dockerAvailable } from '../docker/client';
-import { aggregateReplicaState, configuredReplicas, getRuntime, replicaName } from '../docker/containers';
+import { aggregateReplicaState, configuredReplicas } from '../docker/containers';
+import { dockerSnapshot } from '../docker/sampler';
 import { ContainerState } from '../types';
 
 /**
@@ -14,7 +14,12 @@ export async function websiteRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/websites', async (req) => {
     const user = currentUser(req)!;
-    const dockerUp = await dockerAvailable();
+    // Una sola foto de Docker para toda la vista. Es ella quien dice si el
+    // daemon respondía: preguntarlo aparte daba dos verdades distintas y, con
+    // el ping recuperado y la foto todavía vacía, la vista pintaba todos los
+    // sitios como caídos.
+    const snap = await dockerSnapshot(5000);
+    const dockerUp = snap.docker;
     const tls = !!getSetting('letsencryptEmail');
     const sites: any[] = [];
 
@@ -29,16 +34,12 @@ export async function websiteRoutes(app: FastifyInstance): Promise<void> {
         const states: ContainerState[] = [];
         let startedAt: string | null = null;
         if (dockerUp) {
-          for (let i = 1; i <= total; i++) {
-            try {
-              const runtime = await getRuntime(replicaName(project, service, i));
-              states.push(runtime.state);
-              if (runtime.state === 'running') {
-                running += 1;
-                if (!startedAt) startedAt = runtime.startedAt;
-              }
-            } catch {
-              /* réplica ilocalizable */
+          for (const replica of snap.byService.get(service.id)?.perReplica ?? []) {
+            if (replica.unreachable) continue; // réplica ilocalizable
+            states.push(replica.runtime.state);
+            if (replica.runtime.state === 'running') {
+              running += 1;
+              if (!startedAt) startedAt = replica.runtime.startedAt;
             }
           }
         }

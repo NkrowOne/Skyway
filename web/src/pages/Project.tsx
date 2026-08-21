@@ -33,15 +33,33 @@ export interface MetricPoint {
 
 const HISTORY_LIMIT = 120;
 
-/** Abre el stream SSE de métricas del proyecto y acumula histórico por servicio. */
-function useProjectMetrics(projectId: string | undefined) {
+/**
+ * Stream del proyecto: métricas en vivo e historial por servicio, y los avisos
+ * de despliegue.
+ *
+ * Las dos cosas viajan por la MISMA conexión a propósito. El navegador solo
+ * abre seis conexiones por host en HTTP/1.1 —un túnel SSH, por ejemplo— y esta
+ * página ya gasta una en los logs del despliegue abierto y otra en los del
+ * contenedor: separar métricas y despliegues dejaba el panel a un paso de
+ * quedarse sin hueco para las peticiones normales.
+ */
+function useProjectStream(projectId: string | undefined, onDeploySettled: () => void) {
   const [latest, setLatest] = useState<MetricsSnapshot | null>(null);
+  const [deploys, setDeploys] = useState<Record<string, ActiveDeploy>>({});
+  const [live, setLive] = useState(false);
   const historyRef = useRef<Map<string, MetricPoint[]>>(new Map());
+  // El callback cambia de identidad en cada render; la ref evita reabrir el SSE.
+  const settledRef = useRef(onDeploySettled);
+  settledRef.current = onDeploySettled;
 
   useEffect(() => {
     if (!projectId) return;
     historyRef.current = new Map();
+    setDeploys({});
+    setLive(false);
+
     const es = openStream(`/projects/${projectId}/metrics/stream`);
+
     es.addEventListener('metrics', (ev) => {
       const snap: MetricsSnapshot = JSON.parse((ev as MessageEvent).data);
       setLatest(snap);
@@ -60,39 +78,15 @@ function useProjectMetrics(projectId: string | undefined) {
         historyRef.current.set(serviceId, arr);
       }
     });
-    es.onerror = () => {
-      /* EventSource reintenta solo */
-    };
-    return () => es.close();
-  }, [projectId]);
 
-  return { latest, historyRef };
-}
-
-/**
- * Feed de despliegues del proyecto por SSE. El refetch del proyecto (4 s) ya
- * traía el estado, pero llegar tarde a «está saliendo una versión» es
- * exactamente el problema: aquí el aviso entra en el instante en que se encola.
- * Mientras no llegue la instantánea del stream manda lo que trajo la carga
- * inicial; después manda el stream, que es quien sabe cuándo termina.
- */
-function useProjectDeploys(projectId: string | undefined, onSettled: () => void) {
-  const [deploys, setDeploys] = useState<Record<string, ActiveDeploy>>({});
-  const [live, setLive] = useState(false);
-  // El callback cambia de identidad en cada render; la ref evita reabrir el SSE.
-  const settledRef = useRef(onSettled);
-  settledRef.current = onSettled;
-
-  useEffect(() => {
-    if (!projectId) return;
-    setDeploys({});
-    setLive(false);
-    const es = openStream(`/projects/${projectId}/deploys/stream`);
-    es.addEventListener('snapshot', (ev) => {
+    // Estado inicial de los despliegues vivos, al conectar.
+    es.addEventListener('deploys', (ev) => {
       const data = JSON.parse((ev as MessageEvent).data) as { deploys: ActiveDeploy[] };
       setDeploys(Object.fromEntries(data.deploys.map((d) => [d.serviceId, d])));
       setLive(true);
     });
+
+    // Cambios de fase, en el instante en que ocurren (no esperan al temporizador).
     es.addEventListener('deploy', (ev) => {
       const item = JSON.parse((ev as MessageEvent).data) as ActiveDeploy;
       const running = isActiveDeploy(item.status);
@@ -105,13 +99,14 @@ function useProjectDeploys(projectId: string | undefined, onSettled: () => void)
       // Al terminar cambian el contenedor y sus métricas: se refresca el proyecto.
       if (!running) settledRef.current();
     });
+
     es.onerror = () => {
       /* EventSource reintenta solo */
     };
     return () => es.close();
   }, [projectId]);
 
-  return { deploys, live };
+  return { latest, historyRef, deploys, live };
 }
 
 function CanvasSkeleton() {
@@ -194,8 +189,7 @@ export default function ProjectPage() {
     enabled: !!projectId,
   });
 
-  const { latest, historyRef } = useProjectMetrics(projectId);
-  const deployFeed = useProjectDeploys(projectId, () => {
+  const { latest, historyRef, deploys, live } = useProjectStream(projectId, () => {
     queryClient.invalidateQueries({ queryKey: ['project', projectId] });
   });
 
@@ -254,7 +248,7 @@ export default function ProjectPage() {
   }
 
   const { project: proj, services, alertCounts } = project.data;
-  const activeDeploys = deployFeed.live ? deployFeed.deploys : project.data.activeDeploys ?? {};
+  const activeDeploys = live ? deploys : project.data.activeDeploys ?? {};
   const deployingServices = services.filter((s) => activeDeploys[s.id]);
   // Gestión de estructura (renombrar/eliminar): admin o propietario del workspace del proyecto.
   const isManager =

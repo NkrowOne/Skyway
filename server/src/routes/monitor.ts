@@ -18,10 +18,9 @@ import {
   aggregateReplicaState,
   configuredReplicas,
   fetchLogsTail,
-  getRuntime,
-  getStats,
   replicaName,
 } from '../docker/containers';
+import { dockerSnapshot } from '../docker/sampler';
 import { ContainerState, ProjectRow, ServiceRow } from '../types';
 
 /** Proyectos visibles para el usuario de la petición (admin: todos). */
@@ -29,6 +28,13 @@ function accessibleProjects(req: any): ProjectRow[] {
   const user = currentUser(req)!;
   return listProjects().filter((p) => canAccessProject(user, p.id));
 }
+
+/**
+ * Antigüedad tolerada de la foto de Docker en las vistas de Monitor. La página
+ * se refresca cada 60 s, así que unos segundos de retraso no se notan y a
+ * cambio comparte muestreo con el resto del panel.
+ */
+const OVERVIEW_MAX_AGE_MS = 5000;
 
 export async function monitorRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
@@ -38,15 +44,17 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
    * accesibles, con métricas, alertas, último despliegue y uso de disco.
    */
   app.get('/api/monitor/overview', async (req) => {
-    const dockerUp = await dockerAvailable();
     const projects = accessibleProjects(req);
+    // Una sola foto para toda la vista: antes cada servicio pedía su inspect y
+    // su stats por separado, y `stats` cuesta ~1 s por contenedor. Es la foto
+    // quien dice si Docker respondía (ver la nota en websites.ts).
+    const snap = await dockerSnapshot(OVERVIEW_MAX_AGE_MS);
+    const dockerUp = snap.docker;
     const disk = dockerUp ? await diskUsageByService().catch(() => null) : null;
 
     const services: any[] = [];
     for (const project of projects) {
       const alertCounts = openAlertCountsByService(project.id);
-      // En paralelo por servicio: la latencia de la página es la del servicio
-      // más lento, no la suma de todos (getStats tarda ~1 s por contenedor).
       const entries = await Promise.all(
         listServices(project.id).map(async (service) => {
           const cfg = service.config as any;
@@ -59,20 +67,17 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
           let stats: { cpuPercent: number; memUsage: number; memLimit: number } | null = null;
 
           if (dockerUp) {
+            const sample = snap.byService.get(service.id);
             for (let i = 1; i <= total; i++) {
-              const name = replicaName(project, service, i);
-              let runtime;
-              try {
-                runtime = await getRuntime(name);
-              } catch {
-                continue;
-              }
+              const replica = sample?.perReplica.find((r) => r.index === i);
+              if (!replica || replica.unreachable) continue;
+              const runtime = replica.runtime;
               states.push(runtime.state);
               restartCount += runtime.restartCount;
               if (runtime.state === 'running') {
                 running += 1;
                 if (!startedAt) startedAt = runtime.startedAt;
-                const s = await getStats(name);
+                const s = replica.stats;
                 if (s) {
                   if (!stats) stats = { cpuPercent: 0, memUsage: 0, memLimit: 0 };
                   stats.cpuPercent = Math.round((stats.cpuPercent + s.cpuPercent) * 10) / 10;
@@ -159,18 +164,16 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
     let scanned = 0;
 
     const projects = accessibleProjects(req).filter((p) => !params.projectId || p.id === params.projectId);
+    // Solo hace falta saber qué contenedores existen: la foto compartida basta.
+    const logSnap = await dockerSnapshot(OVERVIEW_MAX_AGE_MS);
     for (const project of projects) {
       for (const service of listServices(project.id)) {
         const total = configuredReplicas(service);
         for (let i = 1; i <= total; i++) {
           const name = replicaName(project, service, i);
-          let runtime;
-          try {
-            runtime = await getRuntime(name);
-          } catch {
-            continue;
-          }
-          if (runtime.state === 'not_created') continue;
+          const replica = logSnap.byService.get(service.id)?.perReplica.find((r) => r.index === i);
+          if (!replica || replica.unreachable) continue;
+          if (replica.runtime.state === 'not_created') continue;
           scanned += 1;
           try {
             const lines = await fetchLogsTail(name, params.tail);

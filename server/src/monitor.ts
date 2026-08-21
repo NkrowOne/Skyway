@@ -15,7 +15,8 @@ import {
 } from './db';
 import { diskUsageByService, hostDisk } from './disk';
 import { dockerAvailable } from './docker/client';
-import { configuredReplicas, getRuntime, getStats, replicaName } from './docker/containers';
+import { configuredReplicas, replicaName } from './docker/containers';
+import { dockerSnapshot } from './docker/sampler';
 import { explainExitCode } from './deploy/diagnose';
 import { netDelta, pruneNetCounters } from './metrics';
 import { ContainerState } from './types';
@@ -52,8 +53,19 @@ function num(key: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/**
+ * Antigüedad tolerada de la foto de Docker. El monitor vigila tendencias
+ * (caídas, bucles, CPU sostenida), no instantes, así que media ventana de tick
+ * sobra — y así comparte muestreo con el panel en vez de duplicarlo.
+ */
+const SAMPLE_MAX_AGE_MS = 15_000;
+
 async function tick(): Promise<void> {
   if (!(await dockerAvailable())) return;
+  // Una sola foto para todo el ciclo. Antes se preguntaba a Docker contenedor
+  // a contenedor y en serie: con `stats` tardando ~1 s, un servidor con treinta
+  // servicios no llegaba a terminar el ciclo dentro de su propio intervalo.
+  const snap = await dockerSnapshot(SAMPLE_MAX_AGE_MS);
 
   const cpuThreshold = num('alertCpuPercent', 90);
   const memThreshold = num('alertMemPercent', 90);
@@ -79,12 +91,11 @@ async function tick(): Promise<void> {
       const name = replicaName(project, service, idx);
       const trackKey = `${service.id}#${idx}`;
       const replicaTag = totalReplicas > 1 ? ` (réplica ${idx}/${totalReplicas})` : '';
-      let runtime;
-      try {
-        runtime = await getRuntime(name);
-      } catch {
-        continue;
-      }
+      const replica = snap.byService.get(service.id)?.perReplica.find((r) => r.index === idx);
+      // Sin dato fiable de esta réplica se salta el ciclo: interpretar el
+      // silencio de Docker como un cambio de estado dispararía alertas falsas.
+      if (!replica || replica.unreachable) continue;
+      const runtime = replica.runtime;
       if (runtime.state !== 'not_created') anyReplicaSeen = true;
       if (runtime.state === 'running') runningReplicas += 1;
       const prev = tracked.get(trackKey);
@@ -146,7 +157,7 @@ async function tick(): Promise<void> {
         // La réplica corre: su contador de red debe sobrevivir aunque getStats
         // falle puntualmente (si no, al recuperarse perdería el tramo del hueco).
         seenReplicas.add(name);
-        const stats = await getStats(name);
+        const stats = replica.stats;
         if (stats) {
           // Muestra para el histórico: suma de todas las réplicas del servicio.
           statsReplicas += 1;

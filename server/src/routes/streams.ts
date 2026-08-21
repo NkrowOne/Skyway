@@ -3,6 +3,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, requireAuth } from '../auth';
 import { activeDeploymentsByProject, getProject, getService, listServices } from '../db';
+import { dockerSnapshot } from '../docker/sampler';
 import { onDeployFeed, toDeployFeedItem } from '../events';
 import { dockerAvailable } from '../docker/client';
 import {
@@ -12,10 +13,19 @@ import {
   fetchLogsText,
   followLogs,
   getRuntime,
-  getStats,
-  replicaName,
 } from '../docker/containers';
 import { sseInit } from '../sse';
+
+/**
+ * Antigüedad que tolera el stream de métricas. Va por debajo del intervalo del
+ * temporizador para que cada ciclo traiga datos nuevos —lo cual solo se cumple
+ * porque la foto se fecha al empezar a muestrear y no al terminar; si no, un
+ * muestreo de un segundo se serviría dos veces y el refresco real sería de
+ * 5 s—. Aun así es el muestreador quien decide si hay que preguntar a Docker:
+ * con varias pestañas abiertas, todas comparten la misma foto.
+ */
+const SAMPLE_MAX_AGE_MS = 2000;
+const METRICS_TICK_MS = 2500;
 
 export async function streamRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
@@ -154,58 +164,62 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
 
     const channel = sseInit(reply);
 
+    // Los despliegues viajan por este mismo stream: el panel de proyecto
+    // necesita las dos cosas a la vez y el navegador solo abre seis conexiones
+    // por host en HTTP/1.1 (un túnel SSH, sin ir más lejos). El aviso de
+    // despliegue sigue siendo instantáneo —sale del bus, no del temporizador—.
+    const unsubscribe = onDeployFeed((item) => {
+      if (item.projectId === id) channel.send('deploy', item);
+    });
+    channel.onClose(unsubscribe);
+    channel.send('deploys', {
+      deploys: Object.values(activeDeploymentsByProject(id)).map((d) => toDeployFeedItem(d, id)),
+    });
+
+    let ticking = false;
     const tick = async (): Promise<void> => {
-      if (channel.closed) return;
-      const docker = await dockerAvailable();
-      if (!docker) {
-        channel.send('metrics', { ts: Date.now(), docker: false, services: {} });
-        return;
+      // Sin esta guarda, un ciclo que tarde más que el intervalo apila ciclos
+      // encima —y cada uno tarda más que el anterior—. Con muchos servicios es
+      // lo que convierte el panel en una máquina de martillear a Docker.
+      if (channel.closed || ticking) return;
+      ticking = true;
+      try {
+        const snap = await dockerSnapshot(SAMPLE_MAX_AGE_MS);
+        if (channel.closed) return;
+        if (!snap.docker) {
+          channel.send('metrics', { ts: snap.at, docker: false, services: {} });
+          return;
+        }
+        const services: Record<string, unknown> = {};
+        for (const s of listServices(id)) {
+          const sample = snap.byService.get(s.id);
+          services[s.id] = {
+            state: sample?.state ?? 'not_created',
+            stats: sample?.stats ?? null,
+            replicas: sample?.replicas ?? { running: 0, total: configuredReplicas(s) },
+          };
+        }
+        const load = os.loadavg()[0];
+        channel.send('metrics', {
+          ts: snap.at,
+          docker: true,
+          host: {
+            cpus: os.cpus().length,
+            load: Math.round(load * 100) / 100,
+            totalMem: os.totalmem(),
+            freeMem: os.freemem(),
+          },
+          services,
+        });
+      } catch (err: any) {
+        req.log.warn(`stream de métricas: ${err?.message || err}`);
+      } finally {
+        ticking = false;
       }
-      const services = listServices(id);
-      const entries = await Promise.all(
-        services.map(async (s) => {
-          const total = configuredReplicas(s);
-          let running = 0;
-          let aggregated: { cpuPercent: number; memUsage: number; memLimit: number; netRx: number; netTx: number } | null = null;
-          let firstState: string = 'not_created';
-          for (let i = 1; i <= total; i++) {
-            const name = replicaName(project, s, i);
-            const runtime = await getRuntime(name);
-            if (i === 1) firstState = runtime.state;
-            if (runtime.state !== 'running') continue;
-            running += 1;
-            const stats = await getStats(name);
-            if (stats) {
-              if (!aggregated) aggregated = { cpuPercent: 0, memUsage: 0, memLimit: 0, netRx: 0, netTx: 0 };
-              aggregated.cpuPercent = Math.round((aggregated.cpuPercent + stats.cpuPercent) * 10) / 10;
-              aggregated.memUsage += stats.memUsage;
-              // El límite se suma por réplica: si no, el % de RAM agregado
-              // supera el 100% con el servicio perfectamente sano.
-              aggregated.memLimit += stats.memLimit;
-              aggregated.netRx += stats.netRx;
-              aggregated.netTx += stats.netTx;
-            }
-          }
-          const state = running === total && total > 0 ? 'running' : running > 0 ? firstState === 'running' ? 'running' : firstState : firstState;
-          return [s.id, { state, stats: aggregated, replicas: { running, total } }] as const;
-        }),
-      );
-      const load = os.loadavg()[0];
-      channel.send('metrics', {
-        ts: Date.now(),
-        docker: true,
-        host: {
-          cpus: os.cpus().length,
-          load: Math.round(load * 100) / 100,
-          totalMem: os.totalmem(),
-          freeMem: os.freemem(),
-        },
-        services: Object.fromEntries(entries),
-      });
     };
 
     void tick();
-    const interval = setInterval(tick, 2500);
+    const interval = setInterval(tick, METRICS_TICK_MS);
     channel.onClose(() => clearInterval(interval));
   });
 }

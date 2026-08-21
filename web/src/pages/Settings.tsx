@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useLocation } from 'react-router-dom';
 import { AlertTriangle, BellRing, CheckCircle2, Cpu, DatabaseBackup, Download, Globe, KeyRound, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import GithubAppPanel from '../components/GithubAppPanel';
@@ -48,6 +49,7 @@ function ErrPill({ label }: { label: string }) {
 }
 
 function SettingsSection({
+  id,
   icon,
   iconClass,
   title,
@@ -55,6 +57,8 @@ function SettingsSection({
   aside,
   children,
 }: {
+  /** Ancla para enlazar la sección desde otra pantalla (`/settings#github`). */
+  id?: string;
   icon: React.ReactNode;
   iconClass: string;
   title: string;
@@ -63,7 +67,7 @@ function SettingsSection({
   children: React.ReactNode;
 }) {
   return (
-    <section className="card p-5">
+    <section id={id} className="card scroll-mt-6 p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-2.5">
         <div>
           {/* El icono anota el título a escala de texto; el tono aporta el matiz semántico. */}
@@ -92,11 +96,37 @@ function StatTile({ label, value, sub }: { label: string; value: string; sub: st
   );
 }
 
+/**
+ * Lleva la vista a la sección enlazada (`/settings#github`). Hace falta hacerlo
+ * a mano: en una SPA el navegador intenta saltar al ancla antes de que React
+ * haya pintado nada, no encuentra el elemento y se queda arriba. Esta página es
+ * larga y es justo donde la gente decía no encontrar la conexión de GitHub.
+ *
+ * El salto va DENTRO del efecto, no en un frame posterior: quien llega aquí
+ * viene de github.com con `?github=…#github`, y el aviso de vuelta limpia la
+ * query en este mismo ciclo llevándose el fragmento por delante. Un salto
+ * diferido se cancelaba al reiniciarse el efecto sin hash, así que nunca
+ * ocurría justo en el único caso para el que existe.
+ */
+function useHashScroll(): void {
+  const { hash } = useLocation();
+  // Una vez por destino: la URL cambia bajo los pies y no hay que repetirlo.
+  const jumped = useRef<string | null>(null);
+  useEffect(() => {
+    if (!hash || jumped.current === hash) return;
+    const target = document.getElementById(hash.slice(1));
+    if (!target) return; // la sección aún no existe: no se fuerza nada
+    jumped.current = hash;
+    target.scrollIntoView({ block: 'start' });
+  }, [hash]);
+}
+
 export default function SettingsPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
   // Vuelta de github.com tras crear la App o instalarla: se avisa y se limpia la URL.
   useGithubReturnNotice();
+  useHashScroll();
   const [rootDomain, setRootDomain] = useState('');
   const [letsencryptEmail, setLetsencryptEmail] = useState('');
   const [serverIp, setServerIp] = useState('');
@@ -360,6 +390,7 @@ export default function SettingsPage() {
       </SettingsSection>
 
       <SettingsSection
+        id="github"
         icon={<ModuleLogo kind="github" size={15} />}
         iconClass="text-txt"
         title="GitHub"

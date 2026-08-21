@@ -6,6 +6,7 @@ import { GithubAppStatus, GithubInstallation } from '../types';
 import { timeAgo } from '../utils';
 import { ModuleLogo } from './ModuleIcon';
 import { Button, ConfirmModal, CopyButton, Field, Skeleton, useToast } from './ui';
+import { useCreateGithubApp } from './useGithubApp';
 
 /**
  * Alta y gestión de la GitHub App del servidor.
@@ -21,7 +22,7 @@ export default function GithubAppPanel() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [org, setOrg] = useState('');
-  const [creating, setCreating] = useState(false);
+  const createApp = useCreateGithubApp();
   const [disconnecting, setDisconnecting] = useState(false);
   const [toRemove, setToRemove] = useState<GithubInstallation | null>(null);
 
@@ -39,29 +40,6 @@ export default function GithubAppPanel() {
     queryClient.invalidateQueries({ queryKey: ['githubApp'] });
     queryClient.invalidateQueries({ queryKey: ['githubInstallations'] });
   };
-
-  /**
-   * GitHub solo acepta el manifiesto por POST desde el navegador, así que se
-   * arma un formulario al vuelo y se envía. No hay forma servidor-a-servidor.
-   */
-  const createApp = useMutation({
-    mutationFn: () =>
-      api.post<{ action: string; manifest: unknown }>('/github/app/manifest', org.trim() ? { org: org.trim() } : {}),
-    onSuccess: (res) => {
-      setCreating(true);
-      const form = document.createElement('form');
-      form.method = 'POST';
-      form.action = res.action;
-      const input = document.createElement('input');
-      input.type = 'hidden';
-      input.name = 'manifest';
-      input.value = JSON.stringify(res.manifest);
-      form.appendChild(input);
-      document.body.appendChild(form);
-      form.submit();
-    },
-    onError: (err: Error) => toast(err.message, 'err'),
-  });
 
   const disconnect = useMutation({
     mutationFn: () => api.post('/github/app/disconnect'),
@@ -113,7 +91,7 @@ export default function GithubAppPanel() {
           >
             <input className="input" placeholder="mi-organizacion" value={org} onChange={(e) => setOrg(e.target.value)} />
           </Field>
-          <Button onClick={() => createApp.mutate()} loading={createApp.isPending || creating}>
+          <Button onClick={() => createApp.create(org)} loading={createApp.pending}>
             <ModuleLogo kind="github" size={14} /> Crear la App en GitHub
           </Button>
         </div>
