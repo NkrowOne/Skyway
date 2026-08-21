@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { assertProjectAccess, assertProjectManage, canAccessProject, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
 import {
+  activeDeploymentsByProject,
   clearProjectMemberships,
   createProject,
   countWorkspaceProjects,
@@ -20,6 +21,7 @@ import {
   setProjectWorkspace,
   updateProjectMeta,
 } from '../db';
+import { toDeployFeedItem } from '../events';
 import { dockerAvailable } from '../docker/client';
 import { containerName, getRuntime, listServiceContainers, removeContainer, removeVolume, stopContainer, volumeName } from '../docker/containers';
 import { projectNetworkName, removeNetwork } from '../docker/networks';
@@ -115,7 +117,18 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     const services = await Promise.all(
       listServices(id).map((s) => serviceWithRuntime(project, s, docker)),
     );
-    return { project, services, docker, alertCounts: openAlertCountsByService(id) };
+    // activeDeploys va en la carga inicial para que la rejilla ya pinte «hay
+    // una versión saliendo» en el primer render, sin esperar al stream.
+    const active = activeDeploymentsByProject(id);
+    return {
+      project,
+      services,
+      docker,
+      alertCounts: openAlertCountsByService(id),
+      activeDeploys: Object.fromEntries(
+        Object.entries(active).map(([serviceId, row]) => [serviceId, toDeployFeedItem(row, id)]),
+      ),
+    };
   });
 
   app.patch('/api/projects/:id', async (req, reply) => {

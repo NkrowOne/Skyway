@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { History, Lightbulb, RotateCcw, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
-import { cx, DEPLOY_STATUS_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
+import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
 import { Skeleton, useToast } from '../ui';
 
@@ -24,15 +24,6 @@ function Collapse({ open, children }: { open: boolean; children: React.ReactNode
     </div>
   );
 }
-
-const TRIGGER_LABEL: Record<string, string> = {
-  initial: 'creación',
-  manual: 'manual',
-  webhook: 'push',
-  autodeploy: 'auto-deploy',
-  rollback: 'rollback',
-  import: 'importación',
-};
 
 /** Explicación del fallo generada por el servidor (qué pasó y cómo arreglarlo). */
 function DiagnosisCard({ raw }: { raw: string | null }) {
@@ -197,20 +188,30 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
   // El más reciente en el tiempo: sirve para teñir en rojo un último intento fallido.
   const latestId = list[0]?.id ?? null;
 
-  // El vigente («Activo») es el principal y va SIEMPRE arriba del todo, aunque
-  // después haya intentos cancelados o fallidos más recientes. El resto conserva
-  // el orden cronológico —lo que esté en curso queda justo debajo del vigente—.
-  const ordered =
-    currentId && list[0]?.id !== currentId
-      ? [list.find((d) => d.id === currentId)!, ...list.filter((d) => d.id !== currentId)]
-      : list;
+  // Orden: primero LO QUE ESTÁ SALIENDO, después el vigente («Activo»), y
+  // debajo el histórico en orden cronológico. La versión en curso manda sobre
+  // la vigente porque es la novedad —lo que hay que ver sin buscarlo—; el
+  // vigente sube por encima del histórico aunque haya intentos fallidos o
+  // cancelados más recientes, porque es lo que sirve tráfico ahora mismo.
+  const running = list.filter((d) => isActiveDeploy(d.status));
+  const runningIds = new Set(running.map((d) => d.id));
+  const current = currentId ? list.find((d) => d.id === currentId) : undefined;
+  const ordered = [
+    ...running,
+    ...(current && !runningIds.has(current.id) ? [current] : []),
+    ...list.filter((d) => !runningIds.has(d.id) && d.id !== currentId),
+  ];
 
-  // Abre automáticamente el despliegue en curso; si no hay, el que encabeza la lista.
+  // Un despliegue que arranca se abre solo: es la novedad que hay que ver. Al
+  // depender del id, si el usuario lo pliega a mano no se le vuelve a abrir.
+  const runningId = running[0]?.id ?? null;
   useEffect(() => {
-    if (openId === null && ordered.length > 0) {
-      const active = ordered.find((d) => isActiveDeploy(d.status));
-      setOpenId(active ? active.id : ordered[0].id);
-    }
+    if (runningId) setOpenId(runningId);
+  }, [runningId]);
+
+  // Sin nada en curso, se abre el que encabeza la lista (normalmente el vigente).
+  useEffect(() => {
+    if (openId === null && !runningId && ordered.length > 0) setOpenId(ordered[0].id);
   }, [ordered.length]);
 
   if (deployments.isLoading) {
@@ -270,7 +271,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
                         : 'Despliegue')}
                 </p>
                 <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">
-                  {TRIGGER_LABEL[d.trigger] ?? d.trigger}
+                  {DEPLOY_TRIGGER_LABEL[d.trigger] ?? d.trigger}
                   {d.commit_sha && <> · {d.commit_sha.slice(0, 7)}</>}
                   <> · {timeAgo(d.created_at)}</>
                   {d.finished_at && <> · {fmtDuration(d.finished_at - d.created_at)}</>}

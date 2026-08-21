@@ -8,7 +8,9 @@ import { Button, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } fr
 import { ModuleLogo } from '../components/ModuleIcon';
 import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
-import { Me, MetricsSnapshot, Project, Service } from '../types';
+import { DeployLine } from '../components/DeployBadge';
+import { ActiveDeploy, Me, MetricsSnapshot, Project, Service } from '../types';
+import { isActiveDeploy } from '../utils';
 
 // Carga diferida: el drawer del servicio (con sus 8 pestañas y modales) y los
 // modales de cabecera solo se descargan al abrirlos, no al entrar al proyecto.
@@ -64,6 +66,51 @@ function useProjectMetrics(projectId: string | undefined) {
   }, [projectId]);
 
   return { latest, historyRef };
+}
+
+/**
+ * Feed de despliegues del proyecto por SSE. El refetch del proyecto (4 s) ya
+ * traía el estado, pero llegar tarde a «está saliendo una versión» es
+ * exactamente el problema: aquí el aviso entra en el instante en que se encola.
+ * Mientras no llegue la instantánea del stream manda lo que trajo la carga
+ * inicial; después manda el stream, que es quien sabe cuándo termina.
+ */
+function useProjectDeploys(projectId: string | undefined, onSettled: () => void) {
+  const [deploys, setDeploys] = useState<Record<string, ActiveDeploy>>({});
+  const [live, setLive] = useState(false);
+  // El callback cambia de identidad en cada render; la ref evita reabrir el SSE.
+  const settledRef = useRef(onSettled);
+  settledRef.current = onSettled;
+
+  useEffect(() => {
+    if (!projectId) return;
+    setDeploys({});
+    setLive(false);
+    const es = openStream(`/projects/${projectId}/deploys/stream`);
+    es.addEventListener('snapshot', (ev) => {
+      const data = JSON.parse((ev as MessageEvent).data) as { deploys: ActiveDeploy[] };
+      setDeploys(Object.fromEntries(data.deploys.map((d) => [d.serviceId, d])));
+      setLive(true);
+    });
+    es.addEventListener('deploy', (ev) => {
+      const item = JSON.parse((ev as MessageEvent).data) as ActiveDeploy;
+      const running = isActiveDeploy(item.status);
+      setDeploys((prev) => {
+        const next = { ...prev };
+        if (running) next[item.serviceId] = item;
+        else delete next[item.serviceId];
+        return next;
+      });
+      // Al terminar cambian el contenedor y sus métricas: se refresca el proyecto.
+      if (!running) settledRef.current();
+    });
+    es.onerror = () => {
+      /* EventSource reintenta solo */
+    };
+    return () => es.close();
+  }, [projectId]);
+
+  return { deploys, live };
 }
 
 function CanvasSkeleton() {
@@ -133,14 +180,21 @@ export default function ProjectPage() {
   const project = useQuery({
     queryKey: ['project', projectId],
     queryFn: () =>
-      api.get<{ project: Project; services: Service[]; docker: boolean; alertCounts: Record<string, number> }>(
-        `/projects/${projectId}`,
-      ),
+      api.get<{
+        project: Project;
+        services: Service[];
+        docker: boolean;
+        alertCounts: Record<string, number>;
+        activeDeploys: Record<string, ActiveDeploy>;
+      }>(`/projects/${projectId}`),
     refetchInterval: 4000,
     enabled: !!projectId,
   });
 
   const { latest, historyRef } = useProjectMetrics(projectId);
+  const deployFeed = useProjectDeploys(projectId, () => {
+    queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+  });
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
   const isAdmin = me.data?.user?.role === 'admin';
@@ -197,6 +251,8 @@ export default function ProjectPage() {
   }
 
   const { project: proj, services, alertCounts } = project.data;
+  const activeDeploys = deployFeed.live ? deployFeed.deploys : project.data.activeDeploys ?? {};
+  const deployingServices = services.filter((s) => activeDeploys[s.id]);
   // Gestión de estructura (renombrar/eliminar): admin o propietario del workspace del proyecto.
   const isManager =
     isAdmin ||
@@ -296,6 +352,38 @@ export default function ProjectPage() {
           </div>
         </div>
 
+        {/*
+          El aviso de despliegue va ARRIBA del todo y con su propia cinta: el
+          problema que resuelve es no enterarse de que hay una versión saliendo,
+          así que no puede depender de abrir el servicio ni de mirar su tarjeta.
+        */}
+        {deployingServices.length > 0 && (
+          <div className="relative mb-4 overflow-hidden rounded-xl border border-warn/35 bg-warn/[.07] px-4 py-3">
+            <span aria-hidden className="deploy-sweep absolute inset-x-0 top-0 h-[2px]" />
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <div className="flex min-w-0 flex-col gap-1">
+                <p className="text-[13px] font-semibold">
+                  {deployingServices.length === 1
+                    ? 'Hay una versión nueva saliendo'
+                    : `Hay ${deployingServices.length} versiones nuevas saliendo`}
+                </p>
+                {deployingServices.slice(0, 4).map((s) => (
+                  <span key={s.id} className="flex min-w-0 flex-wrap items-center gap-x-2">
+                    <span className="text-xs font-medium">{s.name}</span>
+                    <DeployLine deploy={activeDeploys[s.id]} />
+                  </span>
+                ))}
+                {deployingServices.length > 4 && (
+                  <span className="text-[11px] text-subtle">y {deployingServices.length - 4} más</span>
+                )}
+              </div>
+              <Button size="sm" variant="secondary" onClick={() => openService(deployingServices[0].id)}>
+                Ver progreso
+              </Button>
+            </div>
+          </div>
+        )}
+
         {importReport.data?.report && (
           <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
             <span className="flex items-center gap-2 text-acc-soft">
@@ -342,6 +430,7 @@ export default function ProjectPage() {
                 service={s}
                 metrics={latest?.services[s.id] ?? null}
                 alertCount={alertCounts?.[s.id] ?? 0}
+                deploy={activeDeploys[s.id] ?? null}
                 selected={s.id === selectedId}
                 onClick={() => openService(s.id)}
               />

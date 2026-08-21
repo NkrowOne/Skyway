@@ -4,6 +4,7 @@ import path from 'path';
 import { config } from '../config';
 import {
   createDeployment,
+  deploymentSummary,
   getDeployment,
   getEnv,
   getGithubConnector,
@@ -18,7 +19,7 @@ import {
 } from '../db';
 import { fireAlert, resolveServiceAlerts } from '../alerts';
 import { diagnose } from './diagnose';
-import { emitDeploy } from '../events';
+import { emitDeploy, emitDeployFeed, toDeployFeedItem } from '../events';
 import { docker, dockerAvailable } from '../docker/client';
 import {
   configuredReplicas,
@@ -66,6 +67,20 @@ interface ActiveJob {
 const activeJobs = new Map<string, ActiveJob>();
 
 /**
+ * Anuncia el despliegue en el feed del proyecto. El canal por despliegue solo
+ * llega a quien ya tiene ese despliegue abierto; esto avisa al panel entero
+ * —rejilla de servicios y cabecera— en cuanto arranca uno, que es lo que hace
+ * visible «hay una versión nueva saliendo» sin abrir nada.
+ */
+function publishFeed(deploymentId: string): void {
+  const row = deploymentSummary(deploymentId);
+  if (!row) return;
+  const service = getService(row.service_id);
+  if (!service) return;
+  emitDeployFeed(toDeployFeedItem(row, service.project_id));
+}
+
+/**
  * Cancela un despliegue: si está corriendo, mata sus procesos (git/build);
  * si sigue en cola, lo marca como cancelado antes de que arranque.
  */
@@ -86,6 +101,7 @@ export function cancelDeployment(deploymentId: string): boolean {
   if (row && row.status === 'queued') {
     updateDeployment(deploymentId, { status: 'canceled', error: 'Cancelado antes de empezar', finished_at: now() });
     emitDeploy(deploymentId, { type: 'done', status: 'canceled', error: null });
+    publishFeed(deploymentId);
     return true;
   }
   return false;
@@ -130,6 +146,9 @@ export function triggerDeploy(
   opts: { imageTag?: string } = {},
 ): DeploymentRow {
   const deployment = createDeployment(serviceId, trigger, opts.imageTag ?? null);
+  // Se anuncia YA, en cola: el aviso de «versión nueva en camino» no puede
+  // esperar a que haya un hueco de build libre.
+  publishFeed(deployment.id);
   void enqueue(`deploy:${serviceId}`, () => runDeployment(deployment.id));
   return deployment;
 }
@@ -165,6 +184,7 @@ async function runDeployment(deploymentId: string): Promise<void> {
   const setStatus = (status: DeploymentRow['status']) => {
     updateDeployment(deploymentId, { status });
     emitDeploy(deploymentId, { type: 'status', status });
+    publishFeed(deploymentId);
   };
 
   const checkCanceled = () => {
@@ -212,6 +232,7 @@ async function runDeployment(deploymentId: string): Promise<void> {
     setStatus('success');
     updateDeployment(deploymentId, { finished_at: now() });
     emitDeploy(deploymentId, { type: 'done', status: 'success' });
+    publishFeed(deploymentId);
     log('✔ Despliegue completado');
 
     // Un despliegue correcto resuelve las alertas de caída y el fallo de despliegue previo.
@@ -227,6 +248,7 @@ async function runDeployment(deploymentId: string): Promise<void> {
       log('✖ Despliegue cancelado por el usuario');
       updateDeployment(deploymentId, { status: 'canceled', error: 'Cancelado por el usuario', finished_at: now() });
       emitDeploy(deploymentId, { type: 'done', status: 'canceled', error: null });
+      publishFeed(deploymentId);
       return;
     }
     const message = err?.message || String(err);
@@ -239,6 +261,7 @@ async function runDeployment(deploymentId: string): Promise<void> {
       log(`ℹ ${diag.title}: ${diag.cause}`);
     }
     emitDeploy(deploymentId, { type: 'done', status: 'failed', error: message });
+    publishFeed(deploymentId);
 
     if (service && project) {
       fireAlert({

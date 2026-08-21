@@ -664,6 +664,24 @@ export interface Deployment {
   finished_at: number | null;
 }
 
+/**
+ * Despliegue vivo tal y como lo anuncia el feed del proyecto: la carga inicial
+ * de /projects/:id y el stream /projects/:id/deploys/stream usan esta forma, de
+ * modo que la rejilla sabe qué servicio tiene una versión nueva saliendo sin
+ * abrir el panel de nadie.
+ */
+export interface ActiveDeploy {
+  id: string;
+  serviceId: string;
+  projectId: string;
+  status: DeploymentStatus;
+  trigger: string;
+  commitSha: string | null;
+  commitMsg: string | null;
+  createdAt: number;
+  finishedAt: number | null;
+}
+
 export type AlertSeverity = 'critical' | 'warning' | 'info';
 
 export interface Alert {

@@ -5,7 +5,7 @@ import { api } from '../api';
 import { useLatch, useLocalStorage, useMediaQuery } from '../hooks';
 import { MetricPoint } from '../pages/Project';
 import { Deployment, DbOverview, MetricsSnapshot, Project, Runtime, Service } from '../types';
-import { cx, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
+import { cx, DEPLOY_STATUS_LABEL, isActiveDeploy, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import DeploymentsTab from './tabs/DeploymentsTab';
 import { Button, ConfirmModal, Skeleton, Spinner, StatusBadge, Tabs, useToast } from './ui';
@@ -154,6 +154,13 @@ export default function ServiceDrawer({
   }
 
   const { service, runtime } = detail.data;
+  // Con un despliegue vivo, el estado del contenedor sigue siendo el de la
+  // versión ANTERIOR (sigue sirviendo): la fase del despliegue va aparte, en su
+  // propia chapa, para no confundir «Activo» con «ya está la versión nueva».
+  const activeDeployment =
+    detail.data.latestDeployment && isActiveDeploy(detail.data.latestDeployment.status)
+      ? detail.data.latestDeployment
+      : null;
   const state = latestMetrics?.services[serviceId]?.state ?? runtime.state;
   const replicas = latestMetrics?.services[serviceId]?.replicas;
   const isRunning = state === 'running' || state === 'restarting';
@@ -202,7 +209,7 @@ export default function ServiceDrawer({
           <div className="flex min-w-0 items-center gap-3">
             <ModuleChip kind={moduleKind(service)} size={fullscreen ? 40 : 38} />
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h2 className="truncate text-base font-[650] tracking-[-.01em]">{service.name}</h2>
                 <StatusBadge
                   tone={STATE_TONE[state]}
@@ -211,6 +218,12 @@ export default function ServiceDrawer({
                   replicas={replicas}
                   className="px-[9px] py-0.5"
                 />
+                {activeDeployment && (
+                  <span className="badge-in inline-flex shrink-0 items-center gap-[5px] whitespace-nowrap rounded-full border border-warn/35 bg-warn/[.1] px-[9px] py-0.5 text-[11px] font-medium text-warn">
+                    <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-warn" />
+                    {DEPLOY_STATUS_LABEL[activeDeployment.status]}
+                  </span>
+                )}
               </div>
               <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">{subtitle}</p>
             </div>

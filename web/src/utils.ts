@@ -132,6 +132,16 @@ export const DEPLOY_STATUS_LABEL: Record<DeploymentStatus, string> = {
   canceled: 'Cancelado',
 };
 
+/** De dónde vino el despliegue. Compartido: lo pintan el historial y la rejilla. */
+export const DEPLOY_TRIGGER_LABEL: Record<string, string> = {
+  initial: 'creación',
+  manual: 'manual',
+  webhook: 'push',
+  autodeploy: 'auto-deploy',
+  rollback: 'rollback',
+  import: 'importación',
+};
+
 export function isActiveDeploy(status: DeploymentStatus): boolean {
   return status === 'queued' || status === 'building' || status === 'deploying';
 }

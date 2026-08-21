@@ -2,7 +2,8 @@ import os from 'os';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, requireAuth } from '../auth';
-import { getProject, getService, listServices } from '../db';
+import { activeDeploymentsByProject, getProject, getService, listServices } from '../db';
+import { onDeployFeed, toDeployFeedItem } from '../events';
 import { dockerAvailable } from '../docker/client';
 import {
   configuredReplicas,
@@ -115,6 +116,33 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     reply.header('Content-Type', 'text/plain; charset=utf-8');
     reply.header('Content-Disposition', `attachment; filename="logs-${service.slug}-${stamp}.txt"`);
     return text;
+  });
+
+  /**
+   * Despliegues del proyecto en vivo (SSE). A diferencia del stream de logs de
+   * UN despliegue, este avisa al panel entero en el instante en que arranca o
+   * cambia de fase cualquiera: así la rejilla de servicios puede anunciar que
+   * hay una versión nueva saliendo sin que nadie tenga abierto ese servicio.
+   */
+  app.get('/api/projects/:id/deploys/stream', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const project = getProject(id);
+    if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectAccess(req, reply, id)) return reply;
+
+    const channel = sseInit(reply);
+    // El bus es global: se filtra por proyecto antes de escribir en el socket.
+    const unsubscribe = onDeployFeed((item) => {
+      if (item.projectId !== id) return;
+      channel.send('deploy', item);
+    });
+    channel.onClose(unsubscribe);
+
+    // Estado inicial: lo que ya estuviera en marcha antes de abrir el stream,
+    // con la misma forma que los eventos para que el cliente no distinga.
+    channel.send('snapshot', {
+      deploys: Object.values(activeDeploymentsByProject(id)).map((d) => toDeployFeedItem(d, id)),
+    });
   });
 
   /** Métricas en vivo de todos los servicios de un proyecto (SSE). */

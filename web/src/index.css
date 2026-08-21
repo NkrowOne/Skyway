@@ -158,6 +158,32 @@ details > summary::-webkit-details-marker {
 }
 
 /*
+ * Despliegue en curso: una cinta de luz que recorre el borde superior de la
+ * tarjeta. Es indeterminada a propósito —un build no tiene porcentaje honesto—
+ * pero se mueve, que es lo que hace que el ojo la encuentre sin buscarla.
+ */
+@keyframes deploy-sweep {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.deploy-sweep {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklab, var(--color-warn) 35%, transparent) 25%,
+    var(--color-warn) 50%,
+    color-mix(in oklab, var(--color-warn) 35%, transparent) 75%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: deploy-sweep 1.5s linear infinite;
+}
+
+/*
  * Entradas y salidas emparejadas: todo lo que aparece con animación también
  * se despide con ella. Las salidas usan `both` para sostener el último frame
  * mientras React desmonta (usePresence).

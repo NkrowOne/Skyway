@@ -1266,6 +1266,20 @@ export function getDeployment(deploymentId: string): DeploymentRow | undefined {
   return db.prepare('SELECT * FROM deployments WHERE id = ?').get(deploymentId) as DeploymentRow | undefined;
 }
 
+/**
+ * Igual que getDeployment pero sin el log (que llega a cientos de kB). Para los
+ * avisos del feed, que se emiten varias veces por despliegue y no lo necesitan.
+ */
+export function deploymentSummary(deploymentId: string): DeploymentRow | undefined {
+  const row = db
+    .prepare(
+      `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis, created_at, finished_at
+         FROM deployments WHERE id = ?`,
+    )
+    .get(deploymentId) as Omit<DeploymentRow, 'logs'> | undefined;
+  return row ? { ...row, logs: '' } : undefined;
+}
+
 export function listDeployments(serviceId: string, limit = 20): DeploymentRow[] {
   return db
     .prepare('SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis, created_at, finished_at FROM deployments WHERE service_id = ? ORDER BY created_at DESC LIMIT ?')
@@ -1277,6 +1291,31 @@ export function latestDeployment(serviceId: string): DeploymentRow | undefined {
   return db
     .prepare('SELECT * FROM deployments WHERE service_id = ? ORDER BY created_at DESC LIMIT 1')
     .get(serviceId) as DeploymentRow | undefined;
+}
+
+/** Estados no terminales: el despliegue sigue vivo y hay versión nueva en camino. */
+export const ACTIVE_DEPLOY_STATES = ['queued', 'building', 'deploying'] as const;
+
+/**
+ * Despliegues en marcha del proyecto, indexados por servicio. La rejilla y la
+ * cabecera del proyecto lo usan para anunciar la versión que está saliendo sin
+ * tener que abrir el panel del servicio.
+ */
+export function activeDeploymentsByProject(projectId: string): Record<string, DeploymentRow> {
+  const rows = db
+    .prepare(
+      `SELECT d.id, d.service_id, d.status, d.trigger, d.commit_sha, d.commit_msg, d.image_tag,
+              d.error, d.diagnosis, d.created_at, d.finished_at
+         FROM deployments d JOIN services s ON s.id = d.service_id
+        WHERE s.project_id = ? AND d.status IN ('queued', 'building', 'deploying')
+        ORDER BY d.created_at ASC`,
+    )
+    .all(projectId) as DeploymentRow[];
+  const out: Record<string, DeploymentRow> = {};
+  // Orden ascendente y sobrescritura: si un servicio tuviera dos vivos (cola),
+  // gana el más reciente, que es el que la UI debe anunciar.
+  for (const row of rows) out[row.service_id] = { ...row, logs: '' };
+  return out;
 }
 
 /**
