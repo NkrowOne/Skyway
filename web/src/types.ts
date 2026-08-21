@@ -121,6 +121,8 @@ export interface Project {
   serviceCount?: number;
   lastDeployAt?: number | null;
   openAlerts?: number;
+  /** Despliegues en marcha en el proyecto: la tarjeta anuncia la versión que sale. */
+  activeDeploys?: number;
 }
 
 // ---------- cuentas de cliente: workspaces, planes, facturación ----------

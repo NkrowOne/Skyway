@@ -122,9 +122,15 @@ function planMigration(service: ServiceRow, project: ProjectRow, sourceUrl: stri
         SRC: sourceUrl.trim(),
         DST: `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${service.slug}:5432/${encodeURIComponent(database)}`,
       },
+      // Volcado a fichero y después restauración, en vez de una tubería: `sh`
+      // no siempre admite `pipefail` (dash no lo tiene) y con tubería un
+      // pg_dump que muere a medias devolvería el éxito de psql, dejando la base
+      // a medio copiar y con cara de haber ido bien.
       // --no-owner/--no-acl: los roles del origen no existen aquí y sin esto el
       // restore se llena de errores de permisos que no significan nada.
-      script: 'set -o pipefail; pg_dump --no-owner --no-acl --verbose "$SRC" | psql --set ON_ERROR_STOP=on "$DST"',
+      script:
+        'pg_dump --no-owner --no-acl --verbose -f /tmp/skyway-dump.sql "$SRC" && ' +
+        'psql --set ON_ERROR_STOP=on -f /tmp/skyway-dump.sql "$DST"',
     };
   }
 
@@ -148,8 +154,8 @@ function planMigration(service: ServiceRow, project: ProjectRow, sourceUrl: stri
       // --no-tablespaces evita el PROCESS privilege que los servicios
       // gestionados no conceden, y que hace fallar el volcado entero.
       script:
-        'set -o pipefail; mysqldump --single-transaction --no-tablespaces -h "$SRC_HOST" -P "$SRC_PORT" -u "$SRC_USER" -p"$SRC_PASS" "$SRC_DB" ' +
-        '| mysql -h "$DST_HOST" -u "$DST_USER" -p"$DST_PASS" "$DST_DB"',
+        'mysqldump --single-transaction --no-tablespaces -h "$SRC_HOST" -P "$SRC_PORT" -u "$SRC_USER" -p"$SRC_PASS" "$SRC_DB" > /tmp/skyway-dump.sql && ' +
+        'mysql -h "$DST_HOST" -u "$DST_USER" -p"$DST_PASS" "$DST_DB" < /tmp/skyway-dump.sql',
     };
   }
 
@@ -162,7 +168,9 @@ function planMigration(service: ServiceRow, project: ProjectRow, sourceUrl: stri
         SRC: sourceUrl.trim(),
         DST: `mongodb://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${service.slug}:27017/?authSource=admin`,
       },
-      script: 'set -o pipefail; mongodump --uri="$SRC" --archive | mongorestore --uri="$DST" --archive --drop',
+      script:
+        'mongodump --uri="$SRC" --archive=/tmp/skyway.archive && ' +
+        'mongorestore --uri="$DST" --archive=/tmp/skyway.archive --drop',
     };
   }
 
@@ -293,7 +301,9 @@ export async function probeSource(service: ServiceRow, project: ProjectRow, sour
       ? 'pg_isready -d "$SRC" -t 8'
       : plan.image.startsWith('mysql')
         ? 'mysql -h "$SRC_HOST" -P "$SRC_PORT" -u "$SRC_USER" -p"$SRC_PASS" -e "SELECT 1" "$SRC_DB"'
-        : 'mongosh --quiet --eval "db.runCommand({ping:1})" "$SRC"';
+        : // mongosh solo viene en las imágenes de Mongo 6+; en las anteriores
+          // la consola se llama «mongo».
+          'mongosh --quiet --eval "db.runCommand({ping:1})" "$SRC" || mongo --quiet --eval "db.runCommand({ping:1})" "$SRC"';
 
   const args = ['run', '--rm', '--network', projectNetworkName(project)];
   for (const key of Object.keys(plan.env)) args.push('--env', key);

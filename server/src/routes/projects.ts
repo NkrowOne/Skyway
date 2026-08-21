@@ -59,6 +59,7 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
         serviceCount: listServices(p.id).length,
         lastDeployAt: meta[p.id]?.lastDeployAt ?? null,
         openAlerts: meta[p.id]?.openAlerts ?? 0,
+        activeDeploys: meta[p.id]?.activeDeploys ?? 0,
       })),
     };
   });

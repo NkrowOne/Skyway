@@ -1355,6 +1355,25 @@ export function reusableBuild(serviceId: string, commitSha: string, buildKey: st
     .get(serviceId, commitSha, buildKey) as DeploymentRow | undefined;
 }
 
+/**
+ * Despliegue que construyó una imagen. Un rollback reutiliza la imagen de otro
+ * despliegue y necesita SU config-as-code: si aquel commit declaraba otro
+ * comando de arranque o healthcheck, volver a esa imagen sin volver a esa
+ * configuración arrancaría una mezcla de las dos versiones.
+ */
+export function deploymentForImage(serviceId: string, imageTag: string): DeploymentRow | undefined {
+  const row = db
+    .prepare(
+      `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
+              build_key, repo_config, force_build, created_at, finished_at
+         FROM deployments
+        WHERE service_id = ? AND image_tag = ? AND status = 'success'
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(serviceId, imageTag) as Omit<DeploymentRow, 'logs'> | undefined;
+  return row ? { ...row, logs: '' } : undefined;
+}
+
 /** Imagen del último despliegue correcto: sirve de caché de capas para el build. */
 export function lastSuccessfulImage(serviceId: string): string | null {
   const row = db
@@ -1758,16 +1777,38 @@ export function listProjectIncidents(projectId: string, types: string[], resolve
 }
 
 /** Metadatos de actividad por proyecto para el panel: último despliegue y alertas abiertas. */
-export function projectDashboardMeta(): Record<string, { lastDeployAt: number | null; openAlerts: number }> {
-  const out: Record<string, { lastDeployAt: number | null; openAlerts: number }> = {};
+export interface ProjectDashboardMeta {
+  lastDeployAt: number | null;
+  openAlerts: number;
+  /** Despliegues en marcha: el panel avisa de que hay versiones saliendo. */
+  activeDeploys: number;
+}
+
+export function projectDashboardMeta(): Record<string, ProjectDashboardMeta> {
+  const out: Record<string, ProjectDashboardMeta> = {};
+  const entry = (pid: string): ProjectDashboardMeta =>
+    (out[pid] ??= { lastDeployAt: null, openAlerts: 0, activeDeploys: 0 });
+
   const deploys = db
     .prepare('SELECT s.project_id AS pid, MAX(d.created_at) AS m FROM deployments d JOIN services s ON s.id = d.service_id GROUP BY s.project_id')
     .all() as { pid: string; m: number }[];
-  for (const r of deploys) out[r.pid] = { lastDeployAt: r.m, openAlerts: 0 };
+  for (const r of deploys) entry(r.pid).lastDeployAt = r.m;
+
   const alerts = db
     .prepare('SELECT project_id AS pid, COUNT(*) AS c FROM alerts WHERE resolved_at IS NULL AND project_id IS NOT NULL GROUP BY project_id')
     .all() as { pid: string; c: number }[];
-  for (const r of alerts) out[r.pid] = { lastDeployAt: out[r.pid]?.lastDeployAt ?? null, openAlerts: r.c };
+  for (const r of alerts) entry(r.pid).openAlerts = r.c;
+
+  const running = db
+    .prepare(
+      `SELECT s.project_id AS pid, COUNT(*) AS c
+         FROM deployments d JOIN services s ON s.id = d.service_id
+        WHERE d.status IN ('queued', 'building', 'deploying')
+        GROUP BY s.project_id`,
+    )
+    .all() as { pid: string; c: number }[];
+  for (const r of running) entry(r.pid).activeDeploys = r.c;
+
   return out;
 }
 

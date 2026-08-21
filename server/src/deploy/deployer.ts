@@ -5,6 +5,7 @@ import path from 'path';
 import { config } from '../config';
 import {
   createDeployment,
+  deploymentForImage,
   deploymentSummary,
   getDeployment,
   getEnv,
@@ -222,7 +223,13 @@ async function runDeployment(deploymentId: string): Promise<void> {
       }
       // Volver a una versión anterior debe volver también a SU config-as-code:
       // si aquel commit declaraba otro comando de arranque, es el que toca.
-      repoConfig = parseRepoConfig(deployment.repo_config);
+      // La configuración vive en el despliegue que CONSTRUYÓ la imagen, no en
+      // esta fila de rollback (que nunca clonó nada).
+      const origin = deploymentForImage(service.id, image);
+      repoConfig = parseRepoConfig(origin?.repo_config ?? null);
+      if (origin?.commit_sha) {
+        updateDeployment(deploymentId, { commit_sha: origin.commit_sha, commit_msg: origin.commit_msg });
+      }
     } else {
       const built = await buildGitImage(project, service, deploymentId, job, log);
       image = built.image;

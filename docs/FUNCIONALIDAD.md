@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.24.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.25.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -52,8 +52,9 @@ server/src/
   metrics.ts            deltas de red por réplica + agrupado del histórico de consumo
   monitor.ts            bucle 30 s: caídas, bucles de reinicio, CPU/RAM, uptime, disco, histórico
   scheduler.ts          bucle 10 min: backups programados de BBDD + snapshot diario del panel
-  autodeploy.ts         bucle ~2 min: sondea la cabeza de la rama (git ls-remote) y despliega si cambió
-  events.ts             bus en memoria para logs de despliegue (SSE)
+  autodeploy.ts         bucle ~1 min: sondea la cabeza de la rama (API con ETag, o git ls-remote) y despliega si cambió
+  datamigrate.ts        copia de datos desde una base externa (Railway) a una gestionada, con log en vivo
+  events.ts             bus en memoria: logs de despliegue y feed de despliegues del proyecto (SSE)
   sse.ts                utilidad Server-Sent Events
   docker/
     client.ts           instancia dockerode + ping cacheado
@@ -64,8 +65,11 @@ server/src/
     deployer.ts         orquestador: build → swap sin corte → validación → rollback
     queue.ts            cola serializada por servicio + semáforo de builds
     stackdeploy.ts      despliegue por etapas de una pila: espera de arranque + SQL de inicialización
+    railwayconfig.ts    lectura de railway.json / railway.toml (config-as-code)
     diagnose.ts         diagnóstico de fallos y explicación de códigos de salida
-  github/client.ts      API de GitHub: validar tokens, listar repos y ramas (solo lectura)
+  github/client.ts      API de GitHub: validar tokens, listar repos y ramas, cabeza de rama con ETag
+  github/app.ts         GitHub App: alta por manifiesto, tokens de instalación, repos por instalación
+  github/resolve.ts     con qué credencial se clona cada servicio (App → conector → token global)
   railway/client.ts     cliente GraphQL de Railway (solo en memoria)
   railway/importer.ts   análisis y ejecución de la importación desde Railway
   routes/               una ruta por área (ver §7 API)
@@ -79,6 +83,11 @@ web/src/
   hooks.ts              useLocalStorage, useMediaQuery…
   pages/                Dashboard, Proyecto, Monitor, Sitios, Estado, Ajustes…
   components/           canvas de servicios, drawer con pestañas, gráficas
+  components/GithubSource.tsx    selector unificado de cuenta de GitHub (App + tokens) y de repo
+  components/GithubModal.tsx     conexiones de GitHub del proyecto
+  components/GithubAppPanel.tsx  alta y gestión de la GitHub App (Ajustes)
+  components/DeployBadge.tsx     señales de «hay una versión saliendo» (cinta y franja)
+  components/DataMigrationModal.tsx  copia de datos desde una base externa
   components/tabs/      Despliegues, Consultas, Variables, Backups, Archivos,
                         Métricas, Logs, Ajustes del servicio
 ```
@@ -107,9 +116,10 @@ web/src/
 ### Pipeline de despliegue (deploy/deployer.ts)
 
 1. `triggerDeploy(serviceId, trigger)` crea una fila `deployments` en estado
-   `queued` y la encola. La cola (`queue.ts`) **serializa por servicio** (un
-   deploy a la vez por servicio) y limita los builds globales con un semáforo
-   (`BUILD_CONCURRENCY`, por defecto 2).
+   `queued`, **la anuncia en el feed del proyecto** (ver más abajo) y la encola.
+   La cola (`queue.ts`) **serializa por servicio** (un deploy a la vez por
+   servicio) y limita los builds globales con un semáforo (`BUILD_CONCURRENCY`;
+   por defecto, núcleos − 1 acotado a [2, 4]).
 2. **Build/obtención de imagen**:
    - `database` → `docker pull` de la imagen de la plantilla. La **versión
      efectiva** (`cfg.version` o el default de la plantilla) decide a la vez el
@@ -125,19 +135,27 @@ web/src/
      siempre aunque el servicio venga de una versión antigua o se borraran a
      mano.
    - `image` → `docker pull` de la imagen indicada.
-   - `git` → clone superficial (`--depth 1 --branch`) + build con **Dockerfile**
-     si existe (BuildKit; si el plugin buildx faltara, se degrada al builder
-     clásico con un aviso en el log), o **Nixpacks** si no. Si el repo trae
-     `railway.json` con `deploy.startCommand`, ese comando **manda sobre el
-     `startCmd` del servicio** (misma precedencia config-as-code que Railway;
-     el importador copia el del panel y puede contradecir al del repo). El
-     token para clonar se resuelve así: el
-     **conector de GitHub** del servicio (`connectorId`, token del cliente) o, en
-     su defecto, el token global (`settings.githubToken`); se inyecta en la URL y
-     se **enmascara** en los logs. Si el conector referenciado ya no existe, se
-     avisa en el log y se usa el global.
-   - rollback → reutiliza una imagen ya construida (`image_tag`), si sigue viva.
-3. **Despliegue del contenedor** (swap con validación):
+   - `git` → **reutilización de imagen** primero: se consulta la cabeza de la
+     rama por la API de GitHub y, si ese commit ya se construyó con éxito y con
+     la misma huella de compilación (`build_key`: repo, rootDir, Dockerfile y
+     build-args), se reutiliza su imagen sin clonar ni compilar. Es el caso
+     normal al redesplegar por un cambio de variables. `force` en el endpoint de
+     despliegue (botón «Reconstruir») lo salta.
+     Si hay que construir: clone superficial (`--depth 1 --branch --no-tags`) +
+     build con **Dockerfile** si existe (BuildKit, con `BUILDKIT_INLINE_CACHE` y
+     `--cache-from` de la última imagen correcta; si el plugin buildx faltara,
+     se degrada al builder clásico con un aviso en el log), o **Nixpacks** si no.
+     La **config-as-code** del repo (`railway.json` / `railway.toml`, ver §5.3)
+     manda sobre los ajustes del panel, igual que en Railway. El token para
+     clonar se resuelve en `github/resolve.ts` (ver §5.4).
+   - rollback → reutiliza una imagen ya construida (`image_tag`), si sigue viva,
+     junto con la config-as-code del despliegue que la construyó.
+3. **Comando previo** (`deploy.preDeployCommand` de la config-as-code): se
+   ejecuta con la imagen y las variables nuevas contra la red del proyecto,
+   **antes** de tocar la versión en marcha. Es donde suelen ir las migraciones;
+   si falla, el despliegue se aborta y lo que estaba sirviendo sigue igual. El
+   comando viaja en una variable de entorno, nunca interpolado en el shell.
+4. **Despliegue del contenedor** (swap con validación):
    - **Corte cero** (servicios sin volúmenes ni puerto de host): se arranca la
      versión nueva en paralelo, se **valida** (healthcheck HTTP 2xx o periodo de
      gracia) y solo entonces se intercambia, réplica a réplica (rolling update).
@@ -145,9 +163,18 @@ web/src/
      automática** — si la versión nueva falla la validación, vuelve la anterior.
    - `recoverStaleSwap` repara restos (`--next`/`--prev`) de un swap interrumpido
      por una caída del servidor.
-4. **Post**: un deploy correcto resuelve las alertas de caída del servicio y
+   - Antes de arrancar se inyectan las **variables de compatibilidad Railway**
+     (§5.5) sin pisar ninguna definida por el usuario.
+5. **Post**: un deploy correcto resuelve las alertas de caída del servicio y
    purga imágenes antiguas (se conservan las **5 últimas** por servicio para
    rollback). Un fallo genera una alerta con diagnóstico (`diagnose.ts`).
+
+**Feed de despliegues.** Cada cambio de fase (encolado, construyendo,
+desplegando, terminado) se publica en un bus en memoria (`events.ts`) que
+alimenta `GET /api/projects/:id/deploys/stream`. El panel lo usa para anunciar
+«hay una versión nueva saliendo» en la rejilla de servicios, en la cabecera del
+proyecto y en las tarjetas del panel general, sin esperar al refresco periódico.
+En el historial del servicio, **lo que está saliendo va por encima del activo**.
 
 ---
 
@@ -179,19 +206,21 @@ web/src/
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
 | `project_vars` | `(project_id, key)` → `value` — variables compartidas |
-| `deployments` | `status`, `trigger`, `commit_sha/msg`, `image_tag`, `logs`, `error`, `diagnosis` |
+| `deployments` | `status`, `trigger`, `commit_sha/msg`, `image_tag`, `logs`, `error`, `diagnosis`, `build_key` (huella de las entradas de compilación, para reutilizar imagen), `repo_config` (config-as-code del repo en ese commit, JSON), `force_build` |
 | `audit_log` | `ts`, `actor`, `action`, `target_*`, `detail`, `ip` |
 | `alerts` | `severity`, `type`, `title`, `message`, `explanation`, `dedupe_key`, `resolved_at`, `read_at` |
 | `uptime_hourly` | `(service_id, hour)` → `up`, `total` — histórico de disponibilidad |
 | `service_metrics_hourly` | `(service_id, hour)` → sumas y máximos de CPU/RAM, bytes de red del periodo (delta) y foto de disco — histórico de consumo (~90 d) |
 | `host_metrics_hourly` | `hour` → carga, RAM y disco del host (sumas, máximos y última foto) — histórico de consumo del servidor (~90 d) |
 | `github_connectors` | `id`, `project_id`, `name`, `token` (en claro: se necesita para clonar; jamás sale por la API), `gh_login`, `token_type`, `created_by`, `last_used_at` — cae en cascada con el proyecto |
+| `github_installations` | instalaciones de la GitHub App: `id`, `installation_id`, `account_login`, `account_type`, `repo_selection`, `project_id` (null = global del administrador), `created_by`, `last_used_at`, `suspended`. **No guarda credenciales**: el token de clonado se emite bajo demanda y caduca en una hora |
 
 `config` de servicio (ver `types.ts`): `GitConfig`, `DatabaseConfig`, `ImageConfig`
 comparten `domains`, `hostPort`, `cpus`, `memoryMb`, `diskMb`, `healthcheckPath`,
-`volumes`, `replicas`; git añade `repoUrl`, `connectorId`, `branch`, `rootDir`,
-`dockerfilePath`, `startCmd`, `port`, `buildArgs`, `webhookSecret`, `autoDeploy`;
-database añade `template`, `version`, `backupSchedule`, `backupRetention`.
+`volumes`, `replicas`; git añade `repoUrl`, `githubInstallationId`, `connectorId`,
+`branch`, `rootDir`, `dockerfilePath`, `startCmd`, `buildCmd`, `port`, `buildArgs`,
+`webhookSecret`, `autoDeploy`; database añade `template`, `version`,
+`backupSchedule`, `backupRetention`.
 
 ---
 
@@ -235,15 +264,28 @@ database añade `template`, `version`, `backupSchedule`, `backupRetention`.
   (mismo origen; sin scripts externos ni inline), `X-Frame-Options: DENY`,
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
   `Cross-Origin-Opener-Policy: same-origin`, `Permissions-Policy` restrictiva y
-  `Strict-Transport-Security` sobre HTTPS.
+  `Strict-Transport-Security` sobre HTTPS. Única excepción de la CSP:
+  `form-action` admite además `https://github.com`, porque crear la GitHub App
+  exige que el navegador envíe el manifiesto por POST a github.com (no hay forma
+  servidor-a-servidor). No afecta a scripts, estilos ni peticiones.
+- **Saltos a GitHub**: el estado anti-CSRF de crear e instalar la App viaja
+  **firmado** (HS256 con el secreto de sesión, 30 min) en vez de guardado, y al
+  volver se comprueba además que la sesión sea la del mismo usuario. Las rutas de
+  retorno exigen sesión de navegador; las de creación, además, rol admin.
 - **Webhooks**: firma **HMAC-SHA256** verificada con comparación en tiempo
-  constante sobre el cuerpo crudo. El webhook de Stripe añade tolerancia temporal
-  (anti-replay) y solo actúa si Stripe confirma `payment_status == paid`; las
-  claves de Stripe se guardan en `settings` y nunca se devuelven en claro.
+  constante sobre el cuerpo crudo. El de la GitHub App usa el secreto que GitHub
+  generó al crearla, y antes de desplegar comprueba que el proyecto del servicio
+  tenga conectada **esa** instalación (si no, cualquiera que instalase la App en
+  un repo homónimo dispararía despliegues ajenos). El webhook de Stripe añade
+  tolerancia temporal (anti-replay) y solo actúa si Stripe confirma
+  `payment_status == paid`; las claves de Stripe se guardan en `settings` y nunca
+  se devuelven en claro.
 - **Consola de BBDD y explorador de archivos**: todo corre **dentro** del
   contenedor con exec; las consultas/rutas viajan como variables de entorno del
   exec, **nunca interpoladas en el shell**. La consola tiene modo solo-lectura
-  por defecto (reforzado en el propio motor).
+  por defecto (reforzado en el propio motor). El mismo patrón cubre el comando
+  previo al despliegue y la copia de datos entre bases: el comando y las URLs de
+  conexión viajan por entorno y el shell los lee con `"$VAR"`.
 - **Superficie crítica**: quien accede a Skyway controla el Docker del host. El
   `docker-compose` publica la UI solo en `127.0.0.1:4000` (acceso por dominio+TLS
   vía Traefik, o túnel SSH). Recomendado: contraseña fuerte, dominio con TLS o
@@ -262,7 +304,9 @@ aplican **en caliente**.
 | Opción | git | image | database | Notas |
 | --- | --- | --- | --- | --- |
 | `repoUrl`, `branch`, `rootDir`, `dockerfilePath`, `startCmd` | ✓ | — | — | build del repo |
-| `connectorId` | ✓ | — | — | conector de GitHub del proyecto para clonar (null = token global) |
+| `buildCmd` | ✓ | — | — | comando de compilación con Nixpacks (equivale al «Build Command» de Railway) |
+| `githubInstallationId` | ✓ | — | — | instalación de la GitHub App con la que clonar (§5.4) |
+| `connectorId` | ✓ | — | — | conector con token personal para clonar (null = token global) |
 | `buildArgs` | ✓ | — | — | `--build-arg` |
 | `image` | — | ✓ | — | imagen pública |
 | `template`, `version` | — | — | ✓ | postgres/redis/mysql/mongo/minio |
@@ -381,19 +425,108 @@ del Studio, que viene desactivada.
 
 ---
 
+### 5.3 Config-as-code de Railway (`railway.json` / `railway.toml`)
+
+Un proyecto traído de Railway suele llevar su configuración dentro del
+repositorio, y allí **manda sobre el panel** —esa es la precedencia de Railway y
+Skyway la reproduce—. Se busca en el directorio raíz del servicio (monorepos) y
+después en la raíz del repo; se admiten JSON y un subconjunto de TOML.
+
+| Clave | Efecto en Skyway |
+| --- | --- |
+| `build.builder` | `DOCKERFILE` exige Dockerfile; `NIXPACKS`/`RAILPACK` lo ignoran aunque exista |
+| `build.buildCommand` | `NIXPACKS_BUILD_CMD` al construir sin Dockerfile |
+| `build.dockerfilePath` | Dockerfile alternativo (también con la variable `RAILWAY_DOCKERFILE_PATH`, que va por delante) |
+| `deploy.startCommand` | comando de arranque del contenedor |
+| `deploy.preDeployCommand` | se ejecuta antes del intercambio; si falla, el despliegue se aborta |
+| `deploy.healthcheckPath`, `deploy.healthcheckTimeout` | validación del despliegue |
+| `deploy.restartPolicyType`, `restartPolicyMaxRetries` | política de reinicio de Docker (`NEVER`→`no`, `ON_FAILURE`→`on-failure`, `ALWAYS`→`unless-stopped`) |
+| `deploy.numReplicas` | **no se aplica**: las réplicas consumen cuota del workspace y se fijan en Ajustes. Se avisa en el log |
+| `deploy.cronSchedule` | **no se aplica**: Skyway aún no ejecuta servicios programados. Se avisa en el log |
+| `build.watchPatterns` | sin efecto |
+
+La configuración leída se guarda con el despliegue (`deployments.repo_config`),
+de modo que reutilizar una imagen o hacer rollback recupera **la configuración
+de ese commit**, no la del último.
+
+### 5.4 Credenciales de GitHub
+
+Tres caminos, resueltos en un único sitio (`github/resolve.ts`) para que el
+despliegue, el sondeo y el webhook usen siempre la misma credencial:
+
+1. **GitHub App** (recomendado). El administrador la crea desde Ajustes con el
+   flujo de manifiesto de GitHub: el navegador envía a github.com un formulario
+   ya relleno (permisos `contents:read` y `metadata:read`, evento `push`, URL del
+   webhook y retornos) y GitHub devuelve un código de un solo uso que Skyway
+   canjea por el id de la App, su clave privada y el secreto del webhook. A
+   partir de ahí, cada cuenta u organización se conecta pulsando «Conectar con
+   GitHub» y eligiendo allí qué repositorios ve Skyway.
+   La conexión **no caduca** y no guarda credenciales: para clonar se emite un
+   token de instalación de una hora, cacheado en memoria y renovado con margen.
+   Una instalación puede ser **del proyecto** (la conecta el cliente) o
+   **global** (la conecta el administrador y sirve para todos).
+2. **Conector con token personal** (`connectorId`): lo anterior, disponible para
+   cuentas donde no se puede instalar una App. El token se guarda y se enmascara
+   en los logs.
+3. **Token global** (`settings.githubToken`): el atajo del administrador.
+
+Un servicio sin cuenta elegida busca una instalación que ya vea la cuenta del
+repositorio antes de caer al token global. Una instalación de OTRO proyecto no
+vale aunque se escriba su id a mano.
+
+### 5.5 Variables de compatibilidad con Railway
+
+En cada despliegue se rellenan las variables mágicas de Railway con el
+equivalente de Skyway, **sin pisar nunca** un valor definido por el usuario, para
+que una aplicación migrada que las lea siga funcionando:
+
+`RAILWAY_PROJECT_NAME`, `RAILWAY_PROJECT_ID`, `RAILWAY_SERVICE_NAME`,
+`RAILWAY_SERVICE_ID`, `RAILWAY_ENVIRONMENT`, `RAILWAY_ENVIRONMENT_NAME`,
+`RAILWAY_DEPLOYMENT_ID`, `RAILWAY_REPLICA_ID`, `RAILWAY_PRIVATE_DOMAIN` (el alias
+del servicio en la red del proyecto), `RAILWAY_TCP_PROXY_PORT`,
+`RAILWAY_PUBLIC_DOMAIN` y `RAILWAY_STATIC_URL` (si el servicio tiene dominio),
+`RAILWAY_GIT_COMMIT_SHA`, `RAILWAY_GIT_COMMIT_MESSAGE` y `RAILWAY_GIT_BRANCH`.
+
+### 5.6 Copia de datos desde una base externa
+
+`datamigrate.ts` vuelca una base de datos externa —la de Railway, normalmente—
+sobre una base gestionada del proyecto. Es el último paso de una migración y
+antes obligaba a entrar por SSH al servidor.
+
+- Motores: **PostgreSQL, MySQL y MongoDB**. Redis (caché) y MinIO quedan fuera.
+- Se ejecuta en un contenedor efímero de la imagen del propio motor, dentro de la
+  red del proyecto. La URL de origen y las credenciales de destino viajan como
+  **variables de entorno**, nunca interpoladas en el shell.
+- Volcado a fichero y después restauración (no tubería): `sh` no siempre admite
+  `pipefail`, y con tubería un volcado que muere a medias devolvería el éxito del
+  restore dejando la base a medio copiar.
+- Una copia por servicio, con comprobación previa del origen, log en vivo por
+  SSE, cancelación y tope de una hora.
+- El destino **se sobrescribe**: la interfaz lo advierte.
+
+---
+
 ## 6. Áreas funcionales (resumen)
 
 - **Despliegues**: build en vivo (SSE), historial, cancelación, rollback a
   cualquiera de las 5 imágenes conservadas, diagnóstico de fallos en español.
-- **Auto-deploy** (servicios git): Skyway sondea la cabeza de la rama cada ~2 min
-  con `git ls-remote` (mismo acceso que el clon, sirve para repos privados y para
-  servidores sin dominio) y despliega en cuanto aparece un commit nuevo. Sin tocar
-  GitHub; la primera comprobación fija la línea base y solo disparan los commits
-  posteriores. Se controla con `autoDeploy` (opt-out) en Ajustes del servicio.
-  El **webhook** de GitHub (`/api/webhooks/github/:serviceId`, HMAC) sigue
-  disponible para despliegues instantáneos: obedece la misma opción `autoDeploy` y
-  no se pisa con el sondeo (un commit ya construido no se vuelve a desplegar). El
-  interruptor `autoDeploy` manda sobre ambas vías a la vez.
+- **Auto-deploy** (servicios git). Tres vías, todas gobernadas por el mismo
+  interruptor `autoDeploy` (opt-out, en Ajustes del servicio):
+  1. **Webhook de la GitHub App** (`/api/webhooks/github/app`): el camino rápido.
+     La App lo registra sola al crearse, así que cualquier repo conectado
+     despliega al hacer push sin configurar nada. Un push se reparte entre todos
+     los servicios que apuntan a ese repo y esa rama **y cuyo proyecto tenga
+     conectada esa instalación**.
+  2. **Webhook por servicio** (`/api/webhooks/github/:serviceId`, HMAC con el
+     `webhookSecret` del servicio): lo de siempre, para quien use tokens.
+  3. **Sondeo** cada ~1 min: pregunta la cabeza de la rama por la API de GitHub
+     con ETag (un 304 no consume cuota ni arranca un proceso) y cae a
+     `git ls-remote` si no hay credencial o el repo no es de GitHub. Es la red de
+     seguridad: funciona sin dominio público y sin tocar GitHub. La primera
+     comprobación fija la línea base y solo disparan los commits posteriores.
+
+  Las tres vías comparten estado: un commit ya construido no se vuelve a
+  desplegar, y con un despliegue vivo no se encola otro encima.
 - **Variables**: por servicio y compartidas por proyecto; referencias
   `${{Servicio.VAR}}` y `${{shared.VAR}}` resueltas al desplegar.
 - **Pilas de aplicaciones**: Supabase, WordPress, Ghost, n8n y Metabase con todos
@@ -710,12 +843,12 @@ descontada) y ninguna base queda negativa. Se excluyen del descuento las líneas
 dos veces un precio ya pactado. En una factura a medida el descuento se añade a mano
 como línea negativa; una factura emitida es inmutable y conserva su descuento.
 
-### 7.3 Proyectos, variables compartidas y conectores de GitHub
+### 7.3 Proyectos, variables compartidas y GitHub
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/projects` | auth | proyectos accesibles (con meta) |
 | POST | `/projects` | admin/owner | crea proyecto (`{name, client?, workspaceId?}`); el propietario en su workspace, dentro de la cuota |
-| GET | `/projects/:id` | +access | proyecto + servicios con runtime |
+| GET | `/projects/:id` | +access | proyecto + servicios con runtime + `activeDeploys` (despliegues vivos por servicio) |
 | PATCH | `/projects/:id` | manage | renombra; el admin además reasigna de workspace |
 | DELETE | `/projects/:id?volumes=true` | manage | elimina proyecto (y volúmenes opcional) |
 | POST | `/projects/:id/deploy-all` | +access | despliega repos e imágenes del proyecto |
@@ -729,11 +862,31 @@ como línea negativa; una factura emitida es inmutable y conserva su descuento.
 | GET | `/connectors/:id/branches?repo=owner/repo` | +access | ramas del repo (la por defecto primero) |
 | GET | `/connectors` | admin | todos los conectores de todos los proyectos (control central) |
 
-**Conectores de GitHub**: cualquier usuario con acceso al workspace (clientes
-incluidos) conecta un token de su cuenta; al crear o editar un servicio `git`
-elige el conector y el repo/rama de esa cuenta. El token se guarda en el servidor,
-nunca se devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
-(`connector_created`/`connector_deleted`) y el admin lo controla desde Ajustes.
+**GitHub App** (§5.4). Es el camino recomendado y convive con los conectores:
+
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| GET | `/github/app` | auth | estado de la App (`configured`, slug, URL del webhook) |
+| POST | `/github/app/manifest` | admin+sesión | manifiesto y URL de acción para crear la App desde el navegador (`{org?}`) |
+| GET | `/github/app/setup?code&state` | admin+sesión | retorno de GitHub: canjea el código y guarda las credenciales |
+| POST | `/github/app/disconnect` | admin+sesión | olvida las credenciales (la App sigue existiendo en GitHub) |
+| GET | `/github/app/install?projectId=` | +access | 302 a GitHub para instalar la App (sin `projectId`, instalación global; solo admin) |
+| GET | `/github/app/installed?installation_id&state` | auth | retorno de la instalación: registra la cuenta conectada |
+| GET | `/projects/:id/github/installations` | +access | instalaciones usables desde el proyecto (las suyas y las globales) |
+| GET | `/github/installations` | admin | todas las instalaciones (vista central) |
+| POST | `/github/installations/:rowId/sync` | +access\* | refresca desde GitHub (repos elegidos, suspensión) |
+| DELETE | `/github/installations/:rowId` | +access\* | quita la conexión (la App sigue instalada en GitHub) |
+| GET | `/github/installations/:rowId/repos` | +access | repos que la instalación deja ver |
+| GET | `/github/installations/:rowId/branches?repo=owner/repo` | +access | ramas del repo |
+
+\* Las instalaciones **globales** solo las gestiona el administrador.
+
+**Conectores con token personal**: cualquier usuario con acceso al workspace
+(clientes incluidos) conecta un token de su cuenta; al crear o editar un servicio
+`git` elige la cuenta y el repo/rama. El token se guarda en el servidor, nunca se
+devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
+(`connector_created`/`connector_deleted`, `github_installation_connected`/
+`github_installation_removed`) y el admin lo controla desde Ajustes.
 
 ### 7.4 Servicios
 | Método | Ruta | Nivel | Descripción |
@@ -747,7 +900,7 @@ nunca se devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | GET | `/services/:id` | +access | servicio + runtime + último deploy |
 | PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente) |
 | DELETE | `/services/:id?volumes=true` | +access | elimina servicio |
-| POST | `/services/:id/deploy` | +access | dispara despliegue manual |
+| POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
 | GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias) |
 | PUT | `/services/:id/env` | +access | reemplaza variables del servicio |
@@ -760,11 +913,21 @@ nunca se devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/deployments/:id/cancel` | +access | cancela uno en curso |
 | POST | `/deployments/:id/rollback` | +access | redespliega una imagen anterior (solo git) |
 | GET | `/deployments/:id/logs/stream` | +access | **SSE** de build/deploy |
+| GET | `/projects/:id/deploys/stream` | +access | **SSE** del feed de despliegues del proyecto (instantánea + cada cambio de fase) |
 | GET | `/services/:id/logs/stream` | +access | **SSE** de logs de ejecución (cada línea con su cursor de tiempo) |
 | GET | `/services/:id/logs/tail` | +access | páginado hacia atrás: líneas anteriores a un cursor (`?limit=&before=`) para cargar historial al subir |
 | GET | `/services/:id/logs/download` | +access | descarga íntegra del log del contenedor como adjunto de texto (`?timestamps=1` para incluir sellos) |
 | GET | `/projects/:id/metrics/stream` | +access | **SSE** de métricas en vivo del proyecto |
 | GET | `/services/:id/metrics/history` | +access | histórico de consumo del servicio (`?hours=`): CPU/RAM (media y pico), red y disco |
+
+### 7.5.1 Copia de datos desde una base externa (§5.6)
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| GET | `/services/:id/data-migration` | manage | si el motor lo admite y estado de la copia en curso |
+| POST | `/services/:id/data-migration/test` | manage | comprueba que el origen responde (`{sourceUrl}`) |
+| POST | `/services/:id/data-migration` | manage | lanza la copia (`{sourceUrl}`); el destino se sobrescribe |
+| POST | `/services/:id/data-migration/cancel` | manage | corta la copia en marcha |
+| GET | `/services/:id/data-migration/stream` | manage | **SSE** del log de la copia |
 
 ### 7.6 Consola de base de datos
 La tienen las bases que crea Skyway (postgres, mysql, mongo, redis) y, además,
@@ -850,7 +1013,8 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/import/railway/projects` | admin | lista proyectos de Railway (`{token}`) |
 | POST | `/import/railway/analyze` | admin | plan de importación (sin valores de variables) |
 | POST | `/import/railway/run` | admin | ejecuta la importación |
-| POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy instantáneo en push (firma verificada); respeta `autoDeploy` y deduplica contra el último commit construido; complementa al sondeo interno de `autodeploy.ts` |
+| POST | `/webhooks/github/app` | público (HMAC de la App) | webhook **único** de la GitHub App: reparte cada push entre los servicios que apuntan a ese repo y esa rama y cuyo proyecto tenga conectada esa instalación; también sincroniza altas, bajas y suspensiones de instalaciones |
+| POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy por servicio en push (firma verificada); respeta `autoDeploy` y deduplica contra el último commit construido; complementa al sondeo interno de `autodeploy.ts` |
 | POST | `/webhooks/stripe` | público (firma Stripe) | marca la factura como pagada al confirmarse el cobro; firma `Stripe-Signature` verificada (HMAC-SHA256 con tolerancia temporal anti-replay); exige `payment_status == paid`; idempotente |
 
 ---
@@ -864,15 +1028,19 @@ distroless), el explorador lo indica y no está disponible.
 | `DATA_DIR` | `./data` | SQLite, builds y backups |
 | `WEB_DIST` | `web/dist` | web compilada a servir |
 | `JWT_SECRET` | generado | secreto de firma de sesiones (si no, se genera y persiste) |
-| `BUILD_CONCURRENCY` | `2` | builds simultáneos |
+| `BUILD_CONCURRENCY` | núcleos − 1, en [2, 4] | builds simultáneos |
 | `TRUST_PROXY` | privadas/loopback | confianza en `X-Forwarded-*` (`true`/`false`/número/CIDRs) |
 | `DOCKER_SOCK` | socket estándar | ruta alternativa al socket de Docker |
 | `LOG_LEVEL` | `info` | nivel de log de Fastify |
 
 Ajustes en la UI (tabla `settings`, solo admin): `rootDomain`, `letsencryptEmail`,
 `serverIp`, `githubToken`, umbrales de alerta y canales (Discord/Telegram/webhook).
+La GitHub App guarda ahí sus credenciales (`githubAppId`, `githubAppSlug`,
+`githubAppName`, `githubAppPrivateKey`, `githubAppClientId`,
+`githubAppClientSecret`, `githubAppWebhookSecret`, `githubAppHtmlUrl`); las crea y
+las borra el propio flujo de la App, no se editan a mano.
 Opcional: `autoDeployPollSeconds` afina el intervalo del sondeo de auto-deploy
-(por defecto 120 s, mínimo 30).
+(por defecto 60 s, mínimo 15).
 
 ---
 

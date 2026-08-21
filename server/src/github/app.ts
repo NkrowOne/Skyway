@@ -236,8 +236,13 @@ export function buildAppManifest(baseUrl: string, suffix: string): AppManifest {
   } catch {
     /* baseUrl ya viene validada por la ruta; el nombre es solo cosmético */
   }
+  // GitHub limita el nombre a 34 caracteres y exige que sea único en todo
+  // github.com: el sufijo aleatorio evita el choque y por eso se recorta el
+  // host, nunca el sufijo. El usuario puede cambiarlo en el propio formulario.
+  const suffixPart = ` ${suffix}`;
+  const name = `Skyway ${host}`.slice(0, 34 - suffixPart.length) + suffixPart;
   return {
-    name: `Skyway ${host} ${suffix}`.slice(0, 34), // GitHub limita el nombre a 34 caracteres
+    name,
     url: base,
     hook_attributes: { url: `${base}/api/webhooks/github/app`, active: true },
     redirect_url: `${base}/api/github/app/setup`,
