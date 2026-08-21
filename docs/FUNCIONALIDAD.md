@@ -138,6 +138,21 @@ tirones.
 - **Un fallo de Docker no es un cambio de estado**: si el daemon no responde por
   una réplica, se marca inalcanzable y el monitor salta ese ciclo en vez de
   disparar una alerta de caída falsa.
+- **Con tope de tiempo**: el cliente de Docker se construye sin `timeout` y una
+  llamada al socket puede no volver nunca. Cada consulta tiene 8 s y el muestreo
+  entero 20 s; al vencer se devuelve una foto vacía marcada como «Docker no
+  disponible». Es lo que impide que un solo cuelgue —de un contenedor de un
+  proyecto— deje sin panel a todos los demás de forma permanente.
+- **Una foto sin datos no se guarda**: si el daemon no respondía, la foto no se
+  cachea, para que la lectura siguiente vuelva a intentarlo en cuanto se
+  recupere en vez de esperar a que caduque.
+- **Una sola verdad por respuesta**: quien pinta varios servicios pide la foto
+  una vez y saca de ella tanto los estados como el indicador de «Docker
+  disponible». Preguntarlo por separado daba respuestas que se contradecían.
+
+La foto se fecha **al empezar** a muestrear, no al terminar: un muestreo tarda
+lo suyo y, fechándolo al final, se serviría como recién hecho y quien pide datos
+cada 2,5 s recibiría dos veces la misma lectura.
 
 El stream de métricas, además, **no solapa ciclos**: si uno tarda más que el
 intervalo, el siguiente se descarta en lugar de apilarse encima.

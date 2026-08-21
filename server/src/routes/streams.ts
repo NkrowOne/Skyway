@@ -18,9 +18,11 @@ import { sseInit } from '../sse';
 
 /**
  * Antigüedad que tolera el stream de métricas. Va por debajo del intervalo del
- * temporizador para que cada ciclo traiga datos nuevos, pero es el muestreador
- * quien decide si hay que preguntar a Docker: con varias pestañas abiertas,
- * todas comparten la misma foto en vez de pedir una cada una.
+ * temporizador para que cada ciclo traiga datos nuevos —lo cual solo se cumple
+ * porque la foto se fecha al empezar a muestrear y no al terminar; si no, un
+ * muestreo de un segundo se serviría dos veces y el refresco real sería de
+ * 5 s—. Aun así es el muestreador quien decide si hay que preguntar a Docker:
+ * con varias pestañas abiertas, todas comparten la misma foto.
  */
 const SAMPLE_MAX_AGE_MS = 2000;
 const METRICS_TICK_MS = 2500;

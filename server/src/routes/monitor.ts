@@ -44,12 +44,13 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
    * accesibles, con métricas, alertas, último despliegue y uso de disco.
    */
   app.get('/api/monitor/overview', async (req) => {
-    const dockerUp = await dockerAvailable();
     const projects = accessibleProjects(req);
-    const disk = dockerUp ? await diskUsageByService().catch(() => null) : null;
     // Una sola foto para toda la vista: antes cada servicio pedía su inspect y
-    // su stats por separado, y `stats` cuesta ~1 s por contenedor.
+    // su stats por separado, y `stats` cuesta ~1 s por contenedor. Es la foto
+    // quien dice si Docker respondía (ver la nota en websites.ts).
     const snap = await dockerSnapshot(OVERVIEW_MAX_AGE_MS);
+    const dockerUp = snap.docker;
+    const disk = dockerUp ? await diskUsageByService().catch(() => null) : null;
 
     const services: any[] = [];
     for (const project of projects) {

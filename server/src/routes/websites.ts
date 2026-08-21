@@ -1,7 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { canAccessProject, currentUser, requireAuth } from '../auth';
 import { getSetting, listDeployments, listProjects, listServices, openAlertCountsByService } from '../db';
-import { dockerAvailable } from '../docker/client';
 import { aggregateReplicaState, configuredReplicas } from '../docker/containers';
 import { dockerSnapshot } from '../docker/sampler';
 import { ContainerState } from '../types';
@@ -15,9 +14,12 @@ export async function websiteRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/websites', async (req) => {
     const user = currentUser(req)!;
-    const dockerUp = await dockerAvailable();
-    // Una sola foto de Docker para toda la vista.
+    // Una sola foto de Docker para toda la vista. Es ella quien dice si el
+    // daemon respondía: preguntarlo aparte daba dos verdades distintas y, con
+    // el ping recuperado y la foto todavía vacía, la vista pintaba todos los
+    // sitios como caídos.
     const snap = await dockerSnapshot(5000);
+    const dockerUp = snap.docker;
     const tls = !!getSetting('letsencryptEmail');
     const sites: any[] = [];
 

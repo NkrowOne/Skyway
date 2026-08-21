@@ -44,7 +44,7 @@ import {
   updateResources,
   volumeName,
 } from '../docker/containers';
-import { invalidateDockerSnapshot, sampledRuntime } from '../docker/sampler';
+import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
 import { triggerDeploy } from '../deploy/deployer';
 import { getTemplate, templateList } from '../templates';
 import { availableReferences, resolveServiceEnv } from '../variables';
@@ -241,12 +241,12 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
-    const docker = await dockerAvailable();
     // Lectura de panel: se sirve de la foto compartida (el drawer la repite
-    // cada 4 s) en vez de lanzar su propio inspect contra el socket.
-    const runtime = docker
-      ? await sampledRuntime(id, PANEL_MAX_AGE_MS)
-      : { state: 'unknown', startedAt: null, exitCode: null, restartCount: 0, image: null };
+    // cada 4 s) en vez de lanzar su propio inspect contra el socket. La foto es
+    // también quien dice si Docker respondía, para no dar dos verdades.
+    const snap = await dockerSnapshot(PANEL_MAX_AGE_MS);
+    const docker = snap.docker;
+    const runtime = runtimeIn(snap, id);
     return {
       service: found.service,
       project: found.project,
