@@ -120,6 +120,43 @@ export async function removeImage(tag: string): Promise<void> {
   }
 }
 
+/**
+ * Cómo pasarle un comando de arranque a una imagen, según su ENTRYPOINT.
+ *
+ * Nixpacks construye con `ENTRYPOINT ["/bin/bash","-l","-c"]` y deja el comando
+ * en el CMD. Si ahí se mete un `['sh','-c','...']`, `bash -l -c` toma el PRIMER
+ * argumento como el programa a ejecutar y los demás pasan a ser `$0` y `$1`:
+ * arranca un `sh` pelado que lee EOF de una entrada vacía y **sale con 0 sin
+ * escribir una línea**. El despliegue falla sin dejar rastro de por qué, y la
+ * imagen construida con Dockerfile —que no lleva entrypoint— funcionaba.
+ *
+ * Con un entrypoint que ya es un shell, el comando va tal cual como CMD, que es
+ * lo que hacen Nixpacks y Railway. Con uno que no lo es, se aparta: quien fija
+ * un comando de arranque quiere ESE comando, no el envoltorio de la imagen.
+ */
+export async function startCommandSpec(
+  image: string,
+  startCmd: string,
+): Promise<{ cmd: string[]; entrypoint?: string[]; replacedEntrypoint: string[] | null }> {
+  let entry: string[] = [];
+  try {
+    const info = await docker.getImage(image).inspect();
+    entry = (info.Config?.Entrypoint as string[] | null) || [];
+  } catch {
+    /* imagen no inspeccionable: se envuelve en un shell, como siempre */
+  }
+  if (entry.length === 0) return { cmd: ['sh', '-c', startCmd], replacedEntrypoint: null };
+  if (isShellEntrypoint(entry)) return { cmd: [startCmd], replacedEntrypoint: null };
+  return { cmd: ['sh', '-c', startCmd], entrypoint: [], replacedEntrypoint: entry };
+}
+
+/** `["/bin/bash","-l","-c"]`, `["/bin/sh","-c"]`… es decir: ya envuelve un comando. */
+function isShellEntrypoint(entry: string[]): boolean {
+  if (entry[entry.length - 1] !== '-c') return false;
+  const bin = (entry[0] || '').split('/').pop() || '';
+  return ['sh', 'bash', 'ash', 'dash', 'zsh', 'busybox'].includes(bin);
+}
+
 export async function imageExists(tag: string): Promise<boolean> {
   try {
     await docker.getImage(tag).inspect();
@@ -176,6 +213,8 @@ export interface RunSpec {
   cpus?: number | null;
   memoryMb?: number | null;
   cmd?: string[] | null;
+  /** Solo si hay que APARTAR el de la imagen; `[]` lo anula. */
+  entrypoint?: string[] | null;
   volumes?: { name: string; containerPath: string }[];
   /** Overrides para el contenedor de validación de los despliegues sin corte. */
   nameOverride?: string;
@@ -239,6 +278,7 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
     Env: Object.entries(spec.env).map(([k, v]) => `${k}=${v}`),
     Labels: labels,
     Cmd: spec.cmd || undefined,
+    ...(spec.entrypoint ? { Entrypoint: spec.entrypoint } : {}),
     ExposedPorts: exposed,
     HostConfig: hostConfig,
     NetworkingConfig: {

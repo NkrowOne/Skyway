@@ -230,9 +230,9 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
   }
   if (forceNixpacks && fs.existsSync(dockerfile)) {
     log(
-      `⚠ ${path.basename(opts.repoDir)} tiene Dockerfile, pero la configuración del repositorio pide el constructor ` +
-        `${forced}: se ignora el Dockerfile y se construye con Nixpacks. El comando de arranque será el que infiera ` +
-        `Nixpacks, NO el CMD del Dockerfile. Para usar el Dockerfile, pon "builder": "DOCKERFILE" en railway.json.`,
+      `⚠ El repositorio tiene Dockerfile, pero su configuración pide el constructor ${forced}: se ignora el Dockerfile ` +
+        `y se construye con Nixpacks. El comando de arranque será el que infiera Nixpacks, NO el CMD del Dockerfile. ` +
+        `Para usar el Dockerfile, pon "builder": "DOCKERFILE" en railway.json.`,
     );
   }
 
