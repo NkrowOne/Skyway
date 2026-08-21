@@ -208,9 +208,19 @@ cmd_action() {
   case "$verb" in
     deploy)
       local out id
-      out=$(api POST "/services/$SVC_ID/deploy")
+      # Sin --rebuild, un commit ya construido reutiliza su imagen (lo normal al
+      # redesplegar por variables); con él se recompila desde cero.
+      if [[ "${REBUILD:-0}" == "1" ]]; then
+        out=$(api POST "/services/$SVC_ID/deploy" --data '{"force":true}')
+      else
+        out=$(api POST "/services/$SVC_ID/deploy")
+      fi
       id=$(printf '%s' "$out" | jq -r '.deployment.id')
-      ok "Despliegue lanzado para «$SVC_NAME» ${C_DIM}(rama configurada al último commit)${C_RESET}"
+      if [[ "${REBUILD:-0}" == "1" ]]; then
+        ok "Reconstrucción lanzada para «$SVC_NAME» ${C_DIM}(sin reutilizar la imagen del commit)${C_RESET}"
+      else
+        ok "Despliegue lanzado para «$SVC_NAME» ${C_DIM}(rama configurada al último commit)${C_RESET}"
+      fi
       [[ "${FOLLOW:-0}" == "1" ]] && follow_deploy "$id"
       ;;
     restart)
@@ -325,6 +335,7 @@ ${C_BOLD}skyway${C_RESET} — control de Skyway desde la terminal
 
 Opciones:
   -f, --follow   Sigue el despliegue hasta que termina (deploy, rewind)
+  -r, --rebuild  Recompila sin reutilizar la imagen del commit ya construido (deploy)
   -y, --yes      No pregunta confirmación (stop, rewind, update)
   -u, --url URL  URL de Skyway (o \$SKYWAY_URL)
   -t, --token T  Token sky_… (o \$SKYWAY_TOKEN)
@@ -338,10 +349,11 @@ EOF
 main() {
   load_config
   local cmd="" positional=""
-  FOLLOW=0; ASSUME_YES=0
+  FOLLOW=0; ASSUME_YES=0; REBUILD=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -f|--follow) FOLLOW=1;;
+      -r|--rebuild) REBUILD=1;;
       -y|--yes) ASSUME_YES=1;;
       -u|--url) SKYWAY_URL="${2:-}"; shift;;
       -t|--token) SKYWAY_TOKEN="${2:-}"; shift;;

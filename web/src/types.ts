@@ -56,6 +56,34 @@ export interface GithubConnector {
   project_client?: string | null;
 }
 
+/**
+ * Instalación de la GitHub App sobre una cuenta u organización. No caduca y no
+ * guarda credenciales: el token de clonado lo emite Skyway al desplegar.
+ * `projectId` null = conexión global del administrador.
+ */
+export interface GithubInstallation {
+  id: string;
+  installationId: number;
+  accountLogin: string;
+  accountType: string;
+  /** 'all' (toda la cuenta) o 'selected' (solo los repos elegidos en GitHub). */
+  repoSelection: string;
+  projectId: string | null;
+  projectName: string | null;
+  createdBy: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+  suspended: boolean;
+  manageUrl: string | null;
+}
+
+export interface GithubAppStatus {
+  configured: boolean;
+  canConfigure: boolean;
+  app: { slug: string; name: string; htmlUrl: string } | null;
+  webhookUrl: string;
+}
+
 export interface GithubRepo {
   fullName: string;
   private: boolean;
@@ -93,6 +121,8 @@ export interface Project {
   serviceCount?: number;
   lastDeployAt?: number | null;
   openAlerts?: number;
+  /** Despliegues en marcha en el proyecto: la tarjeta anuncia la versión que sale. */
+  activeDeploys?: number;
 }
 
 // ---------- cuentas de cliente: workspaces, planes, facturación ----------
@@ -662,6 +692,24 @@ export interface Deployment {
   diagnosis: string | null;
   created_at: number;
   finished_at: number | null;
+}
+
+/**
+ * Despliegue vivo tal y como lo anuncia el feed del proyecto: la carga inicial
+ * de /projects/:id y el stream /projects/:id/deploys/stream usan esta forma, de
+ * modo que la rejilla sabe qué servicio tiene una versión nueva saliendo sin
+ * abrir el panel de nadie.
+ */
+export interface ActiveDeploy {
+  id: string;
+  serviceId: string;
+  projectId: string;
+  status: DeploymentStatus;
+  trigger: string;
+  commitSha: string | null;
+  commitMsg: string | null;
+  createdAt: number;
+  finishedAt: number | null;
 }
 
 export type AlertSeverity = 'critical' | 'warning' | 'info';

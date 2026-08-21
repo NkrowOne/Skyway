@@ -99,6 +99,14 @@ export interface RailwayServiceRaw {
   customDomains: string[];
   serviceDomains: string[];
   volumeMounts: string[];
+  /** Campos «extendidos»: solo llegan si la API de Railway los expone hoy. */
+  healthcheckPath: string | null;
+  numReplicas: number | null;
+  restartPolicyType: string | null;
+  cronSchedule: string | null;
+  builder: string | null;
+  /** Puerto del dominio del servicio: es el que Railway enruta al contenedor. */
+  domainPort: number | null;
 }
 
 export interface RailwayProjectDetail {
@@ -108,15 +116,20 @@ export interface RailwayProjectDetail {
   services: RailwayServiceRaw[];
 }
 
-/** Lee la estructura de un proyecto de Railway para un entorno concreto. */
-export async function getRailwayProject(
-  token: string,
-  projectId: string,
-  environmentId?: string,
-): Promise<RailwayProjectDetail> {
-  const data = await gql<any>(
-    token,
-    `query ($id: String!) {
+/**
+ * Campos del `serviceInstance` que Railway ha ido añadiendo. Se piden en una
+ * consulta aparte porque GraphQL rechaza la petición ENTERA si uno de ellos ya
+ * no existe: mejor perder los extras que quedarse sin poder importar nada.
+ */
+const INSTANCE_EXTRA_FIELDS = `
+  healthcheckPath
+  numReplicas
+  restartPolicyType
+  cronSchedule
+  builder
+`;
+
+const projectQuery = (extras: string, domainExtras = ''): string => `query ($id: String!) {
       project(id: $id) {
         id
         name
@@ -136,18 +149,33 @@ export async function getRailwayProject(
               startCommand
               rootDirectory
               buildCommand
+              ${extras}
               source { repo image }
               domains {
                 customDomains { domain }
-                serviceDomains { domain }
+                serviceDomains { domain ${domainExtras} }
               }
             } } }
           } }
         }
       }
-    }`,
-    { id: projectId },
-  );
+    }`;
+
+/** Lee la estructura de un proyecto de Railway para un entorno concreto. */
+export async function getRailwayProject(
+  token: string,
+  projectId: string,
+  environmentId?: string,
+): Promise<RailwayProjectDetail> {
+  let data: any;
+  try {
+    data = await gql<any>(token, projectQuery(INSTANCE_EXTRA_FIELDS, 'targetPort'), { id: projectId });
+  } catch (err) {
+    // La API cambió y alguno de los campos extra ya no existe: se reintenta con
+    // lo imprescindible, que es lo que lleva funcionando desde el principio.
+    if (!(err instanceof RailwayError)) throw err;
+    data = await gql<any>(token, projectQuery('', ''), { id: projectId });
+  }
 
   const project = data?.project;
   if (!project) throw new RailwayError('Proyecto no encontrado en Railway (¿ID correcto y token con acceso?)');
@@ -170,9 +198,15 @@ export async function getRailwayProject(
     }
   }
 
+  const intOrNull = (value: unknown): number | null => {
+    const n = Number(value);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  };
+
   const services: RailwayServiceRaw[] = edges(project.services).map((s: any) => {
     const instances = edges(s.serviceInstances);
     const instance = instances.find((i: any) => i.environmentId === envId) ?? instances[0] ?? {};
+    const serviceDomains = instance?.domains?.serviceDomains ?? [];
     return {
       id: s.id,
       name: s.name,
@@ -183,8 +217,16 @@ export async function getRailwayProject(
       rootDirectory: instance?.rootDirectory ?? null,
       buildCommand: instance?.buildCommand ?? null,
       customDomains: (instance?.domains?.customDomains ?? []).map((d: any) => d?.domain).filter(Boolean),
-      serviceDomains: (instance?.domains?.serviceDomains ?? []).map((d: any) => d?.domain).filter(Boolean),
+      serviceDomains: serviceDomains.map((d: any) => d?.domain).filter(Boolean),
       volumeMounts: volumeMountsByService.get(s.id) ?? [],
+      healthcheckPath: instance?.healthcheckPath ?? null,
+      numReplicas: intOrNull(instance?.numReplicas),
+      restartPolicyType: instance?.restartPolicyType ?? null,
+      cronSchedule: instance?.cronSchedule ?? null,
+      builder: instance?.builder ?? null,
+      // Railway enruta su dominio a este puerto: es el dato más fiable sobre
+      // dónde escucha la aplicación, mejor que asumir 3000.
+      domainPort: intOrNull(serviceDomains.find((d: any) => intOrNull(d?.targetPort))?.targetPort),
     };
   });
 

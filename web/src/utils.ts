@@ -132,6 +132,16 @@ export const DEPLOY_STATUS_LABEL: Record<DeploymentStatus, string> = {
   canceled: 'Cancelado',
 };
 
+/** De dónde vino el despliegue. Compartido: lo pintan el historial y la rejilla. */
+export const DEPLOY_TRIGGER_LABEL: Record<string, string> = {
+  initial: 'creación',
+  manual: 'manual',
+  webhook: 'push',
+  autodeploy: 'auto-deploy',
+  rollback: 'rollback',
+  import: 'importación',
+};
+
 export function isActiveDeploy(status: DeploymentStatus): boolean {
   return status === 'queued' || status === 'building' || status === 'deploying';
 }
@@ -189,6 +199,14 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   autodeploy: 'Auto-deploy (commit nuevo)',
   server_started: 'Servidor iniciado',
   railway_import: 'Proyecto importado de Railway',
+  data_migration_started: 'Copia de datos iniciada',
+  data_migration_canceled: 'Copia de datos cancelada',
+  github_app_created: 'GitHub App conectada',
+  github_app_disconnected: 'GitHub App desenlazada',
+  github_installation_connected: 'Cuenta de GitHub conectada',
+  github_installation_removed: 'Cuenta de GitHub desconectada',
+  github_installation_deleted: 'Instalación de GitHub eliminada en GitHub',
+  github_installation_suspended: 'Instalación de GitHub suspendida/reactivada',
   deployment_canceled: 'Despliegue cancelado',
   project_deploy_all: 'Despliegue de todo el proyecto',
   service_exec: 'Comando ejecutado en contenedor',

@@ -1,10 +1,13 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, CalendarClock, Download, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { Archive, CalendarClock, Database, Download, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { api } from '../../api';
 import { Service } from '../../types';
 import { fmtBytes, fmtDateTime, timeAgo } from '../../utils';
 import { Button, ConfirmModal, Field, Skeleton, useToast } from '../ui';
+
+// Solo se descarga al abrirlo: trae su propio visor de log.
+const DataMigrationModal = lazy(() => import('../DataMigrationModal'));
 
 interface BackupEntry {
   file: string;
@@ -69,6 +72,7 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
   const queryClient = useQueryClient();
   const [restoreFile, setRestoreFile] = useState<string | null>(null);
   const [deleteFile, setDeleteFile] = useState<string | null>(null);
+  const [migrating, setMigrating] = useState(false);
 
   const backups = useQuery({
     queryKey: ['backups', serviceId],
@@ -127,6 +131,37 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
   return (
     <div className="flex flex-col gap-3.5 p-4 sm:px-5">
       <ScheduleSection service={service} onChanged={onChanged} />
+
+      {/*
+        Migrar desde fuera vive junto a los backups porque es la misma idea:
+        meter datos en esta base. Es el último paso de una migración de Railway
+        y antes obligaba a entrar por SSH al servidor.
+      */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-line bg-bg px-4 py-3">
+        <div className="min-w-0">
+          <h3 className="flex items-center gap-2 text-[13px] font-semibold">
+            <Database size={14} className="text-info" />
+            Importar desde otra base de datos
+          </h3>
+          <p className="mt-1 text-[11px] text-subtle">
+            Vuelca aquí una base externa (la de Railway, por ejemplo) con su URL de conexión pública.
+          </p>
+        </div>
+        <Button size="sm" variant="secondary" onClick={() => setMigrating(true)}>
+          Copiar datos
+        </Button>
+      </div>
+
+      {migrating && (
+        <Suspense fallback={null}>
+          <DataMigrationModal
+            open
+            onClose={() => setMigrating(false)}
+            serviceId={service.id}
+            serviceName={service.name}
+          />
+        </Suspense>
+      )}
 
       <div className="flex flex-wrap items-center justify-between gap-2.5">
         <p className="text-xs text-sub">

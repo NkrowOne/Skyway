@@ -28,6 +28,9 @@ export interface PlannedService {
   branch?: string;
   rootDir?: string;
   startCmd?: string;
+  buildCmd?: string;
+  healthcheckPath?: string;
+  replicas?: number;
   port?: number | null;
   domains: string[];
   volumeMounts: string[];
@@ -165,9 +168,22 @@ async function planService(
     _vars: vars,
   };
 
-  // Puerto: Railway inyecta PORT dinámico; si el servicio lo fijaba, lo respetamos.
+  // Puerto: Railway inyecta PORT dinámico; si el servicio lo fijaba, lo
+  // respetamos. Si no, vale el puerto al que Railway enruta su dominio, que es
+  // el dato real de dónde escucha la aplicación.
   const portVar = Number(vars.PORT);
-  const explicitPort = Number.isInteger(portVar) && portVar > 0 && portVar < 65536 ? portVar : null;
+  const explicitPort =
+    Number.isInteger(portVar) && portVar > 0 && portVar < 65536 ? portVar : raw.domainPort ?? null;
+
+  // Ajustes del panel de Railway que Skyway sí sabe reproducir.
+  if (raw.healthcheckPath) base.healthcheckPath = raw.healthcheckPath;
+  if (raw.numReplicas && raw.numReplicas > 1) {
+    base.replicas = Math.min(raw.numReplicas, 10);
+    notes.push(`Railway tenía ${raw.numReplicas} réplicas: se importan (consumen cuota del workspace, revísalo en Ajustes).`);
+  }
+  if (raw.cronSchedule) {
+    notes.push(`El servicio tenía un cron en Railway («${raw.cronSchedule}»): Skyway aún no ejecuta servicios programados.`);
+  }
 
   if (raw.image) {
     const template = matchTemplate(raw.image);
@@ -178,7 +194,7 @@ async function planService(
       if (!template.exact) {
         notes.push(`Imagen original "${raw.image}": se usará la plantilla oficial ${template.template}:${template.version}.`);
       }
-      notes.push('Se generan credenciales nuevas; los datos se copian con el comando del informe.');
+      notes.push('Se generan credenciales nuevas; los datos se copian después desde el informe de importación.');
       return base;
     }
     base.kind = 'image';
@@ -209,7 +225,13 @@ async function planService(
     base.port = explicitPort ?? 3000;
     if (!explicitPort) notes.push('Puerto interno asumido 3000: ajústalo si tu app escucha en otro.');
     if (raw.buildCommand) {
-      notes.push(`Build command de Railway ("${raw.buildCommand}") no se traslada: Skyway construye con Dockerfile o Nixpacks.`);
+      // Skyway construye con Nixpacks cuando no hay Dockerfile, igual que
+      // Railway, y Nixpacks acepta el comando de compilación por variable.
+      base.buildCmd = raw.buildCommand;
+      notes.push(`Build command de Railway («${raw.buildCommand}») trasladado: se aplica al construir con Nixpacks (si el repo trae Dockerfile, manda el Dockerfile).`);
+    }
+    if (raw.builder && raw.builder.toUpperCase() === 'DOCKERFILE') {
+      notes.push('Railway construía con Dockerfile: asegúrate de que el repositorio lo trae en la raíz o indica su ruta en Ajustes.');
     }
     return base;
   }
@@ -512,6 +534,12 @@ export interface DataCopyEntry {
   template: string;
   command: string | null;
   note: string;
+  /** Servicio de Skyway creado, para poder lanzar la copia desde el panel. */
+  serviceId: string | null;
+  /** URL pública del origen en Railway, si la había: precarga el formulario. */
+  sourceUrl: string | null;
+  /** El motor admite copia automatizada desde el panel. */
+  automatable: boolean;
 }
 
 export interface ImportReport {
@@ -645,6 +673,8 @@ export async function runRailwayImport(
         port: planned.port ?? null,
         startCmd: planned.startCmd,
         domains: planned.domains,
+        healthcheckPath: planned.healthcheckPath ?? null,
+        replicas: planned.replicas,
         volumes: volumes.length ? volumes : undefined,
       };
       const service = createService(project.id, planned.railwayName, svcSlug, 'image', cfg);
@@ -657,6 +687,9 @@ export async function runRailwayImport(
         branch: planned.branch || 'main',
         rootDir: planned.rootDir,
         startCmd: planned.startCmd,
+        buildCmd: planned.buildCmd,
+        healthcheckPath: planned.healthcheckPath ?? null,
+        replicas: planned.replicas,
         port: planned.port || 3000,
         domains: planned.domains,
         webhookSecret: randomToken(16),
@@ -676,13 +709,17 @@ export async function runRailwayImport(
   if (gitCount > 0) {
     report.nextSteps.push(`Despliega los ${gitCount} servicio(s) de repositorio (botón Desplegar). Si alguno es privado, configura antes el token de GitHub en Ajustes.`);
   }
-  if (report.dataCopy.some((d) => d.command)) {
+  if (report.dataCopy.some((d) => d.automatable)) {
+    report.nextSteps.push('Copia los datos de las bases de datos desde el informe («Copiar datos ahora»); el log va en vivo.');
+  } else if (report.dataCopy.some((d) => d.command)) {
     report.nextSteps.push('Copia los datos de las bases de datos con los comandos del informe (ejecútalos en el servidor).');
   }
   if (domainCount > 0) {
     report.nextSteps.push(`Apunta el DNS de tus ${domainCount} dominio(s) a la IP de este servidor cuando quieras hacer el cambio.`);
   }
-  report.nextSteps.push('Configura los webhooks de GitHub de cada servicio para el auto-deploy (Ajustes del servicio).');
+  report.nextSteps.push(
+    'Conecta la cuenta de GitHub del proyecto (botón «GitHub»): con la App los push despliegan solos, sin configurar webhooks.',
+  );
   report.nextSteps.push('Cuando todo funcione, pausa o borra el proyecto en Railway.');
 
   setSetting(`importReport:${project.id}`, JSON.stringify(report));
@@ -702,11 +739,21 @@ function buildDataCopyEntry(
   const service = listServices(project.id).find((s) => s.slug === svcSlug);
   const localEnv = service ? getEnv(service.id) : {};
   const network = `skyway-${project.slug}`;
-  const entry: DataCopyEntry = { service: planned.railwayName, template: templateKey, command: null, note: '' };
 
   const publicUrl =
     vars.DATABASE_PUBLIC_URL || vars.MYSQL_PUBLIC_URL || vars.MONGO_PUBLIC_URL || vars.REDIS_PUBLIC_URL ||
     Object.entries(vars).find(([k, v]) => /_URL$/.test(k) && /rlwy\.net|railway\.app/.test(v))?.[1];
+
+  const entry: DataCopyEntry = {
+    service: planned.railwayName,
+    template: templateKey,
+    command: null,
+    note: '',
+    serviceId: service?.id ?? null,
+    sourceUrl: publicUrl ?? null,
+    // Postgres, MySQL y Mongo se copian desde el panel; Redis y MinIO no.
+    automatable: ['postgres', 'mysql', 'mongo'].includes(templateKey) && !!service,
+  };
 
   if (templateKey === 'redis') {
     entry.note = 'Redis suele usarse como caché: normalmente no hace falta migrar datos. Si los necesitas, usa redis-cli --rdb.';
@@ -719,19 +766,19 @@ function buildDataCopyEntry(
 
   if (templateKey === 'postgres') {
     entry.command = `docker run --rm --network ${network} postgres:${version} sh -c 'pg_dump --no-owner --no-acl "${publicUrl}" | psql "postgresql://skyway:${localEnv.POSTGRES_PASSWORD}@${svcSlug}:5432/skyway"'`;
-    entry.note = 'Ejecuta el comando en el servidor con el servicio ya desplegado. Copia esquema y datos.';
+    entry.note = 'Pulsa «Copiar datos ahora» para hacerlo desde el panel, o ejecuta el comando en el servidor. Copia esquema y datos.';
   } else if (templateKey === 'mysql') {
     const u = tryParseUrl(publicUrl);
     if (u) {
       const db = u.pathname.replace(/^\//, '') || 'railway';
       entry.command = `docker run --rm --network ${network} mysql:${version} sh -c 'mysqldump --single-transaction -h ${u.hostname} -P ${u.port || '3306'} -u ${decodeURIComponent(u.username)} -p"${decodeURIComponent(u.password)}" ${db} | mysql -h ${svcSlug} -u skyway -p"${localEnv.MYSQL_PASSWORD}" skyway'`;
-      entry.note = 'Ejecuta el comando en el servidor con el servicio ya desplegado.';
+      entry.note = 'Pulsa «Copiar datos ahora» para hacerlo desde el panel, o ejecuta el comando en el servidor.';
     } else {
       entry.note = `No se pudo interpretar la URL pública (${publicUrl.slice(0, 40)}...): exporta con mysqldump manualmente.`;
     }
   } else if (templateKey === 'mongo') {
     entry.command = `docker run --rm --network ${network} mongo:${version} sh -c 'mongodump --uri="${publicUrl}" --archive | mongorestore --uri="mongodb://skyway:${localEnv.MONGO_INITDB_ROOT_PASSWORD}@${svcSlug}:27017" --archive --drop'`;
-    entry.note = 'Ejecuta el comando en el servidor con el servicio ya desplegado. --drop sustituye colecciones existentes.';
+    entry.note = 'Pulsa «Copiar datos ahora» para hacerlo desde el panel, o ejecuta el comando en el servidor. Sustituye las colecciones existentes.';
   } else if (templateKey === 'minio') {
     entry.note = 'Copia los objetos con `mc mirror` (MinIO Client) entre el bucket antiguo y el nuevo.';
   }

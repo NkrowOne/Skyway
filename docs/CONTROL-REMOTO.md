@@ -36,7 +36,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects"
 # Ver un servicio (estado del contenedor incluido)
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/services/SVC_ID"
 
-# Desplegar un servicio
+# Desplegar un servicio (añade {"force":true} para recompilar sin reutilizar imagen)
 curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/services/SVC_ID/deploy"
 
 # Reiniciar / parar / arrancar
@@ -48,6 +48,18 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/j
 
 # Último despliegue con logs
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/deployments/DEP_ID"
+
+# Despliegues en marcha de un proyecto, en vivo (SSE)
+curl -sN -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/deploys/stream"
+
+# Cuentas de GitHub conectadas al proyecto y sus repos
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/github/installations"
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/github/installations/GHI_ID/repos"
+
+# Copiar los datos de una base externa a una gestionada (Postgres/MySQL/Mongo)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"sourceUrl":"postgresql://usuario:clave@host:5432/db"}' \
+  "$BASE/api/services/SVC_ID/data-migration"
 
 # Catálogo de pilas de aplicaciones y creación de una entera (Supabase, WordPress…)
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/stacks"

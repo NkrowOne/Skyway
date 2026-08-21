@@ -6,10 +6,11 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 
 ## Características
 
-- **Importador de Railway** — migra tus proyectos existentes en minutos: un asistente lee tu cuenta por la API oficial de Railway y recrea servicios, variables (con sus referencias), dominios propios y volúmenes, además de generar los comandos exactos para copiar los datos de cada base de datos. Ver [Migrar desde Railway](#migrar-desde-railway).
-- **Despliegue desde GitHub** — pega la URL del repo (o `usuario/repo`) y Skyway clona, construye y despliega. Usa el `Dockerfile` del repo o, si no hay, [Nixpacks](https://nixpacks.com) (el mismo builder que usa Railway). Repos privados con token.
+- **Importador de Railway** — migra tus proyectos existentes en minutos: un asistente lee tu cuenta por la API oficial de Railway y recrea servicios, variables (con sus referencias), dominios propios y volúmenes, y **copia los datos de las bases de datos desde el propio panel**, con el log en vivo. Lee además la configuración del repositorio (`railway.json` / `railway.toml`) y rellena las variables `RAILWAY_*` en tiempo de ejecución, para que una aplicación migrada siga funcionando tal cual. Ver [Migrar desde Railway](#migrar-desde-railway).
+- **Despliegue desde GitHub** — conecta tu cuenta con la **GitHub App** de tu servidor (un clic, sin tokens que caduquen), elige el repo de una lista y Skyway clona, construye y despliega. Usa el `Dockerfile` del repo o, si no hay, [Nixpacks](https://nixpacks.com) (el mismo builder que usa Railway).
 - **Imágenes Docker** — despliega cualquier imagen pública (n8n, Plausible, Uptime Kuma...) como un servicio más, con dominio, volúmenes y límites.
-- **Auto-deploy con webhooks** — cada `git push` a la rama configurada redespliega automáticamente (firma HMAC verificada).
+- **Auto-deploy sin configurar nada** — con la GitHub App, cada `git push` a la rama configurada redespliega al momento: el webhook viene puesto de fábrica. Sin App también funciona, por webhook por servicio o por sondeo de la rama. Y si el commit ya estaba construido, se reutiliza su imagen en vez de compilar otra vez.
+- **Ves lo que está saliendo** — cuando hay una versión nueva en camino, la tarjeta del servicio, la cabecera del proyecto y el panel general lo anuncian con una cinta en movimiento; en el historial, el despliegue en curso va por encima del activo.
 - **Bases de datos en un clic** — PostgreSQL, Redis, MySQL, MongoDB y MinIO con credenciales generadas, volumen persistente y variables de conexión listas.
 - **Proyectos con red privada** — los servicios de un proyecto comparten una red Docker y se resuelven entre sí por nombre (`postgres:5432`, `redis:6379`...), sin exponer nada al exterior.
 - **Variables con referencias** — conecta servicios con `${{Postgres.DATABASE_URL}}`, igual que en Railway. Se resuelven al desplegar.
@@ -60,28 +61,29 @@ Abre `http://IP-DEL-SERVIDOR:4000` (o `http://tu-dominio`) y crea la cuenta de a
 
 1. **Crea un proyecto** — por ejemplo `mi-saas`. Cada proyecto tiene su red privada `skyway-mi-saas`.
 2. **Añade una base de datos** — "Nuevo servicio → Base de datos → PostgreSQL". Se crea con credenciales generadas y variables (`DATABASE_URL`, `PGHOST`...) listas para referenciar.
-3. **Despliega tu app** — "Nuevo servicio → Repositorio de GitHub". Indica la URL, rama y puerto interno. Verás el build en directo en la pestaña **Despliegues**.
-4. **Conéctalos** — en la pestaña **Variables** de tu app añade:
+3. **Conecta GitHub** — en Ajustes → GitHub, pulsa "Crear la App en GitHub": Skyway envía a GitHub un formulario ya relleno y vuelve conectado. Después, en cada proyecto, "GitHub → Conectar con GitHub" elige qué repositorios ve Skyway.
+4. **Despliega tu app** — "Nuevo servicio → Repositorio de GitHub". Elige el repo de la lista, la rama y el puerto interno. Verás el build en directo en la pestaña **Despliegues**.
+5. **Conéctalos** — en la pestaña **Variables** de tu app añade:
    ```
    DATABASE_URL=${{PostgreSQL.DATABASE_URL}}
    ```
    y redespliega. La app llega a la base de datos por la red privada del proyecto.
 
    Para lo común de una empresa (SMTP, claves de API, `TZ`...), usa **Variables compartidas** del proyecto: se heredan en todos sus servicios (las del servicio ganan si repiten clave) y se referencian con `${{shared.VAR}}`.
-5. **Ponle dominio** — en **Ajustes** del servicio añade `app.midominio.com` (con el DNS apuntando a tu servidor). Con email de Let's Encrypt configurado, TLS automático.
-6. **Auto-deploy** — copia la URL y el secreto del webhook (Ajustes del servicio) en GitHub → Settings → Webhooks. Cada push despliega.
-7. **Activa las notificaciones** — en Ajustes → Alertas configura Discord, Telegram o un webhook y pulsa "Enviar notificación de prueba". Si un servicio de un cliente se cae, te llega al momento con la explicación del código de salida.
-8. **Revisa el panel de seguridad** (icono del escudo) — corrige los hallazgos hasta subir la nota: límites de recursos en todos los servicios, TLS activado, sin puertos de bases de datos expuestos.
-9. **Vigila y depura desde el Monitor** (icono de actividad, o `g m`) — todos los servicios con su consumo y espacio; si algo falla, busca el texto del error en los logs de todos los contenedores a la vez.
-10. **Comparte el estado con tu cliente** — en el proyecto, botón **Página de estado**: actívala y pásale el enlace. Verá disponibilidad e incidencias sin entrar al panel.
+6. **Ponle dominio** — en **Ajustes** del servicio añade `app.midominio.com` (con el DNS apuntando a tu servidor). Con email de Let's Encrypt configurado, TLS automático.
+7. **Auto-deploy** — con la GitHub App conectada no hay nada que hacer: cada push despliega. (Sin App: copia la URL y el secreto del webhook de Ajustes del servicio en GitHub → Settings → Webhooks.)
+8. **Activa las notificaciones** — en Ajustes → Alertas configura Discord, Telegram o un webhook y pulsa "Enviar notificación de prueba". Si un servicio de un cliente se cae, te llega al momento con la explicación del código de salida.
+9. **Revisa el panel de seguridad** (icono del escudo) — corrige los hallazgos hasta subir la nota: límites de recursos en todos los servicios, TLS activado, sin puertos de bases de datos expuestos.
+10. **Vigila y depura desde el Monitor** (icono de actividad, o `g m`) — todos los servicios con su consumo y espacio; si algo falla, busca el texto del error en los logs de todos los contenedores a la vez.
+11. **Comparte el estado con tu cliente** — en el proyecto, botón **Página de estado**: actívala y pásale el enlace. Verá disponibilidad e incidencias sin entrar al panel.
 
 ## Migrar desde Railway
 
 1. Crea un **token de cuenta** en Railway (Account Settings → Tokens). No selecciones equipo si también quieres ver tus proyectos personales.
 2. En Skyway: **Dashboard → Importar de Railway**, pega el token (se usa solo en memoria durante la importación, nunca se guarda) y elige proyecto y entorno.
 3. Revisa la **vista previa**: qué servicio se convierte en qué (repo → servicio git, Postgres/Redis/MySQL/Mongo/MinIO → plantilla con credenciales nuevas, otras imágenes → servicio de imagen), con avisos de todo lo que conviene revisar.
-4. Importa. Las bases de datos e imágenes se despliegan solas; los repos quedan listos para pulsar **Desplegar** (configura antes el token de GitHub si son privados).
-5. **Copia los datos**: el informe (accesible después desde el banner del proyecto) incluye el comando exacto `pg_dump | psql` / `mysqldump | mysql` / `mongodump | mongorestore` para cada base de datos, usando el TCP proxy público de Railway y las credenciales nuevas. Ejecútalo en el servidor.
+4. Importa. Las bases de datos e imágenes se despliegan solas; los repos quedan listos para pulsar **Desplegar** (conecta antes la cuenta de GitHub si son privados).
+5. **Copia los datos**: en el informe (accesible después desde el banner del proyecto), pulsa **Copiar datos ahora** en cada base de datos. Skyway comprueba el origen, vuelca y restaura desde el servidor y te enseña el log en vivo. Necesita el TCP proxy público activo en Railway. Si prefieres hacerlo a mano, el comando equivalente sigue en el informe.
 6. Apunta el **DNS** de tus dominios a la IP del servidor cuando quieras hacer el cambio, verifica, y pausa el proyecto en Railway.
 
 Qué se traslada: servicios con su configuración (rama, directorio raíz, comando de arranque, puerto si estaba en `PORT`), variables por servicio **con referencias `${{Servicio.VAR}}` funcionando** (misma sintaxis), variables compartidas del entorno, dominios propios y volúmenes. Qué no: los dominios `*.up.railway.app` (genera los tuyos), el build command (Skyway construye con Dockerfile/Nixpacks) y los datos (un comando por base de datos, incluido en el informe).
@@ -118,7 +120,7 @@ La UI de desarrollo (`http://localhost:5173`) proxya `/api` al servidor. Para pr
 - **Servidor**: Node 20+ / TypeScript / Fastify. Estado en SQLite (`/data/skyway.db`). Habla con Docker vía `dockerode` + CLI (builds).
 - **Pipeline de despliegue**: clone superficial → build (Dockerfile o Nixpacks) → recrear contenedor con env resuelto, límites de recursos, red y labels de Traefik → verificación → purga de imágenes antiguas (se conservan las 5 últimas por servicio para rollback).
 - **Web**: React + Vite + Tailwind. Logs y métricas por SSE.
-- **Un build concurrente por servicio**, máximo 2 builds globales en paralelo (configurable con `BUILD_CONCURRENCY`).
+- **Un build concurrente por servicio**; en paralelo, tantos como núcleos − 1 (entre 2 y 4, configurable con `BUILD_CONCURRENCY`).
 
 ### Estructura del código
 
@@ -154,11 +156,11 @@ web/src/
 | `PORT`                | `4000`      | Puerto de la UI/API                            |
 | `DATA_DIR`            | `./data`    | SQLite, builds temporales                      |
 | `JWT_SECRET`          | generado    | Secreto de sesiones (persiste en la BD si no)  |
-| `BUILD_CONCURRENCY`   | `2`         | Builds simultáneos                             |
+| `BUILD_CONCURRENCY`   | núcleos − 1 | Builds simultáneos (por defecto entre 2 y 4)   |
 | `TRUST_PROXY`         | privadas    | Confianza en `X-Forwarded-*` para la IP real (rangos privados/loopback por defecto; `true`/`false`/nº/CIDRs) |
 | `DOCKER_SOCK`         | socket std  | Ruta alternativa al socket de Docker           |
 
-En **Ajustes** (UI): dominio raíz para subdominios generados, email de Let's Encrypt y token de GitHub para repos privados.
+En **Ajustes** (UI): dominio raíz para subdominios generados, email de Let's Encrypt y la **GitHub App** del servidor (o, como alternativa, un token global de GitHub para repos privados).
 
 ## ¿Y Kubernetes?
 

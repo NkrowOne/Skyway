@@ -10,6 +10,7 @@ import {
   deleteService,
   getEnv,
   getGithubConnector,
+  getGithubInstallation,
   getProject,
   getService,
   latestDeployment,
@@ -54,10 +55,12 @@ const createGitSchema = z.object({
   name: z.string().trim().min(1).max(60),
   repoUrl: z.string().trim().min(3, 'Repositorio requerido'),
   connectorId: z.string().trim().optional(),
+  githubInstallationId: z.string().trim().optional(),
   branch: z.string().trim().min(1).default('main'),
   rootDir: z.string().trim().optional(),
   dockerfilePath: z.string().trim().optional(),
   startCmd: z.string().trim().optional(),
+  buildCmd: z.string().trim().optional(),
   port: z.coerce.number().int().min(1).max(65535).default(3000),
   domains: z.array(z.string().trim().min(1)).default([]),
   autoDeploy: z.boolean().default(true),
@@ -85,10 +88,12 @@ const patchSchema = z.object({
     .object({
       repoUrl: z.string().trim().min(3).optional(),
       connectorId: z.string().trim().nullable().optional(),
+      githubInstallationId: z.string().trim().nullable().optional(),
       branch: z.string().trim().min(1).optional(),
       rootDir: z.string().trim().nullable().optional(),
       dockerfilePath: z.string().trim().nullable().optional(),
       startCmd: z.string().trim().nullable().optional(),
+      buildCmd: z.string().trim().nullable().optional(),
       // nullable: los servicios de imagen sin puerto interno (workers) envían
       // null; sin esto, NINGÚN ajuste suyo se podía guardar (Number(null)=0).
       port: z.coerce.number().int().min(1).max(65535).nullable().optional(),
@@ -111,9 +116,19 @@ const patchSchema = z.object({
     .optional(),
 });
 
+/**
+ * ¿Se puede usar esa conexión de GitHub desde este proyecto? Vale la del propio
+ * proyecto y la global del administrador; la de OTRO proyecto no, aunque se
+ * escriba su id a mano (sería una vía para clonar repos de otro cliente).
+ */
+function installationVisibleFrom(rowId: string, projectId: string): boolean {
+  const row = getGithubInstallation(rowId);
+  return !!row && (row.project_id === null || row.project_id === projectId);
+}
+
 /** Campos cuyo cambio requiere recrear el contenedor. */
 const REDEPLOY_FIELDS = [
-  'repoUrl', 'connectorId', 'branch', 'rootDir', 'dockerfilePath', 'startCmd', 'port',
+  'repoUrl', 'connectorId', 'githubInstallationId', 'branch', 'rootDir', 'dockerfilePath', 'startCmd', 'buildCmd', 'port',
   'domains', 'hostPort', 'version', 'image', 'buildArgs', 'healthcheckPath', 'volumes', 'replicas',
 ] as const;
 
@@ -177,14 +192,19 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       if (body.connectorId && getGithubConnector(body.connectorId)?.project_id !== projectId) {
         return reply.code(400).send({ error: 'Conector de GitHub desconocido en este proyecto' });
       }
+      if (body.githubInstallationId && !installationVisibleFrom(body.githubInstallationId, projectId)) {
+        return reply.code(400).send({ error: 'Conexión de GitHub desconocida en este proyecto' });
+      }
       const slug = uniqueSlug(projectId, body.name);
       const cfg: GitConfig = {
         repoUrl: body.repoUrl,
         connectorId: body.connectorId || undefined,
+        githubInstallationId: body.githubInstallationId || undefined,
         branch: body.branch,
         rootDir: body.rootDir || undefined,
         dockerfilePath: body.dockerfilePath || undefined,
         startCmd: body.startCmd || undefined,
+        buildCmd: body.buildCmd || undefined,
         port: body.port,
         domains: body.domains,
         autoDeploy: body.autoDeploy,
@@ -242,6 +262,9 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (body.config?.connectorId && getGithubConnector(body.config.connectorId)?.project_id !== found.project.id) {
       return reply.code(400).send({ error: 'Conector de GitHub desconocido en este proyecto' });
     }
+    if (body.config?.githubInstallationId && !installationVisibleFrom(body.config.githubInstallationId, found.project.id)) {
+      return reply.code(400).send({ error: 'Conexión de GitHub desconocida en este proyecto' });
+    }
 
     const oldCfg = found.service.config as any;
     const newCfg = { ...oldCfg };
@@ -253,6 +276,8 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         if (value === undefined) continue;
         // El conector y el auto-deploy solo tienen sentido en servicios de repositorio.
         if (key === 'connectorId' && found.service.type !== 'git') continue;
+        if (key === 'githubInstallationId' && found.service.type !== 'git') continue;
+        if (key === 'buildCmd' && found.service.type !== 'git') continue;
         if (key === 'autoDeploy' && found.service.type !== 'git') continue;
         // Campos que no aplican a bases de datos: se ignoran sin efecto.
         if (found.service.type === 'database' && ['replicas', 'healthcheckPath'].includes(key)) continue;
@@ -405,14 +430,26 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
+  /**
+   * Despliegue manual. Por defecto reutiliza la imagen si el commit y la
+   * configuración de compilación no han cambiado (que es lo que se quiere al
+   * redesplegar por un cambio de variables); con `force` se recompila desde
+   * cero, para cuando lo que cambió está fuera del repo (imagen base, un
+   * paquete del registro).
+   */
   app.post('/api/services/:id/deploy', async (req, reply) => {
     const { id } = req.params as { id: string };
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
+    const body = z.object({ force: z.boolean().optional() }).parse(req.body ?? {});
     markManualAction(id);
-    audit(req, 'service_deploy', { type: 'service', id, detail: found.service.name });
-    const deployment = triggerDeploy(id, 'manual');
+    audit(req, 'service_deploy', {
+      type: 'service',
+      id,
+      detail: `${found.service.name}${body.force ? ' (reconstrucción forzada)' : ''}`,
+    });
+    const deployment = triggerDeploy(id, 'manual', { forceBuild: body.force });
     reply.code(202);
     return { deployment };
   });

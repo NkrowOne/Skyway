@@ -5,6 +5,7 @@ import { BellRing, Building2, Plus, TrainFront } from 'lucide-react';
 import { api } from '../api';
 import { useLatch } from '../hooks';
 import { Button, Field, Modal, Skeleton, useToast } from '../components/ui';
+import { DeploySweep } from '../components/DeployBadge';
 
 // El asistente de importación de Railway solo se abre desde un botón: se carga
 // (React.lazy) en su 1ª apertura, no al entrar al panel.
@@ -28,11 +29,21 @@ function Monogram({ name }: { name: string }) {
 
 function ProjectCard({ project }: { project: Project }) {
   const alerts = project.openAlerts ?? 0;
+  const deploying = project.activeDeploys ?? 0;
   return (
-    <Link to={`/projects/${project.id}`} className="card card-hover block p-5">
+    <Link to={`/projects/${project.id}`} className="card card-hover relative block p-5">
+      {/* La misma cinta que la tarjeta del servicio: el aviso de «hay una
+          versión saliendo» se lee igual desde el panel general. */}
+      {deploying > 0 && <DeploySweep />}
       <div className="flex items-start justify-between gap-2">
         <Monogram name={project.name} />
         <span className="flex items-center gap-1.5">
+          {deploying > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-warn/[.15] px-[9px] py-[3px] text-[11px] font-semibold text-warn">
+              <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-current" />
+              {deploying === 1 ? 'desplegando' : `${deploying} desplegando`}
+            </span>
+          )}
           {alerts > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-err/[.15] px-[9px] py-[3px] text-[11px] font-semibold text-err tnum">
               <BellRing size={10} /> {alerts}
@@ -91,6 +102,9 @@ export default function Dashboard() {
   const projects = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.get<{ projects: Project[] }>('/projects'),
+    // El panel general anuncia los despliegues en marcha: sin refresco, un
+    // push que sale mientras estás aquí no se vería hasta cambiar de página.
+    refetchInterval: 8000,
   });
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });

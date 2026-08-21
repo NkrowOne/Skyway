@@ -1,11 +1,11 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, ExternalLink, MoveHorizontal, Play, RefreshCw, Rocket, Square, Terminal, X } from 'lucide-react';
+import { ChevronLeft, ExternalLink, Hammer, MoveHorizontal, Play, RefreshCw, Rocket, Square, Terminal, X } from 'lucide-react';
 import { api } from '../api';
 import { useLatch, useLocalStorage, useMediaQuery } from '../hooks';
 import { MetricPoint } from '../pages/Project';
 import { Deployment, DbOverview, MetricsSnapshot, Project, Runtime, Service } from '../types';
-import { cx, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
+import { cx, DEPLOY_STATUS_LABEL, isActiveDeploy, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import DeploymentsTab from './tabs/DeploymentsTab';
 import { Button, ConfirmModal, Skeleton, Spinner, StatusBadge, Tabs, useToast } from './ui';
@@ -93,10 +93,17 @@ export default function ServiceDrawer({
     queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
   };
 
+  /**
+   * Despliegue. Sin `force`, si el commit y la configuración de build no han
+   * cambiado se reutiliza la imagen ya construida (que es lo que se quiere al
+   * redesplegar por variables); con `force` se recompila desde cero, para
+   * cuando lo que cambió está fuera del repo (imagen base, un paquete).
+   */
   const deploy = useMutation({
-    mutationFn: () => api.post<{ deployment: Deployment }>(`/services/${serviceId}/deploy`),
-    onSuccess: () => {
-      toast('Despliegue iniciado', 'ok');
+    mutationFn: (force?: boolean) =>
+      api.post<{ deployment: Deployment }>(`/services/${serviceId}/deploy`, force ? { force: true } : {}),
+    onSuccess: (_data, force) => {
+      toast(force ? 'Reconstruyendo desde cero…' : 'Despliegue iniciado', 'ok');
       setPendingRedeploy(false);
       setTab('deployments');
       invalidate();
@@ -154,6 +161,13 @@ export default function ServiceDrawer({
   }
 
   const { service, runtime } = detail.data;
+  // Con un despliegue vivo, el estado del contenedor sigue siendo el de la
+  // versión ANTERIOR (sigue sirviendo): la fase del despliegue va aparte, en su
+  // propia chapa, para no confundir «Activo» con «ya está la versión nueva».
+  const activeDeployment =
+    detail.data.latestDeployment && isActiveDeploy(detail.data.latestDeployment.status)
+      ? detail.data.latestDeployment
+      : null;
   const state = latestMetrics?.services[serviceId]?.state ?? runtime.state;
   const replicas = latestMetrics?.services[serviceId]?.replicas;
   const isRunning = state === 'running' || state === 'restarting';
@@ -202,7 +216,7 @@ export default function ServiceDrawer({
           <div className="flex min-w-0 items-center gap-3">
             <ModuleChip kind={moduleKind(service)} size={fullscreen ? 40 : 38} />
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h2 className="truncate text-base font-[650] tracking-[-.01em]">{service.name}</h2>
                 <StatusBadge
                   tone={STATE_TONE[state]}
@@ -211,6 +225,12 @@ export default function ServiceDrawer({
                   replicas={replicas}
                   className="px-[9px] py-0.5"
                 />
+                {activeDeployment && (
+                  <span className="badge-in inline-flex shrink-0 items-center gap-[5px] whitespace-nowrap rounded-full border border-warn/35 bg-warn/[.1] px-[9px] py-0.5 text-[11px] font-medium text-warn">
+                    <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-warn" />
+                    {DEPLOY_STATUS_LABEL[activeDeployment.status]}
+                  </span>
+                )}
               </div>
               <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">{subtitle}</p>
             </div>
@@ -239,11 +259,22 @@ export default function ServiceDrawer({
           <Button
             size="sm"
             className={cx(fullscreen && 'h-11 flex-1')}
-            onClick={() => deploy.mutate()}
+            onClick={() => deploy.mutate(undefined)}
             loading={deploy.isPending}
           >
             <Rocket size={13} /> Desplegar
           </Button>
+          {service.type === 'git' && (
+            <Button
+              size="sm"
+              variant="secondary"
+              className={cx(fullscreen && 'h-11 min-w-11 px-0')}
+              onClick={() => deploy.mutate(true)}
+              title="Reconstruir la imagen desde cero, sin reutilizar la del commit ya construido"
+            >
+              <Hammer size={fullscreen ? 16 : 13} /> {!fullscreen && 'Reconstruir'}
+            </Button>
+          )}
           {isRunning ? (
             <>
               <Button
@@ -316,7 +347,7 @@ export default function ServiceDrawer({
               size="sm"
               variant="secondary"
               className="w-full shrink-0 sm:w-auto"
-              onClick={() => deploy.mutate()}
+              onClick={() => deploy.mutate(undefined)}
               loading={deploy.isPending}
             >
               Desplegar ahora
@@ -347,7 +378,7 @@ export default function ServiceDrawer({
               <VariablesTab
                 serviceId={serviceId}
                 onSaved={invalidate}
-                onDeploy={() => deploy.mutate()}
+                onDeploy={() => deploy.mutate(undefined)}
                 onNeedsRedeploy={() => setPendingRedeploy(true)}
               />
             )}

@@ -1,6 +1,7 @@
 import { BellRing, Globe } from 'lucide-react';
-import { ContainerState, Service, ServiceStats } from '../types';
+import { ActiveDeploy, ContainerState, Service, ServiceStats } from '../types';
 import { cx, fmtBytes, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
+import { DeployBanner, DeploySweep } from './DeployBadge';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import { StatusBadge } from './ui';
 
@@ -19,12 +20,15 @@ export default function ServiceCard({
   service,
   metrics,
   alertCount = 0,
+  deploy = null,
   selected,
   onClick,
 }: {
   service: Service;
   metrics: { state: ContainerState; stats: ServiceStats | null; replicas?: { running: number; total: number } } | null;
   alertCount?: number;
+  /** Despliegue vivo del servicio, si lo hay: la tarjeta lo anuncia en primer plano. */
+  deploy?: ActiveDeploy | null;
   selected: boolean;
   onClick: () => void;
 }) {
@@ -45,9 +49,18 @@ export default function ServiceCard({
         'relative rounded-xl border bg-surface p-4 text-left',
         selected
           ? 'border-[color-mix(in_oklab,var(--color-acc)_70%,var(--color-line))] shadow-card-selected transition-[border-color,box-shadow] duration-[180ms] ease-out'
-          : cx('card-hover', alertCount > 0 ? 'border-[color-mix(in_oklab,var(--color-err)_45%,var(--color-line))] shadow-lvl1' : 'border-line shadow-lvl1'),
+          : cx(
+              'card-hover shadow-lvl1',
+              alertCount > 0
+                ? 'border-[color-mix(in_oklab,var(--color-err)_45%,var(--color-line))]'
+                : deploy
+                  ? 'border-[color-mix(in_oklab,var(--color-warn)_45%,var(--color-line))]'
+                  : 'border-line',
+            ),
       )}
     >
+      {/* La cinta va antes que la chapa de alertas para que esta pinte encima. */}
+      {deploy && <DeploySweep />}
       {alertCount > 0 && (
         <span className="absolute -top-[9px] right-3 flex items-center gap-1 rounded-full bg-err px-2 py-0.5 text-[10px] font-semibold text-white shadow-[0_2px_8px_-2px_color-mix(in_oklab,var(--color-err)_60%,transparent)]">
           <BellRing size={10} /> {alertCount === 1 ? '1 alerta' : `${alertCount} alertas`}
@@ -69,7 +82,9 @@ export default function ServiceCard({
         />
       </div>
 
-      <div className="mt-3.5 flex items-center justify-between gap-2 text-xs text-sub">
+      {deploy && <DeployBanner deploy={deploy} className="mt-3" />}
+
+      <div className={cx('flex items-center justify-between gap-2 text-xs text-sub', deploy ? 'mt-2.5' : 'mt-3.5')}>
         {stats ? (
           <div className="tnum flex items-center gap-3">
             <span>

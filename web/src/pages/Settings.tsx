@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, BellRing, CheckCircle2, Cpu, DatabaseBackup, Download, Globe, Trash2 } from 'lucide-react';
+import { AlertTriangle, BellRing, CheckCircle2, Cpu, DatabaseBackup, Download, Globe, KeyRound, Trash2 } from 'lucide-react';
 import { api } from '../api';
+import GithubAppPanel from '../components/GithubAppPanel';
+import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { ModuleLogo } from '../components/ModuleIcon';
 import { Button, ConfirmModal, Field, useFlash, useToast } from '../components/ui';
 import { DockerUsage, GithubConnector, SystemInfo } from '../types';
@@ -93,6 +95,8 @@ function StatTile({ label, value, sub }: { label: string; value: string; sub: st
 export default function SettingsPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
+  // Vuelta de github.com tras crear la App o instalarla: se avisa y se limpia la URL.
+  useGithubReturnNotice();
   const [rootDomain, setRootDomain] = useState('');
   const [letsencryptEmail, setLetsencryptEmail] = useState('');
   const [serverIp, setServerIp] = useState('');
@@ -359,10 +363,19 @@ export default function SettingsPage() {
         icon={<ModuleLogo kind="github" size={15} />}
         iconClass="text-txt"
         title="GitHub"
+        description="La App es la conexión recomendada: se instala una vez por cuenta, no caduca y deja los despliegues por push activados sin configurar webhooks."
+      >
+        <GithubAppPanel />
+      </SettingsSection>
+
+      <SettingsSection
+        icon={<KeyRound size={15} />}
+        iconClass="text-subtle"
+        title="Token global de GitHub"
         description={
           <>
-            Token de acceso personal (permiso <span className="font-mono">repo</span>) para clonar repos privados. Es el
-            token por defecto: los proyectos pueden añadir conectores propios que lo sustituyen servicio a servicio.
+            Alternativa a la App: un token de acceso personal (permiso <span className="font-mono">repo</span>) que se
+            usa cuando el servicio no tiene ninguna conexión propia. Caduca y ve todo lo que ve esa cuenta.
           </>
         }
         aside={settings.data?.settings.hasGithubToken ? <OkPill label="Conectado" /> : undefined}

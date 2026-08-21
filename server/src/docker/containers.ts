@@ -183,8 +183,12 @@ export interface RunSpec {
   withTraefik?: boolean;
   withHostPort?: boolean;
   withVolumes?: boolean;
-  /** 'no' para contenedores de validación: si mueren, queremos verlos muertos. */
-  restartPolicy?: 'unless-stopped' | 'no';
+  /**
+   * 'no' para contenedores de validación: si mueren, queremos verlos muertos.
+   * También admite la política completa de Docker, que es como se traslada el
+   * `restartPolicyType` de la config-as-code de Railway.
+   */
+  restartPolicy?: 'unless-stopped' | 'no' | { Name: string; MaximumRetryCount?: number };
 }
 
 /** Crea y arranca el contenedor de un servicio (elimina el homónimo si existe). */
@@ -209,7 +213,10 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
   };
 
   const hostConfig: Docker.HostConfig = {
-    RestartPolicy: { Name: spec.restartPolicy ?? 'unless-stopped' },
+    RestartPolicy:
+      typeof spec.restartPolicy === 'object'
+        ? (spec.restartPolicy as Docker.HostConfig['RestartPolicy'])
+        : { Name: spec.restartPolicy ?? 'unless-stopped' },
     Binds: withVolumes ? (spec.volumes || []).map((v) => `${v.name}:${v.containerPath}`) : [],
     // Rotación de logs: sin esto, el json-log de un contenedor parlanchín
     // crece sin límite y acaba llenando el disco del servidor.

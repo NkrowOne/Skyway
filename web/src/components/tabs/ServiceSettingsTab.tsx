@@ -2,9 +2,18 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { ChevronRight, Cpu, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
 import { api } from '../../api';
-import { DbTemplate, GithubConnector, Service } from '../../types';
+import { DbTemplate, Service } from '../../types';
 import { cx } from '../../utils';
 import DomainsEditor from '../DomainsEditor';
+import {
+  GithubSource,
+  GithubSourceSelect,
+  NO_SOURCE,
+  sourceFromConfig,
+  sourceStillConnected,
+  sourceToConfig,
+  useGithubSources,
+} from '../GithubSource';
 import { ModuleLogo, moduleKind } from '../ModuleIcon';
 import { Button, ConfirmModal, CopyButton, EditorBar, Field, useFlash, useToast } from '../ui';
 
@@ -43,11 +52,13 @@ function SectionCard({
 interface FormState {
   name: string;
   repoUrl: string;
-  connectorId: string;
+  /** Cuenta de GitHub con la que clonar: instalación de la App o token personal. */
+  source: GithubSource;
   branch: string;
   rootDir: string;
   dockerfilePath: string;
   startCmd: string;
+  buildCmd: string;
   port: string;
   version: string;
   image: string;
@@ -69,11 +80,12 @@ function formFromService(service: Service): FormState {
   return {
     name: service.name,
     repoUrl: cfg.repoUrl ?? '',
-    connectorId: cfg.connectorId ?? '',
+    source: sourceFromConfig(cfg),
     branch: cfg.branch ?? 'main',
     rootDir: cfg.rootDir ?? '',
     dockerfilePath: cfg.dockerfilePath ?? '',
     startCmd: cfg.startCmd ?? '',
+    buildCmd: (cfg as any).buildCmd ?? '',
     port: isImage ? (cfg.port ? String(cfg.port) : '') : String(cfg.port ?? 3000),
     version: cfg.version ?? '',
     image: cfg.image ?? '',
@@ -121,16 +133,12 @@ export default function ServiceSettingsTab({
   const dirty = useMemo(() => JSON.stringify(form) !== JSON.stringify(baseline), [form, baseline]);
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
 
-  const connectors = useQuery({
-    queryKey: ['connectors', projectId],
-    queryFn: () => api.get<{ connectors: GithubConnector[]; hasGlobalToken: boolean }>(`/projects/${projectId}/connectors`),
-    enabled: isGit,
-    staleTime: 30_000,
-  });
-  const connectorList = connectors.data?.connectors ?? [];
-  // Conector borrado pero aún referenciado: se muestra para poder quitarlo. Solo
-  // se da por colgante con la lista cargada; si no, un guardado lo borraría sin querer.
-  const danglingConnector = !!connectors.data && !!form.connectorId && !connectorList.some((c) => c.id === form.connectorId);
+  const sources = useGithubSources(projectId, isGit);
+  const hasSources = sources.installations.length > 0 || sources.connectors.length > 0;
+  // Cuenta desconectada pero aún referenciada: hay que verlo para poder cambiarla.
+  // Solo se da por colgante con las listas ya cargadas; si no, guardar mientras
+  // las consultas están en vuelo la borraría sin querer.
+  const danglingSource = !sources.isLoading && !sourceStillConnected(form.source, sources);
 
   // El puerto interno de una base de datos lo fija su plantilla, no el
   // formulario: hay que preguntarlo para poder anunciar la dirección completa.
@@ -171,13 +179,14 @@ export default function ServiceSettingsTab({
       };
       if (isGit) {
         Object.assign(config, {
-          // Un id colgante (conector borrado) se limpia al guardar: el servidor lo rechazaría.
-          connectorId: danglingConnector ? null : form.connectorId || null,
+          // Un id colgante (cuenta desconectada) se limpia al guardar: el servidor lo rechazaría.
+          ...sourceToConfig(danglingSource ? NO_SOURCE : form.source),
           repoUrl: form.repoUrl.trim(),
           branch: form.branch.trim() || 'main',
           rootDir: form.rootDir.trim() || null,
           dockerfilePath: form.dockerfilePath.trim() || null,
           startCmd: form.startCmd.trim() || null,
+          buildCmd: form.buildCmd.trim() || null,
           port: Number(form.port) || 3000,
           domains: form.domains,
           autoDeploy: form.autoDeploy,
@@ -243,25 +252,21 @@ export default function ServiceSettingsTab({
                 <Field label="Repositorio">
                   <input className="input font-mono text-xs" value={form.repoUrl} onChange={(e) => set('repoUrl', e.target.value)} />
                 </Field>
-                {(connectorList.length > 0 || danglingConnector) && (
+                {(hasSources || danglingSource) && (
                   <Field
                     label="Cuenta de GitHub para clonar"
-                    hint="Conector del proyecto (repos del cliente) o el token global del servidor"
-                    error={danglingConnector ? 'El conector elegido ya no existe: se usará el token global hasta que elijas otro' : null}
+                    hint="Cuenta conectada al proyecto (App o token), o el token global del servidor"
+                    error={
+                      danglingSource
+                        ? 'La cuenta que tenía este servicio ya no está conectada: se usará el token global hasta que elijas otra'
+                        : null
+                    }
                   >
-                    <select className="input" value={form.connectorId} onChange={(e) => set('connectorId', e.target.value)}>
-                      <option value="">Token global del servidor</option>
-                      {connectorList.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name} · @{c.gh_login}
-                        </option>
-                      ))}
-                      {danglingConnector && (
-                        <option value={form.connectorId} disabled>
-                          (conector eliminado)
-                        </option>
-                      )}
-                    </select>
+                    <GithubSourceSelect
+                      sources={sources}
+                      value={danglingSource ? NO_SOURCE : form.source}
+                      onChange={(next) => set('source', next)}
+                    />
                   </Field>
                 )}
                 <div className="grid grid-cols-2 gap-2.5">
@@ -286,6 +291,17 @@ export default function ServiceSettingsTab({
                     value={form.startCmd}
                     onChange={(e) => set('startCmd', e.target.value)}
                     placeholder="npm run start"
+                  />
+                </Field>
+                <Field
+                  label="Comando de compilación"
+                  hint="Equivalente al «Build Command» de Railway. Solo aplica sin Dockerfile (build con Nixpacks); con Dockerfile manda el Dockerfile."
+                >
+                  <input
+                    className="input font-mono text-xs"
+                    value={form.buildCmd}
+                    onChange={(e) => set('buildCmd', e.target.value)}
+                    placeholder="npm run build"
                   />
                 </Field>
                 <Field

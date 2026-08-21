@@ -7,6 +7,7 @@ import { ZodError } from 'zod';
 import { config } from './config';
 import { authRoutes } from './routes/auth';
 import { connectorRoutes } from './routes/connectors';
+import { githubRoutes } from './routes/github';
 import { workspaceRoutes } from './routes/workspaces';
 import { planRoutes } from './routes/plans';
 import { billingRoutes } from './routes/billing';
@@ -25,6 +26,7 @@ import { webhookRoutes } from './routes/webhooks';
 import { securityRoutes } from './routes/security';
 import { alertRoutes } from './routes/alerts';
 import { importRoutes } from './routes/import';
+import { migrateRoutes } from './routes/migrate';
 import { opsRoutes } from './routes/ops';
 import { domainRoutes } from './routes/domains';
 import { passkeyRoutes } from './routes/passkeys';
@@ -69,7 +71,10 @@ export function buildApp(): FastifyInstance {
         "style-src 'self' 'unsafe-inline'",
         "script-src 'self'",
         "connect-src 'self'",
-        "form-action 'self'",
+        // github.com: crear la GitHub App exige que el NAVEGADOR envíe el
+        // manifiesto por POST a github.com (no hay forma server-to-server).
+        // Es el único destino externo admitido, y solo para formularios.
+        "form-action 'self' https://github.com",
       ].join('; '),
     );
     // HSTS solo sobre HTTPS: en un túnel SSH por HTTP no debe fijarse.
@@ -90,6 +95,7 @@ export function buildApp(): FastifyInstance {
 
   app.register(authRoutes);
   app.register(connectorRoutes);
+  app.register(githubRoutes);
   app.register(workspaceRoutes);
   app.register(planRoutes);
   app.register(billingRoutes);
@@ -108,6 +114,7 @@ export function buildApp(): FastifyInstance {
   app.register(securityRoutes);
   app.register(alertRoutes);
   app.register(importRoutes);
+  app.register(migrateRoutes);
   app.register(opsRoutes);
   app.register(domainRoutes);
   app.register(passkeyRoutes);
