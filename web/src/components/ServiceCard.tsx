@@ -1,7 +1,7 @@
 import { BellRing, Globe } from 'lucide-react';
 import { ActiveDeploy, ContainerState, Service, ServiceStats } from '../types';
-import { cx, fmtBytes, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
-import { DeployBanner, DeploySweep } from './DeployBadge';
+import { cx, DEPLOY_STATUS_LABEL, fmtBytes, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
+import { DeploySweep } from './DeployBadge';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import { StatusBadge } from './ui';
 
@@ -27,7 +27,7 @@ export default function ServiceCard({
   service: Service;
   metrics: { state: ContainerState; stats: ServiceStats | null; replicas?: { running: number; total: number } } | null;
   alertCount?: number;
-  /** Despliegue vivo del servicio, si lo hay: la tarjeta lo anuncia en primer plano. */
+  /** Despliegue vivo del servicio, si lo hay. */
   deploy?: ActiveDeploy | null;
   selected: boolean;
   onClick: () => void;
@@ -74,17 +74,22 @@ export default function ServiceCard({
             <p className="truncate font-mono text-[11px] text-subtle">{subtitle}</p>
           </div>
         </div>
-        <StatusBadge
-          tone={STATE_TONE[state]}
-          label={STATE_LABEL[state]}
-          pulse={STATE_PULSE[state]}
-          replicas={metrics?.replicas}
-        />
+        {/* Con un despliegue vivo, la chapa dice la fase en vez del estado: es
+            la pregunta del momento, y va donde ya se mira el estado en lugar de
+            abrir otro recuadro dentro de la tarjeta. */}
+        {deploy ? (
+          <StatusBadge tone="warn" label={DEPLOY_STATUS_LABEL[deploy.status]} pulse />
+        ) : (
+          <StatusBadge
+            tone={STATE_TONE[state]}
+            label={STATE_LABEL[state]}
+            pulse={STATE_PULSE[state]}
+            replicas={metrics?.replicas}
+          />
+        )}
       </div>
 
-      {deploy && <DeployBanner deploy={deploy} className="mt-3" />}
-
-      <div className={cx('flex items-center justify-between gap-2 text-xs text-sub', deploy ? 'mt-2.5' : 'mt-3.5')}>
+      <div className="mt-3.5 flex items-center justify-between gap-2 text-xs text-sub">
         {stats ? (
           <div className="tnum flex items-center gap-3">
             <span>

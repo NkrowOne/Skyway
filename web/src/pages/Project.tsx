@@ -8,7 +8,6 @@ import { Button, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } fr
 import { ModuleLogo } from '../components/ModuleIcon';
 import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
-import { DeployLine } from '../components/DeployBadge';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { ActiveDeploy, Me, MetricsSnapshot, Project, Service } from '../types';
 import { isActiveDeploy } from '../utils';
@@ -249,7 +248,6 @@ export default function ProjectPage() {
 
   const { project: proj, services, alertCounts } = project.data;
   const activeDeploys = live ? deploys : project.data.activeDeploys ?? {};
-  const deployingServices = services.filter((s) => activeDeploys[s.id]);
   // Gestión de estructura (renombrar/eliminar): admin o propietario del workspace del proyecto.
   const isManager =
     isAdmin ||
@@ -348,38 +346,6 @@ export default function ProjectPage() {
             </Button>
           </div>
         </div>
-
-        {/*
-          El aviso de despliegue va ARRIBA del todo y con su propia cinta: el
-          problema que resuelve es no enterarse de que hay una versión saliendo,
-          así que no puede depender de abrir el servicio ni de mirar su tarjeta.
-        */}
-        {deployingServices.length > 0 && (
-          <div className="relative mb-4 overflow-hidden rounded-xl border border-warn/35 bg-warn/[.07] px-4 py-3">
-            <span aria-hidden className="deploy-sweep absolute inset-x-0 top-0 h-[2px]" />
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-              <div className="flex min-w-0 flex-col gap-1">
-                <p className="text-[13px] font-semibold">
-                  {deployingServices.length === 1
-                    ? 'Hay una versión nueva saliendo'
-                    : `Hay ${deployingServices.length} versiones nuevas saliendo`}
-                </p>
-                {deployingServices.slice(0, 4).map((s) => (
-                  <span key={s.id} className="flex min-w-0 flex-wrap items-center gap-x-2">
-                    <span className="text-xs font-medium">{s.name}</span>
-                    <DeployLine deploy={activeDeploys[s.id]} />
-                  </span>
-                ))}
-                {deployingServices.length > 4 && (
-                  <span className="text-[11px] text-subtle">y {deployingServices.length - 4} más</span>
-                )}
-              </div>
-              <Button size="sm" variant="secondary" onClick={() => openService(deployingServices[0].id)}>
-                Ver progreso
-              </Button>
-            </div>
-          </div>
-        )}
 
         {importReport.data?.report && (
           <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
