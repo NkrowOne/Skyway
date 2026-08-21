@@ -621,10 +621,24 @@ export default function NewServiceModal({
               />
             </Field>
           ) : (
-            <p className="rounded-lg border border-dashed border-line bg-bg px-3.5 py-2.5 text-[11px] text-sub">
-              Aún no hay ninguna cuenta de GitHub conectada a este proyecto. Conéctala con el botón <b>GitHub</b> de la
-              cabecera y podrás elegir tus repos privados de una lista, sin pegar URLs ni tokens.
-            </p>
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-line bg-bg px-3.5 py-3">
+              <p className="min-w-0 flex-1 text-[11px] text-sub">
+                Sin cuenta de GitHub conectada solo se pueden clonar repositorios públicos. Conéctala y eliges tus repos
+                privados de una lista, sin pegar URLs ni tokens.
+              </p>
+              {sources.appConfigured && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    window.location.href = `/api/github/app/install?projectId=${encodeURIComponent(projectId)}`;
+                  }}
+                >
+                  <ModuleLogo kind="github" size={13} /> Conectar con GitHub
+                </Button>
+              )}
+            </div>
           )}
 
           {source.kind !== 'none' ? (
