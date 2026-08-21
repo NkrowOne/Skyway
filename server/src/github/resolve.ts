@@ -21,10 +21,18 @@ import { GitConfig, GithubInstallationRow, ProjectRow } from '../types';
 import { installationToken } from './app';
 import { parseGithubSlug } from './client';
 
-/** Token de clonado de una instalación, marcando su uso. */
-export async function installationTokenFor(row: GithubInstallationRow): Promise<string> {
+/**
+ * Token de clonado de una instalación. `touch` marca el uso: solo lo hace quien
+ * va a clonar de verdad. El sondeo pide token cada minuto, y si lo marcara, el
+ * «último despliegue» de la conexión diría siempre «hace unos segundos» y
+ * dejaría de significar nada.
+ */
+export async function installationTokenFor(
+  row: GithubInstallationRow,
+  opts: { touch?: boolean } = {},
+): Promise<string> {
   const token = await installationToken(row.installation_id);
-  touchGithubInstallation(row.id);
+  if (opts.touch !== false) touchGithubInstallation(row.id);
   return token;
 }
 
@@ -73,8 +81,13 @@ function matchingInstallation(project: ProjectRow, repoUrl: string): GithubInsta
  * un repo público se clona igual sin credencial y romper el despliegue por eso
  * sería peor que avisar.
  */
-export async function resolveGitAuth(project: ProjectRow, cfg: GitConfig): Promise<GitAuth> {
+export async function resolveGitAuth(
+  project: ProjectRow,
+  cfg: GitConfig,
+  opts: { touch?: boolean } = {},
+): Promise<GitAuth> {
   const globalToken = getSetting('githubToken');
+  const touch = opts.touch !== false;
 
   // 1. Instalación de la GitHub App elegida explícitamente en el servicio.
   if (cfg.githubInstallationId) {
@@ -82,7 +95,7 @@ export async function resolveGitAuth(project: ProjectRow, cfg: GitConfig): Promi
     if (row) {
       try {
         return {
-          token: await installationTokenFor(row),
+          token: await installationTokenFor(row, { touch }),
           source: 'app',
           detail: `Clonando con la GitHub App instalada en @${row.account_login}`,
           warning: row.suspended ? `La instalación de @${row.account_login} está suspendida en GitHub.` : null,
@@ -108,7 +121,7 @@ export async function resolveGitAuth(project: ProjectRow, cfg: GitConfig): Promi
   if (cfg.connectorId) {
     const connector = getGithubConnector(cfg.connectorId);
     if (connector && connector.project_id === project.id) {
-      touchGithubConnector(connector.id);
+      if (touch) touchGithubConnector(connector.id);
       return {
         token: connector.token,
         source: 'connector',
@@ -129,7 +142,7 @@ export async function resolveGitAuth(project: ProjectRow, cfg: GitConfig): Promi
   if (auto) {
     try {
       return {
-        token: await installationTokenFor(auto),
+        token: await installationTokenFor(auto, { touch }),
         source: 'app',
         detail: `Clonando con la GitHub App instalada en @${auto.account_login}`,
         warning: null,
@@ -142,7 +155,10 @@ export async function resolveGitAuth(project: ProjectRow, cfg: GitConfig): Promi
   return { token: globalToken, source: globalToken ? 'global' : 'none', detail: null, warning: null };
 }
 
-/** Igual, pero solo el token: para el sondeo, que no escribe en ningún log. */
+/**
+ * Igual, pero solo el token y sin marcar uso: para el sondeo, que no escribe en
+ * ningún log y no debe contar como «último despliegue» de la conexión.
+ */
 export async function resolveGitToken(project: ProjectRow, cfg: GitConfig): Promise<string | null> {
-  return (await resolveGitAuth(project, cfg)).token;
+  return (await resolveGitAuth(project, cfg, { touch: false })).token;
 }

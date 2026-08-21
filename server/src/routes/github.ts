@@ -68,9 +68,12 @@ function verifyState(raw: string | undefined, kind: SetupState['kind']): SetupSt
  * es lo que el usuario está usando ahora mismo para ver el panel.
  */
 function baseUrlOf(req: FastifyRequest): string {
-  const host = req.headers['x-forwarded-host'] || req.headers.host;
-  if (typeof host !== 'string' || !host) throw new Error('No se pudo determinar la URL pública del panel');
-  return `${req.protocol}://${host.split(',')[0].trim()}`;
+  // req.hostname/req.protocol respetan `config.trustProxy`: solo se hace caso a
+  // X-Forwarded-* si el proxy es de confianza. Leer la cabecera a pelo dejaría
+  // que cualquiera decidiera qué URLs lleva el manifiesto de la App.
+  const host = req.hostname;
+  if (!host) throw new Error('No se pudo determinar la URL pública del panel');
+  return `${req.protocol}://${host}`;
 }
 
 /** Vista pública de una instalación (no hay secreto que ocultar, pero sí ruido). */

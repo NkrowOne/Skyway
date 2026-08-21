@@ -440,12 +440,15 @@ async function assertPostgresVolumeCompatible(
  * commit ya construido no vale y hay que recompilar. Sin esto, tocar el
  * rootDir o un build-arg dejaría al servicio sirviendo la imagen vieja.
  */
-function buildKeyFor(cfg: GitConfig): string {
+function buildKeyFor(service: ServiceRow, cfg: GitConfig): string {
   const args = Object.entries(cfg.buildArgs || {})
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `${k}=${v}`);
+  // RAILWAY_DOCKERFILE_PATH y buildCmd también deciden qué imagen sale, aunque
+  // vivan fuera del bloque de build: cambiarlos tiene que invalidar la caché.
+  const dockerfile = getEnv(service.id).RAILWAY_DOCKERFILE_PATH || cfg.dockerfilePath || 'Dockerfile';
   return createHash('sha256')
-    .update(JSON.stringify([normalizeRepoUrl(cfg.repoUrl), cfg.rootDir || '.', cfg.dockerfilePath || 'Dockerfile', args]))
+    .update(JSON.stringify([normalizeRepoUrl(cfg.repoUrl), cfg.rootDir || '.', dockerfile, cfg.buildCmd || '', args]))
     .digest('hex')
     .slice(0, 32);
 }
@@ -461,7 +464,7 @@ async function buildGitImage(
   const image = `skyway/${project.slug}-${service.slug}:${deploymentId.slice(-8)}`;
   const workDir = path.join(config.buildsDir, deploymentId);
   const token = await resolveCloneToken(project, cfg, log);
-  const buildKey = buildKeyFor(cfg);
+  const buildKey = buildKeyFor(service, cfg);
   const forceBuild = getDeployment(deploymentId)?.force_build === 1;
   const onSpawn = (p: any) => {
     job.procs.add(p);
