@@ -26,6 +26,7 @@ import { webhookRoutes } from './routes/webhooks';
 import { securityRoutes } from './routes/security';
 import { alertRoutes } from './routes/alerts';
 import { importRoutes } from './routes/import';
+import { migrateRoutes } from './routes/migrate';
 import { opsRoutes } from './routes/ops';
 import { domainRoutes } from './routes/domains';
 import { passkeyRoutes } from './routes/passkeys';
@@ -113,6 +114,7 @@ export function buildApp(): FastifyInstance {
   app.register(securityRoutes);
   app.register(alertRoutes);
   app.register(importRoutes);
+  app.register(migrateRoutes);
   app.register(opsRoutes);
   app.register(domainRoutes);
   app.register(passkeyRoutes);

@@ -17,26 +17,6 @@ export async function nixpacksAvailable(): Promise<boolean> {
   return nixpacksCache;
 }
 
-/**
- * startCommand de config-as-code (railway.json). Railway da prioridad al
- * fichero del repo sobre el ajuste del panel, y el importador copia el del
- * panel: si el repo define el suyo (p. ej. un start.sh que levanta procesos
- * auxiliares), el despliegue debe replicar esa precedencia o el servicio
- * arrancaría con el comando equivocado.
- */
-export function readRailwayStartCommand(repoDir: string, rootDir?: string): string | null {
-  for (const dir of [path.resolve(repoDir, rootDir || '.'), path.resolve(repoDir)]) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'railway.json'), 'utf8'));
-      const cmd = parsed?.deploy?.startCommand;
-      if (typeof cmd === 'string' && cmd.trim()) return cmd.trim();
-    } catch {
-      /* sin fichero o inválido: se prueba la siguiente ubicación */
-    }
-  }
-  return null;
-}
-
 let buildxCache: boolean | null = null;
 
 /**
@@ -203,6 +183,14 @@ export interface BuildOpts {
   buildArgs?: Record<string, string>;
   /** Imagen anterior de la que reaprovechar capas (BuildKit `--cache-from`). */
   cacheFrom?: string | null;
+  /**
+   * Constructor forzado por la config-as-code de Railway: NIXPACKS o RAILPACK
+   * ignoran un Dockerfile presente; DOCKERFILE exige que exista. Sin valor, se
+   * usa el Dockerfile si está y Nixpacks si no.
+   */
+  builder?: string | null;
+  /** Variables para Nixpacks (NIXPACKS_BUILD_CMD y compañía). */
+  nixpacksEnv?: Record<string, string>;
   onSpawn?: (p: any) => void;
 }
 
@@ -231,7 +219,20 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
     argFlags.push('--build-arg', `${k}=${v}`);
   }
 
-  if (fs.existsSync(dockerfile)) {
+  // El constructor declarado en railway.json/toml manda, como en Railway: un
+  // repo con Dockerfile pero `builder: NIXPACKS` se construye con Nixpacks.
+  const forced = (opts.builder || '').toUpperCase();
+  const forceNixpacks = forced === 'NIXPACKS' || forced === 'RAILPACK';
+  if (forced === 'DOCKERFILE' && !fs.existsSync(dockerfile)) {
+    throw new Error(
+      `La configuración del repositorio pide construir con Dockerfile, pero no hay ninguno en ${path.relative(opts.repoDir, dockerfile)}.`,
+    );
+  }
+  if (forceNixpacks && fs.existsSync(dockerfile)) {
+    log(`La configuración del repositorio pide el constructor ${forced}: se ignora el Dockerfile y se construye con Nixpacks.`);
+  }
+
+  if (fs.existsSync(dockerfile) && !forceNixpacks) {
     log(`Construyendo con Dockerfile (${path.relative(opts.repoDir, dockerfile)})...`);
     const buildkit = await buildxAvailable();
     if (!buildkit) {
@@ -258,9 +259,12 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
   }
 
   if (await nixpacksAvailable()) {
-    log('No hay Dockerfile; construyendo con Nixpacks...');
+    log(forceNixpacks ? 'Construyendo con Nixpacks...' : 'No hay Dockerfile; construyendo con Nixpacks...');
     const envFlags: string[] = [];
-    for (const [k, v] of Object.entries(opts.buildArgs || {})) {
+    // Las NIXPACKS_* van después de los build-args para que ganen: son la
+    // traducción del buildCommand de Railway y deben mandar sobre un homónimo
+    // que el usuario tuviera puesto como argumento de compilación.
+    for (const [k, v] of Object.entries({ ...opts.buildArgs, ...opts.nixpacksEnv })) {
       envFlags.push('--env', `${k}=${v}`);
     }
     await spawnLogged('nixpacks', ['build', context, '--name', opts.imageTag, ...envFlags], { onSpawn: opts.onSpawn }, log);

@@ -41,7 +41,8 @@ import { ensureNetwork, projectNetworkName, EDGE_NETWORK } from '../docker/netwo
 import { apiHeadSha, parseGithubSlug } from '../github/client';
 import { resolveGitAuth } from '../github/resolve';
 import { isWorkspaceActive, workspaceOfProject } from '../quota';
-import { buildImage, cloneRepo, normalizeRepoUrl, readRailwayStartCommand, spawnLogged } from './builder';
+import { buildImage, cloneRepo, normalizeRepoUrl, spawnLogged } from './builder';
+import { dockerRestartPolicy, hasRailwayConfig, RailwayRepoConfig, readRailwayRepoConfig } from './railwayconfig';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
 import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
 import { resolveServiceEnv } from '../variables';
@@ -208,7 +209,7 @@ async function runDeployment(deploymentId: string): Promise<void> {
     setStatus('building');
 
     let image: string;
-    let repoStartCmd: string | null = null;
+    let repoConfig: RailwayRepoConfig | null = null;
     if (service.type === 'database') {
       image = await prepareDatabaseImage(service, log);
     } else if (service.type === 'image') {
@@ -219,16 +220,19 @@ async function runDeployment(deploymentId: string): Promise<void> {
       if (!(await imageExists(image))) {
         throw new Error(`La imagen ${image} ya no existe en el servidor (fue purgada). Haz un despliegue normal.`);
       }
+      // Volver a una versión anterior debe volver también a SU config-as-code:
+      // si aquel commit declaraba otro comando de arranque, es el que toca.
+      repoConfig = parseRepoConfig(deployment.repo_config);
     } else {
       const built = await buildGitImage(project, service, deploymentId, job, log);
       image = built.image;
-      repoStartCmd = built.repoStartCmd;
+      repoConfig = built.repoConfig;
     }
     checkCanceled();
     updateDeployment(deploymentId, { image_tag: image });
 
     setStatus('deploying');
-    await deployContainer(project, service, image, deploymentId, log, repoStartCmd);
+    await deployContainer(project, service, image, deploymentId, log, repoConfig, job);
     checkCanceled();
 
     setStatus('success');
@@ -445,7 +449,7 @@ async function buildGitImage(
   deploymentId: string,
   job: ActiveJob,
   log: (l: string) => void,
-): Promise<{ image: string; repoStartCmd: string | null }> {
+): Promise<{ image: string; repoConfig: RailwayRepoConfig | null }> {
   const cfg = service.config as GitConfig;
   const image = `skyway/${project.slug}-${service.slug}:${deploymentId.slice(-8)}`;
   const workDir = path.join(config.buildsDir, deploymentId);
@@ -469,9 +473,9 @@ async function buildGitImage(
         commit_sha: reused.commit_sha,
         commit_msg: reused.commit_msg,
         build_key: buildKey,
-        repo_start_cmd: reused.repo_start_cmd,
+        repo_config: reused.repo_config,
       });
-      return { image: reused.image_tag!, repoStartCmd: reused.repo_start_cmd };
+      return { image: reused.image_tag!, repoConfig: parseRepoConfig(reused.repo_config) };
     }
   }
 
@@ -483,21 +487,28 @@ async function buildGitImage(
       log,
     );
     if (job.canceled) throw new CanceledError();
-    const repoStartCmd = readRailwayStartCommand(workDir, cfg.rootDir);
+    const repoConfig = readRailwayRepoConfig(workDir, cfg.rootDir);
+    if (hasRailwayConfig(repoConfig) && repoConfig.source) {
+      log(`Configuración del repositorio leída de ${repoConfig.source} (config-as-code de Railway).`);
+    }
     updateDeployment(deploymentId, {
       commit_sha: info.commitSha,
       commit_msg: info.commitMsg,
       build_key: buildKey,
-      repo_start_cmd: repoStartCmd,
+      repo_config: JSON.stringify(repoConfig),
     });
 
     await buildImage(
       {
         repoDir: workDir,
         rootDir: cfg.rootDir,
-        dockerfilePath: cfg.dockerfilePath,
+        // RAILWAY_DOCKERFILE_PATH y el dockerfilePath del fichero mandan sobre
+        // el ajuste del panel, misma precedencia que en Railway.
+        dockerfilePath: repoDockerfilePath(service, repoConfig) ?? cfg.dockerfilePath,
         imageTag: image,
         buildArgs: cfg.buildArgs,
+        builder: repoConfig.builder,
+        nixpacksEnv: nixpacksEnvFor(cfg, repoConfig),
         // Capas de la última imagen correcta como caché: si el daemon purgó su
         // caché de build (o la imagen se construyó antes de un reinicio), esto
         // evita rehacer install de dependencias y compilaciones ya hechas.
@@ -508,7 +519,7 @@ async function buildGitImage(
     );
     if (job.canceled) throw new CanceledError();
     log(`Imagen construida: ${image}`);
-    return { image, repoStartCmd };
+    return { image, repoConfig };
   } finally {
     releaseBuildSlot();
     fs.rmSync(workDir, { recursive: true, force: true });
@@ -550,13 +561,131 @@ async function resolveCloneToken(project: ProjectRow, cfg: GitConfig, log: (l: s
   return auth.token;
 }
 
+/** Config-as-code guardada en el despliegue (JSON), tolerante a basura. */
+function parseRepoConfig(raw: string | null): RailwayRepoConfig | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as RailwayRepoConfig) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Dockerfile alternativo: Railway lo admite en el fichero de configuración y
+ * también con la variable `RAILWAY_DOCKERFILE_PATH` del servicio, que es como
+ * lo tiene mucha gente. Se respetan las dos, con la variable por delante.
+ */
+function repoDockerfilePath(service: ServiceRow, repoConfig: RailwayRepoConfig): string | null {
+  const fromEnv = getEnv(service.id).RAILWAY_DOCKERFILE_PATH;
+  return (fromEnv && fromEnv.trim()) || repoConfig.dockerfilePath || null;
+}
+
+/**
+ * Traducción del `buildCommand` de Railway a Nixpacks, que es el constructor
+ * equivalente. Sin esto, un proyecto migrado que compilaba con un comando
+ * propio se desplegaba sin compilar y fallaba al arrancar.
+ */
+function nixpacksEnvFor(cfg: GitConfig, repoConfig: RailwayRepoConfig): Record<string, string> {
+  const env: Record<string, string> = {};
+  // El fichero del repo manda sobre el ajuste del panel, como en Railway.
+  const buildCmd = repoConfig.buildCommand ?? cfg.buildCmd;
+  if (buildCmd) env.NIXPACKS_BUILD_CMD = buildCmd;
+  const startCmd = repoConfig.startCommand ?? cfg.startCmd;
+  if (startCmd) env.NIXPACKS_START_CMD = startCmd;
+  return env;
+}
+
+/**
+ * Variables mágicas de Railway en tiempo de ejecución.
+ *
+ * Una aplicación migrada que lea `RAILWAY_PUBLIC_DOMAIN` para construir sus
+ * URLs, o `RAILWAY_GIT_COMMIT_SHA` para sellar una versión, seguiría leyendo
+ * `undefined` después de migrar y fallaría de formas difíciles de atribuir.
+ * Se rellenan con el equivalente de Skyway y NUNCA se pisa un valor que el
+ * usuario haya definido a mano.
+ */
+function applyRailwayCompatEnv(
+  env: Record<string, string>,
+  project: ProjectRow,
+  service: ServiceRow,
+  deploymentId: string,
+  domains: string[],
+  internalPort: number | null,
+): void {
+  const deployment = deploymentSummary(deploymentId);
+  const put = (key: string, value: string | null | undefined) => {
+    if (value && env[key] === undefined) env[key] = value;
+  };
+  put('RAILWAY_PROJECT_NAME', project.name);
+  put('RAILWAY_PROJECT_ID', project.id);
+  put('RAILWAY_SERVICE_NAME', service.name);
+  put('RAILWAY_SERVICE_ID', service.id);
+  put('RAILWAY_ENVIRONMENT', 'production');
+  put('RAILWAY_ENVIRONMENT_NAME', 'production');
+  put('RAILWAY_DEPLOYMENT_ID', deploymentId);
+  put('RAILWAY_REPLICA_ID', deploymentId);
+  // El «dominio privado» de Railway es el nombre por el que un servicio llega a
+  // otro dentro del proyecto: aquí, su alias en la red del proyecto.
+  put('RAILWAY_PRIVATE_DOMAIN', service.slug);
+  if (internalPort) put('RAILWAY_TCP_PROXY_PORT', String(internalPort));
+  if (domains[0]) {
+    put('RAILWAY_PUBLIC_DOMAIN', domains[0]);
+    put('RAILWAY_STATIC_URL', `https://${domains[0]}`);
+  }
+  if (deployment?.commit_sha) {
+    put('RAILWAY_GIT_COMMIT_SHA', deployment.commit_sha);
+    put('RAILWAY_GIT_COMMIT_MESSAGE', deployment.commit_msg ?? '');
+  }
+  if (service.type === 'git') put('RAILWAY_GIT_BRANCH', (service.config as GitConfig).branch || 'main');
+}
+
+/**
+ * `preDeployCommand` de Railway: se ejecuta con la imagen y las variables del
+ * despliegue nuevo, contra la red del proyecto, ANTES de tocar la versión que
+ * está sirviendo. Ahí es donde vive el `migrate` de casi todo el mundo, y por
+ * eso un fallo aborta el despliegue en vez de arrancar contra un esquema viejo.
+ *
+ * El comando viaja en una variable de entorno y se ejecuta con `eval`: nunca se
+ * interpola en la línea de órdenes del shell.
+ */
+async function runPreDeploy(
+  project: ProjectRow,
+  image: string,
+  env: Record<string, string>,
+  command: string,
+  log: (l: string) => void,
+  job?: ActiveJob,
+): Promise<void> {
+  log(`Ejecutando el comando previo al despliegue: ${command}`);
+  const args = ['run', '--rm', '--network', projectNetworkName(project)];
+  for (const key of Object.keys(env)) args.push('--env', key);
+  args.push('--env', 'SKYWAY_PREDEPLOY_CMD', image, 'sh', '-c', 'eval "$SKYWAY_PREDEPLOY_CMD"');
+  const onSpawn = job
+    ? (p: any) => {
+        job.procs.add(p);
+        p.on('exit', () => job.procs.delete(p));
+      }
+    : undefined;
+  try {
+    await spawnLogged('docker', args, { env: { ...env, SKYWAY_PREDEPLOY_CMD: command }, onSpawn }, log);
+  } catch (err: any) {
+    throw new Error(
+      `El comando previo al despliegue falló (${err?.message || err}). No se ha tocado la versión en marcha.`,
+    );
+  }
+  log('Comando previo completado.');
+}
+
 async function deployContainer(
   project: ProjectRow,
   service: ServiceRow,
   image: string,
   deploymentId: string,
   log: (l: string) => void,
-  repoStartCmd: string | null = null,
+  repoConfig: RailwayRepoConfig | null = null,
+  job?: ActiveJob,
 ): Promise<void> {
   const netName = projectNetworkName(project);
   await ensureNetwork(netName);
@@ -620,12 +749,13 @@ async function deployContainer(
     cpus = cfg.cpus ?? null;
     memoryMb = cfg.memoryMb ?? null;
     volumes = cfg.volumes || [];
-    // Config-as-code de Railway: el startCommand de railway.json manda sobre
-    // el del servicio (misma precedencia que Railway; el importador copia el
-    // del panel y puede contradecir al del repo).
+    // Config-as-code de Railway: el startCommand del repo manda sobre el del
+    // servicio (misma precedencia que Railway; el importador copia el del panel
+    // y puede contradecir al del repo).
+    const repoStartCmd = repoConfig?.startCommand ?? null;
     const startCmd = repoStartCmd ?? cfg.startCmd;
     if (repoStartCmd && cfg.startCmd && repoStartCmd !== cfg.startCmd) {
-      log(`startCommand de railway.json («${repoStartCmd}») tiene prioridad sobre el del servicio, como en Railway.`);
+      log(`startCommand de ${repoConfig?.source ?? 'la configuración del repo'} («${repoStartCmd}») tiene prioridad sobre el del servicio, como en Railway.`);
     }
     if (startCmd) cmd = ['sh', '-c', startCmd];
     if (!env.PORT) env.PORT = String(internalPort);
@@ -634,6 +764,17 @@ async function deployContainer(
   env.SKYWAY_PROJECT = project.slug;
   env.SKYWAY_SERVICE = service.slug;
   env.SKYWAY_DEPLOYMENT = deploymentId;
+  applyRailwayCompatEnv(env, project, service, deploymentId, domains, internalPort);
+
+  // Política de reinicio declarada en el repo (restartPolicyType de Railway).
+  // Sin ella, la de siempre: unless-stopped.
+  const restartPolicy = dockerRestartPolicy(
+    repoConfig?.restartPolicyType ?? null,
+    repoConfig?.restartPolicyMaxRetries ?? null,
+  );
+  if (restartPolicy) {
+    log(`Política de reinicio del repositorio: ${repoConfig!.restartPolicyType} → docker «${restartPolicy.Name}».`);
+  }
 
   const spec = {
     project,
@@ -648,15 +789,39 @@ async function deployContainer(
     memoryMb,
     cmd,
     volumes,
+    ...(restartPolicy ? { restartPolicy } : {}),
   };
 
   const name = containerName(project, service);
   const tempName = `${name}--next`;
   const prevName = `${name}--prev`;
+  // El healthcheck del repositorio manda sobre el del panel, igual que el
+  // comando de arranque: es config-as-code y viaja con el commit.
   const healthcheckPath: string | null =
-    service.type !== 'database' ? (service.config as any).healthcheckPath || null : null;
+    repoConfig?.healthcheckPath ?? (service.type !== 'database' ? (service.config as any).healthcheckPath || null : null);
+  const probeTimeoutMs = repoConfig?.healthcheckTimeout
+    ? Math.min(Math.max(repoConfig.healthcheckTimeout, 5), 900) * 1000
+    : PROBE_TIMEOUT_MS;
+
+  // Comando previo al despliegue (donde casi todo el mundo pone las
+  // migraciones). Va ANTES de tocar la versión en marcha: si falla, el
+  // despliegue se aborta y lo que está sirviendo sigue igual, como en Railway.
+  if (repoConfig?.preDeployCommand) {
+    await runPreDeploy(project, image, env, repoConfig.preDeployCommand, log, job);
+  }
 
   await recoverStaleSwap(service.id, log);
+
+  // El repo puede pedir réplicas, pero eso consume cuota del workspace y se
+  // gestiona en el panel: se avisa en vez de aplicarlo a espaldas de nadie.
+  if (repoConfig?.numReplicas && repoConfig.numReplicas !== configuredReplicas(service)) {
+    log(
+      `ℹ La configuración del repositorio pide ${repoConfig.numReplicas} réplicas; en Skyway las réplicas se fijan en Ajustes del servicio (consumen cuota del workspace). Se mantienen ${configuredReplicas(service)}.`,
+    );
+  }
+  if (repoConfig?.cronSchedule) {
+    log(`ℹ La configuración del repositorio declara un cron («${repoConfig.cronSchedule}»); Skyway aún no ejecuta servicios programados.`);
+  }
 
   const replicas = configuredReplicas(service);
   if (replicas > 1 && (volumes.length > 0 || hostPort)) {
@@ -682,7 +847,7 @@ async function deployContainer(
         withHostPort: false,
         restartPolicy: 'no',
       });
-      const verdict = await validateContainer(netName, `${service.slug}-next`, internalPort, healthcheckPath, tempName, log);
+      const verdict = await validateContainer(netName, `${service.slug}-next`, internalPort, healthcheckPath, tempName, log, probeTimeoutMs);
       if (!verdict.ok) {
         await appendContainerTail(tempName, log);
         await removeContainer(tempName);
@@ -711,7 +876,7 @@ async function deployContainer(
           throw new Error(`estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'}`);
         }
         if (!oldExists && i === 1) {
-          const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, rn, log);
+          const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, rn, log, probeTimeoutMs);
           if (!verdict.ok) throw new Error(verdict.reason);
         }
       } catch (err: any) {
@@ -751,7 +916,7 @@ async function deployContainer(
     }
     try {
       await runServiceContainer(spec);
-      const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, name, log);
+      const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, name, log, probeTimeoutMs);
       if (!verdict.ok) throw new Error(verdict.reason);
     } catch (err: any) {
       await appendContainerTail(name, log);
@@ -841,14 +1006,15 @@ async function validateContainer(
   healthcheckPath: string | null,
   containerRef: string,
   log: (l: string) => void,
+  timeoutMs: number = PROBE_TIMEOUT_MS,
 ): Promise<{ ok: boolean; reason: string }> {
   if (healthcheckPath && port) {
     const path = healthcheckPath.startsWith('/') ? healthcheckPath : `/${healthcheckPath}`;
-    log(`Esperando healthcheck 2xx en http://${aliasHost}:${port}${path} (hasta ${PROBE_TIMEOUT_MS / 1000}s)...`);
+    log(`Esperando healthcheck 2xx en http://${aliasHost}:${port}${path} (hasta ${Math.round(timeoutMs / 1000)}s)...`);
     if (!(await imageExists('busybox:stable'))) {
       await spawnLogged('docker', ['pull', 'busybox:stable'], {}, log);
     }
-    const deadline = Date.now() + PROBE_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
     let attempts = 0;
     // Sin espera previa: hay procesos que ya responden al instante y esperar
     // un segundo «por si acaso» se lo cobraba a TODOS los despliegues.
@@ -864,7 +1030,7 @@ async function validateContainer(
       }
       await sleep(PROBE_INTERVAL_MS);
     }
-    return { ok: false, reason: `el healthcheck ${path} no respondió 2xx en ${PROBE_TIMEOUT_MS / 1000}s` };
+    return { ok: false, reason: `el healthcheck ${path} no respondió 2xx en ${Math.round(timeoutMs / 1000)}s` };
   }
 
   // Sin healthcheck no hay forma de saber que la versión nueva está bien: solo

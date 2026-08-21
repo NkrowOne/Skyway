@@ -185,9 +185,10 @@ export function initDb(): void {
   // permite reutilizar la imagen de un commit ya construido solo si se
   // construiría exactamente igual.
   ensureColumn('deployments', 'build_key', 'TEXT');
-  // startCommand que traía railway.json en ese commit: al reutilizar la imagen
-  // no se clona, y sin esto el servicio arrancaría con el comando equivocado.
-  ensureColumn('deployments', 'repo_start_cmd', 'TEXT');
+  // Config-as-code de Railway leída del repo en ese commit (JSON). Al reutilizar
+  // la imagen no se clona, y sin esto el servicio arrancaría sin el comando de
+  // arranque, el healthcheck ni la política de reinicio que declara el repo.
+  ensureColumn('deployments', 'repo_config', 'TEXT');
   // 1 = el usuario pidió reconstruir sin reutilizar imagen.
   ensureColumn('deployments', 'force_build', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'role', "TEXT NOT NULL DEFAULT 'admin'"); // los usuarios previos eran el dueño
@@ -1279,7 +1280,7 @@ export function createDeployment(
     error: null,
     diagnosis: null,
     build_key: null,
-    repo_start_cmd: null,
+    repo_config: null,
     force_build: opts.forceBuild ? 1 : 0,
     created_at: now(),
     finished_at: null,
@@ -1296,7 +1297,7 @@ export function updateDeployment(
   fields: Partial<
     Pick<
       DeploymentRow,
-      'status' | 'commit_sha' | 'commit_msg' | 'image_tag' | 'logs' | 'error' | 'finished_at' | 'build_key' | 'repo_start_cmd'
+      'status' | 'commit_sha' | 'commit_msg' | 'image_tag' | 'logs' | 'error' | 'finished_at' | 'build_key' | 'repo_config'
     >
   >,
 ): void {
@@ -1318,7 +1319,7 @@ export function deploymentSummary(deploymentId: string): DeploymentRow | undefin
   const row = db
     .prepare(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
-              build_key, repo_start_cmd, force_build, created_at, finished_at
+              build_key, repo_config, force_build, created_at, finished_at
          FROM deployments WHERE id = ?`,
     )
     .get(deploymentId) as Omit<DeploymentRow, 'logs'> | undefined;
@@ -1329,7 +1330,7 @@ export function listDeployments(serviceId: string, limit = 20): DeploymentRow[] 
   return db
     .prepare(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
-              build_key, repo_start_cmd, force_build, created_at, finished_at
+              build_key, repo_config, force_build, created_at, finished_at
          FROM deployments WHERE service_id = ? ORDER BY created_at DESC LIMIT ?`,
     )
     .all(serviceId, limit)
@@ -1346,7 +1347,7 @@ export function reusableBuild(serviceId: string, commitSha: string, buildKey: st
   return db
     .prepare(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
-              build_key, repo_start_cmd, force_build, created_at, finished_at
+              build_key, repo_config, force_build, created_at, finished_at
          FROM deployments
         WHERE service_id = ? AND commit_sha = ? AND build_key = ? AND status = 'success' AND image_tag IS NOT NULL
         ORDER BY created_at DESC LIMIT 1`,
@@ -1384,7 +1385,7 @@ export function activeDeploymentsByProject(projectId: string): Record<string, De
   const rows = db
     .prepare(
       `SELECT d.id, d.service_id, d.status, d.trigger, d.commit_sha, d.commit_msg, d.image_tag,
-              d.error, d.diagnosis, d.build_key, d.repo_start_cmd, d.force_build, d.created_at, d.finished_at
+              d.error, d.diagnosis, d.build_key, d.repo_config, d.force_build, d.created_at, d.finished_at
          FROM deployments d JOIN services s ON s.id = d.service_id
         WHERE s.project_id = ? AND d.status IN ('queued', 'building', 'deploying')
         ORDER BY d.created_at ASC`,

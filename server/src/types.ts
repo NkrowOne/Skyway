@@ -20,6 +20,12 @@ export interface GitConfig {
   rootDir?: string;
   dockerfilePath?: string;
   startCmd?: string;
+  /**
+   * Comando de compilación cuando se construye con Nixpacks (sin Dockerfile).
+   * Es el equivalente al «Build Command» del panel de Railway, y el importador
+   * lo copia de allí. Con Dockerfile no aplica: manda el Dockerfile.
+   */
+  buildCmd?: string;
   port: number;
   buildArgs?: Record<string, string>;
   domains: string[];
@@ -142,8 +148,8 @@ export interface DeploymentRow {
    * puede reutilizar la imagen en vez de clonar y compilar otra vez.
    */
   build_key: string | null;
-  /** startCommand de railway.json en ese commit, para no perderlo al reutilizar. */
-  repo_start_cmd: string | null;
+  /** Config-as-code de Railway del repo en ese commit (JSON), para no perderla al reutilizar. */
+  repo_config: string | null;
   /** 1 = reconstruir sin reutilizar imagen, aunque el commit ya esté construido. */
   force_build: number;
   created_at: number;

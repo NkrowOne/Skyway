@@ -1,9 +1,12 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, ArrowRight, CheckCircle2, Database, GitBranch, Package, TrainFront } from 'lucide-react';
 import { api } from '../api';
 import { Button, CopyButton, Field, Modal, useToast } from './ui';
 import { cx } from '../utils';
+
+// El modal de copia trae su propio visor de logs: solo se descarga al usarlo.
+const DataMigrationModal = lazy(() => import('./DataMigrationModal'));
 
 interface RailwayProject {
   id: string;
@@ -45,7 +48,18 @@ export interface ImportReport {
   created: { name: string; kind: string; notes: string[] }[];
   skipped: { name: string; notes: string[] }[];
   warnings: string[];
-  dataCopy: { service: string; template: string; command: string | null; note: string }[];
+  dataCopy: {
+    service: string;
+    template: string;
+    command: string | null;
+    note: string;
+    /** Servicio creado en Skyway: permite lanzar la copia desde aquí. */
+    serviceId?: string | null;
+    /** URL pública del origen en Railway, si Railway la exponía. */
+    sourceUrl?: string | null;
+    /** El motor admite copia automatizada (Postgres, MySQL, Mongo). */
+    automatable?: boolean;
+  }[];
   nextSteps: string[];
 }
 
@@ -57,6 +71,7 @@ const KIND_META: Record<string, { label: string; icon: typeof GitBranch; cls: st
 };
 
 export function ImportReportView({ report }: { report: ImportReport }) {
+  const [copying, setCopying] = useState<ImportReport['dataCopy'][number] | null>(null);
   return (
     <div className="space-y-4 text-sm">
       <div className="flex items-center gap-2 text-ok">
@@ -91,15 +106,29 @@ export function ImportReportView({ report }: { report: ImportReport }) {
           <div className="space-y-2">
             {report.dataCopy.map((d) => (
               <div key={d.service} className="rounded-lg border border-line bg-surface2 p-3">
-                <p className="text-xs font-medium">{d.service} ({d.template})</p>
-                <p className="mt-1 text-xs text-sub">{d.note}</p>
-                {d.command && (
-                  <div className="mt-2 flex items-start gap-1">
-                    <code className="block flex-1 overflow-x-auto whitespace-pre rounded-md bg-term p-2 font-mono text-[10.5px] text-txt/[.88]">
-                      {d.command}
-                    </code>
-                    <CopyButton value={d.command} />
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium">{d.service} ({d.template})</p>
+                    <p className="mt-1 text-xs text-sub">{d.note}</p>
                   </div>
+                  {d.automatable && d.serviceId && (
+                    <Button size="sm" variant="secondary" onClick={() => setCopying(d)}>
+                      <Database size={13} /> Copiar datos ahora
+                    </Button>
+                  )}
+                </div>
+                {d.command && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer list-none text-[11px] text-subtle hover:text-sub">
+                      Comando equivalente para el servidor
+                    </summary>
+                    <div className="mt-1.5 flex items-start gap-1">
+                      <code className="block flex-1 overflow-x-auto whitespace-pre rounded-md bg-term p-2 font-mono text-[10.5px] text-txt/[.88]">
+                        {d.command}
+                      </code>
+                      <CopyButton value={d.command} />
+                    </div>
+                  </details>
                 )}
               </div>
             ))}
@@ -129,6 +158,18 @@ export function ImportReportView({ report }: { report: ImportReport }) {
           ))}
         </ol>
       </div>
+
+      {copying?.serviceId && (
+        <Suspense fallback={null}>
+          <DataMigrationModal
+            open
+            onClose={() => setCopying(null)}
+            serviceId={copying.serviceId}
+            serviceName={copying.service}
+            defaultSourceUrl={copying.sourceUrl ?? null}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

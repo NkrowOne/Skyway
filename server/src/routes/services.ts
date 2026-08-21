@@ -60,6 +60,7 @@ const createGitSchema = z.object({
   rootDir: z.string().trim().optional(),
   dockerfilePath: z.string().trim().optional(),
   startCmd: z.string().trim().optional(),
+  buildCmd: z.string().trim().optional(),
   port: z.coerce.number().int().min(1).max(65535).default(3000),
   domains: z.array(z.string().trim().min(1)).default([]),
   autoDeploy: z.boolean().default(true),
@@ -92,6 +93,7 @@ const patchSchema = z.object({
       rootDir: z.string().trim().nullable().optional(),
       dockerfilePath: z.string().trim().nullable().optional(),
       startCmd: z.string().trim().nullable().optional(),
+      buildCmd: z.string().trim().nullable().optional(),
       // nullable: los servicios de imagen sin puerto interno (workers) envían
       // null; sin esto, NINGÚN ajuste suyo se podía guardar (Number(null)=0).
       port: z.coerce.number().int().min(1).max(65535).nullable().optional(),
@@ -126,7 +128,7 @@ function installationVisibleFrom(rowId: string, projectId: string): boolean {
 
 /** Campos cuyo cambio requiere recrear el contenedor. */
 const REDEPLOY_FIELDS = [
-  'repoUrl', 'connectorId', 'githubInstallationId', 'branch', 'rootDir', 'dockerfilePath', 'startCmd', 'port',
+  'repoUrl', 'connectorId', 'githubInstallationId', 'branch', 'rootDir', 'dockerfilePath', 'startCmd', 'buildCmd', 'port',
   'domains', 'hostPort', 'version', 'image', 'buildArgs', 'healthcheckPath', 'volumes', 'replicas',
 ] as const;
 
@@ -202,6 +204,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         rootDir: body.rootDir || undefined,
         dockerfilePath: body.dockerfilePath || undefined,
         startCmd: body.startCmd || undefined,
+        buildCmd: body.buildCmd || undefined,
         port: body.port,
         domains: body.domains,
         autoDeploy: body.autoDeploy,
@@ -274,6 +277,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         // El conector y el auto-deploy solo tienen sentido en servicios de repositorio.
         if (key === 'connectorId' && found.service.type !== 'git') continue;
         if (key === 'githubInstallationId' && found.service.type !== 'git') continue;
+        if (key === 'buildCmd' && found.service.type !== 'git') continue;
         if (key === 'autoDeploy' && found.service.type !== 'git') continue;
         // Campos que no aplican a bases de datos: se ignoran sin efecto.
         if (found.service.type === 'database' && ['replicas', 'healthcheckPath'].includes(key)) continue;

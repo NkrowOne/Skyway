@@ -58,6 +58,7 @@ interface FormState {
   rootDir: string;
   dockerfilePath: string;
   startCmd: string;
+  buildCmd: string;
   port: string;
   version: string;
   image: string;
@@ -84,6 +85,7 @@ function formFromService(service: Service): FormState {
     rootDir: cfg.rootDir ?? '',
     dockerfilePath: cfg.dockerfilePath ?? '',
     startCmd: cfg.startCmd ?? '',
+    buildCmd: (cfg as any).buildCmd ?? '',
     port: isImage ? (cfg.port ? String(cfg.port) : '') : String(cfg.port ?? 3000),
     version: cfg.version ?? '',
     image: cfg.image ?? '',
@@ -184,6 +186,7 @@ export default function ServiceSettingsTab({
           rootDir: form.rootDir.trim() || null,
           dockerfilePath: form.dockerfilePath.trim() || null,
           startCmd: form.startCmd.trim() || null,
+          buildCmd: form.buildCmd.trim() || null,
           port: Number(form.port) || 3000,
           domains: form.domains,
           autoDeploy: form.autoDeploy,
@@ -288,6 +291,17 @@ export default function ServiceSettingsTab({
                     value={form.startCmd}
                     onChange={(e) => set('startCmd', e.target.value)}
                     placeholder="npm run start"
+                  />
+                </Field>
+                <Field
+                  label="Comando de compilación"
+                  hint="Equivalente al «Build Command» de Railway. Solo aplica sin Dockerfile (build con Nixpacks); con Dockerfile manda el Dockerfile."
+                >
+                  <input
+                    className="input font-mono text-xs"
+                    value={form.buildCmd}
+                    onChange={(e) => set('buildCmd', e.target.value)}
+                    placeholder="npm run build"
                   />
                 </Field>
                 <Field
