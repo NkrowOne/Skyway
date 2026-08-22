@@ -267,10 +267,15 @@ const RULES: Rule[] = [
 
 export function diagnose(error: string | null, logs: string): Diagnosis | null {
   if (!error) return null;
+  // Para decidir QUÉ falló basta la cola: el error está al final.
   const tail = logs.slice(-6000);
   for (const rule of RULES) {
     if (rule.test(error, tail)) {
-      const fix = typeof rule.fix === 'function' ? rule.fix(error, tail) : rule.fix;
+      // Para decidir QUÉ HACER hace falta el log entero. Las señales que afinan
+      // el remedio —con qué credencial se clonó, con qué constructor se
+      // construyó— se escriben al principio, y un build con mucha salida (pip,
+      // npm) las deja a decenas de miles de caracteres de la cola.
+      const fix = typeof rule.fix === 'function' ? rule.fix(error, logs) : rule.fix;
       return { id: rule.id, title: rule.title, cause: rule.cause, fix };
     }
   }

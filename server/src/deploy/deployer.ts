@@ -18,6 +18,7 @@ import {
   successfulDeploymentsBeyond,
   updateDeployment,
   listDeployments,
+  getSetting,
 } from '../db';
 import { fireAlert, resolveServiceAlerts } from '../alerts';
 import { diagnose } from './diagnose';
@@ -38,6 +39,7 @@ import {
   stopContainer,
   volumeName,
   getRuntime,
+  runArgsFor,
   startCommandSpec,
 } from '../docker/containers';
 import { ensureNetwork, projectNetworkName, EDGE_NETWORK } from '../docker/networks';
@@ -458,7 +460,18 @@ function buildKeyFor(service: ServiceRow, cfg: GitConfig): string {
   // vivan fuera del bloque de build: cambiarlos tiene que invalidar la caché.
   const dockerfile = getEnv(service.id).RAILWAY_DOCKERFILE_PATH || cfg.dockerfilePath || 'Dockerfile';
   return createHash('sha256')
-    .update(JSON.stringify([normalizeRepoUrl(cfg.repoUrl), cfg.rootDir || '.', dockerfile, cfg.buildCmd || '', args]))
+    .update(
+      JSON.stringify([
+        normalizeRepoUrl(cfg.repoUrl),
+        cfg.rootDir || '.',
+        dockerfile,
+        cfg.buildCmd || '',
+        // Nixpacks hornea el comando de arranque en la imagen (NIXPACKS_START_CMD):
+        // cambiarlo tiene que invalidar la caché o se reutiliza una imagen con el viejo.
+        cfg.startCmd || '',
+        args,
+      ]),
+    )
     .digest('hex')
     .slice(0, 32);
 }
@@ -507,7 +520,7 @@ async function buildGitImage(
       log,
     );
     if (job.canceled) throw new CanceledError();
-    const repoConfig = readRailwayRepoConfig(workDir, cfg.rootDir);
+    const repoConfig = readRailwayRepoConfig(workDir, cfg.rootDir, log);
     if (hasRailwayConfig(repoConfig) && repoConfig.source) {
       log(`Configuración del repositorio leída de ${repoConfig.source} (config-as-code de Railway).`);
       warnBuilderChange(service.id, repoConfig, log);
@@ -664,6 +677,7 @@ function applyRailwayCompatEnv(
   deploymentId: string,
   domains: string[],
   internalPort: number | null,
+  volumes: { name: string; containerPath: string }[] = [],
 ): void {
   const deployment = deploymentSummary(deploymentId);
   const put = (key: string, value: string | null | undefined) => {
@@ -683,7 +697,16 @@ function applyRailwayCompatEnv(
   if (internalPort) put('RAILWAY_TCP_PROXY_PORT', String(internalPort));
   if (domains[0]) {
     put('RAILWAY_PUBLIC_DOMAIN', domains[0]);
-    put('RAILWAY_STATIC_URL', `https://${domains[0]}`);
+    // El esquema lo decide quien enruta: sin correo de Let's Encrypt, Traefik
+    // no monta el router seguro y prometer https lleva a un 404 con un
+    // certificado que no es el del dominio.
+    put('RAILWAY_STATIC_URL', `${getSetting('letsencryptEmail') ? 'https' : 'http'}://${domains[0]}`);
+  }
+  // La forma que documenta Railway para encontrar el disco persistente; sus
+  // plantillas oficiales la usan tal cual.
+  if (volumes[0]) {
+    put('RAILWAY_VOLUME_NAME', volumes[0].name);
+    put('RAILWAY_VOLUME_MOUNT_PATH', volumes[0].containerPath);
   }
   if (deployment?.commit_sha) {
     put('RAILWAY_GIT_COMMIT_SHA', deployment.commit_sha);
@@ -712,7 +735,11 @@ async function runPreDeploy(
   log(`Ejecutando el comando previo al despliegue: ${command}`);
   const args = ['run', '--rm', '--network', projectNetworkName(project)];
   for (const key of Object.keys(env)) args.push('--env', key);
-  args.push('--env', 'SKYWAY_PREDEPLOY_CMD', image, 'sh', '-c', 'eval "$SKYWAY_PREDEPLOY_CMD"');
+  args.push('--env', 'SKYWAY_PREDEPLOY_CMD');
+  // Cómo se le entrega la orden depende del ENTRYPOINT de la imagen, igual que
+  // el comando de arranque: con el de Nixpacks, un `sh -c` acababa arrancando
+  // un shell vacío que salía con 0 —y esto se habría dado por ejecutado—.
+  args.push(...(await runArgsFor(image, 'eval "$SKYWAY_PREDEPLOY_CMD"')));
   const onSpawn = job
     ? (p: any) => {
         job.procs.add(p);
@@ -831,7 +858,7 @@ async function deployContainer(
   env.SKYWAY_PROJECT = project.slug;
   env.SKYWAY_SERVICE = service.slug;
   env.SKYWAY_DEPLOYMENT = deploymentId;
-  applyRailwayCompatEnv(env, project, service, deploymentId, domains, internalPort);
+  applyRailwayCompatEnv(env, project, service, deploymentId, domains, internalPort, volumes);
 
   // Política de reinicio declarada en el repo (restartPolicyType de Railway).
   // Sin ella, la de siempre: unless-stopped.
@@ -867,9 +894,9 @@ async function deployContainer(
   // comando de arranque: es config-as-code y viaja con el commit.
   const healthcheckPath: string | null =
     repoConfig?.healthcheckPath ?? (service.type !== 'database' ? (service.config as any).healthcheckPath || null : null);
-  const probeTimeoutMs = repoConfig?.healthcheckTimeout
-    ? Math.min(Math.max(repoConfig.healthcheckTimeout, 5), 900) * 1000
-    : PROBE_TIMEOUT_MS;
+  const envTimeout = Number(getEnv(service.id).RAILWAY_HEALTHCHECK_TIMEOUT_SEC);
+  const declaredTimeout = repoConfig?.healthcheckTimeout ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : null);
+  const probeTimeoutMs = declaredTimeout ? Math.min(Math.max(declaredTimeout, 5), 900) * 1000 : PROBE_TIMEOUT_MS;
 
   // Comando previo al despliegue (donde casi todo el mundo pone las
   // migraciones). Va ANTES de tocar la versión en marcha: si falla, el
@@ -885,6 +912,12 @@ async function deployContainer(
   if (repoConfig?.numReplicas && repoConfig.numReplicas !== configuredReplicas(service)) {
     log(
       `ℹ La configuración del repositorio pide ${repoConfig.numReplicas} réplicas; en Skyway las réplicas se fijan en Ajustes del servicio (consumen cuota del workspace). Se mantienen ${configuredReplicas(service)}.`,
+    );
+  }
+  if (repoConfig?.watchPatterns.length) {
+    log(
+      `ℹ La configuración del repositorio declara «watchPatterns» (${repoConfig.watchPatterns.join(', ')}); Skyway aún no filtra ` +
+        'por ruta: cualquier push a la rama dispara el despliegue automático.',
     );
   }
   if (repoConfig?.cronSchedule) {
@@ -1037,7 +1070,13 @@ async function recoverStaleSwap(serviceId: string, log: (l: string) => void): Pr
   }
 }
 
-const PROBE_TIMEOUT_MS = 60_000;
+/**
+ * Margen para que el healthcheck responda. 300 s es el de Railway: un repo
+ * migrado que allí pasaba con el margen por defecto tenía aquí una quinta parte.
+ * Se puede subir con `healthcheckTimeout` en railway.json o con la variable
+ * `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`, que es lo que documenta Railway.
+ */
+const PROBE_TIMEOUT_MS = 300_000;
 // Sondeo ágil: cada intento cuesta un `docker run busybox` (~0,3 s), así que
 // bajar el intervalo apenas añade carga y recorta segundos de la ventana entre
 // «el proceso ya responde» y «Skyway se entera».

@@ -127,8 +127,14 @@ function fromSections(build: any, deploy: any, source: string): RailwayRepoConfi
  * el que Railway la resuelve. `RAILWAY_DOCKERFILE_PATH` en las variables del
  * servicio sigue mandando sobre el fichero, como en Railway.
  */
-export function readRailwayRepoConfig(repoDir: string, rootDir?: string): RailwayRepoConfig {
-  const roots = [path.resolve(repoDir, rootDir || '.'), path.resolve(repoDir)];
+export function readRailwayRepoConfig(
+  repoDir: string,
+  rootDir?: string,
+  log?: (l: string) => void,
+): RailwayRepoConfig {
+  // Sin rootDir las dos rutas son la misma, y sin deduplicar el mismo fichero
+  // se leía —y se avisaba— dos veces.
+  const roots = [...new Set([path.resolve(repoDir, rootDir || '.'), path.resolve(repoDir)])];
   for (const dir of roots) {
     for (const file of ['railway.json', 'railway.toml']) {
       const full = path.join(dir, file);
@@ -142,12 +148,23 @@ export function readRailwayRepoConfig(repoDir: string, rootDir?: string): Railwa
       try {
         if (file.endsWith('.json')) {
           const parsed = JSON.parse(text);
+          // Railway admite `environments.<entorno>[.<servicio>]` en el mismo
+          // fichero. Skyway aún no lo aplica, y callarlo es lo peor que puede
+          // hacer: quien lo usa cree que su configuración está activa.
+          if (parsed?.environments && log) {
+            log(`⚠ ${rel} trae configuración por entorno («environments»), que Skyway todavía no aplica. Solo se lee la del nivel raíz.`);
+          }
           return fromSections(parsed?.build, parsed?.deploy, rel);
         }
         const tables = parseToml(text);
+        if (log && Object.keys(tables).some((k) => k.startsWith('environments.'))) {
+          log(`⚠ ${rel} trae configuración por entorno («[environments…]»), que Skyway todavía no aplica. Solo se lee la del nivel raíz.`);
+        }
         return fromSections(tables.build, tables.deploy, rel);
-      } catch {
-        // Fichero presente pero ilegible: no se adivina, se sigue buscando.
+      } catch (err: any) {
+        // Presente pero ilegible. No se adivina, pero tampoco se calla: si no,
+        // el despliegue termina en verde con una configuración que no se aplicó.
+        log?.(`⚠ ${rel} no se pudo leer (${err?.message || err}): se ignora y se usan los ajustes del panel.`);
         continue;
       }
     }
@@ -166,6 +183,8 @@ export function hasRailwayConfig(cfg: RailwayRepoConfig): boolean {
     !!cfg.healthcheckPath ||
     cfg.numReplicas !== null ||
     !!cfg.restartPolicyType ||
+    cfg.restartPolicyMaxRetries !== null ||
+    cfg.watchPatterns.length > 0 ||
     !!cfg.cronSchedule
   );
 }
@@ -179,16 +198,18 @@ export function dockerRestartPolicy(
   type: string | null,
   maxRetries: number | null,
 ): { Name: string; MaximumRetryCount?: number } | null {
+  const retries = maxRetries && maxRetries > 0 ? Math.min(maxRetries, 100) : null;
   switch (type) {
     case 'NEVER':
       return { Name: 'no' };
     case 'ON_FAILURE':
-      return maxRetries && maxRetries > 0
-        ? { Name: 'on-failure', MaximumRetryCount: Math.min(maxRetries, 100) }
-        : { Name: 'on-failure' };
+      return retries ? { Name: 'on-failure', MaximumRetryCount: retries } : { Name: 'on-failure' };
     case 'ALWAYS':
       return { Name: 'unless-stopped' };
     default:
-      return null;
+      // Declarar solo el número de reintentos es válido en Railway: se aplica
+      // sobre su política por defecto, que es ON_FAILURE. Sin esto acababa en
+      // reinicios ilimitados, justo lo contrario de lo que se pedía.
+      return retries ? { Name: 'on-failure', MaximumRetryCount: retries } : null;
   }
 }
