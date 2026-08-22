@@ -75,7 +75,9 @@ export default function NewServiceModal({
   const [name, setName] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
   const [branch, setBranch] = useState('main');
-  const [port, setPort] = useState('3000');
+  // Vacío a propósito: si no se toca, el primer despliegue lo detecta del EXPOSE
+  // de la imagen. Precargar «3000» hacía imposible NO elegir puerto.
+  const [port, setPort] = useState('');
   const [rootDir, setRootDir] = useState('');
   const [template, setTemplate] = useState<string | null>(null);
   const [image, setImage] = useState('');
@@ -115,7 +117,7 @@ export default function NewServiceModal({
     setName('');
     setRepoUrl('');
     setBranch('main');
-    setPort('3000');
+    setPort('');
     setRootDir('');
     setTemplate(null);
     setImage('');
@@ -202,7 +204,7 @@ export default function NewServiceModal({
       name: inferredName,
       repoUrl: repoUrl.trim(),
       branch: branch.trim() || 'main',
-      port: Number(port) || 3000,
+      ...(port.trim() ? { port: Number(port) } : {}),
       ...(rootDir.trim() ? { rootDir: rootDir.trim() } : {}),
       ...(source.kind === 'app' ? { githubInstallationId: source.id } : {}),
       ...(source.kind === 'pat' ? { connectorId: source.id } : {}),
@@ -681,8 +683,14 @@ export default function NewServiceModal({
                 <input className="input" value={branch} onChange={(e) => setBranch(e.target.value)} />
               )}
             </Field>
-            <Field label="Puerto de la app" hint="Puerto interno que escucha tu aplicación">
-              <input className="input" type="number" value={port} onChange={(e) => setPort(e.target.value)} />
+            <Field label="Puerto de la app" hint="Vacío = se detecta del EXPOSE de la imagen (y si no lo declara, 3000)">
+              <input
+                className="input"
+                type="number"
+                placeholder="automático"
+                value={port}
+                onChange={(e) => setPort(e.target.value)}
+              />
             </Field>
           </div>
           <div className="grid grid-cols-2 gap-3">

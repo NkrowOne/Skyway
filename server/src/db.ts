@@ -189,6 +189,12 @@ export function initDb(): void {
   // la imagen no se clona, y sin esto el servicio arrancaría sin el comando de
   // arranque, el healthcheck ni la política de reinicio que declara el repo.
   ensureColumn('deployments', 'repo_config', 'TEXT');
+  // Qué variables del servicio entraron DE VERDAD en aquel build, con un digest
+  // de su valor (JSON `{NOMBRE: hash}`). Con Dockerfile eso lo deciden los `ARG`
+  // que declare el repo, y leerlos exige clonar: la huella `build_key` no puede
+  // preverlo, así que se mira hacia atrás. Digests y nunca valores: esta fila se
+  // sirve por la API de despliegues y un `--build-arg` puede llevar un token.
+  ensureColumn('deployments', 'build_vars', 'TEXT');
   // 1 = el usuario pidió reconstruir sin reutilizar imagen.
   ensureColumn('deployments', 'force_build', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'role', "TEXT NOT NULL DEFAULT 'admin'"); // los usuarios previos eran el dueño
@@ -1311,7 +1317,16 @@ export function updateDeployment(
   fields: Partial<
     Pick<
       DeploymentRow,
-      'status' | 'commit_sha' | 'commit_msg' | 'image_tag' | 'logs' | 'error' | 'finished_at' | 'build_key' | 'repo_config'
+      | 'status'
+      | 'commit_sha'
+      | 'commit_msg'
+      | 'image_tag'
+      | 'logs'
+      | 'error'
+      | 'finished_at'
+      | 'build_key'
+      | 'repo_config'
+      | 'build_vars'
     >
   >,
 ): void {
@@ -1361,7 +1376,7 @@ export function reusableBuild(serviceId: string, commitSha: string, buildKey: st
   return db
     .prepare(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
-              build_key, repo_config, force_build, created_at, finished_at
+              build_key, repo_config, build_vars, force_build, created_at, finished_at
          FROM deployments
         WHERE service_id = ? AND commit_sha = ? AND build_key = ? AND status = 'success' AND image_tag IS NOT NULL
         ORDER BY created_at DESC LIMIT 1`,

@@ -387,6 +387,18 @@ export default function ServiceSettingsTab({
             title="Dominios"
             description="Traefik enruta 80/443 con TLS automático si está configurado"
           >
+            {/* Se mira form.port y no cfg.port a propósito: el aviso tiene que salir
+                en cuanto se vacía el puerto, antes de guardar, que es cuando
+                todavía se puede uno echar atrás. Es la contrapartida del «vacío =
+                sin HTTP» del campo de arriba, que invita a dejarlo en blanco sin
+                contar que eso deja el dominio de adorno. */}
+            {isImage && form.domains.length > 0 && !form.port.trim() && (
+              <p className="mb-3 rounded-lg border border-warn/30 bg-warn/[.06] px-3 py-2 text-xs text-warn">
+                Sin puerto interno Traefik no puede enrutar el dominio: no se crea la ruta ni se emite certificado, y
+                el dominio responderá 404 con un certificado que no es el suyo. Indica arriba el puerto en el que
+                escucha, o quítale el dominio si es un worker sin HTTP.
+              </p>
+            )}
             <DomainsEditor domains={form.domains} onChange={(d) => set('domains', d)} slug={service.slug} />
           </SectionCard>
         )}

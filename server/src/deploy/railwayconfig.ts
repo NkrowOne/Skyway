@@ -60,6 +60,47 @@ const num = (value: unknown): number | null => {
  * debe tumbar un despliegue— igual que hace el lector de JSON con las claves
  * que no conoce.
  */
+/**
+ * Quita el comentario final de una línea sin meterse dentro de las comillas.
+ *
+ * Antes se hacía con una expresión sobre la línea entera (`/\s+#.*$/`), y una
+ * almohadilla dentro de una cadena la partía por la mitad: `startCommand =
+ * "manage.py migrate # y ya"` se quedaba en «manage.py migrat» —con el último
+ * carácter comido, porque la comilla de cierre desaparecía antes de recortar
+ * las comillas— y `"a # b # c"` se perdía del todo. Un comando de arranque
+ * mutilado o vacío que no se ve hasta que el contenedor no levanta.
+ *
+ * Se conserva la regla de exigir un espacio delante del '#' para abrir
+ * comentario: sin ella, un valor desnudo como `--tag=#build` se rompería.
+ *
+ * No se deshacen las escapadas: el valor se entrega tal cual venía. La barra
+ * invertida se mira solo para saber dónde acaba la cadena, que es lo único que
+ * hace falta aquí para no cortar donde no se debe.
+ */
+function sinComentario(valor: string): string {
+  let comilla: string | null = null;
+  for (let i = 0; i < valor.length; i += 1) {
+    const c = valor[i];
+    if (comilla) {
+      // Solo la comilla doble admite escapadas en TOML; dentro de la simple la
+      // barra es un carácter más, y tratarla como escape dejaría sin cerrar
+      // rutas como 'C:\app\'.
+      if (c === '\\' && comilla === '"') {
+        i += 1;
+        continue;
+      }
+      if (c === comilla) comilla = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      comilla = c;
+      continue;
+    }
+    if (c === '#' && i > 0 && /\s/.test(valor[i - 1])) return valor.slice(0, i).trim();
+  }
+  return valor.trim();
+}
+
 function parseToml(text: string): Record<string, Record<string, unknown>> {
   const out: Record<string, Record<string, unknown>> = {};
   let section = '';
@@ -78,11 +119,15 @@ function parseToml(text: string): Record<string, Record<string, unknown>> {
     const eq = line.indexOf('=');
     if (eq <= 0) continue;
     const key = line.slice(0, eq).trim().replace(/^["']|["']$/g, '');
-    const raw = line.slice(eq + 1).trim().replace(/\s+#.*$/, '');
+    const raw = sinComentario(line.slice(eq + 1).trim());
     if (!key) continue;
 
     if (/^["']/.test(raw)) {
-      out[section][key] = raw.slice(1, raw.length - 1);
+      // Se busca la comilla de cierre en vez de recortar a ciegas el último
+      // carácter: si el fichero viene con una comilla sin cerrar, es mejor
+      // quedarse con el valor entero que devolverlo mordido.
+      const cierre = raw.lastIndexOf(raw[0]);
+      out[section][key] = cierre > 0 ? raw.slice(1, cierre) : raw.slice(1);
     } else if (raw === 'true' || raw === 'false') {
       out[section][key] = raw === 'true';
     } else if (/^\[.*\]$/.test(raw)) {
