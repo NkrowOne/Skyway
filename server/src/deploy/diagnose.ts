@@ -175,7 +175,7 @@ const RULES: Rule[] = [
     cause:
       'El build no llegó a empaquetar nada: `tsc` encontró errores de tipos. Ojo con el más habitual, «Cannot find module X»: casi nunca es un error de tipos, es que esa dependencia no está en la imagen. `npm ci` instala EXACTAMENTE lo que dice el package-lock.json de la raíz, así que un paquete que en tu máquina está en node_modules pero no declarado —o el package.json de un subproyecto que no es un workspace— aquí no existe. Los «implicitly has an any type» que salen detrás suelen ser el eco del módulo que falta, no errores independientes.',
     fix:
-      'Reproduce el build limpio en local: borra node_modules, `npm ci` y `npm run build`. Si falla igual, falta declarar la dependencia (`npm i -S paquete`, commiteando también el package-lock). Si el error viene de un subdirectorio que se despliega por su cuenta (un worker, una función), sácalo del build de la web quitándolo de las «references» del tsconfig raíz. Y revisa la versión de Node: si el log trae avisos EBADENGINE, fija la que necesitas con «engines.node» en package.json o con el build arg NIXPACKS_NODE_VERSION.',
+      'Reproduce el build limpio en local: borra node_modules, `npm ci` y `npm run build`. Si falla igual, falta declarar la dependencia (`npm i -S paquete`, commiteando también el package-lock). Si el error viene de un subdirectorio que se despliega por su cuenta (un worker, una función), sácalo del build de la web quitándolo de las «references» del tsconfig raíz. Y revisa la versión de Node: si el log trae avisos EBADENGINE, fija la que necesitas con «engines.node» en package.json o con la variable NIXPACKS_NODE_VERSION del servicio.',
   },
   {
     id: 'build-npm',
@@ -254,7 +254,7 @@ const RULES: Rule[] = [
     cause:
       'El log trae avisos «Unsupported engine»: alguna dependencia exige una versión de Node mayor que la que se usó para construir. Cuando el repositorio no dice qué versión quiere, Nixpacks elige una por defecto que se queda corta con paquetes recientes (Vite 7, supabase-js…), y el fallo aparece más tarde, al ejecutar el build, con un error que no menciona la versión.',
     fix:
-      'Declara la versión en el propio repositorio, que es lo que Nixpacks mira: «engines»: { "node": ">=22" } en package.json, o un fichero .nvmrc. Si prefieres no tocar el repo, añade en Ajustes → Build del servicio el argumento NIXPACKS_NODE_VERSION con el número mayor (por ejemplo 22). Las versiones disponibles son las que trae el Nixpacks instalado: si necesitas una muy reciente, actualiza Skyway para que se reinstale.',
+      'Declara la versión en el propio repositorio, que es lo que Nixpacks mira: «engines»: { "node": ">=22" } en package.json, o un fichero .nvmrc. Si prefieres no tocar el repo, define la variable NIXPACKS_NODE_VERSION del servicio con el número mayor (por ejemplo 22): las variables del servicio llegan al build. Las versiones disponibles son las que trae el Nixpacks instalado: si necesitas una muy reciente, actualiza Skyway para que se reinstale.',
   },
   {
     id: 'build-generic',

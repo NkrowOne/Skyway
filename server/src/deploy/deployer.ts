@@ -456,6 +456,13 @@ function buildKeyFor(service: ServiceRow, cfg: GitConfig): string {
   const args = Object.entries(cfg.buildArgs || {})
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `${k}=${v}`);
+  // Las variables del servicio llegan al build (ver buildImage), así que
+  // cambiarlas cambia la imagen: si no entran aquí, se reutilizaría el bundle
+  // construido con el valor viejo, que es justo el fallo que esto arregla.
+  // Cuesta una recompilación al tocar una variable; Railway hace lo mismo.
+  const vars = Object.entries(resolveServiceEnv(service))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}=${v}`);
   // RAILWAY_DOCKERFILE_PATH y buildCmd también deciden qué imagen sale, aunque
   // vivan fuera del bloque de build: cambiarlos tiene que invalidar la caché.
   const dockerfile = getEnv(service.id).RAILWAY_DOCKERFILE_PATH || cfg.dockerfilePath || 'Dockerfile';
@@ -470,6 +477,7 @@ function buildKeyFor(service: ServiceRow, cfg: GitConfig): string {
         // cambiarlo tiene que invalidar la caché o se reutiliza una imagen con el viejo.
         cfg.startCmd || '',
         args,
+        vars,
       ]),
     )
     .digest('hex')
@@ -543,6 +551,7 @@ async function buildGitImage(
         buildArgs: cfg.buildArgs,
         builder: repoConfig.builder,
         nixpacksEnv: nixpacksEnvFor(cfg, repoConfig),
+        serviceEnv: resolveServiceEnv(service),
         // Capas de la última imagen correcta como caché: si el daemon purgó su
         // caché de build (o la imagen se construyó antes de un reinicio), esto
         // evita rehacer install de dependencias y compilaciones ya hechas.

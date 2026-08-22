@@ -192,6 +192,13 @@ export interface BuildOpts {
   /** Variables para Nixpacks (NIXPACKS_BUILD_CMD y compañía). */
   nixpacksEnv?: Record<string, string>;
   onSpawn?: (p: any) => void;
+  /**
+   * Variables del servicio. Railway las expone durante el build y ahí es donde
+   * un front hornea sus `VITE_*`/`NEXT_PUBLIC_*` en el bundle; sin ellas el
+   * build sale con la URL vacía, el contenedor arranca y solo se rompe en el
+   * navegador. Cómo llegan depende del constructor (ver buildImage).
+   */
+  serviceEnv?: Record<string, string>;
 }
 
 /** ¿Existe la imagen en el daemon local? (para no pasar un --cache-from muerto). */
@@ -201,6 +208,31 @@ function localImageExists(tag: string): Promise<boolean> {
     p.on('error', () => resolve(false));
     p.on('exit', (code) => resolve(code === 0));
   });
+}
+
+/**
+ * Nombres declarados con `ARG` en un Dockerfile. Se leen a mano en vez de con
+ * un parser: solo hace falta el nombre, y la forma de la instrucción es
+ * `ARG NOMBRE[=valor]`, una por línea, con continuaciones poco frecuentes.
+ */
+function declaredArgs(dockerfile: string): Set<string> {
+  const nombres = new Set<string>();
+  let texto: string;
+  try {
+    texto = fs.readFileSync(dockerfile, 'utf8');
+  } catch {
+    return nombres;
+  }
+  for (const linea of texto.split('\n')) {
+    const m = /^\s*ARG\s+(.+)$/i.exec(linea);
+    if (!m) continue;
+    // `ARG A=1 B=2` es válido: cada término aporta un nombre.
+    for (const termino of m[1].split(/\s+/)) {
+      const nombre = termino.split('=')[0].trim();
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(nombre)) nombres.add(nombre);
+    }
+  }
+  return nombres;
 }
 
 /** Construye la imagen: Dockerfile si existe; si no, Nixpacks (como Railway). */
@@ -263,9 +295,25 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
         cacheFlags.push('--cache-from', opts.cacheFrom);
       }
     }
+    // Con Dockerfile solo se pasan las variables que el propio Dockerfile
+    // DECLARA con ARG. Es lo que exige Railway («you must specify them in the
+    // Dockerfile using the ARG command») y además evita meter en el historial
+    // de la imagen secretos que nadie pidió: un `--build-arg` queda visible en
+    // `docker history` para siempre.
+    const declared = declaredArgs(dockerfile);
+    const envArgs: string[] = [];
+    const used: string[] = [];
+    for (const [k, v] of Object.entries(opts.serviceEnv || {})) {
+      if (!declared.has(k) || (opts.buildArgs || {})[k] !== undefined) continue;
+      envArgs.push('--build-arg', `${k}=${v}`);
+      used.push(k);
+    }
+    if (used.length > 0) {
+      log(`Variables del servicio declaradas con ARG en el Dockerfile: ${used.join(', ')}.`);
+    }
     await spawnLogged(
       'docker',
-      ['build', '-t', opts.imageTag, '-f', dockerfile, ...cacheFlags, ...argFlags, context],
+      ['build', '-t', opts.imageTag, '-f', dockerfile, ...cacheFlags, ...argFlags, ...envArgs, context],
       { env: { DOCKER_BUILDKIT: buildkit ? '1' : '0' }, onSpawn: opts.onSpawn },
       log,
     );
@@ -278,7 +326,10 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
     // Las NIXPACKS_* van después de los build-args para que ganen: son la
     // traducción del buildCommand de Railway y deben mandar sobre un homónimo
     // que el usuario tuviera puesto como argumento de compilación.
-    for (const [k, v] of Object.entries({ ...opts.buildArgs, ...opts.nixpacksEnv })) {
+    // Nixpacks recibe las variables del servicio, como en Railway: es lo que
+    // permite que un front hornee su API en el bundle, y también que
+    // NIXPACKS_NODE_VERSION funcione puesta como variable normal.
+    for (const [k, v] of Object.entries({ ...opts.serviceEnv, ...opts.buildArgs, ...opts.nixpacksEnv })) {
       envFlags.push('--env', `${k}=${v}`);
     }
     await spawnLogged('nixpacks', ['build', context, '--name', opts.imageTag, ...envFlags], { onSpawn: opts.onSpawn }, log);
