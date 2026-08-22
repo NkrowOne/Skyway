@@ -1101,6 +1101,8 @@ const GRACE_MS = 5000;
  * despliegue colgado para siempre.
  */
 const RESTART_WINDOW_MS = 90_000;
+/** Líneas que se rescatan del contenedor fallido antes de borrarlo. */
+const TAIL_LINES = 80;
 /** Cada cuánto se mira si el contenedor murió durante el periodo de gracia. */
 const GRACE_CHECK_MS = 500;
 /** Ventana de asentamiento de cada réplica en la actualización rodante. */
@@ -1254,13 +1256,17 @@ async function appendContainerTail(name: string, log: (l: string) => void): Prom
     const info = await findContainer(name);
     if (!info) return;
     const container = docker.getContainer(name);
-    const buf = (await container.logs({ stdout: true, stderr: true, tail: 20, follow: false })) as unknown as Buffer;
+    // Ochenta y no veinte: el contenedor se borra a continuación y estas líneas
+    // son lo ÚNICO que queda de él. Un traceback de Python se come veinte sin
+    // esfuerzo y deja fuera justo lo de antes —qué arrancó, qué no—, que suele
+    // ser donde está la respuesta.
+    const buf = (await container.logs({ stdout: true, stderr: true, tail: TAIL_LINES, follow: false })) as unknown as Buffer;
     const text = demuxDockerLog(Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf)))
       .split('\n')
       .filter((l) => l.trim())
-      .slice(-20);
+      .slice(-TAIL_LINES);
     if (text.length > 0) {
-      log('— Últimas líneas del contenedor fallido —');
+      log(`— Últimas ${text.length} líneas del contenedor fallido —`);
       for (const line of text) log(`  ${line}`);
       return;
     }

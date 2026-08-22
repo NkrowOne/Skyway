@@ -44,7 +44,7 @@ export const config = {
   // máquina holgada dos despliegues simultáneos ya no hacen cola detrás de uno.
   buildConcurrency: Math.max(1, Number(process.env.BUILD_CONCURRENCY) || defaultBuildConcurrency()),
   trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
-  version: '0.28.1',
+  version: '0.28.2',
 };
 
 export function ensureDataDirs(): void {
