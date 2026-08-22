@@ -276,8 +276,16 @@ function declaredArgs(dockerfile: string): Set<string> {
   return nombres;
 }
 
-/** Construye la imagen: Dockerfile si existe; si no, Nixpacks (como Railway). */
-export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
+/**
+ * Construye la imagen: Dockerfile si existe; si no, Nixpacks (como Railway).
+ *
+ * Devuelve las variables del SERVICIO que de verdad han entrado en el build.
+ * Cuáles son depende del constructor —los `ARG` que declare el Dockerfile, o el
+ * criterio de prefijos públicos con Nixpacks— y quien llama no puede saberlo sin
+ * repetir aquí esa lógica. Sirve para no reutilizar después una imagen que lleva
+ * horneado el valor viejo de alguna de ellas.
+ */
+export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDelBuild: Record<string, string> }> {
   const context = path.resolve(opts.repoDir, opts.rootDir || '.');
   if (!context.startsWith(path.resolve(opts.repoDir))) {
     throw new Error('rootDir fuera del repositorio');
@@ -406,12 +414,13 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
     // `docker history` para siempre.
     const declared = declaredArgs(dockerfile);
     const envArgs: string[] = [];
-    const used: string[] = [];
+    const varsDelBuild: Record<string, string> = {};
     for (const [k, v] of Object.entries(opts.serviceEnv || {})) {
       if (!declared.has(k) || (opts.buildArgs || {})[k] !== undefined) continue;
       envArgs.push('--build-arg', `${k}=${v}`);
-      used.push(k);
+      varsDelBuild[k] = v;
     }
+    const used = Object.keys(varsDelBuild);
     if (used.length > 0) {
       log(`Variables del servicio declaradas con ARG en el Dockerfile: ${used.join(', ')}.`);
     }
@@ -421,7 +430,7 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
       { env: { DOCKER_BUILDKIT: buildkit ? '1' : '0' }, onSpawn: opts.onSpawn },
       log,
     );
-    return;
+    return { varsDelBuild };
   }
 
   if (hayNixpacks) {
@@ -458,7 +467,7 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
       envFlags.push('--env', `${k}=${v}`);
     }
     await spawnLogged('nixpacks', ['build', context, '--name', opts.imageTag, ...envFlags], { onSpawn: opts.onSpawn }, log);
-    return;
+    return { varsDelBuild: paraElBuild };
   }
 
   throw new Error(

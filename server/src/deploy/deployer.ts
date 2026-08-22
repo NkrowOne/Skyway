@@ -13,6 +13,7 @@ import {
   getService,
   lastSuccessfulImage,
   reusableBuild,
+  updateService,
   setDeploymentDiagnosis,
   setEnv,
   successfulDeploymentsBeyond,
@@ -29,6 +30,7 @@ import {
   containerName,
   findContainer,
   imageExists,
+  imageExposedPorts,
   listServiceContainers,
   removeContainer,
   removeImage,
@@ -501,6 +503,9 @@ async function buildGitImage(
   const workDir = path.join(config.buildsDir, deploymentId);
   const token = await resolveCloneToken(project, cfg, log);
   const buildKey = buildKeyFor(service, cfg);
+  // Un solo cálculo del entorno para las dos cosas que lo necesitan: comprobar
+  // que las variables del build siguen valiendo lo mismo, y dárselas al build.
+  const env = resolveServiceEnv(service);
   const forceBuild = getDeployment(deploymentId)?.force_build === 1;
   const onSpawn = (p: any) => {
     job.procs.add(p);
@@ -513,13 +518,17 @@ async function buildGitImage(
   // entero a no hacer nada. Se consulta la cabeza por API (barato) antes de
   // pedir hueco de build, así que ni siquiera ocupa un slot de compilación.
   if (!forceBuild) {
-    const reused = await reuseBuiltImage(service.id, cfg, token, buildKey, log);
+    const reused = await reuseBuiltImage(service.id, cfg, token, buildKey, env, log);
     if (reused) {
       updateDeployment(deploymentId, {
         commit_sha: reused.commit_sha,
         commit_msg: reused.commit_msg,
         build_key: buildKey,
         repo_config: reused.repo_config,
+        // La huella de las variables viaja con la imagen, no con la fila: sin
+        // arrastrarla, el despliegue siguiente compararía contra esta fila —que
+        // no construyó nada— y se quedaría ciego otra vez.
+        build_vars: reused.build_vars ?? null,
       });
       return { image: reused.image_tag!, repoConfig: parseRepoConfig(reused.repo_config) };
     }
@@ -546,7 +555,7 @@ async function buildGitImage(
       repo_config: JSON.stringify(repoConfig),
     });
 
-    await buildImage(
+    const { varsDelBuild } = await buildImage(
       {
         repoDir: workDir,
         rootDir: cfg.rootDir,
@@ -559,7 +568,7 @@ async function buildGitImage(
         serviceBuilder: cfg.builder,
         previousBuilder: builderPrevio,
         nixpacksEnv: nixpacksEnvFor(cfg, repoConfig),
-        serviceEnv: resolveServiceEnv(service),
+        serviceEnv: env,
         // Capas de la última imagen correcta como caché: si el daemon purgó su
         // caché de build (o la imagen se construyó antes de un reinicio), esto
         // evita rehacer install de dependencias y compilaciones ya hechas.
@@ -569,6 +578,7 @@ async function buildGitImage(
       log,
     );
     if (job.canceled) throw new CanceledError();
+    updateDeployment(deploymentId, { build_vars: digestBuildVars(varsDelBuild) });
     log(`Imagen construida: ${image}`);
     return { image, repoConfig };
   } finally {
@@ -583,11 +593,47 @@ async function buildGitImage(
  * el camino es best-effort: si no se puede saber la cabeza o la imagen ya no
  * está en el disco, se compila como siempre.
  */
+/**
+ * Digest de las variables que entraron en un build. Se guarda el hash y no el
+ * valor: la fila del despliegue se sirve por la API del panel, y un `--build-arg`
+ * puede llevar un token. Para saber si algo cambió basta con comparar hashes.
+ */
+function hashVar(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
+}
+
+function digestBuildVars(vars: Record<string, string>): string {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(vars)) out[k] = hashVar(v);
+  return JSON.stringify(out);
+}
+
+/** Variables que entraron en aquel build y hoy valen otra cosa (o ya no están). */
+function changedBuildVars(raw: string | null | undefined, env: Record<string, string>): string[] {
+  if (!raw) return []; // despliegue anterior al registro: se reutiliza como siempre
+  let previo: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return [];
+    previo = parsed as Record<string, unknown>;
+  } catch {
+    return []; // ilegible: no es motivo para recompilar a ciegas
+  }
+  const out: string[] = [];
+  for (const [nombre, hash] of Object.entries(previo)) {
+    if (typeof hash !== 'string') continue;
+    const actual = env[nombre];
+    if (actual === undefined || hashVar(actual) !== hash) out.push(nombre);
+  }
+  return out.sort();
+}
+
 async function reuseBuiltImage(
   serviceId: string,
   cfg: GitConfig,
   token: string | null,
   buildKey: string,
+  env: Record<string, string>,
   log: (l: string) => void,
 ): Promise<DeploymentRow | null> {
   const slug = parseGithubSlug(cfg.repoUrl);
@@ -597,6 +643,19 @@ async function reuseBuiltImage(
   const previous = reusableBuild(serviceId, head, buildKey);
   if (!previous?.image_tag) return null;
   if (!(await imageExists(previous.image_tag))) return null;
+  // La huella no puede saber qué variables entran en un build con Dockerfile: eso
+  // lo deciden los `ARG` que declare el repo, y para leerlos habría que clonar,
+  // que es justo lo que este atajo evita. Se comparan con las que SÍ entraron la
+  // última vez: si una cambió, esa imagen lleva el valor viejo horneado dentro y
+  // reutilizarla sería servir un cambio que el usuario cree haber aplicado.
+  const cambiadas = changedBuildVars(previous.build_vars, env);
+  if (cambiadas.length > 0) {
+    log(
+      `El commit ${head.slice(0, 7)} ya estaba construido, pero ${cambiadas.join(', ')} entró en aquel build y su ` +
+        'valor ha cambiado: la imagen guardada lleva el valor viejo dentro, así que se compila de nuevo.',
+    );
+    return null;
+  }
   log(
     `El commit ${head.slice(0, 7)} ya está construido con esta configuración: se reutiliza la imagen ${previous.image_tag} ` +
       '(sin clonar ni compilar). Usa «Reconstruir» si quieres forzar una compilación limpia.',
@@ -759,6 +818,58 @@ async function runPreDeploy(
   log('Comando previo completado.');
 }
 
+/**
+ * Puerto interno de un servicio de repositorio, contrastado con el EXPOSE de la
+ * imagen recién construida.
+ *
+ * Skyway no puede saber dónde escucha de verdad una aplicación: le pasa el
+ * puerto por `PORT` y confía. Cuando la app no respeta `PORT` y escucha en otro
+ * sitio no pasaba nada visible —el proceso sigue vivo y la validación sin
+ * healthcheck lo da por bueno—, y quedaba un despliegue en verde con un 502 en
+ * el dominio sin una sola línea del log que mencionara el puerto. El EXPOSE de
+ * la imagen es la única pista que hay, y se usa con dos varas muy distintas:
+ *
+ *  - Si alguien eligió el puerto, o el servicio ya ha desplegado bien alguna
+ *    vez, NO se toca: solo se avisa. Cambiárselo a un servicio que va sería
+ *    reabrir lo que ya funciona, y EXPOSE se hereda de la imagen base con tanta
+ *    frecuencia que miente más de lo que acierta.
+ *  - Solo en el PRIMER despliegue de un servicio cuyo puerto nadie eligió y
+ *    cuya imagen expone UN único puerto se adopta ese, se dice en el log y se
+ *    guarda en los ajustes: a partir de ahí ya es una decisión, no una
+ *    suposición, y no se vuelve a tomar sola.
+ */
+async function resolveGitPort(
+  service: ServiceRow,
+  cfg: GitConfig,
+  image: string,
+  log: (l: string) => void,
+): Promise<number> {
+  const configurado = cfg.port || 3000;
+  const expuestos = await imageExposedPorts(image);
+  if (expuestos.length === 0 || expuestos.includes(configurado)) return configurado;
+
+  const nuncaDesplegoBien = lastSuccessfulImage(service.id) === null;
+  const nadieLoEligio = cfg.portAuto === true;
+  if (nadieLoEligio && nuncaDesplegoBien && expuestos.length === 1) {
+    const detectado = expuestos[0];
+    log(
+      `Puerto interno detectado del EXPOSE de la imagen: ${detectado} (estaba el ${configurado} por defecto, que ` +
+        'nadie llegó a elegir). Queda guardado en Ajustes del servicio; cámbialo ahí si tu aplicación escucha en otro.',
+    );
+    // Se persiste para que el panel, las etiquetas de Traefik y los despliegues
+    // siguientes cuenten todos lo mismo, y para que esto deje de decidirse solo.
+    updateService(service.id, service.name, { ...cfg, port: detectado, portAuto: undefined });
+    return detectado;
+  }
+
+  log(
+    `⚠ La imagen declara EXPOSE ${expuestos.join(', ')} y el puerto interno del servicio es ${configurado}. Si tu ` +
+      `aplicación escucha donde dice la imagen y no en ${configurado}, Traefik enrutará a un puerto vacío (502) ` +
+      'aunque el despliegue se dé por bueno. Se respeta el configurado: cámbialo en Ajustes → Puerto interno si hace falta.',
+  );
+  return configurado;
+}
+
 async function deployContainer(
   project: ProjectRow,
   service: ServiceRow,
@@ -832,7 +943,7 @@ async function deployContainer(
     if (internalPort && !env.PORT) env.PORT = String(internalPort);
   } else {
     const cfg = service.config as GitConfig;
-    internalPort = cfg.port || 3000;
+    internalPort = await resolveGitPort(service, cfg, image, log);
     domains = cfg.domains || [];
     hostPort = cfg.hostPort ?? null;
     cpus = cfg.cpus ?? null;
@@ -1044,7 +1155,24 @@ async function deployContainer(
   }
 
   if (domains.length > 0) {
-    log(`Dominios activos: ${domains.join(', ')}`);
+    // Sin puerto interno no hay a dónde enrutar: las etiquetas de Traefik solo
+    // se ponen con puerto, así que no se crea el router ni se pide certificado.
+    // Decirlo aquí es lo único que rompe el fallo silencioso: el usuario ya ha
+    // hecho el DNS y, leyendo «Dominios activos» al final de un despliegue
+    // correcto, da por bueno que funciona.
+    if (!internalPort) {
+      log(
+        `⚠ ${domains.join(', ')}: el dominio NO enruta a este servicio. No tiene puerto interno, y Traefik necesita ` +
+          'saber a qué puerto del contenedor entregar la petición: no se crea la ruta ni se emite certificado, así ' +
+          'que el dominio responderá 404 y con un certificado que no es el suyo.',
+      );
+      log(
+        'Si el servicio sirve HTTP, indica su puerto en Ajustes del servicio → Puerto interno y redespliega. Si es ' +
+          'un worker sin HTTP, quítale el dominio: no lo necesita.',
+      );
+    } else {
+      log(`Dominios activos: ${domains.join(', ')}`);
+    }
   }
   if (hostPort && internalPort) {
     log(`Puerto publicado: ${hostPort} → ${internalPort}`);

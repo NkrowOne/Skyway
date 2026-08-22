@@ -59,6 +59,21 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
         });
       }
 
+      // Aquí se ven los que ya están así, vengan de donde vengan: la importación
+      // de Railway y las pilas llaman a createService directamente y no pasan por
+      // la validación de las rutas, así que sin esto un dominio muerto solo se
+      // descubre abriéndolo en el navegador.
+      if (service.type === 'image' && (cfg.domains?.length ?? 0) > 0 && !cfg.port) {
+        findings.push({
+          id: `domain-no-port-${service.id}`,
+          severity: 'warning',
+          title: `Dominio que no enruta: ${service.name}`,
+          detail: `"${service.name}" tiene dominio (${(cfg.domains as string[]).join(', ')}) pero ningún puerto interno: Traefik no puede saber a qué puerto del contenedor entregar la petición, así que no crea la ruta ni pide certificado. El dominio responde 404 y con un certificado que no es el suyo, aunque el panel lo muestre configurado.`,
+          fix: 'Indica el puerto en el que escucha el servicio en Ajustes del servicio → Puerto interno y redespliega. Si es un worker sin HTTP, quítale el dominio.',
+          ...base,
+        });
+      }
+
       if ((service.type === 'git' || service.type === 'image') && (cfg.domains?.length ?? 0) > 0) {
         servicesWithDomains.push(service.name);
       }

@@ -66,7 +66,10 @@ const createGitSchema = z.object({
   builder: z.enum(['auto', 'dockerfile', 'nixpacks']).optional(),
   startCmd: z.string().trim().optional(),
   buildCmd: z.string().trim().optional(),
-  port: z.coerce.number().int().min(1).max(65535).default(3000),
+  // Sin `.default`: que no venga puerto es un dato —nadie lo ha elegido— y el
+  // valor por defecto lo borraba. Se sigue guardando 3000; lo que se guarda
+  // además es de dónde salió.
+  port: z.coerce.number().int().min(1).max(65535).optional(),
   domains: z.array(z.string().trim().min(1)).default([]),
   autoDeploy: z.boolean().default(true),
 });
@@ -185,6 +188,16 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     let service: ServiceRow;
     if (base.type === 'image') {
       const body = createImageSchema.parse(req.body);
+      // Un dominio sin puerto no enruta a nada y el panel lo enseñaría como
+      // configurado. Se corta en el alta, que es donde no hay nada que romper.
+      // No se infiere un puerto a propósito: un worker sin HTTP es legítimo, y
+      // darle router y certificado por su cuenta sería peor que el error.
+      if (body.domains.length > 0 && !body.port) {
+        return reply.code(400).send({
+          error:
+            'Un servicio con dominio necesita puerto interno: Traefik tiene que saber a qué puerto del contenedor entregar la petición. Indica el puerto en el que escucha la imagen, o crea el servicio sin dominio si es un worker sin HTTP.',
+        });
+      }
       const slug = uniqueSlug(projectId, body.name);
       const cfg: ImageConfig = {
         image: body.image,
@@ -212,7 +225,10 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         builder: body.builder && body.builder !== 'auto' ? body.builder : undefined,
         startCmd: body.startCmd || undefined,
         buildCmd: body.buildCmd || undefined,
-        port: body.port,
+        port: body.port ?? 3000,
+        // Nadie eligió el puerto: el primer despliegue puede corregirlo con el
+        // EXPOSE de la imagen. En cuanto se elija uno a mano, esto desaparece.
+        portAuto: body.port === undefined ? true : undefined,
         domains: body.domains,
         autoDeploy: body.autoDeploy,
         webhookSecret: randomToken(16),
@@ -329,6 +345,27 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
           continue;
         }
         newCfg[key] = normalized;
+      }
+    }
+
+    // Cambiar el puerto a mano cierra la auto-detección: a partir de ahí manda
+    // la persona, aunque la imagen exponga otro. Se compara con el valor viejo
+    // porque Ajustes reenvía el puerto al guardar CUALQUIER campo, y guardar la
+    // rama sin tocar el puerto no es elegirlo.
+    if (body.config?.port != null && body.config.port !== oldCfg.port) newCfg.portAuto = undefined;
+
+    // Se rechaza solo cuando el cambio CREA la combinación dominio-sin-puerto:
+    // un servicio que ya la tiene guardada —los importados de Railway sin puerto
+    // conocido, sobre todo— tiene que poder seguir editándose (CPU, imagen,
+    // volúmenes) sin chocar con un error por un campo que no ha tocado.
+    if (found.service.type === 'image') {
+      const yaEstaba = ((oldCfg.domains ?? []) as string[]).length > 0 && !oldCfg.port;
+      const quedaria = ((newCfg.domains ?? []) as string[]).length > 0 && !newCfg.port;
+      if (quedaria && !yaEstaba) {
+        return reply.code(400).send({
+          error:
+            'Un servicio con dominio necesita puerto interno: Traefik tiene que saber a qué puerto del contenedor entregar la petición. Indica el puerto en el que escucha el servicio, o quítale el dominio si es un worker sin HTTP.',
+        });
       }
     }
 

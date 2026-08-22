@@ -184,6 +184,25 @@ async function planService(
   if (raw.cronSchedule) {
     notes.push(`El servicio tenía un cron en Railway («${raw.cronSchedule}»): Skyway aún no ejecuta servicios programados.`);
   }
+  // La política de reinicio no tiene ajuste propio en el servicio: Skyway solo
+  // la lee del railway.json/toml del repositorio, y el contenedor nace con
+  // «unless-stopped». Eso ya se comporta como ALWAYS, y como ON_FAILURE en lo
+  // que importa —reinicia ante fallo, y si el proceso muere una y otra vez
+  // salta la alerta de bucle de reinicios—, así que avisar de esos dos sería
+  // ruido en cada servicio importado. El único que cambia de comportamiento de
+  // verdad es NEVER: en Railway el servicio se quedaba muerto y aquí revive.
+  const politicaReinicio = raw.restartPolicyType?.trim().toUpperCase() || null;
+  if (politicaReinicio === 'NEVER') {
+    notes.push(
+      'En Railway la política de reinicio era NEVER; en Skyway el contenedor se relanza igualmente (unless-stopped). ' +
+        'Si el servicio no debe revivir al terminar, declara «deploy.restartPolicyType: "NEVER"» en el railway.json del repositorio.',
+    );
+  } else if (politicaReinicio && politicaReinicio !== 'ON_FAILURE' && politicaReinicio !== 'ALWAYS') {
+    notes.push(
+      `En Railway la política de reinicio era «${raw.restartPolicyType}», que Skyway no sabe traducir: el contenedor ` +
+        'se relanza con «unless-stopped». Puedes fijarla en el railway.json del repositorio (deploy.restartPolicyType).',
+    );
+  }
 
   if (raw.image) {
     const template = matchTemplate(raw.image);
@@ -691,6 +710,10 @@ export async function runRailwayImport(
         healthcheckPath: planned.healthcheckPath ?? null,
         replicas: planned.replicas,
         port: planned.port || 3000,
+        // Railway no dijo a qué puerto enruta su dominio: el 3000 es una
+        // suposición nuestra, y el primer despliegue puede corregirla con el
+        // EXPOSE de la imagen (la nota del informe ya lo advierte).
+        portAuto: planned.port ? undefined : true,
         domains: planned.domains,
         webhookSecret: randomToken(16),
         volumes: volumes.length ? volumes : undefined,

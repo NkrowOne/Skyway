@@ -35,6 +35,13 @@ export interface GitConfig {
    */
   buildCmd?: string;
   port: number;
+  /**
+   * El puerto de arriba lo puso Skyway por defecto: nadie lo eligió. Mientras
+   * siga en `true` —y solo hasta el primer despliegue correcto— el desplegador
+   * puede corregirlo con el EXPOSE de la imagen. Ausente significa que lo
+   * eligió una persona, o que el servicio es anterior a esto: no se toca jamás.
+   */
+  portAuto?: boolean;
   buildArgs?: Record<string, string>;
   domains: string[];
   hostPort?: number | null;
@@ -158,6 +165,13 @@ export interface DeploymentRow {
   build_key: string | null;
   /** Config-as-code de Railway del repo en ese commit (JSON), para no perderla al reutilizar. */
   repo_config: string | null;
+  /**
+   * Digest por variable de las que llegaron al build (JSON `{NOMBRE: hash}`).
+   * Con Dockerfile, cuáles llegan depende de los `ARG` del repo y no se sabe sin
+   * clonar; con esto se puede comprobar al reutilizar que ninguna ha cambiado.
+   * Opcional: las consultas que no lo necesitan no lo seleccionan.
+   */
+  build_vars?: string | null;
   /** 1 = reconstruir sin reutilizar imagen, aunque el commit ya esté construido. */
   force_build: number;
   created_at: number;

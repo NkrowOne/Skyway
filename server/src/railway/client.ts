@@ -167,15 +167,29 @@ export async function getRailwayProject(
   projectId: string,
   environmentId?: string,
 ): Promise<RailwayProjectDetail> {
+  // Escalones de la consulta, del que más datos trae al que menos: GraphQL
+  // rechaza la petición ENTERA si un campo ya no existe, así que cada escalón
+  // renuncia a lo que puede faltar antes que quedarse sin poder importar nada.
+  // El de en medio es EXACTAMENTE la consulta que venía funcionando: si «branch»
+  // no existiera, el importador se comporta igual que siempre.
+  const escalones: [string, string][] = [
+    [`branch\n${INSTANCE_EXTRA_FIELDS}`, 'targetPort'],
+    [INSTANCE_EXTRA_FIELDS, 'targetPort'],
+    ['', ''],
+  ];
   let data: any;
-  try {
-    data = await gql<any>(token, projectQuery(INSTANCE_EXTRA_FIELDS, 'targetPort'), { id: projectId });
-  } catch (err) {
-    // La API cambió y alguno de los campos extra ya no existe: se reintenta con
-    // lo imprescindible, que es lo que lleva funcionando desde el principio.
-    if (!(err instanceof RailwayError)) throw err;
-    data = await gql<any>(token, projectQuery('', ''), { id: projectId });
+  let ultimoError: RailwayError | null = null;
+  for (const [extras, domainExtras] of escalones) {
+    try {
+      data = await gql<any>(token, projectQuery(extras, domainExtras), { id: projectId });
+      ultimoError = null;
+      break;
+    } catch (err) {
+      if (!(err instanceof RailwayError)) throw err;
+      ultimoError = err;
+    }
   }
+  if (ultimoError) throw ultimoError;
 
   const project = data?.project;
   if (!project) throw new RailwayError('Proyecto no encontrado en Railway (¿ID correcto y token con acceso?)');

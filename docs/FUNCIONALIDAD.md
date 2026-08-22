@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.30.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.31.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -272,7 +272,7 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
 | `project_vars` | `(project_id, key)` → `value` — variables compartidas |
-| `deployments` | `status`, `trigger`, `commit_sha/msg`, `image_tag`, `logs`, `error`, `diagnosis`, `build_key` (huella de las entradas de compilación, para reutilizar imagen), `repo_config` (config-as-code del repo en ese commit, JSON), `force_build` |
+| `deployments` | `status`, `trigger`, `commit_sha/msg`, `image_tag`, `logs`, `error`, `diagnosis`, `build_key` (huella de las entradas de compilación, para reutilizar imagen), `repo_config` (config-as-code del repo en ese commit, JSON), `build_vars` (digest `{NOMBRE: hash}` de las variables que entraron en ese build; nunca el valor), `force_build` |
 | `audit_log` | `ts`, `actor`, `action`, `target_*`, `detail`, `ip` |
 | `alerts` | `severity`, `type`, `title`, `message`, `explanation`, `dedupe_key`, `resolved_at`, `read_at` |
 | `uptime_hourly` | `(service_id, hour)` → `up`, `total` — histórico de disponibilidad |
@@ -285,7 +285,7 @@ del servicio, **lo que está saliendo va por encima del activo**.
 comparten `domains`, `hostPort`, `cpus`, `memoryMb`, `diskMb`, `healthcheckPath`,
 `volumes`, `replicas`; git añade `repoUrl`, `githubInstallationId`, `connectorId`,
 `branch`, `rootDir`, `dockerfilePath`, `builder`, `startCmd`, `buildCmd`, `port`,
-`buildArgs`, `webhookSecret`, `autoDeploy`; database añade `template`, `version`,
+`portAuto`, `buildArgs`, `webhookSecret`, `autoDeploy`; database añade `template`, `version`,
 `backupSchedule`, `backupRetention`.
 
 ---
@@ -372,6 +372,7 @@ aplican **en caliente**.
 | `repoUrl`, `branch`, `rootDir`, `dockerfilePath`, `startCmd` | ✓ | — | — | build del repo |
 | `buildCmd` | ✓ | — | — | comando de compilación con Nixpacks (equivale al «Build Command» de Railway) |
 | `builder` | ✓ | — | — | `auto` (def.), `dockerfile` o `nixpacks`. Elegirlo manda sobre `railway.json` (§5.3) |
+| `portAuto` | ✓ | — | — | interno: marca que el puerto lo puso Skyway y nadie lo eligió. Ver «Puerto interno» abajo |
 | `githubInstallationId` | ✓ | — | — | instalación de la GitHub App con la que clonar (§5.4) |
 | `connectorId` | ✓ | — | — | conector con token personal para clonar (null = token global) |
 | `buildArgs` | ✓ | — | — | `--build-arg` |
@@ -534,6 +535,35 @@ Si el fichero pide Nixpacks, hay Dockerfile y `nixpacks` no está instalado en e
 servidor, se construye con el Dockerfile y se avisa. Elegido a mano, en cambio,
 el despliegue falla con el motivo: no se entrega en silencio una imagen distinta
 de la pedida.
+
+**Puerto interno.** Skyway inyecta `PORT` y confía en que la aplicación lo
+respete; cuando no lo hace y escucha en otro sitio, el proceso sigue vivo, el
+despliegue sale verde y el dominio da 502. Desde la v0.31 el desplegador
+contrasta el puerto configurado con el `EXPOSE` de la imagen construida:
+
+- Si no coinciden, **siempre se avisa en el log** y el diagnóstico de un
+  healthcheck fallido señala el desajuste concreto.
+- Solo se **adopta** el de la imagen en el primer despliegue de un servicio cuyo
+  puerto nadie eligió (`portAuto`), que nunca ha desplegado bien y cuya imagen
+  expone un único puerto. Se deja escrito en el log y se guarda en los ajustes:
+  a partir de ahí es una decisión, no una suposición.
+- Un puerto elegido a mano, o un servicio que ya despliega bien, **no se toca
+  nunca**. `EXPOSE` se hereda de la imagen base y miente a menudo.
+
+**Dominio sin puerto.** Un servicio de imagen puede no tener puerto interno (así
+se declara un worker), pero entonces no se le pueden poner etiquetas de Traefik:
+no hay router, no hay certificado y el dominio responde 404. Antes se guardaba
+sin más y el log decía «Dominios activos». Ahora la API rechaza crear esa
+combinación, el log del despliegue la explica, el panel avisa junto al dominio y
+el escáner de seguridad la marca en los servicios que ya la tenían.
+
+**Variables que entraron en el build.** Skyway reutiliza la imagen cuando el
+commit y la huella de compilación no han cambiado, sin llegar a clonar. Con
+Dockerfile, qué variables entran lo deciden los `ARG` que declare el repo, y eso
+no se sabe sin clonar: por eso cada despliegue guarda en `build_vars` un digest
+de las que consumió. Al reutilizar se comparan; si alguna cambió, se compila de
+nuevo y se dice cuál. Los despliegues anteriores a este registro no tienen
+`build_vars` y se reutilizan como siempre: actualizar Skyway no recompila nada.
 
 ### 5.4 Credenciales de GitHub
 

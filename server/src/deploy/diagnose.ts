@@ -15,6 +15,25 @@ const has = (haystack: string, ...needles: string[]) => {
 };
 
 /**
+ * Qué mirar cuando la validación de salud falla. Si en el log consta que la
+ * imagen expone otro puerto, eso va primero: explica una sonda que no responde
+ * nunca aunque la aplicación esté perfectamente viva, y es de lo que más cuesta
+ * ver a ojo.
+ */
+function healthcheckFix(_error: string, logs: string): string {
+  const base =
+    'Mira las "últimas líneas del contenedor fallido" en este log: ahí está el error de tu app. Comprueba también ' +
+    'que la ruta de healthcheck existe, responde 2xx sin autenticación y que el puerto interno es el correcto.';
+  const desajuste = /declara EXPOSE ([\d, ]+) y el puerto interno del servicio es (\d+)/.exec(logs);
+  if (!desajuste) return base;
+  return (
+    `Arriba en este log ya se avisa: la imagen declara EXPOSE ${desajuste[1].trim()} y el servicio está configurado ` +
+    `en el ${desajuste[2]}. Si tu aplicación escucha donde dice la imagen, la sonda va a un puerto donde no hay ` +
+    `nadie y no responderá nunca. Corrige «Puerto interno» en Ajustes del servicio. ${base}`
+  );
+}
+
+/**
  * Qué mirar cuando el proceso sale con 0. Si en el log consta que se cambió de
  * constructor, eso va primero: es la causa que más veces explica «falla algo
  * que llevaba meses funcionando» sin que nadie tocara el repo.
@@ -224,7 +243,7 @@ const RULES: Rule[] = [
     test: (e) => has(e, 'no pasó la validación', 'no respondió 2xx', 'Se restauró la versión anterior', 'Se mantuvo la versión anterior'),
     title: 'La versión nueva no superó la validación de salud',
     cause: 'Skyway arrancó la versión nueva y la comprobó antes de retirar la anterior: o el proceso murió al arrancar, o el healthcheck no respondió 2xx a tiempo. La versión anterior sigue sirviendo.',
-    fix: 'Mira las "últimas líneas del contenedor fallido" en este log: ahí está el error de tu app. Comprueba también que la ruta de healthcheck existe, responde 2xx sin autenticación y que el puerto interno es el correcto.',
+    fix: healthcheckFix,
   },
   {
     id: 'container-died',

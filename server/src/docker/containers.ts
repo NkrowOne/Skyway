@@ -170,6 +170,32 @@ function isShellEntrypoint(entry: string[]): boolean {
   return ['sh', 'bash', 'ash', 'dash', 'zsh', 'busybox'].includes(bin);
 }
 
+/**
+ * Puertos TCP que la imagen declara con EXPOSE: los suyos y los que hereda de
+ * su imagen base, de menor a mayor.
+ *
+ * Es una PISTA, no una verdad. EXPOSE es documentación —Docker no comprueba que
+ * haya nadie escuchando ahí— y se hereda: un multi-stage que acaba en
+ * `FROM nginx` arrastra su 80 aunque la aplicación sirva en otro sitio, y una
+ * imagen de Nixpacks normalmente no expone nada. Por eso esto solo devuelve el
+ * dato y decide quien lo pide; jamás se le cambia el puerto por su cuenta a un
+ * servicio que ya despliega bien.
+ */
+export async function imageExposedPorts(image: string): Promise<number[]> {
+  try {
+    const info = await docker.getImage(image).inspect();
+    const expuestos = (info.Config?.ExposedPorts || {}) as Record<string, unknown>;
+    return Object.keys(expuestos)
+      .filter((clave) => !clave.endsWith('/udp'))
+      .map((clave) => Number(clave.split('/')[0]))
+      .filter((p) => Number.isInteger(p) && p > 0 && p < 65536)
+      .sort((a, b) => a - b);
+  } catch {
+    // Imagen no inspeccionable: sin pista, se sigue con el puerto configurado.
+    return [];
+  }
+}
+
 export async function imageExists(tag: string): Promise<boolean> {
   try {
     await docker.getImage(tag).inspect();
