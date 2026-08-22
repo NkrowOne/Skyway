@@ -113,6 +113,15 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useLocalStorage<string[]>(`skyway.dbHistory.${serviceId}`, []);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Altura al contenido, con tope: a partir de ahí el propio textarea scrollea
+  // en vez de empujar los resultados fuera de la pantalla.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 420)}px`;
+  }, [query]);
   const historyRef = useRef<HTMLDivElement>(null);
 
   const overview = useQuery({
@@ -291,11 +300,12 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
             }
           }}
           spellCheck={false}
-          rows={4}
           placeholder={engine ? PLACEHOLDER[engine] : ''}
-          // En móvil sin tirador de redimensión (era un «slider» táctil incómodo y
-          // confuso): altura fija cómoda. En escritorio sí se puede estirar.
-          className="w-full resize-none bg-transparent px-3.5 py-3 font-mono text-xs leading-relaxed text-txt outline-none placeholder:text-subtle focus-visible:[outline:none] sm:resize-y"
+          // Crece con la consulta en vez de quedarse en cuatro líneas: una
+          // consulta con varios JOIN ocupa seis o siete y había que escribirla
+          // mirando por una rendija. El tirador de redimensión sobra: sin él no
+          // hay «slider» táctil incómodo en móvil y aquí ya no hace falta.
+          className="min-h-[5.5rem] w-full resize-none bg-transparent px-3.5 py-3 font-mono text-xs leading-relaxed text-txt outline-none placeholder:text-subtle focus-visible:[outline:none]"
         />
         <div className="flex flex-wrap items-center gap-2 border-t border-line px-2.5 py-2">
           <Button size="sm" onClick={() => execute()} loading={run.isPending} disabled={!query.trim()}>
