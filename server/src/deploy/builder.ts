@@ -199,6 +199,12 @@ export interface BuildOpts {
    * navegador. Cómo llegan depende del constructor (ver buildImage).
    */
   serviceEnv?: Record<string, string>;
+  /**
+   * Constructor del último despliegue correcto: el valor registrado, 'LEGACY'
+   * si es anterior a que Skyway leyera railway.json, o null si nunca desplegó
+   * bien. Manda sobre el del fichero cuando cambiarlo rompería lo que ya va.
+   */
+  previousBuilder?: string | null;
 }
 
 /** ¿Existe la imagen en el daemon local? (para no pasar un --cache-from muerto). */
@@ -298,7 +304,23 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
       `La configuración del repositorio pide construir con Dockerfile, pero no hay ninguno en ${path.relative(opts.repoDir, dockerfile)}.`,
     );
   }
-  if (forceNixpacks && fs.existsSync(dockerfile)) {
+  // Un servicio que ya despliega bien no cambia de constructor por su cuenta.
+  // Cambiarlo cambia el comando de arranque y el entorno entero —otra base,
+  // otra versión de lenguaje, otras dependencias de sistema—, y eso rompe cosas
+  // que llevaban meses en pie sin que nadie tocara el repositorio. La
+  // compatibilidad con Railway es para decidir lo que aún no está decidido, no
+  // para reabrir lo que ya funciona.
+  const previo = (opts.previousBuilder || '').toUpperCase();
+  const yaIbaConDockerfile = previo === 'LEGACY' || previo === 'DOCKERFILE';
+  let respetarDockerfile = false;
+  if (forceNixpacks && fs.existsSync(dockerfile) && yaIbaConDockerfile) {
+    respetarDockerfile = true;
+    log(
+      `⚠ La configuración pide ${forced}, pero el último despliegue correcto se construyó con el Dockerfile del ` +
+        'repositorio: se mantiene ese, para no cambiarle el arranque a un servicio que va. Si de verdad quieres ' +
+        'Nixpacks, quita el Dockerfile del repositorio.',
+    );
+  } else if (forceNixpacks && fs.existsSync(dockerfile)) {
     log(
       `⚠ El repositorio tiene Dockerfile, pero su configuración pide el constructor ${forced}: se ignora el Dockerfile ` +
         `y se construye con Nixpacks. El comando de arranque será el que infiera Nixpacks, NO el CMD del Dockerfile. ` +
@@ -306,7 +328,7 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
     );
   }
 
-  if (fs.existsSync(dockerfile) && !forceNixpacks) {
+  if (fs.existsSync(dockerfile) && (!forceNixpacks || respetarDockerfile)) {
     log(`Construyendo con Dockerfile (${path.relative(opts.repoDir, dockerfile)})...`);
     const buildkit = await buildxAvailable();
     if (!buildkit) {

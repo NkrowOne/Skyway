@@ -530,9 +530,10 @@ async function buildGitImage(
     );
     if (job.canceled) throw new CanceledError();
     const repoConfig = readRailwayRepoConfig(workDir, cfg.rootDir, log);
+    let builderPrevio: string | null = null;
     if (hasRailwayConfig(repoConfig) && repoConfig.source) {
       log(`Configuración del repositorio leída de ${repoConfig.source} (config-as-code de Railway).`);
-      warnBuilderChange(service.id, repoConfig, log);
+      builderPrevio = previousBuilder(service.id);
     }
     updateDeployment(deploymentId, {
       commit_sha: info.commitSha,
@@ -551,6 +552,7 @@ async function buildGitImage(
         imageTag: image,
         buildArgs: cfg.buildArgs,
         builder: repoConfig.builder,
+        previousBuilder: builderPrevio,
         nixpacksEnv: nixpacksEnvFor(cfg, repoConfig),
         serviceEnv: resolveServiceEnv(service),
         // Capas de la última imagen correcta como caché: si el daemon purgó su
@@ -607,33 +609,19 @@ async function resolveCloneToken(project: ProjectRow, cfg: GitConfig, log: (l: s
 
 /** Config-as-code guardada en el despliegue (JSON), tolerante a basura. */
 /**
- * Avisa si este despliegue va a construirse de otra forma que el último que
- * funcionó.
+ * Con qué se construyó el último despliegue que funcionó.
  *
- * Cambiar de constructor cambia el comando de arranque: el del Dockerfile no es
- * el que infiere Nixpacks. Un servicio que llevaba meses bien puede empezar a
- * fallar sin que nadie haya tocado el repo, solo porque Skyway pasó a respetar
- * el `builder` de railway.json. Sin decirlo, la única pista es una línea suelta
- * entre cien de log, y el usuario ve «falla algo que está funcionando».
+ * Devuelve el constructor que quedó registrado, `'LEGACY'` si hubo un
+ * despliegue correcto de cuando Skyway aún no leía railway.json —entonces la
+ * regla era «Dockerfile si lo hay»— o null si el servicio nunca ha desplegado
+ * bien. Lo usa buildImage para no cambiarle el constructor por su cuenta a un
+ * servicio que ya va: cambiarlo cambia el comando de arranque y el entorno
+ * entero, y eso rompe cosas que llevaban meses en pie.
  */
-function warnBuilderChange(
-  serviceId: string,
-  repoConfig: RailwayRepoConfig,
-  log: (l: string) => void,
-): void {
-  const ahora = (repoConfig.builder || '').toUpperCase();
-  if (!ahora) return;
+function previousBuilder(serviceId: string): string | null {
   const previo = listDeployments(serviceId, 25).find((d) => d.status === 'success');
-  if (!previo) return;
-  const antes = (parseRepoConfig(previo.repo_config)?.builder || '').toUpperCase();
-  if (antes === ahora) return;
-  log(
-    antes
-      ? `⚠ El último despliegue correcto se construyó con ${antes} y este usa ${ahora}: el comando de arranque puede no ser el mismo.`
-      : `⚠ El último despliegue correcto es anterior a que Skyway leyera ${repoConfig.source}, así que se construyó ` +
-        `con el Dockerfile del repo. Este usa ${ahora}, que infiere su propio comando de arranque: si la app no arranca, ` +
-        `es lo primero que hay que mirar.`,
-  );
+  if (!previo) return null;
+  return (parseRepoConfig(previo.repo_config)?.builder || '').toUpperCase() || 'LEGACY';
 }
 
 function parseRepoConfig(raw: string | null): RailwayRepoConfig | null {
