@@ -211,6 +211,34 @@ function localImageExists(tag: string): Promise<boolean> {
 }
 
 /**
+ * Prefijos de las variables que sí tiene sentido dar al constructor.
+ *
+ * Todas comparten una propiedad: por convención de la herramienta que las lee,
+ * su valor acaba en el bundle que descarga el navegador. Es decir, son públicas
+ * por diseño, y grabarlas en la imagen no revela nada que no fuera a publicarse
+ * igualmente. Lo demás se queda fuera.
+ */
+const BUILD_TIME_PREFIXES = [
+  'NIXPACKS_', // configuración del propio constructor
+  'VITE_',
+  'NEXT_PUBLIC_',
+  'REACT_APP_',
+  'NUXT_PUBLIC_',
+  'GATSBY_',
+  'EXPO_PUBLIC_',
+  'ASTRO_PUBLIC_',
+  'VUE_APP_',
+  'PUBLIC_', // SvelteKit
+];
+
+/** Variables sueltas, sin prefijo, que cambian el resultado del build. */
+const BUILD_TIME_NAMES = ['NODE_ENV', 'BUN_ENV'];
+
+export function isBuildTimeVar(name: string): boolean {
+  return BUILD_TIME_NAMES.includes(name) || BUILD_TIME_PREFIXES.some((p) => name.startsWith(p));
+}
+
+/**
  * Nombres declarados con `ARG` en un Dockerfile. Se leen a mano en vez de con
  * un parser: solo hace falta el nombre, y la forma de la instrucción es
  * `ARG NOMBRE[=valor]`, una por línea, con continuaciones poco frecuentes.
@@ -326,10 +354,31 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
     // Las NIXPACKS_* van después de los build-args para que ganen: son la
     // traducción del buildCommand de Railway y deben mandar sobre un homónimo
     // que el usuario tuviera puesto como argumento de compilación.
-    // Nixpacks recibe las variables del servicio, como en Railway: es lo que
-    // permite que un front hornee su API en el bundle, y también que
-    // NIXPACKS_NODE_VERSION funcione puesta como variable normal.
-    for (const [k, v] of Object.entries({ ...opts.serviceEnv, ...opts.buildArgs, ...opts.nixpacksEnv })) {
+    // A Nixpacks solo van las variables que de verdad hacen falta al construir,
+    // NO todas: Nixpacks las escribe como ARG y ENV en el Dockerfile que
+    // genera, así que cualquier cosa que se le pase queda grabada en las capas
+    // de la imagen y en `docker history` para siempre. Un token de bot o una
+    // clave de cifrado no tienen por qué acabar ahí.
+    //
+    // El criterio es el de las propias herramientas: las variables que se
+    // hornean en un bundle son públicas por diseño y llevan prefijo para
+    // decirlo. El resto es de ejecución y llega al contenedor, no al build.
+    const paraElBuild: Record<string, string> = {};
+    const fuera: string[] = [];
+    for (const [k, v] of Object.entries(opts.serviceEnv || {})) {
+      if (isBuildTimeVar(k)) paraElBuild[k] = v;
+      else fuera.push(k);
+    }
+    if (Object.keys(paraElBuild).length > 0) {
+      log(`Variables del servicio disponibles en el build: ${Object.keys(paraElBuild).sort().join(', ')}.`);
+    }
+    if (fuera.length > 0) {
+      log(
+        `${fuera.length} variables más quedan solo para la ejecución: Nixpacks las grabaría en la imagen. Si alguna ` +
+          'hace falta al construir y no es secreta, añádela como argumento de compilación del servicio.',
+      );
+    }
+    for (const [k, v] of Object.entries({ ...paraElBuild, ...opts.buildArgs, ...opts.nixpacksEnv })) {
       envFlags.push('--env', `${k}=${v}`);
     }
     await spawnLogged('nixpacks', ['build', context, '--name', opts.imageTag, ...envFlags], { onSpawn: opts.onSpawn }, log);
