@@ -474,6 +474,10 @@ function buildKeyFor(service: ServiceRow, cfg: GitConfig): string {
         cfg.rootDir || '.',
         dockerfile,
         cfg.buildCmd || '',
+        // Cambiar de constructor cambia la imagen entera: sin esto, pasar de
+        // Dockerfile a Nixpacks reutilizaría la imagen del Dockerfile y el
+        // ajuste parecería no hacer nada.
+        cfg.builder || 'auto',
         // Nixpacks hornea el comando de arranque en la imagen (NIXPACKS_START_CMD):
         // cambiarlo tiene que invalidar la caché o se reutiliza una imagen con el viejo.
         cfg.startCmd || '',
@@ -552,6 +556,7 @@ async function buildGitImage(
         imageTag: image,
         buildArgs: cfg.buildArgs,
         builder: repoConfig.builder,
+        serviceBuilder: cfg.builder,
         previousBuilder: builderPrevio,
         nixpacksEnv: nixpacksEnvFor(cfg, repoConfig),
         serviceEnv: resolveServiceEnv(service),

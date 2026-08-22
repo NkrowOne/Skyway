@@ -634,6 +634,8 @@ export interface GitConfig {
   connectorId?: string | null;
   rootDir?: string;
   dockerfilePath?: string;
+  /** Constructor elegido a mano; ausente = lo decide Skyway. */
+  builder?: 'auto' | 'dockerfile' | 'nixpacks';
   startCmd?: string;
   port: number;
   buildArgs?: Record<string, string>;

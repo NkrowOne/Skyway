@@ -19,6 +19,14 @@ export interface GitConfig {
   githubInstallationId?: string | null;
   rootDir?: string;
   dockerfilePath?: string;
+  /**
+   * Constructor elegido a mano para este servicio. Ausente o `'auto'` = lo
+   * decide Skyway (lo que declare la config-as-code del repositorio y, si no
+   * dice nada, Dockerfile si lo hay y Nixpacks si no). Elegirlo aquí manda
+   * sobre el fichero del repositorio: es la forma de tener un repo que sirve
+   * para las dos cosas —Docker y Railway— y decidir en Skyway con cuál va.
+   */
+  builder?: 'auto' | 'dockerfile' | 'nixpacks';
   startCmd?: string;
   /**
    * Comando de compilación cuando se construye con Nixpacks (sin Dockerfile).

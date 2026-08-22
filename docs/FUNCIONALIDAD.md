@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.29.1. Si el código y este documento discrepan,
+> Versión de este documento: 0.30.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -284,8 +284,8 @@ del servicio, **lo que está saliendo va por encima del activo**.
 `config` de servicio (ver `types.ts`): `GitConfig`, `DatabaseConfig`, `ImageConfig`
 comparten `domains`, `hostPort`, `cpus`, `memoryMb`, `diskMb`, `healthcheckPath`,
 `volumes`, `replicas`; git añade `repoUrl`, `githubInstallationId`, `connectorId`,
-`branch`, `rootDir`, `dockerfilePath`, `startCmd`, `buildCmd`, `port`, `buildArgs`,
-`webhookSecret`, `autoDeploy`; database añade `template`, `version`,
+`branch`, `rootDir`, `dockerfilePath`, `builder`, `startCmd`, `buildCmd`, `port`,
+`buildArgs`, `webhookSecret`, `autoDeploy`; database añade `template`, `version`,
 `backupSchedule`, `backupRetention`.
 
 ---
@@ -371,6 +371,7 @@ aplican **en caliente**.
 | --- | --- | --- | --- | --- |
 | `repoUrl`, `branch`, `rootDir`, `dockerfilePath`, `startCmd` | ✓ | — | — | build del repo |
 | `buildCmd` | ✓ | — | — | comando de compilación con Nixpacks (equivale al «Build Command» de Railway) |
+| `builder` | ✓ | — | — | `auto` (def.), `dockerfile` o `nixpacks`. Elegirlo manda sobre `railway.json` (§5.3) |
 | `githubInstallationId` | ✓ | — | — | instalación de la GitHub App con la que clonar (§5.4) |
 | `connectorId` | ✓ | — | — | conector con token personal para clonar (null = token global) |
 | `buildArgs` | ✓ | — | — | `--build-arg` |
@@ -500,7 +501,7 @@ después en la raíz del repo; se admiten JSON y un subconjunto de TOML.
 
 | Clave | Efecto en Skyway |
 | --- | --- |
-| `build.builder` | `DOCKERFILE` exige Dockerfile; `NIXPACKS`/`RAILPACK` lo ignoran aunque exista |
+| `build.builder` | `DOCKERFILE` exige Dockerfile; `NIXPACKS`/`RAILPACK` lo ignoran aunque exista. Ver más abajo la precedencia |
 | `build.buildCommand` | `NIXPACKS_BUILD_CMD` al construir sin Dockerfile |
 | `build.dockerfilePath` | Dockerfile alternativo (también con la variable `RAILWAY_DOCKERFILE_PATH`, que va por delante) |
 | `deploy.startCommand` | comando de arranque del contenedor |
@@ -514,6 +515,25 @@ después en la raíz del repo; se admiten JSON y un subconjunto de TOML.
 La configuración leída se guarda con el despliegue (`deployments.repo_config`),
 de modo que reutilizar una imagen o hacer rollback recupera **la configuración
 de ese commit**, no la del último.
+
+**Qué constructor se usa**, de más prioridad a menos:
+
+1. El ajuste `builder` del servicio (Ajustes → Constructor), si no es `auto`.
+   Es una decisión explícita y gana a todo lo demás, incluido `railway.json`.
+   Sirve para tener un repo válido para Docker y para Railway a la vez y
+   decidir en Skyway con cuál se construye, sin tocar el repositorio.
+2. `build.builder` del fichero de configuración del repo, **salvo** que pida
+   Nixpacks sobre un servicio cuyo último despliegue correcto se hizo con el
+   Dockerfile: ahí se mantiene el Dockerfile y se avisa en el log. Cambiar de
+   constructor cambia el comando de arranque y el entorno entero, y eso no debe
+   pasarle solo por añadir un fichero a un servicio que ya va. Para forzarlo,
+   se elige a mano (punto 1).
+3. La regla de siempre: Dockerfile si lo hay, Nixpacks si no.
+
+Si el fichero pide Nixpacks, hay Dockerfile y `nixpacks` no está instalado en el
+servidor, se construye con el Dockerfile y se avisa. Elegido a mano, en cambio,
+el despliegue falla con el motivo: no se entrega en silencio una imagen distinta
+de la pedida.
 
 ### 5.4 Credenciales de GitHub
 
