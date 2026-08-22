@@ -189,6 +189,13 @@ export interface BuildOpts {
    * usa el Dockerfile si está y Nixpacks si no.
    */
   builder?: string | null;
+  /**
+   * Constructor elegido a mano en los ajustes del servicio ('dockerfile' o
+   * 'nixpacks'). Manda sobre todo lo demás: sobre el fichero del repositorio y
+   * sobre la regla de no tocarle el constructor a un servicio que ya va. Es una
+   * decisión de quien administra Skyway, no una inferencia.
+   */
+  serviceBuilder?: string | null;
   /** Variables para Nixpacks (NIXPACKS_BUILD_CMD y compañía). */
   nixpacksEnv?: Record<string, string>;
   onSpawn?: (p: any) => void;
@@ -285,10 +292,37 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
     argFlags.push('--build-arg', `${k}=${v}`);
   }
 
-  // El constructor declarado en railway.json/toml manda, como en Railway: un
-  // repo con Dockerfile pero `builder: NIXPACKS` se construye con Nixpacks.
-  const forced = (opts.builder || '').toUpperCase();
+  const hayDockerfile = fs.existsSync(dockerfile);
+  // Un Dockerfile que se ha pedido por su nombre y no está es un error, no una
+  // invitación a construir otra cosa: quien escribe `dockerfilePath` sabe con
+  // qué quiere construir, y caer a Nixpacks sin decirlo entrega una imagen que
+  // no es la que se pidió (y encima parecería que el ajuste no hace nada).
+  const dockerfilePedido = !!opts.dockerfilePath && opts.dockerfilePath !== 'Dockerfile';
+  if (dockerfilePedido && !hayDockerfile) {
+    throw new Error(
+      `No existe el Dockerfile indicado (${path.relative(opts.repoDir, dockerfile)}). Corrige la ruta en los ajustes ` +
+        'del servicio, en railway.json o en RAILWAY_DOCKERFILE_PATH.',
+    );
+  }
+
+  // Precedencia del constructor, de más a menos: lo elegido a mano en los
+  // ajustes del servicio, lo que declare la config-as-code del repositorio y,
+  // en último lugar, la regla de siempre (Dockerfile si lo hay, Nixpacks si no).
+  // Así un mismo repo sirve para Docker y para Railway y es Skyway quien decide
+  // con cuál se construye, sin tener que tocar el repositorio.
+  const elegido = (opts.serviceBuilder || '').toLowerCase();
+  const aMano = elegido === 'dockerfile' || elegido === 'nixpacks';
+  const delFichero = (opts.builder || '').toUpperCase();
+  const forced = aMano ? elegido.toUpperCase() : delFichero;
   const forceNixpacks = forced === 'NIXPACKS' || forced === 'RAILPACK';
+  const origen = aMano ? 'los ajustes del servicio' : 'la configuración del repositorio';
+
+  if (aMano) {
+    log(`Constructor fijado en los ajustes del servicio: ${elegido === 'dockerfile' ? 'Dockerfile' : 'Nixpacks'}.`);
+    if (delFichero && delFichero !== forced) {
+      log(`ℹ El repositorio declara «${opts.builder}», pero manda lo elegido en Skyway.`);
+    }
+  }
   // Railpack es el constructor por defecto de Railway desde 2025 e infiere
   // versiones y pasos distintos, y su railpack.json no se lee. Construir con
   // Nixpacks es la mejor aproximación que hay, pero decirlo importa: si algo
@@ -296,12 +330,23 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
   if (forced === 'RAILPACK') {
     log('ℹ La configuración pide el constructor RAILPACK; Skyway construye con Nixpacks, que es parecido pero no idéntico (railpack.json no se lee).');
   }
-  if (forced && forced !== 'NIXPACKS' && forced !== 'RAILPACK' && forced !== 'DOCKERFILE') {
+  if (!aMano && forced && forced !== 'NIXPACKS' && forced !== 'RAILPACK' && forced !== 'DOCKERFILE') {
     log(`⚠ Constructor «${opts.builder}» no reconocido: se ignora y se decide como siempre (Dockerfile si lo hay, si no Nixpacks).`);
   }
-  if (forced === 'DOCKERFILE' && !fs.existsSync(dockerfile)) {
+  if (forced === 'DOCKERFILE' && !hayDockerfile) {
     throw new Error(
-      `La configuración del repositorio pide construir con Dockerfile, pero no hay ninguno en ${path.relative(opts.repoDir, dockerfile)}.`,
+      `Se pide construir con Dockerfile (${origen}), pero no hay ninguno en ${path.relative(opts.repoDir, dockerfile)}.`,
+    );
+  }
+
+  const hayNixpacks = await nixpacksAvailable();
+  // Si se ha elegido Nixpacks a mano no se cae al Dockerfile en silencio: se
+  // dice que falta la herramienta. Construir otra cosa distinta de la pedida es
+  // justo lo que hace que un servicio arranque de forma que nadie esperaba.
+  if (aMano && forceNixpacks && !hayNixpacks) {
+    throw new Error(
+      'Está elegido el constructor Nixpacks, pero nixpacks no está instalado en el servidor. Elige «Dockerfile del ' +
+        'repositorio» en Ajustes → Constructor, o instala nixpacks (https://nixpacks.com).',
     );
   }
   // Un servicio que ya despliega bien no cambia de constructor por su cuenta.
@@ -309,26 +354,35 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
   // otra versión de lenguaje, otras dependencias de sistema—, y eso rompe cosas
   // que llevaban meses en pie sin que nadie tocara el repositorio. La
   // compatibilidad con Railway es para decidir lo que aún no está decidido, no
-  // para reabrir lo que ya funciona.
+  // para reabrir lo que ya funciona. Elegirlo a mano sí lo reabre: eso ya no es
+  // una inferencia de Skyway, es una decisión de quien administra.
   const previo = (opts.previousBuilder || '').toUpperCase();
   const yaIbaConDockerfile = previo === 'LEGACY' || previo === 'DOCKERFILE';
   let respetarDockerfile = false;
-  if (forceNixpacks && fs.existsSync(dockerfile) && yaIbaConDockerfile) {
+  if (forceNixpacks && hayDockerfile && !aMano && yaIbaConDockerfile) {
     respetarDockerfile = true;
     log(
       `⚠ La configuración pide ${forced}, pero el último despliegue correcto se construyó con el Dockerfile del ` +
         'repositorio: se mantiene ese, para no cambiarle el arranque a un servicio que va. Si de verdad quieres ' +
-        'Nixpacks, quita el Dockerfile del repositorio.',
+        'Nixpacks, elígelo en Ajustes → Constructor.',
     );
-  } else if (forceNixpacks && fs.existsSync(dockerfile)) {
+  } else if (forceNixpacks && hayDockerfile && !aMano && !hayNixpacks) {
+    // Nixpacks es opcional en la imagen de Skyway (su instalación es
+    // best-effort). Si el repositorio lo pide y no está, el Dockerfile que hay
+    // delante es mejor respuesta que abortar el despliegue.
+    respetarDockerfile = true;
     log(
-      `⚠ El repositorio tiene Dockerfile, pero su configuración pide el constructor ${forced}: se ignora el Dockerfile ` +
-        `y se construye con Nixpacks. El comando de arranque será el que infiera Nixpacks, NO el CMD del Dockerfile. ` +
-        `Para usar el Dockerfile, pon "builder": "DOCKERFILE" en railway.json.`,
+      `⚠ La configuración pide ${forced}, pero nixpacks no está instalado en el servidor: se construye con el ` +
+        'Dockerfile del repositorio.',
+    );
+  } else if (forceNixpacks && hayDockerfile) {
+    log(
+      `⚠ El repositorio tiene Dockerfile, pero se pide el constructor ${forced} (${origen}): se ignora el Dockerfile ` +
+        `y se construye con Nixpacks. El comando de arranque será el que infiera Nixpacks, NO el CMD del Dockerfile.`,
     );
   }
 
-  if (fs.existsSync(dockerfile) && (!forceNixpacks || respetarDockerfile)) {
+  if (hayDockerfile && (!forceNixpacks || respetarDockerfile)) {
     log(`Construyendo con Dockerfile (${path.relative(opts.repoDir, dockerfile)})...`);
     const buildkit = await buildxAvailable();
     if (!buildkit) {
@@ -370,7 +424,7 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
     return;
   }
 
-  if (await nixpacksAvailable()) {
+  if (hayNixpacks) {
     log(forceNixpacks ? 'Construyendo con Nixpacks...' : 'No hay Dockerfile; construyendo con Nixpacks...');
     const envFlags: string[] = [];
     // Las NIXPACKS_* van después de los build-args para que ganen: son la

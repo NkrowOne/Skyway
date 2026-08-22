@@ -57,6 +57,7 @@ interface FormState {
   branch: string;
   rootDir: string;
   dockerfilePath: string;
+  builder: 'auto' | 'dockerfile' | 'nixpacks';
   startCmd: string;
   buildCmd: string;
   port: string;
@@ -84,6 +85,7 @@ function formFromService(service: Service): FormState {
     branch: cfg.branch ?? 'main',
     rootDir: cfg.rootDir ?? '',
     dockerfilePath: cfg.dockerfilePath ?? '',
+    builder: cfg.builder ?? 'auto',
     startCmd: cfg.startCmd ?? '',
     buildCmd: (cfg as any).buildCmd ?? '',
     port: isImage ? (cfg.port ? String(cfg.port) : '') : String(cfg.port ?? 3000),
@@ -185,6 +187,7 @@ export default function ServiceSettingsTab({
           branch: form.branch.trim() || 'main',
           rootDir: form.rootDir.trim() || null,
           dockerfilePath: form.dockerfilePath.trim() || null,
+          builder: form.builder,
           startCmd: form.startCmd.trim() || null,
           buildCmd: form.buildCmd.trim() || null,
           port: Number(form.port) || 3000,
@@ -285,6 +288,16 @@ export default function ServiceSettingsTab({
                     <input className="input" placeholder="Dockerfile" value={form.dockerfilePath} onChange={(e) => set('dockerfilePath', e.target.value)} />
                   </Field>
                 </div>
+                <Field
+                  label="Constructor"
+                  hint="Automático: manda railway.json y, si no dice nada, el Dockerfile si lo hay. Elegir uno fuerza ese, aunque el repositorio pida el otro."
+                >
+                  <select className="input" value={form.builder} onChange={(e) => set('builder', e.target.value as FormState['builder'])}>
+                    <option value="auto">Automático (recomendado)</option>
+                    <option value="dockerfile">Dockerfile del repositorio</option>
+                    <option value="nixpacks">Nixpacks (como Railway)</option>
+                  </select>
+                </Field>
                 <Field label="Comando de arranque" hint="Opcional: sobreescribe el CMD de la imagen">
                   <input
                     className="input font-mono text-xs"

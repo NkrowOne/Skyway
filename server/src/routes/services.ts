@@ -63,6 +63,7 @@ const createGitSchema = z.object({
   branch: z.string().trim().min(1).default('main'),
   rootDir: z.string().trim().optional(),
   dockerfilePath: z.string().trim().optional(),
+  builder: z.enum(['auto', 'dockerfile', 'nixpacks']).optional(),
   startCmd: z.string().trim().optional(),
   buildCmd: z.string().trim().optional(),
   port: z.coerce.number().int().min(1).max(65535).default(3000),
@@ -96,6 +97,7 @@ const patchSchema = z.object({
       branch: z.string().trim().min(1).optional(),
       rootDir: z.string().trim().nullable().optional(),
       dockerfilePath: z.string().trim().nullable().optional(),
+      builder: z.enum(['auto', 'dockerfile', 'nixpacks']).optional(),
       startCmd: z.string().trim().nullable().optional(),
       buildCmd: z.string().trim().nullable().optional(),
       // nullable: los servicios de imagen sin puerto interno (workers) envían
@@ -132,7 +134,7 @@ function installationVisibleFrom(rowId: string, projectId: string): boolean {
 
 /** Campos cuyo cambio requiere recrear el contenedor. */
 const REDEPLOY_FIELDS = [
-  'repoUrl', 'connectorId', 'githubInstallationId', 'branch', 'rootDir', 'dockerfilePath', 'startCmd', 'buildCmd', 'port',
+  'repoUrl', 'connectorId', 'githubInstallationId', 'branch', 'rootDir', 'dockerfilePath', 'builder', 'startCmd', 'buildCmd', 'port',
   'domains', 'hostPort', 'version', 'image', 'buildArgs', 'healthcheckPath', 'volumes', 'replicas',
 ] as const;
 
@@ -207,6 +209,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         branch: body.branch,
         rootDir: body.rootDir || undefined,
         dockerfilePath: body.dockerfilePath || undefined,
+        builder: body.builder && body.builder !== 'auto' ? body.builder : undefined,
         startCmd: body.startCmd || undefined,
         buildCmd: body.buildCmd || undefined,
         port: body.port,
@@ -284,6 +287,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         if (key === 'connectorId' && found.service.type !== 'git') continue;
         if (key === 'githubInstallationId' && found.service.type !== 'git') continue;
         if (key === 'buildCmd' && found.service.type !== 'git') continue;
+        if (key === 'builder' && found.service.type !== 'git') continue;
         if (key === 'autoDeploy' && found.service.type !== 'git') continue;
         // Campos que no aplican a bases de datos: se ignoran sin efecto.
         if (found.service.type === 'database' && ['replicas', 'healthcheckPath'].includes(key)) continue;
@@ -291,6 +295,9 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         // Un servicio git siempre escucha en un puerto: null no lo borra.
         if (key === 'port' && value === null && found.service.type === 'git') continue;
         let normalized: unknown = value === null ? undefined : value;
+        // 'auto' es la ausencia de elección: se guarda como tal, y así volver a
+        // «Automático» no cuenta como cambio frente a un servicio que nunca lo tocó.
+        if (key === 'builder' && value === 'auto') normalized = undefined;
 
         // Los volúmenes llegan como rutas; se conserva el nombre del volumen
         // Docker existente para no perder los datos al reordenar/añadir.
