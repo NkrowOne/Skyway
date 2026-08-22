@@ -223,6 +223,16 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<void> {
   // repo con Dockerfile pero `builder: NIXPACKS` se construye con Nixpacks.
   const forced = (opts.builder || '').toUpperCase();
   const forceNixpacks = forced === 'NIXPACKS' || forced === 'RAILPACK';
+  // Railpack es el constructor por defecto de Railway desde 2025 e infiere
+  // versiones y pasos distintos, y su railpack.json no se lee. Construir con
+  // Nixpacks es la mejor aproximación que hay, pero decirlo importa: si algo
+  // sale con otra versión de la esperada, es por aquí.
+  if (forced === 'RAILPACK') {
+    log('ℹ La configuración pide el constructor RAILPACK; Skyway construye con Nixpacks, que es parecido pero no idéntico (railpack.json no se lee).');
+  }
+  if (forced && forced !== 'NIXPACKS' && forced !== 'RAILPACK' && forced !== 'DOCKERFILE') {
+    log(`⚠ Constructor «${opts.builder}» no reconocido: se ignora y se decide como siempre (Dockerfile si lo hay, si no Nixpacks).`);
+  }
   if (forced === 'DOCKERFILE' && !fs.existsSync(dockerfile)) {
     throw new Error(
       `La configuración del repositorio pide construir con Dockerfile, pero no hay ninguno en ${path.relative(opts.repoDir, dockerfile)}.`,

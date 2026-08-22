@@ -296,7 +296,11 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
     HostConfig: hostConfig,
     NetworkingConfig: {
       EndpointsConfig: {
-        [netName]: { Aliases: [alias] },
+        // El segundo alias es el nombre DNS privado de Railway: una app migrada
+        // que lleve `postgres.railway.internal` escrito en una cadena de
+        // conexión —o dentro del código, donde el importador no llega— resuelve
+        // igual sin tocar nada. No cuesta nada tener los dos.
+        [netName]: { Aliases: [alias, `${alias}.railway.internal`] },
       },
     },
   });
