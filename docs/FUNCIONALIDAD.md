@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.28.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.28.1. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---

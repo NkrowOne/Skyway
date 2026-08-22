@@ -957,7 +957,10 @@ async function deployContainer(
         withHostPort: false,
         restartPolicy: 'no',
       });
-      const verdict = await validateContainer(netName, `${service.slug}-next`, internalPort, healthcheckPath, tempName, log, probeTimeoutMs);
+      // Sin política: este contenedor se crea con `restartPolicy: 'no'` a
+      // propósito —si muere, queremos verlo muerto— así que esperar reintentos
+      // que Docker no va a hacer solo alargaría el fallo.
+      const verdict = await validateContainer(netName, `${service.slug}-next`, internalPort, healthcheckPath, tempName, log, probeTimeoutMs, null);
       if (!verdict.ok) {
         await appendContainerTail(tempName, log);
         await removeContainer(tempName);
@@ -986,7 +989,7 @@ async function deployContainer(
           throw new Error(`estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'}`);
         }
         if (!oldExists && i === 1) {
-          const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, rn, log, probeTimeoutMs);
+          const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, rn, log, probeTimeoutMs, restartPolicy);
           if (!verdict.ok) throw new Error(verdict.reason);
         }
       } catch (err: any) {
@@ -1026,7 +1029,7 @@ async function deployContainer(
     }
     try {
       await runServiceContainer(spec);
-      const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, name, log, probeTimeoutMs);
+      const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, name, log, probeTimeoutMs, restartPolicy);
       if (!verdict.ok) throw new Error(verdict.reason);
     } catch (err: any) {
       await appendContainerTail(name, log);
@@ -1091,6 +1094,13 @@ const PROBE_TIMEOUT_MS = 300_000;
 // «el proceso ya responde» y «Skyway se entera».
 const PROBE_INTERVAL_MS = 1200;
 const GRACE_MS = 5000;
+/**
+ * Margen total cuando el repositorio declara una política que reintenta. Manda
+ * la política: si pidió reintentos, se le dan de verdad en vez de sentenciar al
+ * primer tropiezo. Sigue acotado, para que un bucle de reinicio no deje el
+ * despliegue colgado para siempre.
+ */
+const RESTART_WINDOW_MS = 90_000;
 /** Cada cuánto se mira si el contenedor murió durante el periodo de gracia. */
 const GRACE_CHECK_MS = 500;
 /** Ventana de asentamiento de cada réplica en la actualización rodante. */
@@ -1123,6 +1133,7 @@ async function validateContainer(
   containerRef: string,
   log: (l: string) => void,
   timeoutMs: number = PROBE_TIMEOUT_MS,
+  restartPolicy: { Name: string; MaximumRetryCount?: number } | null = null,
 ): Promise<{ ok: boolean; reason: string }> {
   if (healthcheckPath && port) {
     const path = healthcheckPath.startsWith('/') ? healthcheckPath : `/${healthcheckPath}`;
@@ -1153,16 +1164,53 @@ async function validateContainer(
   // se puede comprobar que no se muere enseguida. Se vigila cada poco en vez de
   // dormir el periodo entero, para que un arranque fallido corte YA y el
   // usuario vea el error (y la versión anterior vuelva) sin esperar en balde.
-  log(`Sin healthcheck configurado: periodo de gracia de ${GRACE_MS / 1000}s...`);
-  const graceUntil = Date.now() + GRACE_MS;
-  while (Date.now() < graceUntil) {
+  // Si el repositorio declaró reintentos, un tropiezo al arrancar NO es un
+  // veredicto: es Docker haciendo lo que le pidieron. Fallar en el primer
+  // intento contradice el `restartPolicyMaxRetries` del propio repo, y con un
+  // fallo transitorio —una conexión que se cae al arrancar— tumba un despliegue
+  // que se habría recuperado solo. Se le da margen a que se asiente.
+  const reintenta = !!restartPolicy && restartPolicy.Name !== 'no';
+  const budget = reintenta ? RESTART_WINDOW_MS : GRACE_MS;
+  log(
+    reintenta
+      ? `Sin healthcheck configurado: tiene que aguantar ${GRACE_MS / 1000}s seguidos en pie (hasta ${budget / 1000}s, porque el repositorio pide reintentos)...`
+      : `Sin healthcheck configurado: periodo de gracia de ${GRACE_MS / 1000}s...`,
+  );
+
+  const inicio = Date.now();
+  const deadline = inicio + budget;
+  // Acaba de arrancar: se cuenta en pie desde ya, o el reloj de la racha
+  // empezaría medio segundo tarde y no cabría dentro de la ventana.
+  let enPieDesde: number | null = inicio;
+  let avisado = false;
+  for (;;) {
     await sleep(GRACE_CHECK_MS);
     const runtime = await getRuntime(containerRef);
-    if (runtime.state !== 'running') {
-      return { ok: false, reason: `el proceso terminó enseguida (estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'})` };
+
+    if (runtime.state === 'running') {
+      if (enPieDesde === null) enPieDesde = Date.now();
+      if (Date.now() - enPieDesde >= GRACE_MS) return { ok: true, reason: 'ok' };
+    } else {
+      enPieDesde = null;
+      // Salir con 0 bajo `on-failure` es terminal: Docker no lo reinicia.
+      const terminal =
+        !reintenta || (restartPolicy!.Name === 'on-failure' && runtime.state === 'exited' && runtime.exitCode === 0);
+      if (terminal) {
+        return { ok: false, reason: `el proceso terminó enseguida (estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'})` };
+      }
+      if (!avisado) {
+        log('El proceso se cayó al arrancar; Docker lo reintenta según la política del repositorio. Esperando a que se asiente...');
+        avisado = true;
+      }
     }
+    if (Date.now() >= deadline) break;
   }
-  return { ok: true, reason: 'ok' };
+  return {
+    ok: false,
+    reason: reintenta
+      ? `no logró mantenerse en pie ${GRACE_MS / 1000}s seguidos en ${budget / 1000}s: sigue cayéndose y reiniciándose`
+      : 'el proceso no llegó a arrancar',
+  };
 }
 
 function probeOnce(netName: string, host: string, port: number, path: string): Promise<boolean> {
