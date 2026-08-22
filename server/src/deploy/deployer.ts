@@ -47,7 +47,7 @@ import { invalidateDockerSnapshot } from '../docker/sampler';
 import { apiHeadSha, parseGithubSlug } from '../github/client';
 import { resolveGitAuth } from '../github/resolve';
 import { isWorkspaceActive, workspaceOfProject } from '../quota';
-import { buildImage, cloneRepo, normalizeRepoUrl, spawnLogged } from './builder';
+import { buildImage, cloneRepo, isBuildTimeVar, normalizeRepoUrl, spawnLogged } from './builder';
 import { dockerRestartPolicy, hasRailwayConfig, RailwayRepoConfig, readRailwayRepoConfig } from './railwayconfig';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
 import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
@@ -456,11 +456,12 @@ function buildKeyFor(service: ServiceRow, cfg: GitConfig): string {
   const args = Object.entries(cfg.buildArgs || {})
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `${k}=${v}`);
-  // Las variables del servicio llegan al build (ver buildImage), así que
-  // cambiarlas cambia la imagen: si no entran aquí, se reutilizaría el bundle
-  // construido con el valor viejo, que es justo el fallo que esto arregla.
-  // Cuesta una recompilación al tocar una variable; Railway hace lo mismo.
+  // Solo las variables que LLEGAN al build (ver isBuildTimeVar): cambiarlas
+  // cambia la imagen y hay que recompilar, o se serviría el bundle construido
+  // con el valor viejo. Las de ejecución no entran, para no recompilar cada vez
+  // que se rota un token que el build nunca vio.
   const vars = Object.entries(resolveServiceEnv(service))
+    .filter(([k]) => isBuildTimeVar(k))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `${k}=${v}`);
   // RAILWAY_DOCKERFILE_PATH y buildCmd también deciden qué imagen sale, aunque
