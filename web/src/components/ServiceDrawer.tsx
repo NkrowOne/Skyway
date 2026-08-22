@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ExternalLink, Hammer, MoveHorizontal, Play, RefreshCw, Rocket, Square, Terminal, X } from 'lucide-react';
 import { api } from '../api';
@@ -42,6 +42,13 @@ export default function ServiceDrawer({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState('deployments');
+  /**
+   * Al abrir una base de datos se entra por Consultas. «Despliegues» en un
+   * Postgres de plantilla solo dice que se hizo un `pull`: a una base se viene
+   * a consultarla. Solo se decide una vez por servicio; a partir de ahí manda
+   * la pestaña que elija quien lo esté usando.
+   */
+  const pestanaFijada = useRef<string | null>(null);
   const [execOpen, setExecOpen] = useState(false);
   // El terminal (ExecModal) se descarga en su 1ª apertura; el cerrojo lo mantiene
   // montado luego para conservar su animación de cierre.
@@ -86,6 +93,12 @@ export default function ServiceDrawer({
       }>(`/services/${serviceId}`),
     refetchInterval: 4000,
   });
+
+  useEffect(() => {
+    if (!detail.data || pestanaFijada.current === serviceId) return;
+    pestanaFijada.current = serviceId;
+    if (detail.data.dbConsole) setTab('db');
+  }, [serviceId, detail.data]);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['service', serviceId] });
