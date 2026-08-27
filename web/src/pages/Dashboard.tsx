@@ -1,7 +1,7 @@
 import { lazy, Suspense, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { BellRing, Building2, Plus, TrainFront } from 'lucide-react';
+import { BellRing, Boxes, Building2, FolderKanban, Plus, Search, TrainFront, Zap } from 'lucide-react';
 import { api } from '../api';
 import { useLatch } from '../hooks';
 import { Button, Field, Modal, Skeleton, useToast } from '../components/ui';
@@ -172,6 +172,7 @@ export default function Dashboard() {
   const [name, setName] = useState('');
   const [client, setClient] = useState('');
   const [filter, setFilter] = useState<string | null>(null);
+  const [projectQuery, setProjectQuery] = useState('');
   const queryClient = useQueryClient();
   const toast = useToast();
 
@@ -205,7 +206,25 @@ export default function Dashboard() {
     () => [...new Set(all.map((p) => p.client).filter((c): c is string => !!c))].sort(),
     [all],
   );
-  const visible = filter === null ? all : all.filter((p) => (filter === '' ? !p.client : p.client === filter));
+
+  const totalProjects = all.length;
+  const totalServices = all.reduce((sum, p) => sum + (p.serviceCount ?? 0), 0);
+  const totalDeploying = all.reduce((sum, p) => sum + (p.activeDeploys ?? 0), 0);
+  const totalAlerts = all.reduce((sum, p) => sum + (p.openAlerts ?? 0), 0);
+
+  const visible = useMemo(() => {
+    let list = filter === null ? all : all.filter((p) => (filter === '' ? !p.client : p.client === filter));
+    if (projectQuery.trim()) {
+      const q = projectQuery.toLowerCase().trim();
+      list = list.filter(
+        (p) =>
+          p.name.toLowerCase().includes(q) ||
+          p.slug.toLowerCase().includes(q) ||
+          (p.services ?? []).some((s) => s.name.toLowerCase().includes(q)),
+      );
+    }
+    return list;
+  }, [all, filter, projectQuery]);
 
   const grouped = useMemo(() => {
     const groups = new Map<string, Project[]>();
@@ -228,7 +247,32 @@ export default function Dashboard() {
     <div className="mx-auto max-w-[1120px] px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold leading-[30px] tracking-[-.02em]">Proyectos</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-semibold leading-[30px] tracking-[-.02em]">Proyectos</h1>
+            {totalProjects > 0 && (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface2/60 px-2.5 py-0.5 font-medium text-sub">
+                  <FolderKanban size={11} className="text-acc" />
+                  <strong className="text-txt">{totalProjects}</strong> proyectos
+                </span>
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface2/60 px-2.5 py-0.5 font-medium text-sub">
+                  <Boxes size={11} className="text-info" />
+                  <strong className="text-txt">{totalServices}</strong> servicios
+                </span>
+                {totalDeploying > 0 && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-warn/30 bg-warn/10 px-2.5 py-0.5 font-semibold text-warn">
+                    <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse" />
+                    {totalDeploying} desplegando
+                  </span>
+                )}
+                {totalAlerts > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-err/30 bg-err/10 px-2.5 py-0.5 font-semibold text-err">
+                    <BellRing size={11} /> {totalAlerts}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
           <p className="mt-1.5 text-sm text-sub">Cada proyecto agrupa servicios que comparten una red privada</p>
         </div>
         {isManager && (
@@ -246,19 +290,44 @@ export default function Dashboard() {
         )}
       </div>
 
-      {clients.length > 0 && (
-        <div className="-mx-4 mb-7 flex items-center gap-2 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:flex-wrap sm:px-0">
-          <button onClick={() => setFilter(null)} className={chipCls(filter === null)}>
-            Todas <span className="opacity-70 tnum">{all.length}</span>
-          </button>
-          {clients.map((c) => {
-            const count = all.filter((p) => p.client === c).length;
-            return (
-              <button key={c} onClick={() => setFilter(filter === c ? null : c)} className={chipCls(filter === c)}>
-                <Building2 size={11} /> {c} <span className="opacity-60 tnum">{count}</span>
+      {/* Buscador en tiempo real y filtros por cliente/empresa */}
+      {all.length > 0 && (
+        <div className="mb-7 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative w-full max-w-sm">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle pointer-events-none" />
+            <input
+              type="text"
+              value={projectQuery}
+              onChange={(e) => setProjectQuery(e.target.value)}
+              placeholder="Buscar proyecto o servicio..."
+              className="h-9 w-full rounded-xl border border-line bg-surface/80 pl-9 pr-8 text-xs text-txt placeholder:text-subtle transition-colors focus:border-acc/60 focus:bg-surface focus:outline-none"
+            />
+            {projectQuery && (
+              <button
+                onClick={() => setProjectQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-subtle hover:text-txt"
+                title="Limpiar búsqueda"
+              >
+                ✕
               </button>
-            );
-          })}
+            )}
+          </div>
+
+          {clients.length > 0 && (
+            <div className="-mx-4 flex items-center gap-1.5 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:flex-wrap sm:px-0">
+              <button onClick={() => setFilter(null)} className={chipCls(filter === null)}>
+                Todas <span className="opacity-70 tnum">{all.length}</span>
+              </button>
+              {clients.map((c) => {
+                const count = all.filter((p) => p.client === c).length;
+                return (
+                  <button key={c} onClick={() => setFilter(filter === c ? null : c)} className={chipCls(filter === c)}>
+                    <Building2 size={11} /> {c} <span className="opacity-60 tnum">{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 

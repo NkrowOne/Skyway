@@ -92,23 +92,32 @@ export default function ServiceCard({
       <div className="mt-3.5 flex items-center justify-between gap-2 text-xs text-sub">
         {stats ? (
           <div className="tnum flex items-center gap-3">
-            <span className="inline-flex items-center gap-1.5">
-              <span className="text-subtle">CPU</span>
-              <span className={cx('font-medium', stats.cpuPercent >= CPU_ALERT ? 'font-semibold text-warn' : 'text-txt')}>
+            <span className="inline-flex items-center gap-1.5" title={`Uso de CPU: ${stats.cpuPercent}%`}>
+              <span className="text-subtle text-[11px]">CPU</span>
+              <span className={cx('font-medium text-xs', stats.cpuPercent >= CPU_ALERT ? 'font-semibold text-warn' : 'text-txt')}>
                 {stats.cpuPercent}%
               </span>
+              <span className="h-1.5 w-8 rounded-full bg-surface2 overflow-hidden inline-flex">
+                <span
+                  className={cx(
+                    'h-full rounded-full transition-all duration-300',
+                    stats.cpuPercent >= CPU_ALERT ? 'bg-warn' : 'bg-acc',
+                  )}
+                  style={{ width: `${Math.min(100, Math.max(8, stats.cpuPercent))}%` }}
+                />
+              </span>
             </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span className="text-subtle">RAM</span>
-              <span className="font-medium text-txt">{fmtBytes(stats.memUsage)}</span>
+            <span className="inline-flex items-center gap-1.5" title={`Uso de RAM: ${fmtBytes(stats.memUsage)}`}>
+              <span className="text-subtle text-[11px]">RAM</span>
+              <span className="font-medium text-xs text-txt">{fmtBytes(stats.memUsage)}</span>
             </span>
           </div>
         ) : (
-          <span className="text-subtle">Sin métricas</span>
+          <span className="text-subtle text-[11px]">Sin métricas</span>
         )}
         {domain && (
-          <span className="flex min-w-0 items-center gap-1 text-sub group-hover:text-txt transition-colors">
-            <Globe size={11} className="shrink-0" />
+          <span className="flex min-w-0 items-center gap-1 text-sub group-hover:text-acc-soft transition-colors" title={`Dominio: ${domain}`}>
+            <Globe size={11} className="shrink-0 text-subtle group-hover:text-acc-soft" />
             <span className="max-w-[120px] truncate text-[11px] font-mono">{domain}</span>
           </span>
         )}
