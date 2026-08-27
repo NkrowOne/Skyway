@@ -134,9 +134,8 @@ export function NumberInput({ value, onChange, emptyValue = 0, onFocus, onBlur, 
 
 // ---------- EditorBar ----------
 /**
- * Barra de acciones anclada al fondo del panel (sticky): sigue visible por larga
- * que sea la lista de campos, así el botón de guardar nunca queda «perdido abajo».
- * Un mismo primitivo para Ajustes y Variables, para que se sientan iguales.
+ * Dock de guardado flotante elevado: solo aparece cuando hay cambios pendientes (dirty),
+ * flotando de manera limpia sobre el contenido y evitando solaparse con la barra de tareas.
  */
 export function EditorBar({
   dirty,
@@ -155,30 +154,28 @@ export function EditorBar({
   saveLabel?: string;
   dirtyLabel?: string;
 }) {
+  if (!dirty && !saved) return null;
+
   return (
-    <div className="sticky bottom-0 z-30 mt-auto flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface/95 px-4 py-3 sm:px-5 backdrop-blur-xl shadow-[0_-8px_24px_rgba(0,0,0,0.45)] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-      {dirty ? (
-        <span className="flex items-center gap-[7px] text-xs font-medium text-warn">
-          <span className="pulse-soft h-2 w-2 shrink-0 rounded-full bg-current" />
-          <span className="truncate">{dirtyLabel}</span>
-        </span>
-      ) : (
-        <span className="text-xs text-subtle">Sin cambios pendientes</span>
-      )}
-      <div className="flex shrink-0 items-center gap-2">
+    <div className="sticky bottom-4 sm:bottom-6 z-40 mx-auto mt-6 flex w-[calc(100%-1.5rem)] max-w-lg items-center justify-between gap-3 rounded-2xl border border-line/80 bg-surface/92 p-2.5 pl-4 backdrop-blur-xl shadow-[0_12px_32px_rgba(0,0,0,0.5)] menu-in">
+      <span className="flex min-w-0 items-center gap-2 text-xs font-medium text-warn">
+        <span className="pulse-soft h-2 w-2 shrink-0 rounded-full bg-warn" />
+        <span className="truncate">{dirtyLabel}</span>
+      </span>
+      <div className="flex shrink-0 items-center gap-1.5">
         {dirty && onDiscard && (
-          <Button variant="ghost" size="sm" onClick={onDiscard}>
+          <Button variant="ghost" size="sm" onClick={onDiscard} className="h-8 text-xs text-sub hover:text-txt">
             Descartar
           </Button>
         )}
         <Button
           size="sm"
-          variant={dirty ? 'primary' : 'secondary'}
+          variant="primary"
           onClick={onSave}
           loading={saving}
           disabled={!dirty}
           success={saved && !dirty}
-          className={cx(dirty && 'font-semibold shadow-md')}
+          className="h-8 font-semibold shadow-md text-xs px-3.5"
         >
           {saveLabel}
         </Button>

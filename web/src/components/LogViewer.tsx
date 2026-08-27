@@ -416,12 +416,15 @@ export default function LogViewer({
     requestAnimationFrame(() => {
       if (ref.current) {
         ref.current.scrollTop = ref.current.scrollHeight;
-        const raf2 = requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
           if (ref.current) {
             ref.current.scrollTop = ref.current.scrollHeight;
             setTimeout(() => {
               if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
-            }, 50);
+            }, 60);
+            setTimeout(() => {
+              if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+            }, 350);
           }
         });
       }
@@ -439,6 +442,19 @@ export default function LogViewer({
       setUnreadCount(unreadCountRef.current);
     }
   }, [visible.length, follow, scrollToBottom]);
+
+  // Observer de redimensionamiento: garantiza anclaje inferior cuando los acordeones crecen
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (follow) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [follow]);
 
   // Si cambia el filtro o fase, reiniciar a follow y saltar abajo
   useEffect(() => {

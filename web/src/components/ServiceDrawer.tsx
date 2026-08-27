@@ -59,9 +59,16 @@ export default function ServiceDrawer({
   // Un aviso persistente vale más que un toast fugaz. Se limpia al desplegar o cambiar de servicio.
   const [pendingRedeploy, setPendingRedeploy] = useState(false);
   const [targetDeploymentId, setTargetDeploymentId] = useState<string | null>(null);
+  const [isTabDirty, setIsTabDirty] = useState(false);
+  const [pendingTabChange, setPendingTabChange] = useState<string | null>(null);
+  const [pendingClose, setPendingClose] = useState(false);
+
   useEffect(() => {
     setPendingRedeploy(false);
     setTargetDeploymentId(null);
+    setIsTabDirty(false);
+    setPendingTabChange(null);
+    setPendingClose(false);
   }, [serviceId]);
   const [wide, setWide] = useLocalStorage('skyway.drawerWide', false);
   const fullscreen = useMediaQuery('(max-width: 899px)');
@@ -73,16 +80,45 @@ export default function ServiceDrawer({
     const raf = requestAnimationFrame(() => setEntered(true));
     return () => cancelAnimationFrame(raf);
   }, []);
-  // Esc cierra el drawer, salvo que haya un modal/paleta abierto por encima.
+
+  const handleAttemptClose = () => {
+    if (isTabDirty) {
+      setPendingClose(true);
+      return;
+    }
+    onClose();
+  };
+
+  const handleTabChange = (nextTab: string) => {
+    if (nextTab === tab) return;
+    if (isTabDirty) {
+      setPendingTabChange(nextTab);
+      return;
+    }
+    setTab(nextTab);
+  };
+
+  // Esc cierra el drawer, salvo que haya un modal/paleta abierto por encima o cambios sin guardar.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
       if (document.querySelector('[role="dialog"]')) return;
-      onClose();
+      handleAttemptClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, isTabDirty]);
+
+  // Aviso del navegador si el usuario recarga la página con cambios sin guardar
+  useEffect(() => {
+    if (!isTabDirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [isTabDirty]);
 
   const detail = useQuery({
     queryKey: ['service', serviceId],
@@ -215,13 +251,13 @@ export default function ServiceDrawer({
       {fullscreen && (
         <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
           <button
-            onClick={onClose}
+            onClick={handleAttemptClose}
             className="press flex min-h-10 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-sub hover:bg-surface2 hover:text-txt"
           >
             <ChevronLeft size={15} /> {projectName}
           </button>
           <button
-            onClick={onClose}
+            onClick={handleAttemptClose}
             className="press ml-auto flex min-h-10 min-w-10 items-center justify-center rounded-lg leading-none text-subtle hover:bg-surface2 hover:text-txt"
             title="Cerrar (esc)"
           >
@@ -264,7 +300,7 @@ export default function ServiceDrawer({
                 <MoveHorizontal size={15} />
               </button>
               <button
-                onClick={onClose}
+                onClick={handleAttemptClose}
                 className="press rounded-lg p-[7px] leading-none text-subtle hover:bg-surface2 hover:text-txt"
                 title="Cerrar (esc)"
               >
@@ -355,17 +391,19 @@ export default function ServiceDrawer({
         </div>
 
         {pendingRedeploy && (
-          <div className="tab-in mt-3.5 flex flex-col gap-2 rounded-lg border border-acc/30 bg-acc/[.08] px-3 py-2.5 text-xs sm:flex-row sm:items-center sm:gap-2.5 sm:py-2">
-            <span className="flex min-w-0 flex-1 items-start gap-2.5 sm:items-center">
-              <Rocket size={14} className="mt-px shrink-0 text-acc-soft sm:mt-0" />
-              <span className="text-sub">
-                <span className="font-medium text-txt">Cambios guardados sin aplicar.</span> Se activan al desplegar de nuevo.
+          <div className="tab-in mt-3.5 flex flex-col gap-2.5 rounded-xl border border-acc/35 bg-acc/[.09] p-3 text-xs sm:flex-row sm:items-center sm:gap-3 shadow-sm">
+            <span className="flex min-w-0 flex-1 items-center gap-2.5">
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-acc/20 text-acc">
+                <Rocket size={14} />
+              </span>
+              <span className="text-sub leading-snug">
+                <span className="font-semibold text-txt">Cambios guardados sin aplicar.</span> Se activan en el próximo despliegue.
               </span>
             </span>
             <Button
               size="sm"
-              variant="secondary"
-              className="w-full shrink-0 sm:w-auto"
+              variant="primary"
+              className="w-full shrink-0 sm:w-auto font-semibold shadow-md text-xs px-3"
               onClick={() => deploy.mutate(undefined)}
               loading={deploy.isPending}
             >
@@ -377,7 +415,7 @@ export default function ServiceDrawer({
         <Tabs
           tabs={tabs}
           active={tab}
-          onChange={setTab}
+          onChange={handleTabChange}
           className={cx('mt-3.5', fullscreen ? '-mx-3.5 px-3.5' : '-mx-5 px-5')}
         />
       </div>
@@ -409,9 +447,14 @@ export default function ServiceDrawer({
             {tab === 'variables' && (
               <VariablesTab
                 serviceId={serviceId}
-                onSaved={invalidate}
+                onSaved={() => {
+                  invalidate();
+                  setPendingRedeploy(true);
+                  setIsTabDirty(false);
+                }}
                 onDeploy={() => deploy.mutate(undefined)}
                 onNeedsRedeploy={() => setPendingRedeploy(true)}
+                onDirtyChange={setIsTabDirty}
               />
             )}
             {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
@@ -465,6 +508,26 @@ export default function ServiceDrawer({
         title={`Detener "${service.name}"`}
         message="El servicio dejará de estar disponible hasta que lo vuelvas a iniciar."
         confirmLabel="Detener"
+        confirmVariant="danger"
+      />
+      <ConfirmModal
+        open={!!pendingTabChange || pendingClose}
+        onClose={() => {
+          setPendingTabChange(null);
+          setPendingClose(false);
+        }}
+        onConfirm={() => {
+          setIsTabDirty(false);
+          const nextT = pendingTabChange;
+          const shouldClose = pendingClose;
+          setPendingTabChange(null);
+          setPendingClose(false);
+          if (nextT) setTab(nextT);
+          if (shouldClose) onClose();
+        }}
+        title="¿Descartar cambios sin guardar?"
+        message="Tienes modificaciones pendientes en las variables de entorno que no han sido guardadas. Si sales ahora, se perderán."
+        confirmLabel="Descartar y salir"
         confirmVariant="danger"
       />
     </aside>

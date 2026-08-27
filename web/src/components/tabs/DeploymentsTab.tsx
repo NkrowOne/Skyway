@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
+import { Check, History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
@@ -21,6 +21,130 @@ function Collapse({ open, children }: { open: boolean; children: React.ReactNode
   return (
     <div className={cx('collapse-grid', grown && open && 'collapse-open')}>
       <div>{children}</div>
+    </div>
+  );
+}
+
+/** Barra de carga y etapas de progreso estilo Railway */
+function DeployProgress({ deployment }: { deployment: Deployment }) {
+  const isLive = isActiveDeploy(deployment.status);
+
+  let currentStep = 0;
+  if (deployment.status === 'queued') currentStep = 1;
+  else if (deployment.status === 'building') currentStep = 2;
+  else if (deployment.status === 'deploying') currentStep = 3;
+  else if (deployment.status === 'success') currentStep = 4;
+  else if (deployment.status === 'failed' || deployment.status === 'canceled') currentStep = -1;
+
+  const steps = [
+    { num: 1, label: 'En cola' },
+    { num: 2, label: 'Compilación' },
+    { num: 3, label: 'Despliegue' },
+    { num: 4, label: 'Activo' },
+  ];
+
+  return (
+    <div className="mb-3 rounded-xl border border-line bg-surface p-3 text-xs">
+      <div className="flex items-center justify-between gap-2 pb-2">
+        <div className="flex items-center gap-2">
+          {isLive ? (
+            <div className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+              <svg className="h-4 w-4 animate-spin text-warn" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+            </div>
+          ) : deployment.status === 'success' ? (
+            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-ok/20 text-ok">
+              <Check size={11} strokeWidth={3} />
+            </span>
+          ) : (
+            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-err/20 text-err font-bold text-[10px]">
+              ✕
+            </span>
+          )}
+          <span className="font-semibold text-txt">
+            {isLive
+              ? deployment.status === 'queued'
+                ? 'Preparando entorno de despliegue…'
+                : deployment.status === 'building'
+                  ? 'Construyendo imagen y empaquetando…'
+                  : 'Iniciando contenedor y validando salud…'
+              : deployment.status === 'success'
+                ? 'Despliegue completado con éxito'
+                : deployment.status === 'canceled'
+                  ? 'Despliegue cancelado por el usuario'
+                  : 'Despliegue interrumpido con errores'}
+          </span>
+        </div>
+        {isLive && (
+          <span className="font-mono text-[11px] font-semibold text-warn animate-pulse">
+            En vivo
+          </span>
+        )}
+      </div>
+
+      {/* Barra de progreso continua */}
+      <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-surface2">
+        <div
+          className={cx(
+            'h-full rounded-full transition-all duration-500',
+            deployment.status === 'failed'
+              ? 'bg-err w-full'
+              : deployment.status === 'canceled'
+                ? 'bg-subtle w-full'
+                : deployment.status === 'success'
+                  ? 'bg-ok w-full'
+                  : 'bg-gradient-to-r from-acc to-warn animate-pulse',
+          )}
+          style={{
+            width:
+              deployment.status === 'queued'
+                ? '25%'
+                : deployment.status === 'building'
+                  ? '60%'
+                  : deployment.status === 'deploying'
+                    ? '88%'
+                    : '100%',
+          }}
+        />
+      </div>
+
+      {/* Pasos de progreso */}
+      <div className="mt-2.5 flex items-center justify-between text-[11px]">
+        {steps.map((s) => {
+          const isDone = deployment.status === 'success' || (currentStep > s.num && currentStep > 0);
+          const isCurrent = isLive && currentStep === s.num;
+          const isFailed = (deployment.status === 'failed' || deployment.status === 'canceled') && currentStep === s.num;
+
+          return (
+            <div key={s.num} className="flex items-center gap-1.5">
+              <span
+                className={cx(
+                  'flex h-4 w-4 items-center justify-center rounded-full text-[9.5px] font-bold transition-colors',
+                  isDone
+                    ? 'bg-ok/20 text-ok'
+                    : isCurrent
+                      ? 'bg-warn text-black font-extrabold animate-pulse'
+                      : isFailed
+                        ? 'bg-err text-white'
+                        : 'bg-surface2 text-subtle',
+                )}
+              >
+                {isDone ? '✓' : s.num}
+              </span>
+              <span
+                className={cx(
+                  'hidden sm:inline font-medium',
+                  isCurrent ? 'text-warn font-semibold' : isDone ? 'text-sub' : 'text-subtle',
+                )}
+              >
+                {s.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -126,10 +250,7 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
 }
 
 /**
- * Pill de estado del despliegue: píldora sobria y neutra; el color lo lleva un
- * punto indicador, no todo el fondo. Así un «Fallido» marca en rojo solo el
- * punto —no tiñe la píldora entera— y el conjunto se lee limpio y profesional.
- * Cada transición (En cola → Construyendo → Activo) entra con un pop mínimo.
+ * Pill de estado del despliegue: píldora sobria con spinner de progreso si está activo.
  */
 function DeployPill({ deployment, isCurrent }: { deployment: Deployment; isCurrent: boolean }) {
   const active = isActiveDeploy(deployment.status);
@@ -144,9 +265,19 @@ function DeployPill({ deployment, isCurrent }: { deployment: Deployment; isCurre
   return (
     <span
       key={label}
-      className="badge-in inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-surface2 px-2.5 py-[3px] text-[11px] font-medium text-sub"
+      className={cx(
+        'badge-in inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors',
+        active ? 'bg-warn/10 text-warn border border-warn/25' : 'bg-surface2 text-sub border border-line',
+      )}
     >
-      <span className={cx('h-[5px] w-[5px] shrink-0 rounded-full', dot, active && 'pulse-soft')} />
+      {active ? (
+        <svg className="h-3 w-3 animate-spin text-warn" viewBox="0 0 24 24" fill="none">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+        </svg>
+      ) : (
+        <span className={cx('h-1.5 w-1.5 shrink-0 rounded-full', dot)} />
+      )}
       {label}
     </span>
   );
@@ -343,6 +474,7 @@ export default function DeploymentsTab({
             {(open || closingId === d.id) && (
               <Collapse open={open}>
                 <div className="border-t border-line p-3">
+                  <DeployProgress deployment={d} />
                   {d.error && (
                     <p className="mb-2.5 rounded-r-lg border-l-2 border-err/40 bg-err/[.08] px-3 py-2.5 text-xs text-err">{d.error}</p>
                   )}

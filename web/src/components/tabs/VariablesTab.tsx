@@ -85,11 +85,13 @@ export default function VariablesTab({
   onSaved,
   onDeploy,
   onNeedsRedeploy,
+  onDirtyChange,
 }: {
   serviceId: string;
   onSaved: () => void;
   onDeploy?: () => void;
   onNeedsRedeploy?: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -102,6 +104,11 @@ export default function VariablesTab({
   const [dirty, setDirty] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
   const keyInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+    return () => onDirtyChange?.(false);
+  }, [dirty, onDirtyChange]);
 
   const env = useQuery({
     queryKey: ['env', serviceId],
