@@ -64,7 +64,7 @@ export interface ParsedRow {
   lvl: Level;
 }
 
-/** Parsea una línea de log extrayendo timestamp (ISO/Docker/RFC3339), fase (build/deploy/runtime) y nivel. */
+/** Parsea una línea de log extrayendo timestamp (ISO/Docker/RFC3339/legacy), fase y nivel. */
 function parseRawLine(raw: string, defaultStage: LogStage = 'all'): ParsedRow {
   let text = stripAnsi(raw).trimEnd();
   let ts: number | null = null;
@@ -117,6 +117,10 @@ function parseRawLine(raw: string, defaultStage: LogStage = 'all'): ParsedRow {
 
 /** Formatea una marca de tiempo según el formato seleccionado. */
 function formatTimestamp(ts: number | null, iso: string | null, format: TimestampFormat): string {
+  if (!ts && iso) {
+    const parsed = Date.parse(iso);
+    if (Number.isFinite(parsed)) ts = parsed;
+  }
   if (!ts && !iso) return '';
   if (format === 'relative' && ts) {
     const diff = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -292,7 +296,7 @@ function ToolButton({
       onClick={onClick}
       disabled={disabled}
       className={cx(
-        'press flex h-8 w-8 items-center justify-center rounded-lg leading-none disabled:opacity-40 transition-colors',
+        'press flex h-7.5 w-7.5 sm:h-8 sm:w-8 items-center justify-center rounded-lg leading-none disabled:opacity-40 transition-colors',
         active ? 'bg-acc/[.16] text-acc-soft' : 'text-subtle hover:bg-surface2 hover:text-txt',
       )}
     >
@@ -323,7 +327,6 @@ export default function LogViewer({
   tailAnchor = false,
   stageFilter: controlledStageFilter,
   onStageFilterChange,
-  availableStages,
   defaultStage = 'all',
   extraHeaderLeft,
   extraHeaderRight,
@@ -345,7 +348,6 @@ export default function LogViewer({
   tailAnchor?: boolean;
   stageFilter?: LogStage;
   onStageFilterChange?: (stage: LogStage) => void;
-  availableStages?: LogStage[];
   defaultStage?: LogStage;
   extraHeaderLeft?: React.ReactNode;
   extraHeaderRight?: React.ReactNode;
@@ -376,7 +378,6 @@ export default function LogViewer({
   const [clearedUntil, setClearedUntil] = useState<number>(0);
 
   const stage = controlledStageFilter ?? internalStage;
-  const setStage = onStageFilterChange ?? setInternalStage;
 
   // Procesado memoizado O(1) de líneas
   const rows = useMemo(() => {
@@ -396,21 +397,12 @@ export default function LogViewer({
   const counts = useMemo(() => {
     let err = 0;
     let warn = 0;
-    let build = 0;
-    let deploy = 0;
-    let runtime = 0;
     for (const r of rows) {
       if (r.lvl === 'err') err++;
       else if (r.lvl === 'warn') warn++;
-      if (r.stage === 'build') build++;
-      else if (r.stage === 'deploy') deploy++;
-      else if (r.stage === 'runtime') runtime++;
     }
-    return { err, warn, build, deploy, runtime };
+    return { err, warn };
   }, [rows]);
-
-  const hasStages =
-    (availableStages && availableStages.length > 1) || counts.build > 0 || counts.deploy > 0 || counts.runtime > 0;
 
   // Filtrado de filas visibles
   const visible = useMemo(() => {
@@ -632,25 +624,6 @@ export default function LogViewer({
     </button>
   );
 
-  const stageChip = (key: LogStage, label: string, count?: number) => (
-    <button
-      type="button"
-      onClick={() => setStage(key)}
-      aria-pressed={stage === key}
-      className={cx(
-        'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium transition-colors duration-150',
-        stage === key
-          ? 'bg-surface2 text-txt shadow-sm border border-line font-semibold'
-          : 'text-subtle hover:bg-surface2/60 hover:text-txt',
-      )}
-    >
-      {label}
-      {count !== undefined && count > 0 && (
-        <span className="tnum rounded bg-term px-1 text-[10px] text-subtle">{NF.format(count)}</span>
-      )}
-    </button>
-  );
-
   const shell = (
     <section
       className={cx(
@@ -698,16 +671,18 @@ export default function LogViewer({
         </div>
       )}
 
+      {/* ── TOOLBAR LIMPIA Y RESPONSIVA (SIN CONFLICTOS DE ICONOS) ── */}
       {toolbar && (
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-line bg-term2 px-2.5 py-1.5">
-          <div className="flex min-w-[200px] flex-1 items-center gap-1.5">
+        <div className="flex shrink-0 flex-col gap-2 border-b border-line bg-term2 px-2.5 py-2 sm:flex-row sm:items-center sm:justify-between">
+          {/* Fila izquierda: Buscador + Filtros de nivel */}
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 sm:gap-2">
             {/* Buscador interactivo */}
-            <div className="flex h-8 flex-1 items-center gap-2 rounded-lg border border-line bg-term px-2.5 focus-within:border-acc">
+            <div className="flex h-8 min-w-[140px] flex-1 items-center gap-2 rounded-lg border border-line bg-term px-2.5 focus-within:border-acc">
               <Search size={13} className="shrink-0 text-subtle" />
               <input
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                placeholder="Buscar en los logs… (regex o texto)"
+                placeholder="Buscar en los logs…"
                 spellCheck={false}
                 className="min-w-0 flex-1 bg-transparent font-mono text-xs text-txt outline-none placeholder:text-subtle"
               />
@@ -734,20 +709,10 @@ export default function LogViewer({
               {levelChip('err', 'Errores', counts.err, 'err')}
               {levelChip('warn', 'Avisos', counts.warn, 'warn')}
             </div>
-
-            {/* Sub-pestañas de fase (Build, Deploy, Runtime) */}
-            {hasStages && (
-              <div className="flex shrink-0 items-center gap-0.5 rounded-lg bg-term p-0.5 border border-line">
-                {stageChip('all', 'Todos')}
-                {counts.build > 0 && stageChip('build', 'Build', counts.build)}
-                {counts.deploy > 0 && stageChip('deploy', 'Deploy', counts.deploy)}
-                {counts.runtime > 0 && stageChip('runtime', 'Runtime', counts.runtime)}
-              </div>
-            )}
           </div>
 
-          {/* Botones de acción y opciones */}
-          <div className="flex shrink-0 items-center gap-0.5">
+          {/* Fila derecha: Botones de acción sin solapamiento */}
+          <div className="flex shrink-0 items-center justify-between sm:justify-end gap-1">
             {/* Selector de formato de fechas */}
             <div className="relative">
               <ToolButton
@@ -759,7 +724,7 @@ export default function LogViewer({
               </ToolButton>
               {tsMenuOpen && (
                 <div
-                  className="absolute right-0 top-full z-30 mt-1 min-w-[185px] rounded-xl border border-line bg-surface p-1.5 shadow-modal"
+                  className="absolute right-0 top-full z-40 mt-1 min-w-[185px] rounded-xl border border-line bg-surface p-1.5 shadow-modal"
                   onMouseLeave={() => setTsMenuOpen(false)}
                 >
                   <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-subtle">
