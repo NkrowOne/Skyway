@@ -29,6 +29,7 @@ import {
   workspaceOfProject,
   workspacePlan,
 } from '../quota';
+import { archiveContainerLogs } from '../deploy/deployer';
 import { dockerAvailable } from '../docker/client';
 import {
   configuredReplicas,
@@ -514,12 +515,18 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
       markManualAction(id);
       const total = configuredReplicas(found.service);
+      const lastDep = latestDeployment(found.service.id);
       try {
         for (let i = 1; i <= total; i++) {
           const name = replicaName(found.project, found.service, i);
-          if (action === 'start') await startContainer(name);
-          else if (action === 'stop') await stopContainer(name);
-          else await restartContainer(name);
+          if (action === 'start') {
+            await startContainer(name);
+          } else if (action === 'stop') {
+            await archiveContainerLogs(name, lastDep?.id);
+            await stopContainer(name);
+          } else {
+            await restartContainer(name);
+          }
         }
       } catch (err: any) {
         return reply.code(500).send({ error: err?.message || 'Operación fallida' });

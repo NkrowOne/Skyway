@@ -1,6 +1,7 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  ArrowDown,
   ArrowDownToLine,
   ArrowUpToLine,
   Check,
@@ -26,7 +27,7 @@ export type TimestampFormat = 'time' | 'datetime' | 'utc' | 'relative';
 const NF = new Intl.NumberFormat('es');
 
 /** Filas agrupadas en tramos para virtualizar por bloque (ver index.css). */
-const CHUNK = 64;
+const CHUNK = 48;
 
 /** Heurística de niveles: error/fatal/panic → err; warn → warn; resto neutro. */
 function detectLevel(line: string): Level {
@@ -63,30 +64,30 @@ export interface ParsedRow {
   lvl: Level;
 }
 
-/** Parsea una línea de log extrayendo timestamp (ISO/legacy), fase (build/deploy/runtime) y nivel. */
-function parseRawLine(raw: string): ParsedRow {
+/** Parsea una línea de log extrayendo timestamp (ISO/Docker/RFC3339), fase (build/deploy/runtime) y nivel. */
+function parseRawLine(raw: string, defaultStage: LogStage = 'all'): ParsedRow {
   let text = stripAnsi(raw).trimEnd();
   let ts: number | null = null;
   let iso: string | null = null;
-  let stage: LogStage = 'all';
+  let stage: LogStage = defaultStage;
 
-  // 1. Detección de timestamp ISO (Docker 2026-08-27T19:24:12.123456789Z o estándar)
+  // 1. Detección de timestamp ISO de Docker (2026-08-27T19:24:12.123456789Z o 2026-08-27 19:24:12)
   const spaceIdx = text.indexOf(' ');
-  if (spaceIdx >= 19 && text[4] === '-' && text[7] === '-' && text[10] === 'T') {
+  if (spaceIdx >= 19 && text[4] === '-' && text[7] === '-' && (text[10] === 'T' || text[10] === ' ')) {
     const candidate = text.slice(0, spaceIdx);
     const parsed = Date.parse(candidate);
     if (Number.isFinite(parsed)) {
       ts = parsed;
       iso = candidate;
-      text = text.slice(spaceIdx + 1);
+      text = text.slice(spaceIdx + 1).trimStart();
     }
   } else if (spaceIdx >= 8 && spaceIdx <= 12 && /^\d{2}:\d{2}:\d{2}/.test(text)) {
     // Sello legacy HH:mm:ss
     iso = text.slice(0, spaceIdx);
-    text = text.slice(spaceIdx + 1);
+    text = text.slice(spaceIdx + 1).trimStart();
   }
 
-  // 2. Detección de fase de despliegue / ejecución estilo Railway
+  // 2. Detección de fase explícita ([build], [deploy], [runtime], [sys])
   const lower = text.toLowerCase();
   if (lower.startsWith('[build]') || lower.startsWith('build:')) {
     stage = 'build';
@@ -144,7 +145,7 @@ function formatTimestamp(ts: number | null, iso: string | null, format: Timestam
       second: '2-digit',
     });
   }
-  return iso?.slice(0, 8) || '';
+  return iso ? iso.slice(0, 8) : '';
 }
 
 /** Tooltip con información temporal completa para el hover. */
@@ -152,7 +153,7 @@ function timestampTooltip(ts: number | null, iso: string | null): string | undef
   if (!ts && !iso) return undefined;
   if (ts) {
     const d = new Date(ts);
-    return `Fecha: ${d.toLocaleString('es-ES')}\nISO: ${d.toISOString()}\nUTC: ${d.toUTCString()}`;
+    return `Fecha local: ${d.toLocaleString('es-ES')}\nISO: ${d.toISOString()}\nUTC: ${d.toUTCString()}`;
   }
   return `Hora: ${iso}`;
 }
@@ -201,7 +202,7 @@ function StageBadge({ stage }: { stage: LogStage }) {
 }
 
 /**
- * Fila de log individual memoizada: evita re-renderizar todo el buffer durante el streaming en vivo.
+ * Fila de log individual memoizada: ultra-rápida y ligera.
  */
 const LogRow = memo(function LogRow({
   n,
@@ -229,7 +230,7 @@ const LogRow = memo(function LogRow({
   return (
     <div
       className={cx(
-        'log-row flex items-baseline',
+        'log-row flex items-baseline hover:bg-white/[.02]',
         wrap ? 'w-full' : 'w-max min-w-full',
         lvl === 'err' && 'log-row-err',
         lvl === 'warn' && 'log-row-warn',
@@ -238,18 +239,21 @@ const LogRow = memo(function LogRow({
       {gutter && (
         <span
           className="log-gutter tnum select-none px-2 text-right text-[11px] tabular-nums"
-          style={{ minWidth: '3.5ch' }}
+          style={{ minWidth: '3.8ch' }}
         >
           {n}
         </span>
       )}
-      {showTs && tsString && (
+      {showTs && (
         <span
-          className="log-ts tnum shrink-0 select-none px-2 text-[11px] tabular-nums transition-colors hover:text-txt"
+          className={cx(
+            'log-ts tnum shrink-0 select-none px-2 text-[11px] tabular-nums transition-colors hover:text-txt',
+            !tsString && 'opacity-0',
+          )}
           title={tsTooltip}
-          style={{ minWidth: tsString.length > 10 ? '14ch' : '8.5ch' }}
+          style={{ minWidth: tsString && tsString.length > 10 ? '14ch' : '8.5ch' }}
         >
-          {tsString}
+          {tsString || '00:00:00'}
         </span>
       )}
       <span
@@ -288,7 +292,7 @@ function ToolButton({
       onClick={onClick}
       disabled={disabled}
       className={cx(
-        'press flex h-8 w-8 items-center justify-center rounded-lg leading-none disabled:opacity-40',
+        'press flex h-8 w-8 items-center justify-center rounded-lg leading-none disabled:opacity-40 transition-colors',
         active ? 'bg-acc/[.16] text-acc-soft' : 'text-subtle hover:bg-surface2 hover:text-txt',
       )}
     >
@@ -298,7 +302,8 @@ function ToolButton({
 }
 
 /**
- * Consola de logs profesional estilo Railway.
+ * Consola de logs profesional estilo Railway con scroll al fondo garantizado,
+ * soporte de marcas de tiempo completas y herramientas avanzadas.
  */
 export default function LogViewer({
   lines,
@@ -319,6 +324,7 @@ export default function LogViewer({
   stageFilter: controlledStageFilter,
   onStageFilterChange,
   availableStages,
+  defaultStage = 'all',
   extraHeaderLeft,
   extraHeaderRight,
 }: {
@@ -340,6 +346,7 @@ export default function LogViewer({
   stageFilter?: LogStage;
   onStageFilterChange?: (stage: LogStage) => void;
   availableStages?: LogStage[];
+  defaultStage?: LogStage;
   extraHeaderLeft?: React.ReactNode;
   extraHeaderRight?: React.ReactNode;
 }) {
@@ -352,11 +359,13 @@ export default function LogViewer({
   const prevFirstRef = useRef<string | undefined>(undefined);
   const prevLenRef = useRef(0);
   const lastTopRef = useRef(0);
+  const unreadCountRef = useRef(0);
 
   const [follow, setFollow] = useState(true);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [filter, setFilter] = useState('');
   const [level, setLevel] = useState<LevelFilter>('all');
-  const [internalStage, setInternalStage] = useState<LogStage>('all');
+  const [internalStage, setInternalStage] = useState<LogStage>(defaultStage);
   const [wrap, setWrap] = useState(true);
   const [gutter, setGutter] = useState(true);
   const [showTs, setShowTs] = useState(true);
@@ -376,13 +385,13 @@ export default function LogViewer({
     const effectiveLines = clearedUntil > 0 ? lines.slice(clearedUntil) : lines;
     const result = effectiveLines.map((raw) => {
       let r = next.get(raw) ?? prev.get(raw);
-      if (!r) r = parseRawLine(raw);
+      if (!r) r = parseRawLine(raw, defaultStage);
       next.set(raw, r);
       return r;
     });
     procRef.current = next;
     return result;
-  }, [lines, clearedUntil]);
+  }, [lines, clearedUntil, defaultStage]);
 
   const counts = useMemo(() => {
     let err = 0;
@@ -429,17 +438,45 @@ export default function LogViewer({
     return out;
   }, [visible]);
 
-  // Autoscroll suave
-  useEffect(() => {
-    if (!follow) return;
+  // Función robusta multi-frame para asegurar que SIEMPRE empieza y queda anclado en la parte inferior
+  const scrollToBottom = useCallback(() => {
     const el = ref.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-    const raf = requestAnimationFrame(() => {
-      if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+    requestAnimationFrame(() => {
+      if (ref.current) {
+        ref.current.scrollTop = ref.current.scrollHeight;
+        const raf2 = requestAnimationFrame(() => {
+          if (ref.current) {
+            ref.current.scrollTop = ref.current.scrollHeight;
+            setTimeout(() => {
+              if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+            }, 50);
+          }
+        });
+      }
     });
-    return () => cancelAnimationFrame(raf);
-  }, [visible, follow]);
+  }, []);
+
+  // Al montar, al cambiar filtros o al recibir líneas mientras follow=true: siempre ir al final
+  useEffect(() => {
+    if (follow) {
+      unreadCountRef.current = 0;
+      setUnreadCount(0);
+      scrollToBottom();
+    } else {
+      unreadCountRef.current += 1;
+      setUnreadCount(unreadCountRef.current);
+    }
+  }, [visible.length, follow, scrollToBottom]);
+
+  // Si cambia el filtro o fase, reiniciar a follow y saltar abajo
+  useEffect(() => {
+    setFollow(true);
+    unreadCountRef.current = 0;
+    setUnreadCount(0);
+    scrollToBottom();
+  }, [stage, level, filter, scrollToBottom]);
 
   useEffect(() => {
     onFollowChange?.(follow);
@@ -466,8 +503,9 @@ export default function LogViewer({
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.scrollTop = follow ? el.scrollHeight : lastTopRef.current;
-  }, [maximized]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (follow) scrollToBottom();
+    else el.scrollTop = lastTopRef.current;
+  }, [maximized, follow, scrollToBottom]);
 
   useEffect(() => {
     if (!maximized) return;
@@ -514,7 +552,12 @@ export default function LogViewer({
       const el = ref.current;
       if (!el) return;
       lastTopRef.current = el.scrollTop;
-      setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+      const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 45;
+      setFollow(isAtBottom);
+      if (isAtBottom) {
+        unreadCountRef.current = 0;
+        setUnreadCount(0);
+      }
       if (el.scrollTop < 120 && el.scrollHeight - el.clientHeight > 200) triggerLoadOlder();
     });
   };
@@ -531,7 +574,9 @@ export default function LogViewer({
       el.scrollTop = 0;
     } else {
       setFollow(true);
-      el.scrollTop = el.scrollHeight;
+      unreadCountRef.current = 0;
+      setUnreadCount(0);
+      scrollToBottom();
     }
   };
 
@@ -574,16 +619,16 @@ export default function LogViewer({
         'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium transition-colors duration-150',
         level === key
           ? tone === 'err'
-            ? 'bg-err/[.18] text-err'
+            ? 'bg-err/[.18] text-err font-semibold'
             : tone === 'warn'
-              ? 'bg-warn/[.18] text-warn'
-              : 'bg-acc/[.18] text-acc-soft'
+              ? 'bg-warn/[.18] text-warn font-semibold'
+              : 'bg-acc/[.18] text-acc-soft font-semibold'
           : 'text-subtle hover:bg-surface2 hover:text-txt',
       )}
     >
       {tone && <span className={cx('h-[5px] w-[5px] rounded-full', tone === 'err' ? 'bg-err' : 'bg-warn')} />}
       {label}
-      {n !== undefined && n > 0 && <span className="tnum opacity-80">{NF.format(n)}</span>}
+      {n !== undefined && n > 0 && <span className="tnum opacity-85 font-mono">{NF.format(n)}</span>}
     </button>
   );
 
@@ -595,7 +640,7 @@ export default function LogViewer({
       className={cx(
         'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium transition-colors duration-150',
         stage === key
-          ? 'bg-surface2 text-txt shadow-sm border border-line'
+          ? 'bg-surface2 text-txt shadow-sm border border-line font-semibold'
           : 'text-subtle hover:bg-surface2/60 hover:text-txt',
       )}
     >
@@ -609,8 +654,8 @@ export default function LogViewer({
   const shell = (
     <section
       className={cx(
-        'log-shell relative flex min-h-0 flex-col overflow-hidden bg-term',
-        maximized ? 'h-full rounded-none' : cx(!bare && 'rounded-xl border border-line shadow-sm', className),
+        'log-shell relative flex min-h-0 h-full w-full flex-col overflow-hidden bg-term',
+        maximized ? 'rounded-none' : cx(!bare && 'rounded-xl border border-line shadow-sm', className),
       )}
       style={{ '--log-line-h': maximized ? '23px' : '22px' } as React.CSSProperties}
     >
@@ -630,7 +675,7 @@ export default function LogViewer({
                   title={follow ? 'En vivo' : 'En pausa'}
                 />
               )}
-              <span className="tnum font-medium text-txt/90">{NF.format(rows.length)}</span>
+              <span className="tnum font-medium text-txt/80">{NF.format(rows.length)}</span>
               <span className="hidden sm:inline">líneas</span>
               {replicas > 1 && <span className="hidden text-subtle sm:inline">· {replicas} réplicas</span>}
             </span>
@@ -668,7 +713,7 @@ export default function LogViewer({
               />
               {filter && (
                 <div className="flex items-center gap-1">
-                  <span className="text-[10px] text-subtle tabular-nums">
+                  <span className="text-[10px] text-subtle tabular-nums font-mono">
                     {visible.length} match{visible.length === 1 ? '' : 'es'}
                   </span>
                   <button
@@ -714,7 +759,7 @@ export default function LogViewer({
               </ToolButton>
               {tsMenuOpen && (
                 <div
-                  className="absolute right-0 top-full z-30 mt-1 min-w-[170px] rounded-lg border border-line bg-surface p-1 shadow-modal"
+                  className="absolute right-0 top-full z-30 mt-1 min-w-[185px] rounded-xl border border-line bg-surface p-1.5 shadow-modal"
                   onMouseLeave={() => setTsMenuOpen(false)}
                 >
                   <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-subtle">
@@ -726,7 +771,7 @@ export default function LogViewer({
                       setShowTs((s) => !s);
                       setTsMenuOpen(false);
                     }}
-                    className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs hover:bg-surface2"
+                    className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs hover:bg-surface2"
                   >
                     <span>Mostrar fechas</span>
                     {showTs && <Check size={12} className="text-acc" />}
@@ -749,8 +794,8 @@ export default function LogViewer({
                         setTsMenuOpen(false);
                       }}
                       className={cx(
-                        'flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs',
-                        tsFormat === opt.key && showTs ? 'bg-acc/10 font-medium text-acc-soft' : 'hover:bg-surface2',
+                        'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs',
+                        tsFormat === opt.key && showTs ? 'bg-acc/10 font-semibold text-acc-soft' : 'hover:bg-surface2',
                       )}
                     >
                       <span>{opt.label}</span>
@@ -777,7 +822,7 @@ export default function LogViewer({
               {copied ? <Check size={14} className="pop-in text-ok" /> : <Copy size={14} />}
             </ToolButton>
             <ToolButton
-              title={onDownload ? 'Descargar log completo del servidor' : 'Descargar log'}
+              title={onDownload ? 'Descargar log completo' : 'Descargar log'}
               onClick={onDownload ?? download}
               disabled={!onDownload && visible.length === 0}
             >
@@ -846,14 +891,14 @@ export default function LogViewer({
         </div>
       )}
 
-      <div className={cx('relative min-h-0', showChrome || toolbar ? 'flex-1' : 'h-full')}>
+      <div className="relative min-h-0 flex-1 w-full overflow-hidden">
         <div
           ref={ref}
           onScroll={onScroll}
           className={cx(
-            'log-body h-full overscroll-contain font-mono text-[12.5px] leading-[1.65] text-txt/90',
+            'log-body h-full w-full font-mono text-[12.5px] leading-[1.65] text-txt/90',
             maximized && 'text-[13px] leading-[1.7]',
-            wrap ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto',
+            wrap ? 'overflow-y-scroll overflow-x-hidden' : 'overflow-scroll',
           )}
           role="log"
           tabIndex={0}
@@ -901,6 +946,25 @@ export default function LogViewer({
             ))
           )}
         </div>
+
+        {/* Botón flotante estilo Railway para volver al final si el usuario scrollea hacia arriba */}
+        {!follow && visible.length > 0 && (
+          <div className="absolute bottom-3 right-4 z-20 pop-in">
+            <button
+              type="button"
+              onClick={() => jump('bottom')}
+              className="press flex items-center gap-2 rounded-full border border-line bg-surface/95 px-3 py-1.5 text-xs font-semibold text-txt shadow-modal backdrop-blur-md hover:bg-surface2"
+            >
+              <ArrowDown size={13} className="text-acc" />
+              <span>Ir al final</span>
+              {unreadCount > 0 && (
+                <span className="rounded-full bg-acc px-1.5 py-0.2 text-[10px] font-bold text-white">
+                  +{unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );

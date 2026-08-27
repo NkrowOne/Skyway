@@ -156,14 +156,17 @@ function makeLogger(deploymentId: string): DeployContext['log'] & { buffer: () =
 }
 
 /** Archiva los logs de ejecución del contenedor antes de destruirlo, para el histórico por despliegue. */
-async function archiveContainerLogs(cName: string): Promise<void> {
+export async function archiveContainerLogs(cName: string, fallbackDeploymentId?: string): Promise<void> {
   try {
     const info = await findContainer(cName);
-    const prevDepId = info?.Config?.Labels?.['skyway.deployment'];
-    if (prevDepId) {
-      const text = await fetchLogsText(cName, 2000, true);
+    let targetDepId = info?.Config?.Labels?.['skyway.deployment'];
+    if (!targetDepId && fallbackDeploymentId) {
+      targetDepId = fallbackDeploymentId;
+    }
+    if (targetDepId) {
+      const text = await fetchLogsText(cName, 3000, true);
       if (text && text.trim()) {
-        saveDeploymentRuntimeLogs(prevDepId, text);
+        saveDeploymentRuntimeLogs(targetDepId, text);
       }
     }
   } catch {

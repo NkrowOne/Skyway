@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { assertProjectAccess, requireAuth } from '../auth';
 import { audit } from '../audit';
-import { getDeployment, getProject, getService, listDeployments } from '../db';
+import { getDeployment, getProject, getService, listDeployments, saveDeploymentRuntimeLogs } from '../db';
 import { cancelDeployment, triggerDeploy } from '../deploy/deployer';
 import { dockerAvailable } from '../docker/client';
 import { containerName, fetchLogsText, findContainer } from '../docker/containers';
@@ -111,18 +111,27 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     let runtimeLogs = deployment.runtime_logs ?? null;
     let isLiveRuntime = false;
 
-    // Si el contenedor actual de este servicio pertenece a este despliegue,
-    // podemos consultar sus logs de ejecución en vivo desde Docker.
+    // Si el contenedor actual de este servicio pertenece a este despliegue (o es el último despliegue),
+    // consultamos los logs de ejecución directamente desde Docker con marcas de tiempo íntegras.
     if (project && service && (await dockerAvailable())) {
       const cName = containerName(project, service);
       const info = await findContainer(cName);
-      if (info && info.Config?.Labels?.['skyway.deployment'] === deployment.id) {
-        isLiveRuntime = info.State.Running;
-        try {
-          const liveText = await fetchLogsText(cName, 2000, true);
-          if (liveText) runtimeLogs = liveText;
-        } catch {
-          /* usar runtimeLogs archivado */
+      if (info) {
+        const matchesDep = info.Config?.Labels?.['skyway.deployment'] === deployment.id;
+        const isLatest = listDeployments(deployment.service_id)[0]?.id === deployment.id;
+        if (matchesDep || (!runtimeLogs && isLatest)) {
+          isLiveRuntime = info.State.Running;
+          try {
+            const liveText = await fetchLogsText(cName, 3000, true);
+            if (liveText && liveText.trim()) {
+              runtimeLogs = liveText;
+              if (!deployment.runtime_logs && !isLiveRuntime) {
+                saveDeploymentRuntimeLogs(deployment.id, liveText);
+              }
+            }
+          } catch {
+            /* usar runtimeLogs archivado */
+          }
         }
       }
     }

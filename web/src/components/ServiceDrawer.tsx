@@ -380,12 +380,16 @@ export default function ServiceDrawer({
         />
       </div>
 
-      <div className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain" role="tabpanel">
-        {/* h-full (no min-h-full): da altura DEFINIDA a la pestaña de Logs, cuyo visor
-            usa flex-1 para llenar y scrollear por dentro; con min-height no resolvía y
-            el log crecía sin fin. Las pestañas de documento (despliegues, métricas…)
-            desbordan hacia el scroll del cuerpo igual que antes (sus hijos no llevan min-h-0). */}
-        <div key={tab} className="tab-in flex h-full flex-col">
+      <div
+        className={cx(
+          'relative min-h-0 flex-1 overscroll-contain',
+          tab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-y-auto',
+        )}
+        role="tabpanel"
+      >
+        {/* En Logs, el visor ocupa el 100% del alto disponible y scrollea por dentro.
+            En pestañas de documento (despliegues, variables, métricas…) el tabpanel scrollea externamente. */}
+        <div key={tab} className="tab-in flex h-full flex-col min-h-0">
           {/* La pestaña activa (salvo Despliegues) se carga bajo demanda; Suspense
               solo muestra el spinner la 1ª vez que se abre una pestaña diferida. */}
           <Suspense fallback={<div className="flex flex-1 items-center justify-center p-8"><Spinner /></div>}>

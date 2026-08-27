@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
@@ -50,20 +50,27 @@ function DiagnosisCard({ raw }: { raw: string | null }) {
 
 /** Logs de un despliegue: histórico + streaming en vivo si está activo. */
 function DeploymentLogs({ deployment }: { deployment: Deployment }) {
-  const [lines, setLines] = useState<string[]>([]);
+  const [streamLines, setStreamLines] = useState<string[]>([]);
+  const isLive = isActiveDeploy(deployment.status);
   const queryClient = useQueryClient();
 
+  const logsQuery = useQuery({
+    queryKey: ['deploymentLogs', deployment.id],
+    queryFn: () =>
+      api.get<{ buildLogs: string; runtimeLogs: string | null }>(`/deployments/${deployment.id}/logs`),
+    enabled: !isLive,
+  });
+
   useEffect(() => {
-    setLines([]);
-    // Coalescencia por frame: los builds emiten ráfagas de líneas; agruparlas
-    // evita un re-render por línea sobre un buffer que puede ser grande.
+    if (!isLive) return;
+    setStreamLines([]);
     const pending: string[] = [];
     let raf = 0;
     const flush = () => {
       raf = 0;
       if (!pending.length) return;
       const incoming = pending.splice(0);
-      setLines((prev) => {
+      setStreamLines((prev) => {
         const next = prev.length ? prev.concat(incoming) : incoming;
         return next.length > 8_000 ? next.slice(next.length - 8_000) : next;
       });
@@ -72,11 +79,8 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
     es.addEventListener('snapshot', (ev) => {
       const data = JSON.parse((ev as MessageEvent).data);
       pending.length = 0;
-      if (raf) {
-        cancelAnimationFrame(raf);
-        raf = 0;
-      }
-      setLines(data.logs ? data.logs.split('\n').filter(Boolean) : []);
+      if (raf) cancelAnimationFrame(raf);
+      setStreamLines(data.logs ? data.logs.split('\n').filter(Boolean) : []);
     });
     es.addEventListener('log', (ev) => {
       pending.push(JSON.parse((ev as MessageEvent).data).line);
@@ -87,25 +91,34 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
       queryClient.invalidateQueries({ queryKey: ['service', deployment.service_id] });
       es.close();
     });
-    es.onerror = () => {
-      /* si el despliegue terminó, el servidor cierra el stream */
-    };
     return () => {
       if (raf) cancelAnimationFrame(raf);
       es.close();
     };
-  }, [deployment.id]);
+  }, [deployment.id, isLive, deployment.service_id, queryClient]);
+
+  const lines = useMemo(() => {
+    if (isLive) return streamLines;
+    if (logsQuery.data) {
+      const b = logsQuery.data.buildLogs ? logsQuery.data.buildLogs.split('\n').filter(Boolean) : [];
+      const r = logsQuery.data.runtimeLogs
+        ? logsQuery.data.runtimeLogs
+            .split('\n')
+            .filter(Boolean)
+            .map((l) => (l.includes('[runtime]') ? l : `[runtime] ${l}`))
+        : [];
+      return [...b, ...r];
+    }
+    return deployment.logs ? deployment.logs.split('\n').filter(Boolean) : [];
+  }, [isLive, streamLines, logsQuery.data, deployment.logs]);
 
   return (
     <LogViewer
       lines={lines}
       toolbar
-      title="Build & deploy"
-      downloadName={`deploy-${deployment.id}.log`}
-      // Altura acotada cómoda: el log no estira el panel; con muchas líneas
-      // aparece su propio scroll (el cuerpo virtualiza, no pinta todo a la vez)
-      // y al llegar al borde el scroll continúa en el panel.
-      className="h-[min(56vh,460px)]"
+      title={deployment.id}
+      downloadName={`deploy-${deployment.id}.txt`}
+      className="h-[360px] max-h-[55vh]"
     />
   );
 }
