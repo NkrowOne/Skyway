@@ -234,15 +234,17 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
       </div>
 
       {objects.length > 0 && (
-        <div className="max-h-28 overflow-y-auto rounded-xl border border-line bg-bg p-2">
-          <p className="mb-1.5 px-1 text-[10.5px] font-semibold uppercase tracking-[.08em] text-subtle">
-            {overview.data?.overview.objectLabel} · {objects.length}
-          </p>
+        <div className="shrink-0 max-h-36 overflow-y-auto rounded-xl border border-line bg-surface2/30 p-2.5 shadow-sm">
+          <div className="mb-2 flex items-center justify-between px-0.5 text-[11px] font-semibold uppercase tracking-wider text-subtle">
+            <span>
+              {overview.data?.overview.objectLabel} ({objects.length})
+            </span>
+          </div>
           <div className="flex flex-wrap gap-1.5">
             {objects.map((o, i) => (
               <span
                 key={`${o.name}-${i}`}
-                className="inline-flex max-w-full items-stretch overflow-hidden rounded-lg border border-line bg-surface text-[11.5px] text-sub transition-colors focus-within:border-acc/50 hover:border-acc/50"
+                className="inline-flex max-w-full items-stretch overflow-hidden rounded-lg border border-line bg-surface text-[11.5px] text-sub transition-colors focus-within:border-acc/50 hover:border-acc/50 shadow-sm"
               >
                 <button
                   onClick={() => browse.mutate({ object: o.name, mode: 'data' })}
@@ -273,12 +275,12 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
 
       {/* Snippets de consultas frecuentes */}
       {snippets.length > 0 && (
-        <div className="-mb-0.5 flex flex-wrap items-center gap-1.5">
+        <div className="shrink-0 -mb-0.5 flex flex-wrap items-center gap-1.5">
           {snippets.map((s) => (
             <button
               key={s.label}
               onClick={() => setQuery(s.query)}
-              className="rounded-full border border-line bg-surface px-2.5 py-[3px] text-[11px] text-sub transition-colors hover:border-acc/50 hover:text-txt"
+              className="rounded-full border border-line bg-surface px-2.5 py-[3px] text-[11px] text-sub transition-colors hover:border-acc/50 hover:text-txt shadow-sm"
               title={s.hint ?? s.query}
             >
               {s.label}
@@ -288,7 +290,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
       )}
 
       {/* Editor */}
-      <div className="rounded-xl border border-line bg-bg focus-within:border-acc/50">
+      <div className="shrink-0 rounded-xl border border-line bg-bg focus-within:border-acc/50 shadow-sm">
         <textarea
           ref={textareaRef}
           value={query}

@@ -141,7 +141,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-4 sm:px-5">
       {/* Migas de pan + acciones */}
-      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+      <div className="shrink-0 flex flex-wrap items-center gap-1.5 text-xs">
         <HardDrive size={13} className="shrink-0 text-subtle" />
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5 font-mono text-[11.5px]">
           {crumbs(dir).map((c, i, arr) => (
@@ -168,7 +168,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
         </button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="shrink-0 flex flex-wrap items-center gap-2">
         <Button size="sm" variant="secondary" onClick={() => fileInput.current?.click()} loading={uploading}>
           <Upload size={13} /> Subir
         </Button>
