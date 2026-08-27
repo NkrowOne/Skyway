@@ -4,12 +4,6 @@ import {
   Check,
   ChevronDown,
   Code2,
-  Cpu,
-  Layers,
-  Play,
-  Radio,
-  RotateCcw,
-  Sparkles,
   Terminal,
 } from 'lucide-react';
 import { api, openStream } from '../../api';

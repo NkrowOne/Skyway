@@ -37,22 +37,22 @@ function ProjectCard({ project }: { project: Project }) {
       {deploying > 0 && <DeploySweep />}
       <div className="flex items-start justify-between gap-2">
         <Monogram name={project.name} />
-        <span className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2.5 text-xs">
           {deploying > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-warn/[.15] px-[9px] py-[3px] text-[11px] font-semibold text-warn">
-              <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-current" />
+            <span className="inline-flex items-center gap-1.5 font-medium text-warn">
+              <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-warn" />
               {deploying === 1 ? 'desplegando' : `${deploying} desplegando`}
             </span>
           )}
           {alerts > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-err/[.15] px-[9px] py-[3px] text-[11px] font-semibold text-err tnum">
-              <BellRing size={10} /> {alerts}
+            <span className="inline-flex items-center gap-1 font-medium text-err">
+              <BellRing size={11} /> {alerts}
             </span>
           )}
-          <span className="inline-flex items-center rounded-full bg-surface2 px-[9px] py-[3px] text-[11px] font-medium text-sub tnum">
+          <span className="font-mono text-[11px] text-subtle">
             {project.serviceCount === 1 ? '1 servicio' : `${project.serviceCount ?? 0} servicios`}
           </span>
-        </span>
+        </div>
       </div>
       <h3 className="mt-3.5 text-[15px] font-semibold tracking-[-.01em]">{project.name}</h3>
       <p className="mt-1 text-xs text-sub">

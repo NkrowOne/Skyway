@@ -189,17 +189,15 @@ export function EditorBar({
 
 // ---------- StatusBadge ----------
 const TONE_BADGE: Record<Tone, string> = {
-  ok: 'bg-ok/[.14] text-ok',
-  warn: 'bg-warn/[.13] text-warn',
-  err: 'bg-err/[.14] text-err',
-  info: 'bg-info/[.13] text-info',
-  neutral: 'bg-surface2 text-sub',
+  ok: 'text-ok bg-ok/10 border border-ok/20',
+  warn: 'text-warn bg-warn/10 border border-warn/20',
+  err: 'text-err bg-err/10 border border-err/20',
+  info: 'text-info bg-info/10 border border-info/20',
+  neutral: 'text-sub bg-surface2 border border-line',
 };
 
 /**
- * Pill de estado unificado: bg tono/14, dot 5px (pulsa en transitorios) y
- * texto opcional de réplicas ("· 2/2"). Cuando el estado cambia (Activo →
- * Deteniendo…), el contenido hace un pop mínimo que lleva la mirada al dato.
+ * Pill de estado unificado: dot 5px y tipografía limpia.
  */
 export function StatusBadge({
   tone,
@@ -220,16 +218,16 @@ export function StatusBadge({
   return (
     <span
       className={cx(
-        'inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-[9px] py-[3px] text-[11px] font-medium transition-colors duration-300',
+        'inline-flex shrink-0 items-center whitespace-nowrap rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors duration-200',
         TONE_BADGE[tone],
         className,
       )}
     >
-      <span key={stateKey} className="badge-in inline-flex items-center gap-[5px]">
-        {dot && <span className={cx('h-[5px] w-[5px] rounded-full bg-current', pulse && 'pulse-soft')} />}
+      <span key={stateKey} className="inline-flex items-center gap-1.5">
+        {dot && <span className={cx('h-1.5 w-1.5 rounded-full bg-current', pulse && 'pulse-soft')} />}
         {label}
         {replicas && replicas.total > 1 && (
-          <span className={cx('tnum', replicas.running < replicas.total && 'text-warn')}>
+          <span className={cx('tnum font-mono text-[10px]', replicas.running < replicas.total && 'text-warn')}>
             · {replicas.running}/{replicas.total}
           </span>
         )}

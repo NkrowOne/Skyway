@@ -12,7 +12,6 @@ import {
   Layers,
   Plus,
   Search,
-  Sparkles,
   Table,
   Trash2,
   Upload,
@@ -620,16 +619,14 @@ export default function VariablesTab({
         <div className="flex flex-col gap-3">
           {/* Sugerencias rápidas */}
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
-            <span className="font-medium text-sub flex items-center gap-1">
-              <Sparkles size={12} className="text-acc" /> Sugerencias:
-            </span>
+            <span className="font-medium text-sub">Comunes:</span>
             {suggestions
               .filter((s) => !rows.some((r) => r.key === s.key))
               .map((s) => (
                 <button
                   key={s.key}
                   type="button"
-                  className="press rounded-md border border-line bg-surface px-2 py-1 font-mono text-[11px] text-sub transition-colors hover:border-acc/50 hover:bg-surface2 hover:text-txt"
+                  className="press rounded-md border border-line bg-surface2/60 px-2 py-0.5 font-mono text-[11px] text-sub transition-colors hover:border-acc/40 hover:text-txt"
                   title={s.hint}
                   onClick={() => {
                     setRows((prev) => [...prev, makeRow(s.key, s.value)]);

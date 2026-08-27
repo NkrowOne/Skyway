@@ -549,11 +549,13 @@ details[open] > .details-body {
  * filas de un bloque fuera de pantalla no maquetan ni pintan.
  */
 .log-chunk {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 500px;
+  contain: layout style;
 }
 .log-body {
-  overscroll-behavior: contain;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  scrollbar-gutter: stable;
 }
 /* Canalón de numeración: se queda pegado a la izquierda al hacer scroll horizontal. */
 .log-gutter {

@@ -118,7 +118,7 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
       toolbar
       title={deployment.id}
       downloadName={`deploy-${deployment.id}.txt`}
-      className="h-[360px] max-h-[55vh]"
+      className="h-[380px] min-h-[260px] max-h-[60vh]"
     />
   );
 }

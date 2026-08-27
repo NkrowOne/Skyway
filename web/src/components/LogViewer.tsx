@@ -187,27 +187,6 @@ function highlight(line: string, q: string): React.ReactNode {
   return out;
 }
 
-/** Badge de fase estilo Railway. */
-function StageBadge({ stage }: { stage: LogStage }) {
-  if (stage === 'all') return null;
-  const color =
-    stage === 'build'
-      ? 'bg-sky-500/15 text-sky-400 border border-sky-500/25'
-      : stage === 'deploy'
-        ? 'bg-purple-500/15 text-purple-400 border border-purple-500/25'
-        : stage === 'runtime'
-          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25'
-          : 'bg-zinc-500/15 text-zinc-400 border border-zinc-500/25';
-  return (
-    <span className={cx('log-stage-badge mr-1.5 shrink-0 uppercase', color)}>
-      {stage === 'sys' ? 'SYS' : stage}
-    </span>
-  );
-}
-
-/**
- * Fila de log individual memoizada: ultra-rápida y ligera.
- */
 const LogRow = memo(function LogRow({
   n,
   text,
@@ -242,7 +221,7 @@ const LogRow = memo(function LogRow({
     >
       {gutter && (
         <span
-          className="log-gutter tnum select-none px-2 text-right text-[11px] tabular-nums"
+          className="log-gutter tnum select-none px-2 text-right text-[11px] tabular-nums text-subtle/70"
           style={{ minWidth: '3.8ch' }}
         >
           {n}
@@ -251,11 +230,11 @@ const LogRow = memo(function LogRow({
       {showTs && (
         <span
           className={cx(
-            'log-ts tnum shrink-0 select-none px-2 text-[11px] tabular-nums transition-colors hover:text-txt',
+            'log-ts tnum shrink-0 select-none px-2 text-[11px] tabular-nums text-subtle transition-colors hover:text-txt',
             !tsString && 'opacity-0',
           )}
           title={tsTooltip}
-          style={{ minWidth: tsString && tsString.length > 10 ? '14ch' : '8.5ch' }}
+          style={{ minWidth: tsString && tsString.length > 10 ? '13ch' : '8ch' }}
         >
           {tsString || '00:00:00'}
         </span>
@@ -263,11 +242,10 @@ const LogRow = memo(function LogRow({
       <span
         className={cx(
           'flex flex-1 items-baseline py-[1px] pr-3',
-          !gutter && !showTs ? 'pl-3' : 'pl-1.5',
+          !gutter && !showTs ? 'pl-3' : 'pl-1',
           wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre',
         )}
       >
-        <StageBadge stage={stage} />
         <span className="min-w-0 flex-1">{highlight(text, query)}</span>
       </span>
     </div>
@@ -840,17 +818,17 @@ export default function LogViewer({
           </span>
 
           {follow ? (
-            <span className="badge-in inline-flex shrink-0 items-center gap-1.5 rounded-full border border-ok/25 bg-[color-mix(in_oklab,var(--color-ok)_12%,var(--color-term2))] px-2.5 py-0.5 text-[10.5px] font-medium text-ok">
-              <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-current" />
+            <span className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-ok">
+              <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-ok" />
               En vivo
             </span>
           ) : (
             <button
               type="button"
               onClick={() => jump('bottom')}
-              className="press badge-in inline-flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface2 px-2.5 py-0.5 text-[10.5px] font-medium text-sub hover:text-txt"
+              className="press inline-flex shrink-0 items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-0.5 text-[11px] font-medium text-sub hover:text-txt"
             >
-              <ArrowDownToLine size={11} /> Seguir al final
+              <ArrowDownToLine size={12} /> Seguir al final
             </button>
           )}
         </div>
@@ -863,7 +841,7 @@ export default function LogViewer({
           className={cx(
             'log-body h-full w-full font-mono text-[12.5px] leading-[1.65] text-txt/90',
             maximized && 'text-[13px] leading-[1.7]',
-            wrap ? 'overflow-y-scroll overflow-x-hidden' : 'overflow-scroll',
+            wrap ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto',
           )}
           role="log"
           tabIndex={0}
