@@ -89,6 +89,8 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
     es.addEventListener('done', () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', deployment.service_id] });
       queryClient.invalidateQueries({ queryKey: ['service', deployment.service_id] });
+      queryClient.invalidateQueries({ queryKey: ['alerts'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
       es.close();
     });
     return () => {

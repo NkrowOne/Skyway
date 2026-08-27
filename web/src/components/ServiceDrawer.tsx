@@ -107,7 +107,9 @@ export default function ServiceDrawer({
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['service', serviceId] });
     queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
     queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
+    queryClient.invalidateQueries({ queryKey: ['alerts'] });
   };
 
   /**

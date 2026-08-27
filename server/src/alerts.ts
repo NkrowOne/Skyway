@@ -1,4 +1,4 @@
-import { getProject, getService, insertAlert, resolveOpenServiceAlerts } from './db';
+import { getProject, getService, insertAlert, resolveAllOpenServiceAlerts, resolveOpenServiceAlerts } from './db';
 import { dispatchToChannels } from './notify';
 import { AlertSeverity } from './types';
 
@@ -96,6 +96,22 @@ export function resolveServiceAlerts(serviceId: string, type: string, notifyReco
       severity: 'info',
       title: 'Servicio recuperado',
       message: `"${service?.name ?? serviceId}" vuelve a estar en ejecución.`,
+      project: project?.name ?? null,
+      service: service?.name ?? null,
+    }).catch(() => {});
+  }
+}
+
+/** Resuelve TODAS las alertas abiertas de un servicio (p. ej. al redesplegar con éxito). */
+export function resolveAllServiceAlerts(serviceId: string, notifyRecovery = false): void {
+  const resolved = resolveAllOpenServiceAlerts(serviceId);
+  if (resolved.length > 0 && notifyRecovery) {
+    const service = getService(serviceId);
+    const project = service ? getProject(service.project_id) : undefined;
+    void dispatchToChannels({
+      severity: 'info',
+      title: 'Servicio recuperado',
+      message: `"${service?.name ?? serviceId}" se ha desplegado con éxito y ha resuelto sus incidencias.`,
       project: project?.name ?? null,
       service: service?.name ?? null,
     }).catch(() => {});

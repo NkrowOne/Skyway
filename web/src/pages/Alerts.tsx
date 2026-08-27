@@ -120,6 +120,7 @@ export default function AlertsPage() {
     mutationFn: (id: string) => api.post(`/alerts/${id}/resolve`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alerts'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
       toast('Alerta resuelta', 'ok');
     },
     onError: (err: Error) => toast(err.message, 'err'),

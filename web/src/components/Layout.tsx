@@ -406,6 +406,7 @@ function AlertBell() {
     if (next && unread > 0) {
       await api.post('/alerts/read-all');
       queryClient.invalidateQueries({ queryKey: ['alerts'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
     }
   };
 

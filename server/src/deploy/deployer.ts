@@ -22,7 +22,7 @@ import {
   listDeployments,
   getSetting,
 } from '../db';
-import { fireAlert, resolveServiceAlerts } from '../alerts';
+import { fireAlert, resolveAllServiceAlerts, resolveServiceAlerts } from '../alerts';
 import { diagnose } from './diagnose';
 import { emitDeploy, emitDeployFeed, toDeployFeedItem } from '../events';
 import { docker, dockerAvailable } from '../docker/client';
@@ -290,10 +290,8 @@ async function runDeployment(deploymentId: string): Promise<void> {
     publishFeed(deploymentId);
     log('✔ Despliegue completado');
 
-    // Un despliegue correcto resuelve las alertas de caída y el fallo de despliegue previo.
-    resolveServiceAlerts(service.id, 'service_down', false);
-    resolveServiceAlerts(service.id, 'crash_loop', false);
-    resolveServiceAlerts(service.id, 'deploy_failed', false);
+    // Un despliegue correcto resuelve todas las alertas abiertas previas del servicio (caídas, fallos de deploy, memoria, etc.).
+    resolveAllServiceAlerts(service.id, false);
 
     if (service.type === 'git' && !deployment.image_tag) {
       await cleanupOldImages(service.id, log);
