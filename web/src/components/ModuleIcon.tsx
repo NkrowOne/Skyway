@@ -181,3 +181,37 @@ export function ModuleChip({
     </span>
   );
 }
+
+/** Píldora compacta de servicio viva con el tinte y color de su marca oficial */
+export function ModuleBadge({
+  kind,
+  name,
+  className,
+}: {
+  kind: ModuleKind;
+  name: string;
+  className?: string;
+}) {
+  const { bg, fg } = CHIP[kind] ?? CHIP.generic;
+  return (
+    <span
+      className={cx(
+        'inline-flex max-w-[140px] items-center gap-1.5 truncate rounded-lg px-2 py-0.5 text-[11px] font-semibold transition-all duration-150',
+        className,
+      )}
+      style={{
+        backgroundColor: bg,
+        color: fg,
+        border: `1px solid color-mix(in srgb, ${fg} 30%, transparent)`,
+        boxShadow: `0 1px 3px color-mix(in srgb, ${fg} 8%, transparent)`,
+      }}
+      title={`${name} (${kind})`}
+    >
+      <span className="shrink-0 flex items-center justify-center">
+        <ModuleLogo kind={kind} size={11} />
+      </span>
+      <span className="truncate">{name}</span>
+    </span>
+  );
+}
+

@@ -23,21 +23,22 @@
 }
 
 :root {
-  /* Fuente canónica de tokens (tokens/_ds_bundle.css) para usos fuera de Tailwind (SVG, color-mix). */
-  --color-bg: oklch(14% 0.01 280);
-  --color-surface: oklch(18% 0.013 280);
-  --color-surface-2: oklch(22% 0.016 280);
-  --color-line: oklch(28% 0.018 280);
-  --color-txt: oklch(96% 0.005 280);
-  --color-sub: oklch(70% 0.015 280);
-  --color-subtle: oklch(55% 0.015 280);
-  --color-acc: #6e56cf;
-  --color-acc-soft: #b9a7ee;
-  --color-ok: oklch(74% 0.16 142);
-  --color-warn: oklch(80% 0.15 80);
-  --color-err: oklch(64% 0.22 25);
-  --color-info: oklch(72% 0.095 250); /* azul periwinkle: en familia con el violeta, sin estridencia */
-  --color-term: oklch(11% 0.008 280); /* fondo de terminales/logs */
+  /* Paleta seria y viva: Obsidian & Midnight Slate con Electric Indigo */
+  --color-bg: oklch(13% 0.015 265);
+  --color-surface: oklch(17.5% 0.02 265);
+  --color-surface-2: oklch(21.5% 0.026 265);
+  --color-line: oklch(26.5% 0.028 265);
+  --color-txt: oklch(96.5% 0.008 265);
+  --color-sub: oklch(72% 0.025 265);
+  --color-subtle: oklch(56% 0.025 265);
+  --color-acc: #7c5dfa;
+  --color-acc-soft: #b8a5fc;
+  --color-ok: oklch(76% 0.17 155);
+  --color-warn: oklch(80% 0.16 75);
+  --color-err: oklch(65% 0.23 25);
+  --color-info: oklch(74% 0.14 240);
+  --color-term: oklch(10% 0.012 265);
+  --color-term-2: oklch(14.5% 0.016 265);
 
   /*
    * Sistema de movimiento: tres curvas para toda la casa.

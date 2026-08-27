@@ -6,7 +6,7 @@ import { api } from '../api';
 import { useLatch } from '../hooks';
 import { Button, Field, Modal, Skeleton, useToast } from '../components/ui';
 import { DeploySweep } from '../components/DeployBadge';
-import { ModuleLogo, moduleKind } from '../components/ModuleIcon';
+import { ModuleBadge, ModuleLogo, moduleKind } from '../components/ModuleIcon';
 
 // El asistente de importación de Railway solo se abre desde un botón: se carga
 // (React.lazy) en su 1ª apertura, no al entrar al panel.
@@ -14,15 +14,39 @@ const RailwayImportModal = lazy(() => import('../components/RailwayImportModal')
 import { Me, Project, ProjectServiceSummary } from '../types';
 import { cx, timeAgo } from '../utils';
 
+const MONOGRAM_GRADIENTS = [
+  'from-indigo-500/25 to-purple-600/25 text-indigo-300 border-indigo-500/35 shadow-[0_0_12px_-3px_rgba(99,102,241,0.2)]',
+  'from-cyan-500/25 to-blue-600/25 text-cyan-300 border-cyan-500/35 shadow-[0_0_12px_-3px_rgba(6,182,212,0.2)]',
+  'from-emerald-500/25 to-teal-600/25 text-emerald-300 border-emerald-500/35 shadow-[0_0_12px_-3px_rgba(16,185,129,0.2)]',
+  'from-violet-500/25 to-fuchsia-600/25 text-violet-300 border-violet-500/35 shadow-[0_0_12px_-3px_rgba(139,92,246,0.2)]',
+  'from-amber-500/25 to-orange-600/25 text-amber-300 border-amber-500/35 shadow-[0_0_12px_-3px_rgba(245,158,11,0.2)]',
+  'from-rose-500/25 to-pink-600/25 text-rose-300 border-rose-500/35 shadow-[0_0_12px_-3px_rgba(244,63,94,0.2)]',
+  'from-sky-500/25 to-indigo-600/25 text-sky-300 border-sky-500/35 shadow-[0_0_12px_-3px_rgba(14,165,233,0.2)]',
+];
+
+function getMonogramTheme(name: string) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash << 5) - hash + name.charCodeAt(i);
+    hash |= 0;
+  }
+  return MONOGRAM_GRADIENTS[Math.abs(hash) % MONOGRAM_GRADIENTS.length];
+}
+
 /**
- * Monograma del proyecto: dos letras en mono, como sus slugs. Identidad real
- * por tarjeta en lugar de un icono repetido que no dice nada.
+ * Monograma del proyecto: dos letras con gradiente vivo exclusivo por proyecto
  */
 function Monogram({ name }: { name: string }) {
   const words = name.trim().split(/[\s\-_]+/).filter(Boolean);
   const initials = (words.length >= 2 ? words[0][0] + words[1][0] : name.trim().slice(0, 2)).toUpperCase();
+  const theme = getMonogramTheme(name);
   return (
-    <span className="flex h-10 w-10 shrink-0 select-none items-center justify-center rounded-xl border border-line/80 bg-gradient-to-br from-surface2 to-surface font-mono text-[13px] font-bold tracking-[.04em] text-txt shadow-sm transition-colors group-hover:border-acc/40">
+    <span
+      className={cx(
+        'flex h-10 w-10 shrink-0 select-none items-center justify-center rounded-xl border bg-gradient-to-br font-mono text-[13px] font-bold tracking-[.04em] transition-all duration-200 group-hover:scale-105',
+        theme,
+      )}
+    >
       {initials}
     </span>
   );
@@ -49,22 +73,11 @@ function ServiceStack({ services }: { services?: ProjectServiceSummary[] }) {
     <div className="mt-3 flex flex-wrap items-center gap-1.5">
       {visible.map((s) => {
         const kind = moduleKind(s);
-        return (
-          <span
-            key={s.id}
-            className="inline-flex max-w-[135px] items-center gap-1.5 truncate rounded-md border border-line/60 bg-surface2/60 px-2 py-0.5 text-[11px] font-medium text-sub transition-colors group-hover:border-line hover:border-acc/40 hover:text-txt"
-            title={`${s.name} (${kind})`}
-          >
-            <span className="shrink-0">
-              <ModuleLogo kind={kind} size={12} />
-            </span>
-            <span className="truncate">{s.name}</span>
-          </span>
-        );
+        return <ModuleBadge key={s.id} kind={kind} name={s.name} />;
       })}
       {remaining > 0 && (
         <span
-          className="inline-flex items-center rounded-md border border-line/60 bg-surface2/40 px-1.5 py-0.5 text-[10.5px] font-medium text-subtle"
+          className="inline-flex items-center rounded-lg border border-line/80 bg-surface2/70 px-2 py-0.5 text-[10.5px] font-semibold text-subtle"
           title={`${remaining} servicio${remaining > 1 ? 's' : ''} más`}
         >
           +{remaining} más

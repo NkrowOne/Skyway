@@ -241,40 +241,12 @@ export default function ProjectPage() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  if (project.isLoading) return <CanvasSkeleton />;
-  if (project.isError || !project.data) {
-    return <div className="p-8 text-center text-sm text-sub">Proyecto no encontrado</div>;
-  }
-
-  const { project: proj, services, alertCounts } = project.data;
-  const activeDeploys = live ? deploys : project.data.activeDeploys ?? {};
-  // Gestión de estructura (renombrar/eliminar): admin o propietario del workspace del proyecto.
-  const isManager =
-    isAdmin ||
-    (me.data?.user?.role === 'owner' && !!me.data?.user?.workspaceId && proj.workspace_id === me.data?.user?.workspaceId);
-  const selected = services.find((s) => s.id === selectedId) ?? null;
-  if (selected) lastServiceRef.current = selected;
-  // Durante la salida el drawer pinta el último servicio visto.
-  const drawerService = selected ?? lastServiceRef.current;
-
   const [serviceQuery, setServiceQuery] = useState('');
   const [serviceTypeFilter, setServiceTypeFilter] = useState<'all' | 'git' | 'database' | 'image' | 'alerts'>('all');
 
-  const openService = (id: string | null) => {
-    if (id) setSearchParams({ s: id });
-    else setSearchParams({});
-  };
-
-  const hasDeployables = services.some((s) => s.type !== 'database');
-
-  // Conteo de métricas agregadas del proyecto
-  const totalServices = services.length;
-  const runningCount = services.filter((s) => (latest?.services[s.id]?.state ?? s.runtime?.state) === 'running').length;
-  const alertServicesCount = services.filter((s) => (alertCounts?.[s.id] ?? 0) > 0).length;
-  const deployServicesCount = Object.keys(activeDeploys).length;
-  const gitCount = services.filter((s) => s.type === 'git').length;
-  const dbCount = services.filter((s) => s.type === 'database').length;
-  const imageCount = services.filter((s) => s.type === 'image').length;
+  const services = project.data?.services ?? [];
+  const alertCounts = project.data?.alertCounts ?? {};
+  const activeDeploys = live ? deploys : project.data?.activeDeploys ?? {};
 
   const filteredServices = useMemo(() => {
     return services.filter((s) => {
@@ -295,6 +267,37 @@ export default function ProjectPage() {
       return true;
     });
   }, [services, serviceTypeFilter, serviceQuery, alertCounts]);
+
+  if (project.isLoading) return <CanvasSkeleton />;
+  if (project.isError || !project.data) {
+    return <div className="p-8 text-center text-sm text-sub">Proyecto no encontrado</div>;
+  }
+
+  const { project: proj } = project.data;
+  // Gestión de estructura (renombrar/eliminar): admin o propietario del workspace del proyecto.
+  const isManager =
+    isAdmin ||
+    (me.data?.user?.role === 'owner' && !!me.data?.user?.workspaceId && proj.workspace_id === me.data?.user?.workspaceId);
+  const selected = services.find((s) => s.id === selectedId) ?? null;
+  if (selected) lastServiceRef.current = selected;
+  // Durante la salida el drawer pinta el último servicio visto.
+  const drawerService = selected ?? lastServiceRef.current;
+
+  const openService = (id: string | null) => {
+    if (id) setSearchParams({ s: id });
+    else setSearchParams({});
+  };
+
+  const hasDeployables = services.some((s) => s.type !== 'database');
+
+  // Conteo de métricas agregadas del proyecto
+  const totalServices = services.length;
+  const runningCount = services.filter((s) => (latest?.services[s.id]?.state ?? s.runtime?.state) === 'running').length;
+  const alertServicesCount = services.filter((s) => (alertCounts?.[s.id] ?? 0) > 0).length;
+  const deployServicesCount = Object.keys(activeDeploys).length;
+  const gitCount = services.filter((s) => s.type === 'git').length;
+  const dbCount = services.filter((s) => s.type === 'database').length;
+  const imageCount = services.filter((s) => s.type === 'image').length;
 
   return (
     <div className="flex h-full">

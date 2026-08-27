@@ -6,22 +6,22 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Tokens del rediseño (design_handoff_skyway_redesign): superficies oklch + violeta #6e56cf.
-        bg: 'oklch(14% 0.01 280 / <alpha-value>)', // fondo de página
-        surface: 'oklch(18% 0.013 280 / <alpha-value>)', // tarjetas / drawer
-        surface2: 'oklch(22% 0.016 280 / <alpha-value>)', // superficie elevada / hover
-        line: 'oklch(28% 0.018 280 / <alpha-value>)', // bordes hairline
-        txt: 'oklch(96% 0.005 280 / <alpha-value>)', // texto principal
-        sub: 'oklch(70% 0.015 280 / <alpha-value>)', // texto secundario
-        subtle: 'oklch(55% 0.015 280 / <alpha-value>)', // texto terciario / placeholders
-        acc: '#6e56cf', // violeta de marca
-        'acc-soft': '#b9a7ee', // violeta claro para iconos sobre tinte de marca
-        ok: 'oklch(74% 0.16 142 / <alpha-value>)',
-        warn: 'oklch(80% 0.15 80 / <alpha-value>)',
-        err: 'oklch(64% 0.22 25 / <alpha-value>)',
-        info: 'oklch(72% 0.095 250 / <alpha-value>)', // azul periwinkle: en familia con el violeta, sin estridencia
-        term: 'oklch(11% 0.008 280 / <alpha-value>)', // fondo de terminales/logs
-        term2: 'oklch(15.5% 0.01 280 / <alpha-value>)', // cromo de la consola (cabecera, canalón, barra)
+        // Paleta seria y viva: Obsidian & Midnight Slate con Electric Indigo
+        bg: 'oklch(13% 0.015 265 / <alpha-value>)', // fondo de página
+        surface: 'oklch(17.5% 0.02 265 / <alpha-value>)', // tarjetas / drawer
+        surface2: 'oklch(21.5% 0.026 265 / <alpha-value>)', // superficie elevada / hover
+        line: 'oklch(26.5% 0.028 265 / <alpha-value>)', // bordes hairline
+        txt: 'oklch(96.5% 0.008 265 / <alpha-value>)', // texto principal
+        sub: 'oklch(72% 0.025 265 / <alpha-value>)', // texto secundario
+        subtle: 'oklch(56% 0.025 265 / <alpha-value>)', // texto terciario / placeholders
+        acc: '#7c5dfa', // violeta eléctrico de marca
+        'acc-soft': '#b8a5fc', // violeta claro para iconos sobre tinte de marca
+        ok: 'oklch(76% 0.17 155 / <alpha-value>)',
+        warn: 'oklch(80% 0.16 75 / <alpha-value>)',
+        err: 'oklch(65% 0.23 25 / <alpha-value>)',
+        info: 'oklch(74% 0.14 240 / <alpha-value>)', // azul cielo vivo
+        term: 'oklch(10% 0.012 265 / <alpha-value>)', // fondo de terminales/logs
+        term2: 'oklch(14.5% 0.016 265 / <alpha-value>)', // cromo de la consola (cabecera, canalón, barra)
       },
       borderRadius: {
         // Radios unificados: controles 10px, tarjetas 12px, overlays 14px.
