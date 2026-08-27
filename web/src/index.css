@@ -602,6 +602,30 @@ details[open] > .details-body {
   background: color-mix(in oklab, var(--color-warn) 34%, transparent);
   color: var(--color-warn);
 }
+.log-mark-active {
+  background: var(--color-warn);
+  color: var(--color-term);
+  font-weight: 600;
+}
+/* Timestamp de log formateado */
+.log-ts {
+  user-select: none;
+  color: color-mix(in oklab, var(--color-subtle) 85%, transparent);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+/* Insignias de fase de logs estilo Railway */
+.log-stage-badge {
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
 
 /* Pantalla completa de la consola: sube y se asienta; se despide en reversa. */
 @keyframes console-in {

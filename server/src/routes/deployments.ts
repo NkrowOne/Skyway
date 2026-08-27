@@ -1,8 +1,10 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { assertProjectAccess, requireAuth } from '../auth';
 import { audit } from '../audit';
-import { getDeployment, getService, listDeployments } from '../db';
+import { getDeployment, getProject, getService, listDeployments } from '../db';
 import { cancelDeployment, triggerDeploy } from '../deploy/deployer';
+import { dockerAvailable } from '../docker/client';
+import { containerName, fetchLogsText, findContainer } from '../docker/containers';
 import { onDeploy } from '../events';
 import { markManualAction } from '../monitor';
 import { sseInit } from '../sse';
@@ -95,5 +97,93 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       channel.send('done', { status: deployment.status, error: deployment.error });
       setTimeout(() => channel.close(), 100);
     }
+  });
+
+  /** Devuelve el desglose estructurado de logs de un despliegue (Build, Deploy y Runtime). */
+  app.get('/api/deployments/:id/logs', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const deployment = getDeployment(id);
+    if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
+    if (!serviceAccess(req, reply, deployment.service_id)) return reply;
+
+    const service = getService(deployment.service_id);
+    const project = service ? getProject(service.project_id) : undefined;
+    let runtimeLogs = deployment.runtime_logs ?? null;
+    let isLiveRuntime = false;
+
+    // Si el contenedor actual de este servicio pertenece a este despliegue,
+    // podemos consultar sus logs de ejecución en vivo desde Docker.
+    if (project && service && (await dockerAvailable())) {
+      const cName = containerName(project, service);
+      const info = await findContainer(cName);
+      if (info && info.Config?.Labels?.['skyway.deployment'] === deployment.id) {
+        isLiveRuntime = info.State.Running;
+        try {
+          const liveText = await fetchLogsText(cName, 2000, true);
+          if (liveText) runtimeLogs = liveText;
+        } catch {
+          /* usar runtimeLogs archivado */
+        }
+      }
+    }
+
+    return {
+      deploymentId: deployment.id,
+      status: deployment.status,
+      buildLogs: deployment.logs || '',
+      runtimeLogs,
+      isLiveRuntime,
+      createdAt: deployment.created_at,
+      finishedAt: deployment.finished_at,
+    };
+  });
+
+  /** Descarga el log completo de un despliegue (build + deploy + runtime). */
+  app.get('/api/deployments/:id/logs/download', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const deployment = getDeployment(id);
+    if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
+    if (!serviceAccess(req, reply, deployment.service_id)) return reply;
+
+    const service = getService(deployment.service_id);
+    const project = service ? getProject(service.project_id) : undefined;
+    let runtimeLogs = deployment.runtime_logs || '';
+
+    if (project && service && (await dockerAvailable())) {
+      const cName = containerName(project, service);
+      const info = await findContainer(cName);
+      if (info && info.Config?.Labels?.['skyway.deployment'] === deployment.id) {
+        try {
+          const liveText = await fetchLogsText(cName, 'all', true);
+          if (liveText) runtimeLogs = liveText;
+        } catch {
+          /* usar archivado */
+        }
+      }
+    }
+
+    const stamp = new Date(deployment.created_at).toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const serviceSlug = service?.slug ?? 'servicio';
+
+    let fullText = `=== SKYWAY DEPLOYMENT LOG ===\n`;
+    fullText += `Deployment ID: ${deployment.id}\n`;
+    fullText += `Service: ${service?.name ?? deployment.service_id} (${serviceSlug})\n`;
+    fullText += `Trigger: ${deployment.trigger}\n`;
+    fullText += `Status: ${deployment.status}\n`;
+    if (deployment.commit_sha) fullText += `Commit: ${deployment.commit_sha} - ${deployment.commit_msg ?? ''}\n`;
+    fullText += `Date: ${new Date(deployment.created_at).toISOString()}\n`;
+    fullText += `==========================================\n\n`;
+
+    fullText += `--- BUILD & DEPLOY LOGS ---\n`;
+    fullText += (deployment.logs || 'Sin logs de build.') + '\n\n';
+
+    if (runtimeLogs) {
+      fullText += `--- RUNTIME / APPLICATION LOGS ---\n`;
+      fullText += runtimeLogs + '\n';
+    }
+
+    reply.header('Content-Type', 'text/plain; charset=utf-8');
+    reply.header('Content-Disposition', `attachment; filename="deploy-${serviceSlug}-${deployment.id}-${stamp}.txt"`);
+    return fullText;
   });
 }

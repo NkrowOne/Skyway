@@ -18,6 +18,7 @@ import {
   setEnv,
   successfulDeploymentsBeyond,
   updateDeployment,
+  saveDeploymentRuntimeLogs,
   listDeployments,
   getSetting,
 } from '../db';
@@ -28,6 +29,7 @@ import { docker, dockerAvailable } from '../docker/client';
 import {
   configuredReplicas,
   containerName,
+  fetchLogsText,
   findContainer,
   imageExists,
   imageExposedPorts,
@@ -135,7 +137,10 @@ function makeLogger(deploymentId: string): DeployContext['log'] & { buffer: () =
   }, 1000);
 
   const log = ((line: string) => {
-    const stamped = `${new Date().toISOString().slice(11, 19)} ${line}`;
+    // Sello ISO completo (YYYY-MM-DDTHH:mm:ss.sssZ) para que el visor pueda pintar
+    // la fecha, la hora exacta y calcular tiempos relativos precisos como en Railway.
+    const iso = new Date().toISOString();
+    const stamped = line.startsWith('20') && line.includes('T') ? line : `${iso} ${line}`;
     if (buffer.length < MAX_LOG_CHARS) {
       buffer += stamped + '\n';
       dirty = true;
@@ -148,6 +153,22 @@ function makeLogger(deploymentId: string): DeployContext['log'] & { buffer: () =
     updateDeployment(deploymentId, { logs: buffer });
   };
   return log;
+}
+
+/** Archiva los logs de ejecución del contenedor antes de destruirlo, para el histórico por despliegue. */
+async function archiveContainerLogs(cName: string): Promise<void> {
+  try {
+    const info = await findContainer(cName);
+    const prevDepId = info?.Config?.Labels?.['skyway.deployment'];
+    if (prevDepId) {
+      const text = await fetchLogsText(cName, 2000, true);
+      if (text && text.trim()) {
+        saveDeploymentRuntimeLogs(prevDepId, text);
+      }
+    }
+  } catch {
+    /* noop best-effort */
+  }
 }
 
 /** Crea un despliegue y lo encola. Devuelve la fila inmediatamente. */
@@ -1110,6 +1131,7 @@ async function deployContainer(
         throw new Error(`La réplica ${i}/${replicas} no arrancó (${err?.message || err}).`);
       }
       if (hadOld) {
+        await archiveContainerLogs(rPrev);
         await stopContainer(rPrev);
         await removeContainer(rPrev);
       }
@@ -1121,6 +1143,7 @@ async function deployContainer(
       const match = c.name.match(/-r(\d+)$/);
       if (match && Number(match[1]) > replicas) {
         log(`Retirando réplica sobrante ${c.name}...`);
+        await archiveContainerLogs(c.name);
         await stopContainer(c.name);
         await removeContainer(c.name);
       }
@@ -1151,7 +1174,10 @@ async function deployContainer(
         `El contenedor terminó inesperadamente (${err?.message || err}). Revisa los logs del servicio.`,
       );
     }
-    if (oldExists) await removeContainer(prevName);
+    if (oldExists) {
+      await archiveContainerLogs(prevName);
+      await removeContainer(prevName);
+    }
   }
 
   if (domains.length > 0) {

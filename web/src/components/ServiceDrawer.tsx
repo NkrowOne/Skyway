@@ -58,7 +58,11 @@ export default function ServiceDrawer({
   // Cambios guardados (ajustes o variables) que solo surten efecto al redesplegar.
   // Un aviso persistente vale más que un toast fugaz. Se limpia al desplegar o cambiar de servicio.
   const [pendingRedeploy, setPendingRedeploy] = useState(false);
-  useEffect(() => setPendingRedeploy(false), [serviceId]);
+  const [targetDeploymentId, setTargetDeploymentId] = useState<string | null>(null);
+  useEffect(() => {
+    setPendingRedeploy(false);
+    setTargetDeploymentId(null);
+  }, [serviceId]);
   const [wide, setWide] = useLocalStorage('skyway.drawerWide', false);
   const fullscreen = useMediaQuery('(max-width: 899px)');
   const toast = useToast();
@@ -385,7 +389,16 @@ export default function ServiceDrawer({
           {/* La pestaña activa (salvo Despliegues) se carga bajo demanda; Suspense
               solo muestra el spinner la 1ª vez que se abre una pestaña diferida. */}
           <Suspense fallback={<div className="flex flex-1 items-center justify-center p-8"><Spinner /></div>}>
-            {tab === 'deployments' && <DeploymentsTab serviceId={serviceId} serviceType={service.type} />}
+            {tab === 'deployments' && (
+              <DeploymentsTab
+                serviceId={serviceId}
+                serviceType={service.type}
+                onNavigateToLogs={(depId) => {
+                  setTargetDeploymentId(depId);
+                  setTab('logs');
+                }}
+              />
+            )}
             {tab === 'db' && <DbConsoleTab serviceId={serviceId} />}
             {tab === 'variables' && (
               <VariablesTab
@@ -398,7 +411,13 @@ export default function ServiceDrawer({
             {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
             {tab === 'files' && <FilesTab serviceId={serviceId} />}
             {tab === 'metrics' && <MetricsTab serviceId={serviceId} service={service} latest={latestMetrics} historyRef={historyRef} />}
-            {tab === 'logs' && <LogsTab serviceId={serviceId} replicas={(service.config as any).replicas ?? 1} />}
+            {tab === 'logs' && (
+              <LogsTab
+                serviceId={serviceId}
+                replicas={(service.config as any).replicas ?? 1}
+                initialDeploymentId={targetDeploymentId}
+              />
+            )}
             {tab === 'settings' && (
               <ServiceSettingsTab
                 service={service}

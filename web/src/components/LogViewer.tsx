@@ -2,26 +2,27 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'rea
 import { createPortal } from 'react-dom';
 import {
   ArrowDownToLine,
-  ArrowUp,
   ArrowUpToLine,
   Check,
+  Clock,
   Copy,
   Download,
   Hash,
-  Loader2,
   Maximize2,
   Minimize2,
   Search,
+  Trash2,
   WrapText,
   X,
 } from 'lucide-react';
 import { cx, stripAnsi } from '../utils';
 
-type Level = 'err' | 'warn' | 'plain';
-type LevelFilter = 'all' | 'err' | 'warn';
+export type Level = 'err' | 'warn' | 'plain';
+export type LevelFilter = 'all' | 'err' | 'warn';
+export type LogStage = 'all' | 'build' | 'deploy' | 'runtime' | 'sys';
+export type TimestampFormat = 'time' | 'datetime' | 'utc' | 'relative';
 
-/** Formateador de miles reutilizable (locale fija): crearlo en cada render es caro
- *  y LogViewer re-renderiza por cada lote de líneas durante el streaming en vivo. */
+/** Formateador de miles reutilizable (locale fija). */
 const NF = new Intl.NumberFormat('es');
 
 /** Filas agrupadas en tramos para virtualizar por bloque (ver index.css). */
@@ -30,10 +31,130 @@ const CHUNK = 64;
 /** Heurística de niveles: error/fatal/panic → err; warn → warn; resto neutro. */
 function detectLevel(line: string): Level {
   const l = line.toLowerCase();
-  if (l.includes('error') || l.includes(' err ') || l.includes('fatal') || l.includes('panic') || l.includes('[error]'))
+  if (
+    l.includes('error') ||
+    l.includes(' err ') ||
+    l.includes('fatal') ||
+    l.includes('panic') ||
+    l.includes('[error]') ||
+    l.includes('level=error') ||
+    l.includes('"level":"error"')
+  ) {
     return 'err';
-  if (l.includes('warn')) return 'warn';
+  }
+  if (
+    l.includes('warn') ||
+    l.includes('warning') ||
+    l.includes('[warn]') ||
+    l.includes('level=warn') ||
+    l.includes('"level":"warn"')
+  ) {
+    return 'warn';
+  }
   return 'plain';
+}
+
+export interface ParsedRow {
+  raw: string;
+  cleanText: string;
+  ts: number | null;
+  iso: string | null;
+  stage: LogStage;
+  lvl: Level;
+}
+
+/** Parsea una línea de log extrayendo timestamp (ISO/legacy), fase (build/deploy/runtime) y nivel. */
+function parseRawLine(raw: string): ParsedRow {
+  let text = stripAnsi(raw).trimEnd();
+  let ts: number | null = null;
+  let iso: string | null = null;
+  let stage: LogStage = 'all';
+
+  // 1. Detección de timestamp ISO (Docker 2026-08-27T19:24:12.123456789Z o estándar)
+  const spaceIdx = text.indexOf(' ');
+  if (spaceIdx >= 19 && text[4] === '-' && text[7] === '-' && text[10] === 'T') {
+    const candidate = text.slice(0, spaceIdx);
+    const parsed = Date.parse(candidate);
+    if (Number.isFinite(parsed)) {
+      ts = parsed;
+      iso = candidate;
+      text = text.slice(spaceIdx + 1);
+    }
+  } else if (spaceIdx >= 8 && spaceIdx <= 12 && /^\d{2}:\d{2}:\d{2}/.test(text)) {
+    // Sello legacy HH:mm:ss
+    iso = text.slice(0, spaceIdx);
+    text = text.slice(spaceIdx + 1);
+  }
+
+  // 2. Detección de fase de despliegue / ejecución estilo Railway
+  const lower = text.toLowerCase();
+  if (lower.startsWith('[build]') || lower.startsWith('build:')) {
+    stage = 'build';
+    text = text.replace(/^\[build\]\s*|^build:\s*/i, '');
+  } else if (lower.startsWith('[deploy]') || lower.startsWith('deploy:')) {
+    stage = 'deploy';
+    text = text.replace(/^\[deploy\]\s*|^deploy:\s*/i, '');
+  } else if (lower.startsWith('[runtime]') || lower.startsWith('runtime:')) {
+    stage = 'runtime';
+    text = text.replace(/^\[runtime\]\s*|^runtime:\s*/i, '');
+  } else if (lower.startsWith('[sys]') || lower.startsWith('[system]') || lower.startsWith('system:')) {
+    stage = 'sys';
+    text = text.replace(/^\[(sys|system)\]\s*|^(sys|system):\s*/i, '');
+  }
+
+  const lvl = detectLevel(text);
+
+  return {
+    raw,
+    cleanText: text,
+    ts,
+    iso,
+    stage,
+    lvl,
+  };
+}
+
+/** Formatea una marca de tiempo según el formato seleccionado. */
+function formatTimestamp(ts: number | null, iso: string | null, format: TimestampFormat): string {
+  if (!ts && !iso) return '';
+  if (format === 'relative' && ts) {
+    const diff = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (diff < 10) return '<10s';
+    if (diff < 60) return `${diff}s`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+    return `${Math.floor(diff / 86400)}d`;
+  }
+  if (format === 'utc' && ts) {
+    return new Date(ts).toISOString().slice(11, 19) + ' UTC';
+  }
+  if (format === 'datetime' && ts) {
+    const d = new Date(ts);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const time = d.toLocaleTimeString('es-ES', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return `${day}/${month} ${time}`;
+  }
+  // format === 'time' (default)
+  if (ts) {
+    return new Date(ts).toLocaleTimeString('es-ES', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  }
+  return iso?.slice(0, 8) || '';
+}
+
+/** Tooltip con información temporal completa para el hover. */
+function timestampTooltip(ts: number | null, iso: string | null): string | undefined {
+  if (!ts && !iso) return undefined;
+  if (ts) {
+    const d = new Date(ts);
+    return `Fecha: ${d.toLocaleString('es-ES')}\nISO: ${d.toISOString()}\nUTC: ${d.toUTCString()}`;
+  }
+  return `Hora: ${iso}`;
 }
 
 /** Resalta TODAS las coincidencias (sin distinguir mayúsculas) de `q` en la línea. */
@@ -61,42 +182,85 @@ function highlight(line: string, q: string): React.ReactNode {
   return out;
 }
 
+/** Badge de fase estilo Railway. */
+function StageBadge({ stage }: { stage: LogStage }) {
+  if (stage === 'all') return null;
+  const color =
+    stage === 'build'
+      ? 'bg-sky-500/15 text-sky-400 border border-sky-500/25'
+      : stage === 'deploy'
+        ? 'bg-purple-500/15 text-purple-400 border border-purple-500/25'
+        : stage === 'runtime'
+          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25'
+          : 'bg-zinc-500/15 text-zinc-400 border border-zinc-500/25';
+  return (
+    <span className={cx('log-stage-badge mr-1.5 shrink-0 uppercase', color)}>
+      {stage === 'sys' ? 'SYS' : stage}
+    </span>
+  );
+}
+
 /**
- * Una fila de log, memoizada: cuando llegan líneas nuevas por el final, las
- * filas previas conservan sus props y React se salta su re-render (clave para
- * que el streaming no reconcilie todo el buffer). El resaltado se computa aquí.
+ * Fila de log individual memoizada: evita re-renderizar todo el buffer durante el streaming en vivo.
  */
 const LogRow = memo(function LogRow({
   n,
   text,
+  tsString,
+  tsTooltip,
+  stage,
   lvl,
   wrap,
   gutter,
+  showTs,
   query,
 }: {
   n: number;
   text: string;
+  tsString: string;
+  tsTooltip?: string;
+  stage: LogStage;
   lvl: Level;
   wrap: boolean;
   gutter: boolean;
+  showTs: boolean;
   query: string;
 }) {
   return (
     <div
       className={cx(
-        'log-row flex',
+        'log-row flex items-baseline',
         wrap ? 'w-full' : 'w-max min-w-full',
         lvl === 'err' && 'log-row-err',
         lvl === 'warn' && 'log-row-warn',
       )}
     >
       {gutter && (
-        <span className="log-gutter tnum select-none px-2.5 text-right text-[11px] tabular-nums" style={{ minWidth: '3.5ch' }}>
+        <span
+          className="log-gutter tnum select-none px-2 text-right text-[11px] tabular-nums"
+          style={{ minWidth: '3.5ch' }}
+        >
           {n}
         </span>
       )}
-      <span className={cx('py-[1px] pr-3', gutter ? 'pl-2' : 'pl-3', wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre')}>
-        {highlight(text, query)}
+      {showTs && tsString && (
+        <span
+          className="log-ts tnum shrink-0 select-none px-2 text-[11px] tabular-nums transition-colors hover:text-txt"
+          title={tsTooltip}
+          style={{ minWidth: tsString.length > 10 ? '14ch' : '8.5ch' }}
+        >
+          {tsString}
+        </span>
+      )}
+      <span
+        className={cx(
+          'flex flex-1 items-baseline py-[1px] pr-3',
+          !gutter && !showTs ? 'pl-3' : 'pl-1.5',
+          wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre',
+        )}
+      >
+        <StageBadge stage={stage} />
+        <span className="min-w-0 flex-1">{highlight(text, query)}</span>
       </span>
     </div>
   );
@@ -134,13 +298,7 @@ function ToolButton({
 }
 
 /**
- * Consola de logs profesional. Un mismo primitivo para logs de servicio y de
- * despliegue, incrustado o a pantalla completa:
- *  · autoscroll inteligente (sigue el final salvo que el usuario suba);
- *  · filtro por texto (resaltado) y por nivel (error/aviso, con contadores);
- *  · numeración de línea en canalón fijo, ajuste de línea, copia y descarga;
- *  · cuerpo virtualizado (content-visibility) que aguanta buffers enormes;
- *  · botón de maximizar que promueve la MISMA consola a pantalla completa.
+ * Consola de logs profesional estilo Railway.
  */
 export default function LogViewer({
   lines,
@@ -158,109 +316,110 @@ export default function LogViewer({
   onDownload,
   onFollowChange,
   tailAnchor = false,
+  stageFilter: controlledStageFilter,
+  onStageFilterChange,
+  availableStages,
+  extraHeaderLeft,
+  extraHeaderRight,
 }: {
   lines: string[];
   className?: string;
-  /** Barra de herramientas pro (filtro, niveles, numeración, ajuste, saltos, copiar, descargar). */
   toolbar?: boolean;
-  /** Sin borde/radio propio: para incrustar bajo otra cabecera. */
   bare?: boolean;
   replicas?: number;
   downloadName?: string;
   statusNote?: string | null;
-  /** Título del cromo de la consola (p. ej. «Build & deploy», «Logs en vivo»). */
   title?: string;
-  /** Si se pasa, activa la carga de historial al subir (paginación hacia atrás). */
   onLoadOlder?: () => void;
-  /** Hay líneas más antiguas por cargar (muestra el botón y arma el auto-scroll). */
   canLoadOlder?: boolean;
-  /** Una carga de historial está en curso. */
   loadingOlder?: boolean;
-  /** Se ha llegado al principio del registro (no hay más historial). */
   reachedStart?: boolean;
-  /** Descarga a medida (p. ej. el log completo desde el servidor); reemplaza a la local. */
   onDownload?: () => void;
-  /** Notifica al contenedor si el visor sigue el final (para su política de recorte). */
   onFollowChange?: (follow: boolean) => void;
-  /** Ancla el contenido al fondo cuando aún no llena la vista: el registro más
-   *  nuevo queda abajo del todo (estilo terminal). Para los logs en vivo. */
   tailAnchor?: boolean;
+  stageFilter?: LogStage;
+  onStageFilterChange?: (stage: LogStage) => void;
+  availableStages?: LogStage[];
+  extraHeaderLeft?: React.ReactNode;
+  extraHeaderRight?: React.ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
-  // Caché del procesado por texto de línea: stripAnsi + nivel son funciones puras
-  // de la línea, así que se memorizan y solo se computa lo nuevo. Se reconstruye
-  // el mapa con las líneas vigentes en cada pasada (memoria acotada), lo que hace
-  // el procesado O(n) barato y robusto tanto si el buffer crece por el final
-  // (streaming) como por el frente (cargar historial) o se recorta —clave para
-  // que el móvil no se ahogue con buffers grandes.
-  const procRef = useRef(new Map<string, { text: string; lvl: Level }>());
+  const procRef = useRef(new Map<string, ParsedRow>());
   const scrollRaf = useRef(0);
-  // Ancla para conservar el sitio de lectura al anteponer historial: alto y
-  // scroll del cuerpo justo antes de pedir el tramo. Al llegar, se desplaza el
-  // scroll por el alto EXACTO añadido por el frente (newScrollHeight − alto
-  // guardado), así el contenido visible no se mueve sea cual sea la estimación
-  // de alto de las filas nuevas fuera de pantalla.
   const anchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
-  // Evita re-disparar la carga de historial mientras una está en curso.
   const olderRequestedRef = useRef(false);
-  // Detección de crecimiento por el frente (prepend) entre renders.
   const prevFirstRef = useRef<string | undefined>(undefined);
   const prevLenRef = useRef(0);
-  // Última posición de scroll: al maximizar/restaurar el cuerpo se reubica, así
-  // que se restaura aquí para no perder el sitio de lectura (si no vamos al final).
   const lastTopRef = useRef(0);
+
   const [follow, setFollow] = useState(true);
   const [filter, setFilter] = useState('');
   const [level, setLevel] = useState<LevelFilter>('all');
+  const [internalStage, setInternalStage] = useState<LogStage>('all');
   const [wrap, setWrap] = useState(true);
   const [gutter, setGutter] = useState(true);
+  const [showTs, setShowTs] = useState(true);
+  const [tsFormat, setTsFormat] = useState<TimestampFormat>('time');
+  const [tsMenuOpen, setTsMenuOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [maximized, setMaximized] = useState(false);
+  const [clearedUntil, setClearedUntil] = useState<number>(0);
 
-  // Los builds reales (npm, docker…) emiten colores ANSI: se limpian una vez aquí
-  // y filtro, niveles, copia y descarga trabajan ya sobre texto legible.
+  const stage = controlledStageFilter ?? internalStage;
+  const setStage = onStageFilterChange ?? setInternalStage;
+
+  // Procesado memoizado O(1) de líneas
   const rows = useMemo(() => {
     const prev = procRef.current;
-    const next = new Map<string, { text: string; lvl: Level }>();
-    const result = lines.map((raw) => {
+    const next = new Map<string, ParsedRow>();
+    const effectiveLines = clearedUntil > 0 ? lines.slice(clearedUntil) : lines;
+    const result = effectiveLines.map((raw) => {
       let r = next.get(raw) ?? prev.get(raw);
-      if (!r) r = { text: stripAnsi(raw), lvl: detectLevel(raw) };
+      if (!r) r = parseRawLine(raw);
       next.set(raw, r);
       return r;
     });
     procRef.current = next;
     return result;
-  }, [lines]);
+  }, [lines, clearedUntil]);
 
   const counts = useMemo(() => {
     let err = 0;
     let warn = 0;
+    let build = 0;
+    let deploy = 0;
+    let runtime = 0;
     for (const r of rows) {
       if (r.lvl === 'err') err++;
       else if (r.lvl === 'warn') warn++;
+      if (r.stage === 'build') build++;
+      else if (r.stage === 'deploy') deploy++;
+      else if (r.stage === 'runtime') runtime++;
     }
-    return { err, warn };
+    return { err, warn, build, deploy, runtime };
   }, [rows]);
 
-  // Se conserva el índice original (1-based) para el canalón: al filtrar por
-  // nivel o texto los números siguen apuntando a la posición real en el flujo.
+  const hasStages =
+    (availableStages && availableStages.length > 1) || counts.build > 0 || counts.deploy > 0 || counts.runtime > 0;
+
+  // Filtrado de filas visibles
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const out: { n: number; text: string; lvl: Level }[] = [];
+    const out: { n: number; row: ParsedRow; tsString: string; tsTooltip?: string }[] = [];
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       if (level !== 'all' && r.lvl !== level) continue;
-      if (q && !r.text.toLowerCase().includes(q)) continue;
-      out.push({ n: i + 1, text: r.text, lvl: r.lvl });
+      if (stage !== 'all' && r.stage !== 'all' && r.stage !== stage) continue;
+      if (q && !r.cleanText.toLowerCase().includes(q)) continue;
+      const tsString = formatTimestamp(r.ts, r.iso, tsFormat);
+      const tsTooltip = timestampTooltip(r.ts, r.iso);
+      out.push({ n: i + 1, row: r, tsString, tsTooltip });
     }
     return out;
-  }, [rows, filter, level]);
+  }, [rows, filter, level, stage, tsFormat]);
 
-  // Se agrupan las filas en tramos: cada tramo lleva content-visibility (ver
-  // index.css), de modo que el navegador evalúa la visibilidad de pocos bloques
-  // en vez de miles de filas. La clave del tramo es el nº de su primera fila:
-  // estable al añadir por el final (los tramos previos no se remontan).
+  // Bloques virtualizados para alto rendimiento
   const chunks = useMemo(() => {
     const out: { key: number; rows: typeof visible }[] = [];
     for (let i = 0; i < visible.length; i += CHUNK) {
@@ -270,34 +429,26 @@ export default function LogViewer({
     return out;
   }, [visible]);
 
+  // Autoscroll suave
   useEffect(() => {
     if (!follow) return;
     const el = ref.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-    // Con content-visibility la altura de las filas fuera de pantalla es una
-    // estimación; se reaplica un frame después para clavar el fondo real cuando
-    // llega un lote grande (p. ej. el snapshot de un despliegue).
     const raf = requestAnimationFrame(() => {
       if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
     });
     return () => cancelAnimationFrame(raf);
   }, [visible, follow]);
 
-  // Informa al contenedor de si seguimos el final: lo usa para no recortar el
-  // frente del buffer (el historial que el usuario lee) mientras está arriba.
   useEffect(() => {
     onFollowChange?.(follow);
   }, [follow, onFollowChange]);
 
-  // Rearma la carga de historial cuando termina la anterior.
   useEffect(() => {
     if (!loadingOlder) olderRequestedRef.current = false;
   }, [loadingOlder]);
 
-  // Al anteponer historial (el buffer crece por el FRENTE) se conserva el punto
-  // de lectura desplazando el scroll por el alto añadido arriba. Un append por el
-  // final no cambia el frente y no ancla nada.
   useLayoutEffect(() => {
     const first = lines[0];
     const grewFront =
@@ -312,25 +463,18 @@ export default function LogViewer({
     prevLenRef.current = lines.length;
   }, [lines]);
 
-  // Al maximizar/restaurar el nodo se reubica: si veníamos siguiendo, al final;
-  // si el usuario había subido a leer, se recupera su posición (no se salta arriba).
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.scrollTop = follow ? el.scrollHeight : lastTopRef.current;
   }, [maximized]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A pantalla completa: bloquea el scroll del fondo, marca el resto de la app
-  // como inerte (foco atrapado + fuera del árbol de accesibilidad), cierra con
-  // Esc, da foco al diálogo y devuelve el foco al disparador al salir.
   useEffect(() => {
     if (!maximized) return;
     const root = document.getElementById('root');
     const previouslyFocused = document.activeElement as HTMLElement | null;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    // El diálogo vive en document.body (portal), fuera de #root, así que inertar
-    // #root contiene el foco y el lector de pantalla sin tocar el diálogo.
     root?.setAttribute('inert', '');
     root?.setAttribute('aria-hidden', 'true');
     overlayRef.current?.focus();
@@ -351,8 +495,6 @@ export default function LogViewer({
     };
   }, [maximized]);
 
-  // Guarda alto y scroll del cuerpo justo antes de pedir historial, para reponer
-  // el sitio de lectura cuando el buffer crezca por el frente.
   const captureAnchor = () => {
     const el = ref.current;
     if (el) anchorRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
@@ -365,9 +507,6 @@ export default function LogViewer({
     onLoadOlder();
   };
 
-  // El scroll táctil dispara este evento decenas de veces por gesto; sin acotar,
-  // cada uno forzaba layout + un posible re-render del buffer entero. Se limita a
-  // una lectura por frame (y se cancela al desmontar).
   const onScroll = () => {
     if (scrollRaf.current) return;
     scrollRaf.current = requestAnimationFrame(() => {
@@ -376,11 +515,10 @@ export default function LogViewer({
       if (!el) return;
       lastTopRef.current = el.scrollTop;
       setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
-      // Scroll infinito hacia arriba: al acercarse al frente carga historial,
-      // solo si hay recorrido real (si el log cabe en pantalla, se usa el botón).
       if (el.scrollTop < 120 && el.scrollHeight - el.clientHeight > 200) triggerLoadOlder();
     });
   };
+
   useEffect(() => () => {
     if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
   }, []);
@@ -397,27 +535,35 @@ export default function LogViewer({
     }
   };
 
-  const plainText = () => visible.map((v) => v.text).join('\n');
+  const plainText = (includeTimestamps = showTs) => {
+    return visible
+      .map((v) => (includeTimestamps && v.tsString ? `${v.tsString} ${v.row.cleanText}` : v.row.cleanText))
+      .join('\n');
+  };
 
   const copyAll = () => {
-    navigator.clipboard.writeText(plainText()).then(() => {
+    navigator.clipboard.writeText(plainText(showTs)).then(() => {
       setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
+      setTimeout(() => setCopied(false), 1400);
     });
   };
 
   const download = () => {
-    const blob = new Blob([plainText()], { type: 'text/plain' });
+    const blob = new Blob([plainText(true)], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = downloadName ?? `logs-${new Date().toISOString().slice(0, 19)}.txt`;
+    a.download = downloadName ?? `logs-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const filtering = level !== 'all' || filter.trim().length > 0;
-  const showChrome = toolbar || !!title || maximized;
+  const clearBuffer = () => {
+    setClearedUntil(lines.length);
+  };
+
+  const filtering = level !== 'all' || stage !== 'all' || filter.trim().length > 0;
+  const showChrome = toolbar || !!title || maximized || !!extraHeaderLeft || !!extraHeaderRight;
 
   const levelChip = (key: LevelFilter, label: string, n?: number, tone?: 'err' | 'warn') => (
     <button
@@ -425,19 +571,38 @@ export default function LogViewer({
       onClick={() => setLevel(key)}
       aria-pressed={level === key}
       className={cx(
-        'flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-medium transition-colors duration-150',
+        'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium transition-colors duration-150',
         level === key
           ? tone === 'err'
-            ? 'bg-err/[.16] text-err'
+            ? 'bg-err/[.18] text-err'
             : tone === 'warn'
-              ? 'bg-warn/[.16] text-warn'
-              : 'bg-acc/[.16] text-acc-soft'
+              ? 'bg-warn/[.18] text-warn'
+              : 'bg-acc/[.18] text-acc-soft'
           : 'text-subtle hover:bg-surface2 hover:text-txt',
       )}
     >
-      {tone && <span className={cx('h-[6px] w-[6px] rounded-full', tone === 'err' ? 'bg-err' : 'bg-warn')} />}
+      {tone && <span className={cx('h-[5px] w-[5px] rounded-full', tone === 'err' ? 'bg-err' : 'bg-warn')} />}
       {label}
       {n !== undefined && n > 0 && <span className="tnum opacity-80">{NF.format(n)}</span>}
+    </button>
+  );
+
+  const stageChip = (key: LogStage, label: string, count?: number) => (
+    <button
+      type="button"
+      onClick={() => setStage(key)}
+      aria-pressed={stage === key}
+      className={cx(
+        'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium transition-colors duration-150',
+        stage === key
+          ? 'bg-surface2 text-txt shadow-sm border border-line'
+          : 'text-subtle hover:bg-surface2/60 hover:text-txt',
+      )}
+    >
+      {label}
+      {count !== undefined && count > 0 && (
+        <span className="tnum rounded bg-term px-1 text-[10px] text-subtle">{NF.format(count)}</span>
+      )}
     </button>
   );
 
@@ -445,34 +610,34 @@ export default function LogViewer({
     <section
       className={cx(
         'log-shell relative flex min-h-0 flex-col overflow-hidden bg-term',
-        maximized ? 'h-full rounded-none' : cx(!bare && 'rounded-lg border border-line', className),
+        maximized ? 'h-full rounded-none' : cx(!bare && 'rounded-xl border border-line shadow-sm', className),
       )}
-      style={{ '--log-line-h': maximized ? '22px' : '21px' } as React.CSSProperties}
+      style={{ '--log-line-h': maximized ? '23px' : '22px' } as React.CSSProperties}
     >
       {showChrome && (
-        <div className="flex shrink-0 items-center gap-2.5 border-b border-line bg-term2 px-3 py-2">
-          <span className="flex min-w-0 items-center gap-2">
+        <div className="flex shrink-0 items-center justify-between gap-2.5 border-b border-line bg-term2 px-3 py-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
+            {extraHeaderLeft}
             {title && (
-              <span className="truncate font-mono text-[10.5px] font-medium uppercase tracking-[.09em] text-sub">
+              <span className="truncate font-mono text-[11px] font-semibold uppercase tracking-[.08em] text-sub">
                 {title}
               </span>
             )}
             <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-subtle">
-              {/* Sin barra de indicaciones (consola sin `toolbar`), el punto vivo/pausa
-                  vive aquí; con `toolbar`, el estado del flujo lo lleva el pie —evita
-                  duplicar el indicador. */}
               {!toolbar && (
                 <span
                   className={cx('h-[6px] w-[6px] rounded-full', follow ? 'pulse-soft bg-ok' : 'bg-subtle')}
-                  title={follow ? 'En vivo' : 'En pausa (has subido)'}
+                  title={follow ? 'En vivo' : 'En pausa'}
                 />
               )}
-              <span className="tnum">{NF.format(rows.length)}</span>
+              <span className="tnum font-medium text-txt/90">{NF.format(rows.length)}</span>
               <span className="hidden sm:inline">líneas</span>
-              {replicas > 1 && <span className="hidden text-subtle sm:inline">· réplica 1/{replicas}</span>}
+              {replicas > 1 && <span className="hidden text-subtle sm:inline">· {replicas} réplicas</span>}
             </span>
-          </span>
-          <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1">
+            {extraHeaderRight}
             <ToolButton
               title={maximized ? 'Restaurar (Esc)' : 'Pantalla completa'}
               onClick={() => setMaximized((m) => !m)}
@@ -489,34 +654,113 @@ export default function LogViewer({
       )}
 
       {toolbar && (
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line bg-term2 px-2.5 py-2">
-          <div className="flex h-8 min-w-[150px] flex-1 items-center gap-2 rounded-lg border border-line bg-term px-2.5 focus-within:border-acc">
-            <Search size={13} className="shrink-0 text-subtle" />
-            <input
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filtrar… (p. ej. error, ECONNREFUSED, /api)"
-              spellCheck={false}
-              className="min-w-0 flex-1 bg-transparent font-mono text-xs text-txt outline-none placeholder:text-subtle"
-            />
-            {filter && (
-              <button
-                type="button"
-                onClick={() => setFilter('')}
-                className="press shrink-0 text-subtle hover:text-txt"
-                title="Limpiar filtro"
-                aria-label="Limpiar filtro"
-              >
-                <X size={13} />
-              </button>
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-line bg-term2 px-2.5 py-1.5">
+          <div className="flex min-w-[200px] flex-1 items-center gap-1.5">
+            {/* Buscador interactivo */}
+            <div className="flex h-8 flex-1 items-center gap-2 rounded-lg border border-line bg-term px-2.5 focus-within:border-acc">
+              <Search size={13} className="shrink-0 text-subtle" />
+              <input
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Buscar en los logs… (regex o texto)"
+                spellCheck={false}
+                className="min-w-0 flex-1 bg-transparent font-mono text-xs text-txt outline-none placeholder:text-subtle"
+              />
+              {filter && (
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-subtle tabular-nums">
+                    {visible.length} match{visible.length === 1 ? '' : 'es'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setFilter('')}
+                    className="press shrink-0 text-subtle hover:text-txt"
+                    title="Limpiar filtro"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Filtros de nivel */}
+            <div className="flex shrink-0 items-center gap-0.5 rounded-lg bg-term p-0.5 border border-line">
+              {levelChip('all', 'Todo')}
+              {levelChip('err', 'Errores', counts.err, 'err')}
+              {levelChip('warn', 'Avisos', counts.warn, 'warn')}
+            </div>
+
+            {/* Sub-pestañas de fase (Build, Deploy, Runtime) */}
+            {hasStages && (
+              <div className="flex shrink-0 items-center gap-0.5 rounded-lg bg-term p-0.5 border border-line">
+                {stageChip('all', 'Todos')}
+                {counts.build > 0 && stageChip('build', 'Build', counts.build)}
+                {counts.deploy > 0 && stageChip('deploy', 'Deploy', counts.deploy)}
+                {counts.runtime > 0 && stageChip('runtime', 'Runtime', counts.runtime)}
+              </div>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-0.5 rounded-lg bg-term p-0.5">
-            {levelChip('all', 'Todo')}
-            {levelChip('err', 'Errores', counts.err, 'err')}
-            {levelChip('warn', 'Avisos', counts.warn, 'warn')}
-          </div>
+
+          {/* Botones de acción y opciones */}
           <div className="flex shrink-0 items-center gap-0.5">
+            {/* Selector de formato de fechas */}
+            <div className="relative">
+              <ToolButton
+                title={showTs ? `Fechas: ${tsFormat} (clic para opciones)` : 'Mostrar marcas de tiempo'}
+                onClick={() => setTsMenuOpen((o) => !o)}
+                active={showTs}
+              >
+                <Clock size={14} />
+              </ToolButton>
+              {tsMenuOpen && (
+                <div
+                  className="absolute right-0 top-full z-30 mt-1 min-w-[170px] rounded-lg border border-line bg-surface p-1 shadow-modal"
+                  onMouseLeave={() => setTsMenuOpen(false)}
+                >
+                  <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-subtle">
+                    Marcas de tiempo
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTs((s) => !s);
+                      setTsMenuOpen(false);
+                    }}
+                    className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs hover:bg-surface2"
+                  >
+                    <span>Mostrar fechas</span>
+                    {showTs && <Check size={12} className="text-acc" />}
+                  </button>
+                  <div className="my-1 border-t border-line" />
+                  {(
+                    [
+                      { key: 'time', label: 'Hora (HH:mm:ss)' },
+                      { key: 'datetime', label: 'Fecha + Hora (DD/MM HH:mm)' },
+                      { key: 'utc', label: 'Hora UTC' },
+                      { key: 'relative', label: 'Tiempo relativo' },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => {
+                        setTsFormat(opt.key);
+                        setShowTs(true);
+                        setTsMenuOpen(false);
+                      }}
+                      className={cx(
+                        'flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs',
+                        tsFormat === opt.key && showTs ? 'bg-acc/10 font-medium text-acc-soft' : 'hover:bg-surface2',
+                      )}
+                    >
+                      <span>{opt.label}</span>
+                      {tsFormat === opt.key && showTs && <Check size={12} className="text-acc" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <ToolButton title="Numerar líneas" onClick={() => setGutter((g) => !g)} active={gutter}>
               <Hash size={14} />
             </ToolButton>
@@ -529,44 +773,64 @@ export default function LogViewer({
             <ToolButton title="Ir al final" onClick={() => jump('bottom')}>
               <ArrowDownToLine size={14} />
             </ToolButton>
-            <ToolButton title="Copiar líneas visibles" onClick={copyAll} disabled={visible.length === 0}>
+            <ToolButton title="Copiar texto visible" onClick={copyAll} disabled={visible.length === 0}>
               {copied ? <Check size={14} className="pop-in text-ok" /> : <Copy size={14} />}
             </ToolButton>
             <ToolButton
-              title={onDownload ? 'Descargar log completo' : 'Descargar'}
+              title={onDownload ? 'Descargar log completo del servidor' : 'Descargar log'}
               onClick={onDownload ?? download}
               disabled={!onDownload && visible.length === 0}
             >
               <Download size={14} />
             </ToolButton>
+            {clearedUntil === 0 && (
+              <ToolButton title="Limpiar vista actual" onClick={clearBuffer} disabled={visible.length === 0}>
+                <Trash2 size={13} />
+              </ToolButton>
+            )}
+            {clearedUntil > 0 && (
+              <button
+                type="button"
+                onClick={() => setClearedUntil(0)}
+                className="press flex h-7 items-center rounded-md bg-surface2 px-2 text-[11px] text-sub hover:text-txt"
+                title="Restaurar líneas ocultas"
+              >
+                Restaurar ({clearedUntil})
+              </button>
+            )}
           </div>
         </div>
       )}
 
       {toolbar && (
-        <div className="flex shrink-0 items-center gap-2.5 border-b border-line bg-term2 px-3 py-2 text-[11px] text-subtle">
+        <div className="flex shrink-0 items-center justify-between gap-2.5 border-b border-line bg-term2 px-3 py-1.5 text-[11px] text-subtle">
           <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
             {statusNote ? (
-              <span className="text-warn">{statusNote}</span>
+              <span className="text-warn font-medium">{statusNote}</span>
             ) : (
               <>
                 <span>
-                  <span className="tnum text-sub">{NF.format(visible.length)}</span>
-                  {filtering ? ` de ${NF.format(rows.length)} líneas` : ' líneas'}
+                  <span className="tnum font-medium text-txt/90">{NF.format(visible.length)}</span>
+                  {filtering ? ` de ${NF.format(rows.length)} líneas filtradas` : ' líneas'}
                 </span>
-                <span className="text-line">·</span>
-                <span>
-                  <span className="text-err">error</span> y <span className="text-warn">warn</span> resaltados
-                </span>
+                {counts.err > 0 && (
+                  <>
+                    <span className="text-line">·</span>
+                    <span className="text-err font-medium">{counts.err} errores</span>
+                  </>
+                )}
+                {counts.warn > 0 && (
+                  <>
+                    <span className="text-line">·</span>
+                    <span className="text-warn font-medium">{counts.warn} avisos</span>
+                  </>
+                )}
               </>
             )}
           </span>
-          {/* Estado del flujo. Antes flotaba sobre los logs y los tapaba; ahora se
-              ancla al pie de las indicaciones, como cierre de la barra: «En vivo»
-              mientras se sigue el final; si el usuario ha subido a leer, un botón
-              sobrio para reengancharse. */}
+
           {follow ? (
-            <span className="badge-in inline-flex shrink-0 items-center gap-1.5 rounded-full border border-ok/25 bg-[color-mix(in_oklab,var(--color-ok)_12%,var(--color-term2))] px-2.5 py-1 font-medium text-ok">
+            <span className="badge-in inline-flex shrink-0 items-center gap-1.5 rounded-full border border-ok/25 bg-[color-mix(in_oklab,var(--color-ok)_12%,var(--color-term2))] px-2.5 py-0.5 text-[10.5px] font-medium text-ok">
               <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-current" />
               En vivo
             </span>
@@ -574,9 +838,9 @@ export default function LogViewer({
             <button
               type="button"
               onClick={() => jump('bottom')}
-              className="press badge-in inline-flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface2 px-2.5 py-1 font-medium text-sub hover:text-txt"
+              className="press badge-in inline-flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface2 px-2.5 py-0.5 text-[10.5px] font-medium text-sub hover:text-txt"
             >
-              <ArrowDownToLine size={12} /> Seguir el final
+              <ArrowDownToLine size={11} /> Seguir al final
             </button>
           )}
         </div>
@@ -587,74 +851,56 @@ export default function LogViewer({
           ref={ref}
           onScroll={onScroll}
           className={cx(
-            // log-body: capa de composición propia + aislamiento de pintado, para que
-            // el scroll de un panel ANCESTRO (o la barra de URL del móvil) traslade la
-            // capa en vez de repintar miles de filas (lo que congelaba la página).
-            // overscroll-contain: al llegar al borde, el scroll no salta al panel
-            // de detrás (en móvil eso «atrapaba» el gesto y parecía un bloqueo).
             'log-body h-full overscroll-contain font-mono text-[12.5px] leading-[1.65] text-txt/90',
             maximized && 'text-[13px] leading-[1.7]',
             wrap ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto',
           )}
           role="log"
-          // Sin anuncios en vivo: un flujo rápido saturaría al lector de pantalla.
-          // El indicador «En vivo», el contador y copiar/descargar dan el contenido.
-          aria-live="off"
-          aria-label="Salida de registro"
+          tabIndex={0}
         >
-          {/* Ancla al fondo: con pocas líneas, el registro más nuevo queda abajo del
-              todo (estilo terminal); con muchas, desborda y scrollea con normalidad. */}
-          <div className={cx(tailAnchor && 'flex min-h-full flex-col justify-end')}>
-          {onLoadOlder && (loadingOlder || canLoadOlder || reachedStart) && (
-            <div className="flex items-center justify-center gap-2 border-b border-line/60 px-3 py-2 text-[11px] text-subtle">
-              {loadingOlder ? (
-                <>
-                  <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
-                  Cargando líneas anteriores…
-                </>
-              ) : canLoadOlder ? (
-                <button
-                  type="button"
-                  onClick={triggerLoadOlder}
-                  className="press inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface2 px-3 py-1 font-medium text-sub hover:text-txt"
-                >
-                  <ArrowUp size={12} /> Cargar líneas anteriores
-                </button>
-              ) : (
-                <span className="inline-flex items-center gap-2 text-subtle">
-                  <span className="h-px w-6 bg-line" /> Inicio del registro <span className="h-px w-6 bg-line" />
-                </span>
-              )}
+          {canLoadOlder && (
+            <div className="flex justify-center p-2.5">
+              <button
+                type="button"
+                onClick={triggerLoadOlder}
+                disabled={loadingOlder}
+                className="press inline-flex items-center gap-1.5 rounded-lg border border-line bg-term2 px-3 py-1 text-xs text-sub hover:text-txt disabled:opacity-50"
+              >
+                {loadingOlder ? 'Cargando líneas anteriores…' : 'Cargar historial anterior ↑'}
+              </button>
             </div>
           )}
+
           {visible.length === 0 ? (
-            <span className="block px-3 py-3 text-subtle">
-              {filtering ? 'Ninguna línea coincide con el filtro.' : 'Sin logs todavía…'}
-            </span>
+            <div className="flex h-full min-h-[140px] items-center justify-center p-6 text-center text-xs text-subtle font-sans">
+              {filtering ? 'Ninguna línea coincide con los filtros aplicados.' : 'Sin logs todavía…'}
+            </div>
           ) : (
-            chunks.map((ch) => (
-              <div key={ch.key} className="log-chunk" style={{ '--rows': ch.rows.length } as React.CSSProperties}>
-                {ch.rows.map((v) => (
-                  <LogRow key={v.n} n={v.n} text={v.text} lvl={v.lvl} wrap={wrap} gutter={gutter} query={filter.trim()} />
+            chunks.map((c) => (
+              <div
+                key={c.key}
+                className="log-chunk"
+                style={{ '--rows': c.rows.length } as React.CSSProperties}
+              >
+                {c.rows.map((v) => (
+                  <LogRow
+                    key={v.n}
+                    n={v.n}
+                    text={v.row.cleanText}
+                    tsString={v.tsString}
+                    tsTooltip={v.tsTooltip}
+                    stage={v.row.stage}
+                    lvl={v.row.lvl}
+                    wrap={wrap}
+                    gutter={gutter}
+                    showTs={showTs}
+                    query={filter}
+                  />
                 ))}
               </div>
             ))
           )}
-          </div>
         </div>
-
-        {/* El estado del flujo (En vivo / Seguir el final) vive en la barra de
-            indicaciones cuando hay `toolbar`, para no tapar los logs. Sin esa barra
-            (consola mínima) se conserva aquí el botón flotante para reengancharse. */}
-        {!toolbar && !follow && (
-          <button
-            type="button"
-            onClick={() => jump('bottom')}
-            className="badge-in press absolute bottom-2.5 right-3 inline-flex items-center gap-1 rounded-full border border-line bg-surface2 px-3 py-1 text-xs text-sub shadow-lvl1 hover:text-txt"
-          >
-            <ArrowDownToLine size={12} /> Seguir el final
-          </button>
-        )}
       </div>
     </section>
   );
@@ -665,14 +911,11 @@ export default function LogViewer({
         ref={overlayRef}
         role="dialog"
         aria-modal="true"
-        aria-label={title ? `${title} — pantalla completa` : 'Consola de logs a pantalla completa'}
+        aria-label={title ? `${title} — pantalla completa` : 'Consola de logs'}
         tabIndex={-1}
-        className="console-in fixed inset-0 z-[70] flex flex-col bg-term p-0 outline-none sm:p-3"
-        onMouseDown={(e) => {
-          if (e.target === e.currentTarget) setMaximized(false);
-        }}
+        className="console-in fixed inset-0 z-50 flex flex-col bg-bg p-3 outline-none sm:p-5"
       >
-        <div className="flex min-h-0 flex-1 overflow-hidden sm:rounded-2xl sm:border sm:border-line sm:shadow-lvl3">
+        <div className="h-full w-full overflow-hidden rounded-xl border border-line shadow-modal">
           {shell}
         </div>
       </div>,

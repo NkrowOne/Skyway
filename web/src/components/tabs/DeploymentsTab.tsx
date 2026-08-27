@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { History, Lightbulb, RotateCcw, XCircle } from 'lucide-react';
+import { History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
@@ -137,7 +137,15 @@ function DeployPill({ deployment, isCurrent }: { deployment: Deployment; isCurre
   );
 }
 
-export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: string; serviceType: string }) {
+export default function DeploymentsTab({
+  serviceId,
+  serviceType,
+  onNavigateToLogs,
+}: {
+  serviceId: string;
+  serviceType: string;
+  onNavigateToLogs?: (deploymentId: string) => void;
+}) {
   const [openId, setOpenId] = useState<string | null>(null);
   // La tarjeta que se está plegando sigue montada hasta acabar su animación.
   const [closingId, setClosingId] = useState<string | null>(null);
@@ -189,10 +197,7 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
   const latestId = list[0]?.id ?? null;
 
   // Orden: primero LO QUE ESTÁ SALIENDO, después el vigente («Activo»), y
-  // debajo el histórico en orden cronológico. La versión en curso manda sobre
-  // la vigente porque es la novedad —lo que hay que ver sin buscarlo—; el
-  // vigente sube por encima del histórico aunque haya intentos fallidos o
-  // cancelados más recientes, porque es lo que sirve tráfico ahora mismo.
+  // debajo el histórico en orden cronológico.
   const running = list.filter((d) => isActiveDeploy(d.status));
   const runningIds = new Set(running.map((d) => d.id));
   const current = currentId ? list.find((d) => d.id === currentId) : undefined;
@@ -202,14 +207,11 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
     ...list.filter((d) => !runningIds.has(d.id) && d.id !== currentId),
   ];
 
-  // Un despliegue que arranca se abre solo: es la novedad que hay que ver. Al
-  // depender del id, si el usuario lo pliega a mano no se le vuelve a abrir.
   const runningId = running[0]?.id ?? null;
   useEffect(() => {
     if (runningId) setOpenId(runningId);
   }, [runningId]);
 
-  // Sin nada en curso, se abre el que encabeza la lista (normalmente el vigente).
   useEffect(() => {
     if (openId === null && !runningId && ordered.length > 0) setOpenId(ordered[0].id);
   }, [ordered.length]);
@@ -239,10 +241,6 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
         const open = openId === d.id;
         const active = isActiveDeploy(d.status);
         const isCurrent = d.id === currentId;
-        // Lógica de énfasis: solo el estado VIGENTE lleva color de fondo.
-        // El que sirve tráfico va en verde; el último intento, si falló, en rojo;
-        // el que está en curso lleva borde ámbar y cometa de progreso.
-        // El histórico queda neutro para que el color siempre signifique «ahora».
         const isLatestFailed = d.id === latestId && d.status === 'failed';
         const tint = active
           ? 'border-[color-mix(in_oklab,var(--color-warn)_40%,var(--color-line))] bg-warn/[.04]'
@@ -254,75 +252,91 @@ export default function DeploymentsTab({ serviceId, serviceType }: { serviceId: 
                 ? 'border-[color-mix(in_oklab,var(--color-acc)_30%,var(--color-line))] bg-bg'
                 : 'border-line bg-bg';
         return (
-        <div key={d.id} className={cx('relative overflow-hidden rounded-xl border transition-colors duration-300', tint)}>
-          <button
-            onClick={() => toggle(d.id)}
-            className="flex w-full items-center justify-between gap-2 px-3.5 py-3 text-left transition-colors duration-150 hover:bg-txt/[.03]"
-          >
-            <div className="flex min-w-0 items-center gap-3">
-              <DeployPill deployment={d} isCurrent={d.id === currentId} />
-              <div className="min-w-0">
-                <p className="truncate text-[13px] font-medium">
-                  {d.commit_msg ||
-                    (d.trigger === 'rollback'
-                      ? 'Rollback de imagen'
-                      : serviceType === 'database'
-                        ? 'Despliegue de base de datos'
-                        : 'Despliegue')}
-                </p>
-                <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">
-                  {DEPLOY_TRIGGER_LABEL[d.trigger] ?? d.trigger}
-                  {d.commit_sha && <> · {d.commit_sha.slice(0, 7)}</>}
-                  <> · {timeAgo(d.created_at)}</>
-                  {d.finished_at && <> · {fmtDuration(d.finished_at - d.created_at)}</>}
-                </p>
+          <div key={d.id} className={cx('relative overflow-hidden rounded-xl border transition-colors duration-300', tint)}>
+            <button
+              onClick={() => toggle(d.id)}
+              className="flex w-full items-center justify-between gap-2 px-3.5 py-3 text-left transition-colors duration-150 hover:bg-txt/[.03]"
+            >
+              <div className="flex min-w-0 items-center gap-3">
+                <DeployPill deployment={d} isCurrent={d.id === currentId} />
+                <div className="min-w-0">
+                  <p className="truncate text-[13px] font-medium">
+                    {d.commit_msg ||
+                      (d.trigger === 'rollback'
+                        ? 'Rollback de imagen'
+                        : serviceType === 'database'
+                          ? 'Despliegue de base de datos'
+                          : 'Despliegue')}
+                  </p>
+                  <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">
+                    {DEPLOY_TRIGGER_LABEL[d.trigger] ?? d.trigger}
+                    {d.commit_sha && <> · {d.commit_sha.slice(0, 7)}</>}
+                    <> · {timeAgo(d.created_at)}</>
+                    {d.finished_at && <> · {fmtDuration(d.finished_at - d.created_at)}</>}
+                  </p>
+                </div>
               </div>
-            </div>
-            <span className="flex shrink-0 items-center gap-0.5">
-              {isActiveDeploy(d.status) && (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    cancel.mutate(d.id);
-                  }}
-                  onKeyDown={(e) => e.key === 'Enter' && cancel.mutate(d.id)}
-                  className="press rounded-lg p-1.5 leading-none text-err/80 hover:bg-surface2 hover:text-err"
-                  title="Cancelar despliegue"
-                >
-                  <XCircle size={14} />
-                </span>
-              )}
-              {d.id !== currentId && d.status === 'success' && serviceType === 'git' && (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    rollback.mutate(d.id);
-                  }}
-                  onKeyDown={(e) => e.key === 'Enter' && rollback.mutate(d.id)}
-                  className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
-                  title="Volver a esta versión"
-                >
-                  <RotateCcw size={13} />
-                </span>
-              )}
-            </span>
-          </button>
-          {(open || closingId === d.id) && (
-            <Collapse open={open}>
-              <div className="border-t border-line p-3">
-                {d.error && (
-                  <p className="mb-2.5 rounded-r-lg border-l-2 border-err/40 bg-err/[.08] px-3 py-2.5 text-xs text-err">{d.error}</p>
+              <span className="flex shrink-0 items-center gap-1">
+                {onNavigateToLogs && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onNavigateToLogs(d.id);
+                    }}
+                    onKeyDown={(e) => e.key === 'Enter' && onNavigateToLogs(d.id)}
+                    className="press flex items-center gap-1 rounded-lg border border-line bg-surface px-2 py-1 text-[11px] font-medium text-sub hover:bg-surface2 hover:text-txt"
+                    title="Ver logs completos en la consola"
+                  >
+                    <ScrollText size={12} />
+                    <span className="hidden sm:inline">Logs</span>
+                  </span>
                 )}
-                <DiagnosisCard raw={d.diagnosis} />
-                <DeploymentLogs deployment={d} />
-              </div>
-            </Collapse>
-          )}
-        </div>
+                {isActiveDeploy(d.status) && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      cancel.mutate(d.id);
+                    }}
+                    onKeyDown={(e) => e.key === 'Enter' && cancel.mutate(d.id)}
+                    className="press rounded-lg p-1.5 leading-none text-err/80 hover:bg-surface2 hover:text-err"
+                    title="Cancelar despliegue"
+                  >
+                    <XCircle size={14} />
+                  </span>
+                )}
+                {d.id !== currentId && d.status === 'success' && serviceType === 'git' && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      rollback.mutate(d.id);
+                    }}
+                    onKeyDown={(e) => e.key === 'Enter' && rollback.mutate(d.id)}
+                    className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
+                    title="Volver a esta versión"
+                  >
+                    <RotateCcw size={13} />
+                  </span>
+                )}
+              </span>
+            </button>
+            {(open || closingId === d.id) && (
+              <Collapse open={open}>
+                <div className="border-t border-line p-3">
+                  {d.error && (
+                    <p className="mb-2.5 rounded-r-lg border-l-2 border-err/40 bg-err/[.08] px-3 py-2.5 text-xs text-err">{d.error}</p>
+                  )}
+                  <DiagnosisCard raw={d.diagnosis} />
+                  <DeploymentLogs deployment={d} />
+                </div>
+              </Collapse>
+            )}
+          </div>
         );
       })}
     </div>

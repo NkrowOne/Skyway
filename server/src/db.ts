@@ -181,6 +181,7 @@ export function initDb(): void {
   // Migraciones de columnas para bases de datos ya existentes.
   ensureColumn('projects', 'client', 'TEXT');
   ensureColumn('deployments', 'diagnosis', 'TEXT');
+  ensureColumn('deployments', 'runtime_logs', 'TEXT');
   // Huella de las entradas de compilación (repo, rootDir, Dockerfile, buildArgs):
   // permite reutilizar la imagen de un commit ya construido solo si se
   // construiría exactamente igual.
@@ -1322,6 +1323,7 @@ export function updateDeployment(
       | 'commit_msg'
       | 'image_tag'
       | 'logs'
+      | 'runtime_logs'
       | 'error'
       | 'finished_at'
       | 'build_key'
@@ -1334,6 +1336,11 @@ export function updateDeployment(
   if (keys.length === 0) return;
   const sets = keys.map((k) => `${k} = ?`).join(', ');
   db.prepare(`UPDATE deployments SET ${sets} WHERE id = ?`).run(...keys.map((k) => (fields as any)[k]), deploymentId);
+}
+
+/** Guarda o archiva los logs de ejecución de un contenedor para un despliegue. */
+export function saveDeploymentRuntimeLogs(deploymentId: string, runtimeLogs: string): void {
+  db.prepare('UPDATE deployments SET runtime_logs = ? WHERE id = ?').run(runtimeLogs, deploymentId);
 }
 
 export function getDeployment(deploymentId: string): DeploymentRow | undefined {

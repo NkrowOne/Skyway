@@ -155,6 +155,7 @@ export interface DeploymentRow {
   commit_msg: string | null;
   image_tag: string | null;
   logs: string;
+  runtime_logs?: string | null;
   error: string | null;
   diagnosis: string | null;
   /**
