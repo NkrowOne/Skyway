@@ -127,12 +127,38 @@ export function buildApp(): FastifyInstance {
   app.register(statusRoutes);
   app.register(websiteRoutes);
 
-  // Sirve la UI compilada (producción) con fallback SPA.
-  if (fs.existsSync(path.join(config.webDist, 'index.html'))) {
-    app.register(fastifyStatic, { root: config.webDist, index: ['index.html'] });
+  // Sirve la UI compilada (producción) con fallback SPA optimizado en memoria y caché inmutable.
+  const indexHtmlPath = path.join(config.webDist, 'index.html');
+  if (fs.existsSync(indexHtmlPath)) {
+    let cachedIndexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
+    fs.watchFile(indexHtmlPath, { interval: 5000 }, () => {
+      try {
+        if (fs.existsSync(indexHtmlPath)) cachedIndexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
+      } catch {
+        /* noop */
+      }
+    });
+
+    app.register(fastifyStatic, {
+      root: config.webDist,
+      index: ['index.html'],
+      setHeaders: (res, filePath) => {
+        if (filePath.includes(path.sep + 'assets' + path.sep) || filePath.includes('/assets/')) {
+          // Assets versionados con hash de Vite: caché inmutable de 1 año
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          // index.html y otros archivos raíz: no-cache para detección inmediata de versiones nuevas
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        }
+      },
+    });
+
     app.setNotFoundHandler((req, reply) => {
       if (req.method === 'GET' && !req.url.startsWith('/api/')) {
-        return reply.type('text/html').send(fs.readFileSync(path.join(config.webDist, 'index.html')));
+        return reply
+          .type('text/html')
+          .header('Cache-Control', 'no-cache, no-store, must-revalidate')
+          .send(cachedIndexHtml);
       }
       return reply.code(404).send({ error: 'No encontrado' });
     });

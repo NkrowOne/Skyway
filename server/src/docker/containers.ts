@@ -634,6 +634,10 @@ export async function followLogs(
 
   const stop = () => {
     try {
+      out.removeAllListeners();
+      err.removeAllListeners();
+      out.destroy();
+      err.destroy();
       (stream as any).destroy?.();
     } catch {
       /* noop */

@@ -58,6 +58,11 @@ let db: Database.Database;
 export function initDb(): void {
   db = new Database(path.join(config.dataDir, 'skyway.db'));
   db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('busy_timeout = 5000');
+  db.pragma('cache_size = -64000');
+  db.pragma('temp_store = MEMORY');
+  db.pragma('mmap_size = 268435456');
   db.pragma('foreign_keys = ON');
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -249,6 +254,9 @@ export function initDb(): void {
       disk_used_last REAL,
       disk_total_last REAL
     );
+    CREATE INDEX IF NOT EXISTS idx_services_project ON services(project_id);
+    CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_service_metrics_ws ON service_metrics_hourly(workspace_id, hour);
   `);
 
   // Conectores de GitHub por proyecto: tokens de los clientes para clonar sus

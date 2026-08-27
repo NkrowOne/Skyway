@@ -104,6 +104,13 @@ export function cancelDeployment(deploymentId: string): boolean {
     for (const proc of job.procs) {
       try {
         proc.kill('SIGTERM');
+        setTimeout(() => {
+          try {
+            if (!(proc as any).killed) proc.kill('SIGKILL');
+          } catch {
+            /* ya terminado */
+          }
+        }, 3000);
       } catch {
         /* ya terminado */
       }
