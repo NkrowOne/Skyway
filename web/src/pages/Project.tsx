@@ -1,7 +1,7 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { FileText, KeyRound, Pencil, Plus, RefreshCw, Signal, Trash2, X } from 'lucide-react';
+import { BellRing, Database, FileText, KeyRound, Layers, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
 import { api, openStream } from '../api';
 import { useLatch, usePresence } from '../hooks';
 import { Button, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } from '../components/ui';
@@ -10,7 +10,7 @@ import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { ActiveDeploy, Me, MetricsSnapshot, Project, Service } from '../types';
-import { isActiveDeploy } from '../utils';
+import { CMD_K_LABEL, cx, isActiveDeploy } from '../utils';
 
 // Carga diferida: el drawer del servicio (con sus 8 pestañas y modales) y los
 // modales de cabecera solo se descargan al abrirlos, no al entrar al proyecto.
@@ -257,12 +257,44 @@ export default function ProjectPage() {
   // Durante la salida el drawer pinta el último servicio visto.
   const drawerService = selected ?? lastServiceRef.current;
 
+  const [serviceQuery, setServiceQuery] = useState('');
+  const [serviceTypeFilter, setServiceTypeFilter] = useState<'all' | 'git' | 'database' | 'image' | 'alerts'>('all');
+
   const openService = (id: string | null) => {
     if (id) setSearchParams({ s: id });
     else setSearchParams({});
   };
 
   const hasDeployables = services.some((s) => s.type !== 'database');
+
+  // Conteo de métricas agregadas del proyecto
+  const totalServices = services.length;
+  const runningCount = services.filter((s) => (latest?.services[s.id]?.state ?? s.runtime?.state) === 'running').length;
+  const alertServicesCount = services.filter((s) => (alertCounts?.[s.id] ?? 0) > 0).length;
+  const deployServicesCount = Object.keys(activeDeploys).length;
+  const gitCount = services.filter((s) => s.type === 'git').length;
+  const dbCount = services.filter((s) => s.type === 'database').length;
+  const imageCount = services.filter((s) => s.type === 'image').length;
+
+  const filteredServices = useMemo(() => {
+    return services.filter((s) => {
+      if (serviceTypeFilter === 'git' && s.type !== 'git') return false;
+      if (serviceTypeFilter === 'database' && s.type !== 'database') return false;
+      if (serviceTypeFilter === 'image' && s.type !== 'image') return false;
+      if (serviceTypeFilter === 'alerts' && !(alertCounts?.[s.id] > 0)) return false;
+
+      if (serviceQuery.trim()) {
+        const q = serviceQuery.toLowerCase().trim();
+        const matchName = s.name.toLowerCase().includes(q);
+        const matchSlug = s.slug.toLowerCase().includes(q);
+        const matchRepo = s.type === 'git' && (s.config?.repoUrl ?? '').toLowerCase().includes(q);
+        const matchImage = s.type === 'image' && (s.config?.image ?? '').toLowerCase().includes(q);
+        const matchTemplate = s.type === 'database' && (s.config?.template ?? '').toLowerCase().includes(q);
+        if (!matchName && !matchSlug && !matchRepo && !matchImage && !matchTemplate) return false;
+      }
+      return true;
+    });
+  }, [services, serviceTypeFilter, serviceQuery, alertCounts]);
 
   return (
     <div className="flex h-full">
@@ -278,6 +310,28 @@ export default function ProjectPage() {
               <CopyButton value={`skyway-${proj.slug}`} className="-ml-0.5 p-0.5" title="Copiar nombre de la red" />
               <span className="hidden sm:inline">— los servicios se resuelven entre sí por nombre</span>
             </p>
+
+            {/* Resumen de salud de infraestructura en tiempo real */}
+            {totalServices > 0 && (
+              <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-line/80 bg-surface px-2.5 py-0.5 font-medium text-sub">
+                  <span className={cx('h-1.5 w-1.5 rounded-full', runningCount > 0 ? 'bg-ok' : 'bg-subtle')} />
+                  <span className="font-semibold text-txt">{runningCount}</span>/{totalServices} activos
+                </span>
+                {deployServicesCount > 0 && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-warn/30 bg-warn/10 px-2.5 py-0.5 font-medium text-warn">
+                    <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-warn" />
+                    <span className="font-semibold">{deployServicesCount}</span> desplegando
+                  </span>
+                )}
+                {alertServicesCount > 0 && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-err/30 bg-err/10 px-2.5 py-0.5 font-medium text-err">
+                    <BellRing size={11} />
+                    <span className="font-semibold">{alertServicesCount}</span> con alertas
+                  </span>
+                )}
+              </div>
+            )}
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
             {isManager && (
@@ -368,6 +422,106 @@ export default function ProjectPage() {
           </div>
         )}
 
+        {/* Barra de búsqueda y filtros de servicios */}
+        {services.length > 2 && (
+          <div className="mb-4 flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-[200px] max-w-sm flex-1 items-center gap-2 rounded-xl border border-line/80 bg-surface px-3 py-1.5 shadow-sm focus-within:border-acc">
+              <Search size={13} className="shrink-0 text-subtle" />
+              <input
+                value={serviceQuery}
+                onChange={(e) => setServiceQuery(e.target.value)}
+                placeholder="Buscar servicio por nombre, repo o imagen…"
+                className="min-w-0 flex-1 bg-transparent text-xs text-txt outline-none placeholder:text-subtle"
+              />
+              {serviceQuery && (
+                <button
+                  type="button"
+                  onClick={() => setServiceQuery('')}
+                  className="text-subtle hover:text-txt"
+                  title="Borrar búsqueda"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+
+            <div className="flex shrink-0 flex-wrap items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setServiceTypeFilter('all')}
+                className={cx(
+                  'rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                  serviceTypeFilter === 'all'
+                    ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
+                    : 'text-sub hover:bg-surface hover:text-txt',
+                )}
+              >
+                Todos ({totalServices})
+              </button>
+              {gitCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setServiceTypeFilter('git')}
+                  className={cx(
+                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                    serviceTypeFilter === 'git'
+                      ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
+                      : 'text-sub hover:bg-surface hover:text-txt',
+                  )}
+                >
+                  <ModuleLogo kind="github" size={12} />
+                  <span>Git ({gitCount})</span>
+                </button>
+              )}
+              {dbCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setServiceTypeFilter('database')}
+                  className={cx(
+                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                    serviceTypeFilter === 'database'
+                      ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
+                      : 'text-sub hover:bg-surface hover:text-txt',
+                  )}
+                >
+                  <Database size={12} className="text-acc" />
+                  <span>Bases de datos ({dbCount})</span>
+                </button>
+              )}
+              {imageCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setServiceTypeFilter('image')}
+                  className={cx(
+                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                    serviceTypeFilter === 'image'
+                      ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
+                      : 'text-sub hover:bg-surface hover:text-txt',
+                  )}
+                >
+                  <Layers size={12} className="text-info" />
+                  <span>Docker / Apps ({imageCount})</span>
+                </button>
+              )}
+              {alertServicesCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setServiceTypeFilter('alerts')}
+                  className={cx(
+                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                    serviceTypeFilter === 'alerts'
+                      ? 'border border-err/30 bg-err/15 font-semibold text-err shadow-sm'
+                      : 'text-err/80 hover:bg-err/10 hover:text-err',
+                  )}
+                >
+                  <BellRing size={11} />
+                  <span>Alertas ({alertServicesCount})</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {services.length === 0 ? (
           <div className="card flex flex-col items-center gap-4 py-20 text-center">
             <svg width="120" height="72" viewBox="0 0 120 72" fill="none" aria-hidden className="text-line">
@@ -385,9 +539,27 @@ export default function ProjectPage() {
               <Plus size={15} /> Añadir servicio
             </Button>
           </div>
+        ) : filteredServices.length === 0 ? (
+          <div className="card flex flex-col items-center gap-3 py-16 text-center">
+            <Search size={22} className="text-subtle" />
+            <p className="text-sm font-medium text-txt">No se encontraron servicios</p>
+            <p className="max-w-xs text-xs text-subtle">
+              No hay servicios que coincidan con los filtros de búsqueda aplicados.
+            </p>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                setServiceQuery('');
+                setServiceTypeFilter('all');
+              }}
+            >
+              Limpiar búsqueda
+            </Button>
+          </div>
         ) : (
           <div className="stagger grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3.5">
-            {services.map((s) => (
+            {filteredServices.map((s) => (
               <ServiceCard
                 key={s.id}
                 service={s}
@@ -405,11 +577,11 @@ export default function ProjectPage() {
           <p className="mt-5 hidden text-[11px] text-subtle drawer:block">
             {selected ? (
               <>
-                Pulsa <kbd className="kbd">esc</kbd> para cerrar el panel · <kbd className="kbd">⌘K</kbd> para buscar
+                Pulsa <kbd className="kbd">esc</kbd> para cerrar el panel · <kbd className="kbd">{CMD_K_LABEL}</kbd> para buscar
               </>
             ) : (
               <>
-                Abre un servicio para desplegar, ver logs y editar variables · <kbd className="kbd">⌘K</kbd> para buscar
+                Abre un servicio para desplegar, ver logs y editar variables · <kbd className="kbd">{CMD_K_LABEL}</kbd> para buscar
               </>
             )}
           </p>

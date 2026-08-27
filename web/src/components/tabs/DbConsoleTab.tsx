@@ -14,7 +14,7 @@ import {
 import { api } from '../../api';
 import { useLocalStorage } from '../../hooks';
 import { DbOverview, DbQueryResult, DbSnippet } from '../../types';
-import { cx, fmtBytes } from '../../utils';
+import { CMD_ENTER_LABEL, cx, fmtBytes } from '../../utils';
 import { Button, Kbd, Skeleton, useToast } from '../ui';
 
 /** Descarga un contenido como archivo desde el navegador. */
@@ -312,7 +312,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
             <Play size={12} /> Ejecutar
           </Button>
           <span className="hidden items-center gap-1 text-[11px] text-subtle sm:flex">
-            <Kbd>⌘↵</Kbd>
+            <Kbd>{CMD_ENTER_LABEL}</Kbd>
           </span>
           <label
             className={cx(

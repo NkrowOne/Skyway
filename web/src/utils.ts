@@ -236,3 +236,21 @@ export function fmtDateTime(ts: number): string {
     minute: '2-digit',
   });
 }
+
+/** Detección de macOS / iOS para adaptar atajos de teclado (⌘ vs Ctrl) */
+export const isMac =
+  typeof navigator !== 'undefined' &&
+  Boolean(
+    /Mac|iPhone|iPod|iPad/i.test(
+      (navigator as any).userAgentData?.platform || navigator.platform || navigator.userAgent,
+    ),
+  );
+
+/** Tecla modificadora principal: ⌘ en Mac, Ctrl en Windows/Linux */
+export const MOD_KEY = isMac ? '⌘' : 'Ctrl';
+
+/** Etiqueta de la paleta de comandos: ⌘K en Mac, Ctrl+K en Windows/Linux */
+export const CMD_K_LABEL = isMac ? '⌘K' : 'Ctrl+K';
+
+/** Etiqueta de ejecutar consulta: ⌘↵ en Mac, Ctrl+↵ en Windows/Linux */
+export const CMD_ENTER_LABEL = isMac ? '⌘↵' : 'Ctrl+↵';

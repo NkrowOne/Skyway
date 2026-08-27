@@ -104,6 +104,7 @@ export default function VariablesTab({
   const [dirty, setDirty] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
   const keyInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
+  const valueInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -241,13 +242,16 @@ export default function VariablesTab({
       }
     }
 
-    // Si contiene '=', actúa de divisor automático
+    // Si contiene '=', actúa de divisor automático y salta el foco al campo valor
     if (rawInput.includes('=')) {
       const eq = rawInput.indexOf('=');
       const key = rawInput.slice(0, eq).trim();
       const value = rawInput.slice(eq + 1);
-      setRows((prev) => prev.map((r) => (r.id === id ? { ...r, key, value } : r)));
+      setRows((prev) => prev.map((r) => (r.id === id ? { ...r, key, value: value || r.value } : r)));
       setDirty(true);
+      setTimeout(() => {
+        valueInputRefs.current.get(id)?.focus();
+      }, 10);
       return;
     }
 
@@ -529,7 +533,7 @@ export default function VariablesTab({
                           isDup && 'bg-err/[.04]',
                         )}
                       >
-                        {/* Campo CLAVE / KEY con divisor automático de '=' */}
+                        {/* Campo CLAVE / KEY con salto automático al pulsar '=' o Enter */}
                         <div className="relative flex items-center sm:w-[40%] sm:border-r border-line">
                           <input
                             ref={(el) => {
@@ -544,6 +548,15 @@ export default function VariablesTab({
                             value={row.key}
                             spellCheck={false}
                             onChange={(e) => handleKeyChange(row.id, e.target.value, index)}
+                            onKeyDown={(e) => {
+                              if (e.key === '=' || e.key === 'Equal') {
+                                e.preventDefault();
+                                valueInputRefs.current.get(row.id)?.focus();
+                              } else if (e.key === 'Enter') {
+                                e.preventDefault();
+                                valueInputRefs.current.get(row.id)?.focus();
+                              }
+                            }}
                           />
                           {isDup && (
                             <span className="mr-2 rounded bg-err/15 px-1.5 py-0.5 text-[9.5px] font-bold text-err">
@@ -552,9 +565,13 @@ export default function VariablesTab({
                           )}
                         </div>
 
-                        {/* Campo VALOR / VALUE */}
+                        {/* Campo VALOR / VALUE con salto a la siguiente fila al pulsar Enter */}
                         <div className="flex min-w-0 flex-1 items-center border-t sm:border-t-0 border-line/60">
                           <input
+                            ref={(el) => {
+                              if (el) valueInputRefs.current.set(row.id, el);
+                              else valueInputRefs.current.delete(row.id);
+                            }}
                             className={cx(
                               'min-w-0 flex-1 bg-transparent px-3.5 py-2.5 font-mono text-xs outline-none placeholder:text-subtle focus:bg-surface2/60',
                               isRef ? 'text-info font-medium' : isRevealed ? 'text-txt' : 'text-subtle',
@@ -564,6 +581,17 @@ export default function VariablesTab({
                             value={row.value}
                             spellCheck={false}
                             onChange={(e) => handleValueChange(row.id, e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                if (index === filteredRows.length - 1) {
+                                  handleAddRow();
+                                } else {
+                                  const nextRow = filteredRows[index + 1];
+                                  if (nextRow) keyInputRefs.current.get(nextRow.id)?.focus();
+                                }
+                              }
+                            }}
                           />
 
                           {/* Botones de acción individual por fila */}

@@ -26,7 +26,8 @@ import { createPortal } from 'react-dom';
 import { api } from '../api';
 import { isEditableTarget, usePresence } from '../hooks';
 import { Alert, Me, Project, Service, SystemInfo } from '../types';
-import { cx, fmtBytes, SEVERITY_TONE, timeAgo } from '../utils';
+import { CMD_K_LABEL, cx, fmtBytes, SEVERITY_TONE, timeAgo } from '../utils';
+import { ModuleLogo, moduleKind } from './ModuleIcon';
 import { Kbd, Spinner, StatusBadge } from './ui';
 import ErrorBoundary from './ErrorBoundary';
 
@@ -60,7 +61,7 @@ const PAGE_LABEL: Record<string, string> = {
 
 interface PaletteItem {
   key: string;
-  group: 'Proyectos' | 'Acciones rápidas';
+  group: 'Proyectos y Servicios' | 'Acciones rápidas';
   icon: React.ReactNode;
   label: React.ReactNode;
   meta?: React.ReactNode;
@@ -90,15 +91,34 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
   }, [open]);
 
   const items = useMemo<PaletteItem[]>(() => {
-    const list: PaletteItem[] = (projects.data?.projects ?? []).map((p) => ({
-      key: `p-${p.id}`,
-      group: 'Proyectos',
-      icon: <Boxes size={15} className="text-acc-soft" />,
-      label: p.name,
-      meta: p.client ?? undefined,
-      keywords: `${p.name} ${p.slug} ${p.client ?? ''}`.toLowerCase(),
-      to: `/projects/${p.id}`,
-    }));
+    const list: PaletteItem[] = (projects.data?.projects ?? []).flatMap((p) => {
+      const pItem: PaletteItem = {
+        key: `p-${p.id}`,
+        group: 'Proyectos y Servicios',
+        icon: <Boxes size={15} className="text-acc-soft" />,
+        label: <span className="font-semibold text-txt">{p.name}</span>,
+        meta: p.client ? `${p.client} · ${p.serviceCount ?? 0} serv.` : `${p.serviceCount ?? 0} serv.`,
+        keywords: `${p.name} ${p.slug} ${p.client ?? ''}`.toLowerCase(),
+        to: `/projects/${p.id}`,
+      };
+
+      const sItems: PaletteItem[] = (p.services ?? []).map((s) => ({
+        key: `s-${s.id}`,
+        group: 'Proyectos y Servicios',
+        icon: <ModuleLogo kind={moduleKind(s)} size={14} />,
+        label: (
+          <span>
+            <span className="font-medium text-txt">{s.name}</span>
+            <span className="ml-2 text-[11px] text-subtle font-normal">en {p.name}</span>
+          </span>
+        ),
+        meta: s.type,
+        keywords: `${s.name} ${s.type} ${p.name} ${p.slug} ${(s.config?.repoUrl ?? '')} ${(s.config?.image ?? '')} ${(s.config?.template ?? '')}`.toLowerCase(),
+        to: `/projects/${p.id}?s=${s.id}`,
+      }));
+
+      return [pItem, ...sItems];
+    });
     const actions: PaletteItem[] = [
       {
         key: 'a-monitor',
@@ -222,7 +242,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
     navigate(item.to);
   };
 
-  const groups: PaletteItem['group'][] = ['Proyectos', 'Acciones rápidas'];
+  const groups: PaletteItem['group'][] = ['Proyectos y Servicios', 'Acciones rápidas'];
 
   return createPortal(
     <div
@@ -327,7 +347,7 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
   const { mounted, closing } = usePresence(open, 180);
   if (!mounted) return null;
   const rows: { label: string; keys: string[] }[] = [
-    { label: 'Paleta de comandos', keys: ['⌘K'] },
+    { label: 'Paleta de comandos', keys: [CMD_K_LABEL] },
     { label: 'Ir a proyectos', keys: ['g', 'p'] },
     { label: 'Ir al monitor', keys: ['g', 'm'] },
     { label: 'Ir a sitios web', keys: ['g', 'w'] },
@@ -783,7 +803,7 @@ export default function Layout() {
           >
             <Search size={14} className="shrink-0" />
             <span className="flex-1 truncate text-left">Buscar o saltar a…</span>
-            <Kbd>⌘K</Kbd>
+            <Kbd>{CMD_K_LABEL}</Kbd>
           </button>
         )}
 
@@ -792,17 +812,17 @@ export default function Layout() {
             <button
               onClick={() => setCmdOpen(true)}
               className="mr-1 flex items-center gap-2 rounded-lg border border-line bg-bg px-2.5 py-1.5 text-xs text-subtle transition-colors duration-150 hover:border-[color-mix(in_oklab,var(--color-acc)_45%,var(--color-line))]"
-              title="Buscar (⌘K)"
+              title={`Buscar (${CMD_K_LABEL})`}
             >
               <Search size={13} />
-              <Kbd className="hidden border-0 bg-transparent p-0 sm:inline">⌘K</Kbd>
+              <Kbd className="hidden border-0 bg-transparent p-0 sm:inline">{CMD_K_LABEL}</Kbd>
             </button>
           )}
           {isHome && (
             <button
               onClick={() => setCmdOpen(true)}
               className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt sm:hidden"
-              title="Buscar (⌘K)"
+              title={`Buscar (${CMD_K_LABEL})`}
             >
               <Search size={16} />
             </button>
