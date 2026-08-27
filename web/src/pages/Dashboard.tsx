@@ -6,11 +6,12 @@ import { api } from '../api';
 import { useLatch } from '../hooks';
 import { Button, Field, Modal, Skeleton, useToast } from '../components/ui';
 import { DeploySweep } from '../components/DeployBadge';
+import { ModuleLogo, moduleKind } from '../components/ModuleIcon';
 
 // El asistente de importación de Railway solo se abre desde un botón: se carga
 // (React.lazy) en su 1ª apertura, no al entrar al panel.
 const RailwayImportModal = lazy(() => import('../components/RailwayImportModal'));
-import { Me, Project } from '../types';
+import { Me, Project, ProjectServiceSummary } from '../types';
 import { cx, timeAgo } from '../utils';
 
 /**
@@ -21,9 +22,55 @@ function Monogram({ name }: { name: string }) {
   const words = name.trim().split(/[\s\-_]+/).filter(Boolean);
   const initials = (words.length >= 2 ? words[0][0] + words[1][0] : name.trim().slice(0, 2)).toUpperCase();
   return (
-    <span className="flex h-9 w-9 shrink-0 select-none items-center justify-center rounded-[10px] border border-line bg-surface2 font-mono text-[13px] font-semibold tracking-[.04em] text-sub">
+    <span className="flex h-10 w-10 shrink-0 select-none items-center justify-center rounded-xl border border-line/80 bg-gradient-to-br from-surface2 to-surface font-mono text-[13px] font-bold tracking-[.04em] text-txt shadow-sm transition-colors group-hover:border-acc/40">
       {initials}
     </span>
+  );
+}
+
+/**
+ * Mini-resumen visual con los logos y nombres de los servicios del proyecto
+ */
+function ServiceStack({ services }: { services?: ProjectServiceSummary[] }) {
+  if (!services || services.length === 0) {
+    return (
+      <div className="mt-3 flex items-center gap-1.5 text-[11px] text-subtle">
+        <span className="h-1.5 w-1.5 rounded-full bg-line" />
+        <span>Sin servicios configurados</span>
+      </div>
+    );
+  }
+
+  const maxVisible = 4;
+  const visible = services.slice(0, maxVisible);
+  const remaining = services.length - maxVisible;
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+      {visible.map((s) => {
+        const kind = moduleKind(s);
+        return (
+          <span
+            key={s.id}
+            className="inline-flex max-w-[135px] items-center gap-1.5 truncate rounded-md border border-line/60 bg-surface2/60 px-2 py-0.5 text-[11px] font-medium text-sub transition-colors group-hover:border-line hover:border-acc/40 hover:text-txt"
+            title={`${s.name} (${kind})`}
+          >
+            <span className="shrink-0">
+              <ModuleLogo kind={kind} size={12} />
+            </span>
+            <span className="truncate">{s.name}</span>
+          </span>
+        );
+      })}
+      {remaining > 0 && (
+        <span
+          className="inline-flex items-center rounded-md border border-line/60 bg-surface2/40 px-1.5 py-0.5 text-[10.5px] font-medium text-subtle"
+          title={`${remaining} servicio${remaining > 1 ? 's' : ''} más`}
+        >
+          +{remaining} más
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -31,36 +78,52 @@ function ProjectCard({ project }: { project: Project }) {
   const alerts = project.openAlerts ?? 0;
   const deploying = project.activeDeploys ?? 0;
   return (
-    <Link to={`/projects/${project.id}`} className="card card-hover relative block p-5">
-      {/* La misma cinta que la tarjeta del servicio: el aviso de «hay una
-          versión saliendo» se lee igual desde el panel general. */}
+    <Link
+      to={`/projects/${project.id}`}
+      className="group card card-hover relative flex flex-col justify-between p-5 transition-all duration-200 border-line hover:border-acc/40 hover:shadow-lg hover:shadow-acc/5"
+    >
+      {/* La misma cinta que la tarjeta del servicio: el aviso de «hay una versión saliendo» */}
       {deploying > 0 && <DeploySweep />}
-      <div className="flex items-start justify-between gap-2">
-        <Monogram name={project.name} />
-        <div className="flex items-center gap-2.5 text-xs">
-          {deploying > 0 && (
-            <span className="inline-flex items-center gap-1.5 font-medium text-warn">
-              <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-warn" />
-              {deploying === 1 ? 'desplegando' : `${deploying} desplegando`}
+      <div>
+        <div className="flex items-start justify-between gap-2">
+          <Monogram name={project.name} />
+          <div className="flex items-center gap-2 text-xs">
+            {deploying > 0 && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-warn/30 bg-warn/10 px-2 py-0.5 text-[11px] font-medium text-warn">
+                <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-warn" />
+                {deploying === 1 ? 'desplegando' : `${deploying} desplegando`}
+              </span>
+            )}
+            {alerts > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-err/30 bg-err/10 px-2 py-0.5 text-[11px] font-semibold text-err">
+                <BellRing size={10} /> {alerts}
+              </span>
+            )}
+            <span className="font-mono text-[11px] text-subtle">
+              {project.serviceCount === 1 ? '1 servicio' : `${project.serviceCount ?? 0} servicios`}
             </span>
-          )}
-          {alerts > 0 && (
-            <span className="inline-flex items-center gap-1 font-medium text-err">
-              <BellRing size={11} /> {alerts}
-            </span>
-          )}
-          <span className="font-mono text-[11px] text-subtle">
-            {project.serviceCount === 1 ? '1 servicio' : `${project.serviceCount ?? 0} servicios`}
-          </span>
+          </div>
         </div>
+
+        <h3 className="mt-3.5 text-[15px] font-semibold tracking-[-.01em] text-txt transition-colors group-hover:text-acc-soft">
+          {project.name}
+        </h3>
+        <p className="mt-0.5 text-xs text-sub">
+          <span className="font-mono text-[11px] text-subtle">{project.slug}</span>
+        </p>
+
+        {/* Mini resumen visual de la pila de servicios */}
+        <ServiceStack services={project.services} />
       </div>
-      <h3 className="mt-3.5 text-[15px] font-semibold tracking-[-.01em]">{project.name}</h3>
-      <p className="mt-1 text-xs text-sub">
-        <span className="font-mono text-[11px] text-subtle">{project.slug}</span>
-      </p>
-      <p className="mt-3 text-[11px] text-subtle">
-        {project.lastDeployAt ? `Último despliegue ${timeAgo(project.lastDeployAt)}` : 'Sin despliegues todavía'}
-      </p>
+
+      <div className="mt-4 flex items-center justify-between border-t border-line/50 pt-3 text-[11px] text-subtle">
+        <span>
+          {project.lastDeployAt ? `Último despliegue ${timeAgo(project.lastDeployAt)}` : 'Sin despliegues todavía'}
+        </span>
+        <span className="text-xs font-semibold text-subtle transition-all group-hover:translate-x-0.5 group-hover:text-txt">
+          →
+        </span>
+      </div>
     </Link>
   );
 }

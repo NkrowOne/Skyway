@@ -340,6 +340,7 @@ export default function LogViewer({
   const prevLenRef = useRef(0);
   const lastTopRef = useRef(0);
   const unreadCountRef = useRef(0);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const [follow, setFollow] = useState(true);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -674,9 +675,10 @@ export default function LogViewer({
             <div className="flex h-8 min-w-[140px] flex-1 items-center gap-2 rounded-lg border border-line bg-term px-2.5 focus-within:border-acc">
               <Search size={13} className="shrink-0 text-subtle" />
               <input
+                ref={searchRef}
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                placeholder="Buscar en los logs…"
+                placeholder="Buscar en los logs… (Ctrl+F)"
                 spellCheck={false}
                 className="min-w-0 flex-1 bg-transparent font-mono text-xs text-txt outline-none placeholder:text-subtle"
               />

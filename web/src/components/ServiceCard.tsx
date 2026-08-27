@@ -46,11 +46,11 @@ export default function ServiceCard({
     <button
       onClick={onClick}
       className={cx(
-        'relative rounded-xl border bg-surface p-4 text-left',
+        'group relative rounded-xl border bg-surface p-4 text-left transition-all duration-200',
         selected
-          ? 'border-[color-mix(in_oklab,var(--color-acc)_70%,var(--color-line))] shadow-card-selected transition-[border-color,box-shadow] duration-[180ms] ease-out'
+          ? 'border-acc/70 shadow-[0_0_20px_-4px_color-mix(in_oklab,var(--color-acc)_35%,transparent)] bg-surface2/40'
           : cx(
-              'card-hover shadow-lvl1',
+              'card-hover shadow-lvl1 hover:border-line/90',
               alertCount > 0
                 ? 'border-[color-mix(in_oklab,var(--color-err)_45%,var(--color-line))]'
                 : deploy
@@ -70,13 +70,13 @@ export default function ServiceCard({
         <div className="flex min-w-0 items-center gap-2.5">
           <ModuleChip kind={moduleKind(service)} size={36} />
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold">{service.name}</h3>
+            <h3 className="truncate text-sm font-semibold text-txt group-hover:text-acc-soft transition-colors">
+              {service.name}
+            </h3>
             <p className="truncate font-mono text-[11px] text-subtle">{subtitle}</p>
           </div>
         </div>
-        {/* Con un despliegue vivo, la chapa dice la fase en vez del estado: es
-            la pregunta del momento, y va donde ya se mira el estado en lugar de
-            abrir otro recuadro dentro de la tarjeta. */}
+        {/* Con un despliegue vivo, la chapa dice la fase en vez del estado */}
         {deploy ? (
           <StatusBadge tone="warn" label={DEPLOY_STATUS_LABEL[deploy.status]} pulse />
         ) : (
@@ -92,23 +92,24 @@ export default function ServiceCard({
       <div className="mt-3.5 flex items-center justify-between gap-2 text-xs text-sub">
         {stats ? (
           <div className="tnum flex items-center gap-3">
-            <span>
-              CPU{' '}
-              <span className={cx(stats.cpuPercent >= CPU_ALERT ? 'font-semibold text-warn' : 'text-txt')}>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="text-subtle">CPU</span>
+              <span className={cx('font-medium', stats.cpuPercent >= CPU_ALERT ? 'font-semibold text-warn' : 'text-txt')}>
                 {stats.cpuPercent}%
               </span>
             </span>
-            <span>
-              RAM <span className="text-txt">{fmtBytes(stats.memUsage)}</span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="text-subtle">RAM</span>
+              <span className="font-medium text-txt">{fmtBytes(stats.memUsage)}</span>
             </span>
           </div>
         ) : (
           <span className="text-subtle">Sin métricas</span>
         )}
         {domain && (
-          <span className="flex min-w-0 items-center gap-1 text-sub">
+          <span className="flex min-w-0 items-center gap-1 text-sub group-hover:text-txt transition-colors">
             <Globe size={11} className="shrink-0" />
-            <span className="max-w-[120px] truncate text-[11px]">{domain}</span>
+            <span className="max-w-[120px] truncate text-[11px] font-mono">{domain}</span>
           </span>
         )}
       </div>

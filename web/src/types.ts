@@ -111,6 +111,13 @@ export interface Runtime {
   image: string | null;
 }
 
+export interface ProjectServiceSummary {
+  id: string;
+  name: string;
+  type: 'git' | 'database' | 'image';
+  config: any;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -119,6 +126,7 @@ export interface Project {
   workspace_id?: string | null;
   created_at: number;
   serviceCount?: number;
+  services?: ProjectServiceSummary[];
   lastDeployAt?: number | null;
   openAlerts?: number;
   /** Despliegues en marcha en el proyecto: la tarjeta anuncia la versión que sale. */

@@ -60,13 +60,22 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     const projects = listProjects().filter((p) => canAccessProject(user, p.id));
     const meta = projectDashboardMeta();
     return {
-      projects: projects.map((p) => ({
-        ...p,
-        serviceCount: listServices(p.id).length,
-        lastDeployAt: meta[p.id]?.lastDeployAt ?? null,
-        openAlerts: meta[p.id]?.openAlerts ?? 0,
-        activeDeploys: meta[p.id]?.activeDeploys ?? 0,
-      })),
+      projects: projects.map((p) => {
+        const sList = listServices(p.id);
+        return {
+          ...p,
+          serviceCount: sList.length,
+          services: sList.map((s) => ({
+            id: s.id,
+            name: s.name,
+            type: s.type,
+            config: s.config,
+          })),
+          lastDeployAt: meta[p.id]?.lastDeployAt ?? null,
+          openAlerts: meta[p.id]?.openAlerts ?? 0,
+          activeDeploys: meta[p.id]?.activeDeploys ?? 0,
+        };
+      }),
     };
   });
 
