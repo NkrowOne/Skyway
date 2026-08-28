@@ -304,7 +304,7 @@ export default function ProjectPage() {
       <div className="min-w-0 flex-1 overflow-y-auto px-4 py-5 sm:px-7 sm:py-7">
         <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-xl font-semibold tracking-[-.015em]">{proj.name}</h1>
+            <h1 className="text-xl font-semibold">{proj.name}</h1>
             <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-sub">
               Red privada{' '}
               <span className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-px font-mono text-xs text-txt">

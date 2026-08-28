@@ -50,7 +50,7 @@ function SiteCard({
               className="flex max-w-full items-center gap-1.5 text-left"
               title="Abrir el servicio"
             >
-              <span className="truncate text-sm font-semibold tracking-[-.01em]">{site.name}</span>
+              <span className="truncate text-sm font-semibold">{site.name}</span>
               {site.alerts > 0 && (
                 <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-err/[.14] px-1.5 py-px text-micro font-semibold text-err">
                   <BellRing size={9} /> {site.alerts}
@@ -210,7 +210,7 @@ export default function SitesPage() {
     <div className="mx-auto max-w-[1120px] px-4 py-7 sm:px-6 sm:py-9">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="flex items-center gap-2.5 text-2xl font-semibold leading-[30px] tracking-[-.02em]">
+          <h1 className="flex items-center gap-2.5 text-2xl font-semibold leading-[30px]">
             <Globe size={22} className="text-acc-soft" /> Sitios y servicios
           </h1>
           <p className="mt-1.5 text-sm text-sub">

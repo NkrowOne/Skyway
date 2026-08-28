@@ -808,46 +808,26 @@ export default function LogViewer({
         </div>
       )}
 
-      {toolbar && (
+      {/* Solo aparece cuando tiene algo que contar: un aviso, un filtro activo
+          o el seguimiento en vivo. Vacía era una franja de cromo sin función. */}
+      {toolbar && (statusNote || filtering || follow) && (
         <div className="flex shrink-0 items-center justify-between gap-2.5 border-b border-line bg-term2 px-3 py-1.5 text-xs text-subtle">
           <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
             {statusNote ? (
-              <span className="text-warn font-medium">{statusNote}</span>
-            ) : (
-              <>
-                <span>
-                  <span className="tnum font-medium text-txt/90">{NF.format(visible.length)}</span>
-                  {filtering ? ` de ${NF.format(rows.length)} líneas filtradas` : ' líneas'}
-                </span>
-                {counts.err > 0 && (
-                  <>
-                    <span className="text-line">·</span>
-                    <span className="text-err font-medium">{counts.err} errores</span>
-                  </>
-                )}
-                {counts.warn > 0 && (
-                  <>
-                    <span className="text-line">·</span>
-                    <span className="text-warn font-medium">{counts.warn} avisos</span>
-                  </>
-                )}
-              </>
-            )}
+              <span className="font-medium text-warn">{statusNote}</span>
+            ) : filtering ? (
+              <span>
+                <span className="tnum font-medium text-txt/90">{NF.format(visible.length)}</span> de{' '}
+                <span className="tnum">{NF.format(rows.length)}</span> líneas
+              </span>
+            ) : null}
           </span>
 
-          {follow ? (
+          {follow && (
             <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-ok">
               <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-ok" />
               En vivo
             </span>
-          ) : (
-            <button
-              type="button"
-              onClick={() => jump('bottom')}
-              className="press inline-flex shrink-0 items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-0.5 text-xs font-medium text-sub hover:text-txt"
-            >
-              <ArrowDownToLine size={12} /> Seguir al final
-            </button>
           )}
         </div>
       )}

@@ -35,16 +35,11 @@ export default {
         term: 'oklch(12.5% 0.006 255 / <alpha-value>)', // fondo de terminales/logs
         term2: 'oklch(17% 0.007 255 / <alpha-value>)', // cromo de la consola (cabecera, canalón, barra)
         /*
-         * Serie categórica para gráficas. Escalonada en luminosidad (Δ≈0.10 entre
-         * series consecutivas) para que se distingan también en escala de grises
-         * y con daltonismo, no solo por tono.
+         * La serie categórica de las gráficas vive solo en index.css como
+         * --color-chart-1..6: las consumen atributos SVG (fill/stroke), no
+         * clases de Tailwind, y tenerla en dos sitios solo invita a que se
+         * desincronicen.
          */
-        'chart-1': 'oklch(58.4% 0.135 248 / <alpha-value>)',
-        'chart-2': 'oklch(68.9% 0.150 352 / <alpha-value>)',
-        'chart-3': 'oklch(72.7% 0.145 152 / <alpha-value>)',
-        'chart-4': 'oklch(81.3% 0.105 296 / <alpha-value>)',
-        'chart-5': 'oklch(86.1% 0.130 80 / <alpha-value>)',
-        'chart-6': 'oklch(89.4% 0.090 196 / <alpha-value>)',
       },
       borderRadius: {
         // Radios unificados: controles 8px, tarjetas 12px, overlays 16px.

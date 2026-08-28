@@ -615,8 +615,8 @@ function UsoTab({ detail }: { detail: Detail }) {
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Suspense fallback={<><Skeleton className="h-56 w-full" /><Skeleton className="h-56 w-full" /></>}>
-              <UsageBars title="CPU consumida (núcleo·h)" points={series.map((p) => ({ t: p.t, value: p.cpuCoreHours }))} color="var(--color-acc)" format={(v) => String(round1(v))} labelFor={labelFor} />
-              <UsageBars title="Memoria consumida (GB·h)" points={series.map((p) => ({ t: p.t, value: p.ramGbHours }))} color="var(--color-info)" format={(v) => String(round1(v))} labelFor={labelFor} />
+              <UsageBars title="CPU consumida (núcleo·h)" points={series.map((p) => ({ t: p.t, value: p.cpuCoreHours }))} color="var(--color-chart-1)" format={(v) => String(round1(v))} labelFor={labelFor} />
+              <UsageBars title="Memoria consumida (GB·h)" points={series.map((p) => ({ t: p.t, value: p.ramGbHours }))} color="var(--color-chart-2)" format={(v) => String(round1(v))} labelFor={labelFor} />
             </Suspense>
           </div>
 
@@ -1756,7 +1756,7 @@ export default function WorkspacePage() {
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2.5">
-            <h1 className="text-2xl font-semibold tracking-[-.02em]">{ws.name}</h1>
+            <h1 className="text-2xl font-semibold">{ws.name}</h1>
             <StatusBadge tone={suspended ? 'warn' : 'ok'} label={suspended ? 'suspendida' : 'activa'} dot={!suspended} />
           </div>
           <p className="mt-1 text-sm text-sub">

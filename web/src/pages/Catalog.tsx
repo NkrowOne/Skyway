@@ -134,7 +134,7 @@ export default function CatalogPage() {
       </Link>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-[-.02em]">Catálogo</h1>
+          <h1 className="text-2xl font-semibold">Catálogo</h1>
           <p className="mt-1.5 text-sm text-sub">Los servicios que facturas: web, IA, hosting, bases de datos, dominios, soporte… con su modelo de precio. Se contratan por cuenta.</p>
         </div>
         <Button onClick={() => setDraft({ ...EMPTY })}>

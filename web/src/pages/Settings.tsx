@@ -339,7 +339,7 @@ export default function SettingsPage() {
   return (
     <div className="mx-auto flex max-w-[780px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-2">
-        <h1 className="text-2xl font-semibold tracking-[-.02em]">Ajustes</h1>
+        <h1 className="text-2xl font-semibold">Ajustes</h1>
         <p className="mt-1.5 text-sm text-sub">Configuración global del servidor: dominios, integraciones, alertas y mantenimiento</p>
       </div>
 

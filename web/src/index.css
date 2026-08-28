@@ -43,6 +43,19 @@
   --color-warn: oklch(79.5% 0.140 80);
   --color-err: oklch(65.5% 0.195 25);
   --color-info: oklch(76% 0.110 250);
+  /*
+   * Serie categórica de las gráficas. Escalonada en luminosidad (Δ≈0.10 entre
+   * series consecutivas) para que se distingan también en escala de grises y
+   * con daltonismo, no solo por tono. Cada magnitud tiene su color fijo en
+   * toda la aplicación: la CPU es siempre chart-1, la memoria siempre chart-2.
+   */
+  --color-chart-1: oklch(58.4% 0.135 248); /* CPU / carga */
+  --color-chart-2: oklch(68.9% 0.150 352); /* memoria */
+  --color-chart-3: oklch(72.7% 0.145 152); /* red · descarga */
+  --color-chart-4: oklch(81.3% 0.105 296); /* red · subida */
+  --color-chart-5: oklch(86.1% 0.130 80); /* disco */
+  --color-chart-6: oklch(89.4% 0.090 196); /* libre */
+
   --color-term: oklch(12.5% 0.006 255);
   --color-term-2: oklch(17% 0.007 255);
 

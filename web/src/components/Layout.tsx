@@ -28,7 +28,7 @@ import { isEditableTarget, usePresence } from '../hooks';
 import { Alert, Me, Project, Service, SystemInfo } from '../types';
 import { CMD_K_LABEL, cx, fmtBytes, SEVERITY_TONE, timeAgo } from '../utils';
 import { ModuleLogo, moduleKind } from './ModuleIcon';
-import { Kbd, Spinner, StatusBadge } from './ui';
+import { Chip, Kbd, Spinner, StatusBadge } from './ui';
 import ErrorBoundary from './ErrorBoundary';
 
 /** Logo de Skyway: chip con gradiente de marca. */
@@ -779,7 +779,7 @@ export default function Layout() {
         )}
       >
         <div className="flex min-w-0 items-center gap-2.5">
-          <Link to="/" className="flex shrink-0 items-center gap-2.5 text-sm font-[650] tracking-[.01em] text-txt">
+          <Link to="/" className="flex shrink-0 items-center gap-2 text-sm font-semibold text-txt">
             <BrandMark />
             <span className={cx(!isHome && 'hidden md:inline')}>Skyway</span>
           </Link>
@@ -788,9 +788,9 @@ export default function Layout() {
               <ChevronRight size={14} className="shrink-0 text-subtle" />
               <span className="truncate text-sm font-medium">{pageLabel}</span>
               {clientPill && (
-                <span className="hidden shrink-0 items-center gap-[5px] rounded-full border border-line bg-bg px-2.5 py-0.5 text-xs text-sub sm:flex">
-                  <Building2 size={10} /> {clientPill}
-                </span>
+                <Chip className="hidden sm:inline-flex" icon={<Building2 size={10} aria-hidden />}>
+                  {clientPill}
+                </Chip>
               )}
             </>
           )}
@@ -799,7 +799,7 @@ export default function Layout() {
         {isHome && (
           <button
             onClick={() => setCmdOpen(true)}
-            className="hidden min-w-0 flex-[0_1_300px] items-center gap-2 rounded-lg border border-line bg-bg py-1.5 pl-3 pr-2 text-sm text-subtle transition-colors duration-150 hover:border-line2 hover:text-sub sm:flex"
+            className="hidden h-9 min-w-0 flex-[0_1_320px] items-center gap-2 rounded-lg border border-line bg-bg pl-3 pr-2 text-sm text-subtle transition-colors duration-[--dur-1] hover:border-line2 hover:text-sub sm:flex"
           >
             <Search size={14} className="shrink-0" />
             <span className="flex-1 truncate text-left">Buscar o saltar a…</span>
@@ -828,14 +828,14 @@ export default function Layout() {
             </button>
           )}
           {sys && (
-            <div className="mr-2 hidden items-center gap-2 rounded-full border border-line bg-bg px-3 py-[5px] text-xs text-sub nav:flex">
-              <span className="h-1.5 w-1.5 rounded-full bg-ok" />
-              <span>
-                CPU <span className="tnum text-txt">{sys.host.load[0]}</span>/{sys.host.cpus}
+            <div className="mr-2 hidden items-center gap-3 rounded-lg border border-line bg-bg px-3 py-1 text-xs text-subtle nav:flex">
+              <span title={`Carga media: ${sys.host.load[0]} de ${sys.host.cpus} núcleos`}>
+                CPU <span className="tnum font-medium text-txt">{sys.host.load[0]}</span>
+                <span className="text-subtle">/{sys.host.cpus}</span>
               </span>
-              <span className="text-line">·</span>
-              <span>
-                RAM <span className="tnum text-txt">{fmtBytes(sys.host.freeMem)}</span> libres
+              <span aria-hidden className="h-3 w-px bg-line" />
+              <span title="Memoria libre del host">
+                RAM <span className="tnum font-medium text-txt">{fmtBytes(sys.host.freeMem)}</span>
               </span>
             </div>
           )}

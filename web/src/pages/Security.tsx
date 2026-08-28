@@ -152,7 +152,7 @@ export default function SecurityPage() {
   return (
     <div className="mx-auto flex max-w-[880px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-2">
-        <h1 className="text-2xl font-semibold tracking-[-.02em]">Panel de seguridad</h1>
+        <h1 className="text-2xl font-semibold">Panel de seguridad</h1>
         <p className="mt-1.5 text-sm text-sub">Revisión continua de la configuración de todos los proyectos</p>
       </div>
 

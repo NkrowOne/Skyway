@@ -141,7 +141,7 @@ export default function PublicStatusPage() {
       <div className="page-in mx-auto w-full max-w-[760px] px-4 py-10 sm:px-6 sm:py-14">
         <header className="mb-7">
           <p className="text-xs font-semibold uppercase tracking-[.14em] text-subtle">Estado del servicio</p>
-          <h1 className="mt-1.5 text-2xl font-semibold leading-8 tracking-[-.02em]">{data.project.name}</h1>
+          <h1 className="mt-1.5 text-2xl font-semibold leading-8">{data.project.name}</h1>
           {data.project.client && <p className="mt-1 text-sm text-sub">{data.project.client}</p>}
         </header>
 

@@ -154,7 +154,8 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
   const [hover, setHover] = useState<number | null>(null);
   const [table, setTable] = useState(false);
   const paidColor = 'var(--color-ok)';
-  const pendColor = 'var(--color-acc)';
+  // Pendiente es un estado, no una marca: va en el color de aviso.
+  const pendColor = 'var(--color-warn)';
 
   const innerW = W - PAD.left - PAD.right;
   const innerH = H - PAD.top - PAD.bottom;

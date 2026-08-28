@@ -56,7 +56,7 @@ function StatTile({
       <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[.07em] text-subtle">
         {icon} {label}
       </div>
-      <p className="mt-2 text-lg font-semibold tracking-[-.01em] tnum">{value}</p>
+      <p className="mt-2 text-lg font-semibold tnum">{value}</p>
       {detail && <p className="mt-0.5 text-xs text-subtle">{detail}</p>}
       {pct !== undefined && pct !== null && (
         <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-surface2">
@@ -511,7 +511,7 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
             title={`Carga del sistema${cpus ? ` · ${cpus} núcleos` : ''}`}
             points={loadPoints}
             hours={hours}
-            color="var(--color-acc)"
+            color="var(--color-chart-1)"
             format={(v) => v.toFixed(v < 10 ? 2 : 1)}
             threshold={cpus ? { value: cpus, label: `${cpus} núcleos` } : null}
           />
@@ -519,7 +519,7 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
             title="RAM del servidor"
             points={memPoints}
             hours={hours}
-            color="var(--color-info)"
+            color="var(--color-chart-2)"
             format={(v) => fmtBytes(v)}
             threshold={memTotal ? { value: memTotal, label: `total ${fmtBytes(memTotal)}` } : null}
             fixedMax={memTotal ?? undefined}
@@ -528,7 +528,7 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
             title="Disco del servidor · ocupado"
             points={diskPoints}
             hours={hours}
-            color="var(--color-warn)"
+            color="var(--color-chart-5)"
             format={(v) => fmtBytes(v)}
             threshold={diskTotal ? { value: diskTotal, label: `total ${fmtBytes(diskTotal)}` } : null}
             fixedMax={diskTotal ?? undefined}
@@ -632,7 +632,7 @@ export default function MonitorPage() {
   return (
     <div className="mx-auto max-w-[1180px] px-4 py-7 sm:px-6 sm:py-9">
       <div className="mb-6">
-        <h1 className="flex items-center gap-2.5 text-2xl font-semibold leading-[30px] tracking-[-.02em]">
+        <h1 className="flex items-center gap-2.5 text-2xl font-semibold leading-[30px]">
           <Activity size={22} className="text-acc-soft" /> Monitor
         </h1>
         <p className="mt-1.5 text-sm text-sub">

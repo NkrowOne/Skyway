@@ -44,7 +44,7 @@ export default function AccountingPage() {
     <div className="mx-auto max-w-[1120px] px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-[-.02em]">Contabilidad</h1>
+          <h1 className="text-2xl font-semibold">Contabilidad</h1>
           <p className="mt-1.5 text-sm text-sub">Ingresos de tu empresa: lo facturado a los clientes, lo cobrado y lo pendiente</p>
         </div>
         <a href="/api/accounting/export.csv" download className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface2 px-3.5 text-sm font-medium text-txt hover:border-acc/50">

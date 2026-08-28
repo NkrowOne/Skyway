@@ -97,7 +97,7 @@ export default function UsersPage() {
     <div className="mx-auto flex max-w-[880px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-2 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-[-.02em]">Usuarios</h1>
+          <h1 className="text-2xl font-semibold">Usuarios</h1>
           <p className="mt-1.5 text-sm text-sub">
             Administradores con control total del servidor, y miembros limitados a los workspaces de su cliente
           </p>

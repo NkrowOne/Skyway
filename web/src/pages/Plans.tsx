@@ -92,7 +92,7 @@ export default function PlansPage() {
       </Link>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-[-.02em]">Planes</h1>
+          <h1 className="text-2xl font-semibold">Planes</h1>
           <p className="mt-1.5 text-sm text-sub">Los usos incluidos y el precio que hereda cada cuenta. Se pueden ajustar a medida por cliente.</p>
         </div>
         <Button onClick={() => setDraft({ ...EMPTY, modules: modules.data?.modules.map((m) => m.key) ?? [] })}>

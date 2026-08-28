@@ -272,7 +272,7 @@ export default function ServiceDrawer({
             <ModuleChip kind={moduleKind(service)} size={fullscreen ? 40 : 38} />
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="truncate text-base font-[650] tracking-[-.01em]">{service.name}</h2>
+                <h2 className="truncate text-base font-semibold">{service.name}</h2>
                 <StatusBadge
                   tone={STATE_TONE[state]}
                   label={STATE_LABEL[state]}

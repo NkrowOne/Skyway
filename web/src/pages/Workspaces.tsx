@@ -31,7 +31,7 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
             <Building2 size={16} />
           </span>
           <div className="min-w-0">
-            <h3 className="truncate text-base font-semibold tracking-[-.01em]">{workspace.name}</h3>
+            <h3 className="truncate text-base font-semibold">{workspace.name}</h3>
             <p className="font-mono text-xs text-subtle">{workspace.slug}</p>
           </div>
         </div>
@@ -112,7 +112,7 @@ export default function WorkspacesPage() {
     <div className="mx-auto max-w-[1120px] px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-[-.02em]">Cuentas y clientes</h1>
+          <h1 className="text-2xl font-semibold">Cuentas y clientes</h1>
           <p className="mt-1.5 text-sm text-sub">
             Cada cuenta agrupa los proyectos de un cliente bajo una cuota de recursos compartida y su facturación
           </p>

@@ -129,7 +129,7 @@ export default function AccountPage() {
   return (
     <div className="mx-auto flex max-w-[780px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-2">
-        <h1 className="text-2xl font-semibold tracking-[-.02em]">Mi cuenta</h1>
+        <h1 className="text-2xl font-semibold">Mi cuenta</h1>
         <p className="mt-1.5 text-sm text-sub">
           {me.data?.user?.email} · {me.data?.user?.role === 'admin' ? 'administrador' : 'miembro'}
         </p>

@@ -145,7 +145,7 @@ export default function Login() {
           <div className="mb-6 flex flex-col items-center gap-3.5 text-center">
             <BrandMark size={52} iconSize={24} radius={14} />
             <div>
-              <h1 className="text-xl font-[650] tracking-[-.015em]">Entrar en Skyway</h1>
+              <h1 className="text-xl font-semibold">Entrar en Skyway</h1>
               <p className="mt-1 text-sm text-sub">Tu plataforma de despliegue auto-alojada</p>
             </div>
           </div>
