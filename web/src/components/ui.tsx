@@ -191,7 +191,7 @@ export function PageHeader({
         {eyebrow && (
           <p className="mb-1 text-micro font-semibold uppercase tracking-[.09em] text-subtle">{eyebrow}</p>
         )}
-        <h1 className="truncate text-xl font-semibold text-txt">{title}</h1>
+        <h1 className="truncate text-2xl font-semibold text-txt">{title}</h1>
         {description && <p className="mt-1 max-w-2xl text-xs leading-5 text-sub">{description}</p>}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
@@ -227,7 +227,7 @@ export function Section({
           )}
         >
           <div className="min-w-0">
-            {title && <h2 className="truncate text-sm font-semibold text-txt">{title}</h2>}
+            {title && <h2 className="truncate text-base font-semibold text-txt">{title}</h2>}
             {description && <p className="mt-0.5 text-xs leading-5 text-subtle">{description}</p>}
           </div>
           {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
@@ -270,9 +270,16 @@ export function Menu({
         onCloseRef.current();
       }
     };
-    // `mousedown` y no `click`: cerrar antes de que el clic active lo que haya debajo.
+    /*
+     * `mousedown` y no `click`: cierra antes de que el clic active lo que haya
+     * debajo. El ancla (el contenedor `relative` que envuelve al disparador y
+     * al menú) cuenta como «dentro»: si no, pulsar el disparador con el menú
+     * abierto lo cerraría en mousedown y el click posterior volvería a
+     * abrirlo, y el menú no se cerraría nunca desde su propio botón.
+     */
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onCloseRef.current();
+      const ancla = ref.current?.parentElement ?? ref.current;
+      if (ancla && !ancla.contains(e.target as Node)) onCloseRef.current();
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('mousedown', onDown);
@@ -466,16 +473,9 @@ export function EditorBar({
 }
 
 // ---------- StatusBadge ----------
-const TONE_BADGE: Record<Tone, string> = {
-  ok: 'border-ok/25 bg-ok/10 text-ok',
-  warn: 'border-warn/25 bg-warn/10 text-warn',
-  err: 'border-err/25 bg-err/10 text-err',
-  info: 'border-info/25 bg-info/10 text-info',
-  neutral: 'border-line bg-surface2 text-sub',
-};
-
 /**
- * Pill de estado unificado: dot 5px y tipografía limpia.
+ * Estado de un recurso: es un Chip con punto, más el recuento de réplicas
+ * cuando hay más de una. No duplica la tabla de tonos: usa la de Chip.
  */
 export function StatusBadge({
   tone,
@@ -483,6 +483,7 @@ export function StatusBadge({
   pulse,
   replicas,
   dot = true,
+  size,
   className,
 }: {
   tone: Tone;
@@ -490,27 +491,18 @@ export function StatusBadge({
   pulse?: boolean;
   replicas?: { running: number; total: number };
   dot?: boolean;
+  size?: ChipSize;
   className?: string;
 }) {
-  const stateKey = typeof label === 'string' || typeof label === 'number' ? `${tone}-${label}` : undefined;
   return (
-    <span
-      className={cx(
-        'inline-flex shrink-0 items-center whitespace-nowrap rounded-md border px-1.5 py-0.5 text-xs font-medium transition-colors duration-[--dur-2]',
-        TONE_BADGE[tone],
-        className,
+    <Chip tone={tone} size={size} dot={dot} pulse={pulse} className={className}>
+      {label}
+      {replicas && replicas.total > 1 && (
+        <span className={cx('tnum font-mono', replicas.running < replicas.total && 'text-warn')}>
+          {replicas.running}/{replicas.total}
+        </span>
       )}
-    >
-      <span key={stateKey} className="inline-flex items-center gap-1.5">
-        {dot && <span className={cx('h-1.5 w-1.5 rounded-full bg-current', pulse && 'pulse-soft')} />}
-        {label}
-        {replicas && replicas.total > 1 && (
-          <span className={cx('tnum font-mono text-micro', replicas.running < replicas.total && 'text-warn')}>
-            · {replicas.running}/{replicas.total}
-          </span>
-        )}
-      </span>
-    </span>
+    </Chip>
   );
 }
 

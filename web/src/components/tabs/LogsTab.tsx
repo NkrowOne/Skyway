@@ -17,7 +17,7 @@ import {
   timeAgo,
 } from '../../utils';
 import LogViewer, { LogStage } from '../LogViewer';
-import { Skeleton, useToast } from '../ui';
+import { Menu, Skeleton, useToast } from '../ui';
 
 type Row = { line: string; cursor: string | null };
 
@@ -348,11 +348,14 @@ export default function LogsTab({
             <ChevronDown size={14} className="shrink-0 text-subtle" />
           </button>
 
-          {selectorOpen && (
-            <div
-              className="absolute left-0 top-full z-50 mt-1.5 max-h-[380px] w-full min-w-[290px] sm:w-[360px] overflow-y-auto rounded-xl border border-line bg-surface p-1.5 shadow-modal"
-              onMouseLeave={() => setSelectorOpen(false)}
-            >
+          {/* Antes solo se cerraba con onMouseLeave: inalcanzable en táctil. */}
+          <Menu
+            open={selectorOpen}
+            onClose={() => setSelectorOpen(false)}
+            align="left"
+            className="max-h-[380px] w-full min-w-[290px] overflow-y-auto sm:w-[360px]"
+          >
+            <div>
               <div className="px-2.5 py-1.5 text-micro font-semibold uppercase tracking-wider text-subtle">
                 Seleccionar despliegue
               </div>
@@ -432,7 +435,7 @@ export default function LogsTab({
                 );
               })}
             </div>
-          )}
+          </Menu>
         </div>
 
         {/* Sub-pestañas limpias: Solo Aplicación y Compilación */}

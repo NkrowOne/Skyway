@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { cx, stripAnsi } from '../utils';
+import { Menu } from './ui';
 
 export type Level = 'err' | 'warn' | 'plain';
 export type LevelFilter = 'all' | 'err' | 'warn';
@@ -718,11 +719,11 @@ export default function LogViewer({
               >
                 <Clock size={14} />
               </ToolButton>
-              {tsMenuOpen && (
-                <div
-                  className="absolute right-0 top-full z-40 mt-1 min-w-[185px] rounded-xl border border-line bg-surface p-1.5 shadow-modal"
-                  onMouseLeave={() => setTsMenuOpen(false)}
-                >
+              {/* Antes solo se cerraba con onMouseLeave: en una pantalla táctil
+                  no hay «salir con el ratón», así que quedaba abierto para
+                  siempre. Menu cierra con Esc y con un toque fuera. */}
+              <Menu open={tsMenuOpen} onClose={() => setTsMenuOpen(false)} align="right">
+                <div>
                   <p className="px-2 py-1 text-micro font-semibold uppercase tracking-wider text-subtle">
                     Marcas de tiempo
                   </p>
@@ -764,7 +765,7 @@ export default function LogViewer({
                     </button>
                   ))}
                 </div>
-              )}
+              </Menu>
             </div>
 
             <ToolButton title="Numerar líneas" onClick={() => setGutter((g) => !g)} active={gutter}>
