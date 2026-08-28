@@ -5,7 +5,7 @@ import { api } from '../api';
 import { GithubAppStatus, GithubInstallation } from '../types';
 import { timeAgo } from '../utils';
 import { ModuleLogo } from './ModuleIcon';
-import { Button, ConfirmModal, CopyButton, Field, Skeleton, useToast } from './ui';
+import { Button, Chip, ConfirmModal, CopyButton, Field, Skeleton, useToast } from './ui';
 import { useCreateGithubApp } from './useGithubApp';
 
 /**
@@ -114,9 +114,9 @@ export default function GithubAppPanel() {
           <div className="min-w-0">
             <p className="flex items-center gap-1.5 truncate text-sm font-medium">
               {app.name}
-              <span className="inline-flex items-center gap-1 rounded-full bg-ok/[.14] px-1.5 py-px text-micro font-semibold text-ok">
-                <CheckCircle2 size={9} /> activa
-              </span>
+              <Chip size="sm" tone="ok" icon={<CheckCircle2 size={9} aria-hidden />}>
+                activa
+              </Chip>
             </p>
             <a
               href={app.htmlUrl}
@@ -167,12 +167,12 @@ export default function GithubAppPanel() {
                     {inst.projectName ? (
                       <span className="text-sub">· {inst.projectName}</span>
                     ) : (
-                      <span className="rounded-full bg-surface2 px-1.5 py-px text-micro text-sub">del servidor</span>
+                      <Chip size="sm">del servidor</Chip>
                     )}
                     {inst.suspended && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-err/[.12] px-1.5 py-px text-micro font-medium text-err">
-                        <ShieldAlert size={9} /> suspendida
-                      </span>
+                      <Chip size="sm" tone="err" icon={<ShieldAlert size={9} aria-hidden />}>
+                        suspendida
+                      </Chip>
                     )}
                   </p>
                   <p className="mt-px truncate text-xs text-subtle">

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Boxes, Fingerprint, KeyRound, Pencil, Plus, Shield, Trash2, Users2 } from 'lucide-react';
 import { api } from '../api';
-import { Button, ConfirmModal, Field, Modal, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, Field, Modal, useToast } from '../components/ui';
 import { Me, Project, UserRole, UserSummary } from '../types';
 import { cx, timeAgo } from '../utils';
 
@@ -19,21 +19,12 @@ const EMPTY: Draft = { email: '', password: '', role: 'member', projectIds: [] }
 function RoleChip({ role }: { role: UserRole }) {
   if (role === 'admin')
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.15] px-2 py-0.5 text-micro font-semibold text-acc-soft">
-        <Shield size={9} /> admin
-      </span>
+      <Chip size="sm" tone="info" icon={<Shield size={9} aria-hidden />}>
+        admin
+      </Chip>
     );
-  if (role === 'owner')
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.12] px-2 py-0.5 text-micro font-semibold text-acc-soft">
-        propietario
-      </span>
-    );
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-txt/[.08] px-2 py-0.5 text-micro font-semibold text-sub">
-      miembro
-    </span>
-  );
+  if (role === 'owner') return <Chip size="sm" tone="info">propietario</Chip>;
+  return <Chip size="sm">miembro</Chip>;
 }
 
 export default function UsersPage() {
@@ -123,7 +114,7 @@ export default function UsersPage() {
                 <span className="truncate text-sm font-medium">{u.email}</span>
                 <RoleChip role={u.role} />
                 {u.id === me.data?.user?.id && (
-                  <span className="rounded-full border border-line px-2 py-0.5 text-micro text-subtle">tú</span>
+                  <Chip size="sm">tú</Chip>
                 )}
               </div>
               <div className="flex flex-wrap items-center gap-3 text-xs text-subtle">

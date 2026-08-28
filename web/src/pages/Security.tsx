@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ChevronDown, KeyRound, ScrollText } from 'lucide-react';
 import { api } from '../api';
-import { Button, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { AuditEntry, SecurityFinding, SecurityReport } from '../types';
 import { AUDIT_ACTION_LABEL, cx, fmtDateTime, SEVERITY_LABEL, SEVERITY_TONE } from '../utils';
 
@@ -161,24 +161,24 @@ export default function SecurityPage() {
         <div className="min-w-[240px] flex-1">
           <div className="flex flex-wrap gap-2">
             {counts.critical > 0 && (
-              <span className="inline-flex items-center rounded-full bg-err/[.14] px-2.5 py-[3px] text-xs font-semibold text-err">
-                {counts.critical} crítico{counts.critical !== 1 && 's'}
-              </span>
+              <Chip tone="err">
+                <span className="tnum">{counts.critical}</span> crítico{counts.critical !== 1 && 's'}
+              </Chip>
             )}
             {counts.warning > 0 && (
-              <span className="inline-flex items-center rounded-full bg-warn/[.13] px-2.5 py-[3px] text-xs font-semibold text-warn">
-                {counts.warning} aviso{counts.warning !== 1 && 's'}
-              </span>
+              <Chip tone="warn">
+                <span className="tnum">{counts.warning}</span> aviso{counts.warning !== 1 && 's'}
+              </Chip>
             )}
             {counts.info > 0 && (
-              <span className="inline-flex items-center rounded-full bg-info/[.13] px-2.5 py-[3px] text-xs font-semibold text-info">
-                {counts.info} informativo{counts.info !== 1 && 's'}
-              </span>
+              <Chip tone="info">
+                <span className="tnum">{counts.info}</span> informativo{counts.info !== 1 && 's'}
+              </Chip>
             )}
             {findings.length === 0 && (
-              <span className="inline-flex items-center rounded-full bg-ok/[.14] px-2.5 py-[3px] text-xs font-semibold text-ok">
+              <Chip tone="ok" dot>
                 Sin hallazgos: todo en orden
-              </span>
+              </Chip>
             )}
           </div>
           <p className="mt-2.5 text-xs text-sub">
@@ -206,7 +206,7 @@ export default function SecurityPage() {
                   <summary className="flex cursor-pointer items-center gap-3">
                     <StatusBadge tone={SEVERITY_TONE[f.severity]} label={SEVERITY_LABEL[f.severity]} dot={false} className="font-semibold" />
                     <span className="min-w-0 flex-1 truncate text-sm font-semibold">{g.base}</span>
-                    <span className="tnum ml-auto shrink-0 rounded-full bg-surface2 px-2.5 py-[3px] text-xs font-medium text-sub">
+                    <span className="tnum ml-auto shrink-0 rounded-md border border-line bg-surface2 px-1.5 py-0.5 text-xs font-medium text-sub">
                       {g.items.length} servicios
                     </span>
                     <ChevronDown
@@ -220,7 +220,7 @@ export default function SecurityPage() {
                         <Link
                           key={i.id}
                           to={i.projectId ? `/projects/${i.projectId}${i.serviceId ? `?s=${i.serviceId}` : ''}` : '#'}
-                          className="rounded-full border border-line bg-bg px-2.5 py-[3px] font-mono text-xs text-sub transition-colors duration-150 hover:border-line2 hover:text-txt"
+                          className="rounded-md border border-line bg-bg px-1.5 py-0.5 font-mono text-xs text-sub transition-colors duration-[--dur-1] hover:border-line2 hover:text-txt"
                         >
                           {i.title.includes(':') ? i.title.split(':').slice(1).join(':').trim() : i.projectName ?? i.title}
                           {i.projectName ? ` · ${i.projectName}` : ''}

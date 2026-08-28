@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowUpRight, BellRing, ExternalLink, Folder, Globe, Lock, RefreshCw, Rocket, Search, Unlock } from 'lucide-react';
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
-import { Button, ConfirmModal, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { WebsiteEntry } from '../types';
 import { cx, DEPLOY_STATUS_LABEL, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
 
@@ -52,9 +52,9 @@ function SiteCard({
             >
               <span className="truncate text-sm font-semibold">{site.name}</span>
               {site.alerts > 0 && (
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-err/[.14] px-1.5 py-px text-micro font-semibold text-err">
-                  <BellRing size={9} /> {site.alerts}
-                </span>
+                <Chip size="sm" tone="err" icon={<BellRing size={9} aria-hidden />}>
+                  {site.alerts}
+                </Chip>
               )}
             </button>
             {/* El proyecto es un enlace propio: un salto directo a su canvas. */}
@@ -84,7 +84,7 @@ function SiteCard({
             href={`${scheme}://${d}`}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex max-w-full items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-[3px] text-xs text-sub transition-colors hover:border-acc/50 hover:text-txt"
+            className="inline-flex max-w-full items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-0.5 text-xs text-sub transition-colors duration-[--dur-1] hover:border-line2 hover:text-txt"
             title={`Abrir ${scheme}://${d}`}
           >
             {tls ? <Lock size={10} className="shrink-0 text-ok" /> : <Unlock size={10} className="shrink-0 text-warn" />}
@@ -97,7 +97,7 @@ function SiteCard({
             href={`http://${serverIp || window.location.hostname}:${site.hostPort}`}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-[3px] font-mono text-xs text-sub transition-colors hover:border-acc/50 hover:text-txt"
+            className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-0.5 font-mono text-xs text-sub transition-colors duration-[--dur-1] hover:border-line2 hover:text-txt"
             title="Puerto público del host"
           >
             :{site.hostPort}

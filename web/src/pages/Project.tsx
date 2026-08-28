@@ -4,7 +4,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { BellRing, Database, FileText, KeyRound, Layers, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
 import { api, openStream } from '../api';
 import { useLatch, usePresence } from '../hooks';
-import { Button, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } from '../components/ui';
 import { ModuleLogo } from '../components/ModuleIcon';
 import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
@@ -307,7 +307,7 @@ export default function ProjectPage() {
             <h1 className="text-xl font-semibold">{proj.name}</h1>
             <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-sub">
               Red privada{' '}
-              <span className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-px font-mono text-xs text-txt">
+              <span className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-px font-mono text-xs text-txt">
                 skyway-{proj.slug}
               </span>
               <CopyButton value={`skyway-${proj.slug}`} className="-ml-0.5 p-0.5" title="Copiar nombre de la red" />
@@ -317,21 +317,18 @@ export default function ProjectPage() {
             {/* Resumen de salud de infraestructura en tiempo real */}
             {totalServices > 0 && (
               <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-line/80 bg-surface px-2.5 py-0.5 font-medium text-sub">
-                  <span className={cx('h-1.5 w-1.5 rounded-full', runningCount > 0 ? 'bg-ok' : 'bg-subtle')} />
-                  <span className="font-semibold text-txt">{runningCount}</span>/{totalServices} activos
-                </span>
+                <Chip tone={runningCount > 0 ? 'ok' : 'neutral'} dot>
+                  <span className="tnum font-semibold">{runningCount}</span>/{totalServices} activos
+                </Chip>
                 {deployServicesCount > 0 && (
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-warn/30 bg-warn/10 px-2.5 py-0.5 font-medium text-warn">
-                    <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-warn" />
-                    <span className="font-semibold">{deployServicesCount}</span> desplegando
-                  </span>
+                  <Chip tone="warn" dot pulse>
+                    <span className="tnum font-semibold">{deployServicesCount}</span> desplegando
+                  </Chip>
                 )}
                 {alertServicesCount > 0 && (
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-err/30 bg-err/10 px-2.5 py-0.5 font-medium text-err">
-                    <BellRing size={11} />
-                    <span className="font-semibold">{alertServicesCount}</span> con alertas
-                  </span>
+                  <Chip tone="err" icon={<BellRing size={11} aria-hidden />}>
+                    <span className="tnum font-semibold">{alertServicesCount}</span> con alertas
+                  </Chip>
                 )}
               </div>
             )}
