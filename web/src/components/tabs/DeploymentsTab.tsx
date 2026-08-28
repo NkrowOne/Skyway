@@ -99,11 +99,19 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
         </span>
       </div>
 
-      {/* Barra fina de 2px */}
-      <div className="h-1 w-full overflow-hidden rounded-full bg-surface">
+      {/* Progreso por etapas: lo que de verdad se sabe. Antes la anchura salía
+          de unos porcentajes inventados (25/60/88 %) y parpadeaba sin parar. */}
+      <div
+        className="h-1 w-full overflow-hidden rounded-full bg-surface"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={4}
+        aria-valuenow={currentStep}
+        aria-label={`Etapa ${currentStep} de 4`}
+      >
         <div
-          className="h-full rounded-full bg-gradient-to-r from-acc to-warn transition-all duration-300 animate-pulse"
-          style={{ width: currentStep === 1 ? '25%' : currentStep === 2 ? '60%' : '88%' }}
+          className="h-full rounded-full bg-warn transition-[width] duration-[--dur-3]"
+          style={{ width: `${(currentStep / 4) * 100}%` }}
         />
       </div>
 

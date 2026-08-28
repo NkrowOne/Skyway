@@ -4,7 +4,7 @@ import { CheckCircle2, ExternalLink, Globe, HelpCircle, Plus, RefreshCw, X } fro
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { cx, Tone } from '../utils';
-import { Button, CopyButton, useToast } from './ui';
+import { Button, Chip, CopyButton, useToast } from './ui';
 
 interface DomainCheck {
   domain: string;
@@ -107,17 +107,15 @@ function DomainRow({
       <div className="flex items-center gap-2">
         <Globe size={13} className="shrink-0 text-info" />
         <span className="min-w-0 truncate font-mono text-xs">{domain}</span>
-        <button
+        <Chip
+          size="sm"
+          tone={meta.tone}
           onClick={() => setExpanded(!expanded)}
-          className={cx(
-            'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-micro font-semibold',
-            TONE_PILL[meta.tone],
-          )}
-          title="Ver detalle"
+          title={expanded ? 'Ocultar detalle del DNS' : 'Ver detalle del DNS'}
+          icon={status === 'ok' ? <CheckCircle2 size={10} aria-hidden /> : undefined}
         >
-          {status === 'ok' && <CheckCircle2 size={10} />}
           {check.isFetching ? 'Comprobando…' : meta.label}
-        </button>
+        </Chip>
         <span className="ml-auto flex shrink-0 items-center gap-0.5">
           <button
             onClick={() => check.refetch()}

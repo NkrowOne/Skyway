@@ -22,7 +22,7 @@ import {
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import type { BandPoint } from '../components/HistoryChart';
-import { Button, ConfirmModal, EmptyState, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, EmptyState, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { DiskBreakdown, HostMetricHistory, LogSearchResult, Me, MonitorOverview, MonitorService } from '../types';
 import { cx, fmtBytes, fmtDateTime, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
 
@@ -213,9 +213,7 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
           <p className="flex items-center gap-1.5 truncate text-sm font-medium">
             {s.name}
             {s.alerts > 0 && (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-err/[.14] px-1.5 py-px text-micro font-semibold text-err">
-                <BellRing size={9} /> {s.alerts}
-              </span>
+              <Chip size="sm" tone="err" icon={<BellRing size={9} aria-hidden />}>{s.alerts}</Chip>
             )}
           </p>
           <p className="truncate text-xs text-subtle">
@@ -615,26 +613,16 @@ export default function MonitorPage() {
   const cpuPct = host ? (host.load / host.cpus) * 100 : null;
 
   const chip = (key: StateFilter, label: string, count?: number) => (
-    <button
-      onClick={() => setStateFilter(key)}
-      className={cx(
-        'flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-[5px] text-xs transition-colors duration-150',
-        stateFilter === key
-          ? 'border-acc/55 bg-acc/[.16] font-medium text-acc-soft'
-          : 'border-line bg-surface text-sub hover:border-line2 hover:text-txt',
-      )}
-    >
+    <Chip tone="info" active={stateFilter === key} onClick={() => setStateFilter(key)}>
       {label}
-      {count !== undefined && <span className="opacity-70 tnum">{count}</span>}
-    </button>
+      {count !== undefined && <span className="tnum opacity-70">{count}</span>}
+    </Chip>
   );
 
   return (
     <div className="mx-auto max-w-[1180px] px-4 py-7 sm:px-6 sm:py-9">
       <div className="mb-6">
-        <h1 className="flex items-center gap-2.5 text-2xl font-semibold leading-[30px]">
-          <Activity size={22} className="text-acc-soft" /> Monitor
-        </h1>
+        <h1 className="text-2xl font-semibold">Monitor</h1>
         <p className="mt-1.5 text-sm text-sub">
           Todos los servicios del servidor de un vistazo: estado, consumo, espacio y una lupa para los logs
         </p>

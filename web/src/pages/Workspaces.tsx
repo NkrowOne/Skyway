@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { Building2, CreditCard, Plus, SlidersHorizontal } from 'lucide-react';
 import { api } from '../api';
-import { Button, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { MiniMeter } from '../components/QuotaMeter';
 import { Me, Plan, Workspace } from '../types';
 import { cx, fmtMb, fmtMoney } from '../utils';
@@ -12,9 +12,9 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 
 function PlanPill({ workspace }: { workspace: Workspace }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.14] px-2 py-0.5 text-micro font-semibold text-acc-soft">
-      <CreditCard size={9} /> {workspace.plan ? workspace.plan.name : 'sin plan'}
-    </span>
+    <Chip size="sm" tone="info" icon={<CreditCard size={9} aria-hidden />}>
+      {workspace.plan ? workspace.plan.name : 'sin plan'}
+    </Chip>
   );
 }
 

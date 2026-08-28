@@ -1,6 +1,6 @@
 import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, RefreshCw, Send, Sparkles, Trash2, Zap } from 'lucide-react';
+import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, RefreshCw, Send, Trash2, Zap } from 'lucide-react';
 import { api } from '../api';
 import { Button, Field, NumberInput, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { RevenueBars } from '../components/BillingCharts';
@@ -302,7 +302,7 @@ function AiGatewaySettings() {
   return (
     <>
       <section className="card p-5">
-        <h2 className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} className="text-acc-soft" /> Gateway de IA (Gemini)</h2>
+        <h2 className="text-base font-semibold">Gateway de IA (Gemini)</h2>
         <p className="mt-1 text-xs text-subtle">
           Tu clave de Google Gemini. Skyway proxya las peticiones de los clientes con ella (nunca se expone), mide los tokens y los factura por cuenta. Cada cliente usa una clave <span className="font-mono">skai_…</span> propia, revocable. Admite <span className="font-mono">generateContent</span>, streaming SSE y API compatible con OpenAI.
         </p>

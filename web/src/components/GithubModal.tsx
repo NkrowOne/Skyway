@@ -5,7 +5,7 @@ import { api } from '../api';
 import { GithubAppStatus, GithubConnector, GithubInstallation } from '../types';
 import { timeAgo } from '../utils';
 import { ModuleLogo } from './ModuleIcon';
-import { Button, ConfirmModal, Field, Modal, Skeleton, useToast } from './ui';
+import { Button, Chip, ConfirmModal, Field, Modal, Skeleton, useToast } from './ui';
 import { useCreateGithubApp } from './useGithubApp';
 
 /**
@@ -160,16 +160,16 @@ export default function GithubModal({
                               <p className="flex flex-wrap items-center gap-1.5 truncate text-sm font-medium">
                                 @{inst.accountLogin}
                                 {inst.suspended ? (
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-err/[.12] px-1.5 py-px text-micro font-medium text-err">
+                                  <span className="inline-flex items-center gap-1 rounded-md border border-err/25 bg-err/10 px-1.5 py-px text-micro font-medium text-err">
                                     <ShieldAlert size={9} /> suspendida
                                   </span>
                                 ) : (
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-ok/[.12] px-1.5 py-px text-micro font-medium text-ok">
+                                  <span className="inline-flex items-center gap-1 rounded-md border border-ok/25 bg-ok/10 px-1.5 py-px text-micro font-medium text-ok">
                                     <CheckCircle2 size={9} /> sin caducidad
                                   </span>
                                 )}
                                 {!inst.projectId && (
-                                  <span className="rounded-full bg-surface2 px-1.5 py-px text-micro text-sub">del servidor</span>
+                                  <span className="rounded-md border border-line bg-surface2 px-1.5 py-px text-micro text-sub">del servidor</span>
                                 )}
                               </p>
                               <p className="mt-px text-xs text-subtle">
@@ -284,7 +284,7 @@ export default function GithubModal({
               <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-sub hover:text-txt">
                 <KeyRound size={13} />
                 Tokens personales
-                {pats.length > 0 && <span className="rounded-full bg-surface2 px-1.5 py-px text-micro">{pats.length}</span>}
+                {pats.length > 0 && <span className="rounded-md border border-line bg-surface2 px-1.5 py-px text-micro">{pats.length}</span>}
               </summary>
 
               <p className="mt-2 text-xs text-subtle">

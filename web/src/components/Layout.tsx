@@ -143,7 +143,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
         label: 'Ver alertas activas',
         meta:
           unread > 0 ? (
-            <span className="inline-flex items-center rounded-full bg-err/[.15] px-2 py-0.5 text-xs font-semibold text-err">{unread}</span>
+            <Chip size="sm" tone="err">{unread}</Chip>
           ) : undefined,
         keywords: 'alertas avisos notificaciones',
         to: '/alerts',
@@ -556,9 +556,7 @@ function MainMenu({
           label: 'Alertas',
           meta:
             unread > 0 ? (
-              <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-err/[.15] px-1.5 text-micro font-semibold text-err">
-                {unread > 9 ? '9+' : unread}
-              </span>
+              <Chip size="sm" tone="err">{unread > 9 ? '9+' : unread}</Chip>
             ) : undefined,
         },
       ],

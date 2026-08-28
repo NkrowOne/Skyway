@@ -26,13 +26,10 @@ export function QuotaMeter({
   const ratio = ceiling > 0 ? used / ceiling : used > 0 ? 1.5 : 0;
   const over = used > ceiling + 1e-9;
   const pct = Math.max(used > 0 ? 3 : 0, Math.min(100, ratio * 100));
-  const tone = over ? 'err' : ratio >= 0.9 ? 'warn' : 'acc';
-  const fill =
-    tone === 'err'
-      ? 'bg-err'
-      : tone === 'warn'
-        ? 'bg-warn'
-        : 'bg-gradient-to-r from-[#7d66d9] to-acc';
+  // El consumo normal es un dato, no una alarma ni una marca: va en neutro y
+  // solo se tiñe cuando se acerca al techo o lo pasa.
+  const tone = over ? 'err' : ratio >= 0.9 ? 'warn' : 'neutral';
+  const fill = tone === 'err' ? 'bg-err' : tone === 'warn' ? 'bg-warn' : 'bg-sub';
 
   return (
     <div>
@@ -41,7 +38,7 @@ export function QuotaMeter({
           {icon && <span className="text-subtle [&>svg]:block">{icon}</span>}
           {label}
           {inheriting && (
-            <span className="rounded-full border border-line px-1.5 py-px text-micro font-normal text-subtle">del plan</span>
+            <span className="rounded-md border border-line px-1.5 py-px text-micro font-normal text-subtle">del plan</span>
           )}
         </span>
         <span className={cx('tnum text-sm', over ? 'font-semibold text-err' : 'text-txt')}>

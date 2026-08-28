@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Archive, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket } from 'lucide-react';
 import { api } from '../api';
-import { Button, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { Alert } from '../types';
 import { ALERT_TYPE_LABEL, cx, fmtDateTime, SEVERITY_LABEL, SEVERITY_TONE } from '../utils';
 
@@ -151,9 +151,7 @@ export default function AlertsPage() {
           >
             Activas
             {activeCount > 0 && (
-              <span className="ml-1.5 inline-flex h-4 min-w-4 translate-y-px items-center justify-center rounded-full bg-err/[.18] px-1 text-micro font-bold text-err">
-                {activeCount}
-              </span>
+              <Chip size="sm" tone="err" className="ml-1.5">{activeCount}</Chip>
             )}
           </button>
           <button

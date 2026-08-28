@@ -226,11 +226,11 @@ export default function NewServiceModal({
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
             onClick={() => setStep('git')}
-            className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-acc/60"
+            className="card card-hover flex flex-col items-start gap-3 p-5 text-left"
           >
             <LogoRow kinds={['github']} size={24} />
             <div>
-              <h3 className="text-sm font-medium group-hover:text-acc">Repositorio de GitHub</h3>
+              <h3 className="text-sm font-medium">Repositorio de GitHub</h3>
               <p className="mt-1 text-xs text-sub">
                 Clona, construye (Dockerfile o Nixpacks) y despliega automáticamente
               </p>
@@ -238,21 +238,21 @@ export default function NewServiceModal({
           </button>
           <button
             onClick={() => setStep('database')}
-            className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-info/60"
+            className="card card-hover flex flex-col items-start gap-3 p-5 text-left"
           >
             <LogoRow kinds={['postgres', 'redis', 'mysql', 'mongo']} size={17} />
             <div>
-              <h3 className="text-sm font-medium group-hover:text-info">Base de datos</h3>
+              <h3 className="text-sm font-medium">Base de datos</h3>
               <p className="mt-1 text-xs text-sub">PostgreSQL, Redis, MySQL, MongoDB o MinIO listos para usar</p>
             </div>
           </button>
           <button
             onClick={() => setStep('stack')}
-            className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-ok/60"
+            className="card card-hover flex flex-col items-start gap-3 p-5 text-left"
           >
             <LogoRow kinds={['supabase', 'wordpress', 'n8n', 'ghost']} size={19} />
             <div>
-              <h3 className="text-sm font-medium group-hover:text-ok">Aplicación completa</h3>
+              <h3 className="text-sm font-medium">Aplicación completa</h3>
               <p className="mt-1 text-xs text-sub">
                 Supabase, WordPress, Ghost, n8n o Metabase con todos sus servicios y su base de datos
               </p>
@@ -260,11 +260,11 @@ export default function NewServiceModal({
           </button>
           <button
             onClick={() => setStep('image')}
-            className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-warn/60"
+            className="card card-hover flex flex-col items-start gap-3 p-5 text-left"
           >
             <LogoRow kinds={['docker']} size={24} />
             <div>
-              <h3 className="text-sm font-medium group-hover:text-warn">Imagen Docker</h3>
+              <h3 className="text-sm font-medium">Imagen Docker</h3>
               <p className="mt-1 text-xs text-sub">Cualquier imagen pública: Plausible, Uptime Kuma, Grafana...</p>
             </div>
           </button>
@@ -290,7 +290,7 @@ export default function NewServiceModal({
               >
                 <LogoRow kinds={s.logos.map(asKind)} size={19} />
                 <div className="min-w-0">
-                  <h3 className="text-sm font-medium group-hover:text-ok">{s.label}</h3>
+                  <h3 className="text-sm font-medium">{s.label}</h3>
                   <p className="mt-1 text-xs text-sub">{s.description}</p>
                   <p className="mt-1.5 text-xs text-subtle">
                     {s.services.length === 1 ? '1 servicio' : `${s.services.length} servicios`} ·{' '}
@@ -383,7 +383,7 @@ export default function NewServiceModal({
                     {svc.image}
                   </span>
                   {svc.public && (
-                    <span className="ml-[25px] w-fit shrink-0 rounded-full bg-surface2 px-1.5 py-0.5 text-micro text-sub sm:ml-0">
+                    <span className="ml-6 w-fit shrink-0 rounded-md border border-line bg-surface2 px-1.5 py-0.5 text-micro text-sub sm:ml-0">
                       entrada pública
                     </span>
                   )}
@@ -487,7 +487,7 @@ export default function NewServiceModal({
                   {svc.description}
                 </span>
                 {svc.public && (
-                  <span className="ml-[25px] w-fit shrink-0 rounded-full bg-surface2 px-1.5 py-0.5 text-micro text-sub sm:ml-0">
+                  <span className="ml-6 w-fit shrink-0 rounded-md border border-line bg-surface2 px-1.5 py-0.5 text-micro text-sub sm:ml-0">
                     entrada pública
                   </span>
                 )}

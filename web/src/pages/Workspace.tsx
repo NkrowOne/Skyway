@@ -19,7 +19,6 @@ import {
   Plus,
   Receipt,
   Send,
-  Sparkles,
   TrendingDown,
   TrendingUp,
   Trash2,
@@ -28,7 +27,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import { COUNTRY_OPTIONS, DEFAULT_COUNTRY, countryName } from '../countries';
-import { Button, ConfirmModal, CopyButton, EditorBar, Field, Modal, NumberInput, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, CopyButton, EditorBar, Field, Modal, NumberInput, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
 import { QuotaMeter } from '../components/QuotaMeter';
 // Gráficos de la pestaña «Uso» (no es la pestaña por defecto): carga diferida.
 const UsageBars = lazy(() => import('../components/BillingCharts').then((m) => ({ default: m.UsageBars })));
@@ -325,9 +324,9 @@ function ModulosTab({ detail, isAdmin, modules, onSaved }: { detail: Detail; isA
                         <span className="flex items-center gap-2 text-sm font-semibold">
                           {m.label}
                           {isAdmin && isGranted && isDisabled && (
-                            <span className="rounded-full bg-warn/[.14] px-1.5 py-px text-micro font-semibold text-warn">acotado por el cliente</span>
+                            <span className="rounded-md border border-warn/25 bg-warn/10 px-1.5 py-px text-micro font-medium text-warn">acotado por el cliente</span>
                           )}
-                          {locked && <span className="rounded-full border border-line px-1.5 py-px text-micro text-subtle">no incluido</span>}
+                          {locked && <span className="rounded-md border border-line bg-surface2 px-1.5 py-px text-micro text-subtle">no incluido</span>}
                         </span>
                         <span className="mt-0.5 block text-xs leading-snug text-subtle">{m.description}</span>
                       </span>
@@ -437,9 +436,9 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="truncate text-sm font-medium">{m.email}</span>
-                <span className={cx('rounded-full px-2 py-0.5 text-micro font-semibold', m.role === 'owner' ? 'bg-acc/[.15] text-acc-soft' : 'bg-txt/[.08] text-sub')}>
+                <Chip size="sm" tone={m.role === 'owner' ? 'info' : 'neutral'}>
                   {m.role === 'owner' ? 'propietario' : 'miembro'}
-                </span>
+                </Chip>
               </div>
               <p className="mt-0.5 text-xs text-subtle">
                 {m.role === 'owner'
@@ -674,7 +673,7 @@ function HistorialPlan({ detail }: { detail: Detail }) {
           {t.priceCents != null && t.currency && (
             <span className="text-xs text-sub">{fmtMoney(t.priceCents, t.currency)}/{t.interval === 'yearly' ? 'año' : 'mes'}</span>
           )}
-          {t.to === null && <span className="rounded-full bg-ok/15 px-1.5 py-0.5 text-micro font-medium text-ok">vigente</span>}
+          {t.to === null && <span className="rounded-md border border-ok/25 bg-ok/10 px-1.5 py-0.5 text-micro font-medium text-ok">vigente</span>}
           <span className="ml-auto text-xs text-subtle">
             {fmtDate(t.from)} → {t.to === null ? 'hoy' : fmtDate(t.to)}
           </span>
@@ -1557,7 +1556,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
   if (iaProducts.length === 0 && iaSubs.length === 0) {
     return (
       <section className="card p-5">
-        <h2 className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} className="text-acc-soft" /> Precios de IA de este cliente</h2>
+        <h2 className="text-base font-semibold">Precios de IA de este cliente</h2>
         <p className="mt-2 text-xs text-subtle">Crea primero productos de IA (medidos por tokens) en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>. Luego podrás activarlos para este cliente en un clic y darle un precio propio.</p>
       </section>
     );
@@ -1566,7 +1565,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
   return (
     <section className="card overflow-hidden">
       <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
-        <h2 className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} className="text-acc-soft" /> Precios de IA de este cliente</h2>
+        <h2 className="text-base font-semibold">Precios de IA de este cliente</h2>
         {unassigned.length > 0 && (
           <Button size="sm" onClick={() => assign.mutate()} loading={assign.isPending}>
             <Plus size={13} /> {iaSubs.length === 0 ? 'Facturar IA a este cliente' : 'Añadir productos nuevos'}

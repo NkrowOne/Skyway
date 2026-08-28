@@ -6,7 +6,7 @@ import { api } from '../api';
 import GithubAppPanel from '../components/GithubAppPanel';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { ModuleLogo } from '../components/ModuleIcon';
-import { Button, ConfirmModal, Field, useFlash, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, Field, useFlash, useToast } from '../components/ui';
 import { DockerUsage, GithubConnector, SystemInfo } from '../types';
 import { cx, fmtBytes, fmtDateTime, timeAgo } from '../utils';
 
@@ -32,19 +32,17 @@ interface Settings {
 
 function OkPill({ label, dot }: { label: string; dot?: boolean }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-ok/[.14] px-2 py-px text-micro font-semibold text-ok">
-      {dot ? <span className="h-[5px] w-[5px] rounded-full bg-current" /> : <CheckCircle2 size={10} />}
+    <Chip size="sm" tone="ok" dot={dot} icon={dot ? undefined : <CheckCircle2 size={10} aria-hidden />}>
       {label}
-    </span>
+    </Chip>
   );
 }
 
 function ErrPill({ label }: { label: string }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-err/[.14] px-2 py-px text-micro font-semibold text-err">
-      <span className="h-[5px] w-[5px] rounded-full bg-current" />
+    <Chip size="sm" tone="err" dot>
       {label}
-    </span>
+    </Chip>
   );
 }
 
