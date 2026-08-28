@@ -166,6 +166,52 @@ export function EmptyState({
   );
 }
 
+// ---------- ErrorState ----------
+/**
+ * Una consulta que falla no es un panel vacío.
+ *
+ * Varias pantallas presentaban el fallo como ausencia de datos —y el panel de
+ * alertas llegaba a decir «Todo en orden» con su punto verde cuando lo que
+ * pasaba es que la petición no había llegado—. Un error dice qué ha fallado y
+ * ofrece volver a intentarlo.
+ */
+export function ErrorState({
+  title = 'No se han podido cargar los datos',
+  error,
+  onRetry,
+  retrying,
+  compact,
+  className,
+}: {
+  title?: string;
+  error?: unknown;
+  onRetry?: () => void;
+  retrying?: boolean;
+  compact?: boolean;
+  className?: string;
+}) {
+  const detalle = error instanceof Error ? error.message : typeof error === 'string' ? error : null;
+  return (
+    <div
+      role="alert"
+      className={cx(
+        'flex flex-col items-center justify-center gap-2 text-center',
+        compact ? 'px-4 py-8' : 'px-6 py-14',
+        className,
+      )}
+    >
+      <AlertCircle size={compact ? 18 : 22} className="text-err" aria-hidden />
+      <p className={cx('font-semibold text-txt', compact ? 'text-sm' : 'text-base')}>{title}</p>
+      {detalle && <p className="max-w-sm text-balance text-xs leading-5 text-subtle">{detalle}</p>}
+      {onRetry && (
+        <Button variant="secondary" size="sm" className="mt-2" onClick={onRetry} loading={retrying}>
+          Reintentar
+        </Button>
+      )}
+    </div>
+  );
+}
+
 // ---------- PageHeader ----------
 /**
  * Cabecera de página. Existía escrita a mano y distinta en cada una de las
@@ -591,7 +637,7 @@ export function Modal({
       >
         <div aria-hidden className="mx-auto mt-2 h-1 w-9 rounded-full bg-line sm:hidden" />
         <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
-          <h2 className="text-sm font-semibold">{title}</h2>
+          <h2 className="text-base font-semibold">{title}</h2>
           <button
             onClick={onClose}
             className="press rounded-md p-1 text-sub transition-colors hover:bg-surface2 hover:text-txt"

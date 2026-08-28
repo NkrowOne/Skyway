@@ -110,7 +110,7 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
   return (
     <section className="card p-4 sm:p-5">
       <div className="mb-3">
-        <h2 className="flex items-center gap-2 text-sm font-semibold">
+        <h2 className="flex items-center gap-2 text-base font-semibold">
           <ScrollText size={14} className="text-info" />
           Buscar en los logs de todos los servicios
         </h2>

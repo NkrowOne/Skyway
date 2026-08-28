@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import {
   Activity,
+  AlertCircle,
   AlertTriangle,
   Bell,
   BellRing,
@@ -461,8 +462,14 @@ function AlertBell() {
             </Link>
           </div>
           <div className="max-h-96 overflow-y-auto p-2">
-            {(alerts.data?.alerts ?? []).length === 0 && (
-              <p className="px-3 py-6 text-center text-xs text-sub">Sin alertas. Todo en orden.</p>
+            {alerts.isError ? (
+              <p className="flex items-center justify-center gap-1.5 px-3 py-6 text-center text-xs text-err" role="alert">
+                <AlertCircle size={13} aria-hidden /> No se han podido cargar las alertas
+              </p>
+            ) : (
+              (alerts.data?.alerts ?? []).length === 0 && (
+                <p className="px-3 py-6 text-center text-xs text-sub">Sin alertas. Todo en orden.</p>
+              )
             )}
             {alerts.data?.alerts.map((a) => (
               <Link

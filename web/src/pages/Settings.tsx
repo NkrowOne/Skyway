@@ -69,7 +69,7 @@ function SettingsSection({
       <div className="mb-4 flex flex-wrap items-start justify-between gap-2.5">
         <div>
           {/* El icono anota el título a escala de texto; el tono aporta el matiz semántico. */}
-          <h2 className="flex items-center gap-2 text-sm font-semibold">
+          <h2 className="flex items-center gap-2 text-base font-semibold">
             <span aria-hidden className={cx('[&>svg]:block', iconClass)}>
               {icon}
             </span>

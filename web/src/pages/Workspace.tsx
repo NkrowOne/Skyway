@@ -131,7 +131,7 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
     <div className="flex flex-col gap-5">
       <section className="card p-5">
         <div className="mb-1 flex items-center justify-between">
-          <h2 className="text-sm font-semibold">Cuota de recursos</h2>
+          <h2 className="text-base font-semibold">Cuota de recursos</h2>
           {isAdmin && (
             <select
               className="input h-8 w-auto py-0 text-sm"
@@ -220,7 +220,7 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
       </section>
 
       <section className="card p-5">
-        <h2 className="mb-3 text-sm font-semibold">Proyectos del cliente</h2>
+        <h2 className="mb-3 text-base font-semibold">Proyectos del cliente</h2>
         {detail.projects.length === 0 ? (
           <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
             Sin proyectos todavía en esta cuenta.
@@ -274,7 +274,7 @@ function ModulosTab({ detail, isAdmin, modules, onSaved }: { detail: Detail; isA
   return (
     <div className="flex flex-col gap-5">
       <section className="card p-5">
-        <h2 className="text-sm font-semibold">Módulos</h2>
+        <h2 className="text-base font-semibold">Módulos</h2>
         <p className="mt-1 text-xs text-subtle">
           {isAdmin
             ? 'Concede o retira los módulos de esta cuenta. El cliente puede acotar (desactivar) los concedidos, nunca ampliarlos.'
@@ -419,7 +419,7 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
     <section className="card overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
         <div>
-          <h2 className="text-sm font-semibold">Usuarios de la cuenta</h2>
+          <h2 className="text-base font-semibold">Usuarios de la cuenta</h2>
           <p className="mt-0.5 text-xs text-subtle">
             {ws.allocation.members} de {ws.quota.maxMembers} · propietarios y miembros con acceso a proyectos de esta cuenta
           </p>
@@ -620,7 +620,7 @@ function UsoTab({ detail }: { detail: Detail }) {
           </div>
 
           <section className="card p-5">
-            <h2 className="mb-3 text-sm font-semibold">Proyectos por consumo de CPU</h2>
+            <h2 className="mb-3 text-base font-semibold">Proyectos por consumo de CPU</h2>
             {(data?.byProject ?? []).length === 0 ? (
               <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
                 Aún no hay datos de consumo por proyecto (necesita histórico del monitor).
@@ -760,7 +760,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
         </section>
       )}
       <section className="card p-5">
-        <h2 className="mb-3 text-sm font-semibold">Uso de los últimos 30 días</h2>
+        <h2 className="mb-3 text-base font-semibold">Uso de los últimos 30 días</h2>
         {usage.isLoading ? (
           <Skeleton className="h-16 w-full" />
         ) : (
@@ -780,7 +780,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
 
       <section className="card overflow-hidden">
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <h2 className="text-sm font-semibold">Facturas</h2>
+          <h2 className="text-base font-semibold">Facturas</h2>
           {isAdmin && (
             <div className="flex gap-2">
               <Button size="sm" variant="secondary" onClick={() => setEditing(EMPTY_INVOICE(ws.id, ws.plan?.currency ?? 'EUR'))}>
@@ -1232,7 +1232,7 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
   return (
     <section className="card overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
-        <h2 className="flex items-center gap-2 text-sm font-semibold"><Boxes size={15} className="text-acc-soft" /> Servicios contratados</h2>
+        <h2 className="flex items-center gap-2 text-base font-semibold"><Boxes size={15} className="text-acc-soft" /> Servicios contratados</h2>
         <div className="flex gap-2">
           <Button size="sm" variant="secondary" onClick={() => setCharge(true)}><Plus size={13} /> Pago único</Button>
           <Button size="sm" onClick={() => setAdding(true)} disabled={subscribable.length === 0}><Plus size={13} /> Suscribir</Button>
@@ -1435,7 +1435,7 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
   return (
     <section className="card overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
-        <h2 className="flex items-center gap-2 text-sm font-semibold"><KeyRound size={15} className="text-acc-soft" /> Claves de IA (Gemini)</h2>
+        <h2 className="flex items-center gap-2 text-base font-semibold"><KeyRound size={15} className="text-acc-soft" /> Claves de IA (Gemini)</h2>
         <Button size="sm" onClick={() => setCreating(true)}><Plus size={13} /> Nueva clave</Button>
       </div>
 
@@ -1665,7 +1665,7 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
   });
   return (
     <section className="card p-5">
-      <h2 className="mb-3 text-sm font-semibold">Datos de facturación del cliente</h2>
+      <h2 className="mb-3 text-base font-semibold">Datos de facturación del cliente</h2>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="NIF / CIF" hint="Obligatorio en factura completa"><input className="input" value={taxId} onChange={(e) => setTaxId(e.target.value)} placeholder="B12345678" /></Field>
         <Field label="Email de facturación"><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="pagos@cliente.com" /></Field>

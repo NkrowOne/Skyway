@@ -67,7 +67,7 @@ export default function AccountingPage() {
               la moneda de la empresa y el resto se desglosa aparte. */}
           {(s!.byCurrency ?? []).filter((b) => b.currency !== cur).length > 0 && (
             <section className="card mt-3 px-4 py-3">
-              <h2 className="text-sm font-semibold">Facturación en otras monedas</h2>
+              <h2 className="text-base font-semibold">Facturación en otras monedas</h2>
               <p className="mt-0.5 text-xs text-subtle">No se suman a los totales de arriba: cada divisa se contabiliza por separado.</p>
               <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1.5">
                 {s!.byCurrency!.filter((b) => b.currency !== cur).map((b) => (
@@ -87,7 +87,7 @@ export default function AccountingPage() {
           <div className="mt-5 grid gap-5 lg:grid-cols-2">
             <section className="card overflow-hidden">
               <div className="border-b border-line px-4 py-3">
-                <h2 className="text-sm font-semibold">Por cliente</h2>
+                <h2 className="text-base font-semibold">Por cliente</h2>
               </div>
               {s!.byClient.length === 0 ? (
                 <p className="px-4 py-8 text-center text-xs text-subtle">Aún no hay facturación por cliente.</p>
@@ -114,7 +114,7 @@ export default function AccountingPage() {
 
             <section className="card overflow-hidden">
               <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
-                <h2 className="text-sm font-semibold">Facturas</h2>
+                <h2 className="text-base font-semibold">Facturas</h2>
                 <div className="flex gap-1 overflow-x-auto [scrollbar-width:none]">
                   {FILTERS.map((f) => (
                     <button
@@ -215,7 +215,7 @@ function BillingAutomationSettings() {
 
   return (
     <section className="card p-5">
-      <h2 className="flex items-center gap-2 text-sm font-semibold"><CalendarClock size={15} className="text-acc-soft" /> Automatización de facturación</h2>
+      <h2 className="flex items-center gap-2 text-base font-semibold"><CalendarClock size={15} className="text-acc-soft" /> Automatización de facturación</h2>
       <p className="mt-1 max-w-2xl text-xs text-subtle">
         Skyway lleva la facturación recurrente por ti. Aquí decides cuánto hace solo —desde preparar el borrador hasta emitirlo— y qué ocurre cuando un cliente no paga. El scheduler lo revisa cada 10 minutos.
       </p>
@@ -411,7 +411,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
   const rows = allowedModels.length ? allowedModels : q.data.models.map((m) => m.model);
   return (
     <section className="card p-5">
-      <h2 className="flex items-center gap-2 text-sm font-semibold"><Coins size={15} className="text-ok" /> Cuánto ganas por modelo</h2>
+      <h2 className="flex items-center gap-2 text-base font-semibold"><Coins size={15} className="text-ok" /> Cuánto ganas por modelo</h2>
       <p className="mt-1 max-w-2xl text-xs text-subtle">
         Skyway trae el coste de cada modelo desde la tarifa vigente de Google; tú pones el margen que quieres. Te decimos a qué precio venderlo y cuánto ganas por millón de tokens. Después pon ese precio en el producto de IA del <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a> para cobrarlo.
       </p>
@@ -733,7 +733,7 @@ function CompanyProfile() {
   return (
     <div className="grid gap-5 lg:grid-cols-2">
       <section className="card p-5">
-        <h2 className="flex items-center gap-2 text-sm font-semibold"><Building2 size={15} className="text-acc-soft" /> Datos de la empresa emisora</h2>
+        <h2 className="flex items-center gap-2 text-base font-semibold"><Building2 size={15} className="text-acc-soft" /> Datos de la empresa emisora</h2>
         <p className="mt-1 text-xs text-subtle">Aparecen en cada factura. Tú facturas a tus clientes.</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <Field label="Nombre / razón social"><input className="input" value={draft.companyName} onChange={(e) => set({ companyName: e.target.value })} placeholder="Skyway Cloud S.L." /></Field>
@@ -764,7 +764,7 @@ function CompanyProfile() {
 
       <div className="flex flex-col gap-5">
         <section className="card p-5">
-          <h2 className="flex items-center gap-2 text-sm font-semibold"><Landmark size={15} className="text-info" /> Transferencia bancaria</h2>
+          <h2 className="flex items-center gap-2 text-base font-semibold"><Landmark size={15} className="text-info" /> Transferencia bancaria</h2>
           <p className="mt-1 text-xs text-subtle">Los datos que ve el cliente para pagar por transferencia.</p>
           <div className="mt-4 grid gap-3">
             <Field label="IBAN"><input className="input font-mono" value={draft.iban} onChange={(e) => set({ iban: e.target.value })} placeholder="ES91 2100 0418 4502 0005 1332" /></Field>
@@ -776,7 +776,7 @@ function CompanyProfile() {
         </section>
 
         <section className="card p-5">
-          <h2 className="flex items-center gap-2 text-sm font-semibold"><CreditCard size={15} className="text-acc-soft" /> Stripe (pago con tarjeta)</h2>
+          <h2 className="flex items-center gap-2 text-base font-semibold"><CreditCard size={15} className="text-acc-soft" /> Stripe (pago con tarjeta)</h2>
           <p className="mt-1 text-xs text-subtle">
             Cobra facturas con tarjeta. Configura el webhook <span className="font-mono">/api/webhooks/stripe</span> en Stripe con el secreto de firma.
           </p>
@@ -792,7 +792,7 @@ function CompanyProfile() {
         </section>
 
         <section className="card p-5">
-          <h2 className="flex items-center gap-2 text-sm font-semibold"><Send size={15} className="text-info" /> Correo saliente (envío de facturas)</h2>
+          <h2 className="flex items-center gap-2 text-base font-semibold"><Send size={15} className="text-info" /> Correo saliente (envío de facturas)</h2>
           <p className="mt-1 text-xs text-subtle">
             Servidor SMTP con el que se envía la factura en PDF al email de facturación del cliente.
           </p>

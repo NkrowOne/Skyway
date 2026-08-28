@@ -54,7 +54,7 @@ function ScoreRing({ score, grade }: { score: number; grade: string }) {
 function SectionHeader({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
   return (
     <div>
-      <h2 className="flex items-center gap-2 text-sm font-semibold">
+      <h2 className="flex items-center gap-2 text-base font-semibold">
         <span aria-hidden className="text-sub [&>svg]:block">
           {icon}
         </span>

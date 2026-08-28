@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Archive, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket } from 'lucide-react';
 import { api } from '../api';
-import { Button, Chip, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, ErrorState, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { Alert } from '../types';
 import { ALERT_TYPE_LABEL, cx, fmtDateTime, SEVERITY_LABEL, SEVERITY_TONE } from '../utils';
 
@@ -184,13 +184,21 @@ export default function AlertsPage() {
         </div>
       )}
 
-      {!current.isLoading && list.length === 0 && (
-        <div className="card flex flex-col items-center gap-3 py-16 text-center text-sm text-sub">
-          {/* El mismo dot de estado del sistema que en la topbar: verde y respirando. */}
-          <span
-            aria-hidden
-            className="pulse-soft h-2.5 w-2.5 rounded-full bg-ok"
+      {current.isError && (
+        <div className="card">
+          <ErrorState
+            title="No se han podido cargar las alertas"
+            error={current.error}
+            onRetry={() => current.refetch()}
+            retrying={current.isFetching}
           />
+        </div>
+      )}
+
+      {!current.isLoading && !current.isError && list.length === 0 && (
+        <div className="card flex flex-col items-center gap-3 py-16 text-center text-sm text-sub">
+          {/* Verde solo cuando de verdad se sabe que no hay nada que mirar. */}
+          <span aria-hidden className="pulse-soft h-2.5 w-2.5 rounded-full bg-ok" />
           {openOnly ? 'No hay alertas activas. Todo en orden.' : 'Sin alertas registradas todavía.'}
         </div>
       )}
