@@ -4,7 +4,7 @@ import { Archive, CalendarClock, Database, Download, Plus, RotateCcw, Trash2 } f
 import { api } from '../../api';
 import { Service } from '../../types';
 import { fmtBytes, fmtDateTime, timeAgo } from '../../utils';
-import { Button, ConfirmModal, Field, Skeleton, useToast } from '../ui';
+import { Button, ConfirmModal, EmptyState, Field, Skeleton, useToast } from '../ui';
 
 // Solo se descarga al abrirlo: trae su propio visor de log.
 const DataMigrationModal = lazy(() => import('../DataMigrationModal'));
@@ -188,9 +188,12 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
       )}
 
       {list.length === 0 && !create.isPending && (
-        <div className="flex flex-col items-center gap-2 rounded-xl border border-line bg-bg py-12 text-center text-sm text-sub">
-          <Archive size={24} className="text-subtle" />
-          Sin backups todavía. Crea el primero — mejor antes de cualquier cambio delicado.
+        <div className="rounded-xl border border-line bg-bg">
+          <EmptyState
+            icon={<Archive />}
+            title="Sin copias de seguridad"
+            description="Crea la primera antes de cualquier cambio delicado: restaurarla es cuestión de un clic."
+          />
         </div>
       )}
 

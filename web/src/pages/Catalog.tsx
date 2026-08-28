@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react';
 import { api } from '../api';
-import { Button, ConfirmModal, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, ConfirmModal, EmptyState, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { BillingModel, Product, ProductCategory, UsageMeter } from '../types';
 import { cx, fmtMoney } from '../utils';
 
@@ -145,7 +145,13 @@ export default function CatalogPage() {
       {q.isLoading ? (
         <Skeleton className="h-40 w-full" />
       ) : byCat.length === 0 ? (
-        <div className="card p-10 text-center text-sm text-subtle">Sin productos todavía. Crea el primero para empezar a facturar servicios.</div>
+        <div className="card">
+          <EmptyState
+            title="Sin productos todavía"
+            description="Crea el primero para poder facturar servicios a tus clientes."
+            action={<Button onClick={() => setDraft({ ...EMPTY })}><Plus size={15} /> Nuevo producto</Button>}
+          />
+        </div>
       ) : (
         <div className="flex flex-col gap-6">
           {byCat.map((g) => (

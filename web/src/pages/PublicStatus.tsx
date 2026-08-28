@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { AlertCircle, CheckCircle2, CircleSlash, HelpCircle, Megaphone, Rocket } from 'lucide-react';
 import { api } from '../api';
-import { Skeleton } from '../components/ui';
+import { EmptyState, Skeleton } from '../components/ui';
 import { PublicServiceState, PublicStatus } from '../types';
 import { cx } from '../utils';
 
@@ -184,7 +184,7 @@ export default function PublicStatusPage() {
 
         <section className="rounded-2xl border border-line bg-surface">
           {data.services.length === 0 && (
-            <p className="px-5 py-10 text-center text-sm text-subtle">Aún no hay servicios publicados en esta página.</p>
+            <EmptyState title="Aún no hay servicios publicados" description="Cuando se publique alguno, su estado aparecerá aquí." />
           )}
           {data.services.map((s, idx) => {
             const meta = STATE_META[s.state];

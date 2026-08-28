@@ -5,7 +5,7 @@ import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
-import { Skeleton, useToast } from '../ui';
+import { EmptyState, Skeleton, useToast } from '../ui';
 
 /**
  * Acordeón mantequilla: crece y se pliega animando grid-template-rows
@@ -351,10 +351,11 @@ export default function DeploymentsTab({
 
   if (list.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 py-16 text-center text-sm text-sub">
-        <History size={24} className="text-subtle" />
-        Aún no hay despliegues
-      </div>
+      <EmptyState
+        icon={<History />}
+        title="Aún no hay despliegues"
+        description="En cuanto lances uno aparecerá aquí con su registro completo y el detalle de cada fase."
+      />
     );
   }
 

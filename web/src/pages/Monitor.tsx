@@ -22,7 +22,7 @@ import {
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import type { BandPoint } from '../components/HistoryChart';
-import { Button, ConfirmModal, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, ConfirmModal, EmptyState, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { DiskBreakdown, HostMetricHistory, LogSearchResult, Me, MonitorOverview, MonitorService } from '../types';
 import { cx, fmtBytes, fmtDateTime, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
 
@@ -384,7 +384,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
           </p>
         </div>
         {data.services.length === 0 && (
-          <p className="px-4 py-10 text-center text-xs text-subtle">Sin servicios que medir todavía.</p>
+          <EmptyState compact icon={<Activity />} title="Sin servicios que medir" description="Despliega un servicio y sus métricas aparecerán aquí." />
         )}
         <div className="overflow-x-auto">
           <div className="min-w-[640px]">
