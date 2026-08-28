@@ -81,7 +81,7 @@ function ResultTable({ result }: { result: DbQueryResult }) {
             {(result.columns ?? []).map((c, i) => (
               <th
                 key={`${c}-${i}`}
-                className="whitespace-nowrap border-b border-line bg-surface2 px-3 py-2 text-xs font-semibold uppercase tracking-[.05em] text-sub"
+                className="whitespace-nowrap border-b border-line bg-surface2 px-3 py-2 eyebrow text-sub"
               >
                 {c}
               </th>
@@ -235,7 +235,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
 
       {objects.length > 0 && (
         <div className="shrink-0 max-h-36 overflow-y-auto rounded-xl border border-line bg-surface2/30 p-2.5 shadow-sm">
-          <div className="mb-2 flex items-center justify-between px-0.5 text-xs font-semibold uppercase tracking-wider text-subtle">
+          <div className="mb-2 flex items-center justify-between px-0.5 eyebrowr text-subtle">
             <span>
               {overview.data?.overview.objectLabel} ({objects.length})
             </span>
@@ -280,7 +280,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
             <button
               key={s.label}
               onClick={() => setQuery(s.query)}
-              className="rounded-full border border-line bg-surface px-2.5 py-[3px] text-xs text-sub transition-colors hover:border-acc/50 hover:text-txt shadow-sm"
+              className="rounded-full border border-line bg-surface px-2.5 py-0.5 text-xs text-sub transition-colors hover:border-acc/50 hover:text-txt shadow-sm"
               title={s.hint ?? s.query}
             >
               {s.label}

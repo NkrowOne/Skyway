@@ -368,7 +368,7 @@ export default function NewServiceModal({
               .map((svc) => (
                 <div
                   key={svc.slug}
-                  className="flex flex-col gap-0.5 px-2.5 py-[7px] sm:flex-row sm:items-center sm:gap-2.5"
+                  className="flex flex-col gap-0.5 px-2.5 py-1.5 sm:flex-row sm:items-center sm:gap-2.5"
                 >
                   <span className="flex min-w-0 items-center gap-2.5">
                     <span className="shrink-0" style={{ color: moduleFg(templateKind(svc)) }}>
@@ -379,7 +379,7 @@ export default function NewServiceModal({
                       {svc.slug.slice(tplPlan.prefix.length)}
                     </span>
                   </span>
-                  <span className="min-w-0 flex-1 truncate pl-[25px] font-mono text-xs text-subtle sm:pl-0">
+                  <span className="min-w-0 flex-1 truncate pl-6 font-mono text-xs text-subtle sm:pl-0">
                     {svc.image}
                   </span>
                   {svc.public && (
@@ -473,7 +473,7 @@ export default function NewServiceModal({
             {selectedStack.services.map((svc) => (
               <div
                 key={svc.key}
-                className="flex flex-col gap-0.5 px-2.5 py-[7px] sm:flex-row sm:items-center sm:gap-2.5"
+                className="flex flex-col gap-0.5 px-2.5 py-1.5 sm:flex-row sm:items-center sm:gap-2.5"
               >
                 <span className="flex min-w-0 items-center gap-2.5">
                   <span className="shrink-0" style={{ color: moduleFg(asKind(svc.icon)) }}>
@@ -483,7 +483,7 @@ export default function NewServiceModal({
                     {slugPreview(stackPrefix) || selectedStack.defaultPrefix}-{svc.key}
                   </span>
                 </span>
-                <span className="min-w-0 flex-1 truncate pl-[25px] text-xs text-sub sm:pl-0">
+                <span className="min-w-0 flex-1 truncate pl-6 text-xs text-sub sm:pl-0">
                   {svc.description}
                 </span>
                 {svc.public && (

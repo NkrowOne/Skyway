@@ -283,7 +283,7 @@ function ModulosTab({ detail, isAdmin, modules, onSaved }: { detail: Detail; isA
         <div className="mt-4 flex flex-col gap-5">
           {groups.map(([group, mods]) => (
             <div key={group}>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-[.08em] text-subtle">{group}</p>
+              <p className="mb-2 eyebrow text-subtle">{group}</p>
               <div className="grid gap-2.5 sm:grid-cols-2">
                 {mods.map((m) => {
                   const isGranted = granted.has(m.key);
@@ -666,7 +666,7 @@ function HistorialPlan({ detail }: { detail: Detail }) {
   const ancla = detail.workspace.last_billed_period_end;
   return (
     <section className="card overflow-hidden">
-      <h2 className="border-b border-line px-4 py-2.5 text-xs font-semibold uppercase tracking-[.08em] text-subtle">Historial de plan</h2>
+      <h2 className="border-b border-line px-4 py-2.5 eyebrow text-subtle">Historial de plan</h2>
       {tramos.map((t, i) => (
         <div key={t.id} className={cx('flex flex-wrap items-baseline gap-x-2 px-4 py-2.5 text-sm', i > 0 && 'border-t border-line')}>
           <span className="font-medium">{t.planName ?? 'Sin plan'}</span>
@@ -746,7 +746,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
       )}
       {alerts.length > 0 && (
         <section className="card overflow-hidden">
-          <h2 className="border-b border-line px-4 py-2.5 text-xs font-semibold uppercase tracking-[.08em] text-subtle">Avisos de la cuenta</h2>
+          <h2 className="border-b border-line px-4 py-2.5 eyebrow text-subtle">Avisos de la cuenta</h2>
           {alerts.slice(0, 5).map((a, i) => (
             <div key={a.id} className={cx('px-4 py-2.5', i > 0 && 'border-t border-line')}>
               <div className="flex items-center gap-2">
@@ -1002,14 +1002,14 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
       <div className="flex flex-col gap-4 text-sm">
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <p className="mb-1 text-micro font-semibold uppercase tracking-[.08em] text-subtle">Emisor</p>
+            <p className="mb-1 eyebrow text-subtle">Emisor</p>
             <p className="font-semibold">{em.companyName || 'Tu empresa'}</p>
             {em.taxId && <p className="text-subtle">NIF {em.taxId}</p>}
             {em.address && <p className="whitespace-pre-line text-subtle">{em.address}</p>}
             {em.email && <p className="text-subtle">{em.email}</p>}
           </div>
           <div className="text-right">
-            <p className="mb-1 text-micro font-semibold uppercase tracking-[.08em] text-subtle">Cliente</p>
+            <p className="mb-1 eyebrow text-subtle">Cliente</p>
             <p className="font-semibold">{clientName}</p>
             {clientTaxId && <p className="text-subtle">NIF {clientTaxId}</p>}
             {clientAddress && <p className="whitespace-pre-line text-subtle">{clientAddress}</p>}
@@ -1070,7 +1070,7 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
 
         {invoice.status !== 'paid' && invoice.status !== 'void' && (issuer.iban || invoice.stripe_url) && (
           <div className="rounded-lg border border-line bg-bg p-3.5">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-[.08em] text-subtle">Cómo pagar</p>
+            <p className="mb-2 eyebrow text-subtle">Cómo pagar</p>
             {issuer.iban && (
               <div className="flex items-center justify-between gap-2 text-xs">
                 <div>

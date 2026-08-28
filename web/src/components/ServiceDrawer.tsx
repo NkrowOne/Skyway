@@ -266,7 +266,7 @@ export default function ServiceDrawer({
         </div>
       )}
 
-      <div className={cx('shrink-0', fullscreen ? 'px-3.5 pt-4' : 'px-5 pt-[18px]')}>
+      <div className={cx('shrink-0', fullscreen ? 'px-3.5 pt-4' : 'px-5 pt-4')}>
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-3">
             <ModuleChip kind={moduleKind(service)} size={fullscreen ? 40 : 38} />
@@ -278,10 +278,10 @@ export default function ServiceDrawer({
                   label={STATE_LABEL[state]}
                   pulse={STATE_PULSE[state]}
                   replicas={replicas}
-                  className="px-[9px] py-0.5"
+                  className="px-2 py-0.5"
                 />
                 {activeDeployment && (
-                  <span className="badge-in inline-flex shrink-0 items-center gap-[5px] whitespace-nowrap rounded-full border border-warn/35 bg-warn/[.1] px-[9px] py-0.5 text-xs font-medium text-warn">
+                  <span className="badge-in inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-warn/35 bg-warn/[.1] px-2 py-0.5 text-xs font-medium text-warn">
                     <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-warn" />
                     {DEPLOY_STATUS_LABEL[activeDeployment.status]}
                   </span>
@@ -294,14 +294,14 @@ export default function ServiceDrawer({
             <div className="flex shrink-0 items-center gap-0.5">
               <button
                 onClick={() => setWide(!wide)}
-                className="press rounded-lg p-[7px] leading-none text-subtle hover:bg-surface2 hover:text-txt"
+                className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
                 title="Cambiar ancho del panel"
               >
                 <MoveHorizontal size={15} />
               </button>
               <button
                 onClick={handleAttemptClose}
-                className="press rounded-lg p-[7px] leading-none text-subtle hover:bg-surface2 hover:text-txt"
+                className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
                 title="Cerrar (esc)"
               >
                 <X size={15} />

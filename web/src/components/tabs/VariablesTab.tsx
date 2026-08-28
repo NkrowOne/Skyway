@@ -683,7 +683,7 @@ export default function VariablesTab({
               <div className="flex flex-col gap-2.5">
                 {references.map((ref) => (
                   <div key={ref.service} className="rounded-lg bg-surface2/50 p-2 border border-line/60">
-                    <p className="mb-1.5 text-micro font-bold uppercase tracking-wider text-subtle">
+                    <p className="mb-1.5 eyebrow text-subtle">
                       {ref.service === 'shared' ? 'Variables compartidas' : ref.service}
                     </p>
                     <div className="flex flex-wrap gap-1.5">

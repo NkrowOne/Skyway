@@ -336,7 +336,7 @@ export default function Dashboard() {
           {grouped.map(([clientName, list]) => (
             <section key={clientName || '_none'}>
               <div className="mb-3.5 flex items-center gap-3">
-                <h2 className="text-xs font-semibold uppercase tracking-[.09em] text-sub">
+                <h2 className="eyebrow text-sub">
                   {clientName || 'Sin empresa'}
                 </h2>
                 <span className="text-xs text-subtle tnum">

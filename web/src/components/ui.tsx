@@ -189,7 +189,7 @@ export function PageHeader({
     <header className={cx('flex flex-wrap items-end justify-between gap-x-4 gap-y-3', className)}>
       <div className="min-w-0">
         {eyebrow && (
-          <p className="mb-1 text-micro font-semibold uppercase tracking-[.09em] text-subtle">{eyebrow}</p>
+          <p className="mb-1 eyebrow text-subtle">{eyebrow}</p>
         )}
         <h1 className="truncate text-2xl font-semibold text-txt">{title}</h1>
         {description && <p className="mt-1 max-w-2xl text-xs leading-5 text-sub">{description}</p>}

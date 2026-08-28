@@ -200,7 +200,7 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
       {list.length > 0 && (
         <div className="overflow-hidden rounded-xl border border-line bg-bg">
           {list.map((b) => (
-            <div key={b.file} className="flex items-center justify-between gap-2 border-b border-line px-3.5 py-[11px] last:border-b-0">
+            <div key={b.file} className="flex items-center justify-between gap-2 border-b border-line px-3.5 py-3 last:border-b-0">
               <div className="flex min-w-0 items-center gap-2.5">
                 <Archive size={14} className="shrink-0 text-subtle" />
                 <div className="min-w-0">

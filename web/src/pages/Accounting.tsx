@@ -458,7 +458,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                   {profitOut != null ? (
                     <>
                       <p className="tnum text-lg font-semibold leading-none text-ok">{eurMd(profitOut, currency)}</p>
-                      <p className="mt-1 text-micro uppercase tracking-wide text-subtle">ganas en salida</p>
+                      <p className="mt-1 eyebrow text-subtle">ganas en salida</p>
                     </>
                   ) : (
                     <p className="text-xs text-subtle">Añade coste y margen</p>
@@ -489,8 +489,8 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
               {/* Coste → precio de venta, por tipo de token. */}
               <div className="mt-3 grid grid-cols-[64px_1fr_1fr] items-center gap-x-2 gap-y-1.5">
                 <span />
-                <span className="text-micro uppercase tracking-wide text-subtle">Te cuesta {cur(currency)}/M</span>
-                <span className="text-right text-micro uppercase tracking-wide text-subtle">Vendes a</span>
+                <span className="eyebrow text-subtle">Te cuesta {cur(currency)}/M</span>
+                <span className="text-right eyebrow text-subtle">Vendes a</span>
                 {COST_TYPES.map((t) => {
                   const price = priceOf(num(d[t.key]), margin);
                   return (
@@ -506,7 +506,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
               {/* Precio de lista de Google (referencia en USD) para comparar con tu coste. */}
               {ref && (
                 <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-micro text-subtle">
-                  <span className="uppercase tracking-wide">Lista Google · $/M</span>
+                  <span className="eyebrow">Lista Google · $/M</span>
                   <span className="tnum">entrada {usdM(ref.in)} · caché {usdM(ref.cache)} · salida {usdM(ref.out)}</span>
                   <button className="text-acc-soft hover:underline" title="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" onClick={() => setDraft(model, { in: String(ref.in), cache: String(ref.cache), out: String(ref.out) })}>usar</button>
                 </div>

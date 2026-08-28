@@ -53,7 +53,7 @@ function StatTile({
   const barColor = tone === 'err' ? 'bg-err' : tone === 'warn' ? 'bg-warn' : 'bg-ok';
   return (
     <div className="card p-4">
-      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[.07em] text-subtle">
+      <div className="flex items-center gap-2 eyebrow text-subtle">
         {icon} {label}
       </div>
       <p className="mt-2 text-lg font-semibold tnum">{value}</p>
@@ -343,7 +343,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
                 { label: 'Contenedores (escritura)', icon: <HardDrive size={12} />, value: data.docker.containers.size, count: data.docker.containers.count },
               ].map((t) => (
                 <div key={t.label}>
-                  <p className="flex items-center gap-1.5 text-micro font-medium uppercase tracking-[.07em] text-subtle">
+                  <p className="flex items-center gap-1.5 eyebrow text-subtle">
                     {t.icon} {t.label}
                   </p>
                   <p className="tnum mt-1 text-base font-semibold">
@@ -763,7 +763,7 @@ export default function MonitorPage() {
                   </div>
                 </div>
 
-                <div className="hidden grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] gap-3 border-b border-line bg-bg px-4 py-2 text-micro font-semibold uppercase tracking-[.07em] text-subtle md:grid">
+                <div className="hidden grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] gap-3 border-b border-line bg-bg px-4 py-2 eyebrow text-subtle md:grid">
                   <span>Servicio</span>
                   <span>Estado</span>
                   {(
@@ -777,7 +777,7 @@ export default function MonitorPage() {
                       key={c.key}
                       onClick={() => setSortKey(sortKey === c.key ? 'default' : c.key)}
                       className={cx(
-                        'flex items-center gap-1 text-left uppercase tracking-[.07em] transition-colors hover:text-txt',
+                        'eyebrow flex items-center gap-1 text-left transition-colors hover:text-txt',
                         sortKey === c.key ? 'text-acc-soft' : 'text-subtle',
                       )}
                       title={sortKey === c.key ? 'Quitar ordenación' : `Ordenar por ${c.label} (mayor primero)`}

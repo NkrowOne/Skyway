@@ -82,7 +82,7 @@ export function ImportReportView({ report }: { report: ImportReport }) {
       </div>
 
       <div>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Servicios creados</h3>
+        <h3 className="mb-2 eyebrow text-sub">Servicios creados</h3>
         <ul className="space-y-1.5">
           {report.created.map((c) => (
             <li key={c.name} className="rounded-lg border border-line bg-surface2 px-3 py-2">
@@ -102,7 +102,7 @@ export function ImportReportView({ report }: { report: ImportReport }) {
 
       {report.dataCopy.length > 0 && (
         <div>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Copia de datos</h3>
+          <h3 className="mb-2 eyebrow text-sub">Copia de datos</h3>
           <div className="space-y-2">
             {report.dataCopy.map((d) => (
               <div key={d.service} className="rounded-lg border border-line bg-surface2 p-3">
@@ -138,7 +138,7 @@ export function ImportReportView({ report }: { report: ImportReport }) {
 
       {report.warnings.length > 0 && (
         <div>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Revisa esto</h3>
+          <h3 className="mb-2 eyebrow text-sub">Revisa esto</h3>
           <ul className="space-y-1 text-xs text-warn">
             {report.warnings.map((w, i) => (
               <li key={i} className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/5 px-3 py-2">
@@ -151,7 +151,7 @@ export function ImportReportView({ report }: { report: ImportReport }) {
       )}
 
       <div>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Siguientes pasos</h3>
+        <h3 className="mb-2 eyebrow text-sub">Siguientes pasos</h3>
         <ol className="list-inside list-decimal space-y-1 text-xs text-sub">
           {report.nextSteps.map((s, i) => (
             <li key={i}>{s}</li>

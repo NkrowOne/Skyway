@@ -33,7 +33,7 @@ function Tile({
 }) {
   return (
     <div className="rounded-xl border border-line bg-bg px-3.5 py-3">
-      <p className="flex items-center gap-1.5 text-micro font-medium uppercase tracking-[.06em] text-subtle">
+      <p className="flex items-center gap-1.5 eyebrow text-subtle">
         {icon} {label}
       </p>
       <p className={cx('mt-1.5 text-lg font-semibold leading-none', tone === 'err' ? 'text-err' : tone === 'warn' ? 'text-warn' : 'text-txt')}>

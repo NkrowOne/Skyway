@@ -356,7 +356,7 @@ export default function LogsTab({
             className="max-h-[380px] w-full min-w-[290px] overflow-y-auto sm:w-[360px]"
           >
             <div>
-              <div className="px-2.5 py-1.5 text-micro font-semibold uppercase tracking-wider text-subtle">
+              <div className="px-2.5 py-1.5 eyebrow text-subtle">
                 Seleccionar despliegue
               </div>
 
@@ -385,7 +385,7 @@ export default function LogsTab({
               </button>
 
               <div className="my-1.5 border-t border-line" />
-              <div className="px-2.5 py-1 text-micro font-semibold uppercase tracking-wider text-subtle">
+              <div className="px-2.5 py-1 eyebrow text-subtle">
                 Historial ({deployments.length})
               </div>
 

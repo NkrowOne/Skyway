@@ -140,7 +140,7 @@ export default function PublicStatusPage() {
     <div className="min-h-full overflow-y-auto bg-bg">
       <div className="page-in mx-auto w-full max-w-[760px] px-4 py-10 sm:px-6 sm:py-14">
         <header className="mb-7">
-          <p className="text-xs font-semibold uppercase tracking-[.14em] text-subtle">Estado del servicio</p>
+          <p className="eyebrow text-subtle">Estado del servicio</p>
           <h1 className="mt-1.5 text-2xl font-semibold leading-8">{data.project.name}</h1>
           {data.project.client && <p className="mt-1 text-sm text-sub">{data.project.client}</p>}
         </header>
@@ -154,7 +154,7 @@ export default function PublicStatusPage() {
           <div className="mb-7 flex items-start gap-3 rounded-2xl border border-info/35 bg-info/[.08] px-5 py-4">
             <Megaphone size={17} className="mt-0.5 shrink-0 text-info" />
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[.08em] text-info">Aviso</p>
+              <p className="eyebrow text-info">Aviso</p>
               <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-txt">{data.notice}</p>
             </div>
           </div>
@@ -162,7 +162,7 @@ export default function PublicStatusPage() {
 
         {open.length > 0 && (
           <section className="mb-7 rounded-2xl border border-err/30 bg-err/[.05] p-5">
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-[.08em] text-err">Incidencias activas</h2>
+            <h2 className="mb-3 eyebrow text-err">Incidencias activas</h2>
             <div className="flex flex-col gap-2.5">
               {open.map((i) => (
                 <div key={i.id}>
@@ -215,7 +215,7 @@ export default function PublicStatusPage() {
 
         {past.length > 0 && (
           <section className="mt-7">
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-[.08em] text-subtle">
+            <h2 className="mb-3 eyebrow text-subtle">
               Incidencias recientes (7 días)
             </h2>
             <div className="flex flex-col gap-2">

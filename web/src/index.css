@@ -794,6 +794,16 @@ details[open] > .details-body {
     height: 100%;
   }
 
+  /*
+   * Rótulo en versalitas: el pequeño encabezado que dice de qué va el bloque
+   * que viene debajo. Existía escrito a mano de diecinueve maneras distintas
+   * —tres tamaños, cuatro pesos y diez valores de tracking— para el mismo
+   * papel. El color se deja fuera a propósito: lo pone quien lo use.
+   */
+  .eyebrow {
+    @apply text-micro font-semibold uppercase tracking-[.09em];
+  }
+
   .kbd {
     @apply rounded border border-line bg-surface2 px-1.5 py-px font-mono text-micro leading-4 text-sub;
   }

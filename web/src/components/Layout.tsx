@@ -295,7 +295,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
             if (rows.length === 0) return null;
             return (
               <div key={g}>
-                <p className="mx-2 mb-1.5 mt-1.5 text-xs font-semibold uppercase tracking-[.08em] text-subtle">{g}</p>
+                <p className="mx-2 mb-1.5 mt-1.5 eyebrow text-subtle">{g}</p>
                 {rows.map((item) => {
                   const idx = items.indexOf(item);
                   const selected = idx === sel;
@@ -306,7 +306,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
                       onClick={() => go(item)}
                       onMouseMove={() => setSel(idx)}
                       className={cx(
-                        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[9px] text-left',
+                        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left',
                         selected && 'bg-acc/[.14] shadow-[inset_2px_0_0_var(--color-acc)]',
                       )}
                     >
@@ -441,7 +441,7 @@ function AlertBell() {
         {unread > 0 && (
           <span
             key={unread}
-            className="pop-in absolute -right-px -top-px flex h-[15px] min-w-[15px] items-center justify-center rounded-full border-2 border-surface bg-err px-[3px] text-micro font-bold leading-none text-white"
+            className="pop-in absolute -right-px -top-px flex h-[15px] min-w-[15px] items-center justify-center rounded-full border-2 border-surface bg-err px-0.5 text-micro font-bold leading-none text-white"
           >
             {unread > 9 ? '9+' : unread}
           </span>
@@ -639,7 +639,7 @@ function MainMenu({
           <div className="max-h-[min(70vh,520px)] overflow-y-auto p-2">
             {groups.map((g) => (
               <div key={g.label} className="mb-1 last:mb-0">
-                <p className="mx-2 mb-1 mt-1.5 text-xs font-semibold uppercase tracking-[.08em] text-subtle">{g.label}</p>
+                <p className="mx-2 mb-1 mt-1.5 eyebrow text-subtle">{g.label}</p>
                 {g.items.map((it) => (
                   <Row key={it.to} item={it} />
                 ))}

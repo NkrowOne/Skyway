@@ -39,7 +39,7 @@ function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: (
   return (
     <div
       className={cx(
-        'relative overflow-hidden rounded-xl border border-line bg-surface py-4 pl-[18px] pr-[18px] transition-opacity',
+        'relative overflow-hidden rounded-xl border border-line bg-surface py-4 pl-4 pr-4 transition-opacity',
         !resolved && tone === 'err' && 'bg-err/[.035]',
         resolved && 'opacity-[.7]',
       )}
@@ -57,7 +57,7 @@ function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: (
                 tone={SEVERITY_TONE[alert.severity]}
                 label={SEVERITY_LABEL[alert.severity]}
                 dot={false}
-                className="px-2 py-0.5 text-micro font-semibold uppercase tracking-[.03em]"
+                className="px-2 py-0.5 eyebrow"
               />
             )}
           </div>
@@ -131,7 +131,7 @@ export default function AlertsPage() {
   const activeCount = active.data?.alerts.length ?? 0;
 
   return (
-    <div className="mx-auto flex max-w-[880px] flex-col gap-[18px] px-4 py-7 sm:px-6 sm:py-10">
+    <div className="mx-auto flex max-w-[880px] flex-col gap-4 px-4 py-7 sm:px-6 sm:py-10">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Alertas</h1>
@@ -139,13 +139,13 @@ export default function AlertsPage() {
             Caídas, bucles de reinicio, CPU/RAM altas y despliegues fallidos de todos los proyectos
           </p>
         </div>
-        <div role="tablist" className="inline-flex gap-0.5 rounded-lg border border-line bg-bg p-[3px]">
+        <div role="tablist" className="inline-flex gap-0.5 rounded-lg border border-line bg-bg p-0.5">
           <button
             role="tab"
             aria-selected={openOnly}
             onClick={() => setOpenOnly(true)}
             className={cx(
-              'rounded-[7px] px-3.5 py-[5px] text-xs transition-colors duration-150',
+              'rounded-[7px] px-3.5 py-1 text-xs transition-colors duration-150',
               openOnly ? 'bg-surface2 font-semibold text-txt' : 'text-sub hover:text-txt',
             )}
           >
@@ -159,7 +159,7 @@ export default function AlertsPage() {
             aria-selected={!openOnly}
             onClick={() => setOpenOnly(false)}
             className={cx(
-              'rounded-[7px] px-3.5 py-[5px] text-xs transition-colors duration-150',
+              'rounded-[7px] px-3.5 py-1 text-xs transition-colors duration-150',
               !openOnly ? 'bg-surface2 font-semibold text-txt' : 'text-sub hover:text-txt',
             )}
           >

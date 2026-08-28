@@ -88,7 +88,7 @@ function StatTile({ label, value, sub }: { label: string; value: string; sub: st
   return (
     <div className="rounded-lg border border-line bg-bg px-3.5 py-3">
       <p className="text-xs text-subtle">{label}</p>
-      <p className="tnum mt-[3px] text-sm font-semibold">{value}</p>
+      <p className="tnum mt-0.5 text-sm font-semibold">{value}</p>
       <p className="mt-px text-xs text-sub">{sub}</p>
     </div>
   );
@@ -692,7 +692,7 @@ export default function SettingsPage() {
 
       <div className="safe-b sticky bottom-0 mt-1 flex items-center justify-between gap-2.5 border-t border-line bg-bg/90 py-3 backdrop-blur-lg">
         {dirty ? (
-          <span className="flex items-center gap-[7px] text-xs text-warn">
+          <span className="flex items-center gap-1.5 text-xs text-warn">
             <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />
             Cambios sin guardar · se aplican al guardar
           </span>

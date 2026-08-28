@@ -349,7 +349,7 @@ export default function SecurityPage() {
             <thead className="sticky top-0 z-[1] bg-surface2 text-sub">
               <tr>
                 {['Cuándo', 'Quién', 'Acción', 'Detalle', 'IP'].map((h) => (
-                  <th key={h} className="px-3.5 py-[9px] text-xs font-semibold uppercase tracking-[.06em]">
+                  <th key={h} className="px-3.5 py-2 eyebrow">
                     {h}
                   </th>
                 ))}
@@ -360,15 +360,15 @@ export default function SecurityPage() {
                 const failed = entry.action.includes('failed') || entry.action.includes('blocked');
                 return (
                   <tr key={entry.id} className={cx('border-t border-line', failed && 'bg-err/[.04]')}>
-                    <td className="whitespace-nowrap px-3.5 py-[9px] font-mono text-xs text-subtle">{fmtDateTime(entry.ts)}</td>
-                    <td className="px-3.5 py-[9px]">{entry.actor}</td>
-                    <td className="px-3.5 py-[9px]">
+                    <td className="whitespace-nowrap px-3.5 py-2 font-mono text-xs text-subtle">{fmtDateTime(entry.ts)}</td>
+                    <td className="px-3.5 py-2">{entry.actor}</td>
+                    <td className="px-3.5 py-2">
                       <span className={cx(failed && 'font-medium text-err')}>
                         {AUDIT_ACTION_LABEL[entry.action] ?? entry.action}
                       </span>
                     </td>
-                    <td className="max-w-[240px] truncate px-3.5 py-[9px] text-sub">{entry.detail ?? entry.target_id ?? ''}</td>
-                    <td className="px-3.5 py-[9px] font-mono text-xs text-subtle">{entry.ip ?? ''}</td>
+                    <td className="max-w-[240px] truncate px-3.5 py-2 text-sub">{entry.detail ?? entry.target_id ?? ''}</td>
+                    <td className="px-3.5 py-2 font-mono text-xs text-subtle">{entry.ip ?? ''}</td>
                   </tr>
                 );
               })}

@@ -156,7 +156,7 @@ export default function CatalogPage() {
         <div className="flex flex-col gap-6">
           {byCat.map((g) => (
             <section key={g.cat}>
-              <h2 className="mb-2.5 text-xs font-semibold uppercase tracking-[.09em] text-subtle">{CATS[g.cat]}</h2>
+              <h2 className="mb-2.5 eyebrow text-subtle">{CATS[g.cat]}</h2>
               <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3">
                 {g.items.map((p) => (
                   <div key={p.id} className={cx('card p-4', !!p.archived && 'opacity-60')}>

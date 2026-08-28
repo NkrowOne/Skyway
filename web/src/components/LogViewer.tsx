@@ -242,7 +242,7 @@ const LogRow = memo(function LogRow({
       )}
       <span
         className={cx(
-          'flex flex-1 items-baseline py-[1px] pr-3',
+          'flex flex-1 items-baseline py-px pr-3',
           !gutter && !showTs ? 'pl-3' : 'pl-1',
           wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre',
         )}
@@ -633,7 +633,7 @@ export default function LogViewer({
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
             {extraHeaderLeft}
             {title && (
-              <span className="truncate font-mono text-xs font-semibold uppercase tracking-[.08em] text-sub">
+              <span className="truncate font-mono eyebrow text-sub">
                 {title}
               </span>
             )}
@@ -724,7 +724,7 @@ export default function LogViewer({
                   siempre. Menu cierra con Esc y con un toque fuera. */}
               <Menu open={tsMenuOpen} onClose={() => setTsMenuOpen(false)} align="right">
                 <div>
-                  <p className="px-2 py-1 text-micro font-semibold uppercase tracking-wider text-subtle">
+                  <p className="px-2 py-1 eyebrow text-subtle">
                     Marcas de tiempo
                   </p>
                   <button

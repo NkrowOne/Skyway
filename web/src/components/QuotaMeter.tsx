@@ -69,7 +69,7 @@ export function MiniMeter({ label, used, ceiling, format = (n) => String(n) }: {
   return (
     <div className="min-w-0">
       <div className="mb-1 flex items-center justify-between gap-2">
-        <span className="text-micro font-medium uppercase tracking-[.06em] text-subtle">{label}</span>
+        <span className="eyebrow text-subtle">{label}</span>
         <span className={cx('tnum text-xs', over ? 'text-err' : 'text-sub')}>
           {format(used)}<span className="text-subtle">/{format(ceiling)}</span>
         </span>
