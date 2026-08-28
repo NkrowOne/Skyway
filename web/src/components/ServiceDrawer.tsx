@@ -252,7 +252,7 @@ export default function ServiceDrawer({
         <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
           <button
             onClick={handleAttemptClose}
-            className="press flex min-h-10 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-sub hover:bg-surface2 hover:text-txt"
+            className="press flex min-h-10 items-center gap-1.5 rounded-lg px-2.5 text-sm text-sub hover:bg-surface2 hover:text-txt"
           >
             <ChevronLeft size={15} /> {projectName}
           </button>
@@ -281,13 +281,13 @@ export default function ServiceDrawer({
                   className="px-[9px] py-0.5"
                 />
                 {activeDeployment && (
-                  <span className="badge-in inline-flex shrink-0 items-center gap-[5px] whitespace-nowrap rounded-full border border-warn/35 bg-warn/[.1] px-[9px] py-0.5 text-[11px] font-medium text-warn">
+                  <span className="badge-in inline-flex shrink-0 items-center gap-[5px] whitespace-nowrap rounded-full border border-warn/35 bg-warn/[.1] px-[9px] py-0.5 text-xs font-medium text-warn">
                     <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-warn" />
                     {DEPLOY_STATUS_LABEL[activeDeployment.status]}
                   </span>
                 )}
               </div>
-              <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">{subtitle}</p>
+              <p className="mt-0.5 truncate font-mono text-xs text-subtle">{subtitle}</p>
             </div>
           </div>
           {!fullscreen && (

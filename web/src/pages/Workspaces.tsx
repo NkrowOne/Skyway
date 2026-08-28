@@ -12,7 +12,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 
 function PlanPill({ workspace }: { workspace: Workspace }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.14] px-2 py-0.5 text-[10px] font-semibold text-acc-soft">
+    <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.14] px-2 py-0.5 text-micro font-semibold text-acc-soft">
       <CreditCard size={9} /> {workspace.plan ? workspace.plan.name : 'sin plan'}
     </span>
   );
@@ -31,8 +31,8 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
             <Building2 size={16} />
           </span>
           <div className="min-w-0">
-            <h3 className="truncate text-[15px] font-semibold tracking-[-.01em]">{workspace.name}</h3>
-            <p className="font-mono text-[11px] text-subtle">{workspace.slug}</p>
+            <h3 className="truncate text-base font-semibold tracking-[-.01em]">{workspace.name}</h3>
+            <p className="font-mono text-xs text-subtle">{workspace.slug}</p>
           </div>
         </div>
         <StatusBadge tone={suspended ? 'warn' : 'ok'} label={suspended ? 'suspendida' : 'activa'} dot={!suspended} pulse={false} />
@@ -44,7 +44,7 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
         <MiniMeter label="Disco" used={a.diskMb} ceiling={q.diskMb} format={fmtMb} />
       </div>
 
-      <div className="mt-4 flex items-center justify-between border-t border-line pt-3 text-[11px] text-subtle">
+      <div className="mt-4 flex items-center justify-between border-t border-line pt-3 text-xs text-subtle">
         <div className="flex items-center gap-3">
           <span className={cx('tnum', countTone(a.projects, q.maxProjects))}>{a.projects}/{q.maxProjects} proy.</span>
           <span className={cx('tnum', countTone(a.services, q.maxServices))}>{a.services}/{q.maxServices} serv.</span>

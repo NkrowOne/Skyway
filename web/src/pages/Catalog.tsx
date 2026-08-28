@@ -150,22 +150,22 @@ export default function CatalogPage() {
         <div className="flex flex-col gap-6">
           {byCat.map((g) => (
             <section key={g.cat}>
-              <h2 className="mb-2.5 text-[11px] font-semibold uppercase tracking-[.09em] text-subtle">{CATS[g.cat]}</h2>
+              <h2 className="mb-2.5 text-xs font-semibold uppercase tracking-[.09em] text-subtle">{CATS[g.cat]}</h2>
               <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3">
                 {g.items.map((p) => (
                   <div key={p.id} className={cx('card p-4', !!p.archived && 'opacity-60')}>
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <h3 className="truncate text-[14px] font-semibold">{p.name}</h3>
-                        <p className="mt-0.5 text-[13px] text-sub tnum">{priceSummary(p)}</p>
+                        <h3 className="truncate text-sm font-semibold">{p.name}</h3>
+                        <p className="mt-0.5 text-sm text-sub tnum">{priceSummary(p)}</p>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         <button onClick={() => setDraft(fromProduct(p))} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Editar"><Pencil size={14} /></button>
                         <button onClick={() => setToDelete(p)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title={p.in_use ? 'En uso: se archivará' : 'Eliminar'}><Trash2 size={14} /></button>
                       </div>
                     </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[11px]">
-                      <StatusBadge tone="info" label={MODELS[p.billing_model]} dot={false} className="text-[10px]" />
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs">
+                      <StatusBadge tone="info" label={MODELS[p.billing_model]} dot={false} className="text-micro" />
                       {p.meter && <span className="rounded border border-line bg-bg px-1.5 py-0.5 text-subtle">{METERS[p.meter]}</span>}
                       {p.tax_exempt ? <span className="text-subtle">exento IVA</span> : <span className="text-subtle">IVA {p.tax_rate}%</span>}
                       {!!p.archived && <span className="text-warn">archivado</span>}
@@ -196,7 +196,7 @@ export default function CatalogPage() {
               </Field>
             </div>
 
-            <p className="rounded-md border border-line bg-bg px-3 py-2 text-[12px] text-sub">{MODEL_HELP[draft.billingModel]}</p>
+            <p className="rounded-md border border-line bg-bg px-3 py-2 text-xs text-sub">{MODEL_HELP[draft.billingModel]}</p>
 
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {draft.billingModel !== 'tiered' && (
@@ -238,7 +238,7 @@ export default function CatalogPage() {
             {draft.billingModel === 'tiered' && (
               <Field label="Tramos de precio" hint="«hasta» vacío = último tramo (sin tope)">
                 <div className="flex flex-col gap-1.5">
-                  <div className="grid grid-cols-[1fr_1fr_28px] items-center gap-2 px-1 text-[11px] text-subtle">
+                  <div className="grid grid-cols-[1fr_1fr_28px] items-center gap-2 px-1 text-xs text-subtle">
                     <span>Hasta (unidades)</span><span>Precio / unidad</span><span />
                   </div>
                   {draft.tiers.map((t, i) => (
@@ -248,7 +248,7 @@ export default function CatalogPage() {
                       <button type="button" onClick={() => set({ tiers: draft.tiers.filter((_, idx) => idx !== i) })} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" disabled={draft.tiers.length <= 1}><Trash2 size={13} /></button>
                     </div>
                   ))}
-                  <button type="button" onClick={() => set({ tiers: [...draft.tiers, { upTo: '', unitUnits: '0' }] })} className="mt-1 inline-flex w-fit items-center gap-1 text-[12px] text-acc-soft hover:underline"><Plus size={12} /> Añadir tramo</button>
+                  <button type="button" onClick={() => set({ tiers: [...draft.tiers, { upTo: '', unitUnits: '0' }] })} className="mt-1 inline-flex w-fit items-center gap-1 text-xs text-acc-soft hover:underline"><Plus size={12} /> Añadir tramo</button>
                 </div>
               </Field>
             )}
@@ -256,10 +256,10 @@ export default function CatalogPage() {
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Field label="IVA (%)"><input className="input tnum" type="number" min={0} max={100} value={draft.taxRate} onChange={(e) => set({ taxRate: e.target.value })} disabled={draft.taxExempt} /></Field>
               <Field label="IRPF (%)"><input className="input tnum" type="number" min={0} max={100} value={draft.irpfRate} onChange={(e) => set({ irpfRate: e.target.value })} /></Field>
-              <label className="mt-6 flex cursor-pointer items-center gap-2 text-[13px] text-sub">
+              <label className="mt-6 flex cursor-pointer items-center gap-2 text-sm text-sub">
                 <input type="checkbox" checked={draft.taxExempt} onChange={(e) => set({ taxExempt: e.target.checked })} className="accent-acc" /> Exento de IVA
               </label>
-              <label className="mt-6 flex cursor-pointer items-center gap-2 text-[13px] text-sub">
+              <label className="mt-6 flex cursor-pointer items-center gap-2 text-sm text-sub">
                 <input type="checkbox" checked={draft.active} onChange={(e) => set({ active: e.target.checked })} className="accent-acc" /> Activo
               </label>
             </div>

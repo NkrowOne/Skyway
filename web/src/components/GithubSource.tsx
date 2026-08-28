@@ -216,7 +216,7 @@ export function GithubRepoPicker({
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">{r.fullName}</span>
               {r.private && (
-                <span className="flex shrink-0 items-center gap-1 rounded-full bg-surface2 px-1.5 py-0.5 text-[10px] text-sub">
+                <span className="flex shrink-0 items-center gap-1 rounded-full bg-surface2 px-1.5 py-0.5 text-micro text-sub">
                   <Lock size={9} /> privado
                 </span>
               )}

@@ -41,10 +41,10 @@ function ScoreRing({ score, grade }: { score: number; grade: string }) {
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-[26px] font-bold leading-none" style={{ color }}>
+        <span className="text-2xl font-bold leading-none" style={{ color }}>
           {grade}
         </span>
-        <span className="tnum text-[11px] text-subtle">{score}/100</span>
+        <span className="tnum text-xs text-subtle">{score}/100</span>
       </div>
     </div>
   );
@@ -200,13 +200,13 @@ export default function SecurityPage() {
                   open={f.severity === 'critical'}
                   className={cx(
                     'group animate-details rounded-xl border bg-surface p-4',
-                    f.severity === 'critical' ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]' : 'border-line',
+                    f.severity === 'critical' ? 'border-err/35' : 'border-line',
                   )}
                 >
                   <summary className="flex cursor-pointer items-center gap-3">
                     <StatusBadge tone={SEVERITY_TONE[f.severity]} label={SEVERITY_LABEL[f.severity]} dot={false} className="font-semibold" />
                     <span className="min-w-0 flex-1 truncate text-sm font-semibold">{g.base}</span>
-                    <span className="tnum ml-auto shrink-0 rounded-full bg-surface2 px-2.5 py-[3px] text-[11px] font-medium text-sub">
+                    <span className="tnum ml-auto shrink-0 rounded-full bg-surface2 px-2.5 py-[3px] text-xs font-medium text-sub">
                       {g.items.length} servicios
                     </span>
                     <ChevronDown
@@ -214,13 +214,13 @@ export default function SecurityPage() {
                       className="shrink-0 text-subtle transition-transform duration-200 ease-out group-open:rotate-180"
                     />
                   </summary>
-                  <div className="details-body mt-3 flex flex-col gap-2.5 border-t border-line pt-3 text-[13px]">
+                  <div className="details-body mt-3 flex flex-col gap-2.5 border-t border-line pt-3 text-sm">
                     <div className="flex flex-wrap gap-1.5">
                       {g.items.map((i) => (
                         <Link
                           key={i.id}
                           to={i.projectId ? `/projects/${i.projectId}${i.serviceId ? `?s=${i.serviceId}` : ''}` : '#'}
-                          className="rounded-full border border-line bg-bg px-2.5 py-[3px] font-mono text-[11px] text-sub transition-colors duration-150 hover:border-[color-mix(in_oklab,var(--color-acc)_45%,var(--color-line))] hover:text-txt"
+                          className="rounded-full border border-line bg-bg px-2.5 py-[3px] font-mono text-xs text-sub transition-colors duration-150 hover:border-line2 hover:text-txt"
                         >
                           {i.title.includes(':') ? i.title.split(':').slice(1).join(':').trim() : i.projectName ?? i.title}
                           {i.projectName ? ` · ${i.projectName}` : ''}
@@ -241,7 +241,7 @@ export default function SecurityPage() {
                 open={f.severity === 'critical'}
                 className={cx(
                   'group animate-details rounded-xl border bg-surface p-4',
-                  f.severity === 'critical' ? 'border-[color-mix(in_oklab,var(--color-err)_35%,var(--color-line))]' : 'border-line',
+                  f.severity === 'critical' ? 'border-err/35' : 'border-line',
                 )}
               >
                 <summary className="flex cursor-pointer items-center gap-3">
@@ -261,7 +261,7 @@ export default function SecurityPage() {
                     className={cx('shrink-0 text-subtle transition-transform duration-200 ease-out group-open:rotate-180', !f.projectId && 'ml-auto')}
                   />
                 </summary>
-                <div className="details-body mt-3 flex flex-col gap-2 border-t border-line pt-3 text-[13px]">
+                <div className="details-body mt-3 flex flex-col gap-2 border-t border-line pt-3 text-sm">
                   <p className="text-sub">{f.detail}</p>
                   <p>
                     <span className="font-semibold text-ok">Cómo arreglarlo: </span>
@@ -349,7 +349,7 @@ export default function SecurityPage() {
             <thead className="sticky top-0 z-[1] bg-surface2 text-sub">
               <tr>
                 {['Cuándo', 'Quién', 'Acción', 'Detalle', 'IP'].map((h) => (
-                  <th key={h} className="px-3.5 py-[9px] text-[11px] font-semibold uppercase tracking-[.06em]">
+                  <th key={h} className="px-3.5 py-[9px] text-xs font-semibold uppercase tracking-[.06em]">
                     {h}
                   </th>
                 ))}
@@ -360,7 +360,7 @@ export default function SecurityPage() {
                 const failed = entry.action.includes('failed') || entry.action.includes('blocked');
                 return (
                   <tr key={entry.id} className={cx('border-t border-line', failed && 'bg-err/[.04]')}>
-                    <td className="whitespace-nowrap px-3.5 py-[9px] font-mono text-[11px] text-subtle">{fmtDateTime(entry.ts)}</td>
+                    <td className="whitespace-nowrap px-3.5 py-[9px] font-mono text-xs text-subtle">{fmtDateTime(entry.ts)}</td>
                     <td className="px-3.5 py-[9px]">{entry.actor}</td>
                     <td className="px-3.5 py-[9px]">
                       <span className={cx(failed && 'font-medium text-err')}>
@@ -368,7 +368,7 @@ export default function SecurityPage() {
                       </span>
                     </td>
                     <td className="max-w-[240px] truncate px-3.5 py-[9px] text-sub">{entry.detail ?? entry.target_id ?? ''}</td>
-                    <td className="px-3.5 py-[9px] font-mono text-[11px] text-subtle">{entry.ip ?? ''}</td>
+                    <td className="px-3.5 py-[9px] font-mono text-xs text-subtle">{entry.ip ?? ''}</td>
                   </tr>
                 );
               })}

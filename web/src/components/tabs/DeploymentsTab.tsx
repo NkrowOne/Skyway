@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
+import { Check, ChevronDown, History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
@@ -40,13 +40,13 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
   if (deployment.status === 'success') {
     return (
       <div className="flex items-center justify-between rounded-lg border border-line/60 bg-surface2/30 px-3 py-1.5 text-xs">
-        <span className="flex items-center gap-1.5 font-medium text-ok text-[11.5px]">
+        <span className="flex items-center gap-1.5 font-medium text-ok text-xs">
           <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-ok/20 text-ok">
             <Check size={9} strokeWidth={3} />
           </span>
           Despliegue completado
         </span>
-        <div className="flex items-center gap-2 font-mono text-[10.5px] text-subtle">
+        <div className="flex items-center gap-2 font-mono text-micro text-subtle">
           <span>4/4 etapas</span>
           {deployment.finished_at && (
             <span>· {fmtDuration(deployment.finished_at - deployment.created_at)}</span>
@@ -60,14 +60,14 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
   if (deployment.status === 'failed' || deployment.status === 'canceled') {
     return (
       <div className="flex items-center justify-between rounded-lg border border-err/30 bg-err/[.07] px-3 py-1.5 text-xs text-err">
-        <span className="flex items-center gap-1.5 font-medium text-[11.5px]">
-          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-err/20 text-err font-bold text-[9px]">
+        <span className="flex items-center gap-1.5 font-medium text-xs">
+          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-err/20 text-err font-bold text-micro">
             ✕
           </span>
           {deployment.status === 'canceled' ? 'Despliegue cancelado' : 'Despliegue interrumpido con errores'}
         </span>
         {deployment.finished_at && (
-          <span className="font-mono text-[10.5px] text-subtle">
+          <span className="font-mono text-micro text-subtle">
             {fmtDuration(deployment.finished_at - deployment.created_at)}
           </span>
         )}
@@ -86,7 +86,7 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
             </svg>
           </div>
-          <span className="font-medium text-txt text-[11.5px]">
+          <span className="font-medium text-txt text-xs">
             {deployment.status === 'queued'
               ? 'En cola de ejecución…'
               : deployment.status === 'building'
@@ -94,7 +94,7 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
                 : 'Iniciando contenedor y validando salud…'}
           </span>
         </div>
-        <span className="font-mono text-[10.5px] font-semibold text-warn">
+        <span className="font-mono text-micro font-semibold text-warn">
           Etapa {currentStep}/4
         </span>
       </div>
@@ -108,7 +108,7 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
       </div>
 
       {/* Mini etapas compactas */}
-      <div className="mt-1.5 flex items-center justify-between text-[10.5px] text-subtle font-mono">
+      <div className="mt-1.5 flex items-center justify-between text-micro text-subtle font-mono">
         <span className={cx(currentStep >= 1 ? (currentStep === 1 ? 'text-warn font-semibold' : 'text-ok') : 'text-subtle')}>
           1. Cola
         </span>
@@ -221,7 +221,7 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
       toolbar
       title={deployment.id}
       downloadName={`deploy-${deployment.id}.txt`}
-      className="h-[270px] min-h-[220px] max-h-[340px] rounded-lg overflow-hidden border border-line"
+      className="h-[min(52vh,420px)] overflow-hidden rounded-lg border border-line"
     />
   );
 }
@@ -243,7 +243,7 @@ function DeployPill({ deployment, isCurrent }: { deployment: Deployment; isCurre
     <span
       key={label}
       className={cx(
-        'badge-in inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors',
+        'badge-in inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-0.5 text-xs font-medium transition-colors',
         active ? 'bg-warn/10 text-warn border border-warn/25' : 'bg-surface2 text-sub border border-line',
       )}
     >
@@ -365,89 +365,84 @@ export default function DeploymentsTab({
         const active = isActiveDeploy(d.status);
         const isCurrent = d.id === currentId;
         const isLatestFailed = d.id === latestId && d.status === 'failed';
+        // El estado ya lo dice la píldora; al borde le basta con marcar lo que
+        // pide atención. Antes competían cuatro mezclas de color a la vez.
         const tint = active
-          ? 'border-[color-mix(in_oklab,var(--color-warn)_40%,var(--color-line))] bg-warn/[.04]'
+          ? 'border-warn/40 bg-warn/5'
           : isLatestFailed
-            ? 'border-[color-mix(in_oklab,var(--color-err)_45%,var(--color-line))] bg-err/[.06]'
+            ? 'border-err/45 bg-err/5'
             : isCurrent
-              ? 'border-[color-mix(in_oklab,var(--color-ok)_35%,var(--color-line))] bg-ok/[.05]'
+              ? 'border-ok/35'
               : open
-                ? 'border-[color-mix(in_oklab,var(--color-acc)_30%,var(--color-line))] bg-bg'
-                : 'border-line bg-bg';
+                ? 'border-line2'
+                : 'border-line';
         return (
-          <div key={d.id} className={cx('relative overflow-hidden rounded-xl border transition-colors duration-300', tint)}>
-            <button
-              onClick={() => toggle(d.id)}
-              className="flex w-full items-center justify-between gap-2 px-3.5 py-3 text-left transition-colors duration-150 hover:bg-txt/[.03]"
-            >
-              <div className="flex min-w-0 items-center gap-3">
+          <div key={d.id} className={cx('relative overflow-hidden rounded-xl border bg-bg transition-colors duration-[--dur-3]', tint)}>
+            <div className="flex items-center gap-1 pr-2">
+              <button
+                onClick={() => toggle(d.id)}
+                aria-expanded={open}
+                className="flex min-w-0 flex-1 items-center gap-3 px-3.5 py-3 text-left transition-colors duration-[--dur-1] hover:bg-txt/[.03]"
+              >
                 <DeployPill deployment={d} isCurrent={d.id === currentId} />
-                <div className="min-w-0">
-                  <p className="truncate text-[13px] font-medium">
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium">
                     {d.commit_msg ||
                       (d.trigger === 'rollback'
                         ? 'Rollback de imagen'
                         : serviceType === 'database'
                           ? 'Despliegue de base de datos'
                           : 'Despliegue')}
-                  </p>
-                  <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">
+                  </span>
+                  <span className="mt-0.5 block truncate font-mono text-xs text-subtle">
                     {DEPLOY_TRIGGER_LABEL[d.trigger] ?? d.trigger}
                     {d.commit_sha && <> · {d.commit_sha.slice(0, 7)}</>}
                     <> · {timeAgo(d.created_at)}</>
                     {d.finished_at && <> · {fmtDuration(d.finished_at - d.created_at)}</>}
-                  </p>
-                </div>
-              </div>
+                  </span>
+                </span>
+                <ChevronDown
+                  size={14}
+                  aria-hidden
+                  className={cx('ml-auto shrink-0 text-subtle transition-transform duration-[--dur-2]', open && 'rotate-180')}
+                />
+              </button>
               <span className="flex shrink-0 items-center gap-1">
                 {onNavigateToLogs && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onNavigateToLogs(d.id);
-                    }}
-                    onKeyDown={(e) => e.key === 'Enter' && onNavigateToLogs(d.id)}
-                    className="press flex items-center gap-1 rounded-lg border border-line bg-surface px-2 py-1 text-[11px] font-medium text-sub hover:bg-surface2 hover:text-txt"
+                  <button
+                    type="button"
+                    onClick={() => onNavigateToLogs(d.id)}
+                    className="press flex items-center gap-1 rounded-lg border border-line bg-surface px-2 py-1 text-xs font-medium text-sub hover:bg-surface2 hover:text-txt"
                     title="Ver logs completos en la consola"
                   >
-                    <ScrollText size={12} />
+                    <ScrollText size={12} aria-hidden />
                     <span className="hidden sm:inline">Logs</span>
-                  </span>
+                  </button>
                 )}
-                {isActiveDeploy(d.status) && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      cancel.mutate(d.id);
-                    }}
-                    onKeyDown={(e) => e.key === 'Enter' && cancel.mutate(d.id)}
+                {active && (
+                  <button
+                    type="button"
+                    onClick={() => cancel.mutate(d.id)}
                     className="press rounded-lg p-1.5 leading-none text-err/80 hover:bg-surface2 hover:text-err"
                     title="Cancelar despliegue"
+                    aria-label="Cancelar despliegue"
                   >
-                    <XCircle size={14} />
-                  </span>
+                    <XCircle size={14} aria-hidden />
+                  </button>
                 )}
                 {d.id !== currentId && d.status === 'success' && serviceType === 'git' && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      rollback.mutate(d.id);
-                    }}
-                    onKeyDown={(e) => e.key === 'Enter' && rollback.mutate(d.id)}
+                  <button
+                    type="button"
+                    onClick={() => rollback.mutate(d.id)}
                     className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
                     title="Volver a esta versión"
+                    aria-label="Volver a esta versión"
                   >
-                    <RotateCcw size={13} />
-                  </span>
+                    <RotateCcw size={13} aria-hidden />
+                  </button>
                 )}
               </span>
-            </button>
+            </div>
             {(open || closingId === d.id) && (
               <Collapse open={open}>
                 <div className="border-t border-line p-3 flex flex-col gap-2.5">

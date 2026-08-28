@@ -110,7 +110,7 @@ function DomainRow({
         <button
           onClick={() => setExpanded(!expanded)}
           className={cx(
-            'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold',
+            'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-micro font-semibold',
             TONE_PILL[meta.tone],
           )}
           title="Ver detalle"
@@ -233,7 +233,7 @@ export default function DomainsEditor({
                 <Plus size={12} /> {domains.includes(generated!) ? 'Añadido' : 'Añadir subdominio'}
               </Button>
             </div>
-            <p className="mt-2 text-[11px] text-subtle">
+            <p className="mt-2 text-xs text-subtle">
               Generado desde tu dominio raíz. Requisito único: registro <span className="font-mono">A</span> comodín{' '}
               <span className="font-mono">
                 *.{rootDomain} → {ip ?? 'IP del servidor'}
@@ -294,7 +294,7 @@ export default function DomainsEditor({
         </Button>
       </div>
 
-      <div className="flex items-start gap-2 text-[11px] text-subtle">
+      <div className="flex items-start gap-2 text-xs text-subtle">
         <HelpCircle size={12} className="mt-0.5 shrink-0" />
         <p>
           El tráfico entra por Traefik (puertos 80/443).{' '}

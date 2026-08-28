@@ -57,16 +57,16 @@ function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: (
                 tone={SEVERITY_TONE[alert.severity]}
                 label={SEVERITY_LABEL[alert.severity]}
                 dot={false}
-                className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[.03em]"
+                className="px-2 py-0.5 text-micro font-semibold uppercase tracking-[.03em]"
               />
             )}
           </div>
-          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-subtle">
+          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-subtle">
             <span>{ALERT_TYPE_LABEL[alert.type] ?? alert.type}</span>
             <span className="text-line">·</span>
             <span className="tnum">{fmtDateTime(alert.ts)}</span>
           </p>
-          <p className="mt-2 text-[13px] leading-relaxed text-sub">{alert.message}</p>
+          <p className="mt-2 text-sm leading-relaxed text-sub">{alert.message}</p>
           {alert.explanation && (
             <div className="mt-2.5 flex items-start gap-2 rounded-r-md border-l-2 border-warn/40 bg-warn/[.05] py-2 pl-2.5 pr-3 text-xs text-sub">
               <Lightbulb size={13} className="mt-px shrink-0 text-warn" />
@@ -151,7 +151,7 @@ export default function AlertsPage() {
           >
             Activas
             {activeCount > 0 && (
-              <span className="ml-1.5 inline-flex h-4 min-w-4 translate-y-px items-center justify-center rounded-full bg-err/[.18] px-1 text-[10px] font-bold text-err">
+              <span className="ml-1.5 inline-flex h-4 min-w-4 translate-y-px items-center justify-center rounded-full bg-err/[.18] px-1 text-micro font-bold text-err">
                 {activeCount}
               </span>
             )}
@@ -191,7 +191,7 @@ export default function AlertsPage() {
           {/* El mismo dot de estado del sistema que en la topbar: verde y respirando. */}
           <span
             aria-hidden
-            className="pulse-soft h-2.5 w-2.5 rounded-full bg-ok shadow-[0_0_12px_color-mix(in_oklab,var(--color-ok)_60%,transparent)]"
+            className="pulse-soft h-2.5 w-2.5 rounded-full bg-ok"
           />
           {openOnly ? 'No hay alertas activas. Todo en orden.' : 'Sin alertas registradas todavía.'}
         </div>

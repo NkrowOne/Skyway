@@ -160,19 +160,19 @@ export default function GithubModal({
                               <p className="flex flex-wrap items-center gap-1.5 truncate text-sm font-medium">
                                 @{inst.accountLogin}
                                 {inst.suspended ? (
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-err/[.12] px-1.5 py-px text-[10px] font-medium text-err">
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-err/[.12] px-1.5 py-px text-micro font-medium text-err">
                                     <ShieldAlert size={9} /> suspendida
                                   </span>
                                 ) : (
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-ok/[.12] px-1.5 py-px text-[10px] font-medium text-ok">
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-ok/[.12] px-1.5 py-px text-micro font-medium text-ok">
                                     <CheckCircle2 size={9} /> sin caducidad
                                   </span>
                                 )}
                                 {!inst.projectId && (
-                                  <span className="rounded-full bg-surface2 px-1.5 py-px text-[10px] text-sub">del servidor</span>
+                                  <span className="rounded-full bg-surface2 px-1.5 py-px text-micro text-sub">del servidor</span>
                                 )}
                               </p>
-                              <p className="mt-px text-[11px] text-subtle">
+                              <p className="mt-px text-xs text-subtle">
                                 {inst.repoSelection === 'all' ? 'todos los repos de la cuenta' : 'solo los repos elegidos'} ·
                                 conectada por {inst.createdBy} · {timeAgo(inst.createdAt)}
                                 {inst.lastUsedAt ? ` · último despliegue ${timeAgo(inst.lastUsedAt)}` : ' · sin usar'}
@@ -235,7 +235,7 @@ export default function GithubModal({
                       <Button className="mt-4" onClick={() => createApp.create(appOrg)} loading={createApp.pending}>
                         <ModuleLogo kind="github" size={14} /> Crear la App en GitHub
                       </Button>
-                      <div className="mt-3 text-[11px] text-subtle">
+                      <div className="mt-3 text-xs text-subtle">
                         {orgOpen ? (
                           <div className="mx-auto flex max-w-xs items-center gap-2">
                             <input
@@ -284,10 +284,10 @@ export default function GithubModal({
               <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-sub hover:text-txt">
                 <KeyRound size={13} />
                 Tokens personales
-                {pats.length > 0 && <span className="rounded-full bg-surface2 px-1.5 py-px text-[10px]">{pats.length}</span>}
+                {pats.length > 0 && <span className="rounded-full bg-surface2 px-1.5 py-px text-micro">{pats.length}</span>}
               </summary>
 
-              <p className="mt-2 text-[11px] text-subtle">
+              <p className="mt-2 text-xs text-subtle">
                 Alternativa para cuentas donde no se puede instalar una App. Caducan y dan acceso a todo lo que ve esa
                 cuenta, así que la App es preferible cuando esté disponible.
               </p>
@@ -307,7 +307,7 @@ export default function GithubModal({
                           <p className="truncate text-sm font-medium">
                             {c.name} <span className="font-mono text-xs text-sub">@{c.gh_login}</span>
                           </p>
-                          <p className="mt-px text-[11px] text-subtle">
+                          <p className="mt-px text-xs text-subtle">
                             {c.token_type === 'fine-grained' ? 'token fine-grained' : c.token_type === 'classic' ? 'token clásico' : 'token'} ·
                             conectado por {c.created_by} · {timeAgo(c.created_at)}
                             {c.last_used_at ? ` · último despliegue ${timeAgo(c.last_used_at)}` : ' · sin usar'}
@@ -370,7 +370,7 @@ export default function GithubModal({
             </details>
 
             {apps.length === 0 && pats.length === 0 && connectors.data && !connectors.data.hasGlobalToken && (
-              <p className="mt-4 rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-[11px] text-sub">
+              <p className="mt-4 rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
                 Sin ninguna conexión solo se pueden clonar repositorios públicos.
               </p>
             )}

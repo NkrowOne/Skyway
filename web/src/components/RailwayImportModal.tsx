@@ -119,11 +119,11 @@ export function ImportReportView({ report }: { report: ImportReport }) {
                 </div>
                 {d.command && (
                   <details className="mt-2">
-                    <summary className="cursor-pointer list-none text-[11px] text-subtle hover:text-sub">
+                    <summary className="cursor-pointer list-none text-xs text-subtle hover:text-sub">
                       Comando equivalente para el servidor
                     </summary>
                     <div className="mt-1.5 flex items-start gap-1">
-                      <code className="block flex-1 overflow-x-auto whitespace-pre rounded-md bg-term p-2 font-mono text-[10.5px] text-txt/[.88]">
+                      <code className="block flex-1 overflow-x-auto whitespace-pre rounded-md bg-term p-2 font-mono text-micro text-txt/[.88]">
                         {d.command}
                       </code>
                       <CopyButton value={d.command} />
@@ -389,17 +389,17 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
                     <Icon size={15} className={meta.cls} />
                     <span className="text-sm font-medium">{s.railwayName}</span>
                     <span className="text-xs text-sub">→ {meta.label}</span>
-                    <span className="ml-auto text-[11px] text-sub">
+                    <span className="ml-auto text-xs text-sub">
                       {s.varCount > 0 && `${s.varCount} vars`}
                       {s.domains.length > 0 && ` · ${s.domains.length} dominio(s)`}
                       {s.volumeMounts.length > 0 && ` · ${s.volumeMounts.length} volumen(es)`}
                     </span>
                   </div>
                   {(s.kind === 'git' ? [`${s.repoUrl} (${s.branch})`] : s.kind === 'image' ? [s.image] : []).map((l) => (
-                    <p key={l} className="mt-1 truncate font-mono text-[11px] text-sub">{l}</p>
+                    <p key={l} className="mt-1 truncate font-mono text-xs text-sub">{l}</p>
                   ))}
                   {s.notes.map((n, i) => (
-                    <p key={i} className="mt-1 text-[11px] text-sub">· {n}</p>
+                    <p key={i} className="mt-1 text-xs text-sub">· {n}</p>
                   ))}
                 </div>
               );

@@ -76,7 +76,7 @@ export default function MetricChart({
     <div className="relative rounded-xl border border-line bg-bg p-4">
       <div className="mb-2.5 flex items-baseline justify-between">
         <h3 className="text-xs font-semibold text-sub">{title}</h3>
-        <span className="tnum text-[15px] font-semibold text-txt">{current !== null ? format(current) : '—'}</span>
+        <span className="tnum text-base font-semibold text-txt">{current !== null ? format(current) : '—'}</span>
       </div>
       {points.length < 2 ? (
         <div className="flex h-[140px] items-center justify-center text-xs text-subtle">Recopilando datos…</div>
@@ -131,7 +131,7 @@ export default function MetricChart({
           </svg>
           {hovered && hover !== null && (
             <div
-              className="tnum pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-surface2 px-2 py-1 text-[11px] text-txt shadow-lvl1"
+              className="tnum pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-surface2 px-2 py-1 text-xs text-txt shadow-lvl1"
               style={{ left: `${(xs[hover] / W) * 100}%` }}
             >
               {format(hovered.value)} · {fmtTime(hovered.ts)}

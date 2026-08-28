@@ -196,7 +196,7 @@ export function ModuleBadge({
   return (
     <span
       className={cx(
-        'inline-flex max-w-[140px] items-center gap-1.5 truncate rounded-lg px-2 py-0.5 text-[11px] font-semibold transition-all duration-150',
+        'inline-flex max-w-[140px] items-center gap-1.5 truncate rounded-lg px-2 py-0.5 text-xs font-semibold transition-all duration-150',
         className,
       )}
       style={{

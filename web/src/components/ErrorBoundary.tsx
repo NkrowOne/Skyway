@@ -62,7 +62,7 @@ export default class ErrorBoundary extends Component<Props, State> {
             datos: el detalle está en la consola del navegador.
           </p>
         </div>
-        <p className="max-w-lg break-words rounded-lg border border-line bg-bg px-3 py-2 font-mono text-[11px] text-subtle">
+        <p className="max-w-lg break-words rounded-lg border border-line bg-bg px-3 py-2 font-mono text-xs text-subtle">
           {error.message || String(error)}
         </p>
         <div className="mt-1 flex gap-2">

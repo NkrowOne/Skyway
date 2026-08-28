@@ -109,7 +109,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
         label: (
           <span>
             <span className="font-medium text-txt">{s.name}</span>
-            <span className="ml-2 text-[11px] text-subtle font-normal">en {p.name}</span>
+            <span className="ml-2 text-xs text-subtle font-normal">en {p.name}</span>
           </span>
         ),
         meta: s.type,
@@ -143,7 +143,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
         label: 'Ver alertas activas',
         meta:
           unread > 0 ? (
-            <span className="inline-flex items-center rounded-full bg-err/[.15] px-2 py-0.5 text-[11px] font-semibold text-err">{unread}</span>
+            <span className="inline-flex items-center rounded-full bg-err/[.15] px-2 py-0.5 text-xs font-semibold text-err">{unread}</span>
           ) : undefined,
         keywords: 'alertas avisos notificaciones',
         to: '/alerts',
@@ -284,7 +284,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
               }
             }}
             placeholder="Busca proyectos, servicios o acciones…"
-            className="flex-1 bg-transparent text-[15px] text-txt outline-none placeholder:text-subtle focus-visible:[outline:none]"
+            className="flex-1 bg-transparent text-base text-txt outline-none placeholder:text-subtle focus-visible:[outline:none]"
           />
           <Kbd>esc</Kbd>
         </div>
@@ -295,7 +295,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
             if (rows.length === 0) return null;
             return (
               <div key={g}>
-                <p className="mx-2 mb-1.5 mt-1.5 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">{g}</p>
+                <p className="mx-2 mb-1.5 mt-1.5 text-xs font-semibold uppercase tracking-[.08em] text-subtle">{g}</p>
                 {rows.map((item) => {
                   const idx = items.indexOf(item);
                   const selected = idx === sel;
@@ -321,7 +321,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
             );
           })}
         </div>
-        <div className="flex items-center gap-3.5 border-t border-line bg-bg px-4 py-2 text-[11px] text-subtle">
+        <div className="flex items-center gap-3.5 border-t border-line bg-bg px-4 py-2 text-xs text-subtle">
           <span className="flex items-center gap-1">
             <Kbd>↑↓</Kbd> navegar
           </span>
@@ -376,9 +376,9 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
       >
         <div className="mb-3.5 flex items-center gap-2">
           <Keyboard size={16} className="text-acc" />
-          <h2 className="text-[15px] font-semibold">Atajos de teclado</h2>
+          <h2 className="text-base font-semibold">Atajos de teclado</h2>
         </div>
-        <div className="flex flex-col gap-2.5 text-[13px]">
+        <div className="flex flex-col gap-2.5 text-sm">
           {rows.map((r) => (
             <div key={r.label} className="flex items-center justify-between">
               <span className="text-sub">{r.label}</span>
@@ -441,7 +441,7 @@ function AlertBell() {
         {unread > 0 && (
           <span
             key={unread}
-            className="pop-in absolute -right-px -top-px flex h-[15px] min-w-[15px] items-center justify-center rounded-full border-2 border-surface bg-err px-[3px] text-[9px] font-bold leading-none text-white"
+            className="pop-in absolute -right-px -top-px flex h-[15px] min-w-[15px] items-center justify-center rounded-full border-2 border-surface bg-err px-[3px] text-micro font-bold leading-none text-white"
           >
             {unread > 9 ? '9+' : unread}
           </span>
@@ -476,11 +476,11 @@ function AlertBell() {
                     tone={a.resolved_at ? 'neutral' : SEVERITY_TONE[a.severity]}
                     label={a.resolved_at ? 'resuelta' : 'activa'}
                     dot={false}
-                    className="px-2 py-0.5 text-[10px]"
+                    className="px-2 py-0.5 text-micro"
                   />
                   <span className="truncate text-xs font-medium">{a.title}</span>
                 </div>
-                <p className="mt-0.5 truncate text-[11px] text-sub">
+                <p className="mt-0.5 truncate text-xs text-sub">
                   {a.message} · {timeAgo(a.ts)}
                 </p>
               </Link>
@@ -556,7 +556,7 @@ function MainMenu({
           label: 'Alertas',
           meta:
             unread > 0 ? (
-              <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-err/[.15] px-1.5 text-[10px] font-semibold text-err">
+              <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-err/[.15] px-1.5 text-micro font-semibold text-err">
                 {unread > 9 ? '9+' : unread}
               </span>
             ) : undefined,
@@ -630,8 +630,8 @@ function MainMenu({
                 <UserRound size={15} />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] font-medium text-txt">{user.email}</span>
-                <span className="block truncate text-[11px] text-subtle">
+                <span className="block truncate text-sm font-medium text-txt">{user.email}</span>
+                <span className="block truncate text-xs text-subtle">
                   {ROLE_LABEL[user.role] ?? user.role}
                   {user.workspaceName ? ` · ${user.workspaceName}` : ''}
                 </span>
@@ -641,7 +641,7 @@ function MainMenu({
           <div className="max-h-[min(70vh,520px)] overflow-y-auto p-2">
             {groups.map((g) => (
               <div key={g.label} className="mb-1 last:mb-0">
-                <p className="mx-2 mb-1 mt-1.5 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">{g.label}</p>
+                <p className="mx-2 mb-1 mt-1.5 text-xs font-semibold uppercase tracking-[.08em] text-subtle">{g.label}</p>
                 {g.items.map((it) => (
                   <Row key={it.to} item={it} />
                 ))}
@@ -788,7 +788,7 @@ export default function Layout() {
               <ChevronRight size={14} className="shrink-0 text-subtle" />
               <span className="truncate text-sm font-medium">{pageLabel}</span>
               {clientPill && (
-                <span className="hidden shrink-0 items-center gap-[5px] rounded-full border border-line bg-bg px-2.5 py-0.5 text-[11px] text-sub sm:flex">
+                <span className="hidden shrink-0 items-center gap-[5px] rounded-full border border-line bg-bg px-2.5 py-0.5 text-xs text-sub sm:flex">
                   <Building2 size={10} /> {clientPill}
                 </span>
               )}
@@ -799,7 +799,7 @@ export default function Layout() {
         {isHome && (
           <button
             onClick={() => setCmdOpen(true)}
-            className="hidden min-w-0 flex-[0_1_300px] items-center gap-2 rounded-lg border border-line bg-bg py-1.5 pl-3 pr-2 text-[13px] text-subtle transition-colors duration-150 hover:border-[color-mix(in_oklab,var(--color-acc)_45%,var(--color-line))] hover:text-sub sm:flex"
+            className="hidden min-w-0 flex-[0_1_300px] items-center gap-2 rounded-lg border border-line bg-bg py-1.5 pl-3 pr-2 text-sm text-subtle transition-colors duration-150 hover:border-line2 hover:text-sub sm:flex"
           >
             <Search size={14} className="shrink-0" />
             <span className="flex-1 truncate text-left">Buscar o saltar a…</span>
@@ -811,7 +811,7 @@ export default function Layout() {
           {!isHome && (
             <button
               onClick={() => setCmdOpen(true)}
-              className="mr-1 flex items-center gap-2 rounded-lg border border-line bg-bg px-2.5 py-1.5 text-xs text-subtle transition-colors duration-150 hover:border-[color-mix(in_oklab,var(--color-acc)_45%,var(--color-line))]"
+              className="mr-1 flex items-center gap-2 rounded-lg border border-line bg-bg px-2.5 py-1.5 text-xs text-subtle transition-colors duration-150 hover:border-line2"
               title={`Buscar (${CMD_K_LABEL})`}
             >
               <Search size={13} />
@@ -829,7 +829,7 @@ export default function Layout() {
           )}
           {sys && (
             <div className="mr-2 hidden items-center gap-2 rounded-full border border-line bg-bg px-3 py-[5px] text-xs text-sub nav:flex">
-              <span className="h-1.5 w-1.5 rounded-full bg-ok shadow-[0_0_6px_color-mix(in_oklab,var(--color-ok)_70%,transparent)]" />
+              <span className="h-1.5 w-1.5 rounded-full bg-ok" />
               <span>
                 CPU <span className="tnum text-txt">{sys.host.load[0]}</span>/{sys.host.cpus}
               </span>

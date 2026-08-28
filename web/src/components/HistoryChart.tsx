@@ -124,7 +124,7 @@ export function HistoryChart({
         <button
           onClick={() => setTable((t) => !t)}
           className={cx(
-            'press flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] transition-colors',
+            'press flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro transition-colors',
             table ? 'bg-surface2 text-txt' : 'text-subtle hover:text-txt',
           )}
           title={table ? 'Ver gráfica' : 'Ver como tabla'}
@@ -140,7 +140,7 @@ export function HistoryChart({
         </div>
       ) : table ? (
         <div className="max-h-[176px] overflow-y-auto rounded-lg border border-line">
-          <table className="w-full text-left text-[11px]">
+          <table className="w-full text-left text-xs">
             <thead className="sticky top-0 bg-surface text-subtle">
               <tr>
                 <th className="px-2.5 py-1.5 font-medium">Momento</th>
@@ -238,7 +238,7 @@ export function HistoryChart({
 
           {hoveredNode && (
             <div
-              className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-surface2 px-2 py-1 text-[11px] text-txt shadow-lvl1"
+              className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-surface2 px-2 py-1 text-xs text-txt shadow-lvl1"
               style={{ left: `${(hoveredNode.x / W) * 100}%` }}
             >
               {hoverValid ? (
@@ -249,7 +249,7 @@ export function HistoryChart({
               ) : (
                 <span className="text-subtle">sin datos</span>
               )}
-              <span className="mt-0.5 block text-[10px] text-subtle">{fmtStamp(hoveredNode.t, hours)}</span>
+              <span className="mt-0.5 block text-micro text-subtle">{fmtStamp(hoveredNode.t, hours)}</span>
             </div>
           )}
         </div>
@@ -306,16 +306,16 @@ export function NetBars({
       <div className="mb-2 flex items-center justify-between gap-2">
         <h3 className="text-xs font-semibold text-sub">Red — tráfico transferido</h3>
         <div className="flex items-center gap-2.5">
-          <span className="flex items-center gap-1 text-[10.5px] text-subtle">
+          <span className="flex items-center gap-1 text-micro text-subtle">
             <span className="inline-block h-2 w-2 rounded-sm" style={{ background: txColor }} aria-hidden /> ↑ enviado
           </span>
-          <span className="flex items-center gap-1 text-[10.5px] text-subtle">
+          <span className="flex items-center gap-1 text-micro text-subtle">
             <span className="inline-block h-2 w-2 rounded-sm" style={{ background: rxColor }} aria-hidden /> ↓ recibido
           </span>
           <button
             onClick={() => setTable((t) => !t)}
             className={cx(
-              'press flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] transition-colors',
+              'press flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro transition-colors',
               table ? 'bg-surface2 text-txt' : 'text-subtle hover:text-txt',
             )}
             title={table ? 'Ver gráfica' : 'Ver como tabla'}
@@ -330,7 +330,7 @@ export function NetBars({
         <div className="flex h-[140px] items-center justify-center text-xs text-subtle">Sin tráfico de red en este periodo.</div>
       ) : table ? (
         <div className="max-h-[176px] overflow-y-auto rounded-lg border border-line">
-          <table className="w-full text-left text-[11px]">
+          <table className="w-full text-left text-xs">
             <thead className="sticky top-0 bg-surface text-subtle">
               <tr>
                 <th className="px-2.5 py-1.5 font-medium">Momento</th>
@@ -391,7 +391,7 @@ export function NetBars({
 
           {hover !== null && points[hover] && (
             <div
-              className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-surface2 px-2 py-1 text-[11px] text-txt shadow-lvl1"
+              className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-surface2 px-2 py-1 text-xs text-txt shadow-lvl1"
               style={{ left: `${((PAD.left + slot * hover + slot / 2) / W) * 100}%` }}
             >
               <span className="tnum block">
@@ -400,7 +400,7 @@ export function NetBars({
               <span className="tnum block">
                 <span style={{ color: rxColor }}>↓</span> {format(points[hover].rx)}
               </span>
-              <span className="mt-0.5 block text-[10px] text-subtle">{fmtStamp(points[hover].t, hours)}</span>
+              <span className="mt-0.5 block text-micro text-subtle">{fmtStamp(points[hover].t, hours)}</span>
             </div>
           )}
         </div>

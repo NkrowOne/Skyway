@@ -307,7 +307,7 @@ export default function ProjectPage() {
             <h1 className="text-xl font-semibold tracking-[-.015em]">{proj.name}</h1>
             <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-sub">
               Red privada{' '}
-              <span className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-px font-mono text-[11px] text-txt">
+              <span className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-px font-mono text-xs text-txt">
                 skyway-{proj.slug}
               </span>
               <CopyButton value={`skyway-${proj.slug}`} className="-ml-0.5 p-0.5" title="Copiar nombre de la red" />
@@ -577,7 +577,7 @@ export default function ProjectPage() {
         )}
 
         {services.length > 0 && (
-          <p className="mt-5 hidden text-[11px] text-subtle drawer:block">
+          <p className="mt-5 hidden text-xs text-subtle drawer:block">
             {selected ? (
               <>
                 Pulsa <kbd className="kbd">esc</kbd> para cerrar el panel · <kbd className="kbd">{CMD_K_LABEL}</kbd> para buscar

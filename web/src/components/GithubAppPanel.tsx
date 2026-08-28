@@ -95,7 +95,7 @@ export default function GithubAppPanel() {
             <ModuleLogo kind="github" size={14} /> Crear la App en GitHub
           </Button>
         </div>
-        <p className="mt-3 flex items-start gap-1.5 text-[11px] text-subtle">
+        <p className="mt-3 flex items-start gap-1.5 text-xs text-subtle">
           <Zap size={12} className="mt-px shrink-0 text-acc-soft" />
           Permisos que pide: leer el contenido y los metadatos de los repositorios, y recibir el evento «push». Ninguno
           de escritura: Skyway nunca empuja a GitHub.
@@ -114,7 +114,7 @@ export default function GithubAppPanel() {
           <div className="min-w-0">
             <p className="flex items-center gap-1.5 truncate text-sm font-medium">
               {app.name}
-              <span className="inline-flex items-center gap-1 rounded-full bg-ok/[.14] px-1.5 py-px text-[10px] font-semibold text-ok">
+              <span className="inline-flex items-center gap-1 rounded-full bg-ok/[.14] px-1.5 py-px text-micro font-semibold text-ok">
                 <CheckCircle2 size={9} /> activa
               </span>
             </p>
@@ -122,7 +122,7 @@ export default function GithubAppPanel() {
               href={app.htmlUrl}
               target="_blank"
               rel="noreferrer"
-              className="mt-px inline-flex items-center gap-1 text-[11px] text-subtle hover:text-txt hover:underline"
+              className="mt-px inline-flex items-center gap-1 text-xs text-subtle hover:text-txt hover:underline"
             >
               {app.htmlUrl.replace(/^https:\/\//, '')} <ExternalLink size={10} />
             </a>
@@ -138,9 +138,9 @@ export default function GithubAppPanel() {
         </div>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-subtle">
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-subtle">
         <span>URL del webhook (ya configurada en la App):</span>
-        <span className="rounded-md border border-line bg-surface px-1.5 py-px font-mono text-[11px] text-sub">
+        <span className="rounded-md border border-line bg-surface px-1.5 py-px font-mono text-xs text-sub">
           {status.data?.webhookUrl}
         </span>
         <CopyButton value={status.data?.webhookUrl ?? ''} className="p-0.5" title="Copiar URL del webhook" />
@@ -148,7 +148,7 @@ export default function GithubAppPanel() {
 
       <div className="mt-4 border-t border-line pt-4">
         <h3 className="text-xs font-semibold">Cuentas conectadas</h3>
-        <p className="mt-1 text-[11px] text-subtle">
+        <p className="mt-1 text-xs text-subtle">
           Instalaciones de la App. Las marcadas «del servidor» las conectaste tú y sirven para todos los proyectos; el
           resto las conectó cada cliente en su proyecto.
         </p>
@@ -167,15 +167,15 @@ export default function GithubAppPanel() {
                     {inst.projectName ? (
                       <span className="text-sub">· {inst.projectName}</span>
                     ) : (
-                      <span className="rounded-full bg-surface2 px-1.5 py-px text-[10px] text-sub">del servidor</span>
+                      <span className="rounded-full bg-surface2 px-1.5 py-px text-micro text-sub">del servidor</span>
                     )}
                     {inst.suspended && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-err/[.12] px-1.5 py-px text-[10px] font-medium text-err">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-err/[.12] px-1.5 py-px text-micro font-medium text-err">
                         <ShieldAlert size={9} /> suspendida
                       </span>
                     )}
                   </p>
-                  <p className="mt-px truncate text-[11px] text-subtle">
+                  <p className="mt-px truncate text-xs text-subtle">
                     {inst.repoSelection === 'all' ? 'todos los repos' : 'repos elegidos'} · conectada por {inst.createdBy} ·{' '}
                     {timeAgo(inst.createdAt)}
                     {inst.lastUsedAt ? ` · último despliegue ${timeAgo(inst.lastUsedAt)}` : ' · sin usar'}

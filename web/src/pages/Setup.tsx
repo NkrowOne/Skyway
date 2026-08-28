@@ -45,15 +45,15 @@ export default function Setup() {
         <div
           key={errorShake}
           className={cx(
-            'rounded-2xl border border-line bg-surface px-7 py-8 shadow-[0_24px_64px_-24px_rgba(0,0,0,.7),inset_0_1px_0_color-mix(in_oklab,var(--color-acc)_16%,transparent)]',
+            'rounded-2xl border border-line bg-surface px-7 py-8 shadow-lvl3',
             errorShake > 0 && 'shake',
           )}
         >
           <div className="mb-6 flex flex-col items-center gap-3.5 text-center">
             <BrandMark size={52} iconSize={24} radius={14} />
             <div>
-              <h1 className="text-[19px] font-[650] tracking-[-.015em]">Bienvenido a Skyway</h1>
-              <p className="mt-1 text-[13px] text-sub">Crea la cuenta de administrador para empezar</p>
+              <h1 className="text-xl font-[650] tracking-[-.015em]">Bienvenido a Skyway</h1>
+              <p className="mt-1 text-sm text-sub">Crea la cuenta de administrador para empezar</p>
             </div>
           </div>
           <form onSubmit={submit} className="flex flex-col gap-4">
@@ -98,7 +98,7 @@ export default function Setup() {
             </Button>
           </form>
         </div>
-        <p className="mt-4 flex items-center justify-center gap-1.5 text-[11.5px] text-subtle">
+        <p className="mt-4 flex items-center justify-center gap-1.5 text-xs text-subtle">
           <ShieldCheck size={12} /> Intentos limitados por IP · toda la actividad queda en el registro de auditoría
         </p>
       </div>

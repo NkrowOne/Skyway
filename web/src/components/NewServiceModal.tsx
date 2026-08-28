@@ -292,7 +292,7 @@ export default function NewServiceModal({
                 <div className="min-w-0">
                   <h3 className="text-sm font-medium group-hover:text-ok">{s.label}</h3>
                   <p className="mt-1 text-xs text-sub">{s.description}</p>
-                  <p className="mt-1.5 text-[11px] text-subtle">
+                  <p className="mt-1.5 text-xs text-subtle">
                     {s.services.length === 1 ? '1 servicio' : `${s.services.length} servicios`} ·{' '}
                     {Math.round(s.memoryHintMb / 1024)} GB de RAM recomendados
                   </p>
@@ -321,7 +321,7 @@ export default function NewServiceModal({
                 Ver qué crea
               </Button>
             </div>
-            <p className="mt-2 text-[11px] text-subtle">
+            <p className="mt-2 text-xs text-subtle">
               Skyway traduce su cableado: los dominios internos de Railway pasan a los de aquí y lo que no tenga
               equivalente se te dice antes de crear nada.
             </p>
@@ -356,7 +356,7 @@ export default function NewServiceModal({
               href={`https://railway.com/new/template/${tplPlan.code}`}
               target="_blank"
               rel="noreferrer"
-              className="flex shrink-0 items-center gap-1 text-[11px] text-sub hover:text-txt"
+              className="flex shrink-0 items-center gap-1 text-xs text-sub hover:text-txt"
             >
               En Railway <ExternalLink size={11} />
             </a>
@@ -374,16 +374,16 @@ export default function NewServiceModal({
                     <span className="shrink-0" style={{ color: moduleFg(templateKind(svc)) }}>
                       <ModuleLogo kind={templateKind(svc)} size={15} />
                     </span>
-                    <span className="truncate font-mono text-[11px] sm:w-32 sm:shrink-0">
+                    <span className="truncate font-mono text-xs sm:w-32 sm:shrink-0">
                       {slugPreview(stackPrefix) || tplPlan.prefix}
                       {svc.slug.slice(tplPlan.prefix.length)}
                     </span>
                   </span>
-                  <span className="min-w-0 flex-1 truncate pl-[25px] font-mono text-[11px] text-subtle sm:pl-0">
+                  <span className="min-w-0 flex-1 truncate pl-[25px] font-mono text-xs text-subtle sm:pl-0">
                     {svc.image}
                   </span>
                   {svc.public && (
-                    <span className="ml-[25px] w-fit shrink-0 rounded-full bg-surface2 px-1.5 py-0.5 text-[10px] text-sub sm:ml-0">
+                    <span className="ml-[25px] w-fit shrink-0 rounded-full bg-surface2 px-1.5 py-0.5 text-micro text-sub sm:ml-0">
                       entrada pública
                     </span>
                   )}
@@ -411,7 +411,7 @@ export default function NewServiceModal({
           </div>
 
           {(tplPlan.warnings.length > 0 || tplPlan.services.some((s) => s.notes.length > 0)) && (
-            <ul className="space-y-1 text-[11px] text-subtle">
+            <ul className="space-y-1 text-xs text-subtle">
               {tplPlan.warnings.map((w) => (
                 <li key={w} className="flex gap-1.5">
                   <span aria-hidden>·</span>
@@ -463,7 +463,7 @@ export default function NewServiceModal({
               href={selectedStack.docsUrl}
               target="_blank"
               rel="noreferrer"
-              className="flex shrink-0 items-center gap-1 text-[11px] text-sub hover:text-txt"
+              className="flex shrink-0 items-center gap-1 text-xs text-sub hover:text-txt"
             >
               Documentación <ExternalLink size={11} />
             </a>
@@ -479,15 +479,15 @@ export default function NewServiceModal({
                   <span className="shrink-0" style={{ color: moduleFg(asKind(svc.icon)) }}>
                     <ModuleLogo kind={asKind(svc.icon)} size={15} />
                   </span>
-                  <span className="truncate font-mono text-[11px] sm:w-28 sm:shrink-0">
+                  <span className="truncate font-mono text-xs sm:w-28 sm:shrink-0">
                     {slugPreview(stackPrefix) || selectedStack.defaultPrefix}-{svc.key}
                   </span>
                 </span>
-                <span className="min-w-0 flex-1 truncate pl-[25px] text-[11px] text-sub sm:pl-0">
+                <span className="min-w-0 flex-1 truncate pl-[25px] text-xs text-sub sm:pl-0">
                   {svc.description}
                 </span>
                 {svc.public && (
-                  <span className="ml-[25px] w-fit shrink-0 rounded-full bg-surface2 px-1.5 py-0.5 text-[10px] text-sub sm:ml-0">
+                  <span className="ml-[25px] w-fit shrink-0 rounded-full bg-surface2 px-1.5 py-0.5 text-micro text-sub sm:ml-0">
                     entrada pública
                   </span>
                 )}
@@ -517,7 +517,7 @@ export default function NewServiceModal({
             </Field>
           </div>
 
-          <ul className="space-y-1 text-[11px] text-subtle">
+          <ul className="space-y-1 text-xs text-subtle">
             {selectedStack.notes.map((note) => (
               <li key={note} className="flex gap-1.5">
                 <span aria-hidden>·</span>
@@ -624,7 +624,7 @@ export default function NewServiceModal({
             </Field>
           ) : (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-line bg-bg px-3.5 py-3">
-              <p className="min-w-0 flex-1 text-[11px] text-sub">
+              <p className="min-w-0 flex-1 text-xs text-sub">
                 Sin cuenta de GitHub conectada solo se pueden clonar repositorios públicos. Conéctala y eliges tus repos
                 privados de una lista, sin pegar URLs ni tokens.
               </p>
@@ -737,7 +737,7 @@ export default function NewServiceModal({
                 <div className="min-w-0">
                   <h3 className="text-sm font-medium">{tpl.label}</h3>
                   <p className="truncate text-xs text-sub">{tpl.description}</p>
-                  <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">
+                  <p className="mt-0.5 truncate font-mono text-xs text-subtle">
                     {tpl.image}:{tpl.defaultVersion}
                   </p>
                 </div>

@@ -354,7 +354,7 @@ export default function VariablesTab({
         <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-line bg-surface p-2.5 shadow-sm">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <span className="text-xs font-semibold text-txt">Variables de entorno</span>
-            <span className="rounded bg-surface2 px-1.5 py-0.5 text-[10.5px] font-mono text-subtle">
+            <span className="rounded bg-surface2 px-1.5 py-0.5 text-micro font-mono text-subtle">
               {rows.length}
             </span>
           </div>
@@ -433,14 +433,14 @@ export default function VariablesTab({
             <div className="mt-2.5 flex flex-col gap-1.5">
               {railwayPending.map((p) => (
                 <div key={p.id} className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono font-semibold text-txt text-[11px]">{p.key}</span>
+                  <span className="font-mono font-semibold text-txt text-xs">{p.key}</span>
                   {p.candidates.map((g) => {
                     const token = `\${{${g.service}.${MAIN_VAR[g.template!]}}}`;
                     return (
                       <button
                         key={g.service}
                         type="button"
-                        className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-[11px] text-info transition-colors hover:border-info"
+                        className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info"
                         onClick={() => {
                           setRows((prev) =>
                             prev.map((r) => (r.id === p.id ? { ...r, value: token } : r)),
@@ -559,7 +559,7 @@ export default function VariablesTab({
                             }}
                           />
                           {isDup && (
-                            <span className="mr-2 rounded bg-err/15 px-1.5 py-0.5 text-[9.5px] font-bold text-err">
+                            <span className="mr-2 rounded bg-err/15 px-1.5 py-0.5 text-micro font-bold text-err">
                               Duplicada
                             </span>
                           )}
@@ -642,7 +642,7 @@ export default function VariablesTab({
               >
                 <Plus size={14} className="text-acc" />
                 <span>Añadir variable</span>
-                <span className="hidden text-[11px] font-normal text-subtle sm:inline">
+                <span className="hidden text-xs font-normal text-subtle sm:inline">
                   (escribe <code className="font-mono text-txt">CLAVE=valor</code> para autocompletar)
                 </span>
               </button>
@@ -661,7 +661,7 @@ export default function VariablesTab({
                 <button
                   key={s.key}
                   type="button"
-                  className="press rounded-md border border-line bg-surface2/60 px-2 py-0.5 font-mono text-[11px] text-sub transition-colors hover:border-acc/40 hover:text-txt"
+                  className="press rounded-md border border-line bg-surface2/60 px-2 py-0.5 font-mono text-xs text-sub transition-colors hover:border-acc/40 hover:text-txt"
                   title={s.hint}
                   onClick={() => {
                     setRows((prev) => [...prev, makeRow(s.key, s.value)]);
@@ -678,12 +678,12 @@ export default function VariablesTab({
             <div className="rounded-xl border border-line bg-surface p-3.5 text-xs shadow-sm">
               <div className="mb-2 flex items-center justify-between">
                 <span className="font-semibold text-sub">Referencias disponibles en el proyecto</span>
-                <span className="text-[11px] text-subtle">Clic para copiar formato {'${{...}}'}</span>
+                <span className="text-xs text-subtle">Clic para copiar formato {'${{...}}'}</span>
               </div>
               <div className="flex flex-col gap-2.5">
                 {references.map((ref) => (
                   <div key={ref.service} className="rounded-lg bg-surface2/50 p-2 border border-line/60">
-                    <p className="mb-1.5 text-[10.5px] font-bold uppercase tracking-wider text-subtle">
+                    <p className="mb-1.5 text-micro font-bold uppercase tracking-wider text-subtle">
                       {ref.service === 'shared' ? 'Variables compartidas' : ref.service}
                     </p>
                     <div className="flex flex-wrap gap-1.5">
@@ -693,7 +693,7 @@ export default function VariablesTab({
                           <button
                             key={v}
                             type="button"
-                            className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-[11px] text-info transition-colors hover:border-info hover:bg-info/10"
+                            className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info hover:bg-info/10"
                             title={`Copiar ${token}`}
                             onClick={() => {
                               navigator.clipboard.writeText(token);

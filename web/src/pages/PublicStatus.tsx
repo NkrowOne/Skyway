@@ -58,7 +58,7 @@ function UptimeBars({ days }: { days: { date: number; pct: number | null }[] }) 
   return (
     <div className="relative">
       {tip && (
-        <div className="pointer-events-none absolute -top-8 z-10 -translate-x-1/2 whitespace-nowrap rounded-md border border-line bg-surface2 px-2 py-1 text-[10.5px] text-txt shadow-lvl3"
+        <div className="pointer-events-none absolute -top-8 z-10 -translate-x-1/2 whitespace-nowrap rounded-md border border-line bg-surface2 px-2 py-1 text-micro text-txt shadow-lvl3"
           style={{ left: `${((tip.idx + 0.5) / days.length) * 100}%` }}
         >
           {tip.text}
@@ -140,21 +140,21 @@ export default function PublicStatusPage() {
     <div className="min-h-full overflow-y-auto bg-bg">
       <div className="page-in mx-auto w-full max-w-[760px] px-4 py-10 sm:px-6 sm:py-14">
         <header className="mb-7">
-          <p className="text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">Estado del servicio</p>
-          <h1 className="mt-1.5 text-[26px] font-semibold leading-8 tracking-[-.02em]">{data.project.name}</h1>
+          <p className="text-xs font-semibold uppercase tracking-[.14em] text-subtle">Estado del servicio</p>
+          <h1 className="mt-1.5 text-2xl font-semibold leading-8 tracking-[-.02em]">{data.project.name}</h1>
           {data.project.client && <p className="mt-1 text-sm text-sub">{data.project.client}</p>}
         </header>
 
         <div className={cx('mb-7 flex items-center gap-3 rounded-2xl border px-5 py-4', overall.cls)}>
           {overall.icon}
-          <span className="text-[15px] font-semibold">{overall.label}</span>
+          <span className="text-base font-semibold">{overall.label}</span>
         </div>
 
         {data.notice && (
           <div className="mb-7 flex items-start gap-3 rounded-2xl border border-info/35 bg-info/[.08] px-5 py-4">
             <Megaphone size={17} className="mt-0.5 shrink-0 text-info" />
             <div>
-              <p className="text-[12px] font-semibold uppercase tracking-[.08em] text-info">Aviso</p>
+              <p className="text-xs font-semibold uppercase tracking-[.08em] text-info">Aviso</p>
               <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-txt">{data.notice}</p>
             </div>
           </div>
@@ -162,7 +162,7 @@ export default function PublicStatusPage() {
 
         {open.length > 0 && (
           <section className="mb-7 rounded-2xl border border-err/30 bg-err/[.05] p-5">
-            <h2 className="mb-3 text-[13px] font-semibold uppercase tracking-[.08em] text-err">Incidencias activas</h2>
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-[.08em] text-err">Incidencias activas</h2>
             <div className="flex flex-col gap-2.5">
               {open.map((i) => (
                 <div key={i.id}>
@@ -200,7 +200,7 @@ export default function PublicStatusPage() {
                   <span className={cx('text-xs font-medium', meta.cls)}>{meta.label}</span>
                 </div>
                 <UptimeBars days={s.days} />
-                <div className="mt-2 flex items-center justify-between text-[10.5px] text-subtle">
+                <div className="mt-2 flex items-center justify-between text-micro text-subtle">
                   <span>hace 90 días</span>
                   <span className="tnum">
                     24 h: <span className="text-sub">{fmtPct(s.uptime24h)}</span> · 7 d:{' '}
@@ -215,14 +215,14 @@ export default function PublicStatusPage() {
 
         {past.length > 0 && (
           <section className="mt-7">
-            <h2 className="mb-3 text-[13px] font-semibold uppercase tracking-[.08em] text-subtle">
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-[.08em] text-subtle">
               Incidencias recientes (7 días)
             </h2>
             <div className="flex flex-col gap-2">
               {past.map((i) => (
                 <div key={i.id} className="rounded-xl border border-line bg-surface px-4 py-3">
-                  <p className="text-[13px] font-medium text-txt">{i.title}</p>
-                  <p className="mt-0.5 text-[11.5px] text-subtle">
+                  <p className="text-sm font-medium text-txt">{i.title}</p>
+                  <p className="mt-0.5 text-xs text-subtle">
                     {new Date(i.startedAt).toLocaleString('es', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
                     {' — resuelta '}
                     {i.resolvedAt &&
@@ -234,7 +234,7 @@ export default function PublicStatusPage() {
           </section>
         )}
 
-        <footer className="mt-10 flex items-center justify-between text-[11px] text-subtle">
+        <footer className="mt-10 flex items-center justify-between text-xs text-subtle">
           <span>Actualizado hace {secondsAgo < 5 ? 'unos segundos' : `${secondsAgo} s`} · se refresca solo</span>
           <span className="flex items-center gap-1.5">
             <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-[4px] bg-acc text-white">

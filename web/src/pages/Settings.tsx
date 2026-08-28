@@ -32,7 +32,7 @@ interface Settings {
 
 function OkPill({ label, dot }: { label: string; dot?: boolean }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-ok/[.14] px-2 py-px text-[10px] font-semibold text-ok">
+    <span className="inline-flex items-center gap-1 rounded-full bg-ok/[.14] px-2 py-px text-micro font-semibold text-ok">
       {dot ? <span className="h-[5px] w-[5px] rounded-full bg-current" /> : <CheckCircle2 size={10} />}
       {label}
     </span>
@@ -41,7 +41,7 @@ function OkPill({ label, dot }: { label: string; dot?: boolean }) {
 
 function ErrPill({ label }: { label: string }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-err/[.14] px-2 py-px text-[10px] font-semibold text-err">
+    <span className="inline-flex items-center gap-1 rounded-full bg-err/[.14] px-2 py-px text-micro font-semibold text-err">
       <span className="h-[5px] w-[5px] rounded-full bg-current" />
       {label}
     </span>
@@ -89,9 +89,9 @@ function SettingsSection({
 function StatTile({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
     <div className="rounded-lg border border-line bg-bg px-3.5 py-3">
-      <p className="text-[11px] text-subtle">{label}</p>
+      <p className="text-xs text-subtle">{label}</p>
       <p className="tnum mt-[3px] text-sm font-semibold">{value}</p>
-      <p className="mt-px text-[11px] text-sub">{sub}</p>
+      <p className="mt-px text-xs text-sub">{sub}</p>
     </div>
   );
 }
@@ -467,14 +467,14 @@ export default function SettingsPage() {
               <Trash2 size={13} /> Eliminar token
             </Button>
           )}
-          <span className="text-[11px] text-subtle">
+          <span className="text-xs text-subtle">
             «Probar» valida el token escrito, o el guardado si el campo está vacío.
           </span>
         </div>
 
         <div className="mt-5 border-t border-line pt-4">
           <h3 className="text-xs font-semibold">Conectores por proyecto</h3>
-          <p className="mt-1 text-[11px] text-subtle">
+          <p className="mt-1 text-xs text-subtle">
             Cuentas de GitHub que tus clientes han conectado a sus proyectos (desde el botón «Conectores» del proyecto).
             Sus servicios clonan con ese token en lugar del global. Aquí puedes revocarlos todos.
           </p>
@@ -491,9 +491,9 @@ export default function SettingsPage() {
                       <span className="font-medium">{c.project_name}</span>
                       {c.project_client ? <span className="text-subtle"> · {c.project_client}</span> : ''}
                       <span className="text-sub"> — {c.name} </span>
-                      <span className="font-mono text-[11px] text-sub">@{c.gh_login}</span>
+                      <span className="font-mono text-xs text-sub">@{c.gh_login}</span>
                     </p>
-                    <p className="mt-px truncate text-[11px] text-subtle">
+                    <p className="mt-px truncate text-xs text-subtle">
                       conectado por {c.created_by} · {timeAgo(c.created_at)}
                       {c.last_used_at ? ` · último despliegue ${timeAgo(c.last_used_at)}` : ' · sin usar'}
                     </p>
@@ -629,7 +629,7 @@ export default function SettingsPage() {
               </Button>
             </div>
           )}
-          <p className="mt-3 text-[11px] text-subtle">
+          <p className="mt-3 text-xs text-subtle">
             La limpieza purga imágenes colgantes y caché de build; nunca toca volúmenes. Si Nixpacks faltara, los repos sin
             Dockerfile no podrían construirse: <span className="font-mono">curl -sSL https://nixpacks.com/install.sh | bash</span>
           </p>
@@ -664,9 +664,9 @@ export default function SettingsPage() {
                 key={b.file}
                 className="flex items-center gap-3 border-b border-line/60 bg-bg px-3.5 py-2 text-xs last:border-b-0"
               >
-                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-sub">{b.file}</span>
-                <span className="tnum shrink-0 text-[11px] text-subtle">{fmtDateTime(b.createdAt)}</span>
-                <span className="tnum w-16 shrink-0 text-right text-[11px] text-subtle">{fmtBytes(b.size)}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-sub">{b.file}</span>
+                <span className="tnum shrink-0 text-xs text-subtle">{fmtDateTime(b.createdAt)}</span>
+                <span className="tnum w-16 shrink-0 text-right text-xs text-subtle">{fmtBytes(b.size)}</span>
                 <a
                   href={`/api/system/backups/${encodeURIComponent(b.file)}/download`}
                   className="rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt"
@@ -685,7 +685,7 @@ export default function SettingsPage() {
             ))}
           </div>
         )}
-        <p className="mt-3 text-[11px] leading-relaxed text-subtle">
+        <p className="mt-3 text-xs leading-relaxed text-subtle">
           Para restaurar: para Skyway, sustituye <span className="font-mono">/data/skyway.db</span> por el snapshot y
           arranca de nuevo. Descarga alguna copia fuera del servidor: un backup en el mismo disco no sobrevive a una
           avería del disco.

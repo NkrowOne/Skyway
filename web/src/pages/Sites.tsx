@@ -50,9 +50,9 @@ function SiteCard({
               className="flex max-w-full items-center gap-1.5 text-left"
               title="Abrir el servicio"
             >
-              <span className="truncate text-[13.5px] font-semibold tracking-[-.01em]">{site.name}</span>
+              <span className="truncate text-sm font-semibold tracking-[-.01em]">{site.name}</span>
               {site.alerts > 0 && (
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-err/[.14] px-1.5 py-px text-[10px] font-semibold text-err">
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-err/[.14] px-1.5 py-px text-micro font-semibold text-err">
                   <BellRing size={9} /> {site.alerts}
                 </span>
               )}
@@ -60,7 +60,7 @@ function SiteCard({
             {/* El proyecto es un enlace propio: un salto directo a su canvas. */}
             <Link
               to={`/projects/${site.projectId}`}
-              className="mt-0.5 flex max-w-full items-center gap-1 text-[11px] text-subtle transition-colors hover:text-sub"
+              className="mt-0.5 flex max-w-full items-center gap-1 text-xs text-subtle transition-colors hover:text-sub"
               title={`Ir al proyecto «${site.projectName}»`}
             >
               <Folder size={10} className="shrink-0 opacity-70" />
@@ -76,7 +76,7 @@ function SiteCard({
 
       <div className="mt-3 flex min-h-[26px] flex-wrap items-center gap-1.5">
         {site.domains.length === 0 && site.hostPort === null && (
-          <span className="text-[11px] text-subtle">Sin dominio — añádelo en Ajustes del servicio</span>
+          <span className="text-xs text-subtle">Sin dominio — añádelo en Ajustes del servicio</span>
         )}
         {site.domains.map((d) => (
           <a
@@ -84,7 +84,7 @@ function SiteCard({
             href={`${scheme}://${d}`}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex max-w-full items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-[3px] text-[11px] text-sub transition-colors hover:border-acc/50 hover:text-txt"
+            className="inline-flex max-w-full items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-[3px] text-xs text-sub transition-colors hover:border-acc/50 hover:text-txt"
             title={`Abrir ${scheme}://${d}`}
           >
             {tls ? <Lock size={10} className="shrink-0 text-ok" /> : <Unlock size={10} className="shrink-0 text-warn" />}
@@ -97,7 +97,7 @@ function SiteCard({
             href={`http://${serverIp || window.location.hostname}:${site.hostPort}`}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-[3px] font-mono text-[11px] text-sub transition-colors hover:border-acc/50 hover:text-txt"
+            className="inline-flex items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-[3px] font-mono text-xs text-sub transition-colors hover:border-acc/50 hover:text-txt"
             title="Puerto público del host"
           >
             :{site.hostPort}
@@ -107,7 +107,7 @@ function SiteCard({
       </div>
 
       <div className="mt-auto flex items-center justify-between gap-2 pt-3">
-        <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-sub">
+        <span className="flex min-w-0 items-center gap-1.5 text-xs text-sub">
           <span className={cx('h-1.5 w-1.5 shrink-0 rounded-full', deployDot)} />
           <span className="truncate">
             {site.lastDeploy

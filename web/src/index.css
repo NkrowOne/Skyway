@@ -23,24 +23,40 @@
 }
 
 :root {
-  /* Paleta seria y viva: Obsidian & Midnight Slate con Electric Indigo */
-  --color-bg: oklch(13% 0.015 265);
-  --color-surface: oklch(17.5% 0.02 265);
-  --color-surface-2: oklch(21.5% 0.026 265);
-  --color-line: oklch(26.5% 0.028 265);
-  --color-txt: oklch(96.5% 0.008 265);
-  --color-sub: oklch(72% 0.025 265);
-  --color-subtle: oklch(56% 0.025 265);
-  --color-acc: #7c5dfa;
-  --color-acc-soft: #b8a5fc;
-  --color-ok: oklch(76% 0.17 155);
-  --color-warn: oklch(80% 0.16 75);
-  --color-err: oklch(65% 0.23 25);
-  --color-info: oklch(74% 0.14 240);
-  --color-term: oklch(10% 0.012 265);
-  --color-term-2: oklch(14.5% 0.016 265);
+  /*
+   * Paleta «sala de control»: grafito casi neutro y el color reservado para
+   * decir algo. Los valores y sus ratios de contraste están razonados en
+   * docs/DISENO.md; si tocas uno, vuelve a pasar `npm run check:contrast`.
+   */
+  --color-bg: oklch(16% 0.007 255);
+  --color-surface: oklch(19.5% 0.008 255);
+  --color-surface-2: oklch(23.5% 0.009 255);
+  --color-surface-3: oklch(27.5% 0.010 255);
+  --color-line: oklch(30% 0.010 255);
+  --color-line-2: oklch(36% 0.012 255);
+  --color-txt: oklch(97% 0.004 255);
+  --color-sub: oklch(77.5% 0.010 255);
+  --color-subtle: oklch(64% 0.012 255);
+  --color-acc: oklch(55% 0.135 250);
+  --color-acc-soft: oklch(76% 0.110 250);
+  --color-ok: oklch(74% 0.150 152);
+  --color-warn: oklch(79.5% 0.140 80);
+  --color-err: oklch(65.5% 0.195 25);
+  --color-info: oklch(76% 0.110 250);
+  --color-term: oklch(12.5% 0.006 255);
+  --color-term-2: oklch(17% 0.007 255);
 
   /*
+   * Escala de duración. Antes había quince valores sueltos entre 0,13 s y
+   * 0,32 s sin criterio; ahora cuatro pasos y cada transición elige el suyo
+   * según cuánto recorrido tiene que contar el ojo.
+   */
+  --dur-1: 120ms; /* cambio de color, hover, foco */
+  --dur-2: 180ms; /* aparición y salida de elementos pequeños */
+  --dur-3: 260ms; /* paneles, menús, drawers */
+  --dur-4: 360ms; /* hojas y acordeones (recorrido largo) */
+
+/*
    * Sistema de movimiento: tres curvas para toda la casa.
    * --ease-out (swift-out) para entradas, salidas y desplazamientos;
    * --ease-pop (muelle) para pops de estado (badges, checks);
@@ -94,19 +110,10 @@ summary,
 }
 
 /*
- * El cielo de Skyway — la firma visual de la casa: una nebulosa de marca y una
- * constelación tenue en lo alto de cada pantalla. Decora los bordes, nunca el
- * contenido: por debajo de ~420px de altura no hay nada.
+ * Antes había aquí una nebulosa violeta fija sobre toda la pantalla. Un panel
+ * de control no necesita ambiente: el fondo es fondo y el color se reserva
+ * para el estado de los servicios. Se queda solo la capa de apilamiento.
  */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  /* Un único resplandor tenue arriba: profundidad, no un «hero glow». */
-  background: radial-gradient(1100px 460px at 22% -20%, color-mix(in oklab, var(--color-acc) 5%, transparent), transparent 64%);
-}
 #root {
   position: relative;
   z-index: 1;
@@ -118,14 +125,14 @@ body::before {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: oklch(32% 0.018 280) transparent;
+  scrollbar-color: var(--color-line-2) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: oklch(32% 0.018 280);
+  background: var(--color-line-2);
   border-radius: 4px;
 }
 *::-webkit-scrollbar-track {
@@ -215,17 +222,15 @@ details > summary::-webkit-details-marker {
 @keyframes panel-in {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.985);
-    filter: blur(5px);
+    transform: translateY(6px) scale(0.99);
   }
   to {
     opacity: 1;
     transform: none;
-    filter: none;
   }
 }
 .panel-in {
-  animation: panel-in 0.22s var(--ease-spring);
+  animation: panel-in var(--dur-3) var(--ease-spring);
 }
 @keyframes panel-out {
   from {
@@ -607,19 +612,6 @@ details[open] > .details-body {
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
 }
-/* Insignias de fase de logs estilo Railway */
-.log-stage-badge {
-  font-size: 9.5px;
-  font-weight: 650;
-  letter-spacing: 0.05em;
-  padding: 1px 4px;
-  border-radius: 4px;
-  user-select: none;
-  display: inline-flex;
-  align-items: center;
-  line-height: 1;
-}
-
 /* Pantalla completa de la consola: sube y se asienta; se despide en reversa. */
 @keyframes console-in {
   from {
@@ -680,7 +672,7 @@ details[open] > .details-body {
 @keyframes pop-in {
   from {
     opacity: 0;
-    transform: scale(0.4);
+    transform: scale(0.86);
   }
   to {
     opacity: 1;
@@ -707,13 +699,6 @@ details[open] > .details-body {
     transparent 6px,
     transparent 12px
   );
-  background-size: 200% 100%;
-  animation: quota-stripes 0.9s linear infinite;
-}
-@keyframes quota-stripes {
-  to {
-    background-position: 34px 0;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -731,35 +716,46 @@ details[open] > .details-body {
  */
 @layer components {
   .input {
-    @apply w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm text-txt placeholder-subtle outline-none transition-[border-color,box-shadow] duration-150;
+    @apply h-9 w-full rounded-lg border border-line bg-bg px-3 text-sm text-txt placeholder-subtle outline-none transition-[border-color,box-shadow] duration-[--dur-1];
+  }
+  /* Un <textarea> no puede tener alto fijo: recupera el relleno vertical. */
+  textarea.input,
+  select[multiple].input {
+    @apply h-auto py-2;
+  }
+  .input:hover:not(:focus) {
+    border-color: var(--color-line-2);
   }
   .input:focus {
     border-color: var(--color-acc);
-    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-acc) 25%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-acc) 22%, transparent);
+  }
+  /* Estado de error del campo: el borde ya lo dice, sin necesidad de icono. */
+  .input[aria-invalid='true'] {
+    border-color: color-mix(in oklab, var(--color-err) 70%, var(--color-line));
+  }
+  .input[aria-invalid='true']:focus {
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-err) 22%, transparent);
   }
 
   .card {
-    @apply rounded-xl border border-line bg-surface shadow-lvl1;
-    /* Luz cenital: un velo de claridad en el borde superior da volumen sin ruido. */
-    background-image: linear-gradient(180deg, color-mix(in oklab, var(--color-txt) 2.5%, transparent), transparent 26%);
+    @apply rounded-xl border border-line bg-surface;
   }
 
   /* Tarjeta interactiva: borde de marca + lift + sombra tintada al pasar; asiento al pulsar. */
   .card-hover {
     transition:
-      border-color 180ms var(--ease-out),
-      transform 180ms var(--ease-out),
-      box-shadow 180ms var(--ease-out);
+      border-color var(--dur-2) var(--ease-out),
+      background-color var(--dur-2) var(--ease-out);
   }
   @media (hover: hover) and (pointer: fine) {
     .card-hover:hover {
-      border-color: color-mix(in oklab, var(--color-acc) 55%, var(--color-line));
-      transform: translateY(-1px);
-      @apply shadow-card-hover;
+      border-color: var(--color-line-2);
+      background-color: var(--color-surface-2);
     }
   }
   .card-hover:active {
-    transform: translateY(0) scale(0.995);
+    background-color: var(--color-surface-3);
     transition-duration: 60ms;
   }
 
@@ -775,8 +771,18 @@ details[open] > .details-body {
     animation: shimmer 1.8s linear infinite;
   }
 
+  /*
+   * Consola de logs: ocupa el alto de su hueco salvo que quien la usa diga otra
+   * cosa. Va en @layer components a propósito —las utilidades de Tailwind se
+   * emiten después y deben poder anularla—; si esta regla se sube a CSS suelto
+   * al final del fichero, vuelve a ganar el 100 % y el scroll se rompe.
+   */
+  .log-shell {
+    height: 100%;
+  }
+
   .kbd {
-    @apply rounded-[5px] border border-line bg-surface2 px-1.5 py-px font-mono text-[11px] leading-4 text-sub;
+    @apply rounded border border-line bg-surface2 px-1.5 py-px font-mono text-micro leading-4 text-sub;
   }
 }
 

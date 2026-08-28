@@ -37,14 +37,14 @@ export function QuotaMeter({
   return (
     <div>
       <div className="mb-1.5 flex items-baseline justify-between gap-3">
-        <span className="flex items-center gap-1.5 text-[13px] font-medium text-sub">
+        <span className="flex items-center gap-1.5 text-sm font-medium text-sub">
           {icon && <span className="text-subtle [&>svg]:block">{icon}</span>}
           {label}
           {inheriting && (
-            <span className="rounded-full border border-line px-1.5 py-px text-[10px] font-normal text-subtle">del plan</span>
+            <span className="rounded-full border border-line px-1.5 py-px text-micro font-normal text-subtle">del plan</span>
           )}
         </span>
-        <span className={cx('tnum text-[13px]', over ? 'font-semibold text-err' : 'text-txt')}>
+        <span className={cx('tnum text-sm', over ? 'font-semibold text-err' : 'text-txt')}>
           {format(used)} <span className="text-subtle">/ {format(ceiling)}</span>
         </span>
       </div>
@@ -55,7 +55,7 @@ export function QuotaMeter({
         />
       </div>
       {(hint || over) && (
-        <p className={cx('mt-1 text-[11px]', over ? 'text-err' : 'text-subtle')}>
+        <p className={cx('mt-1 text-xs', over ? 'text-err' : 'text-subtle')}>
           {over ? `Asignado por encima del techo · ${format(used - ceiling)} de más` : hint}
         </p>
       )}
@@ -72,8 +72,8 @@ export function MiniMeter({ label, used, ceiling, format = (n) => String(n) }: {
   return (
     <div className="min-w-0">
       <div className="mb-1 flex items-center justify-between gap-2">
-        <span className="text-[10px] font-medium uppercase tracking-[.06em] text-subtle">{label}</span>
-        <span className={cx('tnum text-[11px]', over ? 'text-err' : 'text-sub')}>
+        <span className="text-micro font-medium uppercase tracking-[.06em] text-subtle">{label}</span>
+        <span className={cx('tnum text-xs', over ? 'text-err' : 'text-sub')}>
           {format(used)}<span className="text-subtle">/{format(ceiling)}</span>
         </span>
       </div>

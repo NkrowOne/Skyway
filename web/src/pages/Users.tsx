@@ -19,18 +19,18 @@ const EMPTY: Draft = { email: '', password: '', role: 'member', projectIds: [] }
 function RoleChip({ role }: { role: UserRole }) {
   if (role === 'admin')
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.15] px-2 py-0.5 text-[10px] font-semibold text-acc-soft">
+      <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.15] px-2 py-0.5 text-micro font-semibold text-acc-soft">
         <Shield size={9} /> admin
       </span>
     );
   if (role === 'owner')
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.12] px-2 py-0.5 text-[10px] font-semibold text-acc-soft">
+      <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.12] px-2 py-0.5 text-micro font-semibold text-acc-soft">
         propietario
       </span>
     );
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-txt/[.08] px-2 py-0.5 text-[10px] font-semibold text-sub">
+    <span className="inline-flex items-center gap-1 rounded-full bg-txt/[.08] px-2 py-0.5 text-micro font-semibold text-sub">
       miembro
     </span>
   );
@@ -123,10 +123,10 @@ export default function UsersPage() {
                 <span className="truncate text-sm font-medium">{u.email}</span>
                 <RoleChip role={u.role} />
                 {u.id === me.data?.user?.id && (
-                  <span className="rounded-full border border-line px-2 py-0.5 text-[10px] text-subtle">tú</span>
+                  <span className="rounded-full border border-line px-2 py-0.5 text-micro text-subtle">tú</span>
                 )}
               </div>
-              <div className="flex flex-wrap items-center gap-3 text-[11px] text-subtle">
+              <div className="flex flex-wrap items-center gap-3 text-xs text-subtle">
                 <span className="flex items-center gap-1">
                   <Boxes size={11} />
                   {u.role === 'admin'
@@ -169,7 +169,7 @@ export default function UsersPage() {
         ))}
       </div>
 
-      <p className="flex items-center gap-1.5 text-[11px] text-subtle">
+      <p className="flex items-center gap-1.5 text-xs text-subtle">
         <Users2 size={12} /> Los miembros solo ven y operan sus workspaces: nada de ajustes del servidor, seguridad, otros proyectos ni
         gestión de usuarios.
       </p>
@@ -212,8 +212,8 @@ export default function UsersPage() {
                       draft.role === r ? 'border-acc bg-acc/[.10]' : 'border-line bg-bg hover:border-subtle',
                     )}
                   >
-                    <p className="text-[13px] font-semibold">{r === 'admin' ? 'Administrador' : 'Miembro'}</p>
-                    <p className="mt-0.5 text-[11px] leading-snug text-subtle">
+                    <p className="text-sm font-semibold">{r === 'admin' ? 'Administrador' : 'Miembro'}</p>
+                    <p className="mt-0.5 text-xs leading-snug text-subtle">
                       {r === 'admin' ? 'Control total: servidor, usuarios y todos los workspaces' : 'Solo los workspaces que le asignes'}
                     </p>
                   </button>
@@ -231,8 +231,8 @@ export default function UsersPage() {
                         onChange={() => toggleProject(p.id)}
                         className="accent-acc"
                       />
-                      <span className="min-w-0 flex-1 truncate text-[13px]">{p.name}</span>
-                      {p.client && <span className="shrink-0 text-[11px] text-subtle">{p.client}</span>}
+                      <span className="min-w-0 flex-1 truncate text-sm">{p.name}</span>
+                      {p.client && <span className="shrink-0 text-xs text-subtle">{p.client}</span>}
                     </label>
                   ))}
                 </div>

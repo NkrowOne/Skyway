@@ -1,10 +1,10 @@
 import { lazy, Suspense, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { BellRing, Boxes, Building2, FolderKanban, Plus, Search, TrainFront, Zap } from 'lucide-react';
+import { BellRing, Boxes, Building2, ChevronRight, FolderKanban, Plus, Search, TrainFront, X, Zap } from 'lucide-react';
 import { api } from '../api';
 import { useLatch } from '../hooks';
-import { Button, Field, Modal, Skeleton, useToast } from '../components/ui';
+import { Button, Chip, Field, Modal, PageHeader, Skeleton, useToast } from '../components/ui';
 import { DeploySweep } from '../components/DeployBadge';
 import { ModuleBadge, ModuleLogo, moduleKind } from '../components/ModuleIcon';
 
@@ -14,39 +14,17 @@ const RailwayImportModal = lazy(() => import('../components/RailwayImportModal')
 import { Me, Project, ProjectServiceSummary } from '../types';
 import { cx, timeAgo } from '../utils';
 
-const MONOGRAM_GRADIENTS = [
-  'from-indigo-500/25 to-purple-600/25 text-indigo-300 border-indigo-500/35 shadow-[0_0_12px_-3px_rgba(99,102,241,0.2)]',
-  'from-cyan-500/25 to-blue-600/25 text-cyan-300 border-cyan-500/35 shadow-[0_0_12px_-3px_rgba(6,182,212,0.2)]',
-  'from-emerald-500/25 to-teal-600/25 text-emerald-300 border-emerald-500/35 shadow-[0_0_12px_-3px_rgba(16,185,129,0.2)]',
-  'from-violet-500/25 to-fuchsia-600/25 text-violet-300 border-violet-500/35 shadow-[0_0_12px_-3px_rgba(139,92,246,0.2)]',
-  'from-amber-500/25 to-orange-600/25 text-amber-300 border-amber-500/35 shadow-[0_0_12px_-3px_rgba(245,158,11,0.2)]',
-  'from-rose-500/25 to-pink-600/25 text-rose-300 border-rose-500/35 shadow-[0_0_12px_-3px_rgba(244,63,94,0.2)]',
-  'from-sky-500/25 to-indigo-600/25 text-sky-300 border-sky-500/35 shadow-[0_0_12px_-3px_rgba(14,165,233,0.2)]',
-];
-
-function getMonogramTheme(name: string) {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = (hash << 5) - hash + name.charCodeAt(i);
-    hash |= 0;
-  }
-  return MONOGRAM_GRADIENTS[Math.abs(hash) % MONOGRAM_GRADIENTS.length];
-}
-
 /**
- * Monograma del proyecto: dos letras con gradiente vivo exclusivo por proyecto
+ * Monograma del proyecto: dos iniciales en monoespaciada sobre superficie
+ * neutra. Antes cada proyecto recibía uno de siete degradados de color con
+ * resplandor propio; identificaba menos de lo que decoraba, y el color de la
+ * interfaz está reservado para decir en qué estado está algo.
  */
 function Monogram({ name }: { name: string }) {
   const words = name.trim().split(/[\s\-_]+/).filter(Boolean);
   const initials = (words.length >= 2 ? words[0][0] + words[1][0] : name.trim().slice(0, 2)).toUpperCase();
-  const theme = getMonogramTheme(name);
   return (
-    <span
-      className={cx(
-        'flex h-10 w-10 shrink-0 select-none items-center justify-center rounded-xl border bg-gradient-to-br font-mono text-[13px] font-bold tracking-[.04em] transition-all duration-200 group-hover:scale-105',
-        theme,
-      )}
-    >
+    <span className="flex h-9 w-9 shrink-0 select-none items-center justify-center rounded-lg border border-line bg-surface2 font-mono text-xs font-semibold tracking-[.06em] text-sub">
       {initials}
     </span>
   );
@@ -58,10 +36,7 @@ function Monogram({ name }: { name: string }) {
 function ServiceStack({ services }: { services?: ProjectServiceSummary[] }) {
   if (!services || services.length === 0) {
     return (
-      <div className="mt-3 flex items-center gap-1.5 text-[11px] text-subtle">
-        <span className="h-1.5 w-1.5 rounded-full bg-line" />
-        <span>Sin servicios configurados</span>
-      </div>
+      <p className="mt-3 text-xs text-subtle">Sin servicios todavía</p>
     );
   }
 
@@ -76,12 +51,9 @@ function ServiceStack({ services }: { services?: ProjectServiceSummary[] }) {
         return <ModuleBadge key={s.id} kind={kind} name={s.name} />;
       })}
       {remaining > 0 && (
-        <span
-          className="inline-flex items-center rounded-lg border border-line/80 bg-surface2/70 px-2 py-0.5 text-[10.5px] font-semibold text-subtle"
-          title={`${remaining} servicio${remaining > 1 ? 's' : ''} más`}
-        >
-          +{remaining} más
-        </span>
+        <Chip size="sm" title={`${remaining} servicio${remaining > 1 ? 's' : ''} más`}>
+          +{remaining}
+        </Chip>
       )}
     </div>
   );
@@ -93,7 +65,7 @@ function ProjectCard({ project }: { project: Project }) {
   return (
     <Link
       to={`/projects/${project.id}`}
-      className="group card card-hover relative flex flex-col justify-between p-5 transition-all duration-200 border-line hover:border-acc/40 hover:shadow-lg hover:shadow-acc/5"
+      className="group card card-hover relative flex flex-col justify-between p-4"
     >
       {/* La misma cinta que la tarjeta del servicio: el aviso de «hay una versión saliendo» */}
       {deploying > 0 && <DeploySweep />}
@@ -102,40 +74,33 @@ function ProjectCard({ project }: { project: Project }) {
           <Monogram name={project.name} />
           <div className="flex items-center gap-2 text-xs">
             {deploying > 0 && (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-warn/30 bg-warn/10 px-2 py-0.5 text-[11px] font-medium text-warn">
-                <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-warn" />
+              <Chip tone="warn" dot pulse>
                 {deploying === 1 ? 'desplegando' : `${deploying} desplegando`}
-              </span>
+              </Chip>
             )}
             {alerts > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-err/30 bg-err/10 px-2 py-0.5 text-[11px] font-semibold text-err">
-                <BellRing size={10} /> {alerts}
-              </span>
+              <Chip tone="err" icon={<BellRing size={10} />} title={alerts === 1 ? '1 alerta abierta' : `${alerts} alertas abiertas`}>
+                {alerts}
+              </Chip>
             )}
-            <span className="font-mono text-[11px] text-subtle">
+            <span className="tnum font-mono text-xs text-subtle">
               {project.serviceCount === 1 ? '1 servicio' : `${project.serviceCount ?? 0} servicios`}
             </span>
           </div>
         </div>
 
-        <h3 className="mt-3.5 text-[15px] font-semibold tracking-[-.01em] text-txt transition-colors group-hover:text-acc-soft">
-          {project.name}
-        </h3>
-        <p className="mt-0.5 text-xs text-sub">
-          <span className="font-mono text-[11px] text-subtle">{project.slug}</span>
-        </p>
+        <h3 className="mt-3 truncate text-base font-semibold text-txt">{project.name}</h3>
+        <p className="mt-0.5 truncate font-mono text-xs text-subtle">{project.slug}</p>
 
         {/* Mini resumen visual de la pila de servicios */}
         <ServiceStack services={project.services} />
       </div>
 
-      <div className="mt-4 flex items-center justify-between border-t border-line/50 pt-3 text-[11px] text-subtle">
-        <span>
+      <div className="mt-4 flex items-center justify-between border-t border-line pt-3 text-xs text-subtle">
+        <span className="truncate">
           {project.lastDeployAt ? `Último despliegue ${timeAgo(project.lastDeployAt)}` : 'Sin despliegues todavía'}
         </span>
-        <span className="text-xs font-semibold text-subtle transition-all group-hover:translate-x-0.5 group-hover:text-txt">
-          →
-        </span>
+        <ChevronRight size={14} className="shrink-0 transition-colors duration-[--dur-1] group-hover:text-txt" />
       </div>
     </Link>
   );
@@ -235,60 +200,49 @@ export default function Dashboard() {
     return [...groups.entries()].sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)));
   }, [visible]);
 
-  const chipCls = (active: boolean) =>
-    cx(
-      'flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3.5 py-[5px] text-xs transition-colors duration-150',
-      active
-        ? 'border-acc/55 bg-acc/[.16] font-medium text-acc-soft'
-        : 'border-line bg-surface text-sub hover:border-[color-mix(in_oklab,var(--color-acc)_40%,var(--color-line))] hover:text-txt',
-    );
-
   return (
     <div className="mx-auto max-w-[1120px] px-4 py-7 sm:px-6 sm:py-10">
-      <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-2xl font-semibold leading-[30px] tracking-[-.02em]">Proyectos</h1>
-            {totalProjects > 0 && (
-              <div className="flex items-center gap-2 text-xs">
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface2/60 px-2.5 py-0.5 font-medium text-sub">
-                  <FolderKanban size={11} className="text-acc" />
-                  <strong className="text-txt">{totalProjects}</strong> proyectos
-                </span>
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface2/60 px-2.5 py-0.5 font-medium text-sub">
-                  <Boxes size={11} className="text-info" />
-                  <strong className="text-txt">{totalServices}</strong> servicios
-                </span>
-                {totalDeploying > 0 && (
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-warn/30 bg-warn/10 px-2.5 py-0.5 font-semibold text-warn">
-                    <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse" />
-                    {totalDeploying} desplegando
-                  </span>
-                )}
-                {totalAlerts > 0 && (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-err/30 bg-err/10 px-2.5 py-0.5 font-semibold text-err">
-                    <BellRing size={11} /> {totalAlerts}
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-          <p className="mt-1.5 text-sm text-sub">Cada proyecto agrupa servicios que comparten una red privada</p>
-        </div>
-        {isManager && (
-          <div className="flex items-center gap-2">
-            {isAdmin && (
-              <Button variant="secondary" onClick={() => setImportOpen(true)} title="Migra un proyecto desde Railway">
-                <TrainFront size={15} /> <span className="hidden sm:inline">Importar de Railway</span>
-                <span className="sm:hidden">Importar</span>
+      <PageHeader
+        className="mb-7"
+        title="Proyectos"
+        description="Cada proyecto agrupa servicios que comparten una red privada."
+        actions={
+          isManager && (
+            <>
+              {isAdmin && (
+                <Button variant="secondary" onClick={() => setImportOpen(true)} title="Migra un proyecto desde Railway">
+                  <TrainFront size={15} /> <span className="hidden sm:inline">Importar de Railway</span>
+                  <span className="sm:hidden">Importar</span>
+                </Button>
+              )}
+              <Button onClick={() => setCreateOpen(true)}>
+                <Plus size={15} /> Nuevo proyecto
               </Button>
-            )}
-            <Button onClick={() => setCreateOpen(true)}>
-              <Plus size={15} /> Nuevo proyecto
-            </Button>
-          </div>
-        )}
-      </div>
+            </>
+          )
+        }
+      />
+
+      {totalProjects > 0 && (
+        <div className="-mt-4 mb-6 flex flex-wrap items-center gap-1.5">
+          <Chip icon={<FolderKanban size={11} />}>
+            <span className="tnum font-semibold text-txt">{totalProjects}</span> proyectos
+          </Chip>
+          <Chip icon={<Boxes size={11} />}>
+            <span className="tnum font-semibold text-txt">{totalServices}</span> servicios
+          </Chip>
+          {totalDeploying > 0 && (
+            <Chip tone="warn" dot pulse>
+              <span className="tnum">{totalDeploying}</span> desplegando
+            </Chip>
+          )}
+          {totalAlerts > 0 && (
+            <Chip tone="err" icon={<BellRing size={11} />}>
+              <span className="tnum">{totalAlerts}</span> {totalAlerts === 1 ? 'alerta' : 'alertas'}
+            </Chip>
+          )}
+        </div>
+      )}
 
       {/* Buscador en tiempo real y filtros por cliente/empresa */}
       {all.length > 0 && (
@@ -300,30 +254,37 @@ export default function Dashboard() {
               value={projectQuery}
               onChange={(e) => setProjectQuery(e.target.value)}
               placeholder="Buscar proyecto o servicio..."
-              className="h-9 w-full rounded-xl border border-line bg-surface/80 pl-9 pr-8 text-xs text-txt placeholder:text-subtle transition-colors focus:border-acc/60 focus:bg-surface focus:outline-none"
+              className="input pl-9 pr-8"
             />
             {projectQuery && (
               <button
                 onClick={() => setProjectQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-subtle hover:text-txt"
+                className="press absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-subtle hover:text-txt"
                 title="Limpiar búsqueda"
+                aria-label="Limpiar búsqueda"
               >
-                ✕
+                <X size={13} />
               </button>
             )}
           </div>
 
           {clients.length > 0 && (
             <div className="-mx-4 flex items-center gap-1.5 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:flex-wrap sm:px-0">
-              <button onClick={() => setFilter(null)} className={chipCls(filter === null)}>
-                Todas <span className="opacity-70 tnum">{all.length}</span>
-              </button>
+              <Chip tone="info" active={filter === null} onClick={() => setFilter(null)}>
+                Todas <span className="tnum opacity-70">{all.length}</span>
+              </Chip>
               {clients.map((c) => {
                 const count = all.filter((p) => p.client === c).length;
                 return (
-                  <button key={c} onClick={() => setFilter(filter === c ? null : c)} className={chipCls(filter === c)}>
-                    <Building2 size={11} /> {c} <span className="opacity-60 tnum">{count}</span>
-                  </button>
+                  <Chip
+                    key={c}
+                    tone="info"
+                    active={filter === c}
+                    onClick={() => setFilter(filter === c ? null : c)}
+                    icon={<Building2 size={11} />}
+                  >
+                    {c} <span className="tnum opacity-70">{count}</span>
+                  </Chip>
                 );
               })}
             </div>

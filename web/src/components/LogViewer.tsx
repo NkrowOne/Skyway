@@ -221,7 +221,7 @@ const LogRow = memo(function LogRow({
     >
       {gutter && (
         <span
-          className="log-gutter tnum select-none px-2 text-right text-[11px] tabular-nums text-subtle/70"
+          className="log-gutter tnum select-none px-2 text-right text-xs tabular-nums text-subtle/70"
           style={{ minWidth: '3.8ch' }}
         >
           {n}
@@ -230,7 +230,7 @@ const LogRow = memo(function LogRow({
       {showTs && (
         <span
           className={cx(
-            'log-ts tnum shrink-0 select-none px-2 text-[11px] tabular-nums text-subtle transition-colors hover:text-txt',
+            'log-ts tnum shrink-0 select-none px-2 text-xs tabular-nums text-subtle transition-colors hover:text-txt',
             !tsString && 'opacity-0',
           )}
           title={tsTooltip}
@@ -603,7 +603,7 @@ export default function LogViewer({
       onClick={() => setLevel(key)}
       aria-pressed={level === key}
       className={cx(
-        'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium transition-colors duration-150',
+        'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors duration-150',
         level === key
           ? tone === 'err'
             ? 'bg-err/[.18] text-err font-semibold'
@@ -622,7 +622,7 @@ export default function LogViewer({
   const shell = (
     <section
       className={cx(
-        'log-shell relative flex min-h-0 h-full w-full flex-col overflow-hidden bg-term',
+        'log-shell relative flex min-h-0 w-full flex-col overflow-hidden bg-term',
         maximized ? 'rounded-none' : cx(!bare && 'rounded-xl border border-line shadow-sm', className),
       )}
       style={{ '--log-line-h': maximized ? '23px' : '22px' } as React.CSSProperties}
@@ -632,11 +632,11 @@ export default function LogViewer({
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
             {extraHeaderLeft}
             {title && (
-              <span className="truncate font-mono text-[11px] font-semibold uppercase tracking-[.08em] text-sub">
+              <span className="truncate font-mono text-xs font-semibold uppercase tracking-[.08em] text-sub">
                 {title}
               </span>
             )}
-            <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-subtle">
+            <span className="flex shrink-0 items-center gap-1.5 text-xs text-subtle">
               {!toolbar && (
                 <span
                   className={cx('h-[6px] w-[6px] rounded-full', follow ? 'pulse-soft bg-ok' : 'bg-subtle')}
@@ -684,7 +684,7 @@ export default function LogViewer({
               />
               {filter && (
                 <div className="flex items-center gap-1">
-                  <span className="text-[10px] text-subtle tabular-nums font-mono">
+                  <span className="text-micro text-subtle tabular-nums font-mono">
                     {visible.length} match{visible.length === 1 ? '' : 'es'}
                   </span>
                   <button
@@ -723,7 +723,7 @@ export default function LogViewer({
                   className="absolute right-0 top-full z-40 mt-1 min-w-[185px] rounded-xl border border-line bg-surface p-1.5 shadow-modal"
                   onMouseLeave={() => setTsMenuOpen(false)}
                 >
-                  <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-subtle">
+                  <p className="px-2 py-1 text-micro font-semibold uppercase tracking-wider text-subtle">
                     Marcas de tiempo
                   </p>
                   <button
@@ -798,7 +798,7 @@ export default function LogViewer({
               <button
                 type="button"
                 onClick={() => setClearedUntil(0)}
-                className="press flex h-7 items-center rounded-md bg-surface2 px-2 text-[11px] text-sub hover:text-txt"
+                className="press flex h-7 items-center rounded-md bg-surface2 px-2 text-xs text-sub hover:text-txt"
                 title="Restaurar líneas ocultas"
               >
                 Restaurar ({clearedUntil})
@@ -809,7 +809,7 @@ export default function LogViewer({
       )}
 
       {toolbar && (
-        <div className="flex shrink-0 items-center justify-between gap-2.5 border-b border-line bg-term2 px-3 py-1.5 text-[11px] text-subtle">
+        <div className="flex shrink-0 items-center justify-between gap-2.5 border-b border-line bg-term2 px-3 py-1.5 text-xs text-subtle">
           <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
             {statusNote ? (
               <span className="text-warn font-medium">{statusNote}</span>
@@ -836,7 +836,7 @@ export default function LogViewer({
           </span>
 
           {follow ? (
-            <span className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-ok">
+            <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-ok">
               <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-ok" />
               En vivo
             </span>
@@ -844,7 +844,7 @@ export default function LogViewer({
             <button
               type="button"
               onClick={() => jump('bottom')}
-              className="press inline-flex shrink-0 items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-0.5 text-[11px] font-medium text-sub hover:text-txt"
+              className="press inline-flex shrink-0 items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-0.5 text-xs font-medium text-sub hover:text-txt"
             >
               <ArrowDownToLine size={12} /> Seguir al final
             </button>
@@ -857,8 +857,10 @@ export default function LogViewer({
           ref={ref}
           onScroll={onScroll}
           className={cx(
+            // Tamaño propio de terminal (fuera de la escala de la interfaz):
+            // aquí manda la legibilidad de la monoespaciada, no la jerarquía.
             'log-body h-full w-full font-mono text-[12.5px] leading-[1.65] text-txt/90',
-            maximized && 'text-[13px] leading-[1.7]',
+            maximized && 'text-[13.5px] leading-[1.7]',
             wrap ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto',
           )}
           role="log"
@@ -919,7 +921,7 @@ export default function LogViewer({
               <ArrowDown size={13} className="text-acc" />
               <span>Ir al final</span>
               {unreadCount > 0 && (
-                <span className="rounded-full bg-acc px-1.5 py-0.2 text-[10px] font-bold text-white">
+                <span className="rounded-full bg-acc px-1.5 py-0.5 text-micro font-bold text-white">
                   +{unreadCount > 99 ? '99+' : unreadCount}
                 </span>
               )}

@@ -3,7 +3,7 @@ import { ActiveDeploy, ContainerState, Service, ServiceStats } from '../types';
 import { cx, DEPLOY_STATUS_LABEL, fmtBytes, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
 import { DeploySweep } from './DeployBadge';
 import { ModuleChip, moduleKind } from './ModuleIcon';
-import { StatusBadge } from './ui';
+import { Chip, StatusBadge } from './ui';
 
 const TEMPLATE_LABEL: Record<string, string> = {
   postgres: 'PostgreSQL',
@@ -46,79 +46,73 @@ export default function ServiceCard({
     <button
       onClick={onClick}
       className={cx(
-        'group relative rounded-xl border bg-surface p-4 text-left transition-all duration-200',
+        'group relative rounded-xl border p-4 text-left',
         selected
-          ? 'border-acc/70 shadow-[0_0_20px_-4px_color-mix(in_oklab,var(--color-acc)_35%,transparent)] bg-surface2/40'
+          ? 'border-acc bg-surface2'
           : cx(
-              'card-hover shadow-lvl1 hover:border-line/90',
-              alertCount > 0
-                ? 'border-[color-mix(in_oklab,var(--color-err)_45%,var(--color-line))]'
-                : deploy
-                  ? 'border-[color-mix(in_oklab,var(--color-warn)_45%,var(--color-line))]'
-                  : 'border-line',
+              'card-hover bg-surface',
+              // El borde solo cambia de color cuando hay algo que mirar.
+              alertCount > 0 ? 'border-err/45' : deploy ? 'border-warn/45' : 'border-line',
             ),
       )}
     >
       {/* La cinta va antes que la chapa de alertas para que esta pinte encima. */}
       {deploy && <DeploySweep />}
-      {alertCount > 0 && (
-        <span className="absolute -top-[9px] right-3 flex items-center gap-1 rounded-full bg-err px-2 py-0.5 text-[10px] font-semibold text-white shadow-[0_2px_8px_-2px_color-mix(in_oklab,var(--color-err)_60%,transparent)]">
-          <BellRing size={10} /> {alertCount === 1 ? '1 alerta' : `${alertCount} alertas`}
-        </span>
-      )}
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2.5">
           <ModuleChip kind={moduleKind(service)} size={36} />
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-txt group-hover:text-acc-soft transition-colors">
-              {service.name}
-            </h3>
-            <p className="truncate font-mono text-[11px] text-subtle">{subtitle}</p>
+            <h3 className="truncate text-sm font-semibold text-txt">{service.name}</h3>
+            <p className="truncate font-mono text-xs text-subtle">{subtitle}</p>
           </div>
         </div>
-        {/* Con un despliegue vivo, la chapa dice la fase en vez del estado */}
-        {deploy ? (
-          <StatusBadge tone="warn" label={DEPLOY_STATUS_LABEL[deploy.status]} pulse />
-        ) : (
-          <StatusBadge
-            tone={STATE_TONE[state]}
-            label={STATE_LABEL[state]}
-            pulse={STATE_PULSE[state]}
-            replicas={metrics?.replicas}
-          />
-        )}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {alertCount > 0 && (
+            <Chip tone="err" icon={<BellRing size={10} />} title={alertCount === 1 ? '1 alerta abierta' : `${alertCount} alertas abiertas`}>
+              {alertCount}
+            </Chip>
+          )}
+          {/* Con un despliegue vivo, la chapa dice la fase en vez del estado */}
+          {deploy ? (
+            <StatusBadge tone="warn" label={DEPLOY_STATUS_LABEL[deploy.status]} pulse />
+          ) : (
+            <StatusBadge
+              tone={STATE_TONE[state]}
+              label={STATE_LABEL[state]}
+              pulse={STATE_PULSE[state]}
+              replicas={metrics?.replicas}
+            />
+          )}
+        </div>
       </div>
 
       <div className="mt-3.5 flex items-center justify-between gap-2 text-xs text-sub">
         {stats ? (
           <div className="tnum flex items-center gap-3">
             <span className="inline-flex items-center gap-1.5" title={`Uso de CPU: ${stats.cpuPercent}%`}>
-              <span className="text-subtle text-[11px]">CPU</span>
-              <span className={cx('font-medium text-xs', stats.cpuPercent >= CPU_ALERT ? 'font-semibold text-warn' : 'text-txt')}>
+              <span className="text-xs text-subtle">CPU</span>
+              <span className={cx('tnum text-xs font-medium', stats.cpuPercent >= CPU_ALERT ? 'font-semibold text-warn' : 'text-txt')}>
                 {stats.cpuPercent}%
               </span>
-              <span className="h-1.5 w-8 rounded-full bg-surface2 overflow-hidden inline-flex">
+              <span className="inline-flex h-1 w-8 overflow-hidden rounded-full bg-surface3">
                 <span
-                  className={cx(
-                    'h-full rounded-full transition-all duration-300',
-                    stats.cpuPercent >= CPU_ALERT ? 'bg-warn' : 'bg-acc',
-                  )}
+                  className={cx('h-full rounded-full transition-[width] duration-[--dur-3]', stats.cpuPercent >= CPU_ALERT ? 'bg-warn' : 'bg-sub')}
                   style={{ width: `${Math.min(100, Math.max(8, stats.cpuPercent))}%` }}
                 />
               </span>
             </span>
             <span className="inline-flex items-center gap-1.5" title={`Uso de RAM: ${fmtBytes(stats.memUsage)}`}>
-              <span className="text-subtle text-[11px]">RAM</span>
-              <span className="font-medium text-xs text-txt">{fmtBytes(stats.memUsage)}</span>
+              <span className="text-xs text-subtle">RAM</span>
+              <span className="tnum text-xs font-medium text-txt">{fmtBytes(stats.memUsage)}</span>
             </span>
           </div>
         ) : (
-          <span className="text-subtle text-[11px]">Sin métricas</span>
+          <span className="text-xs text-subtle">Sin métricas</span>
         )}
         {domain && (
-          <span className="flex min-w-0 items-center gap-1 text-sub group-hover:text-acc-soft transition-colors" title={`Dominio: ${domain}`}>
-            <Globe size={11} className="shrink-0 text-subtle group-hover:text-acc-soft" />
-            <span className="max-w-[120px] truncate text-[11px] font-mono">{domain}</span>
+          <span className="flex min-w-0 items-center gap-1 text-sub" title={`Dominio: ${domain}`}>
+            <Globe size={11} className="shrink-0 text-subtle" />
+            <span className="max-w-[130px] truncate font-mono text-xs">{domain}</span>
           </span>
         )}
       </div>
