@@ -1,6 +1,6 @@
 import { BellRing, Globe } from 'lucide-react';
 import { ActiveDeploy, ContainerState, Service, ServiceStats } from '../types';
-import { cx, DEPLOY_STATUS_LABEL, fmtBytes, fmtCores, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
+import { cx, DEPLOY_STATUS_LABEL, fmtBytes, fmtCores, fmtMb, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
 import { DeploySweep } from './DeployBadge';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import { Chip, StatusBadge } from './ui';
@@ -42,6 +42,7 @@ export default function ServiceCard({
    * límite reservado.
    */
   const limiteCpu = service.config.cpus ?? null;
+  const limiteMem = service.config.memoryMb ?? null;
   const cpuEnAviso = !!(stats && limiteCpu && stats.cpuPercent / 100 >= limiteCpu * CPU_ALERT);
   const isDb = service.type === 'database';
   const domain = !isDb ? service.config.domains?.[0] : undefined;
@@ -89,17 +90,18 @@ export default function ServiceCard({
               {alertCount}
             </Chip>
           )}
-          {/* Con un despliegue vivo, la chapa dice la fase en vez del estado */}
-          {deploy ? (
-            <StatusBadge tone="warn" label={DEPLOY_STATUS_LABEL[deploy.status]} pulse />
-          ) : (
-            <StatusBadge
-              tone={STATE_TONE[state]}
-              label={STATE_LABEL[state]}
-              pulse={STATE_PULSE[state]}
-              replicas={metrics?.replicas}
-            />
-          )}
+          {/*
+           * La fase del despliegue se suma al estado, no lo sustituye: mientras
+           * sale una versión —que es justo cuando más importa— la tarjeta dejaba
+           * de decir si el servicio seguía en pie.
+           */}
+          {deploy && <Chip size="sm" tone="warn" dot pulse>{DEPLOY_STATUS_LABEL[deploy.status]}</Chip>}
+          <StatusBadge
+            tone={STATE_TONE[state]}
+            label={STATE_LABEL[state]}
+            pulse={STATE_PULSE[state]}
+            replicas={metrics?.replicas}
+          />
         </div>
       </div>
 
@@ -127,7 +129,11 @@ export default function ServiceCard({
             </span>
             <span className="inline-flex items-center gap-1.5" title={`Uso de RAM: ${fmtBytes(stats.memUsage)}`}>
               <span className="text-xs text-subtle">RAM</span>
-              <span className="tnum text-xs font-medium text-txt">{fmtBytes(stats.memUsage)}</span>
+              <span className="tnum text-xs font-medium text-txt">
+                {fmtBytes(stats.memUsage)}
+                {/* Sin su techo, «412 MB» no dice si sobra o falta. */}
+                {limiteMem && <span className="font-normal text-subtle">/{fmtMb(limiteMem)}</span>}
+              </span>
             </span>
           </div>
         ) : (

@@ -355,7 +355,7 @@ export default function ProjectPage() {
                     <span className="tnum font-semibold">{deployServicesCount}</span> desplegando
                   </Chip>
                 )}
-                {(alertServicesCount > 0 || serviceTypeFilter === 'alerts') && (
+                {alertServicesCount > 0 && (
                   <Chip tone="err" icon={<BellRing size={11} aria-hidden />}>
                     <span className="tnum font-semibold">{alertServicesCount}</span> con alertas
                   </Chip>
@@ -481,78 +481,55 @@ export default function ProjectPage() {
               )}
             </div>
 
-            <div className="flex shrink-0 flex-wrap items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setServiceTypeFilter('all')}
-                className={cx(
-                  'rounded-lg px-2.5 py-1 text-xs font-medium transition-colors max-sm:py-2',
-                  serviceTypeFilter === 'all'
-                    ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
-                    : 'text-sub hover:bg-surface hover:text-txt',
-                )}
-              >
-                Todos ({totalServices})
-              </button>
+            {/*
+              * Los cinco filtros estaban escritos a mano, cada uno con su
+              * combinación de clases. Un filtro puesto se mantiene visible
+              * aunque su recuento baje a cero: si desaparece, la rejilla se
+              * queda vacía y no hay nada que tocar para deshacerlo.
+              */}
+            <div className="flex shrink-0 flex-wrap items-center gap-1" role="group" aria-label="Filtrar servicios por tipo">
+              <Chip tone="info" active={serviceTypeFilter === 'all'} onClick={() => setServiceTypeFilter('all')}>
+                Todos <span className="tnum opacity-70">{totalServices}</span>
+              </Chip>
               {(gitCount > 0 || serviceTypeFilter === 'git') && (
-                <button
-                  type="button"
+                <Chip
+                  tone="info"
+                  active={serviceTypeFilter === 'git'}
                   onClick={() => setServiceTypeFilter('git')}
-                  className={cx(
-                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors max-sm:py-2',
-                    serviceTypeFilter === 'git'
-                      ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
-                      : 'text-sub hover:bg-surface hover:text-txt',
-                  )}
+                  icon={<ModuleLogo kind="github" size={12} />}
                 >
-                  <ModuleLogo kind="github" size={12} />
-                  <span>Git ({gitCount})</span>
-                </button>
+                  Git <span className="tnum opacity-70">{gitCount}</span>
+                </Chip>
               )}
               {(dbCount > 0 || serviceTypeFilter === 'database') && (
-                <button
-                  type="button"
+                <Chip
+                  tone="info"
+                  active={serviceTypeFilter === 'database'}
                   onClick={() => setServiceTypeFilter('database')}
-                  className={cx(
-                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors max-sm:py-2',
-                    serviceTypeFilter === 'database'
-                      ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
-                      : 'text-sub hover:bg-surface hover:text-txt',
-                  )}
+                  icon={<Database size={12} aria-hidden />}
                 >
-                  <Database size={12} className="text-acc" />
-                  <span>Bases de datos ({dbCount})</span>
-                </button>
+                  Bases de datos <span className="tnum opacity-70">{dbCount}</span>
+                </Chip>
               )}
               {(imageCount > 0 || serviceTypeFilter === 'image') && (
-                <button
-                  type="button"
+                <Chip
+                  tone="info"
+                  active={serviceTypeFilter === 'image'}
                   onClick={() => setServiceTypeFilter('image')}
-                  className={cx(
-                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors max-sm:py-2',
-                    serviceTypeFilter === 'image'
-                      ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
-                      : 'text-sub hover:bg-surface hover:text-txt',
-                  )}
+                  icon={<Layers size={12} aria-hidden />}
                 >
-                  <Layers size={12} className="text-info" />
-                  <span>Docker / Apps ({imageCount})</span>
-                </button>
+                  Docker / Apps <span className="tnum opacity-70">{imageCount}</span>
+                </Chip>
               )}
-              {alertServicesCount > 0 && (
-                <button
-                  type="button"
+              {(alertServicesCount > 0 || serviceTypeFilter === 'alerts') && (
+                <Chip
+                  tone="err"
+                  active={serviceTypeFilter === 'alerts'}
                   onClick={() => setServiceTypeFilter('alerts')}
-                  className={cx(
-                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors max-sm:py-2',
-                    serviceTypeFilter === 'alerts'
-                      ? 'border border-err/30 bg-err/15 font-semibold text-err shadow-sm'
-                      : 'text-err/80 hover:bg-err/10 hover:text-err',
-                  )}
+                  icon={<BellRing size={11} aria-hidden />}
                 >
-                  <BellRing size={11} />
-                  <span>Alertas ({alertServicesCount})</span>
-                </button>
+                  Alertas <span className="tnum opacity-70">{alertServicesCount}</span>
+                </Chip>
               )}
             </div>
           </div>

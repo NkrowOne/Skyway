@@ -105,7 +105,9 @@ export function Chip({
     'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border font-medium transition-colors duration-[--dur-1]',
     size === 'sm' ? 'px-1.5 py-px text-micro' : 'px-1.5 py-0.5 text-xs',
     onClick && !active ? CHIP_IDLE : CHIP_TONE[tone],
-    onClick && 'press cursor-pointer',
+    // Un chip que se pulsa es un objetivo táctil: con el relleno de etiqueta se
+    // queda en unos 20px de alto, que con el pulgar no se acierta.
+    onClick && 'press cursor-pointer max-sm:px-2.5 max-sm:py-1.5',
     className,
   );
   const body = (

@@ -182,7 +182,7 @@ export default function ServiceDrawer({
         cx('fixed inset-0 z-40', closing ? 'push-out' : 'push-in')
       : cx(
           'min-h-0 shrink-0 overflow-hidden border-l border-line shadow-drawer transition-[width,opacity] duration-[220ms] ease-[cubic-bezier(.25,.8,.3,1)]',
-          closing ? 'opacity-0' : 'drawer-in',
+          closing ? 'drawer-out' : 'drawer-in',
         ),
   );
   // La anchura anima de 0 al objetivo al entrar y de vuelta a 0 al salir: el canvas hace sitio en el mismo gesto.
@@ -295,7 +295,13 @@ export default function ServiceDrawer({
         : `${service.config.template}:${service.config.version} · host interno: ${service.slug}`;
 
   return (
-    <aside className={asideCls} style={asideStyle} role="complementary" aria-label={`Servicio ${service.name}`}>
+    <aside
+      className={asideCls}
+      style={asideStyle}
+      role={fullscreen ? 'dialog' : 'complementary'}
+      aria-modal={fullscreen || undefined}
+      aria-label={`Servicio ${service.name}`}
+    >
       {barraDeCierre}
 
       <div className={cx('shrink-0', fullscreen ? 'px-3.5 pt-4' : 'px-5 pt-4')}>
@@ -453,11 +459,16 @@ export default function ServiceDrawer({
       </div>
 
       <div
+        // La clave por pestaña remonta el panel al cambiar: sin ella se
+        // conservaba la posición de scroll de la anterior y se entraba en la
+        // siguiente a media altura, sin motivo aparente.
+        key={tab}
         className={cx(
           'relative min-h-0 flex-1 overscroll-contain',
           tab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-y-auto',
         )}
         role="tabpanel"
+        aria-label={tabs.find((t) => t.key === tab)?.label}
       >
         {/* En Logs, el visor ocupa el 100% del alto disponible y scrollea por dentro.
             En pestañas de documento (despliegues, variables, métricas…) el tabpanel scrollea externamente. */}
