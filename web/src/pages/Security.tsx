@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ChevronDown, KeyRound, ScrollText } from 'lucide-react';
 import { api } from '../api';
-import { Button, Chip, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, ErrorState, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { AuditEntry, SecurityFinding, SecurityReport } from '../types';
 import { AUDIT_ACTION_LABEL, cx, fmtDateTime, SEVERITY_LABEL, SEVERITY_TONE } from '../utils';
 
@@ -128,7 +128,15 @@ export default function SecurityPage() {
   });
 
   if (report.isLoading) return <SecuritySkeleton />;
-  if (!report.data) return <p className="p-8 text-center text-sm text-sub">No se pudo cargar el informe.</p>;
+  if (!report.data)
+    return (
+      <ErrorState
+        title="No se ha podido cargar el informe de seguridad"
+        error={report.error}
+        onRetry={() => report.refetch()}
+        retrying={report.isFetching}
+      />
+    );
 
   const { findings, score, grade } = report.data;
   const counts = {

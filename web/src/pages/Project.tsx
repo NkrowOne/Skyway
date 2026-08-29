@@ -1,10 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { BellRing, Database, FileText, KeyRound, Layers, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
-import { api, openStream } from '../api';
+import { ApiError, api, openStream } from '../api';
 import { useLatch, usePresence } from '../hooks';
-import { Button, Chip, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, CopyButton, EmptyState, ErrorState, Field, Modal, Skeleton, useToast } from '../components/ui';
 import { ModuleLogo } from '../components/ModuleIcon';
 import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
@@ -270,7 +270,29 @@ export default function ProjectPage() {
 
   if (project.isLoading) return <CanvasSkeleton />;
   if (project.isError || !project.data) {
-    return <div className="p-8 text-center text-sm text-sub">Proyecto no encontrado</div>;
+    // Un 404 sí es «no existe»; cualquier otro fallo es de conexión, y decir
+    // «no encontrado» hace pensar que el proyecto se ha perdido.
+    if (project.error instanceof ApiError && project.error.status === 404) {
+      return (
+        <EmptyState
+          title="Proyecto no encontrado"
+          description="Puede que se haya eliminado o que el enlace ya no sea válido."
+          action={
+            <Link to="/" className="text-sm font-medium text-acc-soft hover:underline">
+              Volver a proyectos
+            </Link>
+          }
+        />
+      );
+    }
+    return (
+      <ErrorState
+        title="No se ha podido cargar el proyecto"
+        error={project.error}
+        onRetry={() => project.refetch()}
+        retrying={project.isFetching}
+      />
+    );
   }
 
   const { project: proj } = project.data;

@@ -756,9 +756,10 @@ export function Tabs({
 // ---------- Spinner ----------
 export function Spinner({ label }: { label?: string }) {
   return (
-    <div className="flex items-center justify-center gap-2 py-10 text-sub">
-      <Loader2 size={18} className="animate-spin" />
-      {label && <span className="text-sm">{label}</span>}
+    <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 py-10 text-sub">
+      <Loader2 size={18} className="animate-spin" aria-hidden />
+      {/* Sin etiqueta visible, el lector de pantalla anunciaba un hueco mudo. */}
+      {label ? <span className="text-sm">{label}</span> : <span className="sr-only">Cargando…</span>}
     </div>
   );
 }

@@ -884,7 +884,11 @@ export default function Layout() {
         <div key={location.pathname} className="page-in h-full">
           {/* Límite por página: si una revienta al pintar, el marco (barra
               lateral, campana, paleta) sigue vivo y se puede navegar a otra. */}
-          <ErrorBoundary resetKey={location.pathname} scope="esta página">
+          <ErrorBoundary
+            resetKey={location.pathname}
+            scope="esta página"
+            onReset={() => queryClient.resetQueries()}
+          >
             <Suspense fallback={<div className="flex h-full items-center justify-center"><Spinner /></div>}>
               <Outlet />
             </Suspense>

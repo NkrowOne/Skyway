@@ -21,6 +21,14 @@ interface Props {
   resetKey?: string;
   /** Texto de contexto: «esta página», «este panel»… */
   scope?: string;
+  /**
+   * Se llama al pulsar «Reintentar», antes de olvidar el error.
+   *
+   * Casi todos estos fallos vienen de un dato con la forma que no era, así que
+   * volver a pintar sin tirar la caché reproduce el mismo error al instante.
+   * Quien envuelve el límite reinicia aquí sus consultas.
+   */
+  onReset?: () => void;
 }
 
 interface State {
@@ -66,7 +74,14 @@ export default class ErrorBoundary extends Component<Props, State> {
           {error.message || String(error)}
         </p>
         <div className="mt-1 flex gap-2">
-          <Button size="sm" variant="secondary" onClick={() => this.setState({ error: null })}>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              this.props.onReset?.();
+              this.setState({ error: null });
+            }}
+          >
             <RotateCcw size={13} /> Reintentar
           </Button>
           <Button size="sm" variant="ghost" onClick={() => window.location.reload()}>
