@@ -1,6 +1,6 @@
 import { BellRing, Globe } from 'lucide-react';
 import { ActiveDeploy, ContainerState, Service, ServiceStats } from '../types';
-import { cx, DEPLOY_STATUS_LABEL, fmtBytes, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
+import { cx, DEPLOY_STATUS_LABEL, fmtBytes, fmtCores, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
 import { DeploySweep } from './DeployBadge';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import { Chip, StatusBadge } from './ui';
@@ -13,8 +13,8 @@ const TEMPLATE_LABEL: Record<string, string> = {
   minio: 'MinIO',
 };
 
-/** Umbral visual: CPU al límite se marca en warn. */
-const CPU_ALERT = 90;
+/** Fracción del límite de CPU a partir de la cual el dato se marca en aviso. */
+const CPU_ALERT = 0.9;
 
 export default function ServiceCard({
   service,
@@ -34,6 +34,15 @@ export default function ServiceCard({
 }) {
   const state = metrics?.state ?? service.runtime?.state ?? 'unknown';
   const stats = metrics?.stats ?? null;
+  /*
+   * Docker cuenta la CPU con 100 = un núcleo, así que un servicio de cuatro
+   * núcleos a tope reporta 400. La tarjeta lo pintaba como «400 %» sobre una
+   * barra tope 100 y saltaba a aviso a partir de 0,9 núcleos. Ahora va en
+   * núcleos, como en el resto de la aplicación, y el umbral es relativo al
+   * límite reservado.
+   */
+  const limiteCpu = service.config.cpus ?? null;
+  const cpuEnAviso = !!(stats && limiteCpu && stats.cpuPercent / 100 >= limiteCpu * CPU_ALERT);
   const isDb = service.type === 'database';
   const domain = !isDb ? service.config.domains?.[0] : undefined;
   const subtitle = isDb
@@ -51,8 +60,16 @@ export default function ServiceCard({
           ? 'border-acc bg-surface2'
           : cx(
               'card-hover bg-surface',
-              // El borde solo cambia de color cuando hay algo que mirar.
-              alertCount > 0 ? 'border-err/45' : deploy ? 'border-warn/45' : 'border-line',
+              /*
+               * El borde solo cambia cuando hay algo que mirar, y estar caído
+               * es lo primero: antes un servicio muerto se veía igual que uno
+               * sano y había que leer la píldora de cada tarjeta para dar con él.
+               */
+              STATE_TONE[state] === 'err' || alertCount > 0
+                ? 'border-err/45'
+                : deploy || STATE_TONE[state] === 'warn'
+                  ? 'border-warn/45'
+                  : 'border-line',
             ),
       )}
     >
@@ -89,17 +106,24 @@ export default function ServiceCard({
       <div className="mt-3.5 flex items-center justify-between gap-2 text-xs text-sub">
         {stats ? (
           <div className="tnum flex items-center gap-3">
-            <span className="inline-flex items-center gap-1.5" title={`Uso de CPU: ${stats.cpuPercent}%`}>
+            <span
+              className="inline-flex items-center gap-1.5"
+              title={limiteCpu ? `CPU: ${fmtCores(stats.cpuPercent)} de ${limiteCpu} reservados` : `CPU: ${fmtCores(stats.cpuPercent)}`}
+            >
               <span className="text-xs text-subtle">CPU</span>
-              <span className={cx('tnum text-xs font-medium', stats.cpuPercent >= CPU_ALERT ? 'font-semibold text-warn' : 'text-txt')}>
-                {stats.cpuPercent}%
+              <span className={cx('tnum text-xs font-medium', cpuEnAviso ? 'font-semibold text-warn' : 'text-txt')}>
+                {fmtCores(stats.cpuPercent)}
               </span>
-              <span className="inline-flex h-1 w-8 overflow-hidden rounded-full bg-surface3">
-                <span
-                  className={cx('h-full rounded-full transition-[width] duration-[--dur-3]', stats.cpuPercent >= CPU_ALERT ? 'bg-warn' : 'bg-sub')}
-                  style={{ width: `${Math.min(100, Math.max(8, stats.cpuPercent))}%` }}
-                />
-              </span>
+              {/* La barra solo aparece cuando hay un límite contra el que medir:
+                  sin denominador honesto es un adorno que además mentía. */}
+              {limiteCpu && (
+                <span className="inline-flex h-1 w-8 overflow-hidden rounded-full bg-surface3">
+                  <span
+                    className={cx('h-full rounded-full transition-[width] duration-[--dur-3]', cpuEnAviso ? 'bg-warn' : 'bg-sub')}
+                    style={{ width: `${Math.min(100, Math.max(8, (stats.cpuPercent / 100 / limiteCpu) * 100))}%` }}
+                  />
+                </span>
+              )}
             </span>
             <span className="inline-flex items-center gap-1.5" title={`Uso de RAM: ${fmtBytes(stats.memUsage)}`}>
               <span className="text-xs text-subtle">RAM</span>

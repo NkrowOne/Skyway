@@ -5,7 +5,7 @@ import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
-import { EmptyState, ErrorState, Skeleton, useToast } from '../ui';
+import { ConfirmModal, EmptyState, ErrorState, Skeleton, useToast } from '../ui';
 
 /**
  * Acordeón mantequilla: crece y se pliega animando grid-template-rows
@@ -253,8 +253,16 @@ function DeployPill({ deployment, isCurrent }: { deployment: Deployment; isCurre
     <span
       key={label}
       className={cx(
-        'badge-in inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-0.5 text-xs font-medium transition-colors',
-        active ? 'bg-warn/10 text-warn border border-warn/25' : 'bg-surface2 text-sub border border-line',
+        'badge-in inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-1.5 py-0.5 text-xs font-medium transition-colors',
+        // El estado es lo que se viene a mirar a esta lista: «Completado»,
+        // «Fallido» y «Cancelado» compartían el mismo gris.
+        active
+          ? 'border-warn/25 bg-warn/10 text-warn'
+          : isCurrent
+            ? 'border-ok/25 bg-ok/10 text-ok'
+            : deployment.status === 'failed'
+              ? 'border-err/25 bg-err/10 text-err'
+              : 'border-line bg-surface2 text-sub',
       )}
     >
       {active ? (
@@ -280,6 +288,9 @@ export default function DeploymentsTab({
   onNavigateToLogs?: (deploymentId: string) => void;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
+  // Volver a una versión anterior es un cambio en producción: como el resto de
+  // acciones de ese calado, pasa por una confirmación.
+  const [rollbackTo, setRollbackTo] = useState<Deployment | null>(null);
   // La tarjeta que se está plegando sigue montada hasta acabar su animación.
   const [closingId, setClosingId] = useState<string | null>(null);
   const closeTimer = useRef<number>();
@@ -382,6 +393,20 @@ export default function DeploymentsTab({
 
   return (
     <div className="flex flex-col gap-2.5 p-4 sm:px-5">
+      <ConfirmModal
+        open={!!rollbackTo}
+        onClose={() => setRollbackTo(null)}
+        onConfirm={() => {
+          if (rollbackTo) rollback.mutate(rollbackTo.id);
+          setRollbackTo(null);
+        }}
+        title="Volver a esta versión"
+        message={`El servicio se redesplegará con la imagen de «${rollbackTo?.commit_msg || rollbackTo?.id.slice(0, 8) || ''}». Habrá un corte breve mientras arranca.`}
+        confirmLabel="Volver a esta versión"
+        confirmVariant="secondary"
+        loading={rollback.isPending}
+      />
+
       {ordered.map((d) => {
         const open = openId === d.id;
         const active = isActiveDeploy(d.status);
@@ -455,7 +480,7 @@ export default function DeploymentsTab({
                 {d.id !== currentId && d.status === 'success' && serviceType === 'git' && (
                   <button
                     type="button"
-                    onClick={() => rollback.mutate(d.id)}
+                    onClick={() => setRollbackTo(d)}
                     className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
                     title="Volver a esta versión"
                     aria-label="Volver a esta versión"

@@ -153,6 +153,9 @@ export default function ProjectPage() {
   useGithubReturnNotice();
   const [newOpen, setNewOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  // Redesplegar el proyecto entero toca todos los servicios a la vez: se
+  // pregunta, como en cualquier otra acción de ese alcance.
+  const [deployAllOpen, setDeployAllOpen] = useState(false);
   const [deleteVolumes, setDeleteVolumes] = useState(false);
   const [sharedOpen, setSharedOpen] = useState(false);
   const [githubOpen, setGithubOpen] = useState(false);
@@ -410,7 +413,7 @@ export default function ProjectPage() {
                 variant="secondary"
                 size="sm"
                 className="max-sm:h-11 max-sm:min-w-11"
-                onClick={() => deployAll.mutate()}
+                onClick={() => setDeployAllOpen(true)}
                 loading={deployAll.isPending}
                 title="Redespliega todos los servicios de repo e imagen"
               >
@@ -704,6 +707,20 @@ export default function ProjectPage() {
           </div>
         </form>
       </Modal>
+
+      <ConfirmModal
+        open={deployAllOpen}
+        onClose={() => setDeployAllOpen(false)}
+        onConfirm={() => {
+          deployAll.mutate();
+          setDeployAllOpen(false);
+        }}
+        title="Redesplegar todo el proyecto"
+        message={`Se lanzará un despliegue de cada servicio de repositorio e imagen. Cada uno tendrá un corte breve mientras arranca su versión nueva.`}
+        confirmLabel="Desplegar todo"
+        confirmVariant="secondary"
+        loading={deployAll.isPending}
+      />
 
       <ConfirmModal
         open={deleteOpen}

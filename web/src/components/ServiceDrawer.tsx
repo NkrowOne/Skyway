@@ -189,9 +189,35 @@ export default function ServiceDrawer({
   const targetWidth = wide ? 'min(840px, calc(100vw - 64px))' : 'min(600px, calc(100vw - 64px))';
   const asideStyle = fullscreen ? undefined : { width: entered && !closing ? targetWidth : 0 };
 
+  /*
+   * La barra de cierre se pinta en las tres ramas, no solo en la de éxito.
+   * Por debajo de 900px el drawer es un `fixed inset-0` que tapa hasta la
+   * barra superior: si la petición tarda o falla y esta barra no está, en un
+   * teléfono no hay forma de volver —no hay Esc ni velo que tocar.
+   */
+  const barraDeCierre = fullscreen && (
+    <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
+      <button
+        onClick={handleAttemptClose}
+        className="press flex min-h-10 items-center gap-1.5 rounded-lg px-2.5 text-sm text-sub hover:bg-surface2 hover:text-txt"
+      >
+        <ChevronLeft size={15} /> {projectName}
+      </button>
+      <button
+        onClick={handleAttemptClose}
+        className="press ml-auto flex min-h-10 min-w-10 items-center justify-center rounded-lg leading-none text-subtle hover:bg-surface2 hover:text-txt"
+        title="Cerrar (esc)"
+        aria-label="Cerrar"
+      >
+        <X size={17} />
+      </button>
+    </div>
+  );
+
   if (!detail.data && detail.isError) {
     return (
       <aside className={asideCls} style={asideStyle}>
+        {barraDeCierre}
         <div className="flex h-full items-center justify-center p-5">
           <ErrorState
             title="No se ha podido cargar el servicio"
@@ -207,6 +233,7 @@ export default function ServiceDrawer({
   if (!detail.data) {
     return (
       <aside className={asideCls} style={asideStyle} aria-busy>
+        {barraDeCierre}
         <div className="border-b border-line p-5">
           <div className="flex items-center gap-3">
             <Skeleton className="h-[38px] w-[38px] rounded-[10px]" />
@@ -263,23 +290,7 @@ export default function ServiceDrawer({
 
   return (
     <aside className={asideCls} style={asideStyle} role="complementary" aria-label={`Servicio ${service.name}`}>
-      {fullscreen && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
-          <button
-            onClick={handleAttemptClose}
-            className="press flex min-h-10 items-center gap-1.5 rounded-lg px-2.5 text-sm text-sub hover:bg-surface2 hover:text-txt"
-          >
-            <ChevronLeft size={15} /> {projectName}
-          </button>
-          <button
-            onClick={handleAttemptClose}
-            className="press ml-auto flex min-h-10 min-w-10 items-center justify-center rounded-lg leading-none text-subtle hover:bg-surface2 hover:text-txt"
-            title="Cerrar (esc)" aria-label="Cerrar (esc)"
-          >
-            <X size={17} />
-          </button>
-        </div>
-      )}
+      {barraDeCierre}
 
       <div className={cx('shrink-0', fullscreen ? 'px-3.5 pt-4' : 'px-5 pt-4')}>
         <div className="flex items-start justify-between gap-2">
