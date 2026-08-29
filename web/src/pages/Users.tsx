@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Boxes, Fingerprint, KeyRound, Pencil, Plus, Shield, Trash2, Users2 } from 'lucide-react';
 import { api } from '../api';
-import { Button, ConfirmModal, Field, Modal, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, ErrorState, Field, Modal, useToast } from '../components/ui';
 import { Me, Project, UserRole, UserSummary } from '../types';
 import { cx, timeAgo } from '../utils';
 
@@ -19,21 +19,12 @@ const EMPTY: Draft = { email: '', password: '', role: 'member', projectIds: [] }
 function RoleChip({ role }: { role: UserRole }) {
   if (role === 'admin')
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.15] px-2 py-0.5 text-[10px] font-semibold text-acc-soft">
-        <Shield size={9} /> admin
-      </span>
+      <Chip size="sm" tone="info" icon={<Shield size={9} aria-hidden />}>
+        admin
+      </Chip>
     );
-  if (role === 'owner')
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.12] px-2 py-0.5 text-[10px] font-semibold text-acc-soft">
-        propietario
-      </span>
-    );
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-txt/[.08] px-2 py-0.5 text-[10px] font-semibold text-sub">
-      miembro
-    </span>
-  );
+  if (role === 'owner') return <Chip size="sm" tone="info">propietario</Chip>;
+  return <Chip size="sm">miembro</Chip>;
 }
 
 export default function UsersPage() {
@@ -97,7 +88,10 @@ export default function UsersPage() {
     <div className="mx-auto flex max-w-[880px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-2 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-[-.02em]">Usuarios</h1>
+          <h1 className="flex items-center gap-2.5 text-2xl font-semibold">
+            Usuarios
+            {list.length > 0 && <Chip>{list.length}</Chip>}
+          </h1>
           <p className="mt-1.5 text-sm text-sub">
             Administradores con control total del servidor, y miembros limitados a los workspaces de su cliente
           </p>
@@ -108,7 +102,16 @@ export default function UsersPage() {
       </div>
 
       <div className="card overflow-hidden">
-        {list.length === 0 && (
+        {users.isError && (
+          <ErrorState
+            compact
+            title="No se han podido cargar los usuarios"
+            error={users.error}
+            onRetry={() => users.refetch()}
+            retrying={users.isFetching}
+          />
+        )}
+        {!users.isError && list.length === 0 && (
           <p className="px-4 py-10 text-center text-sm text-subtle">
             {users.isLoading ? 'Cargando…' : 'Todavía no hay usuarios.'}
           </p>
@@ -123,10 +126,10 @@ export default function UsersPage() {
                 <span className="truncate text-sm font-medium">{u.email}</span>
                 <RoleChip role={u.role} />
                 {u.id === me.data?.user?.id && (
-                  <span className="rounded-full border border-line px-2 py-0.5 text-[10px] text-subtle">tú</span>
+                  <Chip size="sm">tú</Chip>
                 )}
               </div>
-              <div className="flex flex-wrap items-center gap-3 text-[11px] text-subtle">
+              <div className="flex flex-wrap items-center gap-3 text-xs text-subtle">
                 <span className="flex items-center gap-1">
                   <Boxes size={11} />
                   {u.role === 'admin'
@@ -169,7 +172,7 @@ export default function UsersPage() {
         ))}
       </div>
 
-      <p className="flex items-center gap-1.5 text-[11px] text-subtle">
+      <p className="flex items-center gap-1.5 text-xs text-subtle">
         <Users2 size={12} /> Los miembros solo ven y operan sus workspaces: nada de ajustes del servidor, seguridad, otros proyectos ni
         gestión de usuarios.
       </p>
@@ -212,8 +215,8 @@ export default function UsersPage() {
                       draft.role === r ? 'border-acc bg-acc/[.10]' : 'border-line bg-bg hover:border-subtle',
                     )}
                   >
-                    <p className="text-[13px] font-semibold">{r === 'admin' ? 'Administrador' : 'Miembro'}</p>
-                    <p className="mt-0.5 text-[11px] leading-snug text-subtle">
+                    <p className="text-sm font-semibold">{r === 'admin' ? 'Administrador' : 'Miembro'}</p>
+                    <p className="mt-0.5 text-xs leading-snug text-subtle">
                       {r === 'admin' ? 'Control total: servidor, usuarios y todos los workspaces' : 'Solo los workspaces que le asignes'}
                     </p>
                   </button>
@@ -221,7 +224,7 @@ export default function UsersPage() {
               </div>
             </Field>
             {draft.role === 'member' && (
-              <Field label="Workspaces con acceso" hint={projects.data?.projects.length ? undefined : 'aún no hay proyectos creados'}>
+              <Field label="Proyectos con acceso" hint={projects.data?.projects.length ? undefined : 'aún no hay proyectos creados'} group>
                 <div className="flex max-h-44 flex-col gap-1 overflow-y-auto rounded-lg border border-line bg-bg p-2">
                   {(projects.data?.projects ?? []).map((p) => (
                     <label key={p.id} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface2">
@@ -231,8 +234,8 @@ export default function UsersPage() {
                         onChange={() => toggleProject(p.id)}
                         className="accent-acc"
                       />
-                      <span className="min-w-0 flex-1 truncate text-[13px]">{p.name}</span>
-                      {p.client && <span className="shrink-0 text-[11px] text-subtle">{p.client}</span>}
+                      <span className="min-w-0 flex-1 truncate text-sm">{p.name}</span>
+                      {p.client && <span className="shrink-0 text-xs text-subtle">{p.client}</span>}
                     </label>
                   ))}
                 </div>

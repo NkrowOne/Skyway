@@ -22,7 +22,7 @@ import {
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import type { BandPoint } from '../components/HistoryChart';
-import { Button, ConfirmModal, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, EmptyState, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { DiskBreakdown, HostMetricHistory, LogSearchResult, Me, MonitorOverview, MonitorService } from '../types';
 import { cx, fmtBytes, fmtDateTime, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
 
@@ -53,11 +53,11 @@ function StatTile({
   const barColor = tone === 'err' ? 'bg-err' : tone === 'warn' ? 'bg-warn' : 'bg-ok';
   return (
     <div className="card p-4">
-      <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[.07em] text-subtle">
+      <div className="flex items-center gap-2 eyebrow text-subtle">
         {icon} {label}
       </div>
-      <p className="mt-2 text-lg font-semibold tracking-[-.01em] tnum">{value}</p>
-      {detail && <p className="mt-0.5 text-[11px] text-subtle">{detail}</p>}
+      <p className="mt-2 text-lg font-semibold tnum">{value}</p>
+      {detail && <p className="mt-0.5 text-xs text-subtle">{detail}</p>}
       {pct !== undefined && pct !== null && (
         <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-surface2">
           <div className={cx('h-full rounded-full transition-[width] duration-500', barColor)} style={{ width: `${Math.min(100, pct)}%` }} />
@@ -110,11 +110,11 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
   return (
     <section className="card p-4 sm:p-5">
       <div className="mb-3">
-        <h2 className="flex items-center gap-2 text-[13px] font-semibold">
+        <h2 className="flex items-center gap-2 text-base font-semibold">
           <ScrollText size={14} className="text-info" />
           Buscar en los logs de todos los servicios
         </h2>
-        <p className="mt-1 text-[11px] text-subtle">
+        <p className="mt-1 text-xs text-subtle">
           ¿Un error y no sabes de dónde viene? Busca el texto en las últimas ~400 líneas de cada contenedor.
         </p>
       </div>
@@ -157,7 +157,7 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
 
       {search.data && (
         <div className="mt-3.5">
-          <p className="mb-2 text-[11px] text-subtle">
+          <p className="mb-2 text-xs text-subtle">
             {search.data.results.length === 0
               ? `Sin coincidencias de «${submitted.q}» en ${search.data.scanned} contenedor(es).`
               : `${search.data.results.length}${search.data.truncated ? '+' : ''} coincidencia(s) en ${search.data.scanned} contenedor(es).`}
@@ -170,13 +170,13 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
                 className="block w-full border-b border-line/60 px-3.5 py-2 text-left transition-colors last:border-0 hover:bg-surface"
                 title="Abrir el servicio"
               >
-                <div className="flex items-center gap-2 text-[10.5px] text-subtle">
+                <div className="flex items-center gap-2 text-micro text-subtle">
                   <span className="font-medium text-acc-soft">{r.serviceName}</span>
                   {r.replica && <span>réplica {r.replica}</span>}
                   <span>· {r.projectName}</span>
                   {r.ts && <span className="ml-auto tnum">{fmtDateTime(r.ts)}</span>}
                 </div>
-                <p className="mt-0.5 break-all font-mono text-[11px] leading-relaxed text-sub">{highlight(r.line)}</p>
+                <p className="mt-0.5 break-all font-mono text-xs leading-relaxed text-sub">{highlight(r.line)}</p>
               </button>
             ))}
           </div>
@@ -210,15 +210,13 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
       <div className="flex min-w-0 items-center gap-2.5">
         <ModuleChip kind={moduleKind({ type: s.type, config: { template: s.template, image: s.image } as any })} size={30} radius={8} />
         <div className="min-w-0">
-          <p className="flex items-center gap-1.5 truncate text-[13px] font-medium">
+          <p className="flex items-center gap-1.5 truncate text-sm font-medium">
             {s.name}
             {s.alerts > 0 && (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-err/[.14] px-1.5 py-px text-[10px] font-semibold text-err">
-                <BellRing size={9} /> {s.alerts}
-              </span>
+              <Chip size="sm" tone="err" icon={<BellRing size={9} aria-hidden />}>{s.alerts}</Chip>
             )}
           </p>
-          <p className="truncate text-[11px] text-subtle">
+          <p className="truncate text-xs text-subtle">
             {s.projectName}
             {s.client ? ` · ${s.client}` : ''}
           </p>
@@ -228,10 +226,10 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
       <div>
         <StatusBadge tone={STATE_TONE[s.state]} label={STATE_LABEL[s.state]} pulse={STATE_PULSE[s.state]} replicas={s.replicas} />
         {isDown && s.exitCode !== null ? (
-          <p className="mt-1 text-[10px] text-err">código {s.exitCode}</p>
+          <p className="mt-1 text-micro text-err">código {s.exitCode}</p>
         ) : (
           s.uptime24h !== null && (
-            <p className={cx('tnum mt-1 text-[10px]', s.uptime24h < 99 ? 'text-warn' : 'text-subtle')} title="Disponibilidad en las últimas 24 h">
+            <p className={cx('tnum mt-1 text-micro', s.uptime24h < 99 ? 'text-warn' : 'text-subtle')} title="Disponibilidad en las últimas 24 h">
               {s.uptime24h.toFixed(s.uptime24h >= 99.995 ? 0 : 1)}% · 24 h
             </p>
           )
@@ -240,14 +238,14 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
 
       <div className="text-xs text-sub tnum">
         {s.stats ? `${s.stats.cpuPercent.toFixed(1)}%` : '—'}
-        {s.cpus ? <span className="text-[10px] text-subtle"> / {s.cpus} CPU</span> : null}
+        {s.cpus ? <span className="text-micro text-subtle"> / {s.cpus} CPU</span> : null}
       </div>
 
       <div className="text-xs text-sub">
         {s.stats ? (
           <>
             <span className="tnum">{fmtBytes(s.stats.memUsage)}</span>
-            {s.memoryMb ? <span className="text-[10px] text-subtle"> / {s.memoryMb} MB</span> : null}
+            {s.memoryMb ? <span className="text-micro text-subtle"> / {s.memoryMb} MB</span> : null}
             {memPct !== null && s.memoryMb ? <UsageBar pct={memPct} tone={memPct > 90 ? 'err' : memPct > 75 ? 'warn' : 'ok'} /> : null}
           </>
         ) : (
@@ -259,7 +257,7 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
         {s.disk.totalBytes !== null ? (
           <>
             <span className="tnum">{fmtBytes(s.disk.totalBytes)}</span>
-            {s.disk.quotaMb ? <span className="text-[10px] text-subtle"> / {s.disk.quotaMb} MB</span> : null}
+            {s.disk.quotaMb ? <span className="text-micro text-subtle"> / {s.disk.quotaMb} MB</span> : null}
             {diskPct !== null && <UsageBar pct={diskPct} tone={diskPct > 100 ? 'err' : diskPct > 80 ? 'warn' : 'ok'} />}
           </>
         ) : (
@@ -273,7 +271,7 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
             onClick={onRestart}
             disabled={restarting}
             className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt disabled:opacity-40"
-            title="Reiniciar"
+            title="Reiniciar" aria-label="Reiniciar"
           >
             <RefreshCw size={13} className={cx(restarting && 'animate-spin')} />
           </button>
@@ -345,12 +343,12 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
                 { label: 'Contenedores (escritura)', icon: <HardDrive size={12} />, value: data.docker.containers.size, count: data.docker.containers.count },
               ].map((t) => (
                 <div key={t.label}>
-                  <p className="flex items-center gap-1.5 text-[10.5px] font-medium uppercase tracking-[.07em] text-subtle">
+                  <p className="flex items-center gap-1.5 eyebrow text-subtle">
                     {t.icon} {t.label}
                   </p>
-                  <p className="tnum mt-1 text-[15px] font-semibold">
+                  <p className="tnum mt-1 text-base font-semibold">
                     {fmtBytes(t.value)}
-                    {t.count !== undefined && <span className="ml-1 text-[10.5px] font-normal text-subtle">× {t.count}</span>}
+                    {t.count !== undefined && <span className="ml-1 text-micro font-normal text-subtle">× {t.count}</span>}
                   </p>
                 </div>
               ))}
@@ -372,8 +370,8 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
 
       <div className="card overflow-hidden">
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <p className="text-[13px] font-semibold">Espacio por servicio</p>
-          <p className="text-[11px] text-subtle">
+          <p className="text-sm font-semibold">Espacio por servicio</p>
+          <p className="text-xs text-subtle">
             medido: <span className="tnum text-sub">{fmtBytes(measured)}</span>
             {data.host && (
               <>
@@ -384,7 +382,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
           </p>
         </div>
         {data.services.length === 0 && (
-          <p className="px-4 py-10 text-center text-xs text-subtle">Sin servicios que medir todavía.</p>
+          <EmptyState compact icon={<Activity />} title="Sin servicios que medir" description="Despliega un servicio y sus métricas aparecerán aquí." />
         )}
         <div className="overflow-x-auto">
           <div className="min-w-[640px]">
@@ -403,8 +401,8 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
                   title={`${s.volumes.length} volumen(es): ${fmtBytes(volBytes)} · contenedor: ${fmtBytes(s.containerBytes)}${s.logBytes !== null ? ` · logs: ${fmtBytes(s.logBytes)}` : ''}`}
                 >
                   <span className="min-w-0">
-                    <span className="block truncate text-[12.5px] font-medium">{s.name}</span>
-                    <span className="block truncate text-[10.5px] text-subtle">{s.projectName}</span>
+                    <span className="block truncate text-xs font-medium">{s.name}</span>
+                    <span className="block truncate text-micro text-subtle">{s.projectName}</span>
                   </span>
                   <span className="flex items-center gap-2">
                     <span className="h-2 flex-1 overflow-hidden rounded-full bg-surface2">
@@ -420,7 +418,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
                   <span className="tnum text-right text-xs text-sub">
                     {fmtBytes(s.totalBytes)}
                     {s.quotaMb && (
-                      <span className={cx('block text-[10px]', pctOfQuota! > 100 ? 'text-err' : 'text-subtle')}>
+                      <span className={cx('block text-micro', pctOfQuota! > 100 ? 'text-err' : 'text-subtle')}>
                         de {s.quotaMb} MB ({Math.round(pctOfQuota!)}%)
                       </span>
                     )}
@@ -430,7 +428,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
             })}
           </div>
         </div>
-        <p className="border-t border-line px-4 py-2.5 text-[10.5px] leading-relaxed text-subtle">
+        <p className="border-t border-line px-4 py-2.5 text-micro leading-relaxed text-subtle">
           Se mide volúmenes + capa de escritura del contenedor (y logs si son legibles). La cuota se asigna en Ajustes
           del servicio → Recursos; al superarla salta una alerta.
         </p>
@@ -472,7 +470,7 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-1 self-start rounded-xl border border-line bg-surface p-1 text-[13px]">
+      <div className="flex items-center gap-1 self-start rounded-xl border border-line bg-surface p-1 text-sm">
         {ranges.map((r) => (
           <button
             key={r.h}
@@ -511,7 +509,7 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
             title={`Carga del sistema${cpus ? ` · ${cpus} núcleos` : ''}`}
             points={loadPoints}
             hours={hours}
-            color="var(--color-acc)"
+            color="var(--color-chart-1)"
             format={(v) => v.toFixed(v < 10 ? 2 : 1)}
             threshold={cpus ? { value: cpus, label: `${cpus} núcleos` } : null}
           />
@@ -519,7 +517,7 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
             title="RAM del servidor"
             points={memPoints}
             hours={hours}
-            color="var(--color-info)"
+            color="var(--color-chart-2)"
             format={(v) => fmtBytes(v)}
             threshold={memTotal ? { value: memTotal, label: `total ${fmtBytes(memTotal)}` } : null}
             fixedMax={memTotal ?? undefined}
@@ -528,12 +526,12 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
             title="Disco del servidor · ocupado"
             points={diskPoints}
             hours={hours}
-            color="var(--color-warn)"
+            color="var(--color-chart-5)"
             format={(v) => fmtBytes(v)}
             threshold={diskTotal ? { value: diskTotal, label: `total ${fmtBytes(diskTotal)}` } : null}
             fixedMax={diskTotal ?? undefined}
           />
-          <p className="text-center text-[11px] text-subtle">
+          <p className="text-center text-xs text-subtle">
             La carga del sistema es el número medio de procesos esperando CPU; si supera el número de núcleos, el servidor va
             saturado. La banda va de la media al pico de cada periodo.
           </p>
@@ -615,26 +613,16 @@ export default function MonitorPage() {
   const cpuPct = host ? (host.load / host.cpus) * 100 : null;
 
   const chip = (key: StateFilter, label: string, count?: number) => (
-    <button
-      onClick={() => setStateFilter(key)}
-      className={cx(
-        'flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-[5px] text-xs transition-colors duration-150',
-        stateFilter === key
-          ? 'border-acc/55 bg-acc/[.16] font-medium text-acc-soft'
-          : 'border-line bg-surface text-sub hover:border-[color-mix(in_oklab,var(--color-acc)_40%,var(--color-line))] hover:text-txt',
-      )}
-    >
+    <Chip tone="info" active={stateFilter === key} onClick={() => setStateFilter(key)}>
       {label}
-      {count !== undefined && <span className="opacity-70 tnum">{count}</span>}
-    </button>
+      {count !== undefined && <span className="tnum opacity-70">{count}</span>}
+    </Chip>
   );
 
   return (
     <div className="mx-auto max-w-[1180px] px-4 py-7 sm:px-6 sm:py-9">
       <div className="mb-6">
-        <h1 className="flex items-center gap-2.5 text-2xl font-semibold leading-[30px] tracking-[-.02em]">
-          <Activity size={22} className="text-acc-soft" /> Monitor
-        </h1>
+        <h1 className="text-2xl font-semibold">Monitor</h1>
         <p className="mt-1.5 text-sm text-sub">
           Todos los servicios del servidor de un vistazo: estado, consumo, espacio y una lupa para los logs
         </p>
@@ -727,7 +715,7 @@ export default function MonitorPage() {
             />
           </div>
 
-          <div className="mb-4 flex items-center gap-1 rounded-xl border border-line bg-surface p-1 text-[13px] sm:w-fit">
+          <div className="mb-4 flex items-center gap-1 rounded-xl border border-line bg-surface p-1 text-sm sm:w-fit">
             {(
               [
                 { key: 'services', label: 'Servicios', icon: <Server size={13} /> },
@@ -771,38 +759,38 @@ export default function MonitorPage() {
                     {chip('all', 'Todos', services.length)}
                     {chip('running', 'Activos', running)}
                     {chip('down', 'Con problemas', down)}
-                    {chip('stopped', 'Parados', services.length - running - down)}
+                    {chip('stopped', 'Detenidos', services.length - running - down)}
                   </div>
-                </div>
-
-                <div className="hidden grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] gap-3 border-b border-line bg-bg px-4 py-2 text-[10.5px] font-semibold uppercase tracking-[.07em] text-subtle md:grid">
-                  <span>Servicio</span>
-                  <span>Estado</span>
-                  {(
-                    [
-                      { key: 'cpu', label: 'CPU' },
-                      { key: 'mem', label: 'RAM' },
-                      { key: 'disk', label: 'Disco' },
-                    ] as const
-                  ).map((c) => (
-                    <button
-                      key={c.key}
-                      onClick={() => setSortKey(sortKey === c.key ? 'default' : c.key)}
-                      className={cx(
-                        'flex items-center gap-1 text-left uppercase tracking-[.07em] transition-colors hover:text-txt',
-                        sortKey === c.key ? 'text-acc-soft' : 'text-subtle',
-                      )}
-                      title={sortKey === c.key ? 'Quitar ordenación' : `Ordenar por ${c.label} (mayor primero)`}
-                    >
-                      {c.label}
-                      {sortKey === c.key && <ArrowDownWideNarrow size={11} />}
-                    </button>
-                  ))}
-                  <span className="text-right">Acciones</span>
                 </div>
 
                 <div className="overflow-x-auto">
                   <div className="min-w-[760px]">
+                    <div className="grid grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] gap-3 border-b border-line bg-bg px-4 py-2 eyebrow text-subtle">
+                      <span>Servicio</span>
+                      <span>Estado</span>
+                      {(
+                        [
+                          { key: 'cpu', label: 'CPU' },
+                          { key: 'mem', label: 'RAM' },
+                          { key: 'disk', label: 'Disco' },
+                        ] as const
+                      ).map((c) => (
+                        <button
+                          key={c.key}
+                          onClick={() => setSortKey(sortKey === c.key ? 'default' : c.key)}
+                          className={cx(
+                            'eyebrow flex items-center gap-1 text-left transition-colors hover:text-txt',
+                            sortKey === c.key ? 'text-acc-soft' : 'text-subtle',
+                          )}
+                          title={sortKey === c.key ? 'Quitar ordenación' : `Ordenar por ${c.label} (mayor primero)`}
+                        >
+                          {c.label}
+                          {sortKey === c.key && <ArrowDownWideNarrow size={11} />}
+                        </button>
+                      ))}
+                      <span className="text-right">Acciones</span>
+                    </div>
+
                     {filtered.length === 0 && (
                       <p className="px-4 py-10 text-center text-xs text-subtle">
                         {services.length === 0 ? 'Aún no hay servicios desplegados.' : 'Ningún servicio coincide con el filtro.'}
@@ -820,7 +808,7 @@ export default function MonitorPage() {
                       .filter((s) => (s.state === 'exited' || s.state === 'dead') && s.exitExplanation)
                       .slice(0, 3)
                       .map((s) => (
-                        <p key={s.id} className="flex items-start gap-2 py-1 text-[11.5px] leading-relaxed text-sub">
+                        <p key={s.id} className="flex items-start gap-2 py-1 text-xs leading-relaxed text-sub">
                           <TriangleAlert size={12} className="mt-0.5 shrink-0 text-err" />
                           <span>
                             <Link to={`/projects/${s.projectId}?s=${s.id}`} className="font-medium text-err hover:underline">
@@ -843,7 +831,7 @@ export default function MonitorPage() {
       )}
 
       {services.length > 0 && overview.data && (
-        <p className="mt-4 text-right text-[10.5px] text-subtle">
+        <p className="mt-4 text-right text-micro text-subtle">
           Actualización automática cada 6 s · {filtered.length !== services.length ? `${filtered.length} de ` : ''}
           {services.length} servicios
           {services.some((s) => s.startedAt && s.state === 'running')

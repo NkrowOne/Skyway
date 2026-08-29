@@ -8,7 +8,7 @@ import { Deployment, DbOverview, MetricsSnapshot, Project, Runtime, Service } fr
 import { cx, DEPLOY_STATUS_LABEL, isActiveDeploy, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import DeploymentsTab from './tabs/DeploymentsTab';
-import { Button, ConfirmModal, Skeleton, Spinner, StatusBadge, Tabs, useToast } from './ui';
+import { Button, ConfirmModal, ErrorState, Skeleton, Spinner, StatusBadge, Tabs, useToast } from './ui';
 
 // La pestaña de Despliegues (por defecto) viaja con el drawer; el resto de pestañas
 // y el terminal se cargan al abrirlos, para no descargar las 8 pestañas de una vez.
@@ -182,16 +182,64 @@ export default function ServiceDrawer({
         cx('fixed inset-0 z-40', closing ? 'push-out' : 'push-in')
       : cx(
           'min-h-0 shrink-0 overflow-hidden border-l border-line shadow-drawer transition-[width,opacity] duration-[220ms] ease-[cubic-bezier(.25,.8,.3,1)]',
-          closing ? 'opacity-0' : 'drawer-in',
+          closing ? 'drawer-out' : 'drawer-in',
         ),
   );
   // La anchura anima de 0 al objetivo al entrar y de vuelta a 0 al salir: el canvas hace sitio en el mismo gesto.
-  const targetWidth = wide ? 'min(840px, calc(100vw - 64px))' : 'min(600px, calc(100vw - 64px))';
+  /*
+   * El ancho se limita también en proporción, no solo en píxeles: con
+   * `calc(100vw - 64px)` un drawer amplio se comía 836 de 900 y dejaba el
+   * lienzo en 64px. Como la preferencia se guarda, bastaba haberlo ensanchado
+   * una vez en un monitor grande para encontrárselo así en el portátil.
+   */
+  const targetWidth = wide ? 'min(840px, 62vw)' : 'min(600px, 50vw, calc(100vw - 64px))';
   const asideStyle = fullscreen ? undefined : { width: entered && !closing ? targetWidth : 0 };
+
+  /*
+   * La barra de cierre se pinta en las tres ramas, no solo en la de éxito.
+   * Por debajo de 900px el drawer es un `fixed inset-0` que tapa hasta la
+   * barra superior: si la petición tarda o falla y esta barra no está, en un
+   * teléfono no hay forma de volver —no hay Esc ni velo que tocar.
+   */
+  const barraDeCierre = fullscreen && (
+    <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
+      <button
+        onClick={handleAttemptClose}
+        className="press flex min-h-10 items-center gap-1.5 rounded-lg px-2.5 text-sm text-sub hover:bg-surface2 hover:text-txt"
+      >
+        <ChevronLeft size={15} /> {projectName}
+      </button>
+      <button
+        onClick={handleAttemptClose}
+        className="press ml-auto flex min-h-10 min-w-10 items-center justify-center rounded-lg leading-none text-subtle hover:bg-surface2 hover:text-txt"
+        title="Cerrar (esc)"
+        aria-label="Cerrar"
+      >
+        <X size={17} />
+      </button>
+    </div>
+  );
+
+  if (!detail.data && detail.isError) {
+    return (
+      <aside className={asideCls} style={asideStyle}>
+        {barraDeCierre}
+        <div className="flex h-full items-center justify-center p-5">
+          <ErrorState
+            title="No se ha podido cargar el servicio"
+            error={detail.error}
+            onRetry={() => detail.refetch()}
+            retrying={detail.isFetching}
+          />
+        </div>
+      </aside>
+    );
+  }
 
   if (!detail.data) {
     return (
       <aside className={asideCls} style={asideStyle} aria-busy>
+        {barraDeCierre}
         <div className="border-b border-line p-5">
           <div className="flex items-center gap-3">
             <Skeleton className="h-[38px] w-[38px] rounded-[10px]" />
@@ -247,62 +295,52 @@ export default function ServiceDrawer({
         : `${service.config.template}:${service.config.version} · host interno: ${service.slug}`;
 
   return (
-    <aside className={asideCls} style={asideStyle} role="complementary" aria-label={`Servicio ${service.name}`}>
-      {fullscreen && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
-          <button
-            onClick={handleAttemptClose}
-            className="press flex min-h-10 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-sub hover:bg-surface2 hover:text-txt"
-          >
-            <ChevronLeft size={15} /> {projectName}
-          </button>
-          <button
-            onClick={handleAttemptClose}
-            className="press ml-auto flex min-h-10 min-w-10 items-center justify-center rounded-lg leading-none text-subtle hover:bg-surface2 hover:text-txt"
-            title="Cerrar (esc)"
-          >
-            <X size={17} />
-          </button>
-        </div>
-      )}
+    <aside
+      className={asideCls}
+      style={asideStyle}
+      role={fullscreen ? 'dialog' : 'complementary'}
+      aria-modal={fullscreen || undefined}
+      aria-label={`Servicio ${service.name}`}
+    >
+      {barraDeCierre}
 
-      <div className={cx('shrink-0', fullscreen ? 'px-3.5 pt-4' : 'px-5 pt-[18px]')}>
+      <div className={cx('shrink-0', fullscreen ? 'px-3.5 pt-4' : 'px-5 pt-4')}>
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-3">
             <ModuleChip kind={moduleKind(service)} size={fullscreen ? 40 : 38} />
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="truncate text-base font-[650] tracking-[-.01em]">{service.name}</h2>
+                <h2 className="truncate text-base font-semibold">{service.name}</h2>
                 <StatusBadge
                   tone={STATE_TONE[state]}
                   label={STATE_LABEL[state]}
                   pulse={STATE_PULSE[state]}
                   replicas={replicas}
-                  className="px-[9px] py-0.5"
+                  className="px-2 py-0.5"
                 />
                 {activeDeployment && (
-                  <span className="badge-in inline-flex shrink-0 items-center gap-[5px] whitespace-nowrap rounded-full border border-warn/35 bg-warn/[.1] px-[9px] py-0.5 text-[11px] font-medium text-warn">
+                  <span className="badge-in inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-warn/35 bg-warn/[.1] px-2 py-0.5 text-xs font-medium text-warn">
                     <span className="pulse-soft h-[5px] w-[5px] rounded-full bg-warn" />
                     {DEPLOY_STATUS_LABEL[activeDeployment.status]}
                   </span>
                 )}
               </div>
-              <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">{subtitle}</p>
+              <p className="mt-0.5 truncate font-mono text-xs text-subtle">{subtitle}</p>
             </div>
           </div>
           {!fullscreen && (
             <div className="flex shrink-0 items-center gap-0.5">
               <button
                 onClick={() => setWide(!wide)}
-                className="press rounded-lg p-[7px] leading-none text-subtle hover:bg-surface2 hover:text-txt"
+                className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
                 title="Cambiar ancho del panel"
               >
                 <MoveHorizontal size={15} />
               </button>
               <button
                 onClick={handleAttemptClose}
-                className="press rounded-lg p-[7px] leading-none text-subtle hover:bg-surface2 hover:text-txt"
-                title="Cerrar (esc)"
+                className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
+                title="Cerrar (esc)" aria-label="Cerrar (esc)"
               >
                 <X size={15} />
               </button>
@@ -326,6 +364,7 @@ export default function ServiceDrawer({
               className={cx(fullscreen && 'h-11 min-w-11 px-0')}
               onClick={() => deploy.mutate(true)}
               title="Reconstruir la imagen desde cero, sin reutilizar la del commit ya construido"
+              aria-label="Reconstruir"
             >
               <Hammer size={fullscreen ? 16 : 13} /> {!fullscreen && 'Reconstruir'}
             </Button>
@@ -339,6 +378,7 @@ export default function ServiceDrawer({
                 onClick={() => setConfirmVerb('restart')}
                 loading={action.isPending && confirmVerb === 'restart'}
                 title="Reiniciar"
+                aria-label="Reiniciar"
               >
                 <RefreshCw size={fullscreen ? 16 : 13} /> {!fullscreen && 'Reiniciar'}
               </Button>
@@ -349,6 +389,7 @@ export default function ServiceDrawer({
                 onClick={() => setConfirmVerb('stop')}
                 loading={action.isPending && confirmVerb === 'stop'}
                 title="Detener"
+                aria-label="Detener"
               >
                 <Square size={fullscreen ? 16 : 13} /> {!fullscreen && 'Detener'}
               </Button>
@@ -421,11 +462,16 @@ export default function ServiceDrawer({
       </div>
 
       <div
+        // La clave por pestaña remonta el panel al cambiar: sin ella se
+        // conservaba la posición de scroll de la anterior y se entraba en la
+        // siguiente a media altura, sin motivo aparente.
+        key={tab}
         className={cx(
           'relative min-h-0 flex-1 overscroll-contain',
           tab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-y-auto',
         )}
         role="tabpanel"
+        aria-label={tabs.find((t) => t.key === tab)?.label}
       >
         {/* En Logs, el visor ocupa el 100% del alto disponible y scrollea por dentro.
             En pestañas de documento (despliegues, variables, métricas…) el tabpanel scrollea externamente. */}

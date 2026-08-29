@@ -143,7 +143,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
       {/* Migas de pan + acciones */}
       <div className="shrink-0 flex flex-wrap items-center gap-1.5 text-xs">
         <HardDrive size={13} className="shrink-0 text-subtle" />
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5 font-mono text-[11.5px]">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5 font-mono text-xs">
           {crumbs(dir).map((c, i, arr) => (
             <span key={c.path} className="flex items-center gap-0.5">
               <button
@@ -215,6 +215,16 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
               <span className="font-mono">..</span>
             </button>
           )}
+          {(listing.data?.listing.entries ?? []).length > 0 && (
+            <div className="flex items-center gap-2 border-b border-line bg-surface2/50 px-3 py-1.5 eyebrow text-subtle">
+              <span className="min-w-0 flex-1">Nombre</span>
+              <span className="shrink-0">Permisos</span>
+              <span className="w-16 shrink-0 text-right">Tamaño</span>
+              {/* Reserva el hueco de los botones de acción para que los rótulos
+                  caigan sobre su columna. */}
+              <span aria-hidden className="w-[52px] shrink-0 max-sm:w-[76px]" />
+            </div>
+          )}
           {(listing.data?.listing.entries ?? []).length === 0 ? (
             <p className="px-3 py-8 text-center text-xs text-subtle">Carpeta vacía.</p>
           ) : (
@@ -244,15 +254,15 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
                     </span>
                   </div>
                 )}
-                <span className="tnum shrink-0 text-[10.5px] text-subtle">{entry.perms}</span>
+                <span className="tnum shrink-0 text-micro text-subtle">{entry.perms}</span>
                 {entry.type === 'file' && (
-                  <span className="tnum w-16 shrink-0 text-right text-[10.5px] text-subtle">{fmtBytes(entry.size)}</span>
+                  <span className="tnum w-16 shrink-0 text-right text-micro text-subtle">{fmtBytes(entry.size)}</span>
                 )}
-                <div className="flex shrink-0 items-center gap-0.5">
+                <div className="flex shrink-0 items-center gap-0.5 max-sm:gap-1.5">
                   {entry.type === 'file' && (
                     <button
                       onClick={() => download(entry)}
-                      className="rounded-md p-1 text-subtle transition-colors hover:bg-bg hover:text-txt"
+                      className="rounded-md p-1 text-subtle transition-colors hover:bg-bg hover:text-txt max-sm:p-2.5"
                       title="Descargar"
                     >
                       <Download size={13} />
@@ -261,7 +271,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
                   {entry.type !== 'symlink' && (
                     <button
                       onClick={() => setDeleting(entry)}
-                      className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err"
+                      className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err max-sm:p-2.5"
                       title="Eliminar"
                     >
                       <Trash2 size={13} />
@@ -274,7 +284,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
         </div>
       )}
 
-      <p className="text-[11px] leading-relaxed text-subtle">
+      <p className="text-xs leading-relaxed text-subtle">
         Explora los archivos del contenedor sin FTP ni credenciales: va por el socket de Docker con tu sesión del panel.
         Subidas hasta 100 MB, descargas hasta 50 MB. Cada cambio queda en el registro de actividad.
       </p>

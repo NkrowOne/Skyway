@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
+import { Check, ChevronDown, History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
-import { Skeleton, useToast } from '../ui';
+import { ConfirmModal, EmptyState, ErrorState, Skeleton, useToast } from '../ui';
 
 /**
  * Acordeón mantequilla: crece y se pliega animando grid-template-rows
@@ -40,13 +40,13 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
   if (deployment.status === 'success') {
     return (
       <div className="flex items-center justify-between rounded-lg border border-line/60 bg-surface2/30 px-3 py-1.5 text-xs">
-        <span className="flex items-center gap-1.5 font-medium text-ok text-[11.5px]">
+        <span className="flex items-center gap-1.5 font-medium text-ok text-xs">
           <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-ok/20 text-ok">
             <Check size={9} strokeWidth={3} />
           </span>
           Despliegue completado
         </span>
-        <div className="flex items-center gap-2 font-mono text-[10.5px] text-subtle">
+        <div className="flex items-center gap-2 font-mono text-micro text-subtle">
           <span>4/4 etapas</span>
           {deployment.finished_at && (
             <span>· {fmtDuration(deployment.finished_at - deployment.created_at)}</span>
@@ -60,14 +60,14 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
   if (deployment.status === 'failed' || deployment.status === 'canceled') {
     return (
       <div className="flex items-center justify-between rounded-lg border border-err/30 bg-err/[.07] px-3 py-1.5 text-xs text-err">
-        <span className="flex items-center gap-1.5 font-medium text-[11.5px]">
-          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-err/20 text-err font-bold text-[9px]">
+        <span className="flex items-center gap-1.5 font-medium text-xs">
+          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-err/20 text-err font-bold text-micro">
             ✕
           </span>
           {deployment.status === 'canceled' ? 'Despliegue cancelado' : 'Despliegue interrumpido con errores'}
         </span>
         {deployment.finished_at && (
-          <span className="font-mono text-[10.5px] text-subtle">
+          <span className="font-mono text-micro text-subtle">
             {fmtDuration(deployment.finished_at - deployment.created_at)}
           </span>
         )}
@@ -86,7 +86,7 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
             </svg>
           </div>
-          <span className="font-medium text-txt text-[11.5px]">
+          <span className="font-medium text-txt text-xs">
             {deployment.status === 'queued'
               ? 'En cola de ejecución…'
               : deployment.status === 'building'
@@ -94,21 +94,29 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
                 : 'Iniciando contenedor y validando salud…'}
           </span>
         </div>
-        <span className="font-mono text-[10.5px] font-semibold text-warn">
+        <span className="font-mono text-micro font-semibold text-warn">
           Etapa {currentStep}/4
         </span>
       </div>
 
-      {/* Barra fina de 2px */}
-      <div className="h-1 w-full overflow-hidden rounded-full bg-surface">
+      {/* Progreso por etapas: lo que de verdad se sabe. Antes la anchura salía
+          de unos porcentajes inventados (25/60/88 %) y parpadeaba sin parar. */}
+      <div
+        className="h-1 w-full overflow-hidden rounded-full bg-surface"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={4}
+        aria-valuenow={currentStep}
+        aria-label={`Etapa ${currentStep} de 4`}
+      >
         <div
-          className="h-full rounded-full bg-gradient-to-r from-acc to-warn transition-all duration-300 animate-pulse"
-          style={{ width: currentStep === 1 ? '25%' : currentStep === 2 ? '60%' : '88%' }}
+          className="h-full rounded-full bg-warn transition-[width] duration-[--dur-3]"
+          style={{ width: `${(currentStep / 4) * 100}%` }}
         />
       </div>
 
       {/* Mini etapas compactas */}
-      <div className="mt-1.5 flex items-center justify-between text-[10.5px] text-subtle font-mono">
+      <div className="mt-1.5 flex items-center justify-between text-micro text-subtle font-mono">
         <span className={cx(currentStep >= 1 ? (currentStep === 1 ? 'text-warn font-semibold' : 'text-ok') : 'text-subtle')}>
           1. Cola
         </span>
@@ -220,8 +228,10 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
       lines={lines}
       toolbar
       title={deployment.id}
+      state={isLive ? 'ready' : logsQuery.isLoading ? 'loading' : logsQuery.isError ? 'error' : 'ready'}
+      onRetry={() => logsQuery.refetch()}
       downloadName={`deploy-${deployment.id}.txt`}
-      className="h-[270px] min-h-[220px] max-h-[340px] rounded-lg overflow-hidden border border-line"
+      className="h-[min(52vh,420px)] overflow-hidden rounded-lg border border-line"
     />
   );
 }
@@ -231,7 +241,10 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
  */
 function DeployPill({ deployment, isCurrent }: { deployment: Deployment; isCurrent: boolean }) {
   const active = isActiveDeploy(deployment.status);
-  const label = isCurrent ? 'Activo' : DEPLOY_STATUS_LABEL[deployment.status];
+  // «Activo» ya significa «el contenedor está en marcha» en la chapa de estado
+  // del servicio, a dos centímetros de aquí. Aquí lo que se dice es otra cosa:
+  // que esta es la versión que se está sirviendo.
+  const label = isCurrent ? 'En producción' : DEPLOY_STATUS_LABEL[deployment.status];
   const dot = active
     ? 'bg-warn'
     : isCurrent
@@ -243,8 +256,16 @@ function DeployPill({ deployment, isCurrent }: { deployment: Deployment; isCurre
     <span
       key={label}
       className={cx(
-        'badge-in inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors',
-        active ? 'bg-warn/10 text-warn border border-warn/25' : 'bg-surface2 text-sub border border-line',
+        'badge-in inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-1.5 py-0.5 text-xs font-medium transition-colors',
+        // El estado es lo que se viene a mirar a esta lista: «Completado»,
+        // «Fallido» y «Cancelado» compartían el mismo gris.
+        active
+          ? 'border-warn/25 bg-warn/10 text-warn'
+          : isCurrent
+            ? 'border-ok/25 bg-ok/10 text-ok'
+            : deployment.status === 'failed'
+              ? 'border-err/25 bg-err/10 text-err'
+              : 'border-line bg-surface2 text-sub',
       )}
     >
       {active ? (
@@ -270,6 +291,9 @@ export default function DeploymentsTab({
   onNavigateToLogs?: (deploymentId: string) => void;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
+  // Volver a una versión anterior es un cambio en producción: como el resto de
+  // acciones de ese calado, pasa por una confirmación.
+  const [rollbackTo, setRollbackTo] = useState<Deployment | null>(null);
   // La tarjeta que se está plegando sigue montada hasta acabar su animación.
   const [closingId, setClosingId] = useState<string | null>(null);
   const closeTimer = useRef<number>();
@@ -349,105 +373,130 @@ export default function DeploymentsTab({
     );
   }
 
+  if (deployments.isError) {
+    return (
+      <ErrorState
+        title="No se han podido cargar los despliegues"
+        error={deployments.error}
+        onRetry={() => deployments.refetch()}
+        retrying={deployments.isFetching}
+      />
+    );
+  }
+
   if (list.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 py-16 text-center text-sm text-sub">
-        <History size={24} className="text-subtle" />
-        Aún no hay despliegues
-      </div>
+      <EmptyState
+        icon={<History />}
+        title="Aún no hay despliegues"
+        description="En cuanto lances uno aparecerá aquí con su registro completo y el detalle de cada fase."
+      />
     );
   }
 
   return (
     <div className="flex flex-col gap-2.5 p-4 sm:px-5">
+      <ConfirmModal
+        open={!!rollbackTo}
+        onClose={() => setRollbackTo(null)}
+        onConfirm={() => {
+          if (rollbackTo) rollback.mutate(rollbackTo.id);
+          setRollbackTo(null);
+        }}
+        title="Volver a esta versión"
+        message={`El servicio se redesplegará con la imagen de «${rollbackTo?.commit_msg || rollbackTo?.id.slice(0, 8) || ''}». Habrá un corte breve mientras arranca.`}
+        confirmLabel="Volver a esta versión"
+        confirmVariant="secondary"
+        loading={rollback.isPending}
+      />
+
       {ordered.map((d) => {
         const open = openId === d.id;
         const active = isActiveDeploy(d.status);
         const isCurrent = d.id === currentId;
         const isLatestFailed = d.id === latestId && d.status === 'failed';
+        // El estado ya lo dice la píldora; al borde le basta con marcar lo que
+        // pide atención. Antes competían cuatro mezclas de color a la vez.
         const tint = active
-          ? 'border-[color-mix(in_oklab,var(--color-warn)_40%,var(--color-line))] bg-warn/[.04]'
+          ? 'border-warn/40 bg-warn/5'
           : isLatestFailed
-            ? 'border-[color-mix(in_oklab,var(--color-err)_45%,var(--color-line))] bg-err/[.06]'
+            ? 'border-err/45 bg-err/5'
             : isCurrent
-              ? 'border-[color-mix(in_oklab,var(--color-ok)_35%,var(--color-line))] bg-ok/[.05]'
+              ? 'border-ok/35'
               : open
-                ? 'border-[color-mix(in_oklab,var(--color-acc)_30%,var(--color-line))] bg-bg'
-                : 'border-line bg-bg';
+                ? 'border-line2'
+                : 'border-line';
         return (
-          <div key={d.id} className={cx('relative overflow-hidden rounded-xl border transition-colors duration-300', tint)}>
-            <button
-              onClick={() => toggle(d.id)}
-              className="flex w-full items-center justify-between gap-2 px-3.5 py-3 text-left transition-colors duration-150 hover:bg-txt/[.03]"
-            >
-              <div className="flex min-w-0 items-center gap-3">
+          <div key={d.id} className={cx('relative overflow-hidden rounded-xl border bg-bg transition-colors duration-[--dur-3]', tint)}>
+            <div className="flex items-center gap-1 pr-2">
+              <button
+                onClick={() => toggle(d.id)}
+                aria-expanded={open}
+                className="flex min-w-0 flex-1 items-center gap-3 px-3.5 py-3 text-left transition-colors duration-[--dur-1] hover:bg-txt/[.03]"
+              >
                 <DeployPill deployment={d} isCurrent={d.id === currentId} />
-                <div className="min-w-0">
-                  <p className="truncate text-[13px] font-medium">
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium">
                     {d.commit_msg ||
                       (d.trigger === 'rollback'
                         ? 'Rollback de imagen'
                         : serviceType === 'database'
                           ? 'Despliegue de base de datos'
                           : 'Despliegue')}
-                  </p>
-                  <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">
+                  </span>
+                  <span className="mt-0.5 block truncate font-mono text-xs text-subtle">
                     {DEPLOY_TRIGGER_LABEL[d.trigger] ?? d.trigger}
                     {d.commit_sha && <> · {d.commit_sha.slice(0, 7)}</>}
-                    <> · {timeAgo(d.created_at)}</>
+                    <>
+                      {' · '}
+                      <span title={new Date(d.created_at).toLocaleString('es')}>{timeAgo(d.created_at)}</span>
+                    </>
                     {d.finished_at && <> · {fmtDuration(d.finished_at - d.created_at)}</>}
-                  </p>
-                </div>
-              </div>
+                  </span>
+                </span>
+                <ChevronDown
+                  size={14}
+                  aria-hidden
+                  className={cx('ml-auto shrink-0 text-subtle transition-transform duration-[--dur-2]', open && 'rotate-180')}
+                />
+              </button>
               <span className="flex shrink-0 items-center gap-1">
                 {onNavigateToLogs && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onNavigateToLogs(d.id);
-                    }}
-                    onKeyDown={(e) => e.key === 'Enter' && onNavigateToLogs(d.id)}
-                    className="press flex items-center gap-1 rounded-lg border border-line bg-surface px-2 py-1 text-[11px] font-medium text-sub hover:bg-surface2 hover:text-txt"
+                  <button
+                    type="button"
+                    onClick={() => onNavigateToLogs(d.id)}
+                    className="press flex items-center gap-1 rounded-lg border border-line bg-surface px-2 py-1 text-xs font-medium text-sub hover:bg-surface2 hover:text-txt"
                     title="Ver logs completos en la consola"
                   >
-                    <ScrollText size={12} />
+                    <ScrollText size={12} aria-hidden />
                     <span className="hidden sm:inline">Logs</span>
-                  </span>
+                  </button>
                 )}
-                {isActiveDeploy(d.status) && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      cancel.mutate(d.id);
-                    }}
-                    onKeyDown={(e) => e.key === 'Enter' && cancel.mutate(d.id)}
-                    className="press rounded-lg p-1.5 leading-none text-err/80 hover:bg-surface2 hover:text-err"
+                {active && (
+                  <button
+                    type="button"
+                    onClick={() => cancel.mutate(d.id)}
+                    disabled={cancel.isPending}
+                    className="press rounded-lg p-1.5 leading-none text-err/80 hover:bg-surface2 hover:text-err disabled:opacity-40"
                     title="Cancelar despliegue"
+                    aria-label="Cancelar despliegue"
                   >
-                    <XCircle size={14} />
-                  </span>
+                    <XCircle size={14} aria-hidden />
+                  </button>
                 )}
                 {d.id !== currentId && d.status === 'success' && serviceType === 'git' && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      rollback.mutate(d.id);
-                    }}
-                    onKeyDown={(e) => e.key === 'Enter' && rollback.mutate(d.id)}
+                  <button
+                    type="button"
+                    onClick={() => setRollbackTo(d)}
                     className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
                     title="Volver a esta versión"
+                    aria-label="Volver a esta versión"
                   >
-                    <RotateCcw size={13} />
-                  </span>
+                    <RotateCcw size={13} aria-hidden />
+                  </button>
                 )}
               </span>
-            </button>
+            </div>
             {(open || closingId === d.id) && (
               <Collapse open={open}>
                 <div className="border-t border-line p-3 flex flex-col gap-2.5">

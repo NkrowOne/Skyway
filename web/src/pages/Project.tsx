@@ -1,10 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { BellRing, Database, FileText, KeyRound, Layers, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
-import { api, openStream } from '../api';
+import { ApiError, api, openStream } from '../api';
 import { useLatch, usePresence } from '../hooks';
-import { Button, ConfirmModal, CopyButton, Field, Modal, Skeleton, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, CopyButton, EmptyState, ErrorState, Field, Modal, Skeleton, useToast } from '../components/ui';
 import { ModuleLogo } from '../components/ModuleIcon';
 import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
@@ -153,6 +153,9 @@ export default function ProjectPage() {
   useGithubReturnNotice();
   const [newOpen, setNewOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  // Redesplegar el proyecto entero toca todos los servicios a la vez: se
+  // pregunta, como en cualquier otra acción de ese alcance.
+  const [deployAllOpen, setDeployAllOpen] = useState(false);
   const [deleteVolumes, setDeleteVolumes] = useState(false);
   const [sharedOpen, setSharedOpen] = useState(false);
   const [githubOpen, setGithubOpen] = useState(false);
@@ -270,7 +273,29 @@ export default function ProjectPage() {
 
   if (project.isLoading) return <CanvasSkeleton />;
   if (project.isError || !project.data) {
-    return <div className="p-8 text-center text-sm text-sub">Proyecto no encontrado</div>;
+    // Un 404 sí es «no existe»; cualquier otro fallo es de conexión, y decir
+    // «no encontrado» hace pensar que el proyecto se ha perdido.
+    if (project.error instanceof ApiError && project.error.status === 404) {
+      return (
+        <EmptyState
+          title="Proyecto no encontrado"
+          description="Puede que se haya eliminado o que el enlace ya no sea válido."
+          action={
+            <Link to="/" className="text-sm font-medium text-acc-soft hover:underline">
+              Volver a proyectos
+            </Link>
+          }
+        />
+      );
+    }
+    return (
+      <ErrorState
+        title="No se ha podido cargar el proyecto"
+        error={project.error}
+        onRetry={() => project.refetch()}
+        retrying={project.isFetching}
+      />
+    );
   }
 
   const { project: proj } = project.data;
@@ -304,10 +329,10 @@ export default function ProjectPage() {
       <div className="min-w-0 flex-1 overflow-y-auto px-4 py-5 sm:px-7 sm:py-7">
         <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-xl font-semibold tracking-[-.015em]">{proj.name}</h1>
+            <h1 className="text-xl font-semibold">{proj.name}</h1>
             <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-sub">
               Red privada{' '}
-              <span className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-px font-mono text-[11px] text-txt">
+              <span className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-px font-mono text-xs text-txt">
                 skyway-{proj.slug}
               </span>
               <CopyButton value={`skyway-${proj.slug}`} className="-ml-0.5 p-0.5" title="Copiar nombre de la red" />
@@ -317,21 +342,23 @@ export default function ProjectPage() {
             {/* Resumen de salud de infraestructura en tiempo real */}
             {totalServices > 0 && (
               <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-line/80 bg-surface px-2.5 py-0.5 font-medium text-sub">
-                  <span className={cx('h-1.5 w-1.5 rounded-full', runningCount > 0 ? 'bg-ok' : 'bg-subtle')} />
-                  <span className="font-semibold text-txt">{runningCount}</span>/{totalServices} activos
-                </span>
+                {/* Verde solo cuando están todos en pie: «3/20 activos» en
+                    verde decía justo lo contrario de lo que pasaba. */}
+                <Chip
+                  tone={runningCount === totalServices ? 'ok' : runningCount === 0 ? 'err' : 'warn'}
+                  dot
+                >
+                  <span className="tnum font-semibold">{runningCount}</span>/{totalServices} activos
+                </Chip>
                 {deployServicesCount > 0 && (
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-warn/30 bg-warn/10 px-2.5 py-0.5 font-medium text-warn">
-                    <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-warn" />
-                    <span className="font-semibold">{deployServicesCount}</span> desplegando
-                  </span>
+                  <Chip tone="warn" dot pulse>
+                    <span className="tnum font-semibold">{deployServicesCount}</span> desplegando
+                  </Chip>
                 )}
                 {alertServicesCount > 0 && (
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-err/30 bg-err/10 px-2.5 py-0.5 font-medium text-err">
-                    <BellRing size={11} />
-                    <span className="font-semibold">{alertServicesCount}</span> con alertas
-                  </span>
+                  <Chip tone="err" icon={<BellRing size={11} aria-hidden />}>
+                    <span className="tnum font-semibold">{alertServicesCount}</span> con alertas
+                  </Chip>
                 )}
               </div>
             )}
@@ -345,14 +372,19 @@ export default function ProjectPage() {
                     setEditClient(proj.client ?? '');
                     setEditOpen(true);
                   }}
-                  className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
+                  className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt max-sm:h-11 max-sm:min-w-11"
                   title={isAdmin ? 'Renombrar / empresa' : 'Renombrar'}
                 >
                   <Pencil size={14} />
                 </button>
+                <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-line" />
                 <button
-                  onClick={() => setDeleteOpen(true)}
-                  className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-err"
+                  onClick={() => {
+                    // El borrado de volúmenes vuelve a «no» en cada apertura.
+                    setDeleteVolumes(false);
+                    setDeleteOpen(true);
+                  }}
+                  className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-err max-sm:h-11 max-sm:min-w-11"
                   title="Eliminar proyecto"
                 >
                   <Trash2 size={14} />
@@ -391,7 +423,7 @@ export default function ProjectPage() {
                 variant="secondary"
                 size="sm"
                 className="max-sm:h-11 max-sm:min-w-11"
-                onClick={() => deployAll.mutate()}
+                onClick={() => setDeployAllOpen(true)}
                 loading={deployAll.isPending}
                 title="Redespliega todos los servicios de repo e imagen"
               >
@@ -440,86 +472,64 @@ export default function ProjectPage() {
                 <button
                   type="button"
                   onClick={() => setServiceQuery('')}
-                  className="text-subtle hover:text-txt"
+                  className="press shrink-0 rounded p-1 text-subtle hover:text-txt max-sm:p-2"
                   title="Borrar búsqueda"
+                  aria-label="Borrar búsqueda"
                 >
-                  <X size={12} />
+                  <X size={13} />
                 </button>
               )}
             </div>
 
-            <div className="flex shrink-0 flex-wrap items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setServiceTypeFilter('all')}
-                className={cx(
-                  'rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
-                  serviceTypeFilter === 'all'
-                    ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
-                    : 'text-sub hover:bg-surface hover:text-txt',
-                )}
-              >
-                Todos ({totalServices})
-              </button>
-              {gitCount > 0 && (
-                <button
-                  type="button"
+            {/*
+              * Los cinco filtros estaban escritos a mano, cada uno con su
+              * combinación de clases. Un filtro puesto se mantiene visible
+              * aunque su recuento baje a cero: si desaparece, la rejilla se
+              * queda vacía y no hay nada que tocar para deshacerlo.
+              */}
+            <div className="flex shrink-0 flex-wrap items-center gap-1" role="group" aria-label="Filtrar servicios por tipo">
+              <Chip tone="info" active={serviceTypeFilter === 'all'} onClick={() => setServiceTypeFilter('all')}>
+                Todos <span className="tnum opacity-70">{totalServices}</span>
+              </Chip>
+              {(gitCount > 0 || serviceTypeFilter === 'git') && (
+                <Chip
+                  tone="info"
+                  active={serviceTypeFilter === 'git'}
                   onClick={() => setServiceTypeFilter('git')}
-                  className={cx(
-                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
-                    serviceTypeFilter === 'git'
-                      ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
-                      : 'text-sub hover:bg-surface hover:text-txt',
-                  )}
+                  icon={<ModuleLogo kind="github" size={12} />}
                 >
-                  <ModuleLogo kind="github" size={12} />
-                  <span>Git ({gitCount})</span>
-                </button>
+                  Git <span className="tnum opacity-70">{gitCount}</span>
+                </Chip>
               )}
-              {dbCount > 0 && (
-                <button
-                  type="button"
+              {(dbCount > 0 || serviceTypeFilter === 'database') && (
+                <Chip
+                  tone="info"
+                  active={serviceTypeFilter === 'database'}
                   onClick={() => setServiceTypeFilter('database')}
-                  className={cx(
-                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
-                    serviceTypeFilter === 'database'
-                      ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
-                      : 'text-sub hover:bg-surface hover:text-txt',
-                  )}
+                  icon={<Database size={12} aria-hidden />}
                 >
-                  <Database size={12} className="text-acc" />
-                  <span>Bases de datos ({dbCount})</span>
-                </button>
+                  Bases de datos <span className="tnum opacity-70">{dbCount}</span>
+                </Chip>
               )}
-              {imageCount > 0 && (
-                <button
-                  type="button"
+              {(imageCount > 0 || serviceTypeFilter === 'image') && (
+                <Chip
+                  tone="info"
+                  active={serviceTypeFilter === 'image'}
                   onClick={() => setServiceTypeFilter('image')}
-                  className={cx(
-                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
-                    serviceTypeFilter === 'image'
-                      ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
-                      : 'text-sub hover:bg-surface hover:text-txt',
-                  )}
+                  icon={<Layers size={12} aria-hidden />}
                 >
-                  <Layers size={12} className="text-info" />
-                  <span>Docker / Apps ({imageCount})</span>
-                </button>
+                  Docker / Apps <span className="tnum opacity-70">{imageCount}</span>
+                </Chip>
               )}
-              {alertServicesCount > 0 && (
-                <button
-                  type="button"
+              {(alertServicesCount > 0 || serviceTypeFilter === 'alerts') && (
+                <Chip
+                  tone="err"
+                  active={serviceTypeFilter === 'alerts'}
                   onClick={() => setServiceTypeFilter('alerts')}
-                  className={cx(
-                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
-                    serviceTypeFilter === 'alerts'
-                      ? 'border border-err/30 bg-err/15 font-semibold text-err shadow-sm'
-                      : 'text-err/80 hover:bg-err/10 hover:text-err',
-                  )}
+                  icon={<BellRing size={11} aria-hidden />}
                 >
-                  <BellRing size={11} />
-                  <span>Alertas ({alertServicesCount})</span>
-                </button>
+                  Alertas <span className="tnum opacity-70">{alertServicesCount}</span>
+                </Chip>
               )}
             </div>
           </div>
@@ -543,22 +553,24 @@ export default function ProjectPage() {
             </Button>
           </div>
         ) : filteredServices.length === 0 ? (
-          <div className="card flex flex-col items-center gap-3 py-16 text-center">
-            <Search size={22} className="text-subtle" />
-            <p className="text-sm font-medium text-txt">No se encontraron servicios</p>
-            <p className="max-w-xs text-xs text-subtle">
-              No hay servicios que coincidan con los filtros de búsqueda aplicados.
-            </p>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => {
-                setServiceQuery('');
-                setServiceTypeFilter('all');
-              }}
-            >
-              Limpiar búsqueda
-            </Button>
+          <div className="card">
+            <EmptyState
+              icon={<Search />}
+              title="Ningún servicio coincide"
+              description="Ni la búsqueda ni el filtro de tipo dejan pasar ninguno de los servicios del proyecto."
+              action={
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    setServiceQuery('');
+                    setServiceTypeFilter('all');
+                  }}
+                >
+                  Quitar filtros
+                </Button>
+              }
+            />
           </div>
         ) : (
           <div className="stagger grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3.5">
@@ -577,7 +589,7 @@ export default function ProjectPage() {
         )}
 
         {services.length > 0 && (
-          <p className="mt-5 hidden text-[11px] text-subtle drawer:block">
+          <p className="mt-5 hidden text-xs text-subtle drawer:block">
             {selected ? (
               <>
                 Pulsa <kbd className="kbd">esc</kbd> para cerrar el panel · <kbd className="kbd">{CMD_K_LABEL}</kbd> para buscar
@@ -684,6 +696,20 @@ export default function ProjectPage() {
           </div>
         </form>
       </Modal>
+
+      <ConfirmModal
+        open={deployAllOpen}
+        onClose={() => setDeployAllOpen(false)}
+        onConfirm={() => {
+          deployAll.mutate();
+          setDeployAllOpen(false);
+        }}
+        title="Redesplegar todo el proyecto"
+        message={`Se lanzará un despliegue de cada servicio de repositorio e imagen. Cada uno tendrá un corte breve mientras arranca su versión nueva.`}
+        confirmLabel="Desplegar todo"
+        confirmVariant="secondary"
+        loading={deployAll.isPending}
+      />
 
       <ConfirmModal
         open={deleteOpen}

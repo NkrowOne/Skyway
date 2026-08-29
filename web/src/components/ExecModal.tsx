@@ -76,7 +76,7 @@ export default function ExecModal({
           {QUICK_COMMANDS.map((c) => (
             <button
               key={c}
-              className="rounded-md border border-line bg-surface2 px-2 py-0.5 font-mono text-[11px] transition-colors duration-150 hover:border-acc/50"
+              className="rounded-md border border-line bg-surface2 px-2 py-0.5 font-mono text-xs transition-colors duration-150 hover:border-acc/50"
               onClick={() => {
                 setCommand(c);
                 run(c);
@@ -88,13 +88,13 @@ export default function ExecModal({
         </div>
 
         <div className="relative">
-          <pre className="h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-term p-3 font-mono text-[11.5px] leading-relaxed text-txt/[.88]">
+          <pre className="h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-term p-3 font-mono text-xs leading-relaxed text-txt/[.88]">
             {running ? 'Ejecutando...' : result ? result.output || '(sin salida)' : 'La salida aparecerá aquí. El comando corre con `sh -c` dentro del contenedor.'}
           </pre>
           {result && (
             <span
               className={cx(
-                'absolute right-2 top-2 rounded-full border px-2 py-0.5 text-[11px]',
+                'absolute right-2 top-2 rounded-full border px-2 py-0.5 text-xs',
                 result.exitCode === 0 ? 'border-ok/40 bg-ok/10 text-ok' : 'border-err/40 bg-err/10 text-err',
               )}
             >

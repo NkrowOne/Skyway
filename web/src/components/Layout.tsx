@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import {
   Activity,
+  AlertCircle,
   AlertTriangle,
   Bell,
   BellRing,
@@ -28,7 +29,7 @@ import { isEditableTarget, usePresence } from '../hooks';
 import { Alert, Me, Project, Service, SystemInfo } from '../types';
 import { CMD_K_LABEL, cx, fmtBytes, SEVERITY_TONE, timeAgo } from '../utils';
 import { ModuleLogo, moduleKind } from './ModuleIcon';
-import { Kbd, Spinner, StatusBadge } from './ui';
+import { Chip, Kbd, Spinner, StatusBadge } from './ui';
 import ErrorBoundary from './ErrorBoundary';
 
 /** Logo de Skyway: chip con gradiente de marca. */
@@ -109,7 +110,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
         label: (
           <span>
             <span className="font-medium text-txt">{s.name}</span>
-            <span className="ml-2 text-[11px] text-subtle font-normal">en {p.name}</span>
+            <span className="ml-2 text-xs text-subtle font-normal">en {p.name}</span>
           </span>
         ),
         meta: s.type,
@@ -143,7 +144,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
         label: 'Ver alertas activas',
         meta:
           unread > 0 ? (
-            <span className="inline-flex items-center rounded-full bg-err/[.15] px-2 py-0.5 text-[11px] font-semibold text-err">{unread}</span>
+            <Chip size="sm" tone="err">{unread}</Chip>
           ) : undefined,
         keywords: 'alertas avisos notificaciones',
         to: '/alerts',
@@ -284,7 +285,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
               }
             }}
             placeholder="Busca proyectos, servicios o acciones…"
-            className="flex-1 bg-transparent text-[15px] text-txt outline-none placeholder:text-subtle focus-visible:[outline:none]"
+            className="flex-1 bg-transparent text-base text-txt outline-none placeholder:text-subtle focus-visible:[outline:none]"
           />
           <Kbd>esc</Kbd>
         </div>
@@ -295,7 +296,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
             if (rows.length === 0) return null;
             return (
               <div key={g}>
-                <p className="mx-2 mb-1.5 mt-1.5 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">{g}</p>
+                <p className="mx-2 mb-1.5 mt-1.5 eyebrow text-subtle">{g}</p>
                 {rows.map((item) => {
                   const idx = items.indexOf(item);
                   const selected = idx === sel;
@@ -306,7 +307,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
                       onClick={() => go(item)}
                       onMouseMove={() => setSel(idx)}
                       className={cx(
-                        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[9px] text-left',
+                        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left',
                         selected && 'bg-acc/[.14] shadow-[inset_2px_0_0_var(--color-acc)]',
                       )}
                     >
@@ -321,7 +322,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
             );
           })}
         </div>
-        <div className="flex items-center gap-3.5 border-t border-line bg-bg px-4 py-2 text-[11px] text-subtle">
+        <div className="flex items-center gap-3.5 border-t border-line bg-bg px-4 py-2 text-xs text-subtle">
           <span className="flex items-center gap-1">
             <Kbd>↑↓</Kbd> navegar
           </span>
@@ -350,7 +351,7 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
     { label: 'Paleta de comandos', keys: [CMD_K_LABEL] },
     { label: 'Ir a proyectos', keys: ['g', 'p'] },
     { label: 'Ir al monitor', keys: ['g', 'm'] },
-    { label: 'Ir a sitios web', keys: ['g', 'w'] },
+    { label: 'Ir a sitios y servicios', keys: ['g', 'w'] },
     { label: 'Ir a seguridad', keys: ['g', 's'] },
     { label: 'Ir a alertas', keys: ['g', 'a'] },
     { label: 'Cerrar drawer / modales', keys: ['esc'] },
@@ -376,9 +377,9 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
       >
         <div className="mb-3.5 flex items-center gap-2">
           <Keyboard size={16} className="text-acc" />
-          <h2 className="text-[15px] font-semibold">Atajos de teclado</h2>
+          <h2 className="text-base font-semibold">Atajos de teclado</h2>
         </div>
-        <div className="flex flex-col gap-2.5 text-[13px]">
+        <div className="flex flex-col gap-2.5 text-sm">
           {rows.map((r) => (
             <div key={r.label} className="flex items-center justify-between">
               <span className="text-sub">{r.label}</span>
@@ -435,13 +436,13 @@ function AlertBell() {
       <button
         onClick={toggle}
         className="press relative rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
-        title="Alertas"
+        title="Alertas" aria-label="Alertas"
       >
         <Bell size={16} />
         {unread > 0 && (
           <span
             key={unread}
-            className="pop-in absolute -right-px -top-px flex h-[15px] min-w-[15px] items-center justify-center rounded-full border-2 border-surface bg-err px-[3px] text-[9px] font-bold leading-none text-white"
+            className="pop-in absolute -right-px -top-px flex h-[15px] min-w-[15px] items-center justify-center rounded-full border-2 border-surface bg-err px-0.5 text-micro font-bold leading-none text-white"
           >
             {unread > 9 ? '9+' : unread}
           </span>
@@ -461,8 +462,14 @@ function AlertBell() {
             </Link>
           </div>
           <div className="max-h-96 overflow-y-auto p-2">
-            {(alerts.data?.alerts ?? []).length === 0 && (
-              <p className="px-3 py-6 text-center text-xs text-sub">Sin alertas. Todo en orden.</p>
+            {alerts.isError ? (
+              <p className="flex items-center justify-center gap-1.5 px-3 py-6 text-center text-xs text-err" role="alert">
+                <AlertCircle size={13} aria-hidden /> No se han podido cargar las alertas
+              </p>
+            ) : (
+              (alerts.data?.alerts ?? []).length === 0 && (
+                <p className="px-3 py-6 text-center text-xs text-sub">Sin alertas. Todo en orden.</p>
+              )
             )}
             {alerts.data?.alerts.map((a) => (
               <Link
@@ -476,11 +483,11 @@ function AlertBell() {
                     tone={a.resolved_at ? 'neutral' : SEVERITY_TONE[a.severity]}
                     label={a.resolved_at ? 'resuelta' : 'activa'}
                     dot={false}
-                    className="px-2 py-0.5 text-[10px]"
+                    className="px-2 py-0.5 text-micro"
                   />
                   <span className="truncate text-xs font-medium">{a.title}</span>
                 </div>
-                <p className="mt-0.5 truncate text-[11px] text-sub">
+                <p className="mt-0.5 truncate text-xs text-sub">
                   {a.message} · {timeAgo(a.ts)}
                 </p>
               </Link>
@@ -556,9 +563,7 @@ function MainMenu({
           label: 'Alertas',
           meta:
             unread > 0 ? (
-              <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-err/[.15] px-1.5 text-[10px] font-semibold text-err">
-                {unread > 9 ? '9+' : unread}
-              </span>
+              <Chip size="sm" tone="err">{unread > 9 ? '9+' : unread}</Chip>
             ) : undefined,
         },
       ],
@@ -630,8 +635,8 @@ function MainMenu({
                 <UserRound size={15} />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] font-medium text-txt">{user.email}</span>
-                <span className="block truncate text-[11px] text-subtle">
+                <span className="block truncate text-sm font-medium text-txt">{user.email}</span>
+                <span className="block truncate text-xs text-subtle">
                   {ROLE_LABEL[user.role] ?? user.role}
                   {user.workspaceName ? ` · ${user.workspaceName}` : ''}
                 </span>
@@ -641,7 +646,7 @@ function MainMenu({
           <div className="max-h-[min(70vh,520px)] overflow-y-auto p-2">
             {groups.map((g) => (
               <div key={g.label} className="mb-1 last:mb-0">
-                <p className="mx-2 mb-1 mt-1.5 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">{g.label}</p>
+                <p className="mx-2 mb-1 mt-1.5 eyebrow text-subtle">{g.label}</p>
                 {g.items.map((it) => (
                   <Row key={it.to} item={it} />
                 ))}
@@ -779,7 +784,7 @@ export default function Layout() {
         )}
       >
         <div className="flex min-w-0 items-center gap-2.5">
-          <Link to="/" className="flex shrink-0 items-center gap-2.5 text-sm font-[650] tracking-[.01em] text-txt">
+          <Link to="/" className="flex shrink-0 items-center gap-2 text-sm font-semibold text-txt">
             <BrandMark />
             <span className={cx(!isHome && 'hidden md:inline')}>Skyway</span>
           </Link>
@@ -788,9 +793,9 @@ export default function Layout() {
               <ChevronRight size={14} className="shrink-0 text-subtle" />
               <span className="truncate text-sm font-medium">{pageLabel}</span>
               {clientPill && (
-                <span className="hidden shrink-0 items-center gap-[5px] rounded-full border border-line bg-bg px-2.5 py-0.5 text-[11px] text-sub sm:flex">
-                  <Building2 size={10} /> {clientPill}
-                </span>
+                <Chip className="hidden sm:inline-flex" icon={<Building2 size={10} aria-hidden />}>
+                  {clientPill}
+                </Chip>
               )}
             </>
           )}
@@ -799,7 +804,7 @@ export default function Layout() {
         {isHome && (
           <button
             onClick={() => setCmdOpen(true)}
-            className="hidden min-w-0 flex-[0_1_300px] items-center gap-2 rounded-lg border border-line bg-bg py-1.5 pl-3 pr-2 text-[13px] text-subtle transition-colors duration-150 hover:border-[color-mix(in_oklab,var(--color-acc)_45%,var(--color-line))] hover:text-sub sm:flex"
+            className="hidden h-9 min-w-0 flex-[0_1_320px] items-center gap-2 rounded-lg border border-line bg-bg pl-3 pr-2 text-sm text-subtle transition-colors duration-[--dur-1] hover:border-line2 hover:text-sub sm:flex"
           >
             <Search size={14} className="shrink-0" />
             <span className="flex-1 truncate text-left">Buscar o saltar a…</span>
@@ -811,7 +816,7 @@ export default function Layout() {
           {!isHome && (
             <button
               onClick={() => setCmdOpen(true)}
-              className="mr-1 flex items-center gap-2 rounded-lg border border-line bg-bg px-2.5 py-1.5 text-xs text-subtle transition-colors duration-150 hover:border-[color-mix(in_oklab,var(--color-acc)_45%,var(--color-line))]"
+              className="mr-1 flex items-center gap-2 rounded-lg border border-line bg-bg px-2.5 py-1.5 text-xs text-subtle transition-colors duration-150 hover:border-line2"
               title={`Buscar (${CMD_K_LABEL})`}
             >
               <Search size={13} />
@@ -828,14 +833,14 @@ export default function Layout() {
             </button>
           )}
           {sys && (
-            <div className="mr-2 hidden items-center gap-2 rounded-full border border-line bg-bg px-3 py-[5px] text-xs text-sub nav:flex">
-              <span className="h-1.5 w-1.5 rounded-full bg-ok shadow-[0_0_6px_color-mix(in_oklab,var(--color-ok)_70%,transparent)]" />
-              <span>
-                CPU <span className="tnum text-txt">{sys.host.load[0]}</span>/{sys.host.cpus}
+            <div className="mr-2 hidden items-center gap-3 rounded-lg border border-line bg-bg px-3 py-1 text-xs text-subtle nav:flex">
+              <span title={`Carga media: ${sys.host.load[0]} de ${sys.host.cpus} núcleos`}>
+                CPU <span className="tnum font-medium text-txt">{sys.host.load[0]}</span>
+                <span className="text-subtle">/{sys.host.cpus}</span>
               </span>
-              <span className="text-line">·</span>
-              <span>
-                RAM <span className="tnum text-txt">{fmtBytes(sys.host.freeMem)}</span> libres
+              <span aria-hidden className="h-3 w-px bg-line" />
+              <span title="Memoria libre del host">
+                RAM <span className="tnum font-medium text-txt">{fmtBytes(sys.host.freeMem)}</span>
               </span>
             </div>
           )}
@@ -879,7 +884,11 @@ export default function Layout() {
         <div key={location.pathname} className="page-in h-full">
           {/* Límite por página: si una revienta al pintar, el marco (barra
               lateral, campana, paleta) sigue vivo y se puede navegar a otra. */}
-          <ErrorBoundary resetKey={location.pathname} scope="esta página">
+          <ErrorBoundary
+            resetKey={location.pathname}
+            scope="esta página"
+            onReset={() => queryClient.resetQueries()}
+          >
             <Suspense fallback={<div className="flex h-full items-center justify-center"><Spinner /></div>}>
               <Outlet />
             </Suspense>

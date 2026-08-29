@@ -60,10 +60,10 @@ export function UsageBars({
           {title}
         </h3>
         <div className="flex items-center gap-2.5">
-          <span className="tnum text-[11px] text-subtle">total {format(total)}</span>
+          <span className="tnum text-xs text-subtle">total {format(total)}</span>
           <button
             onClick={() => setTable((t) => !t)}
-            className={cx('press flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] transition-colors', table ? 'bg-surface2 text-txt' : 'text-subtle hover:text-txt')}
+            className={cx('press flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro transition-colors', table ? 'bg-surface2 text-txt' : 'text-subtle hover:text-txt')}
             aria-pressed={table}
             title={table ? 'Ver gráfica' : 'Ver como tabla'}
           >
@@ -76,7 +76,7 @@ export function UsageBars({
         <div className="flex h-[140px] items-center justify-center text-xs text-subtle">Sin consumo en este periodo.</div>
       ) : table ? (
         <div className="max-h-[176px] overflow-y-auto rounded-lg border border-line">
-          <table className="w-full text-left text-[11px]">
+          <table className="w-full text-left text-xs">
             <thead className="sticky top-0 bg-surface text-subtle">
               <tr>
                 <th className="px-2.5 py-1.5 font-medium">Momento</th>
@@ -95,7 +95,7 @@ export function UsageBars({
         </div>
       ) : (
         <div className="relative">
-          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onMouseLeave={() => setHover(null)}>
+          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onPointerLeave={() => setHover(null)}>
             {gridYs.map((g, i) => (
               <g key={i}>
                 <line x1={PAD.left} x2={W - PAD.right} y1={g.y} y2={g.y} stroke="var(--color-line)" strokeWidth="1" opacity="0.5" />
@@ -110,7 +110,7 @@ export function UsageBars({
               const active = hover === i;
               return (
                 <g key={p.t} opacity={hover !== null && !active ? 0.45 : 1} style={{ transition: 'opacity .12s' }}>
-                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onMouseEnter={() => setHover(i)} />
+                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onPointerEnter={() => setHover(i)} onPointerDown={() => setHover(i)} />
                   {p.value > 0 && (
                     <rect x={cx0 - barW / 2} y={PAD.top + innerH - h} width={barW} height={Math.max(0.5, h)} rx={Math.min(3, barW / 2)} fill={color} />
                   )}
@@ -127,11 +127,11 @@ export function UsageBars({
           </svg>
           {hover !== null && points[hover] && (
             <div
-              className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-surface2 px-2 py-1 text-[11px] text-txt shadow-lvl1"
+              className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-surface2 px-2 py-1 text-xs text-txt shadow-lvl1"
               style={{ left: `${((PAD.left + slot * hover + slot / 2) / W) * 100}%` }}
             >
               <span className="tnum font-semibold">{format(points[hover].value)}</span>
-              <span className="mt-0.5 block text-[10px] text-subtle">{labelFor(points[hover].t)}</span>
+              <span className="mt-0.5 block text-micro text-subtle">{labelFor(points[hover].t)}</span>
             </div>
           )}
         </div>
@@ -154,7 +154,8 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
   const [hover, setHover] = useState<number | null>(null);
   const [table, setTable] = useState(false);
   const paidColor = 'var(--color-ok)';
-  const pendColor = 'var(--color-acc)';
+  // Pendiente es un estado, no una marca: va en el color de aviso.
+  const pendColor = 'var(--color-warn)';
 
   const innerW = W - PAD.left - PAD.right;
   const innerH = H - PAD.top - PAD.bottom;
@@ -170,15 +171,15 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
       <div className="mb-2 flex items-center justify-between gap-2">
         <h3 className="text-xs font-semibold text-sub">Ingresos por mes</h3>
         <div className="flex items-center gap-2.5">
-          <span className="flex items-center gap-1 text-[10.5px] text-subtle">
+          <span className="flex items-center gap-1 text-micro text-subtle">
             <span className="inline-block h-2 w-2 rounded-sm" style={{ background: paidColor }} aria-hidden /> cobrado
           </span>
-          <span className="flex items-center gap-1 text-[10.5px] text-subtle">
+          <span className="flex items-center gap-1 text-micro text-subtle">
             <span className="inline-block h-2 w-2 rounded-sm" style={{ background: pendColor }} aria-hidden /> pendiente
           </span>
           <button
             onClick={() => setTable((t) => !t)}
-            className={cx('press flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] transition-colors', table ? 'bg-surface2 text-txt' : 'text-subtle hover:text-txt')}
+            className={cx('press flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro transition-colors', table ? 'bg-surface2 text-txt' : 'text-subtle hover:text-txt')}
             aria-pressed={table}
             title={table ? 'Ver gráfica' : 'Ver como tabla'}
           >
@@ -191,7 +192,7 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
         <div className="flex h-[160px] items-center justify-center text-xs text-subtle">Sin facturación en este periodo.</div>
       ) : table ? (
         <div className="max-h-[200px] overflow-y-auto rounded-lg border border-line">
-          <table className="w-full text-left text-[11px]">
+          <table className="w-full text-left text-xs">
             <thead className="sticky top-0 bg-surface text-subtle">
               <tr>
                 <th className="px-2.5 py-1.5 font-medium">Mes</th>
@@ -212,7 +213,7 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
         </div>
       ) : (
         <div className="relative">
-          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onMouseLeave={() => setHover(null)}>
+          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onPointerLeave={() => setHover(null)}>
             {gridYs.map((g, i) => (
               <g key={i}>
                 <line x1={PAD.left} x2={W - PAD.right} y1={g.y} y2={g.y} stroke="var(--color-line)" strokeWidth="1" opacity="0.5" />
@@ -230,7 +231,7 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
               const base = PAD.top + innerH;
               return (
                 <g key={p.t} opacity={hover !== null && !active ? 0.45 : 1} style={{ transition: 'opacity .12s' }}>
-                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onMouseEnter={() => setHover(i)} />
+                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onPointerEnter={() => setHover(i)} onPointerDown={() => setHover(i)} />
                   {p.paid > 0 && <rect x={cx0 - barW / 2} y={base - paidH} width={barW} height={Math.max(0.5, paidH)} rx={Math.min(3, barW / 2)} fill={paidColor} />}
                   {/* 2px de hueco de superficie entre segmentos apilados */}
                   {pending > 0 && <rect x={cx0 - barW / 2} y={base - paidH - pendH - (p.paid > 0 ? 2 : 0)} width={barW} height={Math.max(0.5, pendH)} rx={Math.min(3, barW / 2)} fill={pendColor} />}
@@ -247,10 +248,10 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
           </svg>
           {hover !== null && points[hover] && (
             <div
-              className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-surface2 px-2 py-1.5 text-[11px] text-txt shadow-lvl1"
+              className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-surface2 px-2 py-1.5 text-xs text-txt shadow-lvl1"
               style={{ left: `${((PAD.left + slot * hover + slot / 2) / W) * 100}%` }}
             >
-              <span className="mb-0.5 block text-[10px] font-semibold text-subtle">{labelFor(points[hover].t)}</span>
+              <span className="mb-0.5 block text-micro font-semibold text-subtle">{labelFor(points[hover].t)}</span>
               <span className="tnum block">
                 <span style={{ color: pendColor }}>■</span> facturado {format(points[hover].invoiced)}
               </span>

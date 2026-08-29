@@ -17,7 +17,7 @@ import {
   timeAgo,
 } from '../../utils';
 import LogViewer, { LogStage } from '../LogViewer';
-import { Skeleton, useToast } from '../ui';
+import { Menu, Skeleton, useToast } from '../ui';
 
 type Row = { line: string; cursor: string | null };
 
@@ -322,7 +322,7 @@ export default function LogsTab({
                 <span className="pulse-soft h-2 w-2 shrink-0 rounded-full bg-ok" />
                 <span className="font-semibold">Despliegue actual (En vivo)</span>
                 {currentSuccessDeploy && (
-                  <span className="hidden font-mono text-[11px] text-subtle md:inline">
+                  <span className="hidden font-mono text-xs text-subtle md:inline">
                     · {currentSuccessDeploy.commit_msg ? currentSuccessDeploy.commit_msg.slice(0, 32) : currentSuccessDeploy.id.slice(0, 12)}
                   </span>
                 )}
@@ -348,12 +348,15 @@ export default function LogsTab({
             <ChevronDown size={14} className="shrink-0 text-subtle" />
           </button>
 
-          {selectorOpen && (
-            <div
-              className="absolute left-0 top-full z-50 mt-1.5 max-h-[380px] w-full min-w-[290px] sm:w-[360px] overflow-y-auto rounded-xl border border-line bg-surface p-1.5 shadow-modal"
-              onMouseLeave={() => setSelectorOpen(false)}
-            >
-              <div className="px-2.5 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-subtle">
+          {/* Antes solo se cerraba con onMouseLeave: inalcanzable en táctil. */}
+          <Menu
+            open={selectorOpen}
+            onClose={() => setSelectorOpen(false)}
+            align="left"
+            className="max-h-[380px] w-full min-w-[290px] overflow-y-auto sm:w-[360px]"
+          >
+            <div>
+              <div className="px-2.5 py-1.5 eyebrow text-subtle">
                 Seleccionar despliegue
               </div>
 
@@ -373,7 +376,7 @@ export default function LogsTab({
                   <span className="pulse-soft h-2 w-2 rounded-full bg-ok" />
                   <div>
                     <p className="font-semibold text-txt">Despliegue actual (En vivo)</p>
-                    <p className="text-[11px] text-subtle">
+                    <p className="text-xs text-subtle">
                       {currentSuccessDeploy ? getFriendlyTitle(currentSuccessDeploy) : 'Salida en directo'}
                     </p>
                   </div>
@@ -382,7 +385,7 @@ export default function LogsTab({
               </button>
 
               <div className="my-1.5 border-t border-line" />
-              <div className="px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-subtle">
+              <div className="px-2.5 py-1 eyebrow text-subtle">
                 Historial ({deployments.length})
               </div>
 
@@ -409,19 +412,19 @@ export default function LogsTab({
                     <div className="min-w-0 flex-1 pr-2">
                       <div className="flex items-center gap-1.5">
                         <span className={cx('h-2 w-2 shrink-0 rounded-full', dotColor)} />
-                        <span className="truncate font-semibold text-txt text-[12px]">{titleText}</span>
+                        <span className="truncate font-semibold text-txt text-xs">{titleText}</span>
                         {isCur && (
-                          <span className="shrink-0 rounded bg-ok/15 px-1 py-0.2 text-[9.5px] font-semibold text-ok">
+                          <span className="shrink-0 rounded bg-ok/15 px-1 py-0.5 text-micro font-semibold text-ok">
                             Activo
                           </span>
                         )}
                         {d.status === 'failed' && (
-                          <span className="shrink-0 rounded bg-err/15 px-1 py-0.2 text-[9.5px] font-semibold text-err">
+                          <span className="shrink-0 rounded bg-err/15 px-1 py-0.5 text-micro font-semibold text-err">
                             Falló
                           </span>
                         )}
                       </div>
-                      <p className="mt-0.5 truncate font-mono text-[10.5px] text-subtle">
+                      <p className="mt-0.5 truncate font-mono text-micro text-subtle">
                         {d.commit_sha ? `${d.commit_sha.slice(0, 7)} · ` : ''}
                         dep-{shortId} · {timeAgo(d.created_at)}
                         {d.finished_at ? ` · ${fmtDuration(d.finished_at - d.created_at)}` : ''}
@@ -432,7 +435,7 @@ export default function LogsTab({
                 );
               })}
             </div>
-          )}
+          </Menu>
         </div>
 
         {/* Sub-pestañas limpias: Solo Aplicación y Compilación */}

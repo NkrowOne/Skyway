@@ -3,7 +3,7 @@ import { Lock, Search } from 'lucide-react';
 import { api } from '../api';
 import { GithubConnector, GithubInstallation, GithubRepo } from '../types';
 import { cx } from '../utils';
-import { Spinner } from './ui';
+import { ErrorState, Spinner } from './ui';
 
 /**
  * De dónde salen los repos que se pueden desplegar en un proyecto.
@@ -196,7 +196,15 @@ export function GithubRepoPicker({
       </div>
       <div className="max-h-44 overflow-y-auto p-1.5">
         {repos.isLoading && <Spinner label="Cargando repos…" />}
-        {repos.isError && <p className="px-2.5 py-4 text-center text-xs text-err">{(repos.error as Error).message}</p>}
+        {repos.isError && (
+          <ErrorState
+            compact
+            title="No se han podido cargar los repositorios"
+            error={repos.error}
+            onRetry={() => repos.refetch()}
+            retrying={repos.isFetching}
+          />
+        )}
         {repos.data && list.length === 0 && (
           <p className="px-2.5 py-4 text-center text-xs text-subtle">
             {needle ? `Sin repos que coincidan con «${filter}»` : 'Esta cuenta no expone ningún repo a Skyway.'}
@@ -210,13 +218,13 @@ export function GithubRepoPicker({
               type="button"
               onClick={() => onPick(r)}
               className={cx(
-                'flex w-full items-center gap-2 rounded-md px-2.5 py-[7px] text-left transition-colors',
+                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors',
                 active ? 'bg-acc/[.14] shadow-[inset_2px_0_0_var(--color-acc)]' : 'hover:bg-surface2',
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">{r.fullName}</span>
               {r.private && (
-                <span className="flex shrink-0 items-center gap-1 rounded-full bg-surface2 px-1.5 py-0.5 text-[10px] text-sub">
+                <span className="flex shrink-0 items-center gap-1 rounded-md border border-line bg-surface2 px-1.5 py-0.5 text-micro text-sub">
                   <Lock size={9} /> privado
                 </span>
               )}

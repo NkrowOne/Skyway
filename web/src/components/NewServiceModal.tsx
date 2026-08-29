@@ -221,16 +221,16 @@ export default function NewServiceModal({
   };
 
   return (
-    <Modal open={open} onClose={close} title="Nuevo servicio" wide>
+    <Modal open={open} onClose={close} title="Nuevo servicio" wide dirty={step !== 'pick'}>
       {step === 'pick' && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
             onClick={() => setStep('git')}
-            className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-acc/60"
+            className="card card-hover flex flex-col items-start gap-3 p-5 text-left"
           >
             <LogoRow kinds={['github']} size={24} />
             <div>
-              <h3 className="text-sm font-medium group-hover:text-acc">Repositorio de GitHub</h3>
+              <h3 className="text-sm font-medium">Repositorio de GitHub</h3>
               <p className="mt-1 text-xs text-sub">
                 Clona, construye (Dockerfile o Nixpacks) y despliega automáticamente
               </p>
@@ -238,21 +238,21 @@ export default function NewServiceModal({
           </button>
           <button
             onClick={() => setStep('database')}
-            className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-info/60"
+            className="card card-hover flex flex-col items-start gap-3 p-5 text-left"
           >
             <LogoRow kinds={['postgres', 'redis', 'mysql', 'mongo']} size={17} />
             <div>
-              <h3 className="text-sm font-medium group-hover:text-info">Base de datos</h3>
+              <h3 className="text-sm font-medium">Base de datos</h3>
               <p className="mt-1 text-xs text-sub">PostgreSQL, Redis, MySQL, MongoDB o MinIO listos para usar</p>
             </div>
           </button>
           <button
             onClick={() => setStep('stack')}
-            className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-ok/60"
+            className="card card-hover flex flex-col items-start gap-3 p-5 text-left"
           >
             <LogoRow kinds={['supabase', 'wordpress', 'n8n', 'ghost']} size={19} />
             <div>
-              <h3 className="text-sm font-medium group-hover:text-ok">Aplicación completa</h3>
+              <h3 className="text-sm font-medium">Aplicación completa</h3>
               <p className="mt-1 text-xs text-sub">
                 Supabase, WordPress, Ghost, n8n o Metabase con todos sus servicios y su base de datos
               </p>
@@ -260,11 +260,11 @@ export default function NewServiceModal({
           </button>
           <button
             onClick={() => setStep('image')}
-            className="card group flex flex-col items-start gap-3 border-line p-5 text-left transition-all hover:border-warn/60"
+            className="card card-hover flex flex-col items-start gap-3 p-5 text-left"
           >
             <LogoRow kinds={['docker']} size={24} />
             <div>
-              <h3 className="text-sm font-medium group-hover:text-warn">Imagen Docker</h3>
+              <h3 className="text-sm font-medium">Imagen Docker</h3>
               <p className="mt-1 text-xs text-sub">Cualquier imagen pública: Plausible, Uptime Kuma, Grafana...</p>
             </div>
           </button>
@@ -290,9 +290,9 @@ export default function NewServiceModal({
               >
                 <LogoRow kinds={s.logos.map(asKind)} size={19} />
                 <div className="min-w-0">
-                  <h3 className="text-sm font-medium group-hover:text-ok">{s.label}</h3>
+                  <h3 className="text-sm font-medium">{s.label}</h3>
                   <p className="mt-1 text-xs text-sub">{s.description}</p>
-                  <p className="mt-1.5 text-[11px] text-subtle">
+                  <p className="mt-1.5 text-xs text-subtle">
                     {s.services.length === 1 ? '1 servicio' : `${s.services.length} servicios`} ·{' '}
                     {Math.round(s.memoryHintMb / 1024)} GB de RAM recomendados
                   </p>
@@ -321,7 +321,7 @@ export default function NewServiceModal({
                 Ver qué crea
               </Button>
             </div>
-            <p className="mt-2 text-[11px] text-subtle">
+            <p className="mt-2 text-xs text-subtle">
               Skyway traduce su cableado: los dominios internos de Railway pasan a los de aquí y lo que no tenga
               equivalente se te dice antes de crear nada.
             </p>
@@ -356,7 +356,7 @@ export default function NewServiceModal({
               href={`https://railway.com/new/template/${tplPlan.code}`}
               target="_blank"
               rel="noreferrer"
-              className="flex shrink-0 items-center gap-1 text-[11px] text-sub hover:text-txt"
+              className="flex shrink-0 items-center gap-1 text-xs text-sub hover:text-txt"
             >
               En Railway <ExternalLink size={11} />
             </a>
@@ -368,22 +368,22 @@ export default function NewServiceModal({
               .map((svc) => (
                 <div
                   key={svc.slug}
-                  className="flex flex-col gap-0.5 px-2.5 py-[7px] sm:flex-row sm:items-center sm:gap-2.5"
+                  className="flex flex-col gap-0.5 px-2.5 py-1.5 sm:flex-row sm:items-center sm:gap-2.5"
                 >
                   <span className="flex min-w-0 items-center gap-2.5">
                     <span className="shrink-0" style={{ color: moduleFg(templateKind(svc)) }}>
                       <ModuleLogo kind={templateKind(svc)} size={15} />
                     </span>
-                    <span className="truncate font-mono text-[11px] sm:w-32 sm:shrink-0">
+                    <span className="truncate font-mono text-xs sm:w-32 sm:shrink-0">
                       {slugPreview(stackPrefix) || tplPlan.prefix}
                       {svc.slug.slice(tplPlan.prefix.length)}
                     </span>
                   </span>
-                  <span className="min-w-0 flex-1 truncate pl-[25px] font-mono text-[11px] text-subtle sm:pl-0">
+                  <span className="min-w-0 flex-1 truncate pl-6 font-mono text-xs text-subtle sm:pl-0">
                     {svc.image}
                   </span>
                   {svc.public && (
-                    <span className="ml-[25px] w-fit shrink-0 rounded-full bg-surface2 px-1.5 py-0.5 text-[10px] text-sub sm:ml-0">
+                    <span className="ml-6 w-fit shrink-0 rounded-md border border-line bg-surface2 px-1.5 py-0.5 text-micro text-sub sm:ml-0">
                       entrada pública
                     </span>
                   )}
@@ -411,7 +411,7 @@ export default function NewServiceModal({
           </div>
 
           {(tplPlan.warnings.length > 0 || tplPlan.services.some((s) => s.notes.length > 0)) && (
-            <ul className="space-y-1 text-[11px] text-subtle">
+            <ul className="space-y-1 text-xs text-subtle">
               {tplPlan.warnings.map((w) => (
                 <li key={w} className="flex gap-1.5">
                   <span aria-hidden>·</span>
@@ -463,7 +463,7 @@ export default function NewServiceModal({
               href={selectedStack.docsUrl}
               target="_blank"
               rel="noreferrer"
-              className="flex shrink-0 items-center gap-1 text-[11px] text-sub hover:text-txt"
+              className="flex shrink-0 items-center gap-1 text-xs text-sub hover:text-txt"
             >
               Documentación <ExternalLink size={11} />
             </a>
@@ -473,21 +473,21 @@ export default function NewServiceModal({
             {selectedStack.services.map((svc) => (
               <div
                 key={svc.key}
-                className="flex flex-col gap-0.5 px-2.5 py-[7px] sm:flex-row sm:items-center sm:gap-2.5"
+                className="flex flex-col gap-0.5 px-2.5 py-1.5 sm:flex-row sm:items-center sm:gap-2.5"
               >
                 <span className="flex min-w-0 items-center gap-2.5">
                   <span className="shrink-0" style={{ color: moduleFg(asKind(svc.icon)) }}>
                     <ModuleLogo kind={asKind(svc.icon)} size={15} />
                   </span>
-                  <span className="truncate font-mono text-[11px] sm:w-28 sm:shrink-0">
+                  <span className="truncate font-mono text-xs sm:w-28 sm:shrink-0">
                     {slugPreview(stackPrefix) || selectedStack.defaultPrefix}-{svc.key}
                   </span>
                 </span>
-                <span className="min-w-0 flex-1 truncate pl-[25px] text-[11px] text-sub sm:pl-0">
+                <span className="min-w-0 flex-1 truncate pl-6 text-xs text-sub sm:pl-0">
                   {svc.description}
                 </span>
                 {svc.public && (
-                  <span className="ml-[25px] w-fit shrink-0 rounded-full bg-surface2 px-1.5 py-0.5 text-[10px] text-sub sm:ml-0">
+                  <span className="ml-6 w-fit shrink-0 rounded-md border border-line bg-surface2 px-1.5 py-0.5 text-micro text-sub sm:ml-0">
                     entrada pública
                   </span>
                 )}
@@ -517,7 +517,7 @@ export default function NewServiceModal({
             </Field>
           </div>
 
-          <ul className="space-y-1 text-[11px] text-subtle">
+          <ul className="space-y-1 text-xs text-subtle">
             {selectedStack.notes.map((note) => (
               <li key={note} className="flex gap-1.5">
                 <span aria-hidden>·</span>
@@ -624,7 +624,7 @@ export default function NewServiceModal({
             </Field>
           ) : (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-line bg-bg px-3.5 py-3">
-              <p className="min-w-0 flex-1 text-[11px] text-sub">
+              <p className="min-w-0 flex-1 text-xs text-sub">
                 Sin cuenta de GitHub conectada solo se pueden clonar repositorios públicos. Conéctala y eliges tus repos
                 privados de una lista, sin pegar URLs ni tokens.
               </p>
@@ -683,7 +683,7 @@ export default function NewServiceModal({
                 <input className="input" value={branch} onChange={(e) => setBranch(e.target.value)} />
               )}
             </Field>
-            <Field label="Puerto de la app" hint="Vacío = se detecta del EXPOSE de la imagen (y si no lo declara, 3000)">
+            <Field label="Puerto interno" hint="Vacío = se detecta del EXPOSE de la imagen (y si no lo declara, 3000)">
               <input
                 className="input"
                 type="number"
@@ -737,7 +737,7 @@ export default function NewServiceModal({
                 <div className="min-w-0">
                   <h3 className="text-sm font-medium">{tpl.label}</h3>
                   <p className="truncate text-xs text-sub">{tpl.description}</p>
-                  <p className="mt-0.5 truncate font-mono text-[11px] text-subtle">
+                  <p className="mt-0.5 truncate font-mono text-xs text-subtle">
                     {tpl.image}:{tpl.defaultVersion}
                   </p>
                 </div>

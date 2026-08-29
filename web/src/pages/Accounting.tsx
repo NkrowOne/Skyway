@@ -1,8 +1,8 @@
 import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, RefreshCw, Send, Sparkles, Trash2, Zap } from 'lucide-react';
+import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, RefreshCw, Send, Trash2, Zap } from 'lucide-react';
 import { api } from '../api';
-import { Button, Field, NumberInput, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, EmptyState, ErrorState, Field, NumberInput, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { RevenueBars } from '../components/BillingCharts';
 import { AccountingInvoice, AccountingSummary, AiGatewayConfig, AiModelPrices, AiPriceSync, AiPriceSyncState, BillingAutomation, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
 import { cx, fmtDate, fmtMoney, timeAgo } from '../utils';
@@ -14,7 +14,7 @@ const monthLabel = (t: number) => new Date(t).toLocaleDateString('es', { month: 
 function Kpi({ label, value, tone }: { label: string; value: string; tone?: 'ok' | 'acc' | 'warn' }) {
   return (
     <div className="card p-4">
-      <p className="text-[11px] text-subtle">{label}</p>
+      <p className="text-xs text-subtle">{label}</p>
       <p className={cx('mt-1 tnum text-2xl font-semibold leading-none', tone === 'ok' ? 'text-ok' : tone === 'warn' ? 'text-warn' : 'text-txt')}>{value}</p>
     </div>
   );
@@ -44,34 +44,43 @@ export default function AccountingPage() {
     <div className="mx-auto max-w-[1120px] px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-[-.02em]">Contabilidad</h1>
+          <h1 className="text-2xl font-semibold">Contabilidad</h1>
           <p className="mt-1.5 text-sm text-sub">Ingresos de tu empresa: lo facturado a los clientes, lo cobrado y lo pendiente</p>
         </div>
-        <a href="/api/accounting/export.csv" download className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface2 px-3.5 text-[13px] font-medium text-txt hover:border-acc/50">
+        <a href="/api/accounting/export.csv" download className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface2 px-3.5 text-sm font-medium text-txt hover:border-acc/50">
           <Download size={15} /> Exportar CSV
         </a>
       </div>
 
       {summary.isLoading ? (
         <Skeleton className="h-24 w-full" />
+      ) : !s ? (
+        <div className="card">
+          <ErrorState
+            title="No se ha podido cargar el resumen de contabilidad"
+            error={summary.error}
+            onRetry={() => summary.refetch()}
+            retrying={summary.isFetching}
+          />
+        </div>
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Kpi label="Facturado" value={money(s!.totals.invoiced)} />
-            <Kpi label="Cobrado" value={money(s!.totals.paid)} tone="ok" />
-            <Kpi label="Pendiente de cobro" value={money(s!.totals.pending)} tone={s!.totals.pending > 0 ? 'warn' : undefined} />
-            <Kpi label="Facturas" value={String(s!.totals.count)} />
+            <Kpi label="Facturado" value={money(s.totals.invoiced)} />
+            <Kpi label="Cobrado" value={money(s.totals.paid)} tone="ok" />
+            <Kpi label="Pendiente de cobro" value={money(s.totals.pending)} tone={s.totals.pending > 0 ? 'warn' : undefined} />
+            <Kpi label="Facturas" value={String(s.totals.count)} />
           </div>
 
           {/* Los importes NO se suman entre divisas: los totales de arriba son los de
               la moneda de la empresa y el resto se desglosa aparte. */}
-          {(s!.byCurrency ?? []).filter((b) => b.currency !== cur).length > 0 && (
+          {(s.byCurrency ?? []).filter((b) => b.currency !== cur).length > 0 && (
             <section className="card mt-3 px-4 py-3">
-              <h2 className="text-[13px] font-semibold">Facturación en otras monedas</h2>
-              <p className="mt-0.5 text-[11px] text-subtle">No se suman a los totales de arriba: cada divisa se contabiliza por separado.</p>
+              <h2 className="text-base font-semibold">Facturación en otras monedas</h2>
+              <p className="mt-0.5 text-xs text-subtle">No se suman a los totales de arriba: cada divisa se contabiliza por separado.</p>
               <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1.5">
-                {s!.byCurrency!.filter((b) => b.currency !== cur).map((b) => (
-                  <span key={b.currency} className="text-[12px] tnum">
+                {s.byCurrency!.filter((b) => b.currency !== cur).map((b) => (
+                  <span key={b.currency} className="text-xs tnum">
                     <span className="font-semibold">{b.currency}</span>
                     <span className="text-sub"> · facturado {fmtMoney(b.invoiced, b.currency)} · cobrado {fmtMoney(b.paid, b.currency)} · {b.count} fact.</span>
                   </span>
@@ -81,31 +90,31 @@ export default function AccountingPage() {
           )}
 
           <div className="mt-5">
-            <RevenueBars points={s!.series} format={money} labelFor={monthLabel} />
+            <RevenueBars points={s.series} format={money} labelFor={monthLabel} />
           </div>
 
           <div className="mt-5 grid gap-5 lg:grid-cols-2">
             <section className="card overflow-hidden">
               <div className="border-b border-line px-4 py-3">
-                <h2 className="text-sm font-semibold">Por cliente</h2>
+                <h2 className="text-base font-semibold">Por cliente</h2>
               </div>
-              {s!.byClient.length === 0 ? (
+              {s.byClient.length === 0 ? (
                 <p className="px-4 py-8 text-center text-xs text-subtle">Aún no hay facturación por cliente.</p>
               ) : (
-                s!.byClient.map((c, i) => {
+                s.byClient.map((c, i) => {
                   const pct = c.invoiced > 0 ? Math.round((c.paid / c.invoiced) * 100) : 0;
                   return (
                     <div key={`${c.workspaceId}-${c.currency ?? cur}`} className={cx('px-4 py-3', i > 0 && 'border-t border-line')}>
                       <div className="flex items-center justify-between gap-2">
-                        <span className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium">
+                        <span className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium">
                           <Building2 size={12} className="shrink-0 text-subtle" /> {c.name}
                         </span>
-                        <span className="shrink-0 text-[13px] font-semibold tnum">{fmtMoney(c.invoiced, c.currency ?? cur)}</span>
+                        <span className="shrink-0 text-sm font-semibold tnum">{fmtMoney(c.invoiced, c.currency ?? cur)}</span>
                       </div>
                       <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface2">
                         <div className="h-full rounded-full bg-ok" style={{ width: `${pct}%` }} />
                       </div>
-                      <p className="mt-1 text-[11px] text-subtle tnum">{money(c.paid)} cobrado · {pct}%</p>
+                      <p className="mt-1 text-xs text-subtle tnum">{money(c.paid)} cobrado · {pct}%</p>
                     </div>
                   );
                 })
@@ -114,13 +123,13 @@ export default function AccountingPage() {
 
             <section className="card overflow-hidden">
               <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
-                <h2 className="text-sm font-semibold">Facturas</h2>
+                <h2 className="text-base font-semibold">Facturas</h2>
                 <div className="flex gap-1 overflow-x-auto [scrollbar-width:none]">
                   {FILTERS.map((f) => (
                     <button
                       key={f.key || 'all'}
                       onClick={() => setStatusFilter(f.key)}
-                      className={cx('shrink-0 rounded-md px-2 py-0.5 text-[11px] transition-colors', statusFilter === f.key ? 'bg-acc/[.15] font-medium text-acc-soft' : 'text-subtle hover:text-txt')}
+                      className={cx('shrink-0 rounded-md px-2 py-0.5 text-xs transition-colors', statusFilter === f.key ? 'bg-acc/[.15] font-medium text-acc-soft' : 'text-subtle hover:text-txt')}
                     >
                       {f.label}
                     </button>
@@ -128,21 +137,29 @@ export default function AccountingPage() {
                 </div>
               </div>
               <div className="max-h-[360px] overflow-y-auto">
-                {(invoicesQ.data?.invoices ?? []).length === 0 ? (
-                  <p className="px-4 py-8 text-center text-xs text-subtle">Sin facturas.</p>
+                {invoicesQ.isError ? (
+                  <ErrorState
+                    compact
+                    title="No se han podido cargar las facturas"
+                    error={invoicesQ.error}
+                    onRetry={() => invoicesQ.refetch()}
+                    retrying={invoicesQ.isFetching}
+                  />
+                ) : (invoicesQ.data?.invoices ?? []).length === 0 ? (
+                  <EmptyState compact title={statusFilter ? 'Ninguna factura con ese estado' : 'Todavía no hay facturas'} />
                 ) : (
                   invoicesQ.data!.invoices.map((inv, i) => (
                     <div key={inv.id} className={cx('flex items-center justify-between gap-2 px-4 py-2.5', i > 0 && 'border-t border-line')}>
                       <div className="min-w-0">
-                        <p className="flex items-center gap-2 text-[13px]">
-                          <span className="font-mono text-[11px] text-subtle">{inv.number ?? '—'}</span>
+                        <p className="flex items-center gap-2 text-sm">
+                          <span className="font-mono text-xs text-subtle">{inv.number ?? '—'}</span>
                           <span className="truncate">{inv.workspace_name ?? 'Sin cuenta'}</span>
                         </p>
-                        <p className="text-[11px] text-subtle">{fmtDate(inv.period_start)}{inv.payment_method === 'stripe' ? ' · Stripe' : inv.payment_method === 'bank_transfer' ? ' · transferencia' : ''}</p>
+                        <p className="text-xs text-subtle">{fmtDate(inv.period_start)}{inv.payment_method === 'stripe' ? ' · Stripe' : inv.payment_method === 'bank_transfer' ? ' · transferencia' : ''}</p>
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
-                        <span className="text-[13px] font-semibold tnum">{fmtMoney(inv.total_cents, inv.currency)}</span>
-                        <StatusBadge tone={INV_TONE[inv.status]} label={INV_LABEL[inv.status]} dot={false} className="text-[10px]" />
+                        <span className="text-sm font-semibold tnum">{fmtMoney(inv.total_cents, inv.currency)}</span>
+                        <StatusBadge tone={INV_TONE[inv.status]} label={INV_LABEL[inv.status]} dot={false} className="text-micro" />
                       </div>
                     </div>
                   ))
@@ -215,7 +232,7 @@ function BillingAutomationSettings() {
 
   return (
     <section className="card p-5">
-      <h2 className="flex items-center gap-2 text-sm font-semibold"><CalendarClock size={15} className="text-acc-soft" /> Automatización de facturación</h2>
+      <h2 className="flex items-center gap-2 text-base font-semibold"><CalendarClock size={15} className="text-acc-soft" /> Automatización de facturación</h2>
       <p className="mt-1 max-w-2xl text-xs text-subtle">
         Skyway lleva la facturación recurrente por ti. Aquí decides cuánto hace solo —desde preparar el borrador hasta emitirlo— y qué ocurre cuando un cliente no paga. El scheduler lo revisa cada 10 minutos.
       </p>
@@ -223,22 +240,22 @@ function BillingAutomationSettings() {
       <div className="mt-4 flex flex-col divide-y divide-line rounded-xl border border-line">
         <div className="flex items-start justify-between gap-4 p-3.5">
           <div className="min-w-0">
-            <p className="flex items-center gap-2 text-[13px] font-medium"><CalendarClock size={14} className="text-subtle" /> Generar el borrador del ciclo automáticamente</p>
-            <p className="mt-1 text-[12px] text-subtle">En el día de facturación de cada cuenta, Skyway reúne el plan, las suscripciones, el uso medido y los pagos únicos pendientes en un borrador de factura (no lo emite).</p>
+            <p className="flex items-center gap-2 text-sm font-medium"><CalendarClock size={14} className="text-subtle" /> Generar el borrador del ciclo automáticamente</p>
+            <p className="mt-1 text-xs text-subtle">En el día de facturación de cada cuenta, Skyway reúne el plan, las suscripciones, el uso medido y los pagos únicos pendientes en un borrador de factura (no lo emite).</p>
           </div>
           <Toggle checked={draft.autoGenerate} onChange={(v) => set({ autoGenerate: v })} />
         </div>
         <div className={cx('flex items-start justify-between gap-4 p-3.5', !draft.autoGenerate && 'opacity-60')}>
           <div className="min-w-0">
-            <p className="flex items-center gap-2 text-[13px] font-medium"><Zap size={14} className="text-warn" /> Emitir la factura automáticamente</p>
-            <p className="mt-1 text-[12px] text-subtle">Además de generarla, la <b>emite</b>: le asigna número de serie y la bloquea (inmutable). La emisión es un acto legal irreversible; actívalo solo si quieres que cada ciclo se numere y emita sin revisión previa. Apagado: revisas el borrador y lo emites tú.</p>
+            <p className="flex items-center gap-2 text-sm font-medium"><Zap size={14} className="text-warn" /> Emitir la factura automáticamente</p>
+            <p className="mt-1 text-xs text-subtle">Además de generarla, la <b>emite</b>: le asigna número de serie y la bloquea (inmutable). La emisión es un acto legal irreversible; actívalo solo si quieres que cada ciclo se numere y emita sin revisión previa. Apagado: revisas el borrador y lo emites tú.</p>
           </div>
           <Toggle checked={draft.autoIssue} disabled={!draft.autoGenerate} onChange={(v) => set({ autoIssue: v })} />
         </div>
         <div className="flex items-start justify-between gap-4 border-t border-line p-3.5">
           <div className="min-w-0">
-            <p className="flex items-center gap-2 text-[13px] font-medium"><Send size={14} className="text-info" /> Enviar la factura al cliente al emitirla</p>
-            <p className="mt-1 text-[12px] text-subtle">
+            <p className="flex items-center gap-2 text-sm font-medium"><Send size={14} className="text-info" /> Enviar la factura al cliente al emitirla</p>
+            <p className="mt-1 text-xs text-subtle">
               Manda la factura en PDF al email de facturación de la cuenta, en cuanto se emite (a mano o automáticamente).
               Requiere el servidor de correo configurado en «Datos de la empresa». Siempre puedes reenviarla desde la ficha de la cuenta.
             </p>
@@ -247,8 +264,8 @@ function BillingAutomationSettings() {
         </div>
       </div>
 
-      <h3 className="mt-5 flex items-center gap-2 text-[13px] font-medium"><Ban size={14} className="text-err" /> Impago (corte progresivo)</h3>
-      <p className="mt-1 text-[12px] text-subtle">
+      <h3 className="mt-5 flex items-center gap-2 text-sm font-medium"><Ban size={14} className="text-err" /> Impago (corte progresivo)</h3>
+      <p className="mt-1 text-xs text-subtle">
         Una factura emitida y no cobrada vence a los <b className="tnum text-sub">{terms}</b> días (condiciones de pago, en «Datos de la empresa»). Contando desde ese vencimiento:
       </p>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -259,7 +276,7 @@ function BillingAutomationSettings() {
           <NumberInput className={cx('input tnum', invalid && 'border-err')} min={0} max={365} value={draft.dunningCancelDays} onChange={(v) => set({ dunningCancelDays: v })} />
         </Field>
       </div>
-      <div className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-subtle">
+      <div className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-subtle">
         <span className="rounded bg-surface2 px-2 py-0.5">Vence a +{terms}d</span>
         <span className="text-line">→</span>
         <span className="rounded bg-warn/[.15] px-2 py-0.5 text-warn">Aviso al vencer</span>
@@ -268,10 +285,10 @@ function BillingAutomationSettings() {
         <span className="text-line">→</span>
         <span className="rounded bg-err/[.15] px-2 py-0.5 text-err">Cancelación +{draft.dunningCancelDays}d</span>
       </div>
-      {invalid && <p className="mt-2 text-[12px] text-err">Los días para cancelar deben ser ≥ los días para suspender.</p>}
+      {invalid && <p className="mt-2 text-xs text-err">Los días para cancelar deben ser ≥ los días para suspender.</p>}
 
       <div className="mt-4 flex items-center justify-between gap-3">
-        <p className="text-[11px] text-subtle">Al cobrarse una factura vencida, el servicio se reactiva solo (salvo cuentas ya canceladas, que requieren alta manual).</p>
+        <p className="text-xs text-subtle">Al cobrarse una factura vencida, el servicio se reactiva solo (salvo cuentas ya canceladas, que requieren alta manual).</p>
         <Button size="sm" onClick={() => save.mutate()} loading={save.isPending} disabled={invalid}>Guardar</Button>
       </div>
     </section>
@@ -302,7 +319,7 @@ function AiGatewaySettings() {
   return (
     <>
       <section className="card p-5">
-        <h2 className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} className="text-acc-soft" /> Gateway de IA (Gemini)</h2>
+        <h2 className="text-base font-semibold">Gateway de IA (Gemini)</h2>
         <p className="mt-1 text-xs text-subtle">
           Tu clave de Google Gemini. Skyway proxya las peticiones de los clientes con ella (nunca se expone), mide los tokens y los factura por cuenta. Cada cliente usa una clave <span className="font-mono">skai_…</span> propia, revocable. Admite <span className="font-mono">generateContent</span>, streaming SSE y API compatible con OpenAI.
         </p>
@@ -311,11 +328,11 @@ function AiGatewaySettings() {
             <input className="input font-mono" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={q.data.hasGeminiKey ? '•••••••• configurada' : 'AIza…'} />
           </Field>
           <Field label="Modelos permitidos" hint="separados por comas; los de imagen u otros quedan fuera a propósito">
-            <textarea className="input min-h-16 font-mono text-[12px]" value={models} onChange={(e) => setModels(e.target.value)} placeholder="gemini-2.5-flash, gemini-2.5-pro" />
+            <textarea className="input min-h-16 font-mono text-xs" value={models} onChange={(e) => setModels(e.target.value)} placeholder="gemini-2.5-flash, gemini-2.5-pro" />
           </Field>
         </div>
         <div className="mt-3 flex items-center justify-between">
-          <p className="text-[11px] text-subtle">Los precios de venta se definen como productos de categoría IA en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>.</p>
+          <p className="text-xs text-subtle">Los precios de venta se definen como productos de categoría IA en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>.</p>
           <Button size="sm" onClick={() => save.mutate()} loading={save.isPending}>Guardar</Button>
         </div>
       </section>
@@ -411,7 +428,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
   const rows = allowedModels.length ? allowedModels : q.data.models.map((m) => m.model);
   return (
     <section className="card p-5">
-      <h2 className="flex items-center gap-2 text-sm font-semibold"><Coins size={15} className="text-ok" /> Cuánto ganas por modelo</h2>
+      <h2 className="flex items-center gap-2 text-base font-semibold"><Coins size={15} className="text-ok" /> Cuánto ganas por modelo</h2>
       <p className="mt-1 max-w-2xl text-xs text-subtle">
         Skyway trae el coste de cada modelo desde la tarifa vigente de Google; tú pones el margen que quieres. Te decimos a qué precio venderlo y cuánto ganas por millón de tokens. Después pon ese precio en el producto de IA del <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a> para cobrarlo.
       </p>
@@ -440,10 +457,10 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
               {/* Cabecera: modelo + beneficio como cifra protagonista. */}
               <div className="flex items-start justify-between gap-3">
                 <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5">
-                  <span className="font-mono text-[13px]">{model}</span>
+                  <span className="font-mono text-sm">{model}</span>
                   {existing && (
                     <span
-                      className={cx('rounded px-1.5 py-0.5 text-[10px] leading-none', existing.source === 'auto' ? 'bg-info/[.15] text-info' : 'bg-surface2 text-subtle')}
+                      className={cx('rounded px-1.5 py-0.5 text-micro leading-none', existing.source === 'auto' ? 'bg-info/[.15] text-info' : 'bg-surface2 text-subtle')}
                       title={
                         existing.source === 'auto'
                           ? `Coste tomado de la tarifa de Google${existing.synced_at ? ` (${timeAgo(existing.synced_at)})` : ''}. Si lo editas, pasa a manual.`
@@ -458,10 +475,10 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                   {profitOut != null ? (
                     <>
                       <p className="tnum text-lg font-semibold leading-none text-ok">{eurMd(profitOut, currency)}</p>
-                      <p className="mt-1 text-[10px] uppercase tracking-wide text-subtle">ganas en salida</p>
+                      <p className="mt-1 eyebrow text-subtle">ganas en salida</p>
                     </>
                   ) : (
-                    <p className="text-[11px] text-subtle">Añade coste y margen</p>
+                    <p className="text-xs text-subtle">Añade coste y margen</p>
                   )}
                 </div>
               </div>
@@ -471,33 +488,33 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                 <div className="h-full bg-subtle/50" style={{ width: `${costFrac * 100}%` }} />
                 <div className="h-full bg-ok" style={{ width: `${(1 - costFrac) * 100}%` }} />
               </div>
-              <div className="mt-1 flex justify-between text-[10px] text-subtle">
+              <div className="mt-1 flex justify-between text-micro text-subtle">
                 <span>Coste {costOut > 0 ? eurMd(costOut, currency) : '—'}</span>
                 <span className="text-ok">Beneficio {profitOut != null ? eurMd(profitOut, currency) : '—'}</span>
               </div>
 
               {/* Margen: deslizador (simple) + valor exacto. */}
               <div className="mt-4 flex items-center gap-3">
-                <span className="w-16 shrink-0 text-[12px] text-subtle">Margen</span>
+                <span className="w-16 shrink-0 text-xs text-subtle">Margen</span>
                 <input type="range" min={0} max={90} step={1} value={Math.min(90, Math.round(margin))} onChange={(e) => setDraft(model, { margin: e.target.value })} className="h-1.5 flex-1 accent-acc" />
                 <div className="relative">
                   <input className="input h-8 w-16 tnum pr-6 text-right" inputMode="decimal" value={d.margin} onChange={(e) => setDraft(model, { margin: e.target.value })} placeholder="0" />
-                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-subtle">%</span>
+                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-subtle">%</span>
                 </div>
               </div>
 
               {/* Coste → precio de venta, por tipo de token. */}
               <div className="mt-3 grid grid-cols-[64px_1fr_1fr] items-center gap-x-2 gap-y-1.5">
                 <span />
-                <span className="text-[10px] uppercase tracking-wide text-subtle">Te cuesta {cur(currency)}/M</span>
-                <span className="text-right text-[10px] uppercase tracking-wide text-subtle">Vendes a</span>
+                <span className="eyebrow text-subtle">Te cuesta {cur(currency)}/M</span>
+                <span className="text-right eyebrow text-subtle">Vendes a</span>
                 {COST_TYPES.map((t) => {
                   const price = priceOf(num(d[t.key]), margin);
                   return (
                     <Fragment key={t.key}>
-                      <span className="text-[12px] text-subtle" title={t.hint}>{t.label}</span>
+                      <span className="text-xs text-subtle" title={t.hint}>{t.label}</span>
                       <input className="input h-8 tnum" inputMode="decimal" value={d[t.key]} onChange={(e) => setDraft(model, { [t.key]: e.target.value })} placeholder="0" />
-                      <span className="tnum text-right text-[13px] text-acc-soft">{price == null ? '—' : eurMd(price, currency)}</span>
+                      <span className="tnum text-right text-sm text-acc-soft">{price == null ? '—' : eurMd(price, currency)}</span>
                     </Fragment>
                   );
                 })}
@@ -505,10 +522,10 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
 
               {/* Precio de lista de Google (referencia en USD) para comparar con tu coste. */}
               {ref && (
-                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-subtle">
-                  <span className="uppercase tracking-wide">Lista Google · $/M</span>
+                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-micro text-subtle">
+                  <span className="eyebrow">Lista Google · $/M</span>
                   <span className="tnum">entrada {usdM(ref.in)} · caché {usdM(ref.cache)} · salida {usdM(ref.out)}</span>
-                  <button className="text-acc-soft hover:underline" title="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" onClick={() => setDraft(model, { in: String(ref.in), cache: String(ref.cache), out: String(ref.out) })}>usar</button>
+                  <button className="text-acc-soft hover:underline" title="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" aria-label="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" onClick={() => setDraft(model, { in: String(ref.in), cache: String(ref.cache), out: String(ref.out) })}>usar</button>
                 </div>
               )}
 
@@ -516,7 +533,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                 {existing && (
                   <button
                     className="mr-auto rounded p-1.5 text-subtle hover:text-err"
-                    title={existing.source === 'manual' ? 'Descartar tu coste y volver a la tarifa automática de Google' : 'Borrar el coste guardado (la próxima actualización lo repone)'}
+                    title={existing.source === 'manual' ? 'Descartar tu coste y volver a la tarifa automática de Google' : 'Borrar el coste guardado (la próxima actualización lo repone)'} aria-label={existing.source === 'manual' ? 'Descartar tu coste y volver a la tarifa automática de Google' : 'Borrar el coste guardado (la próxima actualización lo repone)'}
                     onClick={() => del.mutate(model)}
                   >
                     <Trash2 size={13} />
@@ -528,7 +545,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
           );
         })}
       </div>
-      <p className="mt-3 text-[11px] text-subtle">
+      <p className="mt-3 text-xs text-subtle">
         «Lista Google» es la tarifa publicada en USD, antes de convertir a {s.currency}; tu coste real puede variar por volumen o por acuerdos con Google. Consulta el precio vigente en <a href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank" rel="noopener noreferrer" className="text-acc-soft hover:underline">ai.google.dev</a>.
       </p>
     </section>
@@ -564,10 +581,10 @@ function PriceSyncBar({
     <div className="mt-4 rounded-xl border border-line bg-bg/40 p-3.5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="flex items-center gap-2 text-[13px] font-medium">
+          <p className="flex items-center gap-2 text-sm font-medium">
             <RefreshCw size={14} className={cx('text-info', refreshing && 'animate-spin')} /> Tarifa de Google al día
           </p>
-          <p className="mt-1 text-[12px] text-subtle">
+          <p className="mt-1 text-xs text-subtle">
             {sync.lastAt ? (
               <>
                 Última comprobación {timeAgo(sync.lastAt)}
@@ -591,10 +608,10 @@ function PriceSyncBar({
         </div>
       </div>
 
-      {failed && <p className="mt-2 text-[12px] text-err">{last?.error}</p>}
+      {failed && <p className="mt-2 text-xs text-err">{last?.error}</p>}
 
       {last && last.ok && (
-        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-subtle">
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-subtle">
           {!!last.updated.length && <span className="rounded bg-ok/[.15] px-2 py-0.5 text-ok">{last.updated.length} actualizado(s)</span>}
           {!!last.added.length && <span className="rounded bg-info/[.15] px-2 py-0.5 text-info">{last.added.length} nuevo(s)</span>}
           {!!last.manual.length && <span className="rounded bg-surface2 px-2 py-0.5" title={last.manual.join(', ')}>{last.manual.length} a mano (respetado)</span>}
@@ -607,12 +624,12 @@ function PriceSyncBar({
       )}
 
       {!!last?.discovered.length && (
-        <p className="mt-2 text-[11px] text-warn">
+        <p className="mt-2 text-xs text-warn">
           Modelos nuevos en Google con tarifa conocida: <span className="font-mono">{last.discovered.join(', ')}</span>. Añádelos arriba en «Modelos permitidos» si quieres venderlos.
         </p>
       )}
 
-      <label className="mt-2 flex items-center gap-2 text-[11px] text-subtle">
+      <label className="mt-2 flex items-center gap-2 text-xs text-subtle">
         <input type="checkbox" className="accent-acc" checked={sync.autoAllow} onChange={(e) => onConfig({ autoAllow: e.target.checked })} disabled={savingConfig} />
         Permitir solos los modelos nuevos que Google publique con tarifa conocida (si no, solo se avisa)
       </label>
@@ -649,7 +666,7 @@ function PriceSyncBar({
               placeholder={String(sync.defaultMarginPct)}
               disabled={savingConfig}
             />
-            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-subtle">%</span>
+            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-subtle">%</span>
           </div>
         </Field>
       </div>
@@ -733,7 +750,7 @@ function CompanyProfile() {
   return (
     <div className="grid gap-5 lg:grid-cols-2">
       <section className="card p-5">
-        <h2 className="flex items-center gap-2 text-sm font-semibold"><Building2 size={15} className="text-acc-soft" /> Datos de la empresa emisora</h2>
+        <h2 className="flex items-center gap-2 text-base font-semibold"><Building2 size={15} className="text-acc-soft" /> Datos de la empresa emisora</h2>
         <p className="mt-1 text-xs text-subtle">Aparecen en cada factura. Tú facturas a tus clientes.</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <Field label="Nombre / razón social"><input className="input" value={draft.companyName} onChange={(e) => set({ companyName: e.target.value })} placeholder="Skyway Cloud S.L." /></Field>
@@ -764,7 +781,7 @@ function CompanyProfile() {
 
       <div className="flex flex-col gap-5">
         <section className="card p-5">
-          <h2 className="flex items-center gap-2 text-sm font-semibold"><Landmark size={15} className="text-info" /> Transferencia bancaria</h2>
+          <h2 className="flex items-center gap-2 text-base font-semibold"><Landmark size={15} className="text-info" /> Transferencia bancaria</h2>
           <p className="mt-1 text-xs text-subtle">Los datos que ve el cliente para pagar por transferencia.</p>
           <div className="mt-4 grid gap-3">
             <Field label="IBAN"><input className="input font-mono" value={draft.iban} onChange={(e) => set({ iban: e.target.value })} placeholder="ES91 2100 0418 4502 0005 1332" /></Field>
@@ -776,7 +793,7 @@ function CompanyProfile() {
         </section>
 
         <section className="card p-5">
-          <h2 className="flex items-center gap-2 text-sm font-semibold"><CreditCard size={15} className="text-acc-soft" /> Stripe (pago con tarjeta)</h2>
+          <h2 className="flex items-center gap-2 text-base font-semibold"><CreditCard size={15} className="text-acc-soft" /> Stripe (pago con tarjeta)</h2>
           <p className="mt-1 text-xs text-subtle">
             Cobra facturas con tarjeta. Configura el webhook <span className="font-mono">/api/webhooks/stripe</span> en Stripe con el secreto de firma.
           </p>
@@ -792,7 +809,7 @@ function CompanyProfile() {
         </section>
 
         <section className="card p-5">
-          <h2 className="flex items-center gap-2 text-sm font-semibold"><Send size={15} className="text-info" /> Correo saliente (envío de facturas)</h2>
+          <h2 className="flex items-center gap-2 text-base font-semibold"><Send size={15} className="text-info" /> Correo saliente (envío de facturas)</h2>
           <p className="mt-1 text-xs text-subtle">
             Servidor SMTP con el que se envía la factura en PDF al email de facturación del cliente.
           </p>
@@ -801,7 +818,7 @@ function CompanyProfile() {
               <Field label="Servidor"><input className="input" value={draft.smtpHost} onChange={(e) => set({ smtpHost: e.target.value })} placeholder="smtp.tuproveedor.com" /></Field>
               <Field label="Puerto"><NumberInput className="input tnum" min={1} max={65535} value={draft.smtpPort} emptyValue={587} onChange={(v) => set({ smtpPort: v })} /></Field>
             </div>
-            <label className="flex items-center gap-2 text-[13px]">
+            <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={draft.smtpSecure} onChange={(e) => set({ smtpSecure: e.target.checked })} />
               <span>TLS directo (puerto 465). Desmarcado usa STARTTLS si el servidor lo ofrece.</span>
             </label>
@@ -816,14 +833,14 @@ function CompanyProfile() {
               <Field label="Nombre del remitente"><input className="input" value={draft.smtpFromName} onChange={(e) => set({ smtpFromName: e.target.value })} placeholder="Facturación Skyway" /></Field>
             </div>
             <div className="flex items-center justify-between gap-3">
-              <p className="text-[11px] text-subtle">La prueba conecta y autentica, sin enviar ningún correo.</p>
+              <p className="text-xs text-subtle">La prueba conecta y autentica, sin enviar ningún correo.</p>
               <Button size="sm" variant="secondary" loading={test.isPending} onClick={() => test.mutate()}>Probar conexión</Button>
             </div>
           </div>
         </section>
 
         <div className="flex items-center justify-between">
-          <p className="flex items-center gap-1.5 text-[11px] text-subtle"><Receipt size={12} /> Numeración correlativa por serie y ejercicio</p>
+          <p className="flex items-center gap-1.5 text-xs text-subtle"><Receipt size={12} /> Numeración correlativa por serie y ejercicio</p>
           <Button onClick={() => save.mutate()} loading={save.isPending}>Guardar</Button>
         </div>
       </div>

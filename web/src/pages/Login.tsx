@@ -17,7 +17,7 @@ function RecoveryModal({ open, onClose, onPasskey }: { open: boolean; onClose: (
   const cmd = 'docker compose exec skyway node dist/tools/reset-password.js tu@email.com';
   return (
     <Modal open={open} onClose={onClose} title="Recuperar el acceso">
-      <div className="flex flex-col gap-5 text-[13px] leading-relaxed text-sub">
+      <div className="flex flex-col gap-5 text-sm leading-relaxed text-sub">
         {onPasskey && (
           <div>
             <p className="flex items-center gap-2 font-semibold text-txt">
@@ -54,18 +54,18 @@ function RecoveryModal({ open, onClose, onPasskey }: { open: boolean; onClose: (
             ¿Eres el único admin? Desde el servidor:
           </p>
           <div className="mt-2 flex items-center gap-1 rounded-lg border border-line bg-term px-3 py-2">
-            <code className="min-w-0 flex-1 select-all whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-txt/90">
+            <code className="min-w-0 flex-1 select-all whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-txt/90">
               <span className="mr-1.5 select-none text-subtle">$</span>
               {cmd}
             </code>
             <CopyButton value={cmd} title="Copiar comando" />
           </div>
-          <p className="mt-1.5 text-[11.5px] text-subtle">
+          <p className="mt-1.5 text-xs text-subtle">
             Imprime una contraseña temporal, cierra las demás sesiones y deja rastro en la auditoría. Sin Docker:{' '}
-            <code className="font-mono text-[11px]">npm run reset-password -w server -- tu@email.com</code>
+            <code className="font-mono text-xs">npm run reset-password -w server -- tu@email.com</code>
           </p>
         </div>
-        <p className="flex items-center gap-1.5 border-t border-line pt-3 text-[11.5px] text-subtle">
+        <p className="flex items-center gap-1.5 border-t border-line pt-3 text-xs text-subtle">
           <KeyRound size={12} className="shrink-0" />
           Skyway no envía emails de restablecimiento: nadie puede pedir un reset en tu nombre desde fuera.
         </p>
@@ -138,15 +138,15 @@ export default function Login() {
         <div
           key={errorShake}
           className={cx(
-            'rounded-2xl border border-line bg-surface px-7 py-8 shadow-[0_24px_64px_-24px_rgba(0,0,0,.7),inset_0_1px_0_color-mix(in_oklab,var(--color-acc)_16%,transparent)]',
+            'rounded-2xl border border-line bg-surface px-7 py-8 shadow-lvl3',
             errorShake > 0 && 'shake',
           )}
         >
           <div className="mb-6 flex flex-col items-center gap-3.5 text-center">
             <BrandMark size={52} iconSize={24} radius={14} />
             <div>
-              <h1 className="text-[19px] font-[650] tracking-[-.015em]">Entrar en Skyway</h1>
-              <p className="mt-1 text-[13px] text-sub">Tu plataforma de despliegue auto-alojada</p>
+              <h1 className="text-xl font-semibold">Entrar en Skyway</h1>
+              <p className="mt-1 text-sm text-sub">Tu plataforma de despliegue auto-alojada</p>
             </div>
           </div>
           <form onSubmit={submit} className="flex flex-col gap-4">
@@ -205,7 +205,7 @@ export default function Login() {
           </form>
           {passkeysSupported() && (
             <>
-              <div className="my-4 flex items-center gap-3 text-[11px] text-subtle">
+              <div className="my-4 flex items-center gap-3 text-xs text-subtle">
                 <span className="h-px flex-1 bg-line" />
                 o
                 <span className="h-px flex-1 bg-line" />
@@ -216,8 +216,8 @@ export default function Login() {
             </>
           )}
         </div>
-        <p className="mt-4 flex items-center justify-center gap-1.5 text-[11.5px] text-subtle">
-          <ShieldCheck size={12} /> Intentos limitados por IP · toda la actividad queda en el registro de auditoría
+        <p className="mt-4 flex items-center justify-center gap-1.5 text-xs text-subtle">
+          <ShieldCheck size={12} /> Intentos limitados por IP · toda la actividad queda en el registro de actividad
         </p>
       </div>
       <RecoveryModal

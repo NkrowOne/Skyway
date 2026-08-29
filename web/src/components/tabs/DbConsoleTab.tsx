@@ -81,7 +81,7 @@ function ResultTable({ result }: { result: DbQueryResult }) {
             {(result.columns ?? []).map((c, i) => (
               <th
                 key={`${c}-${i}`}
-                className="whitespace-nowrap border-b border-line bg-surface2 px-3 py-2 text-[11px] font-semibold uppercase tracking-[.05em] text-sub"
+                className="whitespace-nowrap border-b border-line bg-surface2 px-3 py-2 eyebrow text-sub"
               >
                 {c}
               </th>
@@ -92,7 +92,7 @@ function ResultTable({ result }: { result: DbQueryResult }) {
           {(result.rows ?? []).map((row, i) => (
             <tr key={i} className="odd:bg-bg even:bg-surface hover:bg-acc/[.06]">
               {row.map((cell, j) => (
-                <td key={j} className="max-w-[360px] truncate border-b border-line/60 px-3 py-1.5 font-mono text-[11.5px] text-txt" title={cell}>
+                <td key={j} className="max-w-[360px] truncate border-b border-line/60 px-3 py-1.5 font-mono text-xs text-txt" title={cell}>
                   {cell === '' ? <span className="text-subtle">∅</span> : cell}
                 </td>
               ))}
@@ -216,7 +216,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
           <Database size={12} className="text-acc-soft" />
           {engine ? ENGINE_LABEL[engine] : 'Base de datos'}
           {overview.data?.overview.version && (
-            <span className="font-mono text-[10.5px] text-subtle">{overview.data.overview.version.split(' ')[0]}</span>
+            <span className="font-mono text-micro text-subtle">{overview.data.overview.version.split(' ')[0]}</span>
           )}
         </span>
         {totalSize !== null && totalSize > 0 && (
@@ -235,7 +235,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
 
       {objects.length > 0 && (
         <div className="shrink-0 max-h-36 overflow-y-auto rounded-xl border border-line bg-surface2/30 p-2.5 shadow-sm">
-          <div className="mb-2 flex items-center justify-between px-0.5 text-[11px] font-semibold uppercase tracking-wider text-subtle">
+          <div className="mb-2 flex items-center justify-between px-0.5 eyebrowr text-subtle">
             <span>
               {overview.data?.overview.objectLabel} ({objects.length})
             </span>
@@ -244,7 +244,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
             {objects.map((o, i) => (
               <span
                 key={`${o.name}-${i}`}
-                className="inline-flex max-w-full items-stretch overflow-hidden rounded-lg border border-line bg-surface text-[11.5px] text-sub transition-colors focus-within:border-acc/50 hover:border-acc/50 shadow-sm"
+                className="inline-flex max-w-full items-stretch overflow-hidden rounded-lg border border-line bg-surface text-xs text-sub transition-colors focus-within:border-acc/50 hover:border-acc/50 shadow-sm"
               >
                 <button
                   onClick={() => browse.mutate({ object: o.name, mode: 'data' })}
@@ -254,9 +254,9 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
                 >
                   <Table2 size={11} className="shrink-0 text-subtle" />
                   <span className="truncate font-mono">{o.name}</span>
-                  {o.rows !== null && <span className="tnum shrink-0 text-[10px] text-subtle">{fmtRows(o.rows)}</span>}
+                  {o.rows !== null && <span className="tnum shrink-0 text-micro text-subtle">{fmtRows(o.rows)}</span>}
                   {o.sizeBytes !== null && o.sizeBytes > 0 && (
-                    <span className="tnum shrink-0 text-[10px] text-subtle">{fmtBytes(o.sizeBytes)}</span>
+                    <span className="tnum shrink-0 text-micro text-subtle">{fmtBytes(o.sizeBytes)}</span>
                   )}
                 </button>
                 <button
@@ -280,7 +280,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
             <button
               key={s.label}
               onClick={() => setQuery(s.query)}
-              className="rounded-full border border-line bg-surface px-2.5 py-[3px] text-[11px] text-sub transition-colors hover:border-acc/50 hover:text-txt shadow-sm"
+              className="rounded-full border border-line bg-surface px-2.5 py-0.5 text-xs text-sub transition-colors hover:border-acc/50 hover:text-txt shadow-sm"
               title={s.hint ?? s.query}
             >
               {s.label}
@@ -313,12 +313,12 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
           <Button size="sm" onClick={() => execute()} loading={run.isPending} disabled={!query.trim()}>
             <Play size={12} /> Ejecutar
           </Button>
-          <span className="hidden items-center gap-1 text-[11px] text-subtle sm:flex">
+          <span className="hidden items-center gap-1 text-xs text-subtle sm:flex">
             <Kbd>{CMD_ENTER_LABEL}</Kbd>
           </span>
           <label
             className={cx(
-              'flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-colors',
+              'flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors',
               allowWrite ? 'border-warn/40 bg-warn/[.1] text-warn' : 'border-line text-sub hover:text-txt',
             )}
             title="Sin marcar, solo se permiten consultas de lectura"
@@ -335,7 +335,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
             <div className="relative ml-auto" ref={historyRef}>
               <button
                 onClick={() => setHistoryOpen((v) => !v)}
-                className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-sub transition-colors hover:bg-surface2 hover:text-txt"
+                className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-sub transition-colors hover:bg-surface2 hover:text-txt"
               >
                 <History size={12} /> Historial <ChevronDown size={11} />
               </button>
@@ -349,7 +349,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
                         setHistoryOpen(false);
                         textareaRef.current?.focus();
                       }}
-                      className="block w-full truncate rounded-lg px-2.5 py-1.5 text-left font-mono text-[11px] text-sub hover:bg-surface2 hover:text-txt"
+                      className="block w-full truncate rounded-lg px-2.5 py-1.5 text-left font-mono text-xs text-sub hover:bg-surface2 hover:text-txt"
                       title={h}
                     >
                       {h}
@@ -366,13 +366,13 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
       {error && (
         <div className="flex items-start gap-2.5 rounded-xl border border-err/35 bg-err/[.07] px-4 py-3 text-sm text-err">
           <TriangleAlert size={15} className="mt-px shrink-0" />
-          <pre className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed">{error}</pre>
+          <pre className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{error}</pre>
         </div>
       )}
 
       {result && (
         <div className="flex min-h-0 flex-1 flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-2 text-[11px] text-subtle">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-subtle">
             <span className="tnum">
               {result.kind === 'table'
                 ? `${result.rowCount} fila${result.rowCount === 1 ? '' : 's'}`
@@ -412,7 +412,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
           {result.kind === 'table' ? (
             <ResultTable result={result} />
           ) : result.raw ? (
-            <pre className="min-h-0 flex-1 overflow-auto overscroll-contain rounded-lg border border-line bg-bg px-3.5 py-3 font-mono text-[11.5px] leading-relaxed text-txt">
+            <pre className="min-h-0 flex-1 overflow-auto overscroll-contain rounded-lg border border-line bg-bg px-3.5 py-3 font-mono text-xs leading-relaxed text-txt">
               {result.raw}
             </pre>
           ) : (

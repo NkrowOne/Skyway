@@ -19,7 +19,6 @@ import {
   Plus,
   Receipt,
   Send,
-  Sparkles,
   TrendingDown,
   TrendingUp,
   Trash2,
@@ -28,7 +27,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import { COUNTRY_OPTIONS, DEFAULT_COUNTRY, countryName } from '../countries';
-import { Button, ConfirmModal, CopyButton, EditorBar, Field, Modal, NumberInput, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, CopyButton, EditorBar, ErrorState, Field, Modal, NumberInput, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
 import { QuotaMeter } from '../components/QuotaMeter';
 // Gráficos de la pestaña «Uso» (no es la pestaña por defecto): carga diferida.
 const UsageBars = lazy(() => import('../components/BillingCharts').then((m) => ({ default: m.UsageBars })));
@@ -132,10 +131,10 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
     <div className="flex flex-col gap-5">
       <section className="card p-5">
         <div className="mb-1 flex items-center justify-between">
-          <h2 className="text-sm font-semibold">Cuota de recursos</h2>
+          <h2 className="text-base font-semibold">Cuota de recursos</h2>
           {isAdmin && (
             <select
-              className="input h-8 w-auto py-0 text-[13px]"
+              className="input h-8 w-auto py-0 text-sm"
               value={planId}
               onChange={(e) => setPlanId(e.target.value)}
               aria-label="Plan de la cuenta"
@@ -180,7 +179,7 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
                         min={d.min}
                         emptyValue={d.min}
                         onChange={(v) => setRow(d.key, { value: Math.max(d.min, v) })}
-                        className="tnum h-8 w-20 border-x border-line bg-bg px-2 text-center text-[13px] text-txt outline-none disabled:opacity-40"
+                        className="tnum h-8 w-20 border-x border-line bg-bg px-2 text-center text-sm text-txt outline-none disabled:opacity-40"
                       />
                       <button
                         type="button"
@@ -191,7 +190,7 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
                         +
                       </button>
                     </div>
-                    <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-subtle">
+                    <label className="flex cursor-pointer items-center gap-1.5 text-xs text-subtle">
                       {/* Al dejar de heredar, el override arranca desde el valor efectivo actual. */}
                       <input
                         type="checkbox"
@@ -209,7 +208,7 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
         </div>
 
         {(ws.allocation.unlimited.cpu > 0 || ws.allocation.unlimited.memory > 0) && (
-          <p className="mt-4 rounded-lg border border-warn/25 bg-warn/[.08] px-3 py-2 text-[11px] text-warn">
+          <p className="mt-4 rounded-lg border border-warn/25 bg-warn/[.08] px-3 py-2 text-xs text-warn">
             Hay servicios sin límite de recursos: no reservan cuota, pero pueden crecer sin tope. Asígnales CPU/RAM en sus ajustes para acotarlos.
           </p>
         )}
@@ -221,7 +220,7 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
       </section>
 
       <section className="card p-5">
-        <h2 className="mb-3 text-sm font-semibold">Proyectos del cliente</h2>
+        <h2 className="mb-3 text-base font-semibold">Proyectos del cliente</h2>
         {detail.projects.length === 0 ? (
           <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
             Sin proyectos todavía en esta cuenta.
@@ -232,9 +231,9 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
               <Link key={p.id} to={`/projects/${p.id}`} className="-mx-2 flex items-center justify-between gap-3 rounded-lg px-2 py-2.5 hover:bg-surface2">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{p.name}</p>
-                  <p className="font-mono text-[11px] text-subtle">{p.slug}</p>
+                  <p className="font-mono text-xs text-subtle">{p.slug}</p>
                 </div>
-                <span className="shrink-0 text-[11px] text-subtle tnum">{p.serviceCount === 1 ? '1 servicio' : `${p.serviceCount} servicios`}</span>
+                <span className="shrink-0 text-xs text-subtle tnum">{p.serviceCount === 1 ? '1 servicio' : `${p.serviceCount} servicios`}</span>
               </Link>
             ))}
           </div>
@@ -275,7 +274,7 @@ function ModulosTab({ detail, isAdmin, modules, onSaved }: { detail: Detail; isA
   return (
     <div className="flex flex-col gap-5">
       <section className="card p-5">
-        <h2 className="text-sm font-semibold">Módulos</h2>
+        <h2 className="text-base font-semibold">Módulos</h2>
         <p className="mt-1 text-xs text-subtle">
           {isAdmin
             ? 'Concede o retira los módulos de esta cuenta. El cliente puede acotar (desactivar) los concedidos, nunca ampliarlos.'
@@ -284,7 +283,7 @@ function ModulosTab({ detail, isAdmin, modules, onSaved }: { detail: Detail; isA
         <div className="mt-4 flex flex-col gap-5">
           {groups.map(([group, mods]) => (
             <div key={group}>
-              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">{group}</p>
+              <p className="mb-2 eyebrow text-subtle">{group}</p>
               <div className="grid gap-2.5 sm:grid-cols-2">
                 {mods.map((m) => {
                   const isGranted = granted.has(m.key);
@@ -315,21 +314,21 @@ function ModulosTab({ detail, isAdmin, modules, onSaved }: { detail: Detail; isA
                     >
                       <span
                         className={cx(
-                          'mt-0.5 flex h-4.5 w-8 shrink-0 items-center rounded-full p-0.5 transition-colors',
+                          'mt-0.5 flex h-[18px] w-8 shrink-0 items-center rounded-full p-0.5 transition-colors',
                           checked ? 'bg-acc' : 'bg-surface2',
                         )}
                       >
                         <span className={cx('h-3.5 w-3.5 rounded-full bg-white transition-transform', checked && 'translate-x-3.5')} />
                       </span>
                       <span className="min-w-0">
-                        <span className="flex items-center gap-2 text-[13px] font-semibold">
+                        <span className="flex items-center gap-2 text-sm font-semibold">
                           {m.label}
                           {isAdmin && isGranted && isDisabled && (
-                            <span className="rounded-full bg-warn/[.14] px-1.5 py-px text-[9px] font-semibold text-warn">acotado por el cliente</span>
+                            <span className="rounded-md border border-warn/25 bg-warn/10 px-1.5 py-px text-micro font-medium text-warn">acotado por el cliente</span>
                           )}
-                          {locked && <span className="rounded-full border border-line px-1.5 py-px text-[9px] text-subtle">no incluido</span>}
+                          {locked && <span className="rounded-md border border-line bg-surface2 px-1.5 py-px text-micro text-subtle">no incluido</span>}
                         </span>
-                        <span className="mt-0.5 block text-[11px] leading-snug text-subtle">{m.description}</span>
+                        <span className="mt-0.5 block text-xs leading-snug text-subtle">{m.description}</span>
                       </span>
                     </button>
                   );
@@ -420,8 +419,8 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
     <section className="card overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
         <div>
-          <h2 className="text-sm font-semibold">Usuarios de la cuenta</h2>
-          <p className="mt-0.5 text-[11px] text-subtle">
+          <h2 className="text-base font-semibold">Usuarios de la cuenta</h2>
+          <p className="mt-0.5 text-xs text-subtle">
             {ws.allocation.members} de {ws.quota.maxMembers} · propietarios y miembros con acceso a proyectos de esta cuenta
           </p>
         </div>
@@ -437,11 +436,11 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="truncate text-sm font-medium">{m.email}</span>
-                <span className={cx('rounded-full px-2 py-0.5 text-[10px] font-semibold', m.role === 'owner' ? 'bg-acc/[.15] text-acc-soft' : 'bg-txt/[.08] text-sub')}>
+                <Chip size="sm" tone={m.role === 'owner' ? 'info' : 'neutral'}>
                   {m.role === 'owner' ? 'propietario' : 'miembro'}
-                </span>
+                </Chip>
               </div>
-              <p className="mt-0.5 text-[11px] text-subtle">
+              <p className="mt-0.5 text-xs text-subtle">
                 {m.role === 'owner'
                   ? 'acceso a todos los proyectos de la cuenta'
                   : m.projectIds.length === 0
@@ -483,8 +482,8 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
                       onClick={() => setDraft({ ...draft, role: r })}
                       className={cx('rounded-lg border px-3 py-2.5 text-left transition-colors', draft.role === r ? 'border-acc bg-acc/[.10]' : 'border-line bg-bg hover:border-subtle')}
                     >
-                      <p className="text-[13px] font-semibold">{r === 'owner' ? 'Propietario' : 'Miembro'}</p>
-                      <p className="mt-0.5 text-[11px] leading-snug text-subtle">
+                      <p className="text-sm font-semibold">{r === 'owner' ? 'Propietario' : 'Miembro'}</p>
+                      <p className="mt-0.5 text-xs leading-snug text-subtle">
                         {r === 'owner' ? 'Gestiona la cuenta y sus proyectos' : 'Acceso a los proyectos que le asignes'}
                       </p>
                     </button>
@@ -493,12 +492,12 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
               </Field>
             )}
             {draft.role === 'member' && (
-              <Field label="Proyectos con acceso" hint={detail.projects.length ? undefined : 'aún no hay proyectos en la cuenta'}>
+              <Field group label="Proyectos con acceso" hint={detail.projects.length ? undefined : 'aún no hay proyectos en la cuenta'}>
                 <div className="flex max-h-44 flex-col gap-1 overflow-y-auto rounded-lg border border-line bg-bg p-2">
                   {detail.projects.map((p) => (
                     <label key={p.id} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface2">
                       <input type="checkbox" checked={draft.projectIds.includes(p.id)} onChange={() => toggleProject(p.id)} className="accent-acc" />
-                      <span className="min-w-0 flex-1 truncate text-[13px]">{p.name}</span>
+                      <span className="min-w-0 flex-1 truncate text-sm">{p.name}</span>
                     </label>
                   ))}
                 </div>
@@ -544,18 +543,18 @@ function trendPct(vals: number[]): number | null {
 function Insight({ label, value, unit, trend, hint }: { label: string; value: string; unit?: string; trend?: number | null; hint?: string }) {
   return (
     <div className="rounded-xl border border-line bg-bg px-4 py-3">
-      <p className="text-[11px] text-subtle">{label}</p>
+      <p className="text-xs text-subtle">{label}</p>
       <div className="mt-1 flex items-baseline gap-1.5">
         <span className="tnum text-xl font-semibold leading-none">{value}</span>
-        {unit && <span className="text-[11px] text-subtle">{unit}</span>}
+        {unit && <span className="text-xs text-subtle">{unit}</span>}
         {trend != null && trend !== 0 && (
-          <span className={cx('ml-auto flex items-center gap-0.5 text-[11px] font-medium', trend > 0 ? 'text-warn' : 'text-ok')}>
+          <span className={cx('ml-auto flex items-center gap-0.5 text-xs font-medium', trend > 0 ? 'text-warn' : 'text-ok')}>
             {trend > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
             {Math.abs(trend)}%
           </span>
         )}
       </div>
-      {hint && <p className="mt-1 text-[10.5px] leading-snug text-subtle">{hint}</p>}
+      {hint && <p className="mt-1 text-micro leading-snug text-subtle">{hint}</p>}
     </div>
   );
 }
@@ -604,6 +603,15 @@ function UsoTab({ detail }: { detail: Detail }) {
 
       {usage.isLoading ? (
         <Skeleton className="h-48 w-full" />
+      ) : usage.isError ? (
+        <div className="card">
+          <ErrorState
+            title="No se ha podido cargar el consumo"
+            error={usage.error}
+            onRetry={() => usage.refetch()}
+            retrying={usage.isFetching}
+          />
+        </div>
       ) : (
         <>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -615,13 +623,13 @@ function UsoTab({ detail }: { detail: Detail }) {
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Suspense fallback={<><Skeleton className="h-56 w-full" /><Skeleton className="h-56 w-full" /></>}>
-              <UsageBars title="CPU consumida (núcleo·h)" points={series.map((p) => ({ t: p.t, value: p.cpuCoreHours }))} color="var(--color-acc)" format={(v) => String(round1(v))} labelFor={labelFor} />
-              <UsageBars title="Memoria consumida (GB·h)" points={series.map((p) => ({ t: p.t, value: p.ramGbHours }))} color="var(--color-info)" format={(v) => String(round1(v))} labelFor={labelFor} />
+              <UsageBars title="CPU consumida (núcleo·h)" points={series.map((p) => ({ t: p.t, value: p.cpuCoreHours }))} color="var(--color-chart-1)" format={(v) => String(round1(v))} labelFor={labelFor} />
+              <UsageBars title="Memoria consumida (GB·h)" points={series.map((p) => ({ t: p.t, value: p.ramGbHours }))} color="var(--color-chart-2)" format={(v) => String(round1(v))} labelFor={labelFor} />
             </Suspense>
           </div>
 
           <section className="card p-5">
-            <h2 className="mb-3 text-sm font-semibold">Proyectos por consumo de CPU</h2>
+            <h2 className="mb-3 text-base font-semibold">Proyectos por consumo de CPU</h2>
             {(data?.byProject ?? []).length === 0 ? (
               <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
                 Aún no hay datos de consumo por proyecto (necesita histórico del monitor).
@@ -630,11 +638,11 @@ function UsoTab({ detail }: { detail: Detail }) {
               <div className="flex flex-col gap-2.5">
                 {data!.byProject.map((p) => (
                   <div key={p.projectId} className="flex items-center gap-3">
-                    <span className="w-36 shrink-0 truncate text-[13px]">{p.name}</span>
+                    <span className="w-36 shrink-0 truncate text-sm">{p.name}</span>
                     <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface2">
                       <div className="h-full rounded-full bg-acc transition-[width] duration-500" style={{ width: `${Math.min(100, (p.cpuCoreHours / maxProj) * 100)}%` }} />
                     </div>
-                    <span className="w-24 shrink-0 text-right text-[11px] tnum text-sub">{round1(p.cpuCoreHours)} núcleo·h</span>
+                    <span className="w-24 shrink-0 text-right text-xs tnum text-sub">{round1(p.cpuCoreHours)} núcleo·h</span>
                   </div>
                 ))}
               </div>
@@ -667,20 +675,20 @@ function HistorialPlan({ detail }: { detail: Detail }) {
   const ancla = detail.workspace.last_billed_period_end;
   return (
     <section className="card overflow-hidden">
-      <h2 className="border-b border-line px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">Historial de plan</h2>
+      <h2 className="border-b border-line px-4 py-2.5 eyebrow text-subtle">Historial de plan</h2>
       {tramos.map((t, i) => (
-        <div key={t.id} className={cx('flex flex-wrap items-baseline gap-x-2 px-4 py-2.5 text-[13px]', i > 0 && 'border-t border-line')}>
+        <div key={t.id} className={cx('flex flex-wrap items-baseline gap-x-2 px-4 py-2.5 text-sm', i > 0 && 'border-t border-line')}>
           <span className="font-medium">{t.planName ?? 'Sin plan'}</span>
           {t.priceCents != null && t.currency && (
-            <span className="text-[11px] text-sub">{fmtMoney(t.priceCents, t.currency)}/{t.interval === 'yearly' ? 'año' : 'mes'}</span>
+            <span className="text-xs text-sub">{fmtMoney(t.priceCents, t.currency)}/{t.interval === 'yearly' ? 'año' : 'mes'}</span>
           )}
-          {t.to === null && <span className="rounded-full bg-ok/15 px-1.5 py-0.5 text-[10px] font-medium text-ok">vigente</span>}
-          <span className="ml-auto text-[11px] text-subtle">
+          {t.to === null && <span className="rounded-md border border-ok/25 bg-ok/10 px-1.5 py-0.5 text-micro font-medium text-ok">vigente</span>}
+          <span className="ml-auto text-xs text-subtle">
             {fmtDate(t.from)} → {t.to === null ? 'hoy' : fmtDate(t.to)}
           </span>
         </div>
       ))}
-      <p className="border-t border-line px-4 py-2 text-[11px] text-subtle">
+      <p className="border-t border-line px-4 py-2 text-xs text-subtle">
         Cada tramo se factura por los días servidos a su propio precio.
         {ancla != null && ` Facturado hasta el ${fmtDate(ancla)}.`}
       </p>
@@ -740,28 +748,28 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
   return (
     <div className="flex flex-col gap-5">
       {dunLabel && (
-        <div className={cx('flex items-center gap-2 rounded-xl border px-4 py-2.5 text-[13px]', ws.dunning_stage >= 2 ? 'border-err/40 bg-err/[.10] text-err' : 'border-warn/40 bg-warn/[.10] text-warn')}>
+        <div className={cx('flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm', ws.dunning_stage >= 2 ? 'border-err/40 bg-err/[.10] text-err' : 'border-warn/40 bg-warn/[.10] text-warn')}>
           <span className="font-semibold">{dunLabel}.</span>
           <span className="text-sub">{ws.dunning_stage >= 2 ? 'Se reactivará automáticamente al cobrar las facturas pendientes.' : 'Recordatorio enviado; el servicio se suspenderá si no se paga.'}</span>
         </div>
       )}
       {alerts.length > 0 && (
         <section className="card overflow-hidden">
-          <h2 className="border-b border-line px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">Avisos de la cuenta</h2>
+          <h2 className="border-b border-line px-4 py-2.5 eyebrow text-subtle">Avisos de la cuenta</h2>
           {alerts.slice(0, 5).map((a, i) => (
             <div key={a.id} className={cx('px-4 py-2.5', i > 0 && 'border-t border-line')}>
               <div className="flex items-center gap-2">
                 <span className={cx('h-1.5 w-1.5 shrink-0 rounded-full', a.severity === 'critical' || a.severity === 'serious' ? 'bg-err' : a.severity === 'warning' ? 'bg-warn' : 'bg-info')} />
-                <span className="text-[13px] font-medium">{a.title}</span>
-                <span className="ml-auto text-[11px] text-subtle">{timeAgo(a.ts)}</span>
+                <span className="text-sm font-medium">{a.title}</span>
+                <span className="ml-auto text-xs text-subtle">{timeAgo(a.ts)}</span>
               </div>
-              <p className="mt-0.5 pl-3.5 text-[11px] text-sub">{a.message}</p>
+              <p className="mt-0.5 pl-3.5 text-xs text-sub">{a.message}</p>
             </div>
           ))}
         </section>
       )}
       <section className="card p-5">
-        <h2 className="mb-3 text-sm font-semibold">Uso de los últimos 30 días</h2>
+        <h2 className="mb-3 text-base font-semibold">Uso de los últimos 30 días</h2>
         {usage.isLoading ? (
           <Skeleton className="h-16 w-full" />
         ) : (
@@ -772,7 +780,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
             <Stat label="Pico disco" value={u ? `${u.diskMaxGb}` : '—'} unit="GB" />
           </div>
         )}
-        <p className="mt-3 text-[11px] text-subtle">
+        <p className="mt-3 text-xs text-subtle">
           Plan {ws.plan ? `${ws.plan.name} · ${ws.plan.price_cents === 0 ? 'gratis' : `${fmtMoney(ws.plan.price_cents, ws.plan.currency)}/${ws.plan.interval === 'yearly' ? 'año' : 'mes'}`}` : 'sin asignar'}. El uso incluido lo cubre el plan; lo que exceda se tarifica en la factura. Detalle en la pestaña «Uso».
         </p>
       </section>
@@ -781,7 +789,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
 
       <section className="card overflow-hidden">
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <h2 className="text-sm font-semibold">Facturas</h2>
+          <h2 className="text-base font-semibold">Facturas</h2>
           {isAdmin && (
             <div className="flex gap-2">
               <Button size="sm" variant="secondary" onClick={() => setEditing(EMPTY_INVOICE(ws.id, ws.plan?.currency ?? 'EUR'))}>
@@ -800,11 +808,11 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
             <div key={inv.id} className={cx('flex flex-wrap items-center gap-3 px-4 py-3', i > 0 && 'border-t border-line')}>
               <button onClick={() => setViewing(inv)} className="min-w-0 flex-1 text-left">
                 <div className="flex flex-wrap items-center gap-2">
-                  {inv.number && <span className="font-mono text-[11px] text-subtle">{inv.number}</span>}
+                  {inv.number && <span className="font-mono text-xs text-subtle">{inv.number}</span>}
                   <span className="text-sm font-semibold tnum">{fmtMoney(inv.total_cents, inv.currency)}</span>
-                  <StatusBadge tone={INV_TONE[inv.status]} label={INV_LABEL[inv.status]} dot={false} className="text-[10px]" />
+                  <StatusBadge tone={INV_TONE[inv.status]} label={INV_LABEL[inv.status]} dot={false} className="text-micro" />
                 </div>
-                <p className="mt-0.5 text-[11px] text-subtle">
+                <p className="mt-0.5 text-xs text-subtle">
                   {inv.invoice_type === 'rectificativa' ? 'Rectificativa · ' : ''}
                   {fmtDate(inv.period_start)} – {fmtDate(inv.period_end)}
                   {/* !== 0: en una rectificativa el IVA y el IRPF son NEGATIVOS y
@@ -874,7 +882,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                       variant="ghost"
                       onClick={() => {
                         // «Pagada» es un estado terminal: no admite vuelta atrás.
-                        if (confirm(`Marcar como COBRADA la factura ${inv.number ?? ''} por ${fmtMoney(inv.total_cents, inv.currency)}.\n\nEs un estado definitivo: no se puede deshacer.\n\n¿Continuar?`)) {
+                        if (confirm(`Marcar como pagada la factura ${inv.number ?? ''} por ${fmtMoney(inv.total_cents, inv.currency)}.\n\nEs un estado definitivo: no se puede deshacer.\n\n¿Continuar?`)) {
                           setStatus.mutate({ id: inv.id, status: 'paid' });
                         }
                       }}
@@ -940,24 +948,25 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
   return (
     <Modal open onClose={onClose} title={`Rectificar ${invoice.number ?? 'factura'}`} wide>
       <div className="flex flex-col gap-3">
-        <p className="text-[12px] text-sub">
+        <p className="text-xs text-sub">
           La factura emitida es inmutable. Se creará una <strong>factura rectificativa</strong> (serie REC) enlazada a la original; nace en borrador para que la revises antes de emitirla.
         </p>
         <Field label="Motivo de la rectificación" hint="obligatorio; aparece en la factura">
           <input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ej: Error en el importe, descuento acordado, pedido cancelado…" />
         </Field>
-        <label className="flex items-center gap-2 text-[13px]">
+        <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={correct} onChange={(e) => setCorrect(e.target.checked)} />
           Corregir importes (si no, se anula la factura por completo)
         </label>
         {correct && (
           <div className="flex flex-col gap-2 rounded-lg border border-line p-3">
-            <p className="text-[11px] text-subtle">Importes <strong>correctos</strong> (lo que la factura debería decir). Se facturará la diferencia respecto a la original.</p>
-            <div className="grid grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2 px-1 text-[11px] font-medium text-subtle">
+            <p className="text-xs text-subtle">Importes <strong>correctos</strong> (lo que la factura debería decir). Se facturará la diferencia respecto a la original.</p>
+            <div className="-mx-1 flex flex-col gap-2 overflow-x-auto px-1">
+            <div className="grid min-w-[420px] grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2 px-1 text-xs font-medium text-subtle">
               <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA%</span><span />
             </div>
             {lines.map((l, i) => (
-              <div key={i} className="grid grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2">
+              <div key={i} className="grid min-w-[420px] grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2">
                 <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Concepto" />
                 <NumberInput className="input h-9 tnum text-right" value={l.qty} min={0} onChange={(v) => setLine(i, { qty: v })} />
                 <NumberInput className="input h-9 tnum text-right" value={l.unit} step="0.01" onChange={(v) => setLine(i, { unit: v })} />
@@ -967,6 +976,7 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
                 </button>
               </div>
             ))}
+            </div>
             <button onClick={() => setLines((ls) => [...ls, { label: '', qty: 1, unit: 0, taxRate: invoice.tax_rate, irpfRate: 0 }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
               + Añadir línea
             </button>
@@ -1000,33 +1010,33 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
       : [];
   return (
     <Modal open onClose={onClose} title={invoice.number ? `${title} ${invoice.number}` : `${title} (borrador)`} wide>
-      <div className="flex flex-col gap-4 text-[13px]">
+      <div className="flex flex-col gap-4 text-sm">
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <p className="mb-1 text-[10px] font-semibold uppercase tracking-[.08em] text-subtle">Emisor</p>
+            <p className="mb-1 eyebrow text-subtle">Emisor</p>
             <p className="font-semibold">{em.companyName || 'Tu empresa'}</p>
             {em.taxId && <p className="text-subtle">NIF {em.taxId}</p>}
             {em.address && <p className="whitespace-pre-line text-subtle">{em.address}</p>}
             {em.email && <p className="text-subtle">{em.email}</p>}
           </div>
           <div className="text-right">
-            <p className="mb-1 text-[10px] font-semibold uppercase tracking-[.08em] text-subtle">Cliente</p>
+            <p className="mb-1 eyebrow text-subtle">Cliente</p>
             <p className="font-semibold">{clientName}</p>
             {clientTaxId && <p className="text-subtle">NIF {clientTaxId}</p>}
             {clientAddress && <p className="whitespace-pre-line text-subtle">{clientAddress}</p>}
             <p className="text-subtle">{clientCountry}</p>
-            {!clientTaxId && <p className="text-[11px] text-warn">Falta el NIF del cliente para una factura completa.</p>}
+            {!clientTaxId && <p className="text-xs text-warn">Falta el NIF del cliente para una factura completa.</p>}
             <p className="mt-2 text-subtle">
               {invoice.issued_at ? `Expedida ${fmtDate(invoice.issued_at)}` : 'Sin emitir'}
               {invoice.operation_date ? ` · operación ${fmtDate(invoice.operation_date)}` : ''}
             </p>
-            <p className="text-[11px] text-subtle">Periodo {fmtDate(invoice.period_start)} – {fmtDate(invoice.period_end)}</p>
-            <StatusBadge tone={INV_TONE[invoice.status]} label={INV_LABEL[invoice.status]} dot={false} className="mt-1 text-[10px]" />
+            <p className="text-xs text-subtle">Periodo {fmtDate(invoice.period_start)} – {fmtDate(invoice.period_end)}</p>
+            <StatusBadge tone={INV_TONE[invoice.status]} label={INV_LABEL[invoice.status]} dot={false} className="mt-1 text-micro" />
           </div>
         </div>
 
-        <div className="overflow-hidden rounded-lg border border-line">
-          <table className="w-full text-left text-[12px]">
+        <div className="overflow-x-auto rounded-lg border border-line">
+          <table className="w-full min-w-[380px] text-left text-xs">
             <thead className="bg-surface2 text-subtle">
               <tr>
                 <th className="px-3 py-1.5 font-medium">Concepto</th>
@@ -1051,10 +1061,10 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
         </div>
 
         {invoice.legal_mentions && (
-          <p className="rounded-md border border-line bg-bg px-3 py-2 text-[11px] leading-snug text-sub">{invoice.legal_mentions}</p>
+          <p className="rounded-md border border-line bg-bg px-3 py-2 text-xs leading-snug text-sub">{invoice.legal_mentions}</p>
         )}
 
-        <div className="ml-auto w-full max-w-[280px] text-[13px] tnum">
+        <div className="ml-auto w-full max-w-[280px] text-sm tnum">
           <div className="flex justify-between py-0.5 text-sub"><span>Base imponible</span><span>{fmtMoney(invoice.subtotal_cents, invoice.currency)}</span></div>
           {/* Desglose de IVA por tipo (obligatorio si concurren varios tipos). */}
           {breakdown.filter((b) => b.quota_cents !== 0 || b.rate > 0).map((b) => (
@@ -1066,14 +1076,14 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
           {invoice.irpf_cents !== 0 && (
             <div className="flex justify-between py-0.5 text-sub"><span>Retención IRPF ({invoice.irpf_rate}%)</span><span>{invoice.irpf_cents > 0 ? '−' : '+'}{fmtMoney(Math.abs(invoice.irpf_cents), invoice.currency)}</span></div>
           )}
-          <div className="mt-1 flex justify-between border-t border-line pt-1.5 text-[15px] font-semibold"><span>Total</span><span>{fmtMoney(invoice.total_cents, invoice.currency)}</span></div>
+          <div className="mt-1 flex justify-between border-t border-line pt-1.5 text-base font-semibold"><span>Total</span><span>{fmtMoney(invoice.total_cents, invoice.currency)}</span></div>
         </div>
 
         {invoice.status !== 'paid' && invoice.status !== 'void' && (issuer.iban || invoice.stripe_url) && (
           <div className="rounded-lg border border-line bg-bg p-3.5">
-            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[.08em] text-subtle">Cómo pagar</p>
+            <p className="mb-2 eyebrow text-subtle">Cómo pagar</p>
             {issuer.iban && (
-              <div className="flex items-center justify-between gap-2 text-[12px]">
+              <div className="flex items-center justify-between gap-2 text-xs">
                 <div>
                   <p className="text-sub">Transferencia a {issuer.bankName || 'nuestra cuenta'}</p>
                   <p className="font-mono">{issuer.iban}{issuer.bic ? ` · ${issuer.bic}` : ''}</p>
@@ -1082,13 +1092,13 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
               </div>
             )}
             {invoice.stripe_url && (
-              <a href={invoice.stripe_url} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-1.5 text-[12px] font-semibold text-acc-soft hover:underline">
+              <a href={invoice.stripe_url} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-acc-soft hover:underline">
                 <CreditCard size={13} /> Pagar con tarjeta (Stripe) →
               </a>
             )}
           </div>
         )}
-        {issuer.footer && <p className="text-[11px] leading-snug text-subtle">{issuer.footer}</p>}
+        {issuer.footer && <p className="text-xs leading-snug text-subtle">{issuer.footer}</p>}
       </div>
     </Modal>
   );
@@ -1097,9 +1107,9 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
 function Stat({ label, value, unit }: { label: string; value: string; unit: string }) {
   return (
     <div className="rounded-lg border border-line bg-bg px-3 py-2.5">
-      <p className="text-[11px] text-subtle">{label}</p>
+      <p className="text-xs text-subtle">{label}</p>
       <p className="mt-0.5 tnum text-lg font-semibold leading-none">{value}</p>
-      <p className="mt-1 text-[10px] text-subtle">{unit}</p>
+      <p className="mt-1 text-micro text-subtle">{unit}</p>
     </div>
   );
 }
@@ -1154,22 +1164,28 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
   return (
     <Modal open onClose={onClose} title={isNew ? 'Nueva factura a medida' : 'Editar factura'} wide>
       <div className="flex flex-col gap-2">
-        <div className="grid grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2 px-1 text-[11px] font-medium text-subtle">
+        {/* Siete columnas fijas suman 438px y la hoja móvil da 350: la fila de
+            una factura es tabular por naturaleza y no se apila bien, así que se
+            le da su propio carril horizontal. Los totales y los botones se
+            quedan fuera, que esos sí caben. */}
+        <div className="-mx-1 flex flex-col gap-2 overflow-x-auto px-1">
+        <div className="grid min-w-[520px] grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2 px-1 text-xs font-medium text-subtle">
           <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA %</span><span className="text-right">IRPF %</span><span className="text-right">Importe</span><span />
         </div>
         {lines.map((l, i) => (
-          <div key={i} className="grid grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2">
+          <div key={i} className="grid min-w-[520px] grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2">
             <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Ej: Plan Pro (mensual)" />
             <NumberInput className="input h-9 tnum text-right" value={l.qty} min={0} onChange={(v) => setLine(i, { qty: v })} />
             <NumberInput className="input h-9 tnum text-right" value={l.unit} step="0.01" onChange={(v) => setLine(i, { unit: v })} />
             <NumberInput className="input h-9 tnum text-right" value={l.taxRate} min={0} max={100} onChange={(v) => setLine(i, { taxRate: v })} />
             <NumberInput className="input h-9 tnum text-right" value={l.irpfRate} min={0} max={100} onChange={(v) => setLine(i, { irpfRate: v })} />
-            <span className="tnum text-right text-[13px]">{fmtMoney(Math.round(l.qty * l.unit * 100), invoice.currency)}</span>
+            <span className="tnum text-right text-sm">{fmtMoney(Math.round(l.qty * l.unit * 100), invoice.currency)}</span>
             <button onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="rounded-md p-1 text-subtle hover:text-err" title="Quitar línea">
               <Trash2 size={13} />
             </button>
           </div>
         ))}
+        </div>
         <button onClick={() => setLines((ls) => [...ls, { label: '', kind: 'custom', qty: 1, unit: 0, taxRate: invoice.tax_rate, irpfRate: 0, chargeId: undefined }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
           + Añadir línea
         </button>
@@ -1180,7 +1196,7 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
           <span className="text-sm text-sub">Base imponible</span>
           <span className="tnum text-lg font-semibold">{fmtMoney(base, invoice.currency)}</span>
         </div>
-        <p className="text-[11px] text-subtle">El IVA, la retención de IRPF y el total los recalcula el servidor al guardar.</p>
+        <p className="text-xs text-subtle">El IVA, la retención de IRPF y el total los recalcula el servidor al guardar.</p>
         <div className="mt-2 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>Cancelar</Button>
           <Button loading={save.isPending} onClick={() => save.mutate()}>{isNew ? 'Crear factura' : 'Guardar'}</Button>
@@ -1233,7 +1249,7 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
   return (
     <section className="card overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
-        <h2 className="flex items-center gap-2 text-sm font-semibold"><Boxes size={15} className="text-acc-soft" /> Servicios contratados</h2>
+        <h2 className="flex items-center gap-2 text-base font-semibold"><Boxes size={15} className="text-acc-soft" /> Servicios contratados</h2>
         <div className="flex gap-2">
           <Button size="sm" variant="secondary" onClick={() => setCharge(true)}><Plus size={13} /> Pago único</Button>
           <Button size="sm" onClick={() => setAdding(true)} disabled={subscribable.length === 0}><Plus size={13} /> Suscribir</Button>
@@ -1253,9 +1269,9 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium">{s.product_name}</span>
-                  <StatusBadge tone={SUB_STATUS[s.status].tone} label={SUB_STATUS[s.status].label} dot={false} className="text-[10px]" />
+                  <StatusBadge tone={SUB_STATUS[s.status].tone} label={SUB_STATUS[s.status].label} dot={false} className="text-micro" />
                 </div>
-                <p className="mt-0.5 text-[11px] text-subtle tnum">
+                <p className="mt-0.5 text-xs text-subtle tnum">
                   {s.billing_model === 'metered' || s.billing_model === 'tiered'
                     ? `${fmtMoney(s.unit_cents, s.currency)}/${s.unit || 'ud'} · por uso`
                     : `${fmtMoney(s.unit_cents, s.currency)} × ${s.qty}/${s.interval === 'yearly' ? 'año' : 'mes'}`}
@@ -1277,16 +1293,16 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium">{c.label}</span>
-                  <StatusBadge tone="info" label="cargo pendiente" dot={false} className="text-[10px]" />
+                  <StatusBadge tone="info" label="cargo pendiente" dot={false} className="text-micro" />
                 </div>
-                <p className="mt-0.5 text-[11px] text-subtle tnum">{fmtMoney(c.unit_cents, currency)} × {c.qty} · IVA {c.tax_rate}%</p>
+                <p className="mt-0.5 text-xs text-subtle tnum">{fmtMoney(c.unit_cents, currency)} × {c.qty} · IVA {c.tax_rate}%</p>
               </div>
               <button onClick={() => delCharge.mutate(c.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Quitar cargo"><Trash2 size={14} /></button>
             </div>
           ))}
         </>
       )}
-      <p className="border-t border-line px-4 py-2.5 text-[11px] text-subtle">Al generar la factura del ciclo se incluyen estas suscripciones (con su uso medido) y los pagos únicos pendientes (una sola vez).</p>
+      <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">Al generar la factura del ciclo se incluyen estas suscripciones (con su uso medido) y los pagos únicos pendientes (una sola vez).</p>
 
       {adding && <AddSubscriptionModal workspaceId={workspaceId} products={subscribable} onClose={() => setAdding(false)} onSaved={() => { setAdding(false); invalidate(); }} />}
       {charge && <AddChargeModal workspaceId={workspaceId} products={oneOffProducts} onClose={() => setCharge(false)} onSaved={() => { setCharge(false); invalidate(); }} />}
@@ -1324,7 +1340,7 @@ function AddSubscriptionModal({ workspaceId, products, onClose, onSaved }: { wor
           <Field label="Cantidad" hint={metered ? 'multiplica el uso medido' : 'nº de unidades'}><input className="input tnum" type="number" min={0} step="0.5" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
           <Field label="Precio a medida" hint="vacío = precio del catálogo"><input className="input tnum" type="number" min={0} step="0.01" value={customPrice} onChange={(e) => setCustomPrice(e.target.value)} placeholder={product ? String(product.price_cents / 100) : ''} /></Field>
         </div>
-        {product?.description && <p className="rounded-md border border-line bg-bg px-3 py-2 text-[12px] text-sub">{product.description}</p>}
+        {product?.description && <p className="rounded-md border border-line bg-bg px-3 py-2 text-xs text-sub">{product.description}</p>}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>Cancelar</Button>
           <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!productId}>Contratar</Button>
@@ -1383,7 +1399,7 @@ function AddChargeModal({ workspaceId, products, onClose, onSaved }: { workspace
           <Field label="Precio unidad"><input className="input tnum" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
           <Field label="IVA (%)"><input className="input tnum" type="number" min={0} max={100} value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></Field>
         </div>
-        <p className="text-[11px] text-subtle">Se cobra una sola vez en la próxima factura del ciclo que generes (no se repite).</p>
+        <p className="text-xs text-subtle">Se cobra una sola vez en la próxima factura del ciclo que generes (no se repite).</p>
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>Cancelar</Button>
           <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!label.trim()}>Añadir</Button>
@@ -1405,6 +1421,9 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
   const queryClient = useQueryClient();
   const q = useQuery({ queryKey: ['ws-keys', workspaceId], queryFn: () => api.get<WorkspaceKeysResponse>(`/workspaces/${workspaceId}/keys`) });
   const [creating, setCreating] = useState(false);
+  // Revocar una clave es irreversible: como el resto de acciones destructivas
+  // de la aplicación, pasa por una confirmación en vez de dispararse al primer clic.
+  const [revoking, setRevoking] = useState<WorkspaceApiKey | null>(null);
   const [newName, setNewName] = useState('');
   const [budget, setBudget] = useState('');
   const [rpm, setRpm] = useState('');
@@ -1436,12 +1455,12 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
   return (
     <section className="card overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
-        <h2 className="flex items-center gap-2 text-sm font-semibold"><KeyRound size={15} className="text-acc-soft" /> Claves de IA (Gemini)</h2>
+        <h2 className="flex items-center gap-2 text-base font-semibold"><KeyRound size={15} className="text-acc-soft" /> Claves de IA (Gemini)</h2>
         <Button size="sm" onClick={() => setCreating(true)}><Plus size={13} /> Nueva clave</Button>
       </div>
 
       {q.data && !q.data.geminiConfigured && (
-        <p className="border-b border-line bg-warn/[.08] px-4 py-2 text-[11px] text-warn">
+        <p className="border-b border-line bg-warn/[.08] px-4 py-2 text-xs text-warn">
           El gateway de IA aún no tiene configurada la clave de Gemini (en Contabilidad → Gateway de IA). Las claves emitidas no funcionarán hasta entonces.
         </p>
       )}
@@ -1456,17 +1475,17 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium">{k.name}</span>
-                <span className="font-mono text-[11px] text-subtle">{k.prefix}…</span>
-                <StatusBadge tone={KEY_STATUS[k.status].tone} label={KEY_STATUS[k.status].label} dot={false} className="text-[10px]" />
+                <span className="font-mono text-xs text-subtle">{k.prefix}…</span>
+                <StatusBadge tone={KEY_STATUS[k.status].tone} label={KEY_STATUS[k.status].label} dot={false} className="text-micro" />
               </div>
-              <p className="mt-0.5 text-[11px] text-subtle">
+              <p className="mt-0.5 text-xs text-subtle">
                 {k.allowed_models.length ? `${k.allowed_models.length} modelo(s) · ` : 'todos los modelos · '}
                 {k.rate_limit_rpm ? `${k.rate_limit_rpm}/min · ` : ''}
                 {k.last_used_at ? `último uso ${timeAgo(k.last_used_at)}` : 'sin uso aún'}
               </p>
               {k.budget_cents_month != null && (
                 <div className="mt-1.5 max-w-[220px]">
-                  <div className="flex items-center justify-between text-[10px] text-subtle tnum">
+                  <div className="flex items-center justify-between text-micro text-subtle tnum">
                     <span>{fmtMoney(k.spend_cents_cycle, currency)} / {fmtMoney(k.budget_cents_month, currency)}</span>
                     <span>{Math.min(100, Math.round((k.spend_cents_cycle / Math.max(1, k.budget_cents_month)) * 100))}%</span>
                   </div>
@@ -1487,9 +1506,22 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
           </div>
         ))
       )}
-      <p className="border-t border-line px-4 py-2.5 text-[11px] text-subtle">
+      <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">
         El cliente usa la clave contra <span className="font-mono">/gw/v1beta/models/&lt;modelo&gt;:generateContent</span>. El consumo se mide y se factura con los productos de IA del catálogo. El corte por impago es automático.
       </p>
+
+      <ConfirmModal
+        open={!!revoking}
+        onClose={() => setRevoking(null)}
+        onConfirm={() => {
+          if (revoking) revoke.mutate(revoking.id);
+          setRevoking(null);
+        }}
+        title="Revocar la clave"
+        message={`«${revoking?.name ?? ''}» dejará de funcionar en el acto y no se puede recuperar. Las integraciones que la usen empezarán a recibir errores.`}
+        confirmLabel="Revocar"
+        loading={revoke.isPending}
+      />
 
       {/* Modal: crear clave */}
       <Modal open={creating} onClose={() => setCreating(false)} title="Nueva clave de IA">
@@ -1499,7 +1531,7 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
             <Field label={`Presupuesto/mes (${currency})`} hint="vacío = sin tope"><input className="input tnum" type="number" min={0} step="0.01" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="p. ej. 50" /></Field>
             <Field label="Límite (pet./min)" hint="vacío = sin límite"><input className="input tnum" type="number" min={1} value={rpm} onChange={(e) => setRpm(e.target.value)} placeholder="p. ej. 60" /></Field>
           </div>
-          <p className="text-[11px] text-subtle">Al superar el presupuesto del ciclo, el proxy rechaza (402) hasta el siguiente periodo; el límite por minuto protege de picos.</p>
+          <p className="text-xs text-subtle">Al superar el presupuesto del ciclo, el proxy rechaza (402) hasta el siguiente periodo; el límite por minuto protege de picos.</p>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setCreating(false)}>Cancelar</Button>
             <Button onClick={() => create.mutate()} loading={create.isPending} disabled={!newName.trim()}>Crear clave</Button>
@@ -1510,9 +1542,9 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
       {/* Modal: mostrar el secreto una sola vez */}
       <Modal open={!!secret} onClose={() => setSecret(null)} title="Copia la clave ahora">
         <div className="flex flex-col gap-3">
-          <p className="text-[13px] text-sub">Esta es la única vez que se muestra la clave. Guárdala en un lugar seguro; no podrás volver a verla.</p>
+          <p className="text-sm text-sub">Esta es la única vez que se muestra la clave. Guárdala en un lugar seguro; no podrás volver a verla.</p>
           <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-bg px-3 py-2.5">
-            <code className="min-w-0 flex-1 truncate font-mono text-[12px]">{secret}</code>
+            <code className="min-w-0 flex-1 truncate font-mono text-xs">{secret}</code>
             {secret && <CopyButton value={secret} title="Copiar clave" />}
           </div>
           <div className="flex justify-end"><Button onClick={() => setSecret(null)}>Listo</Button></div>
@@ -1557,7 +1589,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
   if (iaProducts.length === 0 && iaSubs.length === 0) {
     return (
       <section className="card p-5">
-        <h2 className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} className="text-acc-soft" /> Precios de IA de este cliente</h2>
+        <h2 className="text-base font-semibold">Precios de IA de este cliente</h2>
         <p className="mt-2 text-xs text-subtle">Crea primero productos de IA (medidos por tokens) en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>. Luego podrás activarlos para este cliente en un clic y darle un precio propio.</p>
       </section>
     );
@@ -1566,7 +1598,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
   return (
     <section className="card overflow-hidden">
       <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
-        <h2 className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} className="text-acc-soft" /> Precios de IA de este cliente</h2>
+        <h2 className="text-base font-semibold">Precios de IA de este cliente</h2>
         {unassigned.length > 0 && (
           <Button size="sm" onClick={() => assign.mutate()} loading={assign.isPending}>
             <Plus size={13} /> {iaSubs.length === 0 ? 'Facturar IA a este cliente' : 'Añadir productos nuevos'}
@@ -1595,15 +1627,15 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">{s.product_name}</span>
-                  <StatusBadge tone={s.frozen ? 'info' : 'neutral'} label={s.frozen ? 'precio propio' : 'precio global'} dot={false} className="text-[10px]" />
+                  <StatusBadge tone={s.frozen ? 'info' : 'neutral'} label={s.frozen ? 'precio propio' : 'precio global'} dot={false} className="text-micro" />
                 </div>
-                <p className="mt-0.5 text-[11px] text-subtle tnum">Global {fmtMoney(globalCents, currency)} · por {prod?.unit || 'ud'}</p>
+                <p className="mt-0.5 text-xs text-subtle tnum">Global {fmtMoney(globalCents, currency)} · por {prod?.unit || 'ud'}</p>
               </div>
               {/* Un producto por TRAMOS se tarifa siempre con su tabla de tramos:
                   el precio por cuenta no lo aplica el motor de facturación, así que
                   no se ofrece aquí (prometía un descuento que no se cobraría). */}
               {prod?.billing_model === 'tiered' ? (
-                <p className="shrink-0 text-[11px] text-subtle">
+                <p className="shrink-0 text-xs text-subtle">
                   Precio por tramos: se edita en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>.
                 </p>
               ) : (
@@ -1611,11 +1643,11 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
                   <div className="relative">
                     <input className="input h-8 w-28 tnum pr-7" inputMode="decimal" value={val} placeholder={String(globalCents / 100)}
                       onChange={(e) => setDrafts((prev) => ({ ...prev, [s.id]: e.target.value }))} />
-                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-subtle">{currency === 'EUR' ? '€' : currency}</span>
+                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-subtle">{currency === 'EUR' ? '€' : currency}</span>
                   </div>
                   <Button size="sm" variant="ghost" loading={setPrice.isPending && setPrice.variables?.subId === s.id} onClick={savePrice}>Guardar</Button>
                   {s.frozen && (
-                    <button className="rounded p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Volver al precio global" onClick={() => { setPrice.mutate({ subId: s.id, unitCents: null }); clearDraft(s.id); }}><Undo2 size={14} /></button>
+                    <button className="rounded p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Volver al precio global" aria-label="Volver al precio global" onClick={() => { setPrice.mutate({ subId: s.id, unitCents: null }); clearDraft(s.id); }}><Undo2 size={14} /></button>
                   )}
                 </div>
               )}
@@ -1623,7 +1655,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
           );
         })
       )}
-      <p className="border-t border-line px-4 py-2.5 text-[11px] text-subtle">
+      <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">
         Deja el precio vacío para usar el <a href="/catalog" className="text-acc-soft hover:underline">precio global</a> del catálogo. Un precio propio solo afecta a este cliente y no recibe el descuento por cuenta (ya es un precio pactado).
       </p>
     </section>
@@ -1666,7 +1698,7 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
   });
   return (
     <section className="card p-5">
-      <h2 className="mb-3 text-sm font-semibold">Datos de facturación del cliente</h2>
+      <h2 className="mb-3 text-base font-semibold">Datos de facturación del cliente</h2>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="NIF / CIF" hint="Obligatorio en factura completa"><input className="input" value={taxId} onChange={(e) => setTaxId(e.target.value)} placeholder="B12345678" /></Field>
         <Field label="Email de facturación"><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="pagos@cliente.com" /></Field>
@@ -1756,7 +1788,7 @@ export default function WorkspacePage() {
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2.5">
-            <h1 className="text-2xl font-semibold tracking-[-.02em]">{ws.name}</h1>
+            <h1 className="text-2xl font-semibold">{ws.name}</h1>
             <StatusBadge tone={suspended ? 'warn' : 'ok'} label={suspended ? 'suspendida' : 'activa'} dot={!suspended} />
           </div>
           <p className="mt-1 text-sm text-sub">

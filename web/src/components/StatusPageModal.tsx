@@ -80,7 +80,7 @@ export default function StatusPageModal({
         </div>
       ) : (
         <div className="flex flex-col gap-4">
-          <p className="text-[13px] leading-relaxed text-sub">
+          <p className="text-sm leading-relaxed text-sub">
             Un panel público con el estado en vivo de los servicios de este proyecto, su disponibilidad de los
             últimos 90 días y las incidencias. Sin necesidad de iniciar sesión: comparte el enlace con tu cliente.
           </p>
@@ -102,7 +102,7 @@ export default function StatusPageModal({
           {enabled && url && (
             <>
               <div className="flex items-center justify-between gap-2 rounded-xl border border-line bg-bg px-3.5 py-2.5">
-                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-txt">{url}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-txt">{url}</span>
                 <span className="flex shrink-0 items-center gap-0.5">
                   <CopyButton value={url} title="Copiar enlace" />
                   <a
@@ -127,7 +127,7 @@ export default function StatusPageModal({
                 >
                   <div className="flex flex-col gap-2">
                     <textarea
-                      className="input min-h-[64px] resize-y py-2 text-[13px] leading-relaxed"
+                      className="input min-h-[64px] resize-y py-2 text-sm leading-relaxed"
                       maxLength={500}
                       placeholder="Ej: Mantenimiento programado el sábado de 02:00 a 03:00 — puede haber cortes breves."
                       value={notice}
@@ -148,7 +148,7 @@ export default function StatusPageModal({
               )}
               {isAdmin && (
                 <div className="flex items-center justify-between gap-3 border-t border-line pt-3.5">
-                  <p className="text-[11px] leading-relaxed text-subtle">
+                  <p className="text-xs leading-relaxed text-subtle">
                     ¿Enlace filtrado o cliente que ya no debe verlo? Genera uno nuevo: el anterior deja de funcionar al
                     instante.
                   </p>
@@ -161,7 +161,7 @@ export default function StatusPageModal({
           )}
 
           {!isAdmin && !enabled && (
-            <p className="text-[11px] text-subtle">Solo un administrador puede activar la página de estado.</p>
+            <p className="text-xs text-subtle">Solo un administrador puede activar la página de estado.</p>
           )}
         </div>
       )}

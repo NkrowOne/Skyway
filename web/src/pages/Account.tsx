@@ -26,7 +26,7 @@ function Section({
     <section className="card p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-2.5">
         <div>
-          <h2 className="flex items-center gap-2 text-sm font-semibold">
+          <h2 className="flex items-center gap-2 text-base font-semibold">
             <span aria-hidden className={`[&>svg]:block ${iconClass}`}>
               {icon}
             </span>
@@ -129,7 +129,7 @@ export default function AccountPage() {
   return (
     <div className="mx-auto flex max-w-[780px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-2">
-        <h1 className="text-2xl font-semibold tracking-[-.02em]">Mi cuenta</h1>
+        <h1 className="text-2xl font-semibold">Mi cuenta</h1>
         <p className="mt-1.5 text-sm text-sub">
           {me.data?.user?.email} · {me.data?.user?.role === 'admin' ? 'administrador' : 'miembro'}
         </p>
@@ -160,7 +160,7 @@ export default function AccountPage() {
               <div key={p.id} className="flex items-center justify-between gap-3 rounded-lg border border-line bg-bg px-3.5 py-2.5">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{p.name}</p>
-                  <p className="mt-px text-[11px] text-subtle">
+                  <p className="mt-px text-xs text-subtle">
                     dominio <span className="font-mono">{p.rp_id}</span> · creada {timeAgo(p.created_at)}
                     {p.last_used_at ? ` · último uso ${timeAgo(p.last_used_at)}` : ' · sin usar'}
                   </p>
@@ -176,7 +176,7 @@ export default function AccountPage() {
             ))}
           </div>
         )}
-        <p className="mt-3 text-[11px] text-subtle">
+        <p className="mt-3 text-xs text-subtle">
           Cada passkey queda ligada al dominio donde se creó (p. ej. <span className="font-mono">localhost</span> por túnel SSH, o tu
           dominio público). Si cambias de dominio, registra una nueva desde él.
         </p>
@@ -203,7 +203,7 @@ export default function AccountPage() {
               <div key={t.id} className="flex items-center justify-between gap-3 rounded-lg border border-line bg-bg px-3.5 py-2.5">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{t.name}</p>
-                  <p className="mt-px text-[11px] text-subtle">
+                  <p className="mt-px text-xs text-subtle">
                     <span className="font-mono">{t.prefix}…</span> · creado {timeAgo(t.created_at)}
                     {t.last_used_at ? ` · último uso ${timeAgo(t.last_used_at)}` : ' · sin usar'}
                     {t.expires_at ? ` · caduca ${new Date(t.expires_at).toLocaleDateString()}` : ''}
@@ -220,7 +220,7 @@ export default function AccountPage() {
             ))}
           </div>
         )}
-        <p className="mt-3 text-[11px] text-subtle">
+        <p className="mt-3 text-xs text-subtle">
           Uso: <span className="font-mono">Authorization: Bearer sky_…</span> contra la API REST. El token completo solo se muestra al
           crearlo.
         </p>

@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowUpRight, BellRing, ExternalLink, Folder, Globe, Lock, RefreshCw, Rocket, Search, Unlock } from 'lucide-react';
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
-import { Button, ConfirmModal, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { WebsiteEntry } from '../types';
 import { cx, DEPLOY_STATUS_LABEL, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
 
@@ -37,8 +37,10 @@ function SiteCard({
           ? 'bg-warn'
           : 'bg-subtle';
 
+  // Sin card-hover: la tarjeta entera no es pulsable —solo el logo, el nombre
+  // y los dominios—, y encenderla al pasar prometía un clic que no existe.
   return (
-    <div className="card card-hover flex flex-col p-4">
+    <div className="card flex flex-col p-4">
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2.5">
           <button onClick={() => navigate(`/projects/${site.projectId}?s=${site.id}`)} className="shrink-0" title="Abrir el servicio">
@@ -50,17 +52,17 @@ function SiteCard({
               className="flex max-w-full items-center gap-1.5 text-left"
               title="Abrir el servicio"
             >
-              <span className="truncate text-[13.5px] font-semibold tracking-[-.01em]">{site.name}</span>
+              <span className="truncate text-sm font-semibold">{site.name}</span>
               {site.alerts > 0 && (
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-err/[.14] px-1.5 py-px text-[10px] font-semibold text-err">
-                  <BellRing size={9} /> {site.alerts}
-                </span>
+                <Chip size="sm" tone="err" icon={<BellRing size={9} aria-hidden />}>
+                  {site.alerts}
+                </Chip>
               )}
             </button>
             {/* El proyecto es un enlace propio: un salto directo a su canvas. */}
             <Link
               to={`/projects/${site.projectId}`}
-              className="mt-0.5 flex max-w-full items-center gap-1 text-[11px] text-subtle transition-colors hover:text-sub"
+              className="mt-0.5 flex max-w-full items-center gap-1 text-xs text-subtle transition-colors hover:text-sub"
               title={`Ir al proyecto «${site.projectName}»`}
             >
               <Folder size={10} className="shrink-0 opacity-70" />
@@ -76,7 +78,7 @@ function SiteCard({
 
       <div className="mt-3 flex min-h-[26px] flex-wrap items-center gap-1.5">
         {site.domains.length === 0 && site.hostPort === null && (
-          <span className="text-[11px] text-subtle">Sin dominio — añádelo en Ajustes del servicio</span>
+          <span className="text-xs text-subtle">Sin dominio — añádelo en Ajustes del servicio</span>
         )}
         {site.domains.map((d) => (
           <a
@@ -84,7 +86,7 @@ function SiteCard({
             href={`${scheme}://${d}`}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex max-w-full items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-[3px] text-[11px] text-sub transition-colors hover:border-acc/50 hover:text-txt"
+            className="inline-flex max-w-full items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-0.5 text-xs text-sub transition-colors duration-[--dur-1] hover:border-line2 hover:text-txt"
             title={`Abrir ${scheme}://${d}`}
           >
             {tls ? <Lock size={10} className="shrink-0 text-ok" /> : <Unlock size={10} className="shrink-0 text-warn" />}
@@ -97,7 +99,7 @@ function SiteCard({
             href={`http://${serverIp || window.location.hostname}:${site.hostPort}`}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-[3px] font-mono text-[11px] text-sub transition-colors hover:border-acc/50 hover:text-txt"
+            className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-0.5 font-mono text-xs text-sub transition-colors duration-[--dur-1] hover:border-line2 hover:text-txt"
             title="Puerto público del host"
           >
             :{site.hostPort}
@@ -107,7 +109,7 @@ function SiteCard({
       </div>
 
       <div className="mt-auto flex items-center justify-between gap-2 pt-3">
-        <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-sub">
+        <span className="flex min-w-0 items-center gap-1.5 text-xs text-sub">
           <span className={cx('h-1.5 w-1.5 shrink-0 rounded-full', deployDot)} />
           <span className="truncate">
             {site.lastDeploy
@@ -120,7 +122,7 @@ function SiteCard({
             onClick={onDeploy}
             disabled={busy}
             className="rounded-lg p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40"
-            title="Desplegar"
+            title="Desplegar" aria-label="Desplegar"
           >
             <Rocket size={13} />
           </button>
@@ -129,7 +131,7 @@ function SiteCard({
               onClick={onRestart}
               disabled={busy}
               className="rounded-lg p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40"
-              title="Reiniciar"
+              title="Reiniciar" aria-label="Reiniciar"
             >
               <RefreshCw size={13} className={cx(busy && 'animate-spin')} />
             </button>
@@ -210,7 +212,7 @@ export default function SitesPage() {
     <div className="mx-auto max-w-[1120px] px-4 py-7 sm:px-6 sm:py-9">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="flex items-center gap-2.5 text-2xl font-semibold leading-[30px] tracking-[-.02em]">
+          <h1 className="flex items-center gap-2.5 text-2xl font-semibold leading-[30px]">
             <Globe size={22} className="text-acc-soft" /> Sitios y servicios
           </h1>
           <p className="mt-1.5 text-sm text-sub">

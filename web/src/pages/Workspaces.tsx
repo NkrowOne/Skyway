@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { Building2, CreditCard, Plus, SlidersHorizontal } from 'lucide-react';
 import { api } from '../api';
-import { Button, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, ErrorState, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { MiniMeter } from '../components/QuotaMeter';
 import { Me, Plan, Workspace } from '../types';
 import { cx, fmtMb, fmtMoney } from '../utils';
@@ -12,9 +12,9 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 
 function PlanPill({ workspace }: { workspace: Workspace }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-acc/[.14] px-2 py-0.5 text-[10px] font-semibold text-acc-soft">
-      <CreditCard size={9} /> {workspace.plan ? workspace.plan.name : 'sin plan'}
-    </span>
+    <Chip size="sm" tone="info" icon={<CreditCard size={9} aria-hidden />}>
+      {workspace.plan ? workspace.plan.name : 'sin plan'}
+    </Chip>
   );
 }
 
@@ -31,8 +31,8 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
             <Building2 size={16} />
           </span>
           <div className="min-w-0">
-            <h3 className="truncate text-[15px] font-semibold tracking-[-.01em]">{workspace.name}</h3>
-            <p className="font-mono text-[11px] text-subtle">{workspace.slug}</p>
+            <h3 className="truncate text-base font-semibold">{workspace.name}</h3>
+            <p className="font-mono text-xs text-subtle">{workspace.slug}</p>
           </div>
         </div>
         <StatusBadge tone={suspended ? 'warn' : 'ok'} label={suspended ? 'suspendida' : 'activa'} dot={!suspended} pulse={false} />
@@ -44,7 +44,7 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
         <MiniMeter label="Disco" used={a.diskMb} ceiling={q.diskMb} format={fmtMb} />
       </div>
 
-      <div className="mt-4 flex items-center justify-between border-t border-line pt-3 text-[11px] text-subtle">
+      <div className="mt-4 flex items-center justify-between border-t border-line pt-3 text-xs text-subtle">
         <div className="flex items-center gap-3">
           <span className={cx('tnum', countTone(a.projects, q.maxProjects))}>{a.projects}/{q.maxProjects} proy.</span>
           <span className={cx('tnum', countTone(a.services, q.maxServices))}>{a.services}/{q.maxServices} serv.</span>
@@ -112,7 +112,7 @@ export default function WorkspacesPage() {
     <div className="mx-auto max-w-[1120px] px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-[-.02em]">Cuentas y clientes</h1>
+          <h1 className="text-2xl font-semibold">Cuentas y clientes</h1>
           <p className="mt-1.5 text-sm text-sub">
             Cada cuenta agrupa los proyectos de un cliente bajo una cuota de recursos compartida y su facturación
           </p>
@@ -142,6 +142,17 @@ export default function WorkspacesPage() {
               <Skeleton className="mt-2.5 h-2.5 w-full rounded-full" />
             </div>
           ))}
+        </div>
+      )}
+
+      {workspaces.isError && (
+        <div className="card">
+          <ErrorState
+            title="No se han podido cargar las cuentas"
+            error={workspaces.error}
+            onRetry={() => workspaces.refetch()}
+            retrying={workspaces.isFetching}
+          />
         </div>
       )}
 

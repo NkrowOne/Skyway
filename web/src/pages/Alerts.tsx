@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Archive, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket } from 'lucide-react';
 import { api } from '../api';
-import { Button, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, ErrorState, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { Alert } from '../types';
 import { ALERT_TYPE_LABEL, cx, fmtDateTime, SEVERITY_LABEL, SEVERITY_TONE } from '../utils';
 
@@ -39,7 +39,7 @@ function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: (
   return (
     <div
       className={cx(
-        'relative overflow-hidden rounded-xl border border-line bg-surface py-4 pl-[18px] pr-[18px] transition-opacity',
+        'relative overflow-hidden rounded-xl border border-line bg-surface py-4 pl-4 pr-4 transition-opacity',
         !resolved && tone === 'err' && 'bg-err/[.035]',
         resolved && 'opacity-[.7]',
       )}
@@ -57,16 +57,16 @@ function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: (
                 tone={SEVERITY_TONE[alert.severity]}
                 label={SEVERITY_LABEL[alert.severity]}
                 dot={false}
-                className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[.03em]"
+                className="px-2 py-0.5 eyebrow"
               />
             )}
           </div>
-          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-subtle">
+          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-subtle">
             <span>{ALERT_TYPE_LABEL[alert.type] ?? alert.type}</span>
             <span className="text-line">·</span>
             <span className="tnum">{fmtDateTime(alert.ts)}</span>
           </p>
-          <p className="mt-2 text-[13px] leading-relaxed text-sub">{alert.message}</p>
+          <p className="mt-2 text-sm leading-relaxed text-sub">{alert.message}</p>
           {alert.explanation && (
             <div className="mt-2.5 flex items-start gap-2 rounded-r-md border-l-2 border-warn/40 bg-warn/[.05] py-2 pl-2.5 pr-3 text-xs text-sub">
               <Lightbulb size={13} className="mt-px shrink-0 text-warn" />
@@ -131,29 +131,27 @@ export default function AlertsPage() {
   const activeCount = active.data?.alerts.length ?? 0;
 
   return (
-    <div className="mx-auto flex max-w-[880px] flex-col gap-[18px] px-4 py-7 sm:px-6 sm:py-10">
+    <div className="mx-auto flex max-w-[880px] flex-col gap-4 px-4 py-7 sm:px-6 sm:py-10">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-[-.02em]">Alertas</h1>
+          <h1 className="text-2xl font-semibold">Alertas</h1>
           <p className="mt-1.5 text-sm text-sub">
             Caídas, bucles de reinicio, CPU/RAM altas y despliegues fallidos de todos los proyectos
           </p>
         </div>
-        <div role="tablist" className="inline-flex gap-0.5 rounded-lg border border-line bg-bg p-[3px]">
+        <div role="tablist" className="inline-flex gap-0.5 rounded-lg border border-line bg-bg p-0.5">
           <button
             role="tab"
             aria-selected={openOnly}
             onClick={() => setOpenOnly(true)}
             className={cx(
-              'rounded-[7px] px-3.5 py-[5px] text-xs transition-colors duration-150',
+              'rounded-[7px] px-3.5 py-1 text-xs transition-colors duration-150',
               openOnly ? 'bg-surface2 font-semibold text-txt' : 'text-sub hover:text-txt',
             )}
           >
             Activas
             {activeCount > 0 && (
-              <span className="ml-1.5 inline-flex h-4 min-w-4 translate-y-px items-center justify-center rounded-full bg-err/[.18] px-1 text-[10px] font-bold text-err">
-                {activeCount}
-              </span>
+              <Chip size="sm" tone="err" className="ml-1.5">{activeCount}</Chip>
             )}
           </button>
           <button
@@ -161,7 +159,7 @@ export default function AlertsPage() {
             aria-selected={!openOnly}
             onClick={() => setOpenOnly(false)}
             className={cx(
-              'rounded-[7px] px-3.5 py-[5px] text-xs transition-colors duration-150',
+              'rounded-[7px] px-3.5 py-1 text-xs transition-colors duration-150',
               !openOnly ? 'bg-surface2 font-semibold text-txt' : 'text-sub hover:text-txt',
             )}
           >
@@ -186,13 +184,21 @@ export default function AlertsPage() {
         </div>
       )}
 
-      {!current.isLoading && list.length === 0 && (
-        <div className="card flex flex-col items-center gap-3 py-16 text-center text-sm text-sub">
-          {/* El mismo dot de estado del sistema que en la topbar: verde y respirando. */}
-          <span
-            aria-hidden
-            className="pulse-soft h-2.5 w-2.5 rounded-full bg-ok shadow-[0_0_12px_color-mix(in_oklab,var(--color-ok)_60%,transparent)]"
+      {current.isError && (
+        <div className="card">
+          <ErrorState
+            title="No se han podido cargar las alertas"
+            error={current.error}
+            onRetry={() => current.refetch()}
+            retrying={current.isFetching}
           />
+        </div>
+      )}
+
+      {!current.isLoading && !current.isError && list.length === 0 && (
+        <div className="card flex flex-col items-center gap-3 py-16 text-center text-sm text-sub">
+          {/* Verde solo cuando de verdad se sabe que no hay nada que mirar. */}
+          <span aria-hidden className="pulse-soft h-2.5 w-2.5 rounded-full bg-ok" />
           {openOnly ? 'No hay alertas activas. Todo en orden.' : 'Sin alertas registradas todavía.'}
         </div>
       )}

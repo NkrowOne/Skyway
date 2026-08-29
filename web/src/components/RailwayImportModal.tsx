@@ -82,7 +82,7 @@ export function ImportReportView({ report }: { report: ImportReport }) {
       </div>
 
       <div>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Servicios creados</h3>
+        <h3 className="mb-2 eyebrow text-sub">Servicios creados</h3>
         <ul className="space-y-1.5">
           {report.created.map((c) => (
             <li key={c.name} className="rounded-lg border border-line bg-surface2 px-3 py-2">
@@ -102,7 +102,7 @@ export function ImportReportView({ report }: { report: ImportReport }) {
 
       {report.dataCopy.length > 0 && (
         <div>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Copia de datos</h3>
+          <h3 className="mb-2 eyebrow text-sub">Copia de datos</h3>
           <div className="space-y-2">
             {report.dataCopy.map((d) => (
               <div key={d.service} className="rounded-lg border border-line bg-surface2 p-3">
@@ -119,11 +119,11 @@ export function ImportReportView({ report }: { report: ImportReport }) {
                 </div>
                 {d.command && (
                   <details className="mt-2">
-                    <summary className="cursor-pointer list-none text-[11px] text-subtle hover:text-sub">
+                    <summary className="cursor-pointer list-none text-xs text-subtle hover:text-sub">
                       Comando equivalente para el servidor
                     </summary>
                     <div className="mt-1.5 flex items-start gap-1">
-                      <code className="block flex-1 overflow-x-auto whitespace-pre rounded-md bg-term p-2 font-mono text-[10.5px] text-txt/[.88]">
+                      <code className="block flex-1 overflow-x-auto whitespace-pre rounded-md bg-term p-2 font-mono text-micro text-txt/[.88]">
                         {d.command}
                       </code>
                       <CopyButton value={d.command} />
@@ -138,7 +138,7 @@ export function ImportReportView({ report }: { report: ImportReport }) {
 
       {report.warnings.length > 0 && (
         <div>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Revisa esto</h3>
+          <h3 className="mb-2 eyebrow text-sub">Revisa esto</h3>
           <ul className="space-y-1 text-xs text-warn">
             {report.warnings.map((w, i) => (
               <li key={i} className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/5 px-3 py-2">
@@ -151,7 +151,7 @@ export function ImportReportView({ report }: { report: ImportReport }) {
       )}
 
       <div>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sub">Siguientes pasos</h3>
+        <h3 className="mb-2 eyebrow text-sub">Siguientes pasos</h3>
         <ol className="list-inside list-decimal space-y-1 text-xs text-sub">
           {report.nextSteps.map((s, i) => (
             <li key={i}>{s}</li>
@@ -389,17 +389,17 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
                     <Icon size={15} className={meta.cls} />
                     <span className="text-sm font-medium">{s.railwayName}</span>
                     <span className="text-xs text-sub">→ {meta.label}</span>
-                    <span className="ml-auto text-[11px] text-sub">
+                    <span className="ml-auto text-xs text-sub">
                       {s.varCount > 0 && `${s.varCount} vars`}
                       {s.domains.length > 0 && ` · ${s.domains.length} dominio(s)`}
                       {s.volumeMounts.length > 0 && ` · ${s.volumeMounts.length} volumen(es)`}
                     </span>
                   </div>
                   {(s.kind === 'git' ? [`${s.repoUrl} (${s.branch})`] : s.kind === 'image' ? [s.image] : []).map((l) => (
-                    <p key={l} className="mt-1 truncate font-mono text-[11px] text-sub">{l}</p>
+                    <p key={l} className="mt-1 truncate font-mono text-xs text-sub">{l}</p>
                   ))}
                   {s.notes.map((n, i) => (
-                    <p key={i} className="mt-1 text-[11px] text-sub">· {n}</p>
+                    <p key={i} className="mt-1 text-xs text-sub">· {n}</p>
                   ))}
                 </div>
               );

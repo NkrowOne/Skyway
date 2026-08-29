@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "build": "tsc -p tsconfig.json --noEmit && vite build && npm run check:classes",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "preview": "vite preview",
-    "logos": "node scripts/fetch-logos.mjs"
+    "logos": "node scripts/fetch-logos.mjs",
+    "check:classes": "node scripts/check-classes.mjs \"$(ls dist/assets/*.css | head -1)\""
   },
   "dependencies": {
     "@tanstack/react-query": "^5.51.23",

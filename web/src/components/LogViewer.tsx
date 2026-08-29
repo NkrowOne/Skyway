@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { cx, stripAnsi } from '../utils';
+import { ErrorState, Menu, Spinner } from './ui';
 
 export type Level = 'err' | 'warn' | 'plain';
 export type LevelFilter = 'all' | 'err' | 'warn';
@@ -221,7 +222,7 @@ const LogRow = memo(function LogRow({
     >
       {gutter && (
         <span
-          className="log-gutter tnum select-none px-2 text-right text-[11px] tabular-nums text-subtle/70"
+          className="log-gutter tnum select-none px-2 text-right text-xs tabular-nums text-subtle/70"
           style={{ minWidth: '3.8ch' }}
         >
           {n}
@@ -230,7 +231,7 @@ const LogRow = memo(function LogRow({
       {showTs && (
         <span
           className={cx(
-            'log-ts tnum shrink-0 select-none px-2 text-[11px] tabular-nums text-subtle transition-colors hover:text-txt',
+            'log-ts tnum shrink-0 select-none px-2 text-xs tabular-nums text-subtle transition-colors hover:text-txt',
             !tsString && 'opacity-0',
           )}
           title={tsTooltip}
@@ -241,7 +242,7 @@ const LogRow = memo(function LogRow({
       )}
       <span
         className={cx(
-          'flex flex-1 items-baseline py-[1px] pr-3',
+          'flex flex-1 items-baseline py-px pr-3',
           !gutter && !showTs ? 'pl-3' : 'pl-1',
           wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre',
         )}
@@ -274,7 +275,10 @@ function ToolButton({
       onClick={onClick}
       disabled={disabled}
       className={cx(
-        'press flex h-7.5 w-7.5 sm:h-8 sm:w-8 items-center justify-center rounded-lg leading-none disabled:opacity-40 transition-colors',
+        // 36px con el pulgar, 32px con ratón. Antes pedía siete y medio, un paso
+        // que la escala de Tailwind no tiene: por debajo de 640px estos ocho
+        // botones se quedaban sin tamaño y los dimensionaba el icono.
+        'press flex h-9 w-9 sm:h-8 sm:w-8 items-center justify-center rounded-lg leading-none disabled:opacity-40 transition-colors',
         active ? 'bg-acc/[.16] text-acc-soft' : 'text-subtle hover:bg-surface2 hover:text-txt',
       )}
     >
@@ -308,6 +312,8 @@ export default function LogViewer({
   defaultStage = 'all',
   extraHeaderLeft,
   extraHeaderRight,
+  state = 'ready',
+  onRetry,
 }: {
   lines: string[];
   className?: string;
@@ -329,6 +335,14 @@ export default function LogViewer({
   defaultStage?: LogStage;
   extraHeaderLeft?: React.ReactNode;
   extraHeaderRight?: React.ReactNode;
+  /**
+   * Qué le pasa a la fuente de los logs. Sin esto, una consola vacía decía
+   * «Sin logs todavía…» tanto si estaba cargando como si la petición había
+   * fallado como si de verdad no había nada: tres situaciones distintas con
+   * el mismo mensaje, y solo una de ellas cierta.
+   */
+  state?: 'loading' | 'error' | 'ready';
+  onRetry?: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -603,7 +617,7 @@ export default function LogViewer({
       onClick={() => setLevel(key)}
       aria-pressed={level === key}
       className={cx(
-        'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium transition-colors duration-150',
+        'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors duration-150',
         level === key
           ? tone === 'err'
             ? 'bg-err/[.18] text-err font-semibold'
@@ -622,7 +636,7 @@ export default function LogViewer({
   const shell = (
     <section
       className={cx(
-        'log-shell relative flex min-h-0 h-full w-full flex-col overflow-hidden bg-term',
+        'log-shell relative flex min-h-0 w-full flex-col overflow-hidden bg-term',
         maximized ? 'rounded-none' : cx(!bare && 'rounded-xl border border-line shadow-sm', className),
       )}
       style={{ '--log-line-h': maximized ? '23px' : '22px' } as React.CSSProperties}
@@ -632,11 +646,11 @@ export default function LogViewer({
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
             {extraHeaderLeft}
             {title && (
-              <span className="truncate font-mono text-[11px] font-semibold uppercase tracking-[.08em] text-sub">
+              <span className="truncate font-mono eyebrow text-sub">
                 {title}
               </span>
             )}
-            <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-subtle">
+            <span className="flex shrink-0 items-center gap-1.5 text-xs text-subtle">
               {!toolbar && (
                 <span
                   className={cx('h-[6px] w-[6px] rounded-full', follow ? 'pulse-soft bg-ok' : 'bg-subtle')}
@@ -684,7 +698,7 @@ export default function LogViewer({
               />
               {filter && (
                 <div className="flex items-center gap-1">
-                  <span className="text-[10px] text-subtle tabular-nums font-mono">
+                  <span className="text-micro text-subtle tabular-nums font-mono">
                     {visible.length} match{visible.length === 1 ? '' : 'es'}
                   </span>
                   <button
@@ -718,12 +732,12 @@ export default function LogViewer({
               >
                 <Clock size={14} />
               </ToolButton>
-              {tsMenuOpen && (
-                <div
-                  className="absolute right-0 top-full z-40 mt-1 min-w-[185px] rounded-xl border border-line bg-surface p-1.5 shadow-modal"
-                  onMouseLeave={() => setTsMenuOpen(false)}
-                >
-                  <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-subtle">
+              {/* Antes solo se cerraba con onMouseLeave: en una pantalla táctil
+                  no hay «salir con el ratón», así que quedaba abierto para
+                  siempre. Menu cierra con Esc y con un toque fuera. */}
+              <Menu open={tsMenuOpen} onClose={() => setTsMenuOpen(false)} align="right">
+                <div>
+                  <p className="px-2 py-1 eyebrow text-subtle">
                     Marcas de tiempo
                   </p>
                   <button
@@ -764,7 +778,7 @@ export default function LogViewer({
                     </button>
                   ))}
                 </div>
-              )}
+              </Menu>
             </div>
 
             <ToolButton title="Numerar líneas" onClick={() => setGutter((g) => !g)} active={gutter}>
@@ -798,7 +812,7 @@ export default function LogViewer({
               <button
                 type="button"
                 onClick={() => setClearedUntil(0)}
-                className="press flex h-7 items-center rounded-md bg-surface2 px-2 text-[11px] text-sub hover:text-txt"
+                className="press flex h-7 items-center rounded-md bg-surface2 px-2 text-xs text-sub hover:text-txt"
                 title="Restaurar líneas ocultas"
               >
                 Restaurar ({clearedUntil})
@@ -808,46 +822,26 @@ export default function LogViewer({
         </div>
       )}
 
-      {toolbar && (
-        <div className="flex shrink-0 items-center justify-between gap-2.5 border-b border-line bg-term2 px-3 py-1.5 text-[11px] text-subtle">
+      {/* Solo aparece cuando tiene algo que contar: un aviso, un filtro activo
+          o el seguimiento en vivo. Vacía era una franja de cromo sin función. */}
+      {toolbar && (statusNote || filtering || follow) && (
+        <div className="flex shrink-0 items-center justify-between gap-2.5 border-b border-line bg-term2 px-3 py-1.5 text-xs text-subtle">
           <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
             {statusNote ? (
-              <span className="text-warn font-medium">{statusNote}</span>
-            ) : (
-              <>
-                <span>
-                  <span className="tnum font-medium text-txt/90">{NF.format(visible.length)}</span>
-                  {filtering ? ` de ${NF.format(rows.length)} líneas filtradas` : ' líneas'}
-                </span>
-                {counts.err > 0 && (
-                  <>
-                    <span className="text-line">·</span>
-                    <span className="text-err font-medium">{counts.err} errores</span>
-                  </>
-                )}
-                {counts.warn > 0 && (
-                  <>
-                    <span className="text-line">·</span>
-                    <span className="text-warn font-medium">{counts.warn} avisos</span>
-                  </>
-                )}
-              </>
-            )}
+              <span className="font-medium text-warn">{statusNote}</span>
+            ) : filtering ? (
+              <span>
+                <span className="tnum font-medium text-txt/90">{NF.format(visible.length)}</span> de{' '}
+                <span className="tnum">{NF.format(rows.length)}</span> líneas
+              </span>
+            ) : null}
           </span>
 
-          {follow ? (
-            <span className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-ok">
+          {follow && (
+            <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-ok">
               <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-ok" />
               En vivo
             </span>
-          ) : (
-            <button
-              type="button"
-              onClick={() => jump('bottom')}
-              className="press inline-flex shrink-0 items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-0.5 text-[11px] font-medium text-sub hover:text-txt"
-            >
-              <ArrowDownToLine size={12} /> Seguir al final
-            </button>
           )}
         </div>
       )}
@@ -857,8 +851,10 @@ export default function LogViewer({
           ref={ref}
           onScroll={onScroll}
           className={cx(
+            // Tamaño propio de terminal (fuera de la escala de la interfaz):
+            // aquí manda la legibilidad de la monoespaciada, no la jerarquía.
             'log-body h-full w-full font-mono text-[12.5px] leading-[1.65] text-txt/90',
-            maximized && 'text-[13px] leading-[1.7]',
+            maximized && 'text-[13.5px] leading-[1.7]',
             wrap ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto',
           )}
           role="log"
@@ -878,8 +874,16 @@ export default function LogViewer({
           )}
 
           {visible.length === 0 ? (
-            <div className="flex h-full min-h-[140px] items-center justify-center p-6 text-center text-xs text-subtle font-sans">
-              {filtering ? 'Ninguna línea coincide con los filtros aplicados.' : 'Sin logs todavía…'}
+            <div className="flex h-full min-h-[140px] items-center justify-center p-6 text-center font-sans">
+              {state === 'loading' ? (
+                <Spinner label="Cargando los logs…" />
+              ) : state === 'error' ? (
+                <ErrorState compact title="No se han podido cargar los logs" onRetry={onRetry} />
+              ) : (
+                <span className="text-xs text-subtle">
+                  {filtering ? 'Ninguna línea coincide con los filtros aplicados.' : 'Sin logs todavía…'}
+                </span>
+              )}
             </div>
           ) : (
             chunks.map((c) => (
@@ -919,7 +923,7 @@ export default function LogViewer({
               <ArrowDown size={13} className="text-acc" />
               <span>Ir al final</span>
               {unreadCount > 0 && (
-                <span className="rounded-full bg-acc px-1.5 py-0.2 text-[10px] font-bold text-white">
+                <span className="rounded-full bg-acc px-1.5 py-0.5 text-micro font-bold text-white">
                   +{unreadCount > 99 ? '99+' : unreadCount}
                 </span>
               )}

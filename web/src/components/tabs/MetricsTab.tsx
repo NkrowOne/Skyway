@@ -33,13 +33,13 @@ function Tile({
 }) {
   return (
     <div className="rounded-xl border border-line bg-bg px-3.5 py-3">
-      <p className="flex items-center gap-1.5 text-[10.5px] font-medium uppercase tracking-[.06em] text-subtle">
+      <p className="flex items-center gap-1.5 eyebrow text-subtle">
         {icon} {label}
       </p>
-      <p className={cx('mt-1.5 text-[17px] font-semibold leading-none', tone === 'err' ? 'text-err' : tone === 'warn' ? 'text-warn' : 'text-txt')}>
+      <p className={cx('mt-1.5 text-lg font-semibold leading-none', tone === 'err' ? 'text-err' : tone === 'warn' ? 'text-warn' : 'text-txt')}>
         {value}
       </p>
-      {sub && <p className="tnum mt-1 text-[11px] text-subtle">{sub}</p>}
+      {sub && <p className="tnum mt-1 text-xs text-subtle">{sub}</p>}
     </div>
   );
 }
@@ -141,7 +141,7 @@ function LiveView({
 
       <MetricChart
         title="CPU · núcleos usados"
-        color="var(--color-acc)"
+        color="var(--color-chart-1)"
         fillOpacity={0.14}
         points={history.map((p) => ({ ts: p.ts, value: p.cpu / 100 }))}
         format={(v) => `${v.toFixed(v < 1 ? 2 : 1)}`}
@@ -149,7 +149,7 @@ function LiveView({
       />
       <MetricChart
         title={memLimit ? `Memoria · límite ${fmtBytes(memLimit)}` : 'Memoria'}
-        color="var(--color-info)"
+        color="var(--color-chart-2)"
         fillOpacity={0.12}
         points={history.map((p) => ({ ts: p.ts, value: p.mem }))}
         format={(v) => fmtBytes(v)}
@@ -157,19 +157,19 @@ function LiveView({
       />
       <MetricChart
         title="Red · descarga"
-        color="var(--color-ok)"
+        color="var(--color-chart-3)"
         fillOpacity={0.12}
         points={netRate.map((p) => ({ ts: p.ts, value: p.rx }))}
         format={(v) => fmtRate(v)}
       />
       <MetricChart
         title="Red · subida"
-        color="var(--color-info)"
+        color="var(--color-chart-4)"
         fillOpacity={0.12}
         points={netRate.map((p) => ({ ts: p.ts, value: p.tx }))}
         format={(v) => fmtRate(v)}
       />
-      <p className="text-center text-[11px] text-subtle">
+      <p className="text-center text-xs text-subtle">
         Muestras cada 2,5 s · ventana de {Math.max(1, Math.round((history.length * 2.5) / 60))} min
       </p>
     </div>
@@ -269,7 +269,7 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
         title="CPU · núcleos"
         points={cpuPoints}
         hours={hours}
-        color="var(--color-acc)"
+        color="var(--color-chart-1)"
         format={(v) => v.toFixed(v < 1 ? 2 : 1)}
         threshold={cpus ? { value: cpus, label: `límite ${cpus}` } : null}
       />
@@ -279,7 +279,7 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
         title="Memoria"
         points={memPoints}
         hours={hours}
-        color="var(--color-info)"
+        color="var(--color-chart-2)"
         format={(v) => fmtBytes(v)}
         threshold={memLimitBytes ? { value: memLimitBytes, label: `límite ${memoryMb} MB` } : null}
       />
@@ -288,11 +288,11 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
         title="Disco ocupado"
         points={diskPoints}
         hours={hours}
-        color="var(--color-ok)"
+        color="var(--color-chart-5)"
         format={(v) => fmtBytes(v)}
         threshold={quotaBytes ? { value: quotaBytes, label: `cuota ${diskMb} MB` } : null}
       />
-      <p className="text-center text-[11px] text-subtle">
+      <p className="text-center text-xs text-subtle">
         Muestras del monitor cada 30 s, agrupadas por {hours <= 24 ? 'hora' : hours <= 168 ? '6 h' : 'día'}. La banda va de la
         media al pico.
       </p>
@@ -316,7 +316,7 @@ export default function MetricsTab({
 
   return (
     <div className="flex flex-col gap-3.5 p-4 sm:px-5">
-      <div className="flex items-center gap-1 self-start rounded-xl border border-line bg-surface p-1 text-[13px]">
+      <div className="flex items-center gap-1 self-start rounded-xl border border-line bg-surface p-1 text-sm">
         {MODES.map((m) => (
           <button
             key={String(m.key)}

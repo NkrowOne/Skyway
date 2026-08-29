@@ -4,7 +4,7 @@ import { CheckCircle2, ExternalLink, Globe, HelpCircle, Plus, RefreshCw, X } fro
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { cx, Tone } from '../utils';
-import { Button, CopyButton, useToast } from './ui';
+import { Button, Chip, CopyButton, useToast } from './ui';
 
 interface DomainCheck {
   domain: string;
@@ -107,17 +107,15 @@ function DomainRow({
       <div className="flex items-center gap-2">
         <Globe size={13} className="shrink-0 text-info" />
         <span className="min-w-0 truncate font-mono text-xs">{domain}</span>
-        <button
+        <Chip
+          size="sm"
+          tone={meta.tone}
           onClick={() => setExpanded(!expanded)}
-          className={cx(
-            'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold',
-            TONE_PILL[meta.tone],
-          )}
-          title="Ver detalle"
+          title={expanded ? 'Ocultar detalle del DNS' : 'Ver detalle del DNS'}
+          icon={status === 'ok' ? <CheckCircle2 size={10} aria-hidden /> : undefined}
         >
-          {status === 'ok' && <CheckCircle2 size={10} />}
           {check.isFetching ? 'Comprobando…' : meta.label}
-        </button>
+        </Chip>
         <span className="ml-auto flex shrink-0 items-center gap-0.5">
           <button
             onClick={() => check.refetch()}
@@ -135,7 +133,7 @@ function DomainRow({
           >
             <ExternalLink size={12} />
           </a>
-          <button onClick={onRemove} className="rounded-md p-1 leading-none text-subtle transition-colors hover:text-err" title="Quitar">
+          <button onClick={onRemove} className="rounded-md p-1 leading-none text-subtle transition-colors hover:text-err" title="Quitar" aria-label="Quitar">
             <X size={12} />
           </button>
         </span>
@@ -233,7 +231,7 @@ export default function DomainsEditor({
                 <Plus size={12} /> {domains.includes(generated!) ? 'Añadido' : 'Añadir subdominio'}
               </Button>
             </div>
-            <p className="mt-2 text-[11px] text-subtle">
+            <p className="mt-2 text-xs text-subtle">
               Generado desde tu dominio raíz. Requisito único: registro <span className="font-mono">A</span> comodín{' '}
               <span className="font-mono">
                 *.{rootDomain} → {ip ?? 'IP del servidor'}
@@ -294,7 +292,7 @@ export default function DomainsEditor({
         </Button>
       </div>
 
-      <div className="flex items-start gap-2 text-[11px] text-subtle">
+      <div className="flex items-start gap-2 text-xs text-subtle">
         <HelpCircle size={12} className="mt-0.5 shrink-0" />
         <p>
           El tráfico entra por Traefik (puertos 80/443).{' '}

@@ -36,13 +36,13 @@ function SectionCard({
   return (
     <section className={cx('rounded-xl border border-line bg-bg p-4', className)}>
       <div className="mb-3.5">
-        <h3 className="flex items-center gap-2 text-[13px] font-semibold">
+        <h3 className="flex items-center gap-2 text-sm font-semibold">
           <span aria-hidden className={cx('[&>svg]:block', iconClass)}>
             {icon}
           </span>
           {title}
         </h3>
-        <p className="mt-1 text-[11px] text-subtle">{description}</p>
+        <p className="mt-1 text-xs text-subtle">{description}</p>
       </div>
       {children}
     </section>
@@ -370,9 +370,9 @@ export default function ServiceSettingsTab({
               <span className="truncate font-mono text-xs">{internalAddress}</span>
               <CopyButton value={internalAddress} />
             </span>
-            {!internalPort && <span className="shrink-0 text-[11px] text-subtle">sin puerto HTTP</span>}
+            {!internalPort && <span className="shrink-0 text-xs text-subtle">sin puerto HTTP</span>}
           </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-subtle">
+          <p className="mt-2 text-xs leading-relaxed text-subtle">
             El nombre es el slug del servicio y solo resuelve dentro de la red privada de este proyecto. Es lo que va en
             las variables de los servicios hermanos: con el dominio público en su lugar, la petición sale a Internet y
             vuelve a entrar por Traefik, que responde <span className="font-mono">404 page not found</span> a todo
@@ -440,7 +440,7 @@ export default function ServiceSettingsTab({
                   <Plus size={13} />
                 </Button>
               </div>
-              <p className="text-[11px] text-subtle">
+              <p className="text-xs text-subtle">
                 Ojo: con volúmenes el despliegue deja de ser de corte cero (no pueden convivir dos instancias escribiendo a la
                 vez). Quitar una ruta no borra el volumen de Docker.
               </p>
@@ -473,7 +473,7 @@ export default function ServiceSettingsTab({
               </Field>
             )}
           </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-subtle">
+          <p className="mt-2 text-xs leading-relaxed text-subtle">
             El espacio asignado (volúmenes + escritura del contenedor) es orientativo: Docker no corta el disco en seco,
             pero Skyway lo vigila y te alerta al superarlo. Consúltalo en Monitor.
           </p>
@@ -487,7 +487,7 @@ export default function ServiceSettingsTab({
               .
             </p>
           )}
-          <label className="mt-3 flex cursor-pointer items-center gap-2 text-[13px] text-sub">
+          <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-sub">
             <input
               type="checkbox"
               checked={form.alertsMuted}
@@ -512,9 +512,9 @@ export default function ServiceSettingsTab({
                 onChange={(e) => set('autoDeploy', e.target.checked)}
                 className="mt-0.5 h-[15px] w-[15px] shrink-0 accent-acc"
               />
-              <span className="text-[13px]">
+              <span className="text-sm">
                 <span className="font-medium">Auto-desplegar al hacer push a <span className="font-mono">{form.branch}</span></span>
-                <span className="mt-1 block text-[11px] leading-relaxed text-subtle">
+                <span className="mt-1 block text-xs leading-relaxed text-subtle">
                   Skyway vigila la rama y redespliega al detectar un commit nuevo, sin tocar GitHub (usa el mismo acceso con el
                   que clona: va bien para repos privados o servidores sin dominio). El interruptor manda sobre las dos vías
                   —sondeo y webhook—: apágalo y ningún push desplegará.
@@ -523,7 +523,7 @@ export default function ServiceSettingsTab({
             </label>
 
             <details className="group mt-2.5">
-              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] text-subtle transition-colors hover:text-sub">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-subtle transition-colors hover:text-sub">
                 <ChevronRight size={12} className="shrink-0 text-subtle transition-transform group-open:rotate-90" />
                 ¿Lo quieres instantáneo? Configura además el webhook de GitHub
               </summary>
@@ -531,18 +531,18 @@ export default function ServiceSettingsTab({
                 <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
                   <span className="shrink-0 text-subtle">URL</span>
                   <span className="flex min-w-0 items-center gap-1.5">
-                    <span className="truncate font-mono text-[11px]">{webhookUrl}</span>
+                    <span className="truncate font-mono text-xs">{webhookUrl}</span>
                     <CopyButton value={webhookUrl} />
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
                   <span className="text-subtle">Secreto</span>
                   <span className="flex items-center gap-1.5">
-                    <span className="font-mono text-[11px]">••••••••••••</span>
+                    <span className="font-mono text-xs">••••••••••••</span>
                     <CopyButton value={cfg.webhookSecret ?? ''} />
                   </span>
                 </div>
-                <p className="text-[11px] text-subtle">
+                <p className="text-xs text-subtle">
                   En GitHub: Settings → Webhooks → Add webhook. Content type <span className="font-mono">application/json</span>{' '}
                   (no <span className="font-mono">x-www-form-urlencoded</span>), evento <span className="font-mono">push</span>.
                   Despliega en el acto; requiere que GitHub alcance tu servidor (dominio público). Obedece el interruptor de
@@ -556,8 +556,8 @@ export default function ServiceSettingsTab({
         <section className="mb-3.5 rounded-xl border border-err/30 bg-err/[.06] p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="text-[13px] font-semibold text-err">Zona de peligro</h3>
-              <p className="mt-0.5 text-[11px] text-sub">Elimina el servicio y su contenedor. Los volúmenes solo si lo marcas.</p>
+              <h3 className="text-sm font-semibold text-err">Zona de peligro</h3>
+              <p className="mt-0.5 text-xs text-sub">Elimina el servicio y su contenedor. Los volúmenes solo si lo marcas.</p>
             </div>
             <Button variant="danger" size="sm" onClick={() => setDeleteOpen(true)}>
               Eliminar servicio

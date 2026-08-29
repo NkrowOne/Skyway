@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Check, Pencil, Plus, Star, Trash2 } from 'lucide-react';
 import { api } from '../api';
-import { Button, ConfirmModal, Field, Modal, useToast } from '../components/ui';
+import { Button, ConfirmModal, EmptyState, ErrorState, Field, Modal, Skeleton, useToast } from '../components/ui';
 import { ModuleDef, Plan } from '../types';
 import { cx, fmtMb, fmtMoney } from '../utils';
 
@@ -92,7 +92,7 @@ export default function PlansPage() {
       </Link>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-[-.02em]">Planes</h1>
+          <h1 className="text-2xl font-semibold">Planes</h1>
           <p className="mt-1.5 text-sm text-sub">Los usos incluidos y el precio que hereda cada cuenta. Se pueden ajustar a medida por cliente.</p>
         </div>
         <Button onClick={() => setDraft({ ...EMPTY, modules: modules.data?.modules.map((m) => m.key) ?? [] })}>
@@ -100,12 +100,44 @@ export default function PlansPage() {
         </Button>
       </div>
 
+      {plans.isLoading && (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4" aria-busy>
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="card p-5">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="mt-2 h-3 w-20" />
+              <Skeleton className="mt-4 h-3 w-full" />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {plans.isError && (
+        <div className="card">
+          <ErrorState
+            title="No se han podido cargar los planes"
+            error={plans.error}
+            onRetry={() => plans.refetch()}
+            retrying={plans.isFetching}
+          />
+        </div>
+      )}
+
+      {plans.data && list.length === 0 && (
+        <div className="card">
+          <EmptyState
+            title="Todavía no hay planes"
+            description="Crea el primero para poder asignar cuotas y precios a las cuentas de cliente."
+          />
+        </div>
+      )}
+
       <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
         {list.map((p) => (
           <div key={p.id} className={cx('card p-5', p.archived && 'opacity-60')}>
             <div className="flex items-start justify-between gap-2">
               <div>
-                <h3 className="flex items-center gap-1.5 text-[15px] font-semibold">
+                <h3 className="flex items-center gap-1.5 text-base font-semibold">
                   {p.name}
                   {p.is_default && <Star size={12} className="text-warn" fill="currentColor" />}
                 </h3>
@@ -128,7 +160,7 @@ export default function PlansPage() {
                 </button>
               </div>
             </div>
-            <dl className="mt-4 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[12px]">
+            <dl className="mt-4 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
               <Row label="CPU" value={`${p.cpu_cores} nú`} />
               <Row label="RAM" value={fmtMb(p.memory_mb)} />
               <Row label="Disco" value={fmtMb(p.disk_mb)} />
@@ -136,7 +168,7 @@ export default function PlansPage() {
               <Row label="Servicios" value={String(p.max_services)} />
               <Row label="Usuarios" value={String(p.max_members)} />
             </dl>
-            <div className="mt-3 flex items-center justify-between border-t border-line pt-3 text-[11px] text-subtle">
+            <div className="mt-3 flex items-center justify-between border-t border-line pt-3 text-xs text-subtle">
               <span>{p.modules.length} módulos</span>
               <span>{p.archived ? 'archivado' : p.inUse > 0 ? `${p.inUse} cuenta${p.inUse === 1 ? '' : 's'}` : 'sin uso'}</span>
             </div>
@@ -176,7 +208,7 @@ export default function PlansPage() {
                       key={m.key}
                       type="button"
                       onClick={() => toggleModule(m.key)}
-                      className={cx('flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-[12px] transition-colors', on ? 'border-acc/55 bg-acc/[.10] text-txt' : 'border-line bg-bg text-sub hover:border-subtle')}
+                      className={cx('flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors', on ? 'border-acc/55 bg-acc/[.10] text-txt' : 'border-line bg-bg text-sub hover:border-subtle')}
                     >
                       <span className={cx('flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border', on ? 'border-acc bg-acc text-white' : 'border-line')}>
                         {on && <Check size={10} />}
@@ -188,10 +220,10 @@ export default function PlansPage() {
               </div>
             </Field>
             <div className="flex flex-wrap items-center gap-4">
-              <label className="flex cursor-pointer items-center gap-2 text-[13px] text-sub">
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-sub">
                 <input type="checkbox" checked={draft.is_default} onChange={(e) => setDraft({ ...draft, is_default: e.target.checked })} className="accent-acc" /> Plan por defecto
               </label>
-              <label className="flex cursor-pointer items-center gap-2 text-[13px] text-sub">
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-sub">
                 <input type="checkbox" checked={draft.archived} onChange={(e) => setDraft({ ...draft, archived: e.target.checked })} className="accent-acc" /> Archivado
               </label>
             </div>
