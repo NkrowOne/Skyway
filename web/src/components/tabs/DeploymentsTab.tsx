@@ -241,7 +241,10 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
  */
 function DeployPill({ deployment, isCurrent }: { deployment: Deployment; isCurrent: boolean }) {
   const active = isActiveDeploy(deployment.status);
-  const label = isCurrent ? 'Activo' : DEPLOY_STATUS_LABEL[deployment.status];
+  // «Activo» ya significa «el contenedor está en marcha» en la chapa de estado
+  // del servicio, a dos centímetros de aquí. Aquí lo que se dice es otra cosa:
+  // que esta es la versión que se está sirviendo.
+  const label = isCurrent ? 'En producción' : DEPLOY_STATUS_LABEL[deployment.status];
   const dot = active
     ? 'bg-warn'
     : isCurrent
@@ -444,7 +447,10 @@ export default function DeploymentsTab({
                   <span className="mt-0.5 block truncate font-mono text-xs text-subtle">
                     {DEPLOY_TRIGGER_LABEL[d.trigger] ?? d.trigger}
                     {d.commit_sha && <> · {d.commit_sha.slice(0, 7)}</>}
-                    <> · {timeAgo(d.created_at)}</>
+                    <>
+                      {' · '}
+                      <span title={new Date(d.created_at).toLocaleString('es')}>{timeAgo(d.created_at)}</span>
+                    </>
                     {d.finished_at && <> · {fmtDuration(d.finished_at - d.created_at)}</>}
                   </span>
                 </span>

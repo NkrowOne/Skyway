@@ -76,15 +76,19 @@ export default function ServiceCard({
     >
       {/* La cinta va antes que la chapa de alertas para que esta pinte encima. */}
       {deploy && <DeploySweep />}
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2.5">
+      {/* El nombre reserva un mínimo: si las chapas no caben en lo que sobra,
+          bajan de línea en vez de dejar el título en cuatro letras. */}
+      <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1.5">
+        <div className="flex min-w-[9rem] flex-1 items-center gap-2.5">
           <ModuleChip kind={moduleKind(service)} size={36} />
           <div className="min-w-0">
             <h3 className="truncate text-sm font-semibold text-txt">{service.name}</h3>
             <p className="truncate font-mono text-xs text-subtle">{subtitle}</p>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        {/* Las chapas ceden y se envuelven en vez de aplastar el nombre: en la
+            columna más estrecha el título llegaba a quedarse en cuatro letras. */}
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
           {alertCount > 0 && (
             <Chip tone="err" icon={<BellRing size={10} />} title={alertCount === 1 ? '1 alerta abierta' : `${alertCount} alertas abiertas`}>
               {alertCount}
@@ -105,16 +109,22 @@ export default function ServiceCard({
         </div>
       </div>
 
-      <div className="mt-3.5 flex items-center justify-between gap-2 text-xs text-sub">
+      {/*
+        * Métricas y dominio en dos filas, no en una: a 250px de columna la fila
+        * única partía «1,4 núcleos» y «412 MB/1 GB» en dos líneas cada una y
+        * dejaba el dominio reducido a su icono.
+        */}
+      <div className="mt-3.5 flex items-center gap-3 whitespace-nowrap text-xs text-sub">
         {stats ? (
-          <div className="tnum flex items-center gap-3">
+          <>
             <span
               className="inline-flex items-center gap-1.5"
               title={limiteCpu ? `CPU: ${fmtCores(stats.cpuPercent)} de ${limiteCpu} reservados` : `CPU: ${fmtCores(stats.cpuPercent)}`}
             >
-              <span className="text-xs text-subtle">CPU</span>
-              <span className={cx('tnum text-xs font-medium', cpuEnAviso ? 'font-semibold text-warn' : 'text-txt')}>
-                {fmtCores(stats.cpuPercent)}
+              <span className="text-subtle">CPU</span>
+              <span className={cx('tnum font-medium', cpuEnAviso ? 'font-semibold text-warn' : 'text-txt')}>
+                {(stats.cpuPercent / 100).toFixed(stats.cpuPercent < 100 ? 2 : 1)}
+                {limiteCpu && <span className="font-normal text-subtle">/{limiteCpu}</span>}
               </span>
               {/* La barra solo aparece cuando hay un límite contra el que medir:
                   sin denominador honesto es un adorno que además mentía. */}
@@ -127,25 +137,29 @@ export default function ServiceCard({
                 </span>
               )}
             </span>
-            <span className="inline-flex items-center gap-1.5" title={`Uso de RAM: ${fmtBytes(stats.memUsage)}`}>
-              <span className="text-xs text-subtle">RAM</span>
-              <span className="tnum text-xs font-medium text-txt">
+            <span
+              className="inline-flex items-center gap-1.5"
+              title={limiteMem ? `RAM: ${fmtBytes(stats.memUsage)} de ${fmtMb(limiteMem)}` : `RAM: ${fmtBytes(stats.memUsage)}`}
+            >
+              <span className="text-subtle">RAM</span>
+              <span className="tnum font-medium text-txt">
                 {fmtBytes(stats.memUsage)}
                 {/* Sin su techo, «412 MB» no dice si sobra o falta. */}
                 {limiteMem && <span className="font-normal text-subtle">/{fmtMb(limiteMem)}</span>}
               </span>
             </span>
-          </div>
+          </>
         ) : (
-          <span className="text-xs text-subtle">Sin métricas</span>
-        )}
-        {domain && (
-          <span className="flex min-w-0 items-center gap-1 text-sub" title={`Dominio: ${domain}`}>
-            <Globe size={11} className="shrink-0 text-subtle" />
-            <span className="max-w-[130px] truncate font-mono text-xs">{domain}</span>
-          </span>
+          <span className="text-subtle">Sin métricas</span>
         )}
       </div>
+
+      {domain && (
+        <span className="mt-1.5 flex min-w-0 items-center gap-1 text-xs text-sub" title={`Dominio: ${domain}`}>
+          <Globe size={11} className="shrink-0 text-subtle" aria-hidden />
+          <span className="truncate font-mono">{domain}</span>
+        </span>
+      )}
     </button>
   );
 }

@@ -364,6 +364,7 @@ export default function ServiceDrawer({
               className={cx(fullscreen && 'h-11 min-w-11 px-0')}
               onClick={() => deploy.mutate(true)}
               title="Reconstruir la imagen desde cero, sin reutilizar la del commit ya construido"
+              aria-label="Reconstruir"
             >
               <Hammer size={fullscreen ? 16 : 13} /> {!fullscreen && 'Reconstruir'}
             </Button>
@@ -377,6 +378,7 @@ export default function ServiceDrawer({
                 onClick={() => setConfirmVerb('restart')}
                 loading={action.isPending && confirmVerb === 'restart'}
                 title="Reiniciar"
+                aria-label="Reiniciar"
               >
                 <RefreshCw size={fullscreen ? 16 : 13} /> {!fullscreen && 'Reiniciar'}
               </Button>
@@ -387,6 +389,7 @@ export default function ServiceDrawer({
                 onClick={() => setConfirmVerb('stop')}
                 loading={action.isPending && confirmVerb === 'stop'}
                 title="Detener"
+                aria-label="Detener"
               >
                 <Square size={fullscreen ? 16 : 13} /> {!fullscreen && 'Detener'}
               </Button>

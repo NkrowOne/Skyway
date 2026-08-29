@@ -553,22 +553,24 @@ export default function ProjectPage() {
             </Button>
           </div>
         ) : filteredServices.length === 0 ? (
-          <div className="card flex flex-col items-center gap-3 py-16 text-center">
-            <Search size={22} className="text-subtle" />
-            <p className="text-sm font-medium text-txt">No se encontraron servicios</p>
-            <p className="max-w-xs text-xs text-subtle">
-              No hay servicios que coincidan con los filtros de búsqueda aplicados.
-            </p>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => {
-                setServiceQuery('');
-                setServiceTypeFilter('all');
-              }}
-            >
-              Limpiar búsqueda
-            </Button>
+          <div className="card">
+            <EmptyState
+              icon={<Search />}
+              title="Ningún servicio coincide"
+              description="Ni la búsqueda ni el filtro de tipo dejan pasar ninguno de los servicios del proyecto."
+              action={
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    setServiceQuery('');
+                    setServiceTypeFilter('all');
+                  }}
+                >
+                  Quitar filtros
+                </Button>
+              }
+            />
           </div>
         ) : (
           <div className="stagger grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3.5">
