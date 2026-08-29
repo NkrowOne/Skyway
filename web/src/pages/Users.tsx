@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Boxes, Fingerprint, KeyRound, Pencil, Plus, Shield, Trash2, Users2 } from 'lucide-react';
 import { api } from '../api';
-import { Button, Chip, ConfirmModal, Field, Modal, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, ErrorState, Field, Modal, useToast } from '../components/ui';
 import { Me, Project, UserRole, UserSummary } from '../types';
 import { cx, timeAgo } from '../utils';
 
@@ -99,7 +99,16 @@ export default function UsersPage() {
       </div>
 
       <div className="card overflow-hidden">
-        {list.length === 0 && (
+        {users.isError && (
+          <ErrorState
+            compact
+            title="No se han podido cargar los usuarios"
+            error={users.error}
+            onRetry={() => users.refetch()}
+            retrying={users.isFetching}
+          />
+        )}
+        {!users.isError && list.length === 0 && (
           <p className="px-4 py-10 text-center text-sm text-subtle">
             {users.isLoading ? 'Cargando…' : 'Todavía no hay usuarios.'}
           </p>

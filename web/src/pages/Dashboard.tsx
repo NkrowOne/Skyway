@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { BellRing, Boxes, Building2, ChevronRight, FolderKanban, Plus, Search, TrainFront, X, Zap } from 'lucide-react';
 import { api } from '../api';
 import { useLatch } from '../hooks';
-import { Button, Chip, Field, Modal, PageHeader, Skeleton, useToast } from '../components/ui';
+import { Button, Chip, ErrorState, Field, Modal, PageHeader, Skeleton, useToast } from '../components/ui';
 import { DeploySweep } from '../components/DeployBadge';
 import { ModuleBadge, ModuleLogo, moduleKind } from '../components/ModuleIcon';
 
@@ -293,6 +293,17 @@ export default function Dashboard() {
       )}
 
       {projects.isLoading && <DashboardSkeleton />}
+
+      {projects.isError && (
+        <div className="card">
+          <ErrorState
+            title="No se han podido cargar los proyectos"
+            error={projects.error}
+            onRetry={() => projects.refetch()}
+            retrying={projects.isFetching}
+          />
+        </div>
+      )}
 
       {projects.data && all.length === 0 && (
         <div className="card flex flex-col items-center gap-3 py-16 text-center">

@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { AlertCircle, CheckCircle2, CircleSlash, HelpCircle, Megaphone, Rocket } from 'lucide-react';
-import { api } from '../api';
-import { EmptyState, Skeleton } from '../components/ui';
+import { api, ApiError } from '../api';
+import { EmptyState, ErrorState, Skeleton } from '../components/ui';
 import { PublicServiceState, PublicStatus } from '../types';
 import { cx } from '../utils';
 
@@ -122,10 +122,25 @@ export default function PublicStatusPage() {
   // Solo sin datos en caché: un refetch de fondo fallido (red inestable del
   // cliente) no debe convertir la página en "desactivada".
   if (!status.data) {
+    // Y solo un 404 significa de verdad que no existe. Cualquier otro fallo es
+    // un problema de conexión, y decirle al cliente que la página ha sido
+    // desactivada sería mentirle sobre el servicio que ha contratado.
+    const noExiste = status.error instanceof ApiError && status.error.status === 404;
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-        <CircleSlash size={28} className="text-subtle" />
-        <p className="text-sm text-sub">Esta página de estado no existe o ha sido desactivada.</p>
+      <div className="flex h-full flex-col items-center justify-center px-6">
+        {noExiste ? (
+          <div className="flex flex-col items-center gap-3 text-center">
+            <CircleSlash size={28} className="text-subtle" />
+            <p className="text-sm text-sub">Esta página de estado no existe o ha sido desactivada.</p>
+          </div>
+        ) : (
+          <ErrorState
+            title="No se ha podido cargar el estado"
+            error={status.error}
+            onRetry={() => status.refetch()}
+            retrying={status.isFetching}
+          />
+        )}
       </div>
     );
   }

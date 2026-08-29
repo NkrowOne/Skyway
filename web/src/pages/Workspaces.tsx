@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { Building2, CreditCard, Plus, SlidersHorizontal } from 'lucide-react';
 import { api } from '../api';
-import { Button, Chip, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, ErrorState, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { MiniMeter } from '../components/QuotaMeter';
 import { Me, Plan, Workspace } from '../types';
 import { cx, fmtMb, fmtMoney } from '../utils';
@@ -142,6 +142,17 @@ export default function WorkspacesPage() {
               <Skeleton className="mt-2.5 h-2.5 w-full rounded-full" />
             </div>
           ))}
+        </div>
+      )}
+
+      {workspaces.isError && (
+        <div className="card">
+          <ErrorState
+            title="No se han podido cargar las cuentas"
+            error={workspaces.error}
+            onRetry={() => workspaces.refetch()}
+            retrying={workspaces.isFetching}
+          />
         </div>
       )}
 

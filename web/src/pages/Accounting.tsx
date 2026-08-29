@@ -2,7 +2,7 @@ import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, RefreshCw, Send, Trash2, Zap } from 'lucide-react';
 import { api } from '../api';
-import { Button, Field, NumberInput, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, EmptyState, ErrorState, Field, NumberInput, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { RevenueBars } from '../components/BillingCharts';
 import { AccountingInvoice, AccountingSummary, AiGatewayConfig, AiModelPrices, AiPriceSync, AiPriceSyncState, BillingAutomation, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
 import { cx, fmtDate, fmtMoney, timeAgo } from '../utils';
@@ -54,23 +54,32 @@ export default function AccountingPage() {
 
       {summary.isLoading ? (
         <Skeleton className="h-24 w-full" />
+      ) : !s ? (
+        <div className="card">
+          <ErrorState
+            title="No se ha podido cargar el resumen de contabilidad"
+            error={summary.error}
+            onRetry={() => summary.refetch()}
+            retrying={summary.isFetching}
+          />
+        </div>
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Kpi label="Facturado" value={money(s!.totals.invoiced)} />
-            <Kpi label="Cobrado" value={money(s!.totals.paid)} tone="ok" />
-            <Kpi label="Pendiente de cobro" value={money(s!.totals.pending)} tone={s!.totals.pending > 0 ? 'warn' : undefined} />
-            <Kpi label="Facturas" value={String(s!.totals.count)} />
+            <Kpi label="Facturado" value={money(s.totals.invoiced)} />
+            <Kpi label="Cobrado" value={money(s.totals.paid)} tone="ok" />
+            <Kpi label="Pendiente de cobro" value={money(s.totals.pending)} tone={s.totals.pending > 0 ? 'warn' : undefined} />
+            <Kpi label="Facturas" value={String(s.totals.count)} />
           </div>
 
           {/* Los importes NO se suman entre divisas: los totales de arriba son los de
               la moneda de la empresa y el resto se desglosa aparte. */}
-          {(s!.byCurrency ?? []).filter((b) => b.currency !== cur).length > 0 && (
+          {(s.byCurrency ?? []).filter((b) => b.currency !== cur).length > 0 && (
             <section className="card mt-3 px-4 py-3">
               <h2 className="text-base font-semibold">Facturación en otras monedas</h2>
               <p className="mt-0.5 text-xs text-subtle">No se suman a los totales de arriba: cada divisa se contabiliza por separado.</p>
               <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1.5">
-                {s!.byCurrency!.filter((b) => b.currency !== cur).map((b) => (
+                {s.byCurrency!.filter((b) => b.currency !== cur).map((b) => (
                   <span key={b.currency} className="text-xs tnum">
                     <span className="font-semibold">{b.currency}</span>
                     <span className="text-sub"> · facturado {fmtMoney(b.invoiced, b.currency)} · cobrado {fmtMoney(b.paid, b.currency)} · {b.count} fact.</span>
@@ -81,7 +90,7 @@ export default function AccountingPage() {
           )}
 
           <div className="mt-5">
-            <RevenueBars points={s!.series} format={money} labelFor={monthLabel} />
+            <RevenueBars points={s.series} format={money} labelFor={monthLabel} />
           </div>
 
           <div className="mt-5 grid gap-5 lg:grid-cols-2">
@@ -89,10 +98,10 @@ export default function AccountingPage() {
               <div className="border-b border-line px-4 py-3">
                 <h2 className="text-base font-semibold">Por cliente</h2>
               </div>
-              {s!.byClient.length === 0 ? (
+              {s.byClient.length === 0 ? (
                 <p className="px-4 py-8 text-center text-xs text-subtle">Aún no hay facturación por cliente.</p>
               ) : (
-                s!.byClient.map((c, i) => {
+                s.byClient.map((c, i) => {
                   const pct = c.invoiced > 0 ? Math.round((c.paid / c.invoiced) * 100) : 0;
                   return (
                     <div key={`${c.workspaceId}-${c.currency ?? cur}`} className={cx('px-4 py-3', i > 0 && 'border-t border-line')}>
@@ -128,8 +137,16 @@ export default function AccountingPage() {
                 </div>
               </div>
               <div className="max-h-[360px] overflow-y-auto">
-                {(invoicesQ.data?.invoices ?? []).length === 0 ? (
-                  <p className="px-4 py-8 text-center text-xs text-subtle">Sin facturas.</p>
+                {invoicesQ.isError ? (
+                  <ErrorState
+                    compact
+                    title="No se han podido cargar las facturas"
+                    error={invoicesQ.error}
+                    onRetry={() => invoicesQ.refetch()}
+                    retrying={invoicesQ.isFetching}
+                  />
+                ) : (invoicesQ.data?.invoices ?? []).length === 0 ? (
+                  <EmptyState compact title={statusFilter ? 'Ninguna factura con ese estado' : 'Todavía no hay facturas'} />
                 ) : (
                   invoicesQ.data!.invoices.map((inv, i) => (
                     <div key={inv.id} className={cx('flex items-center justify-between gap-2 px-4 py-2.5', i > 0 && 'border-t border-line')}>

@@ -8,7 +8,7 @@ import { Deployment, DbOverview, MetricsSnapshot, Project, Runtime, Service } fr
 import { cx, DEPLOY_STATUS_LABEL, isActiveDeploy, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import DeploymentsTab from './tabs/DeploymentsTab';
-import { Button, ConfirmModal, Skeleton, Spinner, StatusBadge, Tabs, useToast } from './ui';
+import { Button, ConfirmModal, ErrorState, Skeleton, Spinner, StatusBadge, Tabs, useToast } from './ui';
 
 // La pestaña de Despliegues (por defecto) viaja con el drawer; el resto de pestañas
 // y el terminal se cargan al abrirlos, para no descargar las 8 pestañas de una vez.
@@ -188,6 +188,21 @@ export default function ServiceDrawer({
   // La anchura anima de 0 al objetivo al entrar y de vuelta a 0 al salir: el canvas hace sitio en el mismo gesto.
   const targetWidth = wide ? 'min(840px, calc(100vw - 64px))' : 'min(600px, calc(100vw - 64px))';
   const asideStyle = fullscreen ? undefined : { width: entered && !closing ? targetWidth : 0 };
+
+  if (!detail.data && detail.isError) {
+    return (
+      <aside className={asideCls} style={asideStyle}>
+        <div className="flex h-full items-center justify-center p-5">
+          <ErrorState
+            title="No se ha podido cargar el servicio"
+            error={detail.error}
+            onRetry={() => detail.refetch()}
+            retrying={detail.isFetching}
+          />
+        </div>
+      </aside>
+    );
+  }
 
   if (!detail.data) {
     return (

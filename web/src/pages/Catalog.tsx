@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react';
 import { api } from '../api';
-import { Button, ConfirmModal, EmptyState, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, ConfirmModal, EmptyState, ErrorState, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { BillingModel, Product, ProductCategory, UsageMeter } from '../types';
 import { cx, fmtMoney } from '../utils';
 
@@ -144,6 +144,15 @@ export default function CatalogPage() {
 
       {q.isLoading ? (
         <Skeleton className="h-40 w-full" />
+      ) : q.isError ? (
+        <div className="card">
+          <ErrorState
+            title="No se ha podido cargar el catálogo"
+            error={q.error}
+            onRetry={() => q.refetch()}
+            retrying={q.isFetching}
+          />
+        </div>
       ) : byCat.length === 0 ? (
         <div className="card">
           <EmptyState

@@ -27,7 +27,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import { COUNTRY_OPTIONS, DEFAULT_COUNTRY, countryName } from '../countries';
-import { Button, Chip, ConfirmModal, CopyButton, EditorBar, Field, Modal, NumberInput, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, CopyButton, EditorBar, ErrorState, Field, Modal, NumberInput, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
 import { QuotaMeter } from '../components/QuotaMeter';
 // Gráficos de la pestaña «Uso» (no es la pestaña por defecto): carga diferida.
 const UsageBars = lazy(() => import('../components/BillingCharts').then((m) => ({ default: m.UsageBars })));
@@ -603,6 +603,15 @@ function UsoTab({ detail }: { detail: Detail }) {
 
       {usage.isLoading ? (
         <Skeleton className="h-48 w-full" />
+      ) : usage.isError ? (
+        <div className="card">
+          <ErrorState
+            title="No se ha podido cargar el consumo"
+            error={usage.error}
+            onRetry={() => usage.refetch()}
+            retrying={usage.isFetching}
+          />
+        </div>
       ) : (
         <>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

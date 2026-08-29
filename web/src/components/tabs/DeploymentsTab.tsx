@@ -5,7 +5,7 @@ import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
-import { EmptyState, Skeleton, useToast } from '../ui';
+import { EmptyState, ErrorState, Skeleton, useToast } from '../ui';
 
 /**
  * Acordeón mantequilla: crece y se pliega animando grid-template-rows
@@ -354,6 +354,17 @@ export default function DeploymentsTab({
           <Skeleton key={i} className="h-16 w-full rounded-xl" />
         ))}
       </div>
+    );
+  }
+
+  if (deployments.isError) {
+    return (
+      <ErrorState
+        title="No se han podido cargar los despliegues"
+        error={deployments.error}
+        onRetry={() => deployments.refetch()}
+        retrying={deployments.isFetching}
+      />
     );
   }
 
