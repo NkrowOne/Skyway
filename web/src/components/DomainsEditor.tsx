@@ -133,7 +133,7 @@ function DomainRow({
           >
             <ExternalLink size={12} />
           </a>
-          <button onClick={onRemove} className="rounded-md p-1 leading-none text-subtle transition-colors hover:text-err" title="Quitar">
+          <button onClick={onRemove} className="rounded-md p-1 leading-none text-subtle transition-colors hover:text-err" title="Quitar" aria-label="Quitar">
             <X size={12} />
           </button>
         </span>

@@ -436,7 +436,7 @@ function AlertBell() {
       <button
         onClick={toggle}
         className="press relative rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
-        title="Alertas"
+        title="Alertas" aria-label="Alertas"
       >
         <Bell size={16} />
         {unread > 0 && (

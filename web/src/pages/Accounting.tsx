@@ -525,7 +525,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                 <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-micro text-subtle">
                   <span className="eyebrow">Lista Google · $/M</span>
                   <span className="tnum">entrada {usdM(ref.in)} · caché {usdM(ref.cache)} · salida {usdM(ref.out)}</span>
-                  <button className="text-acc-soft hover:underline" title="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" onClick={() => setDraft(model, { in: String(ref.in), cache: String(ref.cache), out: String(ref.out) })}>usar</button>
+                  <button className="text-acc-soft hover:underline" title="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" aria-label="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" onClick={() => setDraft(model, { in: String(ref.in), cache: String(ref.cache), out: String(ref.out) })}>usar</button>
                 </div>
               )}
 
@@ -533,7 +533,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                 {existing && (
                   <button
                     className="mr-auto rounded p-1.5 text-subtle hover:text-err"
-                    title={existing.source === 'manual' ? 'Descartar tu coste y volver a la tarifa automática de Google' : 'Borrar el coste guardado (la próxima actualización lo repone)'}
+                    title={existing.source === 'manual' ? 'Descartar tu coste y volver a la tarifa automática de Google' : 'Borrar el coste guardado (la próxima actualización lo repone)'} aria-label={existing.source === 'manual' ? 'Descartar tu coste y volver a la tarifa automática de Google' : 'Borrar el coste guardado (la próxima actualización lo repone)'}
                     onClick={() => del.mutate(model)}
                   >
                     <Trash2 size={13} />

@@ -398,7 +398,7 @@ export default function VariablesTab({
                   type="button"
                   onClick={toggleGlobalReveal}
                   className="press flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface2/60 px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt"
-                  title={globalReveal ? 'Ocultar todos los valores' : 'Revelar todos los valores'}
+                  title={globalReveal ? 'Ocultar todos los valores' : 'Revelar todos los valores'} aria-label={globalReveal ? 'Ocultar todos los valores' : 'Revelar todos los valores'}
                 >
                   {globalReveal ? <EyeOff size={13} /> : <Eye size={13} />}
                   <span className="hidden md:inline">{globalReveal ? 'Ocultar todo' : 'Revelar todo'}</span>
@@ -408,7 +408,7 @@ export default function VariablesTab({
                   type="button"
                   onClick={handleCopyAllAsEnv}
                   className="press flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface2/60 px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt"
-                  title="Copiar todas las variables en formato .env"
+                  title="Copiar todas las variables en formato .env" aria-label="Copiar todas las variables en formato .env"
                 >
                   {copiedAll ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
                   <span className="hidden lg:inline">Copiar .env</span>
@@ -662,7 +662,7 @@ export default function VariablesTab({
                   key={s.key}
                   type="button"
                   className="press rounded-md border border-line bg-surface2/60 px-2 py-0.5 font-mono text-xs text-sub transition-colors hover:border-acc/40 hover:text-txt"
-                  title={s.hint}
+                  title={s.hint} aria-label={s.hint}
                   onClick={() => {
                     setRows((prev) => [...prev, makeRow(s.key, s.value)]);
                     setDirty(true);
@@ -694,7 +694,7 @@ export default function VariablesTab({
                             key={v}
                             type="button"
                             className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info hover:bg-info/10"
-                            title={`Copiar ${token}`}
+                            title={`Copiar ${token}`} aria-label={`Copiar ${token}`}
                             onClick={() => {
                               navigator.clipboard.writeText(token);
                               toast(`Copiado: ${token}`, 'ok');

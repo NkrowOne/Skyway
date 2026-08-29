@@ -1413,6 +1413,9 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
   const queryClient = useQueryClient();
   const q = useQuery({ queryKey: ['ws-keys', workspaceId], queryFn: () => api.get<WorkspaceKeysResponse>(`/workspaces/${workspaceId}/keys`) });
   const [creating, setCreating] = useState(false);
+  // Revocar una clave es irreversible: como el resto de acciones destructivas
+  // de la aplicación, pasa por una confirmación en vez de dispararse al primer clic.
+  const [revoking, setRevoking] = useState<WorkspaceApiKey | null>(null);
   const [newName, setNewName] = useState('');
   const [budget, setBudget] = useState('');
   const [rpm, setRpm] = useState('');
@@ -1498,6 +1501,19 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
       <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">
         El cliente usa la clave contra <span className="font-mono">/gw/v1beta/models/&lt;modelo&gt;:generateContent</span>. El consumo se mide y se factura con los productos de IA del catálogo. El corte por impago es automático.
       </p>
+
+      <ConfirmModal
+        open={!!revoking}
+        onClose={() => setRevoking(null)}
+        onConfirm={() => {
+          if (revoking) revoke.mutate(revoking.id);
+          setRevoking(null);
+        }}
+        title="Revocar la clave"
+        message={`«${revoking?.name ?? ''}» dejará de funcionar en el acto y no se puede recuperar. Las integraciones que la usen empezarán a recibir errores.`}
+        confirmLabel="Revocar"
+        loading={revoke.isPending}
+      />
 
       {/* Modal: crear clave */}
       <Modal open={creating} onClose={() => setCreating(false)} title="Nueva clave de IA">
@@ -1623,7 +1639,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
                   </div>
                   <Button size="sm" variant="ghost" loading={setPrice.isPending && setPrice.variables?.subId === s.id} onClick={savePrice}>Guardar</Button>
                   {s.frozen && (
-                    <button className="rounded p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Volver al precio global" onClick={() => { setPrice.mutate({ subId: s.id, unitCents: null }); clearDraft(s.id); }}><Undo2 size={14} /></button>
+                    <button className="rounded p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Volver al precio global" aria-label="Volver al precio global" onClick={() => { setPrice.mutate({ subId: s.id, unitCents: null }); clearDraft(s.id); }}><Undo2 size={14} /></button>
                   )}
                 </div>
               )}

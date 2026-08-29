@@ -120,7 +120,7 @@ function SiteCard({
             onClick={onDeploy}
             disabled={busy}
             className="rounded-lg p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40"
-            title="Desplegar"
+            title="Desplegar" aria-label="Desplegar"
           >
             <Rocket size={13} />
           </button>
@@ -129,7 +129,7 @@ function SiteCard({
               onClick={onRestart}
               disabled={busy}
               className="rounded-lg p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40"
-              title="Reiniciar"
+              title="Reiniciar" aria-label="Reiniciar"
             >
               <RefreshCw size={13} className={cx(busy && 'animate-spin')} />
             </button>

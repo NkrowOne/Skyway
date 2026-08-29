@@ -117,7 +117,7 @@ export function Chip({
   );
   if (onClick) {
     return (
-      <button type="button" onClick={onClick} title={title} aria-pressed={active} className={shape}>
+      <button type="button" onClick={onClick} title={title} aria-label={title} aria-pressed={active} className={shape}>
         {body}
       </button>
     );
@@ -641,7 +641,7 @@ export function Modal({
           <button
             onClick={onClose}
             className="press rounded-md p-1 text-sub transition-colors hover:bg-surface2 hover:text-txt"
-            title="Cerrar (esc)"
+            title="Cerrar (esc)" aria-label="Cerrar (esc)"
           >
             <X size={16} />
           </button>
@@ -770,7 +770,7 @@ export function CopyButton({ value, className, title = 'Copiar' }: { value: stri
   return (
     <button
       className={cx('press rounded-md p-1 text-subtle hover:bg-surface2 hover:text-txt', className)}
-      title={title}
+      title={title} aria-label={title}
       onClick={() => {
         navigator.clipboard.writeText(value).then(() => {
           setCopied(true);

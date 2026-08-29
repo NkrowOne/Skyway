@@ -271,7 +271,7 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
             onClick={onRestart}
             disabled={restarting}
             className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt disabled:opacity-40"
-            title="Reiniciar"
+            title="Reiniciar" aria-label="Reiniciar"
           >
             <RefreshCw size={13} className={cx(restarting && 'animate-spin')} />
           </button>

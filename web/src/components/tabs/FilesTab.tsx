@@ -248,11 +248,11 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
                 {entry.type === 'file' && (
                   <span className="tnum w-16 shrink-0 text-right text-micro text-subtle">{fmtBytes(entry.size)}</span>
                 )}
-                <div className="flex shrink-0 items-center gap-0.5">
+                <div className="flex shrink-0 items-center gap-0.5 max-sm:gap-1.5">
                   {entry.type === 'file' && (
                     <button
                       onClick={() => download(entry)}
-                      className="rounded-md p-1 text-subtle transition-colors hover:bg-bg hover:text-txt"
+                      className="rounded-md p-1 text-subtle transition-colors hover:bg-bg hover:text-txt max-sm:p-2.5"
                       title="Descargar"
                     >
                       <Download size={13} />
@@ -261,7 +261,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
                   {entry.type !== 'symlink' && (
                     <button
                       onClick={() => setDeleting(entry)}
-                      className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err"
+                      className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err max-sm:p-2.5"
                       title="Eliminar"
                     >
                       <Trash2 size={13} />

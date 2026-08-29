@@ -274,7 +274,7 @@ export default function ServiceDrawer({
           <button
             onClick={handleAttemptClose}
             className="press ml-auto flex min-h-10 min-w-10 items-center justify-center rounded-lg leading-none text-subtle hover:bg-surface2 hover:text-txt"
-            title="Cerrar (esc)"
+            title="Cerrar (esc)" aria-label="Cerrar (esc)"
           >
             <X size={17} />
           </button>
@@ -317,7 +317,7 @@ export default function ServiceDrawer({
               <button
                 onClick={handleAttemptClose}
                 className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
-                title="Cerrar (esc)"
+                title="Cerrar (esc)" aria-label="Cerrar (esc)"
               >
                 <X size={15} />
               </button>
