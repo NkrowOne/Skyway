@@ -17,7 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { cx, stripAnsi } from '../utils';
-import { Menu } from './ui';
+import { ErrorState, Menu, Spinner } from './ui';
 
 export type Level = 'err' | 'warn' | 'plain';
 export type LevelFilter = 'all' | 'err' | 'warn';
@@ -309,6 +309,8 @@ export default function LogViewer({
   defaultStage = 'all',
   extraHeaderLeft,
   extraHeaderRight,
+  state = 'ready',
+  onRetry,
 }: {
   lines: string[];
   className?: string;
@@ -330,6 +332,14 @@ export default function LogViewer({
   defaultStage?: LogStage;
   extraHeaderLeft?: React.ReactNode;
   extraHeaderRight?: React.ReactNode;
+  /**
+   * Qué le pasa a la fuente de los logs. Sin esto, una consola vacía decía
+   * «Sin logs todavía…» tanto si estaba cargando como si la petición había
+   * fallado como si de verdad no había nada: tres situaciones distintas con
+   * el mismo mensaje, y solo una de ellas cierta.
+   */
+  state?: 'loading' | 'error' | 'ready';
+  onRetry?: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -861,8 +871,16 @@ export default function LogViewer({
           )}
 
           {visible.length === 0 ? (
-            <div className="flex h-full min-h-[140px] items-center justify-center p-6 text-center text-xs text-subtle font-sans">
-              {filtering ? 'Ninguna línea coincide con los filtros aplicados.' : 'Sin logs todavía…'}
+            <div className="flex h-full min-h-[140px] items-center justify-center p-6 text-center font-sans">
+              {state === 'loading' ? (
+                <Spinner label="Cargando los logs…" />
+              ) : state === 'error' ? (
+                <ErrorState compact title="No se han podido cargar los logs" onRetry={onRetry} />
+              ) : (
+                <span className="text-xs text-subtle">
+                  {filtering ? 'Ninguna línea coincide con los filtros aplicados.' : 'Sin logs todavía…'}
+                </span>
+              )}
             </div>
           ) : (
             chunks.map((c) => (

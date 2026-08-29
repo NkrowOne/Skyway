@@ -37,8 +37,10 @@ function SiteCard({
           ? 'bg-warn'
           : 'bg-subtle';
 
+  // Sin card-hover: la tarjeta entera no es pulsable —solo el logo, el nombre
+  // y los dominios—, y encenderla al pasar prometía un clic que no existe.
   return (
-    <div className="card card-hover flex flex-col p-4">
+    <div className="card flex flex-col p-4">
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2.5">
           <button onClick={() => navigate(`/projects/${site.projectId}?s=${site.id}`)} className="shrink-0" title="Abrir el servicio">

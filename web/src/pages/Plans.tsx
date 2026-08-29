@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Check, Pencil, Plus, Star, Trash2 } from 'lucide-react';
 import { api } from '../api';
-import { Button, ConfirmModal, Field, Modal, useToast } from '../components/ui';
+import { Button, ConfirmModal, EmptyState, ErrorState, Field, Modal, Skeleton, useToast } from '../components/ui';
 import { ModuleDef, Plan } from '../types';
 import { cx, fmtMb, fmtMoney } from '../utils';
 
@@ -99,6 +99,38 @@ export default function PlansPage() {
           <Plus size={15} /> Nuevo plan
         </Button>
       </div>
+
+      {plans.isLoading && (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4" aria-busy>
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="card p-5">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="mt-2 h-3 w-20" />
+              <Skeleton className="mt-4 h-3 w-full" />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {plans.isError && (
+        <div className="card">
+          <ErrorState
+            title="No se han podido cargar los planes"
+            error={plans.error}
+            onRetry={() => plans.refetch()}
+            retrying={plans.isFetching}
+          />
+        </div>
+      )}
+
+      {plans.data && list.length === 0 && (
+        <div className="card">
+          <EmptyState
+            title="Todavía no hay planes"
+            description="Crea el primero para poder asignar cuotas y precios a las cuentas de cliente."
+          />
+        </div>
+      )}
 
       <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
         {list.map((p) => (

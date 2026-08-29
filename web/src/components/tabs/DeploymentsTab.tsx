@@ -228,6 +228,8 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
       lines={lines}
       toolbar
       title={deployment.id}
+      state={isLive ? 'ready' : logsQuery.isLoading ? 'loading' : logsQuery.isError ? 'error' : 'ready'}
+      onRetry={() => logsQuery.refetch()}
       downloadName={`deploy-${deployment.id}.txt`}
       className="h-[min(52vh,420px)] overflow-hidden rounded-lg border border-line"
     />
