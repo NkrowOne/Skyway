@@ -961,11 +961,12 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
         {correct && (
           <div className="flex flex-col gap-2 rounded-lg border border-line p-3">
             <p className="text-xs text-subtle">Importes <strong>correctos</strong> (lo que la factura debería decir). Se facturará la diferencia respecto a la original.</p>
-            <div className="grid grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2 px-1 text-xs font-medium text-subtle">
+            <div className="-mx-1 flex flex-col gap-2 overflow-x-auto px-1">
+            <div className="grid min-w-[420px] grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2 px-1 text-xs font-medium text-subtle">
               <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA%</span><span />
             </div>
             {lines.map((l, i) => (
-              <div key={i} className="grid grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2">
+              <div key={i} className="grid min-w-[420px] grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2">
                 <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Concepto" />
                 <NumberInput className="input h-9 tnum text-right" value={l.qty} min={0} onChange={(v) => setLine(i, { qty: v })} />
                 <NumberInput className="input h-9 tnum text-right" value={l.unit} step="0.01" onChange={(v) => setLine(i, { unit: v })} />
@@ -975,6 +976,7 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
                 </button>
               </div>
             ))}
+            </div>
             <button onClick={() => setLines((ls) => [...ls, { label: '', qty: 1, unit: 0, taxRate: invoice.tax_rate, irpfRate: 0 }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
               + Añadir línea
             </button>
@@ -1033,8 +1035,8 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
           </div>
         </div>
 
-        <div className="overflow-hidden rounded-lg border border-line">
-          <table className="w-full text-left text-xs">
+        <div className="overflow-x-auto rounded-lg border border-line">
+          <table className="w-full min-w-[380px] text-left text-xs">
             <thead className="bg-surface2 text-subtle">
               <tr>
                 <th className="px-3 py-1.5 font-medium">Concepto</th>
@@ -1162,11 +1164,16 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
   return (
     <Modal open onClose={onClose} title={isNew ? 'Nueva factura a medida' : 'Editar factura'} wide>
       <div className="flex flex-col gap-2">
-        <div className="grid grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2 px-1 text-xs font-medium text-subtle">
+        {/* Siete columnas fijas suman 438px y la hoja móvil da 350: la fila de
+            una factura es tabular por naturaleza y no se apila bien, así que se
+            le da su propio carril horizontal. Los totales y los botones se
+            quedan fuera, que esos sí caben. */}
+        <div className="-mx-1 flex flex-col gap-2 overflow-x-auto px-1">
+        <div className="grid min-w-[520px] grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2 px-1 text-xs font-medium text-subtle">
           <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA %</span><span className="text-right">IRPF %</span><span className="text-right">Importe</span><span />
         </div>
         {lines.map((l, i) => (
-          <div key={i} className="grid grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2">
+          <div key={i} className="grid min-w-[520px] grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2">
             <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Ej: Plan Pro (mensual)" />
             <NumberInput className="input h-9 tnum text-right" value={l.qty} min={0} onChange={(v) => setLine(i, { qty: v })} />
             <NumberInput className="input h-9 tnum text-right" value={l.unit} step="0.01" onChange={(v) => setLine(i, { unit: v })} />
@@ -1178,6 +1185,7 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
             </button>
           </div>
         ))}
+        </div>
         <button onClick={() => setLines((ls) => [...ls, { label: '', kind: 'custom', qty: 1, unit: 0, taxRate: invoice.tax_rate, irpfRate: 0, chargeId: undefined }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
           + Añadir línea
         </button>
