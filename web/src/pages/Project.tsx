@@ -364,14 +364,14 @@ export default function ProjectPage() {
                     setEditClient(proj.client ?? '');
                     setEditOpen(true);
                   }}
-                  className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
+                  className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt max-sm:h-11 max-sm:min-w-11"
                   title={isAdmin ? 'Renombrar / empresa' : 'Renombrar'}
                 >
                   <Pencil size={14} />
                 </button>
                 <button
                   onClick={() => setDeleteOpen(true)}
-                  className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-err"
+                  className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-err max-sm:h-11 max-sm:min-w-11"
                   title="Eliminar proyecto"
                 >
                   <Trash2 size={14} />
@@ -459,10 +459,11 @@ export default function ProjectPage() {
                 <button
                   type="button"
                   onClick={() => setServiceQuery('')}
-                  className="text-subtle hover:text-txt"
+                  className="press shrink-0 rounded p-1 text-subtle hover:text-txt max-sm:p-2"
                   title="Borrar búsqueda"
+                  aria-label="Borrar búsqueda"
                 >
-                  <X size={12} />
+                  <X size={13} />
                 </button>
               )}
             </div>
@@ -472,7 +473,7 @@ export default function ProjectPage() {
                 type="button"
                 onClick={() => setServiceTypeFilter('all')}
                 className={cx(
-                  'rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                  'rounded-lg px-2.5 py-1 text-xs font-medium transition-colors max-sm:py-2',
                   serviceTypeFilter === 'all'
                     ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
                     : 'text-sub hover:bg-surface hover:text-txt',
@@ -485,7 +486,7 @@ export default function ProjectPage() {
                   type="button"
                   onClick={() => setServiceTypeFilter('git')}
                   className={cx(
-                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors max-sm:py-2',
                     serviceTypeFilter === 'git'
                       ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
                       : 'text-sub hover:bg-surface hover:text-txt',
@@ -500,7 +501,7 @@ export default function ProjectPage() {
                   type="button"
                   onClick={() => setServiceTypeFilter('database')}
                   className={cx(
-                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors max-sm:py-2',
                     serviceTypeFilter === 'database'
                       ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
                       : 'text-sub hover:bg-surface hover:text-txt',
@@ -515,7 +516,7 @@ export default function ProjectPage() {
                   type="button"
                   onClick={() => setServiceTypeFilter('image')}
                   className={cx(
-                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors max-sm:py-2',
                     serviceTypeFilter === 'image'
                       ? 'border border-line bg-surface2 font-semibold text-txt shadow-sm'
                       : 'text-sub hover:bg-surface hover:text-txt',
@@ -530,7 +531,7 @@ export default function ProjectPage() {
                   type="button"
                   onClick={() => setServiceTypeFilter('alerts')}
                   className={cx(
-                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                    'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors max-sm:py-2',
                     serviceTypeFilter === 'alerts'
                       ? 'border border-err/30 bg-err/15 font-semibold text-err shadow-sm'
                       : 'text-err/80 hover:bg-err/10 hover:text-err',
