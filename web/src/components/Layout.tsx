@@ -483,7 +483,7 @@ function AlertBell() {
                     tone={a.resolved_at ? 'neutral' : SEVERITY_TONE[a.severity]}
                     label={a.resolved_at ? 'resuelta' : 'activa'}
                     dot={false}
-                    className="px-2 py-0.5 text-micro"
+                    className="text-micro"
                   />
                   <span className="truncate text-xs font-medium">{a.title}</span>
                 </div>

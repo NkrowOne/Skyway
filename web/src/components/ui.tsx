@@ -57,15 +57,44 @@ export function Button({ variant = 'primary', size = 'md', loading, success, cla
 // ---------- Chip ----------
 type ChipSize = 'sm' | 'md';
 
-const CHIP_TONE: Record<Tone, string> = {
-  ok: 'border-ok/25 bg-ok/10 text-ok',
-  warn: 'border-warn/25 bg-warn/10 text-warn',
-  err: 'border-err/25 bg-err/10 text-err',
-  info: 'border-info/25 bg-info/10 text-info',
-  neutral: 'border-line bg-surface2 text-sub',
+/*
+ * El chip no se tiñe entero.
+ *
+ * Un fondo translúcido del color del estado, más un borde de ese mismo color,
+ * más el texto también de ese color: esa es la etiqueta por defecto de media
+ * internet hecha con plantillas —todo pastel y nada jerarquizado—. Aquí la
+ * superficie es siempre la misma, neutra, y el color aparece donde dice algo:
+ * el punto y el icono. El texto solo se tiñe cuando hay un problema, porque
+ * entonces sí queremos que la vista vaya ahí.
+ */
+const CHIP_BASE = 'border-line bg-surface2';
+
+const CHIP_DOT: Record<Tone, string> = {
+  ok: 'bg-ok',
+  warn: 'bg-warn',
+  err: 'bg-err',
+  info: 'bg-acc-soft',
+  neutral: 'bg-subtle',
 };
 
-/** Tono de un chip pulsable cuando no está activo: se apaga hasta que lo tocas. */
+const CHIP_ICON: Record<Tone, string> = {
+  ok: 'text-ok',
+  warn: 'text-warn',
+  err: 'text-err',
+  info: 'text-acc-soft',
+  neutral: 'text-subtle',
+};
+
+const CHIP_TEXT: Record<Tone, string> = {
+  ok: 'text-sub',
+  warn: 'text-sub',
+  err: 'text-err',
+  info: 'text-sub',
+  neutral: 'text-sub',
+};
+
+/** Chip pulsable: encendido es superficie sólida; apagado, nada hasta que lo tocas. */
+const CHIP_ON = 'border-line2 bg-surface3 text-txt';
 const CHIP_IDLE = 'border-transparent bg-transparent text-subtle hover:bg-surface2 hover:text-txt';
 
 /**
@@ -103,8 +132,8 @@ export function Chip({
 }) {
   const shape = cx(
     'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border font-medium transition-colors duration-[--dur-1]',
-    size === 'sm' ? 'px-1.5 py-px text-micro' : 'px-1.5 py-0.5 text-xs',
-    onClick && !active ? CHIP_IDLE : CHIP_TONE[tone],
+    size === 'sm' ? 'px-1.5 py-px text-micro' : 'px-2 py-0.5 text-xs',
+    onClick ? (active ? CHIP_ON : CHIP_IDLE) : cx(CHIP_BASE, CHIP_TEXT[tone]),
     // Un chip que se pulsa es un objetivo táctil: con el relleno de etiqueta se
     // queda en unos 20px de alto, que con el pulgar no se acierta.
     onClick && 'press cursor-pointer max-sm:px-2.5 max-sm:py-1.5',
@@ -112,8 +141,8 @@ export function Chip({
   );
   const body = (
     <>
-      {dot && <span className={cx('h-1.5 w-1.5 shrink-0 rounded-full bg-current', pulse && 'pulse-soft')} />}
-      {icon}
+      {dot && <span className={cx('h-1.5 w-1.5 shrink-0 rounded-full', CHIP_DOT[tone], pulse && 'pulse-soft')} />}
+      {icon && <span className={cx('flex shrink-0 items-center', CHIP_ICON[tone])}>{icon}</span>}
       {children}
     </>
   );
@@ -534,8 +563,12 @@ export function EditorBar({
 
 // ---------- StatusBadge ----------
 /**
- * Estado de un recurso: es un Chip con punto, más el recuento de réplicas
- * cuando hay más de una. No duplica la tabla de tonos: usa la de Chip.
+ * Estado de un recurso: punto de color y texto, sin cápsula.
+ *
+ * Enmarcar cada estado en una píldora teñida llenaba la rejilla de pastillas
+ * que se leían todas igual de fuerte, y el estado dejaba de destacar por
+ * competir consigo mismo. El punto lleva el color; el texto solo se tiñe
+ * cuando algo va mal.
  */
 export function StatusBadge({
   tone,
@@ -543,7 +576,6 @@ export function StatusBadge({
   pulse,
   replicas,
   dot = true,
-  size,
   className,
 }: {
   tone: Tone;
@@ -551,18 +583,29 @@ export function StatusBadge({
   pulse?: boolean;
   replicas?: { running: number; total: number };
   dot?: boolean;
-  size?: ChipSize;
   className?: string;
 }) {
   return (
-    <Chip tone={tone} size={size} dot={dot} pulse={pulse} className={className}>
+    <span
+      className={cx(
+        'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs font-medium',
+        /*
+         * Sin punto no queda nada que lleve el color, así que lo toma el texto.
+         * Con punto, el texto se mantiene sobrio y solo se tiñe si hay problema:
+         * si se tiñeran los dos, volveríamos a la pastilla de colores de antes.
+         */
+        !dot ? CHIP_ICON[tone] : tone === 'err' ? 'text-err' : 'text-sub',
+        className,
+      )}
+    >
+      {dot && <span className={cx('h-1.5 w-1.5 shrink-0 rounded-full', CHIP_DOT[tone], pulse && 'pulse-soft')} />}
       {label}
       {replicas && replicas.total > 1 && (
-        <span className={cx('tnum font-mono', replicas.running < replicas.total && 'text-warn')}>
+        <span className={cx('tnum font-mono', replicas.running < replicas.total ? 'text-warn' : 'text-subtle')}>
           {replicas.running}/{replicas.total}
         </span>
       )}
-    </Chip>
+    </span>
   );
 }
 

@@ -62,14 +62,15 @@ export default function ServiceCard({
           : cx(
               'card-hover bg-surface',
               /*
-               * El borde solo cambia cuando hay algo que mirar, y estar caído
-               * es lo primero: antes un servicio muerto se veía igual que uno
-               * sano y había que leer la píldora de cada tarjeta para dar con él.
+               * El borde de color se reserva para lo que hay que encontrar de un
+               * vistazo en una rejilla de veinte tarjetas: lo caído y lo que
+               * tiene alertas. Un despliegue en marcha ya lo dicen la cinta
+               * superior y su chapa; teñir además el borde era decirlo tres veces.
                */
               STATE_TONE[state] === 'err' || alertCount > 0
-                ? 'border-err/45'
-                : deploy || STATE_TONE[state] === 'warn'
-                  ? 'border-warn/45'
+                ? 'border-err/40'
+                : STATE_TONE[state] === 'warn'
+                  ? 'border-warn/35'
                   : 'border-line',
             ),
       )}
@@ -114,11 +115,17 @@ export default function ServiceCard({
         * única partía «1,4 núcleos» y «412 MB/1 GB» en dos líneas cada una y
         * dejaba el dominio reducido a su icono.
         */}
-      <div className="mt-3.5 flex items-center gap-3 whitespace-nowrap text-xs text-sub">
+      {/*
+        * Un filo separa quién es el servicio de cómo va, y la telemetría se
+        * reparte en dos columnas fijas: así CPU y RAM caen en la misma vertical
+        * en todas las tarjetas de la rejilla y se pueden comparar de un barrido,
+        * en vez de bailar según lo largo que sea cada valor.
+        */}
+      <div className="mt-3.5 grid grid-cols-2 gap-x-3 border-t border-line/70 pt-3 text-xs text-sub">
         {stats ? (
           <>
             <span
-              className="inline-flex items-center gap-1.5"
+              className="inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap"
               title={limiteCpu ? `CPU: ${fmtCores(stats.cpuPercent)} de ${limiteCpu} reservados` : `CPU: ${fmtCores(stats.cpuPercent)}`}
             >
               <span className="text-subtle">CPU</span>
@@ -138,7 +145,7 @@ export default function ServiceCard({
               )}
             </span>
             <span
-              className="inline-flex items-center gap-1.5"
+              className="inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap"
               title={limiteMem ? `RAM: ${fmtBytes(stats.memUsage)} de ${fmtMb(limiteMem)}` : `RAM: ${fmtBytes(stats.memUsage)}`}
             >
               <span className="text-subtle">RAM</span>
@@ -150,7 +157,7 @@ export default function ServiceCard({
             </span>
           </>
         ) : (
-          <span className="text-subtle">Sin métricas</span>
+          <span className="col-span-2 text-subtle">Sin métricas</span>
         )}
       </div>
 

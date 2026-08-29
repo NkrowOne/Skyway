@@ -316,7 +316,6 @@ export default function ServiceDrawer({
                   label={STATE_LABEL[state]}
                   pulse={STATE_PULSE[state]}
                   replicas={replicas}
-                  className="px-2 py-0.5"
                 />
                 {activeDeployment && (
                   <span className="badge-in inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-warn/35 bg-warn/[.1] px-2 py-0.5 text-xs font-medium text-warn">
