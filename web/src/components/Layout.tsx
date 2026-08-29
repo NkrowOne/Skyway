@@ -258,7 +258,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
         aria-modal="true"
         aria-label="Paleta de comandos"
         className={cx(
-          'w-full max-w-[580px] overflow-hidden rounded-2xl border border-line bg-surface shadow-lvl3',
+          'lit lit-alto w-full max-w-[580px] overflow-hidden rounded-2xl border border-line bg-surface shadow-lvl3',
           closing ? 'panel-out' : 'panel-in',
         )}
         onMouseDown={(e) => e.stopPropagation()}
@@ -370,7 +370,7 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
         aria-modal="true"
         aria-label="Atajos de teclado"
         className={cx(
-          'w-full max-w-[420px] rounded-2xl border border-line bg-surface p-5 shadow-lvl3',
+          'lit lit-alto w-full max-w-[420px] rounded-2xl border border-line bg-surface p-5 shadow-lvl3',
           closing ? 'panel-out' : 'panel-in',
         )}
         onMouseDown={(e) => e.stopPropagation()}
@@ -451,7 +451,7 @@ function AlertBell() {
       {menu.mounted && (
         <div
           className={cx(
-            'absolute right-0 top-11 z-50 w-96 max-w-[calc(100vw-24px)] origin-top-right rounded-xl border border-line bg-surface shadow-lvl3',
+            'lit lit-alto absolute right-0 top-11 z-50 w-96 max-w-[calc(100vw-24px)] origin-top-right rounded-xl border border-line bg-surface shadow-lvl3',
             menu.closing ? 'menu-out' : 'menu-in',
           )}
         >
@@ -625,7 +625,7 @@ function MainMenu({
           role="menu"
           aria-label="Menú principal"
           className={cx(
-            'absolute right-0 top-11 z-50 w-[288px] max-w-[calc(100vw-24px)] origin-top-right overflow-hidden rounded-xl border border-line bg-surface shadow-lvl3',
+            'lit lit-alto absolute right-0 top-11 z-50 w-[288px] max-w-[calc(100vw-24px)] origin-top-right overflow-hidden rounded-xl border border-line bg-surface shadow-lvl3',
             menu.closing ? 'menu-out' : 'menu-in',
           )}
         >
@@ -779,7 +779,7 @@ export default function Layout() {
       {/* Cristal: la nebulosa fija del fondo se insinúa tras la topbar translúcida. */}
       <header
         className={cx(
-          'relative z-30 flex h-14 shrink-0 items-center justify-between gap-4 border-b border-line bg-surface/80 px-3 backdrop-blur-xl transition-shadow duration-300 sm:px-5',
+          'lit lit-bajo relative z-30 flex h-14 shrink-0 items-center justify-between gap-4 border-b border-line bg-surface/80 px-3 backdrop-blur-xl transition-shadow duration-300 sm:px-5',
           scrolled && 'shadow-[0_10px_28px_-18px_rgba(0,0,0,.9)]',
         )}
       >

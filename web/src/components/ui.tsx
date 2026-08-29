@@ -372,7 +372,7 @@ export function Menu({
       ref={ref}
       role="menu"
       className={cx(
-        'absolute top-full z-50 mt-1.5 min-w-[190px] rounded-xl border border-line bg-surface p-1 shadow-lvl3',
+        'lit lit-alto absolute top-full z-50 mt-1.5 min-w-[190px] rounded-xl border border-line bg-surface p-1 shadow-lvl3',
         align === 'right' ? 'right-0' : 'left-0',
         closing ? 'menu-out' : 'menu-in',
         className,
@@ -534,7 +534,7 @@ export function EditorBar({
   if (!dirty && !saved) return null;
 
   return (
-    <div className="menu-in sticky bottom-[calc(1rem+env(safe-area-inset-bottom))] z-40 mx-auto mt-6 flex w-[calc(100%-1.5rem)] max-w-lg items-center justify-between gap-3 rounded-2xl border border-line/80 bg-surface/95 p-2.5 pl-4 shadow-lvl3 backdrop-blur-xl sm:bottom-6">
+    <div className="lit lit-alto menu-in sticky bottom-[calc(1rem+env(safe-area-inset-bottom))] z-40 mx-auto mt-6 flex w-[calc(100%-1.5rem)] max-w-lg items-center justify-between gap-3 rounded-2xl border border-line/80 bg-surface/95 p-2.5 pl-4 shadow-lvl3 backdrop-blur-xl sm:bottom-6">
       <span className="flex min-w-0 items-center gap-2 text-xs font-medium text-warn">
         <span className="pulse-soft h-2 w-2 shrink-0 rounded-full bg-warn" />
         <span className="truncate">{dirtyLabel}</span>
@@ -727,7 +727,7 @@ export function Modal({
         tabIndex={-1}
         aria-label={title}
         className={cx(
-          'relative w-full rounded-2xl border border-line bg-surface shadow-lvl3',
+          'lit lit-alto relative w-full rounded-2xl border border-line bg-surface shadow-lvl3',
           wide ? 'max-w-2xl' : 'max-w-md',
           // En móvil, hoja inferior: ancho completo, sube desde abajo y respeta el gesto del sistema.
           'max-sm:max-h-[92dvh] max-sm:max-w-full max-sm:overflow-y-auto max-sm:overscroll-contain max-sm:rounded-b-none max-sm:border-x-0 max-sm:border-b-0 max-sm:safe-b',
@@ -969,7 +969,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                 <div
                   role="status"
                   className={cx(
-                    'mt-2 flex items-start gap-2.5 rounded-xl border border-line bg-surface2 px-3.5 py-3 shadow-toast',
+                    'lit lit-alto mt-2 flex items-start gap-2.5 rounded-xl border border-line bg-surface2 px-3.5 py-3 shadow-toast',
                     t.closing ? 'toast-out' : 'toast-in',
                   )}
                 >

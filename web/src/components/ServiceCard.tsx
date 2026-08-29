@@ -58,7 +58,7 @@ export default function ServiceCard({
       className={cx(
         'group relative rounded-xl border p-4 text-left',
         selected
-          ? 'border-acc bg-surface2'
+          ? 'lit lit-bajo border-acc bg-surface2'
           : cx(
               'card-hover bg-surface',
               /*

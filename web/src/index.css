@@ -803,6 +803,39 @@ details[open] > .details-body {
   }
 
   /*
+   * Luz cenital: una sola fuente, arriba.
+   *
+   * El fondo ya se desvanece desde ahí, así que lo coherente es que lo que
+   * flota por encima recoja esa misma luz y lo que está apoyado en la página
+   * no. Eso convierte el degradado en jerarquía —dice a qué altura está cada
+   * superficie— en vez de en adorno.
+   *
+   * Antes lo llevaban TODAS las tarjetas por igual, y ahí estaba el fallo: si
+   * todo está iluminado, la luz no distingue nada y solo queda el brillito.
+   * La intensidad va en una variable para poder graduarla por sitio sin
+   * reescribir el degradado.
+   */
+  .lit {
+    --lit: 2.5%;
+    --lit-fin: 55%;
+    background-image: linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--color-txt) var(--lit), transparent),
+      transparent var(--lit-fin)
+    );
+  }
+  /* Lo que flota del todo: diálogos, menús, avisos, el panel lateral. */
+  .lit-alto {
+    --lit: 4%;
+    --lit-fin: 62%;
+  }
+  /* Un realce corto, para lo que solo sobresale un poco. */
+  .lit-bajo {
+    --lit: 1.8%;
+    --lit-fin: 38%;
+  }
+
+  /*
    * La tarjeta se apoya sobre la rejilla del fondo, así que necesita despegarse
    * de ella: superficie opaca, borde nítido y una sombra corta. Neutra, no del
    * color de marca —una sombra teñida era justo lo que sobraba antes—: aquí

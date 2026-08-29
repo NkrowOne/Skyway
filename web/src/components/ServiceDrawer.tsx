@@ -176,7 +176,7 @@ export default function ServiceDrawer({
   });
 
   const asideCls = cx(
-    'flex flex-col bg-surface',
+    'lit lit-alto flex flex-col bg-surface [--lit-fin:200px]',
     fullscreen
       ? // Móvil: entra y sale como una página apilada (push de navegación).
         cx('fixed inset-0 z-40', closing ? 'push-out' : 'push-in')
