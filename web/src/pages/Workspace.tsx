@@ -492,7 +492,7 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
               </Field>
             )}
             {draft.role === 'member' && (
-              <Field label="Proyectos con acceso" hint={detail.projects.length ? undefined : 'aún no hay proyectos en la cuenta'}>
+              <Field group label="Proyectos con acceso" hint={detail.projects.length ? undefined : 'aún no hay proyectos en la cuenta'}>
                 <div className="flex max-h-44 flex-col gap-1 overflow-y-auto rounded-lg border border-line bg-bg p-2">
                   {detail.projects.map((p) => (
                     <label key={p.id} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface2">

@@ -396,15 +396,27 @@ export function Field({
   hint,
   error,
   children,
+  group,
 }: {
   label: React.ReactNode;
   hint?: React.ReactNode;
   error?: string | null;
   children: React.ReactNode;
+  /**
+   * Para cuando dentro hay varios controles (una lista de casillas, un grupo de
+   * opciones) en vez de uno solo.
+   *
+   * Un `<label>` alrededor de varias casillas es HTML inválido y hace que
+   * pulsar el rótulo del grupo marque la primera de la lista. En ese caso el
+   * envoltorio pasa a ser `<fieldset>` y el rótulo, su `<legend>`.
+   */
+  group?: boolean;
 }) {
+  const Envoltorio = group ? 'fieldset' : 'label';
+  const Rotulo = group ? 'legend' : 'span';
   return (
-    <label className="block">
-      <span className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-sub">{label}</span>
+    <Envoltorio className="block min-w-0">
+      <Rotulo className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-sub">{label}</Rotulo>
       {children}
       {error ? (
         <span className="mt-1 flex items-center gap-1 text-xs text-err">
@@ -413,7 +425,7 @@ export function Field({
       ) : (
         hint && <span className="mt-1 block text-xs leading-4 text-subtle">{hint}</span>
       )}
-    </label>
+    </Envoltorio>
   );
 }
 
@@ -558,6 +570,13 @@ export function Skeleton({ className }: { className?: string }) {
 }
 
 // ---------- Modal ----------
+/**
+ * Qué cuenta como enfocable dentro de un diálogo. Los deshabilitados quedan
+ * fuera: antes entraban en la lista y el tabulador podía atascarse en uno.
+ */
+const FOCUSABLES =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function Modal({
   open,
   onClose,
@@ -581,18 +600,33 @@ export function Modal({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
+  /*
+   * Depende también de `mounted`: en el render en el que `open` pasa a true el
+   * panel todavía no existe —usePresence monta un render después—, así que un
+   * efecto atado solo a `open` buscaba el panel cuando aún era null y no movía
+   * el foco a ninguna parte.
+   */
   useEffect(() => {
-    if (!open) return;
+    if (!open || !mounted) return;
     previousFocus.current = document.activeElement as HTMLElement | null;
+
+    // Llevar el foco dentro. Sin esto el «focus trap» no atrapa nada: el foco
+    // sigue en el disparador y el tabulador recorre la página de detrás.
+    const llevarElFoco = () => {
+      const panel = panelRef.current;
+      if (!panel || panel.contains(document.activeElement)) return;
+      const primero = panel.querySelector<HTMLElement>(FOCUSABLES);
+      (primero ?? panel).focus();
+    };
+    const raf = requestAnimationFrame(llevarElFoco);
+
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         onCloseRef.current();
       } else if (e.key === 'Tab' && panelRef.current) {
         // Focus trap sencillo dentro del panel.
-        const focusables = panelRef.current.querySelectorAll<HTMLElement>(
-          'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])',
-        );
+        const focusables = panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLES);
         if (focusables.length === 0) return;
         const first = focusables[0];
         const last = focusables[focusables.length - 1];
@@ -607,10 +641,11 @@ export function Modal({
     };
     window.addEventListener('keydown', onKey);
     return () => {
+      cancelAnimationFrame(raf);
       window.removeEventListener('keydown', onKey);
       previousFocus.current?.focus?.();
     };
-  }, [open]);
+  }, [open, mounted]);
 
   if (!mounted) return null;
   return createPortal(
@@ -625,6 +660,7 @@ export function Modal({
         ref={panelRef}
         role="dialog"
         aria-modal="true"
+        tabIndex={-1}
         aria-label={title}
         className={cx(
           'w-full rounded-2xl border border-line bg-surface shadow-lvl3',
@@ -841,7 +877,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     <ToastContext.Provider value={push}>
       {children}
       {createPortal(
-        <div className="fixed bottom-[calc(20px+env(safe-area-inset-bottom))] right-5 z-[60] flex w-[340px] max-w-[calc(100vw-24px)] flex-col">
+        <div
+          aria-live="polite"
+          aria-atomic="false"
+          className="fixed bottom-[calc(20px+env(safe-area-inset-bottom))] right-5 z-[60] flex w-[340px] max-w-[calc(100vw-24px)] flex-col"
+        >
           {toasts.map((t) => (
             <div key={t.id} className={cx('toast-shell', t.closing && 'toast-shell-closing')}>
               <div className="toast-clip">
