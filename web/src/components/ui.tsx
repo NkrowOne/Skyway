@@ -583,22 +583,41 @@ export function Modal({
   title,
   children,
   wide,
+  dirty,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: React.ReactNode;
   wide?: boolean;
+  /**
+   * Hay trabajo escrito sin guardar.
+   *
+   * Con esto puesto, Esc y el clic fuera dejan de descartarlo en silencio y
+   * piden confirmación. Es el mismo trato que ya daba el drawer de servicio a
+   * sus pestañas con cambios.
+   */
+  dirty?: boolean;
 }) {
   // Presencia: el modal permanece montado durante la animación de salida.
   const { mounted, closing } = usePresence(open, 220);
+  const [confirmandoCierre, setConfirmandoCierre] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   // onClose suele ser una arrow recreada en cada render del padre: si el efecto
   // dependiera de ella, cada tecla en un input controlado lo re-ejecutaría y su
   // cleanup devolvería el foco al elemento previo (te "sacaba" del campo).
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  const pedirCierre = useCallback(() => {
+    if (dirty) setConfirmandoCierre(true);
+    else onClose();
+  }, [dirty, onClose]);
+  const onCloseRef = useRef(pedirCierre);
+  onCloseRef.current = pedirCierre;
+
+  // Al cerrarse de verdad, la pregunta pendiente se olvida.
+  useEffect(() => {
+    if (!open) setConfirmandoCierre(false);
+  }, [open]);
 
   /*
    * Depende también de `mounted`: en el render en el que `open` pasa a true el
@@ -654,7 +673,7 @@ export function Modal({
         'fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/55 p-4 pt-[10vh] backdrop-blur-[3px] max-sm:items-end max-sm:p-0 max-sm:pt-8',
         closing ? 'overlay-out' : 'overlay-in',
       )}
-      onMouseDown={onClose}
+      onMouseDown={pedirCierre}
     >
       <div
         ref={panelRef}
@@ -663,7 +682,7 @@ export function Modal({
         tabIndex={-1}
         aria-label={title}
         className={cx(
-          'w-full rounded-2xl border border-line bg-surface shadow-lvl3',
+          'relative w-full rounded-2xl border border-line bg-surface shadow-lvl3',
           wide ? 'max-w-2xl' : 'max-w-md',
           // En móvil, hoja inferior: ancho completo, sube desde abajo y respeta el gesto del sistema.
           'max-sm:max-h-[92dvh] max-sm:max-w-full max-sm:overflow-y-auto max-sm:overscroll-contain max-sm:rounded-b-none max-sm:border-x-0 max-sm:border-b-0 max-sm:safe-b',
@@ -675,7 +694,7 @@ export function Modal({
         <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
           <h2 className="text-base font-semibold">{title}</h2>
           <button
-            onClick={onClose}
+            onClick={pedirCierre}
             className="press rounded-md p-1 text-sub transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
             title="Cerrar (esc)"
             aria-label="Cerrar"
@@ -684,6 +703,23 @@ export function Modal({
           </button>
         </div>
         <div className="p-5">{children}</div>
+
+        {/* La pregunta se pinta dentro del propio panel: apilar un diálogo
+            sobre otro complica el foco sin ganar nada. */}
+        {confirmandoCierre && (
+          <div className="overlay-in absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-2xl bg-surface/95 p-6 text-center backdrop-blur-sm">
+            <p className="text-base font-semibold">Tienes cambios sin guardar</p>
+            <p className="max-w-xs text-xs leading-5 text-sub">Si sales ahora se pierden.</p>
+            <div className="mt-1 flex gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setConfirmandoCierre(false)}>
+                Seguir editando
+              </Button>
+              <Button variant="danger" size="sm" onClick={onClose}>
+                Descartar cambios
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     </div>,
     document.body,

@@ -57,7 +57,7 @@ export default function SharedVarsModal({
   });
 
   return (
-    <Modal open={open} onClose={onClose} title="Variables compartidas del proyecto" wide>
+    <Modal open={open} onClose={onClose} title="Variables compartidas del proyecto" wide dirty={dirty}>
       <p className="mb-4 text-xs text-sub">
         Se inyectan automáticamente en <strong className="text-txt">todos los servicios</strong> del proyecto (si un
         servicio define la misma clave, gana la suya). También puedes referenciarlas con{' '}

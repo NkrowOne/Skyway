@@ -221,7 +221,7 @@ export default function NewServiceModal({
   };
 
   return (
-    <Modal open={open} onClose={close} title="Nuevo servicio" wide>
+    <Modal open={open} onClose={close} title="Nuevo servicio" wide dirty={step !== 'pick'}>
       {step === 'pick' && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
