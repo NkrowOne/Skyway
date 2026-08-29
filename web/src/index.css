@@ -123,13 +123,17 @@ summary,
 }
 
 /*
- * El fondo: papel técnico, no ambiente.
+ * El fondo: textura, no dibujo.
  *
- * Aquí hubo una nebulosa violeta que se quitó por decorativa. Una rejilla es
- * otra cosa: no ilumina nada ni finge profundidad, da superficie. Dos pasos,
- * como el papel milimetrado —celda menor de 32px y línea mayor cada cinco—,
- * para que la vista tenga a qué agarrarse sin que compita con el contenido.
- * Las tarjetas son opacas, así que la rejilla solo asoma por las calles.
+ * Aquí hubo una nebulosa violeta que se quitó por decorativa, y después una
+ * rejilla de papel milimetrado que se pasaba por el otro lado: se leía como un
+ * dibujo y competía con el contenido. Lo que hace falta es solo que el plano no
+ * se vea muerto.
+ *
+ * Una sola rejilla, apenas por encima del umbral de lo perceptible, y
+ * desvanecida hacia abajo con una máscara: densa donde el ojo entra, disuelta
+ * donde está el contenido. Si al mirarla la ves, sobra; se nota al quitarla,
+ * no al ponerla.
  */
 body::before {
   content: '';
@@ -138,21 +142,17 @@ body::before {
   z-index: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(to right, color-mix(in oklab, var(--color-txt) 11%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in oklab, var(--color-txt) 11%, transparent) 1px, transparent 1px),
-    linear-gradient(to right, color-mix(in oklab, var(--color-txt) 4.5%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in oklab, var(--color-txt) 4.5%, transparent) 1px, transparent 1px);
-  background-size:
-    160px 160px,
-    160px 160px,
-    32px 32px,
-    32px 32px;
+    linear-gradient(to right, color-mix(in oklab, var(--color-txt) 4%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--color-txt) 4%, transparent) 1px, transparent 1px);
+  background-size: 34px 34px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, rgb(0 0 0 / 0.45) 45%, transparent 88%);
+  mask-image: linear-gradient(to bottom, #000 0%, rgb(0 0 0 / 0.45) 45%, transparent 88%);
 }
 
 /*
- * Grano. Un plano de color liso en una pantalla grande se ve muerto y además
- * banda en los degradados; un ruido muy tenue le da tacto. Va en su propia
- * capa para poder medirlo aparte de la rejilla.
+ * El grano es lo que de verdad quita el aspecto de plano muerto: un color liso
+ * en una pantalla grande no tiene tacto y además banda. Va en su propia capa
+ * para poder graduarlo aparte de la rejilla.
  */
 body::after {
   content: '';
@@ -160,7 +160,7 @@ body::after {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  opacity: 0.035;
+  opacity: 0.03;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
