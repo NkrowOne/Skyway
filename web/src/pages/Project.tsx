@@ -342,7 +342,12 @@ export default function ProjectPage() {
             {/* Resumen de salud de infraestructura en tiempo real */}
             {totalServices > 0 && (
               <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
-                <Chip tone={runningCount > 0 ? 'ok' : 'neutral'} dot>
+                {/* Verde solo cuando están todos en pie: «3/20 activos» en
+                    verde decía justo lo contrario de lo que pasaba. */}
+                <Chip
+                  tone={runningCount === totalServices ? 'ok' : runningCount === 0 ? 'err' : 'warn'}
+                  dot
+                >
                   <span className="tnum font-semibold">{runningCount}</span>/{totalServices} activos
                 </Chip>
                 {deployServicesCount > 0 && (
@@ -350,7 +355,7 @@ export default function ProjectPage() {
                     <span className="tnum font-semibold">{deployServicesCount}</span> desplegando
                   </Chip>
                 )}
-                {alertServicesCount > 0 && (
+                {(alertServicesCount > 0 || serviceTypeFilter === 'alerts') && (
                   <Chip tone="err" icon={<BellRing size={11} aria-hidden />}>
                     <span className="tnum font-semibold">{alertServicesCount}</span> con alertas
                   </Chip>
@@ -372,6 +377,7 @@ export default function ProjectPage() {
                 >
                   <Pencil size={14} />
                 </button>
+                <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-line" />
                 <button
                   onClick={() => {
                     // El borrado de volúmenes vuelve a «no» en cada apertura.
@@ -488,7 +494,7 @@ export default function ProjectPage() {
               >
                 Todos ({totalServices})
               </button>
-              {gitCount > 0 && (
+              {(gitCount > 0 || serviceTypeFilter === 'git') && (
                 <button
                   type="button"
                   onClick={() => setServiceTypeFilter('git')}
@@ -503,7 +509,7 @@ export default function ProjectPage() {
                   <span>Git ({gitCount})</span>
                 </button>
               )}
-              {dbCount > 0 && (
+              {(dbCount > 0 || serviceTypeFilter === 'database') && (
                 <button
                   type="button"
                   onClick={() => setServiceTypeFilter('database')}
@@ -518,7 +524,7 @@ export default function ProjectPage() {
                   <span>Bases de datos ({dbCount})</span>
                 </button>
               )}
-              {imageCount > 0 && (
+              {(imageCount > 0 || serviceTypeFilter === 'image') && (
                 <button
                   type="button"
                   onClick={() => setServiceTypeFilter('image')}

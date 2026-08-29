@@ -215,6 +215,16 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
               <span className="font-mono">..</span>
             </button>
           )}
+          {(listing.data?.listing.entries ?? []).length > 0 && (
+            <div className="flex items-center gap-2 border-b border-line bg-surface2/50 px-3 py-1.5 eyebrow text-subtle">
+              <span className="min-w-0 flex-1">Nombre</span>
+              <span className="shrink-0">Permisos</span>
+              <span className="w-16 shrink-0 text-right">Tamaño</span>
+              {/* Reserva el hueco de los botones de acción para que los rótulos
+                  caigan sobre su columna. */}
+              <span aria-hidden className="w-[52px] shrink-0 max-sm:w-[76px]" />
+            </div>
+          )}
           {(listing.data?.listing.entries ?? []).length === 0 ? (
             <p className="px-3 py-8 text-center text-xs text-subtle">Carpeta vacía.</p>
           ) : (
