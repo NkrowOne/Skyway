@@ -95,7 +95,8 @@ export function HistoryChart({
   const gridYs = [0.25, 0.5, 0.75, 1].map((f) => ({ y: PAD.top + innerH * (1 - f), v: max * f }));
   const thY = threshold ? PAD.top + innerH - (Math.min(threshold.value, max) / max) * innerH : null;
 
-  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+  // Puntero, no ratón: el mismo manejador sirve para dedo y lápiz.
+  const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!svgRef.current || nodes.length === 0) return;
     const rect = svgRef.current.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * W;
@@ -167,8 +168,9 @@ export function HistoryChart({
             ref={svgRef}
             viewBox={`0 0 ${W} ${H}`}
             className="block w-full"
-            onMouseMove={onMove}
-            onMouseLeave={() => setHover(null)}
+            onPointerMove={onMove}
+            onPointerDown={onMove}
+            onPointerLeave={() => setHover(null)}
           >
             {gridYs.map((g, i) => (
               <g key={i}>
@@ -351,7 +353,7 @@ export function NetBars({
         </div>
       ) : (
         <div className="relative">
-          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onMouseLeave={() => setHover(null)}>
+          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onPointerLeave={() => setHover(null)}>
             {[0.5, 1].map((f, i) => (
               <g key={i}>
                 <line x1={PAD.left} x2={W - PAD.right} y1={mid - half * f} y2={mid - half * f} stroke="var(--color-line)" strokeWidth="1" opacity="0.4" />
@@ -373,7 +375,7 @@ export function NetBars({
               return (
                 <g key={p.t} opacity={hover !== null && !active ? 0.45 : 1} style={{ transition: 'opacity .12s' }}>
                   {/* zona de hover más ancha que la barra */}
-                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onMouseEnter={() => setHover(i)} />
+                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onPointerEnter={() => setHover(i)} onPointerDown={() => setHover(i)} />
                   {p.tx > 0 && <rect x={cx0 - barW / 2} y={mid - txH} width={barW} height={Math.max(0.5, txH)} rx={Math.min(3, barW / 2)} fill={txColor} />}
                   {p.rx > 0 && <rect x={cx0 - barW / 2} y={mid} width={barW} height={Math.max(0.5, rxH)} rx={Math.min(3, barW / 2)} fill={rxColor} />}
                 </g>

@@ -186,7 +186,13 @@ export default function ServiceDrawer({
         ),
   );
   // La anchura anima de 0 al objetivo al entrar y de vuelta a 0 al salir: el canvas hace sitio en el mismo gesto.
-  const targetWidth = wide ? 'min(840px, calc(100vw - 64px))' : 'min(600px, calc(100vw - 64px))';
+  /*
+   * El ancho se limita también en proporción, no solo en píxeles: con
+   * `calc(100vw - 64px)` un drawer amplio se comía 836 de 900 y dejaba el
+   * lienzo en 64px. Como la preferencia se guarda, bastaba haberlo ensanchado
+   * una vez en un monitor grande para encontrárselo así en el portátil.
+   */
+  const targetWidth = wide ? 'min(840px, 62vw)' : 'min(600px, 50vw, calc(100vw - 64px))';
   const asideStyle = fullscreen ? undefined : { width: entered && !closing ? targetWidth : 0 };
 
   /*

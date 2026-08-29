@@ -52,7 +52,8 @@ export default function MetricChart({
     return { path, area, max, xs, ys };
   }, [points, fixedMax]);
 
-  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+  // Puntero, no ratón: el mismo manejador sirve para dedo y lápiz.
+  const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (points.length === 0 || !svgRef.current) return;
     const rect = svgRef.current.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * W;
@@ -86,8 +87,9 @@ export default function MetricChart({
             ref={svgRef}
             viewBox={`0 0 ${W} ${H}`}
             className="block w-full"
-            onMouseMove={onMove}
-            onMouseLeave={() => setHover(null)}
+            onPointerMove={onMove}
+            onPointerDown={onMove}
+            onPointerLeave={() => setHover(null)}
           >
             {gridYs.map((y, i) => (
               <line key={i} x1={PAD.left} x2={W - PAD.right} y1={y} y2={y} stroke="var(--color-line)" opacity="0.5" strokeWidth="1" />

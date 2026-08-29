@@ -470,7 +470,8 @@ export default function DeploymentsTab({
                   <button
                     type="button"
                     onClick={() => cancel.mutate(d.id)}
-                    className="press rounded-lg p-1.5 leading-none text-err/80 hover:bg-surface2 hover:text-err"
+                    disabled={cancel.isPending}
+                    className="press rounded-lg p-1.5 leading-none text-err/80 hover:bg-surface2 hover:text-err disabled:opacity-40"
                     title="Cancelar despliegue"
                     aria-label="Cancelar despliegue"
                   >

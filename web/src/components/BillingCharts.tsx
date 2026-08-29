@@ -95,7 +95,7 @@ export function UsageBars({
         </div>
       ) : (
         <div className="relative">
-          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onMouseLeave={() => setHover(null)}>
+          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onPointerLeave={() => setHover(null)}>
             {gridYs.map((g, i) => (
               <g key={i}>
                 <line x1={PAD.left} x2={W - PAD.right} y1={g.y} y2={g.y} stroke="var(--color-line)" strokeWidth="1" opacity="0.5" />
@@ -110,7 +110,7 @@ export function UsageBars({
               const active = hover === i;
               return (
                 <g key={p.t} opacity={hover !== null && !active ? 0.45 : 1} style={{ transition: 'opacity .12s' }}>
-                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onMouseEnter={() => setHover(i)} />
+                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onPointerEnter={() => setHover(i)} onPointerDown={() => setHover(i)} />
                   {p.value > 0 && (
                     <rect x={cx0 - barW / 2} y={PAD.top + innerH - h} width={barW} height={Math.max(0.5, h)} rx={Math.min(3, barW / 2)} fill={color} />
                   )}
@@ -213,7 +213,7 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
         </div>
       ) : (
         <div className="relative">
-          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onMouseLeave={() => setHover(null)}>
+          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onPointerLeave={() => setHover(null)}>
             {gridYs.map((g, i) => (
               <g key={i}>
                 <line x1={PAD.left} x2={W - PAD.right} y1={g.y} y2={g.y} stroke="var(--color-line)" strokeWidth="1" opacity="0.5" />
@@ -231,7 +231,7 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
               const base = PAD.top + innerH;
               return (
                 <g key={p.t} opacity={hover !== null && !active ? 0.45 : 1} style={{ transition: 'opacity .12s' }}>
-                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onMouseEnter={() => setHover(i)} />
+                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onPointerEnter={() => setHover(i)} onPointerDown={() => setHover(i)} />
                   {p.paid > 0 && <rect x={cx0 - barW / 2} y={base - paidH} width={barW} height={Math.max(0.5, paidH)} rx={Math.min(3, barW / 2)} fill={paidColor} />}
                   {/* 2px de hueco de superficie entre segmentos apilados */}
                   {pending > 0 && <rect x={cx0 - barW / 2} y={base - paidH - pendH - (p.paid > 0 ? 2 : 0)} width={barW} height={Math.max(0.5, pendH)} rx={Math.min(3, barW / 2)} fill={pendColor} />}

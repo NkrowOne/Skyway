@@ -373,7 +373,11 @@ export default function ProjectPage() {
                   <Pencil size={14} />
                 </button>
                 <button
-                  onClick={() => setDeleteOpen(true)}
+                  onClick={() => {
+                    // El borrado de volúmenes vuelve a «no» en cada apertura.
+                    setDeleteVolumes(false);
+                    setDeleteOpen(true);
+                  }}
                   className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-err max-sm:h-11 max-sm:min-w-11"
                   title="Eliminar proyecto"
                 >
