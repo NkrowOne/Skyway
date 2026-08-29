@@ -152,6 +152,20 @@ summary,
   background: transparent;
 }
 
+/*
+ * Safari en iOS amplía la página al enfocar un campo cuya letra mide menos de
+ * 16px, y no la devuelve al salir. La escala de la interfaz es de 13px, así que
+ * ocurría en todos los formularios de la aplicación. Solo donde hay puntero
+ * grueso: en escritorio la densidad se mantiene.
+ */
+@media (pointer: coarse) {
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
 /* Focus ring visible en todo elemento interactivo. */
 :focus-visible {
   outline: 2px solid color-mix(in oklab, var(--color-acc) 70%, transparent);

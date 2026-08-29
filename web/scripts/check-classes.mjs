@@ -18,8 +18,17 @@ if (!cssPath) {
 }
 const css = readFileSync(cssPath, 'utf8');
 
-/** Familias de utilidades que nos interesa vigilar (las de color y forma). */
-const PREFIXES = ['shadow', 'rounded', 'text', 'bg', 'border', 'ring', 'fill', 'stroke', 'from', 'to', 'via', 'divide', 'outline', 'decoration'];
+/**
+ * Familias de utilidades que vigilamos.
+ *
+ * Las de tamaño y espaciado entraron después de encontrar un `h-7.5` que no
+ * existe —la escala de Tailwind salta de 7 a 8—: ocho botones de la consola de
+ * logs se quedaban sin tamaño por debajo de 640px y nadie se enteraba.
+ */
+const PREFIXES = [
+  'shadow', 'rounded', 'text', 'bg', 'border', 'ring', 'fill', 'stroke', 'from', 'to', 'via', 'divide', 'outline', 'decoration',
+  'h', 'w', 'p', 'px', 'py', 'pt', 'pb', 'pl', 'pr', 'm', 'mx', 'my', 'mt', 'mb', 'ml', 'mr', 'gap', 'leading', 'tracking',
+];
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -41,7 +50,12 @@ function selectorOf(cls) {
 
 const used = new Map(); // clase completa -> [ficheros]
 for (const file of walk('src')) {
-  const src = readFileSync(file, 'utf8');
+  // Los comentarios se descartan: citar el nombre de una clase al explicar por
+  // qué se cambió no es usarla, y la guarda lo denunciaba igual.
+  const src = readFileSync(file, 'utf8')
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join('\n');
   // Solo literales de cadena: evita arrastrar identificadores del código.
   for (const m of src.matchAll(/['"`]([^'"`\n]{2,400})['"`]/g)) {
     for (const raw of m[1].split(/\s+/)) {

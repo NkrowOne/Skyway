@@ -491,7 +491,7 @@ export function EditorBar({
   if (!dirty && !saved) return null;
 
   return (
-    <div className="sticky bottom-4 sm:bottom-6 z-40 mx-auto mt-6 flex w-[calc(100%-1.5rem)] max-w-lg items-center justify-between gap-3 rounded-2xl border border-line/80 bg-surface/95 p-2.5 pl-4 backdrop-blur-xl shadow-[0_12px_32px_rgba(0,0,0,0.5)] menu-in">
+    <div className="menu-in sticky bottom-[calc(1rem+env(safe-area-inset-bottom))] z-40 mx-auto mt-6 flex w-[calc(100%-1.5rem)] max-w-lg items-center justify-between gap-3 rounded-2xl border border-line/80 bg-surface/95 p-2.5 pl-4 shadow-lvl3 backdrop-blur-xl sm:bottom-6">
       <span className="flex min-w-0 items-center gap-2 text-xs font-medium text-warn">
         <span className="pulse-soft h-2 w-2 shrink-0 rounded-full bg-warn" />
         <span className="truncate">{dirtyLabel}</span>
@@ -640,8 +640,9 @@ export function Modal({
           <h2 className="text-base font-semibold">{title}</h2>
           <button
             onClick={onClose}
-            className="press rounded-md p-1 text-sub transition-colors hover:bg-surface2 hover:text-txt"
-            title="Cerrar (esc)" aria-label="Cerrar (esc)"
+            className="press rounded-md p-1 text-sub transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
+            title="Cerrar (esc)"
+            aria-label="Cerrar"
           >
             <X size={16} />
           </button>

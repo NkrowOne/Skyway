@@ -275,7 +275,10 @@ function ToolButton({
       onClick={onClick}
       disabled={disabled}
       className={cx(
-        'press flex h-7.5 w-7.5 sm:h-8 sm:w-8 items-center justify-center rounded-lg leading-none disabled:opacity-40 transition-colors',
+        // 36px con el pulgar, 32px con ratón. Antes pedía siete y medio, un paso
+        // que la escala de Tailwind no tiene: por debajo de 640px estos ocho
+        // botones se quedaban sin tamaño y los dimensionaba el icono.
+        'press flex h-9 w-9 sm:h-8 sm:w-8 items-center justify-center rounded-lg leading-none disabled:opacity-40 transition-colors',
         active ? 'bg-acc/[.16] text-acc-soft' : 'text-subtle hover:bg-surface2 hover:text-txt',
       )}
     >

@@ -314,7 +314,7 @@ function ModulosTab({ detail, isAdmin, modules, onSaved }: { detail: Detail; isA
                     >
                       <span
                         className={cx(
-                          'mt-0.5 flex h-4.5 w-8 shrink-0 items-center rounded-full p-0.5 transition-colors',
+                          'mt-0.5 flex h-[18px] w-8 shrink-0 items-center rounded-full p-0.5 transition-colors',
                           checked ? 'bg-acc' : 'bg-surface2',
                         )}
                       >
