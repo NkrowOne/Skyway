@@ -763,34 +763,34 @@ export default function MonitorPage() {
                   </div>
                 </div>
 
-                <div className="hidden grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] gap-3 border-b border-line bg-bg px-4 py-2 eyebrow text-subtle md:grid">
-                  <span>Servicio</span>
-                  <span>Estado</span>
-                  {(
-                    [
-                      { key: 'cpu', label: 'CPU' },
-                      { key: 'mem', label: 'RAM' },
-                      { key: 'disk', label: 'Disco' },
-                    ] as const
-                  ).map((c) => (
-                    <button
-                      key={c.key}
-                      onClick={() => setSortKey(sortKey === c.key ? 'default' : c.key)}
-                      className={cx(
-                        'eyebrow flex items-center gap-1 text-left transition-colors hover:text-txt',
-                        sortKey === c.key ? 'text-acc-soft' : 'text-subtle',
-                      )}
-                      title={sortKey === c.key ? 'Quitar ordenación' : `Ordenar por ${c.label} (mayor primero)`}
-                    >
-                      {c.label}
-                      {sortKey === c.key && <ArrowDownWideNarrow size={11} />}
-                    </button>
-                  ))}
-                  <span className="text-right">Acciones</span>
-                </div>
-
                 <div className="overflow-x-auto">
                   <div className="min-w-[760px]">
+                    <div className="grid grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] gap-3 border-b border-line bg-bg px-4 py-2 eyebrow text-subtle">
+                      <span>Servicio</span>
+                      <span>Estado</span>
+                      {(
+                        [
+                          { key: 'cpu', label: 'CPU' },
+                          { key: 'mem', label: 'RAM' },
+                          { key: 'disk', label: 'Disco' },
+                        ] as const
+                      ).map((c) => (
+                        <button
+                          key={c.key}
+                          onClick={() => setSortKey(sortKey === c.key ? 'default' : c.key)}
+                          className={cx(
+                            'eyebrow flex items-center gap-1 text-left transition-colors hover:text-txt',
+                            sortKey === c.key ? 'text-acc-soft' : 'text-subtle',
+                          )}
+                          title={sortKey === c.key ? 'Quitar ordenación' : `Ordenar por ${c.label} (mayor primero)`}
+                        >
+                          {c.label}
+                          {sortKey === c.key && <ArrowDownWideNarrow size={11} />}
+                        </button>
+                      ))}
+                      <span className="text-right">Acciones</span>
+                    </div>
+
                     {filtered.length === 0 && (
                       <p className="px-4 py-10 text-center text-xs text-subtle">
                         {services.length === 0 ? 'Aún no hay servicios desplegados.' : 'Ningún servicio coincide con el filtro.'}
