@@ -882,7 +882,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                       variant="ghost"
                       onClick={() => {
                         // «Pagada» es un estado terminal: no admite vuelta atrás.
-                        if (confirm(`Marcar como COBRADA la factura ${inv.number ?? ''} por ${fmtMoney(inv.total_cents, inv.currency)}.\n\nEs un estado definitivo: no se puede deshacer.\n\n¿Continuar?`)) {
+                        if (confirm(`Marcar como pagada la factura ${inv.number ?? ''} por ${fmtMoney(inv.total_cents, inv.currency)}.\n\nEs un estado definitivo: no se puede deshacer.\n\n¿Continuar?`)) {
                           setStatus.mutate({ id: inv.id, status: 'paid' });
                         }
                       }}

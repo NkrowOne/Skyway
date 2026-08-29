@@ -99,7 +99,7 @@ export default function Setup() {
           </form>
         </div>
         <p className="mt-4 flex items-center justify-center gap-1.5 text-xs text-subtle">
-          <ShieldCheck size={12} /> Intentos limitados por IP · toda la actividad queda en el registro de auditoría
+          <ShieldCheck size={12} /> Intentos limitados por IP · toda la actividad queda en el registro de actividad
         </p>
       </div>
     </div>

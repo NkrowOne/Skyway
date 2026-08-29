@@ -683,7 +683,7 @@ export default function NewServiceModal({
                 <input className="input" value={branch} onChange={(e) => setBranch(e.target.value)} />
               )}
             </Field>
-            <Field label="Puerto de la app" hint="Vacío = se detecta del EXPOSE de la imagen (y si no lo declara, 3000)">
+            <Field label="Puerto interno" hint="Vacío = se detecta del EXPOSE de la imagen (y si no lo declara, 3000)">
               <input
                 className="input"
                 type="number"

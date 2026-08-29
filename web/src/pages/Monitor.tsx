@@ -759,7 +759,7 @@ export default function MonitorPage() {
                     {chip('all', 'Todos', services.length)}
                     {chip('running', 'Activos', running)}
                     {chip('down', 'Con problemas', down)}
-                    {chip('stopped', 'Parados', services.length - running - down)}
+                    {chip('stopped', 'Detenidos', services.length - running - down)}
                   </div>
                 </div>
 

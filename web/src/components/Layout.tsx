@@ -351,7 +351,7 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
     { label: 'Paleta de comandos', keys: [CMD_K_LABEL] },
     { label: 'Ir a proyectos', keys: ['g', 'p'] },
     { label: 'Ir al monitor', keys: ['g', 'm'] },
-    { label: 'Ir a sitios web', keys: ['g', 'w'] },
+    { label: 'Ir a sitios y servicios', keys: ['g', 'w'] },
     { label: 'Ir a seguridad', keys: ['g', 's'] },
     { label: 'Ir a alertas', keys: ['g', 'a'] },
     { label: 'Cerrar drawer / modales', keys: ['esc'] },
