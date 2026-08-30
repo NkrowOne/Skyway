@@ -176,7 +176,7 @@ export default function ServiceDrawer({
   });
 
   const asideCls = cx(
-    'flex flex-col bg-surface',
+    'lit lit-alto flex flex-col bg-surface [--lit-fin:200px]',
     fullscreen
       ? // Móvil: entra y sale como una página apilada (push de navegación).
         cx('fixed inset-0 z-40', closing ? 'push-out' : 'push-in')
@@ -316,7 +316,6 @@ export default function ServiceDrawer({
                   label={STATE_LABEL[state]}
                   pulse={STATE_PULSE[state]}
                   replicas={replicas}
-                  className="px-2 py-0.5"
                 />
                 {activeDeployment && (
                   <span className="badge-in inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-warn/35 bg-warn/[.1] px-2 py-0.5 text-xs font-medium text-warn">

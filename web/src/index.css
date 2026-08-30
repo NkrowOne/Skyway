@@ -123,10 +123,47 @@ summary,
 }
 
 /*
- * Antes había aquí una nebulosa violeta fija sobre toda la pantalla. Un panel
- * de control no necesita ambiente: el fondo es fondo y el color se reserva
- * para el estado de los servicios. Se queda solo la capa de apilamiento.
+ * El fondo: textura, no dibujo.
+ *
+ * Aquí hubo una nebulosa violeta que se quitó por decorativa, y después una
+ * rejilla de papel milimetrado que se pasaba por el otro lado: se leía como un
+ * dibujo y competía con el contenido. Lo que hace falta es solo que el plano no
+ * se vea muerto.
+ *
+ * Una sola rejilla, apenas por encima del umbral de lo perceptible, y
+ * desvanecida hacia abajo con una máscara: densa donde el ojo entra, disuelta
+ * donde está el contenido. Si al mirarla la ves, sobra; se nota al quitarla,
+ * no al ponerla.
  */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--color-txt) 3%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--color-txt) 3%, transparent) 1px, transparent 1px);
+  background-size: 34px 34px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, rgb(0 0 0 / 0.45) 45%, transparent 88%);
+  mask-image: linear-gradient(to bottom, #000 0%, rgb(0 0 0 / 0.45) 45%, transparent 88%);
+}
+
+/*
+ * El grano es lo que de verdad quita el aspecto de plano muerto: un color liso
+ * en una pantalla grande no tiene tacto y además banda. Va en su propia capa
+ * para poder graduarlo aparte de la rejilla.
+ */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
 #root {
   position: relative;
   z-index: 1;
@@ -765,24 +802,72 @@ details[open] > .details-body {
     box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-err) 22%, transparent);
   }
 
+  /*
+   * Luz cenital: una sola fuente, arriba.
+   *
+   * El fondo ya se desvanece desde ahí, así que lo coherente es que lo que
+   * flota por encima recoja esa misma luz y lo que está apoyado en la página
+   * no. Eso convierte el degradado en jerarquía —dice a qué altura está cada
+   * superficie— en vez de en adorno.
+   *
+   * Antes lo llevaban TODAS las tarjetas por igual, y ahí estaba el fallo: si
+   * todo está iluminado, la luz no distingue nada y solo queda el brillito.
+   * La intensidad va en una variable para poder graduarla por sitio sin
+   * reescribir el degradado.
+   */
+  .lit {
+    --lit: 2.5%;
+    --lit-fin: 55%;
+    background-image: linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--color-txt) var(--lit), transparent),
+      transparent var(--lit-fin)
+    );
+  }
+  /* Lo que flota del todo: diálogos, menús, avisos, el panel lateral. */
+  .lit-alto {
+    --lit: 4%;
+    --lit-fin: 62%;
+  }
+  /* Un realce corto, para lo que solo sobresale un poco. */
+  .lit-bajo {
+    --lit: 1.8%;
+    --lit-fin: 38%;
+  }
+
+  /*
+   * La tarjeta se apoya sobre la rejilla del fondo, así que necesita despegarse
+   * de ella: superficie opaca, borde nítido y una sombra corta. Neutra, no del
+   * color de marca —una sombra teñida era justo lo que sobraba antes—: aquí
+   * solo sirve para separar el panel del papel.
+   */
   .card {
     @apply rounded-xl border border-line bg-surface;
+    box-shadow:
+      0 1px 2px rgb(0 0 0 / 0.32),
+      0 12px 28px -20px rgb(0 0 0 / 0.7);
   }
 
   /* Tarjeta interactiva: borde de marca + lift + sombra tintada al pasar; asiento al pulsar. */
   .card-hover {
     transition:
       border-color var(--dur-2) var(--ease-out),
-      background-color var(--dur-2) var(--ease-out);
+      box-shadow var(--dur-2) var(--ease-out),
+      transform var(--dur-2) var(--ease-out);
   }
+  /* Al pasar por encima, la tarjeta sube un pelo: el borde se aclara y la
+     sombra se alarga. Un solo gesto, no cuatro cosas cambiando a la vez. */
   @media (hover: hover) and (pointer: fine) {
     .card-hover:hover {
       border-color: var(--color-line-2);
-      background-color: var(--color-surface-2);
+      transform: translateY(-1px);
+      box-shadow:
+        0 1px 2px rgb(0 0 0 / 0.32),
+        0 18px 36px -22px rgb(0 0 0 / 0.85);
     }
   }
   .card-hover:active {
-    background-color: var(--color-surface-3);
+    transform: none;
     transition-duration: 60ms;
   }
 
