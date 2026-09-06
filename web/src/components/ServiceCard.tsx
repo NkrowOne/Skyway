@@ -170,7 +170,7 @@ export default function ServiceCard({
                 ? status.detail
                   ? `Se paró solo · ${status.detail}`
                   : 'Se paró solo'
-                : status.kind === 'none'
+                : state === 'not_created'
                   ? 'Todavía sin desplegar'
                   : 'Sin métricas'}
           </span>

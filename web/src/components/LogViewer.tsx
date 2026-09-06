@@ -12,12 +12,13 @@ import {
   Maximize2,
   Minimize2,
   Search,
+  SlidersHorizontal,
   Trash2,
   WrapText,
   X,
 } from 'lucide-react';
 import { cx, stripAnsi } from '../utils';
-import { ErrorState, Menu, Spinner } from './ui';
+import { ErrorState, Menu, MenuItem, Spinner } from './ui';
 
 export type Level = 'err' | 'warn' | 'plain';
 export type LevelFilter = 'all' | 'err' | 'warn';
@@ -365,7 +366,7 @@ export default function LogViewer({
   const [gutter, setGutter] = useState(true);
   const [showTs, setShowTs] = useState(true);
   const [tsFormat, setTsFormat] = useState<TimestampFormat>('time');
-  const [tsMenuOpen, setTsMenuOpen] = useState(false);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [clearedUntil, setClearedUntil] = useState<number>(0);
@@ -723,101 +724,123 @@ export default function LogViewer({
 
           {/* Fila derecha: Botones de acción sin solapamiento */}
           <div className="flex shrink-0 items-center justify-between sm:justify-end gap-1">
-            {/* Selector de formato de fechas */}
+            {/* Lo que se usa a diario, con su nombre puesto: bajar al último
+                error y llevarse el log. Lo demás vive en «Vista», que es donde
+                se busca lo que se toca una vez. Antes eran ocho iconos
+                idénticos en fila y había que probarlos uno a uno. */}
+            <button
+              type="button"
+              onClick={() => jump('bottom')}
+              className="press flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt sm:h-8"
+              title="Ir al final del registro"
+            >
+              <ArrowDownToLine size={14} aria-hidden />
+              <span className="hidden sm:inline">Al final</span>
+            </button>
+            <button
+              type="button"
+              onClick={onDownload ?? download}
+              disabled={!onDownload && visible.length === 0}
+              className="press flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40 sm:h-8"
+              title={onDownload ? 'Descargar el log completo' : 'Descargar el log'}
+            >
+              <Download size={14} aria-hidden />
+              <span className="hidden sm:inline">Descargar</span>
+            </button>
+
+            <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-line" />
+
             <div className="relative">
-              <ToolButton
-                title={showTs ? `Fechas: ${tsFormat} (clic para opciones)` : 'Mostrar marcas de tiempo'}
-                onClick={() => setTsMenuOpen((o) => !o)}
-                active={showTs}
+              <button
+                type="button"
+                onClick={() => setViewMenuOpen((o) => !o)}
+                aria-expanded={viewMenuOpen}
+                className={cx(
+                  'press flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors sm:h-8',
+                  viewMenuOpen ? 'bg-surface2 text-txt' : 'text-sub hover:bg-surface2 hover:text-txt',
+                )}
+                title="Cómo se ve el registro"
               >
-                <Clock size={14} />
-              </ToolButton>
-              {/* Antes solo se cerraba con onMouseLeave: en una pantalla táctil
-                  no hay «salir con el ratón», así que quedaba abierto para
-                  siempre. Menu cierra con Esc y con un toque fuera. */}
-              <Menu open={tsMenuOpen} onClose={() => setTsMenuOpen(false)} align="right">
+                <SlidersHorizontal size={14} aria-hidden />
+                <span className="hidden sm:inline">Vista</span>
+              </button>
+              <Menu open={viewMenuOpen} onClose={() => setViewMenuOpen(false)} align="right" className="w-[248px]">
                 <div>
-                  <p className="px-2 py-1 eyebrow text-subtle">
-                    Marcas de tiempo
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowTs((s) => !s);
-                      setTsMenuOpen(false);
-                    }}
-                    className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs hover:bg-surface2"
-                  >
-                    <span>Mostrar fechas</span>
-                    {showTs && <Check size={12} className="text-acc" />}
-                  </button>
+                  <p className="px-2.5 py-1 eyebrow text-subtle">Vista</p>
+                  <MenuItem icon={<Hash size={14} />} active={gutter} onClick={() => setGutter((g) => !g)}>
+                    <span className="flex items-center justify-between gap-2">
+                      Numerar líneas
+                      {gutter && <Check size={13} className="shrink-0 text-acc-soft" />}
+                    </span>
+                  </MenuItem>
+                  <MenuItem icon={<WrapText size={14} />} active={wrap} onClick={() => setWrap((w) => !w)}>
+                    <span className="flex items-center justify-between gap-2">
+                      Ajuste de línea
+                      {wrap && <Check size={13} className="shrink-0 text-acc-soft" />}
+                    </span>
+                  </MenuItem>
+                  <MenuItem icon={<Clock size={14} />} active={showTs} onClick={() => setShowTs((v) => !v)}>
+                    <span className="flex items-center justify-between gap-2">
+                      Marcas de tiempo
+                      {showTs && <Check size={13} className="shrink-0 text-acc-soft" />}
+                    </span>
+                  </MenuItem>
+                  {/* El formato solo aparece cuando las fechas están puestas:
+                      elegir entre cuatro formatos de algo oculto no significa nada. */}
+                  {showTs && (
+                    <div className="mb-1 ml-4 flex flex-col border-l border-line pl-1.5">
+                      {(
+                        [
+                          { key: 'time', label: 'Hora (HH:mm:ss)' },
+                          { key: 'datetime', label: 'Fecha y hora' },
+                          { key: 'utc', label: 'Hora UTC' },
+                          { key: 'relative', label: 'Tiempo relativo' },
+                        ] as const
+                      ).map((opt) => (
+                        <MenuItem key={opt.key} active={tsFormat === opt.key} onClick={() => setTsFormat(opt.key)}>
+                          <span className="flex items-center justify-between gap-2 text-xs">
+                            {opt.label}
+                            {tsFormat === opt.key && <Check size={13} className="shrink-0 text-acc-soft" />}
+                          </span>
+                        </MenuItem>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="my-1 border-t border-line" />
-                  {(
-                    [
-                      { key: 'time', label: 'Hora (HH:mm:ss)' },
-                      { key: 'datetime', label: 'Fecha + Hora (DD/MM HH:mm)' },
-                      { key: 'utc', label: 'Hora UTC' },
-                      { key: 'relative', label: 'Tiempo relativo' },
-                    ] as const
-                  ).map((opt) => (
-                    <button
-                      key={opt.key}
-                      type="button"
-                      onClick={() => {
-                        setTsFormat(opt.key);
-                        setShowTs(true);
-                        setTsMenuOpen(false);
-                      }}
-                      className={cx(
-                        'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs',
-                        tsFormat === opt.key && showTs ? 'bg-acc/10 font-semibold text-acc-soft' : 'hover:bg-surface2',
-                      )}
+
+                  <MenuItem
+                    icon={copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
+                    onClick={copyAll}
+                    className={cx(visible.length === 0 && 'pointer-events-none opacity-40')}
+                  >
+                    Copiar lo que se ve
+                  </MenuItem>
+                  <MenuItem
+                    icon={<ArrowUpToLine size={14} />}
+                    onClick={() => {
+                      jump('top');
+                      setViewMenuOpen(false);
+                    }}
+                  >
+                    Ir al principio
+                  </MenuItem>
+                  {clearedUntil === 0 ? (
+                    <MenuItem
+                      icon={<Trash2 size={14} />}
+                      onClick={clearBuffer}
+                      className={cx(visible.length === 0 && 'pointer-events-none opacity-40')}
                     >
-                      <span>{opt.label}</span>
-                      {tsFormat === opt.key && showTs && <Check size={12} className="text-acc" />}
-                    </button>
-                  ))}
+                      Limpiar la vista
+                    </MenuItem>
+                  ) : (
+                    <MenuItem icon={<Trash2 size={14} />} onClick={() => setClearedUntil(0)}>
+                      Restaurar {clearedUntil} líneas ocultas
+                    </MenuItem>
+                  )}
                 </div>
               </Menu>
             </div>
-
-            <ToolButton title="Numerar líneas" onClick={() => setGutter((g) => !g)} active={gutter}>
-              <Hash size={14} />
-            </ToolButton>
-            <ToolButton title="Ajuste de línea" onClick={() => setWrap((w) => !w)} active={wrap}>
-              <WrapText size={14} />
-            </ToolButton>
-            <ToolButton title="Ir al inicio" onClick={() => jump('top')}>
-              <ArrowUpToLine size={14} />
-            </ToolButton>
-            <ToolButton title="Ir al final" onClick={() => jump('bottom')}>
-              <ArrowDownToLine size={14} />
-            </ToolButton>
-            <ToolButton title="Copiar texto visible" onClick={copyAll} disabled={visible.length === 0}>
-              {copied ? <Check size={14} className="pop-in text-ok" /> : <Copy size={14} />}
-            </ToolButton>
-            <ToolButton
-              title={onDownload ? 'Descargar log completo' : 'Descargar log'}
-              onClick={onDownload ?? download}
-              disabled={!onDownload && visible.length === 0}
-            >
-              <Download size={14} />
-            </ToolButton>
-            {clearedUntil === 0 && (
-              <ToolButton title="Limpiar vista actual" onClick={clearBuffer} disabled={visible.length === 0}>
-                <Trash2 size={13} />
-              </ToolButton>
-            )}
-            {clearedUntil > 0 && (
-              <button
-                type="button"
-                onClick={() => setClearedUntil(0)}
-                className="press flex h-7 items-center rounded-md bg-surface2 px-2 text-xs text-sub hover:text-txt"
-                title="Restaurar líneas ocultas"
-              >
-                Restaurar ({clearedUntil})
-              </button>
-            )}
           </div>
         </div>
       )}

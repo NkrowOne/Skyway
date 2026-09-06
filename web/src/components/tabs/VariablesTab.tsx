@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../api';
 import { cx } from '../../utils';
-import { CopyButton, EditorBar, Skeleton, useToast } from '../ui';
+import { CopyButton, EditorBar, Segmented, Skeleton, useToast } from '../ui';
 
 interface ReferenceGroup {
   service: string;
@@ -453,35 +453,16 @@ export default function VariablesTab({
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5">
-            {/* Tabla / texto plano */}
-            <div className="flex items-center rounded-lg border border-line bg-surface2/70 p-0.5" role="group" aria-label="Modo de edición">
-              <button
-                type="button"
-                onClick={() => handleSwitchMode('table')}
-                aria-pressed={viewMode === 'table'}
-                className={cx(
-                  'press flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
-                  viewMode === 'table' ? 'bg-surface text-txt shadow-sm' : 'text-subtle hover:text-txt',
-                )}
-                title="Vista en tabla"
-              >
-                <Table size={12} />
-                <span className="hidden sm:inline">Tabla</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleSwitchMode('raw')}
-                aria-pressed={viewMode === 'raw'}
-                className={cx(
-                  'press flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
-                  viewMode === 'raw' ? 'bg-surface text-txt shadow-sm' : 'text-subtle hover:text-txt',
-                )}
-                title="Editar texto plano formato .env"
-              >
-                <FileText size={12} />
-                <span>.env</span>
-              </button>
-            </div>
+            <Segmented
+              label="Modo de edición"
+              size="sm"
+              value={viewMode}
+              onChange={handleSwitchMode}
+              options={[
+                { key: 'table', label: <span className="max-sm:hidden">Tabla</span>, icon: <Table size={12} aria-hidden />, title: 'Vista en tabla' },
+                { key: 'raw', label: '.env', icon: <FileText size={12} aria-hidden />, title: 'Editar como texto plano' },
+              ]}
+            />
 
             {viewMode === 'table' && (
               <>

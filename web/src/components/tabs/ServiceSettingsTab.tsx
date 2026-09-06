@@ -49,6 +49,24 @@ function SectionCard({
   );
 }
 
+/**
+ * Lo que se toca una vez en la vida (Dockerfile, comandos, healthcheck) va
+ * plegado: mezclado con el nombre y la rama convertía «General» en doce campos
+ * seguidos donde lo frecuente costaba lo mismo de encontrar que lo raro.
+ */
+function Avanzado({ children, resumen }: { children: React.ReactNode; resumen: string }) {
+  return (
+    <details className="animate-details group rounded-lg border border-line bg-surface">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-sm text-sub transition-colors hover:text-txt">
+        <ChevronRight size={13} className="shrink-0 text-subtle transition-transform group-open:rotate-90" />
+        <span className="font-medium">Avanzado</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-subtle">{resumen}</span>
+      </summary>
+      <div className="details-body flex flex-col gap-3 border-t border-line px-3 py-3">{children}</div>
+    </details>
+  );
+}
+
 interface FormState {
   name: string;
   repoUrl: string;
@@ -280,54 +298,56 @@ export default function ServiceSettingsTab({
                     <input className="input tnum" type="number" value={form.port} onChange={(e) => set('port', e.target.value)} />
                   </Field>
                 </div>
-                <div className="grid grid-cols-2 gap-2.5">
-                  <Field label="Directorio raíz" hint="vacío = raíz del repo">
-                    <input className="input" placeholder="apps/api" value={form.rootDir} onChange={(e) => set('rootDir', e.target.value)} />
+                <Avanzado resumen="Directorio, Dockerfile, constructor, comandos y healthcheck">
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <Field label="Directorio raíz" hint="vacío = raíz del repo">
+                      <input className="input" placeholder="apps/api" value={form.rootDir} onChange={(e) => set('rootDir', e.target.value)} />
+                    </Field>
+                    <Field label="Dockerfile" hint="vacío = Dockerfile">
+                      <input className="input" placeholder="Dockerfile" value={form.dockerfilePath} onChange={(e) => set('dockerfilePath', e.target.value)} />
+                    </Field>
+                  </div>
+                  <Field
+                    label="Constructor"
+                    hint="Automático: manda railway.json y, si no dice nada, el Dockerfile si lo hay. Elegir uno fuerza ese, aunque el repositorio pida el otro."
+                  >
+                    <select className="input" value={form.builder} onChange={(e) => set('builder', e.target.value as FormState['builder'])}>
+                      <option value="auto">Automático (recomendado)</option>
+                      <option value="dockerfile">Dockerfile del repositorio</option>
+                      <option value="nixpacks">Nixpacks (como Railway)</option>
+                    </select>
                   </Field>
-                  <Field label="Dockerfile" hint="vacío = Dockerfile">
-                    <input className="input" placeholder="Dockerfile" value={form.dockerfilePath} onChange={(e) => set('dockerfilePath', e.target.value)} />
+                  <Field label="Comando de arranque" hint="Opcional: sobreescribe el CMD de la imagen">
+                    <input
+                      className="input font-mono text-xs"
+                      value={form.startCmd}
+                      onChange={(e) => set('startCmd', e.target.value)}
+                      placeholder="npm run start"
+                    />
                   </Field>
-                </div>
-                <Field
-                  label="Constructor"
-                  hint="Automático: manda railway.json y, si no dice nada, el Dockerfile si lo hay. Elegir uno fuerza ese, aunque el repositorio pida el otro."
-                >
-                  <select className="input" value={form.builder} onChange={(e) => set('builder', e.target.value as FormState['builder'])}>
-                    <option value="auto">Automático (recomendado)</option>
-                    <option value="dockerfile">Dockerfile del repositorio</option>
-                    <option value="nixpacks">Nixpacks (como Railway)</option>
-                  </select>
-                </Field>
-                <Field label="Comando de arranque" hint="Opcional: sobreescribe el CMD de la imagen">
-                  <input
-                    className="input font-mono text-xs"
-                    value={form.startCmd}
-                    onChange={(e) => set('startCmd', e.target.value)}
-                    placeholder="npm run start"
-                  />
-                </Field>
-                <Field
-                  label="Comando de compilación"
-                  hint="Equivalente al «Build Command» de Railway. Solo aplica sin Dockerfile (build con Nixpacks); con Dockerfile manda el Dockerfile."
-                >
-                  <input
-                    className="input font-mono text-xs"
-                    value={form.buildCmd}
-                    onChange={(e) => set('buildCmd', e.target.value)}
-                    placeholder="npm run build"
-                  />
-                </Field>
-                <Field
-                  label="Ruta de healthcheck"
-                  hint="Opcional, ej: /health. Si responde 2xx la nueva versión se considera sana: despliegues sin corte con marcha atrás automática."
-                >
-                  <input
-                    className="input font-mono text-xs"
-                    value={form.healthcheckPath}
-                    onChange={(e) => set('healthcheckPath', e.target.value)}
-                    placeholder="/health"
-                  />
-                </Field>
+                  <Field
+                    label="Comando de compilación"
+                    hint="Equivalente al «Build Command» de Railway. Solo aplica sin Dockerfile (build con Nixpacks); con Dockerfile manda el Dockerfile."
+                  >
+                    <input
+                      className="input font-mono text-xs"
+                      value={form.buildCmd}
+                      onChange={(e) => set('buildCmd', e.target.value)}
+                      placeholder="npm run build"
+                    />
+                  </Field>
+                  <Field
+                    label="Ruta de healthcheck"
+                    hint="Opcional, ej: /health. Si responde 2xx la nueva versión se considera sana: despliegues sin corte con marcha atrás automática."
+                  >
+                    <input
+                      className="input font-mono text-xs"
+                      value={form.healthcheckPath}
+                      onChange={(e) => set('healthcheckPath', e.target.value)}
+                      placeholder="/health"
+                    />
+                  </Field>
+                </Avanzado>
               </>
             ) : isImage ? (
               <>
@@ -553,7 +573,12 @@ export default function ServiceSettingsTab({
           </SectionCard>
         )}
 
-        <section className="mb-3.5 rounded-xl border border-err/30 bg-err/[.06] p-4">
+        {/*
+          * Sin fondo rojo permanente: un panel de alarma que está siempre
+          * puesto deja de avisar de nada. El borde marca el límite y el color
+          * de verdad lo llevan el botón y su confirmación.
+          */}
+        <section className="mb-3.5 rounded-xl border border-err/30 bg-bg p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-semibold text-err">Zona de peligro</h3>

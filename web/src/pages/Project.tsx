@@ -1,10 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { BellRing, Database, FileText, KeyRound, Layers, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
+import { BellRing, Database, FileText, KeyRound, Layers, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
 import { ApiError, api, openStream } from '../api';
 import { useLatch, usePresence } from '../hooks';
-import { Button, Chip, ConfirmModal, CopyButton, EmptyState, ErrorState, Field, Modal, Skeleton, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, CopyButton, EmptyState, ErrorState, Field, Menu, MenuItem, Modal, Skeleton, useToast } from '../components/ui';
 import { ModuleLogo } from '../components/ModuleIcon';
 import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
@@ -164,6 +164,8 @@ export default function ProjectPage() {
   const [editName, setEditName] = useState('');
   const [editClient, setEditClient] = useState('');
   const [reportOpen, setReportOpen] = useState(false);
+  // Menú «···» de la cabecera en móvil.
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const selectedId = searchParams.get('s');
   // Presencia del drawer: sigue montado durante su animación de despedida.
@@ -308,6 +310,18 @@ export default function ProjectPage() {
   // Durante la salida el drawer pinta el último servicio visto.
   const drawerService = selected ?? lastServiceRef.current;
 
+  const abrirEdicion = () => {
+    setEditName(proj.name);
+    setEditClient(proj.client ?? '');
+    setEditOpen(true);
+  };
+
+  const abrirBorrado = () => {
+    // El borrado de volúmenes vuelve a «no» en cada apertura.
+    setDeleteVolumes(false);
+    setDeleteOpen(true);
+  };
+
   const openService = (id: string | null) => {
     if (id) setSearchParams({ s: id });
     else setSearchParams({});
@@ -377,76 +391,147 @@ export default function ProjectPage() {
               </div>
             )}
           </div>
-          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-            {isManager && (
-              <>
-                <button
-                  onClick={() => {
-                    setEditName(proj.name);
-                    setEditClient(proj.client ?? '');
-                    setEditOpen(true);
-                  }}
-                  className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt max-sm:h-11 max-sm:min-w-11"
-                  title={isAdmin ? 'Renombrar / empresa' : 'Renombrar'}
-                >
-                  <Pencil size={14} />
-                </button>
-                <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-line" />
-                <button
-                  onClick={() => {
-                    // El borrado de volúmenes vuelve a «no» en cada apertura.
-                    setDeleteVolumes(false);
-                    setDeleteOpen(true);
-                  }}
-                  className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-err max-sm:h-11 max-sm:min-w-11"
-                  title="Eliminar proyecto"
-                >
-                  <Trash2 size={14} />
-                </button>
-              </>
-            )}
-            <Button
-              variant="secondary"
-              size="sm"
-              className="max-sm:h-11 max-sm:min-w-11"
-              onClick={() => setStatusOpen(true)}
-              title="Página de estado pública para el cliente"
-            >
-              <Signal size={13} /> <span className="hidden sm:inline">Página de estado</span>
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              className="max-sm:h-11 max-sm:min-w-11"
-              onClick={() => setGithubOpen(true)}
-              title="Cuentas de GitHub cuyos repositorios se pueden desplegar aquí"
-            >
-              <ModuleLogo kind="github" size={13} /> <span className="hidden sm:inline">GitHub</span>
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              className="max-sm:h-11 max-sm:min-w-11"
-              onClick={() => setSharedOpen(true)}
-              title="Variables compartidas del proyecto"
-            >
-              <KeyRound size={13} /> <span className="hidden sm:inline">Variables compartidas</span>
-            </Button>
-            {hasDeployables && (
+          {/*
+            * En el móvil estas siete acciones perdían su etiqueta y quedaban
+            * siete cuadrados iguales —uno de ellos borraba el proyecto—. Ahora
+            * ahí solo hay una acción a la vista y un menú donde cada cosa lleva
+            * su nombre escrito. En escritorio siguen en la barra, como estaban.
+            */}
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            <div className="hidden flex-wrap items-center gap-2 sm:flex">
+              {isManager && (
+                <>
+                  <button
+                    onClick={abrirEdicion}
+                    className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
+                    title={isAdmin ? 'Renombrar / empresa' : 'Renombrar'}
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-line" />
+                  <button
+                    onClick={abrirBorrado}
+                    className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-err"
+                    title="Eliminar proyecto"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </>
+              )}
               <Button
                 variant="secondary"
                 size="sm"
-                className="max-sm:h-11 max-sm:min-w-11"
-                onClick={() => setDeployAllOpen(true)}
-                loading={deployAll.isPending}
-                title="Redespliega todos los servicios de repo e imagen"
+                onClick={() => setStatusOpen(true)}
+                title="Página de estado pública para el cliente"
               >
-                <RefreshCw size={13} /> <span className="hidden sm:inline">Desplegar todo</span>
+                <Signal size={13} /> Página de estado
               </Button>
-            )}
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setGithubOpen(true)}
+                title="Cuentas de GitHub cuyos repositorios se pueden desplegar aquí"
+              >
+                <ModuleLogo kind="github" size={13} /> GitHub
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => setSharedOpen(true)} title="Variables compartidas del proyecto">
+                <KeyRound size={13} /> Variables compartidas
+              </Button>
+              {hasDeployables && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setDeployAllOpen(true)}
+                  loading={deployAll.isPending}
+                  title="Redespliega todos los servicios de repo e imagen"
+                >
+                  <RefreshCw size={13} /> Desplegar todo
+                </Button>
+              )}
+            </div>
+
             <Button size="sm" className="max-sm:h-11 max-sm:flex-1" onClick={() => setNewOpen(true)}>
               <Plus size={14} /> Nuevo servicio
             </Button>
+
+            <div className="relative sm:hidden">
+              <button
+                type="button"
+                onClick={() => setMenuOpen((o) => !o)}
+                aria-expanded={menuOpen}
+                className="press flex h-11 min-w-11 items-center justify-center rounded-lg border border-line bg-surface2 text-txt"
+                title="Más acciones del proyecto"
+                aria-label="Más acciones del proyecto"
+              >
+                <MoreHorizontal size={16} />
+              </button>
+              <Menu open={menuOpen} onClose={() => setMenuOpen(false)} align="right" className="w-[240px]">
+                <div>
+                  {hasDeployables && (
+                    <MenuItem
+                      icon={<RefreshCw size={14} />}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        setDeployAllOpen(true);
+                      }}
+                    >
+                      Desplegar todo
+                    </MenuItem>
+                  )}
+                  <MenuItem
+                    icon={<KeyRound size={14} />}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setSharedOpen(true);
+                    }}
+                  >
+                    Variables compartidas
+                  </MenuItem>
+                  <MenuItem
+                    icon={<ModuleLogo kind="github" size={14} />}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setGithubOpen(true);
+                    }}
+                  >
+                    Cuentas de GitHub
+                  </MenuItem>
+                  <MenuItem
+                    icon={<Signal size={14} />}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setStatusOpen(true);
+                    }}
+                  >
+                    Página de estado
+                  </MenuItem>
+                  {isManager && (
+                    <>
+                      <MenuItem
+                        icon={<Pencil size={14} />}
+                        onClick={() => {
+                          setMenuOpen(false);
+                          abrirEdicion();
+                        }}
+                      >
+                        Renombrar proyecto
+                      </MenuItem>
+                      <div className="my-1 border-t border-line" />
+                      <MenuItem
+                        danger
+                        icon={<Trash2 size={14} />}
+                        onClick={() => {
+                          setMenuOpen(false);
+                          abrirBorrado();
+                        }}
+                      >
+                        Eliminar proyecto
+                      </MenuItem>
+                    </>
+                  )}
+                </div>
+              </Menu>
+            </div>
           </div>
         </div>
 

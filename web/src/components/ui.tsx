@@ -160,6 +160,70 @@ export function Chip({
   );
 }
 
+// ---------- Segmented ----------
+/**
+ * Control segmentado: dos o tres vistas excluyentes de lo mismo.
+ *
+ * Estaba escrito cinco veces —logs, monitor, métricas, alertas y variables—
+ * con cinco radios, cinco rellenos y tres fondos distintos para el mismo
+ * trabajo. Como con Chip y StatusBadge, una sola pieza: la pastilla activa es
+ * superficie sólida sobre el carril hundido, y el resto solo texto.
+ */
+export function Segmented<T extends string | number>({
+  options,
+  value,
+  onChange,
+  size = 'md',
+  full,
+  label,
+  className,
+}: {
+  options: { key: T; label: React.ReactNode; icon?: React.ReactNode; badge?: React.ReactNode; title?: string }[];
+  value: T;
+  onChange: (key: T) => void;
+  size?: 'sm' | 'md';
+  /** Ocupa todo el ancho y reparte las opciones: para el móvil. */
+  full?: boolean;
+  label?: string;
+  className?: string;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={label}
+      className={cx(
+        'inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-line bg-surface2/60 p-0.5',
+        full && 'flex w-full',
+        className,
+      )}
+    >
+      {options.map((o) => {
+        const on = o.key === value;
+        return (
+          <button
+            key={String(o.key)}
+            type="button"
+            onClick={() => onChange(o.key)}
+            aria-pressed={on}
+            title={o.title}
+            className={cx(
+              'press flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-3 text-xs font-medium transition-colors duration-[--dur-1]',
+              // En táctil la pastilla crece hasta un objetivo que se acierta con el pulgar.
+              size === 'sm' ? 'h-7 max-sm:h-9' : 'h-8 max-sm:h-10',
+              full && 'flex-1',
+              on ? 'bg-surface font-semibold text-txt shadow-lvl1' : 'text-subtle hover:text-txt',
+            )}
+          >
+            {o.icon}
+            {o.label}
+            {o.badge}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ---------- EmptyState ----------
 /**
  * Hueco vacío con salida. Un panel sin datos no es un error: es el momento de

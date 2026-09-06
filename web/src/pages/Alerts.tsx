@@ -3,9 +3,16 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Archive, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket } from 'lucide-react';
 import { api } from '../api';
-import { Button, Chip, ErrorState, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, ErrorState, Segmented, Skeleton, useToast } from '../components/ui';
 import { Alert } from '../types';
-import { ALERT_TYPE_LABEL, cx, fmtDateTime, SEVERITY_LABEL, SEVERITY_TONE } from '../utils';
+import { ALERT_TYPE_LABEL, cx, fmtDateTime, SEVERITY_LABEL } from '../utils';
+
+/** Color del nivel en la línea de contexto (el riel y el icono ya lo llevan). */
+const SEVERITY_TEXT: Record<string, string> = {
+  critical: 'text-err',
+  warning: 'text-warn',
+  info: 'text-info',
+};
 
 const TYPE_ICON: Record<string, typeof Rocket> = {
   deploy_failed: Rocket,
@@ -39,8 +46,13 @@ function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: (
   return (
     <div
       className={cx(
-        'relative overflow-hidden rounded-xl border border-line bg-surface py-4 pl-4 pr-4 transition-opacity',
-        !resolved && tone === 'err' && 'bg-err/[.035]',
+        /*
+         * La gravedad se dice DOS veces: el riel de color y el icono teñido.
+         * Antes eran cuatro —riel, icono, píldora y fondo rojizo— y una lista
+         * de alertas críticas quedaba en un bloque rojo donde ya no destacaba
+         * ninguna.
+         */
+        'relative overflow-hidden rounded-xl border border-line bg-surface p-4 transition-opacity',
         resolved && 'opacity-[.7]',
       )}
     >
@@ -52,23 +64,19 @@ function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: (
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
             <span className="min-w-0 truncate text-sm font-semibold">{alert.title}</span>
-            {!resolved && (
-              <StatusBadge
-                tone={SEVERITY_TONE[alert.severity]}
-                label={SEVERITY_LABEL[alert.severity]}
-                dot={false}
-                className="px-2 py-0.5 eyebrow"
-              />
-            )}
           </div>
+          {/* El nivel viaja con el tipo, en la línea de contexto: es un dato
+              más de la alerta, no una etiqueta que compita con el título. */}
           <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-subtle">
+            {!resolved && <span className={cx('font-semibold', SEVERITY_TEXT[alert.severity])}>{SEVERITY_LABEL[alert.severity]}</span>}
+            {!resolved && <span className="text-line">·</span>}
             <span>{ALERT_TYPE_LABEL[alert.type] ?? alert.type}</span>
             <span className="text-line">·</span>
             <span className="tnum">{fmtDateTime(alert.ts)}</span>
           </p>
           <p className="mt-2 text-sm leading-relaxed text-sub">{alert.message}</p>
           {alert.explanation && (
-            <div className="mt-2.5 flex items-start gap-2 rounded-r-md border-l-2 border-warn/40 bg-warn/[.05] py-2 pl-2.5 pr-3 text-xs text-sub">
+            <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-warn/25 bg-warn/[.05] px-3 py-2 text-xs text-sub">
               <Lightbulb size={13} className="mt-px shrink-0 text-warn" />
               <p className="leading-relaxed">{alert.explanation}</p>
             </div>
@@ -139,33 +147,19 @@ export default function AlertsPage() {
             Caídas, bucles de reinicio, CPU/RAM altas y despliegues fallidos de todos los proyectos
           </p>
         </div>
-        <div role="tablist" className="inline-flex gap-0.5 rounded-lg border border-line bg-bg p-0.5">
-          <button
-            role="tab"
-            aria-selected={openOnly}
-            onClick={() => setOpenOnly(true)}
-            className={cx(
-              'rounded-[7px] px-3.5 py-1 text-xs transition-colors duration-150',
-              openOnly ? 'bg-surface2 font-semibold text-txt' : 'text-sub hover:text-txt',
-            )}
-          >
-            Activas
-            {activeCount > 0 && (
-              <Chip size="sm" tone="err" className="ml-1.5">{activeCount}</Chip>
-            )}
-          </button>
-          <button
-            role="tab"
-            aria-selected={!openOnly}
-            onClick={() => setOpenOnly(false)}
-            className={cx(
-              'rounded-[7px] px-3.5 py-1 text-xs transition-colors duration-150',
-              !openOnly ? 'bg-surface2 font-semibold text-txt' : 'text-sub hover:text-txt',
-            )}
-          >
-            Historial
-          </button>
-        </div>
+        <Segmented
+          label="Alertas activas o historial"
+          value={openOnly ? 'open' : 'all'}
+          onChange={(k) => setOpenOnly(k === 'open')}
+          options={[
+            {
+              key: 'open',
+              label: 'Activas',
+              badge: activeCount > 0 ? <Chip size="sm" tone="err">{activeCount}</Chip> : undefined,
+            },
+            { key: 'all', label: 'Historial' },
+          ]}
+        />
       </div>
 
       <p className="text-xs text-subtle">

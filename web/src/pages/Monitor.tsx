@@ -22,7 +22,7 @@ import {
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import type { BandPoint } from '../components/HistoryChart';
-import { Button, Chip, ConfirmModal, EmptyState, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, EmptyState, Segmented, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { DiskBreakdown, HostMetricHistory, LogSearchResult, Me, MonitorOverview, MonitorService } from '../types';
 import { cx, fmtBytes, fmtDateTime, serviceStatus, timeAgo } from '../utils';
 
@@ -186,6 +186,12 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
   );
 }
 
+/**
+ * Una fila del monitor. Por debajo de 640px la fila de seis columnas no cabe
+ * —la tabla pedía 760px y había que arrastrar de lado para ver el estado, que
+ * es justo a lo que se entra—, así que ahí se pinta como tarjeta. Las celdas
+ * son las mismas piezas en los dos casos: cambia la composición, no el dato.
+ */
 function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart: () => void; restarting: boolean }) {
   const navigate = useNavigate();
   const memPct = s.stats && s.stats.memLimit > 0 ? (s.stats.memUsage / s.stats.memLimit) * 100 : null;
@@ -193,6 +199,93 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
   const status = serviceStatus(s.state, { exitCode: s.exitCode, stoppedAt: s.stoppedAt });
   // Solo lo que se cayó solo se tiñe de rojo; una parada a mano no es un incidente.
   const isDown = status.kind === 'down';
+
+  const identidad = (
+    <div className="flex min-w-0 flex-1 items-center gap-2.5">
+      <ModuleChip
+        kind={moduleKind({ type: s.type, config: { template: s.template, image: s.image } as any })}
+        size={30}
+        radius={8}
+        className={cx(status.kind === 'stopped' && 'opacity-55 saturate-50')}
+      />
+      <div className="min-w-0">
+        <p className="flex items-center gap-1.5 truncate text-sm font-medium">
+          {s.name}
+          {s.alerts > 0 && (
+            <Chip size="sm" tone="err" icon={<BellRing size={9} aria-hidden />}>{s.alerts}</Chip>
+          )}
+        </p>
+        <p className="truncate text-xs text-subtle">
+          {s.projectName}
+          {s.client ? ` · ${s.client}` : ''}
+        </p>
+      </div>
+    </div>
+  );
+
+  const estado = (
+    <div>
+      <StatusBadge tone={status.tone} label={status.label} pulse={status.pulse} replicas={s.replicas} />
+      {isDown && s.exitCode !== null ? (
+        <p className="mt-1 text-micro text-err">código {s.exitCode}</p>
+      ) : status.kind === 'stopped' && s.stoppedAt ? (
+        <p className="mt-1 text-micro text-subtle">a mano · {timeAgo(s.stoppedAt)}</p>
+      ) : (
+        s.uptime24h !== null && (
+          <p className={cx('tnum mt-1 text-micro', s.uptime24h < 99 ? 'text-warn' : 'text-subtle')} title="Disponibilidad en las últimas 24 h">
+            {s.uptime24h.toFixed(s.uptime24h >= 99.995 ? 0 : 1)}% · 24 h
+          </p>
+        )
+      )}
+    </div>
+  );
+
+  const cpu = (
+    <div className="text-xs text-sub tnum">
+      {s.stats ? `${s.stats.cpuPercent.toFixed(1)}%` : '—'}
+      {s.cpus ? <span className="text-micro text-subtle"> / {s.cpus} CPU</span> : null}
+    </div>
+  );
+
+  const ram = (
+    <div className="text-xs text-sub">
+      {s.stats ? (
+        <>
+          <span className="tnum">{fmtBytes(s.stats.memUsage)}</span>
+          {s.memoryMb ? <span className="text-micro text-subtle"> / {s.memoryMb} MB</span> : null}
+          {memPct !== null && s.memoryMb ? <UsageBar pct={memPct} tone={memPct > 90 ? 'err' : memPct > 75 ? 'warn' : 'ok'} /> : null}
+        </>
+      ) : (
+        '—'
+      )}
+    </div>
+  );
+
+  const disco = (
+    <div className="text-xs text-sub">
+      {s.disk.totalBytes !== null ? (
+        <>
+          <span className="tnum">{fmtBytes(s.disk.totalBytes)}</span>
+          {s.disk.quotaMb ? <span className="text-micro text-subtle"> / {s.disk.quotaMb} MB</span> : null}
+          {diskPct !== null && <UsageBar pct={diskPct} tone={diskPct > 100 ? 'err' : diskPct > 80 ? 'warn' : 'ok'} />}
+        </>
+      ) : (
+        '—'
+      )}
+    </div>
+  );
+
+  const reiniciar = s.state !== 'not_created' && (
+    <button
+      onClick={onRestart}
+      disabled={restarting}
+      className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt disabled:opacity-40 max-sm:h-10 max-sm:w-10"
+      title="Reiniciar"
+      aria-label={`Reiniciar ${s.name}`}
+    >
+      <RefreshCw size={13} className={cx(restarting && 'animate-spin')} />
+    </button>
+  );
 
   return (
     <div
@@ -205,88 +298,52 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
         if (e.key === 'Enter' && e.target === e.currentTarget) navigate(`/projects/${s.projectId}?s=${s.id}`);
       }}
       className={cx(
-        'grid cursor-pointer grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] items-center gap-3 border-b border-line/70 px-4 py-2.5 transition-colors last:border-0 hover:bg-surface',
+        'cursor-pointer border-b border-line/70 transition-colors last:border-0 hover:bg-surface',
         isDown && 'bg-err/[.035]',
       )}
     >
-      <div className="flex min-w-0 items-center gap-2.5">
-        <ModuleChip kind={moduleKind({ type: s.type, config: { template: s.template, image: s.image } as any })} size={30} radius={8} />
-        <div className="min-w-0">
-          <p className="flex items-center gap-1.5 truncate text-sm font-medium">
-            {s.name}
-            {s.alerts > 0 && (
-              <Chip size="sm" tone="err" icon={<BellRing size={9} aria-hidden />}>{s.alerts}</Chip>
-            )}
-          </p>
-          <p className="truncate text-xs text-subtle">
-            {s.projectName}
-            {s.client ? ` · ${s.client}` : ''}
-          </p>
+      {/* Móvil: tarjeta. Quién es y cómo está arriba; el consumo, en tres columnas. */}
+      <div className="flex flex-col gap-3 p-4 sm:hidden">
+        <div className="flex items-start gap-2">
+          {identidad}
+          <span className="flex shrink-0 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+            {reiniciar}
+          </span>
+        </div>
+        {estado}
+        <div className="grid grid-cols-3 gap-3 border-t border-line/70 pt-3">
+          <div className="min-w-0">
+            <p className="eyebrow text-subtle">CPU</p>
+            {cpu}
+          </div>
+          <div className="min-w-0">
+            <p className="eyebrow text-subtle">RAM</p>
+            {ram}
+          </div>
+          <div className="min-w-0">
+            <p className="eyebrow text-subtle">Disco</p>
+            {disco}
+          </div>
         </div>
       </div>
 
-      <div>
-        <StatusBadge tone={status.tone} label={status.label} pulse={status.pulse} replicas={s.replicas} />
-        {isDown && s.exitCode !== null ? (
-          <p className="mt-1 text-micro text-err">código {s.exitCode}</p>
-        ) : status.kind === 'stopped' && s.stoppedAt ? (
-          <p className="mt-1 text-micro text-subtle">a mano · {timeAgo(s.stoppedAt)}</p>
-        ) : (
-          s.uptime24h !== null && (
-            <p className={cx('tnum mt-1 text-micro', s.uptime24h < 99 ? 'text-warn' : 'text-subtle')} title="Disponibilidad en las últimas 24 h">
-              {s.uptime24h.toFixed(s.uptime24h >= 99.995 ? 0 : 1)}% · 24 h
-            </p>
-          )
-        )}
-      </div>
-
-      <div className="text-xs text-sub tnum">
-        {s.stats ? `${s.stats.cpuPercent.toFixed(1)}%` : '—'}
-        {s.cpus ? <span className="text-micro text-subtle"> / {s.cpus} CPU</span> : null}
-      </div>
-
-      <div className="text-xs text-sub">
-        {s.stats ? (
-          <>
-            <span className="tnum">{fmtBytes(s.stats.memUsage)}</span>
-            {s.memoryMb ? <span className="text-micro text-subtle"> / {s.memoryMb} MB</span> : null}
-            {memPct !== null && s.memoryMb ? <UsageBar pct={memPct} tone={memPct > 90 ? 'err' : memPct > 75 ? 'warn' : 'ok'} /> : null}
-          </>
-        ) : (
-          '—'
-        )}
-      </div>
-
-      <div className="text-xs text-sub">
-        {s.disk.totalBytes !== null ? (
-          <>
-            <span className="tnum">{fmtBytes(s.disk.totalBytes)}</span>
-            {s.disk.quotaMb ? <span className="text-micro text-subtle"> / {s.disk.quotaMb} MB</span> : null}
-            {diskPct !== null && <UsageBar pct={diskPct} tone={diskPct > 100 ? 'err' : diskPct > 80 ? 'warn' : 'ok'} />}
-          </>
-        ) : (
-          '—'
-        )}
-      </div>
-
-      <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-        {s.state !== 'not_created' && (
-          <button
-            onClick={onRestart}
-            disabled={restarting}
-            className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt disabled:opacity-40"
-            title="Reiniciar" aria-label="Reiniciar"
+      {/* Escritorio: la fila de la tabla, con sus columnas alineadas. */}
+      <div className="hidden grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] items-center gap-3 px-4 py-2.5 sm:grid">
+        {identidad}
+        {estado}
+        {cpu}
+        {ram}
+        {disco}
+        <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+          {reiniciar}
+          <Link
+            to={`/projects/${s.projectId}?s=${s.id}`}
+            className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
+            title="Abrir servicio"
           >
-            <RefreshCw size={13} className={cx(restarting && 'animate-spin')} />
-          </button>
-        )}
-        <Link
-          to={`/projects/${s.projectId}?s=${s.id}`}
-          className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
-          title="Abrir servicio"
-        >
-          <ArrowUpRight size={13} />
-        </Link>
+            <ArrowUpRight size={13} />
+          </Link>
+        </div>
       </div>
     </div>
   );
@@ -474,20 +531,13 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-1 self-start rounded-xl border border-line bg-surface p-1 text-sm">
-        {ranges.map((r) => (
-          <button
-            key={r.h}
-            onClick={() => setHours(r.h)}
-            className={cx(
-              'press rounded-lg px-3 py-1 transition-colors',
-              hours === r.h ? 'bg-acc/[.16] font-medium text-acc-soft' : 'text-sub hover:text-txt',
-            )}
-          >
-            {r.label}
-          </button>
-        ))}
-      </div>
+      <Segmented
+        className="self-start"
+        label="Ventana del histórico"
+        value={hours}
+        onChange={setHours}
+        options={ranges.map((r) => ({ key: r.h, label: r.label }))}
+      />
 
       {q.isLoading ? (
         <div aria-busy className="flex flex-col gap-3.5">
@@ -726,26 +776,18 @@ export default function MonitorPage() {
             />
           </div>
 
-          <div className="mb-4 flex items-center gap-1 rounded-xl border border-line bg-surface p-1 text-sm sm:w-fit">
-            {(
-              [
-                { key: 'services', label: 'Servicios', icon: <Server size={13} /> },
-                { key: 'host', label: 'Servidor', icon: <Cpu size={13} /> },
-                { key: 'disk', label: 'Espacio', icon: <HardDrive size={13} /> },
-              ] as const
-            ).map((t) => (
-              <button
-                key={t.key}
-                onClick={() => setView(t.key)}
-                className={cx(
-                  'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-4 py-1.5 transition-colors sm:flex-none',
-                  view === t.key ? 'bg-acc/[.16] font-medium text-acc-soft' : 'text-sub hover:text-txt',
-                )}
-              >
-                {t.icon} {t.label}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            className="mb-4 sm:w-fit"
+            full
+            label="Qué se está mirando"
+            value={view}
+            onChange={(k) => setView(k as View)}
+            options={[
+              { key: 'services', label: 'Servicios', icon: <Server size={13} aria-hidden /> },
+              { key: 'host', label: 'Servidor', icon: <Cpu size={13} aria-hidden /> },
+              { key: 'disk', label: 'Espacio', icon: <HardDrive size={13} aria-hidden /> },
+            ]}
+          />
 
           {/* La clave por vista relanza una aparición breve al cambiar Servicios ↔ Espacio. */}
           <div key={view} className="tab-in">
@@ -774,9 +816,14 @@ export default function MonitorPage() {
                   </div>
                 </div>
 
-                <div className="overflow-x-auto">
-                  <div className="min-w-[760px]">
-                    <div className="grid grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] gap-3 border-b border-line bg-bg px-4 py-2 eyebrow text-subtle">
+                <div className="sm:overflow-x-auto">
+                  <div className="sm:min-w-[760px]">
+                    {/* La cabecera de columnas solo existe donde hay columnas
+                        —y donde hay filas debajo que encabezar. */}
+                    <div className={cx(
+                      'hidden grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] gap-3 border-b border-line bg-bg px-4 py-2 eyebrow text-subtle',
+                      filtered.length > 0 && 'sm:grid',
+                    )}>
                       <span>Servicio</span>
                       <span>Estado</span>
                       {(
@@ -802,11 +849,39 @@ export default function MonitorPage() {
                       <span className="text-right">Acciones</span>
                     </div>
 
-                    {filtered.length === 0 && (
-                      <p className="px-4 py-10 text-center text-xs text-subtle">
-                        {services.length === 0 ? 'Aún no hay servicios desplegados.' : 'Ningún servicio coincide con el filtro.'}
-                      </p>
-                    )}
+                    {filtered.length === 0 &&
+                      (services.length === 0 ? (
+                        <EmptyState
+                          compact
+                          icon={<Server />}
+                          title="Aún no hay servicios desplegados"
+                          description="En cuanto despliegues el primero aparecerá aquí con su consumo en vivo."
+                          action={
+                            <Link to="/" className="text-xs font-semibold text-acc-soft hover:underline">
+                              Ir a proyectos →
+                            </Link>
+                          }
+                        />
+                      ) : (
+                        <EmptyState
+                          compact
+                          icon={<Search />}
+                          title="Ningún servicio coincide"
+                          description="Ni la búsqueda ni el filtro de estado dejan pasar ninguno."
+                          action={
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => {
+                                setText('');
+                                setStateFilter('all');
+                              }}
+                            >
+                              Quitar filtros
+                            </Button>
+                          }
+                        />
+                      ))}
                     {filtered.map((s) => (
                       <ServiceRow key={s.id} s={s} onRestart={() => setConfirmRestart(s)} restarting={restarting.has(s.id)} />
                     ))}
