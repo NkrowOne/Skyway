@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronDown, History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
-import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, fmtDuration, isActiveDeploy, timeAgo } from '../../utils';
+import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, fmtDuration, isActiveDeploy, ServiceStatusKind, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
 import { ConfirmModal, EmptyState, ErrorState, Skeleton, useToast } from '../ui';
 
@@ -40,11 +40,12 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
   if (deployment.status === 'success') {
     return (
       <div className="flex items-center justify-between rounded-lg border border-line/60 bg-surface2/30 px-3 py-1.5 text-xs">
-        <span className="flex items-center gap-1.5 font-medium text-ok text-xs">
+        <span className="flex items-center gap-1.5 text-xs font-medium text-ok">
           <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-ok/20 text-ok">
             <Check size={9} strokeWidth={3} />
           </span>
           Despliegue completado
+          {deployment.finished_at && <span className="font-normal text-subtle">· {timeAgo(deployment.finished_at)}</span>}
         </span>
         <div className="flex items-center gap-2 font-mono text-micro text-subtle">
           <span>4/4 etapas</span>
@@ -144,7 +145,7 @@ function DiagnosisCard({ raw }: { raw: string | null }) {
     return null;
   }
   return (
-    <div className="mb-2.5 rounded-r-lg border-l-2 border-warn/40 bg-warn/[.06] p-3 text-xs">
+    <div className="rounded-lg border border-warn/30 bg-warn/[.06] p-3 text-xs">
       <p className="flex items-center gap-1.5 font-semibold text-warn">
         <Lightbulb size={13} /> {diagnosis.title}
       </p>
@@ -239,16 +240,43 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
 /**
  * Pill de estado del despliegue: píldora sobria con spinner de progreso si está activo.
  */
-function DeployPill({ deployment, isCurrent }: { deployment: Deployment; isCurrent: boolean }) {
+/**
+ * Qué dice la píldora de la versión vigente según cómo esté el contenedor.
+ * «En producción» en verde con el servicio parado era mentir dos veces: la
+ * versión estará lista, pero no está sirviendo nada.
+ */
+function currentPill(kind: ServiceStatusKind | undefined): { label: string; cls: string; dot: string } {
+  switch (kind) {
+    case 'stopped':
+      return { label: 'Detenido', cls: 'border-line bg-surface2 text-sub', dot: 'bg-subtle' };
+    case 'down':
+      return { label: 'Caído', cls: 'border-err/25 bg-err/10 text-err', dot: 'bg-err' };
+    case 'none':
+      return { label: 'Sin contenedor', cls: 'border-line bg-surface2 text-sub', dot: 'bg-subtle' };
+    default:
+      return { label: 'En producción', cls: 'border-ok/25 bg-ok/10 text-ok', dot: 'bg-ok' };
+  }
+}
+
+function DeployPill({
+  deployment,
+  isCurrent,
+  serviceKind,
+}: {
+  deployment: Deployment;
+  isCurrent: boolean;
+  serviceKind?: ServiceStatusKind;
+}) {
   const active = isActiveDeploy(deployment.status);
   // «Activo» ya significa «el contenedor está en marcha» en la chapa de estado
   // del servicio, a dos centímetros de aquí. Aquí lo que se dice es otra cosa:
-  // que esta es la versión que se está sirviendo.
-  const label = isCurrent ? 'En producción' : DEPLOY_STATUS_LABEL[deployment.status];
+  // que esta es la versión que se está sirviendo (o la que se serviría).
+  const current = isCurrent ? currentPill(serviceKind) : null;
+  const label = current ? current.label : DEPLOY_STATUS_LABEL[deployment.status];
   const dot = active
     ? 'bg-warn'
-    : isCurrent
-      ? 'bg-ok'
+    : current
+      ? current.dot
       : deployment.status === 'failed'
         ? 'bg-err'
         : 'bg-subtle';
@@ -261,8 +289,8 @@ function DeployPill({ deployment, isCurrent }: { deployment: Deployment; isCurre
         // «Fallido» y «Cancelado» compartían el mismo gris.
         active
           ? 'border-warn/25 bg-warn/10 text-warn'
-          : isCurrent
-            ? 'border-ok/25 bg-ok/10 text-ok'
+          : current
+            ? current.cls
             : deployment.status === 'failed'
               ? 'border-err/25 bg-err/10 text-err'
               : 'border-line bg-surface2 text-sub',
@@ -284,10 +312,13 @@ function DeployPill({ deployment, isCurrent }: { deployment: Deployment; isCurre
 export default function DeploymentsTab({
   serviceId,
   serviceType,
+  serviceStatus,
   onNavigateToLogs,
 }: {
   serviceId: string;
   serviceType: string;
+  /** Cómo está el contenedor ahora: decide qué dice la píldora de la versión vigente. */
+  serviceStatus?: ServiceStatusKind;
   onNavigateToLogs?: (deploymentId: string) => void;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
@@ -421,11 +452,13 @@ export default function DeploymentsTab({
           ? 'border-warn/40 bg-warn/5'
           : isLatestFailed
             ? 'border-err/45 bg-err/5'
-            : isCurrent
-              ? 'border-ok/35'
-              : open
-                ? 'border-line2'
-                : 'border-line';
+            : isCurrent && serviceStatus === 'down'
+              ? 'border-err/45'
+              : isCurrent && (serviceStatus === 'up' || serviceStatus === 'transient' || !serviceStatus)
+                ? 'border-ok/35'
+                : open
+                  ? 'border-line2'
+                  : 'border-line';
         return (
           <div key={d.id} className={cx('relative overflow-hidden rounded-xl border bg-bg transition-colors duration-[--dur-3]', tint)}>
             <div className="flex items-center gap-1 pr-2">
@@ -434,7 +467,7 @@ export default function DeploymentsTab({
                 aria-expanded={open}
                 className="flex min-w-0 flex-1 items-center gap-3 px-3.5 py-3 text-left transition-colors duration-[--dur-1] hover:bg-txt/[.03]"
               >
-                <DeployPill deployment={d} isCurrent={d.id === currentId} />
+                <DeployPill deployment={d} isCurrent={d.id === currentId} serviceKind={serviceStatus} />
                 <span className="min-w-0">
                   <span className="block truncate text-sm font-medium">
                     {d.commit_msg ||
@@ -499,13 +532,15 @@ export default function DeploymentsTab({
             </div>
             {(open || closingId === d.id) && (
               <Collapse open={open}>
-                <div className="border-t border-line p-3 flex flex-col gap-2.5">
+                {/* Primero el resumen (qué pasó, en qué etapa), después el
+                    registro: el ojo baja de la conclusión al detalle, no al revés. */}
+                <div className="flex flex-col gap-2.5 border-t border-line p-3">
+                  <DeployProgress deployment={d} />
                   {d.error && (
-                    <p className="rounded-lg border-l-2 border-err/40 bg-err/[.08] px-3 py-2 text-xs text-err">{d.error}</p>
+                    <p className="rounded-lg border border-err/30 bg-err/[.08] px-3 py-2 text-xs text-err">{d.error}</p>
                   )}
                   <DiagnosisCard raw={d.diagnosis} />
                   <DeploymentLogs deployment={d} />
-                  <DeployProgress deployment={d} />
                 </div>
               </Collapse>
             )}

@@ -1,11 +1,11 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, ExternalLink, Hammer, MoveHorizontal, Play, RefreshCw, Rocket, Square, Terminal, X } from 'lucide-react';
+import { AlertTriangle, ChevronLeft, ExternalLink, Hammer, MoveHorizontal, Play, RefreshCw, Rocket, ScrollText, Square, Terminal, X } from 'lucide-react';
 import { api } from '../api';
 import { useLatch, useLocalStorage, useMediaQuery } from '../hooks';
 import { MetricPoint } from '../pages/Project';
 import { Deployment, DbOverview, MetricsSnapshot, Project, Runtime, Service } from '../types';
-import { cx, DEPLOY_STATUS_LABEL, isActiveDeploy, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
+import { cx, DEPLOY_STATUS_LABEL, isActiveDeploy, serviceStatus, timeAgo } from '../utils';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import DeploymentsTab from './tabs/DeploymentsTab';
 import { Button, ConfirmModal, ErrorState, Skeleton, Spinner, StatusBadge, Tabs, useToast } from './ui';
@@ -274,6 +274,9 @@ export default function ServiceDrawer({
   const state = latestMetrics?.services[serviceId]?.state ?? runtime.state;
   const replicas = latestMetrics?.services[serviceId]?.replicas;
   const isRunning = state === 'running' || state === 'restarting';
+  // «Detenido» (gris, lo paró alguien) y «Caído» (rojo, se murió solo) son
+  // cosas distintas y aquí, con el porqué a mano, se separan.
+  const status = serviceStatus(state, { exitCode: runtime.exitCode, stoppedAt: service.stopped_at });
   const hasBackups = service.type === 'database' && BACKUP_TEMPLATES.includes(service.config.template);
   const hasDbConsole = !!detail.data.dbConsole;
   const tabs = [
@@ -312,9 +315,11 @@ export default function ServiceDrawer({
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="truncate text-base font-semibold">{service.name}</h2>
                 <StatusBadge
-                  tone={STATE_TONE[state]}
-                  label={STATE_LABEL[state]}
-                  pulse={STATE_PULSE[state]}
+                  pill
+                  tone={status.tone}
+                  label={status.label}
+                  pulse={status.pulse}
+                  title={status.detail}
                   replicas={replicas}
                 />
                 {activeDeployment && (
@@ -430,6 +435,37 @@ export default function ServiceDrawer({
           )}
         </div>
 
+        {/*
+          * El estado también se cuenta en una línea, no solo en una chapa: un
+          * servicio parado se lee como parado, con su motivo y su salida.
+          */}
+        {status.kind === 'stopped' && state !== 'created' && !activeDeployment && (
+          <div className="tab-in mt-3.5 flex items-center gap-2.5 rounded-xl border border-line bg-surface2/60 px-3 py-2 text-xs text-sub">
+            <Square size={13} className="shrink-0 text-subtle" aria-hidden />
+            <span className="min-w-0 leading-snug">
+              <span className="font-semibold text-txt">Servicio detenido</span>
+              {service.stopped_at ? ` desde el panel ${timeAgo(service.stopped_at)}` : status.detail ? ` · ${status.detail}` : ''}.
+              {' '}No atiende peticiones hasta que lo inicies.
+            </span>
+          </div>
+        )}
+        {status.kind === 'down' && !activeDeployment && (
+          <div className="tab-in mt-3.5 flex items-center gap-2.5 rounded-xl border border-err/35 bg-err/[.07] px-3 py-2 text-xs text-sub">
+            <AlertTriangle size={13} className="shrink-0 text-err" aria-hidden />
+            <span className="min-w-0 flex-1 leading-snug">
+              <span className="font-semibold text-err">Se paró solo</span>
+              {status.detail ? ` · ${status.detail}` : ''}. El error suele estar al final de los logs.
+            </span>
+            <button
+              type="button"
+              onClick={() => setTab('logs')}
+              className="press flex shrink-0 items-center gap-1 rounded-lg border border-line bg-surface px-2 py-1 text-xs font-medium text-txt hover:bg-surface2"
+            >
+              <ScrollText size={12} aria-hidden /> Ver logs
+            </button>
+          </div>
+        )}
+
         {pendingRedeploy && (
           <div className="tab-in mt-3.5 flex flex-col gap-2.5 rounded-xl border border-acc/35 bg-acc/[.09] p-3 text-xs sm:flex-row sm:items-center sm:gap-3 shadow-sm">
             <span className="flex min-w-0 flex-1 items-center gap-2.5">
@@ -482,6 +518,7 @@ export default function ServiceDrawer({
               <DeploymentsTab
                 serviceId={serviceId}
                 serviceType={service.type}
+                serviceStatus={status.kind}
                 onNavigateToLogs={(depId) => {
                   setTargetDeploymentId(depId);
                   setTab('logs');

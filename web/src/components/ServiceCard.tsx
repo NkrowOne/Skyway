@@ -1,6 +1,6 @@
 import { BellRing, Globe } from 'lucide-react';
 import { ActiveDeploy, ContainerState, Service, ServiceStats } from '../types';
-import { cx, DEPLOY_STATUS_LABEL, fmtBytes, fmtCores, fmtMb, STATE_LABEL, STATE_PULSE, STATE_TONE } from '../utils';
+import { cx, DEPLOY_STATUS_LABEL, fmtBytes, fmtCores, fmtMb, serviceStatus } from '../utils';
 import { DeploySweep } from './DeployBadge';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import { Chip, StatusBadge } from './ui';
@@ -33,6 +33,9 @@ export default function ServiceCard({
   onClick: () => void;
 }) {
   const state = metrics?.state ?? service.runtime?.state ?? 'unknown';
+  // El estado vivo viene del stream; el porqué (código de salida, parada
+  // manual) viaja con el servicio. Juntos distinguen «parado» de «caído».
+  const status = serviceStatus(state, { exitCode: service.runtime?.exitCode, stoppedAt: service.stopped_at });
   const stats = metrics?.stats ?? null;
   /*
    * Docker cuenta la CPU con 100 = un núcleo, así que un servicio de cuatro
@@ -51,6 +54,7 @@ export default function ServiceCard({
     : service.type === 'image'
       ? service.config.image ?? ''
       : service.config.repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, '');
+  const apagado = status.kind === 'stopped' || status.kind === 'none';
 
   return (
     <button
@@ -60,16 +64,16 @@ export default function ServiceCard({
         selected
           ? 'lit lit-bajo border-acc bg-surface2'
           : cx(
-              'card-hover bg-surface',
+              'card-hover lit lit-bajo bg-surface',
               /*
                * El borde de color se reserva para lo que hay que encontrar de un
                * vistazo en una rejilla de veinte tarjetas: lo caído y lo que
-               * tiene alertas. Un despliegue en marcha ya lo dicen la cinta
-               * superior y su chapa; teñir además el borde era decirlo tres veces.
+               * tiene alertas. Un servicio parado adrede no pide atención, así
+               * que va con el borde de siempre y la chapa en gris.
                */
-              STATE_TONE[state] === 'err' || alertCount > 0
+              status.kind === 'down' || alertCount > 0
                 ? 'border-err/40'
-                : STATE_TONE[state] === 'warn'
+                : status.tone === 'warn'
                   ? 'border-warn/35'
                   : 'border-line',
             ),
@@ -81,9 +85,11 @@ export default function ServiceCard({
           bajan de línea en vez de dejar el título en cuatro letras. */}
       <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1.5">
         <div className="flex min-w-[9rem] flex-1 items-center gap-2.5">
-          <ModuleChip kind={moduleKind(service)} size={36} />
+          {/* Un servicio parado se apaga también en el logo: la rejilla dice
+              de un barrido qué está en pie sin leer ninguna chapa. */}
+          <ModuleChip kind={moduleKind(service)} size={36} className={cx(apagado && 'opacity-55 saturate-50')} />
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-txt">{service.name}</h3>
+            <h3 className={cx('truncate text-sm font-semibold', apagado ? 'text-sub' : 'text-txt')}>{service.name}</h3>
             <p className="truncate font-mono text-xs text-subtle">{subtitle}</p>
           </div>
         </div>
@@ -102,19 +108,16 @@ export default function ServiceCard({
            */}
           {deploy && <Chip size="sm" tone="warn" dot pulse>{DEPLOY_STATUS_LABEL[deploy.status]}</Chip>}
           <StatusBadge
-            tone={STATE_TONE[state]}
-            label={STATE_LABEL[state]}
-            pulse={STATE_PULSE[state]}
+            pill
+            tone={status.tone}
+            label={status.label}
+            pulse={status.pulse}
+            title={status.detail}
             replicas={metrics?.replicas}
           />
         </div>
       </div>
 
-      {/*
-        * Métricas y dominio en dos filas, no en una: a 250px de columna la fila
-        * única partía «1,4 núcleos» y «412 MB/1 GB» en dos líneas cada una y
-        * dejaba el dominio reducido a su icono.
-        */}
       {/*
         * Un filo separa quién es el servicio de cómo va, y la telemetría se
         * reparte en dos columnas fijas: así CPU y RAM caen en la misma vertical
@@ -138,7 +141,7 @@ export default function ServiceCard({
               {limiteCpu && (
                 <span className="inline-flex h-1 w-8 overflow-hidden rounded-full bg-surface3">
                   <span
-                    className={cx('h-full rounded-full transition-[width] duration-[--dur-3]', cpuEnAviso ? 'bg-warn' : 'bg-sub')}
+                    className={cx('h-full rounded-full transition-[width] duration-[--dur-3]', cpuEnAviso ? 'bg-warn' : 'bg-acc-soft/70')}
                     style={{ width: `${Math.min(100, Math.max(8, (stats.cpuPercent / 100 / limiteCpu) * 100))}%` }}
                   />
                 </span>
@@ -157,7 +160,20 @@ export default function ServiceCard({
             </span>
           </>
         ) : (
-          <span className="col-span-2 text-subtle">Sin métricas</span>
+          /* Sin métricas no es un misterio: el hueco dice por qué. */
+          <span className="col-span-2 text-subtle">
+            {status.kind === 'stopped'
+              ? status.detail
+                ? `Detenido · ${status.detail}`
+                : 'Detenido · no consume recursos'
+              : status.kind === 'down'
+                ? status.detail
+                  ? `Se paró solo · ${status.detail}`
+                  : 'Se paró solo'
+                : status.kind === 'none'
+                  ? 'Todavía sin desplegar'
+                  : 'Sin métricas'}
+          </span>
         )}
       </div>
 

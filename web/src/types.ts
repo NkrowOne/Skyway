@@ -677,6 +677,8 @@ export interface Service {
   type: 'git' | 'database' | 'image';
   config: GitConfig & DatabaseConfig & { image?: string; icon?: string; stack?: string };
   created_at: number;
+  /** Instante en que alguien lo detuvo desde el panel; null si no. */
+  stopped_at?: number | null;
   runtime?: Runtime;
 }
 
@@ -930,6 +932,8 @@ export interface MonitorService {
   startedAt: string | null;
   exitCode: number | null;
   exitExplanation: string | null;
+  /** Parada pedida desde el panel: se enseña como «detenido», no como caída. */
+  stoppedAt: number | null;
   restartCount: number;
   replicas: { running: number; total: number };
   stats: { cpuPercent: number; memUsage: number; memLimit: number } | null;

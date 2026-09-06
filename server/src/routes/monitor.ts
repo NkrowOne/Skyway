@@ -112,6 +112,7 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
             startedAt,
             exitCode: isDown ? exitCode : null,
             exitExplanation: isDown && exitCode !== null ? explainExitCode(exitCode) : null,
+            stoppedAt: service.stopped_at ?? null,
             restartCount,
             replicas: { running, total },
             stats,

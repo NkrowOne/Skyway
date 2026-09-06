@@ -570,12 +570,28 @@ export function EditorBar({
  * competir consigo mismo. El punto lleva el color; el texto solo se tiñe
  * cuando algo va mal.
  */
+/*
+ * La píldora sí lleva un tinte, pero solo uno y muy bajo: es la única pieza de
+ * la tarjeta que debe leerse a dos metros, y un punto de 6px no lo consigue.
+ * El neutro (detenido, sin desplegar) queda deliberadamente apagado: lo que no
+ * pasa nada no tiene que competir con lo que sí.
+ */
+const PILL_TINT: Record<Tone, string> = {
+  ok: 'border-ok/25 bg-ok/[.09] text-ok',
+  warn: 'border-warn/25 bg-warn/[.09] text-warn',
+  err: 'border-err/30 bg-err/[.10] text-err',
+  info: 'border-acc/30 bg-acc/[.10] text-acc-soft',
+  neutral: 'border-line bg-surface2 text-sub',
+};
+
 export function StatusBadge({
   tone,
   label,
   pulse,
   replicas,
   dot = true,
+  pill,
+  title,
   className,
 }: {
   tone: Tone;
@@ -583,18 +599,28 @@ export function StatusBadge({
   pulse?: boolean;
   replicas?: { running: number; total: number };
   dot?: boolean;
+  /** Cápsula tintada, para donde el estado es la primera pregunta (tarjetas, cabeceras). */
+  pill?: boolean;
+  title?: string;
   className?: string;
 }) {
   return (
     <span
+      title={title}
       className={cx(
         'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs font-medium',
-        /*
-         * Sin punto no queda nada que lleve el color, así que lo toma el texto.
-         * Con punto, el texto se mantiene sobrio y solo se tiñe si hay problema:
-         * si se tiñeran los dos, volveríamos a la pastilla de colores de antes.
-         */
-        !dot ? CHIP_ICON[tone] : tone === 'err' ? 'text-err' : 'text-sub',
+        pill
+          ? cx('rounded-full border px-2 py-0.5', PILL_TINT[tone])
+          : /*
+             * Sin punto no queda nada que lleve el color, así que lo toma el texto.
+             * Con punto, el texto se mantiene sobrio y solo se tiñe si hay problema:
+             * si se tiñeran los dos, volveríamos a la pastilla de colores de antes.
+             */
+            !dot
+            ? CHIP_ICON[tone]
+            : tone === 'err'
+              ? 'text-err'
+              : 'text-sub',
         className,
       )}
     >

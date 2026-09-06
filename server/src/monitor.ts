@@ -109,7 +109,8 @@ async function tick(): Promise<void> {
       // --- caída del servicio ---
       const wasUp = prev && (prev.state === 'running' || prev.state === 'restarting');
       const isDown = runtime.state === 'exited' || runtime.state === 'dead';
-      if (wasUp && isDown && !recentManualAction(service.id)) {
+      // Un servicio parado adrede desde el panel no está «caído».
+      if (wasUp && isDown && !recentManualAction(service.id) && !service.stopped_at) {
         fireAlert({
           severity: 'critical',
           type: 'service_down',

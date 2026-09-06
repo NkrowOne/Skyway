@@ -195,6 +195,10 @@ export function initDb(): void {
   // la imagen no se clona, y sin esto el servicio arrancaría sin el comando de
   // arranque, el healthcheck ni la política de reinicio que declara el repo.
   ensureColumn('deployments', 'repo_config', 'TEXT');
+  // Parada a propósito desde el panel (o la API). Docker no distingue «lo paré
+  // yo» de «se murió»: sin esto el panel pintaba en rojo un servicio que se
+  // había detenido adrede. Se limpia al arrancarlo o al desplegar.
+  ensureColumn('services', 'stopped_at', 'INTEGER');
   // Qué variables del servicio entraron DE VERDAD en aquel build, con un digest
   // de su valor (JSON `{NOMBRE: hash}`). Con Dockerfile eso lo deciden los `ARG`
   // que declare el repo, y leerlos exige clonar: la huella `build_key` no puede
@@ -1264,6 +1268,11 @@ export function serviceSlugExists(projectId: string, slug: string): boolean {
   return !!db.prepare('SELECT 1 FROM services WHERE project_id = ? AND slug = ?').get(projectId, slug);
 }
 
+/** Marca (o borra) que el servicio fue detenido adrede por una persona. */
+export function setServiceStopped(serviceId: string, stopped: boolean): void {
+  db.prepare('UPDATE services SET stopped_at = ? WHERE id = ?').run(stopped ? now() : null, serviceId);
+}
+
 export function updateService(serviceId: string, name: string, cfg: ServiceConfig): void {
   db.prepare('UPDATE services SET name = ?, config = ? WHERE id = ?').run(name, JSON.stringify(cfg), serviceId);
 }
@@ -1318,6 +1327,8 @@ export function createDeployment(
     `INSERT INTO deployments (id, service_id, status, trigger, commit_sha, commit_msg, image_tag, logs, error, force_build, created_at, finished_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(row.id, row.service_id, row.status, row.trigger, row.commit_sha, row.commit_msg, row.image_tag, row.logs, row.error, row.force_build, row.created_at, row.finished_at);
+  // Desplegar arranca el contenedor: la parada manual anterior deja de contar.
+  setServiceStopped(serviceId, false);
   return row;
 }
 

@@ -129,6 +129,8 @@ export interface ServiceRow {
   type: ServiceType;
   config: ServiceConfig;
   created_at: number;
+  /** Instante en que alguien lo detuvo adrede; null si está en marcha o se cayó. */
+  stopped_at?: number | null;
 }
 
 export type DeploymentStatus =
