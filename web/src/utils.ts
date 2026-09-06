@@ -123,6 +123,71 @@ export const STATE_PULSE: Partial<Record<ContainerState, boolean>> = {
   removing: true,
 };
 
+/**
+ * Lo que de verdad se quiere saber de un servicio, en cinco casos: está en
+ * pie, lo pararon adrede, se cayó, está cambiando, o no existe todavía.
+ */
+export type ServiceStatusKind = 'up' | 'stopped' | 'down' | 'transient' | 'none';
+
+export interface ServiceStatus {
+  kind: ServiceStatusKind;
+  tone: Tone;
+  label: string;
+  pulse?: boolean;
+  /** Matiz corto para un title o una línea secundaria («código 137»). */
+  detail?: string;
+}
+
+/** Códigos de salida con nombre: el número solo no le dice nada a nadie. */
+function explainExit(code: number | null | undefined): string | undefined {
+  if (code === null || code === undefined) return undefined;
+  if (code === 137) return 'sin memoria o matado (código 137)';
+  if (code === 143) return 'recibió SIGTERM (código 143)';
+  if (code === 0) return 'terminó sin error (código 0)';
+  return `salió con código ${code}`;
+}
+
+/**
+ * Docker solo dice «exited», y eso vale lo mismo para «lo paré yo» que para
+ * «se murió». Con la marca de parada manual del servidor (o una salida limpia,
+ * código 0) es una parada y va en gris; si no, es una caída y va en rojo.
+ */
+export function serviceStatus(
+  state: ContainerState,
+  runtime?: { exitCode?: number | null; stoppedAt?: number | null },
+): ServiceStatus {
+  switch (state) {
+    case 'running':
+      return { kind: 'up', tone: 'ok', label: 'Activo' };
+    case 'restarting':
+      return { kind: 'transient', tone: 'warn', label: 'Reiniciando', pulse: true };
+    case 'removing':
+      return { kind: 'transient', tone: 'warn', label: 'Eliminando', pulse: true };
+    case 'paused':
+      return { kind: 'stopped', tone: 'warn', label: 'Pausado' };
+    case 'created':
+      return { kind: 'stopped', tone: 'neutral', label: 'Creado', detail: 'aún no ha arrancado' };
+    case 'exited': {
+      const manual = !!runtime?.stoppedAt || runtime?.exitCode === 0;
+      if (manual) {
+        return {
+          kind: 'stopped',
+          tone: 'neutral',
+          label: 'Detenido',
+          detail: runtime?.stoppedAt ? 'parado desde el panel' : explainExit(runtime?.exitCode),
+        };
+      }
+      return { kind: 'down', tone: 'err', label: 'Caído', detail: explainExit(runtime?.exitCode) };
+    }
+    case 'dead':
+      return { kind: 'down', tone: 'err', label: 'Caído', detail: explainExit(runtime?.exitCode) };
+    case 'not_created':
+      return { kind: 'none', tone: 'neutral', label: 'Sin desplegar' };
+    default:
+      return { kind: 'none', tone: 'neutral', label: 'Desconocido' };
+  }
+}
+
 export const DEPLOY_STATUS_LABEL: Record<DeploymentStatus, string> = {
   queued: 'En cola',
   building: 'Construyendo',

@@ -3,23 +3,21 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
   Check,
+  ClipboardPaste,
   Copy,
-  Download,
   Eye,
   EyeOff,
   FileText,
-  HelpCircle,
   Layers,
   Plus,
   Search,
   Table,
   Trash2,
-  Upload,
   X,
 } from 'lucide-react';
 import { api } from '../../api';
 import { cx } from '../../utils';
-import { Button, CopyButton, EditorBar, Skeleton, useToast } from '../ui';
+import { CopyButton, EditorBar, Skeleton, useToast } from '../ui';
 
 interface ReferenceGroup {
   service: string;
@@ -38,6 +36,9 @@ interface Row {
   key: string;
   value: string;
 }
+
+/** Qué le pasa a una fila respecto a lo guardado: es lo que la tiñe. */
+type RowStatus = 'saved' | 'new' | 'changed';
 
 /** Generador de ID único local para filas */
 let rowCounter = 0;
@@ -79,6 +80,42 @@ const guessTemplate = (key: string, value: string): string | null => {
 };
 
 const isReference = (v: string) => v.includes('${{');
+
+/** Nombre de variable válido: es lo que permite partir «A=1 B=2» en dos sin partir un valor con espacios. */
+const KEY_RE = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+
+/** Quita las comillas que envuelven un valor de .env («"abc"» → «abc»), solo si casan. */
+function unquote(value: string): string {
+  const v = value.trim();
+  if (v.length >= 2 && (v[0] === '"' || v[0] === "'") && v[v.length - 1] === v[0]) return v.slice(1, -1);
+  return value;
+}
+
+/**
+ * Lee variables de un texto pegado, en cualquiera de las formas en que suele
+ * llegar: un .env (una por línea), «export CLAVE=valor», o varias en la misma
+ * línea separadas por espacios («A=1 B=2»). Un `<input>` de una línea se come
+ * los saltos al pegar, así que lo primero que llega aquí es el texto del
+ * portapapeles tal cual, no lo que el campo dejó pasar.
+ */
+export function parseEnvText(text: string): { key: string; value: string }[] {
+  const out: { key: string; value: string }[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim().replace(/^export\s+/, '');
+    if (!line || line.startsWith('#')) continue;
+    // Parte por espacios solo cuando lo que sigue es otro «CLAVE=»: así un
+    // valor con espacios («MSG=hola mundo») sigue siendo un solo valor.
+    const chunks = line.split(/\s+(?=[A-Za-z_][A-Za-z0-9_.-]*=)/);
+    for (const chunk of chunks) {
+      const eq = chunk.indexOf('=');
+      if (eq <= 0) continue;
+      const key = chunk.slice(0, eq).trim();
+      if (!KEY_RE.test(key)) continue;
+      out.push({ key, value: unquote(chunk.slice(eq + 1)) });
+    }
+  }
+  return out;
+}
 
 export default function VariablesTab({
   serviceId,
@@ -143,17 +180,13 @@ export default function VariablesTab({
     if (mode === 'raw') {
       setRawText(rows.map((r) => `${r.key}=${r.value}`).join('\n'));
     } else {
-      // Parsear texto plano a filas
+      // Línea a línea, sin descartar una clave suelta a medio escribir.
       const newRows: Row[] = [];
       for (const line of rawText.split('\n')) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) continue;
         const eq = trimmed.indexOf('=');
-        if (eq > 0) {
-          newRows.push(makeRow(trimmed.slice(0, eq).trim(), trimmed.slice(eq + 1)));
-        } else {
-          newRows.push(makeRow(trimmed, ''));
-        }
+        newRows.push(eq > 0 ? makeRow(trimmed.slice(0, eq).trim(), trimmed.slice(eq + 1)) : makeRow(trimmed, ''));
       }
       setRows(newRows);
     }
@@ -214,35 +247,68 @@ export default function VariablesTab({
     }
   };
 
-  // Edición inteligente con divisor '=' al escribir o pegar
-  const handleKeyChange = (id: string, rawInput: string, index: number) => {
-    // Si contiene saltos de línea (pegado múltiple de .env)
-    if (rawInput.includes('\n')) {
-      const lines = rawInput.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
-      if (lines.length > 1) {
-        const parsedRows: Row[] = [];
-        for (const line of lines) {
-          const eq = line.indexOf('=');
-          if (eq > 0) {
-            parsedRows.push(makeRow(line.slice(0, eq).trim(), line.slice(eq + 1)));
-          } else {
-            parsedRows.push(makeRow(line, ''));
-          }
-        }
-        if (parsedRows.length > 0) {
-          setRows((prev) => {
-            const next = [...prev];
-            next.splice(index, 1, ...parsedRows);
-            return next;
-          });
-          setDirty(true);
-          toast(`${parsedRows.length} variables importadas`, 'ok');
-          return;
-        }
+  /**
+   * Mete varias variables de golpe partiendo de la fila `atId`: las claves que
+   * ya existen se actualizan en su sitio (pegar un .env encima no duplica), las
+   * nuevas se insertan justo después. Si la fila de partida está vacía, la
+   * primera nueva la ocupa.
+   */
+  const importVars = (atId: string, vars: { key: string; value: string }[]) => {
+    let updated = 0;
+    let added = 0;
+    // Se calcula fuera del updater: React puede invocarlo dos veces y los
+    // contadores del aviso saldrían dobles.
+    const next = rows.map((r) => ({ ...r }));
+    const at = next.findIndex((r) => r.id === atId);
+    const fresh: Row[] = [];
+    for (const v of vars) {
+      const existing = next.find((r) => r.key.trim() === v.key && r.id !== atId);
+      if (existing) {
+        existing.value = v.value;
+        updated += 1;
+      } else {
+        fresh.push(makeRow(v.key, v.value));
+        added += 1;
       }
     }
+    const emptyAt = at >= 0 && !next[at].key.trim() && !next[at].value;
+    next.splice(emptyAt ? at : at + 1, emptyAt ? 1 : 0, ...fresh);
+    setRows(next);
+    setDirty(true);
+    const parts = [added && `${added} nueva${added === 1 ? '' : 's'}`, updated && `${updated} actualizada${updated === 1 ? '' : 's'}`].filter(
+      Boolean,
+    );
+    toast(`Variables pegadas: ${parts.join(' · ')}`, 'ok');
+  };
 
-    // Si contiene '=', actúa de divisor automático y salta el foco al campo valor
+  /**
+   * Pegado en un campo. El navegador aplana los saltos de línea al pegar en un
+   * `<input>`, así que hay que leer el portapapeles antes de que lo haga: es
+   * lo que permite que «A=1⏎B=2» acabe en dos filas y no en un solo valor.
+   */
+  const handlePaste = (rowId: string, field: 'key' | 'value', e: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData('text');
+    if (!text) return;
+    const vars = parseEnvText(text);
+    // En el campo de valor solo se interviene si claramente viene un lote:
+    // un valor suelto con un «=» dentro (una URL con query) es un valor.
+    const bulk = vars.length >= 2 || (field === 'key' && vars.length === 1 && text.includes('='));
+    if (!bulk) return;
+    e.preventDefault();
+    importVars(rowId, vars);
+  };
+
+  // Edición del nombre: un «=» escrito a mano salta al valor.
+  const handleKeyChange = (id: string, rawInput: string) => {
+    // Texto que llegó aplanado (arrastrar y soltar, autocompletado): si trae
+    // varias variables, se reparte igual que un pegado.
+    if (/\s/.test(rawInput.trim()) || rawInput.includes('\n')) {
+      const vars = parseEnvText(rawInput);
+      if (vars.length >= 2) {
+        importVars(id, vars);
+        return;
+      }
+    }
     if (rawInput.includes('=')) {
       const eq = rawInput.indexOf('=');
       const key = rawInput.slice(0, eq).trim();
@@ -254,8 +320,6 @@ export default function VariablesTab({
       }, 10);
       return;
     }
-
-    // Edición normal
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, key: rawInput } : r)));
     setDirty(true);
   };
@@ -291,7 +355,35 @@ export default function VariablesTab({
 
   const references = env.data?.references ?? [];
   const resolved = env.data?.resolved ?? {};
-  const hasRefs = useMemo(() => rows.some((r) => isReference(r.value)), [rows]);
+  const saved = env.data?.vars ?? {};
+
+  // Qué es nuevo, qué ha cambiado y qué se ha quitado respecto a lo guardado.
+  const statusOf = (row: Row): RowStatus => {
+    const k = row.key.trim();
+    if (!k || !(k in saved)) return 'new';
+    return saved[k] === row.value ? 'saved' : 'changed';
+  };
+  const changes = useMemo(() => {
+    const keys = new Set(rows.map((r) => r.key.trim()).filter(Boolean));
+    const removed = Object.keys(saved).filter((k) => !keys.has(k)).length;
+    let added = 0;
+    let changed = 0;
+    for (const r of rows) {
+      const k = r.key.trim();
+      if (!k) continue;
+      if (!(k in saved)) added += 1;
+      else if (saved[k] !== r.value) changed += 1;
+    }
+    return { added, changed, removed };
+  }, [rows, saved]);
+  const dirtyLabel = useMemo(() => {
+    const parts = [
+      changes.added && `${changes.added} nueva${changes.added === 1 ? '' : 's'}`,
+      changes.changed && `${changes.changed} cambiada${changes.changed === 1 ? '' : 's'}`,
+      changes.removed && `${changes.removed} eliminada${changes.removed === 1 ? '' : 's'}`,
+    ].filter(Boolean);
+    return parts.length ? `${parts.join(' · ')} · se aplican al redesplegar` : 'Cambios sin guardar · se aplican al redesplegar';
+  }, [changes]);
 
   // Claves duplicadas
   const duplicates = useMemo(() => {
@@ -347,29 +439,29 @@ export default function VariablesTab({
     );
   }
 
+  const toolBtn =
+    'press flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt';
+
   return (
     <div className="flex min-h-0 flex-1 flex-col justify-between">
-      <div className="flex flex-col gap-3.5 p-3.5 sm:p-5 pb-24">
-        {/* ── CABECERA Y HERRAMIENTAS PRINCIPALES ── */}
-        <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-line bg-surface p-2.5 shadow-sm">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <span className="text-xs font-semibold text-txt">Variables de entorno</span>
-            <span className="rounded bg-surface2 px-1.5 py-0.5 text-micro font-mono text-subtle">
-              {rows.length}
-            </span>
+      <div className="flex flex-col gap-4 p-3.5 pb-24 sm:p-5">
+        {/* ── Cabecera: qué hay y cómo verlo ── */}
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <h3 className="text-sm font-semibold text-txt">Variables de entorno</h3>
+            <span className="tnum font-mono text-xs text-subtle">{rows.length}</span>
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5">
-            {/* Segmented Control: Tabla / RAW */}
-            <div className="flex items-center rounded-lg bg-surface2/70 p-0.5 border border-line">
+            {/* Tabla / texto plano */}
+            <div className="flex items-center rounded-lg border border-line bg-surface2/70 p-0.5" role="group" aria-label="Modo de edición">
               <button
                 type="button"
                 onClick={() => handleSwitchMode('table')}
+                aria-pressed={viewMode === 'table'}
                 className={cx(
                   'press flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
-                  viewMode === 'table'
-                    ? 'bg-surface text-txt shadow-sm border border-line font-semibold'
-                    : 'text-subtle hover:text-txt',
+                  viewMode === 'table' ? 'bg-surface text-txt shadow-sm' : 'text-subtle hover:text-txt',
                 )}
                 title="Vista en tabla"
               >
@@ -379,16 +471,15 @@ export default function VariablesTab({
               <button
                 type="button"
                 onClick={() => handleSwitchMode('raw')}
+                aria-pressed={viewMode === 'raw'}
                 className={cx(
                   'press flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
-                  viewMode === 'raw'
-                    ? 'bg-surface text-txt shadow-sm border border-line font-semibold'
-                    : 'text-subtle hover:text-txt',
+                  viewMode === 'raw' ? 'bg-surface text-txt shadow-sm' : 'text-subtle hover:text-txt',
                 )}
                 title="Editar texto plano formato .env"
               >
                 <FileText size={12} />
-                <span>RAW</span>
+                <span>.env</span>
               </button>
             </div>
 
@@ -397,18 +488,20 @@ export default function VariablesTab({
                 <button
                   type="button"
                   onClick={toggleGlobalReveal}
-                  className="press flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface2/60 px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt"
-                  title={globalReveal ? 'Ocultar todos los valores' : 'Revelar todos los valores'} aria-label={globalReveal ? 'Ocultar todos los valores' : 'Revelar todos los valores'}
+                  className={toolBtn}
+                  title={globalReveal ? 'Ocultar todos los valores' : 'Revelar todos los valores'}
+                  aria-label={globalReveal ? 'Ocultar todos los valores' : 'Revelar todos los valores'}
                 >
                   {globalReveal ? <EyeOff size={13} /> : <Eye size={13} />}
-                  <span className="hidden md:inline">{globalReveal ? 'Ocultar todo' : 'Revelar todo'}</span>
+                  <span className="hidden md:inline">{globalReveal ? 'Ocultar' : 'Revelar'}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={handleCopyAllAsEnv}
-                  className="press flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface2/60 px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt"
-                  title="Copiar todas las variables en formato .env" aria-label="Copiar todas las variables en formato .env"
+                  className={toolBtn}
+                  title="Copiar todas las variables en formato .env"
+                  aria-label="Copiar todas las variables en formato .env"
                 >
                   {copiedAll ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
                   <span className="hidden lg:inline">Copiar .env</span>
@@ -418,22 +511,20 @@ export default function VariablesTab({
           </div>
         </div>
 
-        {/* ── ALERTA DE MIGRACIÓN DESDE RAILWAY (SI APLICA) ── */}
+        {/* ── Aviso de migración desde Railway (si aplica) ── */}
         {railwayPending.length > 0 && (
-          <div className="rounded-xl border border-warn/35 bg-warn/[.07] p-3.5 text-xs shadow-sm">
+          <div className="rounded-xl border border-warn/35 bg-warn/[.07] p-3.5 text-xs">
             <p className="flex items-center gap-1.5 font-semibold text-warn">
               <AlertTriangle size={14} />
               {railwayPending.length === 1
                 ? '1 variable sigue apuntando a la red externa de Railway'
                 : `${railwayPending.length} variables siguen apuntando a la red externa de Railway`}
             </p>
-            <p className="mt-1 text-sub">
-              Reconéctalas en un clic para usar la red interna ultra-rápida y segura de Skyway:
-            </p>
+            <p className="mt-1 text-sub">Reconéctalas en un clic para usar la red interna del proyecto:</p>
             <div className="mt-2.5 flex flex-col gap-1.5">
               {railwayPending.map((p) => (
                 <div key={p.id} className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono font-semibold text-txt text-xs">{p.key}</span>
+                  <span className="font-mono text-xs font-semibold text-txt">{p.key}</span>
                   {p.candidates.map((g) => {
                     const token = `\${{${g.service}.${MAIN_VAR[g.template!]}}}`;
                     return (
@@ -442,9 +533,7 @@ export default function VariablesTab({
                         type="button"
                         className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info"
                         onClick={() => {
-                          setRows((prev) =>
-                            prev.map((r) => (r.id === p.id ? { ...r, value: token } : r)),
-                          );
+                          setRows((prev) => prev.map((r) => (r.id === p.id ? { ...r, value: token } : r)));
                           setDirty(true);
                           toast(`Reconectado a ${g.service}`, 'ok');
                         }}
@@ -459,15 +548,15 @@ export default function VariablesTab({
           </div>
         )}
 
-        {/* ── MODO TEXTO PLANO RAW (.ENV) ── */}
         {viewMode === 'raw' ? (
+          /* ── Texto plano (.env) ── */
           <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between text-xs text-subtle">
-              <span>Edición directa en formato <code className="font-mono text-txt">CLAVE=valor</code></span>
-              <span>Pega tu archivo .env directamente aquí</span>
-            </div>
+            <p className="text-xs text-subtle">
+              Una variable por línea, en formato <code className="font-mono text-txt">CLAVE=valor</code>. Puedes pegar un
+              archivo .env entero.
+            </p>
             <textarea
-              className="input min-h-[320px] w-full rounded-xl border border-line bg-term p-3.5 font-mono text-xs text-txt/95 leading-relaxed outline-none focus:border-acc"
+              className="input min-h-[320px] w-full rounded-xl border border-line bg-term p-3.5 font-mono text-xs leading-relaxed text-txt/95 outline-none focus:border-acc"
               value={rawText}
               onChange={(e) => {
                 setRawText(e.target.value);
@@ -478,212 +567,235 @@ export default function VariablesTab({
             />
           </div>
         ) : (
-          /* ── MODO TABLA PROFESIONAL RESPONSIVA ── */
+          /* ── Tabla ── */
           <div className="flex flex-col gap-2.5">
-            {/* Buscador de variables (si hay más de 4) */}
             {rows.length > 4 && (
               <div className="flex h-8 w-full items-center gap-2 rounded-lg border border-line bg-surface px-2.5 focus-within:border-acc">
                 <Search size={13} className="shrink-0 text-subtle" />
                 <input
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filtrar variables por nombre o valor…"
+                  placeholder="Filtrar por nombre o valor…"
                   spellCheck={false}
                   className="min-w-0 flex-1 bg-transparent text-xs text-txt outline-none placeholder:text-subtle"
                 />
                 {searchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchQuery('')}
-                    className="press text-subtle hover:text-txt"
-                  >
+                  <button type="button" onClick={() => setSearchQuery('')} className="press text-subtle hover:text-txt" aria-label="Borrar filtro">
                     <X size={12} />
                   </button>
                 )}
               </div>
             )}
 
-            <div className="overflow-hidden rounded-xl border border-line bg-surface shadow-sm">
-              {filteredRows.length === 0 ? (
-                <div className="flex flex-col items-center justify-center p-8 text-center text-xs text-subtle">
-                  {searchQuery ? (
-                    <p>Ninguna variable coincide con "{searchQuery}"</p>
-                  ) : (
-                    <>
-                      <Layers size={24} className="mb-2 opacity-40" />
-                      <p className="font-medium text-txt">Sin variables de entorno</p>
-                      <p className="mt-1 text-subtle">
-                        Añade una variable o escribe <code className="font-mono text-acc">CLAVE=valor</code> directamente.
-                      </p>
-                    </>
-                  )}
-                </div>
-              ) : (
-                <div className="divide-y divide-line">
-                  {filteredRows.map((row, index) => {
-                    const isRevealed = globalReveal || revealedIds.has(row.id);
-                    const isRef = isReference(row.value);
-                    const isDup = duplicates.has(row.key.trim());
+            {/* Cabecera de columnas: en móvil cada fila lleva sus rótulos. */}
+            {filteredRows.length > 0 && (
+              <div className="hidden px-3.5 sm:grid sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] sm:gap-3">
+                <span className="eyebrow text-subtle">Nombre</span>
+                <span className="eyebrow text-subtle">Valor</span>
+              </div>
+            )}
 
-                    return (
-                      <div
-                        key={row.id}
-                        className={cx(
-                          'group flex flex-col sm:flex-row sm:items-center transition-colors duration-150 hover:bg-surface2/40',
-                          isDup && 'bg-err/[.04]',
-                        )}
-                      >
-                        {/* Campo CLAVE / KEY con salto automático al pulsar '=' o Enter */}
-                        <div className="relative flex items-center sm:w-[40%] sm:border-r border-line">
-                          <input
-                            ref={(el) => {
-                              if (el) keyInputRefs.current.set(row.id, el);
-                              else keyInputRefs.current.delete(row.id);
-                            }}
-                            className={cx(
-                              'w-full bg-transparent px-3.5 py-2.5 font-mono text-xs font-medium text-txt outline-none placeholder:text-subtle focus:bg-surface2/60',
-                              isDup && 'text-err font-bold',
-                            )}
-                            placeholder="NOMBRE_VARIABLE"
-                            value={row.key}
-                            spellCheck={false}
-                            onChange={(e) => handleKeyChange(row.id, e.target.value, index)}
-                            onKeyDown={(e) => {
-                              if (e.key === '=' || e.key === 'Equal') {
-                                e.preventDefault();
-                                valueInputRefs.current.get(row.id)?.focus();
-                              } else if (e.key === 'Enter') {
-                                e.preventDefault();
-                                valueInputRefs.current.get(row.id)?.focus();
-                              }
-                            }}
-                          />
-                          {isDup && (
-                            <span className="mr-2 rounded bg-err/15 px-1.5 py-0.5 text-micro font-bold text-err">
-                              Duplicada
-                            </span>
+            {filteredRows.length === 0 ? (
+              <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-line p-8 text-center text-xs text-subtle">
+                {searchQuery ? (
+                  <p>Ninguna variable coincide con «{searchQuery}»</p>
+                ) : (
+                  <>
+                    <Layers size={24} className="mb-2 opacity-40" />
+                    <p className="font-medium text-txt">Sin variables de entorno</p>
+                    <p className="mt-1 text-subtle">
+                      Añade una, o pega un .env entero en cualquier campo: se reparte solo.
+                    </p>
+                  </>
+                )}
+              </div>
+            ) : (
+              /*
+               * En móvil cada variable es una tarjeta con aire alrededor y sus
+               * dos campos apilados con rótulo: antes eran dos cajas pegadas sin
+               * un solo píxel entre variables y no se sabía dónde acababa una.
+               * En escritorio, una lista de filas con las dos columnas alineadas.
+               */
+              <div className="flex flex-col gap-2 sm:gap-0 sm:overflow-hidden sm:rounded-xl sm:border sm:border-line sm:bg-surface">
+                {filteredRows.map((row, index) => {
+                  const isRevealed = globalReveal || revealedIds.has(row.id);
+                  const isRef = isReference(row.value);
+                  const isDup = duplicates.has(row.key.trim());
+                  const status = statusOf(row);
+                  const rail =
+                    status === 'new' ? 'bg-acc-soft' : status === 'changed' ? 'bg-warn' : 'bg-transparent';
+
+                  return (
+                    <div
+                      key={row.id}
+                      className={cx(
+                        'group relative flex flex-col rounded-xl border border-line bg-surface transition-colors duration-150 sm:flex-row sm:items-stretch sm:rounded-none sm:border-0 sm:border-b sm:last:border-b-0 sm:hover:bg-surface2/40',
+                        /*
+                         * Lo nuevo y lo cambiado se ven sin leer: tinte suave
+                         * de fondo, un riel de color a la izquierda y una
+                         * etiqueta. Al guardar vuelven al gris de lo que ya está.
+                         */
+                        status === 'new' && 'border-acc/35 bg-acc/[.06] sm:bg-acc/[.05] sm:hover:bg-acc/[.08]',
+                        status === 'changed' && 'border-warn/35 bg-warn/[.05] sm:bg-warn/[.04] sm:hover:bg-warn/[.07]',
+                        isDup && 'bg-err/[.05] sm:bg-err/[.04]',
+                      )}
+                    >
+                      <span aria-hidden className={cx('absolute inset-y-0 left-0 w-[3px] rounded-l-xl sm:rounded-none', rail)} />
+
+                      {/* Nombre */}
+                      <div className="relative flex min-w-0 items-center gap-2 pl-3.5 pr-2 pt-2 sm:w-[40%] sm:border-r sm:border-line sm:py-0 sm:pr-0">
+                        <span className="eyebrow w-12 shrink-0 text-subtle sm:hidden">Nombre</span>
+                        <input
+                          ref={(el) => {
+                            if (el) keyInputRefs.current.set(row.id, el);
+                            else keyInputRefs.current.delete(row.id);
+                          }}
+                          className={cx(
+                            'h-9 min-w-0 flex-1 rounded-md bg-transparent px-2 font-mono text-xs font-medium text-txt outline-none placeholder:text-subtle focus:bg-surface2/60 sm:h-auto sm:rounded-none sm:px-3.5 sm:py-2.5',
+                            isDup && 'font-bold text-err',
                           )}
-                        </div>
+                          placeholder="NOMBRE_VARIABLE"
+                          value={row.key}
+                          spellCheck={false}
+                          autoCapitalize="characters"
+                          autoCorrect="off"
+                          onChange={(e) => handleKeyChange(row.id, e.target.value)}
+                          onPaste={(e) => handlePaste(row.id, 'key', e)}
+                          onKeyDown={(e) => {
+                            if (e.key === '=' || e.key === 'Enter') {
+                              e.preventDefault();
+                              valueInputRefs.current.get(row.id)?.focus();
+                            }
+                          }}
+                        />
+                        {isDup ? (
+                          <span className="shrink-0 rounded bg-err/15 px-1.5 py-0.5 text-micro font-bold text-err sm:mr-2">Duplicada</span>
+                        ) : status === 'new' ? (
+                          <span className="shrink-0 rounded bg-acc/20 px-1.5 py-0.5 text-micro font-semibold text-acc-soft sm:mr-2">Nueva</span>
+                        ) : status === 'changed' ? (
+                          <span className="shrink-0 rounded bg-warn/15 px-1.5 py-0.5 text-micro font-semibold text-warn sm:mr-2">Cambiada</span>
+                        ) : null}
+                      </div>
 
-                        {/* Campo VALOR / VALUE con salto a la siguiente fila al pulsar Enter */}
-                        <div className="flex min-w-0 flex-1 items-center border-t sm:border-t-0 border-line/60">
-                          <input
-                            ref={(el) => {
-                              if (el) valueInputRefs.current.set(row.id, el);
-                              else valueInputRefs.current.delete(row.id);
-                            }}
-                            className={cx(
-                              'min-w-0 flex-1 bg-transparent px-3.5 py-2.5 font-mono text-xs outline-none placeholder:text-subtle focus:bg-surface2/60',
-                              isRef ? 'text-info font-medium' : isRevealed ? 'text-txt' : 'text-subtle',
-                            )}
-                            placeholder={isRef ? '${{Servicio.VAR}}' : 'valor o secreta'}
-                            type={isRevealed || isRef ? 'text' : 'password'}
-                            value={row.value}
-                            spellCheck={false}
-                            onChange={(e) => handleValueChange(row.id, e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                if (index === filteredRows.length - 1) {
-                                  handleAddRow();
-                                } else {
-                                  const nextRow = filteredRows[index + 1];
-                                  if (nextRow) keyInputRefs.current.get(nextRow.id)?.focus();
-                                }
+                      {/* Valor + acciones */}
+                      <div className="flex min-w-0 flex-1 items-center gap-2 pb-2 pl-3.5 pr-2 pt-1 sm:py-0 sm:pl-0">
+                        <span className="eyebrow w-12 shrink-0 text-subtle sm:hidden">Valor</span>
+                        <input
+                          ref={(el) => {
+                            if (el) valueInputRefs.current.set(row.id, el);
+                            else valueInputRefs.current.delete(row.id);
+                          }}
+                          className={cx(
+                            'h-9 min-w-0 flex-1 rounded-md bg-transparent px-2 font-mono text-xs outline-none placeholder:text-subtle focus:bg-surface2/60 sm:h-auto sm:rounded-none sm:px-3.5 sm:py-2.5',
+                            isRef ? 'font-medium text-info' : isRevealed ? 'text-txt' : 'text-subtle',
+                          )}
+                          placeholder={isRef ? '${{Servicio.VAR}}' : 'valor'}
+                          type={isRevealed || isRef ? 'text' : 'password'}
+                          value={row.value}
+                          spellCheck={false}
+                          autoCapitalize="off"
+                          autoCorrect="off"
+                          onChange={(e) => handleValueChange(row.id, e.target.value)}
+                          onPaste={(e) => handlePaste(row.id, 'value', e)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              if (index === filteredRows.length - 1) {
+                                handleAddRow();
+                              } else {
+                                const nextRow = filteredRows[index + 1];
+                                if (nextRow) keyInputRefs.current.get(nextRow.id)?.focus();
                               }
-                            }}
-                          />
+                            }
+                          }}
+                        />
 
-                          {/* Botones de acción individual por fila */}
-                          <div className="flex shrink-0 items-center gap-0.5 pr-2">
-                            {/* Botón individual de Ver / Ocultar valor */}
-                            {!isRef && (
-                              <button
-                                type="button"
-                                onClick={() => toggleRowReveal(row.id)}
-                                className={cx(
-                                  'press flex h-7 w-7 items-center justify-center rounded-md text-subtle transition-colors hover:bg-surface2 hover:text-txt',
-                                  isRevealed && 'text-acc',
-                                )}
-                                title={isRevealed ? 'Ocultar valor' : 'Mostrar valor'}
-                              >
-                                {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
-                              </button>
-                            )}
-
-                            {/* Copiar valor resuelto */}
-                            <CopyButton
-                              value={resolved[row.key] ?? row.value}
-                              title="Copiar valor resuelto"
-                            />
-
-                            {/* Eliminar variable */}
+                        <div className="flex shrink-0 items-center gap-0.5 sm:pr-2">
+                          {!isRef && (
                             <button
                               type="button"
-                              onClick={() => handleDeleteRow(row.id)}
-                              className="press flex h-7 w-7 items-center justify-center rounded-md text-subtle transition-colors hover:bg-surface2 hover:text-err"
-                              title="Eliminar variable"
+                              onClick={() => toggleRowReveal(row.id)}
+                              className={cx(
+                                'press flex h-8 w-8 items-center justify-center rounded-md text-subtle transition-colors hover:bg-surface2 hover:text-txt sm:h-7 sm:w-7',
+                                isRevealed && 'text-acc-soft',
+                              )}
+                              title={isRevealed ? 'Ocultar valor' : 'Mostrar valor'}
+                              aria-label={isRevealed ? 'Ocultar valor' : 'Mostrar valor'}
                             >
-                              <Trash2 size={13} />
+                              {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
                             </button>
-                          </div>
+                          )}
+                          <CopyButton value={resolved[row.key] ?? row.value} title="Copiar valor resuelto" />
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteRow(row.id)}
+                            className="press flex h-8 w-8 items-center justify-center rounded-md text-subtle transition-colors hover:bg-surface2 hover:text-err sm:h-7 sm:w-7"
+                            title="Eliminar variable"
+                            aria-label="Eliminar variable"
+                          >
+                            <Trash2 size={13} />
+                          </button>
                         </div>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
-              {/* Botón Añadir Variable */}
+            {/* Añadir: un botón claro, con la ayuda de pegado al lado y no dentro. */}
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
                 onClick={handleAddRow}
-                className="press flex w-full items-center justify-center gap-2 border-t border-line bg-surface2/30 px-3.5 py-2.5 text-xs font-semibold text-sub transition-colors hover:bg-surface2 hover:text-txt"
+                className="press flex h-9 items-center gap-1.5 rounded-lg border border-dashed border-line2 px-3 text-xs font-semibold text-sub transition-colors hover:border-acc/50 hover:bg-surface2 hover:text-txt max-sm:flex-1 max-sm:justify-center"
               >
-                <Plus size={14} className="text-acc" />
-                <span>Añadir variable</span>
-                <span className="hidden text-xs font-normal text-subtle sm:inline">
-                  (escribe <code className="font-mono text-txt">CLAVE=valor</code> para autocompletar)
-                </span>
+                <Plus size={14} className="text-acc-soft" />
+                Añadir variable
               </button>
+              <span className="hidden items-center gap-1.5 text-xs text-subtle sm:inline-flex">
+                <ClipboardPaste size={12} aria-hidden />
+                Pega un .env en cualquier campo y se reparte en filas
+              </span>
             </div>
           </div>
         )}
 
-        {/* ── REFERENCIAS Y SUGERENCIAS ── */}
+        {/* ── Referencias y sugerencias ── */}
         <div className="flex flex-col gap-3">
-          {/* Sugerencias rápidas */}
-          <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
-            <span className="font-medium text-sub">Comunes:</span>
-            {suggestions
-              .filter((s) => !rows.some((r) => r.key === s.key))
-              .map((s) => (
-                <button
-                  key={s.key}
-                  type="button"
-                  className="press rounded-md border border-line bg-surface2/60 px-2 py-0.5 font-mono text-xs text-sub transition-colors hover:border-acc/40 hover:text-txt"
-                  title={s.hint} aria-label={s.hint}
-                  onClick={() => {
-                    setRows((prev) => [...prev, makeRow(s.key, s.value)]);
-                    setDirty(true);
-                  }}
-                >
-                  + {s.key}
-                </button>
-              ))}
-          </div>
+          {suggestions.some((s) => !rows.some((r) => r.key === s.key)) && (
+            <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
+              <span className="font-medium text-sub">Habituales:</span>
+              {suggestions
+                .filter((s) => !rows.some((r) => r.key === s.key))
+                .map((s) => (
+                  <button
+                    key={s.key}
+                    type="button"
+                    className="press rounded-md border border-line bg-surface2/60 px-2 py-0.5 font-mono text-xs text-sub transition-colors hover:border-acc/40 hover:text-txt max-sm:py-1.5"
+                    title={s.hint}
+                    aria-label={s.hint}
+                    onClick={() => {
+                      setRows((prev) => [...prev, makeRow(s.key, s.value)]);
+                      setDirty(true);
+                    }}
+                  >
+                    + {s.key}
+                  </button>
+                ))}
+            </div>
+          )}
 
-          {/* Referencias disponibles del proyecto */}
           {references.length > 0 && (
-            <div className="rounded-xl border border-line bg-surface p-3.5 text-xs shadow-sm">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="font-semibold text-sub">Referencias disponibles en el proyecto</span>
-                <span className="text-xs text-subtle">Clic para copiar formato {'${{...}}'}</span>
+            <div className="rounded-xl border border-line bg-surface p-3.5 text-xs">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-1">
+                <span className="font-semibold text-sub">Referencias del proyecto</span>
+                <span className="text-xs text-subtle">Clic para copiar en formato {'${{...}}'}</span>
               </div>
               <div className="flex flex-col gap-2.5">
                 {references.map((ref) => (
-                  <div key={ref.service} className="rounded-lg bg-surface2/50 p-2 border border-line/60">
-                    <p className="mb-1.5 eyebrow text-subtle">
+                  <div key={ref.service} className="rounded-lg border border-line/60 bg-surface2/50 p-2">
+                    <p className="eyebrow mb-1.5 text-subtle">
                       {ref.service === 'shared' ? 'Variables compartidas' : ref.service}
                     </p>
                     <div className="flex flex-wrap gap-1.5">
@@ -693,8 +805,9 @@ export default function VariablesTab({
                           <button
                             key={v}
                             type="button"
-                            className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info hover:bg-info/10"
-                            title={`Copiar ${token}`} aria-label={`Copiar ${token}`}
+                            className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info hover:bg-info/10 max-sm:py-1.5"
+                            title={`Copiar ${token}`}
+                            aria-label={`Copiar ${token}`}
                             onClick={() => {
                               navigator.clipboard.writeText(token);
                               toast(`Copiado: ${token}`, 'ok');
@@ -713,14 +826,13 @@ export default function VariablesTab({
         </div>
       </div>
 
-      {/* ── BARRA DE GUARDADO FIJA / FLOTANTE ELEVADA (ACCESIBLE Y VISIBLE SIEMPRE) ── */}
       <EditorBar
         dirty={dirty}
         saving={save.isPending}
         onSave={submit}
         onDiscard={discard}
         saveLabel={dirty ? `Guardar (${rows.filter((r) => r.key.trim()).length})` : 'Guardar variables'}
-        dirtyLabel="Cambios sin guardar · se aplican al redesplegar"
+        dirtyLabel={dirtyLabel}
       />
     </div>
   );

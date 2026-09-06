@@ -10,7 +10,7 @@ import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { ActiveDeploy, Me, MetricsSnapshot, Project, Service } from '../types';
-import { CMD_K_LABEL, cx, isActiveDeploy } from '../utils';
+import { CMD_K_LABEL, cx, isActiveDeploy, serviceStatus } from '../utils';
 
 // Carga diferida: el drawer del servicio (con sus 8 pestañas y modales) y los
 // modales de cabecera solo se descargan al abrirlos, no al entrar al proyecto.
@@ -318,6 +318,14 @@ export default function ProjectPage() {
   // Conteo de métricas agregadas del proyecto
   const totalServices = services.length;
   const runningCount = services.filter((s) => (latest?.services[s.id]?.state ?? s.runtime?.state) === 'running').length;
+  // Lo que se cayó solo: es lo único que justifica el rojo en el resumen.
+  const downCount = services.filter(
+    (s) =>
+      serviceStatus(latest?.services[s.id]?.state ?? s.runtime?.state ?? 'unknown', {
+        exitCode: s.runtime?.exitCode,
+        stoppedAt: s.stopped_at,
+      }).kind === 'down',
+  ).length;
   const alertServicesCount = services.filter((s) => (alertCounts?.[s.id] ?? 0) > 0).length;
   const deployServicesCount = Object.keys(activeDeploys).length;
   const gitCount = services.filter((s) => s.type === 'git').length;
@@ -343,13 +351,19 @@ export default function ProjectPage() {
             {totalServices > 0 && (
               <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
                 {/* Verde solo cuando están todos en pie: «3/20 activos» en
-                    verde decía justo lo contrario de lo que pasaba. */}
+                    verde decía justo lo contrario de lo que pasaba. Y rojo solo
+                    si alguno se cayó: parados a mano, en gris. */}
                 <Chip
-                  tone={runningCount === totalServices ? 'ok' : runningCount === 0 ? 'err' : 'warn'}
+                  tone={downCount > 0 ? 'err' : runningCount === totalServices ? 'ok' : runningCount === 0 ? 'neutral' : 'warn'}
                   dot
                 >
                   <span className="tnum font-semibold">{runningCount}</span>/{totalServices} activos
                 </Chip>
+                {downCount > 0 && (
+                  <Chip tone="err" dot>
+                    <span className="tnum font-semibold">{downCount}</span> {downCount === 1 ? 'caído' : 'caídos'}
+                  </Chip>
+                )}
                 {deployServicesCount > 0 && (
                   <Chip tone="warn" dot pulse>
                     <span className="tnum font-semibold">{deployServicesCount}</span> desplegando

@@ -24,7 +24,7 @@ import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import type { BandPoint } from '../components/HistoryChart';
 import { Button, Chip, ConfirmModal, EmptyState, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { DiskBreakdown, HostMetricHistory, LogSearchResult, Me, MonitorOverview, MonitorService } from '../types';
-import { cx, fmtBytes, fmtDateTime, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
+import { cx, fmtBytes, fmtDateTime, serviceStatus, timeAgo } from '../utils';
 
 // El histórico del host solo se ve en la vista «host» (la vista por defecto es
 // «services»), así que su gráfico se carga bajo demanda al abrirla.
@@ -190,7 +190,9 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
   const navigate = useNavigate();
   const memPct = s.stats && s.stats.memLimit > 0 ? (s.stats.memUsage / s.stats.memLimit) * 100 : null;
   const diskPct = s.disk.totalBytes !== null && s.disk.quotaMb ? (s.disk.totalBytes / (s.disk.quotaMb * 1024 * 1024)) * 100 : null;
-  const isDown = s.state === 'exited' || s.state === 'dead';
+  const status = serviceStatus(s.state, { exitCode: s.exitCode, stoppedAt: s.stoppedAt });
+  // Solo lo que se cayó solo se tiñe de rojo; una parada a mano no es un incidente.
+  const isDown = status.kind === 'down';
 
   return (
     <div
@@ -224,9 +226,11 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
       </div>
 
       <div>
-        <StatusBadge tone={STATE_TONE[s.state]} label={STATE_LABEL[s.state]} pulse={STATE_PULSE[s.state]} replicas={s.replicas} />
+        <StatusBadge tone={status.tone} label={status.label} pulse={status.pulse} replicas={s.replicas} />
         {isDown && s.exitCode !== null ? (
           <p className="mt-1 text-micro text-err">código {s.exitCode}</p>
+        ) : status.kind === 'stopped' && s.stoppedAt ? (
+          <p className="mt-1 text-micro text-subtle">a mano · {timeAgo(s.stoppedAt)}</p>
         ) : (
           s.uptime24h !== null && (
             <p className={cx('tnum mt-1 text-micro', s.uptime24h < 99 ? 'text-warn' : 'text-subtle')} title="Disponibilidad en las últimas 24 h">
@@ -585,8 +589,12 @@ export default function MonitorPage() {
     const q = text.trim().toLowerCase();
     // Partición exacta en tres grupos: cada servicio cae en un único chip y
     // los contadores cuadran con las filas listadas.
-    const bucket = (s: MonitorService): StateFilter =>
-      s.state === 'running' ? 'running' : s.state === 'exited' || s.state === 'dead' || s.state === 'restarting' ? 'down' : 'stopped';
+    const bucket = (s: MonitorService): StateFilter => {
+      if (s.state === 'running') return 'running';
+      if (s.state === 'restarting') return 'down';
+      const kind = serviceStatus(s.state, { exitCode: s.exitCode, stoppedAt: s.stoppedAt }).kind;
+      return kind === 'down' ? 'down' : 'stopped';
+    };
     const list = services.filter((s) => {
       if (stateFilter !== 'all' && bucket(s) !== stateFilter) return false;
       if (!q) return true;
@@ -605,7 +613,10 @@ export default function MonitorPage() {
   }, [services]);
 
   const running = services.filter((s) => s.state === 'running').length;
-  const down = services.filter((s) => s.state === 'exited' || s.state === 'dead' || s.state === 'restarting').length;
+  // Una parada a mano no cuenta como problema: va con los detenidos.
+  const down = services.filter(
+    (s) => s.state === 'restarting' || serviceStatus(s.state, { exitCode: s.exitCode, stoppedAt: s.stoppedAt }).kind === 'down',
+  ).length;
   const alerts = services.reduce((acc, s) => acc + s.alerts, 0);
   const host = overview.data?.host;
   const memPct = host ? ((host.totalMem - host.freeMem) / host.totalMem) * 100 : null;

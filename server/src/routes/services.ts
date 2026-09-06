@@ -17,6 +17,7 @@ import {
   listServices,
   serviceSlugExists,
   setEnv,
+  setServiceStopped,
   updateService,
 } from '../db';
 import {
@@ -532,6 +533,8 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(500).send({ error: err?.message || 'Operación fallida' });
       }
       audit(req, `service_${action}`, { type: 'service', id, detail: found.service.name });
+      // Una parada pedida desde aquí no es una caída: el panel la pinta en gris.
+      setServiceStopped(id, action === 'stop');
       // La acción acaba de cambiar los contenedores: la foto compartida ya no
       // vale y aquí se lee la verdad, no la caché.
       invalidateDockerSnapshot();

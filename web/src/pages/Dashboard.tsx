@@ -15,16 +15,17 @@ import { Me, Project, ProjectServiceSummary } from '../types';
 import { cx, timeAgo } from '../utils';
 
 /**
- * Monograma del proyecto: dos iniciales en monoespaciada sobre superficie
- * neutra. Antes cada proyecto recibía uno de siete degradados de color con
- * resplandor propio; identificaba menos de lo que decoraba, y el color de la
- * interfaz está reservado para decir en qué estado está algo.
+ * Monograma del proyecto: dos iniciales en monoespaciada sobre el azul de la
+ * casa, muy rebajado. Antes cada proyecto recibía uno de siete degradados con
+ * resplandor propio (decoraba más que identificaba); después fue gris del
+ * todo, y una rejilla de tarjetas grises se leía como apagada. Un solo tinte,
+ * el de marca, da vida sin robarle el color a los estados.
  */
 function Monogram({ name }: { name: string }) {
   const words = name.trim().split(/[\s\-_]+/).filter(Boolean);
   const initials = (words.length >= 2 ? words[0][0] + words[1][0] : name.trim().slice(0, 2)).toUpperCase();
   return (
-    <span className="flex h-9 w-9 shrink-0 select-none items-center justify-center rounded-lg border border-line bg-surface2 font-mono text-xs font-semibold tracking-[.06em] text-sub">
+    <span className="flex h-9 w-9 shrink-0 select-none items-center justify-center rounded-lg border border-acc/25 bg-acc/[.14] font-mono text-xs font-semibold tracking-[.06em] text-acc-soft">
       {initials}
     </span>
   );
@@ -65,7 +66,7 @@ function ProjectCard({ project }: { project: Project }) {
   return (
     <Link
       to={`/projects/${project.id}`}
-      className="group card card-hover relative flex flex-col justify-between p-4"
+      className="group card card-hover lit lit-bajo relative flex flex-col justify-between p-4"
     >
       {/* La misma cinta que la tarjeta del servicio: el aviso de «hay una versión saliendo» */}
       {deploying > 0 && <DeploySweep />}
