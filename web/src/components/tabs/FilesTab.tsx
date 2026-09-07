@@ -6,6 +6,7 @@ import {
   File as FileIcon,
   Folder,
   FolderPlus,
+  FolderOpen,
   HardDrive,
   Link2,
   RefreshCw,
@@ -16,7 +17,7 @@ import {
 import { api } from '../../api';
 import { DirListing, FileEntry } from '../../types';
 import { cx, fmtBytes } from '../../utils';
-import { Button, ConfirmModal, Skeleton, useToast } from '../ui';
+import { Button, ConfirmModal, EmptyState, Skeleton, useToast } from '../ui';
 
 /** Une un directorio y un nombre en una ruta absoluta POSIX. */
 function joinPath(dir: string, name: string): string {
@@ -226,7 +227,12 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
             </div>
           )}
           {(listing.data?.listing.entries ?? []).length === 0 ? (
-            <p className="px-3 py-8 text-center text-xs text-subtle">Carpeta vacía.</p>
+            <EmptyState
+              compact
+              icon={<FolderOpen />}
+              title="Carpeta vacía"
+              description="Aquí aparecerán los archivos del contenedor. Puedes subir uno con el botón de arriba."
+            />
           ) : (
             (listing.data?.listing.entries ?? []).map((entry) => (
               <div

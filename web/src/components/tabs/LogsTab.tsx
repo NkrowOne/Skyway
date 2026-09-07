@@ -17,7 +17,7 @@ import {
   timeAgo,
 } from '../../utils';
 import LogViewer, { LogStage } from '../LogViewer';
-import { Menu, Skeleton, useToast } from '../ui';
+import { Menu, Segmented, Skeleton, useToast } from '../ui';
 
 type Row = { line: string; cursor: string | null };
 
@@ -438,35 +438,16 @@ export default function LogsTab({
           </Menu>
         </div>
 
-        {/* Sub-pestañas limpias: Solo Aplicación y Compilación */}
-        <div className="flex shrink-0 items-center gap-1 rounded-lg bg-surface2/60 p-1 border border-line">
-          <button
-            type="button"
-            onClick={() => setStageTab('runtime')}
-            className={cx(
-              'press flex h-7 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors',
-              stageTab === 'runtime'
-                ? 'bg-surface text-txt shadow-sm border border-line font-semibold'
-                : 'text-subtle hover:text-txt hover:bg-surface/50',
-            )}
-          >
-            <Terminal size={13} className={stageTab === 'runtime' ? 'text-acc' : 'text-subtle'} />
-            <span>Aplicación</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setStageTab('build')}
-            className={cx(
-              'press flex h-7 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors',
-              stageTab === 'build'
-                ? 'bg-surface text-txt shadow-sm border border-line font-semibold'
-                : 'text-subtle hover:text-txt hover:bg-surface/50',
-            )}
-          >
-            <Code2 size={13} className={stageTab === 'build' ? 'text-acc' : 'text-subtle'} />
-            <span>Compilación</span>
-          </button>
-        </div>
+        {/* Qué se está leyendo: lo que escribe la app, o lo que escribió el build. */}
+        <Segmented
+          label="Origen de los logs"
+          value={stageTab}
+          onChange={setStageTab}
+          options={[
+            { key: 'runtime', label: 'Aplicación', icon: <Terminal size={13} aria-hidden /> },
+            { key: 'build', label: 'Compilación', icon: <Code2 size={13} aria-hidden /> },
+          ]}
+        />
       </div>
 
       {/* ── VISOR DE LOGS PROFESIONAL RESPONSIVO CON SCROLL Y TIMESTAMPS GARANTIZADOS ── */}

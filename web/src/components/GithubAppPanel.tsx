@@ -5,7 +5,7 @@ import { api } from '../api';
 import { GithubAppStatus, GithubInstallation } from '../types';
 import { timeAgo } from '../utils';
 import { ModuleLogo } from './ModuleIcon';
-import { Button, Chip, ConfirmModal, CopyButton, Field, Skeleton, useToast } from './ui';
+import { Button, Chip, ConfirmModal, CopyButton, EmptyState, Field, Skeleton, useToast } from './ui';
 import { useCreateGithubApp } from './useGithubApp';
 
 /**
@@ -153,9 +153,14 @@ export default function GithubAppPanel() {
           resto las conectó cada cliente en su proyecto.
         </p>
         {list.length === 0 ? (
-          <p className="mt-3 rounded-lg border border-dashed border-line px-3.5 py-3.5 text-center text-xs text-subtle">
-            Ninguna cuenta conectada todavía.
-          </p>
+          <div className="mt-3 rounded-lg border border-dashed border-line">
+            <EmptyState
+              compact
+              icon={<ModuleLogo kind="github" size={22} />}
+              title="Ninguna cuenta conectada"
+              description="Conecta una cuenta u organización de GitHub para desplegar sus repositorios desde aquí."
+            />
+          </div>
         ) : (
           <div className="mt-3 overflow-hidden rounded-lg border border-line">
             {list.map((inst) => (

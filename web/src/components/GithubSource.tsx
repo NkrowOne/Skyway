@@ -3,7 +3,7 @@ import { Lock, Search } from 'lucide-react';
 import { api } from '../api';
 import { GithubConnector, GithubInstallation, GithubRepo } from '../types';
 import { cx } from '../utils';
-import { ErrorState, Spinner } from './ui';
+import { EmptyState, ErrorState, Spinner } from './ui';
 
 /**
  * De dónde salen los repos que se pueden desplegar en un proyecto.
@@ -206,9 +206,16 @@ export function GithubRepoPicker({
           />
         )}
         {repos.data && list.length === 0 && (
-          <p className="px-2.5 py-4 text-center text-xs text-subtle">
-            {needle ? `Sin repos que coincidan con «${filter}»` : 'Esta cuenta no expone ningún repo a Skyway.'}
-          </p>
+          <EmptyState
+            compact
+            icon={<Search />}
+            title={needle ? 'Ningún repositorio coincide' : 'Esta cuenta no expone ningún repositorio'}
+            description={
+              needle
+                ? `Nada que case con «${filter}».`
+                : 'Da acceso a los repos que quieras desplegar desde la configuración de la App en GitHub.'
+            }
+          />
         )}
         {list.map((r) => {
           const active = selected === r.fullName;

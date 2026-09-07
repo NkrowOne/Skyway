@@ -260,8 +260,13 @@ export function initDb(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_services_project ON services(project_id);
     CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
-    CREATE INDEX IF NOT EXISTS idx_service_metrics_ws ON service_metrics_hourly(workspace_id, hour);
   `);
+  /*
+   * El índice de `service_metrics_hourly(workspace_id, …)` NO va aquí: esa
+   * columna la añade una migración de más abajo, así que en una base de datos
+   * nueva —donde la tabla se acaba de crear sin ella— este bloque entero
+   * fallaba y Skyway no llegaba a arrancar. Se crea junto a su migración.
+   */
 
   // Conectores de GitHub por proyecto: tokens de los clientes para clonar sus
   // repos. Caen en cascada con el proyecto.

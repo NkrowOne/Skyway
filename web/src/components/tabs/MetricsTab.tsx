@@ -7,6 +7,7 @@ import { MetricsSnapshot, Service, ServiceMetricHistory } from '../../types';
 import { cx, fmtBytes, fmtCores, fmtRate } from '../../utils';
 import MetricChart from '../MetricChart';
 import { BandPoint, HistoryChart, NetBars, NetPoint } from '../HistoryChart';
+import { Segmented } from '../ui';
 
 type Mode = 'live' | 24 | 168 | 720;
 
@@ -316,21 +317,17 @@ export default function MetricsTab({
 
   return (
     <div className="flex flex-col gap-3.5 p-4 sm:px-5">
-      <div className="flex items-center gap-1 self-start rounded-xl border border-line bg-surface p-1 text-sm">
-        {MODES.map((m) => (
-          <button
-            key={String(m.key)}
-            onClick={() => setMode(m.key)}
-            className={cx(
-              'press rounded-lg px-3 py-1 transition-colors',
-              mode === m.key ? 'bg-acc/[.16] font-medium text-acc-soft' : 'text-sub hover:text-txt',
-            )}
-          >
-            {m.key === 'live' && <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-ok align-middle pulse-soft" aria-hidden />}
-            {m.label}
-          </button>
-        ))}
-      </div>
+      <Segmented
+        className="self-start"
+        label="Ventana de las métricas"
+        value={mode}
+        onChange={setMode}
+        options={MODES.map((m) => ({
+          key: m.key,
+          label: m.label,
+          icon: m.key === 'live' ? <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-ok" aria-hidden /> : undefined,
+        }))}
+      />
 
       <div key={String(mode)} className="tab-in">
         {mode === 'live' ? (
