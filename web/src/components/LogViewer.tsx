@@ -457,15 +457,50 @@ function LogViewerImpl({
    * quedarse leyendo arriba mientras entraba texto.
    */
   const followRef = useRef(true);
+  /*
+   * En iOS, escribir `scrollTop` mientras hay un dedo en la pantalla —o durante
+   * la inercia justo después— cancela el gesto. Con líneas entrando sin parar,
+   * el seguimiento mandaba al fondo cada pocos milisegundos y era imposible
+   * arrastrar hacia arriba: el visor parecía bloqueado, y como en móvil ocupa
+   * la pantalla entera, parecía bloqueada la web. Mientras dura el gesto no se
+   * escribe el scroll; cuando se asienta, si toca seguir, se va al fondo.
+   */
+  const gestureRef = useRef(false);
+  const settleTimerRef = useRef(0);
+  const pendingBottomRef = useRef(false);
   const scrollToBottom = useCallback(() => {
     const el = ref.current;
     if (!el) return;
+    if (gestureRef.current) {
+      pendingBottomRef.current = true;
+      return;
+    }
     el.scrollTop = el.scrollHeight;
     // Un segundo intento tras el layout: las filas nuevas pueden medir
     // distinto una vez pintadas (ajuste de línea). Solo si nadie se ha movido.
     requestAnimationFrame(() => {
-      if (followRef.current && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+      if (followRef.current && !gestureRef.current && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
     });
+  }, []);
+  const beginGesture = useCallback(() => {
+    gestureRef.current = true;
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+  }, []);
+  // El gesto se da por acabado cuando dejan de llegar eventos de scroll un
+  // rato después de levantar el dedo (la inercia sigue emitiéndolos).
+  const settleSoon = useCallback(() => {
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+    settleTimerRef.current = window.setTimeout(() => {
+      settleTimerRef.current = 0;
+      gestureRef.current = false;
+      if (followRef.current && pendingBottomRef.current) {
+        pendingBottomRef.current = false;
+        scrollToBottom();
+      }
+    }, 180);
+  }, [scrollToBottom]);
+  useEffect(() => () => {
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
   }, []);
 
   // Al recibir líneas con el seguimiento activo, al fondo ANTES de pintar (sin parpadeo).
@@ -493,11 +528,11 @@ function LogViewerImpl({
     const el = ref.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => {
-      if (followRef.current) el.scrollTop = el.scrollHeight;
+      if (followRef.current) scrollToBottom();
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [maximized]);
+  }, [maximized, scrollToBottom]);
 
   const startFollowing = useCallback(() => {
     followRef.current = true;
@@ -589,6 +624,8 @@ function LogViewerImpl({
     lastTopRef.current = el.scrollTop;
     const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 45;
     followRef.current = isAtBottom;
+    // Scroll con el dedo levantado = inercia: el gesto sigue vivo hasta que pare.
+    if (gestureRef.current) settleSoon();
     if (scrollRaf.current) return;
     scrollRaf.current = requestAnimationFrame(() => {
       scrollRaf.current = 0;
@@ -938,6 +975,9 @@ function LogViewerImpl({
         <div
           ref={ref}
           onScroll={onScroll}
+          onTouchStart={beginGesture}
+          onTouchEnd={settleSoon}
+          onTouchCancel={settleSoon}
           className={cx(
             // Tamaño propio de terminal (fuera de la escala de la interfaz):
             // aquí manda la legibilidad de la monoespaciada, no la jerarquía.
