@@ -310,12 +310,16 @@ export default function NewServiceModal({
             <p className="text-xs text-sub">
               ¿No está la que buscas? Instala cualquier plantilla del catálogo de Railway en este proyecto.
             </p>
-            <div className="mt-2 flex gap-2">
+            <div className="mt-2 flex flex-wrap gap-2">
               <input
-                className="input flex-1 font-mono text-xs"
+                className="input min-w-0 flex-1 font-mono sm:text-xs"
                 placeholder="https://railway.com/new/template/supabase"
                 value={tplInput}
                 onChange={(e) => setTplInput(e.target.value)}
+                inputMode="url"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
               />
               <Button type="submit" variant="ghost" loading={previewTemplate.isPending} disabled={!tplInput.trim()}>
                 Ver qué crea
@@ -391,13 +395,16 @@ export default function NewServiceModal({
               ))}
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Prefijo de los servicios">
               <input
                 className="input font-mono"
                 value={stackPrefix}
                 onChange={(e) => setStackPrefix(e.target.value)}
                 placeholder={tplPlan.prefix}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
               />
             </Field>
             <Field label="Dominio (opcional)" hint="Va al servicio de entrada de la plantilla">
@@ -406,6 +413,10 @@ export default function NewServiceModal({
                 placeholder="app.midominio.com"
                 value={stackDomain}
                 onChange={(e) => setStackDomain(e.target.value)}
+                inputMode="url"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
               />
             </Field>
           </div>
@@ -495,13 +506,16 @@ export default function NewServiceModal({
             ))}
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Prefijo de los servicios" hint="Da nombre a cada servicio de la pila">
               <input
                 className="input font-mono"
                 value={stackPrefix}
                 onChange={(e) => setStackPrefix(e.target.value)}
                 placeholder={selectedStack.defaultPrefix}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
               />
             </Field>
             <Field
@@ -513,6 +527,10 @@ export default function NewServiceModal({
                 placeholder="app.midominio.com"
                 value={stackDomain}
                 onChange={(e) => setStackDomain(e.target.value)}
+                inputMode="url"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
               />
             </Field>
           </div>
@@ -584,12 +602,19 @@ export default function NewServiceModal({
               })()}
             </div>
           </Field>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Nombre (opcional)">
               <input className="input" placeholder="se infiere de la imagen" value={name} onChange={(e) => setName(e.target.value)} />
             </Field>
             <Field label="Puerto interno (opcional)" hint="Si sirve HTTP y quieres ponerle dominio">
-              <input className="input" type="number" placeholder="5678" value={imagePort} onChange={(e) => setImagePort(e.target.value)} />
+              <input
+                className="input"
+                type="number"
+                inputMode="numeric"
+                placeholder="5678"
+                value={imagePort}
+                onChange={(e) => setImagePort(e.target.value)}
+              />
             </Field>
           </div>
           <div className="flex justify-between pt-1">
@@ -659,6 +684,8 @@ export default function NewServiceModal({
               label="Repositorio"
               hint="URL completa o atajo owner/repo. Para repos privados conecta una cuenta de GitHub o usa el token de Ajustes."
             >
+              {/* type="text" y no "url" a propósito: el atajo «owner/repo» es
+                  válido aquí y el navegador lo rechazaría como URL. */}
               <input
                 className="input font-mono"
                 placeholder="https://github.com/usuario/mi-app"
@@ -666,10 +693,14 @@ export default function NewServiceModal({
                 onChange={(e) => setRepoUrl(e.target.value)}
                 required
                 autoFocus
+                inputMode="url"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
               />
             </Field>
           )}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Rama">
               {source.kind !== 'none' && (branches.data?.branches.length ?? 0) > 0 ? (
                 <select className="input" value={branch} onChange={(e) => setBranch(e.target.value)}>
@@ -687,13 +718,14 @@ export default function NewServiceModal({
               <input
                 className="input"
                 type="number"
+                inputMode="numeric"
                 placeholder="automático"
                 value={port}
                 onChange={(e) => setPort(e.target.value)}
               />
             </Field>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Nombre (opcional)">
               <input className="input" placeholder="se infiere del repo" value={name} onChange={(e) => setName(e.target.value)} />
             </Field>

@@ -1030,7 +1030,7 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/deployments/:id/rollback` | +access | redespliega una imagen anterior (solo git) |
 | GET | `/deployments/:id/logs/stream` | +access | **SSE** de build/deploy |
 | GET | `/projects/:id/deploys/stream` | +access | **SSE** del feed de despliegues del proyecto (evento `snapshot` + un `deploy` por cambio de fase). Independiente: pensado para agentes y automatizaciones que solo quieren los despliegues |
-| GET | `/services/:id/logs/stream` | +access | **SSE** de logs de ejecución (cada línea con su cursor de tiempo) |
+| GET | `/services/:id/logs/stream` | +access | **SSE** de logs de ejecución de todas las réplicas (cada línea con su cursor de tiempo, que viaja también como `id` del evento; las réplicas 2..n llevan prefijo `[rN]`). Si el contenedor se sustituye o se para, avisa (`notice`) y se vuelve a enganchar solo. Al reconectar, `Last-Event-ID` reanuda desde ese cursor |
 | GET | `/services/:id/logs/tail` | +access | páginado hacia atrás: líneas anteriores a un cursor (`?limit=&before=`) para cargar historial al subir |
 | GET | `/services/:id/logs/download` | +access | descarga íntegra del log del contenedor como adjunto de texto (`?timestamps=1` para incluir sellos) |
 | GET | `/projects/:id/metrics/stream` | +access | **SSE** de métricas en vivo del proyecto: `metrics` cada 2,5 s y, por la misma conexión, los despliegues (`deploys` al conectar + un `deploy` por cambio de fase). El panel abre solo esta, no las dos |

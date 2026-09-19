@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState } from 'react';
+import { lazy, memo, Suspense, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import {
@@ -22,7 +22,7 @@ import {
 import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import type { BandPoint } from '../components/HistoryChart';
-import { Button, Chip, ConfirmModal, EmptyState, Segmented, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, EmptyState, ErrorState, Segmented, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { DiskBreakdown, HostMetricHistory, LogSearchResult, Me, MonitorOverview, MonitorService } from '../types';
 import { cx, fmtBytes, fmtDateTime, serviceStatus, timeAgo } from '../utils';
 
@@ -165,7 +165,8 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
           <div className="max-h-[380px] overflow-y-auto rounded-lg border border-line bg-bg">
             {search.data.results.map((r, i) => (
               <button
-                key={i}
+                // Con solo el índice, una nueva búsqueda reciclaba los nodos de la anterior.
+                key={`${r.serviceId}-${r.ts ?? 'sin-ts'}-${i}`}
                 onClick={() => navigate(`/projects/${r.projectId}?s=${r.serviceId}`)}
                 className="block w-full border-b border-line/60 px-3.5 py-2 text-left transition-colors last:border-0 hover:bg-surface"
                 title="Abrir el servicio"
@@ -191,8 +192,20 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
  * —la tabla pedía 760px y había que arrastrar de lado para ver el estado, que
  * es justo a lo que se entra—, así que ahí se pinta como tarjeta. Las celdas
  * son las mismas piezas en los dos casos: cambia la composición, no el dato.
+ *
+ * Memoizada: el overview llega cada 6 s y react-query conserva la identidad de
+ * los servicios que no cambian, así que solo se repintan las filas con datos
+ * nuevos. `onRestart` recibe el servicio para que la función sea estable.
  */
-function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart: () => void; restarting: boolean }) {
+const ServiceRow = memo(function ServiceRow({
+  s,
+  onRestart,
+  restarting,
+}: {
+  s: MonitorService;
+  onRestart: (s: MonitorService) => void;
+  restarting: boolean;
+}) {
   const navigate = useNavigate();
   const memPct = s.stats && s.stats.memLimit > 0 ? (s.stats.memUsage / s.stats.memLimit) * 100 : null;
   const diskPct = s.disk.totalBytes !== null && s.disk.quotaMb ? (s.disk.totalBytes / (s.disk.quotaMb * 1024 * 1024)) * 100 : null;
@@ -277,9 +290,9 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
 
   const reiniciar = s.state !== 'not_created' && (
     <button
-      onClick={onRestart}
+      onClick={() => onRestart(s)}
       disabled={restarting}
-      className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt disabled:opacity-40 max-sm:h-10 max-sm:w-10"
+      className="press flex items-center justify-center rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt disabled:opacity-40 max-sm:h-10 max-sm:w-10 max-sm:p-0"
       title="Reiniciar"
       aria-label={`Reiniciar ${s.name}`}
     >
@@ -347,7 +360,7 @@ function ServiceRow({ s, onRestart, restarting }: { s: MonitorService; onRestart
       </div>
     </div>
   );
-}
+});
 
 /** Desglose de espacio: qué ocupa cada servicio y qué ocupa Docker. */
 function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
@@ -381,9 +394,15 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
   }
   if (disk.isError) {
     return (
-      <p className="card flex items-center gap-2 px-4 py-8 text-xs text-warn">
-        <TriangleAlert size={14} /> {(disk.error as Error).message}
-      </p>
+      <div className="card">
+        <ErrorState
+          compact
+          title="No se ha podido medir el espacio"
+          error={disk.error}
+          onRetry={() => disk.refetch()}
+          retrying={disk.isFetching}
+        />
+      </div>
     );
   }
 
@@ -445,8 +464,10 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
         {data.services.length === 0 && (
           <EmptyState compact icon={<Activity />} title="Sin servicios que medir" description="Despliega un servicio y sus métricas aparecerán aquí." />
         )}
-        <div className="overflow-x-auto">
-          <div className="min-w-[640px]">
+        {/* En móvil la fila se parte en dos líneas (nombre + barra arriba, tamaño
+            debajo) en vez de obligar a arrastrar de lado una tabla de 640px. */}
+        <div className="sm:overflow-x-auto">
+          <div className="sm:min-w-[640px]">
             {data.services.map((s) => {
               const quotaBytes = s.quotaMb ? s.quotaMb * 1024 * 1024 : null;
               const pctOfQuota = quotaBytes ? (s.totalBytes / quotaBytes) * 100 : null;
@@ -458,14 +479,15 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
                 <button
                   key={s.serviceId}
                   onClick={() => navigate(`/projects/${s.projectId}?s=${s.serviceId}`)}
-                  className="grid w-full grid-cols-[minmax(160px,1.4fr)_minmax(220px,2fr)_minmax(90px,auto)] items-center gap-3 border-b border-line/70 px-4 py-2.5 text-left transition-colors last:border-0 hover:bg-surface"
+                  className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 border-b border-line/70 px-4 py-3 text-left transition-colors last:border-0 hover:bg-surface sm:grid-cols-[minmax(160px,1.4fr)_minmax(220px,2fr)_minmax(90px,auto)] sm:gap-3 sm:py-2.5"
                   title={`${s.volumes.length} volumen(es): ${fmtBytes(volBytes)} · contenedor: ${fmtBytes(s.containerBytes)}${s.logBytes !== null ? ` · logs: ${fmtBytes(s.logBytes)}` : ''}`}
                 >
                   <span className="min-w-0">
                     <span className="block truncate text-xs font-medium">{s.name}</span>
                     <span className="block truncate text-micro text-subtle">{s.projectName}</span>
                   </span>
-                  <span className="flex items-center gap-2">
+                  {/* En móvil la barra baja a la segunda línea y ocupa todo el ancho. */}
+                  <span className="order-3 col-span-2 flex items-center gap-2 sm:order-none sm:col-span-1">
                     <span className="h-2 flex-1 overflow-hidden rounded-full bg-surface2">
                       <span
                         className={cx(
@@ -476,7 +498,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
                       />
                     </span>
                   </span>
-                  <span className="tnum text-right text-xs text-sub">
+                  <span className="tnum shrink-0 text-right text-xs text-sub">
                     {fmtBytes(s.totalBytes)}
                     {s.quotaMb && (
                       <span className={cx('block text-micro', pctOfQuota! > 100 ? 'text-err' : 'text-subtle')}>
@@ -546,9 +568,15 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
           ))}
         </div>
       ) : q.isError ? (
-        <p className="card flex items-center gap-2 px-4 py-8 text-xs text-warn">
-          <TriangleAlert size={14} /> {(q.error as Error).message}
-        </p>
+        <div className="card">
+          <ErrorState
+            compact
+            title="No se ha podido cargar el histórico"
+            error={q.error}
+            onRetry={() => q.refetch()}
+            retrying={q.isFetching}
+          />
+        </div>
       ) : (
         <Suspense
           fallback={
@@ -650,7 +678,21 @@ export default function MonitorPage() {
       if (!q) return true;
       return `${s.name} ${s.projectName} ${s.client ?? ''} ${s.image ?? ''} ${s.domains.join(' ')}`.toLowerCase().includes(q);
     });
-    if (sortKey === 'default') return list;
+    if (sortKey === 'default') {
+      /*
+       * Orden «por estado»: lo que falla arriba, luego lo que corre, al final lo
+       * parado; dentro de cada grupo por proyecto y nombre. Antes se respetaba
+       * el orden del servidor y un servicio caído podía quedar en la pantalla
+       * de abajo del móvil.
+       */
+      const rango = (s: MonitorService) => {
+        const b = bucket(s);
+        return b === 'down' ? 0 : b === 'running' ? 1 : 2;
+      };
+      return [...list].sort(
+        (a, b) => rango(a) - rango(b) || a.projectName.localeCompare(b.projectName, 'es') || a.name.localeCompare(b.name, 'es'),
+      );
+    }
     const value = (s: MonitorService) =>
       sortKey === 'cpu' ? s.stats?.cpuPercent ?? -1 : sortKey === 'mem' ? s.stats?.memUsage ?? -1 : s.disk.totalBytes ?? -1;
     return [...list].sort((a, b) => value(b) - value(a));
@@ -659,7 +701,7 @@ export default function MonitorPage() {
   const projects = useMemo(() => {
     const seen = new Map<string, string>();
     for (const s of services) seen.set(s.projectId, s.projectName);
-    return [...seen.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+    return [...seen.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'es'));
   }, [services]);
 
   const running = services.filter((s) => s.state === 'running').length;
@@ -814,6 +856,22 @@ export default function MonitorPage() {
                     {chip('down', 'Con problemas', down)}
                     {chip('stopped', 'Detenidos', services.length - running - down)}
                   </div>
+                  {/* En móvil no hay cabecera de columnas donde pulsar para ordenar:
+                      el control vive aquí, solo por debajo de sm. */}
+                  <Segmented
+                    className="sm:hidden"
+                    full
+                    size="sm"
+                    label="Ordenar servicios"
+                    value={sortKey}
+                    onChange={setSortKey}
+                    options={[
+                      { key: 'default', label: 'Estado' },
+                      { key: 'cpu', label: 'CPU' },
+                      { key: 'mem', label: 'RAM' },
+                      { key: 'disk', label: 'Disco' },
+                    ]}
+                  />
                 </div>
 
                 <div className="sm:overflow-x-auto">
@@ -883,7 +941,7 @@ export default function MonitorPage() {
                         />
                       ))}
                     {filtered.map((s) => (
-                      <ServiceRow key={s.id} s={s} onRestart={() => setConfirmRestart(s)} restarting={restarting.has(s.id)} />
+                      <ServiceRow key={s.id} s={s} onRestart={setConfirmRestart} restarting={restarting.has(s.id)} />
                     ))}
                   </div>
                 </div>

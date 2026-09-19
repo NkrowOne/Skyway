@@ -248,7 +248,8 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
   return createPortal(
     <div
       className={cx(
-        'fixed inset-0 z-50 flex items-start justify-center bg-black/55 px-4 pb-4 pt-[12vh] backdrop-blur-[3px] sm:pt-[15vh]',
+        // Con el teclado del móvil abierto la paleta baja de sitio: dvh la deja pegada arriba.
+        'fixed inset-0 z-50 flex items-start justify-center bg-black/55 px-3 pb-4 pt-[6dvh] backdrop-blur-[3px] sm:px-4 sm:pt-[15vh]',
         closing ? 'overlay-out' : 'overlay-in',
       )}
       onMouseDown={onClose}
@@ -285,11 +286,14 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
               }
             }}
             placeholder="Busca proyectos, servicios o acciones…"
-            className="flex-1 bg-transparent text-base text-txt outline-none placeholder:text-subtle focus-visible:[outline:none]"
+            autoCapitalize="none"
+            autoCorrect="off"
+            enterKeyHint="go"
+            className="min-w-0 flex-1 bg-transparent text-base text-txt outline-none placeholder:text-subtle focus-visible:[outline:none]"
           />
           <Kbd>esc</Kbd>
         </div>
-        <div ref={listRef} className="max-h-[380px] overflow-y-auto p-2">
+        <div ref={listRef} className="max-h-[min(380px,50dvh)] overflow-y-auto overscroll-contain p-2">
           {items.length === 0 && <p className="px-3 py-8 text-center text-sm text-subtle">Sin resultados para «{query}»</p>}
           {groups.map((g) => {
             const rows = items.filter((i) => i.group === g);
@@ -307,7 +311,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
                       onClick={() => go(item)}
                       onMouseMove={() => setSel(idx)}
                       className={cx(
-                        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left',
+                        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left max-sm:min-h-11',
                         selected && 'bg-acc/[.14] shadow-[inset_2px_0_0_var(--color-acc)]',
                       )}
                     >
@@ -412,11 +416,11 @@ function AlertBell() {
   });
 
   useEffect(() => {
-    const onClick = (e: MouseEvent) => {
+    const onClick = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    window.addEventListener('mousedown', onClick);
-    return () => window.removeEventListener('mousedown', onClick);
+    window.addEventListener('pointerdown', onClick);
+    return () => window.removeEventListener('pointerdown', onClick);
   }, []);
 
   const unread = alerts.data?.unread ?? 0;
@@ -434,9 +438,11 @@ function AlertBell() {
   return (
     <div className="relative" ref={ref}>
       <button
+        type="button"
         onClick={toggle}
-        className="press relative rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
+        className="press relative rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt max-sm:p-2.5"
         title="Alertas" aria-label="Alertas"
+        aria-expanded={open}
       >
         <Bell size={16} />
         {unread > 0 && (
@@ -451,7 +457,14 @@ function AlertBell() {
       {menu.mounted && (
         <div
           className={cx(
-            'lit lit-alto absolute right-0 top-11 z-50 w-96 max-w-[calc(100vw-24px)] origin-top-right rounded-xl border border-line bg-surface shadow-lvl3',
+            /*
+             * En móvil se ancla a la pantalla, no a la campana: colgado de su
+             * borde derecho con casi todo el ancho, se salía por la izquierda.
+             * (La topbar lleva backdrop-filter y es el bloque contenedor del
+             * fixed; como ocupa todo el ancho arriba, coincide con la pantalla.)
+             */
+            'lit lit-alto z-50 origin-top-right rounded-xl border border-line bg-surface shadow-lvl3',
+            'max-sm:fixed max-sm:inset-x-3 max-sm:top-14 sm:absolute sm:right-0 sm:top-11 sm:w-96',
             menu.closing ? 'menu-out' : 'menu-in',
           )}
         >
@@ -461,7 +474,7 @@ function AlertBell() {
               Ver todas
             </Link>
           </div>
-          <div className="max-h-96 overflow-y-auto p-2">
+          <div className="max-h-[min(24rem,60dvh)] overflow-y-auto overscroll-contain p-2">
             {alerts.isError ? (
               <p className="flex items-center justify-center gap-1.5 px-3 py-6 text-center text-xs text-err" role="alert">
                 <AlertCircle size={13} aria-hidden /> No se han podido cargar las alertas
@@ -476,7 +489,7 @@ function AlertBell() {
                 key={a.id}
                 to={a.project_id ? `/projects/${a.project_id}${a.service_id ? `?s=${a.service_id}` : ''}` : '/alerts'}
                 onClick={() => setOpen(false)}
-                className="block rounded-lg px-3 py-2 hover:bg-surface2"
+                className="block rounded-lg px-3 py-2 hover:bg-surface2 max-sm:py-2.5"
               >
                 <div className="flex items-center gap-2">
                   <StatusBadge
@@ -537,16 +550,16 @@ function MainMenu({
 
   useEffect(() => {
     if (!open) return;
-    const onClick = (e: MouseEvent) => {
+    const onClick = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false);
     };
-    window.addEventListener('mousedown', onClick);
+    window.addEventListener('pointerdown', onClick);
     window.addEventListener('keydown', onKey);
     return () => {
-      window.removeEventListener('mousedown', onClick);
+      window.removeEventListener('pointerdown', onClick);
       window.removeEventListener('keydown', onKey);
     };
   }, [open]);
@@ -598,7 +611,7 @@ function MainMenu({
         role="menuitem"
         onClick={() => setOpen(false)}
         className={cx(
-          'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm',
+          'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm max-sm:min-h-11',
           active ? 'bg-acc/[.14] text-txt shadow-[inset_2px_0_0_var(--color-acc)]' : 'text-sub hover:bg-surface2 hover:text-txt',
         )}
       >
@@ -612,9 +625,11 @@ function MainMenu({
   return (
     <div className="relative" ref={ref}>
       <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
-        className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
+        className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt max-sm:p-2.5"
         title="Menú"
+        aria-label="Menú principal"
         aria-haspopup="menu"
         aria-expanded={open}
       >
@@ -643,7 +658,7 @@ function MainMenu({
               </span>
             </div>
           )}
-          <div className="max-h-[min(70vh,520px)] overflow-y-auto p-2">
+          <div className="max-h-[min(70dvh,520px)] overflow-y-auto overscroll-contain p-2">
             {groups.map((g) => (
               <div key={g.label} className="mb-1 last:mb-0">
                 <p className="mx-2 mb-1 mt-1.5 eyebrow text-subtle">{g.label}</p>
@@ -661,7 +676,7 @@ function MainMenu({
                 setOpen(false);
                 onLogout();
               }}
-              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-sub hover:bg-err/[.12] hover:text-err"
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-sub hover:bg-err/[.12] hover:text-err max-sm:min-h-11"
             >
               <span className="text-subtle">
                 <LogOut size={16} />
@@ -815,9 +830,11 @@ export default function Layout() {
         <div className="flex shrink-0 items-center gap-1">
           {!isHome && (
             <button
+              type="button"
               onClick={() => setCmdOpen(true)}
-              className="mr-1 flex items-center gap-2 rounded-lg border border-line bg-bg px-2.5 py-1.5 text-xs text-subtle transition-colors duration-150 hover:border-line2"
+              className="mr-1 flex items-center gap-2 rounded-lg border border-line bg-bg px-2.5 py-1.5 text-xs text-subtle transition-colors duration-150 hover:border-line2 max-sm:h-10 max-sm:w-10 max-sm:justify-center max-sm:px-0"
               title={`Buscar (${CMD_K_LABEL})`}
+              aria-label="Buscar"
             >
               <Search size={13} />
               <Kbd className="hidden border-0 bg-transparent p-0 sm:inline">{CMD_K_LABEL}</Kbd>
@@ -825,9 +842,11 @@ export default function Layout() {
           )}
           {isHome && (
             <button
+              type="button"
               onClick={() => setCmdOpen(true)}
-              className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt sm:hidden"
+              className="press rounded-lg p-2.5 leading-none text-sub hover:bg-surface2 hover:text-txt sm:hidden"
               title={`Buscar (${CMD_K_LABEL})`}
+              aria-label="Buscar"
             >
               <Search size={16} />
             </button>
@@ -873,7 +892,9 @@ export default function Layout() {
       )}
 
       <main
-        className="flex-1 overflow-y-auto"
+        // overscroll-contain: al tocar fondo el scroll no se encadena al
+        // documento, que en iOS hacía rebotar la pantalla entera con la topbar.
+        className="flex-1 overflow-y-auto overscroll-y-contain"
         onScroll={(e) => setScrolled((e.target as HTMLElement).scrollTop > 8)}
       >
         {/* La clave por ruta reinicia la animación de entrada al navegar (los searchParams no la relanzan). */}

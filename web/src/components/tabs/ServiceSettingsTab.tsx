@@ -271,7 +271,15 @@ export default function ServiceSettingsTab({
             {isGit ? (
               <>
                 <Field label="Repositorio">
-                  <input className="input font-mono text-xs" value={form.repoUrl} onChange={(e) => set('repoUrl', e.target.value)} />
+                  <input
+                    className="input font-mono sm:text-xs"
+                    value={form.repoUrl}
+                    onChange={(e) => set('repoUrl', e.target.value)}
+                    inputMode="url"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
                 </Field>
                 {(hasSources || danglingSource) && (
                   <Field
@@ -290,16 +298,16 @@ export default function ServiceSettingsTab({
                     />
                   </Field>
                 )}
-                <div className="grid grid-cols-2 gap-2.5">
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                   <Field label="Rama">
-                    <input className="input" value={form.branch} onChange={(e) => set('branch', e.target.value)} />
+                    <input className="input" value={form.branch} onChange={(e) => set('branch', e.target.value)} autoCapitalize="none" autoCorrect="off" spellCheck={false} />
                   </Field>
                   <Field label="Puerto interno">
-                    <input className="input tnum" type="number" value={form.port} onChange={(e) => set('port', e.target.value)} />
+                    <input className="input tnum" type="number" inputMode="numeric" value={form.port} onChange={(e) => set('port', e.target.value)} />
                   </Field>
                 </div>
                 <Avanzado resumen="Directorio, Dockerfile, constructor, comandos y healthcheck">
-                  <div className="grid grid-cols-2 gap-2.5">
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                     <Field label="Directorio raíz" hint="vacío = raíz del repo">
                       <input className="input" placeholder="apps/api" value={form.rootDir} onChange={(e) => set('rootDir', e.target.value)} />
                     </Field>
@@ -354,9 +362,9 @@ export default function ServiceSettingsTab({
                 <Field label="Imagen" hint="Cambiarla requiere redesplegar">
                   <input className="input font-mono text-xs" value={form.image} onChange={(e) => set('image', e.target.value)} />
                 </Field>
-                <div className="grid grid-cols-2 gap-2.5">
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                   <Field label="Puerto interno" hint="vacío = sin HTTP">
-                    <input className="input tnum" type="number" value={form.port} onChange={(e) => set('port', e.target.value)} />
+                    <input className="input tnum" type="number" inputMode="numeric" value={form.port} onChange={(e) => set('port', e.target.value)} />
                   </Field>
                   <Field label="Comando de arranque" hint="opcional">
                     <input className="input font-mono text-xs" value={form.startCmd} onChange={(e) => set('startCmd', e.target.value)} />
@@ -432,12 +440,13 @@ export default function ServiceSettingsTab({
           >
             <div className="flex flex-col gap-2">
               {form.volumePaths.map((p) => (
-                <div key={p} className="flex items-center justify-between rounded-lg border border-line bg-surface px-3 py-2">
-                  <span className="font-mono text-xs">{p}</span>
+                <div key={p} className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2 max-sm:py-1">
+                  <span className="min-w-0 truncate font-mono text-xs">{p}</span>
                   <button
                     onClick={() => set('volumePaths', form.volumePaths.filter((x) => x !== p))}
-                    className="rounded p-0.5 text-subtle transition-colors hover:text-err"
+                    className="press shrink-0 rounded p-0.5 text-subtle transition-colors hover:text-err max-sm:p-2"
                     title="Quitar"
+                    aria-label={`Quitar el volumen ${p}`}
                   >
                     <X size={13} />
                   </button>
@@ -445,10 +454,13 @@ export default function ServiceSettingsTab({
               ))}
               <div className="flex gap-2">
                 <input
-                  className="input flex-1 font-mono text-xs"
+                  className="input min-w-0 flex-1 font-mono sm:text-xs"
                   placeholder="/app/uploads"
                   value={newVolumePath}
                   onChange={(e) => setNewVolumePath(e.target.value)}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
@@ -456,7 +468,7 @@ export default function ServiceSettingsTab({
                     }
                   }}
                 />
-                <Button size="sm" variant="secondary" className="h-9" onClick={addVolume}>
+                <Button size="sm" variant="secondary" className="h-9" onClick={addVolume} aria-label="Añadir volumen">
                   <Plus size={13} />
                 </Button>
               </div>
@@ -476,20 +488,20 @@ export default function ServiceSettingsTab({
         >
           <div className={cx('grid gap-2.5 grid-cols-2', isDb ? 'sm:grid-cols-4' : 'sm:grid-cols-5')}>
             <Field label="CPUs" hint="vacío = sin límite">
-              <input className="input tnum" type="number" step="0.1" min="0.1" placeholder="1.5" value={form.cpus} onChange={(e) => set('cpus', e.target.value)} />
+              <input className="input tnum" type="number" inputMode="decimal" step="0.1" min="0.1" placeholder="1.5" value={form.cpus} onChange={(e) => set('cpus', e.target.value)} />
             </Field>
             <Field label="RAM (MB)" hint="vacío = sin límite">
-              <input className="input tnum" type="number" min="32" placeholder="512" value={form.memoryMb} onChange={(e) => set('memoryMb', e.target.value)} />
+              <input className="input tnum" type="number" inputMode="numeric" min="32" placeholder="512" value={form.memoryMb} onChange={(e) => set('memoryMb', e.target.value)} />
             </Field>
             <Field label="Disco (MB)" hint="espacio asignado: avisa al superarlo">
-              <input className="input tnum" type="number" min="64" placeholder="2048" value={form.diskMb} onChange={(e) => set('diskMb', e.target.value)} />
+              <input className="input tnum" type="number" inputMode="numeric" min="64" placeholder="2048" value={form.diskMb} onChange={(e) => set('diskMb', e.target.value)} />
             </Field>
             <Field label="Puerto público" hint="expone TCP en el host">
-              <input className="input tnum" type="number" placeholder={isGit ? '8080' : '5432'} value={form.hostPort} onChange={(e) => set('hostPort', e.target.value)} />
+              <input className="input tnum" type="number" inputMode="numeric" placeholder={isGit ? '8080' : '5432'} value={form.hostPort} onChange={(e) => set('hostPort', e.target.value)} />
             </Field>
             {!isDb && (
               <Field label="Réplicas" hint="copias en balanceo">
-                <input className="input tnum" type="number" min="1" max="10" value={form.replicas} onChange={(e) => set('replicas', e.target.value)} />
+                <input className="input tnum" type="number" inputMode="numeric" min="1" max="10" value={form.replicas} onChange={(e) => set('replicas', e.target.value)} />
               </Field>
             )}
           </div>
@@ -507,12 +519,13 @@ export default function ServiceSettingsTab({
               .
             </p>
           )}
-          <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-sub">
+          {/* En móvil el rótulo entero es el objetivo táctil: 40 px de alto, no los 15 de la casilla. */}
+          <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-sub max-sm:min-h-10">
             <input
               type="checkbox"
               checked={form.alertsMuted}
               onChange={(e) => set('alertsMuted', e.target.checked)}
-              className="h-[15px] w-[15px] accent-acc"
+              className="h-[15px] w-[15px] accent-acc max-sm:h-4 max-sm:w-4"
             />
             Silenciar alertas de este servicio
           </label>
@@ -530,7 +543,7 @@ export default function ServiceSettingsTab({
                 type="checkbox"
                 checked={form.autoDeploy}
                 onChange={(e) => set('autoDeploy', e.target.checked)}
-                className="mt-0.5 h-[15px] w-[15px] shrink-0 accent-acc"
+                className="mt-0.5 h-[15px] w-[15px] shrink-0 accent-acc max-sm:h-4 max-sm:w-4"
               />
               <span className="text-sm">
                 <span className="font-medium">Auto-desplegar al hacer push a <span className="font-mono">{form.branch}</span></span>
@@ -607,8 +620,8 @@ export default function ServiceSettingsTab({
         title={`Eliminar "${service.name}"`}
         message="Se detendrá y eliminará el contenedor de este servicio."
       >
-        <label className="mt-3 flex items-center gap-2 text-sm text-sub">
-          <input type="checkbox" checked={deleteVolumes} onChange={(e) => setDeleteVolumes(e.target.checked)} className="accent-acc" />
+        <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-sub max-sm:min-h-10">
+          <input type="checkbox" checked={deleteVolumes} onChange={(e) => setDeleteVolumes(e.target.checked)} className="accent-acc max-sm:h-4 max-sm:w-4" />
           Eliminar también el volumen de datos
         </label>
       </ConfirmModal>

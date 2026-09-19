@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
+import { leaveUnlessTouch, useElementWidth } from './HistoryChart';
 
 interface Point {
   ts: number;
@@ -26,7 +27,9 @@ export default function MetricChart({
   format: (v: number) => string;
   fixedMax?: number;
 }) {
-  const W = 480;
+  // Ancho real del contenedor como ancho del viewBox: el texto de los ejes se
+  // pinta a 9 px de verdad en vez de escalarse con el SVG (ver HistoryChart).
+  const [wrapRef, W] = useElementWidth<HTMLDivElement>(480);
   const H = 140;
   const PAD = { top: 10, right: 8, bottom: 18, left: 8 };
   const [hover, setHover] = useState<number | null>(null);
@@ -50,7 +53,7 @@ export default function MetricChart({
         ? `${path}L${xs[xs.length - 1].toFixed(1)},${baseline}L${xs[0].toFixed(1)},${baseline}Z`
         : '';
     return { path, area, max, xs, ys };
-  }, [points, fixedMax]);
+  }, [points, fixedMax, W]);
 
   // Puntero, no ratón: el mismo manejador sirve para dedo y lápiz.
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -74,7 +77,7 @@ export default function MetricChart({
   const hovered = hover !== null && points[hover] ? points[hover] : null;
 
   return (
-    <div className="relative rounded-xl border border-line bg-bg p-4">
+    <div ref={wrapRef} className="relative rounded-xl border border-line bg-bg p-4">
       <div className="mb-2.5 flex items-baseline justify-between">
         <h3 className="text-xs font-semibold text-sub">{title}</h3>
         <span className="tnum text-base font-semibold text-txt">{current !== null ? format(current) : '—'}</span>
@@ -83,13 +86,15 @@ export default function MetricChart({
         <div className="flex h-[140px] items-center justify-center text-xs text-subtle">Recopilando datos…</div>
       ) : (
         <div className="relative">
+          {/* touch-pan-y: el dedo recorre la serie y el scroll vertical de la página sigue vivo. */}
           <svg
             ref={svgRef}
             viewBox={`0 0 ${W} ${H}`}
-            className="block w-full"
+            className="block w-full touch-pan-y"
+            style={{ height: H }}
             onPointerMove={onMove}
             onPointerDown={onMove}
-            onPointerLeave={() => setHover(null)}
+            onPointerLeave={leaveUnlessTouch(() => setHover(null))}
           >
             {gridYs.map((y, i) => (
               <line key={i} x1={PAD.left} x2={W - PAD.right} y1={y} y2={y} stroke="var(--color-line)" opacity="0.5" strokeWidth="1" />

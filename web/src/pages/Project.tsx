@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { BellRing, Database, FileText, KeyRound, Layers, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
@@ -322,10 +322,13 @@ export default function ProjectPage() {
     setDeleteOpen(true);
   };
 
-  const openService = (id: string | null) => {
-    if (id) setSearchParams({ s: id });
-    else setSearchParams({});
-  };
+  const openService = useCallback(
+    (id: string | null) => {
+      if (id) setSearchParams({ s: id });
+      else setSearchParams({});
+    },
+    [setSearchParams],
+  );
 
   const hasDeployables = services.some((s) => s.type !== 'database');
 
@@ -357,7 +360,7 @@ export default function ProjectPage() {
               <span className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-px font-mono text-xs text-txt">
                 skyway-{proj.slug}
               </span>
-              <CopyButton value={`skyway-${proj.slug}`} className="-ml-0.5 p-0.5" title="Copiar nombre de la red" />
+              <CopyButton value={`skyway-${proj.slug}`} className="-ml-0.5 sm:p-0.5" title="Copiar nombre de la red" />
               <span className="hidden sm:inline">— los servicios se resuelven entre sí por nombre</span>
             </p>
 
@@ -536,8 +539,8 @@ export default function ProjectPage() {
         </div>
 
         {importReport.data?.report && (
-          <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
-            <span className="flex items-center gap-2 text-acc-soft">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
+            <span className="flex min-w-0 flex-1 items-center gap-2 text-acc-soft">
               <FileText size={15} className="shrink-0" />
               Proyecto importado de Railway: consulta el informe con los comandos de copia de datos y pasos pendientes.
             </span>
@@ -546,9 +549,11 @@ export default function ProjectPage() {
                 Ver informe
               </Button>
               <button
+                type="button"
                 onClick={() => dismissReport.mutate()}
-                className="rounded-md p-1.5 text-sub hover:bg-surface2 hover:text-txt"
+                className="press rounded-md p-1.5 text-sub hover:bg-surface2 hover:text-txt max-sm:p-2.5"
                 title="Descartar informe"
+                aria-label="Descartar informe"
               >
                 <X size={14} />
               </button>
@@ -565,7 +570,10 @@ export default function ProjectPage() {
                 value={serviceQuery}
                 onChange={(e) => setServiceQuery(e.target.value)}
                 placeholder="Buscar servicio por nombre, repo o imagen…"
-                className="min-w-0 flex-1 bg-transparent text-xs text-txt outline-none placeholder:text-subtle"
+                autoCapitalize="none"
+                autoCorrect="off"
+                enterKeyHint="search"
+                className="min-w-0 flex-1 bg-transparent text-txt outline-none placeholder:text-subtle sm:text-xs"
               />
               {serviceQuery && (
                 <button
@@ -681,7 +689,7 @@ export default function ProjectPage() {
                 alertCount={alertCounts?.[s.id] ?? 0}
                 deploy={activeDeploys[s.id] ?? null}
                 selected={s.id === selectedId}
-                onClick={() => openService(s.id)}
+                onSelect={openService}
               />
             ))}
           </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react';
@@ -124,7 +124,15 @@ export default function CatalogPage() {
   const setTier = (i: number, patch: Partial<TierDraft>) => setDraft((d) => (d ? { ...d, tiers: d.tiers.map((t, idx) => (idx === i ? { ...t, ...patch } : t)) } : d));
 
   const list = q.data?.products ?? [];
-  const byCat = CAT_ORDER.map((c) => ({ cat: c, items: list.filter((p) => p.category === c) })).filter((g) => g.items.length);
+  // Dentro de cada categoría, alfabético por nombre. `filter` ya devuelve una
+  // copia, así que ordenar no toca la caché de react-query.
+  const byCat = useMemo(
+    () =>
+      CAT_ORDER.map((c) => ({ cat: c, items: list.filter((p) => p.category === c).sort((a, b) => a.name.localeCompare(b.name, 'es')) })).filter(
+        (g) => g.items.length,
+      ),
+    [list],
+  );
   const metered = draft && (draft.billingModel === 'metered' || draft.billingModel === 'tiered');
 
   return (
@@ -175,8 +183,8 @@ export default function CatalogPage() {
                         <p className="mt-0.5 text-sm text-sub tnum">{priceSummary(p)}</p>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
-                        <button onClick={() => setDraft(fromProduct(p))} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Editar"><Pencil size={14} /></button>
-                        <button onClick={() => setToDelete(p)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title={p.in_use ? 'En uso: se archivará' : 'Eliminar'}><Trash2 size={14} /></button>
+                        <button onClick={() => setDraft(fromProduct(p))} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Editar" aria-label="Editar"><Pencil size={14} /></button>
+                        <button onClick={() => setToDelete(p)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title={p.in_use ? 'En uso: se archivará' : 'Eliminar'} aria-label={p.in_use ? 'Archivar' : 'Eliminar'}><Trash2 size={14} /></button>
                       </div>
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs">
@@ -215,7 +223,7 @@ export default function CatalogPage() {
 
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {draft.billingModel !== 'tiered' && (
-                <Field label={draft.billingModel === 'metered' ? 'Precio / unidad' : 'Precio'}><input className="input tnum" type="number" min={0} step="0.01" value={draft.priceUnits} onChange={(e) => set({ priceUnits: e.target.value })} /></Field>
+                <Field label={draft.billingModel === 'metered' ? 'Precio / unidad' : 'Precio'}><input className="input tnum" type="number" inputMode="decimal" min={0} step="0.01" value={draft.priceUnits} onChange={(e) => set({ priceUnits: e.target.value })} /></Field>
               )}
               <Field label="Moneda"><input className="input" maxLength={3} value={draft.currency} onChange={(e) => set({ currency: e.target.value })} /></Field>
               <Field label="Unidad" hint="mes, 1k tokens, hora…"><input className="input" value={draft.unit} onChange={(e) => set({ unit: e.target.value })} /></Field>
@@ -237,7 +245,7 @@ export default function CatalogPage() {
                   </select>
                 </Field>
                 <Field label="Precio por cada" hint="unidades del medidor · 1000000 = por 1M tokens">
-                  <input className="input tnum" type="number" min={1} step={1} value={draft.unitSize} onChange={(e) => set({ unitSize: e.target.value })} />
+                  <input className="input tnum" type="number" inputMode="numeric" min={1} step={1} value={draft.unitSize} onChange={(e) => set({ unitSize: e.target.value })} />
                 </Field>
                 {draft.billingModel === 'tiered' && (
                   <Field label="Modo de tramos">
@@ -253,14 +261,14 @@ export default function CatalogPage() {
             {draft.billingModel === 'tiered' && (
               <Field label="Tramos de precio" hint="«hasta» vacío = último tramo (sin tope)">
                 <div className="flex flex-col gap-1.5">
-                  <div className="grid grid-cols-[1fr_1fr_28px] items-center gap-2 px-1 text-xs text-subtle">
+                  <div className="grid grid-cols-[1fr_1fr_36px] items-center gap-2 px-1 text-xs text-subtle">
                     <span>Hasta (unidades)</span><span>Precio / unidad</span><span />
                   </div>
                   {draft.tiers.map((t, i) => (
-                    <div key={i} className="grid grid-cols-[1fr_1fr_28px] items-center gap-2">
-                      <input className="input tnum" type="number" min={1} placeholder="∞" value={t.upTo} onChange={(e) => setTier(i, { upTo: e.target.value })} />
-                      <input className="input tnum" type="number" min={0} step="0.001" value={t.unitUnits} onChange={(e) => setTier(i, { unitUnits: e.target.value })} />
-                      <button type="button" onClick={() => set({ tiers: draft.tiers.filter((_, idx) => idx !== i) })} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" disabled={draft.tiers.length <= 1}><Trash2 size={13} /></button>
+                    <div key={i} className="grid grid-cols-[1fr_1fr_36px] items-center gap-2">
+                      <input className="input tnum" type="number" inputMode="numeric" min={1} placeholder="∞" value={t.upTo} onChange={(e) => setTier(i, { upTo: e.target.value })} />
+                      <input className="input tnum" type="number" inputMode="decimal" min={0} step="0.001" value={t.unitUnits} onChange={(e) => setTier(i, { unitUnits: e.target.value })} />
+                      <button type="button" onClick={() => set({ tiers: draft.tiers.filter((_, idx) => idx !== i) })} className="justify-self-center rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err disabled:opacity-30 max-sm:p-2.5" disabled={draft.tiers.length <= 1} title="Quitar tramo" aria-label="Quitar tramo"><Trash2 size={13} /></button>
                     </div>
                   ))}
                   <button type="button" onClick={() => set({ tiers: [...draft.tiers, { upTo: '', unitUnits: '0' }] })} className="mt-1 inline-flex w-fit items-center gap-1 text-xs text-acc-soft hover:underline"><Plus size={12} /> Añadir tramo</button>
@@ -269,8 +277,8 @@ export default function CatalogPage() {
             )}
 
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <Field label="IVA (%)"><input className="input tnum" type="number" min={0} max={100} value={draft.taxRate} onChange={(e) => set({ taxRate: e.target.value })} disabled={draft.taxExempt} /></Field>
-              <Field label="IRPF (%)"><input className="input tnum" type="number" min={0} max={100} value={draft.irpfRate} onChange={(e) => set({ irpfRate: e.target.value })} /></Field>
+              <Field label="IVA (%)"><input className="input tnum" type="number" inputMode="decimal" min={0} max={100} value={draft.taxRate} onChange={(e) => set({ taxRate: e.target.value })} disabled={draft.taxExempt} /></Field>
+              <Field label="IRPF (%)"><input className="input tnum" type="number" inputMode="decimal" min={0} max={100} value={draft.irpfRate} onChange={(e) => set({ irpfRate: e.target.value })} /></Field>
               <label className="mt-6 flex cursor-pointer items-center gap-2 text-sm text-sub">
                 <input type="checkbox" checked={draft.taxExempt} onChange={(e) => set({ taxExempt: e.target.checked })} className="accent-acc" /> Exento de IVA
               </label>

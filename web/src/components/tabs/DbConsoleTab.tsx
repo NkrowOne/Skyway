@@ -131,12 +131,15 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
     retry: false,
   });
 
+  // `pointerdown` y no `mousedown`: en táctil el mousedown llega tarde (tras
+  // el toque, con el retardo del gesto) o no llega, y el desplegable del
+  // historial se quedaba abierto hasta tocar dentro de él.
   useEffect(() => {
-    const onClick = (e: MouseEvent) => {
+    const onPointer = (e: PointerEvent) => {
       if (historyRef.current && !historyRef.current.contains(e.target as Node)) setHistoryOpen(false);
     };
-    window.addEventListener('mousedown', onClick);
-    return () => window.removeEventListener('mousedown', onClick);
+    window.addEventListener('pointerdown', onPointer);
+    return () => window.removeEventListener('pointerdown', onPointer);
   }, []);
 
   const run = useMutation({
@@ -226,8 +229,9 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
         )}
         <button
           onClick={() => overview.refetch()}
-          className="ml-auto rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+          className="press ml-auto rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
           title="Recargar esquema"
+          aria-label="Recargar esquema"
         >
           <RefreshCw size={12} className={cx(overview.isFetching && 'animate-spin')} />
         </button>
@@ -249,7 +253,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
                 <button
                   onClick={() => browse.mutate({ object: o.name, mode: 'data' })}
                   disabled={browse.isPending || run.isPending}
-                  className="inline-flex min-w-0 items-center gap-1.5 px-2 py-1 transition-colors hover:text-txt disabled:opacity-60"
+                  className="inline-flex min-w-0 items-center gap-1.5 px-2 py-1 transition-colors hover:text-txt disabled:opacity-60 max-sm:py-2"
                   title={`Ver contenido de ${o.name}`}
                 >
                   <Table2 size={11} className="shrink-0 text-subtle" />
@@ -262,8 +266,9 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
                 <button
                   onClick={() => browse.mutate({ object: o.name, mode: 'describe' })}
                   disabled={browse.isPending || run.isPending}
-                  className="inline-flex items-center border-l border-line px-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-60"
+                  className="inline-flex items-center border-l border-line px-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-60 max-sm:px-2.5"
                   title={engine === 'redis' ? `Tipo, TTL y memoria de ${o.name}` : `Estructura de ${o.name}`}
+                  aria-label={engine === 'redis' ? `Tipo, TTL y memoria de ${o.name}` : `Estructura de ${o.name}`}
                 >
                   <Columns3 size={11} />
                 </button>
@@ -280,7 +285,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
             <button
               key={s.label}
               onClick={() => setQuery(s.query)}
-              className="rounded-full border border-line bg-surface px-2.5 py-0.5 text-xs text-sub transition-colors hover:border-acc/50 hover:text-txt shadow-sm"
+              className="press rounded-full border border-line bg-surface px-2.5 py-0.5 text-xs text-sub transition-colors hover:border-acc/50 hover:text-txt shadow-sm max-sm:py-1.5"
               title={s.hint ?? s.query}
             >
               {s.label}
@@ -307,7 +312,9 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
           // consulta con varios JOIN ocupa seis o siete y había que escribirla
           // mirando por una rendija. El tirador de redimensión sobra: sin él no
           // hay «slider» táctil incómodo en móvil y aquí ya no hace falta.
-          className="min-h-[5.5rem] w-full resize-none bg-transparent px-3.5 py-3 font-mono text-xs leading-relaxed text-txt outline-none placeholder:text-subtle focus-visible:[outline:none]"
+          className="min-h-[5.5rem] w-full resize-none bg-transparent px-3.5 py-3 font-mono text-base leading-relaxed text-txt outline-none placeholder:text-subtle focus-visible:[outline:none] sm:text-xs"
+          autoCapitalize="off"
+          autoCorrect="off"
         />
         <div className="flex flex-wrap items-center gap-2 border-t border-line px-2.5 py-2">
           <Button size="sm" onClick={() => execute()} loading={run.isPending} disabled={!query.trim()}>
@@ -318,7 +325,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
           </span>
           <label
             className={cx(
-              'flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors',
+              'flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors max-sm:py-2',
               allowWrite ? 'border-warn/40 bg-warn/[.1] text-warn' : 'border-line text-sub hover:text-txt',
             )}
             title="Sin marcar, solo se permiten consultas de lectura"
@@ -327,7 +334,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
               type="checkbox"
               checked={allowWrite}
               onChange={(e) => setAllowWrite(e.target.checked)}
-              className="h-3 w-3 accent-warn"
+              className="h-4 w-4 accent-warn"
             />
             Permitir escritura
           </label>
@@ -335,12 +342,13 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
             <div className="relative ml-auto" ref={historyRef}>
               <button
                 onClick={() => setHistoryOpen((v) => !v)}
-                className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-sub transition-colors hover:bg-surface2 hover:text-txt"
+                className="press flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-sub transition-colors hover:bg-surface2 hover:text-txt max-sm:py-2"
+                aria-expanded={historyOpen}
               >
                 <History size={12} /> Historial <ChevronDown size={11} />
               </button>
               {historyOpen && (
-                <div className="absolute right-0 top-8 z-20 max-h-64 w-[440px] max-w-[80vw] overflow-y-auto rounded-xl border border-line bg-surface p-1.5 shadow-lvl3">
+                <div className="absolute right-0 top-9 z-20 max-h-64 w-[440px] max-w-[min(80vw,calc(100vw-2rem))] overflow-y-auto overscroll-contain rounded-xl border border-line bg-surface p-1.5 shadow-lvl3">
                   {history.map((h, i) => (
                     <button
                       key={i}
@@ -349,7 +357,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
                         setHistoryOpen(false);
                         textareaRef.current?.focus();
                       }}
-                      className="block w-full truncate rounded-lg px-2.5 py-1.5 text-left font-mono text-xs text-sub hover:bg-surface2 hover:text-txt"
+                      className="block w-full truncate rounded-lg px-2.5 py-1.5 text-left font-mono text-xs text-sub hover:bg-surface2 hover:text-txt max-sm:py-2.5"
                       title={h}
                     >
                       {h}
@@ -385,14 +393,14 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
               <span className="ml-auto flex items-center gap-1">
                 <button
                   onClick={() => downloadFile(`consulta-${Date.now()}.csv`, resultToCsv(result), 'text/csv')}
-                  className="flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-surface2 hover:text-txt"
+                  className="press flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-surface2 hover:text-txt max-sm:px-2.5 max-sm:py-2"
                   title="Descargar el resultado como CSV"
                 >
                   <Download size={11} /> CSV
                 </button>
                 <button
                   onClick={() => downloadFile(`consulta-${Date.now()}.json`, resultToJson(result), 'application/json')}
-                  className="flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-surface2 hover:text-txt"
+                  className="press flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-surface2 hover:text-txt max-sm:px-2.5 max-sm:py-2"
                   title="Descargar el resultado como JSON"
                 >
                   <Download size={11} /> JSON
@@ -402,7 +410,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
             {result.kind === 'text' && !!result.raw && (
               <button
                 onClick={() => downloadFile(`consulta-${Date.now()}.txt`, result.raw!, 'text/plain')}
-                className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-surface2 hover:text-txt"
+                className="press ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-surface2 hover:text-txt max-sm:px-2.5 max-sm:py-2"
                 title="Descargar el resultado"
               >
                 <Download size={11} /> Descargar

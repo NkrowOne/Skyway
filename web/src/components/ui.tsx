@@ -418,15 +418,17 @@ export function Menu({
      * abierto lo cerraría en mousedown y el click posterior volvería a
      * abrirlo, y el menú no se cerraría nunca desde su propio botón.
      */
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: PointerEvent) => {
       const ancla = ref.current?.parentElement ?? ref.current;
       if (ancla && !ancla.contains(e.target as Node)) onCloseRef.current();
     };
+    // pointerdown cubre ratón y dedo: con mousedown, en iOS el toque fuera
+    // llegaba tarde (tras el touchend) o no llegaba dentro de un scroll.
     window.addEventListener('keydown', onKey);
-    window.addEventListener('mousedown', onDown);
+    window.addEventListener('pointerdown', onDown);
     return () => {
       window.removeEventListener('keydown', onKey);
-      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('pointerdown', onDown);
     };
   }, [open]);
 
@@ -805,7 +807,7 @@ export function Modal({
   return createPortal(
     <div
       className={cx(
-        'fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/55 p-4 pt-[10vh] backdrop-blur-[3px] max-sm:items-end max-sm:p-0 max-sm:pt-8',
+        'fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/55 p-4 pt-[10dvh] backdrop-blur-[3px] max-sm:items-end max-sm:p-0 max-sm:pt-8',
         closing ? 'overlay-out' : 'overlay-in',
       )}
       onMouseDown={pedirCierre}
@@ -825,17 +827,22 @@ export function Modal({
         )}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div aria-hidden className="mx-auto mt-2 h-1 w-9 rounded-full bg-line sm:hidden" />
-        <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
-          <h2 className="text-base font-semibold">{title}</h2>
-          <button
-            onClick={pedirCierre}
-            className="press rounded-md p-1 text-sub transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
-            title="Cerrar (esc)"
-            aria-label="Cerrar"
-          >
-            <X size={16} />
-          </button>
+        {/* En la hoja móvil la cabecera se queda fija: en un formulario largo
+            la X se iba con el scroll y no había forma rápida de salir. */}
+        <div className="max-sm:sticky max-sm:top-0 max-sm:z-10 max-sm:rounded-t-2xl max-sm:bg-surface">
+          <div aria-hidden className="mx-auto mt-2 h-1 w-9 rounded-full bg-line sm:hidden" />
+          <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
+            <h2 className="min-w-0 truncate text-base font-semibold">{title}</h2>
+            <button
+              type="button"
+              onClick={pedirCierre}
+              className="press -my-1 shrink-0 rounded-md p-1 text-sub transition-colors hover:bg-surface2 hover:text-txt max-sm:-my-2 max-sm:p-2.5"
+              title="Cerrar (esc)"
+              aria-label="Cerrar"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
         <div className="p-5">{children}</div>
 
@@ -977,7 +984,9 @@ export function CopyButton({ value, className, title = 'Copiar' }: { value: stri
   const [copied, setCopied] = useState(false);
   return (
     <button
-      className={cx('press rounded-md p-1 text-subtle hover:bg-surface2 hover:text-txt', className)}
+      type="button"
+      // Con el pulgar el icono de 13px se queda en 21px de objetivo: en táctil crece a 36.
+      className={cx('press rounded-md p-1 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5', className)}
       title={title} aria-label={title}
       onClick={() => {
         navigator.clipboard.writeText(value).then(() => {
@@ -1041,7 +1050,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     const id = ++idRef.current;
     // Pila de máximo 3: la más antigua sale.
     setToasts((t) => [...t.filter((x) => !x.closing).slice(-2), { id, message, kind, action: opts?.action }]);
-    setTimeout(() => dismiss(id), 5000);
+    // Con un botón dentro dura más: cinco segundos no dan para leerlo y acertarle con el pulgar.
+    setTimeout(() => dismiss(id), opts?.action ? 8000 : 5000);
   }, [dismiss]);
 
   return (
@@ -1051,7 +1061,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         <div
           aria-live="polite"
           aria-atomic="false"
-          className="fixed bottom-[calc(20px+env(safe-area-inset-bottom))] right-5 z-[60] flex w-[340px] max-w-[calc(100vw-24px)] flex-col"
+          // En móvil ocupan el ancho con el mismo margen a cada lado: anclados a
+          // la derecha con ancho casi total quedaban descentrados y tapaban el
+          // borde izquierdo.
+          className="fixed bottom-[calc(20px+env(safe-area-inset-bottom))] right-5 z-[60] flex w-[340px] max-w-[calc(100vw-24px)] flex-col max-sm:inset-x-3 max-sm:w-auto max-sm:max-w-none"
         >
           {toasts.map((t) => (
             <div key={t.id} className={cx('toast-shell', t.closing && 'toast-shell-closing')}>
@@ -1079,7 +1092,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                       </button>
                     )}
                   </div>
-                  <button onClick={() => dismiss(t.id)} className="press rounded-md p-1 text-subtle hover:text-txt" title="Cerrar">
+                  <button
+                    type="button"
+                    onClick={() => dismiss(t.id)}
+                    className="press -m-1 rounded-md p-1 text-subtle hover:text-txt max-sm:-m-2 max-sm:p-2.5"
+                    title="Cerrar"
+                    aria-label="Cerrar aviso"
+                  >
                     <X size={13} />
                   </button>
                 </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Archive, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket } from 'lucide-react';
@@ -23,7 +23,20 @@ const TYPE_ICON: Record<string, typeof Rocket> = {
   backup_failed: Archive,
 };
 
-function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: () => void; resolving: boolean }) {
+/*
+ * Memoizada: la lista se refresca cada 15 s y al resolver una alerta solo debe
+ * repintarse esa tarjeta. `onResolve` recibe el id en vez de cerrar sobre él
+ * para que la función sea la misma en cada render y el memo sirva de algo.
+ */
+const AlertCard = memo(function AlertCard({
+  alert,
+  onResolve,
+  resolving,
+}: {
+  alert: Alert;
+  onResolve: (id: string) => void;
+  resolving: boolean;
+}) {
   const resolved = !!alert.resolved_at;
   const Icon = TYPE_ICON[alert.type] ?? Rocket;
   const tone: 'err' | 'warn' | 'info' | 'neutral' = resolved
@@ -95,7 +108,7 @@ function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: (
                 <CheckCircle2 size={12} /> Resuelta {fmtDateTime(alert.resolved_at!)}
               </span>
             ) : (
-              <Button size="sm" variant="ghost" className="ml-auto h-[30px]" onClick={onResolve} loading={resolving}>
+              <Button size="sm" variant="ghost" className="ml-auto h-[30px] max-sm:h-10" onClick={() => onResolve(alert.id)} loading={resolving}>
                 Marcar resuelta
               </Button>
             )}
@@ -104,7 +117,7 @@ function AlertCard({ alert, onResolve, resolving }: { alert: Alert; onResolve: (
       </div>
     </div>
   );
-}
+});
 
 export default function AlertsPage() {
   const [openOnly, setOpenOnly] = useState(true);
@@ -200,7 +213,13 @@ export default function AlertsPage() {
       {/* La clave por vista relanza el escalonado al cambiar Activas ↔ Historial. */}
       <div key={String(openOnly)} className="stagger flex flex-col gap-3">
         {list.map((a) => (
-          <AlertCard key={a.id} alert={a} onResolve={() => resolve.mutate(a.id)} resolving={resolve.isPending} />
+          <AlertCard
+            key={a.id}
+            alert={a}
+            onResolve={resolve.mutate}
+            // Solo la alerta que se está resolviendo enseña el spinner; antes lo enseñaban todas a la vez.
+            resolving={resolve.isPending && resolve.variables === a.id}
+          />
         ))}
       </div>
     </div>

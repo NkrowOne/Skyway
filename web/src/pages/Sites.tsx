@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowUpRight, BellRing, ExternalLink, Folder, Globe, Lock, RefreshCw, Rocket, Search, Unlock } from 'lucide-react';
@@ -6,9 +6,16 @@ import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import { Button, Chip, ConfirmModal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { WebsiteEntry } from '../types';
-import { cx, DEPLOY_STATUS_LABEL, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
+import { cx, DEPLOY_STATUS_LABEL, serviceStatus, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
 
-function SiteCard({
+/**
+ * Botón-icono de la tarjeta. En escritorio es discreto (p-1.5); en táctil crece
+ * hasta 40px, que es lo mínimo que se acierta con el pulgar sin mirar.
+ */
+const ICON_BTN =
+  'flex items-center justify-center rounded-lg p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40 max-sm:h-10 max-sm:w-10 max-sm:p-0';
+
+const SiteCard = memo(function SiteCard({
   site,
   tls,
   serverIp,
@@ -19,8 +26,10 @@ function SiteCard({
   site: WebsiteEntry;
   tls: boolean;
   serverIp: string | null;
-  onRestart: () => void;
-  onDeploy: () => void;
+  /* Reciben el sitio/id en vez de cerrar sobre él: así las funciones son las
+     mismas en cada render y el memo de la tarjeta sirve de algo. */
+  onRestart: (site: WebsiteEntry) => void;
+  onDeploy: (serviceId: string) => void;
   busy: boolean;
 }) {
   const navigate = useNavigate();
@@ -118,36 +127,22 @@ function SiteCard({
           </span>
         </span>
         <div className="flex shrink-0 items-center gap-1">
-          <button
-            onClick={onDeploy}
-            disabled={busy}
-            className="rounded-lg p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40"
-            title="Desplegar" aria-label="Desplegar"
-          >
+          <button onClick={() => onDeploy(site.id)} disabled={busy} className={ICON_BTN} title="Desplegar" aria-label="Desplegar">
             <Rocket size={13} />
           </button>
           {isRunning && (
-            <button
-              onClick={onRestart}
-              disabled={busy}
-              className="rounded-lg p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40"
-              title="Reiniciar" aria-label="Reiniciar"
-            >
+            <button onClick={() => onRestart(site)} disabled={busy} className={ICON_BTN} title="Reiniciar" aria-label="Reiniciar">
               <RefreshCw size={13} className={cx(busy && 'animate-spin')} />
             </button>
           )}
-          <Link
-            to={`/projects/${site.projectId}?s=${site.id}`}
-            className="rounded-lg p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt"
-            title="Abrir servicio"
-          >
+          <Link to={`/projects/${site.projectId}?s=${site.id}`} className={ICON_BTN} title="Abrir servicio" aria-label="Abrir servicio">
             <ArrowUpRight size={13} />
           </Link>
         </div>
       </div>
     </div>
   );
-}
+});
 
 export default function SitesPage() {
   const [text, setText] = useState('');
@@ -196,13 +191,23 @@ export default function SitesPage() {
   const all = sites.data?.sites ?? [];
   const filtered = useMemo(() => {
     const q = text.trim().toLowerCase();
-    return all.filter((s) => {
+    const list = all.filter((s) => {
       if (onlyDomains && s.domains.length === 0) return false;
       if (!q) return true;
       return `${s.name} ${s.projectName} ${s.client ?? ''} ${s.domains.join(' ')} ${s.image ?? ''} ${s.repoUrl ?? ''}`
         .toLowerCase()
         .includes(q);
     });
+    /*
+     * Lo que está caído sube arriba: a esta página se entra a comprobar que todo
+     * responde, y un sitio caído en la cuarta fila del móvil no se ve. El resto
+     * conserva el orden del servidor (con dominio primero, luego por nombre):
+     * `sort` es estable, así que ordenar solo por «tiene problema» no lo rompe.
+     * La entrada no trae si la parada fue manual, así que todo exited/dead
+     * cuenta como problema (mejor un falso positivo que esconder una caída).
+     */
+    const problema = (s: WebsiteEntry) => (s.state === 'restarting' || serviceStatus(s.state).kind === 'down' ? 0 : 1);
+    return [...list].sort((a, b) => problema(a) - problema(b));
   }, [all, text, onlyDomains]);
 
   const withDomain = all.filter((s) => s.domains.length > 0).length;
@@ -227,11 +232,12 @@ export default function SitesPage() {
             )}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="relative">
+        {/* A 360px el buscador y el botón no caben en una fila: el campo ocupa todo el ancho y el botón baja. */}
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+          <div className="relative min-w-0 flex-1 sm:flex-none">
             <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
             <input
-              className="input h-9 w-56 pl-8 text-xs"
+              className="input h-9 w-full pl-8 sm:w-56 sm:text-xs"
               placeholder="Buscar servicio, dominio, proyecto…"
               value={text}
               onChange={(e) => setText(e.target.value)}
@@ -295,8 +301,8 @@ export default function SitesPage() {
             site={s}
             tls={sites.data!.tls}
             serverIp={sites.data!.serverIp}
-            onRestart={() => setConfirmRestart(s)}
-            onDeploy={() => deploy.mutate(s.id)}
+            onRestart={setConfirmRestart}
+            onDeploy={deploy.mutate}
             busy={busyIds.has(s.id)}
           />
         ))}

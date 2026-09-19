@@ -33,9 +33,12 @@ export default function Setup() {
     }
   };
 
+  // Con scroll y alineado arriba en móvil: cuando el teclado de iOS encoge el
+  // viewport, un contenedor centrado con overflow-hidden recortaba el botón de
+  // crear la cuenta y no había forma de llegar a él.
   return (
     <div
-      className="relative flex min-h-full items-center justify-center overflow-hidden p-6"
+      className="relative flex min-h-full items-start justify-center overflow-y-auto px-6 py-8 sm:items-center"
       style={{
         background:
           'radial-gradient(1200px 560px at 50% -12%, color-mix(in oklab, var(--color-acc) 5%, transparent), transparent 66%), var(--color-bg)',
@@ -85,8 +88,9 @@ export default function Setup() {
                 <button
                   type="button"
                   onClick={() => setShowPw(!showPw)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-1 leading-none text-subtle transition-colors hover:text-txt"
+                  className="press absolute right-0 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-lg leading-none text-subtle transition-colors hover:text-txt"
                   title={showPw ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                  aria-label={showPw ? 'Ocultar contraseña' : 'Mostrar contraseña'}
                 >
                   {showPw ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>

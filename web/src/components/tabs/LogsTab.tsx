@@ -56,6 +56,8 @@ export default function LogsTab({
   const deployments = deploymentsQuery.data?.deployments ?? [];
   const latestDeploy = deployments[0] ?? null;
   const currentSuccessDeploy = deployments.find((d) => d.status === 'success') ?? latestDeploy;
+  // Despliegue saliendo ahora mismo (si lo hay): en vivo, «Compilación» es su build.
+  const activeDeploy = latestDeploy && isActiveDeploy(latestDeploy.status) ? latestDeploy : null;
 
   // 'live' = logs en vivo del servicio/contenedor activo, o un id concreto de despliegue
   const [selectedDepId, setSelectedDepId] = useState<string>(initialDeploymentId ?? 'live');
@@ -71,9 +73,34 @@ export default function LogsTab({
   const effectiveDepId = isLiveMode ? currentSuccessDeploy?.id : selectedDepId;
   const selectedDeployment = deployments.find((d) => d.id === effectiveDepId);
 
+  /**
+   * Al elegir un despliegue que no llegó a servir (fallido, cancelado o aún
+   * construyéndose) lo que se quiere leer es el build: se abre en Compilación.
+   * Al volver a «En vivo», en Aplicación. Se decide una vez por selección; a
+   * partir de ahí manda la pestaña que toque quien lo esté leyendo.
+   */
+  const autoTabRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (isLiveMode) {
+      if (autoTabRef.current !== 'live') {
+        autoTabRef.current = 'live';
+        setStageTab('runtime');
+      }
+      return;
+    }
+    if (!selectedDeployment || autoTabRef.current === selectedDeployment.id) return;
+    autoTabRef.current = selectedDeployment.id;
+    setStageTab(selectedDeployment.status === 'success' ? 'runtime' : 'build');
+  }, [isLiveMode, selectedDeployment]);
+
   // 2. Logs en vivo (SSE para modo 'live' o para un despliegue en progreso)
   const [liveRows, setLiveRows] = useState<Row[]>([]);
   const [liveNotice, setLiveNotice] = useState<string | null>(null);
+  // El servidor ya está enganchado al contenedor: a partir de aquí, una consola
+  // vacía es que la aplicación no ha escrito nada, no que estemos cargando.
+  const [attached, setAttached] = useState(false);
+  // Se incrementa para reabrir el stream a mano cuando el navegador lo da por perdido.
+  const [streamGen, setStreamGen] = useState(0);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [reachedStart, setReachedStart] = useState(false);
 
@@ -88,17 +115,26 @@ export default function LogsTab({
   }, [liveRows]);
 
   // Manejo de stream en vivo cuando estamos en modo 'live'
+  const streamKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isLiveMode) return;
 
-    setLiveRows([]);
+    // El buffer solo se vacía al cambiar de servicio. Al reabrir el stream
+    // (conexión perdida, vuelta desde un despliegue) se conserva lo leído: el
+    // servidor reenvía la cola y las repetidas se descartan por cursor.
+    if (streamKeyRef.current !== serviceId) {
+      streamKeyRef.current = serviceId;
+      setLiveRows([]);
+      setAttached(false);
+      setReachedStart(false);
+      reachedStartRef.current = false;
+      seenRef.current = new Set();
+    }
     setLiveNotice(null);
     setLoadingOlder(false);
-    setReachedStart(false);
-    reachedStartRef.current = false;
     loadingOlderRef.current = false;
     followingRef.current = true;
-    seenRef.current = new Set();
+    let retryTimer = 0;
 
     const pending: Row[] = [];
     let raf = 0;
@@ -140,13 +176,31 @@ export default function LogsTab({
       const data = JSON.parse((ev as MessageEvent).data);
       setLiveNotice(data.message);
     });
-    es.addEventListener('attached', () => setLiveNotice(null));
+    es.addEventListener('attached', () => {
+      setLiveNotice(null);
+      setAttached(true);
+    });
+    /*
+     * Sin esto, una conexión caída era invisible: la consola seguía diciendo
+     * «En vivo» y no llegaba nada. Si el navegador reintenta solo (CONNECTING)
+     * basta con avisar; si la da por perdida (CLOSED: sesión caducada, 404…)
+     * se reabre a mano a los pocos segundos.
+     */
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED) {
+        setLiveNotice('Conexión perdida con el servidor. Reintentando…');
+        retryTimer = window.setTimeout(() => setStreamGen((g) => g + 1), 5000);
+      } else {
+        setLiveNotice('Reconectando…');
+      }
+    };
 
     return () => {
       if (raf) cancelAnimationFrame(raf);
+      if (retryTimer) window.clearTimeout(retryTimer);
       es.close();
     };
-  }, [serviceId, isLiveMode]);
+  }, [serviceId, isLiveMode, streamGen]);
 
   // Carga de historial hacia atrás en modo 'live'
   const loadOlderLive = useCallback(async () => {
@@ -160,12 +214,27 @@ export default function LogsTab({
         `/services/${serviceId}/logs/tail?limit=${OLDER_PAGE}&before=${encodeURIComponent(before)}`,
       );
       const seen = seenRef.current;
-      const fresh = res.lines.filter((r) => !r.cursor || !seen.has(r.cursor));
+      /*
+       * Docker filtra `until` por segundos, así que la página puede traer
+       * líneas del mismo segundo que el ancla, posteriores a ella. Se quedan
+       * solo las estrictamente anteriores (el cursor RFC3339 ordena como
+       * texto): si no, iban a parar ENCIMA de líneas más antiguas.
+       */
+      const fresh = res.lines.filter((r) => (!r.cursor || r.cursor < before) && (!r.cursor || !seen.has(r.cursor)));
       for (const r of fresh) if (r.cursor) seen.add(r.cursor);
       if (fresh.length) {
         setLiveRows((prev) => {
           let next = fresh.concat(prev);
-          if (next.length > CAP_READING) next = next.slice(0, CAP_READING);
+          // Al pasarse del tope se recorta por DELANTE (lo más antiguo): antes
+          // se cortaba por el final y desaparecían justo las líneas más nuevas.
+          if (next.length > CAP_READING) {
+            const cut = next.length - CAP_READING;
+            for (let i = 0; i < cut; i++) {
+              const c = next[i].cursor;
+              if (c) seen.delete(c);
+            }
+            next = next.slice(cut);
+          }
           return next;
         });
       }
@@ -183,78 +252,145 @@ export default function LogsTab({
 
   // 3. Consulta de logs por despliegue
   const targetDepId = isLiveMode ? currentSuccessDeploy?.id : selectedDepId;
+  const isBuildingSelected = !isLiveMode && !!selectedDeployment && isActiveDeploy(selectedDeployment.status);
+  /*
+   * En vivo, el build de la versión vigente ya no cambia y la salida de la
+   * aplicación llega por el stream: solo hace falta pedirla cuando se lee
+   * Compilación o cuando el contenedor no da nada (parado). Antes se pedían
+   * 3000 líneas a Docker cada 4 s por cada pestaña abierta, mirase lo que
+   * mirase quien la tenía abierta.
+   */
+  const needsDeploymentLogs = !isLiveMode
+    ? !isBuildingSelected
+    : stageTab === 'build' || (liveRows.length === 0 && !attached && liveNotice !== null);
   const deploymentLogsQuery = useQuery({
     queryKey: ['deploymentLogs', targetDepId],
     queryFn: () => api.get<DeploymentLogsResponse>(`/deployments/${targetDepId}/logs`),
-    enabled: !!targetDepId,
-    refetchInterval: isLiveMode ? 4000 : false,
+    enabled: !!targetDepId && needsDeploymentLogs,
+    refetchInterval: isLiveMode && liveRows.length === 0 && !attached ? 10_000 : false,
   });
 
-  // 4. Stream en vivo si es un despliegue EN CURSO
+  // 4. Stream en vivo del build EN CURSO: el despliegue elegido si se está
+  //    construyendo o, en vivo, el que esté saliendo ahora. Antes, con la
+  //    consola en vivo, «Compilación» enseñaba el build de la versión
+  //    ANTERIOR mientras la nueva se compilaba sin que se viera en ningún sitio.
   const [buildingLines, setBuildingLines] = useState<string[]>([]);
-  const isBuildingSelected = !isLiveMode && selectedDeployment && isActiveDeploy(selectedDeployment.status);
+  const buildStreamId = isLiveMode ? activeDeploy?.id ?? null : isBuildingSelected ? selectedDepId : null;
+
+  // Al arrancar un despliegue con la consola en vivo se pasa a Compilación una
+  // vez: es el momento en que se quiere ver. Después manda quien lee.
+  const autoBuildRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isLiveMode || !activeDeploy || autoBuildRef.current === activeDeploy.id) return;
+    autoBuildRef.current = activeDeploy.id;
+    setStageTab('build');
+  }, [isLiveMode, activeDeploy]);
 
   useEffect(() => {
-    if (!isBuildingSelected || !selectedDepId) return;
+    if (!buildStreamId) return;
     setBuildingLines([]);
-    const es = openStream(`/deployments/${selectedDepId}/logs/stream`);
+    const pending: string[] = [];
+    let raf = 0;
+    const flush = () => {
+      raf = 0;
+      if (!pending.length) return;
+      const add = pending.splice(0);
+      setBuildingLines((prev) => (prev.length ? prev.concat(add) : add));
+    };
+    const es = openStream(`/deployments/${buildStreamId}/logs/stream`);
     es.addEventListener('snapshot', (ev) => {
       const data = JSON.parse((ev as MessageEvent).data);
+      pending.length = 0;
       setBuildingLines(data.logs ? data.logs.split('\n').filter(Boolean) : []);
     });
     es.addEventListener('log', (ev) => {
-      const line = JSON.parse((ev as MessageEvent).data).line;
-      setBuildingLines((prev) => [...prev, line]);
+      // Un build escupe ráfagas de cientos de líneas: se agrupan por frame en
+      // vez de forzar un render por línea, que en el móvil se notaba a tirones.
+      pending.push(JSON.parse((ev as MessageEvent).data).line);
+      if (!raf) raf = requestAnimationFrame(flush);
     });
-    return () => es.close();
-  }, [selectedDepId, isBuildingSelected]);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      es.close();
+    };
+  }, [buildStreamId]);
 
   // 5. Consolidación de líneas para el visor
-  const displayLines = useMemo(() => {
-    // Si estamos en streaming en vivo y hay líneas en vivo
-    if (isLiveMode && liveRows.length > 0) {
-      const liveFormatted = liveRows.map((r) =>
-        r.cursor ? `${r.cursor} ${r.line}` : r.line,
-      );
-      if (stageTab === 'runtime') return liveFormatted;
-      if (stageTab === 'build' && deploymentLogsQuery.data) {
-        return deploymentLogsQuery.data.buildLogs
-          ? deploymentLogsQuery.data.buildLogs.split('\n').filter(Boolean)
-          : [];
+  const depData = deploymentLogsQuery.data;
+  const { displayLines, emptyNote } = useMemo(() => {
+    const split = (text: string | null | undefined) => (text ? text.split('\n').filter(Boolean) : []);
+    const bLines = split(depData?.buildLogs);
+    const rLines = split(depData?.runtimeLogs);
+
+    /*
+     * Cada pestaña enseña SOLO lo suyo. Antes, sin salida de aplicación se
+     * colaba el build bajo el rótulo «Aplicación», y en vivo sin datos del
+     * despliegue se colaba la aplicación bajo «Compilación»: quien leía no
+     * podía saber qué estaba mirando. Si no hay nada, se dice por qué.
+     */
+    if (stageTab === 'build') {
+      if (buildStreamId) return { displayLines: buildingLines, emptyNote: 'Esperando la primera línea del build…' };
+      if (depData && bLines.length === 0) {
+        return { displayLines: bLines, emptyNote: 'Este despliegue no dejó salida de compilación.' };
       }
-      return liveFormatted;
+      return { displayLines: bLines, emptyNote: null };
+    }
+
+    if (isLiveMode) {
+      if (liveRows.length > 0) {
+        return { displayLines: liveRows.map((r) => (r.cursor ? `${r.cursor} ${r.line}` : r.line)), emptyNote: null };
+      }
+      /*
+       * Enganchados y sin líneas: el contenedor existe y no ha escrito nada.
+       * Sin contenedor (aviso del servidor): lo último que se archivó del
+       * despliegue vigente, si hay. Antes se enseñaban 3000 líneas del archivo
+       * y un segundo después el stream las sustituía por sus 200: parecía que
+       * el log se borraba solo.
+       */
+      if (attached) return { displayLines: [], emptyNote: 'La aplicación todavía no ha escrito nada.' };
+      if (liveNotice) {
+        return {
+          displayLines: rLines,
+          emptyNote: depData && rLines.length === 0 ? 'No hay contenedor ni salida archivada de esta versión.' : null,
+        };
+      }
+      return { displayLines: [], emptyNote: null };
     }
 
     if (isBuildingSelected) {
-      return buildingLines;
+      return { displayLines: [], emptyNote: 'Este despliegue aún se está construyendo: la aplicación no ha arrancado.' };
     }
+    return {
+      displayLines: rLines,
+      emptyNote:
+        depData && rLines.length === 0 ? 'Este despliegue no guardó salida de la aplicación. Mira Compilación.' : null,
+    };
+  }, [isLiveMode, liveRows, isBuildingSelected, buildStreamId, buildingLines, depData, stageTab, attached, liveNotice]);
 
-    // Datos del despliegue (histórico o servicio detenido)
-    if (deploymentLogsQuery.data) {
-      const data = deploymentLogsQuery.data;
-      const bLines = data.buildLogs ? data.buildLogs.split('\n').filter(Boolean) : [];
-      const rLines = data.runtimeLogs ? data.runtimeLogs.split('\n').filter(Boolean) : [];
-
-      if (stageTab === 'runtime') {
-        return rLines.length > 0 ? rLines : bLines;
-      }
-      return bLines;
-    }
-
-    return [];
-  }, [
-    isLiveMode,
-    liveRows,
-    isBuildingSelected,
-    buildingLines,
-    deploymentLogsQuery.data,
-    stageTab,
-  ]);
+  /*
+   * Qué le pasa a la fuente, para que una consola vacía no diga «sin logs»
+   * mientras todavía está cargando o cuando la petición ha fallado.
+   */
+  const liveRuntime = isLiveMode && stageTab === 'runtime';
+  const viewerState: 'loading' | 'error' | 'ready' =
+    displayLines.length > 0
+      ? 'ready'
+      : liveRuntime
+        ? attached || liveNotice
+          ? liveNotice && needsDeploymentLogs && deploymentLogsQuery.isLoading
+            ? 'loading'
+            : 'ready'
+          : 'loading'
+        : deploymentLogsQuery.isError && !isBuildingSelected
+          ? 'error'
+          : deploymentLogsQuery.isLoading && needsDeploymentLogs
+            ? 'loading'
+            : 'ready';
 
   // Descarga del log
   const handleDownload = useCallback(async () => {
     try {
-      if (isLiveMode && liveRows.length > 0) {
+      if (isLiveMode && stageTab === 'runtime' && liveRows.length > 0) {
         const res = await fetch(`/api/services/${serviceId}/logs/download?timestamps=1`, {
           credentials: 'same-origin',
         });
@@ -282,7 +418,7 @@ export default function LogsTab({
     } catch {
       toast('No se pudo descargar el log', 'err');
     }
-  }, [isLiveMode, liveRows.length, serviceId, targetDepId, toast]);
+  }, [isLiveMode, stageTab, liveRows.length, serviceId, targetDepId, toast]);
 
   // Helper para el color del punto de estado:
   // Verde: Activo
@@ -293,7 +429,7 @@ export default function LogsTab({
     if (d.id === currentSuccessDeploy?.id) return 'bg-ok pulse-soft';
     if (isActiveDeploy(d.status)) return 'bg-warn pulse-soft';
     if (d.status === 'failed' || d.error) return 'bg-err';
-    return 'bg-zinc-500'; // Gris para despliegues inactivos/pasados
+    return 'bg-subtle'; // Gris para despliegues inactivos/pasados
   };
 
   const getFriendlyTitle = (d: Deployment) => {
@@ -312,15 +448,22 @@ export default function LogsTab({
           <button
             type="button"
             onClick={() => setSelectorOpen((o) => !o)}
+            aria-expanded={selectorOpen}
+            aria-haspopup="menu"
             className={cx(
-              'press flex h-9 w-full items-center justify-between gap-2.5 rounded-lg border border-line bg-surface2/70 px-3 text-xs font-medium transition-colors hover:bg-surface2',
+              'press flex h-9 w-full items-center justify-between gap-2.5 rounded-lg border border-line bg-surface2/70 px-3 text-xs font-medium transition-colors hover:bg-surface2 max-sm:h-10',
               isLiveMode ? 'text-txt border-line' : 'text-acc-soft border-acc/40 bg-acc/5',
             )}
           >
             {isLiveMode ? (
-              <div className="flex items-center gap-2 truncate">
+              <div className="flex min-w-0 items-center gap-2 truncate">
                 <span className="pulse-soft h-2 w-2 shrink-0 rounded-full bg-ok" />
-                <span className="font-semibold">Despliegue actual (En vivo)</span>
+                <span className="truncate font-semibold">Despliegue actual (En vivo)</span>
+                {activeDeploy && (
+                  <span className="shrink-0 rounded bg-warn/15 px-1 py-0.5 text-micro font-semibold text-warn">
+                    {DEPLOY_STATUS_LABEL[activeDeploy.status]}
+                  </span>
+                )}
                 {currentSuccessDeploy && (
                   <span className="hidden font-mono text-xs text-subtle md:inline">
                     · {currentSuccessDeploy.commit_msg ? currentSuccessDeploy.commit_msg.slice(0, 32) : currentSuccessDeploy.id.slice(0, 12)}
@@ -328,8 +471,8 @@ export default function LogsTab({
                 )}
               </div>
             ) : (
-              <div className="flex items-center gap-2 truncate">
-                <span className={cx('h-2 w-2 shrink-0 rounded-full', selectedDeployment ? getDotClass(selectedDeployment) : 'bg-zinc-500')} />
+              <div className="flex min-w-0 items-center gap-2 truncate">
+                <span className={cx('h-2 w-2 shrink-0 rounded-full', selectedDeployment ? getDotClass(selectedDeployment) : 'bg-subtle')} />
                 <span className="truncate font-medium">
                   {selectedDeployment ? getFriendlyTitle(selectedDeployment) : selectedDepId}
                 </span>
@@ -353,7 +496,7 @@ export default function LogsTab({
             open={selectorOpen}
             onClose={() => setSelectorOpen(false)}
             align="left"
-            className="max-h-[380px] w-full min-w-[290px] overflow-y-auto sm:w-[360px]"
+            className="max-h-[min(380px,60dvh)] w-full min-w-0 overflow-y-auto overscroll-contain sm:min-w-[290px] sm:w-[360px]"
           >
             <div>
               <div className="px-2.5 py-1.5 eyebrow text-subtle">
@@ -367,16 +510,18 @@ export default function LogsTab({
                   setSelectedDepId('live');
                   setSelectorOpen(false);
                 }}
+                role="menuitemradio"
+                aria-checked={isLiveMode}
                 className={cx(
-                  'flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors',
+                  'flex min-h-10 w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors',
                   isLiveMode ? 'bg-acc/10 font-semibold text-txt' : 'hover:bg-surface2',
                 )}
               >
-                <div className="flex items-center gap-2">
-                  <span className="pulse-soft h-2 w-2 rounded-full bg-ok" />
-                  <div>
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="pulse-soft h-2 w-2 shrink-0 rounded-full bg-ok" />
+                  <div className="min-w-0">
                     <p className="font-semibold text-txt">Despliegue actual (En vivo)</p>
-                    <p className="text-xs text-subtle">
+                    <p className="truncate text-xs text-subtle">
                       {currentSuccessDeploy ? getFriendlyTitle(currentSuccessDeploy) : 'Salida en directo'}
                     </p>
                   </div>
@@ -404,8 +549,10 @@ export default function LogsTab({
                       setSelectedDepId(d.id);
                       setSelectorOpen(false);
                     }}
+                    role="menuitemradio"
+                    aria-checked={isSelected}
                     className={cx(
-                      'flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors',
+                      'flex min-h-10 w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors',
                       isSelected ? 'bg-acc/10 font-semibold text-txt' : 'hover:bg-surface2',
                     )}
                   >
@@ -438,8 +585,12 @@ export default function LogsTab({
           </Menu>
         </div>
 
-        {/* Qué se está leyendo: lo que escribe la app, o lo que escribió el build. */}
+        {/* Qué se está leyendo: lo que escribe la app, o lo que escribió el build.
+            En el móvil ocupa su fila entera y se reparte: dos pastillas anchas
+            que se aciertan con el pulgar. */}
         <Segmented
+          full
+          className="sm:w-fit"
           label="Origen de los logs"
           value={stageTab}
           onChange={setStageTab}
@@ -456,17 +607,20 @@ export default function LogsTab({
         toolbar
         tailAnchor={isLiveMode}
         replicas={replicas}
+        state={viewerState}
+        onRetry={() => deploymentLogsQuery.refetch()}
+        emptyMessage={emptyNote ?? undefined}
         statusNote={
-          isLiveMode
+          isLiveMode && stageTab === 'runtime'
             ? liveNotice
-            : isBuildingSelected
-              ? 'Construyendo despliegue en tiempo real…'
-              : selectedDeployment?.error
+            : buildStreamId && stageTab === 'build'
+              ? `${DEPLOY_STATUS_LABEL[(isLiveMode ? activeDeploy : selectedDeployment)?.status ?? 'building']} en directo…`
+              : !isLiveMode && selectedDeployment?.error
                 ? `Error: ${selectedDeployment.error}`
                 : null
         }
-        onLoadOlder={isLiveMode ? loadOlderLive : undefined}
-        canLoadOlder={isLiveMode && !reachedStart && displayLines.length > 0}
+        onLoadOlder={isLiveMode && stageTab === 'runtime' ? loadOlderLive : undefined}
+        canLoadOlder={isLiveMode && stageTab === 'runtime' && liveRows.length > 0 && !reachedStart}
         loadingOlder={loadingOlder}
         reachedStart={isLiveMode && reachedStart && displayLines.length > 0}
         onDownload={handleDownload}
@@ -478,7 +632,8 @@ export default function LogsTab({
             ? `logs-app-${serviceId}.txt`
             : `deploy-${targetDepId}.txt`
         }
-        className="flex-1 min-h-[300px]"
+        // Sin mínimo en móvil: con el teclado abierto el visor se salía del panel y el final quedaba fuera de alcance.
+        className="min-h-0 flex-1 sm:min-h-[300px]"
       />
     </div>
   );

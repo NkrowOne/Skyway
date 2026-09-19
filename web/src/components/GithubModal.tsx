@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, KeyRound, Plus, RefreshCw, Settings2, ShieldAlert, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { GithubAppStatus, GithubConnector, GithubInstallation } from '../types';
-import { timeAgo } from '../utils';
+import { cx, timeAgo } from '../utils';
 import { ModuleLogo } from './ModuleIcon';
 import { Button, Chip, ConfirmModal, Field, Modal, Skeleton, useToast } from './ui';
 import { useCreateGithubApp } from './useGithubApp';
@@ -185,23 +185,26 @@ export default function GithubModal({
                                 href={inst.manageUrl}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="rounded-md p-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+                                className="press rounded-md p-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
                                 title="Elegir repositorios en GitHub"
+                                aria-label={`Elegir repositorios de @${inst.accountLogin} en GitHub`}
                               >
                                 <Settings2 size={14} />
                               </a>
                             )}
                             <button
                               onClick={() => syncInstallation.mutate(inst.id)}
-                              className="rounded-md p-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+                              className="press rounded-md p-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
                               title="Actualizar estado desde GitHub"
+                              aria-label={`Actualizar @${inst.accountLogin} desde GitHub`}
                             >
-                              <RefreshCw size={14} />
+                              <RefreshCw size={14} className={cx(syncInstallation.isPending && syncInstallation.variables === inst.id && 'animate-spin')} />
                             </button>
                             <button
                               onClick={() => setToDelete({ kind: 'app', id: inst.id, label: `@${inst.accountLogin}` })}
-                              className="rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err"
+                              className="press rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err max-sm:p-2.5"
                               title="Quitar conexión"
+                              aria-label={`Quitar la conexión con @${inst.accountLogin}`}
                             >
                               <Trash2 size={14} />
                             </button>
@@ -239,11 +242,14 @@ export default function GithubModal({
                         {orgOpen ? (
                           <div className="mx-auto flex max-w-xs items-center gap-2">
                             <input
-                              className="input h-8 text-xs"
+                              className="input h-8 sm:text-xs"
                               placeholder="mi-organizacion"
                               value={appOrg}
                               onChange={(e) => setAppOrg(e.target.value)}
                               aria-label="Organización de GitHub"
+                              autoCapitalize="none"
+                              autoCorrect="off"
+                              spellCheck={false}
                             />
                             <button
                               type="button"
@@ -316,8 +322,9 @@ export default function GithubModal({
                       </div>
                       <button
                         onClick={() => setToDelete({ kind: 'pat', id: c.id, label: `${c.name} (@${c.gh_login})` })}
-                        className="rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err"
+                        className="press shrink-0 rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err max-sm:p-2.5"
                         title="Eliminar conector"
+                        aria-label={`Eliminar el conector ${c.name}`}
                       >
                         <Trash2 size={14} />
                       </button>
@@ -343,11 +350,15 @@ export default function GithubModal({
                       hint="github.com → Settings → Developer settings → Tokens (permiso «repo» o solo lectura de los repos)"
                     >
                       <input
-                        className="input font-mono text-xs"
+                        className="input font-mono sm:text-xs"
                         type="password"
                         placeholder="ghp_... o github_pat_..."
                         value={token}
                         onChange={(e) => setToken(e.target.value)}
+                        autoComplete="off"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                       />
                     </Field>
                   </div>

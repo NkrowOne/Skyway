@@ -1,7 +1,11 @@
 import { FastifyReply } from 'fastify';
 
 export interface SseChannel {
-  send: (event: string, data: unknown) => void;
+  /**
+   * `id` opcional: el navegador lo devuelve en `Last-Event-ID` al reconectar
+   * solo, y la ruta puede reanudar desde ahí en vez de empezar de cero.
+   */
+  send: (event: string, data: unknown, id?: string | null) => void;
   close: () => void;
   onClose: (fn: () => void) => void;
   closed: boolean;
@@ -56,9 +60,11 @@ export function sseInit(reply: FastifyReply): SseChannel {
 
   const channel: SseChannel = {
     closed: false,
-    send(event, data) {
+    send(event, data, id) {
       if (channel.closed) return;
-      raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      // El id no puede llevar saltos de línea (rompería el protocolo).
+      const idLine = id ? `id: ${String(id).replace(/[\r\n]+/g, ' ')}\n` : '';
+      raw.write(`${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     },
     close() {
       if (channel.closed) return;

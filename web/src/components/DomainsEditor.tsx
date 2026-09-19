@@ -104,23 +104,31 @@ function DomainRow({
 
   return (
     <div className="rounded-lg border border-line bg-surface px-3 py-2">
-      <div className="flex items-center gap-2">
-        <Globe size={13} className="shrink-0 text-info" />
-        <span className="min-w-0 truncate font-mono text-xs">{domain}</span>
-        <Chip
-          size="sm"
-          tone={meta.tone}
-          onClick={() => setExpanded(!expanded)}
-          title={expanded ? 'Ocultar detalle del DNS' : 'Ver detalle del DNS'}
-          icon={status === 'ok' ? <CheckCircle2 size={10} aria-hidden /> : undefined}
-        >
-          {check.isFetching ? 'Comprobando…' : meta.label}
-        </Chip>
-        <span className="ml-auto flex shrink-0 items-center gap-0.5">
+      {/*
+        En móvil (~360 px) dominio, chip y tres botones no caben en una línea:
+        el dominio se truncaba a nada. Se deja envolver: el dominio con su chip
+        en la primera línea y las acciones pasan a la suya, a tamaño de dedo.
+      */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          <Globe size={13} className="shrink-0 text-info" />
+          <span className="min-w-0 truncate font-mono text-xs">{domain}</span>
+          <Chip
+            size="sm"
+            tone={meta.tone}
+            onClick={() => setExpanded(!expanded)}
+            title={expanded ? 'Ocultar detalle del DNS' : 'Ver detalle del DNS'}
+            icon={status === 'ok' ? <CheckCircle2 size={10} aria-hidden /> : undefined}
+          >
+            {check.isFetching ? 'Comprobando…' : meta.label}
+          </Chip>
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-0.5 max-sm:gap-1">
           <button
             onClick={() => check.refetch()}
-            className="rounded-md p-1 leading-none text-subtle transition-colors hover:text-txt"
+            className="press flex items-center justify-center rounded-md p-1 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:h-10 max-sm:w-10"
             title="Volver a comprobar el DNS"
+            aria-label="Volver a comprobar el DNS"
           >
             <RefreshCw size={12} className={cx(check.isFetching && 'animate-spin')} />
           </button>
@@ -128,12 +136,18 @@ function DomainRow({
             href={`${tls ? 'https' : 'http'}://${domain}`}
             target="_blank"
             rel="noreferrer"
-            className="rounded-md p-1 leading-none text-subtle transition-colors hover:text-txt"
+            className="press flex items-center justify-center rounded-md p-1 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:h-10 max-sm:w-10"
             title="Abrir"
+            aria-label={`Abrir ${domain} en una pestaña nueva`}
           >
             <ExternalLink size={12} />
           </a>
-          <button onClick={onRemove} className="rounded-md p-1 leading-none text-subtle transition-colors hover:text-err" title="Quitar" aria-label="Quitar">
+          <button
+            onClick={onRemove}
+            className="press flex items-center justify-center rounded-md p-1 leading-none text-subtle transition-colors hover:bg-err/10 hover:text-err max-sm:h-10 max-sm:w-10"
+            title="Quitar"
+            aria-label={`Quitar ${domain}`}
+          >
             <X size={12} />
           </button>
         </span>
@@ -252,10 +266,14 @@ export default function DomainsEditor({
               </p>
               <div className="flex gap-2">
                 <input
-                  className="input flex-1 font-mono text-xs"
+                  className="input min-w-0 flex-1 font-mono sm:text-xs"
                   placeholder="apps.midominio.com"
                   value={newRootDomain}
                   onChange={(e) => setNewRootDomain(e.target.value)}
+                  inputMode="url"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                 />
                 <Button
                   size="sm"
@@ -276,10 +294,14 @@ export default function DomainsEditor({
       {/* Dominio propio */}
       <div className="flex gap-2">
         <input
-          className="input flex-1 font-mono text-xs"
+          className="input min-w-0 flex-1 font-mono sm:text-xs"
           placeholder="app.clienteacme.com"
           value={custom}
           onChange={(e) => setCustom(e.target.value)}
+          inputMode="url"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();

@@ -614,25 +614,59 @@ export async function fetchLogsText(
 export async function followLogs(
   name: string,
   onLine: (row: { line: string; cursor: string | null }) => void,
-  tail = 200,
+  tail: number | 'all' = 200,
+  /**
+   * Se llama UNA vez cuando Docker cierra el stream por su cuenta: el
+   * contenedor se ha eliminado (un redespliegue lo sustituye por otro con el
+   * mismo nombre) o el daemon se ha reiniciado. Sin este aviso la ruta SSE
+   * seguía abierta pero muda, y el visor decía «En vivo» sin recibir nada.
+   */
+  onEnd?: () => void,
+  /**
+   * Cursor (sello RFC3339 con nanosegundos) a partir del cual reanudar. Lo
+   * envía el navegador al reconectar (Last-Event-ID): así una conexión que se
+   * cae —el móvil que se bloquea, un cambio de red— retoma justo donde estaba
+   * en vez de volver a las últimas 200 líneas y perder lo de en medio.
+   */
+  since?: string | null,
 ): Promise<() => void> {
   const c = docker.getContainer(name);
-  const stream = (await c.logs({
-    follow: true,
-    stdout: true,
-    stderr: true,
-    tail,
-    timestamps: true,
-  })) as NodeJS.ReadableStream;
+  // `since` acepta un RFC3339Nano en la API de Docker aunque los tipos de
+  // dockerode solo declaren number; `tail: 'all'` igual. Se castea en la frontera.
+  const opts: Record<string, unknown> = { follow: true, stdout: true, stderr: true, timestamps: true };
+  if (since) {
+    opts.since = since;
+    opts.tail = 'all';
+  } else {
+    opts.tail = tail;
+  }
+  const stream = (await c.logs(opts as unknown as Docker.ContainerLogsOptions & { follow: true })) as NodeJS.ReadableStream;
 
   const out = new PassThrough();
   const err = new PassThrough();
-  const feed = lineSplitter((raw) => onLine(splitTimestamp(raw)));
-  out.on('data', feed);
-  err.on('data', feed);
+  // Un troceador POR canal: con uno compartido, un trozo de stderr que llegaba
+  // a media línea de stdout se pegaba dentro de ella y salía una línea corrupta.
+  const feedOut = lineSplitter((raw) => onLine(splitTimestamp(raw)));
+  const feedErr = lineSplitter((raw) => onLine(splitTimestamp(raw)));
+  out.on('data', feedOut);
+  err.on('data', feedErr);
   docker.modem.demuxStream(stream, out, err);
 
+  let stopped = false;
+  let ended = false;
+  const finish = () => {
+    if (stopped || ended) return;
+    ended = true;
+    feedOut.flush();
+    feedErr.flush();
+    onEnd?.();
+  };
+  stream.on('end', finish);
+  stream.on('close', finish);
+  stream.on('error', finish);
+
   const stop = () => {
+    stopped = true;
     try {
       out.removeAllListeners();
       err.removeAllListeners();

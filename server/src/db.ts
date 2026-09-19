@@ -1391,7 +1391,7 @@ export function listDeployments(serviceId: string, limit = 20): DeploymentRow[] 
     .prepare(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
               build_key, repo_config, force_build, created_at, finished_at
-         FROM deployments WHERE service_id = ? ORDER BY created_at DESC LIMIT ?`,
+         FROM deployments WHERE service_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
     )
     .all(serviceId, limit)
     .map((r: any) => ({ ...r, logs: '' })) as DeploymentRow[];
@@ -1446,10 +1446,20 @@ export function lastSuccessfulImage(serviceId: string): string | null {
   return row?.image_tag ?? null;
 }
 
+/**
+ * Sin `logs` ni `runtime_logs`: ningún consumidor los usa y el panel pide este
+ * dato cada 4 s con el servicio abierto. Con `SELECT *` cada sondeo arrastraba
+ * el log de build entero (hasta 400 KB) más el de ejecución archivado.
+ */
 export function latestDeployment(serviceId: string): DeploymentRow | undefined {
-  return db
-    .prepare('SELECT * FROM deployments WHERE service_id = ? ORDER BY created_at DESC LIMIT 1')
-    .get(serviceId) as DeploymentRow | undefined;
+  const row = db
+    .prepare(
+      `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
+              build_key, repo_config, force_build, created_at, finished_at
+         FROM deployments WHERE service_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    )
+    .get(serviceId) as Omit<DeploymentRow, 'logs'> | undefined;
+  return row ? { ...row, logs: '' } : undefined;
 }
 
 /** Estados no terminales: el despliegue sigue vivo y hay versión nueva en camino. */

@@ -58,12 +58,14 @@ export default function ExecModal({
           <div className="relative flex-1">
             <Terminal size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-sub" />
             <input
-              className="input pl-9 font-mono text-xs"
+              className="input pl-9 font-mono sm:text-xs"
               placeholder="npm run migrate"
               value={command}
               onChange={(e) => setCommand(e.target.value)}
               autoFocus
               spellCheck={false}
+              autoCapitalize="none"
+              autoCorrect="off"
             />
           </div>
           <Button type="submit" loading={running}>
@@ -76,7 +78,8 @@ export default function ExecModal({
           {QUICK_COMMANDS.map((c) => (
             <button
               key={c}
-              className="rounded-md border border-line bg-surface2 px-2 py-0.5 font-mono text-xs transition-colors duration-150 hover:border-acc/50"
+              type="button"
+              className="press rounded-md border border-line bg-surface2 px-2 py-0.5 font-mono text-xs transition-colors duration-150 hover:border-acc/50 max-sm:py-1.5"
               onClick={() => {
                 setCommand(c);
                 run(c);
@@ -88,7 +91,9 @@ export default function ExecModal({
         </div>
 
         <div className="relative">
-          <pre className="h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-term p-3 font-mono text-xs leading-relaxed text-txt/[.88]">
+          {/* En móvil la salida se acota al 40 % de la pantalla real (dvh): con
+              el teclado abierto, 288 px fijos dejaban el campo de comando fuera. */}
+          <pre className="h-[min(288px,40dvh)] overflow-auto overscroll-contain whitespace-pre-wrap break-all rounded-lg border border-line bg-term p-3 font-mono text-xs leading-relaxed text-txt/[.88] sm:h-72">
             {running ? 'Ejecutando...' : result ? result.output || '(sin salida)' : 'La salida aparecerá aquí. El comando corre con `sh -c` dentro del contenedor.'}
           </pre>
           {result && (

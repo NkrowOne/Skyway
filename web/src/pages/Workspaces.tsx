@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { Building2, CreditCard, Plus, SlidersHorizontal } from 'lucide-react';
@@ -104,7 +104,11 @@ export default function WorkspacesPage() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  const list = workspaces.data?.workspaces ?? [];
+  // Alfabético por nombre (copia: la caché de react-query no se muta).
+  const list = useMemo(
+    () => [...(workspaces.data?.workspaces ?? [])].sort((a, b) => a.name.localeCompare(b.name, 'es')),
+    [workspaces.data?.workspaces],
+  );
 
   if (isOwner) return null; // redirigiendo
 
@@ -204,12 +208,12 @@ export default function WorkspacesPage() {
                   ))}
               </select>
             </Field>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field label="Email de facturación" hint="opcional">
-                <input className="input" type="email" value={draft.billingEmail} onChange={(e) => setDraft({ ...draft, billingEmail: e.target.value })} placeholder="pagos@acme.com" />
+                <input className="input" type="email" autoComplete="email" autoCapitalize="none" value={draft.billingEmail} onChange={(e) => setDraft({ ...draft, billingEmail: e.target.value })} placeholder="pagos@acme.com" />
               </Field>
               <Field label="Día de cobro" hint="1–28 del mes">
-                <input className="input tnum" type="number" min={1} max={28} value={draft.billingDay} onChange={(e) => setDraft({ ...draft, billingDay: e.target.value })} />
+                <input className="input tnum" type="number" inputMode="numeric" min={1} max={28} value={draft.billingDay} onChange={(e) => setDraft({ ...draft, billingDay: e.target.value })} />
               </Field>
             </div>
             <div className="mt-1.5 flex justify-end gap-2">

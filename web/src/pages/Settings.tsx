@@ -6,7 +6,7 @@ import { api } from '../api';
 import GithubAppPanel from '../components/GithubAppPanel';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { ModuleLogo } from '../components/ModuleIcon';
-import { Button, Chip, ConfirmModal, Field, useFlash, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, ErrorState, Field, Skeleton, useFlash, useToast } from '../components/ui';
 import { DockerUsage, GithubConnector, SystemInfo } from '../types';
 import { cx, fmtBytes, fmtDateTime, timeAgo } from '../utils';
 
@@ -333,6 +333,12 @@ export default function SettingsPage() {
   };
 
   const sys = system.data;
+  /*
+   * El formulario solo existe con los ajustes cargados. Si la consulta falla y
+   * se pintara igual, saldría vacío y «Guardar» machacaría la configuración
+   * real con campos en blanco.
+   */
+  const settingsReady = !!settings.data;
 
   return (
     <div className="mx-auto flex max-w-[780px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
@@ -341,51 +347,71 @@ export default function SettingsPage() {
         <p className="mt-1.5 text-sm text-sub">Configuración global del servidor: dominios, integraciones, alertas y mantenimiento</p>
       </div>
 
-      <SettingsSection
-        icon={<Globe size={15} />}
-        iconClass="text-info"
-        title="Dominios y TLS"
-        description="Subdominios en un clic y certificados automáticos"
-      >
-        <div className="flex flex-col gap-3.5">
-          <Field
-            label="Dominio raíz"
-            hint="Genera subdominios por servicio en un clic. Requisito único: un registro A comodín (*.tudominio) apuntando a la IP del servidor."
-          >
-            <input className="input" placeholder="apps.midominio.com" value={rootDomain} onChange={(e) => setRootDomain(e.target.value)} />
-          </Field>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="Email para Let's Encrypt" hint="Con email definido, TLS automático en cada dominio">
-              <input
-                className="input"
-                type="email"
-                placeholder="tu@email.com"
-                value={letsencryptEmail}
-                onChange={(e) => setLetsencryptEmail(e.target.value)}
-              />
-            </Field>
-            <Field
-              label={
-                <>
-                  IP pública del servidor {serverIpInfo.data?.ip && !serverIp && <OkPill label="autodetectada" />}
-                </>
-              }
-              hint={
-                serverIpInfo.data?.ip
-                  ? `Detectada: ${serverIpInfo.data.ip}. Rellénala solo si es incorrecta; verifica los DNS.`
-                  : 'No se pudo detectar automáticamente: indícala para verificar los DNS de tus dominios.'
-              }
-            >
-              <input
-                className="input font-mono text-xs"
-                placeholder={serverIpInfo.data?.ip ?? '203.0.113.10'}
-                value={serverIp}
-                onChange={(e) => setServerIp(e.target.value)}
-              />
-            </Field>
-          </div>
+      {settings.isLoading && (
+        <div aria-busy className="flex flex-col gap-5">
+          <Skeleton className="h-52 w-full rounded-xl" />
+          <Skeleton className="h-40 w-full rounded-xl" />
         </div>
-      </SettingsSection>
+      )}
+
+      {settings.isError && !settings.data && (
+        <div className="card">
+          <ErrorState
+            title="No se han podido cargar los ajustes"
+            error={settings.error}
+            onRetry={() => settings.refetch()}
+            retrying={settings.isFetching}
+          />
+        </div>
+      )}
+
+      {settingsReady && (
+        <SettingsSection
+          icon={<Globe size={15} />}
+          iconClass="text-info"
+          title="Dominios y TLS"
+          description="Subdominios en un clic y certificados automáticos"
+        >
+          <div className="flex flex-col gap-3.5">
+            <Field
+              label="Dominio raíz"
+              hint="Genera subdominios por servicio en un clic. Requisito único: un registro A comodín (*.tudominio) apuntando a la IP del servidor."
+            >
+              <input className="input" placeholder="apps.midominio.com" value={rootDomain} onChange={(e) => setRootDomain(e.target.value)} />
+            </Field>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field label="Email para Let's Encrypt" hint="Con email definido, TLS automático en cada dominio">
+                <input
+                  className="input"
+                  type="email"
+                  placeholder="tu@email.com"
+                  value={letsencryptEmail}
+                  onChange={(e) => setLetsencryptEmail(e.target.value)}
+                />
+              </Field>
+              <Field
+                label={
+                  <>
+                    IP pública del servidor {serverIpInfo.data?.ip && !serverIp && <OkPill label="autodetectada" />}
+                  </>
+                }
+                hint={
+                  serverIpInfo.data?.ip
+                    ? `Detectada: ${serverIpInfo.data.ip}. Rellénala solo si es incorrecta; verifica los DNS.`
+                    : 'No se pudo detectar automáticamente: indícala para verificar los DNS de tus dominios.'
+                }
+              >
+                <input
+                  className="input font-mono text-xs"
+                  placeholder={serverIpInfo.data?.ip ?? '203.0.113.10'}
+                  value={serverIp}
+                  onChange={(e) => setServerIp(e.target.value)}
+                />
+              </Field>
+            </div>
+          </div>
+        </SettingsSection>
+      )}
 
       <SettingsSection
         id="github"
@@ -397,187 +423,218 @@ export default function SettingsPage() {
         <GithubAppPanel />
       </SettingsSection>
 
-      <SettingsSection
-        icon={<KeyRound size={15} />}
-        iconClass="text-subtle"
-        title="Token global de GitHub"
-        description={
-          <>
-            Alternativa a la App: un token de acceso personal (permiso <span className="font-mono">repo</span>) que se
-            usa cuando el servicio no tiene ninguna conexión propia. Caduca y ve todo lo que ve esa cuenta.
-          </>
-        }
-        aside={settings.data?.settings.hasGithubToken ? <OkPill label="Conectado" /> : undefined}
-      >
-        <Field label="Token de GitHub" hint="Se usa para clonar y para los webhooks de auto-deploy de cada servicio">
-          <input
-            className="input font-mono text-xs"
-            type="password"
-            placeholder={settings.data?.settings.hasGithubToken ? '••••••••••••  (escribir para reemplazar)' : 'ghp_... o github_pat_...'}
-            value={githubToken}
-            onChange={(e) => {
-              setGithubToken(e.target.value);
-              setGithubTest(null);
-            }}
-          />
-        </Field>
-
-        {githubTest && (
-          <div
-            className={cx(
-              'mt-3 rounded-lg border px-3 py-2 text-xs',
-              githubTest.ok ? 'border-ok/30 bg-ok/[.08] text-ok' : 'border-err/30 bg-err/[.08] text-err',
-            )}
-          >
-            {githubTest.ok ? (
+      {settingsReady && (
+        <>
+          <SettingsSection
+            icon={<KeyRound size={15} />}
+            iconClass="text-subtle"
+            title="Token global de GitHub"
+            description={
               <>
-                Conectado como <span className="font-semibold">@{githubTest.login}</span>
-                {githubTest.name ? ` (${githubTest.name})` : ''} ·{' '}
-                {githubTest.tokenType === 'fine-grained'
-                  ? 'token fine-grained'
-                  : githubTest.scopes.length
-                    ? `permisos: ${githubTest.scopes.join(', ')}`
-                    : 'sin scopes clásicos'}
-                {githubTest.tokenType === 'classic' && !githubTest.scopes.includes('repo') && (
-                  <span className="mt-1 flex items-start gap-1 text-warn">
-                    <AlertTriangle size={12} className="mt-0.5 shrink-0" /> Falta el permiso «repo»: no podrá clonar repositorios privados.
-                  </span>
-                )}
+                Alternativa a la App: un token de acceso personal (permiso <span className="font-mono">repo</span>) que se
+                usa cuando el servicio no tiene ninguna conexión propia. Caduca y ve todo lo que ve esa cuenta.
               </>
-            ) : (
-              githubTest.message
-            )}
-          </div>
-        )}
-
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={testGithub} loading={githubTesting}>
-            Probar conexión
-          </Button>
-          {settings.data?.settings.hasGithubToken && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => removeGithub.mutate()}
-              loading={removeGithub.isPending}
-              className="text-err hover:bg-err/[.1]"
-            >
-              <Trash2 size={13} /> Eliminar token
-            </Button>
-          )}
-          <span className="text-xs text-subtle">
-            «Probar» valida el token escrito, o el guardado si el campo está vacío.
-          </span>
-        </div>
-
-        <div className="mt-5 border-t border-line pt-4">
-          <h3 className="text-xs font-semibold">Conectores por proyecto</h3>
-          <p className="mt-1 text-xs text-subtle">
-            Cuentas de GitHub que tus clientes han conectado a sus proyectos (desde el botón «Conectores» del proyecto).
-            Sus servicios clonan con ese token en lugar del global. Aquí puedes revocarlos todos.
-          </p>
-          {(connectors.data?.connectors.length ?? 0) === 0 ? (
-            <p className="mt-3 rounded-lg border border-dashed border-line px-3.5 py-3.5 text-center text-xs text-subtle">
-              Ningún proyecto tiene conectores todavía.
-            </p>
-          ) : (
-            <div className="mt-3 overflow-hidden rounded-lg border border-line">
-              {connectors.data!.connectors.map((c) => (
-                <div key={c.id} className="flex items-center gap-3 border-b border-line/60 bg-bg px-3.5 py-2 text-xs last:border-b-0">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate">
-                      <span className="font-medium">{c.project_name}</span>
-                      {c.project_client ? <span className="text-subtle"> · {c.project_client}</span> : ''}
-                      <span className="text-sub"> — {c.name} </span>
-                      <span className="font-mono text-xs text-sub">@{c.gh_login}</span>
-                    </p>
-                    <p className="mt-px truncate text-xs text-subtle">
-                      conectado por {c.created_by} · {timeAgo(c.created_at)}
-                      {c.last_used_at ? ` · último despliegue ${timeAgo(c.last_used_at)}` : ' · sin usar'}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setConnectorToRevoke(c)}
-                    className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err"
-                    title="Revocar conector"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </SettingsSection>
-
-      <ConfirmModal
-        open={!!connectorToRevoke}
-        onClose={() => setConnectorToRevoke(null)}
-        onConfirm={() => connectorToRevoke && revokeConnector.mutate(connectorToRevoke.id)}
-        title="Revocar conector"
-        message={`«${connectorToRevoke?.name}» (@${connectorToRevoke?.gh_login}) de «${connectorToRevoke?.project_name}» dejará de usarse: sus servicios pasarán al token global en el próximo despliegue.`}
-        confirmLabel="Revocar"
-        loading={revokeConnector.isPending}
-      />
-
-      <SettingsSection
-        icon={<BellRing size={15} />}
-        iconClass="text-warn"
-        title="Alertas y notificaciones"
-        description="Caídas, bucles de reinicio y CPU/RAM sostenidas — sin tener el panel abierto"
-      >
-        <div className="mb-3.5 grid grid-cols-3 gap-3">
-          <Field label="Umbral CPU (%)" hint="por defecto 90">
-            <input className="input tnum" type="number" min={10} max={100} placeholder="90" value={cpuPct} onChange={(e) => setCpuPct(e.target.value)} />
-          </Field>
-          <Field label="Umbral RAM (%)" hint="por defecto 90">
-            <input className="input tnum" type="number" min={10} max={100} placeholder="90" value={memPct} onChange={(e) => setMemPct(e.target.value)} />
-          </Field>
-          <Field label="Sostenido (min)" hint="por defecto 5">
-            <input className="input tnum" type="number" min={1} max={120} placeholder="5" value={sustainMin} onChange={(e) => setSustainMin(e.target.value)} />
-          </Field>
-        </div>
-        <div className="flex flex-col gap-3">
-          <Field label="Webhook genérico (POST JSON)" hint="Para n8n, Zapier, tu propio endpoint…">
-            <input className="input font-mono text-xs" placeholder="https://…" value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} />
-          </Field>
-          <Field label="Webhook de Discord" hint="Canal → Ajustes → Integraciones → Webhooks">
-            <input
-              className="input font-mono text-xs"
-              placeholder="https://discord.com/api/webhooks/…"
-              value={discordUrl}
-              onChange={(e) => setDiscordUrl(e.target.value)}
-            />
-          </Field>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field
-              label={<>Token del bot de Telegram {settings.data?.settings.hasTelegramToken && <OkPill label="configurado" />}</>}
-              hint={settings.data?.settings.hasTelegramToken ? undefined : 'Crea un bot con @BotFather'}
-            >
+            }
+            aside={settings.data?.settings.hasGithubToken ? <OkPill label="Conectado" /> : undefined}
+          >
+            <Field label="Token de GitHub" hint="Se usa para clonar y para los webhooks de auto-deploy de cada servicio">
               <input
                 className="input font-mono text-xs"
                 type="password"
-                placeholder={settings.data?.settings.hasTelegramToken ? '••••••••  (escribir para reemplazar)' : '123456:ABC...'}
-                value={telegramToken}
-                onChange={(e) => setTelegramToken(e.target.value)}
+                placeholder={settings.data?.settings.hasGithubToken ? '••••••••••••  (escribir para reemplazar)' : 'ghp_... o github_pat_...'}
+                value={githubToken}
+                onChange={(e) => {
+                  setGithubToken(e.target.value);
+                  setGithubTest(null);
+                }}
               />
             </Field>
-            <Field label="Chat ID de Telegram" hint="Tu ID o el de un grupo (@userinfobot)">
-              <input
-                className="input font-mono text-xs"
-                placeholder="-100123456789"
-                value={telegramChat}
-                onChange={(e) => setTelegramChat(e.target.value)}
-              />
-            </Field>
-          </div>
-        </div>
-        <div className="mt-3.5 flex justify-end">
-          <Button variant="secondary" size="sm" onClick={testChannels} loading={testing}>
-            Enviar notificación de prueba
-          </Button>
-        </div>
-      </SettingsSection>
+
+            {githubTest && (
+              <div
+                className={cx(
+                  'mt-3 rounded-lg border px-3 py-2 text-xs',
+                  githubTest.ok ? 'border-ok/30 bg-ok/[.08] text-ok' : 'border-err/30 bg-err/[.08] text-err',
+                )}
+              >
+                {githubTest.ok ? (
+                  <>
+                    Conectado como <span className="font-semibold">@{githubTest.login}</span>
+                    {githubTest.name ? ` (${githubTest.name})` : ''} ·{' '}
+                    {githubTest.tokenType === 'fine-grained'
+                      ? 'token fine-grained'
+                      : githubTest.scopes.length
+                        ? `permisos: ${githubTest.scopes.join(', ')}`
+                        : 'sin scopes clásicos'}
+                    {githubTest.tokenType === 'classic' && !githubTest.scopes.includes('repo') && (
+                      <span className="mt-1 flex items-start gap-1 text-warn">
+                        <AlertTriangle size={12} className="mt-0.5 shrink-0" /> Falta el permiso «repo»: no podrá clonar repositorios privados.
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  githubTest.message
+                )}
+              </div>
+            )}
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button variant="secondary" size="sm" onClick={testGithub} loading={githubTesting}>
+                Probar conexión
+              </Button>
+              {settings.data?.settings.hasGithubToken && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeGithub.mutate()}
+                  loading={removeGithub.isPending}
+                  className="text-err hover:bg-err/[.1]"
+                >
+                  <Trash2 size={13} /> Eliminar token
+                </Button>
+              )}
+              <span className="text-xs text-subtle">
+                «Probar» valida el token escrito, o el guardado si el campo está vacío.
+              </span>
+            </div>
+
+            <div className="mt-5 border-t border-line pt-4">
+              <h3 className="text-xs font-semibold">Conectores por proyecto</h3>
+              <p className="mt-1 text-xs text-subtle">
+                Cuentas de GitHub que tus clientes han conectado a sus proyectos (desde el botón «Conectores» del proyecto).
+                Sus servicios clonan con ese token en lugar del global. Aquí puedes revocarlos todos.
+              </p>
+              {connectors.isLoading ? (
+                <Skeleton className="mt-3 h-12 w-full rounded-lg" />
+              ) : connectors.isError ? (
+                <ErrorState
+                  compact
+                  className="mt-3 rounded-lg border border-dashed border-line"
+                  title="No se han podido cargar los conectores"
+                  error={connectors.error}
+                  onRetry={() => connectors.refetch()}
+                  retrying={connectors.isFetching}
+                />
+              ) : (connectors.data?.connectors.length ?? 0) === 0 ? (
+                <p className="mt-3 rounded-lg border border-dashed border-line px-3.5 py-3.5 text-center text-xs text-subtle">
+                  Ningún proyecto tiene conectores todavía.
+                </p>
+              ) : (
+                <div className="mt-3 overflow-hidden rounded-lg border border-line">
+                  {connectors.data!.connectors.map((c) => (
+                    <div key={c.id} className="flex items-center gap-3 border-b border-line/60 bg-bg px-3.5 py-2 text-xs last:border-b-0">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate">
+                          <span className="font-medium">{c.project_name}</span>
+                          {c.project_client ? <span className="text-subtle"> · {c.project_client}</span> : ''}
+                          <span className="text-sub"> — {c.name} </span>
+                          <span className="font-mono text-xs text-sub">@{c.gh_login}</span>
+                        </p>
+                        <p className="mt-px truncate text-xs text-subtle">
+                          conectado por {c.created_by} · {timeAgo(c.created_at)}
+                          {c.last_used_at ? ` · último despliegue ${timeAgo(c.last_used_at)}` : ' · sin usar'}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setConnectorToRevoke(c)}
+                        className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err max-sm:p-2.5"
+                        title="Revocar conector"
+                        aria-label="Revocar conector"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </SettingsSection>
+
+          <ConfirmModal
+            open={!!connectorToRevoke}
+            onClose={() => setConnectorToRevoke(null)}
+            onConfirm={() => connectorToRevoke && revokeConnector.mutate(connectorToRevoke.id)}
+            title="Revocar conector"
+            message={`«${connectorToRevoke?.name}» (@${connectorToRevoke?.gh_login}) de «${connectorToRevoke?.project_name}» dejará de usarse: sus servicios pasarán al token global en el próximo despliegue.`}
+            confirmLabel="Revocar"
+            loading={revokeConnector.isPending}
+          />
+
+          <SettingsSection
+            icon={<BellRing size={15} />}
+            iconClass="text-warn"
+            title="Alertas y notificaciones"
+            description="Caídas, bucles de reinicio y CPU/RAM sostenidas — sin tener el panel abierto"
+          >
+            {/* Tres columnas a 360px dejaban los campos en ~90px, sin sitio para el rótulo. */}
+            <div className="mb-3.5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <Field label="Umbral CPU (%)" hint="por defecto 90">
+                <input className="input tnum" type="number" min={10} max={100} placeholder="90" value={cpuPct} onChange={(e) => setCpuPct(e.target.value)} />
+              </Field>
+              <Field label="Umbral RAM (%)" hint="por defecto 90">
+                <input className="input tnum" type="number" min={10} max={100} placeholder="90" value={memPct} onChange={(e) => setMemPct(e.target.value)} />
+              </Field>
+              <Field label="Sostenido (min)" hint="por defecto 5">
+                <input className="input tnum" type="number" min={1} max={120} placeholder="5" value={sustainMin} onChange={(e) => setSustainMin(e.target.value)} />
+              </Field>
+            </div>
+            <div className="flex flex-col gap-3">
+              <Field label="Webhook genérico (POST JSON)" hint="Para n8n, Zapier, tu propio endpoint…">
+                <input className="input font-mono text-xs" placeholder="https://…" value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} />
+              </Field>
+              <Field label="Webhook de Discord" hint="Canal → Ajustes → Integraciones → Webhooks">
+                <input
+                  className="input font-mono text-xs"
+                  placeholder="https://discord.com/api/webhooks/…"
+                  value={discordUrl}
+                  onChange={(e) => setDiscordUrl(e.target.value)}
+                />
+              </Field>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field
+                  label={<>Token del bot de Telegram {settings.data?.settings.hasTelegramToken && <OkPill label="configurado" />}</>}
+                  hint={settings.data?.settings.hasTelegramToken ? undefined : 'Crea un bot con @BotFather'}
+                >
+                  <input
+                    className="input font-mono text-xs"
+                    type="password"
+                    placeholder={settings.data?.settings.hasTelegramToken ? '••••••••  (escribir para reemplazar)' : '123456:ABC...'}
+                    value={telegramToken}
+                    onChange={(e) => setTelegramToken(e.target.value)}
+                  />
+                </Field>
+                <Field label="Chat ID de Telegram" hint="Tu ID o el de un grupo (@userinfobot)">
+                  <input
+                    className="input font-mono text-xs"
+                    placeholder="-100123456789"
+                    value={telegramChat}
+                    onChange={(e) => setTelegramChat(e.target.value)}
+                  />
+                </Field>
+              </div>
+            </div>
+            <div className="mt-3.5 flex justify-end">
+              <Button variant="secondary" size="sm" onClick={testChannels} loading={testing}>
+                Enviar notificación de prueba
+              </Button>
+            </div>
+          </SettingsSection>
+        </>
+      )}
+
+      {system.isLoading && <Skeleton className="h-40 w-full rounded-xl" />}
+
+      {system.isError && !system.data && (
+        <SettingsSection icon={<Cpu size={15} />} iconClass="text-acc-soft" title="Sistema" description="Estado del host y uso de disco de Docker">
+          <ErrorState
+            compact
+            title="No se ha podido leer el estado del sistema"
+            error={system.error}
+            onRetry={() => system.refetch()}
+            retrying={system.isFetching}
+          />
+        </SettingsSection>
+      )}
 
       {sys && (
         <SettingsSection
@@ -651,7 +708,18 @@ export default function SettingsPage() {
           </Button>
         }
       >
-        {(sysBackups.data?.backups.length ?? 0) === 0 ? (
+        {sysBackups.isLoading ? (
+          <Skeleton className="h-24 w-full rounded-lg" />
+        ) : sysBackups.isError ? (
+          <ErrorState
+            compact
+            className="rounded-lg border border-dashed border-line"
+            title="No se han podido listar los snapshots"
+            error={sysBackups.error}
+            onRetry={() => sysBackups.refetch()}
+            retrying={sysBackups.isFetching}
+          />
+        ) : (sysBackups.data?.backups.length ?? 0) === 0 ? (
           <p className="rounded-lg border border-dashed border-line px-3.5 py-4 text-center text-xs text-subtle">
             Aún no hay snapshots. El primero se creará esta madrugada, o pulsa «Crear ahora».
           </p>
@@ -667,15 +735,17 @@ export default function SettingsPage() {
                 <span className="tnum w-16 shrink-0 text-right text-xs text-subtle">{fmtBytes(b.size)}</span>
                 <a
                   href={`/api/system/backups/${encodeURIComponent(b.file)}/download`}
-                  className="rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+                  className="rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
                   title="Descargar (guárdalo fuera del servidor)"
+                  aria-label="Descargar snapshot"
                 >
                   <Download size={13} />
                 </a>
                 <button
                   onClick={() => deleteSysBackup.mutate(b.file)}
-                  className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err"
+                  className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err max-sm:p-2.5"
                   title="Eliminar"
+                  aria-label="Eliminar snapshot"
                 >
                   <Trash2 size={13} />
                 </button>
@@ -690,33 +760,38 @@ export default function SettingsPage() {
         </p>
       </SettingsSection>
 
-      <div className="safe-b sticky bottom-0 mt-1 flex items-center justify-between gap-2.5 border-t border-line bg-bg/90 py-3 backdrop-blur-lg">
-        {dirty ? (
-          <span className="flex items-center gap-1.5 text-xs text-warn">
-            <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />
-            Cambios sin guardar · se aplican al guardar
-          </span>
-        ) : (
-          <span className="text-xs text-subtle">Sin cambios</span>
-        )}
-        <div className="flex items-center gap-2">
-          {dirty && (
-            <Button variant="ghost" size="sm" onClick={discardSettings}>
-              Descartar
-            </Button>
+      {/* Barra de guardado: solo con ajustes cargados (sin ellos no hay nada que guardar).
+          El relleno inferior suma el safe-area a mano: `.safe-b` pisaba el `py-3` y
+          en iPhone la barra quedaba pegada al gesto del sistema. */}
+      {settingsReady && (
+        <div className="sticky bottom-0 mt-1 flex items-center justify-between gap-2.5 border-t border-line bg-bg/90 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur-lg">
+          {dirty ? (
+            <span className="flex items-center gap-1.5 text-xs text-warn">
+              <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />
+              Cambios sin guardar · se aplican al guardar
+            </span>
+          ) : (
+            <span className="text-xs text-subtle">Sin cambios</span>
           )}
-          <Button
-            variant={dirty ? 'primary' : 'secondary'}
-            size="sm"
-            onClick={() => save.mutate()}
-            loading={save.isPending}
-            disabled={!dirty}
-            success={saved && !dirty}
-          >
-            Guardar ajustes
-          </Button>
+          <div className="flex items-center gap-2">
+            {dirty && (
+              <Button variant="ghost" size="sm" onClick={discardSettings}>
+                Descartar
+              </Button>
+            )}
+            <Button
+              variant={dirty ? 'primary' : 'secondary'}
+              size="sm"
+              onClick={() => save.mutate()}
+              loading={save.isPending}
+              disabled={!dirty}
+              success={saved && !dirty}
+            >
+              Guardar ajustes
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

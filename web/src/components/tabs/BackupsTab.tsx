@@ -45,7 +45,7 @@ function ScheduleSection({ service, onChanged }: { service: Service; onChanged: 
         </h3>
         <p className="mt-1 text-xs text-subtle">Se ejecutan de madrugada, con retención automática</p>
       </div>
-      <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2.5">
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
         <Field label="Frecuencia">
           <select className="input" value={schedule} onChange={(e) => setSchedule(e.target.value)}>
             <option value="">Desactivados</option>
@@ -54,9 +54,17 @@ function ScheduleSection({ service, onChanged }: { service: Service; onChanged: 
           </select>
         </Field>
         <Field label="Conservar">
-          <input className="input tnum" type="number" min={1} max={60} value={retention} onChange={(e) => setRetention(e.target.value)} />
+          <input
+            className="input tnum"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={60}
+            value={retention}
+            onChange={(e) => setRetention(e.target.value)}
+          />
         </Field>
-        <Button variant="secondary" size="sm" className="mb-px h-9" onClick={() => save.mutate()} loading={save.isPending}>
+        <Button variant="secondary" size="sm" className="h-9 sm:mb-px" onClick={() => save.mutate()} loading={save.isPending}>
           Guardar
         </Button>
       </div>
@@ -213,23 +221,26 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
               <div className="flex shrink-0 items-center gap-0.5">
                 <a
                   href={`/api/services/${serviceId}/backups/${b.file}/download`}
-                  className="rounded-md p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+                  className="press rounded-md p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
                   title="Descargar"
+                  aria-label={`Descargar ${b.file}`}
                   download
                 >
                   <Download size={14} />
                 </a>
                 <button
                   onClick={() => setRestoreFile(b.file)}
-                  className="rounded-md p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-warn"
+                  className="press rounded-md p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-warn max-sm:p-2.5"
                   title="Restaurar"
+                  aria-label={`Restaurar ${b.file}`}
                 >
                   <RotateCcw size={14} />
                 </button>
                 <button
                   onClick={() => setDeleteFile(b.file)}
-                  className="rounded-md p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-err"
+                  className="press rounded-md p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-err max-sm:p-2.5"
                   title="Eliminar"
+                  aria-label={`Eliminar ${b.file}`}
                 >
                   <Trash2 size={14} />
                 </button>

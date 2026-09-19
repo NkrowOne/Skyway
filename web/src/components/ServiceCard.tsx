@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { BellRing, Globe } from 'lucide-react';
 import { ActiveDeploy, ContainerState, Service, ServiceStats } from '../types';
 import { cx, DEPLOY_STATUS_LABEL, fmtBytes, fmtCores, fmtMb, serviceStatus } from '../utils';
@@ -16,13 +17,19 @@ const TEMPLATE_LABEL: Record<string, string> = {
 /** Fracción del límite de CPU a partir de la cual el dato se marca en aviso. */
 const CPU_ALERT = 0.9;
 
-export default function ServiceCard({
+/**
+ * Memoizada: el stream de métricas llega cada 2,5 s y volvía a pintar las
+ * veinte tarjetas de la rejilla aunque solo cambiara una cifra en dos. En un
+ * móvil eso se notaba al hacer scroll. `onSelect` recibe el id para que el
+ * padre pueda pasar siempre la misma función.
+ */
+const ServiceCard = memo(function ServiceCard({
   service,
   metrics,
   alertCount = 0,
   deploy = null,
   selected,
-  onClick,
+  onSelect,
 }: {
   service: Service;
   metrics: { state: ContainerState; stats: ServiceStats | null; replicas?: { running: number; total: number } } | null;
@@ -30,7 +37,7 @@ export default function ServiceCard({
   /** Despliegue vivo del servicio, si lo hay. */
   deploy?: ActiveDeploy | null;
   selected: boolean;
-  onClick: () => void;
+  onSelect: (id: string) => void;
 }) {
   const state = metrics?.state ?? service.runtime?.state ?? 'unknown';
   // El estado vivo viene del stream; el porqué (código de salida, parada
@@ -58,7 +65,9 @@ export default function ServiceCard({
 
   return (
     <button
-      onClick={onClick}
+      type="button"
+      onClick={() => onSelect(service.id)}
+      aria-pressed={selected}
       className={cx(
         'group relative rounded-xl border p-4 text-left',
         selected
@@ -185,4 +194,6 @@ export default function ServiceCard({
       )}
     </button>
   );
-}
+});
+
+export default ServiceCard;

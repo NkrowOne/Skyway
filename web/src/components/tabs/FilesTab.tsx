@@ -162,8 +162,9 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
         </div>
         <button
           onClick={() => listing.refetch()}
-          className="rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+          className="press rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
           title="Recargar"
+          aria-label="Recargar el listado"
         >
           <RefreshCw size={12} className={cx(listing.isFetching && 'animate-spin')} />
         </button>

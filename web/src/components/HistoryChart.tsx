@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Table2 } from 'lucide-react';
 import { cx, fmtAxisTime, fmtStamp } from '../utils';
 
@@ -39,6 +39,37 @@ function contiguous<T extends { valid: boolean }>(nodes: T[]): T[][] {
   return segs;
 }
 
+/**
+ * Ancho real del contenedor, para usarlo como ancho del viewBox. Con un ancho
+ * fijo de 560 el SVG se escalaba ×0.6 en un móvil de 360 px y los rótulos de
+ * 9 px quedaban en 5: ilegibles. Dibujando a las unidades reales del
+ * contenedor el texto se pinta a su tamaño y solo las series se adaptan.
+ * `fallback` es lo que se usa hasta la primera medida (y sin ResizeObserver).
+ */
+export function useElementWidth<T extends HTMLElement>(fallback: number): [React.RefObject<T>, number] {
+  const ref = useRef<T>(null);
+  const [width, setWidth] = useState(fallback);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([entry]) => {
+      const w = Math.round(entry.contentRect.width);
+      if (w > 0) setWidth(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, Math.max(200, width)];
+}
+
+/**
+ * Al soltar el dedo el puntero «sale» del SVG y el tooltip se borraba justo
+ * cuando por fin se podía leer. En táctil se conserva hasta el siguiente toque.
+ */
+export const leaveUnlessTouch = (clear: () => void) => (e: React.PointerEvent) => {
+  if (e.pointerType !== 'touch') clear();
+};
+
 export function HistoryChart({
   title,
   points,
@@ -57,7 +88,7 @@ export function HistoryChart({
   threshold?: { value: number; label: string } | null;
   fixedMax?: number;
 }) {
-  const W = 560;
+  const [wrapRef, W] = useElementWidth<HTMLDivElement>(560);
   const H = 176;
   const PAD = { top: 12, right: 12, bottom: 22, left: 46 };
   const [hover, setHover] = useState<number | null>(null);
@@ -116,7 +147,7 @@ export function HistoryChart({
   const hoverValid = hoveredNode?.valid ?? false;
 
   return (
-    <div className="rounded-xl border border-line bg-bg p-4">
+    <div ref={wrapRef} className="rounded-xl border border-line bg-bg p-4">
       <div className="mb-2 flex items-center justify-between gap-2">
         <h3 className="flex items-center gap-2 text-xs font-semibold text-sub">
           <span className="inline-block h-2 w-2 rounded-full" style={{ background: color }} aria-hidden />
@@ -164,13 +195,16 @@ export function HistoryChart({
         </div>
       ) : (
         <div className="relative">
+          {/* touch-pan-y: el dedo recorre la serie sin que el navegador lo tome
+              por un gesto horizontal, y el scroll vertical de la página sigue vivo. */}
           <svg
             ref={svgRef}
             viewBox={`0 0 ${W} ${H}`}
-            className="block w-full"
+            className="block w-full touch-pan-y"
+            style={{ height: H }}
             onPointerMove={onMove}
             onPointerDown={onMove}
-            onPointerLeave={() => setHover(null)}
+            onPointerLeave={leaveUnlessTouch(() => setHover(null))}
           >
             {gridYs.map((g, i) => (
               <g key={i}>
@@ -280,7 +314,7 @@ export function NetBars({
   hours: number;
   format: (v: number) => string;
 }) {
-  const W = 560;
+  const [wrapRef, W] = useElementWidth<HTMLDivElement>(560);
   const H = 176;
   const PAD = { top: 16, right: 12, bottom: 22, left: 46 };
   const [hover, setHover] = useState<number | null>(null);
@@ -303,9 +337,20 @@ export function NetBars({
   const slot = n > 0 ? innerW / n : innerW;
   const barW = Math.min(24, Math.max(2, slot - 3)); // ≤24px, con hueco entre columnas
 
+  // Columna bajo el puntero, en el SVG entero: así el dedo puede recorrer las
+  // barras arrastrando (en táctil los pointerenter de cada rect no se disparan).
+  const pick = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (n === 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * W;
+    const i = Math.floor((x - PAD.left) / slot);
+    if (i >= 0 && i < n) setHover(i);
+    else if (e.pointerType !== 'touch') setHover(null);
+  };
+
   return (
-    <div className="rounded-xl border border-line bg-bg p-4">
-      <div className="mb-2 flex items-center justify-between gap-2">
+    <div ref={wrapRef} className="rounded-xl border border-line bg-bg p-4">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-xs font-semibold text-sub">Red — tráfico transferido</h3>
         <div className="flex items-center gap-2.5">
           <span className="flex items-center gap-1 text-micro text-subtle">
@@ -353,7 +398,14 @@ export function NetBars({
         </div>
       ) : (
         <div className="relative">
-          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onPointerLeave={() => setHover(null)}>
+          <svg
+            viewBox={`0 0 ${W} ${H}`}
+            className="block w-full touch-pan-y"
+            style={{ height: H }}
+            onPointerMove={pick}
+            onPointerDown={pick}
+            onPointerLeave={leaveUnlessTouch(() => setHover(null))}
+          >
             {[0.5, 1].map((f, i) => (
               <g key={i}>
                 <line x1={PAD.left} x2={W - PAD.right} y1={mid - half * f} y2={mid - half * f} stroke="var(--color-line)" strokeWidth="1" opacity="0.4" />
@@ -374,9 +426,7 @@ export function NetBars({
               const active = hover === i;
               return (
                 <g key={p.t} opacity={hover !== null && !active ? 0.45 : 1} style={{ transition: 'opacity .12s' }}>
-                  {/* zona de hover más ancha que la barra */}
-                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onPointerEnter={() => setHover(i)} onPointerDown={() => setHover(i)} />
-                  {p.tx > 0 && <rect x={cx0 - barW / 2} y={mid - txH} width={barW} height={Math.max(0.5, txH)} rx={Math.min(3, barW / 2)} fill={txColor} />}
+                  {p.tx > 0 &&<rect x={cx0 - barW / 2} y={mid - txH} width={barW} height={Math.max(0.5, txH)} rx={Math.min(3, barW / 2)} fill={txColor} />}
                   {p.rx > 0 && <rect x={cx0 - barW / 2} y={mid} width={barW} height={Math.max(0.5, rxH)} rx={Math.min(3, barW / 2)} fill={rxColor} />}
                 </g>
               );

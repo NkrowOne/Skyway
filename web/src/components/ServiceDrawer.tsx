@@ -335,13 +335,16 @@ export default function ServiceDrawer({
           {!fullscreen && (
             <div className="flex shrink-0 items-center gap-0.5">
               <button
+                type="button"
                 onClick={() => setWide(!wide)}
                 className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
                 title="Cambiar ancho del panel"
+                aria-label="Cambiar ancho del panel"
               >
                 <MoveHorizontal size={15} />
               </button>
               <button
+                type="button"
                 onClick={handleAttemptClose}
                 className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
                 title="Cerrar (esc)" aria-label="Cerrar (esc)"
@@ -422,12 +425,18 @@ export default function ServiceDrawer({
               <Terminal size={fullscreen ? 16 : 13} />
             </Button>
           )}
-          {domain && !fullscreen && (
+          {domain && (
             <a
               href={`http://${domain}`}
               target="_blank"
               rel="noreferrer"
-              className="ml-auto inline-flex min-w-0 max-w-[190px] items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+              // En móvil se muestra también, en su propia fila: era la única
+              // forma de abrir el sitio desde el panel y ahí no estaba.
+              className={cx(
+                'inline-flex min-w-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt',
+                fullscreen ? 'h-11 w-full border border-line' : 'ml-auto max-w-[190px]',
+              )}
+              title={`Abrir ${domain}`}
             >
               <ExternalLink size={12} className="shrink-0" />
               <span className="truncate">{domain}</span>
@@ -459,7 +468,7 @@ export default function ServiceDrawer({
             <button
               type="button"
               onClick={() => setTab('logs')}
-              className="press flex shrink-0 items-center gap-1 rounded-lg border border-line bg-surface px-2 py-1 text-xs font-medium text-txt hover:bg-surface2"
+              className="press flex h-9 shrink-0 items-center gap-1 rounded-lg border border-line bg-surface px-2.5 text-xs font-medium text-txt hover:bg-surface2 sm:h-7 sm:px-2"
             >
               <ScrollText size={12} aria-hidden /> Ver logs
             </button>
@@ -504,6 +513,9 @@ export default function ServiceDrawer({
         className={cx(
           'relative min-h-0 flex-1 overscroll-contain',
           tab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-y-auto',
+          // A pantalla completa el panel llega hasta el borde inferior: la
+          // última fila de cada pestaña quedaba debajo de la barra de gestos.
+          fullscreen && 'pb-[env(safe-area-inset-bottom)]',
         )}
         role="tabpanel"
         aria-label={tabs.find((t) => t.key === tab)?.label}

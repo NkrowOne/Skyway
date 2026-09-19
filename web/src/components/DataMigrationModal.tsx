@@ -22,6 +22,13 @@ interface MigrationState {
   migration: { status: Status; logs: string; error: string | null } | null;
 }
 
+/**
+ * Tope de líneas en pantalla. Un volcado grande escupe decenas de miles y
+ * pintarlas todas convierte el móvil en un ladrillo; el log completo sigue en
+ * el servidor y es lo que baja el botón de descarga.
+ */
+const MAX_LINES = 8000;
+
 export default function DataMigrationModal({
   open,
   onClose,
@@ -40,7 +47,35 @@ export default function DataMigrationModal({
   const [lines, setLines] = useState<string[]>([]);
   const [status, setStatus] = useState<Status | null>(null);
   const [probe, setProbe] = useState<{ ok: boolean; message: string } | null>(null);
+  const [streamLost, setStreamLost] = useState(false);
   const streamRef = useRef<EventSource | null>(null);
+  // Líneas recibidas y aún no pintadas: se vuelcan de una vez por frame en
+  // vez de un setState por línea, que con un dump rápido encolaba cientos de
+  // renders por segundo y congelaba el desplazamiento.
+  const pendingRef = useRef<string[]>([]);
+  const rafRef = useRef(0);
+
+  const flush = () => {
+    rafRef.current = 0;
+    if (pendingRef.current.length === 0) return;
+    const chunk = pendingRef.current;
+    pendingRef.current = [];
+    setLines((prev) => {
+      const next = prev.length + chunk.length > MAX_LINES ? [...prev, ...chunk].slice(-MAX_LINES) : [...prev, ...chunk];
+      return next;
+    });
+  };
+
+  const push = (line: string) => {
+    pendingRef.current.push(line);
+    if (!rafRef.current) rafRef.current = requestAnimationFrame(flush);
+  };
+
+  const cancelFlush = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
+    pendingRef.current = [];
+  };
 
   const state = useQuery({
     queryKey: ['dataMigration', serviceId],
@@ -51,39 +86,56 @@ export default function DataMigrationModal({
   /** Sigue el log en vivo. Se abre al lanzar y al reencontrar una copia en curso. */
   const attach = () => {
     streamRef.current?.close();
+    cancelFlush();
+    setStreamLost(false);
     const es = openStream(`/services/${serviceId}/data-migration/stream`);
     streamRef.current = es;
     es.addEventListener('snapshot', (ev) => {
       const data = JSON.parse((ev as MessageEvent).data) as { logs: string; status: Status | null };
-      setLines(data.logs ? data.logs.split('\n').filter(Boolean) : []);
+      cancelFlush();
+      setLines(data.logs ? data.logs.split('\n').filter(Boolean).slice(-MAX_LINES) : []);
       setStatus(data.status);
     });
     es.addEventListener('log', (ev) => {
       const { line } = JSON.parse((ev as MessageEvent).data) as { line: string };
-      setLines((prev) => [...prev, line]);
+      push(line);
     });
     es.addEventListener('done', (ev) => {
       const { status: final } = JSON.parse((ev as MessageEvent).data) as { status: Status };
+      flush();
       setStatus(final);
+      // Se suelta la referencia antes de cerrar: un onerror rezagado de este
+      // stream ya no debe contarse como conexión perdida.
+      if (streamRef.current === es) streamRef.current = null;
       es.close();
       if (final === 'success') toast('Datos copiados', 'ok');
       else if (final === 'failed') toast('La copia de datos falló: revisa el log', 'err');
     });
     es.onerror = () => {
-      /* el servidor cierra el stream al terminar */
+      // El servidor cierra el stream al terminar y eso también dispara onerror;
+      // solo es una pérdida real si el navegador ha dejado de reintentar
+      // (CLOSED) y la copia seguía en marcha por lo que sabíamos.
+      if (es.readyState === EventSource.CLOSED && streamRef.current === es) {
+        flush();
+        setStreamLost(true);
+      }
     };
   };
 
   // Una copia lanzada antes de abrir el modal (o desde otra pestaña) se retoma.
   useEffect(() => {
     if (open && state.data?.migration) attach();
-    return () => streamRef.current?.close();
+    return () => {
+      streamRef.current?.close();
+      cancelFlush();
+    };
   }, [open, state.data?.migration?.status === 'running']);
 
   useEffect(() => {
     if (!open) {
       streamRef.current?.close();
       streamRef.current = null;
+      cancelFlush();
     }
   }, [open]);
 
@@ -109,6 +161,26 @@ export default function DataMigrationModal({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  /**
+   * Descarga el log entero desde el servidor, no lo que hay en pantalla: con
+   * el tope de líneas, lo pintado puede ser solo la cola del volcado.
+   */
+  const downloadFull = async () => {
+    try {
+      const res = await api.get<MigrationState>(`/services/${serviceId}/data-migration`);
+      const text = res.migration?.logs || lines.join('\n');
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `copia-${serviceName}.log`;
+      a.click();
+      // Revocar en diferido: hacerlo síncrono puede abortar la descarga.
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (err) {
+      toast((err as Error).message, 'err');
+    }
+  };
+
   const running = status === 'running';
   const supported = state.data?.supported ?? false;
 
@@ -132,8 +204,10 @@ export default function DataMigrationModal({
               hint="La pública de Railway (DATABASE_PUBLIC_URL y equivalentes). Necesita el TCP Proxy activo para que este servidor llegue."
               error={probe && !probe.ok ? probe.message : null}
             >
+              {/* type="text" y no "url": el navegador solo admite esquemas
+                  «conocidos» y rechazaría mongodb+srv:// o rediss://. */}
               <input
-                className="input font-mono text-xs"
+                className="input font-mono sm:text-xs"
                 placeholder="postgresql://usuario:clave@monorail.proxy.rlwy.net:12345/railway"
                 value={sourceUrl}
                 onChange={(e) => {
@@ -142,6 +216,10 @@ export default function DataMigrationModal({
                 }}
                 disabled={running}
                 spellCheck={false}
+                inputMode="url"
+                autoCapitalize="none"
+                autoCorrect="off"
+                autoComplete="off"
               />
             </Field>
             {probe?.ok && (
@@ -186,14 +264,26 @@ export default function DataMigrationModal({
             )}
           </div>
 
-          {lines.length > 0 && (
+          {(lines.length > 0 || streamLost) && (
             <div className="mt-4">
+              {/* dvh y no vh: en móvil el vh cuenta la barra del navegador y el
+                  visor se salía de la hoja inferior. */}
               <LogViewer
                 lines={lines}
                 toolbar
                 title="Copia de datos"
                 downloadName={`copia-${serviceName}.log`}
-                className="h-[min(46vh,380px)]"
+                onDownload={() => void downloadFull()}
+                className="h-[min(46dvh,380px)]"
+                state={streamLost ? 'error' : 'ready'}
+                onRetry={streamLost ? attach : undefined}
+                statusNote={
+                  streamLost
+                    ? 'Se perdió la conexión con el servidor: el log puede estar incompleto. Vuelve a conectar para seguir.'
+                    : lines.length >= MAX_LINES
+                      ? `Se muestran las últimas ${MAX_LINES} líneas; el log completo está en la descarga.`
+                      : null
+                }
               />
             </div>
           )}
