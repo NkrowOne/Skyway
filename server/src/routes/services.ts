@@ -86,6 +86,19 @@ export function publicServiceConfig<T extends ServiceConfig>(cfg: T): T {
   return out;
 }
 
+/**
+ * Nombre de host válido (RFC 1123), en minúsculas. Los dominios acaban dentro
+ * de la regla `Host(\`…\`)` de Traefik, que es único para todo el servidor: un
+ * texto libre con una comilla invertida o un paréntesis podía redactar una
+ * regla que capturara el tráfico de los dominios de otros clientes.
+ */
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+export const domainSchema = z
+  .string()
+  .trim()
+  .transform((d) => d.toLowerCase())
+  .refine((d) => HOSTNAME.test(d), 'Dominio no válido: solo letras, números, guiones y puntos');
+
 const createGitSchema = z.object({
   type: z.literal('git'),
   name: z.string().trim().min(1).max(60),
@@ -102,7 +115,7 @@ const createGitSchema = z.object({
   // valor por defecto lo borraba. Se sigue guardando 3000; lo que se guarda
   // además es de dónde salió.
   port: z.coerce.number().int().min(1).max(65535).optional(),
-  domains: z.array(z.string().trim().min(1)).default([]),
+  domains: z.array(domainSchema).default([]),
   autoDeploy: z.boolean().default(true),
 });
 
@@ -119,7 +132,7 @@ const createImageSchema = z.object({
   image: z.string().trim().min(1, 'Imagen requerida'),
   port: z.coerce.number().int().min(1).max(65535).optional(),
   startCmd: z.string().trim().optional(),
-  domains: z.array(z.string().trim().min(1)).default([]),
+  domains: z.array(domainSchema).default([]),
 });
 
 const patchSchema = z.object({
@@ -138,7 +151,7 @@ const patchSchema = z.object({
       // nullable: los servicios de imagen sin puerto interno (workers) envían
       // null; sin esto, NINGÚN ajuste suyo se podía guardar (Number(null)=0).
       port: z.coerce.number().int().min(1).max(65535).nullable().optional(),
-      domains: z.array(z.string().trim().min(1)).optional(),
+      domains: z.array(domainSchema).optional(),
       hostPort: z.coerce.number().int().min(1).max(65535).nullable().optional(),
       cpus: z.coerce.number().min(0.1).max(64).nullable().optional(),
       memoryMb: z.coerce.number().int().min(32).max(1024 * 512).nullable().optional(),

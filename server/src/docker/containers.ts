@@ -489,10 +489,14 @@ export async function updateResources(
   memoryMb: number | null | undefined,
 ): Promise<void> {
   const c = docker.getContainer(name);
+  const memory = memoryMb && memoryMb > 0 ? Math.round(memoryMb * 1024 * 1024) : 0;
   const update: any = {
     NanoCpus: cpus && cpus > 0 ? Math.round(cpus * 1e9) : 0,
-    Memory: memoryMb && memoryMb > 0 ? Math.round(memoryMb * 1024 * 1024) : 0,
-    MemorySwap: memoryMb && memoryMb > 0 ? -1 : 0,
+    Memory: memory,
+    // Docker exige que el tope de swap no quede por debajo de la memoria nueva.
+    // El doble es lo mismo que fija al crear el contenedor sin decir nada; con
+    // -1 el swap quedaba SIN límite y el tope de RAM dejaba de acotar nada.
+    MemorySwap: memory > 0 ? memory * 2 : 0,
   };
   await c.update(update);
 }
