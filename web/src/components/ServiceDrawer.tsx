@@ -279,14 +279,16 @@ export default function ServiceDrawer({
   const status = serviceStatus(state, { exitCode: runtime.exitCode, stoppedAt: service.stopped_at });
   const hasBackups = service.type === 'database' && BACKUP_TEMPLATES.includes(service.config.template);
   const hasDbConsole = !!detail.data.dbConsole;
+  // Por frecuencia de uso: lo que se abre a diario va a la izquierda, donde
+  // en el móvil se ve sin desplazar la fila. Los logs estaban los penúltimos.
   const tabs = [
-    { key: 'deployments', label: 'Despliegues' },
     ...(hasDbConsole ? [{ key: 'db', label: 'Consultas' }] : []),
+    { key: 'deployments', label: 'Despliegues' },
+    { key: 'logs', label: 'Logs' },
     { key: 'variables', label: 'Variables' },
     ...(hasBackups ? [{ key: 'backups', label: 'Backups' }] : []),
-    { key: 'files', label: 'Archivos' },
     { key: 'metrics', label: 'Métricas' },
-    { key: 'logs', label: 'Logs' },
+    { key: 'files', label: 'Archivos' },
     { key: 'settings', label: 'Ajustes' },
   ];
   const domain = service.type !== 'database' ? service.config.domains?.[0] : undefined;
