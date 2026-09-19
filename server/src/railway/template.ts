@@ -1,5 +1,5 @@
 import { getRailwayTemplate, RailwayTemplate, RailwayTemplateService } from './client';
-import { rewriteRailwayRefs, splitRef, RailwayRefCtx } from './importer';
+import { RAILWAY_REF_RE, rewriteRailwayRefs, splitRef, RailwayRefCtx } from './importer';
 import { randomAlnum, slugify } from '../util';
 
 /**
@@ -145,7 +145,7 @@ function useLocalFiles(
   const wanted = bucketName.toLowerCase();
   const usaElBucket = (svc: TemplateServicePlan) =>
     Object.values(svc.env).some((v) =>
-      [...v.matchAll(/\$\{\{\s*([^{}]+?)\s*\}\}/g)].some((m) => splitRef(m[1]).scope?.toLowerCase() === wanted),
+      [...v.matchAll(RAILWAY_REF_RE)].some((m) => splitRef(m[1]).scope?.toLowerCase() === wanted),
     );
 
   for (const svc of services.filter(usaElBucket)) {
@@ -161,7 +161,7 @@ function useLocalFiles(
     // Una variable que apuntaba a otra recién borrada del mismo servicio se
     // quedaría con el texto `${{...}}` dentro del contenedor.
     for (const [key, value] of Object.entries(svc.env)) {
-      const rota = [...value.matchAll(/\$\{\{\s*([^{}]+?)\s*\}\}/g)].some((m) => {
+      const rota = [...value.matchAll(RAILWAY_REF_RE)].some((m) => {
         const { scope, key: apuntada } = splitRef(m[1]);
         const propia = !scope || scope.toLowerCase() === svc.templateName.toLowerCase();
         return propia && svc.env[apuntada] === undefined;
@@ -228,7 +228,7 @@ function bucketRefs(services: TemplateServicePlan[], bucketName: string): Set<st
   const wanted = bucketName.toLowerCase();
   for (const svc of services) {
     for (const value of Object.values(svc.env)) {
-      for (const m of value.matchAll(/\$\{\{\s*([^{}]+?)\s*\}\}/g)) {
+      for (const m of value.matchAll(RAILWAY_REF_RE)) {
         const { scope, key } = splitRef(m[1]);
         if (scope && scope.toLowerCase() === wanted) keys.add(key);
       }
@@ -241,10 +241,10 @@ function bucketRefs(services: TemplateServicePlan[], bucketName: string): Set<st
 function minioForBucket(
   bucketName: string,
   prefix: string,
+  slug: string,
   services: TemplateServicePlan[],
   warnings: string[],
 ): TemplateServicePlan {
-  const slug = `${prefix}-${slugify(bucketName)}`;
   // Nombre de bucket válido para S3: minúsculas y al menos 3 caracteres (un
   // bucket llamado «S3» daría «s3», que MinIO rechazaría).
   const bucket = slugify(`${prefix}-${bucketName}`);
@@ -329,6 +329,18 @@ export async function planRailwayTemplate(
   const prefix = slugify(opts.prefix || tpl.name) || 'plantilla';
   const warnings: string[] = [];
 
+  // Dos servicios cuyos nombres dan el mismo slug («Redis» y «redis», «My App»
+  // y «my-app», o dos nombres solo de símbolos) chocaban al crearlos y la
+  // instalación entera fallaba a medias. Se numeran, como en las pilas.
+  const slugsUsados = new Set<string>();
+  const slugUnico = (nombre: string): string => {
+    const base = `${prefix}-${slugify(nombre)}`;
+    let slug = base;
+    for (let n = 2; slugsUsados.has(slug); n++) slug = `${base}-${n}`;
+    slugsUsados.add(slug);
+    return slug;
+  };
+
   const services: TemplateServicePlan[] = [];
   for (const svc of tpl.services) {
     const templateName = (svc.name || '').trim();
@@ -366,11 +378,12 @@ export async function planRailwayTemplate(
       .map((v) => v?.mountPath)
       .filter((p): p is string => !!p && p.startsWith('/'));
     const readyCmd = readyCmdFor(image, { hasVolume: volumes.length > 0, tcpPort });
+    const slug = slugUnico(templateName);
 
     services.push({
       templateName,
-      name: `${prefix}-${slugify(templateName)}`,
-      slug: `${prefix}-${slugify(templateName)}`,
+      name: slug,
+      slug,
       kind: image ? 'image' : 'git',
       image,
       repoUrl: repo ? (repo.startsWith('http') ? repo : `https://github.com/${repo}`) : undefined,
@@ -402,7 +415,7 @@ export async function planRailwayTemplate(
       );
       continue;
     }
-    services.push(minioForBucket(bucketName, prefix, services, warnings));
+    services.push(minioForBucket(bucketName, prefix, slugUnico(bucketName), services, warnings));
     warnings.push(
       `Para el bucket «${bucketName}» se añade un MinIO con el bucket ya creado y las credenciales cableadas: algún servicio necesita hablar S3 y no sé desactivárselo. Los ficheros viven igualmente en un volumen de este servidor, nada sale de él.`,
     );

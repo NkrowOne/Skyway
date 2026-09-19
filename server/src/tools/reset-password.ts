@@ -5,18 +5,23 @@
  *
  *   docker compose exec skyway node dist/tools/reset-password.js <email> [nueva-contraseña]
  *   npm run reset-password -w server -- <email> [nueva-contraseña]
+ *   SKYWAY_NEW_PASSWORD='...' npm run reset-password -w server -- <email>
  *
- * Sin segunda opción genera una contraseña temporal fuerte y la imprime.
- * Invalida las demás sesiones (bump de epoch) y deja rastro en la auditoría.
+ * La contraseña como argumento queda en el historial del shell y en `ps` de
+ * cualquier usuario de la máquina mientras corre: la variable de entorno
+ * evita ambas cosas. Sin ninguna de las dos se genera una contraseña temporal
+ * fuerte y se imprime. Invalida las demás sesiones (bump de epoch) y deja
+ * rastro en la auditoría.
  */
 import crypto from 'node:crypto';
 import { getUserByEmail, initDb, insertAudit, updateUserPassword } from '../db';
 import { hashPassword } from '../util';
 
-const [email, provided] = process.argv.slice(2);
+const [email, argPassword] = process.argv.slice(2);
+const provided = argPassword ?? (process.env.SKYWAY_NEW_PASSWORD || undefined);
 
 if (!email || email.startsWith('-')) {
-  console.error('Uso: reset-password <email> [nueva-contraseña]');
+  console.error('Uso: reset-password <email> [nueva-contraseña]   (o SKYWAY_NEW_PASSWORD en el entorno)');
   process.exit(1);
 }
 if (provided !== undefined && provided.length < 8) {

@@ -8,24 +8,43 @@
  * defensivo y los errores de GraphQL se devuelven tal cual a la UI.
  */
 
+import { safeParse } from '../util';
+
 const ENDPOINTS = [
   process.env.RAILWAY_GQL_URL,
   'https://backboard.railway.com/graphql/v2',
   'https://backboard.railway.app/graphql/v2',
 ].filter(Boolean) as string[];
 
+/**
+ * De qué clase es el fallo, para que quien llama decida si insistir: solo un
+ * error de esquema (`graphql`) justifica repetir la consulta con menos campos.
+ */
+export type RailwayErrorKind = 'auth' | 'ratelimit' | 'http' | 'graphql' | 'network';
+
 export class RailwayError extends Error {
-  constructor(message: string) {
+  kind: RailwayErrorKind;
+  constructor(message: string, kind: RailwayErrorKind = 'http') {
     super(message);
     this.name = 'RailwayError';
+    this.kind = kind;
   }
+}
+
+/** Errores de GraphQL que significan «ese campo ya no existe en el esquema». */
+const SCHEMA_ERROR_RE = /cannot query field|unknown (?:argument|field|type)|is not defined by type|did you mean/i;
+
+/** El error viene de pedir un campo que la API ya no tiene, no de los datos. */
+export function isRailwaySchemaError(err: unknown): boolean {
+  return err instanceof RailwayError && err.kind === 'graphql' && SCHEMA_ERROR_RE.test(err.message);
 }
 
 async function gql<T>(token: string | null, query: string, variables: Record<string, unknown> = {}): Promise<T> {
   let lastError: Error | null = null;
   for (const endpoint of ENDPOINTS) {
+    let res: Response;
     try {
-      const res = await fetch(endpoint, {
+      res = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -35,24 +54,45 @@ async function gql<T>(token: string | null, query: string, variables: Record<str
         body: JSON.stringify({ query, variables }),
         signal: AbortSignal.timeout(20_000),
       });
-      if (res.status === 401 || res.status === 403) {
-        throw new RailwayError('Railway rechazó el token (401/403). Comprueba que es un token de cuenta válido.');
-      }
-      if (!res.ok) {
-        throw new RailwayError(`Railway respondió HTTP ${res.status}`);
-      }
-      const body: any = await res.json();
-      if (body.errors?.length) {
-        throw new RailwayError(`Error de la API de Railway: ${body.errors.map((e: any) => e.message).join('; ')}`);
-      }
-      return body.data as T;
     } catch (err: any) {
+      // Solo se prueba el siguiente endpoint en errores de red. Un timeout no:
+      // encadenar dos esperas de 20 s deja al usuario mirando una rueda.
+      if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+        throw new RailwayError('Railway no respondió en 20 s. Vuelve a intentarlo en un momento.', 'network');
+      }
       lastError = err;
-      // Solo probamos el siguiente endpoint en errores de red, no de la API.
-      if (err instanceof RailwayError) throw err;
+      continue;
     }
+    // El cuerpo se lee siempre, también en los errores: sin consumirlo el
+    // socket queda ocupado, y el importador hace una petición por servicio.
+    const text = await res.text().catch(() => '');
+    if (res.status === 401 || res.status === 403) {
+      throw new RailwayError('Railway rechazó el token (401/403). Comprueba que es un token de cuenta válido.', 'auth');
+    }
+    if (res.status === 429) {
+      const wait = Number(res.headers.get('retry-after'));
+      const cuando = Number.isFinite(wait) && wait > 0 ? ` Vuelve a intentarlo en ${Math.ceil(wait)} s.` : ' Espera un poco antes de reintentar.';
+      throw new RailwayError(`Railway ha limitado las peticiones de este token (429).${cuando}`, 'ratelimit');
+    }
+    if (!res.ok) {
+      throw new RailwayError(`Railway respondió HTTP ${res.status}`, 'http');
+    }
+    const body = safeParse<{ data?: unknown; errors?: unknown } | null>(text, null);
+    if (!body) {
+      // Un 200 que no es JSON es un proxy o una página de mantenimiento delante
+      // de la API: no es nuestro token ni nuestra consulta.
+      throw new RailwayError('Railway devolvió una respuesta que no es JSON (¿mantenimiento?). Vuelve a intentarlo.', 'http');
+    }
+    if (Array.isArray(body.errors) && body.errors.length > 0) {
+      const messages = body.errors.map((e: any) => (typeof e?.message === 'string' ? e.message : 'error desconocido'));
+      throw new RailwayError(`Error de la API de Railway: ${messages.join('; ')}`, 'graphql');
+    }
+    return body.data as T;
   }
-  throw new RailwayError(`No se pudo conectar con la API de Railway: ${lastError?.message || 'error de red'}`);
+  throw new RailwayError(
+    `No se pudo conectar con la API de Railway: ${(lastError as any)?.cause?.message || lastError?.message || 'error de red'}`,
+    'network',
+  );
 }
 
 const edges = (conn: any): any[] => conn?.edges?.map((e: any) => e?.node).filter(Boolean) ?? [];
@@ -185,8 +225,12 @@ export async function getRailwayProject(
       ultimoError = null;
       break;
     } catch (err) {
-      if (!(err instanceof RailwayError)) throw err;
-      ultimoError = err;
+      // Solo se baja un escalón cuando el fallo es de esquema (un campo que ya
+      // no existe). Un token rechazado, un proyecto ajeno o la red caída dan
+      // lo mismo con menos campos: repetir tres veces solo triplicaba la
+      // espera y, con cuota, quemaba peticiones.
+      if (!isRailwaySchemaError(err)) throw err;
+      ultimoError = err as RailwayError;
     }
   }
   if (ultimoError) throw ultimoError;
@@ -271,8 +315,12 @@ export async function getRailwayVariables(
     return {};
   } catch (err) {
     if (serviceId) throw err;
-    // Las variables compartidas pueden no existir; no es fatal.
-    return {};
+    // Las variables compartidas pueden no existir; que la API se queje de la
+    // consulta no es fatal. Pero un token rechazado, la cuota agotada o la red
+    // caída sí lo son: tragarlos daba un plan «sin variables compartidas» que
+    // parecía correcto y dejaba la app importada sin la mitad de su entorno.
+    if (err instanceof RailwayError && err.kind === 'graphql') return {};
+    throw err;
   }
 }
 
@@ -324,13 +372,20 @@ export async function getRailwayTemplate(code: string): Promise<RailwayTemplate>
     { code },
   );
   const tpl = data?.template;
-  if (!tpl) throw new RailwayError(`Railway no conoce ninguna plantilla con el código «${code}».`);
-  const raw = tpl.serializedConfig?.services;
-  const services: RailwayTemplateService[] = raw && typeof raw === 'object' ? Object.values(raw) : [];
+  if (!tpl) throw new RailwayError(`Railway no conoce ninguna plantilla con el código «${code}».`, 'graphql');
+  // `serializedConfig` es un escalar JSON: normalmente llega ya como objeto,
+  // pero un cambio de la API podría entregarlo como texto. Se aceptan ambos.
+  const config: any =
+    typeof tpl.serializedConfig === 'string'
+      ? safeParse<Record<string, unknown>>(tpl.serializedConfig, {})
+      : tpl.serializedConfig ?? {};
+  const raw = config?.services;
+  const services: RailwayTemplateService[] =
+    raw && typeof raw === 'object' ? Object.values(raw).filter((s): s is RailwayTemplateService => !!s && typeof s === 'object') : [];
   if (services.length === 0) {
-    throw new RailwayError(`La plantilla «${tpl.name ?? code}» no declara ningún servicio.`);
+    throw new RailwayError(`La plantilla «${tpl.name ?? code}» no declara ningún servicio.`, 'graphql');
   }
-  const rawBuckets = tpl.serializedConfig?.buckets;
+  const rawBuckets = config?.buckets;
   return {
     id: String(tpl.id ?? ''),
     code: String(tpl.code ?? code),

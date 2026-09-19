@@ -53,6 +53,31 @@ export interface ImportPlan {
 
 const RAILWAY_HOST_RE = /railway\.internal|railway\.app|rlwy\.net/i;
 
+/**
+ * Nombre de host RFC 1123 en minúsculas: la MISMA regla que `domainSchema` en
+ * routes/services.ts (copiada, no importada: un módulo de dominio no debe
+ * depender de una ruta). Los dominios llegan de la API de Railway y acaban
+ * dentro de la regla `Host(\`…\`)` de Traefik, que es única para todo el
+ * servidor: un texto con una comilla invertida o un paréntesis podría redactar
+ * una regla que capturase el tráfico de otros clientes.
+ */
+const HOSTNAME_RE = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/** Separa los dominios válidos de los que no se pueden usar tal cual. */
+export function splitValidDomains(domains: string[]): { valid: string[]; invalid: string[] } {
+  const valid: string[] = [];
+  const invalid: string[] = [];
+  for (const raw of domains) {
+    const d = String(raw ?? '').trim().toLowerCase();
+    if (HOSTNAME_RE.test(d)) {
+      if (!valid.includes(d)) valid.push(d);
+    } else if (d) {
+      invalid.push(d);
+    }
+  }
+  return { valid, invalid };
+}
+
 function splitImage(image: string): { name: string; tag: string | null } {
   const slash = image.lastIndexOf('/');
   const colon = image.lastIndexOf(':');
@@ -158,10 +183,16 @@ async function planService(
 ): Promise<PlannedService> {
   const notes: string[] = [];
   const vars = filterVars(await getRailwayVariables(token, projectId, environmentId, raw.id));
+  const domains = splitValidDomains(raw.customDomains);
+  if (domains.invalid.length > 0) {
+    // Se acotan en el informe para no reproducir un texto arbitrario largo.
+    const lista = domains.invalid.map((d) => `«${d.slice(0, 60)}»`).join(', ');
+    notes.push(`Se descartan ${domains.invalid.length} dominio(s) con formato no válido: ${lista}. Añádelos a mano en Ajustes si procede.`);
+  }
   const base: PlannedService = {
     railwayName: raw.name,
     kind: 'skipped',
-    domains: raw.customDomains,
+    domains: domains.valid,
     volumeMounts: raw.volumeMounts,
     varCount: Object.keys(vars).length,
     notes,
@@ -396,7 +427,13 @@ const summarizeChanges = (items: string[]): string =>
  * de Skyway, así que sin tocarlas el despliegue no falla: el contenedor arranca
  * con el texto `${{...}}` literal como host. Se traducen a lo que sí hay.
  */
-const REF_RE = /\$\{\{\s*([^{}]+?)\s*\}\}/g;
+/**
+ * Referencia `${{...}}` de Railway (con ámbito, comillas o `secret()` dentro).
+ * Global: úsala solo con `replace`/`matchAll`, que la clonan; `test`/`exec`
+ * arrastrarían `lastIndex` entre llamadas.
+ */
+export const RAILWAY_REF_RE = /\$\{\{\s*([^{}]+?)\s*\}\}/g;
+const REF_RE = RAILWAY_REF_RE;
 
 /**
  * Parte una referencia en ámbito y clave. Railway entrecomilla los nombres de
@@ -622,26 +659,31 @@ export async function runRailwayImport(
     if (planned.kind !== 'skipped') slugOf.set(planned.railwayName, uniqueSlug(planned.railwayName));
   }
 
+  const byName: RailwayRefCtx['byName'] = new Map();
+  for (const p of plan.services) {
+    if (p.kind === 'skipped') continue;
+    const slug = slugOf.get(p.railwayName)!;
+    const entry = {
+      slug,
+      port: p.port ?? null,
+      domains: p.domains,
+      // Una base gestionada exporta lo que genere su plantilla, no lo que
+      // traía de Railway: es contra eso contra lo que hay que validar.
+      vars: new Set(
+        p.kind === 'database' && p.template
+          ? Object.keys(getTemplate(p.template)!.makeEnv(slug))
+          : Object.keys(p._vars ?? {}),
+      ),
+    };
+    byName.set(p.railwayName.toLowerCase(), entry);
+    // También por slug: la reconexión del análisis escribe el ámbito como
+    // `slugify(nombre)` cuando el nombre lleva símbolos que el resolutor no
+    // admite, y sin esta entrada esa referencia salía como «servicio
+    // desconocido». Un nombre real gana sobre el slug de otro servicio.
+    if (!byName.has(slug)) byName.set(slug, entry);
+  }
   const refCtx: RailwayRefCtx = {
-    byName: new Map(
-      plan.services
-        .filter((p) => p.kind !== 'skipped')
-        .map((p) => [
-          p.railwayName.toLowerCase(),
-          {
-            slug: slugOf.get(p.railwayName)!,
-            port: p.port ?? null,
-            domains: p.domains,
-            // Una base gestionada exporta lo que genere su plantilla, no lo que
-            // traía de Railway: es contra eso contra lo que hay que validar.
-            vars: new Set(
-              p.kind === 'database' && p.template
-                ? Object.keys(getTemplate(p.template)!.makeEnv(slugOf.get(p.railwayName)!))
-                : Object.keys(p._vars ?? {}),
-            ),
-          },
-        ]),
-    ),
+    byName,
     sharedVars: new Set(Object.keys(plan._sharedVars ?? {})),
     projectName: name,
     environmentName: plan.environment.name,
@@ -749,6 +791,16 @@ export async function runRailwayImport(
   return { project, report };
 }
 
+/**
+ * Lo que puede ir dentro de las comillas de `sh -c '...'` sin romperlas ni
+ * expandir nada: el comando del informe lo copia y pega el administrador en su
+ * terminal, así que una URL de Railway con una comilla o un `$` en la
+ * contraseña no debe convertirse en un comando distinto del que se ve.
+ */
+const SHELL_SAFE_RE = /^[A-Za-z0-9@:/._%+=?&,~-]*$/;
+const shellSafe = (...parts: (string | null | undefined)[]): boolean =>
+  parts.every((p) => typeof p === 'string' && SHELL_SAFE_RE.test(p));
+
 /** Genera el comando de copia de datos Railway → Skyway para una base de datos. */
 function buildDataCopyEntry(
   project: ProjectRow,
@@ -787,19 +839,40 @@ function buildDataCopyEntry(
     return entry;
   }
 
+  // Con caracteres especiales no se propone comando: la copia desde el panel
+  // («Copiar datos ahora») pasa la URL por variable de entorno y no tiene este
+  // problema, así que ese es el camino que se recomienda.
+  const manual = entry.automatable
+    ? 'La URL de origen lleva caracteres especiales: usa «Copiar datos ahora» desde el panel, que no pasa por el shell.'
+    : 'La URL de origen lleva caracteres especiales: exporta e importa manualmente con las herramientas del motor.';
+
   if (templateKey === 'postgres') {
+    if (!shellSafe(publicUrl, version, localEnv.POSTGRES_PASSWORD)) {
+      entry.note = manual;
+      return entry;
+    }
     entry.command = `docker run --rm --network ${network} postgres:${version} sh -c 'pg_dump --no-owner --no-acl "${publicUrl}" | psql "postgresql://skyway:${localEnv.POSTGRES_PASSWORD}@${svcSlug}:5432/skyway"'`;
     entry.note = 'Pulsa «Copiar datos ahora» para hacerlo desde el panel, o ejecuta el comando en el servidor. Copia esquema y datos.';
   } else if (templateKey === 'mysql') {
     const u = tryParseUrl(publicUrl);
     if (u) {
       const db = u.pathname.replace(/^\//, '') || 'railway';
-      entry.command = `docker run --rm --network ${network} mysql:${version} sh -c 'mysqldump --single-transaction -h ${u.hostname} -P ${u.port || '3306'} -u ${decodeURIComponent(u.username)} -p"${decodeURIComponent(u.password)}" ${db} | mysql -h ${svcSlug} -u skyway -p"${localEnv.MYSQL_PASSWORD}" skyway'`;
+      const user = decodeURIComponent(u.username);
+      const password = decodeURIComponent(u.password);
+      if (!shellSafe(u.hostname, u.port, user, password, db, version, localEnv.MYSQL_PASSWORD)) {
+        entry.note = manual;
+        return entry;
+      }
+      entry.command = `docker run --rm --network ${network} mysql:${version} sh -c 'mysqldump --single-transaction -h ${u.hostname} -P ${u.port || '3306'} -u ${user} -p"${password}" ${db} | mysql -h ${svcSlug} -u skyway -p"${localEnv.MYSQL_PASSWORD}" skyway'`;
       entry.note = 'Pulsa «Copiar datos ahora» para hacerlo desde el panel, o ejecuta el comando en el servidor.';
     } else {
       entry.note = `No se pudo interpretar la URL pública (${publicUrl.slice(0, 40)}...): exporta con mysqldump manualmente.`;
     }
   } else if (templateKey === 'mongo') {
+    if (!shellSafe(publicUrl, version, localEnv.MONGO_INITDB_ROOT_PASSWORD)) {
+      entry.note = manual;
+      return entry;
+    }
     entry.command = `docker run --rm --network ${network} mongo:${version} sh -c 'mongodump --uri="${publicUrl}" --archive | mongorestore --uri="mongodb://skyway:${localEnv.MONGO_INITDB_ROOT_PASSWORD}@${svcSlug}:27017" --archive --drop'`;
     entry.note = 'Pulsa «Copiar datos ahora» para hacerlo desde el panel, o ejecuta el comando en el servidor. Sustituye las colecciones existentes.';
   } else if (templateKey === 'minio') {
