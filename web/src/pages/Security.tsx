@@ -191,10 +191,7 @@ export default function SecurityPage() {
               </Chip>
             )}
           </div>
-          <p className="mt-2.5 text-xs text-sub">
-            La puntuación baja con cada hallazgo crítico (−25) o aviso (−10). Corrige los hallazgos y el análisis se
-            actualiza al momento.
-          </p>
+          <p className="mt-2.5 text-xs text-sub">Cada hallazgo crítico resta 25 puntos y cada aviso, 10.</p>
         </div>
       </section>
 
@@ -288,8 +285,8 @@ export default function SecurityPage() {
         <div className="mb-4">
           <SectionHeader
             icon={<KeyRound size={15} />}
-            title="Cuenta y sesiones"
-            description="Cambia la contraseña o invalida las sesiones abiertas en otros navegadores"
+            title="Contraseña y sesiones"
+            description="Cambia la contraseña o cierra las sesiones abiertas en otros navegadores"
           />
         </div>
         <form
@@ -343,7 +340,7 @@ export default function SecurityPage() {
           <SectionHeader
             icon={<ScrollText size={15} />}
             title="Registro de actividad"
-            description="Auditoría completa: accesos, despliegues, cambios de configuración"
+            description="Últimos 100 eventos"
           />
           {/* En móvil el select va a 16px: por debajo iOS hace zoom al enfocarlo. */}
           <select className="input w-auto sm:text-xs" value={auditFilter} onChange={(e) => setAuditFilter(e.target.value)}>

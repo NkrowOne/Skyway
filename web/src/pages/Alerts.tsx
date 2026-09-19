@@ -4,8 +4,16 @@ import { Link } from 'react-router-dom';
 import { Archive, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket } from 'lucide-react';
 import { api } from '../api';
 import { Button, Chip, ErrorState, Segmented, Skeleton, useToast } from '../components/ui';
-import { Alert } from '../types';
+import { Alert, Me } from '../types';
 import { ALERT_TYPE_LABEL, cx, fmtDateTime, SEVERITY_LABEL } from '../utils';
+
+/** Lo justo de `/settings` para saber si alguna alerta sale del panel. */
+interface AlertChannels {
+  hasTelegramToken: boolean;
+  alertWebhookUrl: string | null;
+  alertDiscordUrl: string | null;
+  alertTelegramChat: string | null;
+}
 
 /** Color del nivel en la línea de contexto (el riel y el icono ya lo llevan). */
 const SEVERITY_TEXT: Record<string, string> = {
@@ -108,7 +116,14 @@ const AlertCard = memo(function AlertCard({
                 <CheckCircle2 size={12} /> Resuelta {fmtDateTime(alert.resolved_at!)}
               </span>
             ) : (
-              <Button size="sm" variant="ghost" className="ml-auto h-[30px] max-sm:h-10" onClick={() => onResolve(alert.id)} loading={resolving}>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto h-[30px] max-sm:h-10"
+                onClick={() => onResolve(alert.id)}
+                loading={resolving}
+                title="Las alertas se recuperan solas cuando la causa desaparece"
+              >
                 Marcar resuelta
               </Button>
             )}
@@ -147,6 +162,27 @@ export default function AlertsPage() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  /*
+   * El aviso de «configura un canal» solo tiene sentido para quien puede
+   * configurarlo y solo mientras no haya ninguno: a un miembro no le sirve, y
+   * al admin que ya lo tiene le sobra en cada visita.
+   */
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
+  const isAdmin = me.data?.user?.role === 'admin';
+  const settings = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => api.get<{ settings: AlertChannels }>('/settings'),
+    enabled: !!isAdmin,
+    staleTime: 60_000,
+  });
+  const channels = settings.data?.settings;
+  const sinCanal =
+    !!isAdmin &&
+    !!channels &&
+    !channels.alertDiscordUrl &&
+    !channels.alertWebhookUrl &&
+    !(channels.hasTelegramToken && channels.alertTelegramChat);
+
   const current = openOnly ? active : history;
   const list = current.data?.alerts ?? [];
   const activeCount = active.data?.alerts.length ?? 0;
@@ -175,13 +211,14 @@ export default function AlertsPage() {
         />
       </div>
 
-      <p className="text-xs text-subtle">
-        Las alertas se recuperan solas cuando la causa desaparece. Configura Discord, Telegram o un webhook en{' '}
-        <Link to="/settings" className="text-acc-soft hover:underline">
-          Ajustes → Alertas y notificaciones
-        </Link>{' '}
-        para recibirlas fuera del panel.
-      </p>
+      {sinCanal && (
+        <p className="text-xs text-subtle">
+          Aún no recibes alertas fuera del panel.{' '}
+          <Link to="/settings" className="font-medium text-acc-soft hover:underline">
+            Configurar Discord o Telegram →
+          </Link>
+        </p>
+      )}
 
       {current.isLoading && (
         <div aria-busy className="flex flex-col gap-3">

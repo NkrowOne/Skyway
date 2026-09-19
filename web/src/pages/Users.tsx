@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Boxes, Fingerprint, KeyRound, Pencil, Plus, Shield, Trash2, Users2 } from 'lucide-react';
+import { Boxes, Fingerprint, KeyRound, Pencil, Plus, Shield, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { Button, Chip, ConfirmModal, EmptyState, ErrorState, Field, Modal, Skeleton, useToast } from '../components/ui';
 import { Me, Project, UserRole, UserSummary } from '../types';
@@ -97,7 +97,7 @@ export default function UsersPage() {
             {list.length > 0 && <Chip>{list.length}</Chip>}
           </h1>
           <p className="mt-1.5 text-sm text-sub">
-            Administradores con control total del servidor, y miembros limitados a los workspaces de su cliente
+            Administradores con control total del servidor, y miembros limitados a su cuenta de cliente
           </p>
         </div>
         <Button onClick={() => setDraft({ ...EMPTY })}>
@@ -147,7 +147,7 @@ export default function UsersPage() {
                 <span className="flex items-center gap-1">
                   <Boxes size={11} />
                   {u.role === 'admin'
-                    ? 'todos los workspaces'
+                    ? 'todas las cuentas'
                     : u.role === 'owner'
                       ? `propietario de ${u.workspaceName ?? 'su cuenta'}`
                       : u.projectIds.length === 0
@@ -188,11 +188,6 @@ export default function UsersPage() {
         ))
         )}
       </div>
-
-      <p className="flex items-center gap-1.5 text-xs text-subtle">
-        <Users2 size={12} /> Los miembros solo ven y operan sus workspaces: nada de ajustes del servidor, seguridad, otros proyectos ni
-        gestión de usuarios.
-      </p>
 
       <Modal open={!!draft} onClose={() => setDraft(null)} title={isEdit ? `Editar ${draft?.email}` : 'Nuevo usuario'}>
         {draft && (
@@ -236,7 +231,7 @@ export default function UsersPage() {
                   >
                     <p className="text-sm font-semibold">{r === 'admin' ? 'Administrador' : 'Miembro'}</p>
                     <p className="mt-0.5 text-xs leading-snug text-subtle">
-                      {r === 'admin' ? 'Control total: servidor, usuarios y todos los workspaces' : 'Solo los workspaces que le asignes'}
+                      {r === 'admin' ? 'Control total: servidor, usuarios y todas las cuentas' : 'Solo los proyectos que le asignes'}
                     </p>
                   </button>
                 ))}
@@ -281,7 +276,7 @@ export default function UsersPage() {
         onClose={() => setToDelete(null)}
         onConfirm={() => toDelete && remove.mutate(toDelete.id)}
         title="Eliminar usuario"
-        message={`«${toDelete?.email}» perderá el acceso al momento; sus passkeys y tokens se revocan. Sus workspaces y servicios no se tocan.`}
+        message={`«${toDelete?.email}» perderá el acceso al momento; sus passkeys y tokens se revocan. Sus proyectos y servicios no se tocan.`}
         loading={remove.isPending}
       />
     </div>

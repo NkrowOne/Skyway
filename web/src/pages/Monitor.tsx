@@ -114,9 +114,6 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
           <ScrollText size={14} className="text-info" />
           Buscar en los logs de todos los servicios
         </h2>
-        <p className="mt-1 text-xs text-subtle">
-          ¿Un error y no sabes de dónde viene? Busca el texto en las últimas ~400 líneas de cada contenedor.
-        </p>
       </div>
       <form
         className="flex flex-wrap gap-2"
@@ -148,6 +145,7 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
           Buscar
         </Button>
       </form>
+      <p className="mt-1.5 text-micro text-subtle">Últimas ~400 líneas de cada contenedor.</p>
 
       {search.isError && (
         <p className="mt-3 flex items-center gap-1.5 text-xs text-err">
@@ -242,7 +240,7 @@ const ServiceRow = memo(function ServiceRow({
       {isDown && s.exitCode !== null ? (
         <p className="mt-1 text-micro text-err">código {s.exitCode}</p>
       ) : status.kind === 'stopped' && s.stoppedAt ? (
-        <p className="mt-1 text-micro text-subtle">a mano · {timeAgo(s.stoppedAt)}</p>
+        <p className="mt-1 text-micro text-subtle">detenido desde el panel · {timeAgo(s.stoppedAt)}</p>
       ) : (
         s.uptime24h !== null && (
           <p className={cx('tnum mt-1 text-micro', s.uptime24h < 99 ? 'text-warn' : 'text-subtle')} title="Disponibilidad en las últimas 24 h">
@@ -378,7 +376,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
   const prune = useMutation({
     mutationFn: () => api.post<{ ok: boolean; reclaimed: string }>('/system/prune'),
     onSuccess: (res) => {
-      toast(`Espacio liberado: ${res.reclaimed}. Los volúmenes no se tocan.`, 'ok');
+      toast(`Espacio liberado: ${res.reclaimed}`, 'ok');
       queryClient.invalidateQueries({ queryKey: ['monitorDisk'] });
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -587,14 +585,17 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
             </div>
           }
         >
-          <HistoryChart
-            title={`Carga del sistema${cpus ? ` · ${cpus} núcleos` : ''}`}
-            points={loadPoints}
-            hours={hours}
-            color="var(--color-chart-1)"
-            format={(v) => v.toFixed(v < 10 ? 2 : 1)}
-            threshold={cpus ? { value: cpus, label: `${cpus} núcleos` } : null}
-          />
+          {/* La explicación de qué es la carga va en el title: quien la conoce no la quiere leer cada vez. */}
+          <div title="Procesos esperando CPU, de media. Por encima del número de núcleos, el servidor va saturado.">
+            <HistoryChart
+              title={`Carga del sistema${cpus ? ` · ${cpus} núcleos` : ''}`}
+              points={loadPoints}
+              hours={hours}
+              color="var(--color-chart-1)"
+              format={(v) => v.toFixed(v < 10 ? 2 : 1)}
+              threshold={cpus ? { value: cpus, label: `${cpus} núcleos` } : null}
+            />
+          </div>
           <HistoryChart
             title="RAM del servidor"
             points={memPoints}
@@ -613,10 +614,7 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
             threshold={diskTotal ? { value: diskTotal, label: `total ${fmtBytes(diskTotal)}` } : null}
             fixedMax={diskTotal ?? undefined}
           />
-          <p className="text-center text-xs text-subtle">
-            La carga del sistema es el número medio de procesos esperando CPU; si supera el número de núcleos, el servidor va
-            saturado. La banda va de la media al pico de cada periodo.
-          </p>
+          <p className="text-center text-xs text-subtle">La banda va de la media al pico.</p>
         </Suspense>
       )}
     </div>
@@ -756,12 +754,7 @@ export default function MonitorPage() {
 
       {overview.data && (
         <>
-          {!overview.data.docker && (
-            <div className="mb-4 flex items-center gap-2 rounded-xl border border-warn/30 bg-warn/10 px-4 py-2.5 text-xs text-warn">
-              <TriangleAlert size={14} /> Docker no está disponible: los estados no son en vivo.
-            </div>
-          )}
-
+          {/* Sin aviso de Docker aquí: Layout ya pinta uno global para toda la app. */}
           <div className="stagger mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <StatTile
               icon={<Server size={12} />}
@@ -772,9 +765,9 @@ export default function MonitorPage() {
             />
             <StatTile
               icon={<TriangleAlert size={12} />}
-              label="Con problemas"
+              label="Caídos"
               value={down}
-              detail={down === 0 ? 'todo en orden' : 'caídos o reiniciando'}
+              detail={down === 0 ? 'todo en orden' : 'requieren atención'}
               tone={down > 0 ? 'err' : 'ok'}
             />
             <StatTile
@@ -811,8 +804,8 @@ export default function MonitorPage() {
             <StatTile
               icon={<HardDrive size={12} />}
               label="Disco"
-              value={host?.disk ? fmtBytes(host.disk.free) : '—'}
-              detail="libres"
+              value={host?.disk ? fmtBytes(host.disk.total - host.disk.free) : '—'}
+              detail={host?.disk ? `de ${fmtBytes(host.disk.total)}` : undefined}
               pct={diskPct}
               tone={diskPct !== null && diskPct > 92 ? 'err' : diskPct !== null && diskPct > 80 ? 'warn' : 'ok'}
             />
@@ -853,7 +846,7 @@ export default function MonitorPage() {
                   <div className="flex items-center gap-1.5 overflow-x-auto [scrollbar-width:none]">
                     {chip('all', 'Todos', services.length)}
                     {chip('running', 'Activos', running)}
-                    {chip('down', 'Con problemas', down)}
+                    {chip('down', 'Caídos', down)}
                     {chip('stopped', 'Detenidos', services.length - running - down)}
                   </div>
                   {/* En móvil no hay cabecera de columnas donde pulsar para ordenar:
@@ -913,7 +906,6 @@ export default function MonitorPage() {
                           compact
                           icon={<Server />}
                           title="Aún no hay servicios desplegados"
-                          description="En cuanto despliegues el primero aparecerá aquí con su consumo en vivo."
                           action={
                             <Link to="/" className="text-xs font-semibold text-acc-soft hover:underline">
                               Ir a proyectos →
@@ -925,7 +917,6 @@ export default function MonitorPage() {
                           compact
                           icon={<Search />}
                           title="Ningún servicio coincide"
-                          description="Ni la búsqueda ni el filtro de estado dejan pasar ninguno."
                           action={
                             <Button
                               size="sm"

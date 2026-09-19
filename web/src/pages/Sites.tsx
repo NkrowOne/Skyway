@@ -26,10 +26,10 @@ const SiteCard = memo(function SiteCard({
   site: WebsiteEntry;
   tls: boolean;
   serverIp: string | null;
-  /* Reciben el sitio/id en vez de cerrar sobre él: así las funciones son las
+  /* Reciben el sitio en vez de cerrar sobre él: así las funciones son las
      mismas en cada render y el memo de la tarjeta sirve de algo. */
   onRestart: (site: WebsiteEntry) => void;
-  onDeploy: (serviceId: string) => void;
+  onDeploy: (site: WebsiteEntry) => void;
   busy: boolean;
 }) {
   const navigate = useNavigate();
@@ -126,18 +126,19 @@ const SiteCard = memo(function SiteCard({
               : 'Sin despliegues'}
           </span>
         </span>
+        {/* De lo inocuo a lo que cambia cosas: abrir, reiniciar, desplegar. */}
         <div className="flex shrink-0 items-center gap-1">
-          <button onClick={() => onDeploy(site.id)} disabled={busy} className={ICON_BTN} title="Desplegar" aria-label="Desplegar">
-            <Rocket size={13} />
-          </button>
+          <Link to={`/projects/${site.projectId}?s=${site.id}`} className={ICON_BTN} title="Abrir servicio" aria-label="Abrir servicio">
+            <ArrowUpRight size={13} />
+          </Link>
           {isRunning && (
             <button onClick={() => onRestart(site)} disabled={busy} className={ICON_BTN} title="Reiniciar" aria-label="Reiniciar">
               <RefreshCw size={13} className={cx(busy && 'animate-spin')} />
             </button>
           )}
-          <Link to={`/projects/${site.projectId}?s=${site.id}`} className={ICON_BTN} title="Abrir servicio" aria-label="Abrir servicio">
-            <ArrowUpRight size={13} />
-          </Link>
+          <button onClick={() => onDeploy(site)} disabled={busy} className={ICON_BTN} title="Desplegar" aria-label="Desplegar">
+            <Rocket size={13} />
+          </button>
         </div>
       </div>
     </div>
@@ -181,10 +182,15 @@ export default function SitesPage() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Desplegar también se confirma: el icono va junto al de reiniciar y un clic de más lanza un build.
+  const [confirmDeploy, setConfirmDeploy] = useState<WebsiteEntry | null>(null);
   const deploy = useMutation({
     mutationFn: (serviceId: string) => api.post(`/services/${serviceId}/deploy`),
     ...track,
-    onSuccess: () => toast('Despliegue iniciado', 'ok'),
+    onSuccess: () => {
+      setConfirmDeploy(null);
+      toast('Despliegue iniciado', 'ok');
+    },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
@@ -218,19 +224,9 @@ export default function SitesPage() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-2.5 text-2xl font-semibold leading-[30px]">
-            <Globe size={22} className="text-acc-soft" /> Sitios y servicios
+            <Globe size={22} className="text-acc-soft" /> Sitios web
           </h1>
-          <p className="mt-1.5 text-sm text-sub">
-            Webs y servicios accesibles del servidor, con su estado y un salto directo a su proyecto
-            {sites.data && (
-              <>
-                : {online} en línea, {withDomain} con dominio
-                {!sites.data.tls && withDomain > 0 && (
-                  <span className="text-warn"> · TLS sin configurar (Ajustes → Let&apos;s Encrypt)</span>
-                )}
-              </>
-            )}
-          </p>
+          <p className="mt-1.5 text-sm text-sub">Webs y servicios accesibles desde fuera del servidor.</p>
         </div>
         {/* A 360px el buscador y el botón no caben en una fila: el campo ocupa todo el ancho y el botón baja. */}
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
@@ -253,6 +249,25 @@ export default function SitesPage() {
           </Button>
         </div>
       </div>
+
+      {/* Los números como chips, igual que en Proyectos: se leen de un vistazo y no alargan la descripción. */}
+      {sites.data && all.length > 0 && (
+        <div className="-mt-2 mb-6 flex flex-wrap items-center gap-1.5">
+          <Chip dot tone={online === all.length ? 'ok' : 'warn'}>
+            <span className="tnum font-semibold text-txt">{online}</span> en línea
+          </Chip>
+          <Chip icon={<Globe size={11} aria-hidden />}>
+            <span className="tnum font-semibold text-txt">{withDomain}</span> con dominio
+          </Chip>
+          {!sites.data.tls && withDomain > 0 && (
+            <Link to="/settings" title="Configurar el email de Let's Encrypt en Ajustes">
+              <Chip tone="warn" icon={<Unlock size={11} aria-hidden />}>
+                TLS sin configurar
+              </Chip>
+            </Link>
+          )}
+        </div>
+      )}
 
       {sites.isLoading && (
         <div aria-busy className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
@@ -284,9 +299,10 @@ export default function SitesPage() {
             <circle cx="22" cy="14" r="1.3" fill="currentColor" />
             <circle cx="100" cy="58" r="1.3" fill="currentColor" />
           </svg>
-          <p className="max-w-sm text-sm text-sub">
-            Aún no hay servicios accesibles. Crea un servicio de repositorio o imagen en cualquier proyecto y aparecerá aquí.
-          </p>
+          <p className="max-w-sm text-sm text-sub">Aún no hay servicios accesibles desde fuera.</p>
+          <Link to="/" className="text-xs font-semibold text-acc-soft hover:underline">
+            Ir a proyectos →
+          </Link>
         </div>
       )}
 
@@ -302,7 +318,7 @@ export default function SitesPage() {
             tls={sites.data!.tls}
             serverIp={sites.data!.serverIp}
             onRestart={setConfirmRestart}
-            onDeploy={deploy.mutate}
+            onDeploy={setConfirmDeploy}
             busy={busyIds.has(s.id)}
           />
         ))}
@@ -316,6 +332,17 @@ export default function SitesPage() {
         title={`Reiniciar "${confirmRestart?.name ?? ''}"`}
         message="El servicio quedará unos segundos sin responder mientras vuelve a arrancar."
         confirmLabel="Reiniciar"
+        confirmVariant="primary"
+      />
+
+      <ConfirmModal
+        open={confirmDeploy !== null}
+        onClose={() => setConfirmDeploy(null)}
+        onConfirm={() => confirmDeploy && deploy.mutate(confirmDeploy.id)}
+        loading={!!confirmDeploy && busyIds.has(confirmDeploy.id)}
+        title={`Desplegar "${confirmDeploy?.name ?? ''}"`}
+        message="Se construirá y publicará la versión actual del repositorio o la imagen."
+        confirmLabel="Desplegar"
         confirmVariant="primary"
       />
     </div>
