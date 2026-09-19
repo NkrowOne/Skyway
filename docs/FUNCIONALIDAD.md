@@ -1009,9 +1009,9 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | --- | --- | --- | --- |
 | GET | `/templates` | auth | plantillas de BBDD disponibles |
 | GET | `/stacks` | auth | catálogo de pilas de aplicaciones (§5.1) |
-| POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[]}` |
-| POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada) |
-| POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2) |
+| POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[]}`; atómica (409 si choca un nombre); `domain` como en crear servicio; `services[].config` sin `webhookSecret` |
+| POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada); 20 por minuto y usuario, después 429 |
+| POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas |
 | POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
 | PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
@@ -1040,8 +1040,8 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/services/:id/data-migration` | manage | si el motor lo admite y estado de la copia en curso |
-| POST | `/services/:id/data-migration/test` | manage | comprueba que el origen responde (`{sourceUrl}`) |
-| POST | `/services/:id/data-migration` | manage | lanza la copia (`{sourceUrl}`); el destino se sobrescribe |
+| POST | `/services/:id/data-migration/test` | manage | comprueba que el origen responde (`{sourceUrl}`, máximo 2048 caracteres) |
+| POST | `/services/:id/data-migration` | manage | lanza la copia (`{sourceUrl}`, máximo 2048 caracteres); el destino se sobrescribe |
 | POST | `/services/:id/data-migration/cancel` | manage | corta la copia en marcha |
 | GET | `/services/:id/data-migration/stream` | manage | **SSE** del log de la copia |
 
@@ -1056,7 +1056,7 @@ eso.
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/services/:id/db/overview` | +access | esquema, tamaños y snippets |
-| POST | `/services/:id/db/query` | +access | ejecuta (`{query, allowWrite}`) |
+| POST | `/services/:id/db/query` | +access | ejecuta (`{query, allowWrite}`); 60 por minuto y usuario, después 429 |
 | GET | `/services/:id/db/browse-query` | +access | consulta sugerida (`?object=&mode=data\|describe`) |
 
 ### 7.7 Explorador de archivos (gestor tipo FTP)
@@ -1095,7 +1095,7 @@ distroless), el explorador lo indica y no está disponible.
 | GET | `/system/backups/:file/download` | admin | descarga un snapshot (.db restaurable) |
 | DELETE | `/system/backups/:file` | admin | borra un snapshot |
 | GET | `/settings` | admin | ajustes (secretos como booleanos) |
-| PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas) |
+| PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas); `rootDomain` debe ser un nombre de host válido o vacío |
 | POST | `/settings/github/test` | admin | valida el token de GitHub |
 | DELETE | `/settings/github` | admin | borra el token de GitHub |
 | POST | `/settings/alerts/test` | admin | envía notificación de prueba |
@@ -1104,7 +1104,7 @@ distroless), el explorador lo indica y no está disponible.
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/security` | admin | hallazgos, nota y logins fallidos 24 h |
-| GET | `/audit` | admin | registro de auditoría (`?limit=&action=`) |
+| GET | `/audit` | admin | registro de auditoría (`?limit=&action=`, `action` de hasta 80 caracteres) |
 | POST | `/security/rotate-sessions` | admin | invalida todas las sesiones |
 | GET | `/alerts` | auth | alertas del ámbito del usuario (`?open=&limit=`) |
 | POST | `/alerts/read-all` | auth | marca todas como leídas |
@@ -1125,7 +1125,7 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/projects/:id/status-page` | admin | activa/desactiva y aviso |
 | POST | `/projects/:id/status-page/rotate` | admin | rota el token del enlace |
 | GET | `/projects/:id/import-report` | +access | informe de importación de Railway |
-| DELETE | `/projects/:id/import-report` | +access | borra el informe |
+| DELETE | `/projects/:id/import-report` | +access | borra el informe (auditado como `import_report_deleted`) |
 | POST | `/import/railway/projects` | admin | lista proyectos de Railway (`{token}`) |
 | POST | `/import/railway/analyze` | admin | plan de importación (sin valores de variables) |
 | POST | `/import/railway/run` | admin | ejecuta la importación |
