@@ -371,7 +371,7 @@ export default function DeploymentsTab({
   const rollback = useMutation({
     mutationFn: (deploymentId: string) => api.post<{ deployment: Deployment }>(`/deployments/${deploymentId}/rollback`),
     onSuccess: (data) => {
-      toast('Rollback iniciado', 'ok');
+      toast('Volviendo a la versión anterior…', 'ok');
       toggle(data.deployment.id);
       queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
     },
@@ -446,7 +446,7 @@ export default function DeploymentsTab({
       <EmptyState
         icon={<History />}
         title="Aún no hay despliegues"
-        description="En cuanto lances uno aparecerá aquí con su registro completo y el detalle de cada fase."
+        description="Aparecerán aquí con su registro completo."
       />
     );
   }
@@ -498,7 +498,7 @@ export default function DeploymentsTab({
                   <span className="block truncate text-sm font-medium">
                     {d.commit_msg ||
                       (d.trigger === 'rollback'
-                        ? 'Rollback de imagen'
+                        ? 'Vuelta a una versión anterior'
                         : serviceType === 'database'
                           ? 'Despliegue de base de datos'
                           : 'Despliegue')}
@@ -546,6 +546,9 @@ export default function DeploymentsTab({
                   </button>
                 )}
                 {d.id !== currentId && d.status === 'success' && serviceType === 'git' && (
+                  /* Es un cambio en producción: separado de «Logs» para que no se pulse de paso. */
+                  <>
+                  <span aria-hidden className="mx-0.5 h-4 w-px shrink-0 bg-line" />
                   <button
                     type="button"
                     onClick={() => setRollbackTo(d)}
@@ -555,6 +558,7 @@ export default function DeploymentsTab({
                   >
                     <RotateCcw size={13} aria-hidden />
                   </button>
+                  </>
                 )}
               </span>
             </div>

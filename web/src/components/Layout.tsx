@@ -49,9 +49,9 @@ const PAGE_LABEL: Record<string, string> = {
   '/settings': 'Ajustes',
   '/alerts': 'Alertas',
   '/users': 'Usuarios',
-  '/account': 'Mi cuenta',
+  '/account': 'Mi perfil',
   '/monitor': 'Monitor',
-  '/sites': 'Sitios y servicios',
+  '/sites': 'Sitios web',
   '/workspaces': 'Cuentas y clientes',
   '/plans': 'Planes',
   '/catalog': 'Catálogo',
@@ -133,7 +133,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
         key: 'a-sites',
         group: 'Acciones rápidas',
         icon: <Globe size={15} className="text-subtle" />,
-        label: 'Sitios y servicios',
+        label: 'Sitios web',
         keywords: 'sitios webs servicios apps aplicaciones dominios paginas accesos tls https',
         to: '/sites',
       },
@@ -153,7 +153,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
         key: 'a-account',
         group: 'Acciones rápidas',
         icon: <UserRound size={15} className="text-subtle" />,
-        label: 'Mi cuenta (passkeys y tokens)',
+        label: 'Mi perfil (passkeys y tokens)',
         keywords: 'cuenta passkey token contraseña api',
         to: '/account',
       },
@@ -355,7 +355,7 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
     { label: 'Paleta de comandos', keys: [CMD_K_LABEL] },
     { label: 'Ir a proyectos', keys: ['g', 'p'] },
     { label: 'Ir al monitor', keys: ['g', 'm'] },
-    { label: 'Ir a sitios y servicios', keys: ['g', 'w'] },
+    { label: 'Ir a sitios web', keys: ['g', 'w'] },
     { label: 'Ir a seguridad', keys: ['g', 's'] },
     { label: 'Ir a alertas', keys: ['g', 'a'] },
     { label: 'Cerrar drawer / modales', keys: ['esc'] },
@@ -569,7 +569,7 @@ function MainMenu({
       label: 'Plataforma',
       items: [
         { to: '/monitor', icon: <Activity size={16} />, label: 'Monitor' },
-        { to: '/sites', icon: <Globe size={16} />, label: 'Sitios y servicios' },
+        { to: '/sites', icon: <Globe size={16} />, label: 'Sitios web' },
         {
           to: '/alerts',
           icon: <BellRing size={16} />,
@@ -669,7 +669,7 @@ function MainMenu({
             ))}
           </div>
           <div className="border-t border-line p-2">
-            <Row item={{ to: '/account', icon: <UserRound size={16} />, label: 'Mi cuenta' }} />
+            <Row item={{ to: '/account', icon: <UserRound size={16} />, label: 'Mi perfil' }} />
             <button
               role="menuitem"
               onClick={() => {
@@ -873,7 +873,7 @@ export default function Layout() {
           <Link
             to="/sites"
             className="hidden press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt sm:block"
-            title="Sitios y servicios (g w)"
+            title="Sitios web (g w)"
           >
             <Globe size={16} />
           </Link>

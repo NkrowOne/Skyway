@@ -391,6 +391,9 @@ export default function ServiceDrawer({
               >
                 <RefreshCw size={fullscreen ? 16 : 13} /> {!fullscreen && 'Reiniciar'}
               </Button>
+              {/* Detener corta el servicio: va separado de Reiniciar, que
+                  estaba pegado a él y se pulsaba por error. */}
+              <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-line" />
               <Button
                 size="sm"
                 variant="secondary"
@@ -454,7 +457,7 @@ export default function ServiceDrawer({
           <div className="tab-in mt-3.5 flex items-center gap-2.5 rounded-xl border border-line bg-surface2/60 px-3 py-2 text-xs text-sub">
             <Square size={13} className="shrink-0 text-subtle" aria-hidden />
             <span className="min-w-0 leading-snug">
-              <span className="font-semibold text-txt">Servicio detenido</span>
+              <span className="font-semibold text-txt">Detenido</span>
               {service.stopped_at ? ` desde el panel ${timeAgo(service.stopped_at)}` : status.detail ? ` · ${status.detail}` : ''}.
               {' '}No atiende peticiones hasta que lo inicies.
             </span>
@@ -464,7 +467,7 @@ export default function ServiceDrawer({
           <div className="tab-in mt-3.5 flex items-center gap-2.5 rounded-xl border border-err/35 bg-err/[.07] px-3 py-2 text-xs text-sub">
             <AlertTriangle size={13} className="shrink-0 text-err" aria-hidden />
             <span className="min-w-0 flex-1 leading-snug">
-              <span className="font-semibold text-err">Se paró solo</span>
+              <span className="font-semibold text-err">Caído</span>
               {status.detail ? ` · ${status.detail}` : ''}. El error suele estar al final de los logs.
             </span>
             <button

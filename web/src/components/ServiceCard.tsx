@@ -177,8 +177,8 @@ const ServiceCard = memo(function ServiceCard({
                 : 'Detenido · no consume recursos'
               : status.kind === 'down'
                 ? status.detail
-                  ? `Se paró solo · ${status.detail}`
-                  : 'Se paró solo'
+                  ? `Caído · ${status.detail}`
+                  : 'Caído'
                 : state === 'not_created'
                   ? 'Todavía sin desplegar'
                   : 'Sin métricas'}

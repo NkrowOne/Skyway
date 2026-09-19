@@ -434,7 +434,7 @@ export default function LogsTab({
 
   const getFriendlyTitle = (d: Deployment) => {
     if (d.commit_msg) return d.commit_msg;
-    if (d.trigger === 'rollback') return 'Rollback de versión';
+    if (d.trigger === 'rollback') return 'Vuelta a una versión anterior';
     if (d.trigger === 'github') return `Push a rama ${d.commit_sha ? `(${d.commit_sha.slice(0, 7)})` : ''}`;
     return 'Despliegue manual';
   };

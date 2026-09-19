@@ -174,7 +174,7 @@ export function serviceStatus(
           kind: 'stopped',
           tone: 'neutral',
           label: 'Detenido',
-          detail: runtime?.stoppedAt ? 'parado desde el panel' : explainExit(runtime?.exitCode),
+          detail: runtime?.stoppedAt ? 'desde el panel' : explainExit(runtime?.exitCode),
         };
       }
       return { kind: 'down', tone: 'err', label: 'Caído', detail: explainExit(runtime?.exitCode) };
@@ -203,7 +203,7 @@ export const DEPLOY_TRIGGER_LABEL: Record<string, string> = {
   manual: 'manual',
   webhook: 'push',
   autodeploy: 'auto-deploy',
-  rollback: 'rollback',
+  rollback: 'vuelta atrás',
   import: 'importación',
 };
 
@@ -254,7 +254,7 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   service_updated: 'Servicio actualizado',
   service_deleted: 'Servicio eliminado',
   service_deploy: 'Despliegue manual',
-  service_rollback: 'Rollback',
+  service_rollback: 'Vuelta a una versión anterior',
   service_start: 'Servicio iniciado',
   service_stop: 'Servicio detenido',
   service_restart: 'Servicio reiniciado',
