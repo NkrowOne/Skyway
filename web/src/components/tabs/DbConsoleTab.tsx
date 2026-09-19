@@ -147,14 +147,16 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
 
   // `pointerdown` y no `mousedown`: en táctil el mousedown llega tarde (tras
   // el toque, con el retardo del gesto) o no llega, y el desplegable del
-  // historial se quedaba abierto hasta tocar dentro de él.
+  // historial se quedaba abierto hasta tocar dentro de él. Solo se escucha
+  // mientras está abierto: cerrado, cada toque en la pestaña pasaba por aquí para nada.
   useEffect(() => {
+    if (!historyOpen) return;
     const onPointer = (e: PointerEvent) => {
       if (historyRef.current && !historyRef.current.contains(e.target as Node)) setHistoryOpen(false);
     };
     window.addEventListener('pointerdown', onPointer);
     return () => window.removeEventListener('pointerdown', onPointer);
-  }, []);
+  }, [historyOpen]);
 
   const run = useMutation({
     mutationFn: (q: string) =>
@@ -162,7 +164,11 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
     onSuccess: (data, q) => {
       setResult(data.result);
       setError(null);
-      setHistory([q, ...history.filter((x) => x !== q)].slice(0, 20));
+      // El historial vive en localStorage, que cualquier extensión o persona
+      // con el portátil abierto puede leer. Las consultas de escritura son
+      // donde se teclean valores (un INSERT con una contraseña, un token en un
+      // UPDATE): esas no se guardan; las de lectura sí, que es lo que se repite.
+      if (!allowWrite) setHistory([q, ...history.filter((x) => x !== q)].slice(0, 20));
     },
     onError: (err: Error) => {
       setResult(null);
@@ -366,9 +372,10 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
               </button>
               {historyOpen && (
                 <div className="absolute right-0 top-9 z-20 max-h-64 w-[440px] max-w-[min(80vw,calc(100vw-2rem))] overflow-y-auto overscroll-contain rounded-xl border border-line bg-surface p-1.5 shadow-lvl3">
-                  {history.map((h, i) => (
+                  {/* La consulta es única en el historial (se deduplica al guardar): sirve de clave. */}
+                  {history.map((h) => (
                     <button
-                      key={i}
+                      key={h}
                       onClick={() => {
                         setQuery(h);
                         setHistoryOpen(false);

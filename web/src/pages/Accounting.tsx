@@ -772,7 +772,13 @@ function CompanyProfile() {
       if (d.smtpPass.trim()) payload.smtpPass = d.smtpPass.trim();
       return api.put('/billing/profile', payload);
     },
-    onSuccess: () => { toast('Datos de la empresa guardados', 'ok'); queryClient.invalidateQueries({ queryKey: ['billing-profile'] }); },
+    onSuccess: () => {
+      toast('Datos de la empresa guardados', 'ok');
+      queryClient.invalidateQueries({ queryKey: ['billing-profile'] });
+      // La moneda de la empresa es la de los totales de arriba: cambiarla
+      // dejaba los KPI en la divisa anterior hasta recargar.
+      queryClient.invalidateQueries({ queryKey: ['accounting-summary'] });
+    },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 

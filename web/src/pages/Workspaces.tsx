@@ -83,7 +83,8 @@ export default function WorkspacesPage() {
     queryFn: () => api.get<{ workspaces: Workspace[] }>('/workspaces'),
     enabled: !isOwner,
   });
-  const plans = useQuery({ queryKey: ['plans'], queryFn: () => api.get<{ plans: Plan[] }>('/plans'), enabled: isAdmin });
+  // `!!`: `isAdmin` es undefined mientras `me` carga, y eso react-query lo lee como «activada».
+  const plans = useQuery({ queryKey: ['plans'], queryFn: () => api.get<{ plans: Plan[] }>('/plans'), enabled: !!isAdmin, staleTime: 60_000 });
 
   const [draft, setDraft] = useState<Draft | null>(null);
 

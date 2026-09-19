@@ -98,8 +98,10 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // El nombre va codificado en las tres rutas: lo genera el servidor, pero un
+  // carácter fuera de lo esperado (un `#`, un `?`) rompería la URL en silencio.
   const restore = useMutation({
-    mutationFn: (file: string) => api.post(`/services/${serviceId}/backups/${file}/restore`, { confirm: true }),
+    mutationFn: (file: string) => api.post(`/services/${serviceId}/backups/${encodeURIComponent(file)}/restore`, { confirm: true }),
     onSuccess: () => {
       toast('Copia restaurada', 'ok');
       setRestoreFile(null);
@@ -108,7 +110,7 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
   });
 
   const remove = useMutation({
-    mutationFn: (file: string) => api.del(`/services/${serviceId}/backups/${file}`),
+    mutationFn: (file: string) => api.del(`/services/${serviceId}/backups/${encodeURIComponent(file)}`),
     onSuccess: () => {
       setDeleteFile(null);
       invalidate();
@@ -190,7 +192,7 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
                   pulsaba por error, y aquí un error borra la única copia. */}
               <div className="flex shrink-0 items-center gap-0.5">
                 <a
-                  href={`/api/services/${serviceId}/backups/${b.file}/download`}
+                  href={`/api/services/${serviceId}/backups/${encodeURIComponent(b.file)}/download`}
                   className="press rounded-md p-1.5 leading-none text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
                   title="Descargar"
                   aria-label={`Descargar ${b.file}`}

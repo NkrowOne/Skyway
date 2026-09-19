@@ -46,16 +46,30 @@ function useProjectStream(projectId: string | undefined, onDeploySettled: () => 
   const [latest, setLatest] = useState<MetricsSnapshot | null>(null);
   const [deploys, setDeploys] = useState<Record<string, ActiveDeploy>>({});
   const [live, setLive] = useState(false);
+  // Se incrementa para reabrir el stream cuando el navegador lo da por perdido.
+  const [streamGen, setStreamGen] = useState(0);
   const historyRef = useRef<Map<string, MetricPoint[]>>(new Map());
   // El callback cambia de identidad en cada render; la ref evita reabrir el SSE.
   const settledRef = useRef(onDeploySettled);
   settledRef.current = onDeploySettled;
 
+  // A qué proyecto pertenece lo acumulado en `historyRef`/`latest`.
+  const historyForRef = useRef<string | undefined>(undefined);
+
   useEffect(() => {
     if (!projectId) return;
-    historyRef.current = new Map();
+    // El historial y la última foto solo se vacían al cambiar de proyecto, no
+    // al reabrir la conexión: si no, cada corte borraba las gráficas en vivo.
+    // (Y hay que vaciarlos: al saltar de proyecto por la paleta ⌘K las tarjetas
+    // del nuevo pintaban un instante el estado de los servicios del anterior.)
+    if (historyForRef.current !== projectId) {
+      historyForRef.current = projectId;
+      historyRef.current = new Map();
+      setLatest(null);
+    }
     setDeploys({});
     setLive(false);
+    let retryTimer = 0;
 
     const es = openStream(`/projects/${projectId}/metrics/stream`);
 
@@ -99,11 +113,23 @@ function useProjectStream(projectId: string | undefined, onDeploySettled: () => 
       if (!running) settledRef.current();
     });
 
+    /*
+     * Mientras el navegador reintenta solo (CONNECTING) no hay nada que hacer.
+     * Si la da por perdida (CLOSED: sesión caducada, proxy que corta) el
+     * stream moría en silencio: `live` seguía en true, el sondeo de la página
+     * se quedaba en el ritmo lento de «hay stream» y las fases de despliegue
+     * dejaban de llegar. Se avisa a la página y se reabre a los pocos segundos.
+     */
     es.onerror = () => {
-      /* EventSource reintenta solo */
+      if (es.readyState !== EventSource.CLOSED) return;
+      setLive(false);
+      retryTimer = window.setTimeout(() => setStreamGen((g) => g + 1), 5000);
     };
-    return () => es.close();
-  }, [projectId]);
+    return () => {
+      if (retryTimer) window.clearTimeout(retryTimer);
+      es.close();
+    };
+  }, [projectId, streamGen]);
 
   return { latest, historyRef, deploys, live };
 }

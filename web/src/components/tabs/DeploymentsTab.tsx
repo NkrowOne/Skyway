@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronDown, History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
-import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, fmtDuration, isActiveDeploy, ServiceStatusKind, timeAgo } from '../../utils';
+import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, EMPTY_LIST, fmtDuration, isActiveDeploy, ServiceStatusKind, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
 import { ConfirmModal, EmptyState, ErrorState, Skeleton, useToast } from '../ui';
 
@@ -393,7 +393,8 @@ export default function DeploymentsTab({
   });
 
   // El servidor los envía en orden cronológico (el más reciente primero).
-  const list = deployments.data?.deployments ?? [];
+  // EMPTY_LIST y no `[]`: un literal nuevo por render invalidaba el memo de abajo.
+  const list = deployments.data?.deployments ?? EMPTY_LIST;
   // El despliegue "vigente": el éxito más reciente (la versión que sirve ahora).
   const currentId = list.find((d) => d.status === 'success')?.id ?? null;
   // El más reciente en el tiempo: sirve para teñir en rojo un último intento fallido.
@@ -406,15 +407,13 @@ export default function DeploymentsTab({
    * semana pasada: justo lo que se venía a mirar, escondido. La píldora «En
    * producción» ya dice cuál sirve.
    */
-  const running = list.filter((d) => isActiveDeploy(d.status));
-  const runningIds = new Set(running.map((d) => d.id));
-  const ordered = useMemo(
-    () => [...running, ...list.filter((d) => !runningIds.has(d.id))],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [list],
-  );
+  const ordered = useMemo(() => {
+    const running = list.filter((d) => isActiveDeploy(d.status));
+    const runningIds = new Set(running.map((d) => d.id));
+    return [...running, ...list.filter((d) => !runningIds.has(d.id))];
+  }, [list]);
 
-  const runningId = running[0]?.id ?? null;
+  const runningId = ordered.find((d) => isActiveDeploy(d.status))?.id ?? null;
   useEffect(() => {
     if (runningId) setOpenId(runningId);
   }, [runningId]);

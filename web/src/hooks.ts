@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * Presencia con salida animada: mantiene el nodo montado `exitMs` tras cerrarse
@@ -62,14 +62,19 @@ export function useLocalStorage<T>(key: string, initial: T): [T, (v: T) => void]
       return initial;
     }
   });
-  const set = (v: T) => {
-    setValue(v);
-    try {
-      localStorage.setItem(key, JSON.stringify(v));
-    } catch {
-      /* almacenamiento lleno o bloqueado: seguimos en memoria */
-    }
-  };
+  // Estable: quien lo meta en las dependencias de un efecto no debe verlo
+  // cambiar en cada render.
+  const set = useCallback(
+    (v: T) => {
+      setValue(v);
+      try {
+        localStorage.setItem(key, JSON.stringify(v));
+      } catch {
+        /* almacenamiento lleno o bloqueado: seguimos en memoria */
+      }
+    },
+    [key],
+  );
   return [value, set];
 }
 

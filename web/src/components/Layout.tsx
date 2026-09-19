@@ -638,6 +638,9 @@ function MainMenu({
     });
 
   const close = () => setOpen(false);
+  // Marca también las rutas hijas: dentro de una cuenta (/workspaces/:id) el
+  // menú no señalaba «Cuentas y clientes» y parecía que no estabas en ninguna parte.
+  const activa = (to: string) => location.pathname === to || location.pathname.startsWith(`${to}/`);
 
   return (
     <div className="relative" ref={ref}>
@@ -680,7 +683,7 @@ function MainMenu({
               <div key={g.label} className="mb-1 last:mb-0">
                 <p className="mx-2 mb-1 mt-1.5 eyebrow text-subtle">{g.label}</p>
                 {g.items.map((it) => (
-                  <MenuRow key={it.to} item={it} active={location.pathname === it.to} onNavigate={close} />
+                  <MenuRow key={it.to} item={it} active={activa(it.to)} onNavigate={close} />
                 ))}
               </div>
             ))}
@@ -803,9 +806,14 @@ export default function Layout() {
   }, [cmdOpen, helpOpen, navigate]);
 
   const logout = async () => {
-    await api.post('/auth/logout');
-    queryClient.clear();
-    navigate('/login');
+    // Si el servidor no responde, la sesión local se cierra igual: antes el
+    // fallo dejaba el panel abierto sin aviso, con el usuario creyendo haber salido.
+    try {
+      await api.post('/auth/logout');
+    } finally {
+      queryClient.clear();
+      navigate('/login');
+    }
   };
 
   const sys = system.data;
@@ -888,6 +896,7 @@ export default function Layout() {
             to="/monitor"
             className="hidden press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt sm:block"
             title="Monitor (g m)"
+            aria-label="Monitor"
           >
             <Activity size={16} />
           </Link>
@@ -895,6 +904,7 @@ export default function Layout() {
             to="/sites"
             className="hidden press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt sm:block"
             title="Sitios web (g w)"
+            aria-label="Sitios web"
           >
             <Globe size={16} />
           </Link>

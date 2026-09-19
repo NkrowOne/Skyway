@@ -218,7 +218,7 @@ export default function UsersPage() {
                 onChange={(e) => setDraft({ ...draft, password: e.target.value })}
               />
             </Field>
-            <Field label="Rol">
+            <Field label="Rol" group>
               <div className="grid grid-cols-2 gap-2">
                 {(['member', 'admin'] as const).map((r) => (
                   <button

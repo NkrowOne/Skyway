@@ -48,7 +48,13 @@ export default function PlansPage() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [toDelete, setToDelete] = useState<Plan | null>(null);
   const isEdit = !!draft?.id;
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['plans'] });
+  // Las cuentas heredan cuota, módulos y descuento del plan: al cambiarlo, sus
+  // medidores ya cargados en caché quedaban con los techos viejos.
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ['plans'] });
+    queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+    queryClient.invalidateQueries({ queryKey: ['workspace'] });
+  };
 
   const save = useMutation({
     mutationFn: () => {
@@ -205,7 +211,7 @@ export default function PlansPage() {
               <Field label="Usuarios"><input className="input tnum" type="number" inputMode="numeric" min={1} value={draft.max_members} onChange={(e) => setDraft({ ...draft, max_members: e.target.value })} /></Field>
               <Field label="Descuento (%)" hint="rebaja las facturas de sus cuentas"><input className="input tnum" type="number" inputMode="decimal" min={0} max={100} step="0.5" value={draft.discount_pct} onChange={(e) => setDraft({ ...draft, discount_pct: e.target.value })} /></Field>
             </div>
-            <Field label="Módulos incluidos">
+            <Field label="Módulos incluidos" group>
               <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
                 {(modules.data?.modules ?? []).map((m) => {
                   const on = draft.modules.includes(m.key);

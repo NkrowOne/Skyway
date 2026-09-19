@@ -489,7 +489,7 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
               <input className="input" type="password" value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
             </Field>
             {isAdmin && (
-              <Field label="Rol">
+              <Field label="Rol" group>
                 <div className="grid grid-cols-2 gap-2">
                   {(['member', 'owner'] as const).map((r) => (
                     <button
@@ -725,9 +725,14 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
   // Generar, anular o borrar una factura mueve también los CARGOS PUNTUALES (pasan
   // a facturados o vuelven a pendientes), así que hay que refrescar las dos listas:
   // si no, «Servicios contratados» sigue ofreciendo eliminar un cargo ya facturado.
+  // Y toca la propia cuenta: generar o borrar mueve «facturado hasta» (que pinta
+  // el historial de plan) y cobrar levanta la morosidad, así que se recarga con
+  // sus avisos; si no, el aviso de impago seguía en rojo con la factura ya pagada.
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['ws-invoices', ws.id] });
     queryClient.invalidateQueries({ queryKey: ['ws-subs', ws.id] });
+    queryClient.invalidateQueries({ queryKey: ['ws-alerts', ws.id] });
+    onSaved();
   };
 
   const email = useMutation({
@@ -1526,7 +1531,9 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
   });
   const revoke = useMutation({
     mutationFn: (id: string) => api.del(`/workspaces/${workspaceId}/keys/${id}`),
-    onSuccess: () => { toast('Clave revocada', 'ok'); invalidate(); },
+    // El modal se cierra al terminar, no al pulsar: así se ve el estado de carga
+    // y, si falla, la clave sigue a la vista y se puede reintentar.
+    onSuccess: () => { toast('Clave revocada', 'ok'); setRevoking(null); invalidate(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
@@ -1598,10 +1605,7 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
       <ConfirmModal
         open={!!revoking}
         onClose={() => setRevoking(null)}
-        onConfirm={() => {
-          if (revoking) revoke.mutate(revoking.id);
-          setRevoking(null);
-        }}
+        onConfirm={() => revoking && revoke.mutate(revoking.id)}
         title="Revocar la clave"
         message={`«${revoking?.name ?? ''}» dejará de funcionar en el acto y no se puede recuperar. Las integraciones que la usen empezarán a recibir errores.`}
         confirmLabel="Revocar"
@@ -1833,7 +1837,10 @@ export default function WorkspacePage() {
 
   const detail = useQuery({ queryKey: ['workspace', id], queryFn: () => api.get<Detail>(`/workspaces/${id}`), enabled: !!id });
   const modules = useQuery({ queryKey: ['modules'], queryFn: () => api.get<{ modules: ModuleDef[] }>('/modules'), staleTime: 300_000 });
-  const plans = useQuery({ queryKey: ['plans'], queryFn: () => api.get<{ plans: Plan[] }>('/plans'), enabled: isAdmin });
+  // `!!`: con `me` aún sin resolver `isAdmin` es undefined, y para react-query
+  // «undefined» es «activada»: un propietario pedía /plans y recibía un 403.
+  // Casi estáticos (los edita Planes, que invalida la clave): no hay que volver a pedirlos en cada visita.
+  const plans = useQuery({ queryKey: ['plans'], queryFn: () => api.get<{ plans: Plan[] }>('/plans'), enabled: !!isAdmin, staleTime: 60_000 });
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['workspace', id] });

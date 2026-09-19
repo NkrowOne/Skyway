@@ -289,6 +289,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
                       onClick={() => download(entry)}
                       className="rounded-md p-1 text-subtle transition-colors hover:bg-bg hover:text-txt max-sm:p-2.5"
                       title="Descargar"
+                      aria-label={`Descargar ${entry.name}`}
                     >
                       <Download size={13} />
                     </button>
@@ -298,6 +299,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
                       onClick={() => setDeleting(entry)}
                       className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err max-sm:p-2.5"
                       title="Eliminar"
+                      aria-label={`Eliminar ${entry.name}`}
                     >
                       <Trash2 size={13} />
                     </button>

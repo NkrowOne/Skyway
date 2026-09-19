@@ -28,6 +28,14 @@ export type TimestampFormat = 'time' | 'datetime' | 'utc' | 'relative';
 /** Formateador de miles reutilizable (locale fija). */
 const NF = new Intl.NumberFormat('es');
 
+/*
+ * Formateadores de hora fijos. `toLocaleTimeString` construye uno nuevo en
+ * cada llamada y aquí se llama una vez por línea visible cada vez que entra
+ * una ráfaga: con quince mil líneas en vivo eran quince mil instancias por frame.
+ */
+const TIME_FMT = new Intl.DateTimeFormat('es-ES', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const DATETIME_FMT = new Intl.DateTimeFormat('es-ES', { day: '2-digit', month: '2-digit' });
+
 /** Filas agrupadas en tramos para virtualizar por bloque (ver index.css). */
 const CHUNK = 48;
 
@@ -137,20 +145,10 @@ function formatTimestamp(ts: number | null, iso: string | null, format: Timestam
   }
   if (format === 'datetime' && ts) {
     const d = new Date(ts);
-    const day = String(d.getDate()).padStart(2, '0');
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const time = d.toLocaleTimeString('es-ES', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    return `${day}/${month} ${time}`;
+    return `${DATETIME_FMT.format(d)} ${TIME_FMT.format(d)}`;
   }
   // format === 'time' (default)
-  if (ts) {
-    return new Date(ts).toLocaleTimeString('es-ES', {
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  }
+  if (ts) return TIME_FMT.format(new Date(ts));
   return iso ? iso.slice(0, 8) : '';
 }
 
@@ -366,6 +364,9 @@ function LogViewerImpl({
   const [tsFormat, setTsFormat] = useState<TimestampFormat>('time');
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Se limpia al desmontar: el temporizador tocaba estado de un visor ya cerrado.
+  const copiedTimer = useRef<number>();
+  useEffect(() => () => window.clearTimeout(copiedTimer.current), []);
   const [maximized, setMaximized] = useState(false);
   const [clearedUntil, setClearedUntil] = useState<number>(0);
 
@@ -625,10 +626,16 @@ function LogViewerImpl({
   };
 
   const copyAll = () => {
-    navigator.clipboard.writeText(plainText(showTs)).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1400);
-    });
+    navigator.clipboard
+      .writeText(plainText(showTs))
+      .then(() => {
+        setCopied(true);
+        window.clearTimeout(copiedTimer.current);
+        copiedTimer.current = window.setTimeout(() => setCopied(false), 1400);
+      })
+      // Sin HTTPS o con el permiso denegado el portapapeles rechaza: antes era
+      // un rechazo sin capturar y el check de «copiado» simplemente no salía.
+      .catch(() => setCopied(false));
   };
 
   const download = () => {
@@ -754,13 +761,14 @@ function LogViewerImpl({
               {filter && (
                 <div className="flex items-center gap-1">
                   <span className="text-micro text-subtle tabular-nums font-mono">
-                    {visible.length} match{visible.length === 1 ? '' : 'es'}
+                    {NF.format(visible.length)} {visible.length === 1 ? 'coincidencia' : 'coincidencias'}
                   </span>
                   <button
                     type="button"
                     onClick={() => setFilter('')}
                     className="press shrink-0 text-subtle hover:text-txt"
                     title="Limpiar filtro"
+                    aria-label="Limpiar filtro"
                   >
                     <X size={12} />
                   </button>

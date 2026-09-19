@@ -37,6 +37,12 @@ export default function SharedVarsModal({
     enabled: open,
   });
 
+  // Al cerrar se olvida lo no guardado: si no, al volver a abrir seguía el
+  // borrador descartado (y con `dirty` en pie nunca se recargaba del servidor).
+  useEffect(() => {
+    if (!open) setDirty(false);
+  }, [open]);
+
   // Alfabético al cargar: el orden de inserción del servidor no ayuda a
   // encontrar nada. Mientras se edita no se reordena (las nuevas van al final).
   useEffect(() => {

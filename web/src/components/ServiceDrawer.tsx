@@ -98,11 +98,15 @@ export default function ServiceDrawer({
     setTab(nextTab);
   };
 
+  const asideRef = useRef<HTMLElement>(null);
   // Esc cierra el drawer, salvo que haya un modal/paleta abierto por encima o cambios sin guardar.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
-      if (document.querySelector('[role="dialog"]')) return;
+      // A pantalla completa el propio drawer es un `role="dialog"`: no cuenta
+      // como «algo abierto encima» o Esc nunca lo cerraba en tableta con teclado.
+      const dialogo = [...document.querySelectorAll('[role="dialog"]')].some((el) => el !== asideRef.current);
+      if (dialogo) return;
       handleAttemptClose();
     };
     window.addEventListener('keydown', onKey);
@@ -163,7 +167,9 @@ export default function ServiceDrawer({
     onSuccess: (_data, force) => {
       toast(force ? 'Reconstruyendo desde cero…' : 'Despliegue iniciado', 'ok');
       setPendingRedeploy(false);
-      setTab('deployments');
+      // Solo si no hay nada a medias: el salto a Despliegues desmontaba una
+      // pestaña con cambios sin guardar y se perdían sin preguntar.
+      if (!isTabDirty) setTab('deployments');
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -304,6 +310,7 @@ export default function ServiceDrawer({
 
   return (
     <aside
+      ref={asideRef}
       className={asideCls}
       style={asideStyle}
       role={fullscreen ? 'dialog' : 'complementary'}
@@ -475,7 +482,7 @@ export default function ServiceDrawer({
             </span>
             <button
               type="button"
-              onClick={() => setTab('logs')}
+              onClick={() => handleTabChange('logs')}
               className="press flex h-9 shrink-0 items-center gap-1 rounded-lg border border-line bg-surface px-2.5 text-xs font-medium text-txt hover:bg-surface2 sm:h-7 sm:px-2"
             >
               <ScrollText size={12} aria-hidden /> Ver logs
@@ -629,7 +636,9 @@ export default function ServiceDrawer({
           if (shouldClose) onClose();
         }}
         title="¿Descartar cambios sin guardar?"
-        message="Tienes modificaciones pendientes en las variables de entorno que no han sido guardadas. Si sales ahora, se perderán."
+        // Genérico: los cambios pueden venir de Variables o de Ajustes, y el
+        // texto hablaba siempre de variables de entorno.
+        message="Tienes modificaciones sin guardar en esta pestaña. Si sales ahora, se perderán."
         confirmLabel="Descartar y salir"
         confirmVariant="danger"
       />

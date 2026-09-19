@@ -4,6 +4,7 @@ import { useParams } from 'react-router-dom';
 import { AlertCircle, CheckCircle2, CircleSlash, HelpCircle, Megaphone, Rocket } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { EmptyState, ErrorState, Skeleton } from '../components/ui';
+import { useMediaQuery } from '../hooks';
 import { PublicServiceState, PublicStatus } from '../types';
 import { cx } from '../utils';
 
@@ -45,33 +46,31 @@ function dayColor(pct: number | null): string {
   return 'bg-err';
 }
 
+/*
+ * Formateadores fijos: cada barra lleva su fecha en el aria-label y son 90 por
+ * servicio en cada refresco; `toLocaleString` creaba un formateador por llamada.
+ */
+const DAY_FMT = new Intl.DateTimeFormat('es', { day: 'numeric', month: 'short' });
+const STAMP_FMT = new Intl.DateTimeFormat('es', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+
 function fmtDay(ts: number): string {
-  return new Date(ts).toLocaleDateString('es', { day: 'numeric', month: 'short' });
+  return DAY_FMT.format(new Date(ts));
+}
+
+function fmtStampCorto(ts: number): string {
+  return STAMP_FMT.format(new Date(ts));
 }
 
 function fmtPct(pct: number | null): string {
   return pct === null ? '—' : `${pct.toFixed(pct >= 99.995 ? 0 : 2)}%`;
 }
 
-/** Ancho de pantalla por debajo del cual se enseñan solo los últimos 30 días. */
-const MOVIL_MAX = 639;
-
-/** ¿Estamos en pantalla de móvil? Reacciona al giro y al cambio de tamaño. */
-function useEsMovil(): boolean {
-  const [movil, setMovil] = useState(() => (typeof window !== 'undefined' ? window.innerWidth <= MOVIL_MAX : false));
-  useEffect(() => {
-    const mq = window.matchMedia(`(max-width: ${MOVIL_MAX}px)`);
-    const onChange = () => setMovil(mq.matches);
-    onChange();
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, []);
-  return movil;
-}
+/** Por debajo de este ancho se enseñan solo los últimos 30 días. */
+const MOVIL_QUERY = '(max-width: 639px)';
 
 function UptimeBars({ days }: { days: { date: number; pct: number | null }[] }) {
   const [tip, setTip] = useState<{ idx: number; text: string } | null>(null);
-  const movil = useEsMovil();
+  const movil = useMediaQuery(MOVIL_QUERY);
   /*
    * 90 barras en 328px salen a ~3px cada una: ni se distinguen ni se pulsan.
    * En móvil se enseñan los últimos 30 días (≥6px por barra con el hueco), que
@@ -142,7 +141,7 @@ function Actualizado({ generatedAt }: { generatedAt: number }) {
 
 export default function PublicStatusPage() {
   const { token } = useParams<{ token: string }>();
-  const movil = useEsMovil();
+  const movil = useMediaQuery(MOVIL_QUERY);
 
   const status = useQuery({
     queryKey: ['publicStatus', token],
@@ -246,15 +245,7 @@ export default function PublicStatusPage() {
               {open.map((i) => (
                 <div key={i.id}>
                   <p className="text-sm font-medium text-txt">{i.title}</p>
-                  <p className="mt-0.5 text-xs text-sub">
-                    Desde{' '}
-                    {new Date(i.startedAt).toLocaleString('es', {
-                      day: '2-digit',
-                      month: 'short',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </p>
+                  <p className="mt-0.5 text-xs text-sub">Desde {fmtStampCorto(i.startedAt)}</p>
                 </div>
               ))}
             </div>
@@ -302,10 +293,9 @@ export default function PublicStatusPage() {
                 <div key={i.id} className="rounded-xl border border-line bg-surface px-4 py-3">
                   <p className="text-sm font-medium text-txt">{i.title}</p>
                   <p className="mt-0.5 text-xs text-subtle">
-                    {new Date(i.startedAt).toLocaleString('es', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                    {fmtStampCorto(i.startedAt)}
                     {' — resuelta '}
-                    {i.resolvedAt &&
-                      new Date(i.resolvedAt).toLocaleString('es', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                    {i.resolvedAt && fmtStampCorto(i.resolvedAt)}
                   </p>
                 </div>
               ))}

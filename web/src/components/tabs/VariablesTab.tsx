@@ -364,11 +364,15 @@ export default function VariablesTab({
   // Copiar todo como formato .env
   const handleCopyAllAsEnv = () => {
     const text = rows.map((r) => `${r.key}=${r.value}`).join('\n');
-    navigator.clipboard.writeText(text).then(() => {
-      setCopiedAll(true);
-      toast('Todas las variables copiadas al portapapeles en formato .env', 'ok');
-      setTimeout(() => setCopiedAll(false), 2000);
-    });
+    navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopiedAll(true);
+        toast('Todas las variables copiadas al portapapeles en formato .env', 'ok');
+        setTimeout(() => setCopiedAll(false), 2000);
+      })
+      // Sin HTTPS o con el permiso denegado el portapapeles rechaza: antes no se decía nada.
+      .catch(() => toast('No se ha podido copiar al portapapeles', 'err'));
   };
 
   const references = env.data?.references ?? EMPTY_LIST;
@@ -808,8 +812,11 @@ export default function VariablesTab({
                             title={`Copiar ${token}`}
                             aria-label={`Copiar ${token}`}
                             onClick={() => {
-                              navigator.clipboard.writeText(token);
-                              toast(`Copiado: ${token}`, 'ok');
+                              // El «Copiado» solo cuando de verdad se ha copiado.
+                              navigator.clipboard
+                                .writeText(token)
+                                .then(() => toast(`Copiado: ${token}`, 'ok'))
+                                .catch(() => toast('No se ha podido copiar al portapapeles', 'err'));
                             }}
                           >
                             {v}

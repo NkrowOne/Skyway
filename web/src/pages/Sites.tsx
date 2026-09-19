@@ -190,6 +190,9 @@ export default function SitesPage() {
     onSuccess: () => {
       setConfirmDeploy(null);
       toast('Despliegue iniciado', 'ok');
+      // La tarjeta pinta el último despliegue: sin esto seguía diciendo
+      // «Completado hace 3 días» hasta el siguiente sondeo.
+      queryClient.invalidateQueries({ queryKey: ['websites'] });
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });

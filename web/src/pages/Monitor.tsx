@@ -358,6 +358,7 @@ const ServiceRow = memo(function ServiceRow({
               to={`/projects/${s.projectId}?s=${s.id}`}
               className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
               title="Abrir servicio"
+              aria-label={`Abrir ${s.name}`}
             >
               <ArrowUpRight size={13} />
             </Link>

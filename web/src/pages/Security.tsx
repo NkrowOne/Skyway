@@ -226,16 +226,25 @@ export default function SecurityPage() {
                   </summary>
                   <div className="details-body mt-3 flex flex-col gap-2.5 border-t border-line pt-3 text-sm">
                     <div className="flex flex-wrap gap-1.5">
-                      {g.items.map((i) => (
-                        <Link
-                          key={i.id}
-                          to={i.projectId ? `/projects/${i.projectId}${i.serviceId ? `?s=${i.serviceId}` : ''}` : '#'}
-                          className="rounded-md border border-line bg-bg px-1.5 py-0.5 font-mono text-xs text-sub transition-colors duration-[--dur-1] hover:border-line2 hover:text-txt"
-                        >
-                          {i.title.includes(':') ? i.title.split(':').slice(1).join(':').trim() : i.projectName ?? i.title}
-                          {i.projectName ? ` · ${i.projectName}` : ''}
-                        </Link>
-                      ))}
+                      {g.items.map((i) => {
+                        const texto = `${i.title.includes(':') ? i.title.split(':').slice(1).join(':').trim() : i.projectName ?? i.title}${i.projectName ? ` · ${i.projectName}` : ''}`;
+                        const chip = 'rounded-md border border-line bg-bg px-1.5 py-0.5 font-mono text-xs text-sub';
+                        // Sin proyecto no hay adónde ir: un enlace a «#» subía la
+                        // página al principio y el lector de pantalla lo anunciaba como enlace.
+                        return i.projectId ? (
+                          <Link
+                            key={i.id}
+                            to={`/projects/${i.projectId}${i.serviceId ? `?s=${i.serviceId}` : ''}`}
+                            className={cx(chip, 'transition-colors duration-[--dur-1] hover:border-line2 hover:text-txt')}
+                          >
+                            {texto}
+                          </Link>
+                        ) : (
+                          <span key={i.id} className={chip}>
+                            {texto}
+                          </span>
+                        );
+                      })}
                     </div>
                     <p>
                       <span className="font-semibold text-ok">Cómo arreglarlo: </span>
