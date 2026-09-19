@@ -141,6 +141,65 @@ function readOctal(buf: Buffer, offset: number, len: number): number {
   return str ? parseInt(str, 8) || 0 : 0;
 }
 
+/** Cadena terminada en NUL de una cabecera tar (los nombres son bytes UTF-8). */
+function readString(buf: Buffer, offset: number, len: number): string {
+  return buf.toString('utf8', offset, offset + len).replace(/\0.*$/s, '');
+}
+
+const roundUp512 = (n: number): number => Math.ceil(n / 512) * 512;
+
+/** Cabeceras que solo aportan metadatos de la entrada SIGUIENTE (o del archivo). */
+const META_TYPEFLAGS = new Set(['x', 'g', 'L', 'K']);
+
+type TarScan =
+  | { status: 'need_more' }
+  | { status: 'end' }
+  | { status: 'entry'; name: string; typeflag: string; size: number; dataStart: number };
+
+/**
+ * Localiza la primera entrada REAL del tar que hay en `buf`. Docker escribe con
+ * el `archive/tar` de Go, que delante de un nombre de más de 100 bytes pone una
+ * cabecera PAX (`x`) cuyo cuerpo es `NN path=...`; tar GNU usa `L`. Antes se
+ * tomaba la primera cabecera fuera la que fuera, así que un archivo con nombre
+ * largo (o con acentos suficientes) se descargaba como un fichero de texto con
+ * `path=` dentro. Las cabeceras de metadatos se saltan y su nombre, si lo
+ * traen, se aplica a la entrada que sigue.
+ */
+export function scanTarEntry(buf: Buffer): TarScan {
+  let offset = 0;
+  let longName: string | null = null;
+  for (;;) {
+    if (buf.length < offset + 512) return { status: 'need_more' };
+    // Dos bloques a cero marcan el fin del archivo; con uno basta para saber
+    // que no hay entrada.
+    if (buf[offset] === 0 && buf.subarray(offset, offset + 512).every((b) => b === 0)) return { status: 'end' };
+    const typeflag = String.fromCharCode(buf[offset + 156]);
+    const size = readOctal(buf, offset + 124, 12);
+    if (META_TYPEFLAGS.has(typeflag)) {
+      const dataEnd = offset + 512 + size;
+      if (buf.length < dataEnd) return { status: 'need_more' };
+      if (typeflag === 'x' || typeflag === 'L') {
+        const body = buf.toString('utf8', offset + 512, dataEnd);
+        if (typeflag === 'L') longName = body.replace(/\0.*$/s, '');
+        else {
+          // Registros PAX: «longitud clave=valor\n», la longitud cuenta todo el registro.
+          const m = /(?:^|\n)\d+ path=([^\n]*)\n/.exec(body);
+          if (m) longName = m[1];
+        }
+      }
+      offset = dataEnd + ((512 - (size % 512)) % 512);
+      continue;
+    }
+    let name = readString(buf, offset, 100);
+    // ustar reparte los nombres largos en «prefix/name».
+    if (readString(buf, offset + 257, 6) === 'ustar') {
+      const prefix = readString(buf, offset + 345, 155);
+      if (prefix) name = `${prefix}/${name}`;
+    }
+    return { status: 'entry', name: longName ?? name, typeflag, size, dataStart: offset + 512 };
+  }
+}
+
 /** Descarga UN archivo del contenedor leyendo el tar de `getArchive`. */
 export async function downloadFile(
   project: ProjectRow,
@@ -160,35 +219,55 @@ export async function downloadFile(
     throw new Error(err?.message || 'No se pudo leer el archivo.');
   }
 
-  let buf: Buffer = Buffer.alloc(0);
-  let size = -1;
-  let entryName = '';
+  // Trozos acumulados en una lista y un único concat al final: concatenar en
+  // cada trozo copiaba todo lo leído una y otra vez (cuadrático), y con un
+  // archivo de decenas de MB en trozos de 16 KB eran gigabytes de copia.
+  const chunks: Buffer[] = [];
+  let total = 0;
+  let entry: Extract<TarScan, { status: 'entry' }> | null = null;
   const cap = MAX_DOWNLOAD_BYTES + 16_384; // cabeceras tar + relleno
 
-  for await (const chunk of stream as any as AsyncIterable<Buffer>) {
-    buf = Buffer.concat([buf as Uint8Array, chunk as unknown as Uint8Array]);
-    if (size < 0 && buf.length >= 512) {
-      entryName = buf.toString('ascii', 0, 100).replace(/\0.*$/, '');
-      const typeflag = String.fromCharCode(buf[156]);
-      if (typeflag === '5' || entryName.endsWith('/')) {
-        (stream as any).destroy?.();
-        throw new Error('Es un directorio: descarga archivos concretos.');
+  try {
+    for await (const chunk of stream as any as AsyncIterable<Buffer>) {
+      chunks.push(chunk);
+      total += chunk.length;
+      if (total > cap) throw new Error('El archivo es demasiado grande para descargarlo desde el explorador.');
+      if (!entry) {
+        // Mientras se buscan las cabeceras el acumulado es pequeño (bloques de
+        // 512 bytes): aquí sí se compacta, y se sustituye la lista para no
+        // volver a concatenar lo mismo con el siguiente trozo.
+        const head = chunks.length === 1 ? chunks[0] : Buffer.concat(chunks);
+        chunks.length = 0;
+        chunks.push(head);
+        const scan = scanTarEntry(head);
+        if (scan.status === 'need_more') continue;
+        if (scan.status === 'end') throw new Error('El archivo está vacío o no se pudo leer.');
+        if (scan.typeflag === '5' || scan.name.endsWith('/')) throw new Error('Es un directorio: descarga archivos concretos.');
+        if (scan.typeflag === '2') throw new Error('Es un enlace simbólico: descarga el archivo al que apunta.');
+        if (scan.size > MAX_DOWNLOAD_BYTES) {
+          throw new Error(`El archivo supera el límite de descarga (${Math.round(MAX_DOWNLOAD_BYTES / 1024 / 1024)} MB).`);
+        }
+        entry = scan;
       }
-      size = readOctal(buf, 124, 12);
-      if (size > MAX_DOWNLOAD_BYTES) {
-        (stream as any).destroy?.();
-        throw new Error(`El archivo supera el límite de descarga (${Math.round(MAX_DOWNLOAD_BYTES / 1024 / 1024)} MB).`);
-      }
+      if (total >= entry.dataStart + entry.size) break;
     }
-    if (buf.length > cap) {
+  } finally {
+    // También al salir por `break`: sin esto el stream de Docker quedaba
+    // abierto hasta que el daemon terminaba de enviar el relleno del tar.
+    try {
       (stream as any).destroy?.();
-      throw new Error('El archivo es demasiado grande para descargarlo desde el explorador.');
+    } catch {
+      /* noop */
     }
-    if (size >= 0 && buf.length >= 512 + size) break;
   }
 
-  if (size < 0) throw new Error('El archivo está vacío o no se pudo leer.');
-  return { name: path.posix.basename(entryName) || path.posix.basename(norm), content: buf.subarray(512, 512 + size) };
+  if (!entry) throw new Error('El archivo está vacío o no se pudo leer.');
+  const buf = Buffer.concat(chunks);
+  if (buf.length < entry.dataStart + entry.size) throw new Error('La descarga se cortó antes de terminar.');
+  return {
+    name: path.posix.basename(entry.name) || path.posix.basename(norm),
+    content: buf.subarray(entry.dataStart, entry.dataStart + entry.size),
+  };
 }
 
 /** Construye un tar (formato ustar) con un único archivo. */
@@ -197,7 +276,10 @@ function buildTar(fileName: string, content: Buffer): Buffer {
     throw new Error('El nombre del archivo es demasiado largo (máx. 100 bytes).');
   }
   const header = Buffer.alloc(512, 0);
-  header.write(fileName, 0, 100, 'ascii');
+  // En UTF-8, que es como el tar de Go (Docker) lee los nombres: con 'ascii'
+  // una «ñ» o un acento se escribían como bytes sueltos y el archivo aparecía
+  // en el contenedor con el nombre destrozado.
+  header.write(fileName, 0, 100, 'utf8');
   header.write('0000644\0', 100, 8, 'ascii'); // modo 0644
   header.write('0000000\0', 108, 8, 'ascii'); // uid 0
   header.write('0000000\0', 116, 8, 'ascii'); // gid 0

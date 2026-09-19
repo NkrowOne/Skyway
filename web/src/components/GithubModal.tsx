@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useLatched } from '../hooks';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, KeyRound, Plus, RefreshCw, Settings2, ShieldAlert, Trash2 } from 'lucide-react';
 import { api } from '../api';
@@ -35,6 +36,7 @@ export default function GithubModal({
   const [appOrg, setAppOrg] = useState('');
   const [orgOpen, setOrgOpen] = useState(false);
   const [toDelete, setToDelete] = useState<{ kind: 'app' | 'pat'; id: string; label: string } | null>(null);
+  const toDeleteShown = useLatched(toDelete);
 
   const appStatus = useQuery({
     queryKey: ['githubApp'],
@@ -134,7 +136,10 @@ export default function GithubModal({
                         <ModuleLogo kind="github" size={20} />
                       </span>
                       <p className="mt-3 text-sm font-medium">Conecta tu cuenta de GitHub</p>
-                      <p className="mx-auto mt-1 max-w-md text-xs text-sub">Eliges en GitHub qué repositorios ve Skyway.</p>
+                      <p className="mx-auto mt-1 max-w-md text-xs text-sub">
+                        Eliges en GitHub qué repositorios ve Skyway. Solo aparecen los de las cuentas donde instales la App;
+                        para un repo ajeno donde eres colaborador, usa un token personal (abajo).
+                      </p>
                       <Button className="mt-4" onClick={connectAccount}>
                         <ModuleLogo kind="github" size={14} /> Conectar con GitHub
                       </Button>
@@ -286,8 +291,9 @@ export default function GithubModal({
               </summary>
 
               <p className="mt-2 text-xs text-subtle">
-                Alternativa para cuentas donde no se puede instalar una App. Caducan y dan acceso a todo lo que ve esa
-                cuenta, así que la App es preferible cuando esté disponible.
+                Para cuentas donde no se puede instalar la App y para repos ajenos donde solo eres colaborador: un token
+                clásico con permiso «repo» ve todo lo que ve tu usuario (los fine-grained, solo lo que se les concede).
+                Caducan, así que la App es preferible cuando llegue.
               </p>
 
               {pats.length > 0 && (
@@ -387,9 +393,9 @@ export default function GithubModal({
         onConfirm={() => toDelete && removeConnection.mutate(toDelete)}
         title="Quitar cuenta de GitHub"
         message={
-          toDelete?.kind === 'app'
-            ? `Los servicios que usen ${toDelete.label} pasarán a clonar con el token global del servidor en el próximo despliegue; si el repo es privado y ese token no lo ve, el despliegue fallará. La App seguirá instalada en GitHub: quítala allí si además quieres revocar el acceso.`
-            : `Los servicios que usen «${toDelete?.label}» pasarán a clonar con el token global del servidor en el próximo despliegue; si el repo es privado y ese token no lo ve, el despliegue fallará.`
+          toDeleteShown?.kind === 'app'
+            ? `Los servicios que usen ${toDeleteShown.label} pasarán a clonar con el token global del servidor en el próximo despliegue; si el repo es privado y ese token no lo ve, el despliegue fallará. La App seguirá instalada en GitHub: quítala allí si además quieres revocar el acceso.`
+            : `Los servicios que usen «${toDeleteShown?.label ?? ''}» pasarán a clonar con el token global del servidor en el próximo despliegue; si el repo es privado y ese token no lo ve, el despliegue fallará.`
         }
         loading={removeConnection.isPending}
       />

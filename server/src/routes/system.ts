@@ -3,7 +3,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { requireAdmin, requireAuth } from '../auth';
+import { currentUser, requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { config } from '../config';
 import { getSetting, setSetting } from '../db';
@@ -12,6 +12,7 @@ import { docker, dockerAvailable } from '../docker/client';
 import { nixpacksAvailable } from '../deploy/builder';
 import { channelsConfigured, dispatchToChannels } from '../notify';
 import { verifyGithubToken } from '../github/client';
+import { domainSchema } from './services';
 import {
   SYSTEM_BACKUP_RETENTION,
   createSystemBackup,
@@ -20,6 +21,9 @@ import {
   pruneSystemBackups,
   resolveSystemBackupFile,
 } from '../sysbackup';
+
+/** Tope de cada `docker … prune`: liberar espacio no debería llevar más. */
+const PRUNE_TIMEOUT_MS = 5 * 60_000;
 
 const SETTINGS_KEYS = [
   'rootDomain',
@@ -39,7 +43,9 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
   app.register(async (secured) => {
     secured.addHook('preHandler', requireAuth);
 
-    secured.get('/api/system', async () => ({
+    // Lo consulta cualquier usuario (el Layout pinta CPU/RAM), pero la ruta del
+    // directorio de datos del host es detalle interno: solo la ve el admin.
+    secured.get('/api/system', async (req) => ({
       version: config.version,
       docker: await dockerAvailable(),
       nixpacks: await nixpacksAvailable(),
@@ -53,7 +59,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
         uptime: os.uptime(),
       },
       disk: await hostDisk(),
-      dataDir: config.dataDir,
+      ...(currentUser(req)?.role === 'admin' ? { dataDir: config.dataDir } : {}),
     }));
 
     /** Desglose de lo que ocupa Docker (imágenes, contenedores, volúmenes, caché). */
@@ -85,8 +91,24 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
           let out = '';
           p.stdout.on('data', (c) => (out += c.toString()));
           p.stderr.on('data', (c) => (out += c.toString()));
-          p.on('error', (e) => resolve(`error: ${e.message}`));
-          p.on('exit', () => resolve(out));
+          // Un daemon que se atasca borrando capas dejaba la petición colgada
+          // sin límite; pasado el plazo se corta y se contesta con lo que hay.
+          const timer = setTimeout(() => {
+            try {
+              p.kill('SIGKILL');
+            } catch {
+              /* ya terminó */
+            }
+            out += '\n(se interrumpió: la limpieza tardó demasiado)';
+          }, PRUNE_TIMEOUT_MS);
+          p.on('error', (e) => {
+            clearTimeout(timer);
+            resolve(`error: ${e.message}`);
+          });
+          p.on('exit', () => {
+            clearTimeout(timer);
+            resolve(out);
+          });
         });
       const imageOut = await run(['image', 'prune', '-f']);
       const builderOut = await run(['builder', 'prune', '-f']);
@@ -109,7 +131,9 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     secured.put('/api/settings', { preHandler: requireAdmin }, async (req) => {
       const body = z
         .object({
-          rootDomain: z.string().trim().optional(),
+          // Del dominio raíz salen los subdominios que el panel propone para
+          // los servicios, y esos acaban en reglas Host() de Traefik.
+          rootDomain: z.union([domainSchema, z.literal('')]).optional(),
           letsencryptEmail: z.union([z.string().trim().email(), z.literal('')]).optional(),
           serverIp: z.union([z.string().trim().regex(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, 'IP inválida'), z.literal('')]).optional(),
           githubToken: z.string().trim().optional(),

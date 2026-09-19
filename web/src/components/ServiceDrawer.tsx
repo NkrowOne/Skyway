@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, ChevronLeft, ExternalLink, Hammer, MoveHorizontal, Play, RefreshCw, Rocket, ScrollText, Square, Terminal, X } from 'lucide-react';
 import { api } from '../api';
@@ -81,13 +81,13 @@ export default function ServiceDrawer({
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const handleAttemptClose = () => {
+  const handleAttemptClose = useCallback(() => {
     if (isTabDirty) {
       setPendingClose(true);
       return;
     }
     onClose();
-  };
+  }, [isTabDirty, onClose]);
 
   const handleTabChange = (nextTab: string) => {
     if (nextTab === tab) return;
@@ -98,16 +98,20 @@ export default function ServiceDrawer({
     setTab(nextTab);
   };
 
+  const asideRef = useRef<HTMLElement>(null);
   // Esc cierra el drawer, salvo que haya un modal/paleta abierto por encima o cambios sin guardar.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
-      if (document.querySelector('[role="dialog"]')) return;
+      // A pantalla completa el propio drawer es un `role="dialog"`: no cuenta
+      // como «algo abierto encima» o Esc nunca lo cerraba en tableta con teclado.
+      const dialogo = [...document.querySelectorAll('[role="dialog"]')].some((el) => el !== asideRef.current);
+      if (dialogo) return;
       handleAttemptClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, isTabDirty]);
+  }, [handleAttemptClose]);
 
   // Aviso del navegador si el usuario recarga la página con cambios sin guardar
   useEffect(() => {
@@ -131,7 +135,10 @@ export default function ServiceDrawer({
         /** Motor de la consola de consultas, o null si este servicio no tiene. */
         dbConsole: DbOverview['engine'] | null;
       }>(`/services/${serviceId}`),
-    refetchInterval: 4000,
+    // El estado vivo del contenedor ya llega por el stream de métricas del
+    // proyecto (latestMetrics); esto solo refresca el último despliegue y la
+    // configuración, y a 4 s sumaba tres sondeos con el panel abierto.
+    refetchInterval: 8000,
   });
 
   useEffect(() => {
@@ -160,7 +167,9 @@ export default function ServiceDrawer({
     onSuccess: (_data, force) => {
       toast(force ? 'Reconstruyendo desde cero…' : 'Despliegue iniciado', 'ok');
       setPendingRedeploy(false);
-      setTab('deployments');
+      // Solo si no hay nada a medias: el salto a Despliegues desmontaba una
+      // pestaña con cambios sin guardar y se perdían sin preguntar.
+      if (!isTabDirty) setTab('deployments');
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -301,6 +310,7 @@ export default function ServiceDrawer({
 
   return (
     <aside
+      ref={asideRef}
       className={asideCls}
       style={asideStyle}
       role={fullscreen ? 'dialog' : 'complementary'}
@@ -472,7 +482,7 @@ export default function ServiceDrawer({
             </span>
             <button
               type="button"
-              onClick={() => setTab('logs')}
+              onClick={() => handleTabChange('logs')}
               className="press flex h-9 shrink-0 items-center gap-1 rounded-lg border border-line bg-surface px-2.5 text-xs font-medium text-txt hover:bg-surface2 sm:h-7 sm:px-2"
             >
               <ScrollText size={12} aria-hidden /> Ver logs
@@ -572,6 +582,7 @@ export default function ServiceDrawer({
                 projectId={projectId}
                 onChanged={invalidate}
                 onNeedsRedeploy={() => setPendingRedeploy(true)}
+                onDirtyChange={setIsTabDirty}
                 onDeleted={() => {
                   invalidate();
                   onClose();
@@ -625,7 +636,9 @@ export default function ServiceDrawer({
           if (shouldClose) onClose();
         }}
         title="¿Descartar cambios sin guardar?"
-        message="Tienes modificaciones pendientes en las variables de entorno que no han sido guardadas. Si sales ahora, se perderán."
+        // Genérico: los cambios pueden venir de Variables o de Ajustes, y el
+        // texto hablaba siempre de variables de entorno.
+        message="Tienes modificaciones sin guardar en esta pestaña. Si sales ahora, se perderán."
         confirmLabel="Descartar y salir"
         confirmVariant="danger"
       />

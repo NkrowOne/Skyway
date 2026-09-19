@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, assertProjectManage, canAccessProject, currentUser, requireAuth } from '../auth';
+import { assertProjectAccess, assertProjectManage, canAccessProjectRow, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
 import {
   activeDeploymentsByProject,
@@ -14,6 +14,7 @@ import {
   getWorkspace,
   listProjects,
   listServices,
+  listServicesForProjects,
   openAlertCountsByService,
   projectDashboardMeta,
   projectSlugExists,
@@ -21,6 +22,7 @@ import {
   setProjectWorkspace,
   updateProjectMeta,
 } from '../db';
+import { publicServiceConfig } from './services';
 import { toDeployFeedItem } from '../events';
 import { dockerAvailable } from '../docker/client';
 import { containerName, listServiceContainers, removeContainer, removeVolume, stopContainer, volumeName } from '../docker/containers';
@@ -29,7 +31,7 @@ import { projectNetworkName, removeNetwork } from '../docker/networks';
 import { triggerDeploy } from '../deploy/deployer';
 import { markManualAction } from '../monitor';
 import { effectiveQuota, isWorkspaceActive, workspacePlan } from '../quota';
-import { ServiceRuntime, WorkspaceRow } from '../types';
+import { ServiceRow, ServiceRuntime, WorkspaceRow } from '../types';
 import { slugify } from '../util';
 
 const projectSchema = z.object({
@@ -47,9 +49,10 @@ const projectSchema = z.object({
  */
 const PANEL_MAX_AGE_MS = 4000;
 
-function serviceWithRuntime(service: any, snap: Snapshot) {
+function serviceWithRuntime(service: ServiceRow, snap: Snapshot) {
   const runtime: ServiceRuntime = runtimeIn(snap, service.id);
-  return { ...service, runtime };
+  // Vista de proyecto: la ven todos sus miembros, así que sin secretos.
+  return { ...service, config: publicServiceConfig(service.config), runtime };
 }
 
 export async function projectRoutes(app: FastifyInstance): Promise<void> {
@@ -57,11 +60,14 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/projects', async (req) => {
     const user = currentUser(req)!;
-    const projects = listProjects().filter((p) => canAccessProject(user, p.id));
+    const projects = listProjects().filter((p) => canAccessProjectRow(user, p));
     const meta = projectDashboardMeta();
+    // Una consulta para los servicios de todos los proyectos: el panel sondea
+    // esto cada 8 s y antes lanzaba una por proyecto.
+    const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
     return {
       projects: projects.map((p) => {
-        const sList = listServices(p.id);
+        const sList = servicesByProject.get(p.id) ?? [];
         return {
           ...p,
           serviceCount: sList.length,
@@ -69,7 +75,7 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
             id: s.id,
             name: s.name,
             type: s.type,
-            config: s.config,
+            config: publicServiceConfig(s.config),
           })),
           lastDeployAt: meta[p.id]?.lastDeployAt ?? null,
           openAlerts: meta[p.id]?.openAlerts ?? 0,
@@ -91,7 +97,13 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     if (user.role === 'owner') {
       if (!user.workspace_id) return reply.code(403).send({ error: 'Tu cuenta no tiene un workspace asignado' });
       workspace = getWorkspace(user.workspace_id);
-      if (!workspace) return reply.code(400).send({ error: 'Workspace no encontrado' });
+      // No es un error de la petición: la cuenta apunta a un workspace que ya no
+      // existe (borrado sin reasignar a sus usuarios). Solo el admin lo arregla.
+      if (!workspace) {
+        return reply.code(409).send({
+          error: 'El workspace de tu cuenta ya no existe. Pide a un administrador que reasigne tu usuario a un workspace.',
+        });
+      }
     } else if (body.workspaceId) {
       workspace = getWorkspace(body.workspaceId);
       if (!workspace) return reply.code(400).send({ error: 'Workspace desconocido' });
@@ -196,33 +208,55 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     if (!assertProjectManage(req, reply, id)) return reply;
 
     const services = listServices(id);
+    // Cada paso contra Docker es best-effort y por separado: la fila se borra
+    // SIEMPRE al final. Antes, un fallo a mitad dejaba contenedores ya borrados
+    // y el proyecto vivo en el panel; ahora lo que no se pudo limpiar se
+    // devuelve como aviso para que alguien lo retire a mano.
+    const warnings: string[] = [];
     if (await dockerAvailable()) {
       for (const service of services) {
+        let contenedores: { name: string }[] = [];
         try {
-          for (const c of await listServiceContainers(service.id)) {
+          contenedores = await listServiceContainers(service.id);
+        } catch (err: any) {
+          warnings.push(`${service.name}: no se pudieron enumerar sus contenedores: ${err?.message || err}`);
+        }
+        for (const c of contenedores) {
+          try {
             await stopContainer(c.name);
             await removeContainer(c.name);
+          } catch (err: any) {
+            warnings.push(`${service.name}: no se pudo retirar el contenedor ${c.name}: ${err?.message || err}`);
           }
-        } catch {
-          /* best-effort */
         }
         if (volumes === 'true') {
-          await removeVolume(volumeName(project, service));
-          for (const vol of ((service.config as any).volumes ?? []) as { name: string }[]) {
-            await removeVolume(vol.name);
+          const aBorrar = [volumeName(project, service)];
+          for (const vol of ((service.config as any).volumes ?? []) as { name: string }[]) aBorrar.push(vol.name);
+          for (const nombre of aBorrar) {
+            try {
+              await removeVolume(nombre);
+            } catch (err: any) {
+              warnings.push(`${service.name}: no se pudo borrar el volumen ${nombre}: ${err?.message || err}`);
+            }
           }
         }
       }
-      await removeNetwork(projectNetworkName(project));
+      try {
+        await removeNetwork(projectNetworkName(project));
+      } catch (err: any) {
+        warnings.push(`No se pudo borrar la red ${projectNetworkName(project)}: ${err?.message || err}`);
+      }
+    } else {
+      warnings.push('Docker no está disponible: los contenedores, volúmenes y la red del proyecto no se han retirado.');
     }
     deleteProject(id);
     invalidateDockerSnapshot();
     audit(req, 'project_deleted', {
       type: 'project',
       id,
-      detail: `${project.name}${volumes === 'true' ? ' (con volúmenes)' : ''}`,
+      detail: `${project.name}${volumes === 'true' ? ' (con volúmenes)' : ''}${warnings.length ? ` · ${warnings.length} aviso(s)` : ''}`,
     });
-    return { ok: true };
+    return { ok: true, warnings };
   });
 
   /** Despliega de una vez todos los servicios de repo e imagen del proyecto. */

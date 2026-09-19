@@ -187,7 +187,17 @@ function execError(output: string, fallback: string): Error {
 // ---------- guardas de solo lectura ----------
 
 const SQL_READ_START = /^\s*(select|with|show|explain|describe|desc|table|values|analyze)\b/i;
-const MONGO_WRITE = /\.\s*(insert\w*|update\w*|delete\w*|remove|replaceOne|drop\w*|create\w*|rename\w*|bulkWrite|findOneAndUpdate|findOneAndReplace|findOneAndDelete|findAndModify)\s*\(|dropDatabase|adminCommand|runCommand|fsync|shutdownServer/i;
+/**
+ * Métodos que escriben, llamados con punto (`db.x.insertOne(`) o con corchetes
+ * (`db.x["insertOne"](`), que es la forma más simple de saltarse un filtro que
+ * solo mirase el punto. Sigue siendo un cinturón, no un límite de permisos.
+ */
+const MONGO_WRITE_METHODS =
+  'insert\\w*|update\\w*|delete\\w*|remove|replaceOne|drop\\w*|create\\w*|rename\\w*|bulkWrite|findOneAndUpdate|findOneAndReplace|findOneAndDelete|findAndModify';
+const MONGO_WRITE = new RegExp(
+  `\\.\\s*(?:${MONGO_WRITE_METHODS})\\s*\\(|\\[\\s*['"\`](?:${MONGO_WRITE_METHODS})['"\`]\\s*\\]|dropDatabase|adminCommand|runCommand|fsync|shutdownServer`,
+  'i',
+);
 /**
  * Formas de adminCommand/runCommand que son pura lectura: se neutralizan
  * antes de aplicar MONGO_WRITE para que los propios snippets de la consola
@@ -361,16 +371,20 @@ async function pgOverview(name: string): Promise<DbOverview> {
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE c.relkind IN ('r','p','m') AND n.nspname NOT IN ('pg_catalog','information_schema')
     ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 200`;
-  const meta = await execInContainer(
-    name,
-    `${PSQL} --csv -t -c "SELECT current_setting('server_version'), pg_database_size(current_database())"`,
-    { timeoutMs: QUERY_TIMEOUT_MS, env: [pgOptions(true)] },
-  );
-  const tables = await execInContainer(name, `${PSQL} --csv -t -c "$SKYWAY_QUERY"`, {
-    timeoutMs: QUERY_TIMEOUT_MS,
-    maxOutput: MAX_OUTPUT,
-    env: [`SKYWAY_QUERY=${sql}`, pgOptions(true)],
-  });
+  // Las dos consultas son independientes: en paralelo, la vista tarda lo que la
+  // más lenta y no la suma de ambas (cada exec paga su ida y vuelta al daemon).
+  const [meta, tables] = await Promise.all([
+    execInContainer(
+      name,
+      `${PSQL} --csv -t -c "SELECT current_setting('server_version'), pg_database_size(current_database())"`,
+      { timeoutMs: QUERY_TIMEOUT_MS, env: [pgOptions(true)] },
+    ),
+    execInContainer(name, `${PSQL} --csv -t -c "$SKYWAY_QUERY"`, {
+      timeoutMs: QUERY_TIMEOUT_MS,
+      maxOutput: MAX_OUTPUT,
+      env: [`SKYWAY_QUERY=${sql}`, pgOptions(true)],
+    }),
+  ]);
   if (tables.exitCode !== null && tables.exitCode !== 0) throw execError(tables.output, 'No se pudo leer el esquema.');
   const metaRow = meta.exitCode === 0 ? parseCsv(meta.output)[0] : undefined;
   return {
@@ -409,15 +423,17 @@ async function mysqlRun(name: string, query: string, allowWrite: boolean): Promi
 async function mysqlOverview(name: string): Promise<DbOverview> {
   const sql = `SELECT table_name, COALESCE(table_rows,0), COALESCE(data_length,0)+COALESCE(index_length,0)
     FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY 3 DESC LIMIT 200`;
-  const meta = await execInContainer(name, `${MYSQL} --skip-column-names -e "SELECT VERSION()" 2>&1`, {
-    timeoutMs: QUERY_TIMEOUT_MS,
-    env: [],
-  });
-  const tables = await execInContainer(name, `${MYSQL} --skip-column-names -e "$SKYWAY_QUERY" 2>&1`, {
-    timeoutMs: QUERY_TIMEOUT_MS,
-    maxOutput: MAX_OUTPUT,
-    env: [`SKYWAY_QUERY=${sql}`],
-  });
+  const [meta, tables] = await Promise.all([
+    execInContainer(name, `${MYSQL} --skip-column-names -e "SELECT VERSION()" 2>&1`, {
+      timeoutMs: QUERY_TIMEOUT_MS,
+      env: [],
+    }),
+    execInContainer(name, `${MYSQL} --skip-column-names -e "$SKYWAY_QUERY" 2>&1`, {
+      timeoutMs: QUERY_TIMEOUT_MS,
+      maxOutput: MAX_OUTPUT,
+      env: [`SKYWAY_QUERY=${sql}`],
+    }),
+  ]);
   if (tables.exitCode !== 0) throw execError(tables.output, 'No se pudo leer el esquema.');
   const clean = (s: string) => s.replace(/^mysql: \[Warning\].*\n?/gm, '');
   const objects = parseMysqlBatch(clean(tables.output)).map((r) => ({
@@ -558,11 +574,13 @@ async function redisRun(name: string, query: string): Promise<QueryResult> {
 }
 
 async function redisOverview(name: string): Promise<DbOverview> {
-  const info = await execInContainer(name, `${REDIS} INFO 2>&1`, { timeoutMs: QUERY_TIMEOUT_MS, env: [] });
-  const scan = await execInContainer(name, `${REDIS} --scan --count 200 2>&1 | head -100`, {
-    timeoutMs: QUERY_TIMEOUT_MS,
-    env: [],
-  });
+  const [info, scan] = await Promise.all([
+    execInContainer(name, `${REDIS} INFO 2>&1`, { timeoutMs: QUERY_TIMEOUT_MS, env: [] }),
+    execInContainer(name, `${REDIS} --scan --count 200 2>&1 | head -100`, {
+      timeoutMs: QUERY_TIMEOUT_MS,
+      env: [],
+    }),
+  ]);
   const text = info.output;
   const version = text.match(/redis_version:([^\r\n]+)/)?.[1] ?? null;
   const memory = text.match(/used_memory:(\d+)/)?.[1];

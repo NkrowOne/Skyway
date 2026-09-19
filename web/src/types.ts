@@ -905,7 +905,8 @@ export interface SystemInfo {
     uptime: number;
   };
   disk: { total: number; free: number } | null;
-  dataDir: string;
+  /** Directorio de datos del host: solo llega a los administradores. */
+  dataDir?: string;
 }
 
 export interface DockerUsage {

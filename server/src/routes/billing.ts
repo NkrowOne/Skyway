@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertWorkspaceAccess, requireAdmin, requireAuth } from '../auth';
@@ -36,8 +37,9 @@ import { MailError, sendMail } from '../mailer';
 import { getBillingAutomation } from '../billingsettings';
 import { priceTiers } from '../pricing';
 import { reactivateWorkspaceIfCurrent } from '../billingauto';
-import { StripeError, createStripeCheckout, stripeAmount } from '../stripe';
+import { StripeError, createStripeCheckout, retrieveStripeCheckout, stripeAmount } from '../stripe';
 import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, PlanRow, TaxBreakdownEntry, VatRegime, WorkspaceRow } from '../types';
+import { safeParse } from '../util';
 
 const HOUR_MS = 3_600_000;
 
@@ -78,6 +80,27 @@ const lineSchema = z.object({
 const clampSafe = (n: number): number => Math.max(-Number.MAX_SAFE_INTEGER, Math.min(Number.MAX_SAFE_INTEGER, n));
 
 /**
+ * Redondeo al céntimo «mitad lejos de cero», simétrico en signo. `Math.round`
+ * lleva la mitad hacia +∞ (100,5 → 101 pero −100,5 → −100), así que la reversa de
+ * una rectificativa —la misma base con el signo cambiado— no neteaba exactamente
+ * la cuota de la original y una anulación total dejaba ±1 céntimo de IVA o IRPF.
+ */
+function roundCents(x: number): number {
+  const r = Math.round(Math.abs(x));
+  return (x < 0 ? -r : r) || 0; // `|| 0` evita el −0
+}
+
+/**
+ * Porcentaje de una base en céntimos. Se multiplica ANTES de dividir: con tipos
+ * enteros `base * rate` es exacto y la división por 100 solo puede caer en una
+ * mitad exacta (…,5), que se redondea bien; `base * (rate / 100)` arrastra el
+ * error de 0,21 en coma flotante y en algunas bases cambia el céntimo.
+ */
+function cuota(base: number, rate: number): number {
+  return roundCents((base * rate) / 100);
+}
+
+/**
  * Línea de trabajo del borrador de ciclo. `discountable` es transitorio (no viaja
  * en lineSchema ni se persiste): marca qué líneas admite el descuento comercial.
  * Se fija en el bucle de suscripciones porque en `rawLines` ya se ha perdido el
@@ -101,7 +124,7 @@ function applyAccountDiscount(rawLines: LineDraft[], pct: number, defaultIrpf: n
   const baseByRate = new Map<string, { taxRate: number; irpfRate: number; base: number }>();
   for (const l of rawLines) {
     if (!l.discountable) continue;
-    const amount = Math.round(l.qty * l.unitCents);
+    const amount = roundCents(l.qty * l.unitCents);
     if (amount <= 0) continue; // solo se descuenta sobre importes positivos
     const taxRate = l.taxRate ?? 0;
     // El IRPF se normaliza con el MISMO criterio que `computeTotals` (ausente = el
@@ -123,7 +146,7 @@ function applyAccountDiscount(rawLines: LineDraft[], pct: number, defaultIrpf: n
   const multiIrpf = new Set(grupos.map((g) => g.irpfRate)).size > 1;
   for (const { taxRate, irpfRate, base } of grupos) {
     if (base <= 0) continue;
-    const disc = Math.min(base, Math.round((base * clamped) / 100)); // nunca supera la base del grupo
+    const disc = Math.min(base, cuota(base, clamped)); // nunca supera la base del grupo
     if (disc <= 0) continue;
     const matices = [multiVat ? `IVA ${taxRate}%` : '', multiIrpf ? `IRPF ${irpfRate}%` : ''].filter(Boolean);
     rawLines.push({
@@ -202,7 +225,7 @@ function computeTotals(
     kind: l.kind,
     qty: l.qty,
     unitCents: l.unitCents,
-    amountCents: clampSafe(Math.round(l.qty * l.unitCents)),
+    amountCents: clampSafe(roundCents(l.qty * l.unitCents)),
     taxRate: l.taxRate ?? opts.defaultTaxRate,
     irpfRate: l.irpfRate ?? opts.irpfRate,
     ...(l.chargeId ? { chargeId: l.chargeId } : {}),
@@ -221,7 +244,7 @@ function computeTotals(
     .map(([rate, base]) => ({
       rate,
       base_cents: clampSafe(base),
-      quota_cents: clampSafe(Math.round(base * (rate / 100))),
+      quota_cents: clampSafe(cuota(base, rate)),
     }));
   const tax = clampSafe(taxBreakdown.reduce((sum, b) => sum + b.quota_cents, 0));
   // Retención por tipo: solo los conceptos sujetos (p. ej. servicios profesionales)
@@ -232,7 +255,7 @@ function computeTotals(
     byIrpf.set(rate, (byIrpf.get(rate) ?? 0) + l.amountCents);
   }
   let irpf = 0;
-  for (const [rate, base] of byIrpf) irpf += Math.round(base * (rate / 100));
+  for (const [rate, base] of byIrpf) irpf += cuota(base, rate);
   irpf = clampSafe(irpf);
   // Tipo a guardar en la cabecera: el único si todas las líneas comparten
   // retención; si no, el efectivo sobre la base (solo informativo: el importe
@@ -320,6 +343,16 @@ function rewindAnchorIfLast(inv: InvoiceRow): void {
   // El ancla solo retrocede: si ya está en el inicio del periodo (o antes), ese
   // periodo ya consta como pendiente y no hay nada que devolver.
   if (ws.last_billed_period_end <= inv.period_start) return;
+  // Si otra factura EXPEDIDA y viva sigue cubriendo (parte de) ese periodo, el
+  // periodo no queda sin facturar y no hay nada que devolver. Sin esta comprobación,
+  // anular una rectificativa (mismo periodo que su original) o una factura a medida
+  // cuyo periodo no coincide con un corte rebobinaba el ancla a mitad de un mes ya
+  // facturado, y el tick volvía a cobrar el plan y el consumo de ese tramo: el
+  // salto por `invoiceExistsForCycle` solo protege cuando `period_start` coincide.
+  const solapada = listInvoices(ws.id).some(
+    (o) => o.id !== inv.id && o.status !== 'draft' && o.status !== 'void' && o.period_start < inv.period_end && o.period_end > inv.period_start,
+  );
+  if (solapada) return;
   updateWorkspace(ws.id, { last_billed_period_end: inv.period_start });
 }
 
@@ -329,7 +362,7 @@ function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
   const ws = getWorkspace(inv.workspace_id);
   // Emisor y destinatario: los CONGELADOS al emitir mandan sobre los vivos. Un
   // borrador aún no los tiene, así que se cae a los actuales (es una previsión).
-  const snap = inv.issuer_snapshot ? (JSON.parse(inv.issuer_snapshot) as IssuerSnapshot) : null;
+  const snap = safeParse<IssuerSnapshot | null>(inv.issuer_snapshot, null);
   return {
     number: inv.number ?? 'BORRADOR',
     status: inv.status,
@@ -374,6 +407,39 @@ function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
 /** Nombre del fichero con el que se descarga o se adjunta la factura. */
 function invoiceFilename(inv: InvoiceRow): string {
   return `factura-${(inv.number ?? inv.id).replace(/[^A-Za-z0-9._-]/g, '-')}.pdf`;
+}
+
+/**
+ * PDFs ya renderizados, acotados a las últimas facturas usadas. Una factura
+ * emitida es inmutable (`locked`), pero su PDF no depende solo de la fila: el
+ * IBAN y el pie salen del perfil vivo, y las anteriores a las columnas congeladas
+ * caen a los datos actuales de la cuenta. Por eso la entrada no se valida por
+ * `id + locked`, sino con un hash del modelo completo que pinta el PDF: si algo
+ * cambia se vuelve a renderizar; si no, se sirve el mismo Buffer sin comprimir
+ * de nuevo. Los borradores cambian con cada edición y no se cachean.
+ */
+const PDF_CACHE_MAX = 50;
+const pdfCache = new Map<string, { hash: string; pdf: Buffer }>();
+
+async function invoicePdf(inv: InvoiceRow): Promise<Buffer> {
+  const data = invoicePdfData(inv);
+  if (inv.status === 'draft') return renderInvoicePdf(data);
+  const hash = createHash('sha256').update(JSON.stringify(data)).digest('hex');
+  const hit = pdfCache.get(inv.id);
+  if (hit && hit.hash === hash) {
+    // Se reinserta para que la expulsión por antigüedad siga el último uso.
+    pdfCache.delete(inv.id);
+    pdfCache.set(inv.id, hit);
+    return hit.pdf;
+  }
+  const pdf = await renderInvoicePdf(data);
+  pdfCache.set(inv.id, { hash, pdf });
+  while (pdfCache.size > PDF_CACHE_MAX) {
+    const oldest = pdfCache.keys().next().value;
+    if (oldest === undefined) break;
+    pdfCache.delete(oldest);
+  }
+  return pdf;
 }
 
 /**
@@ -422,7 +488,7 @@ export async function sendInvoiceEmail(inv: InvoiceRow, opts: { manual?: boolean
         (profile.iban ? `\nPuedes pagarla por transferencia a ${profile.iban}${profile.bankName ? ` (${profile.bankName})` : ''}.\n` : '') +
         (inv.stripe_url ? `\nO pagarla con tarjeta aquí: ${inv.stripe_url}\n` : '') +
         `\nUn saludo,\n${profile.companyName || 'Skyway'}\n`,
-      attachments: [{ filename: invoiceFilename(inv), contentType: 'application/pdf', content: renderInvoicePdf(invoicePdfData(inv)) }],
+      attachments: [{ filename: invoiceFilename(inv), contentType: 'application/pdf', content: await invoicePdf(inv) }],
     });
     auditSystem('invoice_emailed', `${numero} → ${destino}`);
     return { ok: true };
@@ -468,7 +534,7 @@ function publicInvoice(inv: InvoiceRow) {
     total_cents: inv.total_cents,
     lines: parseLines(inv.lines),
     plan_name: inv.plan_name,
-    issuer_snapshot: inv.issuer_snapshot ? (JSON.parse(inv.issuer_snapshot) as IssuerSnapshot) : null,
+    issuer_snapshot: safeParse<IssuerSnapshot | null>(inv.issuer_snapshot, null),
     client_name: inv.client_name,
     client_tax_id: inv.client_tax_id,
     client_address: inv.client_address,
@@ -476,6 +542,9 @@ function publicInvoice(inv: InvoiceRow) {
     payment_method: inv.payment_method,
     stripe_url: inv.stripe_url,
     issued_at: inv.issued_at,
+    // Vencimiento congelado al emitir: es el que imprime el PDF y el que usa la
+    // morosidad; sin exponerlo el panel no podía mostrar cuándo vence.
+    due_at: inv.due_at,
     paid_at: inv.paid_at,
     locked: inv.locked,
     notes: inv.notes,
@@ -1054,6 +1123,9 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
   });
 }
 
+/** Facturas cuyo enlace de Stripe se está creando ahora mismo (guarda contra el doble clic). */
+const stripeLinkEnCurso = new Set<string>();
+
 export async function billingRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
@@ -1085,10 +1157,11 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     // Si hay un periodo ya CERRADO sin facturar, se factura ese (es el que toca y
     // el que avanza el ancla); si no, se genera la previsión del periodo en curso.
     // Sin esta distinción, una previsión que se solapa con el periodo cerrado
-    // bloquearía después la facturación automática de ese ciclo.
-    const anchor = cycleAnchor(ws);
-    const cerrado = lastCutoff(ws.billing_day);
-    const cycle = cerrado > anchor ? { start: anchor, end: cerrado } : currentCycle(ws);
+    // bloquearía después la facturación automática de ese ciclo. Se toma el
+    // periodo pendiente más antiguo, de UNO EN UNO como el tick: facturar de golpe
+    // un hueco de varios meses prorrateaba la cuota contra un solo mes nominal y
+    // sumaba el consumo de todos en una única línea.
+    const cycle = pendingPeriods(ws)[0] ?? currentCycle(ws);
     // Idempotencia: sin esto, dos pulsaciones seguidas crean dos facturas del
     // mismo periodo (con el plan y los cargos duplicados en la segunda).
     if (invoiceExistsForCycle(id, cycle.start)) {
@@ -1131,11 +1204,16 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const defaultTaxRate = body.taxRate ?? profile.vatRate;
     const irpfRate = body.irpfRate ?? profile.defaultIrpfRate;
     const regime = body.vatRegime ?? 'general';
+    const periodStart = body.periodStart ?? cycle.start;
+    const periodEnd = body.periodEnd ?? cycle.end;
+    // Un periodo invertido o vacío se imprimiría en la factura y descolocaría el
+    // ancla y el libro registro (ordenado por periodo): se corta aquí.
+    if (periodEnd <= periodStart) return reply.code(400).send({ error: 'El fin del periodo facturado debe ser posterior a su inicio.' });
     const totals = computeTotals(body.lines, { defaultTaxRate, irpfRate, regime });
     const inv = createInvoice({
       workspace_id: id,
-      period_start: body.periodStart ?? cycle.start,
-      period_end: body.periodEnd ?? cycle.end,
+      period_start: periodStart,
+      period_end: periodEnd,
       operation_date: body.operationDate ?? null,
       status: 'draft',
       currency: body.currency ?? plan?.currency ?? profile.currency,
@@ -1191,6 +1269,15 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const target = body.status ?? inv.status;
     if (target !== inv.status && !ALLOWED_TRANSITIONS[inv.status].includes(target)) {
       return reply.code(409).send({ error: `Transición de estado no permitida (${inv.status} → ${target}).` });
+    }
+    // Una factura ya revertida por una rectificativa viva no se anula además: el
+    // cliente quedaría abonado dos veces (la anulación y la rectificativa) y el
+    // periodo constaría como sin facturar. Primero se anula la rectificativa.
+    if (target === 'void' && inv.status !== 'void') {
+      const rect = listRectificationsOf(inv.id);
+      if (rect.length > 0) {
+        return reply.code(409).send({ error: `La factura ya está rectificada por ${rect[0].number ?? rect[0].id}; anula antes esa rectificativa si quieres anular esta.` });
+      }
     }
 
     const fields: Record<string, unknown> = {};
@@ -1253,7 +1340,13 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     // dejar al operador mirando un spinner (los fallos se auditan y alertan).
     if (inv.status === 'draft' && (target === 'issued' || target === 'paid') && getBillingAutomation().emailOnIssue) {
       const emitida = getInvoice(id);
-      if (emitida) void sendInvoiceEmail(emitida);
+      // Los fallos normales ya los audita sendInvoiceEmail; el `.catch` evita que un
+      // rechazo inesperado quede como promesa sin capturar tras responder.
+      if (emitida) {
+        void sendInvoiceEmail(emitida).catch((err: unknown) =>
+          req.log.warn({ err, invoice: emitida.id }, 'fallo inesperado enviando la factura por correo'),
+        );
+      }
     }
     audit(req, 'invoice_updated', { type: 'invoice', id, detail: body.status ?? 'edición' });
     return { invoice: publicInvoice(getInvoice(id)!) };
@@ -1280,7 +1373,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const inv = getInvoice(id);
     if (!inv) return reply.code(404).send({ error: 'Factura no encontrada' });
     if (!assertWorkspaceAccess(req, reply, inv.workspace_id)) return reply;
-    const pdf = renderInvoicePdf(invoicePdfData(inv));
+    const pdf = await invoicePdf(inv);
     reply.header('Content-Disposition', `attachment; filename="${invoiceFilename(inv)}"`);
     reply.type('application/pdf');
     return reply.send(pdf);
@@ -1387,46 +1480,74 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     if (!inv) return reply.code(404).send({ error: 'Factura no encontrada' });
     if (inv.status === 'paid') return reply.code(400).send({ error: 'La factura ya está pagada.' });
     if (inv.status === 'void') return reply.code(400).send({ error: 'La factura está anulada.' });
+    // Se comprueba ANTES de emitir: Stripe rechaza un importe no positivo, y
+    // emitir primero dejaba una factura numerada y bloqueada como efecto
+    // secundario de un enlace que nunca llegó a crearse.
+    if (inv.total_cents <= 0) return reply.code(400).send({ error: 'La factura no tiene importe a cobrar: un enlace de pago exige un total positivo.' });
     const secret = getStripeSecretKey();
     if (!secret) return reply.code(400).send({ error: 'Configura primero la clave de Stripe en Contabilidad.' });
-    const ws = getWorkspace(inv.workspace_id);
-    const origin = `${req.protocol}://${req.headers.host}`;
-
-    // Reutilizar el enlace vigente en vez de crear otra sesión: cada sesión nueva
-    // sobrescribía `stripe_session_id` y el cobro hecho con el enlace anterior
-    // quedaba sin factura a la que imputarse. (El webhook concilia además por el
-    // id de factura, así que un enlace viejo tampoco se pierde.)
-    if (inv.stripe_url && inv.stripe_session_id) {
-      return { url: inv.stripe_url, invoice: publicInvoice(inv), reused: true };
-    }
-
-    // Emitir la factura antes de cobrar (alta antes del pago): asigna número/serie
-    // y la congela. Si ya estaba emitida, no reasigna nada.
-    let issued: InvoiceRow;
+    // Dos clics seguidos entraban a la vez: mientras el primero esperaba a Stripe,
+    // el segundo creaba otra sesión y la última escritura pisaba a la primera.
+    if (stripeLinkEnCurso.has(id)) return reply.code(409).send({ error: 'Ya se está generando el enlace de pago de esta factura.' });
+    stripeLinkEnCurso.add(id);
     try {
-      issued = inv.status === 'draft' ? performEmission(inv, 'issued', {}, { requireFiscalData: true }) : inv;
-    } catch (err) {
-      if (err instanceof BillingError) return reply.code(409).send({ error: err.message });
-      throw err;
-    }
-    const number = issued.number ?? issued.id;
+      const ws = getWorkspace(inv.workspace_id);
+      const origin = `${req.protocol}://${req.headers.host}`;
 
-    try {
-      const session = await createStripeCheckout(secret, {
-        amountCents: issued.total_cents,
-        currency: issued.currency,
-        invoiceNumber: number,
-        invoiceId: issued.id,
-        successUrl: `${origin}/workspaces/${issued.workspace_id}?paid=1`,
-        cancelUrl: `${origin}/workspaces/${issued.workspace_id}`,
-        customerEmail: ws?.billing_email ?? null,
-      });
-      updateInvoice(id, { stripe_session_id: session.id, stripe_url: session.url, payment_method: 'stripe' });
-      audit(req, 'invoice_stripe_link', { type: 'invoice', id, detail: number });
-      return { url: session.url, invoice: publicInvoice(getInvoice(id)!) };
-    } catch (err: any) {
-      if (err instanceof StripeError) return reply.code(502).send({ error: err.message });
-      throw err;
+      // Reutilizar el enlace vigente en vez de crear otra sesión: cada sesión nueva
+      // sobrescribía `stripe_session_id` y el cobro hecho con el enlace anterior
+      // quedaba sin factura a la que imputarse. (El webhook concilia además por el
+      // id de factura, así que un enlace viejo tampoco se pierde.) Pero una sesión
+      // de Checkout CADUCA (24 h por defecto): reutilizar a ciegas devolvía para
+      // siempre un enlace muerto, así que se pregunta a Stripe si sigue abierta y,
+      // si no, se crea otra. Si Stripe no responde se devuelve el enlace guardado.
+      if (inv.stripe_url && inv.stripe_session_id) {
+        let abierta = true;
+        try {
+          abierta = (await retrieveStripeCheckout(secret, inv.stripe_session_id)).status === 'open';
+        } catch (err) {
+          if (!(err instanceof StripeError)) throw err;
+        }
+        if (abierta) return { url: inv.stripe_url, invoice: publicInvoice(inv), reused: true };
+        audit(req, 'invoice_stripe_link_expired', { type: 'invoice', id, detail: inv.stripe_session_id });
+      }
+
+      // Emitir la factura antes de cobrar (alta antes del pago): asigna número/serie
+      // y la congela. Si ya estaba emitida, no reasigna nada.
+      let issued: InvoiceRow;
+      try {
+        issued = inv.status === 'draft' ? performEmission(inv, 'issued', {}, { requireFiscalData: true }) : inv;
+      } catch (err) {
+        if (err instanceof BillingError) return reply.code(409).send({ error: err.message });
+        throw err;
+      }
+      const number = issued.number ?? issued.id;
+
+      try {
+        const session = await createStripeCheckout(secret, {
+          amountCents: issued.total_cents,
+          currency: issued.currency,
+          invoiceNumber: number,
+          invoiceId: issued.id,
+          successUrl: `${origin}/workspaces/${issued.workspace_id}?paid=1`,
+          cancelUrl: `${origin}/workspaces/${issued.workspace_id}`,
+          customerEmail: ws?.billing_email ?? null,
+        });
+        // Si el webhook la ha cobrado mientras se creaba la sesión, no se pisa el
+        // cobro real con un enlace que ya no sirve.
+        const actual = getInvoice(id);
+        if (!actual || actual.status === 'paid' || actual.status === 'void') {
+          return reply.code(409).send({ error: 'La factura ha cambiado de estado mientras se creaba el enlace; recarga la página.' });
+        }
+        updateInvoice(id, { stripe_session_id: session.id, stripe_url: session.url, payment_method: 'stripe' });
+        audit(req, 'invoice_stripe_link', { type: 'invoice', id, detail: number });
+        return { url: session.url, invoice: publicInvoice(getInvoice(id)!) };
+      } catch (err: any) {
+        if (err instanceof StripeError) return reply.code(502).send({ error: err.message });
+        throw err;
+      }
+    } finally {
+      stripeLinkEnCurso.delete(id);
     }
   });
 }

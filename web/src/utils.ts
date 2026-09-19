@@ -55,12 +55,30 @@ export function fmtCores(cpuPercent: number): string {
   return `${txt} ${cores === 1 ? 'núcleo' : 'núcleos'}`;
 }
 
+/*
+ * Formateadores reutilizados. `toLocaleString` y `new Intl.NumberFormat`
+ * construyen un formateador nuevo en cada llamada, y estas funciones se
+ * ejecutan por fila de tabla y por marca de eje en cada repintado: con cien
+ * filas y una gráfica en vivo eran miles de instancias por segundo.
+ */
+const DATE_FMT = new Map<string, Intl.DateTimeFormat>();
+function dateFmt(opts: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = JSON.stringify(opts);
+  let f = DATE_FMT.get(key);
+  if (!f) {
+    f = new Intl.DateTimeFormat('es', opts);
+    DATE_FMT.set(key, f);
+  }
+  return f;
+}
+const MONEY_FMT = new Map<string, Intl.NumberFormat>();
+
 /** Etiqueta de eje temporal adaptada a la ventana (24 h → hora; días → fecha). */
 export function fmtAxisTime(ts: number, hours: number): string {
   const d = new Date(ts);
-  if (hours <= 24) return d.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
-  if (hours <= 24 * 7) return d.toLocaleString('es', { weekday: 'short', hour: '2-digit' });
-  return d.toLocaleDateString('es', { day: '2-digit', month: '2-digit' });
+  if (hours <= 24) return dateFmt({ hour: '2-digit', minute: '2-digit' }).format(d);
+  if (hours <= 24 * 7) return dateFmt({ weekday: 'short', hour: '2-digit' }).format(d);
+  return dateFmt({ day: '2-digit', month: '2-digit' }).format(d);
 }
 
 /** MB legibles (RAM/disco): reutiliza fmtBytes convirtiendo desde megabytes. */
@@ -71,7 +89,12 @@ export function fmtMb(mb: number): string {
 /** Importe monetario a partir de céntimos (facturación). */
 export function fmtMoney(cents: number, currency = 'EUR'): string {
   try {
-    return new Intl.NumberFormat('es', { style: 'currency', currency }).format(cents / 100);
+    let f = MONEY_FMT.get(currency);
+    if (!f) {
+      f = new Intl.NumberFormat('es', { style: 'currency', currency });
+      MONEY_FMT.set(currency, f);
+    }
+    return f.format(cents / 100);
   } catch {
     return `${(cents / 100).toFixed(2)} ${currency}`;
   }
@@ -79,15 +102,15 @@ export function fmtMoney(cents: number, currency = 'EUR'): string {
 
 /** Fecha corta (día/mes/año) para periodos de facturación. */
 export function fmtDate(ts: number): string {
-  return new Date(ts).toLocaleDateString('es', { day: '2-digit', month: 'short', year: 'numeric' });
+  return dateFmt({ day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(ts));
 }
 
 /** Fecha+hora completa para tooltips del histórico. */
 export function fmtStamp(ts: number, hours: number): string {
   const d = new Date(ts);
-  if (hours <= 24) return d.toLocaleString('es', { hour: '2-digit', minute: '2-digit' });
-  if (hours <= 24 * 7) return d.toLocaleString('es', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit' });
-  return d.toLocaleDateString('es', { weekday: 'short', day: '2-digit', month: '2-digit' });
+  if (hours <= 24) return dateFmt({ hour: '2-digit', minute: '2-digit' }).format(d);
+  if (hours <= 24 * 7) return dateFmt({ weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit' }).format(d);
+  return dateFmt({ weekday: 'short', day: '2-digit', month: '2-digit' }).format(d);
 }
 
 export const STATE_LABEL: Record<ContainerState, string> = {
@@ -294,12 +317,7 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
 };
 
 export function fmtDateTime(ts: number): string {
-  return new Date(ts).toLocaleString('es', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return dateFmt({ day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(ts));
 }
 
 /** Detección de macOS / iOS para adaptar atajos de teclado (⌘ vs Ctrl) */
@@ -319,3 +337,11 @@ export const CMD_K_LABEL = isMac ? '⌘K' : 'Ctrl+K';
 
 /** Etiqueta de ejecutar consulta: ⌘↵ en Mac, Ctrl+↵ en Windows/Linux */
 export const CMD_ENTER_LABEL = isMac ? '⌘↵' : 'Ctrl+↵';
+
+/**
+ * Vacíos compartidos para `datos ?? EMPTY_LIST` mientras una consulta carga: un
+ * `[]` o `{}` literal en el cuerpo del componente es un objeto nuevo en cada
+ * render y obliga a recalcular todos los `useMemo` que dependan de él.
+ */
+export const EMPTY_LIST: never[] = [];
+export const EMPTY_RECORD: Record<string, never> = {};

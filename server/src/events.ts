@@ -2,7 +2,10 @@ import { EventEmitter } from 'events';
 
 /** Bus de eventos en memoria para logs de despliegue y cambios de estado. */
 export const bus = new EventEmitter();
-bus.setMaxListeners(0);
+// Un tope alto en vez de ninguno: cada pestaña abierta suscribe un listener
+// por canal, y el aviso de Node al pasar de 500 es la única señal de que hay
+// una fuga de suscripciones (streams que no se desuscriben al cerrar).
+bus.setMaxListeners(500);
 
 export type DeployEvent =
   | { type: 'log'; line: string }

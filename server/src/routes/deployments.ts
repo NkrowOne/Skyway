@@ -1,7 +1,15 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { assertProjectAccess, requireAuth } from '../auth';
 import { audit } from '../audit';
-import { getDeployment, getProject, getService, listDeployments, saveDeploymentRuntimeLogs } from '../db';
+import {
+  deploymentSummary,
+  getDeployment,
+  getProject,
+  getService,
+  latestDeployment,
+  listDeployments,
+  saveDeploymentRuntimeLogs,
+} from '../db';
 import { cancelDeployment, triggerDeploy } from '../deploy/deployer';
 import { dockerAvailable } from '../docker/client';
 import { containerName, fetchLogsText, findContainer } from '../docker/containers';
@@ -40,7 +48,8 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/api/deployments/:id/cancel', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const deployment = getDeployment(id);
+    // Solo hacen falta estado y servicio: sin arrastrar el log de build entero.
+    const deployment = deploymentSummary(id);
     if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
     if (!serviceAccess(req, reply, deployment.service_id)) return reply;
     if (!ACTIVE.has(deployment.status)) {
@@ -55,7 +64,8 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/api/deployments/:id/rollback', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const deployment = getDeployment(id);
+    // Solo hacen falta estado, imagen y servicio: sin el log de build.
+    const deployment = deploymentSummary(id);
     if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
     if (!serviceAccess(req, reply, deployment.service_id)) return reply;
     if (deployment.status !== 'success' || !deployment.image_tag) {
@@ -92,9 +102,13 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     });
     channel.onClose(unsubscribe);
 
-    channel.send('snapshot', { logs: deployment.logs, status: deployment.status });
-    if (!ACTIVE.has(deployment.status)) {
-      channel.send('done', { status: deployment.status, error: deployment.error });
+    // Se relee DESPUÉS de suscribirse: un despliegue que terminara entre la
+    // comprobación de acceso y la suscripción no emitiría ya su «done», y el
+    // visor se quedaría esperando en directo a algo acabado.
+    const current = getDeployment(id) ?? deployment;
+    channel.send('snapshot', { logs: current.logs, status: current.status });
+    if (!ACTIVE.has(current.status)) {
+      channel.send('done', { status: current.status, error: current.error });
       setTimeout(() => channel.close(), 100);
     }
   });
@@ -118,7 +132,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       const info = await findContainer(cName);
       if (info) {
         const matchesDep = info.Config?.Labels?.['skyway.deployment'] === deployment.id;
-        const isLatest = listDeployments(deployment.service_id)[0]?.id === deployment.id;
+        const isLatest = latestDeployment(deployment.service_id)?.id === deployment.id;
         if (matchesDep || (!runtimeLogs && isLatest)) {
           isLiveRuntime = info.State.Running;
           try {
@@ -174,20 +188,20 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const stamp = new Date(deployment.created_at).toISOString().slice(0, 19).replace(/[:T]/g, '-');
     const serviceSlug = service?.slug ?? 'servicio';
 
-    let fullText = `=== SKYWAY DEPLOYMENT LOG ===\n`;
-    fullText += `Deployment ID: ${deployment.id}\n`;
-    fullText += `Service: ${service?.name ?? deployment.service_id} (${serviceSlug})\n`;
-    fullText += `Trigger: ${deployment.trigger}\n`;
-    fullText += `Status: ${deployment.status}\n`;
+    let fullText = `=== SKYWAY · REGISTRO DEL DESPLIEGUE ===\n`;
+    fullText += `Despliegue: ${deployment.id}\n`;
+    fullText += `Servicio: ${service?.name ?? deployment.service_id} (${serviceSlug})\n`;
+    fullText += `Origen: ${deployment.trigger}\n`;
+    fullText += `Estado: ${deployment.status}\n`;
     if (deployment.commit_sha) fullText += `Commit: ${deployment.commit_sha} - ${deployment.commit_msg ?? ''}\n`;
-    fullText += `Date: ${new Date(deployment.created_at).toISOString()}\n`;
+    fullText += `Fecha: ${new Date(deployment.created_at).toISOString()}\n`;
     fullText += `==========================================\n\n`;
 
-    fullText += `--- BUILD & DEPLOY LOGS ---\n`;
-    fullText += (deployment.logs || 'Sin logs de build.') + '\n\n';
+    fullText += `--- COMPILACIÓN Y DESPLIEGUE ---\n`;
+    fullText += (deployment.logs || 'Sin registro de compilación.') + '\n\n';
 
     if (runtimeLogs) {
-      fullText += `--- RUNTIME / APPLICATION LOGS ---\n`;
+      fullText += `--- APLICACIÓN (EJECUCIÓN) ---\n`;
       fullText += runtimeLogs + '\n';
     }
 

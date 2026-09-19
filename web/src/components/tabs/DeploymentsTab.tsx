@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronDown, History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
-import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, fmtDuration, isActiveDeploy, ServiceStatusKind, timeAgo } from '../../utils';
+import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, EMPTY_LIST, fmtDuration, isActiveDeploy, ServiceStatusKind, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
 import { ConfirmModal, EmptyState, ErrorState, Skeleton, useToast } from '../ui';
 
@@ -138,13 +138,16 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
 
 /** Explicación del fallo generada por el servidor (qué pasó y cómo arreglarlo). */
 function DiagnosisCard({ raw }: { raw: string | null }) {
-  if (!raw) return null;
-  let diagnosis: Diagnosis;
-  try {
-    diagnosis = JSON.parse(raw);
-  } catch {
-    return null;
-  }
+  // Se parsea una vez por texto, no en cada repintado del acordeón.
+  const diagnosis = useMemo<Diagnosis | null>(() => {
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as Diagnosis;
+    } catch {
+      return null;
+    }
+  }, [raw]);
+  if (!diagnosis) return null;
   return (
     <div className="rounded-lg border border-warn/30 bg-warn/[.06] p-3 text-xs">
       <p className="flex items-center gap-1.5 font-semibold text-warn">
@@ -365,7 +368,9 @@ export default function DeploymentsTab({
   const deployments = useQuery({
     queryKey: ['deployments', serviceId],
     queryFn: () => api.get<{ deployments: Deployment[] }>(`/services/${serviceId}/deployments`),
-    refetchInterval: 4000,
+    // Rápido solo mientras hay uno saliendo (el `done` del stream ya invalida
+    // esta consulta); con todo quieto, cada 4 s no aporta nada.
+    refetchInterval: (q) => (q.state.data?.deployments.some((d) => isActiveDeploy(d.status)) ? 3000 : 15_000),
   });
 
   const rollback = useMutation({
@@ -388,7 +393,8 @@ export default function DeploymentsTab({
   });
 
   // El servidor los envía en orden cronológico (el más reciente primero).
-  const list = deployments.data?.deployments ?? [];
+  // EMPTY_LIST y no `[]`: un literal nuevo por render invalidaba el memo de abajo.
+  const list = deployments.data?.deployments ?? EMPTY_LIST;
   // El despliegue "vigente": el éxito más reciente (la versión que sirve ahora).
   const currentId = list.find((d) => d.status === 'success')?.id ?? null;
   // El más reciente en el tiempo: sirve para teñir en rojo un último intento fallido.
@@ -401,15 +407,13 @@ export default function DeploymentsTab({
    * semana pasada: justo lo que se venía a mirar, escondido. La píldora «En
    * producción» ya dice cuál sirve.
    */
-  const running = list.filter((d) => isActiveDeploy(d.status));
-  const runningIds = new Set(running.map((d) => d.id));
-  const ordered = useMemo(
-    () => [...running, ...list.filter((d) => !runningIds.has(d.id))],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [list],
-  );
+  const ordered = useMemo(() => {
+    const running = list.filter((d) => isActiveDeploy(d.status));
+    const runningIds = new Set(running.map((d) => d.id));
+    return [...running, ...list.filter((d) => !runningIds.has(d.id))];
+  }, [list]);
 
-  const runningId = running[0]?.id ?? null;
+  const runningId = ordered.find((d) => isActiveDeploy(d.status))?.id ?? null;
   useEffect(() => {
     if (runningId) setOpenId(runningId);
   }, [runningId]);

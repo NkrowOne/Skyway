@@ -10,7 +10,7 @@ import {
   setProjectStatusNotice,
   setProjectStatusPage,
   uptimeDaily,
-  uptimePercent,
+  uptimePercentBatch,
 } from '../db';
 import { aggregateReplicaState, configuredReplicas } from '../docker/containers';
 import { dockerSnapshot } from '../docker/sampler';
@@ -41,7 +41,15 @@ async function buildStatusPayload(project: ProjectRow): Promise<any> {
   const dockerUp = snap.docker;
   const services: any[] = [];
 
-  for (const service of listServices(project.id)) {
+  // Disponibilidad de todos los servicios en tres consultas (una por ventana)
+  // en vez de tres por servicio: la página es pública y se reconstruye cada 10 s.
+  const filas = listServices(project.id);
+  const ids = filas.map((s) => s.id);
+  const uptime24 = uptimePercentBatch(ids, 24);
+  const uptime7d = uptimePercentBatch(ids, 7 * 24);
+  const uptime90 = uptimePercentBatch(ids, 90 * 24);
+
+  for (const service of filas) {
     const total = configuredReplicas(service);
     let running = 0;
     const states: ContainerState[] = [];
@@ -54,8 +62,8 @@ async function buildStatusPayload(project: ProjectRow): Promise<any> {
     }
     const aggState = aggregateReplicaState(states);
 
-    const uptime24h = uptimePercent(service.id, 24);
-    const uptime90d = uptimePercent(service.id, 90 * 24);
+    const uptime24h = uptime24.get(service.id) ?? null;
+    const uptime90d = uptime90.get(service.id) ?? null;
     // Un servicio nunca desplegado no es un componente visible para el
     // cliente. Con Docker caído el estado es 'unknown': el histórico de
     // uptime distingue lo nunca desplegado (sin muestras) de lo real.
@@ -79,7 +87,7 @@ async function buildStatusPayload(project: ProjectRow): Promise<any> {
       type: service.type,
       state: publicState(aggState, running, total),
       uptime24h,
-      uptime7d: uptimePercent(service.id, 7 * 24),
+      uptime7d: uptime7d.get(service.id) ?? null,
       uptime90d,
       days,
     });
@@ -183,7 +191,10 @@ export async function statusRoutes(app: FastifyInstance): Promise<void> {
 
       const enabled = body.enabled ?? !!project.status_enabled;
       const token = project.status_token ?? randomToken(20);
-      if (body.enabled !== undefined) setProjectStatusPage(id, enabled, token);
+      // Si el token se acaba de generar se persiste SIEMPRE, aunque solo llegue
+      // `notice`: antes se devolvía uno recién inventado que no estaba en la BD y
+      // el enlace que la UI mostraba no funcionaba.
+      if (body.enabled !== undefined || !project.status_token) setProjectStatusPage(id, enabled, token);
       if (body.notice !== undefined) setProjectStatusNotice(id, body.notice || null);
       cache.delete(token);
 

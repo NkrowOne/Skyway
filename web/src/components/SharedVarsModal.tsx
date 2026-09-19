@@ -5,9 +5,13 @@ import { api } from '../api';
 import { Button, Modal, useToast } from './ui';
 
 interface Row {
+  /** Clave estable para React: por posición, borrar una fila del medio barajaba los campos. */
+  id: string;
   key: string;
   value: string;
 }
+
+let rowSeq = 0;
 
 /**
  * Variables compartidas del proyecto: se inyectan en todos los servicios
@@ -33,6 +37,12 @@ export default function SharedVarsModal({
     enabled: open,
   });
 
+  // Al cerrar se olvida lo no guardado: si no, al volver a abrir seguía el
+  // borrador descartado (y con `dirty` en pie nunca se recargaba del servidor).
+  useEffect(() => {
+    if (!open) setDirty(false);
+  }, [open]);
+
   // Alfabético al cargar: el orden de inserción del servidor no ayuda a
   // encontrar nada. Mientras se edita no se reordena (las nuevas van al final).
   useEffect(() => {
@@ -40,7 +50,7 @@ export default function SharedVarsModal({
       setRows(
         Object.entries(vars.data.vars)
           .sort(([a], [b]) => a.localeCompare(b, 'es'))
-          .map(([key, value]) => ({ key, value })),
+          .map(([key, value]) => ({ id: `k:${key}`, key, value })),
       );
     }
   }, [vars.data, dirty]);
@@ -78,7 +88,7 @@ export default function SharedVarsModal({
           </p>
         )}
         {rows.map((row, i) => (
-          <div key={i} className="flex items-center gap-2">
+          <div key={row.id} className="flex items-center gap-2">
             <input
               className="input w-2/5 min-w-0 font-mono sm:text-xs"
               placeholder="CLAVE"
@@ -124,7 +134,7 @@ export default function SharedVarsModal({
           size="sm"
           variant="outline"
           onClick={() => {
-            setRows([...rows, { key: '', value: '' }]);
+            setRows([...rows, { id: `n:${Date.now()}_${++rowSeq}`, key: '', value: '' }]);
             setDirty(true);
           }}
         >

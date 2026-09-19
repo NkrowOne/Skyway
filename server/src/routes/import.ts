@@ -5,6 +5,7 @@ import { audit } from '../audit';
 import { getProject, getSetting, setSetting } from '../db';
 import { listRailwayProjects } from '../railway/client';
 import { analyzeRailwayProject, runRailwayImport } from '../railway/importer';
+import { safeParse } from '../util';
 
 const tokenSchema = z.string().trim().min(10, 'Token de Railway requerido');
 
@@ -21,8 +22,8 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
       const { id } = req.params as { id: string };
       if (!getProject(id)) return reply.code(404).send({ error: 'Proyecto no encontrado' });
       if (!assertProjectAccess(req, reply, id)) return reply;
-      const raw = getSetting(`importReport:${id}`);
-      return { report: raw ? JSON.parse(raw) : null };
+      // Un informe corrupto en la BD equivale a no tener informe, no a un 500.
+      return { report: safeParse<Record<string, unknown> | null>(getSetting(`importReport:${id}`), null) };
     });
 
     scoped.delete('/api/projects/:id/import-report', async (req, reply) => {
@@ -30,6 +31,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
       if (!getProject(id)) return reply.code(404).send({ error: 'Proyecto no encontrado' });
       if (!assertProjectAccess(req, reply, id)) return reply;
       setSetting(`importReport:${id}`, null);
+      audit(req, 'import_report_deleted', { type: 'project', id });
       return { ok: true };
     });
   });

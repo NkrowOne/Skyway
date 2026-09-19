@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, memo } from 'react';
 import { Table2 } from 'lucide-react';
 import { cx, fmtAxisTime, fmtStamp } from '../utils';
 
@@ -15,6 +15,13 @@ export interface BandPoint {
   avg: number | null;
   max: number | null;
 }
+
+// Geometría fija de las gráficas, fuera de los componentes: declarada dentro,
+// cada render creaba un objeto nuevo y los `useMemo` que usan los márgenes no
+// podían tenerla como dependencia estable.
+const H = 176;
+const PAD_LINE = { top: 12, right: 12, bottom: 22, left: 46 };
+const PAD_BARS = { top: 16, right: 12, bottom: 22, left: 46 };
 
 function niceMax(v: number): number {
   if (v <= 0) return 1;
@@ -70,7 +77,7 @@ export const leaveUnlessTouch = (clear: () => void) => (e: React.PointerEvent) =
   if (e.pointerType !== 'touch') clear();
 };
 
-export function HistoryChart({
+function HistoryChartImpl({
   title,
   points,
   hours,
@@ -89,16 +96,14 @@ export function HistoryChart({
   fixedMax?: number;
 }) {
   const [wrapRef, W] = useElementWidth<HTMLDivElement>(560);
-  const H = 176;
-  const PAD = { top: 12, right: 12, bottom: 22, left: 46 };
   const [hover, setHover] = useState<number | null>(null);
   const [table, setTable] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
 
   const hasData = points.some((p) => p.avg !== null);
   const n = Math.max(points.length, 2);
-  const innerW = W - PAD.left - PAD.right;
-  const innerH = H - PAD.top - PAD.bottom;
+  const innerW = W - PAD_LINE.left - PAD_LINE.right;
+  const innerH = H - PAD_LINE.top - PAD_LINE.bottom;
 
   const max = useMemo(() => {
     if (fixedMax) return fixedMax;
@@ -113,18 +118,18 @@ export function HistoryChart({
   const nodes = useMemo(
     () =>
       points.map((p, i) => {
-        const x = PAD.left + (i / (n - 1)) * innerW;
+        const x = PAD_LINE.left + (i / (n - 1)) * innerW;
         const valid = p.avg !== null && p.max !== null;
-        const avgY = PAD.top + innerH - (Math.min(p.avg ?? 0, max) / max) * innerH;
-        const maxY = PAD.top + innerH - (Math.min(p.max ?? 0, max) / max) * innerH;
+        const avgY = PAD_LINE.top + innerH - (Math.min(p.avg ?? 0, max) / max) * innerH;
+        const maxY = PAD_LINE.top + innerH - (Math.min(p.max ?? 0, max) / max) * innerH;
         return { i, t: p.t, avg: p.avg, max: p.max, valid, x, avgY, maxY };
       }),
     [points, n, innerW, innerH, max],
   );
 
   const segs = useMemo(() => contiguous(nodes), [nodes]);
-  const gridYs = [0.25, 0.5, 0.75, 1].map((f) => ({ y: PAD.top + innerH * (1 - f), v: max * f }));
-  const thY = threshold ? PAD.top + innerH - (Math.min(threshold.value, max) / max) * innerH : null;
+  const gridYs = [0.25, 0.5, 0.75, 1].map((f) => ({ y: PAD_LINE.top + innerH * (1 - f), v: max * f }));
+  const thY = threshold ? PAD_LINE.top + innerH - (Math.min(threshold.value, max) / max) * innerH : null;
 
   // Puntero, no ratón: el mismo manejador sirve para dedo y lápiz.
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -156,7 +161,7 @@ export function HistoryChart({
         <button
           onClick={() => setTable((t) => !t)}
           className={cx(
-            'press flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro transition-colors',
+            'press tap flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro transition-colors',
             table ? 'bg-surface2 text-txt' : 'text-subtle hover:text-txt',
           )}
           title={table ? 'Ver gráfica' : 'Ver como tabla'}
@@ -208,8 +213,8 @@ export function HistoryChart({
           >
             {gridYs.map((g, i) => (
               <g key={i}>
-                <line x1={PAD.left} x2={W - PAD.right} y1={g.y} y2={g.y} stroke="var(--color-line)" strokeWidth="1" opacity="0.5" />
-                <text x={PAD.left - 6} y={g.y + 3} textAnchor="end" fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
+                <line x1={PAD_LINE.left} x2={W - PAD_LINE.right} y1={g.y} y2={g.y} stroke="var(--color-line)" strokeWidth="1" opacity="0.5" />
+                <text x={PAD_LINE.left - 6} y={g.y + 3} textAnchor="end" fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
                   {format(g.v)}
                 </text>
               </g>
@@ -244,24 +249,24 @@ export function HistoryChart({
 
             {thY !== null && threshold && (
               <>
-                <line x1={PAD.left} x2={W - PAD.right} y1={thY} y2={thY} stroke="var(--color-subtle)" strokeWidth="1" strokeDasharray="4,3" />
-                <text x={W - PAD.right} y={thY - 4} textAnchor="end" fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
+                <line x1={PAD_LINE.left} x2={W - PAD_LINE.right} y1={thY} y2={thY} stroke="var(--color-subtle)" strokeWidth="1" strokeDasharray="4,3" />
+                <text x={W - PAD_LINE.right} y={thY - 4} textAnchor="end" fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
                   {threshold.label}
                 </text>
               </>
             )}
 
-            <line x1={PAD.left} x2={W - PAD.right} y1={H - PAD.bottom} y2={H - PAD.bottom} stroke="var(--color-line)" strokeWidth="1" />
-            <text x={PAD.left} y={H - 6} fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
+            <line x1={PAD_LINE.left} x2={W - PAD_LINE.right} y1={H - PAD_LINE.bottom} y2={H - PAD_LINE.bottom} stroke="var(--color-line)" strokeWidth="1" />
+            <text x={PAD_LINE.left} y={H - 6} fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
               {points.length > 0 ? fmtAxisTime(points[0].t, hours) : ''}
             </text>
-            <text x={W - PAD.right} y={H - 6} textAnchor="end" fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
+            <text x={W - PAD_LINE.right} y={H - 6} textAnchor="end" fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
               {points.length > 0 ? fmtAxisTime(points[points.length - 1].t, hours) : ''}
             </text>
 
             {hoveredNode && (
               <>
-                <line x1={hoveredNode.x} x2={hoveredNode.x} y1={PAD.top} y2={H - PAD.bottom} stroke="var(--color-sub)" strokeWidth="1" strokeDasharray="3,3" opacity="0.7" />
+                <line x1={hoveredNode.x} x2={hoveredNode.x} y1={PAD_LINE.top} y2={H - PAD_LINE.bottom} stroke="var(--color-sub)" strokeWidth="1" strokeDasharray="3,3" opacity="0.7" />
                 {hoverValid && (
                   <>
                     <circle cx={hoveredNode.x} cy={hoveredNode.maxY} r="3" fill={color} opacity="0.5" stroke="var(--color-surface)" strokeWidth="1.5" />
@@ -305,7 +310,7 @@ export interface NetPoint {
   tx: number;
 }
 
-export function NetBars({
+function NetBarsImpl({
   points,
   hours,
   format,
@@ -315,17 +320,15 @@ export function NetBars({
   format: (v: number) => string;
 }) {
   const [wrapRef, W] = useElementWidth<HTMLDivElement>(560);
-  const H = 176;
-  const PAD = { top: 16, right: 12, bottom: 22, left: 46 };
   const [hover, setHover] = useState<number | null>(null);
   const [table, setTable] = useState(false);
 
   const rxColor = 'var(--color-ok)';
   const txColor = 'var(--color-info)';
   const hasData = points.some((p) => p.rx > 0 || p.tx > 0);
-  const innerW = W - PAD.left - PAD.right;
-  const innerH = H - PAD.top - PAD.bottom;
-  const mid = PAD.top + innerH / 2;
+  const innerW = W - PAD_BARS.left - PAD_BARS.right;
+  const innerH = H - PAD_BARS.top - PAD_BARS.bottom;
+  const mid = PAD_BARS.top + innerH / 2;
   const half = innerH / 2;
 
   const max = useMemo(() => {
@@ -343,7 +346,7 @@ export function NetBars({
     if (n === 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * W;
-    const i = Math.floor((x - PAD.left) / slot);
+    const i = Math.floor((x - PAD_BARS.left) / slot);
     if (i >= 0 && i < n) setHover(i);
     else if (e.pointerType !== 'touch') setHover(null);
   };
@@ -362,7 +365,7 @@ export function NetBars({
           <button
             onClick={() => setTable((t) => !t)}
             className={cx(
-              'press flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro transition-colors',
+              'press tap flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro transition-colors',
               table ? 'bg-surface2 text-txt' : 'text-subtle hover:text-txt',
             )}
             title={table ? 'Ver gráfica' : 'Ver como tabla'}
@@ -408,19 +411,19 @@ export function NetBars({
           >
             {[0.5, 1].map((f, i) => (
               <g key={i}>
-                <line x1={PAD.left} x2={W - PAD.right} y1={mid - half * f} y2={mid - half * f} stroke="var(--color-line)" strokeWidth="1" opacity="0.4" />
-                <line x1={PAD.left} x2={W - PAD.right} y1={mid + half * f} y2={mid + half * f} stroke="var(--color-line)" strokeWidth="1" opacity="0.4" />
-                <text x={PAD.left - 6} y={mid - half * f + 3} textAnchor="end" fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
+                <line x1={PAD_BARS.left} x2={W - PAD_BARS.right} y1={mid - half * f} y2={mid - half * f} stroke="var(--color-line)" strokeWidth="1" opacity="0.4" />
+                <line x1={PAD_BARS.left} x2={W - PAD_BARS.right} y1={mid + half * f} y2={mid + half * f} stroke="var(--color-line)" strokeWidth="1" opacity="0.4" />
+                <text x={PAD_BARS.left - 6} y={mid - half * f + 3} textAnchor="end" fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
                   {format(max * f)}
                 </text>
-                <text x={PAD.left - 6} y={mid + half * f + 3} textAnchor="end" fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
+                <text x={PAD_BARS.left - 6} y={mid + half * f + 3} textAnchor="end" fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
                   {format(max * f)}
                 </text>
               </g>
             ))}
 
             {points.map((p, i) => {
-              const cx0 = PAD.left + slot * i + slot / 2;
+              const cx0 = PAD_BARS.left + slot * i + slot / 2;
               const txH = (Math.min(p.tx, max) / max) * half;
               const rxH = (Math.min(p.rx, max) / max) * half;
               const active = hover === i;
@@ -432,11 +435,11 @@ export function NetBars({
               );
             })}
 
-            <line x1={PAD.left} x2={W - PAD.right} y1={mid} y2={mid} stroke="var(--color-line)" strokeWidth="1" />
-            <text x={PAD.left} y={H - 6} fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
+            <line x1={PAD_BARS.left} x2={W - PAD_BARS.right} y1={mid} y2={mid} stroke="var(--color-line)" strokeWidth="1" />
+            <text x={PAD_BARS.left} y={H - 6} fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
               {points.length > 0 ? fmtAxisTime(points[0].t, hours) : ''}
             </text>
-            <text x={W - PAD.right} y={H - 6} textAnchor="end" fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
+            <text x={W - PAD_BARS.right} y={H - 6} textAnchor="end" fontSize="9" fill="var(--color-subtle)" fontFamily="ui-monospace, monospace">
               {points.length > 0 ? fmtAxisTime(points[points.length - 1].t, hours) : ''}
             </text>
           </svg>
@@ -444,7 +447,7 @@ export function NetBars({
           {hover !== null && points[hover] && (
             <div
               className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-line bg-surface2 px-2 py-1 text-xs text-txt shadow-lvl1"
-              style={{ left: `${((PAD.left + slot * hover + slot / 2) / W) * 100}%` }}
+              style={{ left: `${((PAD_BARS.left + slot * hover + slot / 2) / W) * 100}%` }}
             >
               <span className="tnum block">
                 <span style={{ color: txColor }}>↑</span> {format(points[hover].tx)}
@@ -460,3 +463,12 @@ export function NetBars({
     </div>
   );
 }
+
+/*
+ * Memoizadas: el panel del servicio se repinta con cada foto de métricas
+ * (~2,5 s) y las gráficas del histórico reserializaban todos sus trazados SVG
+ * sin que sus datos hubieran cambiado. Quien las use debe pasar `points`,
+ * `threshold` y `format` estables (useMemo / constantes de módulo).
+ */
+export const HistoryChart = memo(HistoryChartImpl);
+export const NetBars = memo(NetBarsImpl);

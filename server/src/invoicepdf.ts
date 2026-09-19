@@ -10,9 +10,17 @@
  * `renderInvoicePdf` es pura y reentrante: todo el estado de maquetación vive
  * dentro de la llamada, no toca disco ni lee configuración global, y el
  * documento resultante depende únicamente de los datos recibidos (por eso las
- * fechas se imprimen en UTC y no hay marca de tiempo de generación).
+ * fechas se imprimen en UTC y no hay marca de tiempo de generación). Es async
+ * solo por la compresión: `deflateSync` por página bloqueaba el event loop del
+ * servidor entero durante cada descarga o adjunto de correo.
  */
-import { deflateSync } from 'node:zlib';
+import { promisify } from 'node:util';
+import { deflate } from 'node:zlib';
+
+const deflateAsync = promisify(deflate);
+// Nivel 6 (el de zlib por defecto): el 9 comprimía apenas unos bytes más a
+// cambio de bastante más CPU en un contenido que ya es texto corto.
+const DEFLATE_LEVEL = 6;
 
 export interface InvoicePdfData {
   number: string;
@@ -292,7 +300,7 @@ interface Pagina {
 }
 
 /** Documento PDF de la factura, listo para descargar o adjuntar a un correo. */
-export function renderInvoicePdf(data: InvoicePdfData): Buffer {
+export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   const moneda = (data.currency || 'EUR').toUpperCase();
   // Una factura ANULADA lleva la marca en el propio título: sin ella su duplicado
   // era indistinguible de una viva (mismo número, misma fecha, mismo total) y el
@@ -543,7 +551,7 @@ export function renderInvoicePdf(data: InvoicePdfData): Buffer {
  * calculan sobre los buffers ya serializados y acumulando su longitud real —es
  * el punto donde más fallan estos generadores— y no sobre longitudes estimadas.
  */
-function serializaPdf(paginas: Pagina[], creado: number | null): Buffer {
+async function serializaPdf(paginas: Pagina[], creado: number | null): Promise<Buffer> {
   const objetos: Buffer[] = [];
   const anade = (cuerpo: Buffer | string): void => {
     objetos.push(typeof cuerpo === 'string' ? Buffer.from(cuerpo, 'latin1') : cuerpo);
@@ -561,8 +569,12 @@ function serializaPdf(paginas: Pagina[], creado: number | null): Buffer {
   const creacion = creado != null && Number.isFinite(creado) ? ` /CreationDate ${cadena(fmtFechaPdf(creado))}` : '';
   anade(`<< /Producer (Skyway) /Creator (Skyway)${creacion} >>`);
 
-  paginas.forEach((p, i) => {
-    const comprimido = deflateSync(Buffer.from(p.ops.join('\n'), 'latin1'), { level: 9 });
+  // Las páginas son independientes: se comprimen a la vez en el pool de hilos de zlib.
+  const comprimidas = await Promise.all(
+    paginas.map((p) => deflateAsync(Buffer.from(p.ops.join('\n'), 'latin1'), { level: DEFLATE_LEVEL })),
+  );
+  paginas.forEach((_, i) => {
+    const comprimido = comprimidas[i];
     anade(Buffer.concat([
       Buffer.from(`<< /Length ${comprimido.length} /Filter /FlateDecode >>\nstream\n`, 'latin1'),
       comprimido,

@@ -16,7 +16,7 @@
 
 import jwt from 'jsonwebtoken';
 import { getSetting, setSetting } from '../db';
-import { GithubError, ghFetch, GithubRepo, toGithubRepo } from './client';
+import { GhRequest, GithubError, ghFetch, GithubRepo, toGithubRepo } from './client';
 
 export interface GithubAppConfig {
   appId: string;
@@ -66,6 +66,59 @@ export function githubAppConfigured(): boolean {
 export function clearGithubApp(): void {
   for (const key of Object.values(SETTING)) setSetting(key, null);
   tokenCache.clear();
+  lastAppInfoCheck = 0;
+}
+
+// ---------- ficha de la App (slug, nombre) ----------
+
+/** Cada cuánto se vuelve a preguntar a GitHub por la ficha de la App. */
+const APP_INFO_TTL_MS = 5 * 60_000;
+let lastAppInfoCheck = 0;
+let appInfoInflight: Promise<void> | null = null;
+
+/**
+ * Pone al día `slug`, nombre y URL de la App desde `GET /app`. Si el
+ * administrador renombra la App en GitHub cambia su slug, y con el antiguo
+ * guardado tanto la página de la App como el enlace de instalación daban 404;
+ * el `appId` (lo que firma el JWT) no cambia, así que se puede preguntar.
+ *
+ * Memoizada (una consulta cada 5 min como mucho) y nunca lanza: si GitHub no
+ * contesta se sigue con lo guardado y se reintenta pasado el plazo.
+ */
+export async function refreshAppInfo(opts: { force?: boolean } = {}): Promise<GithubAppConfig | null> {
+  const cfg = githubAppConfig();
+  if (!cfg) return null;
+  if (!opts.force && Date.now() - lastAppInfoCheck < APP_INFO_TTL_MS) return cfg;
+  if (!appInfoInflight) {
+    // La marca se pone ANTES de preguntar: un fallo también cuenta como
+    // intento, o un GitHub caído se consultaría en cada petición del panel.
+    lastAppInfoCheck = Date.now();
+    appInfoInflight = (async () => {
+      try {
+        const res = await appFetch(cfg, '/app', { timeoutMs: 8_000 });
+        const body: any = await res.json().catch(() => null);
+        // Si por lo que sea contesta otra App (clave cambiada a mano), no se
+        // pisa nada: los ajustes deben seguir describiendo la App cuyo id firma.
+        if (String(body?.id ?? '') !== cfg.appId) return;
+        const slug = typeof body.slug === 'string' ? body.slug.trim() : '';
+        if (!slug) return;
+        const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : slug;
+        const htmlUrl =
+          typeof body.html_url === 'string' && body.html_url.startsWith('https://')
+            ? body.html_url
+            : `https://github.com/apps/${slug}`;
+        if (slug !== cfg.slug) setSetting(SETTING.slug, slug);
+        if (name !== cfg.name) setSetting(SETTING.name, name);
+        if (htmlUrl !== cfg.htmlUrl) setSetting(SETTING.htmlUrl, htmlUrl);
+      } catch {
+        /* sin red o sin permiso: se sigue con lo guardado */
+      } finally {
+        appInfoInflight = null;
+      }
+    })();
+  }
+  await appInfoInflight;
+  return githubAppConfig();
 }
 
 /**
@@ -81,6 +134,28 @@ function appJwt(cfg: GithubAppConfig): string {
     throw new GithubError(
       `La clave privada de la GitHub App no es válida (${err?.message || 'error al firmar'}). Vuelve a conectar la App desde Ajustes.`,
     );
+  }
+}
+
+/**
+ * Petición autenticada como App (JWT). Un 401 aquí no es «token caducado»
+ * como en el resto del cliente: o el reloj del servidor va desfasado (GitHub
+ * rechaza un `exp` a más de 10 min o un `iat` en el futuro) o la clave ya no
+ * es la de la App. El mensaje genérico mandaba al usuario a revisar una
+ * credencial que no existe.
+ */
+async function appFetch(cfg: GithubAppConfig, path: string, req: Omit<GhRequest, 'token'> = {}): Promise<Response> {
+  try {
+    return await ghFetch(path, { ...req, token: appJwt(cfg) });
+  } catch (err) {
+    if (err instanceof GithubError && err.status === 401) {
+      throw new GithubError(
+        `GitHub rechazó la firma de la App (${err.message}). Suele ser el reloj del servidor desfasado (revisa NTP) ` +
+          'o una clave privada que ya no vale: en ese caso, vuelve a conectar la App desde Ajustes.',
+        401,
+      );
+    }
+    throw err;
   }
 }
 
@@ -114,19 +189,19 @@ export async function installationToken(installationId: number): Promise<string>
   if (!cfg) throw new GithubError('La GitHub App no está configurada en este servidor.');
 
   const request = (async () => {
-    const res = await ghFetch(`/app/installations/${installationId}/access_tokens`, {
-      token: appJwt(cfg),
+    const res = await appFetch(cfg, `/app/installations/${installationId}/access_tokens`, {
       method: 'POST',
       passthrough: [404],
     });
     if (res.status === 404) {
+      await res.text().catch(() => ''); // libera el socket antes de lanzar
       throw new GithubError(
         'GitHub ya no conoce esa instalación de la App: se desinstaló desde GitHub. Vuelve a conectar la cuenta.',
         404,
       );
     }
     const body: any = await res.json().catch(() => ({}));
-    if (!body?.token) throw new GithubError('GitHub no devolvió token de instalación.');
+    if (typeof body?.token !== 'string' || !body.token) throw new GithubError('GitHub no devolvió token de instalación.');
     const expiresAt = body.expires_at ? Date.parse(body.expires_at) : Date.now() + 3600_000;
     tokenCache.set(installationId, {
       token: body.token,
@@ -173,17 +248,34 @@ function toInstallationInfo(raw: any): GithubInstallationInfo {
 export async function getInstallation(installationId: number): Promise<GithubInstallationInfo> {
   const cfg = githubAppConfig();
   if (!cfg) throw new GithubError('La GitHub App no está configurada en este servidor.');
-  const res = await ghFetch(`/app/installations/${installationId}`, { token: appJwt(cfg) });
-  return toInstallationInfo(await res.json().catch(() => ({})));
+  const res = await appFetch(cfg, `/app/installations/${installationId}`);
+  const info = toInstallationInfo(await res.json().catch(() => ({})));
+  // Sin id válido no hay nada que guardar: antes acababa una fila con
+  // installation_id = NaN en la BD y una conexión que nunca podría clonar.
+  if (!Number.isInteger(info.installationId) || info.installationId !== installationId) {
+    throw new GithubError('GitHub devolvió una instalación que no se corresponde con la pedida.');
+  }
+  return info;
 }
+
+const INSTALLATIONS_MAX_PAGES = 10; // hasta 1000 instalaciones: de sobra para un servidor
 
 /** Todas las instalaciones vivas de la App (para reconciliar con la BD). */
 export async function listAppInstallations(): Promise<GithubInstallationInfo[]> {
   const cfg = githubAppConfig();
   if (!cfg) return [];
-  const res = await ghFetch('/app/installations?per_page=100', { token: appJwt(cfg) });
-  const body: any[] = (await res.json().catch(() => [])) as any[];
-  return Array.isArray(body) ? body.map(toInstallationInfo) : [];
+  const out: GithubInstallationInfo[] = [];
+  for (let page = 1; page <= INSTALLATIONS_MAX_PAGES; page++) {
+    const res = await appFetch(cfg, `/app/installations?per_page=100&page=${page}`);
+    const body: any[] = (await res.json().catch(() => [])) as any[];
+    if (!Array.isArray(body) || body.length === 0) break;
+    for (const raw of body) {
+      const info = toInstallationInfo(raw);
+      if (Number.isInteger(info.installationId)) out.push(info);
+    }
+    if (body.length < 100) break;
+  }
+  return out;
 }
 
 const REPOS_MAX_PAGES = 5; // hasta 500 repos accesibles por instalación
@@ -261,7 +353,13 @@ export function buildAppManifest(baseUrl: string, suffix: string): AppManifest {
  * guarda. El código es de un solo uso y caduca en una hora.
  */
 export async function convertManifestCode(code: string): Promise<GithubAppConfig> {
-  const res = await ghFetch(`/app-manifests/${encodeURIComponent(code)}/conversions`, { method: 'POST' });
+  const res = await ghFetch(`/app-manifests/${encodeURIComponent(code)}/conversions`, { method: 'POST', passthrough: [404] });
+  if (res.status === 404) {
+    // Es lo que devuelve GitHub cuando el código ya se canjeó (recarga de la
+    // página de retorno) o pasó su hora de vida.
+    await res.text().catch(() => '');
+    throw new GithubError('El código de creación de la App ya se usó o ha caducado: vuelve a crearla desde Ajustes.', 404);
+  }
   const body: any = await res.json().catch(() => ({}));
   if (!body?.id || !body?.pem || !body?.slug) {
     throw new GithubError('GitHub no devolvió las credenciales de la App. Vuelve a intentarlo.');
@@ -283,7 +381,37 @@ export function installUrl(cfg: GithubAppConfig, state: string): string {
   return `https://github.com/apps/${encodeURIComponent(cfg.slug)}/installations/new?state=${encodeURIComponent(state)}`;
 }
 
-/** URL para revisar qué repos ve una instalación ya hecha. */
-export function configureUrl(cfg: GithubAppConfig, installationId: number): string {
-  return `${cfg.htmlUrl.replace(/\/+$/, '')}/installations/${installationId}`;
+/**
+ * Igual, pero comprobando antes que el slug guardado sigue siendo el de GitHub
+ * (ver `refreshAppInfo`). Lanza solo si no hay App configurada.
+ */
+export async function installUrlFresh(state: string): Promise<string> {
+  const cfg = await refreshAppInfo();
+  if (!cfg) throw new GithubError('La GitHub App no está configurada en este servidor.');
+  return installUrl(cfg, state);
+}
+
+/** Cuenta (usuario u organización) sobre la que está hecha una instalación. */
+export interface InstallationAccount {
+  accountType: string;
+  accountLogin: string;
+}
+
+/**
+ * URL para revisar qué repos ve una instalación ya hecha. GitHub la sirve en
+ * los ajustes de la CUENTA, no en la página de la App:
+ * `/settings/installations/<id>` para un usuario y
+ * `/organizations/<login>/settings/installations/<id>` para una organización.
+ * La forma antigua `/apps/<slug>/installations/<id>` no existe (404).
+ *
+ * Se admite todavía la config de la App como primer argumento para no romper
+ * a quien aún no pasa la cuenta: en ese caso se cae a la URL de usuario, que
+ * es correcta para cuentas personales.
+ */
+export function configureUrl(account: InstallationAccount | GithubAppConfig, installationId: number): string {
+  const id = encodeURIComponent(String(installationId));
+  if ('accountLogin' in account && account.accountType.toLowerCase() === 'organization' && account.accountLogin) {
+    return `https://github.com/organizations/${encodeURIComponent(account.accountLogin)}/settings/installations/${id}`;
+  }
+  return `https://github.com/settings/installations/${id}`;
 }

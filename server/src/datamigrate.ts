@@ -25,6 +25,12 @@ import { id, lineSplitter, now } from './util';
 const MAX_LOG_CHARS = 200_000;
 /** Tope de duración: una copia que pasa de aquí es un problema, no una espera. */
 const TIMEOUT_MS = 60 * 60_000;
+/**
+ * Cuánto se conserva en memoria una copia terminada (con su log de hasta
+ * 200 KB) para que el panel pueda enseñar el resultado. Después se suelta: sin
+ * esto el mapa crecía con cada copia hasta el siguiente reinicio.
+ */
+const FINISHED_TTL_MS = 10 * 60_000;
 
 export type MigrationStatus = 'running' | 'success' | 'failed' | 'canceled';
 
@@ -223,6 +229,12 @@ async function run(job: RunningJob, service: ServiceRow, project: ProjectRow, pl
     job.migration.error = error;
     job.migration.finishedAt = now();
     bus.emit(channel(service.id), { type: 'done', status });
+    // Solo se borra si sigue siendo ESTA copia: una nueva sobre el mismo
+    // servicio habrá sustituido la entrada y no hay que tocarla.
+    const timer = setTimeout(() => {
+      if (jobs.get(service.id) === job) jobs.delete(service.id);
+    }, FINISHED_TTL_MS);
+    timer.unref();
   };
 
   try {

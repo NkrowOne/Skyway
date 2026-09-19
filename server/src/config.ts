@@ -23,6 +23,12 @@ function parseTrustProxy(raw: string | undefined): boolean | number | string[] {
   return value.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+/** Puerto de escucha. Un valor no numérico (`PORT=` mal puesto) daba `NaN` y `listen` fallaba con un error críptico. */
+function parsePort(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 && n < 65536 ? n : 4000;
+}
+
 function defaultBuildConcurrency(): number {
   const cpus = os.cpus()?.length || 2;
   // Techo de 4: más builds a la vez saturan disco y red antes que CPU, y
@@ -31,7 +37,7 @@ function defaultBuildConcurrency(): number {
 }
 
 export const config = {
-  port: Number(process.env.PORT || 4000),
+  port: parsePort(process.env.PORT),
   host: process.env.HOST || '0.0.0.0',
   dataDir,
   buildsDir: path.join(dataDir, 'builds'),
@@ -44,7 +50,13 @@ export const config = {
   // máquina holgada dos despliegues simultáneos ya no hacen cola detrás de uno.
   buildConcurrency: Math.max(1, Number(process.env.BUILD_CONCURRENCY) || defaultBuildConcurrency()),
   trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
-  version: '0.31.0',
+  /**
+   * Comprobación anti-CSRF del origen en las peticiones mutantes con cookie
+   * (ver `app.ts`). Activa por defecto; `CSRF_ORIGIN_CHECK=false` la desactiva
+   * para un proxy que no reenvía el Host real y no se puede corregir.
+   */
+  csrfOriginCheck: process.env.CSRF_ORIGIN_CHECK !== 'false',
+  version: '0.32.0',
 };
 
 export function ensureDataDirs(): void {

@@ -220,19 +220,30 @@ export default function SettingsPage() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  /*
+   * Cada campo se rellena solo cuando SU valor en el servidor cambia. Antes
+   * cualquier recarga de ajustes (la propia al guardar, o la del editor de
+   * dominios) pisaba los nueve campos a la vez, incluido lo que se estuviera
+   * escribiendo en otro.
+   */
+  const prevServerRef = useRef<Settings | null>(null);
   useEffect(() => {
-    if (settings.data) {
-      const s = settings.data.settings;
-      setRootDomain(s.rootDomain || '');
-      setLetsencryptEmail(s.letsencryptEmail || '');
-      setServerIp(s.serverIp || '');
-      setCpuPct(s.alertCpuPercent || '');
-      setMemPct(s.alertMemPercent || '');
-      setSustainMin(s.alertSustainMinutes || '');
-      setWebhookUrl(s.alertWebhookUrl || '');
-      setDiscordUrl(s.alertDiscordUrl || '');
-      setTelegramChat(s.alertTelegramChat || '');
-    }
+    if (!settings.data) return;
+    const s = settings.data.settings;
+    const prev = prevServerRef.current;
+    const sync = (key: Exclude<keyof Settings, 'hasGithubToken' | 'hasTelegramToken'>, set: (v: string) => void) => {
+      if (!prev || prev[key] !== s[key]) set(s[key] || '');
+    };
+    sync('rootDomain', setRootDomain);
+    sync('letsencryptEmail', setLetsencryptEmail);
+    sync('serverIp', setServerIp);
+    sync('alertCpuPercent', setCpuPct);
+    sync('alertMemPercent', setMemPct);
+    sync('alertSustainMinutes', setSustainMin);
+    sync('alertWebhookUrl', setWebhookUrl);
+    sync('alertDiscordUrl', setDiscordUrl);
+    sync('alertTelegramChat', setTelegramChat);
+    prevServerRef.current = s;
   }, [settings.data]);
 
   const [saved, flashSaved] = useFlash();

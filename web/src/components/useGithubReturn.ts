@@ -15,6 +15,10 @@ const RETURN_MESSAGE: Record<string, { text: string; tone: 'ok' | 'err' }> = {
   conectado: { text: 'Cuenta de GitHub conectada.', tone: 'ok' },
   estado_invalido: { text: 'El enlace de GitHub caducó o no era de esta sesión. Vuelve a intentarlo.', tone: 'err' },
   proyecto_no_existe: { text: 'El proyecto ya no existe.', tone: 'err' },
+  instalacion_ajena: {
+    text: 'Esa instalación de la App ya está conectada a otro proyecto o al servidor: solo un administrador puede compartirla.',
+    tone: 'err',
+  },
   error: { text: 'GitHub devolvió un error al completar la conexión.', tone: 'err' },
 };
 
@@ -23,6 +27,8 @@ export function useGithubReturnNotice(): void {
   const toast = useToast();
   const code = params.get('github');
 
+  // Solo actúa mientras `github` esté en la URL: al limpiarlo, `code` queda a
+  // null y las siguientes pasadas (por cambios de otros parámetros) no hacen nada.
   useEffect(() => {
     if (!code) return;
     const message = RETURN_MESSAGE[code];
@@ -30,5 +36,5 @@ export function useGithubReturnNotice(): void {
     const next = new URLSearchParams(params);
     next.delete('github');
     setParams(next, { replace: true });
-  }, [code]);
+  }, [code, params, setParams, toast]);
 }

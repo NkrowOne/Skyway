@@ -48,7 +48,13 @@ export default function PlansPage() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [toDelete, setToDelete] = useState<Plan | null>(null);
   const isEdit = !!draft?.id;
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['plans'] });
+  // Las cuentas heredan cuota, módulos y descuento del plan: al cambiarlo, sus
+  // medidores ya cargados en caché quedaban con los techos viejos.
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ['plans'] });
+    queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+    queryClient.invalidateQueries({ queryKey: ['workspace'] });
+  };
 
   const save = useMutation({
     mutationFn: () => {
@@ -92,7 +98,7 @@ export default function PlansPage() {
 
   return (
     <div className="mx-auto max-w-[1000px] px-4 py-7 sm:px-6 sm:py-10">
-      <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt">
+      <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt max-sm:-mt-2 max-sm:mb-2 max-sm:py-2">
         <ArrowLeft size={13} /> Cuentas y clientes
       </Link>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
@@ -205,7 +211,7 @@ export default function PlansPage() {
               <Field label="Usuarios"><input className="input tnum" type="number" inputMode="numeric" min={1} value={draft.max_members} onChange={(e) => setDraft({ ...draft, max_members: e.target.value })} /></Field>
               <Field label="Descuento (%)" hint="rebaja las facturas de sus cuentas"><input className="input tnum" type="number" inputMode="decimal" min={0} max={100} step="0.5" value={draft.discount_pct} onChange={(e) => setDraft({ ...draft, discount_pct: e.target.value })} /></Field>
             </div>
-            <Field label="Módulos incluidos">
+            <Field label="Módulos incluidos" group>
               <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
                 {(modules.data?.modules ?? []).map((m) => {
                   const on = draft.modules.includes(m.key);
@@ -228,10 +234,10 @@ export default function PlansPage() {
             </Field>
             <div className="flex flex-wrap items-center gap-4">
               <label className="flex cursor-pointer items-center gap-2 text-sm text-sub">
-                <input type="checkbox" checked={draft.is_default} onChange={(e) => setDraft({ ...draft, is_default: e.target.checked })} className="accent-acc" /> Plan por defecto
+                <input type="checkbox" checked={draft.is_default} onChange={(e) => setDraft({ ...draft, is_default: e.target.checked })} className="h-4 w-4 shrink-0 accent-acc" /> Plan por defecto
               </label>
               <label className="flex cursor-pointer items-center gap-2 text-sm text-sub">
-                <input type="checkbox" checked={draft.archived} onChange={(e) => setDraft({ ...draft, archived: e.target.checked })} className="accent-acc" /> Archivado
+                <input type="checkbox" checked={draft.archived} onChange={(e) => setDraft({ ...draft, archived: e.target.checked })} className="h-4 w-4 shrink-0 accent-acc" /> Archivado
               </label>
             </div>
             <div className="mt-1.5 flex justify-end gap-2">

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -96,6 +96,14 @@ const DIMS: {
   { key: 'maxMembers', alloc: 'members', label: 'Usuarios', icon: <Users2 size={14} />, fmt: (n) => String(n), step: 1, min: 1 },
 ];
 
+/**
+ * Id local de una línea de factura mientras se edita. Con la posición como
+ * clave, borrar una línea del medio reutilizaba los campos de la siguiente y el
+ * NumberInput enfocado se quedaba con el texto de la línea borrada.
+ */
+let lineSeq = 0;
+const lineUid = () => `l${Date.now().toString(36)}${++lineSeq}`;
+
 function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdmin: boolean; plans: Plan[]; onSaved: () => void }) {
   const toast = useToast();
   const ws = detail.workspace;
@@ -107,6 +115,12 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
   }, [ws]);
   const [rows, setRows] = useState<Record<QuotaKey, Row>>(initial);
   const [planId, setPlanId] = useState<string>(ws.plan_id ?? '');
+  // Tras guardar llega la cuenta recargada: el formulario se alinea con ella.
+  // Si no, `dirty` volvía a encenderse solo porque `initial` ya era lo nuevo.
+  useEffect(() => {
+    setRows(initial);
+    setPlanId(ws.plan_id ?? '');
+  }, [initial, ws.plan_id]);
 
   const dirty =
     planId !== (ws.plan_id ?? '') ||
@@ -195,7 +209,7 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
                         type="checkbox"
                         checked={row.inherit}
                         onChange={(e) => setRow(d.key, e.target.checked ? { inherit: true } : { inherit: false, value: effectiveNow })}
-                        className="accent-acc"
+                        className="h-4 w-4 shrink-0 accent-acc"
                       />
                       heredar del plan
                     </label>
@@ -475,7 +489,7 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
               <input className="input" type="password" value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
             </Field>
             {isAdmin && (
-              <Field label="Rol">
+              <Field label="Rol" group>
                 <div className="grid grid-cols-2 gap-2">
                   {(['member', 'owner'] as const).map((r) => (
                     <button
@@ -498,7 +512,7 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
                 <div className="flex max-h-44 flex-col gap-1 overflow-y-auto rounded-lg border border-line bg-bg p-2">
                   {detail.projects.map((p) => (
                     <label key={p.id} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface2">
-                      <input type="checkbox" checked={draft.projectIds.includes(p.id)} onChange={() => toggleProject(p.id)} className="accent-acc" />
+                      <input type="checkbox" checked={draft.projectIds.includes(p.id)} onChange={() => toggleProject(p.id)} className="h-4 w-4 shrink-0 accent-acc" />
                       <span className="min-w-0 flex-1 truncate text-sm">{p.name}</span>
                     </label>
                   ))}
@@ -711,9 +725,14 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
   // Generar, anular o borrar una factura mueve también los CARGOS PUNTUALES (pasan
   // a facturados o vuelven a pendientes), así que hay que refrescar las dos listas:
   // si no, «Servicios contratados» sigue ofreciendo eliminar un cargo ya facturado.
+  // Y toca la propia cuenta: generar o borrar mueve «facturado hasta» (que pinta
+  // el historial de plan) y cobrar levanta la morosidad, así que se recarga con
+  // sus avisos; si no, el aviso de impago seguía en rojo con la factura ya pagada.
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['ws-invoices', ws.id] });
     queryClient.invalidateQueries({ queryKey: ['ws-subs', ws.id] });
+    queryClient.invalidateQueries({ queryKey: ['ws-alerts', ws.id] });
+    onSaved();
   };
 
   const email = useMutation({
@@ -738,7 +757,13 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
   });
   const stripeLink = useMutation({
     mutationFn: (id: string) => api.post<{ url: string }>(`/invoices/${id}/stripe-link`),
-    onSuccess: (res) => { window.open(res.url, '_blank', 'noopener'); toast('Enlace de pago de Stripe creado', 'ok'); invalidate(); },
+    onSuccess: (res) => {
+      // Tras un await ya no hay gesto del usuario y el navegador suele bloquear
+      // la pestaña nueva: se intenta, y el aviso lleva el enlace por si no abre.
+      const win = window.open(res.url, '_blank', 'noopener');
+      toast('Enlace de pago de Stripe creado', 'ok', win ? undefined : { action: { label: 'Abrir enlace', onClick: () => window.open(res.url, '_blank', 'noopener') } });
+      invalidate();
+    },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
@@ -964,7 +989,7 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
   const toast = useToast();
   const [reason, setReason] = useState('');
   const [correct, setCorrect] = useState(false);
-  const [lines, setLines] = useState(invoice.lines.map((l) => ({ label: l.label, qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate, irpfRate: l.irpfRate ?? 0 })));
+  const [lines, setLines] = useState(invoice.lines.map((l) => ({ uid: lineUid(), label: l.label, qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate, irpfRate: l.irpfRate ?? 0 })));
 
   const rectify = useMutation({
     mutationFn: () => {
@@ -992,7 +1017,7 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
           <input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ej: Error en el importe, descuento acordado, pedido cancelado…" />
         </Field>
         <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={correct} onChange={(e) => setCorrect(e.target.checked)} />
+          <input type="checkbox" className="h-4 w-4 shrink-0 accent-acc" checked={correct} onChange={(e) => setCorrect(e.target.checked)} />
           Corregir importes (si no, se anula la factura por completo)
         </label>
         {correct && (
@@ -1003,7 +1028,7 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
               <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA%</span><span />
             </div>
             {lines.map((l, i) => (
-              <div key={i} className="grid min-w-[420px] grid-cols-[1fr_64px_84px_64px_36px] items-center gap-2">
+              <div key={l.uid} className="grid min-w-[420px] grid-cols-[1fr_64px_84px_64px_36px] items-center gap-2">
                 <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Concepto" />
                 <NumberInput className="input h-9 tnum text-right" inputMode="decimal" value={l.qty} min={0} onChange={(v) => setLine(i, { qty: v })} />
                 <NumberInput className="input h-9 tnum text-right" inputMode="decimal" value={l.unit} step="0.01" onChange={(v) => setLine(i, { unit: v })} />
@@ -1014,7 +1039,7 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
               </div>
             ))}
             </div>
-            <button onClick={() => setLines((ls) => [...ls, { label: '', qty: 1, unit: 0, taxRate: invoice.tax_rate, irpfRate: 0 }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
+            <button onClick={() => setLines((ls) => [...ls, { uid: lineUid(), label: '', qty: 1, unit: 0, taxRate: invoice.tax_rate, irpfRate: 0 }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
               + Añadir línea
             </button>
           </div>
@@ -1173,7 +1198,7 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
     // aplicara el tipo EFECTIVO de la cabecera a todas las líneas, retenciones
     // incluidas donde no las había.
     invoice.lines.map((l) => ({
-      label: l.label, kind: l.kind ?? 'custom', qty: l.qty, unit: l.unitCents / 100,
+      uid: lineUid(), label: l.label, kind: l.kind ?? 'custom', qty: l.qty, unit: l.unitCents / 100,
       taxRate: l.taxRate ?? invoice.tax_rate, irpfRate: l.irpfRate ?? 0, chargeId: l.chargeId,
     })),
   );
@@ -1210,7 +1235,7 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
           <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA %</span><span className="text-right">IRPF %</span><span className="text-right">Importe</span><span />
         </div>
         {lines.map((l, i) => (
-          <div key={i} className="grid min-w-[520px] grid-cols-[1fr_64px_86px_62px_62px_88px_36px] items-center gap-2">
+          <div key={l.uid} className="grid min-w-[520px] grid-cols-[1fr_64px_86px_62px_62px_88px_36px] items-center gap-2">
             <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Ej: Plan Pro (mensual)" />
             <NumberInput className="input h-9 tnum text-right" inputMode="decimal" value={l.qty} min={0} onChange={(v) => setLine(i, { qty: v })} />
             <NumberInput className="input h-9 tnum text-right" inputMode="decimal" value={l.unit} step="0.01" onChange={(v) => setLine(i, { unit: v })} />
@@ -1223,7 +1248,7 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
           </div>
         ))}
         </div>
-        <button onClick={() => setLines((ls) => [...ls, { label: '', kind: 'custom', qty: 1, unit: 0, taxRate: invoice.tax_rate, irpfRate: 0, chargeId: undefined }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
+        <button onClick={() => setLines((ls) => [...ls, { uid: lineUid(), label: '', kind: 'custom', qty: 1, unit: 0, taxRate: invoice.tax_rate, irpfRate: 0, chargeId: undefined }])} className="mt-1 self-start text-xs font-semibold text-acc-soft hover:underline">
           + Añadir línea
         </button>
         {/* La suma de las líneas es la BASE IMPONIBLE, no el total: rotularla
@@ -1506,7 +1531,9 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
   });
   const revoke = useMutation({
     mutationFn: (id: string) => api.del(`/workspaces/${workspaceId}/keys/${id}`),
-    onSuccess: () => { toast('Clave revocada', 'ok'); invalidate(); },
+    // El modal se cierra al terminar, no al pulsar: así se ve el estado de carga
+    // y, si falla, la clave sigue a la vista y se puede reintentar.
+    onSuccess: () => { toast('Clave revocada', 'ok'); setRevoking(null); invalidate(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
@@ -1578,10 +1605,7 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
       <ConfirmModal
         open={!!revoking}
         onClose={() => setRevoking(null)}
-        onConfirm={() => {
-          if (revoking) revoke.mutate(revoking.id);
-          setRevoking(null);
-        }}
+        onConfirm={() => revoking && revoke.mutate(revoking.id)}
         title="Revocar la clave"
         message={`«${revoking?.name ?? ''}» dejará de funcionar en el acto y no se puede recuperar. Las integraciones que la usen empezarán a recibir errores.`}
         confirmLabel="Revocar"
@@ -1640,9 +1664,19 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
   const unassigned = iaProducts.filter((p) => !assigned.has(p.id));
 
   const assign = useMutation({
-    mutationFn: () => Promise.all(unassigned.map((p) => api.post(`/workspaces/${workspaceId}/subscriptions`, { productId: p.id }))),
-    onSuccess: () => { toast('IA activada para este cliente', 'ok'); invalidate(); },
+    // allSettled: un producto que falle no debe esconder los que sí se han
+    // activado; antes un 4xx tiraba todo y la lista no se refrescaba.
+    mutationFn: async () => {
+      const results = await Promise.allSettled(unassigned.map((p) => api.post(`/workspaces/${workspaceId}/subscriptions`, { productId: p.id })));
+      const failed = results.filter((r) => r.status === 'rejected');
+      if (failed.length) {
+        const first = failed[0] as PromiseRejectedResult;
+        throw new Error(`${failed.length} de ${results.length} productos no se han podido activar: ${(first.reason as Error)?.message ?? ''}`);
+      }
+    },
+    onSuccess: () => toast('IA activada para este cliente', 'ok'),
     onError: (err: Error) => toast(err.message, 'err'),
+    onSettled: () => invalidate(),
   });
   const setPrice = useMutation({
     mutationFn: ({ subId, unitCents }: { subId: string; unitCents: number | null }) => api.patch(`/subscriptions/${subId}`, { unitCents }),
@@ -1655,7 +1689,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
     return (
       <section className="card p-5">
         <h2 className="text-base font-semibold">Precios de IA de este cliente</h2>
-        <p className="mt-2 text-xs text-subtle">Crea primero productos de IA en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>; después podrás activarlos aquí con un precio propio.</p>
+        <p className="mt-2 text-xs text-subtle">Crea primero productos de IA en el <Link to="/catalog" className="tap text-acc-soft hover:underline">catálogo</Link>; después podrás activarlos aquí con un precio propio.</p>
       </section>
     );
   }
@@ -1701,7 +1735,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
                   no se ofrece aquí (prometía un descuento que no se cobraría). */}
               {prod?.billing_model === 'tiered' ? (
                 <p className="shrink-0 text-xs text-subtle">
-                  Precio por tramos: se edita en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>.
+                  Precio por tramos: se edita en el <Link to="/catalog" className="tap text-acc-soft hover:underline">catálogo</Link>.
                 </p>
               ) : (
                 <div className="flex shrink-0 items-center gap-1.5">
@@ -1721,7 +1755,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
         })
       )}
       <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">
-        Vacío = <a href="/catalog" className="text-acc-soft hover:underline">precio del catálogo</a>; un precio propio es pactado y no recibe el descuento de la cuenta.
+        Vacío = <Link to="/catalog" className="tap text-acc-soft hover:underline">precio del catálogo</Link>; un precio propio es pactado y no recibe el descuento de la cuenta.
       </p>
     </section>
   );
@@ -1801,9 +1835,12 @@ export default function WorkspacePage() {
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
   const isAdmin = me.data?.user?.role === 'admin';
 
-  const detail = useQuery({ queryKey: ['workspace', id], queryFn: () => api.get<Detail>(`/workspaces/${id}`) });
+  const detail = useQuery({ queryKey: ['workspace', id], queryFn: () => api.get<Detail>(`/workspaces/${id}`), enabled: !!id });
   const modules = useQuery({ queryKey: ['modules'], queryFn: () => api.get<{ modules: ModuleDef[] }>('/modules'), staleTime: 300_000 });
-  const plans = useQuery({ queryKey: ['plans'], queryFn: () => api.get<{ plans: Plan[] }>('/plans'), enabled: isAdmin });
+  // `!!`: con `me` aún sin resolver `isAdmin` es undefined, y para react-query
+  // «undefined» es «activada»: un propietario pedía /plans y recibía un 403.
+  // Casi estáticos (los edita Planes, que invalida la clave): no hay que volver a pedirlos en cada visita.
+  const plans = useQuery({ queryKey: ['plans'], queryFn: () => api.get<{ plans: Plan[] }>('/plans'), enabled: !!isAdmin, staleTime: 60_000 });
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['workspace', id] });
@@ -1832,7 +1869,7 @@ export default function WorkspacePage() {
   if (detail.isError || !detail.data) {
     return (
       <div className="mx-auto max-w-[900px] px-4 py-8 sm:px-6">
-        <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt">
+        <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt max-sm:-mt-2 max-sm:mb-2 max-sm:py-2">
           <ArrowLeft size={13} /> Cuentas y clientes
         </Link>
         <div className="card">
@@ -1861,7 +1898,7 @@ export default function WorkspacePage() {
 
   return (
     <div className="mx-auto max-w-[900px] px-4 py-7 sm:px-6 sm:py-9">
-      <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt">
+      <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt max-sm:-mt-2 max-sm:mb-2 max-sm:py-2">
         <ArrowLeft size={13} /> Cuentas y clientes
       </Link>
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">

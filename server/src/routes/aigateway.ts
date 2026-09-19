@@ -36,7 +36,7 @@ import {
 } from '../aigateway';
 import { GEMINI_LIST_DATE, GEMINI_LIST_USD, getPricesConfig, getSyncState, setPricesConfig, syncAiModelPrices } from '../aiprices';
 import { WorkspaceApiKeyRow, WorkspaceRow } from '../types';
-import { randomToken } from '../util';
+import { randomToken, safeParse } from '../util';
 
 const GW_BODY_LIMIT = 8 * 1024 * 1024; // contexto largo/multimodal supera 1 MB
 
@@ -47,7 +47,7 @@ function publicKey(k: WorkspaceApiKeyRow) {
     prefix: k.prefix,
     provider: k.provider,
     status: k.status,
-    allowed_models: JSON.parse(k.allowed_models || '[]') as string[],
+    allowed_models: safeParse<string[]>(k.allowed_models, []),
     budget_cents_month: k.budget_cents_month,
     spend_cents_cycle: k.spend_cents_cycle,
     rate_limit_rpm: k.rate_limit_rpm,
@@ -113,7 +113,8 @@ type ProxyCtx = { key: WorkspaceApiKeyRow; workspace: WorkspaceRow };
  * (con el error ya enviado). Compartido por generateContent, streaming y OpenAI.
  */
 function preflight(ctx: ProxyCtx, model: string, reply: FastifyReply): string | null {
-  const keyAllowed = JSON.parse(ctx.key.allowed_models || '[]') as string[];
+  // Una allowlist ilegible se trata como vacía (= hereda la del operador), nunca como 500.
+  const keyAllowed = safeParse<string[]>(ctx.key.allowed_models, []);
   if (!isModelAllowed(model, keyAllowed)) {
     reply.code(403).send({ error: { code: 403, message: `Modelo no permitido para esta clave: ${model}.` } });
     return null;
@@ -356,7 +357,7 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
     // Lista de modelos que esta clave puede usar (allowlist del operador ∩ de la clave).
     proxy.get('/gw/v1beta/models', async (req) => {
       const ctx = (req as any).proxyCtx as ProxyCtx;
-      const keyAllowed = JSON.parse(ctx.key.allowed_models || '[]') as string[];
+      const keyAllowed = safeParse<string[]>(ctx.key.allowed_models, []);
       const models = getAllowedModels().filter((m) => keyAllowed.length === 0 || keyAllowed.includes(m));
       return { models: models.map((name) => ({ name: `models/${name}` })) };
     });

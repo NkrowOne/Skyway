@@ -2,8 +2,8 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from 'react-dom';
 import {
   ArrowDown,
-  ArrowDownToLine,
   ArrowUpToLine,
+  ChevronsDown,
   Check,
   Clock,
   Copy,
@@ -27,6 +27,14 @@ export type TimestampFormat = 'time' | 'datetime' | 'utc' | 'relative';
 
 /** Formateador de miles reutilizable (locale fija). */
 const NF = new Intl.NumberFormat('es');
+
+/*
+ * Formateadores de hora fijos. `toLocaleTimeString` construye uno nuevo en
+ * cada llamada y aquí se llama una vez por línea visible cada vez que entra
+ * una ráfaga: con quince mil líneas en vivo eran quince mil instancias por frame.
+ */
+const TIME_FMT = new Intl.DateTimeFormat('es-ES', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const DATETIME_FMT = new Intl.DateTimeFormat('es-ES', { day: '2-digit', month: '2-digit' });
 
 /** Filas agrupadas en tramos para virtualizar por bloque (ver index.css). */
 const CHUNK = 48;
@@ -137,20 +145,10 @@ function formatTimestamp(ts: number | null, iso: string | null, format: Timestam
   }
   if (format === 'datetime' && ts) {
     const d = new Date(ts);
-    const day = String(d.getDate()).padStart(2, '0');
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const time = d.toLocaleTimeString('es-ES', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    return `${day}/${month} ${time}`;
+    return `${DATETIME_FMT.format(d)} ${TIME_FMT.format(d)}`;
   }
   // format === 'time' (default)
-  if (ts) {
-    return new Date(ts).toLocaleTimeString('es-ES', {
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  }
+  if (ts) return TIME_FMT.format(new Date(ts));
   return iso ? iso.slice(0, 8) : '';
 }
 
@@ -194,7 +192,6 @@ const LogRow = memo(function LogRow({
   text,
   tsString,
   tsTooltip,
-  stage,
   lvl,
   wrap,
   gutter,
@@ -205,7 +202,6 @@ const LogRow = memo(function LogRow({
   text: string;
   tsString: string;
   tsTooltip?: string;
-  stage: LogStage;
   lvl: Level;
   wrap: boolean;
   gutter: boolean;
@@ -291,8 +287,11 @@ function ToolButton({
 /**
  * Consola de logs profesional estilo Railway con scroll al fondo garantizado,
  * soporte de marcas de tiempo completas y herramientas avanzadas.
+ *
+ * Va en `memo`: la pestaña que lo aloja se re-renderiza con cada sondeo de
+ * despliegues aunque no haya líneas nuevas, y el visor arrastra miles de filas.
  */
-export default function LogViewer({
+function LogViewerImpl({
   lines,
   className,
   toolbar = false,
@@ -304,12 +303,9 @@ export default function LogViewer({
   onLoadOlder,
   canLoadOlder = false,
   loadingOlder = false,
-  reachedStart = false,
   onDownload,
   onFollowChange,
-  tailAnchor = false,
   stageFilter: controlledStageFilter,
-  onStageFilterChange,
   defaultStage = 'all',
   extraHeaderLeft,
   extraHeaderRight,
@@ -328,12 +324,9 @@ export default function LogViewer({
   onLoadOlder?: () => void;
   canLoadOlder?: boolean;
   loadingOlder?: boolean;
-  reachedStart?: boolean;
   onDownload?: () => void;
   onFollowChange?: (follow: boolean) => void;
-  tailAnchor?: boolean;
   stageFilter?: LogStage;
-  onStageFilterChange?: (stage: LogStage) => void;
   defaultStage?: LogStage;
   extraHeaderLeft?: React.ReactNode;
   extraHeaderRight?: React.ReactNode;
@@ -371,6 +364,9 @@ export default function LogViewer({
   const [tsFormat, setTsFormat] = useState<TimestampFormat>('time');
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Se limpia al desmontar: el temporizador tocaba estado de un visor ya cerrado.
+  const copiedTimer = useRef<number>();
+  useEffect(() => () => window.clearTimeout(copiedTimer.current), []);
   const [maximized, setMaximized] = useState(false);
   const [clearedUntil, setClearedUntil] = useState<number>(0);
 
@@ -630,10 +626,16 @@ export default function LogViewer({
   };
 
   const copyAll = () => {
-    navigator.clipboard.writeText(plainText(showTs)).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1400);
-    });
+    navigator.clipboard
+      .writeText(plainText(showTs))
+      .then(() => {
+        setCopied(true);
+        window.clearTimeout(copiedTimer.current);
+        copiedTimer.current = window.setTimeout(() => setCopied(false), 1400);
+      })
+      // Sin HTTPS o con el permiso denegado el portapapeles rechaza: antes era
+      // un rechazo sin capturar y el check de «copiado» simplemente no salía.
+      .catch(() => setCopied(false));
   };
 
   const download = () => {
@@ -643,7 +645,8 @@ export default function LogViewer({
     a.href = url;
     a.download = downloadName ?? `logs-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
     a.click();
-    URL.revokeObjectURL(url);
+    // En diferido: revocar en el acto puede abortar la descarga en Firefox.
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
   };
 
   const clearBuffer = () => {
@@ -659,7 +662,7 @@ export default function LogViewer({
       onClick={() => setLevel(key)}
       aria-pressed={level === key}
       className={cx(
-        'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors duration-150',
+        'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors duration-150 max-sm:h-9',
         level === key
           ? tone === 'err'
             ? 'bg-err/[.18] text-err font-semibold'
@@ -709,7 +712,7 @@ export default function LogViewer({
                 />
               )}
               <span className="tnum font-medium text-txt/80">{NF.format(rows.length)}</span>
-              <span className="hidden sm:inline">líneas</span>
+              <span>líneas</span>
               {replicas > 1 && (
                 <span className="hidden text-subtle sm:inline" title="Las líneas de cada réplica llevan su prefijo [rN]">
                   · {replicas} réplicas
@@ -758,13 +761,14 @@ export default function LogViewer({
               {filter && (
                 <div className="flex items-center gap-1">
                   <span className="text-micro text-subtle tabular-nums font-mono">
-                    {visible.length} match{visible.length === 1 ? '' : 'es'}
+                    {NF.format(visible.length)} {visible.length === 1 ? 'coincidencia' : 'coincidencias'}
                   </span>
                   <button
                     type="button"
                     onClick={() => setFilter('')}
                     className="press shrink-0 text-subtle hover:text-txt"
                     title="Limpiar filtro"
+                    aria-label="Limpiar filtro"
                   >
                     <X size={12} />
                   </button>
@@ -792,8 +796,9 @@ export default function LogViewer({
               className="press flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt sm:h-8"
               title="Ir al final del registro"
             >
-              <ArrowDownToLine size={14} aria-hidden />
-              <span className="hidden sm:inline">Al final</span>
+              {/* Distinto del icono de descargar: a 14px eran dos flechas iguales. */}
+              <ChevronsDown size={14} aria-hidden />
+              <span>Al final</span>
             </button>
             <button
               type="button"
@@ -803,7 +808,7 @@ export default function LogViewer({
               title={onDownload ? 'Descargar el log completo' : 'Descargar el log'}
             >
               <Download size={14} aria-hidden />
-              <span className="hidden sm:inline">Descargar</span>
+              <span>Descargar</span>
             </button>
 
             <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-line" />
@@ -820,7 +825,7 @@ export default function LogViewer({
                 title="Cómo se ve el registro"
               >
                 <SlidersHorizontal size={14} aria-hidden />
-                <span className="hidden sm:inline">Vista</span>
+                <span>Vista</span>
               </button>
               <Menu open={viewMenuOpen} onClose={() => setViewMenuOpen(false)} align="right" className="w-[248px]">
                 <div>
@@ -918,7 +923,9 @@ export default function LogViewer({
             ) : null}
           </span>
 
-          {follow && (
+          {/* Con un aviso del servidor («Docker no está disponible») no se
+              está en vivo de nada: las dos cosas a la vez se contradecían. */}
+          {follow && !statusNote && (
             <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-ok">
               <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-ok" />
               En vivo
@@ -980,7 +987,6 @@ export default function LogViewer({
                     text={v.row.cleanText}
                     tsString={v.tsString}
                     tsTooltip={v.tsTooltip}
-                    stage={v.row.stage}
                     lvl={v.row.lvl}
                     wrap={wrap}
                     gutter={gutter}
@@ -1037,3 +1043,6 @@ export default function LogViewer({
 
   return shell;
 }
+
+const LogViewer = memo(LogViewerImpl);
+export default LogViewer;

@@ -1,8 +1,8 @@
 import fs from 'fs';
 import { config } from './config';
 import { listProjects, listServices } from './db';
-import { docker } from './docker/client';
-import { listServiceContainers, volumeName } from './docker/containers';
+import { docker, dockerQuery } from './docker/client';
+import { volumeName } from './docker/containers';
 import { ProjectRow, ServiceRow } from './types';
 
 /** Espacio total/libre del sistema de archivos donde vive DATA_DIR. */
@@ -32,6 +32,8 @@ interface DiskSnapshot {
 
 let cached: DiskSnapshot | null = null;
 let inFlight: Promise<DiskSnapshot> | null = null;
+/** Refresco encadenado detrás del que está en vuelo (ver `refresh(force)`). */
+let queued: Promise<DiskSnapshot> | null = null;
 const CACHE_MS = 60_000;
 
 /** Nombres de todos los volúmenes que pertenecen a un servicio. */
@@ -43,21 +45,56 @@ function serviceVolumeNames(project: ProjectRow, service: ServiceRow): string[] 
 }
 
 /**
- * Calcula el uso de disco de todos los servicios en una sola pasada:
- * `docker system df -v` para volúmenes + inspect con tamaños por contenedor.
- * Es una operación costosa, así que se cachea 60 s y se comparte entre peticiones.
+ * Si la ruta del log json-file es legible desde aquí. Solo lo es con Skyway
+ * corriendo en el host o con /var/lib/docker montado; en el caso habitual (en
+ * su contenedor) no lo es, y la primera vez que se comprueba se deja de pedir
+ * el `inspect` por contenedor que solo servía para eso.
+ */
+let logPathReadable: boolean | null = null;
+
+async function containerLogBytes(id: string): Promise<number | null> {
+  if (logPathReadable === false) return null;
+  try {
+    const info: any = await dockerQuery.getContainer(id).inspect();
+    const logPath = info?.LogPath;
+    if (!logPath) return null;
+    const st = await fs.promises.stat(logPath);
+    logPathReadable = true;
+    return st.size;
+  } catch (err: any) {
+    // Inaccesible desde el contenedor de Skyway: no se vuelve a intentar. Un
+    // 404 de Docker (contenedor eliminado a mitad) no dice nada de la ruta.
+    if (err?.code === 'ENOENT' || err?.code === 'EACCES') logPathReadable = false;
+    return null;
+  }
+}
+
+/**
+ * Calcula el uso de disco de todos los servicios en una sola pasada. Un solo
+ * `docker system df` trae el tamaño de cada volumen Y la capa de escritura
+ * (`SizeRw`) de cada contenedor con sus etiquetas; antes se hacía además un
+ * `inspect({size:true})` por contenedor, que obliga al daemon a medir la capa
+ * uno a uno. Es una operación costosa, así que se cachea 60 s y se comparte.
  */
 async function collect(): Promise<DiskSnapshot> {
   const services = new Map<string, ServiceDiskUsage>();
 
   let volumeSizes = new Map<string, number>();
+  const containersByService = new Map<string, { id: string; sizeRw: number }[]>();
   try {
     const df: any = await docker.df();
     volumeSizes = new Map(
       ((df.Volumes ?? []) as any[]).map((v) => [v.Name as string, Math.max(0, v.UsageData?.Size ?? 0)]),
     );
+    for (const c of (df.Containers ?? []) as any[]) {
+      const serviceId = c.Labels?.['skyway.service'];
+      if (typeof serviceId !== 'string' || !serviceId) continue;
+      const list = containersByService.get(serviceId) ?? [];
+      list.push({ id: c.Id as string, sizeRw: Math.max(0, c.SizeRw ?? 0) });
+      containersByService.set(serviceId, list);
+    }
   } catch {
-    // sin df seguimos con los tamaños de contenedor
+    // sin df no hay tamaños: se devuelven ceros y se reintenta en el siguiente ciclo
   }
 
   for (const project of listProjects()) {
@@ -77,30 +114,10 @@ async function collect(): Promise<DiskSnapshot> {
         if (size !== undefined) entry.volumes.push({ name, sizeBytes: size });
       }
 
-      try {
-        for (const c of await listServiceContainers(service.id)) {
-          // try por contenedor: si uno desaparece a mitad (swap de deploy),
-          // las demás réplicas del servicio se siguen midiendo.
-          try {
-            const info: any = await docker.getContainer(c.id).inspect({ size: true } as any);
-            entry.containerBytes += info?.SizeRw ?? 0;
-            // El log json-file solo es medible si el path del host es accesible
-            // (Skyway corriendo en el host o con /var/lib/docker montado).
-            const logPath = info?.LogPath;
-            if (logPath) {
-              try {
-                const st = fs.statSync(logPath);
-                entry.logBytes = (entry.logBytes ?? 0) + st.size;
-              } catch {
-                /* inaccesible desde el contenedor de Skyway */
-              }
-            }
-          } catch {
-            /* contenedor eliminado entre el listado y el inspect */
-          }
-        }
-      } catch {
-        /* listado no disponible */
+      for (const c of containersByService.get(service.id) ?? []) {
+        entry.containerBytes += c.sizeRw;
+        const logBytes = await containerLogBytes(c.id);
+        if (logBytes !== null) entry.logBytes = (entry.logBytes ?? 0) + logBytes;
       }
 
       entry.totalBytes =
@@ -112,18 +129,32 @@ async function collect(): Promise<DiskSnapshot> {
   return { ts: Date.now(), services };
 }
 
-function refresh(): Promise<DiskSnapshot> {
-  if (!inFlight) {
-    inFlight = collect()
-      .then((snap) => {
-        cached = snap;
-        return snap;
-      })
-      .finally(() => {
-        inFlight = null;
-      });
+function start(): Promise<DiskSnapshot> {
+  const work = collect()
+    .then((snap) => {
+      cached = snap;
+      return snap;
+    })
+    .finally(() => {
+      if (inFlight === work) inFlight = null;
+    });
+  inFlight = work;
+  return work;
+}
+
+function refresh(force = false): Promise<DiskSnapshot> {
+  if (!inFlight) return start();
+  if (!force) return inFlight;
+  // Forzar con un refresco en vuelo: ese empezó ANTES de la acción que motiva
+  // el force (un borrado, una restauración) y puede no reflejarla. Se encadena
+  // uno detrás; varios force seguidos comparten el mismo encadenado.
+  if (!queued) {
+    const run = () => start();
+    queued = inFlight.then(run, run).finally(() => {
+      queued = null;
+    });
   }
-  return inFlight;
+  return queued;
 }
 
 /**
@@ -136,5 +167,5 @@ export async function diskUsageByService(force = false): Promise<Map<string, Ser
     if (Date.now() - cached.ts >= CACHE_MS) void refresh().catch(() => {});
     return cached.services;
   }
-  return (await refresh()).services;
+  return (await refresh(force)).services;
 }

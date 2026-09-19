@@ -85,7 +85,7 @@ export function UsageBars({
           <span className="tnum text-xs text-subtle">total {format(total)}</span>
           <button
             onClick={() => setTable((t) => !t)}
-            className={cx('press flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro transition-colors', table ? 'bg-surface2 text-txt' : 'text-subtle hover:text-txt')}
+            className={cx('press tap flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro transition-colors', table ? 'bg-surface2 text-txt' : 'text-subtle hover:text-txt')}
             aria-pressed={table}
             title={table ? 'Ver gráfica' : 'Ver como tabla'}
           >
@@ -208,7 +208,7 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
           </span>
           <button
             onClick={() => setTable((t) => !t)}
-            className={cx('press flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro transition-colors', table ? 'bg-surface2 text-txt' : 'text-subtle hover:text-txt')}
+            className={cx('press tap flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro transition-colors', table ? 'bg-surface2 text-txt' : 'text-subtle hover:text-txt')}
             aria-pressed={table}
             title={table ? 'Ver gráfica' : 'Ver como tabla'}
           >

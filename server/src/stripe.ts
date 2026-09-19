@@ -83,6 +83,36 @@ export async function createStripeCheckout(secretKey: string, opts: StripeChecko
   return { id: body.id, url: body.url };
 }
 
+/** Estado de una Checkout Session: `open` admite pago; `complete` ya se pagó; `expired` caducó. */
+export type StripeCheckoutStatus = 'open' | 'complete' | 'expired';
+
+/**
+ * Consulta una Checkout Session existente. Sirve para no reutilizar un enlace
+ * caducado: Stripe cierra las sesiones a las 24 h y un enlace guardado más tiempo
+ * lleva a una página de error. El id va en la ruta ya codificado.
+ */
+export async function retrieveStripeCheckout(secretKey: string, sessionId: string): Promise<{ id: string; status: StripeCheckoutStatus; url: string | null }> {
+  if (!secretKey) throw new StripeError('No hay ninguna clave secreta de Stripe configurada.');
+  if (!/^[A-Za-z0-9_]+$/.test(sessionId)) throw new StripeError('Identificador de sesión de Stripe no válido.');
+  let res: Response;
+  try {
+    res = await fetch(`${STRIPE_API}/checkout/sessions/${encodeURIComponent(sessionId)}`, {
+      headers: { Authorization: `Bearer ${secretKey}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (err: any) {
+    throw new StripeError(`No se pudo conectar con Stripe: ${err?.message || 'error de red'}`);
+  }
+  const body: any = await res.json().catch(() => ({}));
+  if (res.status === 401) throw new StripeError('Stripe rechazó la clave secreta (401).');
+  // Una sesión que Stripe ya no conoce (borrada, otra cuenta) se trata como caducada:
+  // el llamante crea una nueva en vez de devolver un enlace que no lleva a nada.
+  if (res.status === 404) return { id: sessionId, status: 'expired', url: null };
+  if (!res.ok) throw new StripeError(body?.error?.message || `Stripe respondió HTTP ${res.status}`);
+  const status: StripeCheckoutStatus = body?.status === 'open' ? 'open' : body?.status === 'complete' ? 'complete' : 'expired';
+  return { id: String(body?.id ?? sessionId), status, url: typeof body?.url === 'string' ? body.url : null };
+}
+
 /**
  * Verifica la firma de un webhook de Stripe (cabecera `Stripe-Signature`, formato
  * `t=<ts>,v1=<hmac>`): HMAC-SHA256 de `${t}.${rawBody}` con el secreto del

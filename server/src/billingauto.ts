@@ -282,8 +282,16 @@ export function billingCycleTick(now: Date): void {
           const issued = issueInvoice(inv.id) ?? inv;
           auditSystem('invoice_auto_issued', `${ws.name} · ${issued.number ?? issued.id} · ${money} (emitida automáticamente)`);
           // Envío al cliente, si está activado. Best-effort: el fallo se audita y
-          // alerta dentro de sendInvoiceEmail, y nunca deshace la emisión.
-          if (auto.emailOnIssue) void sendInvoiceEmail(issued);
+          // alerta dentro de sendInvoiceEmail, y nunca deshace la emisión. El
+          // `.catch` cubre un rechazo inesperado (fuera de su try): sin él sería
+          // una promesa rechazada sin capturar, y aquí no hay nadie mirando.
+          if (auto.emailOnIssue) {
+            void sendInvoiceEmail(issued).catch((err: unknown) => {
+              const motivo = (err instanceof Error ? err.message : String(err)).slice(0, 200);
+              console.warn(`[facturación] fallo inesperado enviando la factura ${issued.number ?? issued.id}: ${motivo}`);
+              auditSystem('invoice_email_failed', `${issued.number ?? issued.id}: ${motivo}`);
+            });
+          }
           fireWorkspaceAlert({
             severity: 'info',
             workspaceId: ws.id,

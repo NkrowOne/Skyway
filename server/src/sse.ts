@@ -4,10 +4,16 @@ export interface SseChannel {
   /**
    * `id` opcional: el navegador lo devuelve en `Last-Event-ID` al reconectar
    * solo, y la ruta puede reanudar desde ahí en vez de empezar de cero.
+   *
+   * Devuelve lo que `write` del socket: false si el búfer de salida está lleno
+   * (el navegador no da abasto). Quien reenvía un stream debe entonces frenar
+   * su fuente y esperar a `onDrain`, en vez de acumular en memoria sin tope.
    */
-  send: (event: string, data: unknown, id?: string | null) => void;
+  send: (event: string, data: unknown, id?: string | null) => boolean;
   close: () => void;
   onClose: (fn: () => void) => void;
+  /** Avisa UNA vez cuando el socket vuelve a admitir escrituras. */
+  onDrain: (fn: () => void) => void;
   closed: boolean;
 }
 
@@ -61,10 +67,16 @@ export function sseInit(reply: FastifyReply): SseChannel {
   const channel: SseChannel = {
     closed: false,
     send(event, data, id) {
-      if (channel.closed) return;
+      // Cerrado: no hay nada que escribir ni un 'drain' que vaya a llegar, así
+      // que no se le pide a nadie que espere.
+      if (channel.closed) return true;
       // El id no puede llevar saltos de línea (rompería el protocolo).
       const idLine = id ? `id: ${String(id).replace(/[\r\n]+/g, ' ')}\n` : '';
-      raw.write(`${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      return raw.write(`${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    },
+    onDrain(fn) {
+      if (channel.closed) return;
+      raw.once('drain', fn);
     },
     close() {
       if (channel.closed) return;
@@ -83,6 +95,9 @@ export function sseInit(reply: FastifyReply): SseChannel {
   };
 
   raw.on('close', cleanup);
+  // Sin oyente, un error de escritura en la respuesta (el navegador cortó a
+  // medias) se emite como excepción no capturada y apaga el proceso entero.
+  raw.on('error', cleanup);
 
   open.add(channel);
   return channel;

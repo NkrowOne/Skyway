@@ -26,7 +26,7 @@ export function useFlash(ms = 1600): [boolean, () => void] {
   return [on, flash];
 }
 
-export function Button({ variant = 'primary', size = 'md', loading, success, className, children, disabled, ...rest }: ButtonProps) {
+export function Button({ variant = 'primary', size = 'md', loading, success, className, children, disabled, type = 'button', ...rest }: ButtonProps) {
   const base =
     'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg font-medium transition-[background-color,border-color,color,filter] duration-[--dur-1] ease-out disabled:opacity-45 disabled:cursor-not-allowed';
   const variants = {
@@ -47,7 +47,10 @@ export function Button({ variant = 'primary', size = 'md', loading, success, cla
     lg: 'h-11 px-4 text-base font-semibold',
   };
   return (
-    <button className={cx(base, variants[variant], sizes[size], className)} disabled={disabled || loading} {...rest}>
+    // `type="button"` por defecto: dentro de un <form>, un botón sin tipo
+    // envía el formulario, y bastaba olvidarlo una vez para que «Cancelar»
+    // guardara. Los de envío lo declaran a mano.
+    <button type={type} className={cx(base, variants[variant], sizes[size], className)} disabled={disabled || loading} {...rest}>
       {loading ? <Loader2 size={14} className="animate-spin" /> : success ? <Check size={14} className="pop-in text-current" /> : null}
       {children}
     </button>
@@ -148,7 +151,7 @@ export function Chip({
   );
   if (onClick) {
     return (
-      <button type="button" onClick={onClick} title={title} aria-label={title} aria-pressed={active} className={shape}>
+      <button type="button" onClick={onClick} title={title} aria-pressed={active} className={shape}>
         {body}
       </button>
     );
@@ -922,6 +925,8 @@ export function Tabs({
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const [bar, setBar] = useState<{ left: number; width: number } | null>(null);
+  // Firma estable del conjunto de pestañas: la barra se recoloca si cambian.
+  const tabKeys = tabs.map((t) => t.key).join('|');
 
   useLayoutEffect(() => {
     const c = listRef.current;
@@ -934,7 +939,7 @@ export function Tabs({
     const right = left + el.offsetWidth;
     if (left < c.scrollLeft) c.scrollTo({ left: Math.max(0, left - 12), behavior: 'smooth' });
     else if (right > c.scrollLeft + c.clientWidth) c.scrollTo({ left: right - c.clientWidth + 12, behavior: 'smooth' });
-  }, [active, tabs.map((t) => t.key).join('|')]);
+  }, [active, tabKeys]);
 
   return (
     <div
@@ -981,7 +986,10 @@ export function Spinner({ label }: { label?: string }) {
 
 // ---------- CopyButton ----------
 export function CopyButton({ value, className, title = 'Copiar' }: { value: string; className?: string; title?: string }) {
-  const [copied, setCopied] = useState(false);
+  // useFlash limpia su temporizador al desmontar: el setTimeout suelto de
+  // antes tocaba estado de un componente ya desmontado al cambiar de página.
+  const [copied, flash] = useFlash(1200);
+  const toast = useToast();
   return (
     <button
       type="button"
@@ -989,10 +997,12 @@ export function CopyButton({ value, className, title = 'Copiar' }: { value: stri
       className={cx('press rounded-md p-1 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5', className)}
       title={title} aria-label={title}
       onClick={() => {
-        navigator.clipboard.writeText(value).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1200);
-        });
+        navigator.clipboard
+          .writeText(value)
+          .then(flash)
+          // Sin HTTPS o con el permiso denegado el portapapeles rechaza: antes
+          // era un rechazo sin capturar y el usuario no sabía que no se copió.
+          .catch(() => toast('No se ha podido copiar al portapapeles', 'err'));
       }}
     >
       {copied ? <Check size={13} className="pop-in text-ok" /> : <Copy size={13} />}

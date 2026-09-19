@@ -50,11 +50,54 @@ import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '.
 import { triggerDeploy } from '../deploy/deployer';
 import { getTemplate, templateList } from '../templates';
 import { availableReferences, resolveServiceEnv } from '../variables';
-import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from '../types';
+import { DatabaseConfig, GitConfig, ImageConfig, ServiceConfig, ServiceRow } from '../types';
 import { randomToken, slugify } from '../util';
 
 /** Antigüedad tolerada de la foto de Docker en las lecturas del panel. */
 const PANEL_MAX_AGE_MS = 4000;
+
+/** Con qué se tapan los valores de los build args en las respuestas de lectura. */
+const VALOR_TAPADO = '•••';
+
+/**
+ * Config con los valores de `buildArgs` tapados (se conservan las claves, para
+ * que se vea QUÉ hay). Un `--build-arg` puede llevar un token de registro o de
+ * paquetes privados, y nada del panel los lee: solo se escriben.
+ */
+export function maskBuildArgs<T extends ServiceConfig>(cfg: T): T {
+  const args = (cfg as { buildArgs?: unknown }).buildArgs;
+  if (!args || typeof args !== 'object') return cfg;
+  return {
+    ...cfg,
+    buildArgs: Object.fromEntries(Object.keys(args as Record<string, unknown>).map((k) => [k, VALOR_TAPADO])),
+  };
+}
+
+/**
+ * Config de un servicio tal y como viaja en los LISTADOS (proyectos, panel):
+ * sin el secreto del webhook y con los build args tapados. El detalle del
+ * servicio (`GET /api/services/:id`) sí devuelve el secreto, porque Ajustes lo
+ * enseña para copiarlo a GitHub; el listado de proyectos, que se sondea cada
+ * 8 s y se comparte con todo el que ve el proyecto, no tiene por qué llevarlo.
+ */
+export function publicServiceConfig<T extends ServiceConfig>(cfg: T): T {
+  const out = { ...maskBuildArgs(cfg) } as T & { webhookSecret?: string };
+  delete out.webhookSecret;
+  return out;
+}
+
+/**
+ * Nombre de host válido (RFC 1123), en minúsculas. Los dominios acaban dentro
+ * de la regla `Host(\`…\`)` de Traefik, que es único para todo el servidor: un
+ * texto libre con una comilla invertida o un paréntesis podía redactar una
+ * regla que capturara el tráfico de los dominios de otros clientes.
+ */
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+export const domainSchema = z
+  .string()
+  .trim()
+  .transform((d) => d.toLowerCase())
+  .refine((d) => HOSTNAME.test(d), 'Dominio no válido: solo letras, números, guiones y puntos');
 
 const createGitSchema = z.object({
   type: z.literal('git'),
@@ -72,7 +115,7 @@ const createGitSchema = z.object({
   // valor por defecto lo borraba. Se sigue guardando 3000; lo que se guarda
   // además es de dónde salió.
   port: z.coerce.number().int().min(1).max(65535).optional(),
-  domains: z.array(z.string().trim().min(1)).default([]),
+  domains: z.array(domainSchema).default([]),
   autoDeploy: z.boolean().default(true),
 });
 
@@ -89,7 +132,7 @@ const createImageSchema = z.object({
   image: z.string().trim().min(1, 'Imagen requerida'),
   port: z.coerce.number().int().min(1).max(65535).optional(),
   startCmd: z.string().trim().optional(),
-  domains: z.array(z.string().trim().min(1)).default([]),
+  domains: z.array(domainSchema).default([]),
 });
 
 const patchSchema = z.object({
@@ -108,7 +151,7 @@ const patchSchema = z.object({
       // nullable: los servicios de imagen sin puerto interno (workers) envían
       // null; sin esto, NINGÚN ajuste suyo se podía guardar (Number(null)=0).
       port: z.coerce.number().int().min(1).max(65535).nullable().optional(),
-      domains: z.array(z.string().trim().min(1)).optional(),
+      domains: z.array(domainSchema).optional(),
       hostPort: z.coerce.number().int().min(1).max(65535).nullable().optional(),
       cpus: z.coerce.number().min(0.1).max(64).nullable().optional(),
       memoryMb: z.coerce.number().int().min(32).max(1024 * 512).nullable().optional(),
@@ -269,7 +312,8 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const docker = snap.docker;
     const runtime = runtimeIn(snap, id);
     return {
-      service: found.service,
+      // El secreto del webhook sí va (Ajustes lo copia); los build args, tapados.
+      service: { ...found.service, config: maskBuildArgs(found.service.config) },
       project: found.project,
       runtime,
       latestDeployment: latestDeployment(id) ?? null,
@@ -316,6 +360,19 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         // 'auto' es la ausencia de elección: se guarda como tal, y así volver a
         // «Automático» no cuenta como cambio frente a un servicio que nunca lo tocó.
         if (key === 'builder' && value === 'auto') normalized = undefined;
+
+        // Las lecturas devuelven los build args tapados (`•••`): un cliente de la
+        // API que reenvíe la config tal cual conserva el valor que ya tenía en vez
+        // de guardar la marca como si fuera el secreto.
+        if (key === 'buildArgs' && value && typeof value === 'object') {
+          const old: Record<string, string> = oldCfg.buildArgs ?? {};
+          const merged: Record<string, string> = {};
+          for (const [k, v] of Object.entries(value as Record<string, string>)) {
+            if (v !== VALOR_TAPADO) merged[k] = v;
+            else if (old[k] !== undefined) merged[k] = old[k];
+          }
+          normalized = Object.keys(merged).length > 0 ? merged : undefined;
+        }
 
         // Los volúmenes llegan como rutas; se conserva el nombre del volumen
         // Docker existente para no perder los datos al reordenar/añadir.
@@ -422,11 +479,25 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const name = body.name ?? found.service.name;
     updateService(id, name, newCfg);
 
-    if (resourcesChanged && (await dockerAvailable())) {
+    if (resourcesChanged && !(await dockerAvailable())) {
+      // Sin Docker no se pueden aplicar en caliente: que el panel pida redesplegar
+      // en vez de dar por aplicados unos límites que el contenedor no tiene.
+      needsRedeploy = true;
+    } else if (resourcesChanged) {
       try {
         const updated = getService(id)!;
-        for (let i = 1; i <= configuredReplicas(updated); i++) {
-          await updateResources(replicaName(found.project, found.service, i), newCfg.cpus, newCfg.memoryMb);
+        // Se recorren las réplicas de ANTES y de AHORA: al bajar el número de
+        // réplicas en la misma edición, las sobrantes siguen vivas hasta el
+        // redespliegue y se quedarían con los límites viejos.
+        const total = Math.max(configuredReplicas(found.service), configuredReplicas(updated));
+        for (let i = 1; i <= total; i++) {
+          try {
+            await updateResources(replicaName(found.project, found.service, i), newCfg.cpus, newCfg.memoryMb);
+          } catch (err: any) {
+            // Una réplica que aún no existe (nunca desplegada, o recién ampliada)
+            // no es un fallo: tomará los límites al crearse.
+            if (err?.statusCode !== 404) throw err;
+          }
         }
       } catch {
         needsRedeploy = true;
@@ -435,7 +506,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
 
     const updated = getService(id)!;
     audit(req, 'service_updated', { type: 'service', id, detail: updated.name });
-    return { service: updated, needsRedeploy };
+    return { service: { ...updated, config: maskBuildArgs(updated.config) }, needsRedeploy };
   });
 
   app.delete('/api/services/:id', async (req, reply) => {
@@ -446,15 +517,26 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
 
     markManualAction(id);
+    // Cada paso contra Docker es best-effort y por separado: la fila se borra
+    // SIEMPRE al final. Antes, un fallo a mitad dejaba los contenedores ya
+    // borrados y el servicio vivo en el panel; ahora lo que no se pudo limpiar
+    // se devuelve como aviso para que alguien lo retire a mano.
+    const warnings: string[] = [];
     if (await dockerAvailable()) {
+      let contenedores: { name: string }[] = [];
       try {
         // Por label: incluye réplicas y restos de intercambios.
-        for (const c of await listServiceContainers(id)) {
+        contenedores = await listServiceContainers(id);
+      } catch (err: any) {
+        warnings.push(`No se pudieron enumerar los contenedores del servicio: ${err?.message || err}`);
+      }
+      for (const c of contenedores) {
+        try {
           await stopContainer(c.name);
           await removeContainer(c.name);
+        } catch (err: any) {
+          warnings.push(`No se pudo retirar el contenedor ${c.name}: ${err?.message || err}`);
         }
-      } catch {
-        /* best-effort */
       }
       if (volumes === 'true') {
         // Un volumen puede estar compartido con otro servicio del proyecto (las
@@ -467,20 +549,29 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
             enUso.add(vol.name);
           }
         }
-        await removeVolume(volumeName(found.project, found.service));
+        const aBorrar = [volumeName(found.project, found.service)];
         for (const vol of ((found.service.config as any).volumes ?? []) as { name: string }[]) {
-          if (!enUso.has(vol.name)) await removeVolume(vol.name);
+          if (!enUso.has(vol.name)) aBorrar.push(vol.name);
+        }
+        for (const nombre of aBorrar) {
+          try {
+            await removeVolume(nombre);
+          } catch (err: any) {
+            warnings.push(`No se pudo borrar el volumen ${nombre}: ${err?.message || err}`);
+          }
         }
       }
+    } else {
+      warnings.push('Docker no está disponible: los contenedores y volúmenes del servicio no se han retirado.');
     }
     deleteService(id);
     invalidateDockerSnapshot();
     audit(req, 'service_deleted', {
       type: 'service',
       id,
-      detail: `${found.service.name}${volumes === 'true' ? ' (con volumen)' : ''}`,
+      detail: `${found.service.name}${volumes === 'true' ? ' (con volumen)' : ''}${warnings.length ? ` · ${warnings.length} aviso(s)` : ''}`,
     });
-    return { ok: true };
+    return { ok: true, warnings };
   });
 
   /**
@@ -512,14 +603,19 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       const { id } = req.params as { id: string };
       const found = loadService(id);
       if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
-    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
+      if (!assertProjectAccess(req, reply, found.project.id)) return reply;
       if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
       markManualAction(id);
       const total = configuredReplicas(found.service);
       const lastDep = latestDeployment(found.service.id);
-      try {
-        for (let i = 1; i <= total; i++) {
-          const name = replicaName(found.project, found.service, i);
+      // Se actúa réplica a réplica: una que aún no existe (réplicas ampliadas en
+      // Ajustes sin redesplegar, o un servicio nunca desplegado) no puede
+      // convertir en 500 la acción sobre las que sí están.
+      let tocadas = 0;
+      let fallo: any = null;
+      for (let i = 1; i <= total; i++) {
+        const name = replicaName(found.project, found.service, i);
+        try {
           if (action === 'start') {
             await startContainer(name);
           } else if (action === 'stop') {
@@ -528,9 +624,15 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
           } else {
             await restartContainer(name);
           }
+          tocadas += 1;
+        } catch (err: any) {
+          if (err?.statusCode === 404) continue;
+          fallo = err;
         }
-      } catch (err: any) {
-        return reply.code(500).send({ error: err?.message || 'Operación fallida' });
+      }
+      if (fallo) return reply.code(500).send({ error: fallo?.message || 'Operación fallida' });
+      if (tocadas === 0 && action !== 'stop') {
+        return reply.code(409).send({ error: 'El contenedor aún no existe: despliega el servicio primero' });
       }
       audit(req, `service_${action}`, { type: 'service', id, detail: found.service.name });
       // Una parada pedida desde aquí no es una caída: el panel la pinta en gris.

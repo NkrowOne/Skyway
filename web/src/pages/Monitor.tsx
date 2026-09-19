@@ -20,11 +20,12 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { api } from '../api';
+import { useMediaQuery } from '../hooks';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import type { BandPoint } from '../components/HistoryChart';
 import { Button, Chip, ConfirmModal, EmptyState, ErrorState, Segmented, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { DiskBreakdown, HostMetricHistory, LogSearchResult, Me, MonitorOverview, MonitorService } from '../types';
-import { cx, fmtBytes, fmtDateTime, serviceStatus, timeAgo } from '../utils';
+import { cx, EMPTY_LIST, fmtBytes, fmtDateTime, serviceStatus, timeAgo } from '../utils';
 
 // El histórico del host solo se ve en la vista «host» (la vista por defecto es
 // «services»), así que su gráfico se carga bajo demanda al abrirla.
@@ -199,10 +200,13 @@ const ServiceRow = memo(function ServiceRow({
   s,
   onRestart,
   restarting,
+  isMobile,
 }: {
   s: MonitorService;
   onRestart: (s: MonitorService) => void;
   restarting: boolean;
+  /** Lo decide el padre una vez: cada fila con su propio `matchMedia` era un oyente por servicio. */
+  isMobile: boolean;
 }) {
   const navigate = useNavigate();
   const memPct = s.stats && s.stats.memLimit > 0 ? (s.stats.memUsage / s.stats.memLimit) * 100 : null;
@@ -313,49 +317,54 @@ const ServiceRow = memo(function ServiceRow({
         isDown && 'bg-err/[.035]',
       )}
     >
-      {/* Móvil: tarjeta. Quién es y cómo está arriba; el consumo, en tres columnas. */}
-      <div className="flex flex-col gap-3 p-4 sm:hidden">
-        <div className="flex items-start gap-2">
+      {/* Se pinta solo una de las dos vistas: tenerlas ambas en el DOM y ocultar
+          una por CSS duplicaba el trabajo de cada fila en listas largas. */}
+      {isMobile ? (
+        /* Móvil: tarjeta. Quién es y cómo está arriba; el consumo, en tres columnas. */
+        <div className="flex flex-col gap-3 p-4">
+          <div className="flex items-start gap-2">
+            {identidad}
+            <span className="flex shrink-0 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+              {reiniciar}
+            </span>
+          </div>
+          {estado}
+          <div className="grid grid-cols-3 gap-3 border-t border-line/70 pt-3">
+            <div className="min-w-0">
+              <p className="eyebrow text-subtle">CPU</p>
+              {cpu}
+            </div>
+            <div className="min-w-0">
+              <p className="eyebrow text-subtle">RAM</p>
+              {ram}
+            </div>
+            <div className="min-w-0">
+              <p className="eyebrow text-subtle">Disco</p>
+              {disco}
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* Escritorio: la fila de la tabla, con sus columnas alineadas. */
+        <div className="grid grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] items-center gap-3 px-4 py-2.5">
           {identidad}
-          <span className="flex shrink-0 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+          {estado}
+          {cpu}
+          {ram}
+          {disco}
+          <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
             {reiniciar}
-          </span>
-        </div>
-        {estado}
-        <div className="grid grid-cols-3 gap-3 border-t border-line/70 pt-3">
-          <div className="min-w-0">
-            <p className="eyebrow text-subtle">CPU</p>
-            {cpu}
-          </div>
-          <div className="min-w-0">
-            <p className="eyebrow text-subtle">RAM</p>
-            {ram}
-          </div>
-          <div className="min-w-0">
-            <p className="eyebrow text-subtle">Disco</p>
-            {disco}
+            <Link
+              to={`/projects/${s.projectId}?s=${s.id}`}
+              className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
+              title="Abrir servicio"
+              aria-label={`Abrir ${s.name}`}
+            >
+              <ArrowUpRight size={13} />
+            </Link>
           </div>
         </div>
-      </div>
-
-      {/* Escritorio: la fila de la tabla, con sus columnas alineadas. */}
-      <div className="hidden grid-cols-[minmax(180px,2fr)_110px_minmax(90px,1fr)_minmax(110px,1fr)_minmax(100px,1fr)_84px] items-center gap-3 px-4 py-2.5 sm:grid">
-        {identidad}
-        {estado}
-        {cpu}
-        {ram}
-        {disco}
-        <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-          {reiniciar}
-          <Link
-            to={`/projects/${s.projectId}?s=${s.id}`}
-            className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
-            title="Abrir servicio"
-          >
-            <ArrowUpRight size={13} />
-          </Link>
-        </div>
-      </div>
+      )}
     </div>
   );
 });
@@ -534,7 +543,7 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
     retry: false,
   });
 
-  const points = q.data?.points ?? [];
+  const points = q.data?.points ?? EMPTY_LIST;
   // Derivaciones memoizadas: el panel re-renderiza cada 6 s (overview del padre)
   // pero el histórico solo cambia cada 60 s; sin memo se recalculaban 3 map + 2
   // reverse en cada render y se desestabilizaban las props de los HistoryChart.
@@ -643,6 +652,8 @@ export default function MonitorPage() {
   const [restarting, setRestarting] = useState<Set<string>>(new Set());
   // Servicio pendiente de confirmar el reinicio: una lista larga es fácil de pulsar por error.
   const [confirmRestart, setConfirmRestart] = useState<MonitorService | null>(null);
+  // Una sola consulta de anchura para todas las filas.
+  const isMobile = useMediaQuery('(max-width: 639px)');
   const restart = useMutation({
     mutationFn: (serviceId: string) => api.post(`/services/${serviceId}/restart`),
     onMutate: (serviceId) => setRestarting((prev) => new Set(prev).add(serviceId)),
@@ -660,7 +671,7 @@ export default function MonitorPage() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  const services = overview.data?.services ?? [];
+  const services = overview.data?.services ?? EMPTY_LIST;
   const filtered = useMemo(() => {
     const q = text.trim().toLowerCase();
     // Partición exacta en tres grupos: cada servicio cae en un único chip y
@@ -776,7 +787,7 @@ export default function MonitorPage() {
               value={alerts}
               detail={
                 alerts > 0 ? (
-                  <Link to="/alerts" className="text-acc-soft hover:underline">
+                  <Link to="/alerts" className="tap text-acc-soft hover:underline">
                     ver alertas →
                   </Link>
                 ) : (
@@ -932,7 +943,7 @@ export default function MonitorPage() {
                         />
                       ))}
                     {filtered.map((s) => (
-                      <ServiceRow key={s.id} s={s} onRestart={setConfirmRestart} restarting={restarting.has(s.id)} />
+                      <ServiceRow key={s.id} s={s} isMobile={isMobile} onRestart={setConfirmRestart} restarting={restarting.has(s.id)} />
                     ))}
                   </div>
                 </div>

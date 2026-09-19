@@ -6,7 +6,7 @@ import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import { Button, Chip, ConfirmModal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { WebsiteEntry } from '../types';
-import { cx, DEPLOY_STATUS_LABEL, serviceStatus, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
+import { cx, DEPLOY_STATUS_LABEL, EMPTY_LIST, serviceStatus, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
 
 /**
  * Botón-icono de la tarjeta. En escritorio es discreto (p-1.5); en táctil crece
@@ -58,7 +58,7 @@ const SiteCard = memo(function SiteCard({
           <div className="min-w-0">
             <button
               onClick={() => navigate(`/projects/${site.projectId}?s=${site.id}`)}
-              className="flex max-w-full items-center gap-1.5 text-left"
+              className="tap flex max-w-full items-center gap-1.5 text-left"
               title="Abrir el servicio"
             >
               <span className="truncate text-sm font-semibold">{site.name}</span>
@@ -71,7 +71,7 @@ const SiteCard = memo(function SiteCard({
             {/* El proyecto es un enlace propio: un salto directo a su canvas. */}
             <Link
               to={`/projects/${site.projectId}`}
-              className="mt-0.5 flex max-w-full items-center gap-1 text-xs text-subtle transition-colors hover:text-sub"
+              className="tap mt-0.5 flex max-w-full items-center gap-1 text-xs text-subtle transition-colors hover:text-sub"
               title={`Ir al proyecto «${site.projectName}»`}
             >
               <Folder size={10} className="shrink-0 opacity-70" />
@@ -190,11 +190,14 @@ export default function SitesPage() {
     onSuccess: () => {
       setConfirmDeploy(null);
       toast('Despliegue iniciado', 'ok');
+      // La tarjeta pinta el último despliegue: sin esto seguía diciendo
+      // «Completado hace 3 días» hasta el siguiente sondeo.
+      queryClient.invalidateQueries({ queryKey: ['websites'] });
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  const all = sites.data?.sites ?? [];
+  const all = sites.data?.sites ?? EMPTY_LIST;
   const filtered = useMemo(() => {
     const q = text.trim().toLowerCase();
     const list = all.filter((s) => {

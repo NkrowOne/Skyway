@@ -13,6 +13,7 @@
 import { auditSystem } from './audit';
 import { getSetting, listModelPrices, setModelPrice, setSetting } from './db';
 import { getAllowedModels, getGeminiApiKey, getGeminiBaseUrl, setAllowedModels } from './aigateway';
+import { safeParse } from './util';
 
 /** Tarifa de lista en USD por millón de tokens. */
 export interface ListPrice {
@@ -351,16 +352,7 @@ export interface SyncResult {
 /** Última sincronización (para pintarla en el panel sin volver a llamar a Google). */
 export function getSyncState(): { lastAt: number | null; last: SyncResult | null } {
   const lastAt = numOr(getSetting(S.lastAt), null);
-  const raw = getSetting(S.last);
-  let last: SyncResult | null = null;
-  if (raw) {
-    try {
-      last = JSON.parse(raw) as SyncResult;
-    } catch {
-      last = null;
-    }
-  }
-  return { lastAt, last };
+  return { lastAt, last: safeParse<SyncResult | null>(getSetting(S.last), null) };
 }
 
 function remember(result: SyncResult): SyncResult {

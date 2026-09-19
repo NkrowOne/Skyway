@@ -13,7 +13,7 @@ import {
 import { audit } from '../audit';
 import { countUsers, createUser, getUser, getUserByEmail, getWorkspace, updateUserPassword } from '../db';
 import { UserRow } from '../types';
-import { hashPassword, verifyPassword } from '../util';
+import { decoyPasswordHash, hashPasswordAsync, verifyPasswordAsync } from '../util';
 
 const credentialsSchema = z.object({
   email: z.string().email('Email inválido'),
@@ -47,8 +47,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(403).send({ error: 'Skyway ya está configurado' });
     }
     const body = credentialsSchema.parse(req.body);
+    const passwordHash = await hashPasswordAsync(body.password);
+    // Se vuelve a comprobar tras el `await`: dos peticiones de setup simultáneas
+    // pasaban ambas la guarda de arriba y creaban dos administradores.
+    if (countUsers() > 0) {
+      return reply.code(403).send({ error: 'Skyway ya está configurado' });
+    }
     // El primer usuario es siempre el administrador del servidor.
-    const user = createUser(body.email.toLowerCase(), hashPassword(body.password), 'admin');
+    const user = createUser(body.email.toLowerCase(), passwordHash, 'admin');
     setAuthCookie(reply, signToken(user.id), req.protocol === 'https');
     audit(req, 'setup', { type: 'user', id: user.id, detail: user.email }, user.email);
     return { user: publicUser(user) };
@@ -61,7 +67,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     }
     const body = credentialsSchema.parse(req.body);
     const user = getUserByEmail(body.email.toLowerCase());
-    if (!user || !verifyPassword(body.password, user.password_hash)) {
+    // Sin usuario se verifica igualmente contra un hash señuelo: así la respuesta
+    // tarda lo mismo exista o no el email y el tiempo no delata qué cuentas hay.
+    const ok = await verifyPasswordAsync(body.password, user?.password_hash ?? decoyPasswordHash());
+    if (!user || !ok) {
       recordLoginFailure(req.ip);
       audit(req, 'login_failed', { type: 'user', id: body.email.toLowerCase() });
       return reply.code(401).send({ error: 'Credenciales incorrectas' });
@@ -90,10 +99,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         })
         .parse(req.body);
       const user = currentUser(req)!;
-      if (!verifyPassword(body.current, user.password_hash)) {
+      if (!(await verifyPasswordAsync(body.current, user.password_hash))) {
         return reply.code(401).send({ error: 'La contraseña actual no es correcta' });
       }
-      updateUserPassword(user.id, hashPassword(body.next));
+      const nextHash = await hashPasswordAsync(body.next);
+      // La cuenta pudo borrarse mientras se calculaba el hash.
+      if (!getUser(user.id)) return reply.code(401).send({ error: 'No autenticado' });
+      updateUserPassword(user.id, nextHash);
       // El bump de epoch invalida las cookies previas; renovamos la del solicitante.
       setAuthCookie(reply, signToken(user.id), req.protocol === 'https');
       audit(req, 'password_changed', { type: 'user', id: user.id });

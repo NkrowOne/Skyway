@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, Fragment } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, RefreshCw, Send, Trash2, Zap } from 'lucide-react';
 import { api } from '../api';
@@ -228,11 +229,16 @@ function BillingAutomationSettings() {
   const q = useQuery({ queryKey: ['billing-automation'], queryFn: () => api.get<{ automation: BillingAutomation }>('/billing/automation') });
   const profile = useQuery({ queryKey: ['billing-profile'], queryFn: () => api.get<BillingProfileResponse>('/billing/profile') });
   const [draft, setDraft] = useState<BillingAutomation | null>(null);
-  // El borrador se rellena una vez, cuando llegan los datos; hacerlo en el render
-  // disparaba un setState durante el pintado.
+  // El borrador sigue a los datos del servidor cada vez que cambian (también
+  // tras guardar): sembrado una sola vez, se quedaba con lo anterior aunque el
+  // servidor hubiera normalizado los valores.
+  const seededRef = useRef<unknown>(null);
   useEffect(() => {
-    if (q.data && !draft) setDraft(q.data.automation);
-  }, [q.data, draft]);
+    if (q.data && q.data !== seededRef.current) {
+      seededRef.current = q.data;
+      setDraft(q.data.automation);
+    }
+  }, [q.data]);
 
   const save = useMutation({
     mutationFn: () => api.put('/billing/automation', draft),
@@ -316,11 +322,14 @@ function AiGatewaySettings() {
   const q = useQuery({ queryKey: ['ai-gateway-config'], queryFn: () => api.get<AiGatewayConfig>('/ai/gateway/config') });
   const [key, setKey] = useState('');
   const [models, setModels] = useState('');
-  const [loaded, setLoaded] = useState(false);
-  // Carga inicial del campo desde el servidor (una vez), fuera del render.
+  // El campo sigue a los datos del servidor cada vez que cambian (también tras guardar).
+  const seededRef = useRef<unknown>(null);
   useEffect(() => {
-    if (q.data && !loaded) { setModels(q.data.allowedModels.join(', ')); setLoaded(true); }
-  }, [q.data, loaded]);
+    if (q.data && q.data !== seededRef.current) {
+      seededRef.current = q.data;
+      setModels(q.data.allowedModels.join(', '));
+    }
+  }, [q.data]);
 
   const save = useMutation({
     mutationFn: () => {
@@ -349,7 +358,7 @@ function AiGatewaySettings() {
           </Field>
         </div>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3 gap-y-2">
-          <p className="min-w-0 flex-1 text-xs text-subtle">Los precios de venta se definen como productos de categoría IA en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>.</p>
+          <p className="min-w-0 flex-1 text-xs text-subtle">Los precios de venta se definen como productos de categoría IA en el <Link to="/catalog" className="tap text-acc-soft hover:underline">catálogo</Link>.</p>
           <Button size="sm" onClick={() => save.mutate()} loading={save.isPending}>Guardar</Button>
         </div>
       </section>
@@ -447,7 +456,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
     <section className="card p-5">
       <h2 className="flex items-center gap-2 text-base font-semibold"><Coins size={15} className="text-ok" /> Cuánto ganas por modelo</h2>
       <p className="mt-1 max-w-2xl text-xs text-subtle">
-        Coste de Google + tu margen = precio de venta. El precio que cobras se fija en el producto de IA del <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>.
+        Coste de Google + tu margen = precio de venta. El precio que cobras se fija en el producto de IA del <Link to="/catalog" className="tap text-acc-soft hover:underline">catálogo</Link>.
       </p>
 
       <PriceSyncBar
@@ -542,7 +551,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                 <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-micro text-subtle">
                   <span className="eyebrow">Lista Google · $/M</span>
                   <span className="tnum">entrada {usdM(ref.in)} · caché {usdM(ref.cache)} · salida {usdM(ref.out)}</span>
-                  <button className="text-acc-soft hover:underline" title="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" aria-label="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" onClick={() => setDraft(model, { in: String(ref.in), cache: String(ref.cache), out: String(ref.out) })}>usar</button>
+                  <button className="tap text-acc-soft hover:underline" title="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" aria-label="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" onClick={() => setDraft(model, { in: String(ref.in), cache: String(ref.cache), out: String(ref.out) })}>usar</button>
                 </div>
               )}
 
@@ -647,7 +656,7 @@ function PriceSyncBar({
       )}
 
       <label className="mt-2 flex items-center gap-2 text-xs text-subtle">
-        <input type="checkbox" className="accent-acc" checked={sync.autoAllow} onChange={(e) => onConfig({ autoAllow: e.target.checked })} disabled={savingConfig} />
+        <input type="checkbox" className="h-4 w-4 shrink-0 accent-acc" checked={sync.autoAllow} onChange={(e) => onConfig({ autoAllow: e.target.checked })} disabled={savingConfig} />
         Permitir solos los modelos nuevos que Google publique con tarifa conocida (si no, solo se avisa)
       </label>
 
@@ -716,15 +725,19 @@ function CompanyProfile() {
   // Sincroniza el borrador local cuando llegan los datos (una vez). En un efecto,
   // no en el render: un setState mientras se pinta es un re-render de más y React
   // lo avisa.
+  const seededRef = useRef<unknown>(null);
   useEffect(() => {
-    if (!q.data || draft) return;
+    // Cada vez que el servidor devuelve datos nuevos (también tras guardar), no
+    // solo la primera: si no, el formulario divergía de lo guardado.
+    if (!q.data || q.data === seededRef.current) return;
+    seededRef.current = q.data;
     setDraft({
       ...q.data.profile,
       stripeSecretKey: '', stripeWebhookSecret: '', stripePublishableKey: q.data.stripe.publishableKey,
       smtpHost: q.data.smtp.host, smtpPort: q.data.smtp.port, smtpSecure: q.data.smtp.secure,
       smtpUser: q.data.smtp.user, smtpPass: '', smtpFrom: q.data.smtp.from, smtpFromName: q.data.smtp.fromName,
     });
-  }, [q.data, draft]);
+  }, [q.data]);
 
   const test = useMutation({
     mutationFn: () => {
@@ -759,7 +772,13 @@ function CompanyProfile() {
       if (d.smtpPass.trim()) payload.smtpPass = d.smtpPass.trim();
       return api.put('/billing/profile', payload);
     },
-    onSuccess: () => { toast('Datos de la empresa guardados', 'ok'); queryClient.invalidateQueries({ queryKey: ['billing-profile'] }); },
+    onSuccess: () => {
+      toast('Datos de la empresa guardados', 'ok');
+      queryClient.invalidateQueries({ queryKey: ['billing-profile'] });
+      // La moneda de la empresa es la de los totales de arriba: cambiarla
+      // dejaba los KPI en la divisa anterior hasta recargar.
+      queryClient.invalidateQueries({ queryKey: ['accounting-summary'] });
+    },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
@@ -836,7 +855,7 @@ function CompanyProfile() {
               <Field label="Puerto"><NumberInput className="input tnum" inputMode="numeric" min={1} max={65535} value={draft.smtpPort} emptyValue={587} onChange={(v) => set({ smtpPort: v })} /></Field>
             </div>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={draft.smtpSecure} onChange={(e) => set({ smtpSecure: e.target.checked })} />
+              <input type="checkbox" className="h-4 w-4 shrink-0 accent-acc" checked={draft.smtpSecure} onChange={(e) => set({ smtpSecure: e.target.checked })} />
               <span>TLS directo (puerto 465). Desmarcado usa STARTTLS si el servidor lo ofrece.</span>
             </label>
             <div className="grid gap-3 sm:grid-cols-2">

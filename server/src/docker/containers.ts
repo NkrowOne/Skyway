@@ -1,6 +1,7 @@
 import Docker from 'dockerode';
 import { PassThrough } from 'stream';
-import { docker } from './client';
+import { StringDecoder } from 'string_decoder';
+import { docker, dockerQuery } from './client';
 import { EDGE_NETWORK, projectNetworkName } from './networks';
 import { getSetting } from '../db';
 import { ContainerState, ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
@@ -41,7 +42,7 @@ export function aggregateReplicaState(states: ContainerState[]): ContainerState 
 
 /** Todos los contenedores del servicio por label (incluye réplicas y restos de swaps). */
 export async function listServiceContainers(serviceId: string): Promise<{ id: string; name: string }[]> {
-  const list = await docker.listContainers({
+  const list = await dockerQuery.listContainers({
     all: true,
     filters: { label: [`skyway.service=${serviceId}`] } as any,
   });
@@ -54,7 +55,7 @@ export function volumeName(project: ProjectRow, service: ServiceRow, suffix = 'd
 
 export async function findContainer(name: string): Promise<Docker.ContainerInspectInfo | null> {
   try {
-    return await docker.getContainer(name).inspect();
+    return await dockerQuery.getContainer(name).inspect();
   } catch {
     return null;
   }
@@ -112,12 +113,35 @@ export async function removeVolume(name: string): Promise<void> {
   }
 }
 
-export async function removeImage(tag: string): Promise<void> {
+/**
+ * Quita una etiqueta de imagen. SIN `force`: con él Docker desetiqueta aunque
+ * un contenedor la esté usando, y la purga de imágenes antiguas podía dejar al
+ * servicio en marcha con una imagen sin nombre (y sin rollback posible). El
+ * conflicto se deja por escrito en vez de tragárselo.
+ */
+export async function removeImage(tag: string, log?: (line: string) => void): Promise<void> {
   try {
-    await docker.getImage(tag).remove({ force: true });
-  } catch {
-    // best-effort: puede estar en uso o no existir
+    await dockerQuery.getImage(tag).remove();
+  } catch (err: any) {
+    if (err?.statusCode === 409) {
+      log?.(`⚠ La imagen ${tag} está en uso por un contenedor: no se purga.`);
+    }
+    // 404 (ya no existe) y demás: best-effort
   }
+}
+
+/**
+ * Referencia de imagen tal y como la admite Docker (registro, ruta, etiqueta
+ * o digest). Rechaza cualquier cosa que empiece por «-»: puesta como
+ * posicional de la CLI la tomaría por una opción.
+ */
+const IMAGE_REF = /^[a-z0-9][a-z0-9._\-/:@]*$/i;
+
+export function assertImageRef(image: string): string {
+  if (!IMAGE_REF.test(image)) {
+    throw new Error(`Referencia de imagen no válida: «${image.slice(0, 80)}»`);
+  }
+  return image;
 }
 
 /**
@@ -140,7 +164,7 @@ export async function startCommandSpec(
 ): Promise<{ cmd: string[]; entrypoint?: string[]; replacedEntrypoint: string[] | null }> {
   let entry: string[] = [];
   try {
-    const info = await docker.getImage(image).inspect();
+    const info = await dockerQuery.getImage(image).inspect();
     entry = (info.Config?.Entrypoint as string[] | null) || [];
   } catch {
     /* imagen no inspeccionable: se envuelve en un shell, como siempre */
@@ -158,9 +182,12 @@ export async function startCommandSpec(
  * el despliegue seguía como si hubiera ido bien.
  */
 export async function runArgsFor(image: string, command: string): Promise<string[]> {
+  assertImageRef(image);
   const spec = await startCommandSpec(image, command);
   // entrypoint definido = hay que apartarlo, y en la CLI eso es --entrypoint.
-  return spec.entrypoint ? ['--entrypoint', 'sh', image, ...spec.cmd.slice(1)] : [image, ...spec.cmd];
+  // El «--» cierra las opciones: a partir de ahí todo es posicional, venga
+  // como venga escrito el nombre de la imagen. Quien llama pone esto al final.
+  return spec.entrypoint ? ['--entrypoint', 'sh', '--', image, ...spec.cmd.slice(1)] : ['--', image, ...spec.cmd];
 }
 
 /** `["/bin/bash","-l","-c"]`, `["/bin/sh","-c"]`… es decir: ya envuelve un comando. */
@@ -183,7 +210,7 @@ function isShellEntrypoint(entry: string[]): boolean {
  */
 export async function imageExposedPorts(image: string): Promise<number[]> {
   try {
-    const info = await docker.getImage(image).inspect();
+    const info = await dockerQuery.getImage(image).inspect();
     const expuestos = (info.Config?.ExposedPorts || {}) as Record<string, unknown>;
     return Object.keys(expuestos)
       .filter((clave) => !clave.endsWith('/udp'))
@@ -198,7 +225,7 @@ export async function imageExposedPorts(image: string): Promise<number[]> {
 
 export async function imageExists(tag: string): Promise<boolean> {
   try {
-    await docker.getImage(tag).inspect();
+    await dockerQuery.getImage(tag).inspect();
     return true;
   } catch {
     return false;
@@ -380,14 +407,20 @@ export async function execInContainer(
   let timedOut = false;
   const out = new PassThrough();
   const err = new PassThrough();
-  const feed = (chunk: Buffer) => {
+  // Un decodificador por canal: un carácter UTF-8 partido entre dos trozos
+  // salía como dos «�» con `chunk.toString()`.
+  const decOut = new StringDecoder('utf8');
+  const decErr = new StringDecoder('utf8');
+  const feed = (text: string) => {
     if (output.length < maxOutput) {
-      output += chunk.toString();
+      output += text;
       if (output.length >= maxOutput) truncated = true;
     }
   };
-  out.on('data', feed);
-  err.on('data', feed);
+  out.on('data', (chunk: Buffer) => feed(decOut.write(chunk)));
+  err.on('data', (chunk: Buffer) => feed(decErr.write(chunk)));
+  out.on('error', noop);
+  err.on('error', noop);
   docker.modem.demuxStream(stream, out, err);
 
   await new Promise<void>((resolve) => {
@@ -395,6 +428,8 @@ export async function execInContainer(
       timedOut = true;
       try {
         (stream as any).destroy?.();
+        out.destroy();
+        err.destroy();
       } catch {
         /* noop */
       }
@@ -409,12 +444,31 @@ export async function execInContainer(
       resolve();
     });
   });
+  feed(decOut.end() + decErr.end());
 
-  // El daemon puede tardar unos ms en registrar la salida del exec: si el
-  // código aún es null (y no hubo timeout), se reintenta brevemente para no
-  // confundir una carrera de timing con un fallo.
+  const exitCode = await waitExecExit(exec, { giveUp: () => timedOut });
+  return { output, exitCode, truncated, timedOut, durationMs: Date.now() - started };
+}
+
+function noop(): void {
+  /* nada */
+}
+
+/**
+ * Código de salida de un exec cuyo stream ya terminó. El daemon puede tardar
+ * unos ms en registrar la salida: mientras `ExitCode` sea null y el exec siga
+ * marcado como `Running`, se reintenta brevemente para no confundir esa
+ * carrera de timing con un fallo (o con un éxito). Devuelve null si no se
+ * llegó a saber.
+ */
+export async function waitExecExit(
+  exec: Docker.Exec,
+  opts: { attempts?: number; delayMs?: number; giveUp?: () => boolean } = {},
+): Promise<number | null> {
+  const attempts = opts.attempts ?? 3;
+  const delayMs = opts.delayMs ?? 60;
   let exitCode: number | null = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       const info = await exec.inspect();
       exitCode = info.ExitCode ?? null;
@@ -422,10 +476,10 @@ export async function execInContainer(
     } catch {
       break;
     }
-    if (timedOut) break;
-    await new Promise((r) => setTimeout(r, 60));
+    if (opts.giveUp?.()) break;
+    await new Promise((r) => setTimeout(r, delayMs));
   }
-  return { output, exitCode, truncated, timedOut, durationMs: Date.now() - started };
+  return exitCode;
 }
 
 /** Actualiza límites de CPU/RAM de un contenedor en caliente. */
@@ -435,17 +489,21 @@ export async function updateResources(
   memoryMb: number | null | undefined,
 ): Promise<void> {
   const c = docker.getContainer(name);
+  const memory = memoryMb && memoryMb > 0 ? Math.round(memoryMb * 1024 * 1024) : 0;
   const update: any = {
     NanoCpus: cpus && cpus > 0 ? Math.round(cpus * 1e9) : 0,
-    Memory: memoryMb && memoryMb > 0 ? Math.round(memoryMb * 1024 * 1024) : 0,
-    MemorySwap: memoryMb && memoryMb > 0 ? -1 : 0,
+    Memory: memory,
+    // Docker exige que el tope de swap no quede por debajo de la memoria nueva.
+    // El doble es lo mismo que fija al crear el contenedor sin decir nada; con
+    // -1 el swap quedaba SIN límite y el tope de RAM dejaba de acotar nada.
+    MemorySwap: memory > 0 ? memory * 2 : 0,
   };
   await c.update(update);
 }
 
 export async function getStats(name: string): Promise<ServiceStats | null> {
   try {
-    const c = docker.getContainer(name);
+    const c = dockerQuery.getContainer(name);
     const s: any = await c.stats({ stream: false });
     const cpuDelta = (s.cpu_stats?.cpu_usage?.total_usage || 0) - (s.precpu_stats?.cpu_usage?.total_usage || 0);
     const sysDelta = (s.cpu_stats?.system_cpu_usage || 0) - (s.precpu_stats?.system_cpu_usage || 0);
@@ -507,7 +565,7 @@ export async function fetchLogsTail(
   tail = 400,
   timestamps = true,
 ): Promise<{ ts: number | null; line: string }[]> {
-  const c = docker.getContainer(name);
+  const c = dockerQuery.getContainer(name);
   const raw = (await c.logs({ follow: false, stdout: true, stderr: true, tail, timestamps })) as unknown as Buffer;
   const text = Buffer.isBuffer(raw) ? demuxLogBuffer(raw) : String(raw);
   const out: { ts: number | null; line: string }[] = [];
@@ -563,7 +621,7 @@ export async function fetchLogsBefore(
   limit: number,
   before: string | null,
 ): Promise<{ cursor: string | null; line: string }[]> {
-  const c = docker.getContainer(name);
+  const c = dockerQuery.getContainer(name);
   // `until` (segundos Unix) no está en los tipos de dockerode pero sí en la API
   // de Docker; se fija `follow: false` como literal para elegir la sobrecarga.
   const opts: Docker.ContainerLogsOptions & { follow: false; until?: number } = {
@@ -597,7 +655,7 @@ export async function fetchLogsText(
   tail: number | 'all' = 'all',
   timestamps = false,
 ): Promise<string> {
-  const c = docker.getContainer(name);
+  const c = dockerQuery.getContainer(name);
   // `tail: 'all'` lo acepta la API de Docker aunque los tipos de dockerode solo
   // admitan number: se castea en esta frontera para pedir el buffer completo.
   const opts = { follow: false as const, stdout: true, stderr: true, tail, timestamps };
@@ -605,11 +663,22 @@ export async function fetchLogsText(
   return Buffer.isBuffer(raw) ? demuxLogBuffer(raw) : String(raw);
 }
 
+export interface FollowHandle {
+  /** Corta el seguimiento y libera el stream de Docker. */
+  stop: () => void;
+  /**
+   * Contrapresión: si quien consume (el socket del navegador) no da abasto,
+   * se deja de leer de Docker en vez de acumular líneas en memoria.
+   */
+  pause: () => void;
+  resume: () => void;
+}
+
 /**
  * Sigue los logs de un contenedor y entrega líneas completas con su cursor.
- * Devuelve una función para detener el stream. Se piden con `timestamps` para
- * que cada línea lleve cursor (el visor lo oculta) y así el frente del buffer
- * en vivo sirve de punto de partida para paginar hacia atrás.
+ * Devuelve un manejador para detener o pausar el stream. Se piden con
+ * `timestamps` para que cada línea lleve cursor (el visor lo oculta) y así el
+ * frente del buffer en vivo sirve de punto de partida para paginar hacia atrás.
  */
 export async function followLogs(
   name: string,
@@ -629,7 +698,7 @@ export async function followLogs(
    * en vez de volver a las últimas 200 líneas y perder lo de en medio.
    */
   since?: string | null,
-): Promise<() => void> {
+): Promise<FollowHandle> {
   const c = docker.getContainer(name);
   // `since` acepta un RFC3339Nano en la API de Docker aunque los tipos de
   // dockerode solo declaren number; `tail: 'all'` igual. Se castea en la frontera.
@@ -650,6 +719,10 @@ export async function followLogs(
   const feedErr = lineSplitter((raw) => onLine(splitTimestamp(raw)));
   out.on('data', feedOut);
   err.on('data', feedErr);
+  // Destruir un PassThrough puede emitir 'error'; sin manejador sería una
+  // excepción sin capturar que tumba el proceso entero.
+  out.on('error', noop);
+  err.on('error', noop);
   docker.modem.demuxStream(stream, out, err);
 
   let stopped = false;
@@ -667,16 +740,35 @@ export async function followLogs(
 
   const stop = () => {
     stopped = true;
+    // Primero la fuente y después los PassThrough: al revés, el demuxer
+    // seguía escribiendo en un destino destruido.
     try {
-      out.removeAllListeners();
-      err.removeAllListeners();
-      out.destroy();
-      err.destroy();
       (stream as any).destroy?.();
     } catch {
       /* noop */
     }
+    try {
+      out.destroy();
+      err.destroy();
+    } catch {
+      /* noop */
+    }
   };
-  return stop;
+  const pause = () => {
+    try {
+      (stream as any).pause?.();
+    } catch {
+      /* noop */
+    }
+  };
+  const resume = () => {
+    if (stopped) return;
+    try {
+      (stream as any).resume?.();
+    } catch {
+      /* noop */
+    }
+  };
+  return { stop, pause, resume };
 }
 

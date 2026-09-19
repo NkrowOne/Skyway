@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, ArrowRight, CheckCircle2, Database, GitBranch, Package, TrainFront } from 'lucide-react';
 import { api } from '../api';
@@ -186,6 +186,8 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
   const [plan, setPlan] = useState<Plan | null>(null);
   const [envId, setEnvId] = useState<string>('');
   const [projectName, setProjectName] = useState('');
+  // Si el usuario ya tocó el nombre, cambiar de entorno no se lo pisa.
+  const nameTouchedRef = useRef(false);
   const [client, setClient] = useState('');
   const [report, setReport] = useState<ImportReport | null>(null);
 
@@ -233,7 +235,7 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
       setPlan(res.plan);
       setSelectedId(projectId);
       setEnvId(res.plan.environment.id);
-      setProjectName(res.plan.projectName);
+      if (!nameTouchedRef.current) setProjectName(res.plan.projectName);
       setStep('preview');
     } catch (err) {
       toast((err as Error).message, 'err');
@@ -361,7 +363,14 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
         <div className="space-y-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Nombre en Skyway">
-              <input className="input" value={projectName} onChange={(e) => setProjectName(e.target.value)} />
+              <input
+                className="input"
+                value={projectName}
+                onChange={(e) => {
+                  nameTouchedRef.current = true;
+                  setProjectName(e.target.value);
+                }}
+              />
             </Field>
             <Field label="Empresa / cliente (opcional)">
               <input className="input" value={client} onChange={(e) => setClient(e.target.value)} placeholder="Acme S.L." />

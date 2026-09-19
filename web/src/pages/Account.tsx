@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bot, Fingerprint, KeyRound, Plus, Trash2 } from 'lucide-react';
 import { api } from '../api';
-import { Button, ConfirmModal, CopyButton, Field, Modal, useToast } from '../components/ui';
+import { Button, ConfirmModal, CopyButton, ErrorState, Field, Modal, useToast } from '../components/ui';
 import { ApiToken, Me, Passkey } from '../types';
-import { timeAgo } from '../utils';
+import { fmtDate, timeAgo } from '../utils';
 import { passkeysSupported, registerPasskey } from '../webauthn';
 
 function Section({
@@ -46,7 +46,7 @@ export default function AccountPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
 
-  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me') });
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
 
   // ---- contraseña ----
   const [currentPw, setCurrentPw] = useState('');
@@ -151,9 +151,20 @@ export default function AccountPage() {
           )
         }
       >
-        {(passkeys.data?.passkeys ?? []).length === 0 ? (
+        {/* Un fallo de carga no es «sin passkeys»: antes se pintaba el hueco
+            vacío y parecía que se habían borrado. */}
+        {passkeys.isError ? (
+          <ErrorState
+            compact
+            className="rounded-lg border border-dashed border-line"
+            title="No se han podido cargar las passkeys"
+            error={passkeys.error}
+            onRetry={() => passkeys.refetch()}
+            retrying={passkeys.isFetching}
+          />
+        ) : (passkeys.data?.passkeys ?? []).length === 0 ? (
           <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
-            Sin passkeys todavía. Añade una para entrar sin contraseña.
+            {passkeys.isLoading ? 'Cargando…' : 'Sin passkeys todavía. Añade una para entrar sin contraseña.'}
           </p>
         ) : (
           <div className="flex flex-col gap-2">
@@ -168,8 +179,9 @@ export default function AccountPage() {
                 </div>
                 <button
                   onClick={() => setPkDelete(p)}
-                  className="rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err"
+                  className="rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err max-sm:p-2.5"
                   title="Eliminar passkey"
+                  aria-label={`Eliminar la passkey ${p.name}`}
                 >
                   <Trash2 size={14} />
                 </button>
@@ -194,9 +206,18 @@ export default function AccountPage() {
           </Button>
         }
       >
-        {(tokens.data?.tokens ?? []).length === 0 ? (
+        {tokens.isError ? (
+          <ErrorState
+            compact
+            className="rounded-lg border border-dashed border-line"
+            title="No se han podido cargar los tokens"
+            error={tokens.error}
+            onRetry={() => tokens.refetch()}
+            retrying={tokens.isFetching}
+          />
+        ) : (tokens.data?.tokens ?? []).length === 0 ? (
           <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
-            Sin tokens. Crea uno para controlar Skyway desde fuera del panel.
+            {tokens.isLoading ? 'Cargando…' : 'Sin tokens. Crea uno para controlar Skyway desde fuera del panel.'}
           </p>
         ) : (
           <div className="flex flex-col gap-2">
@@ -207,13 +228,14 @@ export default function AccountPage() {
                   <p className="mt-px text-xs text-subtle">
                     <span className="font-mono">{t.prefix}…</span> · creado {timeAgo(t.created_at)}
                     {t.last_used_at ? ` · último uso ${timeAgo(t.last_used_at)}` : ' · sin usar'}
-                    {t.expires_at ? ` · caduca ${new Date(t.expires_at).toLocaleDateString()}` : ''}
+                    {t.expires_at ? ` · caduca el ${fmtDate(t.expires_at)}` : ''}
                   </p>
                 </div>
                 <button
                   onClick={() => setTokDelete(t)}
-                  className="rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err"
+                  className="rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err max-sm:p-2.5"
                   title="Revocar token"
+                  aria-label={`Revocar el token ${t.name}`}
                 >
                   <Trash2 size={14} />
                 </button>

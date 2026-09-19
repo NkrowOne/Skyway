@@ -106,7 +106,7 @@ const AlertCard = memo(function AlertCard({
             {alert.project_id && (
               <Link
                 to={`/projects/${alert.project_id}${alert.service_id ? `?s=${alert.service_id}` : ''}`}
-                className="text-xs font-semibold text-acc-soft hover:underline"
+                className="tap text-xs font-semibold text-acc-soft hover:underline"
               >
                 Ir al servicio →
               </Link>

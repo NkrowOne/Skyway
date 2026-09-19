@@ -15,6 +15,26 @@ const DEFAULT_POLL_SECONDS = 60;
 const MIN_POLL_SECONDS = 15;
 /** Despliegues aún en marcha: no se encola otro encima. */
 const IN_PROGRESS = new Set(['queued', 'building', 'deploying']);
+/**
+ * Consultas al remoto a la vez. Sin tope, un ciclo lanzaba un `git ls-remote`
+ * (un proceso con su handshake TLS) por cada servicio de repositorio, todos a
+ * la vez: con decenas de servicios era un pico de CPU y de conexiones cada
+ * minuto.
+ */
+const POLL_CONCURRENCY = 4;
+
+/** Ejecuta las tareas con un tope de concurrencia. */
+async function pooled(tasks: (() => Promise<void>)[], limit: number): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= tasks.length) return;
+      await tasks[i]();
+    }
+  });
+  await Promise.all(workers);
+}
 
 /**
  * Auto-deploy por sondeo: cada cierto tiempo se consulta la cabeza de la rama
@@ -93,9 +113,9 @@ async function tick(log: { warn: (msg: string) => void }): Promise<void> {
     }
   }
 
-  // Consultas en paralelo: la latencia del ciclo es la del repo más lento, no la suma.
-  await Promise.all(
-    targets.map(async (t) => {
+  // Consultas en paralelo (con tope): la latencia del ciclo no es la suma de todas.
+  await pooled(
+    targets.map((t) => async () => {
       // Si ya hay un despliegue en marcha, no se encola otro (cierra la ventana
       // entre disparar y que el clon registre el commit_sha).
       const latest = latestDeployment(t.id);
@@ -141,6 +161,7 @@ async function tick(log: { warn: (msg: string) => void }): Promise<void> {
         log.warn(`autodeploy ${t.name}: ${err?.message || err}`);
       }
     }),
+    POLL_CONCURRENCY,
   );
 
   // Olvida los servicios que ya no aplican (borrados o con auto-deploy apagado).
@@ -149,10 +170,13 @@ async function tick(log: { warn: (msg: string) => void }): Promise<void> {
 
 let interval: NodeJS.Timeout | null = null;
 let running = false;
+let stopped = false;
 
 export function startAutoDeploy(log: { warn: (msg: string) => void }): void {
   if (interval) return;
+  stopped = false;
   const schedule = () => {
+    if (stopped) return;
     interval = setTimeout(async () => {
       if (!running) {
         running = true;
@@ -169,4 +193,11 @@ export function startAutoDeploy(log: { warn: (msg: string) => void }): void {
     interval.unref();
   };
   schedule();
+}
+
+/** Apagado ordenado: no se programa ningún sondeo más. */
+export function stopAutoDeploy(): void {
+  stopped = true;
+  if (interval) clearTimeout(interval);
+  interval = null;
 }

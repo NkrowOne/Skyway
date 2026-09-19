@@ -14,6 +14,11 @@ import { getProject, getService } from '../db';
 import { sseInit } from '../sse';
 import { DatabaseConfig } from '../types';
 
+/** La URL de origen acaba en el entorno de un `docker run`: acotada como cualquier otra entrada. */
+const sourceSchema = z.object({
+  sourceUrl: z.string().trim().min(8, 'URL de origen requerida').max(2048, 'URL de origen demasiado larga'),
+});
+
 /**
  * Copia de datos desde una base externa (típicamente la de Railway) a una base
  * gestionada de Skyway. Es el último paso de una migración y el único que hasta
@@ -53,7 +58,7 @@ export async function migrateRoutes(app: FastifyInstance): Promise<void> {
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectManage(req, reply, found.project.id)) return reply;
-    const body = z.object({ sourceUrl: z.string().trim().min(8, 'URL de origen requerida') }).parse(req.body);
+    const body = sourceSchema.parse(req.body);
     try {
       const problem = await probeSource(found.service, found.project, body.sourceUrl);
       return problem ? { ok: false, error: problem } : { ok: true };
@@ -67,7 +72,7 @@ export async function migrateRoutes(app: FastifyInstance): Promise<void> {
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectManage(req, reply, found.project.id)) return reply;
-    const body = z.object({ sourceUrl: z.string().trim().min(8, 'URL de origen requerida') }).parse(req.body);
+    const body = sourceSchema.parse(req.body);
     try {
       const migration = startDataMigration(found.service, found.project, body.sourceUrl);
       // La URL lleva credenciales del origen: en la auditoría solo el servidor.
@@ -103,11 +108,18 @@ export async function migrateRoutes(app: FastifyInstance): Promise<void> {
     if (!assertProjectManage(req, reply, found.project.id)) return reply;
 
     const channel = sseInit(reply);
+    // Margen para que el «done» salga antes de cerrar. Registrado en el canal:
+    // si el navegador cierra antes, el temporizador no queda vivo apuntando a
+    // un canal ya cerrado.
+    const closeSoon = (): void => {
+      const timer = setTimeout(() => channel.close(), 100);
+      channel.onClose(() => clearTimeout(timer));
+    };
     const unsubscribe = onDataMigration(id, (ev) => {
       if (ev.type === 'log') channel.send('log', { line: ev.line });
       else {
         channel.send('done', { status: ev.status });
-        setTimeout(() => channel.close(), 100);
+        closeSoon();
       }
     });
     channel.onClose(unsubscribe);
@@ -116,7 +128,7 @@ export async function migrateRoutes(app: FastifyInstance): Promise<void> {
     channel.send('snapshot', { logs: current?.logs ?? '', status: current?.status ?? null });
     if (current && current.status !== 'running') {
       channel.send('done', { status: current.status });
-      setTimeout(() => channel.close(), 100);
+      closeSoon();
     }
   });
 }

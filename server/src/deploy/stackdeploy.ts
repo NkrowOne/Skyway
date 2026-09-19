@@ -30,19 +30,17 @@ export interface StackStep {
   readyCmd?: string;
 }
 
-/**
- * Margen para que el logger del despliegue vuelque su búfer. Ese volcado
- * REESCRIBE la columna entera de logs, así que escribir antes de que ocurra
- * perdería estas líneas.
- */
-const LOG_SETTLE_MS = 1_500;
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Escribe en el log del despliegue ya terminado. Las esperas y el SQL de
  * inicialización ocurren DESPUÉS de que su despliegue acabe, y este es el sitio
  * donde el usuario los va a buscar.
+ *
+ * Es seguro escribir en cuanto el despliegue llega a estado final: su logger
+ * vuelca el búfer completo ANTES de fijar ese estado y no vuelve a tocar la
+ * columna, así que nada pisa lo que se añada aquí. (Antes hacía falta esperar
+ * un margen a ciegas, porque el volcado periódico podía llegar después.)
  */
 function appendLog(deploymentId: string, line: string): void {
   const stamped = `${new Date().toISOString().slice(11, 19)} ${line}`;
@@ -159,7 +157,6 @@ export async function runStackDeploy(stack: DeployableStack, steps: StackStep[])
             const finished = await awaitDeployment(deployment.id);
             if (finished?.status !== 'success') return false; // su propio log ya explica el fallo
 
-            await sleep(LOG_SETTLE_MS);
             const log = (line: string) => appendLog(deployment.id, line);
             const container = containerName(project, service);
             if (step.readyCmd && !(await waitUntilReady(container, step.readyCmd, log))) return false;

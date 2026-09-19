@@ -24,7 +24,9 @@ permisos del usuario que lo crea**:
 - Token de un **miembro** → solo sus workspaces asignados. Ideal para dar a un
   cliente acceso programático acotado, o para un agente con permisos limitados.
 
-Se usan con la cabecera `Authorization: Bearer`:
+Se usan con la cabecera `Authorization: Bearer`. Con Bearer no aplica la guarda
+CSRF del panel: esa solo mira las peticiones mutantes que llegan con la cookie
+de sesión (un cliente con cookie y una cabecera `Origin` ajena recibe 403).
 
 ```bash
 BASE="https://skyway.tudominio.com"   # o http://localhost:4000 por túnel SSH

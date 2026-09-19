@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useLatched } from '../hooks';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Boxes, Fingerprint, KeyRound, Pencil, Plus, Shield, Trash2 } from 'lucide-react';
 import { api } from '../api';
@@ -31,12 +32,13 @@ export default function UsersPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
 
-  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me') });
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
   const users = useQuery({ queryKey: ['users'], queryFn: () => api.get<{ users: UserSummary[] }>('/users') });
   const projects = useQuery({ queryKey: ['projects'], queryFn: () => api.get<{ projects: Project[] }>('/projects') });
 
   const [draft, setDraft] = useState<Draft | null>(null);
   const [toDelete, setToDelete] = useState<UserSummary | null>(null);
+  const toDeleteShown = useLatched(toDelete);
   const isEdit = !!draft?.id;
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['users'] });
@@ -216,7 +218,7 @@ export default function UsersPage() {
                 onChange={(e) => setDraft({ ...draft, password: e.target.value })}
               />
             </Field>
-            <Field label="Rol">
+            <Field label="Rol" group>
               <div className="grid grid-cols-2 gap-2">
                 {(['member', 'admin'] as const).map((r) => (
                   <button
@@ -246,7 +248,7 @@ export default function UsersPage() {
                         type="checkbox"
                         checked={draft.projectIds.includes(p.id)}
                         onChange={() => toggleProject(p.id)}
-                        className="accent-acc"
+                        className="h-4 w-4 shrink-0 accent-acc"
                       />
                       <span className="min-w-0 flex-1 truncate text-sm">{p.name}</span>
                       {p.client && <span className="shrink-0 text-xs text-subtle">{p.client}</span>}
@@ -276,7 +278,7 @@ export default function UsersPage() {
         onClose={() => setToDelete(null)}
         onConfirm={() => toDelete && remove.mutate(toDelete.id)}
         title="Eliminar usuario"
-        message={`«${toDelete?.email}» perderá el acceso al momento; sus passkeys y tokens se revocan. Sus proyectos y servicios no se tocan.`}
+        message={`«${toDeleteShown?.email ?? ''}» perderá el acceso al momento; sus passkeys y tokens se revocan. Sus proyectos y servicios no se tocan.`}
         loading={remove.isPending}
       />
     </div>

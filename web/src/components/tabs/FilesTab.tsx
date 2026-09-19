@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { useLatched } from '../../hooks';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronRight,
@@ -61,6 +62,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
   const queryClient = useQueryClient();
   const [dir, setDir] = useState('/');
   const [deleting, setDeleting] = useState<FileEntry | null>(null);
+  const deletingShown = useLatched(deleting);
   const [uploading, setUploading] = useState(false);
   const [folderOpen, setFolderOpen] = useState(false);
   const [folderName, setFolderName] = useState('');
@@ -170,7 +172,8 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
               <button
                 onClick={() => setDir(c.path)}
                 className={cx(
-                  'max-w-[160px] truncate rounded px-1 py-0.5 transition-colors hover:bg-surface2 hover:text-txt',
+                  // `truncate` recorta el área extra de `.tap`, así que aquí el alto se gana con relleno.
+                  'max-w-[160px] truncate rounded px-1 py-0.5 transition-colors hover:bg-surface2 hover:text-txt max-sm:min-w-10 max-sm:py-[13px]',
                   i === arr.length - 1 ? 'text-txt' : 'text-sub',
                 )}
               >
@@ -286,6 +289,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
                       onClick={() => download(entry)}
                       className="rounded-md p-1 text-subtle transition-colors hover:bg-bg hover:text-txt max-sm:p-2.5"
                       title="Descargar"
+                      aria-label={`Descargar ${entry.name}`}
                     >
                       <Download size={13} />
                     </button>
@@ -295,6 +299,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
                       onClick={() => setDeleting(entry)}
                       className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err max-sm:p-2.5"
                       title="Eliminar"
+                      aria-label={`Eliminar ${entry.name}`}
                     >
                       <Trash2 size={13} />
                     </button>
@@ -356,11 +361,11 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
         onClose={() => setDeleting(null)}
         onConfirm={() => deleting && del.mutate(deleting)}
         loading={del.isPending}
-        title={`Eliminar ${deleting?.type === 'dir' ? 'carpeta' : 'archivo'}`}
+        title={`Eliminar ${deletingShown?.type === 'dir' ? 'carpeta' : 'archivo'}`}
         message={
-          deleting?.type === 'dir'
-            ? `Se eliminará la carpeta "${deleting?.name}" y todo su contenido dentro del contenedor. Esta acción no se puede deshacer.`
-            : `Se eliminará "${deleting?.name}" dentro del contenedor. Esta acción no se puede deshacer.`
+          deletingShown?.type === 'dir'
+            ? `Se eliminará la carpeta "${deletingShown.name}" y todo su contenido dentro del contenedor. Esta acción no se puede deshacer.`
+            : `Se eliminará "${deletingShown?.name ?? ''}" dentro del contenedor. Esta acción no se puede deshacer.`
         }
       />
     </div>

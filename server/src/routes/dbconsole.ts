@@ -5,7 +5,15 @@ import { audit } from '../audit';
 import { dbConsoleEngine, dbSnippets, getDbBrowseQuery, getDbOverview, runDbQuery } from '../dbconsole';
 import { getProject, getService } from '../db';
 import { dockerAvailable } from '../docker/client';
+import { rateLimit } from '../ratelimit';
 import { ProjectRow, ServiceRow } from '../types';
+
+/**
+ * Tope de consultas por usuario y minuto. Cada una abre un exec en el
+ * contenedor de la base y puede durar 30 s: mismo motivo que el tope de la
+ * terminal, con más margen porque en una consola se encadenan consultas.
+ */
+const CONSULTAS_POR_MINUTO = 60;
 
 function load(id: string): { service: ServiceRow; project: ProjectRow } | null {
   const service = getService(id);
@@ -39,7 +47,7 @@ export async function dbConsoleRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  app.post('/api/services/:id/db/query', async (req, reply) => {
+  app.post('/api/services/:id/db/query', { preHandler: rateLimit({ max: CONSULTAS_POR_MINUTO, windowMs: 60_000 }) }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });

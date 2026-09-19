@@ -1,6 +1,12 @@
 import { FastifyInstance } from 'fastify';
-import { canAccessProject, currentUser, requireAuth } from '../auth';
-import { getSetting, listDeployments, listProjects, listServices, openAlertCountsByService } from '../db';
+import { canAccessProjectRow, currentUser, requireAuth } from '../auth';
+import {
+  getSetting,
+  latestDeploymentsByService,
+  listProjects,
+  listServicesForProjects,
+  openAlertCountsByService,
+} from '../db';
 import { aggregateReplicaState, configuredReplicas } from '../docker/containers';
 import { dockerSnapshot } from '../docker/sampler';
 import { ContainerState } from '../types';
@@ -23,10 +29,16 @@ export async function websiteRoutes(app: FastifyInstance): Promise<void> {
     const tls = !!getSetting('letsencryptEmail');
     const sites: any[] = [];
 
-    for (const project of listProjects()) {
-      if (!canAccessProject(user, project.id)) continue;
+    // Servicios y últimos despliegues de todos los proyectos en dos consultas:
+    // la vista se sondea cada 8 s y antes hacía dos por servicio.
+    const projects = listProjects().filter((p) => canAccessProjectRow(user, p));
+    const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
+    const sitios = [...servicesByProject.values()].flat().filter((s) => s.type !== 'database');
+    const lastDeploys = latestDeploymentsByService(sitios.map((s) => s.id));
+
+    for (const project of projects) {
       const alertCounts = openAlertCountsByService(project.id);
-      for (const service of listServices(project.id)) {
+      for (const service of servicesByProject.get(project.id) ?? []) {
         if (service.type === 'database') continue;
         const cfg = service.config as any;
         const total = configuredReplicas(service);
@@ -43,7 +55,7 @@ export async function websiteRoutes(app: FastifyInstance): Promise<void> {
             }
           }
         }
-        const lastDeploy = listDeployments(service.id, 1)[0] ?? null;
+        const lastDeploy = lastDeploys.get(service.id) ?? null;
         sites.push({
           id: service.id,
           name: service.name,

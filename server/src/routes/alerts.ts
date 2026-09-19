@@ -1,12 +1,31 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { canAccessProject, currentUser, requireAuth } from '../auth';
-import { countUnreadAlerts, getAlert, listAlerts, listUserProjectIds, markAlertsRead, resolveAlert } from '../db';
+import {
+  countUnreadAlerts,
+  getAlert,
+  listAlerts,
+  listUserProjectIds,
+  listWorkspaceProjects,
+  markAlertsRead,
+  resolveAlert,
+} from '../db';
 import { UserRow } from '../types';
 
-/** undefined = sin restricción (admin); lista = solo esos workspaces (member). */
+/**
+ * undefined = sin restricción (admin); lista = solo esos proyectos. Replica la
+ * regla de `canAccessProject`: el propietario ve TODOS los proyectos de su
+ * workspace, el miembro solo los asignados. A los propietarios no se les escriben
+ * filas en `user_projects`, así que consultar solo esa tabla dejaba su campana y
+ * su página de alertas siempre vacías.
+ */
 function alertScope(user: UserRow): string[] | undefined {
-  return user.role === 'admin' ? undefined : listUserProjectIds(user.id);
+  if (user.role === 'admin') return undefined;
+  const ids = new Set(listUserProjectIds(user.id));
+  if (user.role === 'owner' && user.workspace_id) {
+    for (const project of listWorkspaceProjects(user.workspace_id)) ids.add(project.id);
+  }
+  return [...ids];
 }
 
 export async function alertRoutes(app: FastifyInstance): Promise<void> {

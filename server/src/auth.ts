@@ -5,7 +5,7 @@ import { config } from './config';
 import { getApiTokenByHash, getProject, getService, getSetting, getUser, setSetting, touchApiToken, userHasProject } from './db';
 import { MODULE_LABEL, ModuleKey } from './modules';
 import { moduleEnabled, workspaceOfProject, workspacePlan } from './quota';
-import { UserRow } from './types';
+import { ProjectRow, UserRow } from './types';
 import { randomToken } from './util';
 
 declare module 'fastify' {
@@ -22,6 +22,12 @@ declare module 'fastify' {
 export const COOKIE_NAME = 'skyway_token';
 export const API_TOKEN_PREFIX = 'sky_';
 const TOKEN_TTL = '30d';
+/**
+ * Cada cuánto se refresca `last_used_at` de un token de API. Un agente que
+ * sondea cada pocos segundos hacía un UPDATE (y un fsync del WAL) por petición
+ * para un dato que la UI enseña con precisión de minutos.
+ */
+const TOKEN_TOUCH_INTERVAL_MS = 60_000;
 
 let cachedSecret: string | null = null;
 
@@ -145,7 +151,7 @@ export function currentUser(req: FastifyRequest): UserRow | null {
           user = owner;
           req.authActor = `${owner.email} · token:${row.name}`;
           req.authMethod = 'token';
-          touchApiToken(row.id);
+          if (!row.last_used_at || Date.now() - row.last_used_at > TOKEN_TOUCH_INTERVAL_MS) touchApiToken(row.id);
         }
       }
     }
@@ -236,6 +242,17 @@ export function canAccessProject(user: UserRow, projectId: string): boolean {
   }
   // Un miembro accede a los proyectos que se le han asignado.
   return userHasProject(user.id, projectId);
+}
+
+/**
+ * Igual que `canAccessProject`, para cuando la fila del proyecto ya está en la
+ * mano (filtrar un listado): evita releer cada proyecto de la base de datos en
+ * cada sondeo del panel.
+ */
+export function canAccessProjectRow(user: UserRow, project: ProjectRow): boolean {
+  if (user.role === 'admin') return true;
+  if (user.role === 'owner' && user.workspace_id && project.workspace_id === user.workspace_id) return true;
+  return userHasProject(user.id, project.id);
 }
 
 /**

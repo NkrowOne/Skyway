@@ -1,4 +1,4 @@
-import { countFailedLogins, getSetting, listProjects, listServices } from './db';
+import { countFailedLogins, getSetting, listProjects, listServicesForProjects } from './db';
 import { channelsConfigured } from './notify';
 import { hostDisk } from './disk';
 import { DatabaseConfig, SecurityFinding, ServiceRow } from './types';
@@ -16,8 +16,10 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
 
   const servicesWithDomains: string[] = [];
 
+  // Todos los servicios en una consulta en vez de una por proyecto.
+  const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
   for (const project of projects) {
-    for (const service of listServices(project.id)) {
+    for (const service of servicesByProject.get(project.id) ?? []) {
       const cfg = service.config as any;
       const base = {
         projectId: project.id,

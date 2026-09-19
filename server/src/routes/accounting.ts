@@ -282,6 +282,7 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
         period_start: i.period_start,
         period_end: i.period_end,
         issued_at: i.issued_at,
+        due_at: i.due_at,
         paid_at: i.paid_at,
       })),
     };

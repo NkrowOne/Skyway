@@ -69,7 +69,7 @@ dos están corregidos.
 | 16 | Ciclo | «Generar ciclo» no era idempotente: dos pulsaciones creaban dos facturas del mismo periodo, con el plan y los cargos duplicados. | La ruta comprueba el ciclo en curso y responde 409. |
 | 17 | Morosidad | Anular (o rectificar) la factura vencida dejaba al cliente **cortado para siempre**: el corte solo se levantaba al *pagar*. | Anular una factura también reevalúa el saldo y levanta el corte si ya no debe nada. |
 | 18 | Pagos | En monedas **sin decimales** (JPY, KRW…) se enviaba a Stripe el importe en céntimos: cobro de 100 veces la factura. | `stripeAmount` convierte a la unidad mínima real de cada divisa, y la misma función se usa al conciliar el cobro. |
-| 19 | Fiscal | La rectificativa de anulación total no neteaba exactamente cero: negaba el **precio unitario** y volvía a multiplicar por la cantidad, reintroduciendo el redondeo con signo contrario. | Se niega el **importe ya calculado** de cada línea. Verificado que la reversa iguala exactamente la base original. |
+| 19 | Fiscal | La rectificativa de anulación total no neteaba exactamente cero: negaba el **precio unitario** y volvía a multiplicar por la cantidad, reintroduciendo el redondeo con signo contrario. | Se niega el **importe ya calculado** de cada línea. Verificado que la reversa iguala exactamente la base original; desde la sexta tanda (nº 68) también la cuota de IVA y la de IRPF. |
 | 20 | Fiscal | El libro registro exportado incluía **borradores** (sin número ni fecha de expedición) y no seguía ningún orden. | El CSV recoge solo facturas expedidas —las anuladas sí, con su número, para justificar el hueco en la serie— y va ordenado por fecha de expedición y número. |
 | 21 | Fiscal | Se emitían facturas completas **sin NIF** del emisor ni del destinatario. | La emisión se bloquea con un mensaje accionable si falta la identificación fiscal del emisor o, salvo en la simplificada, la del cliente. El webhook de cobro queda **exento** a propósito: un pago ya realizado nunca debe quedarse sin registrar por un dato de configuración. |
 | 22 | Contabilidad | Los totales y la gráfica sumaban facturas de divisas distintas y las etiquetaban con la moneda de la empresa. | Los totales se agrupan **por moneda**; los KPI y la serie son los de la moneda del emisor y el resto se desglosa aparte, sin sumarse. |
@@ -227,6 +227,29 @@ Decisiones de diseño del historial, y las trampas que evitan:
   factura (consumo y cargos incluidos), no solo a la cuota.
 - El historial se ve en la pestaña «Facturación» de la cuenta, con el precio de
   cada tramo y hasta dónde está facturada.
+
+### Sexta tanda: redondeo, ancla, Stripe y validaciones
+
+Verificado con 20 000 facturas aleatorias (IVA 0–21 %, IRPF 0–19 %, cantidades
+fraccionarias e importes negativos) y con la app arrancada sobre una base
+temporal (`scratchpad/r2/`).
+
+| # | Hallazgo | Corrección |
+| --- | --- | --- |
+| 68 | **La cuota de IVA/IRPF de la rectificativa difería 1 céntimo** de la original: `Math.round` redondea la mitad hacia +∞ (`+100,5 → 101`, `−100,5 → −100`) y `base × (tipo/100)` arrastra el error de coma flotante. | `roundCents` (mitad lejos de cero, simétrico) y `cuota = roundCents(base × tipo / 100)` en importes de línea, desglose de IVA, IRPF y descuento. Solo afecta a lo que se recalcule: las emitidas son inmutables. |
+| 69 | **El rebobinado del ancla refacturaba**: retrocedía al `period_start` de cualquier factura anulada o borrada, también de una a medida cuyo periodo no coincide con un corte, y el tick volvía a cobrar plan y consumo del tramo. | No rebobina si otra factura expedida y viva solapa el periodo. |
+| 70 | **Doble abono**: se podía anular una factura que ya tenía una rectificativa viva. | 409 hasta anular antes la rectificativa (simétrico a la guarda de `/rectify`). |
+| 71 | **Enlace de Stripe muerto para siempre**: se reutilizaba a ciegas la sesión guardada, y Checkout caduca a las 24 h. Además un borrador con total ≤ 0 se **emitía y numeraba** antes de que Stripe rechazara el importe, y dos clics seguidos creaban dos sesiones. | Se consulta a Stripe y, si la sesión no sigue abierta, se crea otra (`invoice_stripe_link_expired`); el importe se comprueba antes de emitir (400); guarda de concurrencia (409) y recomprobación del estado tras esperar a Stripe. |
+| 72 | **«Generar ciclo» con el ancla atrasada varios meses** facturaba el hueco entero como un ciclo (factor 2,9 sobre el mes nominal, consumo sumado). | Toma el primer periodo pendiente, de uno en uno, igual que el tick. |
+| 73 | Validaciones que solo vivían en el panel: plan **archivado** contratable por API; **moneda** de un plan contratado editable (el ciclo abortaba por divisas mezcladas); producto `metered`/`tiered` **sin medidor** (nunca se facturaba, en silencio); periodo de factura a medida invertido; `workspaceCurrency` calculada con el plan por defecto mientras el ciclo usaba el contratado. | 400/409 en el servidor; misma regla de moneda que el ciclo. |
+| 74 | `due_at` (el vencimiento congelado que imprime el PDF y usa la morosidad) no llegaba al panel. | Expuesto en las facturas de la cuenta y de contabilidad. |
+
+Pendiente de decisión (no tocado): la factura **a medida** toma por defecto el
+periodo del ciclo en curso y, al emitirse con `period_start` igual al ancla,
+la empuja al fin del ciclo: el plan y el consumo de ese mes no se facturan
+nunca. Arreglarlo exige decidir si `origin='manual'` cuenta como factura del
+ciclo (hoy es la vía para desatascar un ciclo bloqueado) o si el panel deja de
+usar el ciclo como periodo por defecto.
 
 ### Sigue pendiente
 

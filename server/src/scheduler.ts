@@ -108,11 +108,27 @@ async function tick(): Promise<void> {
 }
 
 let interval: NodeJS.Timeout | null = null;
+let tickRunning = false;
 
 export function startScheduler(log: { warn: (msg: string) => void }): void {
   if (interval) return;
   interval = setInterval(() => {
-    tick().catch((err) => log.warn(`scheduler: ${err?.message || err}`));
+    // Sin solape: un backup grande puede tardar más que el intervalo, y el
+    // tick siguiente volvería a verlo «pendiente» y lanzaría otro volcado
+    // encima del que aún está en marcha.
+    if (tickRunning) return;
+    tickRunning = true;
+    tick()
+      .catch((err) => log.warn(`scheduler: ${err?.message || err}`))
+      .finally(() => {
+        tickRunning = false;
+      });
   }, TICK_MS);
   interval.unref();
+}
+
+/** Apagado ordenado: no arranca ningún ciclo más (el que esté en curso termina). */
+export function stopScheduler(): void {
+  if (interval) clearInterval(interval);
+  interval = null;
 }
