@@ -55,6 +55,18 @@ const productSchema = z.object({
   tiers: z.array(tierSchema).max(20).optional(),
 });
 
+/**
+ * Un producto por uso (medido o por tramos) sin medidor no se factura NUNCA: el
+ * ciclo salta la suscripción en silencio y el consumo se regala. Se valida sobre
+ * los campos ya fusionados con la fila, porque el PATCH es parcial.
+ */
+function meterError(merged: { billingModel: string; meter: string | null }): string | null {
+  if ((merged.billingModel === 'metered' || merged.billingModel === 'tiered') && !merged.meter) {
+    return 'Un producto por uso (medido o por tramos) necesita un medidor; sin él nunca se facturaría.';
+  }
+  return null;
+}
+
 function publicProduct(p: ProductRow, tiers: PriceTierRow[]) {
   return {
     id: p.id,
@@ -118,6 +130,8 @@ export async function productRoutes(app: FastifyInstance): Promise<void> {
     const body = productSchema.parse(req.body);
     const tiersBad = body.tiers ? tiersError(body.tiers) : null;
     if (tiersBad) return reply.code(400).send({ error: tiersBad });
+    const meterBad = meterError(body);
+    if (meterBad) return reply.code(400).send({ error: meterBad });
     const p = createProduct({
       name: body.name,
       category: body.category,
@@ -149,6 +163,8 @@ export async function productRoutes(app: FastifyInstance): Promise<void> {
     const body = productSchema.partial().parse(req.body);
     const tiersBad = body.tiers ? tiersError(body.tiers) : null;
     if (tiersBad) return reply.code(400).send({ error: tiersBad });
+    const meterBad = meterError({ billingModel: body.billingModel ?? p.billing_model, meter: body.meter === undefined ? p.meter : body.meter });
+    if (meterBad) return reply.code(400).send({ error: meterBad });
     // La moneda de un producto ya contratado no puede cambiar: las suscripciones
     // vivas la tienen congelada y la factura acabaría mezclando divisas.
     if (body.currency && body.currency.toUpperCase() !== p.currency.toUpperCase() && productInUse(id)) {

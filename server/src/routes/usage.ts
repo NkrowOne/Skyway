@@ -17,7 +17,7 @@ const usageSchema = z.object({
   meter: z.enum(['ai_tokens_in', 'ai_tokens_cache_in', 'ai_tokens_out', 'ai_requests', 'ai_bytes', 'unit']),
   quantity: z.coerce.number().min(0).max(1e15),
   productId: z.string().trim().nullable().optional(),
-  ts: z.coerce.number().int().optional(),
+  ts: z.coerce.number().int().min(0).optional(),
   metadata: z.record(z.unknown()).optional(),
 });
 

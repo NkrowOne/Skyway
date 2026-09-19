@@ -77,17 +77,27 @@ const patchWorkspaceSchema = z.object({
 });
 
 const memberSchema = z.object({
-  email: z.string().email('Email inválido'),
-  password: z.string().min(8, 'La contraseña debe tener al menos 8 caracteres'),
+  email: z.string().email('Email inválido').max(200),
+  password: z.string().min(8, 'La contraseña debe tener al menos 8 caracteres').max(200),
   role: z.enum(['owner', 'member']).default('member'),
-  projectIds: z.array(z.string()).default([]),
+  projectIds: z.array(z.string().max(60)).max(1000).default([]),
 });
 
 const patchMemberSchema = z.object({
   role: z.enum(['owner', 'member']).optional(),
-  projectIds: z.array(z.string()).optional(),
-  password: z.string().min(8, 'La contraseña debe tener al menos 8 caracteres').optional(),
+  projectIds: z.array(z.string().max(60)).max(1000).optional(),
+  password: z.string().min(8, 'La contraseña debe tener al menos 8 caracteres').max(200).optional(),
 });
+
+/** Motivo por el que un plan no se puede contratar, o null si sirve. */
+function planBlocker(planId: string): string | null {
+  const plan = getPlan(planId);
+  if (!plan) return 'Plan desconocido';
+  // Archivado = «no se ofrece para nuevos workspaces»; sin esta comprobación la
+  // regla vivía solo en el panel y la API lo contrataba igual.
+  if (plan.archived) return 'El plan está archivado y no admite contrataciones nuevas.';
+  return null;
+}
 
 // --- vistas ---
 function publicWorkspace(ws: WorkspaceRow) {
@@ -156,7 +166,8 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/api/workspaces', { preHandler: requireAdmin }, async (req, reply) => {
     const body = createWorkspaceSchema.parse(req.body);
-    if (body.planId && !getPlan(body.planId)) return reply.code(400).send({ error: 'Plan desconocido' });
+    const planError = body.planId ? planBlocker(body.planId) : null;
+    if (planError) return reply.code(400).send({ error: planError });
     const ws = createWorkspaceRow(body.name, {
       // Cadena vacía = sin plan (no se escribe '' en la clave foránea).
       plan_id: body.planId || null,
@@ -206,14 +217,18 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     const ws = getWorkspace(id);
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
     const body = patchWorkspaceSchema.parse(req.body);
+    const cambiaPlan = body.planId !== undefined && (body.planId || null) !== ws.plan_id;
+    // Solo se comprueba al CAMBIAR de plan: reenviar el plan actual (aunque se haya
+    // archivado después de contratarlo) no es una contratación nueva.
     if (body.planId && !getPlan(body.planId)) return reply.code(400).send({ error: 'Plan desconocido' });
+    const planError = body.planId && cambiaPlan ? planBlocker(body.planId) : null;
+    if (planError) return reply.code(400).send({ error: planError });
 
     const fields: Record<string, unknown> = {};
     // Instante único para el cambio de plan: el `plan_since` de la cuenta y el
     // corte del historial por tramos tienen que caer en el MISMO milisegundo, o el
     // ciclo dejaría un hueco (o un solape) de unos milisegundos entre ambos.
     const ahora = Date.now();
-    const cambiaPlan = body.planId !== undefined && (body.planId || null) !== ws.plan_id;
     if (body.name !== undefined) fields.name = body.name;
     if (body.planId !== undefined) {
       fields.plan_id = body.planId || null; // '' → sin plan (no rompe la FK)

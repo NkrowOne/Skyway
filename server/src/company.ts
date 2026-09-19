@@ -5,6 +5,7 @@
  */
 import { getSetting, setSetting } from './db';
 import { BillingProfile } from './types';
+import { safeParse } from './util';
 
 export const DEFAULT_PROFILE: BillingProfile = {
   companyName: '',
@@ -25,13 +26,9 @@ export const DEFAULT_PROFILE: BillingProfile = {
 };
 
 export function getBillingProfile(): BillingProfile {
-  const raw = getSetting('billingProfile');
-  if (!raw) return { ...DEFAULT_PROFILE };
-  try {
-    return { ...DEFAULT_PROFILE, ...(JSON.parse(raw) as Partial<BillingProfile>) };
-  } catch {
-    return { ...DEFAULT_PROFILE };
-  }
+  // `safeParse` exige además que lo guardado sea un objeto: extender una cadena o
+  // una lista habría metido claves numéricas en el perfil sin que nadie lo viera.
+  return { ...DEFAULT_PROFILE, ...safeParse<Partial<BillingProfile>>(getSetting('billingProfile'), {}) };
 }
 
 export function setBillingProfile(profile: BillingProfile): void {

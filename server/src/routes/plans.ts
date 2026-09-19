@@ -12,6 +12,7 @@ import {
 } from '../db';
 import { sanitizeModules } from '../modules';
 import { PlanRow } from '../types';
+import { safeParse } from '../util';
 
 const modulesSchema = z.array(z.string()).max(50).transform((arr) => sanitizeModules(arr));
 
@@ -46,22 +47,13 @@ function publicPlan(p: PlanRow) {
     max_projects: p.max_projects,
     max_services: p.max_services,
     max_members: p.max_members,
-    modules: sanitizeModules(safeParse(p.modules)),
+    modules: sanitizeModules(safeParse<string[]>(p.modules, [])),
     is_default: !!p.is_default,
     archived: !!p.archived,
     discount_pct: p.discount_pct,
     created_at: p.created_at,
     inUse: countWorkspacesOnPlan(p.id),
   };
-}
-
-function safeParse(json: string): string[] {
-  try {
-    const v = JSON.parse(json);
-    return Array.isArray(v) ? v : [];
-  } catch {
-    return [];
-  }
 }
 
 /** Planes de facturación: catálogo de usos incluidos. Solo administradores. */
@@ -97,6 +89,12 @@ export async function planRoutes(app: FastifyInstance): Promise<void> {
     const plan = getPlan(id);
     if (!plan) return reply.code(404).send({ error: 'Plan no encontrado' });
     const body = planSchema.partial().parse(req.body);
+    // Igual que en el catálogo (#34): la moneda de un plan CONTRATADO no cambia. Las
+    // suscripciones de sus cuentas se validaron contra la moneda antigua y el
+    // ciclo siguiente abortaría por divisas mezcladas, con el ancla clavada.
+    if (body.currency && body.currency !== plan.currency.toUpperCase() && countWorkspacesOnPlan(id) > 0) {
+      return reply.code(409).send({ error: 'El plan está contratado: no se puede cambiar su moneda. Archívalo y crea uno nuevo.' });
+    }
     const fields: Record<string, unknown> = {};
     if (body.name !== undefined) fields.name = body.name;
     if (body.price_cents !== undefined) fields.price_cents = body.price_cents;

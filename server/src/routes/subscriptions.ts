@@ -8,6 +8,7 @@ import {
   createSubscription,
   deleteSubscription,
   getPendingCharge,
+  getPlan,
   getProduct,
   getSubscription,
   getWorkspace,
@@ -17,18 +18,21 @@ import {
   updateSubscription,
 } from '../db';
 import { getBillingProfile } from '../company';
-import { workspacePlan } from '../quota';
 import { PendingChargeRow, ProductRow, SubscriptionRow, WorkspaceRow } from '../types';
 
 const MONEY = 100_000_00;
 
 /**
- * Moneda de facturación de la cuenta: la de su plan o, sin plan, la del emisor.
- * Una factura tiene una sola moneda, así que contratar un producto en otra divisa
- * sumaría céntimos de monedas distintas sin conversión.
+ * Moneda de facturación de la cuenta: la de su plan CONTRATADO o, sin plan, la del
+ * emisor. Es el mismo criterio que `generateCycleDraft`; pasar por `workspacePlan`
+ * (que cae al plan por defecto como respaldo informativo) validaba aquí contra una
+ * moneda que el ciclo no usa, y una cuenta sin plan podía contratar en la divisa
+ * del plan por defecto para abortar después con «divisas mezcladas». Una factura
+ * tiene una sola moneda: contratar en otra sumaría céntimos sin conversión.
  */
 function workspaceCurrency(ws: WorkspaceRow): string {
-  return (workspacePlan(ws)?.currency ?? getBillingProfile().currency).toUpperCase();
+  const plan = ws.plan_id ? getPlan(ws.plan_id) : undefined;
+  return (plan?.currency ?? getBillingProfile().currency).toUpperCase();
 }
 
 function publicSubscription(s: SubscriptionRow, product: ProductRow | undefined) {
