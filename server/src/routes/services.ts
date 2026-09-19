@@ -590,14 +590,19 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       const { id } = req.params as { id: string };
       const found = loadService(id);
       if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
-    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
+      if (!assertProjectAccess(req, reply, found.project.id)) return reply;
       if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
       markManualAction(id);
       const total = configuredReplicas(found.service);
       const lastDep = latestDeployment(found.service.id);
-      try {
-        for (let i = 1; i <= total; i++) {
-          const name = replicaName(found.project, found.service, i);
+      // Se actúa réplica a réplica: una que aún no existe (réplicas ampliadas en
+      // Ajustes sin redesplegar, o un servicio nunca desplegado) no puede
+      // convertir en 500 la acción sobre las que sí están.
+      let tocadas = 0;
+      let fallo: any = null;
+      for (let i = 1; i <= total; i++) {
+        const name = replicaName(found.project, found.service, i);
+        try {
           if (action === 'start') {
             await startContainer(name);
           } else if (action === 'stop') {
@@ -606,9 +611,15 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
           } else {
             await restartContainer(name);
           }
+          tocadas += 1;
+        } catch (err: any) {
+          if (err?.statusCode === 404) continue;
+          fallo = err;
         }
-      } catch (err: any) {
-        return reply.code(500).send({ error: err?.message || 'Operación fallida' });
+      }
+      if (fallo) return reply.code(500).send({ error: fallo?.message || 'Operación fallida' });
+      if (tocadas === 0 && action !== 'stop') {
+        return reply.code(409).send({ error: 'El contenedor aún no existe: despliega el servicio primero' });
       }
       audit(req, `service_${action}`, { type: 'service', id, detail: found.service.name });
       // Una parada pedida desde aquí no es una caída: el panel la pinta en gris.
