@@ -9,6 +9,7 @@ import {
   GithubSource,
   GithubSourceSelect,
   NO_SOURCE,
+  RepoAccessHint,
   useGithubBranches,
   useGithubSources,
 } from './GithubSource';
@@ -696,6 +697,7 @@ export default function NewServiceModal({
                 onFilter={setRepoFilter}
                 onPick={pickRepo}
                 enabled={open && step === 'git'}
+                projectId={projectId}
               />
             </Field>
           ) : (
@@ -717,6 +719,7 @@ export default function NewServiceModal({
                 autoCorrect="off"
                 spellCheck={false}
               />
+              <RepoAccessHint source={source} repo={repoUrl} projectId={projectId} enabled={open && step === 'git'} />
             </Field>
           )}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

@@ -15,6 +15,10 @@ const RETURN_MESSAGE: Record<string, { text: string; tone: 'ok' | 'err' }> = {
   conectado: { text: 'Cuenta de GitHub conectada.', tone: 'ok' },
   estado_invalido: { text: 'El enlace de GitHub caducó o no era de esta sesión. Vuelve a intentarlo.', tone: 'err' },
   proyecto_no_existe: { text: 'El proyecto ya no existe.', tone: 'err' },
+  instalacion_ajena: {
+    text: 'Esa instalación de la App ya está conectada a otro proyecto o al servidor: solo un administrador puede compartirla.',
+    tone: 'err',
+  },
   error: { text: 'GitHub devolvió un error al completar la conexión.', tone: 'err' },
 };
 

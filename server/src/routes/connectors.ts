@@ -13,8 +13,9 @@ import {
   listAllGithubConnectors,
   listGithubConnectors,
 } from '../db';
-import { GithubError, listGithubBranches, listGithubRepos, verifyGithubToken } from '../github/client';
+import { GithubError, listGithubBranches, listGithubRepos, parseGithubSlug, verifyGithubToken } from '../github/client';
 import { GithubConnectorRow } from '../types';
+import { lookupRepo, notVisibleMessage } from './github';
 
 const MAX_CONNECTORS_PER_PROJECT = 10;
 
@@ -139,6 +140,25 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
     if (!assertProjectAccess(req, reply, connector.project_id)) return reply;
     try {
       return { repos: await listGithubRepos(connector.token) };
+    } catch (err: any) {
+      if (err instanceof GithubError) return reply.code(502).send({ error: err.message });
+      throw err;
+    }
+  });
+
+  /** Un repo escrito a mano comprobado con el token (ver la ruta homónima de la App). */
+  app.get('/api/connectors/:id/repos/lookup', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const query = z.object({ repo: z.string().trim().min(3).max(300) }).parse(req.query);
+    const connector = getGithubConnector(id);
+    if (!connector) return reply.code(404).send({ error: 'Conector no encontrado' });
+    if (!assertProjectAccess(req, reply, connector.project_id)) return reply;
+    const slug = parseGithubSlug(query.repo);
+    if (!slug) return reply.code(400).send({ error: 'Escribe el repositorio como owner/repo o pega su URL de GitHub' });
+    try {
+      const repo = await lookupRepo(connector.token, slug.owner, slug.repo);
+      if (repo) return { repo };
+      return reply.code(404).send({ error: notVisibleMessage('pat', connector.gh_login, slug.owner, slug.repo), reason: 'not_visible' });
     } catch (err: any) {
       if (err instanceof GithubError) return reply.code(502).send({ error: err.message });
       throw err;

@@ -16,7 +16,7 @@ import { getStripeWebhookSecret } from '../company';
 import { verifyStripeSignature } from '../stripe';
 import { markInvoicePaidByStripeSession } from './billing';
 import { triggerDeploy } from '../deploy/deployer';
-import { githubAppConfig } from '../github/app';
+import { forgetInstallationToken, githubAppConfig } from '../github/app';
 import { parseGithubSlug } from '../github/client';
 import { markManualAction } from '../monitor';
 import { GitConfig, ServiceRow } from '../types';
@@ -109,6 +109,9 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
         const action = payload?.action;
         if (action === 'deleted') {
           const removed = deleteGithubInstallationsByNumber(installationId);
+          // El token cacheado seguiría vivo hasta 55 min para una instalación
+          // que GitHub ya ha revocado: se olvida a la vez que las filas.
+          forgetInstallationToken(installationId);
           if (removed > 0) auditSystem('github_installation_deleted', `instalación ${installationId}`);
         } else if (action === 'suspend' || action === 'unsuspend') {
           setGithubInstallationSuspended(installationId, action === 'suspend');

@@ -7,6 +7,7 @@ import {
   deleteGithubInstallation,
   getGithubInstallation,
   getProject,
+  getSetting,
   listAllGithubInstallations,
   listGithubInstallationsByNumber,
   listGithubInstallationsForProject,
@@ -22,10 +23,11 @@ import {
   getInstallation,
   githubAppConfig,
   githubAppConfigured,
-  installUrl,
+  installUrlFresh,
   listInstallationRepos,
+  refreshAppInfo,
 } from '../github/app';
-import { GithubError, listGithubBranches } from '../github/client';
+import { GithubError, getGithubRepo, listGithubBranches, parseGithubSlug } from '../github/client';
 import { installationTokenFor } from '../github/resolve';
 import { moduleAllowedForProject } from '../quota';
 import { GithubInstallationRow } from '../types';
@@ -93,8 +95,10 @@ function publicInstallation(row: GithubInstallationRow & { project_name?: string
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
     suspended: row.suspended === 1,
-    // Enlace a GitHub para añadir o quitar repos de esta instalación.
-    manageUrl: cfg ? configureUrl(cfg, row.installation_id) : null,
+    // Enlace a GitHub para añadir o quitar repos de esta instalación: la página
+    // de ajustes de la cuenta u organización, que va por id de instalación (la
+    // antigua, por slug de la App, no existía y daba 404).
+    manageUrl: cfg ? configureUrl({ accountType: row.account_type, accountLogin: row.account_login }, row.installation_id) : null,
   };
 }
 
@@ -166,12 +170,47 @@ function installationUseAccess(
 
 const useQuerySchema = z.object({ projectId: z.string().trim().min(1).optional() });
 
+/** `owner/repo` o URL de GitHub escritos a mano: se aceptan las dos formas. */
+const lookupSchema = useQuerySchema.extend({ repo: z.string().trim().min(3).max(300) });
+
+/**
+ * Ficha de UN repo con una credencial concreta (o sin ninguna, para los
+ * públicos). null si GitHub dice que no existe o que la credencial no lo ve:
+ * para GitHub son lo mismo (404), y aquí también.
+ */
+const lookupRepo = getGithubRepo;
+
+/**
+ * Por qué una cuenta no ve un repo escrito a mano, dicho de forma que se pueda
+ * actuar. Es el caso de quien es solo colaborador en un repo ajeno: la App solo
+ * ve las cuentas donde está instalada, y un token fine-grained solo lo que se
+ * le concedió; un token clásico con permiso «repo» sí ve donde colaboras.
+ */
+function notVisibleMessage(kind: 'app' | 'pat', account: string, owner: string, repo: string): string {
+  const quien = `${owner}/${repo}`;
+  if (kind === 'app') {
+    return (
+      `La cuenta @${account} no ve ${quien}. La App solo ve los repositorios de las cuentas donde está instalada: ` +
+      `si ${owner} es tuya, añade el repo desde «Elegir repositorios en GitHub»; si solo eres colaborador, conecta ` +
+      'un token clásico de tu usuario con permiso «repo» (Tokens personales), que sí ve los repos donde colaboras.'
+    );
+  }
+  return (
+    `El token de @${account} no ve ${quien}. Un token fine-grained solo ve los repos que se le concedieron, nunca los ` +
+    'de otra cuenta donde eres colaborador: crea uno clásico con permiso «repo», o pide acceso al dueño del repo.'
+  );
+}
+
 export async function githubRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
-  /** Estado de la App: si existe, cómo se llama y dónde instalarla. */
+  /**
+   * Estado de la App: si existe, cómo se llama y dónde instalarla. Se refresca
+   * desde GitHub (memoizado): renombrarla allí cambia su slug y, con el antiguo
+   * guardado, su enlace y el de instalar daban 404.
+   */
   app.get('/api/github/app', async (req) => {
-    const cfg = githubAppConfig();
+    const cfg = await refreshAppInfo();
     const user = currentUser(req)!;
     return {
       configured: !!cfg,
@@ -254,7 +293,9 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const state = signState({ kind: 'install', userId: user.id, projectId: query.projectId ?? null });
-    return redirectToPanel(reply, installUrl(cfg, state));
+    // Con el slug recién comprobado: si la App se renombró en GitHub, el guardado
+    // llevaba a un 404.
+    return redirectToPanel(reply, await installUrlFresh(state));
   });
 
   /**
@@ -272,14 +313,34 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
 
     const state = verifyState(query.state, 'install');
     const user = currentUser(req)!;
-    const back = state?.projectId ? `/projects/${state.projectId}` : '/settings';
+    /*
+     * Sin estado válido, la instalación se hizo desde la propia página de la
+     * App en GitHub (o el enlace caducó). Un administrador con sesión la
+     * registra igual, como conexión del servidor: es quien puede hacerlo desde
+     * Ajustes, y mandarle de vuelta con «estado inválido» solo le obligaba a
+     * repetir el paseo. Para cualquier otro sigue siendo un error.
+     */
+    const adminSinEstado = !state && user.role === 'admin' && !!query.installation_id;
+    const projectId = state?.projectId ?? null;
+    const back = projectId ? `/projects/${projectId}` : '/settings';
 
-    if (!query.installation_id || !state || state.userId !== user.id) {
+    if (!query.installation_id || (!adminSinEstado && (!state || state.userId !== user.id))) {
       return redirectToPanel(reply, `${back}?github=estado_invalido`);
     }
     // El proyecto pudo borrarse mientras el usuario estaba en GitHub.
-    if (state.projectId && !getProject(state.projectId)) {
+    if (projectId && !getProject(projectId)) {
       return redirectToPanel(reply, '/settings?github=proyecto_no_existe');
+    }
+    /*
+     * El id de instalación no viaja firmado en el estado (lo asigna GitHub al
+     * volver) y es un entero adivinable: un miembro podía registrar en SU
+     * proyecto una instalación ajena de la misma App y clonar con ella los
+     * repos privados de otro cliente. Una instalación ya conectada a otro
+     * proyecto, o global, solo la reasigna o comparte el administrador.
+     */
+    if (user.role !== 'admin') {
+      const ajena = listGithubInstallationsByNumber(query.installation_id).some((r) => r.project_id !== projectId);
+      if (ajena) return redirectToPanel(reply, `${back}?github=instalacion_ajena`);
     }
 
     try {
@@ -289,14 +350,14 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
         account_login: info.accountLogin,
         account_type: info.accountType,
         repo_selection: info.repositorySelection,
-        project_id: state.projectId ?? null,
+        project_id: projectId,
         created_by: req.authActor ?? user.email,
         suspended: info.suspended,
       });
       audit(req, 'github_installation_connected', {
         type: 'connector',
         id: row.id,
-        detail: `@${info.accountLogin} (instalación ${info.installationId})${state.projectId ? ` en proyecto ${state.projectId}` : ' global'}`,
+        detail: `@${info.accountLogin} (instalación ${info.installationId})${projectId ? ` en proyecto ${projectId}` : ' global'}`,
       });
       return redirectToPanel(reply, `${back}?github=conectado`);
     } catch (err: any) {
@@ -397,4 +458,58 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
       throw err;
     }
   });
+
+  /**
+   * Un repo escrito a mano (o pegado como URL) comprobado con la instalación:
+   * el listado solo enseña lo que la App ve, y quien es colaborador en un repo
+   * ajeno no lo encuentra ahí. Si la cuenta no lo ve, el 404 dice qué hacer.
+   */
+  app.get('/api/github/installations/:rowId/repos/lookup', async (req, reply) => {
+    const { rowId } = req.params as { rowId: string };
+    const query = lookupSchema.parse(req.query);
+    const row = getGithubInstallation(rowId);
+    if (!row) return reply.code(404).send({ error: 'Instalación no encontrada' });
+    if (!installationUseAccess(req, reply, row, query.projectId)) return reply;
+    const slug = parseGithubSlug(query.repo);
+    if (!slug) return reply.code(400).send({ error: 'Escribe el repositorio como owner/repo o pega su URL de GitHub' });
+    try {
+      const token = await installationTokenFor(row);
+      const repo = await lookupRepo(token, slug.owner, slug.repo);
+      if (repo) return { repo };
+      return reply.code(404).send({ error: notVisibleMessage('app', row.account_login, slug.owner, slug.repo), reason: 'not_visible' });
+    } catch (err: any) {
+      if (err instanceof GithubError) return reply.code(502).send({ error: err.message });
+      throw err;
+    }
+  });
+
+  /**
+   * Lo mismo sin cuenta elegida («URL manual»): con el token global del
+   * servidor si lo hay, y si no, como anónimo (solo repos públicos). Sirve para
+   * decir ANTES de crear el servicio si el primer despliegue va a poder clonar.
+   */
+  app.get('/api/projects/:id/github/lookup', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const query = z.object({ repo: z.string().trim().min(3).max(300) }).parse(req.query);
+    if (!getProject(id)) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectAccess(req, reply, id)) return reply;
+    const slug = parseGithubSlug(query.repo);
+    if (!slug) return reply.code(400).send({ error: 'Escribe el repositorio como owner/repo o pega su URL de GitHub' });
+    const globalToken = getSetting('githubToken') || null;
+    try {
+      const repo = await lookupRepo(globalToken, slug.owner, slug.repo);
+      if (repo) return { repo, credential: globalToken ? 'global' : 'public' };
+      return reply.code(404).send({
+        error: globalToken
+          ? `Ni el token global del servidor ve ${slug.owner}/${slug.repo}: conecta en este proyecto una cuenta de GitHub que lo vea.`
+          : `${slug.owner}/${slug.repo} no es público (o no existe): para clonarlo conecta en este proyecto una cuenta de GitHub que lo vea.`,
+        reason: 'not_visible',
+      });
+    } catch (err: any) {
+      if (err instanceof GithubError) return reply.code(502).send({ error: err.message });
+      throw err;
+    }
+  });
 }
+
+export { lookupRepo, notVisibleMessage };

@@ -136,7 +136,10 @@ export default function GithubModal({
                         <ModuleLogo kind="github" size={20} />
                       </span>
                       <p className="mt-3 text-sm font-medium">Conecta tu cuenta de GitHub</p>
-                      <p className="mx-auto mt-1 max-w-md text-xs text-sub">Eliges en GitHub qué repositorios ve Skyway.</p>
+                      <p className="mx-auto mt-1 max-w-md text-xs text-sub">
+                        Eliges en GitHub qué repositorios ve Skyway. Solo aparecen los de las cuentas donde instales la App;
+                        para un repo ajeno donde eres colaborador, usa un token personal (abajo).
+                      </p>
                       <Button className="mt-4" onClick={connectAccount}>
                         <ModuleLogo kind="github" size={14} /> Conectar con GitHub
                       </Button>
@@ -288,8 +291,9 @@ export default function GithubModal({
               </summary>
 
               <p className="mt-2 text-xs text-subtle">
-                Alternativa para cuentas donde no se puede instalar una App. Caducan y dan acceso a todo lo que ve esa
-                cuenta, así que la App es preferible cuando esté disponible.
+                Para cuentas donde no se puede instalar la App y para repos ajenos donde solo eres colaborador: un token
+                clásico con permiso «repo» ve todo lo que ve tu usuario (los fine-grained, solo lo que se les concede).
+                Caducan, así que la App es preferible cuando llegue.
               </p>
 
               {pats.length > 0 && (

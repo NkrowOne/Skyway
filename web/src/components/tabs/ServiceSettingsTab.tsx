@@ -9,6 +9,7 @@ import {
   GithubSource,
   GithubSourceSelect,
   NO_SOURCE,
+  RepoAccessHint,
   sourceFromConfig,
   sourceStillConnected,
   sourceToConfig,
@@ -300,6 +301,13 @@ export default function ServiceSettingsTab({
                     autoCapitalize="none"
                     autoCorrect="off"
                     spellCheck={false}
+                  />
+                  {/* Solo cuando cambia algo: el repo guardado ya se sabe que clona (o no) por sus despliegues. */}
+                  <RepoAccessHint
+                    source={danglingSource ? NO_SOURCE : form.source}
+                    repo={form.repoUrl}
+                    projectId={projectId}
+                    enabled={dirty && (form.repoUrl !== baseline.repoUrl || form.source !== baseline.source)}
                   />
                 </Field>
                 {(hasSources || danglingSource) && (
