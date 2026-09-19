@@ -29,7 +29,8 @@ function SectionCard({
   icon: React.ReactNode;
   iconClass: string;
   title: string;
-  description: string;
+  /** Opcional: si el título ya lo dice todo, una descripción solo repite. */
+  description?: string;
   children: React.ReactNode;
   className?: string;
 }) {
@@ -42,7 +43,7 @@ function SectionCard({
           </span>
           {title}
         </h3>
-        <p className="mt-1 text-xs text-subtle">{description}</p>
+        {description && <p className="mt-1 text-xs text-subtle">{description}</p>}
       </div>
       {children}
     </section>
@@ -315,14 +316,11 @@ export default function ServiceSettingsTab({
                       <input className="input" placeholder="Dockerfile" value={form.dockerfilePath} onChange={(e) => set('dockerfilePath', e.target.value)} />
                     </Field>
                   </div>
-                  <Field
-                    label="Constructor"
-                    hint="Automático: manda railway.json y, si no dice nada, el Dockerfile si lo hay. Elegir uno fuerza ese, aunque el repositorio pida el otro."
-                  >
+                  <Field label="Constructor" hint="Automático: Dockerfile si lo hay; si no, Nixpacks.">
                     <select className="input" value={form.builder} onChange={(e) => set('builder', e.target.value as FormState['builder'])}>
                       <option value="auto">Automático (recomendado)</option>
                       <option value="dockerfile">Dockerfile del repositorio</option>
-                      <option value="nixpacks">Nixpacks (como Railway)</option>
+                      <option value="nixpacks">Nixpacks</option>
                     </select>
                   </Field>
                   <Field label="Comando de arranque" hint="Opcional: sobreescribe el CMD de la imagen">
@@ -333,10 +331,7 @@ export default function ServiceSettingsTab({
                       placeholder="npm run start"
                     />
                   </Field>
-                  <Field
-                    label="Comando de compilación"
-                    hint="Equivalente al «Build Command» de Railway. Solo aplica sin Dockerfile (build con Nixpacks); con Dockerfile manda el Dockerfile."
-                  >
+                  <Field label="Comando de compilación" hint="Solo sin Dockerfile (Nixpacks); con Dockerfile manda el Dockerfile.">
                     <input
                       className="input font-mono text-xs"
                       value={form.buildCmd}
@@ -387,6 +382,76 @@ export default function ServiceSettingsTab({
           </div>
         </SectionCard>
 
+        {isGit && (
+          <SectionCard icon={<ModuleLogo kind="github" size={14} />} iconClass="text-txt" title="Auto-deploy">
+            <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line bg-surface px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={form.autoDeploy}
+                onChange={(e) => set('autoDeploy', e.target.checked)}
+                className="mt-0.5 h-[15px] w-[15px] shrink-0 accent-acc max-sm:h-4 max-sm:w-4"
+              />
+              <span className="text-sm">
+                <span className="font-medium">Auto-desplegar al hacer push a <span className="font-mono">{form.branch}</span></span>
+                <span className="mt-1 block text-xs leading-relaxed text-subtle">
+                  Comprueba la rama cada pocos minutos. Apagado, ningún push despliega.
+                </span>
+              </span>
+            </label>
+
+            <details className="group mt-2.5">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-subtle transition-colors hover:text-sub">
+                <ChevronRight size={12} className="shrink-0 text-subtle transition-transform group-open:rotate-90" />
+                ¿Lo quieres instantáneo? Configura además el webhook de GitHub
+              </summary>
+              <div className="details-body mt-2 flex flex-col gap-2 text-xs">
+                <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+                  <span className="shrink-0 text-subtle">URL</span>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate font-mono text-xs">{webhookUrl}</span>
+                    <CopyButton value={webhookUrl} />
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+                  <span className="text-subtle">Secreto</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="font-mono text-xs">••••••••••••</span>
+                    <CopyButton value={cfg.webhookSecret ?? ''} />
+                  </span>
+                </div>
+                <ol className="list-decimal space-y-1 pl-5 text-xs text-subtle">
+                  <li>
+                    En el repositorio: <span className="font-mono">Settings → Webhooks → Add webhook</span>.
+                  </li>
+                  <li>
+                    Pega la URL y el secreto; content type <span className="font-mono">application/json</span>.
+                  </li>
+                  <li>
+                    Evento: solo <span className="font-mono">push</span>.
+                  </li>
+                </ol>
+              </div>
+            </details>
+          </SectionCard>
+        )}
+
+        {hasDomains && (
+          <SectionCard icon={<Globe size={14} />} iconClass="text-info" title="Dominios">
+            {/* Se mira form.port y no cfg.port a propósito: el aviso tiene que salir
+                en cuanto se vacía el puerto, antes de guardar, que es cuando
+                todavía se puede uno echar atrás. Es la contrapartida del «vacío =
+                sin HTTP» del campo de arriba, que invita a dejarlo en blanco sin
+                contar que eso deja el dominio de adorno. */}
+            {isImage && form.domains.length > 0 && !form.port.trim() && (
+              <p className="mb-3 rounded-lg border border-warn/30 bg-warn/[.06] px-3 py-2 text-xs text-warn">
+                Sin puerto interno el dominio no funciona: responderá 404 con un certificado que no es el suyo. Indica
+                arriba el puerto en el que escucha, o quítale el dominio si es un worker sin HTTP.
+              </p>
+            )}
+            <DomainsEditor domains={form.domains} onChange={(d) => set('domains', d)} slug={service.slug} />
+          </SectionCard>
+        )}
+
         <SectionCard
           icon={<Network size={14} />}
           iconClass="text-ok"
@@ -401,35 +466,60 @@ export default function ServiceSettingsTab({
             {!internalPort && <span className="shrink-0 text-xs text-subtle">sin puerto HTTP</span>}
           </div>
           <p className="mt-2 text-xs leading-relaxed text-subtle">
-            El nombre es el slug del servicio y solo resuelve dentro de la red privada de este proyecto. Es lo que va en
-            las variables de los servicios hermanos: con el dominio público en su lugar, la petición sale a Internet y
-            vuelve a entrar por Traefik, que responde <span className="font-mono">404 page not found</span> a todo
-            nombre sin ruta —y la aplicación lo verá como un error raro de su cliente HTTP, no como un 404.
+            Úsala en las variables de los demás servicios del proyecto: el dominio público daría un rodeo por Internet.
           </p>
+          {/* El puerto público es la otra cara de la misma pregunta —por dónde se
+              llega al servicio—, así que vive aquí y no entre los límites de CPU y RAM. */}
+          <div className="mt-3 grid grid-cols-2 gap-2.5">
+            <Field label="Puerto público" hint="vacío = solo red interna">
+              <input className="input tnum" type="number" inputMode="numeric" placeholder={isGit ? '8080' : '5432'} value={form.hostPort} onChange={(e) => set('hostPort', e.target.value)} />
+            </Field>
+          </div>
         </SectionCard>
 
-        {hasDomains && (
-          <SectionCard
-            icon={<Globe size={14} />}
-            iconClass="text-info"
-            title="Dominios"
-            description="Traefik enruta 80/443 con TLS automático si está configurado"
-          >
-            {/* Se mira form.port y no cfg.port a propósito: el aviso tiene que salir
-                en cuanto se vacía el puerto, antes de guardar, que es cuando
-                todavía se puede uno echar atrás. Es la contrapartida del «vacío =
-                sin HTTP» del campo de arriba, que invita a dejarlo en blanco sin
-                contar que eso deja el dominio de adorno. */}
-            {isImage && form.domains.length > 0 && !form.port.trim() && (
-              <p className="mb-3 rounded-lg border border-warn/30 bg-warn/[.06] px-3 py-2 text-xs text-warn">
-                Sin puerto interno Traefik no puede enrutar el dominio: no se crea la ruta ni se emite certificado, y
-                el dominio responderá 404 con un certificado que no es el suyo. Indica arriba el puerto en el que
-                escucha, o quítale el dominio si es un worker sin HTTP.
-              </p>
+        <SectionCard
+          icon={<Cpu size={14} />}
+          iconClass="text-acc-soft"
+          title="Recursos"
+          description="Los límites se aplican en caliente, sin reiniciar"
+        >
+          <div className={cx('grid gap-2.5 grid-cols-2', isDb ? 'sm:grid-cols-3' : 'sm:grid-cols-4')}>
+            <Field label="CPUs" hint="vacío = sin límite">
+              <input className="input tnum" type="number" inputMode="decimal" step="0.1" min="0.1" placeholder="1.5" value={form.cpus} onChange={(e) => set('cpus', e.target.value)} />
+            </Field>
+            <Field label="RAM (MB)" hint="vacío = sin límite">
+              <input className="input tnum" type="number" inputMode="numeric" min="32" placeholder="512" value={form.memoryMb} onChange={(e) => set('memoryMb', e.target.value)} />
+            </Field>
+            <Field label="Disco (MB)" hint="No corta: avisa al superarlo.">
+              <input className="input tnum" type="number" inputMode="numeric" min="64" placeholder="2048" value={form.diskMb} onChange={(e) => set('diskMb', e.target.value)} />
+            </Field>
+            {!isDb && (
+              <Field label="Réplicas" hint="copias en balanceo">
+                <input className="input tnum" type="number" inputMode="numeric" min="1" max="10" value={form.replicas} onChange={(e) => set('replicas', e.target.value)} />
+              </Field>
             )}
-            <DomainsEditor domains={form.domains} onChange={(d) => set('domains', d)} slug={service.slug} />
-          </SectionCard>
-        )}
+          </div>
+          {!isDb && replicasN > 1 && (
+            <p className="mt-2.5 rounded-lg border border-acc/30 bg-acc/[.08] px-3 py-2.5 text-xs text-sub">
+              Con {replicasN} réplicas el tráfico se reparte y los despliegues son rodantes: siempre queda una sirviendo.
+              Requiere servicio <strong className="text-txt">sin volúmenes ni puerto público</strong>
+              {(form.volumePaths.length > 0 || form.hostPort) && (
+                <span className="text-err"> — ahora mismo lo incumples: quítalos antes de guardar</span>
+              )}
+              .
+            </p>
+          )}
+          {/* En móvil el rótulo entero es el objetivo táctil: 40 px de alto, no los 15 de la casilla. */}
+          <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-sub max-sm:min-h-10">
+            <input
+              type="checkbox"
+              checked={form.alertsMuted}
+              onChange={(e) => set('alertsMuted', e.target.checked)}
+              className="h-[15px] w-[15px] accent-acc max-sm:h-4 max-sm:w-4"
+            />
+            Silenciar alertas de este servicio
+          </label>
+        </SectionCard>
 
         {!isDb && (
           <SectionCard
@@ -473,116 +563,9 @@ export default function ServiceSettingsTab({
                 </Button>
               </div>
               <p className="text-xs text-subtle">
-                Ojo: con volúmenes el despliegue deja de ser de corte cero (no pueden convivir dos instancias escribiendo a la
-                vez). Quitar una ruta no borra el volumen de Docker.
+                Con volúmenes el despliegue tiene un corte breve. Quitar una ruta no borra los datos.
               </p>
             </div>
-          </SectionCard>
-        )}
-
-        <SectionCard
-          icon={<Cpu size={14} />}
-          iconClass="text-acc-soft"
-          title={isDb ? 'Recursos y red' : 'Recursos y réplicas'}
-          description="Los límites se aplican en caliente, sin reiniciar"
-        >
-          <div className={cx('grid gap-2.5 grid-cols-2', isDb ? 'sm:grid-cols-4' : 'sm:grid-cols-5')}>
-            <Field label="CPUs" hint="vacío = sin límite">
-              <input className="input tnum" type="number" inputMode="decimal" step="0.1" min="0.1" placeholder="1.5" value={form.cpus} onChange={(e) => set('cpus', e.target.value)} />
-            </Field>
-            <Field label="RAM (MB)" hint="vacío = sin límite">
-              <input className="input tnum" type="number" inputMode="numeric" min="32" placeholder="512" value={form.memoryMb} onChange={(e) => set('memoryMb', e.target.value)} />
-            </Field>
-            <Field label="Disco (MB)" hint="espacio asignado: avisa al superarlo">
-              <input className="input tnum" type="number" inputMode="numeric" min="64" placeholder="2048" value={form.diskMb} onChange={(e) => set('diskMb', e.target.value)} />
-            </Field>
-            <Field label="Puerto público" hint="expone TCP en el host">
-              <input className="input tnum" type="number" inputMode="numeric" placeholder={isGit ? '8080' : '5432'} value={form.hostPort} onChange={(e) => set('hostPort', e.target.value)} />
-            </Field>
-            {!isDb && (
-              <Field label="Réplicas" hint="copias en balanceo">
-                <input className="input tnum" type="number" inputMode="numeric" min="1" max="10" value={form.replicas} onChange={(e) => set('replicas', e.target.value)} />
-              </Field>
-            )}
-          </div>
-          <p className="mt-2 text-xs leading-relaxed text-subtle">
-            El espacio asignado (volúmenes + escritura del contenedor) es orientativo: Docker no corta el disco en seco,
-            pero Skyway lo vigila y te alerta al superarlo. Consúltalo en Monitor.
-          </p>
-          {!isDb && replicasN > 1 && (
-            <p className="mt-2.5 rounded-lg border border-acc/30 bg-acc/[.08] px-3 py-2.5 text-xs text-sub">
-              Con {replicasN} réplicas el tráfico se reparte y los despliegues son rodantes: siempre queda una sirviendo.
-              Requiere servicio <strong className="text-txt">sin volúmenes ni puerto público</strong>
-              {(form.volumePaths.length > 0 || form.hostPort) && (
-                <span className="text-err"> — ahora mismo lo incumples: quítalos antes de guardar</span>
-              )}
-              .
-            </p>
-          )}
-          {/* En móvil el rótulo entero es el objetivo táctil: 40 px de alto, no los 15 de la casilla. */}
-          <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-sub max-sm:min-h-10">
-            <input
-              type="checkbox"
-              checked={form.alertsMuted}
-              onChange={(e) => set('alertsMuted', e.target.checked)}
-              className="h-[15px] w-[15px] accent-acc max-sm:h-4 max-sm:w-4"
-            />
-            Silenciar alertas de este servicio
-          </label>
-        </SectionCard>
-
-        {isGit && (
-          <SectionCard
-            icon={<ModuleLogo kind="github" size={14} />}
-            iconClass="text-txt"
-            title="Auto-deploy"
-            description="Despliega solo al detectar un commit nuevo en la rama"
-          >
-            <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line bg-surface px-3 py-2.5">
-              <input
-                type="checkbox"
-                checked={form.autoDeploy}
-                onChange={(e) => set('autoDeploy', e.target.checked)}
-                className="mt-0.5 h-[15px] w-[15px] shrink-0 accent-acc max-sm:h-4 max-sm:w-4"
-              />
-              <span className="text-sm">
-                <span className="font-medium">Auto-desplegar al hacer push a <span className="font-mono">{form.branch}</span></span>
-                <span className="mt-1 block text-xs leading-relaxed text-subtle">
-                  Skyway vigila la rama y redespliega al detectar un commit nuevo, sin tocar GitHub (usa el mismo acceso con el
-                  que clona: va bien para repos privados o servidores sin dominio). El interruptor manda sobre las dos vías
-                  —sondeo y webhook—: apágalo y ningún push desplegará.
-                </span>
-              </span>
-            </label>
-
-            <details className="group mt-2.5">
-              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-subtle transition-colors hover:text-sub">
-                <ChevronRight size={12} className="shrink-0 text-subtle transition-transform group-open:rotate-90" />
-                ¿Lo quieres instantáneo? Configura además el webhook de GitHub
-              </summary>
-              <div className="details-body mt-2 flex flex-col gap-2 text-xs">
-                <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
-                  <span className="shrink-0 text-subtle">URL</span>
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <span className="truncate font-mono text-xs">{webhookUrl}</span>
-                    <CopyButton value={webhookUrl} />
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
-                  <span className="text-subtle">Secreto</span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="font-mono text-xs">••••••••••••</span>
-                    <CopyButton value={cfg.webhookSecret ?? ''} />
-                  </span>
-                </div>
-                <p className="text-xs text-subtle">
-                  En GitHub: Settings → Webhooks → Add webhook. Content type <span className="font-mono">application/json</span>{' '}
-                  (no <span className="font-mono">x-www-form-urlencoded</span>), evento <span className="font-mono">push</span>.
-                  Despliega en el acto; requiere que GitHub alcance tu servidor (dominio público). Obedece el interruptor de
-                  arriba y no se pisa con el sondeo: nunca se despliega dos veces el mismo commit.
-                </p>
-              </div>
-            </details>
           </SectionCard>
         )}
 
@@ -593,10 +576,7 @@ export default function ServiceSettingsTab({
           */}
         <section className="mb-3.5 rounded-xl border border-err/30 bg-bg p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 className="text-sm font-semibold text-err">Zona de peligro</h3>
-              <p className="mt-0.5 text-xs text-sub">Elimina el servicio y su contenedor. Los volúmenes solo si lo marcas.</p>
-            </div>
+            <h3 className="text-sm font-semibold text-err">Zona de peligro</h3>
             <Button variant="danger" size="sm" onClick={() => setDeleteOpen(true)}>
               Eliminar servicio
             </Button>

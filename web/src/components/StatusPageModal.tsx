@@ -81,8 +81,7 @@ export default function StatusPageModal({
       ) : (
         <div className="flex flex-col gap-4">
           <p className="text-sm leading-relaxed text-sub">
-            Un panel público con el estado en vivo de los servicios de este proyecto, su disponibilidad de los
-            últimos 90 días y las incidencias. Sin necesidad de iniciar sesión: comparte el enlace con tu cliente.
+            Estado, disponibilidad de 90 días e incidencias, sin necesidad de entrar al panel.
           </p>
 
           <label className="flex min-h-11 cursor-pointer items-center justify-between gap-3 rounded-xl border border-line bg-bg px-4 py-3">
@@ -150,8 +149,7 @@ export default function StatusPageModal({
               {isAdmin && (
                 <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3.5">
                   <p className="min-w-0 flex-1 basis-48 text-xs leading-relaxed text-subtle">
-                    ¿Enlace filtrado o cliente que ya no debe verlo? Genera uno nuevo: el anterior deja de funcionar al
-                    instante.
+                    Al rotarlo, el enlace anterior deja de funcionar.
                   </p>
                   <Button size="sm" variant="secondary" className="shrink-0" onClick={() => rotate.mutate()} loading={rotate.isPending}>
                     <RefreshCw size={12} /> Rotar enlace

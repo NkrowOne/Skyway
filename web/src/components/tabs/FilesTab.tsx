@@ -17,7 +17,7 @@ import {
 import { api } from '../../api';
 import { DirListing, FileEntry } from '../../types';
 import { cx, fmtBytes } from '../../utils';
-import { Button, ConfirmModal, EmptyState, Skeleton, useToast } from '../ui';
+import { Button, ConfirmModal, EmptyState, Field, Modal, Skeleton, useToast } from '../ui';
 
 /** Une un directorio y un nombre en una ruta absoluta POSIX. */
 function joinPath(dir: string, name: string): string {
@@ -43,12 +43,27 @@ function crumbs(dir: string): { label: string; path: string }[] {
   return out;
 }
 
+/**
+ * Carpetas primero y luego por nombre, como cualquier explorador. El servidor
+ * devuelve el orden de `ls`, que mezcla ambos y ordena por byte (las
+ * mayúsculas antes que las minúsculas).
+ */
+function sortEntries(entries: FileEntry[]): FileEntry[] {
+  return [...entries].sort((a, b) => {
+    const aDir = a.type === 'dir' ? 0 : 1;
+    const bDir = b.type === 'dir' ? 0 : 1;
+    return aDir - bDir || a.name.localeCompare(b.name, 'es');
+  });
+}
+
 export default function FilesTab({ serviceId }: { serviceId: string }) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [dir, setDir] = useState('/');
   const [deleting, setDeleting] = useState<FileEntry | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [folderOpen, setFolderOpen] = useState(false);
+  const [folderName, setFolderName] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
 
   const listing = useQuery({
@@ -63,6 +78,8 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
     mutationFn: (path: string) => api.post(`/services/${serviceId}/files/mkdir`, { path }),
     onSuccess: () => {
       toast('Carpeta creada', 'ok');
+      setFolderOpen(false);
+      setFolderName('');
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -133,11 +150,14 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
     }
   };
 
-  const newFolder = () => {
-    const name = window.prompt('Nombre de la nueva carpeta:');
-    if (!name || !name.trim()) return;
-    mkdir.mutate(joinPath(dir, name.trim()));
+  const submitFolder = (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = folderName.trim();
+    if (!name || mkdir.isPending) return;
+    mkdir.mutate(joinPath(dir, name));
   };
+
+  const entries = sortEntries(listing.data?.listing.entries ?? []);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-4 sm:px-5">
@@ -174,7 +194,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
         <Button size="sm" variant="secondary" onClick={() => fileInput.current?.click()} loading={uploading}>
           <Upload size={13} /> Subir
         </Button>
-        <Button size="sm" variant="secondary" onClick={newFolder} loading={mkdir.isPending}>
+        <Button size="sm" variant="secondary" onClick={() => setFolderOpen(true)} loading={mkdir.isPending}>
           <FolderPlus size={13} /> Nueva carpeta
         </Button>
         <input
@@ -217,7 +237,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
               <span className="font-mono">..</span>
             </button>
           )}
-          {(listing.data?.listing.entries ?? []).length > 0 && (
+          {entries.length > 0 && (
             <div className="flex items-center gap-2 border-b border-line bg-surface2/50 px-3 py-1.5 eyebrow text-subtle">
               <span className="min-w-0 flex-1">Nombre</span>
               <span className="shrink-0">Permisos</span>
@@ -227,15 +247,10 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
               <span aria-hidden className="w-[52px] shrink-0 max-sm:w-[76px]" />
             </div>
           )}
-          {(listing.data?.listing.entries ?? []).length === 0 ? (
-            <EmptyState
-              compact
-              icon={<FolderOpen />}
-              title="Carpeta vacía"
-              description="Aquí aparecerán los archivos del contenedor. Puedes subir uno con el botón de arriba."
-            />
+          {entries.length === 0 ? (
+            <EmptyState compact icon={<FolderOpen />} title="Sin archivos en esta carpeta" />
           ) : (
-            (listing.data?.listing.entries ?? []).map((entry) => (
+            entries.map((entry) => (
               <div
                 key={entry.name}
                 className="group flex items-center gap-2 border-b border-line/60 px-3 py-2 text-xs last:border-b-0 hover:bg-surface2"
@@ -292,9 +307,49 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
       )}
 
       <p className="text-xs leading-relaxed text-subtle">
-        Explora los archivos del contenedor sin FTP ni credenciales: va por el socket de Docker con tu sesión del panel.
-        Subidas hasta 100 MB, descargas hasta 50 MB. Cada cambio queda en el registro de actividad.
+        Subidas hasta 100 MB · descargas hasta 50 MB. Cada cambio queda en el registro de actividad.
       </p>
+
+      {/* Un diálogo propio y no window.prompt: este no se puede estilar, en
+          móvil sale como alerta del sistema y algunos navegadores lo bloquean. */}
+      <Modal
+        open={folderOpen}
+        onClose={() => {
+          setFolderOpen(false);
+          setFolderName('');
+        }}
+        title="Nueva carpeta"
+      >
+        <form onSubmit={submitFolder} className="flex flex-col gap-4">
+          <Field label="Nombre" hint={`Se creará en ${dir}`}>
+            <input
+              className="input font-mono sm:text-xs"
+              value={folderName}
+              onChange={(e) => setFolderName(e.target.value)}
+              placeholder="uploads"
+              autoFocus
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setFolderOpen(false);
+                setFolderName('');
+              }}
+            >
+              Cancelar
+            </Button>
+            <Button type="submit" loading={mkdir.isPending} disabled={!folderName.trim()}>
+              Crear carpeta
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
       <ConfirmModal
         open={!!deleting}

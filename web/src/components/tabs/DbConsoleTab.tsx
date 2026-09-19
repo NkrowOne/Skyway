@@ -316,6 +316,9 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
           autoCapitalize="off"
           autoCorrect="off"
         />
+        {/* Ejecutar a la izquierda; a la derecha lo que cambia el modo (escritura)
+            y el historial. Separados: «Permitir escritura» pegado a Ejecutar se
+            marcaba sin querer al ir a pulsar el botón. */}
         <div className="flex flex-wrap items-center gap-2 border-t border-line px-2.5 py-2">
           <Button size="sm" onClick={() => execute()} loading={run.isPending} disabled={!query.trim()}>
             <Play size={12} /> Ejecutar
@@ -325,7 +328,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
           </span>
           <label
             className={cx(
-              'flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors max-sm:py-2',
+              'ml-auto flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors max-sm:py-2',
               allowWrite ? 'border-warn/40 bg-warn/[.1] text-warn' : 'border-line text-sub hover:text-txt',
             )}
             title="Sin marcar, solo se permiten consultas de lectura"
@@ -339,7 +342,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
             Permitir escritura
           </label>
           {history.length > 0 && (
-            <div className="relative ml-auto" ref={historyRef}>
+            <div className="relative" ref={historyRef}>
               <button
                 onClick={() => setHistoryOpen((v) => !v)}
                 className="press flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-sub transition-colors hover:bg-surface2 hover:text-txt max-sm:py-2"
@@ -433,8 +436,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
         <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-line py-10 text-center">
           <Database size={22} className="text-subtle" />
           <p className="max-w-xs text-xs leading-relaxed text-subtle">
-            Escribe una consulta, usa un snippet o pulsa {overview.data?.overview.objectLabel === 'tablas' ? 'una tabla' : 'un objeto'} de
-            arriba para explorar los datos. Por defecto solo se permite lectura.
+            Escribe una consulta o pulsa {overview.data?.overview.objectLabel === 'tablas' ? 'una tabla' : 'un objeto'} de arriba.
           </p>
         </div>
       )}

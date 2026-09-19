@@ -9,7 +9,7 @@ import { Button, Chip, ConfirmModal, Field, Modal, Skeleton, useToast } from './
 import { useCreateGithubApp } from './useGithubApp';
 
 /**
- * Conexiones de GitHub del proyecto.
+ * Cuentas de GitHub del proyecto.
  *
  * El camino principal es la GitHub App: se pulsa un botón, GitHub pregunta qué
  * repos dejar ver y se vuelve conectado. No caduca, no hay nada que copiar y el
@@ -73,7 +73,7 @@ export default function GithubModal({
       setAddingToken(false);
       setName('');
       setToken('');
-      toast(`Conector @${res.connector.gh_login} conectado`, 'ok');
+      toast(`Cuenta @${res.connector.gh_login} conectada`, 'ok');
       if (res.warning) toast(res.warning, 'info');
       invalidate();
     },
@@ -85,7 +85,7 @@ export default function GithubModal({
       api.del(target.kind === 'app' ? `/github/installations/${target.id}` : `/connectors/${target.id}`),
     onSuccess: () => {
       setToDelete(null);
-      toast('Conexión eliminada', 'ok');
+      toast('Cuenta de GitHub quitada', 'ok');
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -94,7 +94,7 @@ export default function GithubModal({
   const syncInstallation = useMutation({
     mutationFn: (id: string) => api.post(`/github/installations/${id}/sync`),
     onSuccess: () => {
-      toast('Conexión actualizada desde GitHub', 'ok');
+      toast('Cuenta actualizada desde GitHub', 'ok');
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -115,10 +115,7 @@ export default function GithubModal({
   return (
     <>
       <Modal open={open} onClose={() => { if (!toDelete) onClose(); }} title="GitHub" wide>
-        <p className="text-xs text-sub">
-          Conecta las cuentas de GitHub cuyos repositorios se pueden desplegar en este proyecto. Quien tenga acceso al
-          workspace podrá elegir sus repos al crear servicios.
-        </p>
+        <p className="text-xs text-sub">Cuentas de GitHub cuyos repositorios se pueden desplegar en este proyecto.</p>
 
         {loading ? (
           <div className="mt-4 flex flex-col gap-2" aria-busy>
@@ -137,10 +134,7 @@ export default function GithubModal({
                         <ModuleLogo kind="github" size={20} />
                       </span>
                       <p className="mt-3 text-sm font-medium">Conecta tu cuenta de GitHub</p>
-                      <p className="mx-auto mt-1 max-w-md text-xs text-sub">
-                        Eliges en GitHub qué repositorios ve Skyway. La conexión no caduca y los despliegues automáticos
-                        quedan activados al instante, sin configurar ningún webhook.
-                      </p>
+                      <p className="mx-auto mt-1 max-w-md text-xs text-sub">Eliges en GitHub qué repositorios ve Skyway.</p>
                       <Button className="mt-4" onClick={connectAccount}>
                         <ModuleLogo kind="github" size={14} /> Conectar con GitHub
                       </Button>
@@ -203,8 +197,8 @@ export default function GithubModal({
                             <button
                               onClick={() => setToDelete({ kind: 'app', id: inst.id, label: `@${inst.accountLogin}` })}
                               className="press rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err max-sm:p-2.5"
-                              title="Quitar conexión"
-                              aria-label={`Quitar la conexión con @${inst.accountLogin}`}
+                              title="Quitar cuenta"
+                              aria-label={`Quitar la cuenta @${inst.accountLogin}`}
                             >
                               <Trash2 size={14} />
                             </button>
@@ -231,9 +225,7 @@ export default function GithubModal({
                           es donde la gente se rendía y se quedaba con los tokens. */}
                       <p className="mt-3 text-sm font-medium">Conecta GitHub sin tokens</p>
                       <p className="mx-auto mt-1 max-w-md text-xs text-sub">
-                        Primero se crea la App de este servidor: se hace una sola vez y GitHub abre un formulario ya
-                        relleno, solo hay que confirmarlo. Después, cada cuenta —la tuya o la de un cliente— se conecta
-                        con un clic, elige qué repositorios ve Skyway y no caduca nunca.
+                        Se crea una vez por servidor. Después cada cuenta se conecta con un clic.
                       </p>
                       <Button className="mt-4" onClick={() => createApp.create(appOrg)} loading={createApp.pending}>
                         <ModuleLogo kind="github" size={14} /> Crear la App en GitHub
@@ -323,8 +315,8 @@ export default function GithubModal({
                       <button
                         onClick={() => setToDelete({ kind: 'pat', id: c.id, label: `${c.name} (@${c.gh_login})` })}
                         className="press shrink-0 rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err max-sm:p-2.5"
-                        title="Eliminar conector"
-                        aria-label={`Eliminar el conector ${c.name}`}
+                        title="Quitar cuenta"
+                        aria-label={`Quitar la cuenta ${c.name}`}
                       >
                         <Trash2 size={14} />
                       </button>
@@ -382,7 +374,7 @@ export default function GithubModal({
 
             {apps.length === 0 && pats.length === 0 && connectors.data && !connectors.data.hasGlobalToken && (
               <p className="mt-4 rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
-                Sin ninguna conexión solo se pueden clonar repositorios públicos.
+                Sin cuenta conectada solo se clonan repos públicos.
               </p>
             )}
           </>
@@ -393,7 +385,7 @@ export default function GithubModal({
         open={!!toDelete}
         onClose={() => setToDelete(null)}
         onConfirm={() => toDelete && removeConnection.mutate(toDelete)}
-        title="Quitar conexión de GitHub"
+        title="Quitar cuenta de GitHub"
         message={
           toDelete?.kind === 'app'
             ? `Los servicios que usen ${toDelete.label} pasarán a clonar con el token global del servidor en el próximo despliegue; si el repo es privado y ese token no lo ve, el despliegue fallará. La App seguirá instalada en GitHub: quítala allí si además quieres revocar el acceso.`

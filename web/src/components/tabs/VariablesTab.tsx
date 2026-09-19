@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
   Check,
-  ClipboardPaste,
   Copy,
   Eye,
   EyeOff,
@@ -738,20 +737,18 @@ export default function VariablesTab({
               </div>
             )}
 
-            {/* Añadir: un botón claro, con la ayuda de pegado al lado y no dentro. */}
+            {/* La pista del pegado ya la da el estado vacío; aquí, permanente,
+                era ruido para quien ya tiene variables. Queda en el title. */}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
                 onClick={handleAddRow}
+                title="Pega un .env en cualquier campo y se reparte en filas"
                 className="press flex h-9 items-center gap-1.5 rounded-lg border border-dashed border-line2 px-3 text-xs font-semibold text-sub transition-colors hover:border-acc/50 hover:bg-surface2 hover:text-txt max-sm:flex-1 max-sm:justify-center"
               >
                 <Plus size={14} className="text-acc-soft" />
                 Añadir variable
               </button>
-              <span className="hidden items-center gap-1.5 text-xs text-subtle sm:inline-flex">
-                <ClipboardPaste size={12} aria-hidden />
-                Pega un .env en cualquier campo y se reparte en filas
-              </span>
             </div>
           </div>
         )}

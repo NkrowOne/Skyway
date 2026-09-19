@@ -108,11 +108,7 @@ export default function ExecModal({
             </span>
           )}
         </div>
-        <p className="text-xs text-subtle">
-          Útil para migraciones (<span className="font-mono">npm run migrate</span>,{' '}
-          <span className="font-mono">npx prisma migrate deploy</span>...). Cada ejecución queda en el registro de
-          actividad. Límite: 60 s.
-        </p>
+        <p className="text-xs text-subtle">Límite 60 s. Queda en el registro de actividad.</p>
       </div>
     </Modal>
   );

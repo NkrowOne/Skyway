@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { ExternalLink } from 'lucide-react';
+import { ChevronRight, ExternalLink } from 'lucide-react';
 import { api } from '../api';
 import { DbTemplate, Deployment, GithubRepo, RailwayTemplatePlan, Service, Stack } from '../types';
 import { cx } from '../utils';
@@ -29,6 +29,24 @@ function LogoRow({ kinds, size = 20 }: { kinds: ModuleKind[]; size?: number }) {
 }
 
 type Step = 'pick' | 'git' | 'database' | 'image' | 'stack';
+
+/**
+ * Lo que casi nadie toca al crear (puerto, directorio raíz) va plegado: en la
+ * fila con la rama y el nombre hacía parecer que había que rellenarlo, y el
+ * primer despliegue ya lo detecta solo.
+ */
+function Avanzado({ children, resumen }: { children: React.ReactNode; resumen: string }) {
+  return (
+    <details className="animate-details group rounded-lg border border-line bg-surface">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-sm text-sub transition-colors hover:text-txt">
+        <ChevronRight size={13} className="shrink-0 text-subtle transition-transform group-open:rotate-90" />
+        <span className="font-medium">Avanzado</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-subtle">{resumen}</span>
+      </summary>
+      <div className="details-body flex flex-col gap-3 border-t border-line px-3 py-3">{children}</div>
+    </details>
+  );
+}
 
 /** Logo real por plantilla de BD (las no mapeadas caen en genérico). */
 const TEMPLATE_KIND: Record<string, ModuleKind> = {
@@ -325,10 +343,7 @@ export default function NewServiceModal({
                 Ver qué crea
               </Button>
             </div>
-            <p className="mt-2 text-xs text-subtle">
-              Skyway traduce su cableado: los dominios internos de Railway pasan a los de aquí y lo que no tenga
-              equivalente se te dice antes de crear nada.
-            </p>
+            <p className="mt-2 text-xs text-subtle">Verás qué servicios crea antes de confirmar.</p>
           </form>
 
           <div className="mt-4 flex justify-between">
@@ -649,10 +664,7 @@ export default function NewServiceModal({
             </Field>
           ) : (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-line bg-bg px-3.5 py-3">
-              <p className="min-w-0 flex-1 text-xs text-sub">
-                Sin cuenta de GitHub conectada solo se pueden clonar repositorios públicos. Conéctala y eliges tus repos
-                privados de una lista, sin pegar URLs ni tokens.
-              </p>
+              <p className="min-w-0 flex-1 text-xs text-sub">Sin cuenta conectada solo se clonan repos públicos.</p>
               {sources.appConfigured && (
                 <Button
                   type="button"
@@ -714,25 +726,27 @@ export default function NewServiceModal({
                 <input className="input" value={branch} onChange={(e) => setBranch(e.target.value)} />
               )}
             </Field>
-            <Field label="Puerto interno" hint="Vacío = se detecta del EXPOSE de la imagen (y si no lo declara, 3000)">
-              <input
-                className="input"
-                type="number"
-                inputMode="numeric"
-                placeholder="automático"
-                value={port}
-                onChange={(e) => setPort(e.target.value)}
-              />
-            </Field>
-          </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Nombre (opcional)">
               <input className="input" placeholder="se infiere del repo" value={name} onChange={(e) => setName(e.target.value)} />
             </Field>
-            <Field label="Directorio raíz (opcional)" hint="Para monorepos, ej: apps/api">
-              <input className="input" placeholder="." value={rootDir} onChange={(e) => setRootDir(e.target.value)} />
-            </Field>
           </div>
+          <Avanzado resumen="Puerto interno y directorio raíz">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field label="Puerto interno" hint="Vacío = el que declare la imagen (EXPOSE); si no, 3000">
+                <input
+                  className="input"
+                  type="number"
+                  inputMode="numeric"
+                  placeholder="automático"
+                  value={port}
+                  onChange={(e) => setPort(e.target.value)}
+                />
+              </Field>
+              <Field label="Directorio raíz" hint="Para monorepos, ej: apps/api">
+                <input className="input" placeholder="." value={rootDir} onChange={(e) => setRootDir(e.target.value)} />
+              </Field>
+            </div>
+          </Avanzado>
           <div className="flex justify-between pt-1">
             <Button type="button" variant="ghost" onClick={() => setStep('pick')}>
               Atrás
