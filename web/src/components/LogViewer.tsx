@@ -503,6 +503,18 @@ function LogViewerImpl({
     if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
   }, []);
 
+  /*
+   * `overscroll-behavior: contain` solo cuando hay algo que desplazar (ver
+   * .log-body en index.css): un visor corto con ese contain se tragaba el
+   * gesto en iOS y la página de detrás no se movía.
+   */
+  const syncScrollable = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const scrollable = String(el.scrollHeight > el.clientHeight + 1);
+    if (el.dataset.scrollable !== scrollable) el.dataset.scrollable = scrollable;
+  }, []);
+
   // Al recibir líneas con el seguimiento activo, al fondo ANTES de pintar (sin parpadeo).
   const prevVisibleLenRef = useRef(0);
   useLayoutEffect(() => {
@@ -520,7 +532,13 @@ function LogViewerImpl({
       unreadCountRef.current += delta;
       setUnreadCount(unreadCountRef.current);
     }
-  }, [visible.length, scrollToBottom]);
+    syncScrollable();
+  }, [visible.length, scrollToBottom, syncScrollable]);
+
+  // El ajuste de línea cambia el alto del contenido sin cambiar el del hueco.
+  useEffect(() => {
+    syncScrollable();
+  }, [wrap, maximized, syncScrollable]);
 
   // Si el hueco cambia de alto (acordeón, teclado del móvil, giro) y se estaba
   // siguiendo, el fondo sigue siendo el fondo.
@@ -528,11 +546,12 @@ function LogViewerImpl({
     const el = ref.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => {
+      syncScrollable();
       if (followRef.current) scrollToBottom();
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [maximized, scrollToBottom]);
+  }, [maximized, scrollToBottom, syncScrollable]);
 
   const startFollowing = useCallback(() => {
     followRef.current = true;

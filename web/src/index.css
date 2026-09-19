@@ -626,15 +626,30 @@ details[open] > .details-body {
  */
 .log-chunk {
   contain: layout style;
+  /*
+   * Sin esto, las 14.000 filas del buffer se maquetan enteras en cada línea
+   * nueva: en un iPhone el hilo principal no daba abasto y el gesto de scroll
+   * se quedaba clavado. El alto estimado (filas × alto de línea) solo se usa
+   * hasta que el bloque se pinta una vez; después `auto` recuerda el real.
+   */
+  content-visibility: auto;
+  contain-intrinsic-size: auto calc(var(--rows, 48) * var(--log-line-h, 22px));
 }
 .log-body {
   overflow-y: auto !important;
   -webkit-overflow-scrolling: touch;
   /* pan-x también: con «ajuste de línea» apagado hay que poder arrastrar de lado. */
   touch-action: pan-x pan-y;
-  /* El scroll de la consola no se propaga al panel ni a la página al tocar fondo. */
-  overscroll-behavior: contain;
   scrollbar-gutter: stable;
+}
+/*
+ * El scroll de la consola no se propaga al panel ni a la página al tocar fondo,
+ * pero solo cuando de verdad hay algo que desplazar: en iOS un visor con tres
+ * líneas y este contain se tragaba el gesto y la página de detrás no se movía.
+ * El visor marca el atributo cuando su contenido supera el alto.
+ */
+.log-body[data-scrollable='true'] {
+  overscroll-behavior: contain;
 }
 /* Canalón de numeración: se queda pegado a la izquierda al hacer scroll horizontal. */
 .log-gutter {
