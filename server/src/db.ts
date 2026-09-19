@@ -142,6 +142,12 @@ export function initDb(): void {
       finished_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_deployments_service ON deployments(service_id, created_at DESC);
+    -- Despliegues EN MARCHA: el panel de proyectos y la rejilla los cuentan en
+    -- cada refresco con el mismo «status IN (...)», y sin esto recorrían la
+    -- tabla entera de despliegues (que crece con cada push). Índice parcial:
+    -- solo contiene los pocos vivos, así que cabe en una página.
+    CREATE INDEX IF NOT EXISTS idx_deployments_active ON deployments(service_id)
+      WHERE status IN ('queued', 'building', 'deploying');
     CREATE TABLE IF NOT EXISTS project_vars (
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       key TEXT NOT NULL,
@@ -625,6 +631,9 @@ export function initDb(): void {
   ensureColumn('workspaces', 'plan_since', 'INTEGER');
   // Alertas por cuenta (además de por proyecto/servicio).
   ensureColumn('alerts', 'workspace_id', 'TEXT');
+  // Después de la columna (en una base nueva no existe hasta aquí): la ficha de
+  // la cuenta lista sus alertas y sin índice barría toda la tabla.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_alerts_workspace ON alerts(workspace_id, ts DESC)');
   // Escala del medidor: nº de unidades del medidor por unidad de precio (p. ej.
   // 1000000 para tarifar por 1M de tokens con céntimos enteros).
   ensureColumn('catalog_products', 'unit_size', 'INTEGER NOT NULL DEFAULT 1');
@@ -1420,14 +1429,24 @@ export function createDeployment(
     created_at: now(),
     finished_at: null,
   };
-  db.prepare(
-    `INSERT INTO deployments (id, service_id, status, trigger, commit_sha, commit_msg, image_tag, logs, error, force_build, created_at, finished_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(row.id, row.service_id, row.status, row.trigger, row.commit_sha, row.commit_msg, row.image_tag, row.logs, row.error, row.force_build, row.created_at, row.finished_at);
-  // Desplegar arranca el contenedor: la parada manual anterior deja de contar.
-  setServiceStopped(serviceId, false);
+  // Las dos escrituras van juntas: un despliegue creado con el servicio aún
+  // marcado como «parado adrede» lo pintaría en gris mientras se construye.
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO deployments (id, service_id, status, trigger, commit_sha, commit_msg, image_tag, logs, error, force_build, created_at, finished_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(row.id, row.service_id, row.status, row.trigger, row.commit_sha, row.commit_msg, row.image_tag, row.logs, row.error, row.force_build, row.created_at, row.finished_at);
+    // Desplegar arranca el contenedor: la parada manual anterior deja de contar.
+    setServiceStopped(serviceId, false);
+  })();
   return row;
 }
+
+/** Columnas que `updateDeployment` admite: el SQL se compone con los nombres de las claves. */
+const DEPLOYMENT_COLUMNS = new Set([
+  'status', 'commit_sha', 'commit_msg', 'image_tag', 'logs', 'runtime_logs', 'error', 'finished_at',
+  'build_key', 'repo_config', 'build_vars',
+]);
 
 export function updateDeployment(
   deploymentId: string,
@@ -1448,7 +1467,9 @@ export function updateDeployment(
     >
   >,
 ): void {
-  const keys = Object.keys(fields);
+  // Lista blanca como en el resto de `update*`: el tipo lo acota en compilación,
+  // pero el SQL se monta con los nombres en tiempo de ejecución.
+  const keys = Object.keys(fields).filter((k) => DEPLOYMENT_COLUMNS.has(k));
   if (keys.length === 0) return;
   const sets = keys.map((k) => `${k} = ?`).join(', ');
   db.prepare(`UPDATE deployments SET ${sets} WHERE id = ?`).run(...keys.map((k) => (fields as any)[k]), deploymentId);
@@ -1620,13 +1641,21 @@ export function lastBuiltCommitSha(serviceId: string): string | null {
   return row?.commit_sha ?? null;
 }
 
+/**
+ * Despliegues correctos más antiguos que los `keep` últimos (para purgar sus
+ * imágenes). Sin `logs`: se llama al final de CADA despliegue y con `SELECT *`
+ * arrastraba el log de build entero (hasta 400 KB) de todo el histórico.
+ */
 export function successfulDeploymentsBeyond(serviceId: string, keep: number): DeploymentRow[] {
   return db
     .prepare(
-      `SELECT * FROM deployments WHERE service_id = ? AND status = 'success' AND image_tag IS NOT NULL
-       ORDER BY created_at DESC LIMIT -1 OFFSET ?`,
+      `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
+              build_key, repo_config, force_build, created_at, finished_at
+         FROM deployments WHERE service_id = ? AND status = 'success' AND image_tag IS NOT NULL
+        ORDER BY created_at DESC LIMIT -1 OFFSET ?`,
     )
-    .all(serviceId, keep) as DeploymentRow[];
+    .all(serviceId, keep)
+    .map((r: any) => ({ ...r, logs: '' })) as DeploymentRow[];
 }
 
 export function setDeploymentDiagnosis(deploymentId: string, diagnosis: object | null): void {
@@ -1815,9 +1844,12 @@ export function insertAudit(entry: Omit<AuditRow, 'id' | 'ts'>): void {
 export function listAudit(opts: { limit?: number; action?: string; projectId?: string } = {}): AuditRow[] {
   const limit = Math.min(opts.limit ?? 100, 500);
   if (opts.action) {
+    // Es un filtro por PREFIJO literal: `%` y `_` escritos por el usuario se
+    // escapan para que no actúen como comodines y devuelvan todo el registro.
+    const prefijo = opts.action.replace(/[\\%_]/g, (c) => `\\${c}`);
     return db
-      .prepare('SELECT * FROM audit_log WHERE action LIKE ? ORDER BY ts DESC LIMIT ?')
-      .all(`${opts.action}%`, limit) as AuditRow[];
+      .prepare("SELECT * FROM audit_log WHERE action LIKE ? ESCAPE '\\' ORDER BY ts DESC LIMIT ?")
+      .all(`${prefijo}%`, limit) as AuditRow[];
   }
   return db.prepare('SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?').all(limit) as AuditRow[];
 }
@@ -1850,6 +1882,12 @@ export function insertAlert(alert: {
   explanation?: string | null;
   dedupe_key?: string | null;
 }): AlertRow | null {
+  // Comprobación e inserción en la misma transacción: la deduplicación es una
+  // lectura seguida de una escritura y no hay UNIQUE que la respalde.
+  return db.transaction(() => insertAlertTx(alert))();
+}
+
+function insertAlertTx(alert: Parameters<typeof insertAlert>[0]): AlertRow | null {
   if (alert.dedupe_key) {
     const open = db
       .prepare('SELECT id FROM alerts WHERE dedupe_key = ? AND resolved_at IS NULL')

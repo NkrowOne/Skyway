@@ -95,6 +95,9 @@ export function sseInit(reply: FastifyReply): SseChannel {
   };
 
   raw.on('close', cleanup);
+  // Sin oyente, un error de escritura en la respuesta (el navegador cortó a
+  // medias) se emite como excepción no capturada y apaga el proceso entero.
+  raw.on('error', cleanup);
 
   open.add(channel);
   return channel;

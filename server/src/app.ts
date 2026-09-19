@@ -1,9 +1,10 @@
 import fs from 'fs';
 import path from 'path';
-import Fastify, { FastifyInstance } from 'fastify';
+import Fastify, { FastifyInstance, FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 import { ZodError } from 'zod';
+import { COOKIE_NAME } from './auth';
 import { config } from './config';
 import { authRoutes } from './routes/auth';
 import { connectorRoutes } from './routes/connectors';
@@ -38,6 +39,61 @@ import { monitorRoutes } from './routes/monitor';
 import { metricsRoutes } from './routes/metrics';
 import { statusRoutes } from './routes/status';
 import { websiteRoutes } from './routes/websites';
+
+const METODOS_SEGUROS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Defensa anti-CSRF para las peticiones que mutan estado autenticadas con la
+ * COOKIE de sesión. `SameSite=Lax` ya frena a otros sitios, pero no a un
+ * subdominio del mismo sitio: en Skyway las aplicaciones de los clientes viven
+ * en subdominios del `rootDomain` del panel, así que una app desplegada por un
+ * inquilino podía hacer POST al panel con la cookie del administrador que la
+ * visitara. Un token Bearer no viaja solo, así que no necesita esta guarda; una
+ * petición sin cookie tampoco (webhooks de GitHub/Stripe).
+ *
+ * Se mira primero `Sec-Fetch-Site`, que el navegador rellena sin que nadie
+ * pueda falsearlo y que no depende de cómo reenvíe el Host el proxy; sin ella,
+ * se compara el host de `Origin` con el de la petición.
+ */
+function rechazarPorOrigen(req: FastifyRequest): boolean {
+  if (METODOS_SEGUROS.has(req.method)) return false;
+  const cookie = req.headers.cookie;
+  if (!cookie || !cookie.includes(`${COOKIE_NAME}=`)) return false;
+  const auth = req.headers.authorization;
+  if (typeof auth === 'string' && auth.startsWith('Bearer ')) return false;
+
+  const fetchSite = req.headers['sec-fetch-site'];
+  if (fetchSite === 'same-origin' || fetchSite === 'none') return false;
+  if (fetchSite === 'cross-site' || fetchSite === 'same-site') return true;
+
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string' || !origin) return false;
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    // `Origin: null` (iframe aislado, redirección desde otro sitio) o basura.
+    return true;
+  }
+  // `URL.host` omite el puerto por defecto del esquema; la cabecera Host puede
+  // llevarlo escrito («panel:443»). Se comparan ambos sin él.
+  const puertoDefecto = originUrl.protocol === 'https:' ? ':443' : ':80';
+  const normalizar = (h: string): string => h.toLowerCase().replace(new RegExp(`${puertoDefecto}$`), '');
+  const originHost = normalizar(originUrl.host);
+  const hosts = [req.hostname, req.headers.host].filter((h): h is string => typeof h === 'string' && h.length > 0);
+  return !hosts.some((h) => normalizar(h) === originHost);
+}
+
+/** Error que describe el interior del servidor y no una situación del usuario. */
+function esErrorInterno(err: unknown): boolean {
+  if (err instanceof TypeError || err instanceof RangeError || err instanceof ReferenceError || err instanceof SyntaxError) {
+    return true;
+  }
+  const e = err as { code?: unknown; errno?: unknown } | null;
+  if (typeof e?.code === 'string' && e.code.startsWith('SQLITE_')) return true;
+  // Errores de sistema de Node (ENOENT, EACCES, ECONNREFUSED…) llevan `errno`.
+  return typeof e?.errno === 'number';
+}
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -81,6 +137,19 @@ export function buildApp(): FastifyInstance {
     if (req.protocol === 'https') {
       reply.header('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
     }
+    // Las respuestas de la API llevan datos de la sesión: sin esto el navegador
+    // podía guardarlas en la caché de historial y enseñarlas tras cerrar sesión
+    // en un equipo compartido. Una ruta que quiera otra política la sobrescribe.
+    if (req.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
+
+    if (config.csrfOriginCheck && rechazarPorOrigen(req)) {
+      req.log.warn({ origin: req.headers.origin, host: req.hostname, url: req.url }, 'Petición con cookie rechazada por origen');
+      return reply.code(403).send({
+        error:
+          'Petición rechazada: su origen no coincide con el del panel. Si accedes a través de un proxy, ' +
+          'configúralo para que reenvíe la cabecera Host (o X-Forwarded-Host) del navegador.',
+      });
+    }
   });
 
   app.setErrorHandler((err, req, reply) => {
@@ -88,9 +157,16 @@ export function buildApp(): FastifyInstance {
       const message = err.issues.map((i) => i.message).join('; ');
       return reply.code(400).send({ error: message });
     }
-    req.log.error(err);
     const status = (err as any).statusCode && (err as any).statusCode >= 400 ? (err as any).statusCode : 500;
-    return reply.code(status).send({ error: err.message || 'Error interno' });
+    if (status >= 500) req.log.error(err);
+    else req.log.warn(err);
+    // Los mensajes que lanza el propio código (`new Error('…')`) están pensados
+    // para el usuario y se devuelven. Los de un fallo de programación o del
+    // sistema (TypeError, error de SQLite, ENOENT…) describen las tripas del
+    // servidor —rutas de fichero, nombres de columna— y no le sirven a nadie
+    // que no tenga ya el log: se sustituyen por un mensaje genérico.
+    const message = status >= 500 && esErrorInterno(err) ? 'Error interno' : err.message || 'Error interno';
+    return reply.code(status).send({ error: message });
   });
 
   app.register(authRoutes);
@@ -131,7 +207,9 @@ export function buildApp(): FastifyInstance {
   const indexHtmlPath = path.join(config.webDist, 'index.html');
   if (fs.existsSync(indexHtmlPath)) {
     let cachedIndexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-    fs.watchFile(indexHtmlPath, { interval: 5000 }, () => {
+    // `persistent: false`: el sondeo no debe mantener vivo el proceso por sí
+    // solo (tras `app.close()` en pruebas o herramientas se quedaba colgado).
+    fs.watchFile(indexHtmlPath, { interval: 5000, persistent: false }, () => {
       try {
         if (fs.existsSync(indexHtmlPath)) cachedIndexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
       } catch {

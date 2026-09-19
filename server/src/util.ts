@@ -54,20 +54,65 @@ export function fmtBytesEs(bytes: number): string {
 }
 
 const SCRYPT_N = 16384;
+const SCRYPT_KEYLEN = 64;
 
+/** Descompone `s2:salt:hash`; null si el formato no es el nuestro. */
+function parseStoredHash(stored: string): { salt: string; expected: Buffer } | null {
+  const parts = stored.split(':');
+  if (parts.length !== 3 || parts[0] !== 's2') return null;
+  return { salt: parts[1], expected: Buffer.from(parts[2], 'hex') };
+}
+
+function scryptKey(password: string, salt: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, SCRYPT_KEYLEN, { N: SCRYPT_N }, (err, key) => (err ? reject(err) : resolve(key)));
+  });
+}
+
+/**
+ * Versión SÍNCRONA: bloquea el bucle de eventos ~50 ms. Vale para el arranque,
+ * las herramientas de línea de comandos y las rutas de administración poco
+ * frecuentes; en el login y en todo lo que pueda martillear un anónimo se usa
+ * `hashPasswordAsync`/`verifyPasswordAsync`, que calculan en el pool de hilos.
+ */
 export function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(password, salt, 64, { N: SCRYPT_N }).toString('hex');
+  const hash = crypto.scryptSync(password, salt, SCRYPT_KEYLEN, { N: SCRYPT_N }).toString('hex');
   return `s2:${salt}:${hash}`;
 }
 
 export function verifyPassword(password: string, stored: string): boolean {
-  const parts = stored.split(':');
-  if (parts.length !== 3 || parts[0] !== 's2') return false;
-  const [, salt, hash] = parts;
-  const candidate = crypto.scryptSync(password, salt, 64, { N: SCRYPT_N });
-  const expected = Buffer.from(hash, 'hex');
-  return candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected);
+  const parsed = parseStoredHash(stored);
+  if (!parsed) return false;
+  const candidate = crypto.scryptSync(password, parsed.salt, SCRYPT_KEYLEN, { N: SCRYPT_N });
+  return candidate.length === parsed.expected.length && crypto.timingSafeEqual(candidate, parsed.expected);
+}
+
+export async function hashPasswordAsync(password: string): Promise<string> {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = (await scryptKey(password, salt)).toString('hex');
+  return `s2:${salt}:${hash}`;
+}
+
+export async function verifyPasswordAsync(password: string, stored: string): Promise<boolean> {
+  const parsed = parseStoredHash(stored);
+  if (!parsed) return false;
+  const candidate = await scryptKey(password, parsed.salt);
+  return candidate.length === parsed.expected.length && crypto.timingSafeEqual(candidate, parsed.expected);
+}
+
+let decoyHash: string | null = null;
+
+/**
+ * Hash señuelo para el login: contra un email que no existe se verifica igual la
+ * contraseña (contra este hash, que nunca casa), de modo que la respuesta tarda
+ * lo mismo que con un usuario real. Sin él, medir el tiempo bastaba para saber
+ * qué emails tienen cuenta. Se genera una vez por proceso, con una contraseña
+ * aleatoria que nadie conoce.
+ */
+export function decoyPasswordHash(): string {
+  decoyHash ??= hashPassword(randomToken(16));
+  return decoyHash;
 }
 
 export function hmacSha256(secret: string, payload: string | Buffer): string {

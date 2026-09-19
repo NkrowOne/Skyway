@@ -30,7 +30,7 @@ import {
   listPasskeys,
   touchPasskey,
 } from '../db';
-import { randomToken } from '../util';
+import { randomToken, safeParse } from '../util';
 
 const RP_NAME = 'Skyway';
 const CHALLENGE_TTL_MS = 5 * 60_000;
@@ -58,12 +58,26 @@ function capChallenges(map: Map<string, unknown>): void {
 /**
  * WebAuthn liga cada credencial al dominio (rpID). Se derivan del Host real de
  * la petición para que funcione tanto en localhost (túnel SSH) como con dominio.
+ *
+ * El origen esperado se construye con protocolo y host de la petición. La
+ * cabecera `Origin` solo se acepta si apunta a ESE mismo host: sirve para
+ * conservar el esquema real del navegador (https detrás de un proxy que no
+ * reenvía X-Forwarded-Proto), pero antes se tomaba tal cual, y quien la
+ * controla —el cliente— elegía contra qué origen se verificaba su propio reto.
  */
 function rpInfo(req: FastifyRequest): { rpId: string; origin: string } {
-  const host = req.hostname || 'localhost';
+  const host = (req.hostname || 'localhost').toLowerCase();
   const rpId = host.split(':')[0];
+  let origin = `${req.protocol}://${host}`;
   const originHeader = req.headers.origin;
-  const origin = typeof originHeader === 'string' && originHeader ? originHeader : `${req.protocol}://${host}`;
+  if (typeof originHeader === 'string' && originHeader) {
+    try {
+      const url = new URL(originHeader);
+      if (url.host.toLowerCase() === host) origin = url.origin;
+    } catch {
+      /* cabecera malformada: se ignora y manda la petición */
+    }
+  }
   return { rpId, origin };
 }
 
@@ -149,17 +163,27 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
       const transports = (body.response as RegistrationResponseJSON).response?.transports as
         | AuthenticatorTransportFuture[]
         | undefined;
-      const row = insertPasskey({
-        user_id: user.id,
-        credential_id: bufferToB64u(info.credentialID),
-        public_key: bufferToB64u(info.credentialPublicKey),
-        counter: info.counter,
-        transports: transports ? JSON.stringify(transports) : null,
-        device_type: info.credentialDeviceType ?? null,
-        backed_up: info.credentialBackedUp ? 1 : 0,
-        rp_id: pending.rpId,
-        name: body.name,
-      });
+      let row;
+      try {
+        row = insertPasskey({
+          user_id: user.id,
+          credential_id: bufferToB64u(info.credentialID),
+          public_key: bufferToB64u(info.credentialPublicKey),
+          counter: info.counter,
+          transports: transports ? JSON.stringify(transports) : null,
+          device_type: info.credentialDeviceType ?? null,
+          backed_up: info.credentialBackedUp ? 1 : 0,
+          rp_id: pending.rpId,
+          name: body.name,
+        });
+      } catch (err) {
+        // `credential_id` es UNIQUE: la misma llave ya registrada (por este u otro
+        // usuario) daba un 500 opaco en vez de explicar qué pasa.
+        if ((err as { code?: unknown })?.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+          return reply.code(409).send({ error: 'Esta passkey ya está registrada en Skyway' });
+        }
+        throw err;
+      }
       audit(req, 'passkey_registered', { type: 'passkey', id: row.id, detail: `${body.name} (${pending.rpId})` });
       reply.code(201);
       return { passkey: { id: row.id, name: row.name, rp_id: row.rp_id, created_at: row.created_at } };
@@ -213,6 +237,8 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
       audit(req, 'login_failed', { type: 'passkey', id: response?.id ?? '?' });
       return reply.code(401).send({ error: 'Passkey no reconocida' });
     }
+    // Columna JSON almacenada: una fila corrupta no debe tumbar el login con un 500.
+    const transports = safeParse<AuthenticatorTransportFuture[]>(passkey.transports, []);
     let verification;
     try {
       verification = await verifyAuthenticationResponse({
@@ -224,7 +250,7 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
           credentialID: b64uToBuffer(passkey.credential_id),
           credentialPublicKey: b64uToBuffer(passkey.public_key),
           counter: passkey.counter,
-          transports: passkey.transports ? (JSON.parse(passkey.transports) as AuthenticatorTransportFuture[]) : undefined,
+          transports: transports.length > 0 ? transports : undefined,
         },
         requireUserVerification: false,
       });

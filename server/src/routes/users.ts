@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { currentUser, requireAdmin } from '../auth';
+import { currentUser, requireAdmin, setAuthCookie, signToken } from '../auth';
 import { audit } from '../audit';
 import {
   countAdmins,
@@ -20,7 +20,7 @@ import {
   updateUserRole,
   updateUserWorkspace,
 } from '../db';
-import { hashPassword } from '../util';
+import { hashPasswordAsync } from '../util';
 
 // Crear desde aquí (nivel plataforma): admin o miembro. Los propietarios se
 // crean desde «Cuentas y clientes», donde llevan su workspace.
@@ -68,8 +68,15 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     for (const pid of body.projectIds) {
       if (!getProject(pid)) return reply.code(400).send({ error: `Proyecto desconocido: ${pid}` });
     }
-    const user = createUser(email, hashPassword(body.password), body.role);
-    if (body.role === 'member') setUserProjects(user.id, body.projectIds);
+    const passwordHash = await hashPasswordAsync(body.password);
+    // Se repite la comprobación tras el `await`: otra petición pudo crear el mismo
+    // email mientras se calculaba el hash, y el UNIQUE de la tabla daría un 500.
+    if (getUserByEmail(email)) return reply.code(409).send({ error: 'Ya existe un usuario con ese email' });
+    const user = transaction(() => {
+      const created = createUser(email, passwordHash, body.role);
+      if (body.role === 'member') setUserProjects(created.id, body.projectIds);
+      return created;
+    });
     audit(req, 'user_created', { type: 'user', id: user.id, detail: `${email} (${body.role})` });
     reply.code(201);
     return { user: { id: user.id, email: user.email, role: user.role, created_at: user.created_at } };
@@ -100,6 +107,11 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // El hash se calcula ANTES de la transacción (es asíncrono y no puede ir dentro).
+    const passwordHash = body.password ? await hashPasswordAsync(body.password) : null;
+    // El usuario pudo borrarse mientras se calculaba el hash.
+    if (!getUser(id)) return reply.code(404).send({ error: 'Usuario no encontrado' });
+
     // --- Mutaciones atómicas: todo o nada ---
     const effectiveRole = roleChange ?? target.role;
     transaction(() => {
@@ -109,10 +121,18 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
       // Un admin no tiene asignaciones; un miembro recibe las enviadas (si las hay).
       if (effectiveRole === 'admin') setUserProjects(id, []);
       else if (body.projectIds) setUserProjects(id, body.projectIds);
-      if (body.password) updateUserPassword(id, hashPassword(body.password));
+      if (passwordHash) updateUserPassword(id, passwordHash);
     });
 
-    if (body.password) audit(req, 'user_password_reset', { type: 'user', id, detail: target.email });
+    if (passwordHash) {
+      audit(req, 'user_password_reset', { type: 'user', id, detail: target.email });
+      // Cambiar la contraseña sube el epoch y corta las cookies previas del
+      // usuario. Si el administrador se la cambia a SÍ MISMO, sin renovar la suya
+      // la siguiente petición le devolvía al login sin explicación.
+      if (target.id === me.id && req.authMethod === 'cookie') {
+        setAuthCookie(reply, signToken(id), req.protocol === 'https');
+      }
+    }
     audit(req, 'user_updated', { type: 'user', id, detail: target.email });
     const updated = getUser(id)!;
     return {

@@ -4,7 +4,7 @@ import {
   getSetting,
   listDeployments,
   listProjects,
-  listServices,
+  listServicesForProjects,
   pruneMetrics,
   pruneUptime,
   recordHostDisk,
@@ -91,8 +91,12 @@ async function tick(): Promise<void> {
   // Réplicas con contador de red vivo este tick: las que desaparezcan se olvidan.
   const seenReplicas = new Set<string>();
 
-  for (const project of listProjects()) {
-    for (const service of listServices(project.id)) {
+  // Una consulta para todos los servicios en vez de una por proyecto cada 30 s.
+  const projects = listProjects();
+  const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
+
+  for (const project of projects) {
+    for (const service of servicesByProject.get(project.id) ?? []) {
       const totalReplicas = configuredReplicas(service);
       let runningReplicas = 0;
       let anyReplicaSeen = false;
@@ -277,7 +281,7 @@ async function tick(): Promise<void> {
   // (al bajar de 3 réplicas a 1, las claves «svc#2» y «svc#3» se quedaban
   // para siempre con su estado congelado).
   const replicasOf = new Map<string, number>();
-  for (const p of listProjects()) for (const s of listServices(p.id)) replicasOf.set(s.id, configuredReplicas(s));
+  for (const services of servicesByProject.values()) for (const s of services) replicasOf.set(s.id, configuredReplicas(s));
   for (const key of tracked.keys()) {
     const [serviceId, idx] = key.split('#');
     const max = replicasOf.get(serviceId);
@@ -298,8 +302,10 @@ async function checkDiskQuotas(): Promise<void> {
   // Foto de disco del host para el histórico (una por cada ronda de disco, ~5 min).
   const hd = await hostDisk().catch(() => null);
   if (hd) recordHostDisk(hd.total - hd.free, hd.total);
-  for (const project of listProjects()) {
-    for (const service of listServices(project.id)) {
+  const projects = listProjects();
+  const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
+  for (const project of projects) {
+    for (const service of servicesByProject.get(project.id) ?? []) {
       const du = usage.get(service.id);
       // Foto de disco del servicio para el histórico (aunque no tenga cuota).
       if (du) recordServiceDisk(service.id, du.totalBytes, project.workspace_id);
