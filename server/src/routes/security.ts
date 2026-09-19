@@ -26,7 +26,7 @@ export async function securityRoutes(app: FastifyInstance): Promise<void> {
     const query = z
       .object({
         limit: z.coerce.number().int().min(1).max(500).optional(),
-        action: z.string().trim().optional(),
+        action: z.string().trim().max(80).optional(),
       })
       .parse(req.query);
     return { entries: listAudit({ limit: query.limit, action: query.action || undefined }) };

@@ -8,6 +8,7 @@ import {
   getGithubInstallation,
   getProject,
   listAllGithubInstallations,
+  listGithubInstallationsByNumber,
   listGithubInstallationsForProject,
   listUserProjectIds,
   upsertGithubInstallation,
@@ -326,8 +327,12 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
     const row = getGithubInstallation(rowId);
     if (!installationAccess(req, reply, row)) return reply;
     deleteGithubInstallation(rowId);
-    // Solo se olvida el token si ya no queda ninguna fila usando esa instalación.
-    if (listGithubInstallationsForProject(row.project_id ?? '').every((r) => r.installation_id !== row.installation_id)) {
+    // Solo se olvida el token si ya no queda NINGUNA fila (de ningún proyecto)
+    // usando esa instalación. Antes se miraba solo el proyecto de la fila
+    // borrada —y para una global, el proyecto vacío—, así que una instalación
+    // compartida por dos proyectos perdía el token cacheado que el otro seguía
+    // usando.
+    if (listGithubInstallationsByNumber(row.installation_id).length === 0) {
       forgetInstallationToken(row.installation_id);
     }
     audit(req, 'github_installation_removed', {

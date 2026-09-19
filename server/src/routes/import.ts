@@ -31,6 +31,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
       if (!getProject(id)) return reply.code(404).send({ error: 'Proyecto no encontrado' });
       if (!assertProjectAccess(req, reply, id)) return reply;
       setSetting(`importReport:${id}`, null);
+      audit(req, 'import_report_deleted', { type: 'project', id });
       return { ok: true };
     });
   });

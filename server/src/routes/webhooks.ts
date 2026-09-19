@@ -8,9 +8,8 @@ import {
   lastBuiltCommitSha,
   latestDeployment,
   listGithubInstallationsByNumber,
-  listGithubInstallationsForProject,
   listProjects,
-  listServices,
+  listServicesForProjects,
   setGithubInstallationSuspended,
 } from '../db';
 import { getStripeWebhookSecret } from '../company';
@@ -37,12 +36,16 @@ const IN_PROGRESS = new Set(['queued', 'building', 'deploying']);
 function servicesForPush(fullName: string, branch: string, installationId: number): { service: ServiceRow; name: string }[] {
   const wanted = fullName.toLowerCase();
   const out: { service: ServiceRow; name: string }[] = [];
-  for (const project of listProjects()) {
-    const entitled = listGithubInstallationsForProject(project.id).some(
-      (row) => row.installation_id === installationId,
-    );
-    if (!entitled) continue;
-    for (const service of listServices(project.id)) {
+  // Las filas de la instalación se leen una vez: una global (sin proyecto) da
+  // derecho a todos los proyectos; las demás, solo al suyo. Antes se
+  // consultaban las instalaciones y los servicios proyecto a proyecto.
+  const filas = listGithubInstallationsByNumber(installationId);
+  const global = filas.some((row) => row.project_id === null);
+  const proyectosConDerecho = new Set(filas.map((row) => row.project_id));
+  const proyectos = listProjects().filter((p) => global || proyectosConDerecho.has(p.id));
+  const serviciosPorProyecto = listServicesForProjects(proyectos.map((p) => p.id));
+  for (const project of proyectos) {
+    for (const service of serviciosPorProyecto.get(project.id) ?? []) {
       if (service.type !== 'git') continue;
       const cfg = service.config as GitConfig;
       if (cfg.autoDeploy === false) continue;

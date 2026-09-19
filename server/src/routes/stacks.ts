@@ -10,7 +10,9 @@ import {
   getSetting,
   serviceSlugExists,
   setEnv,
+  transaction,
 } from '../db';
+import { rateLimit } from '../ratelimit';
 import {
   effectiveQuota,
   isWorkspaceActive,
@@ -25,18 +27,49 @@ import { getStack, renderStackEnv, stackList, StackRenderCtx } from '../stacks';
 import { getTemplate } from '../templates';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from '../types';
 import { randomToken, slugify } from '../util';
+import { domainSchema, publicServiceConfig } from './services';
+
+/**
+ * Tope de vistas previas de plantillas por usuario y minuto: cada una consulta
+ * la API pública de Railway, y sin tope el panel servía de proxy para ella.
+ */
+const PREVIEWS_POR_MINUTO = 20;
+
+/**
+ * Servicios tal y como salen en la respuesta de creación: sin el secreto del
+ * webhook de los servicios de repositorio (los listados ya lo omiten; aquí se
+ * devolvía la fila entera).
+ */
+function publicServices(rows: ServiceRow[]): ServiceRow[] {
+  return rows.map((s) => ({ ...s, config: publicServiceConfig(s.config) }));
+}
+
+/**
+ * Ejecuta la creación de los servicios en una transacción. Devuelve el mensaje
+ * para el usuario si chocó con un servicio que ya existía (dos peticiones a la
+ * vez con el mismo prefijo: la comprobación previa del prefijo no es atómica),
+ * y relanza cualquier otro fallo. La transacción deshace lo creado hasta ahí.
+ */
+function crearAtomico(fn: () => void): string | null {
+  try {
+    transaction(fn);
+    return null;
+  } catch (err) {
+    const code = String((err as { code?: unknown } | null)?.code ?? '');
+    if (code.startsWith('SQLITE_CONSTRAINT')) {
+      return 'Ya existe un servicio con uno de esos nombres en el proyecto: prueba con otro prefijo.';
+    }
+    throw err;
+  }
+}
 
 const createSchema = z.object({
   stack: z.string().trim().min(1),
   /** Prefijo de los nombres de servicio (`<prefijo>-db`, `<prefijo>-kong`...). */
   prefix: z.string().trim().min(1).max(40).optional(),
-  domain: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .max(253)
-    .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i, 'Dominio no válido')
-    .optional(),
+  // El mismo validador que crear/editar servicio: el dominio acaba en la regla
+  // Host() de Traefik y ahí no puede entrar texto libre.
+  domain: domainSchema.optional(),
 });
 
 /**
@@ -56,13 +89,7 @@ function uniquePrefix(projectId: string, base: string, keys: string[]): string {
 const templateSchema = z.object({
   template: z.string().trim().min(1, 'Indica la plantilla de Railway'),
   prefix: z.string().trim().min(1).max(40).optional(),
-  domain: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .max(253)
-    .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i, 'Dominio no válido')
-    .optional(),
+  domain: domainSchema.optional(),
 });
 
 export async function stackRoutes(app: FastifyInstance): Promise<void> {
@@ -74,7 +101,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
    * Vista previa de una plantilla del catálogo de Railway: qué servicios saldrían
    * y qué avisos hay. No crea nada, así que basta con estar autenticado.
    */
-  app.post('/api/railway-templates/preview', async (req, reply) => {
+  app.post('/api/railway-templates/preview', { preHandler: rateLimit({ max: PREVIEWS_POR_MINUTO, windowMs: 60_000 }) }, async (req, reply) => {
     const body = z.object({ template: z.string().trim().min(1), prefix: z.string().trim().max(40).optional() }).parse(req.body);
     const code = parseTemplateCode(body.template);
     if (!code) return reply.code(400).send({ error: 'No reconozco esa plantilla: pega su URL de Railway o su código.' });
@@ -161,61 +188,71 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
     // del proyecto, incluidos los que el usuario despliegue después).
     const secrets = stack.makeSecrets();
 
+    // Se comprueba ANTES de crear nada: descubrirlo a mitad dejaba media pila
+    // en la base de datos y un 500.
+    const plantillaRota = stack.services.find((s) => s.template && !getTemplate(s.template));
+    if (plantillaRota) return reply.code(500).send({ error: `Plantilla desconocida: ${plantillaRota.template}` });
+
     const created: ServiceRow[] = [];
     const steps: StackStep[] = [];
-    for (const def of stack.services) {
-      const slug = slugs[def.key];
-      const domains = def.public && body.domain ? [body.domain] : [];
-      // Los secretos ganan sobre el entorno renderizado: en el propio servicio
-      // ancla, un `{{secret:X}}` se habría convertido en una referencia a su
-      // propia variable X, que sin el valor literal detrás no resolvería nada.
-      const own = (env: Record<string, string>) =>
-        def.key === stack.secretsService ? { ...env, ...secrets } : env;
-      let service: ServiceRow;
+    // Todo o nada: un choque de slug con una petición simultánea (la comprobación
+    // de arriba no es atómica) o cualquier otro fallo a mitad no deja servicios
+    // sueltos a los que nadie va a desplegar.
+    const creacion = crearAtomico(() => {
+      for (const def of stack.services) {
+        const slug = slugs[def.key];
+        const domains = def.public && body.domain ? [body.domain] : [];
+        // Los secretos ganan sobre el entorno renderizado: en el propio servicio
+        // ancla, un `{{secret:X}}` se habría convertido en una referencia a su
+        // propia variable X, que sin el valor literal detrás no resolvería nada.
+        const own = (env: Record<string, string>) =>
+          def.key === stack.secretsService ? { ...env, ...secrets } : env;
+        let service: ServiceRow;
 
-      if (def.template) {
-        const template = getTemplate(def.template);
-        if (!template) return reply.code(500).send({ error: `Plantilla desconocida: ${def.template}` });
-        const cfg: DatabaseConfig = {
-          template: template.key,
-          version: def.version || template.defaultVersion,
-          stack: stack.key,
-        };
-        service = createService(projectId, slug, slug, 'database', cfg);
-        // Credenciales generadas por la plantilla, como en una base suelta: el
-        // resto de la pila las referencia con ${{servicio.VARIABLE}}.
-        setEnv(service.id, own(template.makeEnv(slug)));
-      } else {
-        const cfg: ImageConfig & { icon?: string; stack?: string } = {
-          image: def.image!,
-          port: def.port ?? null,
-          domains,
-          icon: def.icon,
-          stack: stack.key,
-        };
-        if (def.volumes?.length) {
-          // Separador `__` a propósito. Con guiones, el nombre sería AMBIGUO:
-          // proyecto «acme-prod» + prefijo «supabase» y proyecto «acme» +
-          // prefijo «prod-supabase» darían el mismo, y Docker adjunta el volumen
-          // existente sin mirar de quién es — los datos de otro workspace. Ni
-          // los slugs de proyecto ni los prefijos pueden contener `_`, así que
-          // con este separador la descomposición es única. Dos servicios con la
-          // misma clave lógica comparten volumen: storage e imgproxy lo
-          // necesitan.
-          cfg.volumes = def.volumes.map((v) => ({
-            name: `skyway-${project.slug}__${prefix}__${v.key}`,
-            containerPath: v.path,
-          }));
+        if (def.template) {
+          const template = getTemplate(def.template)!;
+          const cfg: DatabaseConfig = {
+            template: template.key,
+            version: def.version || template.defaultVersion,
+            stack: stack.key,
+          };
+          service = createService(projectId, slug, slug, 'database', cfg);
+          // Credenciales generadas por la plantilla, como en una base suelta: el
+          // resto de la pila las referencia con ${{servicio.VARIABLE}}.
+          setEnv(service.id, own(template.makeEnv(slug)));
+        } else {
+          const cfg: ImageConfig & { icon?: string; stack?: string } = {
+            image: def.image!,
+            port: def.port ?? null,
+            domains,
+            icon: def.icon,
+            stack: stack.key,
+          };
+          if (def.volumes?.length) {
+            // Separador `__` a propósito. Con guiones, el nombre sería AMBIGUO:
+            // proyecto «acme-prod» + prefijo «supabase» y proyecto «acme» +
+            // prefijo «prod-supabase» darían el mismo, y Docker adjunta el volumen
+            // existente sin mirar de quién es — los datos de otro workspace. Ni
+            // los slugs de proyecto ni los prefijos pueden contener `_`, así que
+            // con este separador la descomposición es única. Dos servicios con la
+            // misma clave lógica comparten volumen: storage e imgproxy lo
+            // necesitan.
+            cfg.volumes = def.volumes.map((v) => ({
+              name: `skyway-${project.slug}__${prefix}__${v.key}`,
+              containerPath: v.path,
+            }));
+          }
+          service = createService(projectId, slug, slug, 'image', cfg);
+          setEnv(service.id, own(def.env ? renderStackEnv(def.env, ctx) : {}));
         }
-        service = createService(projectId, slug, slug, 'image', cfg);
-        setEnv(service.id, own(def.env ? renderStackEnv(def.env, ctx) : {}));
-      }
 
-      // El monitor no debe interpretar los arranques de la pila como caídas.
-      markManualAction(service.id);
-      created.push(service);
-      steps.push({ serviceId: service.id, key: def.key, stage: def.stage, readyCmd: def.readyCmd });
-    }
+        created.push(service);
+        steps.push({ serviceId: service.id, key: def.key, stage: def.stage, readyCmd: def.readyCmd });
+      }
+    });
+    if (creacion) return reply.code(409).send({ error: creacion });
+    // El monitor no debe interpretar los arranques de la pila como caídas.
+    for (const service of created) markManualAction(service.id);
 
     audit(req, 'stack_created', {
       type: 'project',
@@ -230,7 +267,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
     });
 
     reply.code(201);
-    return { stack: stack.key, prefix, publicUrl, services: created };
+    return { stack: stack.key, prefix, publicUrl, services: publicServices(created) };
   });
 
   /**
@@ -284,37 +321,41 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
 
     const created: ServiceRow[] = [];
     const steps: StackStep[] = [];
-    for (const svc of plan.services) {
-      const domains = svc.public && body.domain ? [body.domain] : [];
-      const volumes = svc.volumes.map((path, idx) => ({
-        name: `skyway-${project.slug}__${finalPrefix}__${slugify(svc.templateName)}${idx === 0 ? '' : idx + 1}`,
-        containerPath: path,
-      }));
-      const common = {
-        domains,
-        startCmd: svc.startCmd,
-        healthcheckPath: svc.healthcheckPath,
-        volumes: volumes.length ? volumes : undefined,
-        stack: `railway:${plan.code}`,
-      };
-      const cfg =
-        svc.kind === 'image'
-          ? ({ ...common, image: svc.image!, port: svc.port ?? null } as ImageConfig & { stack?: string })
-          : ({
-              ...common,
-              repoUrl: svc.repoUrl!,
-              branch: 'main',
-              rootDir: svc.rootDir,
-              port: svc.port ?? 3000,
-              webhookSecret: randomToken(16),
-            } as GitConfig & { stack?: string });
+    // Atómico por lo mismo que en las pilas del catálogo: sin servicios a medias.
+    const creacion = crearAtomico(() => {
+      for (const svc of plan.services) {
+        const domains = svc.public && body.domain ? [body.domain] : [];
+        const volumes = svc.volumes.map((path, idx) => ({
+          name: `skyway-${project.slug}__${finalPrefix}__${slugify(svc.templateName)}${idx === 0 ? '' : idx + 1}`,
+          containerPath: path,
+        }));
+        const common = {
+          domains,
+          startCmd: svc.startCmd,
+          healthcheckPath: svc.healthcheckPath,
+          volumes: volumes.length ? volumes : undefined,
+          stack: `railway:${plan.code}`,
+        };
+        const cfg =
+          svc.kind === 'image'
+            ? ({ ...common, image: svc.image!, port: svc.port ?? null } as ImageConfig & { stack?: string })
+            : ({
+                ...common,
+                repoUrl: svc.repoUrl!,
+                branch: 'main',
+                rootDir: svc.rootDir,
+                port: svc.port ?? 3000,
+                webhookSecret: randomToken(16),
+              } as GitConfig & { stack?: string });
 
-      const service = createService(projectId, svc.name, svc.slug, svc.kind, cfg);
-      setEnv(service.id, svc.env);
-      markManualAction(service.id);
-      created.push(service);
-      steps.push({ serviceId: service.id, key: svc.templateName, stage: svc.stage, readyCmd: svc.readyCmd });
-    }
+        const service = createService(projectId, svc.name, svc.slug, svc.kind, cfg);
+        setEnv(service.id, svc.env);
+        created.push(service);
+        steps.push({ serviceId: service.id, key: svc.templateName, stage: svc.stage, readyCmd: svc.readyCmd });
+      }
+    });
+    if (creacion) return reply.code(409).send({ error: creacion });
+    for (const service of created) markManualAction(service.id);
 
     audit(req, 'railway_template_imported', {
       type: 'project',
@@ -332,7 +373,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
       name: plan.name,
       prefix: finalPrefix,
       warnings: plan.warnings,
-      services: created,
+      services: publicServices(created),
       notes: plan.services.flatMap((s) => s.notes.map((n) => `${s.templateName}: ${n}`)),
     };
   });
