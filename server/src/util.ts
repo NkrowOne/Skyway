@@ -79,10 +79,19 @@ export function safeEqual(a: string, b: string): boolean {
   return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
 }
 
-/** Trocea un buffer/string en líneas completas, conservando el resto pendiente. */
-export function lineSplitter(onLine: (line: string) => void): (chunk: Buffer | string) => void {
+export type LineFeed = ((chunk: Buffer | string) => void) & {
+  /** Entrega lo que quede sin salto de línea final. Llamar al cerrar el stream. */
+  flush: () => void;
+};
+
+/**
+ * Trocea un buffer/string en líneas completas, conservando el resto pendiente.
+ * `flush()` suelta el resto al acabar el stream: sin él, la última línea de
+ * una herramienta que no termina en salto de línea se perdía.
+ */
+export function lineSplitter(onLine: (line: string) => void): LineFeed {
   let pending = '';
-  return (chunk: Buffer | string) => {
+  const feed = ((chunk: Buffer | string) => {
     pending += chunk.toString();
     let idx;
     while ((idx = pending.indexOf('\n')) >= 0) {
@@ -94,5 +103,11 @@ export function lineSplitter(onLine: (line: string) => void): (chunk: Buffer | s
       onLine(pending);
       pending = '';
     }
+  }) as LineFeed;
+  feed.flush = () => {
+    const rest = pending.replace(/\r$/, '');
+    pending = '';
+    if (rest.length > 0) onLine(rest);
   };
+  return feed;
 }

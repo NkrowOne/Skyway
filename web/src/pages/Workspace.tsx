@@ -27,7 +27,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import { COUNTRY_OPTIONS, DEFAULT_COUNTRY, countryName } from '../countries';
-import { Button, Chip, ConfirmModal, CopyButton, EditorBar, ErrorState, Field, Modal, NumberInput, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, CopyButton, EditorBar, EmptyState, ErrorState, Field, Modal, NumberInput, Segmented, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
 import { QuotaMeter } from '../components/QuotaMeter';
 // Gráficos de la pestaña «Uso» (no es la pestaña por defecto): carga diferida.
 const UsageBars = lazy(() => import('../components/BillingCharts').then((m) => ({ default: m.UsageBars })));
@@ -130,8 +130,8 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
   return (
     <div className="flex flex-col gap-5">
       <section className="card p-5">
-        <div className="mb-1 flex items-center justify-between">
-          <h2 className="text-base font-semibold">Cuota de recursos</h2>
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <h2 className="min-w-0 text-base font-semibold">Cuota de recursos</h2>
           {isAdmin && (
             <select
               className="input h-8 w-auto py-0 text-sm"
@@ -147,8 +147,7 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
           )}
         </div>
         <p className="mb-4 text-xs text-subtle">
-          Acotada a todos los proyectos del cliente en total.{' '}
-          {isAdmin ? 'Amplíala o recórtala en vivo; los límites por servicio ya en marcha se aplican al volver a desplegar.' : 'La define tu proveedor.'}
+          {isAdmin ? 'Suma de todos los proyectos de la cuenta; los servicios en marcha aplican el cambio al redesplegar.' : 'Suma de todos los proyectos de la cuenta; la define tu proveedor.'}
         </p>
 
         <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
@@ -212,11 +211,6 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
             Hay servicios sin límite de recursos: no reservan cuota, pero pueden crecer sin tope. Asígnales CPU/RAM en sus ajustes para acotarlos.
           </p>
         )}
-        {isAdmin && dirty && (
-          <div className="mt-4">
-            <EditorBar dirty={dirty} saving={save.isPending} onSave={() => save.mutate()} onDiscard={() => { setRows(initial); setPlanId(ws.plan_id ?? ''); }} saveLabel="Aplicar cuota" />
-          </div>
-        )}
       </section>
 
       <section className="card p-5">
@@ -239,6 +233,12 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
           </div>
         )}
       </section>
+
+      {/* Fuera de la tarjeta: dentro de ella el `sticky` se pegaba al borde de la
+          caja y no al de la ventana, y la barra se perdía al bajar. */}
+      {isAdmin && (
+        <EditorBar dirty={dirty} saving={save.isPending} onSave={() => save.mutate()} onDiscard={() => { setRows(initial); setPlanId(ws.plan_id ?? ''); }} saveLabel="Aplicar cuota" />
+      )}
     </div>
   );
 }
@@ -277,8 +277,8 @@ function ModulosTab({ detail, isAdmin, modules, onSaved }: { detail: Detail; isA
         <h2 className="text-base font-semibold">Módulos</h2>
         <p className="mt-1 text-xs text-subtle">
           {isAdmin
-            ? 'Concede o retira los módulos de esta cuenta. El cliente puede acotar (desactivar) los concedidos, nunca ampliarlos.'
-            : 'Activa o desactiva bajo tu cuenta los módulos incluidos en tu plan. No puedes activar los que no tengas concedidos.'}
+            ? 'Concede o retira módulos; el cliente solo puede desactivar los concedidos.'
+            : 'Activa o desactiva los módulos incluidos en tu plan.'}
         </p>
         <div className="mt-4 flex flex-col gap-5">
           {groups.map(([group, mods]) => (
@@ -414,24 +414,26 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
   const projectName = (id: string) => detail.projects.find((p) => p.id === id)?.name ?? id;
   const toggleProject = (id: string) =>
     setDraft((d) => (d ? { ...d, projectIds: d.projectIds.includes(id) ? d.projectIds.filter((p) => p !== id) : [...d.projectIds, id] } : d));
+  // Copia ordenada: los datos de react-query no se mutan.
+  const members = useMemo(() => [...detail.members].sort((a, b) => a.email.localeCompare(b.email, 'es')), [detail.members]);
 
   return (
     <section className="card overflow-hidden">
-      <div className="flex items-center justify-between border-b border-line px-4 py-3">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-line px-4 py-3">
+        <div className="min-w-0">
           <h2 className="text-base font-semibold">Usuarios de la cuenta</h2>
           <p className="mt-0.5 text-xs text-subtle">
-            {ws.allocation.members} de {ws.quota.maxMembers} · propietarios y miembros con acceso a proyectos de esta cuenta
+            {ws.allocation.members} de {ws.quota.maxMembers}
           </p>
         </div>
         <Button size="sm" onClick={() => setDraft({ email: '', password: '', role: 'member', projectIds: [] })}>
           <Plus size={13} /> Nuevo usuario
         </Button>
       </div>
-      {detail.members.length === 0 ? (
+      {members.length === 0 ? (
         <p className="px-4 py-8 text-center text-xs text-subtle">Sin usuarios. Crea uno para dar acceso a esta cuenta.</p>
       ) : (
-        detail.members.map((m, i) => (
+        members.map((m, i) => (
           <div key={m.id} className={cx('flex flex-wrap items-center gap-3 px-4 py-3', i > 0 && 'border-t border-line')}>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
@@ -450,10 +452,10 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-1">
-              <button onClick={() => setDraft({ id: m.id, email: m.email, password: '', role: m.role, projectIds: m.projectIds })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Editar">
+              <button onClick={() => setDraft({ id: m.id, email: m.email, password: '', role: m.role, projectIds: m.projectIds })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Editar" aria-label="Editar">
                 <Pencil size={14} />
               </button>
-              <button onClick={() => setToDelete(m)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Eliminar">
+              <button onClick={() => setToDelete(m)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title="Eliminar" aria-label="Eliminar">
                 <Trash2 size={14} />
               </button>
             </div>
@@ -466,7 +468,7 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
           <div className="flex flex-col gap-3.5">
             {!isEdit && (
               <Field label="Email">
-                <input className="input" type="email" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} autoFocus />
+                <input className="input" type="email" autoComplete="email" autoCapitalize="none" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} autoFocus />
               </Field>
             )}
             <Field label={isEdit ? 'Nueva contraseña' : 'Contraseña'} hint={isEdit ? 'vacío = no cambiarla' : 'mínimo 8 caracteres'}>
@@ -580,25 +582,18 @@ function UsoTab({ detail }: { detail: Detail }) {
   const ramTrend = trendPct(series.map((p) => p.ramGbHours));
   const monthlyCpu = days > 0 ? round1((cpuTotal / days) * 30) : 0;
   const labelFor = (t: number) => fmtAxisTime(t, days * 24);
-  const maxProj = Math.max(1e-9, ...(data?.byProject ?? []).map((p) => p.cpuCoreHours));
+  // De mayor a menor consumo: la lista es un ranking, no un listado. Copia
+  // ordenada para no mutar la caché de react-query.
+  const byProject = useMemo(() => [...(data?.byProject ?? [])].sort((a, b) => b.cpuCoreHours - a.cpuCoreHours), [data?.byProject]);
+  const maxProj = Math.max(1e-9, ...byProject.map((p) => p.cpuCoreHours));
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="flex items-center gap-1.5 text-sm text-sub">
-          <Gauge size={15} className="text-acc-soft" /> Consumo agregado de la cuenta en el tiempo
+        <p className="flex min-w-0 items-center gap-1.5 text-sm text-sub">
+          <Gauge size={15} className="shrink-0 text-acc-soft" /> Consumo de la cuenta
         </p>
-        <div className="flex gap-1">
-          {DAY_RANGES.map((r) => (
-            <button
-              key={r.days}
-              onClick={() => setDays(r.days)}
-              className={cx('rounded-lg border px-2.5 py-1 text-xs transition-colors', days === r.days ? 'border-acc/55 bg-acc/[.12] font-medium text-acc-soft' : 'border-line text-sub hover:text-txt')}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
+        <Segmented size="sm" label="Periodo" options={DAY_RANGES.map((r) => ({ key: r.days, label: r.label }))} value={days} onChange={setDays} />
       </div>
 
       {usage.isLoading ? (
@@ -630,15 +625,15 @@ function UsoTab({ detail }: { detail: Detail }) {
 
           <section className="card p-5">
             <h2 className="mb-3 text-base font-semibold">Proyectos por consumo de CPU</h2>
-            {(data?.byProject ?? []).length === 0 ? (
+            {byProject.length === 0 ? (
               <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
                 Aún no hay datos de consumo por proyecto (necesita histórico del monitor).
               </p>
             ) : (
               <div className="flex flex-col gap-2.5">
-                {data!.byProject.map((p) => (
+                {byProject.map((p) => (
                   <div key={p.projectId} className="flex items-center gap-3">
-                    <span className="w-36 shrink-0 truncate text-sm">{p.name}</span>
+                    <span className="w-24 shrink-0 truncate text-sm sm:w-36">{p.name}</span>
                     <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface2">
                       <div className="h-full rounded-full bg-acc transition-[width] duration-500" style={{ width: `${Math.min(100, (p.cpuCoreHours / maxProj) * 100)}%` }} />
                     </div>
@@ -706,6 +701,12 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
   const [editing, setEditing] = useState<Invoice | null>(null);
   const [viewing, setViewing] = useState<Invoice | null>(null);
   const [rectifying, setRectifying] = useState<Invoice | null>(null);
+  // Emitir y marcar pagada son irreversibles: se confirman en un modal propio en
+  // vez de con `window.confirm`, que en móvil sale como diálogo del sistema.
+  const [confirming, setConfirming] = useState<{ inv: Invoice; status: 'issued' | 'paid' } | null>(null);
+  // Borrar un borrador también se confirma: la papelera está pegada a «Emitir» y
+  // un toque de más en móvil se llevaba el trabajo de revisar las líneas.
+  const [deleting, setDeleting] = useState<Invoice | null>(null);
 
   // Generar, anular o borrar una factura mueve también los CARGOS PUNTUALES (pasan
   // a facturados o vuelven a pendientes), así que hay que refrescar las dos listas:
@@ -732,7 +733,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
   });
   const remove = useMutation({
     mutationFn: (id: string) => api.del(`/invoices/${id}`),
-    onSuccess: () => { toast('Factura eliminada', 'ok'); invalidate(); },
+    onSuccess: () => { toast('Factura eliminada', 'ok'); setDeleting(null); invalidate(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
   const stripeLink = useMutation({
@@ -781,17 +782,17 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
           </div>
         )}
         <p className="mt-3 text-xs text-subtle">
-          Plan {ws.plan ? `${ws.plan.name} · ${ws.plan.price_cents === 0 ? 'gratis' : `${fmtMoney(ws.plan.price_cents, ws.plan.currency)}/${ws.plan.interval === 'yearly' ? 'año' : 'mes'}`}` : 'sin asignar'}. El uso incluido lo cubre el plan; lo que exceda se tarifica en la factura. Detalle en la pestaña «Uso».
+          Plan {ws.plan ? `${ws.plan.name} · ${ws.plan.price_cents === 0 ? 'gratis' : `${fmtMoney(ws.plan.price_cents, ws.plan.currency)}/${ws.plan.interval === 'yearly' ? 'año' : 'mes'}`}` : 'sin asignar'}. Lo que exceda el uso incluido se tarifica en la factura.
         </p>
       </section>
 
       <HistorialPlan detail={detail} />
 
       <section className="card overflow-hidden">
-        <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <h2 className="text-base font-semibold">Facturas</h2>
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-line px-4 py-3">
+          <h2 className="min-w-0 text-base font-semibold">Facturas</h2>
           {isAdmin && (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="secondary" onClick={() => setEditing(EMPTY_INVOICE(ws.id, ws.plan?.currency ?? 'EUR'))}>
                 <Plus size={13} /> A medida
               </Button>
@@ -801,8 +802,25 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
             </div>
           )}
         </div>
-        {(data?.invoices ?? []).length === 0 ? (
-          <p className="px-4 py-8 text-center text-xs text-subtle">Sin facturas todavía.</p>
+        {invoicesQ.isLoading ? (
+          <div className="flex flex-col gap-3 p-4">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        ) : invoicesQ.isError ? (
+          <ErrorState
+            compact
+            title="No se han podido cargar las facturas"
+            error={invoicesQ.error}
+            onRetry={() => invoicesQ.refetch()}
+            retrying={invoicesQ.isFetching}
+          />
+        ) : (data?.invoices ?? []).length === 0 ? (
+          <EmptyState
+            compact
+            title="Sin facturas todavía"
+            description={isAdmin ? 'Genera la del ciclo o crea una a medida.' : 'Aquí aparecerán las facturas de tu cuenta.'}
+          />
         ) : (
           data!.invoices.map((inv, i) => (
             <div key={inv.id} className={cx('flex flex-wrap items-center gap-3 px-4 py-3', i > 0 && 'border-t border-line')}>
@@ -828,8 +846,9 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                 <a
                   href={`/api/invoices/${inv.id}/pdf`}
                   download
-                  className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt"
+                  className="inline-flex rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5"
                   title="Descargar la factura en PDF"
+                  aria-label="Descargar la factura en PDF"
                 >
                   <Download size={14} />
                 </a>
@@ -845,8 +864,9 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                     <button
                       onClick={() => email.mutate(inv.id)}
                       disabled={email.isPending}
-                      className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt disabled:opacity-50"
+                      className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt disabled:opacity-50 max-sm:p-2.5"
                       title="Enviar la factura al email de facturación del cliente"
+                      aria-label="Enviar la factura al cliente"
                     >
                       <Send size={14} />
                     </button>
@@ -854,45 +874,29 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                   {/* Una factura emitida es inmutable: solo se editan/borran los borradores. */}
                   {inv.status === 'draft' && (
                     <>
-                      <button onClick={() => setEditing(inv)} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Editar líneas">
+                      <button onClick={() => setEditing(inv)} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Editar líneas" aria-label="Editar líneas">
                         <Pencil size={14} />
                       </button>
                       {/* Emitir es un acto legal IRREVERSIBLE: numera la factura en
                           la serie y la congela. A partir de ahí solo se corrige con
                           una rectificativa, así que se confirma antes. */}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => {
-                          if (confirm(`Se va a EMITIR esta factura por ${fmtMoney(inv.total_cents, inv.currency)}.\n\nAl emitirla toma número de serie y queda bloqueada: ya no podrá editarse ni borrarse, solo corregirse con una factura rectificativa.\n\n¿Emitir?`)) {
-                            setStatus.mutate({ id: inv.id, status: 'issued' });
-                          }
-                        }}
-                      >
+                      <Button size="sm" variant="ghost" onClick={() => setConfirming({ inv, status: 'issued' })}>
                         Emitir
                       </Button>
-                      <button onClick={() => remove.mutate(inv.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Eliminar borrador">
+                      <button onClick={() => setDeleting(inv)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title="Eliminar borrador" aria-label="Eliminar borrador">
                         <Trash2 size={14} />
                       </button>
                     </>
                   )}
                   {inv.status === 'issued' && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => {
-                        // «Pagada» es un estado terminal: no admite vuelta atrás.
-                        if (confirm(`Marcar como pagada la factura ${inv.number ?? ''} por ${fmtMoney(inv.total_cents, inv.currency)}.\n\nEs un estado definitivo: no se puede deshacer.\n\n¿Continuar?`)) {
-                          setStatus.mutate({ id: inv.id, status: 'paid' });
-                        }
-                      }}
-                    >
+                    // «Pagada» es un estado terminal: no admite vuelta atrás.
+                    <Button size="sm" variant="ghost" onClick={() => setConfirming({ inv, status: 'paid' })}>
                       Marcar pagada
                     </Button>
                   )}
                   {/* Una factura emitida no se edita: se corrige con una rectificativa. */}
                   {(inv.status === 'issued' || inv.status === 'paid') && inv.invoice_type !== 'rectificativa' && (
-                    <button onClick={() => setRectifying(inv)} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Emitir factura rectificativa">
+                    <button onClick={() => setRectifying(inv)} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Emitir factura rectificativa" aria-label="Emitir factura rectificativa">
                       <Undo2 size={14} />
                     </button>
                   )}
@@ -910,6 +914,39 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
       {isAdmin && <AiPricingSection workspaceId={ws.id} currency={ws.plan?.currency ?? 'EUR'} />}
 
       {isAdmin && <BillingSettings detail={detail} onSaved={onSaved} />}
+
+      <ConfirmModal
+        open={!!confirming}
+        onClose={() => setConfirming(null)}
+        onConfirm={() => {
+          if (!confirming) return;
+          setStatus.mutate({ id: confirming.inv.id, status: confirming.status }, { onSettled: () => setConfirming(null) });
+        }}
+        title={confirming?.status === 'paid' ? 'Marcar como pagada' : 'Emitir la factura'}
+        message={
+          confirming?.status === 'paid'
+            ? `La factura ${confirming.inv.number ?? ''} por ${fmtMoney(confirming.inv.total_cents, confirming.inv.currency)} pasará a pagada. Es un estado definitivo: no se puede deshacer.`
+            : confirming
+              ? `Se va a emitir esta factura por ${fmtMoney(confirming.inv.total_cents, confirming.inv.currency)}. Al emitirla toma número de serie y queda bloqueada: ya no podrá editarse ni borrarse, solo corregirse con una factura rectificativa.`
+              : ''
+        }
+        confirmLabel={confirming?.status === 'paid' ? 'Marcar pagada' : 'Emitir'}
+        confirmVariant="primary"
+        loading={setStatus.isPending}
+      />
+
+      <ConfirmModal
+        open={!!deleting}
+        onClose={() => setDeleting(null)}
+        onConfirm={() => deleting && remove.mutate(deleting.id)}
+        title="Eliminar borrador"
+        message={
+          deleting
+            ? `El borrador por ${fmtMoney(deleting.total_cents, deleting.currency)} (${fmtDate(deleting.period_start)} – ${fmtDate(deleting.period_end)}) se elimina. Los pagos únicos que incluía vuelven a quedar pendientes.`
+            : ''
+        }
+        loading={remove.isPending}
+      />
 
       {viewing && data && <InvoiceView invoice={viewing} issuer={data.issuer} client={data.client} onClose={() => setViewing(null)} />}
       {editing && <InvoiceEditor invoice={editing} workspaceId={ws.id} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); invalidate(); }} />}
@@ -962,16 +999,16 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
           <div className="flex flex-col gap-2 rounded-lg border border-line p-3">
             <p className="text-xs text-subtle">Importes <strong>correctos</strong> (lo que la factura debería decir). Se facturará la diferencia respecto a la original.</p>
             <div className="-mx-1 flex flex-col gap-2 overflow-x-auto px-1">
-            <div className="grid min-w-[420px] grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2 px-1 text-xs font-medium text-subtle">
+            <div className="grid min-w-[420px] grid-cols-[1fr_64px_84px_64px_36px] items-center gap-2 px-1 text-xs font-medium text-subtle">
               <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA%</span><span />
             </div>
             {lines.map((l, i) => (
-              <div key={i} className="grid min-w-[420px] grid-cols-[1fr_64px_84px_64px_28px] items-center gap-2">
+              <div key={i} className="grid min-w-[420px] grid-cols-[1fr_64px_84px_64px_36px] items-center gap-2">
                 <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Concepto" />
-                <NumberInput className="input h-9 tnum text-right" value={l.qty} min={0} onChange={(v) => setLine(i, { qty: v })} />
-                <NumberInput className="input h-9 tnum text-right" value={l.unit} step="0.01" onChange={(v) => setLine(i, { unit: v })} />
-                <NumberInput className="input h-9 tnum text-right" value={l.taxRate} min={0} max={100} onChange={(v) => setLine(i, { taxRate: v })} />
-                <button onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="rounded-md p-1 text-subtle hover:text-err" title="Quitar línea">
+                <NumberInput className="input h-9 tnum text-right" inputMode="decimal" value={l.qty} min={0} onChange={(v) => setLine(i, { qty: v })} />
+                <NumberInput className="input h-9 tnum text-right" inputMode="decimal" value={l.unit} step="0.01" onChange={(v) => setLine(i, { unit: v })} />
+                <NumberInput className="input h-9 tnum text-right" inputMode="decimal" value={l.taxRate} min={0} max={100} onChange={(v) => setLine(i, { taxRate: v })} />
+                <button onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="justify-self-center rounded-md p-1 text-subtle hover:text-err max-sm:p-2.5" title="Quitar línea" aria-label="Quitar línea">
                   <Trash2 size={13} />
                 </button>
               </div>
@@ -1011,7 +1048,7 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
   return (
     <Modal open onClose={onClose} title={invoice.number ? `${title} ${invoice.number}` : `${title} (borrador)`} wide>
       <div className="flex flex-col gap-4 text-sm">
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <p className="mb-1 eyebrow text-subtle">Emisor</p>
             <p className="font-semibold">{em.companyName || 'Tu empresa'}</p>
@@ -1019,7 +1056,7 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
             {em.address && <p className="whitespace-pre-line text-subtle">{em.address}</p>}
             {em.email && <p className="text-subtle">{em.email}</p>}
           </div>
-          <div className="text-right">
+          <div className="sm:text-right">
             <p className="mb-1 eyebrow text-subtle">Cliente</p>
             <p className="font-semibold">{clientName}</p>
             {clientTaxId && <p className="text-subtle">NIF {clientTaxId}</p>}
@@ -1169,18 +1206,18 @@ function InvoiceEditor({ invoice, workspaceId, onClose, onSaved }: { invoice: In
             le da su propio carril horizontal. Los totales y los botones se
             quedan fuera, que esos sí caben. */}
         <div className="-mx-1 flex flex-col gap-2 overflow-x-auto px-1">
-        <div className="grid min-w-[520px] grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2 px-1 text-xs font-medium text-subtle">
+        <div className="grid min-w-[520px] grid-cols-[1fr_64px_86px_62px_62px_88px_36px] items-center gap-2 px-1 text-xs font-medium text-subtle">
           <span>Concepto</span><span className="text-right">Cant.</span><span className="text-right">Precio</span><span className="text-right">IVA %</span><span className="text-right">IRPF %</span><span className="text-right">Importe</span><span />
         </div>
         {lines.map((l, i) => (
-          <div key={i} className="grid min-w-[520px] grid-cols-[1fr_64px_86px_62px_62px_88px_28px] items-center gap-2">
+          <div key={i} className="grid min-w-[520px] grid-cols-[1fr_64px_86px_62px_62px_88px_36px] items-center gap-2">
             <input className="input h-9" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} placeholder="Ej: Plan Pro (mensual)" />
-            <NumberInput className="input h-9 tnum text-right" value={l.qty} min={0} onChange={(v) => setLine(i, { qty: v })} />
-            <NumberInput className="input h-9 tnum text-right" value={l.unit} step="0.01" onChange={(v) => setLine(i, { unit: v })} />
-            <NumberInput className="input h-9 tnum text-right" value={l.taxRate} min={0} max={100} onChange={(v) => setLine(i, { taxRate: v })} />
-            <NumberInput className="input h-9 tnum text-right" value={l.irpfRate} min={0} max={100} onChange={(v) => setLine(i, { irpfRate: v })} />
+            <NumberInput className="input h-9 tnum text-right" inputMode="decimal" value={l.qty} min={0} onChange={(v) => setLine(i, { qty: v })} />
+            <NumberInput className="input h-9 tnum text-right" inputMode="decimal" value={l.unit} step="0.01" onChange={(v) => setLine(i, { unit: v })} />
+            <NumberInput className="input h-9 tnum text-right" inputMode="decimal" value={l.taxRate} min={0} max={100} onChange={(v) => setLine(i, { taxRate: v })} />
+            <NumberInput className="input h-9 tnum text-right" inputMode="decimal" value={l.irpfRate} min={0} max={100} onChange={(v) => setLine(i, { irpfRate: v })} />
             <span className="tnum text-right text-sm">{fmtMoney(Math.round(l.qty * l.unit * 100), invoice.currency)}</span>
-            <button onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="rounded-md p-1 text-subtle hover:text-err" title="Quitar línea">
+            <button onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="justify-self-center rounded-md p-1 text-subtle hover:text-err max-sm:p-2.5" title="Quitar línea" aria-label="Quitar línea">
               <Trash2 size={13} />
             </button>
           </div>
@@ -1220,6 +1257,9 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
   const productsQ = useQuery({ queryKey: ['products'], queryFn: () => api.get<{ products: Product[] }>('/products'), staleTime: 60_000 });
   const [adding, setAdding] = useState(false);
   const [charge, setCharge] = useState(false);
+  // Suscripciones y cargos comparten la confirmación: en ambos casos se pierde
+  // algo que no se recupera (el precio pactado, el cargo pendiente).
+  const [toDelete, setToDelete] = useState<{ kind: 'sub' | 'charge'; id: string; name: string } | null>(null);
 
   const invalidate = () => { queryClient.invalidateQueries({ queryKey: ['ws-subs', workspaceId] }); onChanged(); };
   const setStatus = useMutation({
@@ -1229,12 +1269,12 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
   });
   const delSub = useMutation({
     mutationFn: (id: string) => api.del(`/subscriptions/${id}`),
-    onSuccess: () => { toast('Suscripción eliminada', 'ok'); invalidate(); },
+    onSuccess: () => { toast('Suscripción eliminada', 'ok'); setToDelete(null); invalidate(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
   const delCharge = useMutation({
     mutationFn: (id: string) => api.del(`/charges/${id}`),
-    onSuccess: () => { toast('Cargo eliminado', 'ok'); invalidate(); },
+    onSuccess: () => { toast('Cargo eliminado', 'ok'); setToDelete(null); invalidate(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
@@ -1248,16 +1288,18 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
 
   return (
     <section className="card overflow-hidden">
-      <div className="flex items-center justify-between border-b border-line px-4 py-3">
-        <h2 className="flex items-center gap-2 text-base font-semibold"><Boxes size={15} className="text-acc-soft" /> Servicios contratados</h2>
-        <div className="flex gap-2">
-          <Button size="sm" variant="secondary" onClick={() => setCharge(true)}><Plus size={13} /> Pago único</Button>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-line px-4 py-3">
+        <h2 className="flex min-w-0 items-center gap-2 text-base font-semibold"><Boxes size={15} className="shrink-0 text-acc-soft" /> Servicios contratados</h2>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="ghost" onClick={() => setCharge(true)}><Plus size={13} /> Pago único</Button>
           <Button size="sm" onClick={() => setAdding(true)} disabled={subscribable.length === 0}><Plus size={13} /> Suscribir</Button>
         </div>
       </div>
 
       {subsQ.isLoading ? (
         <Skeleton className="m-4 h-16" />
+      ) : subsQ.isError ? (
+        <ErrorState compact title="No se han podido cargar los servicios contratados" error={subsQ.error} onRetry={() => subsQ.refetch()} retrying={subsQ.isFetching} />
       ) : subs.length === 0 && charges.length === 0 ? (
         <p className="px-4 py-8 text-center text-xs text-subtle">
           Sin servicios contratados. {activeProducts.length === 0 ? 'Crea productos en el catálogo primero.' : 'Suscribe a un producto recurrente o añade un pago único del catálogo.'}
@@ -1280,11 +1322,11 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
               </div>
               <div className="flex shrink-0 items-center gap-1">
                 {s.status === 'active' ? (
-                  <button onClick={() => setStatus.mutate({ id: s.id, status: 'paused' })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Pausar"><Pause size={14} /></button>
+                  <button onClick={() => setStatus.mutate({ id: s.id, status: 'paused' })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Pausar" aria-label="Pausar"><Pause size={14} /></button>
                 ) : s.status === 'paused' ? (
-                  <button onClick={() => setStatus.mutate({ id: s.id, status: 'active' })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Reanudar"><Play size={14} /></button>
+                  <button onClick={() => setStatus.mutate({ id: s.id, status: 'active' })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Reanudar" aria-label="Reanudar"><Play size={14} /></button>
                 ) : null}
-                <button onClick={() => delSub.mutate(s.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Eliminar"><Trash2 size={14} /></button>
+                <button onClick={() => setToDelete({ kind: 'sub', id: s.id, name: s.product_name })} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title="Eliminar" aria-label="Eliminar"><Trash2 size={14} /></button>
               </div>
             </div>
           ))}
@@ -1297,12 +1339,30 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
                 </div>
                 <p className="mt-0.5 text-xs text-subtle tnum">{fmtMoney(c.unit_cents, currency)} × {c.qty} · IVA {c.tax_rate}%</p>
               </div>
-              <button onClick={() => delCharge.mutate(c.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Quitar cargo"><Trash2 size={14} /></button>
+              <button onClick={() => setToDelete({ kind: 'charge', id: c.id, name: c.label })} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title="Quitar cargo" aria-label="Quitar cargo"><Trash2 size={14} /></button>
             </div>
           ))}
         </>
       )}
-      <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">Al generar la factura del ciclo se incluyen estas suscripciones (con su uso medido) y los pagos únicos pendientes (una sola vez).</p>
+      <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">La factura del ciclo incluye estas suscripciones, su uso medido y los pagos únicos pendientes.</p>
+
+      <ConfirmModal
+        open={!!toDelete}
+        onClose={() => setToDelete(null)}
+        onConfirm={() => {
+          if (!toDelete) return;
+          if (toDelete.kind === 'sub') delSub.mutate(toDelete.id);
+          else delCharge.mutate(toDelete.id);
+        }}
+        title={toDelete?.kind === 'charge' ? 'Quitar cargo' : 'Eliminar suscripción'}
+        message={
+          toDelete?.kind === 'charge'
+            ? `El cargo «${toDelete.name}» no se incluirá en la próxima factura.`
+            : `«${toDelete?.name ?? ''}» deja de facturarse a esta cuenta. Si tenía un precio pactado, se pierde.`
+        }
+        confirmLabel={toDelete?.kind === 'charge' ? 'Quitar' : 'Eliminar'}
+        loading={delSub.isPending || delCharge.isPending}
+      />
 
       {adding && <AddSubscriptionModal workspaceId={workspaceId} products={subscribable} onClose={() => setAdding(false)} onSaved={() => { setAdding(false); invalidate(); }} />}
       {charge && <AddChargeModal workspaceId={workspaceId} products={oneOffProducts} onClose={() => setCharge(false)} onSaved={() => { setCharge(false); invalidate(); }} />}
@@ -1336,9 +1396,9 @@ function AddSubscriptionModal({ workspaceId, products, onClose, onSaved }: { wor
             {products.map((p) => <option key={p.id} value={p.id}>{p.name} · {fmtMoney(p.price_cents, p.currency)}{p.billing_model === 'subscription' ? `/${p.interval === 'yearly' ? 'año' : 'mes'}` : p.unit ? `/${p.unit}` : ''}</option>)}
           </select>
         </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Cantidad" hint={metered ? 'multiplica el uso medido' : 'nº de unidades'}><input className="input tnum" type="number" min={0} step="0.5" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
-          <Field label="Precio a medida" hint="vacío = precio del catálogo"><input className="input tnum" type="number" min={0} step="0.01" value={customPrice} onChange={(e) => setCustomPrice(e.target.value)} placeholder={product ? String(product.price_cents / 100) : ''} /></Field>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field label="Cantidad" hint={metered ? 'multiplica el uso medido' : 'nº de unidades'}><input className="input tnum" type="number" inputMode="decimal" min={0} step="0.5" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
+          <Field label="Precio a medida" hint="vacío = precio del catálogo"><input className="input tnum" type="number" inputMode="decimal" min={0} step="0.01" value={customPrice} onChange={(e) => setCustomPrice(e.target.value)} placeholder={product ? String(product.price_cents / 100) : ''} /></Field>
         </div>
         {product?.description && <p className="rounded-md border border-line bg-bg px-3 py-2 text-xs text-sub">{product.description}</p>}
         <div className="flex justify-end gap-2">
@@ -1394,10 +1454,10 @@ function AddChargeModal({ workspaceId, products, onClose, onSaved }: { workspace
           </Field>
         )}
         <Field label="Concepto"><input className="input" value={label} onChange={(e) => setLabel(e.target.value)} autoFocus placeholder="Consultoría, migración, dominio…" /></Field>
-        <div className="grid grid-cols-3 gap-3">
-          <Field label="Cantidad"><input className="input tnum" type="number" min={0} step="0.5" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
-          <Field label="Precio unidad"><input className="input tnum" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
-          <Field label="IVA (%)"><input className="input tnum" type="number" min={0} max={100} value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></Field>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Field label="Cantidad"><input className="input tnum" type="number" inputMode="decimal" min={0} step="0.5" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
+          <Field label="Precio unidad"><input className="input tnum" type="number" inputMode="decimal" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
+          <Field label="IVA (%)"><input className="input tnum" type="number" inputMode="decimal" min={0} max={100} value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></Field>
         </div>
         <p className="text-xs text-subtle">Se cobra una sola vez en la próxima factura del ciclo que generes (no se repite).</p>
         <div className="flex justify-end gap-2">
@@ -1454,8 +1514,8 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
 
   return (
     <section className="card overflow-hidden">
-      <div className="flex items-center justify-between border-b border-line px-4 py-3">
-        <h2 className="flex items-center gap-2 text-base font-semibold"><KeyRound size={15} className="text-acc-soft" /> Claves de IA (Gemini)</h2>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-line px-4 py-3">
+        <h2 className="flex min-w-0 items-center gap-2 text-base font-semibold"><KeyRound size={15} className="shrink-0 text-acc-soft" /> Claves de IA (Gemini)</h2>
         <Button size="sm" onClick={() => setCreating(true)}><Plus size={13} /> Nueva clave</Button>
       </div>
 
@@ -1467,6 +1527,8 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
 
       {q.isLoading ? (
         <Skeleton className="m-4 h-14" />
+      ) : q.isError ? (
+        <ErrorState compact title="No se han podido cargar las claves" error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching} />
       ) : keys.length === 0 ? (
         <p className="px-4 py-8 text-center text-xs text-subtle">Sin claves. Emite una para que el cliente consuma Gemini por el proxy y se le facture el uso.</p>
       ) : (
@@ -1497,17 +1559,20 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
             </div>
             <div className="flex shrink-0 items-center gap-1">
               {k.status === 'active' ? (
-                <button onClick={() => block.mutate({ id: k.id, on: true })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Suspender (corte manual)"><Ban size={14} /></button>
+                <button onClick={() => block.mutate({ id: k.id, on: true })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Suspender (corte manual)" aria-label="Suspender"><Ban size={14} /></button>
               ) : k.status === 'suspended' ? (
-                <button onClick={() => block.mutate({ id: k.id, on: false })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Reactivar"><Play size={14} /></button>
+                <button onClick={() => block.mutate({ id: k.id, on: false })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Reactivar" aria-label="Reactivar"><Play size={14} /></button>
               ) : null}
-              <button onClick={() => revoke.mutate(k.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err" title="Revocar (irreversible)"><Trash2 size={14} /></button>
+              {/* Pasa por el ConfirmModal de abajo: antes revocaba al primer toque. */}
+              {k.status !== 'revoked' && (
+                <button onClick={() => setRevoking(k)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title="Revocar (irreversible)" aria-label="Revocar"><Trash2 size={14} /></button>
+              )}
             </div>
           </div>
         ))
       )}
       <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">
-        El cliente usa la clave contra <span className="font-mono">/gw/v1beta/models/&lt;modelo&gt;:generateContent</span>. El consumo se mide y se factura con los productos de IA del catálogo. El corte por impago es automático.
+        Se usa contra <span className="font-mono">/gw/v1beta/models/&lt;modelo&gt;:generateContent</span>; el consumo se factura con los productos de IA del catálogo.
       </p>
 
       <ConfirmModal
@@ -1527,9 +1592,9 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
       <Modal open={creating} onClose={() => setCreating(false)} title="Nueva clave de IA">
         <div className="flex flex-col gap-3.5">
           <Field label="Nombre" hint="para identificarla (p. ej. «Producción»)"><input className="input" value={newName} onChange={(e) => setNewName(e.target.value)} autoFocus placeholder="Producción" /></Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label={`Presupuesto/mes (${currency})`} hint="vacío = sin tope"><input className="input tnum" type="number" min={0} step="0.01" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="p. ej. 50" /></Field>
-            <Field label="Límite (pet./min)" hint="vacío = sin límite"><input className="input tnum" type="number" min={1} value={rpm} onChange={(e) => setRpm(e.target.value)} placeholder="p. ej. 60" /></Field>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label={`Presupuesto/mes (${currency})`} hint="vacío = sin tope"><input className="input tnum" type="number" inputMode="decimal" min={0} step="0.01" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="p. ej. 50" /></Field>
+            <Field label="Límite (pet./min)" hint="vacío = sin límite"><input className="input tnum" type="number" inputMode="numeric" min={1} value={rpm} onChange={(e) => setRpm(e.target.value)} placeholder="p. ej. 60" /></Field>
           </div>
           <p className="text-xs text-subtle">Al superar el presupuesto del ciclo, el proxy rechaza (402) hasta el siguiente periodo; el límite por minuto protege de picos.</p>
           <div className="flex justify-end gap-2">
@@ -1590,15 +1655,15 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
     return (
       <section className="card p-5">
         <h2 className="text-base font-semibold">Precios de IA de este cliente</h2>
-        <p className="mt-2 text-xs text-subtle">Crea primero productos de IA (medidos por tokens) en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>. Luego podrás activarlos para este cliente en un clic y darle un precio propio.</p>
+        <p className="mt-2 text-xs text-subtle">Crea primero productos de IA en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>; después podrás activarlos aquí con un precio propio.</p>
       </section>
     );
   }
 
   return (
     <section className="card overflow-hidden">
-      <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
-        <h2 className="text-base font-semibold">Precios de IA de este cliente</h2>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-line px-4 py-3">
+        <h2 className="min-w-0 text-base font-semibold">Precios de IA de este cliente</h2>
         {unassigned.length > 0 && (
           <Button size="sm" onClick={() => assign.mutate()} loading={assign.isPending}>
             <Plus size={13} /> {iaSubs.length === 0 ? 'Facturar IA a este cliente' : 'Añadir productos nuevos'}
@@ -1607,7 +1672,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
       </div>
 
       {iaSubs.length === 0 ? (
-        <p className="px-4 py-8 text-center text-xs text-subtle">Este cliente aún no factura IA. Actívalo para cobrarle el consumo a los precios del catálogo; después puedes darle un precio propio por medidor.</p>
+        <p className="px-4 py-8 text-center text-xs text-subtle">Aún no factura IA. Actívalo para cobrar el consumo a precio de catálogo o con un precio propio por medidor.</p>
       ) : (
         iaSubs.map((s, i) => {
           const prod = productById.get(s.product_id);
@@ -1647,7 +1712,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
                   </div>
                   <Button size="sm" variant="ghost" loading={setPrice.isPending && setPrice.variables?.subId === s.id} onClick={savePrice}>Guardar</Button>
                   {s.frozen && (
-                    <button className="rounded p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Volver al precio global" aria-label="Volver al precio global" onClick={() => { setPrice.mutate({ subId: s.id, unitCents: null }); clearDraft(s.id); }}><Undo2 size={14} /></button>
+                    <button className="rounded p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Volver al precio global" aria-label="Volver al precio global" onClick={() => { setPrice.mutate({ subId: s.id, unitCents: null }); clearDraft(s.id); }}><Undo2 size={14} /></button>
                   )}
                 </div>
               )}
@@ -1656,7 +1721,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
         })
       )}
       <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">
-        Deja el precio vacío para usar el <a href="/catalog" className="text-acc-soft hover:underline">precio global</a> del catálogo. Un precio propio solo afecta a este cliente y no recibe el descuento por cuenta (ya es un precio pactado).
+        Vacío = <a href="/catalog" className="text-acc-soft hover:underline">precio del catálogo</a>; un precio propio es pactado y no recibe el descuento de la cuenta.
       </p>
     </section>
   );
@@ -1701,7 +1766,7 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
       <h2 className="mb-3 text-base font-semibold">Datos de facturación del cliente</h2>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="NIF / CIF" hint="Obligatorio en factura completa"><input className="input" value={taxId} onChange={(e) => setTaxId(e.target.value)} placeholder="B12345678" /></Field>
-        <Field label="Email de facturación"><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="pagos@cliente.com" /></Field>
+        <Field label="Email de facturación"><input className="input" type="email" autoComplete="email" autoCapitalize="none" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="pagos@cliente.com" /></Field>
       </div>
       <Field label="Domicilio fiscal"><textarea className="input min-h-14" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Calle, nº · CP Población · Provincia" /></Field>
       <Field label="País" hint="Determina el régimen de IVA aplicable">
@@ -1712,8 +1777,8 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
         </select>
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Día de cobro" hint="1–28"><input className="input tnum" type="number" min={1} max={28} value={day} onChange={(e) => setDay(e.target.value)} /></Field>
-        <Field label="Descuento (%)" hint="vacío = hereda el del plan"><input className="input tnum" type="number" min={0} max={100} step="0.5" value={disc} onChange={(e) => setDisc(e.target.value)} placeholder="del plan" /></Field>
+        <Field label="Día de cobro" hint="1–28"><input className="input tnum" type="number" inputMode="numeric" min={1} max={28} value={day} onChange={(e) => setDay(e.target.value)} /></Field>
+        <Field label="Descuento (%)" hint="vacío = hereda el del plan"><input className="input tnum" type="number" inputMode="decimal" min={0} max={100} step="0.5" value={disc} onChange={(e) => setDisc(e.target.value)} placeholder="del plan" /></Field>
       </div>
       <Field label="Notas internas"><textarea className="input min-h-16" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Condiciones, contacto, referencia…" /></Field>
       <div className="mt-3 flex justify-end">
@@ -1765,7 +1830,21 @@ export default function WorkspacePage() {
     );
   }
   if (detail.isError || !detail.data) {
-    return <p className="mx-auto max-w-[900px] px-6 py-10 text-sm text-sub">No se pudo cargar la cuenta. {String((detail.error as Error)?.message ?? '')}</p>;
+    return (
+      <div className="mx-auto max-w-[900px] px-4 py-8 sm:px-6">
+        <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt">
+          <ArrowLeft size={13} /> Cuentas y clientes
+        </Link>
+        <div className="card">
+          <ErrorState
+            title="No se ha podido cargar la cuenta"
+            error={detail.error}
+            onRetry={() => detail.refetch()}
+            retrying={detail.isFetching}
+          />
+        </div>
+      </div>
+    );
   }
 
   const d = detail.data;
@@ -1774,10 +1853,10 @@ export default function WorkspacePage() {
 
   const tabs = [
     { key: 'resumen', label: 'Resumen y cuota' },
-    { key: 'uso', label: 'Uso' },
-    { key: 'modulos', label: 'Módulos' },
-    { key: 'usuarios', label: 'Usuarios' },
     { key: 'facturacion', label: 'Facturación' },
+    { key: 'uso', label: 'Uso' },
+    { key: 'usuarios', label: 'Usuarios' },
+    { key: 'modulos', label: 'Módulos' },
   ];
 
   return (
@@ -1806,7 +1885,7 @@ export default function WorkspacePage() {
                 <Pause size={13} /> Suspender
               </Button>
             )}
-            <button onClick={() => setToDelete(true)} className="rounded-lg border border-err/35 bg-err/[.10] p-2 text-err hover:bg-err/20" title="Eliminar cuenta">
+            <button onClick={() => setToDelete(true)} className="inline-flex items-center justify-center rounded-lg border border-err/35 bg-err/[.10] p-2 text-err hover:bg-err/20 max-sm:h-10 max-sm:w-10" title="Eliminar cuenta" aria-label="Eliminar cuenta">
               <Trash2 size={15} />
             </button>
           </div>
@@ -1815,7 +1894,7 @@ export default function WorkspacePage() {
 
       {suspended && (
         <div className="mb-5 flex items-center gap-2 rounded-xl border border-warn/30 bg-warn/[.09] px-4 py-2.5 text-xs text-warn">
-          <Pause size={14} /> Cuenta suspendida: los despliegues y las operaciones nuevas están detenidos hasta reactivarla. Los servicios en marcha siguen vivos.
+          <Pause size={14} /> Cuenta suspendida: no admite despliegues ni operaciones nuevas; los servicios en marcha siguen vivos.
         </div>
       )}
 

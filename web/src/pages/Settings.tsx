@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
-import { AlertTriangle, BellRing, CheckCircle2, Cpu, DatabaseBackup, Download, Globe, KeyRound, Trash2 } from 'lucide-react';
+import { AlertTriangle, BellRing, CheckCircle2, ChevronDown, Cpu, DatabaseBackup, Download, Globe, KeyRound, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import GithubAppPanel from '../components/GithubAppPanel';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { ModuleLogo } from '../components/ModuleIcon';
-import { Button, Chip, ConfirmModal, Field, useFlash, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, ErrorState, Field, Skeleton, useFlash, useToast } from '../components/ui';
 import { DockerUsage, GithubConnector, SystemInfo } from '../types';
 import { cx, fmtBytes, fmtDateTime, timeAgo } from '../utils';
 
@@ -53,6 +53,7 @@ function SettingsSection({
   title,
   description,
   aside,
+  pending,
   children,
 }: {
   /** Ancla para enlazar la sección desde otra pantalla (`/settings#github`). */
@@ -62,6 +63,14 @@ function SettingsSection({
   title: string;
   description: React.ReactNode;
   aside?: React.ReactNode;
+  /**
+   * Hay cambios en esta sección que esperan al botón «Guardar ajustes».
+   *
+   * En la página conviven secciones que guardan con la barra inferior y otras
+   * de acción inmediata (App de GitHub, copias, liberar espacio). Sin esta
+   * marca no se sabía cuál era cuál: se editaba un umbral y no pasaba nada.
+   */
+  pending?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -74,6 +83,14 @@ function SettingsSection({
               {icon}
             </span>
             {title}
+            {pending && (
+              <span
+                className="pulse-soft h-1.5 w-1.5 shrink-0 rounded-full bg-warn"
+                title="Cambios pendientes de guardar"
+                aria-label="Cambios pendientes de guardar"
+                role="img"
+              />
+            )}
           </h2>
           <p className="mt-1 text-xs text-subtle">{description}</p>
         </div>
@@ -185,16 +202,19 @@ export default function SettingsPage() {
   const createSysBackup = useMutation({
     mutationFn: () => api.post<{ backup: SystemBackup }>('/system/backups'),
     onSuccess: (res) => {
-      toast(`Backup del panel creado: ${res.backup.file}`, 'ok');
+      toast(`Copia creada: ${res.backup.file}`, 'ok');
       queryClient.invalidateQueries({ queryKey: ['systemBackups'] });
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Copia pendiente de confirmar el borrado: es irreversible y el icono va pegado al de descargar.
+  const [backupToDelete, setBackupToDelete] = useState<SystemBackup | null>(null);
   const deleteSysBackup = useMutation({
     mutationFn: (file: string) => api.del(`/system/backups/${encodeURIComponent(file)}`),
     onSuccess: () => {
-      toast('Backup eliminado', 'ok');
+      setBackupToDelete(null);
+      toast('Copia eliminada', 'ok');
       queryClient.invalidateQueries({ queryKey: ['systemBackups'] });
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -242,23 +262,28 @@ export default function SettingsPage() {
   });
 
   // Igual que en el panel de servicio: el botón de guardar solo se activa si hay
-  // cambios de verdad (incluye escribir un token nuevo, que es opaco).
-  const dirty = useMemo(() => {
+  // cambios de verdad (incluye escribir un token nuevo, que es opaco). Se calcula
+  // por sección para marcar en su cabecera cuál es la que espera al botón.
+  const pending = useMemo(() => {
     const s = settings.data?.settings;
-    if (!s) return false;
-    if (githubToken || telegramToken) return true;
-    return (
-      rootDomain !== (s.rootDomain || '') ||
-      letsencryptEmail !== (s.letsencryptEmail || '') ||
-      serverIp !== (s.serverIp || '') ||
-      cpuPct !== (s.alertCpuPercent || '') ||
-      memPct !== (s.alertMemPercent || '') ||
-      sustainMin !== (s.alertSustainMinutes || '') ||
-      webhookUrl !== (s.alertWebhookUrl || '') ||
-      discordUrl !== (s.alertDiscordUrl || '') ||
-      telegramChat !== (s.alertTelegramChat || '')
-    );
+    if (!s) return { domains: false, github: false, alerts: false };
+    return {
+      domains:
+        rootDomain !== (s.rootDomain || '') ||
+        letsencryptEmail !== (s.letsencryptEmail || '') ||
+        serverIp !== (s.serverIp || ''),
+      github: !!githubToken,
+      alerts:
+        !!telegramToken ||
+        cpuPct !== (s.alertCpuPercent || '') ||
+        memPct !== (s.alertMemPercent || '') ||
+        sustainMin !== (s.alertSustainMinutes || '') ||
+        webhookUrl !== (s.alertWebhookUrl || '') ||
+        discordUrl !== (s.alertDiscordUrl || '') ||
+        telegramChat !== (s.alertTelegramChat || ''),
+    };
   }, [settings.data, githubToken, telegramToken, rootDomain, letsencryptEmail, serverIp, cpuPct, memPct, sustainMin, webhookUrl, discordUrl, telegramChat]);
+  const dirty = pending.domains || pending.github || pending.alerts;
 
   const discardSettings = () => {
     const s = settings.data?.settings;
@@ -333,6 +358,12 @@ export default function SettingsPage() {
   };
 
   const sys = system.data;
+  /*
+   * El formulario solo existe con los ajustes cargados. Si la consulta falla y
+   * se pintara igual, saldría vacío y «Guardar» machacaría la configuración
+   * real con campos en blanco.
+   */
+  const settingsReady = !!settings.data;
 
   return (
     <div className="mx-auto flex max-w-[780px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
@@ -341,243 +372,315 @@ export default function SettingsPage() {
         <p className="mt-1.5 text-sm text-sub">Configuración global del servidor: dominios, integraciones, alertas y mantenimiento</p>
       </div>
 
-      <SettingsSection
-        icon={<Globe size={15} />}
-        iconClass="text-info"
-        title="Dominios y TLS"
-        description="Subdominios en un clic y certificados automáticos"
-      >
-        <div className="flex flex-col gap-3.5">
-          <Field
-            label="Dominio raíz"
-            hint="Genera subdominios por servicio en un clic. Requisito único: un registro A comodín (*.tudominio) apuntando a la IP del servidor."
-          >
-            <input className="input" placeholder="apps.midominio.com" value={rootDomain} onChange={(e) => setRootDomain(e.target.value)} />
-          </Field>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="Email para Let's Encrypt" hint="Con email definido, TLS automático en cada dominio">
-              <input
-                className="input"
-                type="email"
-                placeholder="tu@email.com"
-                value={letsencryptEmail}
-                onChange={(e) => setLetsencryptEmail(e.target.value)}
-              />
-            </Field>
+      {settings.isLoading && (
+        <div aria-busy className="flex flex-col gap-5">
+          <Skeleton className="h-52 w-full rounded-xl" />
+          <Skeleton className="h-40 w-full rounded-xl" />
+        </div>
+      )}
+
+      {settings.isError && !settings.data && (
+        <div className="card">
+          <ErrorState
+            title="No se han podido cargar los ajustes"
+            error={settings.error}
+            onRetry={() => settings.refetch()}
+            retrying={settings.isFetching}
+          />
+        </div>
+      )}
+
+      {settingsReady && (
+        <SettingsSection
+          icon={<Globe size={15} />}
+          iconClass="text-info"
+          title="Dominios y TLS"
+          description="Subdominios por servicio y certificados automáticos"
+          pending={pending.domains}
+        >
+          <div className="flex flex-col gap-3.5">
             <Field
-              label={
+              label="Dominio raíz"
+              hint={
                 <>
-                  IP pública del servidor {serverIpInfo.data?.ip && !serverIp && <OkPill label="autodetectada" />}
+                  Requiere un registro A comodín <span className="font-mono">*.tudominio</span> apuntando a la IP del servidor.
                 </>
               }
-              hint={
-                serverIpInfo.data?.ip
-                  ? `Detectada: ${serverIpInfo.data.ip}. Rellénala solo si es incorrecta; verifica los DNS.`
-                  : 'No se pudo detectar automáticamente: indícala para verificar los DNS de tus dominios.'
-              }
             >
-              <input
-                className="input font-mono text-xs"
-                placeholder={serverIpInfo.data?.ip ?? '203.0.113.10'}
-                value={serverIp}
-                onChange={(e) => setServerIp(e.target.value)}
-              />
+              <input className="input" placeholder="apps.midominio.com" value={rootDomain} onChange={(e) => setRootDomain(e.target.value)} />
             </Field>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field label="Email para Let's Encrypt" hint="Con email definido, TLS automático en cada dominio">
+                <input
+                  className="input"
+                  type="email"
+                  placeholder="tu@email.com"
+                  value={letsencryptEmail}
+                  onChange={(e) => setLetsencryptEmail(e.target.value)}
+                />
+              </Field>
+              <Field
+                label={
+                  <>
+                    IP pública del servidor {serverIpInfo.data?.ip && !serverIp && <OkPill label="autodetectada" />}
+                  </>
+                }
+                hint={
+                  serverIpInfo.data?.ip
+                    ? `Detectada: ${serverIpInfo.data.ip}. Rellénala solo si es incorrecta; verifica los DNS.`
+                    : 'No se pudo detectar automáticamente: indícala para verificar los DNS de tus dominios.'
+                }
+              >
+                <input
+                  className="input font-mono text-xs"
+                  placeholder={serverIpInfo.data?.ip ?? '203.0.113.10'}
+                  value={serverIp}
+                  onChange={(e) => setServerIp(e.target.value)}
+                />
+              </Field>
+            </div>
           </div>
-        </div>
-      </SettingsSection>
+        </SettingsSection>
+      )}
 
       <SettingsSection
         id="github"
         icon={<ModuleLogo kind="github" size={15} />}
         iconClass="text-txt"
         title="GitHub"
-        description="La App es la conexión recomendada: se instala una vez por cuenta, no caduca y deja los despliegues por push activados sin configurar webhooks."
+        description="Recomendado: se instala una vez por cuenta y no caduca."
       >
         <GithubAppPanel />
       </SettingsSection>
 
-      <SettingsSection
-        icon={<KeyRound size={15} />}
-        iconClass="text-subtle"
-        title="Token global de GitHub"
-        description={
-          <>
-            Alternativa a la App: un token de acceso personal (permiso <span className="font-mono">repo</span>) que se
-            usa cuando el servicio no tiene ninguna conexión propia. Caduca y ve todo lo que ve esa cuenta.
-          </>
-        }
-        aside={settings.data?.settings.hasGithubToken ? <OkPill label="Conectado" /> : undefined}
-      >
-        <Field label="Token de GitHub" hint="Se usa para clonar y para los webhooks de auto-deploy de cada servicio">
-          <input
-            className="input font-mono text-xs"
-            type="password"
-            placeholder={settings.data?.settings.hasGithubToken ? '••••••••••••  (escribir para reemplazar)' : 'ghp_... o github_pat_...'}
-            value={githubToken}
-            onChange={(e) => {
-              setGithubToken(e.target.value);
-              setGithubTest(null);
-            }}
-          />
-        </Field>
-
-        {githubTest && (
-          <div
-            className={cx(
-              'mt-3 rounded-lg border px-3 py-2 text-xs',
-              githubTest.ok ? 'border-ok/30 bg-ok/[.08] text-ok' : 'border-err/30 bg-err/[.08] text-err',
-            )}
-          >
-            {githubTest.ok ? (
+      {settingsReady && (
+        <>
+          <SettingsSection
+            icon={<KeyRound size={15} />}
+            iconClass="text-subtle"
+            title="Token global de GitHub"
+            description={
               <>
-                Conectado como <span className="font-semibold">@{githubTest.login}</span>
-                {githubTest.name ? ` (${githubTest.name})` : ''} ·{' '}
-                {githubTest.tokenType === 'fine-grained'
-                  ? 'token fine-grained'
-                  : githubTest.scopes.length
-                    ? `permisos: ${githubTest.scopes.join(', ')}`
-                    : 'sin scopes clásicos'}
-                {githubTest.tokenType === 'classic' && !githubTest.scopes.includes('repo') && (
-                  <span className="mt-1 flex items-start gap-1 text-warn">
-                    <AlertTriangle size={12} className="mt-0.5 shrink-0" /> Falta el permiso «repo»: no podrá clonar repositorios privados.
-                  </span>
-                )}
+                Alternativa a la App: un token de acceso personal (permiso <span className="font-mono">repo</span>) que se
+                usa cuando el servicio no tiene ninguna conexión propia. Caduca y ve todo lo que ve esa cuenta.
               </>
-            ) : (
-              githubTest.message
-            )}
-          </div>
-        )}
-
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={testGithub} loading={githubTesting}>
-            Probar conexión
-          </Button>
-          {settings.data?.settings.hasGithubToken && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => removeGithub.mutate()}
-              loading={removeGithub.isPending}
-              className="text-err hover:bg-err/[.1]"
-            >
-              <Trash2 size={13} /> Eliminar token
-            </Button>
-          )}
-          <span className="text-xs text-subtle">
-            «Probar» valida el token escrito, o el guardado si el campo está vacío.
-          </span>
-        </div>
-
-        <div className="mt-5 border-t border-line pt-4">
-          <h3 className="text-xs font-semibold">Conectores por proyecto</h3>
-          <p className="mt-1 text-xs text-subtle">
-            Cuentas de GitHub que tus clientes han conectado a sus proyectos (desde el botón «Conectores» del proyecto).
-            Sus servicios clonan con ese token en lugar del global. Aquí puedes revocarlos todos.
-          </p>
-          {(connectors.data?.connectors.length ?? 0) === 0 ? (
-            <p className="mt-3 rounded-lg border border-dashed border-line px-3.5 py-3.5 text-center text-xs text-subtle">
-              Ningún proyecto tiene conectores todavía.
-            </p>
-          ) : (
-            <div className="mt-3 overflow-hidden rounded-lg border border-line">
-              {connectors.data!.connectors.map((c) => (
-                <div key={c.id} className="flex items-center gap-3 border-b border-line/60 bg-bg px-3.5 py-2 text-xs last:border-b-0">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate">
-                      <span className="font-medium">{c.project_name}</span>
-                      {c.project_client ? <span className="text-subtle"> · {c.project_client}</span> : ''}
-                      <span className="text-sub"> — {c.name} </span>
-                      <span className="font-mono text-xs text-sub">@{c.gh_login}</span>
-                    </p>
-                    <p className="mt-px truncate text-xs text-subtle">
-                      conectado por {c.created_by} · {timeAgo(c.created_at)}
-                      {c.last_used_at ? ` · último despliegue ${timeAgo(c.last_used_at)}` : ' · sin usar'}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setConnectorToRevoke(c)}
-                    className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err"
-                    title="Revocar conector"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </SettingsSection>
-
-      <ConfirmModal
-        open={!!connectorToRevoke}
-        onClose={() => setConnectorToRevoke(null)}
-        onConfirm={() => connectorToRevoke && revokeConnector.mutate(connectorToRevoke.id)}
-        title="Revocar conector"
-        message={`«${connectorToRevoke?.name}» (@${connectorToRevoke?.gh_login}) de «${connectorToRevoke?.project_name}» dejará de usarse: sus servicios pasarán al token global en el próximo despliegue.`}
-        confirmLabel="Revocar"
-        loading={revokeConnector.isPending}
-      />
-
-      <SettingsSection
-        icon={<BellRing size={15} />}
-        iconClass="text-warn"
-        title="Alertas y notificaciones"
-        description="Caídas, bucles de reinicio y CPU/RAM sostenidas — sin tener el panel abierto"
-      >
-        <div className="mb-3.5 grid grid-cols-3 gap-3">
-          <Field label="Umbral CPU (%)" hint="por defecto 90">
-            <input className="input tnum" type="number" min={10} max={100} placeholder="90" value={cpuPct} onChange={(e) => setCpuPct(e.target.value)} />
-          </Field>
-          <Field label="Umbral RAM (%)" hint="por defecto 90">
-            <input className="input tnum" type="number" min={10} max={100} placeholder="90" value={memPct} onChange={(e) => setMemPct(e.target.value)} />
-          </Field>
-          <Field label="Sostenido (min)" hint="por defecto 5">
-            <input className="input tnum" type="number" min={1} max={120} placeholder="5" value={sustainMin} onChange={(e) => setSustainMin(e.target.value)} />
-          </Field>
-        </div>
-        <div className="flex flex-col gap-3">
-          <Field label="Webhook genérico (POST JSON)" hint="Para n8n, Zapier, tu propio endpoint…">
-            <input className="input font-mono text-xs" placeholder="https://…" value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} />
-          </Field>
-          <Field label="Webhook de Discord" hint="Canal → Ajustes → Integraciones → Webhooks">
-            <input
-              className="input font-mono text-xs"
-              placeholder="https://discord.com/api/webhooks/…"
-              value={discordUrl}
-              onChange={(e) => setDiscordUrl(e.target.value)}
-            />
-          </Field>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field
-              label={<>Token del bot de Telegram {settings.data?.settings.hasTelegramToken && <OkPill label="configurado" />}</>}
-              hint={settings.data?.settings.hasTelegramToken ? undefined : 'Crea un bot con @BotFather'}
-            >
+            }
+            aside={settings.data?.settings.hasGithubToken ? <OkPill label="Conectado" /> : undefined}
+            pending={pending.github}
+          >
+            <Field label="Token de GitHub" hint="Se usa para clonar y para los webhooks de auto-deploy de cada servicio">
               <input
                 className="input font-mono text-xs"
                 type="password"
-                placeholder={settings.data?.settings.hasTelegramToken ? '••••••••  (escribir para reemplazar)' : '123456:ABC...'}
-                value={telegramToken}
-                onChange={(e) => setTelegramToken(e.target.value)}
+                placeholder={settings.data?.settings.hasGithubToken ? '••••••••••••  (escribir para reemplazar)' : 'ghp_... o github_pat_...'}
+                value={githubToken}
+                onChange={(e) => {
+                  setGithubToken(e.target.value);
+                  setGithubTest(null);
+                }}
               />
             </Field>
-            <Field label="Chat ID de Telegram" hint="Tu ID o el de un grupo (@userinfobot)">
-              <input
-                className="input font-mono text-xs"
-                placeholder="-100123456789"
-                value={telegramChat}
-                onChange={(e) => setTelegramChat(e.target.value)}
-              />
-            </Field>
-          </div>
-        </div>
-        <div className="mt-3.5 flex justify-end">
-          <Button variant="secondary" size="sm" onClick={testChannels} loading={testing}>
-            Enviar notificación de prueba
-          </Button>
-        </div>
-      </SettingsSection>
+
+            {githubTest && (
+              <div
+                className={cx(
+                  'mt-3 rounded-lg border px-3 py-2 text-xs',
+                  githubTest.ok ? 'border-ok/30 bg-ok/[.08] text-ok' : 'border-err/30 bg-err/[.08] text-err',
+                )}
+              >
+                {githubTest.ok ? (
+                  <>
+                    Conectado como <span className="font-semibold">@{githubTest.login}</span>
+                    {githubTest.name ? ` (${githubTest.name})` : ''} ·{' '}
+                    {githubTest.tokenType === 'fine-grained'
+                      ? 'token fine-grained'
+                      : githubTest.scopes.length
+                        ? `permisos: ${githubTest.scopes.join(', ')}`
+                        : 'sin scopes clásicos'}
+                    {githubTest.tokenType === 'classic' && !githubTest.scopes.includes('repo') && (
+                      <span className="mt-1 flex items-start gap-1 text-warn">
+                        <AlertTriangle size={12} className="mt-0.5 shrink-0" /> Falta el permiso «repo»: no podrá clonar repositorios privados.
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  githubTest.message
+                )}
+              </div>
+            )}
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={testGithub}
+                loading={githubTesting}
+                title="Valida el token escrito, o el guardado si el campo está vacío"
+              >
+                Probar conexión
+              </Button>
+              {settings.data?.settings.hasGithubToken && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeGithub.mutate()}
+                  loading={removeGithub.isPending}
+                  className="text-err hover:bg-err/[.1]"
+                >
+                  <Trash2 size={13} /> Eliminar token
+                </Button>
+              )}
+            </div>
+
+            <div className="mt-5 border-t border-line pt-4">
+              <h3 className="text-xs font-semibold">Cuentas de GitHub de los clientes</h3>
+              <p className="mt-1 text-xs text-subtle">
+                Cuentas que los clientes han conectado a sus proyectos. Sus servicios clonan con ellas en vez de con el
+                token global.
+              </p>
+              {connectors.isLoading ? (
+                <Skeleton className="mt-3 h-12 w-full rounded-lg" />
+              ) : connectors.isError ? (
+                <ErrorState
+                  compact
+                  className="mt-3 rounded-lg border border-dashed border-line"
+                  title="No se han podido cargar los conectores"
+                  error={connectors.error}
+                  onRetry={() => connectors.refetch()}
+                  retrying={connectors.isFetching}
+                />
+              ) : (connectors.data?.connectors.length ?? 0) === 0 ? (
+                <p className="mt-3 rounded-lg border border-dashed border-line px-3.5 py-3.5 text-center text-xs text-subtle">
+                  Ningún cliente ha conectado una cuenta todavía.
+                </p>
+              ) : (
+                <div className="mt-3 overflow-hidden rounded-lg border border-line">
+                  {connectors.data!.connectors.map((c) => (
+                    <div key={c.id} className="flex items-center gap-3 border-b border-line/60 bg-bg px-3.5 py-2 text-xs last:border-b-0">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate">
+                          <span className="font-medium">{c.project_name}</span>
+                          {c.project_client ? <span className="text-subtle"> · {c.project_client}</span> : ''}
+                          <span className="text-sub"> — {c.name} </span>
+                          <span className="font-mono text-xs text-sub">@{c.gh_login}</span>
+                        </p>
+                        <p className="mt-px truncate text-xs text-subtle">
+                          conectado por {c.created_by} · {timeAgo(c.created_at)}
+                          {c.last_used_at ? ` · último despliegue ${timeAgo(c.last_used_at)}` : ' · sin usar'}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setConnectorToRevoke(c)}
+                        className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err max-sm:p-2.5"
+                        title="Revocar conector"
+                        aria-label="Revocar conector"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </SettingsSection>
+
+          <ConfirmModal
+            open={!!connectorToRevoke}
+            onClose={() => setConnectorToRevoke(null)}
+            onConfirm={() => connectorToRevoke && revokeConnector.mutate(connectorToRevoke.id)}
+            title="Revocar conector"
+            message={`«${connectorToRevoke?.name}» (@${connectorToRevoke?.gh_login}) de «${connectorToRevoke?.project_name}» dejará de usarse: sus servicios pasarán al token global en el próximo despliegue.`}
+            confirmLabel="Revocar"
+            loading={revokeConnector.isPending}
+          />
+
+          <SettingsSection
+            icon={<BellRing size={15} />}
+            iconClass="text-warn"
+            title="Alertas y notificaciones"
+            description="Caídas, bucles de reinicio y CPU/RAM sostenidas, avisadas fuera del panel"
+            pending={pending.alerts}
+          >
+            {/* Tres columnas a 360px dejaban los campos en ~90px, sin sitio para el rótulo. */}
+            <div className="mb-3.5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <Field label="Umbral CPU (%)" hint="por defecto 90">
+                <input className="input tnum" type="number" min={10} max={100} placeholder="90" value={cpuPct} onChange={(e) => setCpuPct(e.target.value)} />
+              </Field>
+              <Field label="Umbral RAM (%)" hint="por defecto 90">
+                <input className="input tnum" type="number" min={10} max={100} placeholder="90" value={memPct} onChange={(e) => setMemPct(e.target.value)} />
+              </Field>
+              <Field label="Sostenido (min)" hint="por defecto 5">
+                <input className="input tnum" type="number" min={1} max={120} placeholder="5" value={sustainMin} onChange={(e) => setSustainMin(e.target.value)} />
+              </Field>
+            </div>
+            {/* Discord y Telegram primero: son los destinos que casi todo el mundo usa.
+                El webhook genérico queda plegado para no ocupar el sitio de los otros dos. */}
+            <div className="flex flex-col gap-3">
+              <Field label="Webhook de Discord" hint="Canal → Ajustes → Integraciones → Webhooks">
+                <input
+                  className="input font-mono text-xs"
+                  placeholder="https://discord.com/api/webhooks/…"
+                  value={discordUrl}
+                  onChange={(e) => setDiscordUrl(e.target.value)}
+                />
+              </Field>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field
+                  label={<>Token del bot de Telegram {settings.data?.settings.hasTelegramToken && <OkPill label="configurado" />}</>}
+                  hint={settings.data?.settings.hasTelegramToken ? undefined : 'Crea un bot con @BotFather'}
+                >
+                  <input
+                    className="input font-mono text-xs"
+                    type="password"
+                    placeholder={settings.data?.settings.hasTelegramToken ? '••••••••  (escribir para reemplazar)' : '123456:ABC...'}
+                    value={telegramToken}
+                    onChange={(e) => setTelegramToken(e.target.value)}
+                  />
+                </Field>
+                <Field label="Chat ID de Telegram" hint="Tu ID o el de un grupo (@userinfobot)">
+                  <input
+                    className="input font-mono text-xs"
+                    placeholder="-100123456789"
+                    value={telegramChat}
+                    onChange={(e) => setTelegramChat(e.target.value)}
+                  />
+                </Field>
+              </div>
+              {/* Abierto si ya hay uno configurado: plegar un campo con valor lo escondería. */}
+              <details className="group animate-details" open={!!webhookUrl}>
+                <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-sub hover:text-txt">
+                  <ChevronDown size={12} className="shrink-0 transition-transform duration-200 ease-out group-open:rotate-180" />
+                  Otro destino (webhook JSON)
+                </summary>
+                <div className="details-body mt-2">
+                  <Field label="URL del webhook (POST JSON)" hint="Para n8n, Zapier o un endpoint propio">
+                    <input className="input font-mono text-xs" placeholder="https://…" value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} />
+                  </Field>
+                </div>
+              </details>
+            </div>
+            <div className="mt-3.5 flex justify-end">
+              <Button variant="secondary" size="sm" onClick={testChannels} loading={testing}>
+                Enviar notificación de prueba
+              </Button>
+            </div>
+          </SettingsSection>
+        </>
+      )}
+
+      {system.isLoading && <Skeleton className="h-40 w-full rounded-xl" />}
+
+      {system.isError && !system.data && (
+        <SettingsSection icon={<Cpu size={15} />} iconClass="text-acc-soft" title="Sistema" description="Estado del host y uso de disco de Docker">
+          <ErrorState
+            compact
+            title="No se ha podido leer el estado del sistema"
+            error={system.error}
+            onRetry={() => system.refetch()}
+            retrying={system.isFetching}
+          />
+        </SettingsSection>
+      )}
 
       {sys && (
         <SettingsSection
@@ -586,9 +689,17 @@ export default function SettingsPage() {
           title="Sistema"
           description="Estado del host y uso de disco de Docker"
           aside={
-            <div className="flex flex-wrap gap-2">
-              {sys.docker ? <OkPill dot label="Docker conectado" /> : <ErrPill label="Docker no disponible" />}
-              {sys.nixpacks ? <OkPill dot label="Nixpacks instalado" /> : <ErrPill label="Nixpacks no instalado" />}
+            <div className="flex flex-col items-end gap-1.5">
+              <div className="flex flex-wrap gap-2">
+                {sys.docker ? <OkPill dot label="Docker conectado" /> : <ErrPill label="Docker no disponible" />}
+                {sys.nixpacks ? <OkPill dot label="Nixpacks instalado" /> : <ErrPill label="Nixpacks no instalado" />}
+              </div>
+              {/* La orden va pegada al aviso: sin Nixpacks, los repos sin Dockerfile no se construyen. */}
+              {!sys.nixpacks && (
+                <p className="text-xs text-subtle">
+                  Instálalo: <span className="font-mono">curl -sSL https://nixpacks.com/install.sh | bash</span>
+                </p>
+              )}
             </div>
           }
         >
@@ -627,22 +738,18 @@ export default function SettingsPage() {
               </Button>
             </div>
           )}
-          <p className="mt-3 text-xs text-subtle">
-            La limpieza purga imágenes colgantes y caché de build; nunca toca volúmenes. Si Nixpacks faltara, los repos sin
-            Dockerfile no podrían construirse: <span className="font-mono">curl -sSL https://nixpacks.com/install.sh | bash</span>
-          </p>
         </SettingsSection>
       )}
 
       <SettingsSection
         icon={<DatabaseBackup size={15} />}
         iconClass="text-ok"
-        title="Copia de seguridad del panel"
+        title="Copias de seguridad del panel"
         description={
           <>
-            Snapshot diario (~04:00) de la base de datos de Skyway — usuarios, proyectos, servicios y variables.
-            Retención: {sysBackups.data?.retention ?? 7} copias. Los backups de cada base de datos de tus proyectos van
-            aparte, en su pestaña Backups.
+            Copia diaria (~04:00) de la base de datos del panel: usuarios, proyectos, servicios y variables. Se conservan{' '}
+            {sysBackups.data?.retention ?? 7}. Las copias de las bases de datos de cada proyecto van aparte, en la pestaña
+            Backups del servicio.
           </>
         }
         aside={
@@ -651,9 +758,20 @@ export default function SettingsPage() {
           </Button>
         }
       >
-        {(sysBackups.data?.backups.length ?? 0) === 0 ? (
+        {sysBackups.isLoading ? (
+          <Skeleton className="h-24 w-full rounded-lg" />
+        ) : sysBackups.isError ? (
+          <ErrorState
+            compact
+            className="rounded-lg border border-dashed border-line"
+            title="No se han podido listar las copias"
+            error={sysBackups.error}
+            onRetry={() => sysBackups.refetch()}
+            retrying={sysBackups.isFetching}
+          />
+        ) : (sysBackups.data?.backups.length ?? 0) === 0 ? (
           <p className="rounded-lg border border-dashed border-line px-3.5 py-4 text-center text-xs text-subtle">
-            Aún no hay snapshots. El primero se creará esta madrugada, o pulsa «Crear ahora».
+            Aún no hay copias. La primera se creará esta madrugada, o pulsa «Crear ahora».
           </p>
         ) : (
           <div className="overflow-hidden rounded-lg border border-line">
@@ -667,15 +785,19 @@ export default function SettingsPage() {
                 <span className="tnum w-16 shrink-0 text-right text-xs text-subtle">{fmtBytes(b.size)}</span>
                 <a
                   href={`/api/system/backups/${encodeURIComponent(b.file)}/download`}
-                  className="rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt"
-                  title="Descargar (guárdalo fuera del servidor)"
+                  className="rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
+                  title="Descargar copia"
+                  aria-label="Descargar copia"
                 >
                   <Download size={13} />
                 </a>
+                {/* Un filo entre descargar y eliminar: pegados, el pulgar acertaba en el equivocado. */}
+                <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-line" />
                 <button
-                  onClick={() => deleteSysBackup.mutate(b.file)}
-                  className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err"
-                  title="Eliminar"
+                  onClick={() => setBackupToDelete(b)}
+                  className="rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err max-sm:p-2.5"
+                  title="Eliminar copia"
+                  aria-label="Eliminar copia"
                 >
                   <Trash2 size={13} />
                 </button>
@@ -683,40 +805,59 @@ export default function SettingsPage() {
             ))}
           </div>
         )}
-        <p className="mt-3 text-xs leading-relaxed text-subtle">
-          Para restaurar: para Skyway, sustituye <span className="font-mono">/data/skyway.db</span> por el snapshot y
-          arranca de nuevo. Descarga alguna copia fuera del servidor: un backup en el mismo disco no sobrevive a una
-          avería del disco.
-        </p>
+        <p className="mt-3 text-xs text-subtle">Guarda alguna copia fuera del servidor.</p>
+        <details className="group animate-details mt-2">
+          <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-sub hover:text-txt">
+            <ChevronDown size={12} className="shrink-0 transition-transform duration-200 ease-out group-open:rotate-180" />
+            Cómo restaurar
+          </summary>
+          <p className="details-body mt-1.5 text-xs leading-relaxed text-subtle">
+            Para el panel, sustituye <span className="font-mono">/data/skyway.db</span> por la copia y arráncalo de nuevo.
+          </p>
+        </details>
       </SettingsSection>
 
-      <div className="safe-b sticky bottom-0 mt-1 flex items-center justify-between gap-2.5 border-t border-line bg-bg/90 py-3 backdrop-blur-lg">
-        {dirty ? (
-          <span className="flex items-center gap-1.5 text-xs text-warn">
-            <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />
-            Cambios sin guardar · se aplican al guardar
-          </span>
-        ) : (
-          <span className="text-xs text-subtle">Sin cambios</span>
-        )}
-        <div className="flex items-center gap-2">
-          {dirty && (
-            <Button variant="ghost" size="sm" onClick={discardSettings}>
-              Descartar
-            </Button>
+      <ConfirmModal
+        open={!!backupToDelete}
+        onClose={() => setBackupToDelete(null)}
+        onConfirm={() => backupToDelete && deleteSysBackup.mutate(backupToDelete.file)}
+        title="Eliminar copia"
+        message={`Se eliminará "${backupToDelete?.file ?? ''}". Si no la has descargado, no habrá copia.`}
+        loading={deleteSysBackup.isPending}
+      />
+
+      {/* Barra de guardado: solo con ajustes cargados (sin ellos no hay nada que guardar).
+          El relleno inferior suma el safe-area a mano: `.safe-b` pisaba el `py-3` y
+          en iPhone la barra quedaba pegada al gesto del sistema. */}
+      {settingsReady && (
+        <div className="sticky bottom-0 mt-1 flex items-center justify-between gap-2.5 border-t border-line bg-bg/90 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur-lg">
+          {dirty ? (
+            <span className="flex items-center gap-1.5 text-xs text-warn">
+              <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-current" />
+              Cambios sin guardar · se aplican al guardar
+            </span>
+          ) : (
+            <span className="text-xs text-subtle">Sin cambios</span>
           )}
-          <Button
-            variant={dirty ? 'primary' : 'secondary'}
-            size="sm"
-            onClick={() => save.mutate()}
-            loading={save.isPending}
-            disabled={!dirty}
-            success={saved && !dirty}
-          >
-            Guardar ajustes
-          </Button>
+          <div className="flex items-center gap-2">
+            {dirty && (
+              <Button variant="ghost" size="sm" onClick={discardSettings}>
+                Descartar
+              </Button>
+            )}
+            <Button
+              variant={dirty ? 'primary' : 'secondary'}
+              size="sm"
+              onClick={() => save.mutate()}
+              loading={save.isPending}
+              disabled={!dirty}
+              success={saved && !dirty}
+            >
+              Guardar ajustes
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

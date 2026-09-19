@@ -13,6 +13,7 @@ import {
   fetchLogsText,
   followLogs,
   getRuntime,
+  replicaName,
 } from '../docker/containers';
 import { sseInit } from '../sse';
 
@@ -30,7 +31,13 @@ const METRICS_TICK_MS = 2500;
 export async function streamRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
-  /** Logs de ejecución del contenedor en vivo (SSE), con reintento si aún no existe. */
+  /**
+   * Logs de ejecución en vivo (SSE), con reintento si el contenedor aún no
+   * existe. Sigue TODAS las réplicas del servicio: antes solo la primera, y
+   * un servicio con tres réplicas enseñaba «3 réplicas» junto a una consola a
+   * la que le faltaban dos tercios de las líneas. Las de las réplicas 2..n
+   * llevan un prefijo para saber de cuál vienen.
+   */
   app.get('/api/services/:id/logs/stream', async (req, reply) => {
     const { id } = req.params as { id: string };
     const service = getService(id);
@@ -38,40 +45,116 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     if (!service || !project) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, project.id)) return reply;
 
-    const channel = sseInit(reply);
-    const name = containerName(project, service);
-    let stopStream: (() => void) | null = null;
-    let retryTimer: NodeJS.Timeout | null = null;
+    /*
+     * Reconexión del navegador (móvil que se bloquea, cambio de red): trae el
+     * último cursor que recibió y se reanuda desde ahí. Sin esto se volvía a
+     * las últimas 200 líneas y todo lo de en medio se perdía para siempre.
+     */
+    const lastId = req.headers['last-event-id'];
+    const since = typeof lastId === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z?$/.test(lastId) ? lastId : null;
 
-    const attach = async (): Promise<void> => {
+    const channel = sseInit(reply);
+    const total = configuredReplicas(service);
+    const timers = new Set<NodeJS.Timeout>();
+    const stops = new Map<number, () => void>();
+
+    const later = (fn: () => void, ms: number): void => {
       if (channel.closed) return;
+      const t = setTimeout(() => {
+        timers.delete(t);
+        fn();
+      }, ms);
+      timers.add(t);
+    };
+    // Los avisos de estado los da solo la réplica canónica: n avisos iguales
+    // a la vez no dicen más que uno, y el visor solo enseña el último.
+    const notice = (index: number, message: string): void => {
+      if (index === 1) channel.send('notice', { message });
+    };
+
+    /**
+     * Docker cierra el stream de un contenedor parado en cuanto vuelca lo que
+     * tiene. Ahí no hay nada que seguir: se espera a que arranque (o a que un
+     * despliegue lo sustituya) mirando su estado cada pocos segundos, en vez
+     * de volver a pedir el volcado en bucle.
+     */
+    const waitUntilRunning = async (index: number): Promise<void> => {
+      if (channel.closed) return;
+      const runtime = await getRuntime(replicaName(project, service, index));
+      if (channel.closed) return;
+      if (runtime.state === 'running' || runtime.state === 'restarting' || runtime.state === 'not_created') {
+        void attach(index, null);
+        return;
+      }
+      later(() => void waitUntilRunning(index), 4000);
+    };
+
+    const attach = async (index: number, resumeFrom: string | null): Promise<void> => {
+      if (channel.closed) return;
+      const name = replicaName(project, service, index);
       if (!(await dockerAvailable())) {
-        channel.send('notice', { message: 'Docker no está disponible' });
-        retryTimer = setTimeout(attach, 5000);
+        notice(index, 'Docker no está disponible');
+        later(() => void attach(index, resumeFrom), 5000);
         return;
       }
       const runtime = await getRuntime(name);
+      if (channel.closed) return;
       if (runtime.state === 'not_created') {
-        channel.send('notice', { message: 'El contenedor aún no existe. Esperando...' });
-        retryTimer = setTimeout(attach, 3000);
+        notice(index, 'El contenedor aún no existe. Esperando...');
+        later(() => void attach(index, null), 3000);
         return;
       }
       try {
-        channel.send('attached', { state: runtime.state });
+        const prefix = total > 1 ? `[r${index}] ` : '';
         // Cada línea viaja con su cursor (sello de tiempo); el visor lo oculta
-        // pero lo usa como punto de partida para pedir líneas más antiguas.
-        stopStream = await followLogs(name, (row) => channel.send('log', row));
+        // pero lo usa como punto de partida para pedir líneas más antiguas y
+        // como id del evento, para reanudar si la conexión se cae.
+        const stop = await followLogs(
+          name,
+          (row) => channel.send('log', { cursor: row.cursor, line: prefix + row.line }, row.cursor),
+          200,
+          () => {
+            /*
+             * Docker ha cerrado el stream: o el contenedor se ha sustituido (un
+             * redespliegue crea otro con el mismo nombre) o se ha parado. Antes
+             * la ruta seguía abierta pero muda y el visor decía «En vivo» sin
+             * recibir nada más. Las líneas repetidas las descarta el cliente
+             * por cursor.
+             */
+            stops.delete(index);
+            if (channel.closed) return;
+            void getRuntime(name).then((rt) => {
+              if (channel.closed) return;
+              if (rt.state === 'running' || rt.state === 'restarting' || rt.state === 'not_created') {
+                notice(index, 'El contenedor se ha reemplazado. Reconectando…');
+                later(() => void attach(index, null), 1500);
+              } else {
+                notice(index, 'El contenedor está detenido: esto es lo último que escribió. Se reanudará al arrancar.');
+                later(() => void waitUntilRunning(index), 4000);
+              }
+            });
+          },
+          resumeFrom,
+        );
+        if (channel.closed) {
+          stop();
+          return;
+        }
+        stops.set(index, stop);
+        if (index === 1) channel.send('attached', { state: runtime.state, replicas: total });
       } catch {
-        retryTimer = setTimeout(attach, 3000);
+        later(() => void attach(index, resumeFrom), 3000);
       }
     };
 
     channel.onClose(() => {
-      if (retryTimer) clearTimeout(retryTimer);
-      if (stopStream) stopStream();
+      for (const t of timers) clearTimeout(t);
+      timers.clear();
+      for (const stop of stops.values()) stop();
+      stops.clear();
     });
 
-    void attach();
+    for (let i = 1; i <= total; i++) void attach(i, since);
   });
 
   /**

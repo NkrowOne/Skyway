@@ -33,9 +33,15 @@ export default function SharedVarsModal({
     enabled: open,
   });
 
+  // Alfabético al cargar: el orden de inserción del servidor no ayuda a
+  // encontrar nada. Mientras se edita no se reordena (las nuevas van al final).
   useEffect(() => {
     if (vars.data && !dirty) {
-      setRows(Object.entries(vars.data.vars).map(([key, value]) => ({ key, value })));
+      setRows(
+        Object.entries(vars.data.vars)
+          .sort(([a], [b]) => a.localeCompare(b, 'es'))
+          .map(([key, value]) => ({ key, value })),
+      );
     }
   }, [vars.data, dirty]);
 
@@ -74,7 +80,7 @@ export default function SharedVarsModal({
         {rows.map((row, i) => (
           <div key={i} className="flex items-center gap-2">
             <input
-              className="input w-2/5 font-mono text-xs"
+              className="input w-2/5 min-w-0 font-mono sm:text-xs"
               placeholder="CLAVE"
               value={row.key}
               onChange={(e) => {
@@ -83,9 +89,12 @@ export default function SharedVarsModal({
                 setRows(next);
                 setDirty(true);
               }}
+              spellCheck={false}
+              autoCapitalize="characters"
+              autoCorrect="off"
             />
             <input
-              className="input flex-1 font-mono text-xs"
+              className="input min-w-0 flex-1 font-mono sm:text-xs"
               placeholder="valor"
               value={row.value}
               onChange={(e) => {
@@ -94,13 +103,18 @@ export default function SharedVarsModal({
                 setRows(next);
                 setDirty(true);
               }}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
             />
             <button
               onClick={() => {
                 setRows(rows.filter((_, j) => j !== i));
                 setDirty(true);
               }}
-              className="rounded-md p-1.5 text-sub hover:bg-surface2 hover:text-err"
+              className="press shrink-0 rounded-md p-1.5 text-sub hover:bg-surface2 hover:text-err max-sm:p-2.5"
+              title="Eliminar variable"
+              aria-label={`Eliminar ${row.key || 'la variable'}`}
             >
               <Trash2 size={13} />
             </button>

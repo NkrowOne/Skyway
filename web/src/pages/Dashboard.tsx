@@ -1,10 +1,10 @@
-import { lazy, Suspense, useMemo, useState } from 'react';
+import { lazy, memo, Suspense, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { BellRing, Boxes, Building2, ChevronRight, FolderKanban, Plus, Search, TrainFront, X, Zap } from 'lucide-react';
+import { BellRing, Boxes, Building2, ChevronRight, FolderKanban, MoreHorizontal, Plus, Search, TrainFront, X } from 'lucide-react';
 import { api } from '../api';
 import { useLatch } from '../hooks';
-import { Button, Chip, ErrorState, Field, Modal, PageHeader, Skeleton, useToast } from '../components/ui';
+import { Button, Chip, ErrorState, Field, Menu, MenuItem, Modal, PageHeader, Skeleton, useToast } from '../components/ui';
 import { DeploySweep } from '../components/DeployBadge';
 import { ModuleBadge, ModuleLogo, moduleKind } from '../components/ModuleIcon';
 
@@ -60,7 +60,11 @@ function ServiceStack({ services }: { services?: ProjectServiceSummary[] }) {
   );
 }
 
-function ProjectCard({ project }: { project: Project }) {
+/*
+ * Memoizada: la lista se refresca cada 8 s y con veinte proyectos repintarlos
+ * todos por un despliegue que cambia en uno se nota en el móvil.
+ */
+const ProjectCard = memo(function ProjectCard({ project }: { project: Project }) {
   const alerts = project.openAlerts ?? 0;
   const deploying = project.activeDeploys ?? 0;
   return (
@@ -105,6 +109,17 @@ function ProjectCard({ project }: { project: Project }) {
       </div>
     </Link>
   );
+});
+
+/**
+ * Orden dentro de cada grupo: lo que se mueve o falla arriba, el resto por
+ * nombre. Un despliegue en marcha es a lo que se entra a mirar; una alerta,
+ * lo que hay que atender; y lo demás debe encontrarse sin buscar.
+ */
+function compararProyectos(a: Project, b: Project): number {
+  const despliegue = (p: Project) => ((p.activeDeploys ?? 0) > 0 ? 0 : 1);
+  const alerta = (p: Project) => ((p.openAlerts ?? 0) > 0 ? 0 : 1);
+  return despliegue(a) - despliegue(b) || alerta(a) - alerta(b) || a.name.localeCompare(b.name, 'es');
 }
 
 function DashboardSkeleton() {
@@ -135,6 +150,8 @@ export default function Dashboard() {
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const importLatched = useLatch(importOpen);
+  // Menú «···» de la cabecera: la importación es ocasional y no merece un botón fijo.
+  const [menuOpen, setMenuOpen] = useState(false);
   const [name, setName] = useState('');
   const [client, setClient] = useState('');
   const [filter, setFilter] = useState<string | null>(null);
@@ -152,7 +169,7 @@ export default function Dashboard() {
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
   const isAdmin = me.data?.user?.role === 'admin';
-  // El propietario también crea proyectos (en su workspace, asignado por el servidor).
+  // El propietario también crea proyectos (en su cuenta, asignada por el servidor).
   const isManager = isAdmin || me.data?.user?.role === 'owner';
 
   const create = useMutation({
@@ -169,7 +186,8 @@ export default function Dashboard() {
 
   const all = projects.data?.projects ?? [];
   const clients = useMemo(
-    () => [...new Set(all.map((p) => p.client).filter((c): c is string => !!c))].sort(),
+    // Con comparador: el `sort()` por defecto compara puntos de código y mandaba «Ámbar» detrás de «Zeta».
+    () => [...new Set(all.map((p) => p.client).filter((c): c is string => !!c))].sort((a, b) => a.localeCompare(b, 'es')),
     [all],
   );
 
@@ -189,16 +207,17 @@ export default function Dashboard() {
           (p.services ?? []).some((s) => s.name.toLowerCase().includes(q)),
       );
     }
-    return list;
+    return [...list].sort(compararProyectos);
   }, [all, filter, projectQuery]);
 
   const grouped = useMemo(() => {
+    // `visible` ya viene ordenada, y el reparto por grupos conserva ese orden.
     const groups = new Map<string, Project[]>();
     for (const p of visible) {
       const key = p.client ?? '';
       groups.set(key, [...(groups.get(key) ?? []), p]);
     }
-    return [...groups.entries()].sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)));
+    return [...groups.entries()].sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b, 'es')));
   }, [visible]);
 
   return (
@@ -210,15 +229,34 @@ export default function Dashboard() {
         actions={
           isManager && (
             <>
-              {isAdmin && (
-                <Button variant="secondary" onClick={() => setImportOpen(true)} title="Migra un proyecto desde Railway">
-                  <TrainFront size={15} /> <span className="hidden sm:inline">Importar de Railway</span>
-                  <span className="sm:hidden">Importar</span>
-                </Button>
-              )}
               <Button onClick={() => setCreateOpen(true)}>
                 <Plus size={15} /> Nuevo proyecto
               </Button>
+              {isAdmin && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setMenuOpen((o) => !o)}
+                    aria-expanded={menuOpen}
+                    className="press flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-surface2 text-txt hover:border-line2 hover:bg-surface3"
+                    title="Más acciones"
+                    aria-label="Más acciones"
+                  >
+                    <MoreHorizontal size={16} />
+                  </button>
+                  <Menu open={menuOpen} onClose={() => setMenuOpen(false)} align="right">
+                    <MenuItem
+                      icon={<TrainFront size={14} />}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        setImportOpen(true);
+                      }}
+                    >
+                      Importar de Railway
+                    </MenuItem>
+                  </Menu>
+                </div>
+              )}
             </>
           )
         }
@@ -245,7 +283,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Buscador en tiempo real y filtros por cliente/empresa */}
+      {/* Buscador en tiempo real y filtros por cuenta de cliente */}
       {all.length > 0 && (
         <div className="mb-7 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="relative w-full max-w-sm">
@@ -260,7 +298,7 @@ export default function Dashboard() {
             {projectQuery && (
               <button
                 onClick={() => setProjectQuery('')}
-                className="press absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-subtle hover:text-txt"
+                className="press absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-subtle hover:text-txt max-sm:right-1 max-sm:p-2"
                 title="Limpiar búsqueda"
                 aria-label="Limpiar búsqueda"
               >
@@ -332,12 +370,14 @@ export default function Dashboard() {
               </Button>
             </>
           ) : (
-            <p className="text-sm text-sub">Aún no tienes workspaces asignados. Pide a un administrador que te dé acceso.</p>
+            <p className="text-sm text-sub">Aún no tienes proyectos asignados. Pide a un administrador que te dé acceso.</p>
           )}
         </div>
       )}
 
-      {clients.length === 0 ? (
+      {/* Solo con datos: mientras carga ya está el skeleton, y pintar además la
+          rejilla vacía dejaba un hueco con margen debajo de él. */}
+      {!projects.data ? null : clients.length === 0 ? (
         <div className="stagger grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
           {visible.map((p) => (
             <ProjectCard key={p.id} project={p} />
@@ -349,7 +389,7 @@ export default function Dashboard() {
             <section key={clientName || '_none'}>
               <div className="mb-3.5 flex items-center gap-3">
                 <h2 className="eyebrow text-sub">
-                  {clientName || 'Sin empresa'}
+                  {clientName || 'Sin cuenta'}
                 </h2>
                 <span className="text-xs text-subtle tnum">
                   {list.length === 1 ? '1 proyecto' : `${list.length} proyectos`}
@@ -384,7 +424,7 @@ export default function Dashboard() {
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} autoFocus required />
           </Field>
           {isAdmin && (
-            <Field label="Empresa / cliente (opcional)" hint="Asigna el proyecto a la cuenta de ese cliente (crea la cuenta si no existe)">
+            <Field label="Cuenta de cliente (opcional)" hint="Asigna el proyecto a esa cuenta; si no existe, se crea">
               <input className="input" list="clients-list" value={client} onChange={(e) => setClient(e.target.value)} placeholder="Acme S.L." />
               <datalist id="clients-list">
                 {clients.map((c) => (

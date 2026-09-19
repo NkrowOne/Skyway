@@ -315,6 +315,7 @@ export default function LogViewer({
   extraHeaderRight,
   state = 'ready',
   onRetry,
+  emptyMessage,
 }: {
   lines: string[];
   className?: string;
@@ -344,6 +345,8 @@ export default function LogViewer({
    */
   state?: 'loading' | 'error' | 'ready';
   onRetry?: () => void;
+  /** Por qué no hay nada, cuando quien llama lo sabe («este despliegue no guardó salida…»). */
+  emptyMessage?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -373,11 +376,31 @@ export default function LogViewer({
 
   const stage = controlledStageFilter ?? internalStage;
 
+  /*
+   * «Limpiar la vista» guarda un índice absoluto. Si la fuente cambia (otro
+   * despliegue, otra pestaña) o el padre recorta el buffer por delante, ese
+   * índice apunta más allá del final y la consola se quedaba vacía para
+   * siempre diciendo «Sin logs todavía…». Se olvida en cuanto deja de tener
+   * sentido.
+   */
+  useEffect(() => {
+    if (clearedUntil > 0 && lines.length < clearedUntil) setClearedUntil(0);
+  }, [lines.length, clearedUntil]);
+
+  // Tiempo relativo: sin un reloj, «hace 5 s» se quedaba congelado mientras
+  // no llegaran líneas nuevas.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (tsFormat !== 'relative') return;
+    const t = window.setInterval(() => setTick((n) => n + 1), 15_000);
+    return () => window.clearInterval(t);
+  }, [tsFormat]);
+
   // Procesado memoizado O(1) de líneas
   const rows = useMemo(() => {
     const prev = procRef.current;
     const next = new Map<string, ParsedRow>();
-    const effectiveLines = clearedUntil > 0 ? lines.slice(clearedUntil) : lines;
+    const effectiveLines = clearedUntil > 0 && clearedUntil <= lines.length ? lines.slice(clearedUntil) : lines;
     const result = effectiveLines.map((raw) => {
       let r = next.get(raw) ?? prev.get(raw);
       if (!r) r = parseRawLine(raw, defaultStage);
@@ -412,7 +435,9 @@ export default function LogViewer({
       out.push({ n: i + 1, row: r, tsString, tsTooltip });
     }
     return out;
-  }, [rows, filter, level, stage, tsFormat]);
+    // `tick` solo refresca los relativos; no cambia qué filas se ven.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, filter, level, stage, tsFormat, tick]);
 
   // Bloques virtualizados para alto rendimiento
   const chunks = useMemo(() => {
@@ -424,61 +449,72 @@ export default function LogViewer({
     return out;
   }, [visible]);
 
-  // Función robusta multi-frame para asegurar que SIEMPRE empieza y queda anclado en la parte inferior
+  /*
+   * El seguimiento vive también en una ref, actualizada en el mismo instante
+   * del scroll (no al siguiente render): así ningún salto programado al fondo
+   * pisa un gesto del dedo que acaba de empezar.
+   *
+   * Antes había cinco intentos escalonados (dos frames y dos temporizadores
+   * hasta 350 ms) sin comprobar nada: si subías justo después de que llegara
+   * una línea, el último te devolvía abajo, el scroll detectaba «al fondo» y
+   * se reactivaba el seguimiento. En el móvil, con el momentum, era imposible
+   * quedarse leyendo arriba mientras entraba texto.
+   */
+  const followRef = useRef(true);
   const scrollToBottom = useCallback(() => {
     const el = ref.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
+    // Un segundo intento tras el layout: las filas nuevas pueden medir
+    // distinto una vez pintadas (ajuste de línea). Solo si nadie se ha movido.
     requestAnimationFrame(() => {
-      if (ref.current) {
-        ref.current.scrollTop = ref.current.scrollHeight;
-        requestAnimationFrame(() => {
-          if (ref.current) {
-            ref.current.scrollTop = ref.current.scrollHeight;
-            setTimeout(() => {
-              if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
-            }, 60);
-            setTimeout(() => {
-              if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
-            }, 350);
-          }
-        });
-      }
+      if (followRef.current && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
     });
   }, []);
 
-  // Al montar, al cambiar filtros o al recibir líneas mientras follow=true: siempre ir al final
-  useEffect(() => {
-    if (follow) {
-      unreadCountRef.current = 0;
-      setUnreadCount(0);
+  // Al recibir líneas con el seguimiento activo, al fondo ANTES de pintar (sin parpadeo).
+  const prevVisibleLenRef = useRef(0);
+  useLayoutEffect(() => {
+    const delta = visible.length - prevVisibleLenRef.current;
+    prevVisibleLenRef.current = visible.length;
+    if (followRef.current) {
+      if (unreadCountRef.current !== 0) {
+        unreadCountRef.current = 0;
+        setUnreadCount(0);
+      }
       scrollToBottom();
-    } else {
-      unreadCountRef.current += 1;
+    } else if (delta > 0) {
+      // Se cuentan LÍNEAS, no renders: una ráfaga de 300 líneas en un frame
+      // decía «+1».
+      unreadCountRef.current += delta;
       setUnreadCount(unreadCountRef.current);
     }
-  }, [visible.length, follow, scrollToBottom]);
+  }, [visible.length, scrollToBottom]);
 
-  // Observer de redimensionamiento: garantiza anclaje inferior cuando los acordeones crecen
+  // Si el hueco cambia de alto (acordeón, teclado del móvil, giro) y se estaba
+  // siguiendo, el fondo sigue siendo el fondo.
   useEffect(() => {
     const el = ref.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => {
-      if (follow) {
-        el.scrollTop = el.scrollHeight;
-      }
+      if (followRef.current) el.scrollTop = el.scrollHeight;
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [follow]);
+  }, [maximized]);
 
-  // Si cambia el filtro o fase, reiniciar a follow y saltar abajo
-  useEffect(() => {
+  const startFollowing = useCallback(() => {
+    followRef.current = true;
     setFollow(true);
     unreadCountRef.current = 0;
     setUnreadCount(0);
     scrollToBottom();
-  }, [stage, level, filter, scrollToBottom]);
+  }, [scrollToBottom]);
+
+  // Si cambia el filtro o fase, reiniciar a follow y saltar abajo
+  useEffect(() => {
+    startFollowing();
+  }, [stage, level, filter, startFollowing]);
 
   useEffect(() => {
     onFollowChange?.(follow);
@@ -502,12 +538,14 @@ export default function LogViewer({
     prevLenRef.current = lines.length;
   }, [lines]);
 
+  // Al entrar o salir de pantalla completa el nodo se vuelve a montar en otro
+  // sitio y pierde su scroll: se recupera donde estaba (o al fondo, si seguía).
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    if (follow) scrollToBottom();
+    if (followRef.current) scrollToBottom();
     else el.scrollTop = lastTopRef.current;
-  }, [maximized, follow, scrollToBottom]);
+  }, [maximized, scrollToBottom]);
 
   useEffect(() => {
     if (!maximized) return;
@@ -548,19 +586,24 @@ export default function LogViewer({
   };
 
   const onScroll = () => {
+    const el = ref.current;
+    if (!el) return;
+    // La ref se decide YA, en el propio evento; el estado (que repinta) se
+    // agrupa por frame.
+    lastTopRef.current = el.scrollTop;
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 45;
+    followRef.current = isAtBottom;
     if (scrollRaf.current) return;
     scrollRaf.current = requestAnimationFrame(() => {
       scrollRaf.current = 0;
-      const el = ref.current;
-      if (!el) return;
-      lastTopRef.current = el.scrollTop;
-      const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 45;
-      setFollow(isAtBottom);
-      if (isAtBottom) {
+      const node = ref.current;
+      if (!node) return;
+      setFollow(followRef.current);
+      if (followRef.current && unreadCountRef.current !== 0) {
         unreadCountRef.current = 0;
         setUnreadCount(0);
       }
-      if (el.scrollTop < 120 && el.scrollHeight - el.clientHeight > 200) triggerLoadOlder();
+      if (node.scrollTop < 120 && node.scrollHeight - node.clientHeight > 200) triggerLoadOlder();
     });
   };
 
@@ -572,13 +615,11 @@ export default function LogViewer({
     const el = ref.current;
     if (!el) return;
     if (to === 'top') {
+      followRef.current = false;
       setFollow(false);
       el.scrollTop = 0;
     } else {
-      setFollow(true);
-      unreadCountRef.current = 0;
-      setUnreadCount(0);
-      scrollToBottom();
+      startFollowing();
     }
   };
 
@@ -641,6 +682,15 @@ export default function LogViewer({
         maximized ? 'rounded-none' : cx(!bare && 'rounded-xl border border-line shadow-sm', className),
       )}
       style={{ '--log-line-h': maximized ? '23px' : '22px' } as React.CSSProperties}
+      onKeyDown={(e) => {
+        // Ctrl/⌘+F con el foco dentro de la consola busca AQUÍ, no en la página:
+        // el placeholder lo prometía y no había nada detrás.
+        if (toolbar && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+          e.preventDefault();
+          searchRef.current?.focus();
+          searchRef.current?.select();
+        }
+      }}
     >
       {showChrome && (
         <div className="flex shrink-0 items-center justify-between gap-2.5 border-b border-line bg-term2 px-3 py-2">
@@ -660,7 +710,11 @@ export default function LogViewer({
               )}
               <span className="tnum font-medium text-txt/80">{NF.format(rows.length)}</span>
               <span className="hidden sm:inline">líneas</span>
-              {replicas > 1 && <span className="hidden text-subtle sm:inline">· {replicas} réplicas</span>}
+              {replicas > 1 && (
+                <span className="hidden text-subtle sm:inline" title="Las líneas de cada réplica llevan su prefijo [rN]">
+                  · {replicas} réplicas
+                </span>
+              )}
             </span>
           </div>
 
@@ -693,9 +747,13 @@ export default function LogViewer({
                 ref={searchRef}
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                placeholder="Buscar en los logs… (Ctrl+F)"
+                placeholder="Buscar en los logs…"
                 spellCheck={false}
-                className="min-w-0 flex-1 bg-transparent font-mono text-xs text-txt outline-none placeholder:text-subtle"
+                autoCapitalize="none"
+                autoCorrect="off"
+                enterKeyHint="search"
+                // El 16px del móvil lo pone la regla global anti-zoom de iOS; aquí solo el escritorio.
+                className="min-w-0 flex-1 bg-transparent font-mono text-txt outline-none placeholder:text-subtle sm:text-xs"
               />
               {filter && (
                 <div className="flex items-center gap-1">
@@ -903,8 +961,8 @@ export default function LogViewer({
               ) : state === 'error' ? (
                 <ErrorState compact title="No se han podido cargar los logs" onRetry={onRetry} />
               ) : (
-                <span className="text-xs text-subtle">
-                  {filtering ? 'Ninguna línea coincide con los filtros aplicados.' : 'Sin logs todavía…'}
+                <span className="max-w-sm text-balance text-xs leading-5 text-subtle">
+                  {filtering ? 'Ninguna línea coincide con los filtros aplicados.' : emptyMessage ?? 'Sin logs todavía…'}
                 </span>
               )}
             </div>
@@ -965,7 +1023,9 @@ export default function LogViewer({
         aria-modal="true"
         aria-label={title ? `${title} — pantalla completa` : 'Consola de logs'}
         tabIndex={-1}
-        className="console-in fixed inset-0 z-50 flex flex-col bg-bg p-3 outline-none sm:p-5"
+        // El relleno inferior respeta la barra de gestos del móvil: si no, el
+        // botón «Ir al final» y la última línea quedaban debajo de ella.
+        className="console-in fixed inset-0 z-50 flex flex-col bg-bg p-3 pb-[max(12px,env(safe-area-inset-bottom))] outline-none sm:p-5"
       >
         <div className="h-full w-full overflow-hidden rounded-xl border border-line shadow-modal">
           {shell}

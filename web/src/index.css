@@ -196,9 +196,15 @@ body::after {
  * grueso: en escritorio la densidad se mantiene.
  */
 @media (pointer: coarse) {
+  /*
+   * La especificidad importa: `.input` (una clase) pone su propio tamaño y
+   * ganaba a un `select` o `textarea` a pelo, así que esos dos seguían
+   * ampliando la página. Los tres selectores van con dos pseudoclases para
+   * quedar por encima de cualquier utilidad de una clase.
+   */
   input:not([type='checkbox']):not([type='radio']),
-  select,
-  textarea {
+  select:not([hidden]):not([aria-hidden='true']),
+  textarea:not([hidden]):not([aria-hidden='true']) {
     font-size: 16px;
   }
 }
@@ -624,7 +630,10 @@ details[open] > .details-body {
 .log-body {
   overflow-y: auto !important;
   -webkit-overflow-scrolling: touch;
-  touch-action: pan-y;
+  /* pan-x también: con «ajuste de línea» apagado hay que poder arrastrar de lado. */
+  touch-action: pan-x pan-y;
+  /* El scroll de la consola no se propaga al panel ni a la página al tocar fondo. */
+  overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
 /* Canalón de numeración: se queda pegado a la izquierda al hacer scroll horizontal. */
@@ -913,8 +922,13 @@ details[open] > .details-body {
   .tnum {
     font-variant-numeric: tabular-nums;
   }
-  /* Respeta el notch/gesto inferior en elementos anclados abajo (toasts, barras sticky). */
+  /*
+   * Respeta el notch/gesto inferior en elementos anclados abajo (toasts,
+   * barras sticky). Suma al relleno que ya tenga el elemento (`--pb`, que
+   * pone quien lo use) en vez de sustituirlo: antes `safe-b py-3` dejaba el
+   * contenido pegado al borde en cualquier móvil sin barra de gestos.
+   */
   .safe-b {
-    padding-bottom: env(safe-area-inset-bottom);
+    padding-bottom: calc(var(--pb, 0px) + env(safe-area-inset-bottom));
   }
 }

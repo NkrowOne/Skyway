@@ -126,9 +126,12 @@ export default function Login() {
     }
   };
 
+  // Con scroll y alineado arriba en móvil: cuando el teclado de iOS encoge el
+  // viewport, un contenedor centrado con overflow-hidden recortaba el botón de
+  // entrar y no había forma de llegar a él.
   return (
     <div
-      className="relative flex min-h-full items-center justify-center overflow-hidden p-6"
+      className="relative flex min-h-full items-start justify-center overflow-y-auto px-6 py-8 sm:items-center"
       style={{
         background:
           'radial-gradient(1200px 560px at 50% -12%, color-mix(in oklab, var(--color-acc) 5%, transparent), transparent 66%), var(--color-bg)',
@@ -169,10 +172,11 @@ export default function Login() {
               label={
                 <span className="flex w-full items-center justify-between">
                   Contraseña
+                  {/* py-2 -my-2: altura táctil sin mover el rótulo de sitio. */}
                   <button
                     type="button"
                     onClick={() => setRecoveryOpen(true)}
-                    className="font-normal text-subtle transition-colors hover:text-acc-soft"
+                    className="-my-2 py-2 font-normal text-subtle transition-colors hover:text-acc-soft"
                   >
                     ¿La has olvidado?
                   </button>
@@ -191,8 +195,9 @@ export default function Login() {
                 <button
                   type="button"
                   onClick={() => setShowPw(!showPw)}
-                  className="press absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-1 leading-none text-subtle hover:text-txt"
+                  className="press absolute right-0 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-lg leading-none text-subtle hover:text-txt"
                   title={showPw ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                  aria-label={showPw ? 'Ocultar contraseña' : 'Mostrar contraseña'}
                 >
                   {showPw ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>

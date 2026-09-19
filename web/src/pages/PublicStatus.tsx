@@ -53,24 +53,72 @@ function fmtPct(pct: number | null): string {
   return pct === null ? '—' : `${pct.toFixed(pct >= 99.995 ? 0 : 2)}%`;
 }
 
+/** Ancho de pantalla por debajo del cual se enseñan solo los últimos 30 días. */
+const MOVIL_MAX = 639;
+
+/** ¿Estamos en pantalla de móvil? Reacciona al giro y al cambio de tamaño. */
+function useEsMovil(): boolean {
+  const [movil, setMovil] = useState(() => (typeof window !== 'undefined' ? window.innerWidth <= MOVIL_MAX : false));
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${MOVIL_MAX}px)`);
+    const onChange = () => setMovil(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return movil;
+}
+
 function UptimeBars({ days }: { days: { date: number; pct: number | null }[] }) {
   const [tip, setTip] = useState<{ idx: number; text: string } | null>(null);
+  const movil = useEsMovil();
+  /*
+   * 90 barras en 328px salen a ~3px cada una: ni se distinguen ni se pulsan.
+   * En móvil se enseñan los últimos 30 días (≥6px por barra con el hueco), que
+   * es lo que cabe con dignidad; el rótulo de debajo dice qué ventana se ve.
+   */
+  const visibles = movil ? days.slice(-30) : days;
+
+  // En táctil no hay hover: el toque fija el tip y un toque fuera lo quita.
+  useEffect(() => {
+    if (!tip) return;
+    const fuera = () => setTip(null);
+    window.addEventListener('pointerdown', fuera);
+    return () => window.removeEventListener('pointerdown', fuera);
+  }, [tip]);
+
+  const texto = (d: { date: number; pct: number | null }) => `${fmtDay(d.date)}: ${d.pct === null ? 'sin datos' : fmtPct(d.pct)}`;
+
   return (
     <div className="relative">
       {tip && (
-        <div className="pointer-events-none absolute -top-8 z-10 -translate-x-1/2 whitespace-nowrap rounded-md border border-line bg-surface2 px-2 py-1 text-micro text-txt shadow-lvl3"
-          style={{ left: `${((tip.idx + 0.5) / days.length) * 100}%` }}
+        <div
+          role="tooltip"
+          className="pointer-events-none absolute -top-8 z-10 -translate-x-1/2 whitespace-nowrap rounded-md border border-line bg-surface2 px-2 py-1 text-micro text-txt shadow-lvl3"
+          style={{ left: `${((tip.idx + 0.5) / visibles.length) * 100}%` }}
         >
           {tip.text}
         </div>
       )}
-      <div className="flex h-8 items-stretch gap-px">
-        {days.map((d, i) => (
-          <div
+      <div className="flex h-8 items-stretch gap-px" onMouseLeave={() => setTip(null)}>
+        {visibles.map((d, i) => (
+          <button
             key={d.date}
-            className={cx('min-w-0 flex-1 rounded-[2px] transition-opacity', dayColor(d.pct), tip && tip.idx !== i && 'opacity-70')}
-            onMouseEnter={() => setTip({ idx: i, text: `${fmtDay(d.date)}: ${d.pct === null ? 'sin datos' : fmtPct(d.pct)}` })}
-            onMouseLeave={() => setTip(null)}
+            type="button"
+            aria-label={texto(d)}
+            className={cx(
+              'min-w-0 flex-1 rounded-[2px] transition-opacity focus-visible:outline focus-visible:outline-2 focus-visible:outline-acc',
+              dayColor(d.pct),
+              tip && tip.idx !== i && 'opacity-70',
+            )}
+            onMouseEnter={() => setTip({ idx: i, text: texto(d) })}
+            onPointerDown={(e) => {
+              // El listener de la ventana quitaría el tip en este mismo toque.
+              e.stopPropagation();
+              setTip({ idx: i, text: texto(d) });
+            }}
+            onFocus={() => setTip({ idx: i, text: texto(d) })}
+            onBlur={() => setTip(null)}
           />
         ))}
       </div>
@@ -78,9 +126,23 @@ function UptimeBars({ days }: { days: { date: number; pct: number | null }[] }) 
   );
 }
 
+/**
+ * «Actualizado hace N s» vive en su propia hoja: su temporizador de 10 s solo
+ * repinta este texto, no la página entera con sus 90×N barras.
+ */
+function Actualizado({ generatedAt }: { generatedAt: number }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 10_000);
+    return () => clearInterval(t);
+  }, []);
+  const secondsAgo = Math.max(0, Math.round((now - generatedAt) / 1000));
+  return <span>Actualizado hace {secondsAgo < 5 ? 'unos segundos' : `${secondsAgo} s`} · se refresca solo</span>;
+}
+
 export default function PublicStatusPage() {
   const { token } = useParams<{ token: string }>();
-  const [now, setNow] = useState(Date.now());
+  const movil = useEsMovil();
 
   const status = useQuery({
     queryKey: ['publicStatus', token],
@@ -88,11 +150,6 @@ export default function PublicStatusPage() {
     refetchInterval: 30_000,
     retry: 1,
   });
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 10_000);
-    return () => clearInterval(t);
-  }, []);
 
   useEffect(() => {
     if (status.data) document.title = `Estado — ${status.data.project.name}`;
@@ -149,7 +206,6 @@ export default function PublicStatusPage() {
   const overall = OVERALL_META[data.overall];
   const open = data.incidents.filter((i) => !i.resolvedAt);
   const past = data.incidents.filter((i) => i.resolvedAt);
-  const secondsAgo = Math.max(0, Math.round((now - data.generatedAt) / 1000));
 
   return (
     <div className="min-h-full overflow-y-auto bg-bg">
@@ -215,8 +271,8 @@ export default function PublicStatusPage() {
                   <span className={cx('text-xs font-medium', meta.cls)}>{meta.label}</span>
                 </div>
                 <UptimeBars days={s.days} />
-                <div className="mt-2 flex items-center justify-between text-micro text-subtle">
-                  <span>hace 90 días</span>
+                <div className="mt-2 flex items-center justify-between gap-2 text-micro text-subtle">
+                  <span className="shrink-0">hace {movil ? 30 : 90} días</span>
                   <span className="tnum">
                     24 h: <span className="text-sub">{fmtPct(s.uptime24h)}</span> · 7 d:{' '}
                     <span className="text-sub">{fmtPct(s.uptime7d)}</span> · 90 d:{' '}
@@ -249,8 +305,8 @@ export default function PublicStatusPage() {
           </section>
         )}
 
-        <footer className="mt-10 flex items-center justify-between text-xs text-subtle">
-          <span>Actualizado hace {secondsAgo < 5 ? 'unos segundos' : `${secondsAgo} s`} · se refresca solo</span>
+        <footer className="mt-10 flex flex-wrap items-center justify-between gap-2 text-xs text-subtle">
+          <Actualizado generatedAt={data.generatedAt} />
           <span className="flex items-center gap-1.5">
             <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-[4px] bg-acc text-white">
               <Rocket size={9} />

@@ -188,13 +188,19 @@ export function GithubRepoPicker({
       <div className="flex items-center gap-2 border-b border-line px-3 py-2">
         <Search size={13} className="shrink-0 text-subtle" />
         <input
-          className="w-full bg-transparent text-xs outline-none placeholder:text-subtle"
+          className="h-8 w-full bg-transparent text-base outline-none placeholder:text-subtle sm:h-auto sm:text-xs"
           placeholder="Filtrar repos…"
           value={filter}
           onChange={(e) => onFilter(e.target.value)}
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          aria-label="Filtrar repositorios"
         />
       </div>
-      <div className="max-h-44 overflow-y-auto p-1.5">
+      {/* overscroll-contain: la lista vive dentro de un modal que ya scrollea; sin
+          esto, llegar al final arrastraba consigo la hoja entera en móvil. */}
+      <div className="max-h-44 overflow-y-auto overscroll-contain p-1.5">
         {repos.isLoading && <Spinner label="Cargando repos…" />}
         {repos.isError && (
           <ErrorState
@@ -225,9 +231,10 @@ export function GithubRepoPicker({
               type="button"
               onClick={() => onPick(r)}
               className={cx(
-                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors',
+                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors max-sm:py-2.5',
                 active ? 'bg-acc/[.14] shadow-[inset_2px_0_0_var(--color-acc)]' : 'hover:bg-surface2',
               )}
+              aria-pressed={active}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">{r.fullName}</span>
               {r.private && (

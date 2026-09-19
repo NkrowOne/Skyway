@@ -81,11 +81,10 @@ export default function StatusPageModal({
       ) : (
         <div className="flex flex-col gap-4">
           <p className="text-sm leading-relaxed text-sub">
-            Un panel público con el estado en vivo de los servicios de este proyecto, su disponibilidad de los
-            últimos 90 días y las incidencias. Sin necesidad de iniciar sesión: comparte el enlace con tu cliente.
+            Estado, disponibilidad de 90 días e incidencias, sin necesidad de entrar al panel.
           </p>
 
-          <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-line bg-bg px-4 py-3">
+          <label className="flex min-h-11 cursor-pointer items-center justify-between gap-3 rounded-xl border border-line bg-bg px-4 py-3">
             <span className="flex items-center gap-2.5 text-sm font-medium">
               <Signal size={15} className={enabled ? 'text-ok' : 'text-subtle'} />
               Página de estado pública
@@ -104,13 +103,14 @@ export default function StatusPageModal({
               <div className="flex items-center justify-between gap-2 rounded-xl border border-line bg-bg px-3.5 py-2.5">
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-txt">{url}</span>
                 <span className="flex shrink-0 items-center gap-0.5">
-                  <CopyButton value={url} title="Copiar enlace" />
+                  <CopyButton value={url} title="Copiar enlace" className="max-sm:p-2.5" />
                   <a
                     href={url}
                     target="_blank"
                     rel="noreferrer"
-                    className="rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+                    className="press rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
                     title="Abrir la página"
+                    aria-label="Abrir la página de estado en una pestaña nueva"
                   >
                     <ExternalLink size={13} />
                   </a>
@@ -147,12 +147,11 @@ export default function StatusPageModal({
                 </Field>
               )}
               {isAdmin && (
-                <div className="flex items-center justify-between gap-3 border-t border-line pt-3.5">
-                  <p className="text-xs leading-relaxed text-subtle">
-                    ¿Enlace filtrado o cliente que ya no debe verlo? Genera uno nuevo: el anterior deja de funcionar al
-                    instante.
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3.5">
+                  <p className="min-w-0 flex-1 basis-48 text-xs leading-relaxed text-subtle">
+                    Al rotarlo, el enlace anterior deja de funcionar.
                   </p>
-                  <Button size="sm" variant="secondary" onClick={() => rotate.mutate()} loading={rotate.isPending}>
+                  <Button size="sm" variant="secondary" className="shrink-0" onClick={() => rotate.mutate()} loading={rotate.isPending}>
                     <RefreshCw size={12} /> Rotar enlace
                   </Button>
                 </div>

@@ -293,10 +293,7 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
         format={(v) => fmtBytes(v)}
         threshold={quotaBytes ? { value: quotaBytes, label: `cuota ${diskMb} MB` } : null}
       />
-      <p className="text-center text-xs text-subtle">
-        Muestras del monitor cada 30 s, agrupadas por {hours <= 24 ? 'hora' : hours <= 168 ? '6 h' : 'día'}. La banda va de la
-        media al pico.
-      </p>
+      <p className="text-center text-xs text-subtle">La banda va de la media al pico.</p>
     </div>
   );
 }

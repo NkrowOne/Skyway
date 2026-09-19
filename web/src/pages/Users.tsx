@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Boxes, Fingerprint, KeyRound, Pencil, Plus, Shield, Trash2, Users2 } from 'lucide-react';
+import { Boxes, Fingerprint, KeyRound, Pencil, Plus, Shield, Trash2 } from 'lucide-react';
 import { api } from '../api';
-import { Button, Chip, ConfirmModal, ErrorState, Field, Modal, useToast } from '../components/ui';
+import { Button, Chip, ConfirmModal, EmptyState, ErrorState, Field, Modal, Skeleton, useToast } from '../components/ui';
 import { Me, Project, UserRole, UserSummary } from '../types';
 import { cx, timeAgo } from '../utils';
 
@@ -82,7 +82,11 @@ export default function UsersPage() {
       d ? { ...d, projectIds: d.projectIds.includes(id) ? d.projectIds.filter((p) => p !== id) : [...d.projectIds, id] } : d,
     );
 
-  const list = users.data?.users ?? [];
+  // Alfabético por email (copia: la caché de react-query no se muta).
+  const list = useMemo(
+    () => [...(users.data?.users ?? [])].sort((a, b) => a.email.localeCompare(b.email, 'es')),
+    [users.data?.users],
+  );
 
   return (
     <div className="mx-auto flex max-w-[880px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
@@ -93,7 +97,7 @@ export default function UsersPage() {
             {list.length > 0 && <Chip>{list.length}</Chip>}
           </h1>
           <p className="mt-1.5 text-sm text-sub">
-            Administradores con control total del servidor, y miembros limitados a los workspaces de su cliente
+            Administradores con control total del servidor, y miembros limitados a su cuenta de cliente
           </p>
         </div>
         <Button onClick={() => setDraft({ ...EMPTY })}>
@@ -102,7 +106,9 @@ export default function UsersPage() {
       </div>
 
       <div className="card overflow-hidden">
-        {users.isError && (
+        {/* Excluyentes: error, carga, vacío o lista. Antes el error y el «vacío»
+            podían pintarse a la vez. */}
+        {users.isError ? (
           <ErrorState
             compact
             title="No se han podido cargar los usuarios"
@@ -110,13 +116,21 @@ export default function UsersPage() {
             onRetry={() => users.refetch()}
             retrying={users.isFetching}
           />
-        )}
-        {!users.isError && list.length === 0 && (
-          <p className="px-4 py-10 text-center text-sm text-subtle">
-            {users.isLoading ? 'Cargando…' : 'Todavía no hay usuarios.'}
-          </p>
-        )}
-        {list.map((u, i) => (
+        ) : users.isLoading ? (
+          <div className="flex flex-col gap-3 p-4" aria-busy>
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        ) : list.length === 0 ? (
+          <EmptyState
+            compact
+            title="Todavía no hay usuarios"
+            description="Crea el primero para dar acceso al panel."
+            action={<Button size="sm" onClick={() => setDraft({ ...EMPTY })}><Plus size={13} /> Nuevo usuario</Button>}
+          />
+        ) : (
+        list.map((u, i) => (
           <div
             key={u.id}
             className={cx('flex flex-wrap items-center gap-3 px-4 py-3.5 sm:flex-nowrap', i > 0 && 'border-t border-line')}
@@ -133,7 +147,7 @@ export default function UsersPage() {
                 <span className="flex items-center gap-1">
                   <Boxes size={11} />
                   {u.role === 'admin'
-                    ? 'todos los workspaces'
+                    ? 'todas las cuentas'
                     : u.role === 'owner'
                       ? `propietario de ${u.workspaceName ?? 'su cuenta'}`
                       : u.projectIds.length === 0
@@ -154,28 +168,26 @@ export default function UsersPage() {
             <div className="flex shrink-0 items-center gap-1">
               <button
                 onClick={() => setDraft({ id: u.id, email: u.email, password: '', role: u.role, projectIds: u.projectIds })}
-                className="rounded-md p-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt"
+                className="rounded-md p-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
                 title="Editar usuario"
+                aria-label="Editar usuario"
               >
                 <Pencil size={14} />
               </button>
               <button
                 onClick={() => setToDelete(u)}
                 disabled={u.id === me.data?.user?.id}
-                className="rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err disabled:opacity-30"
+                className="rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err disabled:opacity-30 max-sm:p-2.5"
                 title={u.id === me.data?.user?.id ? 'No puedes eliminarte a ti mismo' : 'Eliminar usuario'}
+                aria-label="Eliminar usuario"
               >
                 <Trash2 size={14} />
               </button>
             </div>
           </div>
-        ))}
+        ))
+        )}
       </div>
-
-      <p className="flex items-center gap-1.5 text-xs text-subtle">
-        <Users2 size={12} /> Los miembros solo ven y operan sus workspaces: nada de ajustes del servidor, seguridad, otros proyectos ni
-        gestión de usuarios.
-      </p>
 
       <Modal open={!!draft} onClose={() => setDraft(null)} title={isEdit ? `Editar ${draft?.email}` : 'Nuevo usuario'}>
         {draft && (
@@ -185,6 +197,8 @@ export default function UsersPage() {
                 <input
                   className="input"
                   type="email"
+                  autoComplete="email"
+                  autoCapitalize="none"
                   value={draft.email}
                   onChange={(e) => setDraft({ ...draft, email: e.target.value })}
                   autoFocus
@@ -217,7 +231,7 @@ export default function UsersPage() {
                   >
                     <p className="text-sm font-semibold">{r === 'admin' ? 'Administrador' : 'Miembro'}</p>
                     <p className="mt-0.5 text-xs leading-snug text-subtle">
-                      {r === 'admin' ? 'Control total: servidor, usuarios y todos los workspaces' : 'Solo los workspaces que le asignes'}
+                      {r === 'admin' ? 'Control total: servidor, usuarios y todas las cuentas' : 'Solo los proyectos que le asignes'}
                     </p>
                   </button>
                 ))}
@@ -262,7 +276,7 @@ export default function UsersPage() {
         onClose={() => setToDelete(null)}
         onConfirm={() => toDelete && remove.mutate(toDelete.id)}
         title="Eliminar usuario"
-        message={`«${toDelete?.email}» perderá el acceso al momento; sus passkeys y tokens se revocan. Sus workspaces y servicios no se tocan.`}
+        message={`«${toDelete?.email}» perderá el acceso al momento; sus passkeys y tokens se revocan. Sus proyectos y servicios no se tocan.`}
         loading={remove.isPending}
       />
     </div>

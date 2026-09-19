@@ -16,7 +16,7 @@ Hay **dos planos de control** complementarios:
 
 ## 1. Tokens de API de Skyway
 
-Se crean en **Mi cuenta → Tokens de API**. El token completo (`sky_…`) solo se
+Se crean en **Mi perfil → Tokens de API**. El token completo (`sky_…`) solo se
 muestra una vez; guárdalo en un gestor de secretos. Cada token **hereda los
 permisos del usuario que lo crea**:
 
@@ -74,7 +74,7 @@ curl -s "$BASE/api/health"
 Notas:
 - Los intentos y acciones quedan en el **registro de auditoría** con el formato
   `usuario · token:nombre`, así siempre se sabe qué automatización hizo qué.
-- Revocar un token (Mi cuenta → papelera) corta el acceso al instante.
+- Revocar un token (Mi perfil → papelera) corta el acceso al instante.
 - Ponles caducidad si son para tareas puntuales.
 
 ### CLI rápida: el comando `skyway`

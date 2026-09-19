@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { BellRing, Database, FileText, KeyRound, Layers, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
@@ -235,7 +235,7 @@ export default function ProjectPage() {
   });
 
   const updateProject = useMutation({
-    // Solo el admin reasigna de empresa/workspace; el propietario únicamente renombra.
+    // Solo el admin reasigna el proyecto a otra cuenta; el propietario únicamente renombra.
     mutationFn: () => api.patch(`/projects/${projectId}`, { name: editName, ...(isAdmin ? { client: editClient } : {}) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['project', projectId] });
@@ -301,7 +301,7 @@ export default function ProjectPage() {
   }
 
   const { project: proj } = project.data;
-  // Gestión de estructura (renombrar/eliminar): admin o propietario del workspace del proyecto.
+  // Gestión de estructura (renombrar/eliminar): admin o propietario de la cuenta del proyecto.
   const isManager =
     isAdmin ||
     (me.data?.user?.role === 'owner' && !!me.data?.user?.workspaceId && proj.workspace_id === me.data?.user?.workspaceId);
@@ -322,10 +322,13 @@ export default function ProjectPage() {
     setDeleteOpen(true);
   };
 
-  const openService = (id: string | null) => {
-    if (id) setSearchParams({ s: id });
-    else setSearchParams({});
-  };
+  const openService = useCallback(
+    (id: string | null) => {
+      if (id) setSearchParams({ s: id });
+      else setSearchParams({});
+    },
+    [setSearchParams],
+  );
 
   const hasDeployables = services.some((s) => s.type !== 'database');
 
@@ -357,7 +360,7 @@ export default function ProjectPage() {
               <span className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-px font-mono text-xs text-txt">
                 skyway-{proj.slug}
               </span>
-              <CopyButton value={`skyway-${proj.slug}`} className="-ml-0.5 p-0.5" title="Copiar nombre de la red" />
+              <CopyButton value={`skyway-${proj.slug}`} className="-ml-0.5 sm:p-0.5" title="Copiar nombre de la red" />
               <span className="hidden sm:inline">— los servicios se resuelven entre sí por nombre</span>
             </p>
 
@@ -392,51 +395,14 @@ export default function ProjectPage() {
             )}
           </div>
           {/*
-            * En el móvil estas siete acciones perdían su etiqueta y quedaban
-            * siete cuadrados iguales —uno de ellos borraba el proyecto—. Ahora
-            * ahí solo hay una acción a la vista y un menú donde cada cosa lleva
-            * su nombre escrito. En escritorio siguen en la barra, como estaban.
+            * La barra de escritorio lleva solo las acciones frecuentes, de la
+            * más general a la más concreta. Renombrar y eliminar son raras y la
+            * segunda es destructiva: van al menú «···» con su nombre escrito,
+            * no como dos iconos mudos al principio. En móvil ese mismo menú
+            * recoge también las acciones de la barra, que allí no caben.
             */}
           <div className="flex w-full items-center gap-2 sm:w-auto">
             <div className="hidden flex-wrap items-center gap-2 sm:flex">
-              {isManager && (
-                <>
-                  <button
-                    onClick={abrirEdicion}
-                    className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
-                    title={isAdmin ? 'Renombrar / empresa' : 'Renombrar'}
-                  >
-                    <Pencil size={14} />
-                  </button>
-                  <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-line" />
-                  <button
-                    onClick={abrirBorrado}
-                    className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-err"
-                    title="Eliminar proyecto"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </>
-              )}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setStatusOpen(true)}
-                title="Página de estado pública para el cliente"
-              >
-                <Signal size={13} /> Página de estado
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setGithubOpen(true)}
-                title="Cuentas de GitHub cuyos repositorios se pueden desplegar aquí"
-              >
-                <ModuleLogo kind="github" size={13} /> GitHub
-              </Button>
-              <Button variant="secondary" size="sm" onClick={() => setSharedOpen(true)} title="Variables compartidas del proyecto">
-                <KeyRound size={13} /> Variables compartidas
-              </Button>
               {hasDeployables && (
                 <Button
                   variant="secondary"
@@ -448,18 +414,38 @@ export default function ProjectPage() {
                   <RefreshCw size={13} /> Desplegar todo
                 </Button>
               )}
+              <Button variant="secondary" size="sm" onClick={() => setSharedOpen(true)} title="Variables compartidas del proyecto">
+                <KeyRound size={13} /> Variables compartidas
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setGithubOpen(true)}
+                title="Cuentas de GitHub cuyos repositorios se pueden desplegar aquí"
+              >
+                <ModuleLogo kind="github" size={13} /> Cuentas de GitHub
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setStatusOpen(true)}
+                title="Página de estado pública para el cliente"
+              >
+                <Signal size={13} /> Página de estado
+              </Button>
             </div>
 
             <Button size="sm" className="max-sm:h-11 max-sm:flex-1" onClick={() => setNewOpen(true)}>
               <Plus size={14} /> Nuevo servicio
             </Button>
 
-            <div className="relative sm:hidden">
+            {/* Sin permiso de gestión el menú solo tendría sentido en móvil: en escritorio quedaría vacío. */}
+            <div className={cx('relative', !isManager && 'sm:hidden')}>
               <button
                 type="button"
                 onClick={() => setMenuOpen((o) => !o)}
                 aria-expanded={menuOpen}
-                className="press flex h-11 min-w-11 items-center justify-center rounded-lg border border-line bg-surface2 text-txt"
+                className="press flex h-11 min-w-11 items-center justify-center rounded-lg border border-line bg-surface2 text-txt sm:h-8 sm:min-w-8"
                 title="Más acciones del proyecto"
                 aria-label="Más acciones del proyecto"
               >
@@ -469,6 +455,7 @@ export default function ProjectPage() {
                 <div>
                   {hasDeployables && (
                     <MenuItem
+                      className="sm:hidden"
                       icon={<RefreshCw size={14} />}
                       onClick={() => {
                         setMenuOpen(false);
@@ -479,6 +466,7 @@ export default function ProjectPage() {
                     </MenuItem>
                   )}
                   <MenuItem
+                    className="sm:hidden"
                     icon={<KeyRound size={14} />}
                     onClick={() => {
                       setMenuOpen(false);
@@ -488,6 +476,7 @@ export default function ProjectPage() {
                     Variables compartidas
                   </MenuItem>
                   <MenuItem
+                    className="sm:hidden"
                     icon={<ModuleLogo kind="github" size={14} />}
                     onClick={() => {
                       setMenuOpen(false);
@@ -497,6 +486,7 @@ export default function ProjectPage() {
                     Cuentas de GitHub
                   </MenuItem>
                   <MenuItem
+                    className="sm:hidden"
                     icon={<Signal size={14} />}
                     onClick={() => {
                       setMenuOpen(false);
@@ -536,8 +526,8 @@ export default function ProjectPage() {
         </div>
 
         {importReport.data?.report && (
-          <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
-            <span className="flex items-center gap-2 text-acc-soft">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
+            <span className="flex min-w-0 flex-1 items-center gap-2 text-acc-soft">
               <FileText size={15} className="shrink-0" />
               Proyecto importado de Railway: consulta el informe con los comandos de copia de datos y pasos pendientes.
             </span>
@@ -546,9 +536,11 @@ export default function ProjectPage() {
                 Ver informe
               </Button>
               <button
+                type="button"
                 onClick={() => dismissReport.mutate()}
-                className="rounded-md p-1.5 text-sub hover:bg-surface2 hover:text-txt"
+                className="press rounded-md p-1.5 text-sub hover:bg-surface2 hover:text-txt max-sm:p-2.5"
                 title="Descartar informe"
+                aria-label="Descartar informe"
               >
                 <X size={14} />
               </button>
@@ -565,7 +557,10 @@ export default function ProjectPage() {
                 value={serviceQuery}
                 onChange={(e) => setServiceQuery(e.target.value)}
                 placeholder="Buscar servicio por nombre, repo o imagen…"
-                className="min-w-0 flex-1 bg-transparent text-xs text-txt outline-none placeholder:text-subtle"
+                autoCapitalize="none"
+                autoCorrect="off"
+                enterKeyHint="search"
+                className="min-w-0 flex-1 bg-transparent text-txt outline-none placeholder:text-subtle sm:text-xs"
               />
               {serviceQuery && (
                 <button
@@ -656,7 +651,6 @@ export default function ProjectPage() {
             <EmptyState
               icon={<Search />}
               title="Ningún servicio coincide"
-              description="Ni la búsqueda ni el filtro de tipo dejan pasar ninguno de los servicios del proyecto."
               action={
                 <Button
                   size="sm"
@@ -681,7 +675,7 @@ export default function ProjectPage() {
                 alertCount={alertCounts?.[s.id] ?? 0}
                 deploy={activeDeploys[s.id] ?? null}
                 selected={s.id === selectedId}
-                onClick={() => openService(s.id)}
+                onSelect={openService}
               />
             ))}
           </div>
@@ -781,7 +775,7 @@ export default function ProjectPage() {
             <input className="input" value={editName} onChange={(e) => setEditName(e.target.value)} required />
           </Field>
           {isAdmin && (
-            <Field label="Empresa / cliente" hint="Vacío = sin empresa. Reasigna el proyecto a la cuenta de ese cliente.">
+            <Field label="Cuenta de cliente" hint="Vacío = sin cuenta.">
               <input className="input" value={editClient} onChange={(e) => setEditClient(e.target.value)} placeholder="Acme S.L." />
             </Field>
           )}

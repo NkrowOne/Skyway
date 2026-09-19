@@ -279,14 +279,16 @@ export default function ServiceDrawer({
   const status = serviceStatus(state, { exitCode: runtime.exitCode, stoppedAt: service.stopped_at });
   const hasBackups = service.type === 'database' && BACKUP_TEMPLATES.includes(service.config.template);
   const hasDbConsole = !!detail.data.dbConsole;
+  // Por frecuencia de uso: lo que se abre a diario va a la izquierda, donde
+  // en el móvil se ve sin desplazar la fila. Los logs estaban los penúltimos.
   const tabs = [
-    { key: 'deployments', label: 'Despliegues' },
     ...(hasDbConsole ? [{ key: 'db', label: 'Consultas' }] : []),
+    { key: 'deployments', label: 'Despliegues' },
+    { key: 'logs', label: 'Logs' },
     { key: 'variables', label: 'Variables' },
     ...(hasBackups ? [{ key: 'backups', label: 'Backups' }] : []),
-    { key: 'files', label: 'Archivos' },
     { key: 'metrics', label: 'Métricas' },
-    { key: 'logs', label: 'Logs' },
+    { key: 'files', label: 'Archivos' },
     { key: 'settings', label: 'Ajustes' },
   ];
   const domain = service.type !== 'database' ? service.config.domains?.[0] : undefined;
@@ -335,13 +337,16 @@ export default function ServiceDrawer({
           {!fullscreen && (
             <div className="flex shrink-0 items-center gap-0.5">
               <button
+                type="button"
                 onClick={() => setWide(!wide)}
                 className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
                 title="Cambiar ancho del panel"
+                aria-label="Cambiar ancho del panel"
               >
                 <MoveHorizontal size={15} />
               </button>
               <button
+                type="button"
                 onClick={handleAttemptClose}
                 className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
                 title="Cerrar (esc)" aria-label="Cerrar (esc)"
@@ -386,6 +391,9 @@ export default function ServiceDrawer({
               >
                 <RefreshCw size={fullscreen ? 16 : 13} /> {!fullscreen && 'Reiniciar'}
               </Button>
+              {/* Detener corta el servicio: va separado de Reiniciar, que
+                  estaba pegado a él y se pulsaba por error. */}
+              <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-line" />
               <Button
                 size="sm"
                 variant="secondary"
@@ -422,12 +430,18 @@ export default function ServiceDrawer({
               <Terminal size={fullscreen ? 16 : 13} />
             </Button>
           )}
-          {domain && !fullscreen && (
+          {domain && (
             <a
               href={`http://${domain}`}
               target="_blank"
               rel="noreferrer"
-              className="ml-auto inline-flex min-w-0 max-w-[190px] items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt"
+              // En móvil se muestra también, en su propia fila: era la única
+              // forma de abrir el sitio desde el panel y ahí no estaba.
+              className={cx(
+                'inline-flex min-w-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-sub transition-colors duration-150 hover:bg-surface2 hover:text-txt',
+                fullscreen ? 'h-11 w-full border border-line' : 'ml-auto max-w-[190px]',
+              )}
+              title={`Abrir ${domain}`}
             >
               <ExternalLink size={12} className="shrink-0" />
               <span className="truncate">{domain}</span>
@@ -443,7 +457,7 @@ export default function ServiceDrawer({
           <div className="tab-in mt-3.5 flex items-center gap-2.5 rounded-xl border border-line bg-surface2/60 px-3 py-2 text-xs text-sub">
             <Square size={13} className="shrink-0 text-subtle" aria-hidden />
             <span className="min-w-0 leading-snug">
-              <span className="font-semibold text-txt">Servicio detenido</span>
+              <span className="font-semibold text-txt">Detenido</span>
               {service.stopped_at ? ` desde el panel ${timeAgo(service.stopped_at)}` : status.detail ? ` · ${status.detail}` : ''}.
               {' '}No atiende peticiones hasta que lo inicies.
             </span>
@@ -453,13 +467,13 @@ export default function ServiceDrawer({
           <div className="tab-in mt-3.5 flex items-center gap-2.5 rounded-xl border border-err/35 bg-err/[.07] px-3 py-2 text-xs text-sub">
             <AlertTriangle size={13} className="shrink-0 text-err" aria-hidden />
             <span className="min-w-0 flex-1 leading-snug">
-              <span className="font-semibold text-err">Se paró solo</span>
+              <span className="font-semibold text-err">Caído</span>
               {status.detail ? ` · ${status.detail}` : ''}. El error suele estar al final de los logs.
             </span>
             <button
               type="button"
               onClick={() => setTab('logs')}
-              className="press flex shrink-0 items-center gap-1 rounded-lg border border-line bg-surface px-2 py-1 text-xs font-medium text-txt hover:bg-surface2"
+              className="press flex h-9 shrink-0 items-center gap-1 rounded-lg border border-line bg-surface px-2.5 text-xs font-medium text-txt hover:bg-surface2 sm:h-7 sm:px-2"
             >
               <ScrollText size={12} aria-hidden /> Ver logs
             </button>
@@ -504,6 +518,9 @@ export default function ServiceDrawer({
         className={cx(
           'relative min-h-0 flex-1 overscroll-contain',
           tab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-y-auto',
+          // A pantalla completa el panel llega hasta el borde inferior: la
+          // última fila de cada pestaña quedaba debajo de la barra de gestos.
+          fullscreen && 'pb-[env(safe-area-inset-bottom)]',
         )}
         role="tabpanel"
         aria-label={tabs.find((t) => t.key === tab)?.label}

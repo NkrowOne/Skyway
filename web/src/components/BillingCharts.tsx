@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Table2 } from 'lucide-react';
 import { cx } from '../utils';
+import { leaveUnlessTouch, useElementWidth } from './HistoryChart';
 
 /**
  * Gráficas de facturación y uso, en el lenguaje de las de Skyway: marcas finas,
@@ -14,6 +15,24 @@ function niceMax(v: number): number {
   const unit = v / pow;
   const nice = unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10;
   return nice * pow;
+}
+
+/**
+ * Columna bajo el puntero, calculada sobre el SVG entero: así el dedo recorre
+ * las barras arrastrando (en táctil los pointerenter de cada rect no llegan) y
+ * al salir por los márgenes con ratón se apaga; con el dedo se conserva.
+ */
+function pickSlot(
+  e: React.PointerEvent<SVGSVGElement>,
+  { W, left, slot, n }: { W: number; left: number; slot: number; n: number },
+  setHover: (i: number | null) => void,
+) {
+  if (n === 0) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const x = ((e.clientX - rect.left) / rect.width) * W;
+  const i = Math.floor((x - left) / slot);
+  if (i >= 0 && i < n) setHover(i);
+  else if (e.pointerType !== 'touch') setHover(null);
 }
 
 export interface SeriesPoint {
@@ -36,7 +55,9 @@ export function UsageBars({
   /** Etiqueta del eje temporal para un instante. */
   labelFor: (t: number) => string;
 }) {
-  const W = 560;
+  // Ancho real del contenedor como ancho del viewBox: los rótulos se pintan a
+  // su tamaño en vez de escalarse con el SVG (ver HistoryChart).
+  const [wrapRef, W] = useElementWidth<HTMLDivElement>(560);
   const H = 176;
   const PAD = { top: 12, right: 12, bottom: 22, left: 52 };
   const [hover, setHover] = useState<number | null>(null);
@@ -51,9 +72,10 @@ export function UsageBars({
   const slot = n > 0 ? innerW / n : innerW;
   const barW = Math.min(26, Math.max(2, slot - 3));
   const gridYs = [0.25, 0.5, 0.75, 1].map((f) => ({ y: PAD.top + innerH * (1 - f), v: max * f }));
+  const pick = (e: React.PointerEvent<SVGSVGElement>) => pickSlot(e, { W, left: PAD.left, slot, n }, setHover);
 
   return (
-    <div className="rounded-xl border border-line bg-bg p-4">
+    <div ref={wrapRef} className="rounded-xl border border-line bg-bg p-4">
       <div className="mb-2 flex items-center justify-between gap-2">
         <h3 className="flex items-center gap-2 text-xs font-semibold text-sub">
           <span className="inline-block h-2 w-2 rounded-sm" style={{ background: color }} aria-hidden />
@@ -95,7 +117,14 @@ export function UsageBars({
         </div>
       ) : (
         <div className="relative">
-          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onPointerLeave={() => setHover(null)}>
+          <svg
+            viewBox={`0 0 ${W} ${H}`}
+            className="block w-full touch-pan-y"
+            style={{ height: H }}
+            onPointerMove={pick}
+            onPointerDown={pick}
+            onPointerLeave={leaveUnlessTouch(() => setHover(null))}
+          >
             {gridYs.map((g, i) => (
               <g key={i}>
                 <line x1={PAD.left} x2={W - PAD.right} y1={g.y} y2={g.y} stroke="var(--color-line)" strokeWidth="1" opacity="0.5" />
@@ -110,7 +139,6 @@ export function UsageBars({
               const active = hover === i;
               return (
                 <g key={p.t} opacity={hover !== null && !active ? 0.45 : 1} style={{ transition: 'opacity .12s' }}>
-                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onPointerEnter={() => setHover(i)} onPointerDown={() => setHover(i)} />
                   {p.value > 0 && (
                     <rect x={cx0 - barW / 2} y={PAD.top + innerH - h} width={barW} height={Math.max(0.5, h)} rx={Math.min(3, barW / 2)} fill={color} />
                   )}
@@ -148,7 +176,7 @@ export interface RevenuePoint {
 
 /** Ingresos por mes: cobrado (verde) apilado bajo lo pendiente (violeta). */
 export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint[]; format: (cents: number) => string; labelFor: (t: number) => string }) {
-  const W = 620;
+  const [wrapRef, W] = useElementWidth<HTMLDivElement>(620);
   const H = 200;
   const PAD = { top: 14, right: 12, bottom: 24, left: 64 };
   const [hover, setHover] = useState<number | null>(null);
@@ -165,10 +193,11 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
   const slot = n > 0 ? innerW / n : innerW;
   const barW = Math.min(34, Math.max(3, slot - 4));
   const gridYs = [0.25, 0.5, 0.75, 1].map((f) => ({ y: PAD.top + innerH * (1 - f), v: max * f }));
+  const pick = (e: React.PointerEvent<SVGSVGElement>) => pickSlot(e, { W, left: PAD.left, slot, n }, setHover);
 
   return (
-    <div className="rounded-xl border border-line bg-bg p-4">
-      <div className="mb-2 flex items-center justify-between gap-2">
+    <div ref={wrapRef} className="rounded-xl border border-line bg-bg p-4">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-xs font-semibold text-sub">Ingresos por mes</h3>
         <div className="flex items-center gap-2.5">
           <span className="flex items-center gap-1 text-micro text-subtle">
@@ -213,7 +242,14 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
         </div>
       ) : (
         <div className="relative">
-          <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" onPointerLeave={() => setHover(null)}>
+          <svg
+            viewBox={`0 0 ${W} ${H}`}
+            className="block w-full touch-pan-y"
+            style={{ height: H }}
+            onPointerMove={pick}
+            onPointerDown={pick}
+            onPointerLeave={leaveUnlessTouch(() => setHover(null))}
+          >
             {gridYs.map((g, i) => (
               <g key={i}>
                 <line x1={PAD.left} x2={W - PAD.right} y1={g.y} y2={g.y} stroke="var(--color-line)" strokeWidth="1" opacity="0.5" />
@@ -231,8 +267,7 @@ export function RevenueBars({ points, format, labelFor }: { points: RevenuePoint
               const base = PAD.top + innerH;
               return (
                 <g key={p.t} opacity={hover !== null && !active ? 0.45 : 1} style={{ transition: 'opacity .12s' }}>
-                  <rect x={cx0 - slot / 2} y={PAD.top} width={slot} height={innerH} fill="transparent" onPointerEnter={() => setHover(i)} onPointerDown={() => setHover(i)} />
-                  {p.paid > 0 && <rect x={cx0 - barW / 2} y={base - paidH} width={barW} height={Math.max(0.5, paidH)} rx={Math.min(3, barW / 2)} fill={paidColor} />}
+                  {p.paid > 0 &&<rect x={cx0 - barW / 2} y={base - paidH} width={barW} height={Math.max(0.5, paidH)} rx={Math.min(3, barW / 2)} fill={paidColor} />}
                   {/* 2px de hueco de superficie entre segmentos apilados */}
                   {pending > 0 && <rect x={cx0 - barW / 2} y={base - paidH - pendH - (p.paid > 0 ? 2 : 0)} width={barW} height={Math.max(0.5, pendH)} rx={Math.min(3, barW / 2)} fill={pendColor} />}
                 </g>

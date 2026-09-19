@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
   Check,
-  ClipboardPaste,
   Copy,
   Eye,
   EyeOff,
@@ -45,6 +44,18 @@ let rowCounter = 0;
 function makeRow(key = '', value = ''): Row {
   return { id: `var_${Date.now()}_${++rowCounter}`, key, value };
 }
+
+/**
+ * Filas a partir de lo guardado, ordenadas por clave. El servidor devuelve el
+ * orden de inserción, que en una lista de treinta variables no ayuda a
+ * encontrar nada; alfabético sí. Solo se aplica al cargar y al descartar: las
+ * filas nuevas se añaden al final y nada se reordena mientras se edita, para
+ * que un campo no cambie de sitio debajo del dedo.
+ */
+const rowsFromVars = (vars: Record<string, string>): Row[] =>
+  Object.entries(vars)
+    .sort(([a], [b]) => a.localeCompare(b, 'es'))
+    .map(([key, value]) => makeRow(key, value));
 
 /** Variables típicas que casi toda app necesita, para añadirlas en un clic. */
 const SUGGESTED_VARS: { key: string; value: string; hint: string }[] = [
@@ -155,7 +166,7 @@ export default function VariablesTab({
 
   useEffect(() => {
     if (env.data && !dirty) {
-      const entries = Object.entries(env.data.vars).map(([key, value]) => makeRow(key, value));
+      const entries = rowsFromVars(env.data.vars);
       setRows(entries);
       setRawText(entries.map((r) => `${r.key}=${r.value}`).join('\n'));
     }
@@ -219,7 +230,7 @@ export default function VariablesTab({
   // Descartar cambios
   const discard = () => {
     if (!env.data) return;
-    const entries = Object.entries(env.data.vars).map(([key, value]) => makeRow(key, value));
+    const entries = rowsFromVars(env.data.vars);
     setRows(entries);
     setRawText(entries.map((r) => `${r.key}=${r.value}`).join('\n'));
     setDirty(false);
@@ -537,7 +548,7 @@ export default function VariablesTab({
               archivo .env entero.
             </p>
             <textarea
-              className="input min-h-[320px] w-full rounded-xl border border-line bg-term p-3.5 font-mono text-xs leading-relaxed text-txt/95 outline-none focus:border-acc"
+              className="input min-h-[320px] w-full rounded-xl border border-line bg-term p-3.5 font-mono leading-relaxed text-txt/95 outline-none focus:border-acc sm:text-xs"
               value={rawText}
               onChange={(e) => {
                 setRawText(e.target.value);
@@ -545,6 +556,8 @@ export default function VariablesTab({
               }}
               placeholder={'CLAVE=valor\nAPI_KEY=123456\nDATABASE_URL=${{Postgres.DATABASE_URL}}'}
               spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
             />
           </div>
         ) : (
@@ -724,20 +737,18 @@ export default function VariablesTab({
               </div>
             )}
 
-            {/* Añadir: un botón claro, con la ayuda de pegado al lado y no dentro. */}
+            {/* La pista del pegado ya la da el estado vacío; aquí, permanente,
+                era ruido para quien ya tiene variables. Queda en el title. */}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
                 onClick={handleAddRow}
+                title="Pega un .env en cualquier campo y se reparte en filas"
                 className="press flex h-9 items-center gap-1.5 rounded-lg border border-dashed border-line2 px-3 text-xs font-semibold text-sub transition-colors hover:border-acc/50 hover:bg-surface2 hover:text-txt max-sm:flex-1 max-sm:justify-center"
               >
                 <Plus size={14} className="text-acc-soft" />
                 Añadir variable
               </button>
-              <span className="hidden items-center gap-1.5 text-xs text-subtle sm:inline-flex">
-                <ClipboardPaste size={12} aria-hidden />
-                Pega un .env en cualquier campo y se reparte en filas
-              </span>
             </div>
           </div>
         )}

@@ -39,7 +39,7 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
   // Estado completado con éxito: barra ultra-discreta de 1 línea
   if (deployment.status === 'success') {
     return (
-      <div className="flex items-center justify-between rounded-lg border border-line/60 bg-surface2/30 px-3 py-1.5 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border border-line/60 bg-surface2/30 px-3 py-1.5 text-xs">
         <span className="flex items-center gap-1.5 text-xs font-medium text-ok">
           <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-ok/20 text-ok">
             <Check size={9} strokeWidth={3} />
@@ -60,7 +60,7 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
   // Estado fallido o cancelado
   if (deployment.status === 'failed' || deployment.status === 'canceled') {
     return (
-      <div className="flex items-center justify-between rounded-lg border border-err/30 bg-err/[.07] px-3 py-1.5 text-xs text-err">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border border-err/30 bg-err/[.07] px-3 py-1.5 text-xs text-err">
         <span className="flex items-center gap-1.5 font-medium text-xs">
           <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-err/20 text-err font-bold text-micro">
             ✕
@@ -116,8 +116,9 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
         />
       </div>
 
-      {/* Mini etapas compactas */}
-      <div className="mt-1.5 flex items-center justify-between text-micro text-subtle font-mono">
+      {/* Mini etapas compactas. En el drawer de un móvil (~330px) las cuatro no
+          caben en una línea sin pisarse: se envuelven con un poco de aire. */}
+      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-micro text-subtle font-mono">
         <span className={cx(currentStep >= 1 ? (currentStep === 1 ? 'text-warn font-semibold' : 'text-ok') : 'text-subtle')}>
           1. Cola
         </span>
@@ -156,6 +157,20 @@ function DiagnosisCard({ raw }: { raw: string | null }) {
       </p>
     </div>
   );
+}
+
+/**
+ * Marca una línea de ejecución como `[runtime]` DETRÁS del sello de tiempo de
+ * Docker. Delante, el visor no encontraba el sello (busca «AAAA-MM-DD» al
+ * principio) y la columna de hora salía vacía con el ISO pegado al texto.
+ */
+function tagRuntime(line: string): string {
+  if (line.includes('[runtime]')) return line;
+  const idx = line.indexOf(' ');
+  if (idx >= 20 && line[4] === '-' && Number.isFinite(Date.parse(line.slice(0, idx)))) {
+    return `${line.slice(0, idx)} [runtime] ${line.slice(idx + 1)}`;
+  }
+  return `[runtime] ${line}`;
 }
 
 /** Logs de un despliegue: histórico + streaming en vivo si está activo. */
@@ -197,8 +212,10 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
       if (!raf) raf = requestAnimationFrame(flush);
     });
     es.addEventListener('done', () => {
+      flush();
       queryClient.invalidateQueries({ queryKey: ['deployments', deployment.service_id] });
       queryClient.invalidateQueries({ queryKey: ['service', deployment.service_id] });
+      queryClient.invalidateQueries({ queryKey: ['deploymentLogs', deployment.id] });
       queryClient.invalidateQueries({ queryKey: ['alerts'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       es.close();
@@ -213,14 +230,16 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
     if (isLive) return streamLines;
     if (logsQuery.data) {
       const b = logsQuery.data.buildLogs ? logsQuery.data.buildLogs.split('\n').filter(Boolean) : [];
-      const r = logsQuery.data.runtimeLogs
-        ? logsQuery.data.runtimeLogs
-            .split('\n')
-            .filter(Boolean)
-            .map((l) => (l.includes('[runtime]') ? l : `[runtime] ${l}`))
-        : [];
+      const r = logsQuery.data.runtimeLogs ? logsQuery.data.runtimeLogs.split('\n').filter(Boolean).map(tagRuntime) : [];
       return [...b, ...r];
     }
+    /*
+     * Justo al terminar el despliegue, mientras llega el log archivado, se
+     * sigue enseñando lo que se estuvo viendo en directo: antes la consola se
+     * vaciaba unos segundos y volvía a llenarse, y parecía que se había
+     * perdido el registro.
+     */
+    if (streamLines.length > 0) return streamLines;
     return deployment.logs ? deployment.logs.split('\n').filter(Boolean) : [];
   }, [isLive, streamLines, logsQuery.data, deployment.logs]);
 
@@ -229,10 +248,11 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
       lines={lines}
       toolbar
       title={deployment.id}
-      state={isLive ? 'ready' : logsQuery.isLoading ? 'loading' : logsQuery.isError ? 'error' : 'ready'}
+      state={isLive || lines.length > 0 ? 'ready' : logsQuery.isLoading ? 'loading' : logsQuery.isError ? 'error' : 'ready'}
       onRetry={() => logsQuery.refetch()}
+      emptyMessage={isLive ? 'Esperando la primera línea del build…' : 'Este despliegue no dejó ningún registro.'}
       downloadName={`deploy-${deployment.id}.txt`}
-      className="h-[min(52vh,420px)] overflow-hidden rounded-lg border border-line"
+      className="h-[min(52dvh,420px)] overflow-hidden rounded-lg border border-line"
     />
   );
 }
@@ -351,7 +371,7 @@ export default function DeploymentsTab({
   const rollback = useMutation({
     mutationFn: (deploymentId: string) => api.post<{ deployment: Deployment }>(`/deployments/${deploymentId}/rollback`),
     onSuccess: (data) => {
-      toast('Rollback iniciado', 'ok');
+      toast('Volviendo a la versión anterior…', 'ok');
       toggle(data.deployment.id);
       queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
     },
@@ -374,25 +394,31 @@ export default function DeploymentsTab({
   // El más reciente en el tiempo: sirve para teñir en rojo un último intento fallido.
   const latestId = list[0]?.id ?? null;
 
-  // Orden: primero LO QUE ESTÁ SALIENDO, después el vigente («Activo»), y
-  // debajo el histórico en orden cronológico.
+  /*
+   * Orden: primero LO QUE ESTÁ SALIENDO y debajo el histórico del más nuevo al
+   * más viejo, tal cual. Antes se subía el vigente al segundo puesto, y un
+   * intento fallido de hace un minuto quedaba por debajo de la versión de la
+   * semana pasada: justo lo que se venía a mirar, escondido. La píldora «En
+   * producción» ya dice cuál sirve.
+   */
   const running = list.filter((d) => isActiveDeploy(d.status));
   const runningIds = new Set(running.map((d) => d.id));
-  const current = currentId ? list.find((d) => d.id === currentId) : undefined;
-  const ordered = [
-    ...running,
-    ...(current && !runningIds.has(current.id) ? [current] : []),
-    ...list.filter((d) => !runningIds.has(d.id) && d.id !== currentId),
-  ];
+  const ordered = useMemo(
+    () => [...running, ...list.filter((d) => !runningIds.has(d.id))],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [list],
+  );
 
   const runningId = running[0]?.id ?? null;
   useEffect(() => {
     if (runningId) setOpenId(runningId);
   }, [runningId]);
 
+  const firstId = ordered[0]?.id ?? null;
   useEffect(() => {
-    if (openId === null && !runningId && ordered.length > 0) setOpenId(ordered[0].id);
-  }, [ordered.length]);
+    if (openId === null && !runningId && firstId) setOpenId(firstId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstId]);
 
   if (deployments.isLoading) {
     return (
@@ -420,7 +446,7 @@ export default function DeploymentsTab({
       <EmptyState
         icon={<History />}
         title="Aún no hay despliegues"
-        description="En cuanto lances uno aparecerá aquí con su registro completo y el detalle de cada fase."
+        description="Aparecerán aquí con su registro completo."
       />
     );
   }
@@ -472,7 +498,7 @@ export default function DeploymentsTab({
                   <span className="block truncate text-sm font-medium">
                     {d.commit_msg ||
                       (d.trigger === 'rollback'
-                        ? 'Rollback de imagen'
+                        ? 'Vuelta a una versión anterior'
                         : serviceType === 'database'
                           ? 'Despliegue de base de datos'
                           : 'Despliegue')}
@@ -498,8 +524,10 @@ export default function DeploymentsTab({
                   <button
                     type="button"
                     onClick={() => onNavigateToLogs(d.id)}
-                    className="press flex items-center gap-1 rounded-lg border border-line bg-surface px-2 py-1 text-xs font-medium text-sub hover:bg-surface2 hover:text-txt"
+                    // Con el pulgar, 40px; con ratón, lo justo.
+                    className="press flex h-10 items-center gap-1 rounded-lg border border-line bg-surface px-2.5 text-xs font-medium text-sub hover:bg-surface2 hover:text-txt sm:h-7 sm:px-2"
                     title="Ver logs completos en la consola"
+                    aria-label="Ver logs completos en la consola"
                   >
                     <ScrollText size={12} aria-hidden />
                     <span className="hidden sm:inline">Logs</span>
@@ -510,7 +538,7 @@ export default function DeploymentsTab({
                     type="button"
                     onClick={() => cancel.mutate(d.id)}
                     disabled={cancel.isPending}
-                    className="press rounded-lg p-1.5 leading-none text-err/80 hover:bg-surface2 hover:text-err disabled:opacity-40"
+                    className="press flex h-10 w-10 items-center justify-center rounded-lg leading-none text-err/80 hover:bg-surface2 hover:text-err disabled:opacity-40 sm:h-7 sm:w-7"
                     title="Cancelar despliegue"
                     aria-label="Cancelar despliegue"
                   >
@@ -518,15 +546,19 @@ export default function DeploymentsTab({
                   </button>
                 )}
                 {d.id !== currentId && d.status === 'success' && serviceType === 'git' && (
+                  /* Es un cambio en producción: separado de «Logs» para que no se pulse de paso. */
+                  <>
+                  <span aria-hidden className="mx-0.5 h-4 w-px shrink-0 bg-line" />
                   <button
                     type="button"
                     onClick={() => setRollbackTo(d)}
-                    className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
+                    className="press flex h-10 w-10 items-center justify-center rounded-lg leading-none text-subtle hover:bg-surface2 hover:text-txt sm:h-7 sm:w-7"
                     title="Volver a esta versión"
                     aria-label="Volver a esta versión"
                   >
                     <RotateCcw size={13} aria-hidden />
                   </button>
+                  </>
                 )}
               </span>
             </div>

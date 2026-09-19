@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Check, Pencil, Plus, Star, Trash2 } from 'lucide-react';
@@ -83,7 +83,12 @@ export default function PlansPage() {
   const toggleModule = (key: string) =>
     setDraft((d) => (d ? { ...d, modules: d.modules.includes(key) ? d.modules.filter((k) => k !== key) : [...d.modules, key] } : d));
 
-  const list = plans.data?.plans ?? [];
+  // Del más barato al más caro y, a igual precio, por nombre: es el orden en que
+  // se leen los planes. Copia: la caché de react-query no se muta.
+  const list = useMemo(
+    () => [...(plans.data?.plans ?? [])].sort((a, b) => a.price_cents - b.price_cents || a.name.localeCompare(b.name, 'es')),
+    [plans.data?.plans],
+  );
 
   return (
     <div className="mx-auto max-w-[1000px] px-4 py-7 sm:px-6 sm:py-10">
@@ -146,15 +151,16 @@ export default function PlansPage() {
                   <span className="text-subtle">/{p.interval === 'yearly' ? 'año' : 'mes'}</span>
                 </p>
               </div>
-              <div className="flex items-center gap-1">
-                <button onClick={() => setDraft(fromPlan(p))} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt" title="Editar">
+              <div className="flex shrink-0 items-center gap-1">
+                <button onClick={() => setDraft(fromPlan(p))} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Editar" aria-label="Editar">
                   <Pencil size={14} />
                 </button>
                 <button
                   onClick={() => setToDelete(p)}
                   disabled={p.inUse > 0}
-                  className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err disabled:opacity-30"
+                  className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err disabled:opacity-30 max-sm:p-2.5"
                   title={p.inUse > 0 ? 'En uso: archívalo o reasigna sus cuentas' : 'Eliminar'}
+                  aria-label="Eliminar"
                 >
                   <Trash2 size={14} />
                 </button>
@@ -181,7 +187,7 @@ export default function PlansPage() {
           <div className="flex flex-col gap-3.5">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Field label="Nombre"><input className="input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} autoFocus /></Field>
-              <Field label="Precio"><input className="input tnum" type="number" min={0} step="0.01" value={draft.priceUnits} onChange={(e) => setDraft({ ...draft, priceUnits: e.target.value })} /></Field>
+              <Field label="Precio"><input className="input tnum" type="number" inputMode="decimal" min={0} step="0.01" value={draft.priceUnits} onChange={(e) => setDraft({ ...draft, priceUnits: e.target.value })} /></Field>
               <Field label="Moneda"><input className="input" maxLength={3} value={draft.currency} onChange={(e) => setDraft({ ...draft, currency: e.target.value })} /></Field>
               <Field label="Periodo">
                 <select className="input" value={draft.interval} onChange={(e) => setDraft({ ...draft, interval: e.target.value as 'monthly' | 'yearly' })}>
@@ -190,14 +196,14 @@ export default function PlansPage() {
                 </select>
               </Field>
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <Field label="CPU (núcleos)"><input className="input tnum" type="number" min={0.1} step="0.5" value={draft.cpu_cores} onChange={(e) => setDraft({ ...draft, cpu_cores: e.target.value })} /></Field>
-              <Field label="RAM (MB)"><input className="input tnum" type="number" min={128} step={256} value={draft.memory_mb} onChange={(e) => setDraft({ ...draft, memory_mb: e.target.value })} /></Field>
-              <Field label="Disco (MB)"><input className="input tnum" type="number" min={256} step={1024} value={draft.disk_mb} onChange={(e) => setDraft({ ...draft, disk_mb: e.target.value })} /></Field>
-              <Field label="Proyectos"><input className="input tnum" type="number" min={1} value={draft.max_projects} onChange={(e) => setDraft({ ...draft, max_projects: e.target.value })} /></Field>
-              <Field label="Servicios"><input className="input tnum" type="number" min={1} value={draft.max_services} onChange={(e) => setDraft({ ...draft, max_services: e.target.value })} /></Field>
-              <Field label="Usuarios"><input className="input tnum" type="number" min={1} value={draft.max_members} onChange={(e) => setDraft({ ...draft, max_members: e.target.value })} /></Field>
-              <Field label="Descuento (%)" hint="rebaja las facturas de sus cuentas"><input className="input tnum" type="number" min={0} max={100} step="0.5" value={draft.discount_pct} onChange={(e) => setDraft({ ...draft, discount_pct: e.target.value })} /></Field>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <Field label="CPU (núcleos)"><input className="input tnum" type="number" inputMode="decimal" min={0.1} step="0.5" value={draft.cpu_cores} onChange={(e) => setDraft({ ...draft, cpu_cores: e.target.value })} /></Field>
+              <Field label="RAM (MB)"><input className="input tnum" type="number" inputMode="numeric" min={128} step={256} value={draft.memory_mb} onChange={(e) => setDraft({ ...draft, memory_mb: e.target.value })} /></Field>
+              <Field label="Disco (MB)"><input className="input tnum" type="number" inputMode="numeric" min={256} step={1024} value={draft.disk_mb} onChange={(e) => setDraft({ ...draft, disk_mb: e.target.value })} /></Field>
+              <Field label="Proyectos"><input className="input tnum" type="number" inputMode="numeric" min={1} value={draft.max_projects} onChange={(e) => setDraft({ ...draft, max_projects: e.target.value })} /></Field>
+              <Field label="Servicios"><input className="input tnum" type="number" inputMode="numeric" min={1} value={draft.max_services} onChange={(e) => setDraft({ ...draft, max_services: e.target.value })} /></Field>
+              <Field label="Usuarios"><input className="input tnum" type="number" inputMode="numeric" min={1} value={draft.max_members} onChange={(e) => setDraft({ ...draft, max_members: e.target.value })} /></Field>
+              <Field label="Descuento (%)" hint="rebaja las facturas de sus cuentas"><input className="input tnum" type="number" inputMode="decimal" min={0} max={100} step="0.5" value={draft.discount_pct} onChange={(e) => setDraft({ ...draft, discount_pct: e.target.value })} /></Field>
             </div>
             <Field label="Módulos incluidos">
               <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
@@ -208,7 +214,8 @@ export default function PlansPage() {
                       key={m.key}
                       type="button"
                       onClick={() => toggleModule(m.key)}
-                      className={cx('flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors', on ? 'border-acc/55 bg-acc/[.10] text-txt' : 'border-line bg-bg text-sub hover:border-subtle')}
+                      aria-pressed={on}
+                      className={cx('flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors max-sm:min-h-10', on ? 'border-acc/55 bg-acc/[.10] text-txt' : 'border-line bg-bg text-sub hover:border-subtle')}
                     >
                       <span className={cx('flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border', on ? 'border-acc bg-acc text-white' : 'border-line')}>
                         {on && <Check size={10} />}

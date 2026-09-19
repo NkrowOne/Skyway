@@ -18,7 +18,8 @@ function Section({
   icon: React.ReactNode;
   iconClass: string;
   title: string;
-  description: React.ReactNode;
+  /** Opcional: un título que ya se explica solo no necesita subtítulo de relleno. */
+  description?: React.ReactNode;
   aside?: React.ReactNode;
   children: React.ReactNode;
 }) {
@@ -32,7 +33,7 @@ function Section({
             </span>
             {title}
           </h2>
-          <p className="mt-1 text-xs text-subtle">{description}</p>
+          {description && <p className="mt-1 text-xs text-subtle">{description}</p>}
         </div>
         {aside}
       </div>
@@ -129,7 +130,7 @@ export default function AccountPage() {
   return (
     <div className="mx-auto flex max-w-[780px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
       <div className="mb-2">
-        <h1 className="text-2xl font-semibold">Mi cuenta</h1>
+        <h1 className="text-2xl font-semibold">Mi perfil</h1>
         <p className="mt-1.5 text-sm text-sub">
           {me.data?.user?.email} · {me.data?.user?.role === 'admin' ? 'administrador' : 'miembro'}
         </p>
@@ -139,7 +140,7 @@ export default function AccountPage() {
         icon={<Fingerprint size={15} />}
         iconClass="text-acc-soft"
         title="Passkeys"
-        description="Entra con huella, cara o PIN del dispositivo: sin contraseña y resistente a phishing"
+        description="Entra con huella, cara o PIN del dispositivo."
         aside={
           passkeysSupported() ? (
             <Button size="sm" onClick={() => setPkModal(true)}>
@@ -230,7 +231,6 @@ export default function AccountPage() {
         icon={<KeyRound size={15} />}
         iconClass="text-warn"
         title="Contraseña"
-        description="Cámbiala periódicamente; con passkey la usarás poco"
       >
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Contraseña actual">

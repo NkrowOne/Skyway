@@ -59,7 +59,12 @@ export function spawnLogged(
     p.stdout.on('data', feedOut);
     p.stderr.on('data', feedErr);
     p.on('error', (err) => reject(new Error(`No se pudo ejecutar ${cmd}: ${err.message}`)));
-    p.on('exit', (code) => {
+    // 'close' y no 'exit': 'exit' salta antes de vaciar stdout/stderr, y las
+    // últimas líneas del build se colaban DESPUÉS del paso siguiente del
+    // despliegue (o se perdían si el proceso ya había acabado).
+    p.on('close', (code) => {
+      feedOut.flush();
+      feedErr.flush();
       if (code === 0) resolve();
       else reject(new Error(`${cmd} terminó con código ${code}`));
     });

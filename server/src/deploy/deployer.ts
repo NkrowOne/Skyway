@@ -147,7 +147,9 @@ function makeLogger(deploymentId: string): DeployContext['log'] & { buffer: () =
     // Sello ISO completo (YYYY-MM-DDTHH:mm:ss.sssZ) para que el visor pueda pintar
     // la fecha, la hora exacta y calcular tiempos relativos precisos como en Railway.
     const iso = new Date().toISOString();
-    const stamped = line.startsWith('20') && line.includes('T') ? line : `${iso} ${line}`;
+    // Solo se respeta un sello ISO de verdad: «2000 tests passed» empieza por
+    // «20» y lleva una T, y salía sin hora mientras sus vecinas sí la tenían.
+    const stamped = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(line) ? line : `${iso} ${line}`;
     if (buffer.length < MAX_LOG_CHARS) {
       buffer += stamped + '\n';
       dirty = true;
@@ -286,9 +288,11 @@ async function runDeployment(deploymentId: string): Promise<void> {
     invalidateDockerSnapshot();
     setStatus('success');
     updateDeployment(deploymentId, { finished_at: now() });
+    // La última línea va ANTES del «done»: la ruta SSE cierra el canal 100 ms
+    // después de ese evento y el «✔» llegaba tarde, o no llegaba.
+    log('✔ Despliegue completado');
     emitDeploy(deploymentId, { type: 'done', status: 'success' });
     publishFeed(deploymentId);
-    log('✔ Despliegue completado');
 
     // Un despliegue correcto resuelve todas las alertas abiertas previas del servicio (caídas, fallos de deploy, memoria, etc.).
     resolveAllServiceAlerts(service.id, false);

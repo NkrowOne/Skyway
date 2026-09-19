@@ -139,6 +139,8 @@ export default function SecurityPage() {
     );
 
   const { findings, score, grade } = report.data;
+  const entries = auditLog.data?.entries ?? [];
+  const esFallo = (e: AuditEntry) => e.action.includes('failed') || e.action.includes('blocked');
   const counts = {
     critical: findings.filter((f) => f.severity === 'critical').length,
     warning: findings.filter((f) => f.severity === 'warning').length,
@@ -189,10 +191,7 @@ export default function SecurityPage() {
               </Chip>
             )}
           </div>
-          <p className="mt-2.5 text-xs text-sub">
-            La puntuación baja con cada hallazgo crítico (−25) o aviso (−10). Corrige los hallazgos y el análisis se
-            actualiza al momento.
-          </p>
+          <p className="mt-2.5 text-xs text-sub">Cada hallazgo crítico resta 25 puntos y cada aviso, 10.</p>
         </div>
       </section>
 
@@ -286,8 +285,8 @@ export default function SecurityPage() {
         <div className="mb-4">
           <SectionHeader
             icon={<KeyRound size={15} />}
-            title="Cuenta y sesiones"
-            description="Cambia la contraseña o invalida las sesiones abiertas en otros navegadores"
+            title="Contraseña y sesiones"
+            description="Cambia la contraseña o cierra las sesiones abiertas en otros navegadores"
           />
         </div>
         <form
@@ -341,9 +340,10 @@ export default function SecurityPage() {
           <SectionHeader
             icon={<ScrollText size={15} />}
             title="Registro de actividad"
-            description="Auditoría completa: accesos, despliegues, cambios de configuración"
+            description="Últimos 100 eventos"
           />
-          <select className="input w-auto text-xs" value={auditFilter} onChange={(e) => setAuditFilter(e.target.value)}>
+          {/* En móvil el select va a 16px: por debajo iOS hace zoom al enfocarlo. */}
+          <select className="input w-auto sm:text-xs" value={auditFilter} onChange={(e) => setAuditFilter(e.target.value)}>
             <option value="">Todo</option>
             <option value="login">Accesos</option>
             <option value="service">Servicios</option>
@@ -352,44 +352,82 @@ export default function SecurityPage() {
             <option value="webhook">Webhooks</option>
           </select>
         </div>
-        <div className="max-h-[380px] overflow-y-auto rounded-lg border border-line">
-          <table className="w-full border-collapse text-left text-xs">
-            <thead className="sticky top-0 z-[1] bg-surface2 text-sub">
-              <tr>
-                {['Cuándo', 'Quién', 'Acción', 'Detalle', 'IP'].map((h) => (
-                  <th key={h} className="px-3.5 py-2 eyebrow">
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(auditLog.data?.entries ?? []).map((entry) => {
-                const failed = entry.action.includes('failed') || entry.action.includes('blocked');
+        {auditLog.isLoading ? (
+          <div aria-busy className="flex flex-col gap-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-9 w-full rounded-md" />
+            ))}
+          </div>
+        ) : auditLog.isError ? (
+          <ErrorState
+            compact
+            className="rounded-lg border border-line"
+            title="No se ha podido cargar el registro"
+            error={auditLog.error}
+            onRetry={() => auditLog.refetch()}
+            retrying={auditLog.isFetching}
+          />
+        ) : (
+          <div className="max-h-[380px] overflow-y-auto rounded-lg border border-line">
+            {/*
+             * Móvil: cinco columnas no caben en 360px y la tabla obligaba a arrastrar de
+             * lado para leer la acción. Cada entrada es una tarjeta con los mismos datos
+             * en líneas; la tabla vuelve a partir de sm (patrón de ServiceRow en Monitor).
+             */}
+            <ul className="sm:hidden">
+              {entries.map((entry) => {
+                const failed = esFallo(entry);
                 return (
-                  <tr key={entry.id} className={cx('border-t border-line', failed && 'bg-err/[.04]')}>
-                    <td className="whitespace-nowrap px-3.5 py-2 font-mono text-xs text-subtle">{fmtDateTime(entry.ts)}</td>
-                    <td className="px-3.5 py-2">{entry.actor}</td>
-                    <td className="px-3.5 py-2">
-                      <span className={cx(failed && 'font-medium text-err')}>
+                  <li key={entry.id} className={cx('border-b border-line px-3.5 py-2.5 text-xs last:border-b-0', failed && 'bg-err/[.04]')}>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className={cx('min-w-0 truncate font-medium', failed && 'text-err')}>
                         {AUDIT_ACTION_LABEL[entry.action] ?? entry.action}
                       </span>
-                    </td>
-                    <td className="max-w-[240px] truncate px-3.5 py-2 text-sub">{entry.detail ?? entry.target_id ?? ''}</td>
-                    <td className="px-3.5 py-2 font-mono text-xs text-subtle">{entry.ip ?? ''}</td>
-                  </tr>
+                      <span className="tnum shrink-0 font-mono text-micro text-subtle">{fmtDateTime(entry.ts)}</span>
+                    </div>
+                    <p className="mt-0.5 truncate text-sub">
+                      {entry.actor}
+                      {entry.ip && <span className="font-mono text-subtle"> · {entry.ip}</span>}
+                    </p>
+                    {(entry.detail ?? entry.target_id) && (
+                      <p className="mt-0.5 break-words text-subtle">{entry.detail ?? entry.target_id}</p>
+                    )}
+                  </li>
                 );
               })}
-              {(auditLog.data?.entries ?? []).length === 0 && (
+            </ul>
+            <table className="hidden w-full border-collapse text-left text-xs sm:table">
+              <thead className="sticky top-0 z-[1] bg-surface2 text-sub">
                 <tr>
-                  <td colSpan={5} className="px-3 py-6 text-center text-sub">
-                    Sin actividad registrada
-                  </td>
+                  {['Cuándo', 'Quién', 'Acción', 'Detalle', 'IP'].map((h) => (
+                    <th key={h} className="px-3.5 py-2 eyebrow">
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {entries.map((entry) => {
+                  const failed = esFallo(entry);
+                  return (
+                    <tr key={entry.id} className={cx('border-t border-line', failed && 'bg-err/[.04]')}>
+                      <td className="whitespace-nowrap px-3.5 py-2 font-mono text-xs text-subtle">{fmtDateTime(entry.ts)}</td>
+                      <td className="px-3.5 py-2">{entry.actor}</td>
+                      <td className="px-3.5 py-2">
+                        <span className={cx(failed && 'font-medium text-err')}>
+                          {AUDIT_ACTION_LABEL[entry.action] ?? entry.action}
+                        </span>
+                      </td>
+                      <td className="max-w-[240px] truncate px-3.5 py-2 text-sub">{entry.detail ?? entry.target_id ?? ''}</td>
+                      <td className="px-3.5 py-2 font-mono text-xs text-subtle">{entry.ip ?? ''}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {entries.length === 0 && <p className="px-3 py-6 text-center text-xs text-sub">Sin actividad registrada</p>}
+          </div>
+        )}
       </section>
     </div>
   );

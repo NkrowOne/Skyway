@@ -292,6 +292,10 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
               value={token}
               onChange={(e) => setToken(e.target.value)}
               autoFocus
+              autoComplete="off"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
             />
           </Field>
           <div className="flex justify-end">
@@ -305,7 +309,7 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
       {step === 'pick' && (
         <div className="space-y-4">
           {projects.length > 0 && (
-            <div className="max-h-72 space-y-2 overflow-y-auto">
+            <div className="max-h-72 space-y-2 overflow-y-auto overscroll-contain">
               {projects.map((p) => (
                 <button
                   key={p.id}
@@ -325,17 +329,20 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
           <details className="text-xs text-sub" open={projects.length === 0}>
             <summary className="cursor-pointer hover:text-txt">¿No aparece tu proyecto? Pega su ID</summary>
             <form
-              className="mt-2 flex gap-2"
+              className="mt-2 flex flex-wrap gap-2"
               onSubmit={(e) => {
                 e.preventDefault();
                 if (manualId.trim() && !busy) void analyze(manualId.trim());
               }}
             >
               <input
-                className="input flex-1 font-mono text-xs"
+                className="input min-w-0 flex-1 basis-48 font-mono sm:text-xs"
                 placeholder="ID del proyecto (Settings del proyecto en Railway)"
                 value={manualId}
                 onChange={(e) => setManualId(e.target.value)}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
               />
               <Button size="sm" variant="outline" type="submit" disabled={!manualId.trim() || busy}>
                 Analizar
@@ -352,7 +359,7 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
 
       {step === 'preview' && plan && (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Nombre en Skyway">
               <input className="input" value={projectName} onChange={(e) => setProjectName(e.target.value)} />
             </Field>
@@ -379,15 +386,15 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
             </Field>
           )}
 
-          <div className="max-h-64 space-y-2 overflow-y-auto">
+          <div className="max-h-64 space-y-2 overflow-y-auto overscroll-contain">
             {plan.services.map((s) => {
               const meta = KIND_META[s.kind];
               const Icon = meta.icon;
               return (
                 <div key={s.railwayName} className={cx('card p-3', s.kind === 'skipped' && 'opacity-60')}>
-                  <div className="flex items-center gap-2">
-                    <Icon size={15} className={meta.cls} />
-                    <span className="text-sm font-medium">{s.railwayName}</span>
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <Icon size={15} className={cx('shrink-0', meta.cls)} />
+                    <span className="min-w-0 truncate text-sm font-medium">{s.railwayName}</span>
                     <span className="text-xs text-sub">→ {meta.label}</span>
                     <span className="ml-auto text-xs text-sub">
                       {s.varCount > 0 && `${s.varCount} vars`}
