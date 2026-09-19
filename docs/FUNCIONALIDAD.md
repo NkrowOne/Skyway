@@ -1012,7 +1012,7 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[]}` |
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada) |
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2) |
-| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image) |
+| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
 | PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
 | DELETE | `/services/:id?volumes=true` | +access | elimina servicio; igual que en proyectos, devuelve `{ok, warnings}` |
