@@ -348,6 +348,19 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         // «Automático» no cuenta como cambio frente a un servicio que nunca lo tocó.
         if (key === 'builder' && value === 'auto') normalized = undefined;
 
+        // Las lecturas devuelven los build args tapados (`•••`): un cliente de la
+        // API que reenvíe la config tal cual conserva el valor que ya tenía en vez
+        // de guardar la marca como si fuera el secreto.
+        if (key === 'buildArgs' && value && typeof value === 'object') {
+          const old: Record<string, string> = oldCfg.buildArgs ?? {};
+          const merged: Record<string, string> = {};
+          for (const [k, v] of Object.entries(value as Record<string, string>)) {
+            if (v !== VALOR_TAPADO) merged[k] = v;
+            else if (old[k] !== undefined) merged[k] = old[k];
+          }
+          normalized = Object.keys(merged).length > 0 ? merged : undefined;
+        }
+
         // Los volúmenes llegan como rutas; se conserva el nombre del volumen
         // Docker existente para no perder los datos al reordenar/añadir.
         if (key === 'volumes' && Array.isArray(value)) {
