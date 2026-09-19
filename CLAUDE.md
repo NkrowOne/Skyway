@@ -32,13 +32,20 @@ npm run dev         # server :4000 + web :5173 (proxy /api)
 npm run build       # compila web y server
 npm run typecheck   # SIEMPRE antes de dar por terminado un cambio
 npm run lint        # reglas de hooks de React en la web (orden de hooks, dependencias)
+npm test            # pruebas del servidor (vitest, base SQLite temporal por fichero)
 npm start           # producción, todo en :4000
 ```
 
-No hay suite de tests automatizada; **`npm run typecheck` es la verificación
-mínima obligatoria** tras tocar código, y `npm run build` para validar la web.
-Si tocas componentes React, pasa también `npm run lint`: un hook después de un
-`return` temprano compila sin quejas y rompe la página en producción.
+**`npm run typecheck` y `npm test` son la verificación mínima obligatoria** tras
+tocar código, y `npm run build` para validar la web. Si tocas componentes
+React, pasa también `npm run lint`: un hook después de un `return` temprano
+compila sin quejas y rompe la página en producción. La CI de GitHub
+(`.github/workflows/ci.yml`) ejecuta los cuatro en cada PR.
+
+Las pruebas viven en `server/test/*.test.ts`. Cada fichero arranca con una
+carpeta de datos temporal propia (`test/setup.ts`), llama a `initDb()` en
+`beforeAll` y prueba las rutas con `buildApp()` + `app.inject()` sin Docker.
+Si arreglas un fallo con una prueba que lo reproduce, mejor.
 
 ## Convenciones
 

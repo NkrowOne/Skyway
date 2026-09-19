@@ -1188,7 +1188,9 @@ npm install
 npm run dev          # server :4000 (tsx watch) + web :5173 (vite, proxy /api)
 npm run build        # compila web y server
 npm start            # sirve todo en :4000 (producción)
-npm run typecheck    # server + web
+npm run typecheck    # server + web (incluye server/test)
+npm run lint         # reglas de hooks de React en la web
+npm test             # vitest: server/test (base SQLite temporal, sin Docker) y web/test
 
 # Restablecer contraseña desde el servidor (último recurso):
 docker compose exec skyway node dist/tools/reset-password.js <email> [nueva]

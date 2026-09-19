@@ -3,7 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Lock, Search } from 'lucide-react';
 import { api } from '../api';
 import { GithubConnector, GithubInstallation, GithubRepo } from '../types';
-import { cx } from '../utils';
+import { cx, parseRepoInput } from '../utils';
 import { Button, EmptyState, ErrorState, Spinner } from './ui';
 
 /**
@@ -104,18 +104,6 @@ export function useGithubRepos(source: GithubSource, enabled = true) {
     staleTime: 60_000,
     retry: false,
   });
-}
-
-/**
- * `owner/repo` a partir de lo que alguien escribe o pega: el atajo, la URL de
- * GitHub (con o sin `.git`, con o sin barra final) o nada si no se reconoce.
- */
-export function parseRepoInput(raw: string): string | null {
-  const t = raw.trim().replace(/\.git$/, '').replace(/\/+$/, '');
-  const direct = /^([\w.-]+)\/([\w.-]+)$/.exec(t);
-  if (direct) return `${direct[1]}/${direct[2]}`;
-  const url = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)/i.exec(t);
-  return url ? `${url[1]}/${url[2]}` : null;
 }
 
 /**

@@ -345,3 +345,15 @@ export const CMD_ENTER_LABEL = isMac ? '⌘↵' : 'Ctrl+↵';
  */
 export const EMPTY_LIST: never[] = [];
 export const EMPTY_RECORD: Record<string, never> = {};
+
+/**
+ * `owner/repo` a partir de lo que alguien escribe o pega: el atajo, la URL de
+ * GitHub (con o sin `.git`, con o sin barra final) o null si no se reconoce.
+ */
+export function parseRepoInput(raw: string): string | null {
+  const t = raw.trim().replace(/\.git$/, '').replace(/\/+$/, '');
+  const direct = /^([\w.-]+)\/([\w.-]+)$/.exec(t);
+  if (direct) return `${direct[1]}/${direct[2]}`;
+  const url = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)/i.exec(t);
+  return url ? `${url[1]}/${url[2]}` : null;
+}
