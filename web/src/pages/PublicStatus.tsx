@@ -151,9 +151,17 @@ export default function PublicStatusPage() {
     retry: 1,
   });
 
+  // Al salir de la página se devuelve el título anterior: si no, el nombre del
+  // proyecto se quedaba en la pestaña al volver al panel.
+  const projectName = status.data?.project.name;
   useEffect(() => {
-    if (status.data) document.title = `Estado — ${status.data.project.name}`;
-  }, [status.data]);
+    if (!projectName) return;
+    const previous = document.title;
+    document.title = `Estado — ${projectName}`;
+    return () => {
+      document.title = previous;
+    };
+  }, [projectName]);
 
   if (status.isLoading) {
     // Misma silueta que la página final: nada salta al llegar los datos.

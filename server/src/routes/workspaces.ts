@@ -301,7 +301,10 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     if (!assertWorkspaceAccess(req, reply, id)) return reply;
     const { days } = z.object({ days: z.coerce.number().int().min(1).max(365).default(30) }).parse(req.query);
     const nowHour = Math.floor(Date.now() / HOUR_MS);
-    const usage = workspaceUsageRange(id, nowHour - days * 24, nowHour + 1);
+    // Misma ventana que `/usage/series` (días×24 horas incluyendo la actual): con
+    // una hora de más aquí, el KPI y la gráfica no cuadraban.
+    const fromHour = nowHour - days * 24 + 1;
+    const usage = workspaceUsageRange(id, fromHour, nowHour + 1);
     return {
       days,
       cpuCoreHours: Math.round((usage.cpuCorePctHours / 100) * 100) / 100,

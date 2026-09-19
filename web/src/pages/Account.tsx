@@ -46,7 +46,7 @@ export default function AccountPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
 
-  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me') });
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
 
   // ---- contraseña ----
   const [currentPw, setCurrentPw] = useState('');

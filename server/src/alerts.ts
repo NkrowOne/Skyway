@@ -1,6 +1,36 @@
+import { auditSystem } from './audit';
 import { getProject, getService, insertAlert, resolveAllOpenServiceAlerts, resolveOpenServiceAlerts } from './db';
-import { dispatchToChannels } from './notify';
+import { OutgoingAlert, dispatchToChannelsDetailed } from './notify';
 import { AlertSeverity } from './types';
+
+/** Última auditoría de fallo por canal: como mucho una entrada por hora y canal. */
+const ultimoFalloAuditado = new Map<string, number>();
+const AUDITAR_FALLO_CADA_MS = 3_600_000;
+
+function registrarFalloEnvio(canal: string, contexto: string, motivo: string): void {
+  // Sin logger a mano fuera de una petición: el prefijo permite filtrarlo.
+  console.warn(`[alertas] no se pudo enviar ${contexto} por ${canal}: ${motivo}`);
+  const ahora = Date.now();
+  if (ahora - (ultimoFalloAuditado.get(canal) ?? 0) < AUDITAR_FALLO_CADA_MS) return;
+  ultimoFalloAuditado.set(canal, ahora);
+  auditSystem('alert_dispatch_failed', `${canal}: ${motivo} — ${contexto}`.slice(0, 300));
+}
+
+/**
+ * Envío a los canales externos en segundo plano, sin bloquear al llamante. El
+ * antiguo `.catch(() => {})` tragaba tanto un rechazo como la lista de canales
+ * fallidos que devuelve el envío: Discord o Telegram podían llevar semanas rotos
+ * sin que nadie lo supiera. Se deja traza en el log y, acotada, en la auditoría
+ * (las alertas ya llegan deduplicadas, así que no hay avalancha de entradas).
+ */
+function enviarACanales(alerta: OutgoingAlert): void {
+  const contexto = `«${alerta.title}»${alerta.project ? ` · ${alerta.project}` : ''}`;
+  dispatchToChannelsDetailed(alerta)
+    .then((fallos) => {
+      for (const f of fallos) registrarFalloEnvio(f.channel, contexto, f.error);
+    })
+    .catch((err: unknown) => registrarFalloEnvio('canales', contexto, err instanceof Error ? err.message : String(err)));
+}
 
 export interface FireAlertInput {
   severity: AlertSeverity;
@@ -41,14 +71,14 @@ export function fireAlert(input: FireAlertInput): void {
   if (!row) return; // ya había una alerta abierta idéntica
 
   if (!input.quiet) {
-    void dispatchToChannels({
+    enviarACanales({
       severity: input.severity,
       title: input.title,
       message: input.message,
       explanation: input.explanation,
       project: project?.name ?? null,
       service: service?.name ?? null,
-    }).catch(() => {});
+    });
   }
 }
 
@@ -75,14 +105,14 @@ export function fireWorkspaceAlert(input: {
   });
   if (!row) return; // ya había una abierta idéntica
   if (!input.quiet) {
-    void dispatchToChannels({
+    enviarACanales({
       severity: input.severity,
       title: input.title,
       message: input.message,
       explanation: input.explanation,
       project: null,
       service: null,
-    }).catch(() => {});
+    });
   }
 }
 
@@ -92,13 +122,13 @@ export function resolveServiceAlerts(serviceId: string, type: string, notifyReco
   if (resolved.length > 0 && notifyRecovery) {
     const service = getService(serviceId);
     const project = service ? getProject(service.project_id) : undefined;
-    void dispatchToChannels({
+    enviarACanales({
       severity: 'info',
       title: 'Servicio recuperado',
       message: `"${service?.name ?? serviceId}" vuelve a estar en ejecución.`,
       project: project?.name ?? null,
       service: service?.name ?? null,
-    }).catch(() => {});
+    });
   }
 }
 
@@ -108,12 +138,12 @@ export function resolveAllServiceAlerts(serviceId: string, notifyRecovery = fals
   if (resolved.length > 0 && notifyRecovery) {
     const service = getService(serviceId);
     const project = service ? getProject(service.project_id) : undefined;
-    void dispatchToChannels({
+    enviarACanales({
       severity: 'info',
       title: 'Servicio recuperado',
       message: `"${service?.name ?? serviceId}" se ha desplegado con éxito y ha resuelto sus incidencias.`,
       project: project?.name ?? null,
       service: service?.name ?? null,
-    }).catch(() => {});
+    });
   }
 }

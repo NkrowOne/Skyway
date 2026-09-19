@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertWorkspaceAccess, requireAdmin, requireAuth } from '../auth';
@@ -38,6 +39,7 @@ import { priceTiers } from '../pricing';
 import { reactivateWorkspaceIfCurrent } from '../billingauto';
 import { StripeError, createStripeCheckout, stripeAmount } from '../stripe';
 import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, PlanRow, TaxBreakdownEntry, VatRegime, WorkspaceRow } from '../types';
+import { safeParse } from '../util';
 
 const HOUR_MS = 3_600_000;
 
@@ -329,7 +331,7 @@ function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
   const ws = getWorkspace(inv.workspace_id);
   // Emisor y destinatario: los CONGELADOS al emitir mandan sobre los vivos. Un
   // borrador aún no los tiene, así que se cae a los actuales (es una previsión).
-  const snap = inv.issuer_snapshot ? (JSON.parse(inv.issuer_snapshot) as IssuerSnapshot) : null;
+  const snap = safeParse<IssuerSnapshot | null>(inv.issuer_snapshot, null);
   return {
     number: inv.number ?? 'BORRADOR',
     status: inv.status,
@@ -374,6 +376,39 @@ function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
 /** Nombre del fichero con el que se descarga o se adjunta la factura. */
 function invoiceFilename(inv: InvoiceRow): string {
   return `factura-${(inv.number ?? inv.id).replace(/[^A-Za-z0-9._-]/g, '-')}.pdf`;
+}
+
+/**
+ * PDFs ya renderizados, acotados a las últimas facturas usadas. Una factura
+ * emitida es inmutable (`locked`), pero su PDF no depende solo de la fila: el
+ * IBAN y el pie salen del perfil vivo, y las anteriores a las columnas congeladas
+ * caen a los datos actuales de la cuenta. Por eso la entrada no se valida por
+ * `id + locked`, sino con un hash del modelo completo que pinta el PDF: si algo
+ * cambia se vuelve a renderizar; si no, se sirve el mismo Buffer sin comprimir
+ * de nuevo. Los borradores cambian con cada edición y no se cachean.
+ */
+const PDF_CACHE_MAX = 50;
+const pdfCache = new Map<string, { hash: string; pdf: Buffer }>();
+
+async function invoicePdf(inv: InvoiceRow): Promise<Buffer> {
+  const data = invoicePdfData(inv);
+  if (inv.status === 'draft') return renderInvoicePdf(data);
+  const hash = createHash('sha256').update(JSON.stringify(data)).digest('hex');
+  const hit = pdfCache.get(inv.id);
+  if (hit && hit.hash === hash) {
+    // Se reinserta para que la expulsión por antigüedad siga el último uso.
+    pdfCache.delete(inv.id);
+    pdfCache.set(inv.id, hit);
+    return hit.pdf;
+  }
+  const pdf = await renderInvoicePdf(data);
+  pdfCache.set(inv.id, { hash, pdf });
+  while (pdfCache.size > PDF_CACHE_MAX) {
+    const oldest = pdfCache.keys().next().value;
+    if (oldest === undefined) break;
+    pdfCache.delete(oldest);
+  }
+  return pdf;
 }
 
 /**
@@ -422,7 +457,7 @@ export async function sendInvoiceEmail(inv: InvoiceRow, opts: { manual?: boolean
         (profile.iban ? `\nPuedes pagarla por transferencia a ${profile.iban}${profile.bankName ? ` (${profile.bankName})` : ''}.\n` : '') +
         (inv.stripe_url ? `\nO pagarla con tarjeta aquí: ${inv.stripe_url}\n` : '') +
         `\nUn saludo,\n${profile.companyName || 'Skyway'}\n`,
-      attachments: [{ filename: invoiceFilename(inv), contentType: 'application/pdf', content: renderInvoicePdf(invoicePdfData(inv)) }],
+      attachments: [{ filename: invoiceFilename(inv), contentType: 'application/pdf', content: await invoicePdf(inv) }],
     });
     auditSystem('invoice_emailed', `${numero} → ${destino}`);
     return { ok: true };
@@ -468,7 +503,7 @@ function publicInvoice(inv: InvoiceRow) {
     total_cents: inv.total_cents,
     lines: parseLines(inv.lines),
     plan_name: inv.plan_name,
-    issuer_snapshot: inv.issuer_snapshot ? (JSON.parse(inv.issuer_snapshot) as IssuerSnapshot) : null,
+    issuer_snapshot: safeParse<IssuerSnapshot | null>(inv.issuer_snapshot, null),
     client_name: inv.client_name,
     client_tax_id: inv.client_tax_id,
     client_address: inv.client_address,
@@ -1253,7 +1288,13 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     // dejar al operador mirando un spinner (los fallos se auditan y alertan).
     if (inv.status === 'draft' && (target === 'issued' || target === 'paid') && getBillingAutomation().emailOnIssue) {
       const emitida = getInvoice(id);
-      if (emitida) void sendInvoiceEmail(emitida);
+      // Los fallos normales ya los audita sendInvoiceEmail; el `.catch` evita que un
+      // rechazo inesperado quede como promesa sin capturar tras responder.
+      if (emitida) {
+        void sendInvoiceEmail(emitida).catch((err: unknown) =>
+          req.log.warn({ err, invoice: emitida.id }, 'fallo inesperado enviando la factura por correo'),
+        );
+      }
     }
     audit(req, 'invoice_updated', { type: 'invoice', id, detail: body.status ?? 'edición' });
     return { invoice: publicInvoice(getInvoice(id)!) };
@@ -1280,7 +1321,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const inv = getInvoice(id);
     if (!inv) return reply.code(404).send({ error: 'Factura no encontrada' });
     if (!assertWorkspaceAccess(req, reply, inv.workspace_id)) return reply;
-    const pdf = renderInvoicePdf(invoicePdfData(inv));
+    const pdf = await invoicePdf(inv);
     reply.header('Content-Disposition', `attachment; filename="${invoiceFilename(inv)}"`);
     reply.type('application/pdf');
     return reply.send(pdf);

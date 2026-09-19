@@ -3,7 +3,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { requireAdmin, requireAuth } from '../auth';
+import { currentUser, requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { config } from '../config';
 import { getSetting, setSetting } from '../db';
@@ -39,7 +39,9 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
   app.register(async (secured) => {
     secured.addHook('preHandler', requireAuth);
 
-    secured.get('/api/system', async () => ({
+    // Lo consulta cualquier usuario (el Layout pinta CPU/RAM), pero la ruta del
+    // directorio de datos del host es detalle interno: solo la ve el admin.
+    secured.get('/api/system', async (req) => ({
       version: config.version,
       docker: await dockerAvailable(),
       nixpacks: await nixpacksAvailable(),
@@ -53,7 +55,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
         uptime: os.uptime(),
       },
       disk: await hostDisk(),
-      dataDir: config.dataDir,
+      ...(currentUser(req)?.role === 'admin' ? { dataDir: config.dataDir } : {}),
     }));
 
     /** Desglose de lo que ocupa Docker (imágenes, contenedores, volúmenes, caché). */

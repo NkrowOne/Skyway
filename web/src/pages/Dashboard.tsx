@@ -12,7 +12,7 @@ import { ModuleBadge, ModuleLogo, moduleKind } from '../components/ModuleIcon';
 // (React.lazy) en su 1ª apertura, no al entrar al panel.
 const RailwayImportModal = lazy(() => import('../components/RailwayImportModal'));
 import { Me, Project, ProjectServiceSummary } from '../types';
-import { cx, timeAgo } from '../utils';
+import { cx, EMPTY_LIST, timeAgo } from '../utils';
 
 /**
  * Monograma del proyecto: dos iniciales en monoespaciada sobre el azul de la
@@ -184,7 +184,7 @@ export default function Dashboard() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  const all = projects.data?.projects ?? [];
+  const all = projects.data?.projects ?? EMPTY_LIST;
   const clients = useMemo(
     // Con comparador: el `sort()` por defecto compara puntos de código y mandaba «Ámbar» detrás de «Zeta».
     () => [...new Set(all.map((p) => p.client).filter((c): c is string => !!c))].sort((a, b) => a.localeCompare(b, 'es')),
@@ -215,7 +215,9 @@ export default function Dashboard() {
     const groups = new Map<string, Project[]>();
     for (const p of visible) {
       const key = p.client ?? '';
-      groups.set(key, [...(groups.get(key) ?? []), p]);
+      const bucket = groups.get(key);
+      if (bucket) bucket.push(p);
+      else groups.set(key, [p]);
     }
     return [...groups.entries()].sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b, 'es')));
   }, [visible]);

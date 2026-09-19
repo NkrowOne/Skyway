@@ -71,8 +71,17 @@ function fmtRows(n: number | null): string {
   return String(n);
 }
 
+/**
+ * Filas que se pintan como máximo. Un `SELECT *` sin LIMIT puede devolver
+ * decenas de miles y el navegador se quedaba clavado montando la tabla; la
+ * descarga CSV/JSON sigue llevando el resultado completo.
+ */
+const MAX_RENDERED_ROWS = 500;
+
 /** Tabla de resultados con cabecera fija y celdas monoespaciadas. */
 function ResultTable({ result }: { result: DbQueryResult }) {
+  const allRows = result.rows ?? [];
+  const rows = allRows.length > MAX_RENDERED_ROWS ? allRows.slice(0, MAX_RENDERED_ROWS) : allRows;
   return (
     <div className="min-h-0 flex-1 overflow-auto overscroll-contain rounded-lg border border-line">
       <table className="w-full border-collapse text-left">
@@ -89,7 +98,7 @@ function ResultTable({ result }: { result: DbQueryResult }) {
           </tr>
         </thead>
         <tbody>
-          {(result.rows ?? []).map((row, i) => (
+          {rows.map((row, i) => (
             <tr key={i} className="odd:bg-bg even:bg-surface hover:bg-acc/[.06]">
               {row.map((cell, j) => (
                 <td key={j} className="max-w-[360px] truncate border-b border-line/60 px-3 py-1.5 font-mono text-xs text-txt" title={cell}>
@@ -100,6 +109,11 @@ function ResultTable({ result }: { result: DbQueryResult }) {
           ))}
         </tbody>
       </table>
+      {allRows.length > rows.length && (
+        <p className="border-t border-line bg-surface2 px-3 py-2 text-xs text-subtle">
+          Se muestran las primeras {MAX_RENDERED_ROWS} filas de {allRows.length}. Descarga el CSV o añade un LIMIT para ver el resto.
+        </p>
+      )}
     </div>
   );
 }
@@ -239,7 +253,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
 
       {objects.length > 0 && (
         <div className="shrink-0 max-h-36 overflow-y-auto rounded-xl border border-line bg-surface2/30 p-2.5 shadow-sm">
-          <div className="mb-2 flex items-center justify-between px-0.5 eyebrowr text-subtle">
+          <div className="mb-2 flex items-center justify-between px-0.5 eyebrow text-subtle">
             <span>
               {overview.data?.overview.objectLabel} ({objects.length})
             </span>

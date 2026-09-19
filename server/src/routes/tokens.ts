@@ -51,7 +51,9 @@ export async function tokenRoutes(app: FastifyInstance): Promise<void> {
     return { token, apiToken: publicToken(row) };
   });
 
-  app.delete('/api/tokens/:id', async (req, reply) => {
+  // Revocar también exige sesión: con un token robado no se pueden borrar los
+  // demás (ni el propio, para ocultar el rastro de su uso).
+  app.delete('/api/tokens/:id', { preHandler: requireSession }, async (req, reply) => {
     const user = currentUser(req)!;
     const { id } = req.params as { id: string };
     if (!deleteApiToken(id, user.id)) return reply.code(404).send({ error: 'Token no encontrado' });

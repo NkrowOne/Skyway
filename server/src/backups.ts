@@ -4,10 +4,16 @@ import zlib from 'zlib';
 import { PassThrough, pipeline } from 'stream';
 import { config } from './config';
 import { docker } from './docker/client';
-import { containerName, getRuntime } from './docker/containers';
+import { containerName, getRuntime, waitExecExit } from './docker/containers';
 import { DatabaseConfig, ProjectRow, ServiceRow } from './types';
 
 const BACKUP_TIMEOUT_MS = 10 * 60_000;
+/**
+ * Reintentos al leer el código de salida del exec. El daemon tarda unos ms en
+ * registrarlo tras cerrar el stream; leerlo una sola vez daba `null` y una
+ * copia perfectamente buena se borraba como fallida.
+ */
+const EXIT_CODE_RETRY = { attempts: 10, delayMs: 100 };
 
 interface TemplateBackup {
   dump: string;
@@ -108,15 +114,32 @@ export async function createBackup(project: ProjectRow, service: ServiceRow): Pr
   stderr.on('data', (c) => {
     if (errText.length < 4000) errText += c.toString();
   });
+  stderr.on('error', () => undefined);
   docker.modem.demuxStream(stream, stdout, stderr);
+  // demuxStream solo copia datos: NUNCA cierra los destinos. Sin esto la
+  // tubería stdout→gzip→fichero no terminaba jamás y la copia solo acababa
+  // por el temporizador, que la daba por fallida y borraba el fichero.
+  let outputsClosed = false;
+  const closeOutputs = () => {
+    if (outputsClosed) return;
+    outputsClosed = true;
+    stdout.end();
+    stderr.end();
+  };
+  stream.on('end', closeOutputs);
+  stream.on('close', closeOutputs);
 
   const gzip = zlib.createGzip({ level: 6 });
   const sink = fs.createWriteStream(full);
 
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
+      const err = new Error('El backup superó el tiempo máximo (10 min)');
+      // Destruir la cabeza con error desmonta la cadena entera (pipeline
+      // destruye gzip y el fichero) y corta el exec dentro del contenedor.
+      stdout.destroy(err);
       (stream as any).destroy?.();
-      reject(new Error('El backup superó el tiempo máximo (10 min)'));
+      reject(err);
     }, BACKUP_TIMEOUT_MS);
     pipeline(stdout, gzip, sink, (err) => {
       clearTimeout(timer);
@@ -125,6 +148,7 @@ export async function createBackup(project: ProjectRow, service: ServiceRow): Pr
     });
     stream.on('error', (err) => {
       clearTimeout(timer);
+      stdout.destroy(err);
       reject(err);
     });
   }).catch((err) => {
@@ -132,10 +156,12 @@ export async function createBackup(project: ProjectRow, service: ServiceRow): Pr
     throw err;
   });
 
-  const info = await exec.inspect();
-  if (info.ExitCode !== 0) {
+  const exitCode = await waitExecExit(exec, EXIT_CODE_RETRY);
+  if (exitCode !== 0) {
     fs.rmSync(full, { force: true });
-    throw new Error(`El volcado terminó con error (código ${info.ExitCode}): ${errText.slice(0, 500) || 'sin detalle'}`);
+    throw new Error(
+      `El volcado terminó con error (código ${exitCode ?? 'desconocido'}): ${errText.slice(0, 500) || 'sin detalle'}`,
+    );
   }
 
   const st = fs.statSync(full);
@@ -169,33 +195,55 @@ export async function restoreBackup(project: ProjectRow, service: ServiceRow, fi
   out.on('data', (c) => {
     if (outText.length < 4000) outText += c.toString();
   });
+  out.on('error', () => undefined);
   docker.modem.demuxStream(stream as any, out, out);
+  stream.on('end', () => out.end());
+  stream.on('close', () => out.end());
 
+  // true cuando el fichero entero llegó al cliente dentro del contenedor.
+  let sentAll = false;
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      (stream as any).destroy?.();
-      reject(new Error('La restauración superó el tiempo máximo (10 min)'));
-    }, BACKUP_TIMEOUT_MS);
-
+    let settled = false;
+    const settle = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve();
+    };
     const source = fs.createReadStream(full);
     const gunzip = zlib.createGunzip();
-    source.pipe(gunzip).pipe(stream, { end: true });
-    gunzip.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
+    const timer = setTimeout(() => {
+      const err = new Error('La restauración superó el tiempo máximo (10 min)');
+      // Se desmonta la cadena entera: el fichero deja de leerse, gunzip se
+      // descarta y el socket con Docker se cierra.
+      source.destroy(err);
+      (stream as any).destroy?.();
+      settle(err);
+    }, BACKUP_TIMEOUT_MS);
+    // pipeline destruye los tres si cualquiera falla —un fichero ilegible, un
+    // gzip corrupto, el socket que se corta— en vez de dejar la excepción sin
+    // manejador (createReadStream no tenía ninguno). Su callback llega cuando
+    // TODO el fichero se ha escrito y se ha cerrado stdin; el final del exec
+    // llega después, por el 'end' del stream, y es lo que se espera.
+    pipeline(source, gunzip, stream, (err) => {
+      if (err) settle(err);
+      else sentAll = true;
     });
-    stream.on('end', () => {
-      clearTimeout(timer);
-      resolve();
-    });
-    stream.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
+    stream.on('end', () => settle());
+    stream.on('close', () => settle());
+    stream.on('error', (err) => settle(err));
   });
 
-  const info = await exec.inspect();
-  if (info.ExitCode !== 0) {
-    throw new Error(`La restauración terminó con error (código ${info.ExitCode}): ${outText.slice(0, 500) || 'sin detalle'}`);
+  const exitCode = await waitExecExit(exec, EXIT_CODE_RETRY);
+  if (exitCode !== 0) {
+    throw new Error(
+      `La restauración terminó con error (código ${exitCode ?? 'desconocido'}): ${outText.slice(0, 500) || 'sin detalle'}`,
+    );
+  }
+  if (!sentAll) {
+    throw new Error(
+      `El cliente terminó antes de recibir el backup completo: ${outText.slice(0, 500) || 'sin detalle'}`,
+    );
   }
 }

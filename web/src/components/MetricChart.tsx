@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, memo } from 'react';
 import { leaveUnlessTouch, useElementWidth } from './HistoryChart';
 
 interface Point {
@@ -6,12 +6,16 @@ interface Point {
   value: number;
 }
 
+// Geometría fija, fuera del componente para que los memos puedan depender de ella sin recalcularse.
+const H = 140;
+const PAD = { top: 10, right: 8, bottom: 18, left: 8 };
+
 /**
  * Gráfica de área de una sola serie (SVG puro):
  * línea 2px, relleno sutil, rejilla recesiva, crosshair + tooltip al pasar el ratón.
  * Sin leyenda: el título nombra la serie.
  */
-export default function MetricChart({
+function MetricChartImpl({
   title,
   points,
   color,
@@ -30,8 +34,6 @@ export default function MetricChart({
   // Ancho real del contenedor como ancho del viewBox: el texto de los ejes se
   // pinta a 9 px de verdad en vez de escalarse con el SVG (ver HistoryChart).
   const [wrapRef, W] = useElementWidth<HTMLDivElement>(480);
-  const H = 140;
-  const PAD = { top: 10, right: 8, bottom: 18, left: 8 };
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -161,3 +163,6 @@ function niceMax(v: number): number {
   const nice = unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10;
   return nice * pow;
 }
+
+/** Memoizada: ver HistoryChart. */
+export default memo(MetricChartImpl);

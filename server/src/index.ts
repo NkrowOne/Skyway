@@ -4,12 +4,13 @@ import { fireAlert } from './alerts';
 import { auditSystem } from './audit';
 import { config, ensureDataDirs } from './config';
 import { checkIntegrity, closeDb, initDb, markStaleDeploymentsFailed } from './db';
+import { abortActiveDeployments } from './deploy/deployer';
 import { dockerAvailable } from './docker/client';
 import { ensureNetwork, EDGE_NETWORK } from './docker/networks';
-import { startMonitor } from './monitor';
+import { startMonitor, stopMonitor } from './monitor';
 import { closeAllSse } from './sse';
-import { startScheduler } from './scheduler';
-import { startAutoDeploy } from './autodeploy';
+import { startScheduler, stopScheduler } from './scheduler';
+import { startAutoDeploy, stopAutoDeploy } from './autodeploy';
 
 async function main(): Promise<void> {
   ensureDataDirs();
@@ -111,9 +112,23 @@ async function shutdown(app: FastifyInstance, code: number): Promise<void> {
   }, SHUTDOWN_GRACE_MS);
   forced.unref();
 
+  // Primero los temporizadores de fondo: que no arranque un ciclo nuevo
+  // (un backup, un sondeo de repos) a mitad del cierre.
+  stopMonitor();
+  stopScheduler();
+  stopAutoDeploy();
   // Los streams SSE no terminan solos: se cierran antes de que `app.close()`
   // se ponga a esperarlos.
   closeAllSse();
+  // Los despliegues en marcha: sus procesos hijos (git, docker build) quedarían
+  // huérfanos y la fila en «building» hasta el siguiente arranque. Se les da
+  // un momento para dejar su estado escrito antes de cerrar la base.
+  try {
+    const aborted = await abortActiveDeployments();
+    if (aborted > 0) app.log.warn(`${aborted} despliegues en marcha interrumpidos por el apagado`);
+  } catch (err) {
+    app.log.warn({ err }, 'Error interrumpiendo los despliegues en marcha');
+  }
   try {
     // Cierra la escucha y espera a las peticiones en vuelo.
     await app.close();

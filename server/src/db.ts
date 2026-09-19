@@ -159,6 +159,9 @@ export function initDb(): void {
       ip TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC);
+    -- El panel de seguridad filtra por acción (login_failed en cada render, y el
+    -- registro de actividad por prefijo): sin esto recorría toda la tabla.
+    CREATE INDEX IF NOT EXISTS idx_audit_action_ts ON audit_log(action, ts DESC);
     CREATE TABLE IF NOT EXISTS alerts (
       id TEXT PRIMARY KEY,
       ts INTEGER NOT NULL,
@@ -181,6 +184,9 @@ export function initDb(): void {
     -- de una tabla que nunca se poda.
     CREATE INDEX IF NOT EXISTS idx_alerts_service_open ON alerts(service_id) WHERE resolved_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_alerts_project ON alerts(project_id);
+    -- La campana cuenta las no leídas por proyecto cada 15 s; las no leídas son
+    -- pocas frente al histórico, así que un índice parcial las aísla.
+    CREATE INDEX IF NOT EXISTS idx_alerts_unread ON alerts(project_id) WHERE read_at IS NULL;
   `);
 
   // Migraciones de columnas para bases de datos ya existentes.
@@ -845,8 +851,37 @@ export function transaction<T>(fn: () => T): T {
   return db.transaction(fn)();
 }
 
+/** Servicios cuya `config` corrupta ya se ha avisado: una línea de log por fila, no una por lectura. */
+const configCorruptaAvisada = new Set<string>();
+
 function parseService(row: any): ServiceRow {
-  return { ...row, config: JSON.parse(row.config) };
+  let config: ServiceConfig;
+  try {
+    const parsed = JSON.parse(row.config);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('no es un objeto');
+    config = parsed as ServiceConfig;
+  } catch (err: any) {
+    // Una sola fila ilegible (disco, edición a mano) no puede tumbar TODOS los
+    // listados: el servicio se devuelve con config vacía y se avisa una vez.
+    if (!configCorruptaAvisada.has(row.id)) {
+      configCorruptaAvisada.add(row.id);
+      console.warn(`[db] config ilegible en el servicio ${row.id} (${row.name ?? '?'}): ${err?.message || err}`);
+    }
+    config = {} as ServiceConfig;
+  }
+  return { ...row, config };
+}
+
+/**
+ * Tamaño de los lotes de `IN (...)`. SQLite admite miles de variables por
+ * sentencia, pero troceando nadie depende de ese límite ni de su versión.
+ */
+const IN_BATCH = 500;
+
+function lotes<T>(items: T[], size = IN_BATCH): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
 }
 
 // ---------- users ----------
@@ -1131,6 +1166,30 @@ export function uptimePercent(serviceId: string, hours: number): number | null {
   return Math.round(((row.up ?? 0) / row.total) * 10000) / 100;
 }
 
+/**
+ * `uptimePercent` para muchos servicios en una consulta (misma semántica: null
+ * sin muestras). Las vistas globales lo pedían servicio a servicio en cada
+ * sondeo; con N servicios eran N consultas cada pocos segundos.
+ */
+export function uptimePercentBatch(serviceIds: string[], hours: number): Map<string, number | null> {
+  const from = Math.floor(now() / 3_600_000) - hours;
+  const out = new Map<string, number | null>();
+  for (const sid of serviceIds) out.set(sid, null);
+  for (const lote of lotes([...out.keys()])) {
+    const rows = db
+      .prepare(
+        `SELECT service_id, SUM(up) AS up, SUM(total) AS total FROM uptime_hourly
+          WHERE service_id IN (${lote.map(() => '?').join(',')}) AND hour > ? GROUP BY service_id`,
+      )
+      .all(...lote, from) as { service_id: string; up: number | null; total: number | null }[];
+    for (const r of rows) {
+      if (!r.total) continue;
+      out.set(r.service_id, Math.round(((r.up ?? 0) / r.total) * 10000) / 100);
+    }
+  }
+  return out;
+}
+
 /** Disponibilidad por día (UTC) de los últimos `days` días, para las barras de la página de estado. */
 export function uptimeDaily(serviceId: string, days: number): { day: number; up: number; total: number }[] {
   const fromHour = Math.floor(now() / 3_600_000) - days * 24;
@@ -1242,6 +1301,20 @@ export function pruneMetrics(keepDays = 90): void {
   db.prepare('DELETE FROM host_metrics_hourly WHERE hour < ?').run(cutoff);
   db.prepare('DELETE FROM usage_meter_hourly WHERE hour < ?').run(cutoff);
   db.prepare('DELETE FROM usage_events WHERE ts < ?').run(cutoff * 3_600_000);
+  pruneResolvedAlerts();
+}
+
+/**
+ * Alertas resueltas que se conservan. Cubre de sobra la ventana que enseña
+ * cualquier vista (la página de estado mira 7 días hacia atrás); más allá solo
+ * engordaban una tabla que se consulta en cada refresco del panel. Las abiertas
+ * no caducan nunca: siguen siendo un problema hasta que alguien las resuelve.
+ */
+const ALERTAS_RESUELTAS_DIAS = 90;
+
+function pruneResolvedAlerts(): void {
+  const cutoff = now() - ALERTAS_RESUELTAS_DIAS * 86_400_000;
+  db.prepare('DELETE FROM alerts WHERE resolved_at IS NOT NULL AND resolved_at < ?').run(cutoff);
 }
 
 // ---------- services ----------
@@ -1262,6 +1335,25 @@ export function createService(
 export function listServices(projectId: string): ServiceRow[] {
   return (db.prepare('SELECT * FROM services WHERE project_id = ? ORDER BY created_at ASC').all(projectId) as any[])
     .map(parseService);
+}
+
+/**
+ * Servicios de varios proyectos de una vez, agrupados por proyecto (todo
+ * proyecto pedido tiene entrada, vacía si no tiene servicios). Los listados
+ * globales llamaban a `listServices` por proyecto en cada sondeo.
+ */
+export function listServicesForProjects(projectIds: string[]): Map<string, ServiceRow[]> {
+  const out = new Map<string, ServiceRow[]>();
+  for (const pid of projectIds) out.set(pid, []);
+  for (const lote of lotes([...out.keys()])) {
+    const rows = db
+      .prepare(
+        `SELECT * FROM services WHERE project_id IN (${lote.map(() => '?').join(',')}) ORDER BY created_at ASC`,
+      )
+      .all(...lote) as any[];
+    for (const row of rows) out.get(row.project_id)?.push(parseService(row));
+  }
+  return out;
 }
 
 export function getService(serviceId: string): ServiceRow | undefined {
@@ -1460,6 +1552,34 @@ export function latestDeployment(serviceId: string): DeploymentRow | undefined {
     )
     .get(serviceId) as Omit<DeploymentRow, 'logs'> | undefined;
   return row ? { ...row, logs: '' } : undefined;
+}
+
+/**
+ * `latestDeployment` de muchos servicios en una consulta (sin logs, como
+ * aquella). Las vistas globales pedían el último despliegue servicio a servicio
+ * en cada sondeo. Un servicio sin despliegues no tiene entrada.
+ */
+export function latestDeploymentsByService(serviceIds: string[]): Map<string, DeploymentRow> {
+  const out = new Map<string, DeploymentRow>();
+  for (const lote of lotes([...new Set(serviceIds)])) {
+    const placeholders = lote.map(() => '?').join(',');
+    const rows = db
+      .prepare(
+        `SELECT d.id, d.service_id, d.status, d.trigger, d.commit_sha, d.commit_msg, d.image_tag, d.error, d.diagnosis,
+                d.build_key, d.repo_config, d.force_build, d.created_at, d.finished_at
+           FROM deployments d
+           JOIN (SELECT service_id, MAX(created_at) AS created_at FROM deployments
+                  WHERE service_id IN (${placeholders}) GROUP BY service_id) ult
+             ON ult.service_id = d.service_id AND ult.created_at = d.created_at
+          ORDER BY d.rowid ASC`,
+      )
+      .all(...lote) as Omit<DeploymentRow, 'logs'>[];
+    // Dos despliegues en el mismo milisegundo empatan en MAX(created_at): el
+    // orden por rowid y la sobrescritura dejan el más reciente, igual que
+    // `latestDeployment` (created_at DESC, rowid DESC).
+    for (const row of rows) out.set(row.service_id, { ...row, logs: '' });
+  }
+  return out;
 }
 
 /** Estados no terminales: el despliegue sigue vivo y hay versión nueva en camino. */
@@ -1703,10 +1823,19 @@ export function listAudit(opts: { limit?: number; action?: string; projectId?: s
 }
 
 export function countFailedLogins(sinceMs: number): { count: number; ips: string[] } {
-  const rows = db
-    .prepare("SELECT ip FROM audit_log WHERE action = 'login_failed' AND ts > ?")
-    .all(now() - sinceMs) as { ip: string | null }[];
-  return { count: rows.length, ips: [...new Set(rows.map((r) => r.ip || '?'))].slice(0, 10) };
+  // Se cuenta en SQL: bajo un ataque de fuerza bruta esta tabla tiene decenas
+  // de miles de filas, y traerlas para contarlas en memoria en cada render del
+  // panel de seguridad era lo que lo hacía lento justo cuando más se mira.
+  const since = now() - sinceMs;
+  const count = (
+    db.prepare("SELECT COUNT(*) AS c FROM audit_log WHERE action = 'login_failed' AND ts > ?").get(since) as { c: number }
+  ).c;
+  const ips = (
+    db
+      .prepare("SELECT DISTINCT COALESCE(ip, '?') AS ip FROM audit_log WHERE action = 'login_failed' AND ts > ? LIMIT 10")
+      .all(since) as { ip: string }[]
+  ).map((r) => r.ip);
+  return { count, ips };
 }
 
 // ---------- alertas ----------

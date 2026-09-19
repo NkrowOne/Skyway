@@ -5,6 +5,7 @@ import { audit } from '../audit';
 import { createProduct, deleteProduct, getProduct, listProducts, listTiers, productInUse, replaceTiers, updateProduct } from '../db';
 import { sanitizeModules } from '../modules';
 import { PriceTierRow, ProductRow } from '../types';
+import { safeParse } from '../util';
 
 const MONEY = 100_000_00;
 
@@ -71,7 +72,7 @@ function publicProduct(p: ProductRow, tiers: PriceTierRow[]) {
     tax_rate: p.tax_rate,
     irpf_rate: p.irpf_rate,
     tax_exempt: p.tax_exempt,
-    modules: JSON.parse(p.modules) as string[],
+    modules: safeParse<string[]>(p.modules, []),
     description: p.description,
     active: p.active,
     archived: p.archived,

@@ -12,20 +12,25 @@ import {
   fetchLogsBefore,
   fetchLogsText,
   followLogs,
+  FollowHandle,
   getRuntime,
   replicaName,
 } from '../docker/containers';
 import { sseInit } from '../sse';
 
 /**
- * Antigüedad que tolera el stream de métricas. Va por debajo del intervalo del
- * temporizador para que cada ciclo traiga datos nuevos —lo cual solo se cumple
- * porque la foto se fecha al empezar a muestrear y no al terminar; si no, un
- * muestreo de un segundo se serviría dos veces y el refresco real sería de
- * 5 s—. Aun así es el muestreador quien decide si hay que preguntar a Docker:
- * con varias pestañas abiertas, todas comparten la misma foto.
+ * Antigüedad que tolera el stream de métricas, por ENCIMA del intervalo del
+ * temporizador: así una misma foto sirve a dos ticks consecutivos —y a todas
+ * las pestañas abiertas, vayan como vayan de fase—, y los muestreos quedan
+ * acotados a uno cada 3 s por muchos consumidores que haya. Antes iba por
+ * debajo y cada tick encontraba la foto caducada, con lo que con la foto ya
+ * lenta (muchos contenedores) se pedía otra antes de que llegara la anterior.
+ *
+ * A cambio, con una sola pestaña los datos se renuevan cada dos ticks (5 s),
+ * indistinguible para CPU y RAM. El tick espera a la foto nueva en vez de
+ * servir la pasada (`wait`) y no reenvía una foto ya enviada.
  */
-const SAMPLE_MAX_AGE_MS = 2000;
+const SAMPLE_MAX_AGE_MS = 3000;
 const METRICS_TICK_MS = 2500;
 
 export async function streamRoutes(app: FastifyInstance): Promise<void> {
@@ -56,7 +61,9 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     const channel = sseInit(reply);
     const total = configuredReplicas(service);
     const timers = new Set<NodeJS.Timeout>();
-    const stops = new Map<number, () => void>();
+    const stops = new Map<number, FollowHandle>();
+    /** Réplicas con un `attach` en curso (ver la guarda de reentrada). */
+    const attaching = new Set<number>();
 
     const later = (fn: () => void, ms: number): void => {
       if (channel.closed) return;
@@ -90,67 +97,92 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     };
 
     const attach = async (index: number, resumeFrom: string | null): Promise<void> => {
-      if (channel.closed) return;
-      const name = replicaName(project, service, index);
-      if (!(await dockerAvailable())) {
-        notice(index, 'Docker no está disponible');
-        later(() => void attach(index, resumeFrom), 5000);
-        return;
-      }
-      const runtime = await getRuntime(name);
-      if (channel.closed) return;
-      if (runtime.state === 'not_created') {
-        notice(index, 'El contenedor aún no existe. Esperando...');
-        later(() => void attach(index, null), 3000);
-        return;
-      }
+      // Guarda de reentrada: el temporizador de «aún no existe» y el de «se ha
+      // reemplazado» podían coincidir y abrir DOS seguimientos de la misma
+      // réplica (líneas duplicadas y un stream huérfano que nadie cerraba).
+      if (channel.closed || attaching.has(index)) return;
+      attaching.add(index);
       try {
-        const prefix = total > 1 ? `[r${index}] ` : '';
-        // Cada línea viaja con su cursor (sello de tiempo); el visor lo oculta
-        // pero lo usa como punto de partida para pedir líneas más antiguas y
-        // como id del evento, para reanudar si la conexión se cae.
-        const stop = await followLogs(
-          name,
-          (row) => channel.send('log', { cursor: row.cursor, line: prefix + row.line }, row.cursor),
-          200,
-          () => {
-            /*
-             * Docker ha cerrado el stream: o el contenedor se ha sustituido (un
-             * redespliegue crea otro con el mismo nombre) o se ha parado. Antes
-             * la ruta seguía abierta pero muda y el visor decía «En vivo» sin
-             * recibir nada más. Las líneas repetidas las descarta el cliente
-             * por cursor.
-             */
-            stops.delete(index);
-            if (channel.closed) return;
-            void getRuntime(name).then((rt) => {
-              if (channel.closed) return;
-              if (rt.state === 'running' || rt.state === 'restarting' || rt.state === 'not_created') {
-                notice(index, 'El contenedor se ha reemplazado. Reconectando…');
-                later(() => void attach(index, null), 1500);
-              } else {
-                notice(index, 'El contenedor está detenido: esto es lo último que escribió. Se reanudará al arrancar.');
-                later(() => void waitUntilRunning(index), 4000);
-              }
-            });
-          },
-          resumeFrom,
-        );
-        if (channel.closed) {
-          stop();
+        const name = replicaName(project, service, index);
+        if (!(await dockerAvailable())) {
+          notice(index, 'Docker no está disponible');
+          later(() => void attach(index, resumeFrom), 5000);
           return;
         }
-        stops.set(index, stop);
-        if (index === 1) channel.send('attached', { state: runtime.state, replicas: total });
-      } catch {
-        later(() => void attach(index, resumeFrom), 3000);
+        const runtime = await getRuntime(name);
+        if (channel.closed) return;
+        if (runtime.state === 'not_created') {
+          notice(index, 'El contenedor aún no existe. Esperando...');
+          later(() => void attach(index, null), 3000);
+          return;
+        }
+        try {
+          const prefix = total > 1 ? `[r${index}] ` : '';
+          let handle: FollowHandle | null = null;
+          let waitingDrain = false;
+          // Cada línea viaja con su cursor (sello de tiempo); el visor lo oculta
+          // pero lo usa como punto de partida para pedir líneas más antiguas y
+          // como id del evento, para reanudar si la conexión se cae.
+          handle = await followLogs(
+            name,
+            (row) => {
+              const ok = channel.send('log', { cursor: row.cursor, line: prefix + row.line }, row.cursor);
+              if (ok || waitingDrain || !handle) return;
+              // El socket del navegador no da abasto (pestaña en segundo plano,
+              // red lenta, contenedor que escupe megas): se deja de leer de
+              // Docker hasta que vacíe, en vez de acumular líneas sin tope.
+              waitingDrain = true;
+              handle.pause();
+              channel.onDrain(() => {
+                waitingDrain = false;
+                handle?.resume();
+              });
+            },
+            200,
+            () => {
+              /*
+               * Docker ha cerrado el stream: o el contenedor se ha sustituido (un
+               * redespliegue crea otro con el mismo nombre) o se ha parado. Antes
+               * la ruta seguía abierta pero muda y el visor decía «En vivo» sin
+               * recibir nada más. Las líneas repetidas las descarta el cliente
+               * por cursor.
+               */
+              stops.delete(index);
+              if (channel.closed) return;
+              void getRuntime(name).then((rt) => {
+                if (channel.closed) return;
+                if (rt.state === 'running' || rt.state === 'restarting' || rt.state === 'not_created') {
+                  notice(index, 'El contenedor se ha reemplazado. Reconectando…');
+                  later(() => void attach(index, null), 1500);
+                } else {
+                  notice(index, 'El contenedor está detenido: esto es lo último que escribió. Se reanudará al arrancar.');
+                  later(() => void waitUntilRunning(index), 4000);
+                }
+              });
+            },
+            resumeFrom,
+          );
+          if (channel.closed) {
+            handle.stop();
+            return;
+          }
+          // Si quedara un seguimiento anterior de esta réplica, se cierra antes
+          // de sustituirlo: nunca dos streams de Docker para el mismo visor.
+          stops.get(index)?.stop();
+          stops.set(index, handle);
+          if (index === 1) channel.send('attached', { state: runtime.state, replicas: total });
+        } catch {
+          later(() => void attach(index, resumeFrom), 3000);
+        }
+      } finally {
+        attaching.delete(index);
       }
     };
 
     channel.onClose(() => {
       for (const t of timers) clearTimeout(t);
       timers.clear();
-      for (const stop of stops.values()) stop();
+      for (const handle of stops.values()) handle.stop();
       stops.clear();
     });
 
@@ -199,7 +231,10 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
 
     const q = z.object({ timestamps: z.string().optional() }).parse(req.query);
 
-    if (!(await dockerAvailable())) return reply.code(409).send({ error: 'Docker no está disponible' });
+    // 503 y no 409: no es un conflicto con el estado del recurso, es que la
+    // dependencia de la que se sirve no responde (mismo código que el resto de
+    // rutas cuando falta el daemon).
+    if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
     const name = containerName(project, service);
     const runtime = await getRuntime(name);
     if (runtime.state === 'not_created') return reply.code(409).send({ error: 'El contenedor aún no existe' });
@@ -260,6 +295,8 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     });
 
     let ticking = false;
+    /** `at` de la última foto enviada, para no repetirla. */
+    let lastSentAt = -1;
     const tick = async (): Promise<void> => {
       // Sin esta guarda, un ciclo que tarde más que el intervalo apila ciclos
       // encima —y cada uno tarda más que el anterior—. Con muchos servicios es
@@ -267,8 +304,13 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
       if (channel.closed || ticking) return;
       ticking = true;
       try {
-        const snap = await dockerSnapshot(SAMPLE_MAX_AGE_MS, { stats: true });
+        const snap = await dockerSnapshot(SAMPLE_MAX_AGE_MS, { stats: true, wait: true });
         if (channel.closed) return;
+        // La misma foto que el tick anterior no aporta nada, y el cliente añade
+        // un punto al histórico por evento: con dos iguales su ventana de
+        // tiempo se acortaba a la mitad.
+        if (snap.at === lastSentAt) return;
+        lastSentAt = snap.at;
         if (!snap.docker) {
           channel.send('metrics', { ts: snap.at, docker: false, services: {} });
           return;

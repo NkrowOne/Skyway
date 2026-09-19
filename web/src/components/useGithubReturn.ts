@@ -23,6 +23,8 @@ export function useGithubReturnNotice(): void {
   const toast = useToast();
   const code = params.get('github');
 
+  // Solo actúa mientras `github` esté en la URL: al limpiarlo, `code` queda a
+  // null y las siguientes pasadas (por cambios de otros parámetros) no hacen nada.
   useEffect(() => {
     if (!code) return;
     const message = RETURN_MESSAGE[code];
@@ -30,5 +32,5 @@ export function useGithubReturnNotice(): void {
     const next = new URLSearchParams(params);
     next.delete('github');
     setParams(next, { replace: true });
-  }, [code]);
+  }, [code, params, setParams, toast]);
 }

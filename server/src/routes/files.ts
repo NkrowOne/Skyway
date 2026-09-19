@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, moduleGate, requireAuth } from '../auth';
 import { audit } from '../audit';
@@ -27,6 +27,30 @@ function safeHeaderName(name: string): string {
   return name.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || 'archivo';
 }
 
+/** Códigos de error de sistema con los que falla el socket de Docker. */
+const SOCKET_ERROR = /\b(ECONNREFUSED|ECONNRESET|ENOENT|ENOTFOUND|ETIMEDOUT|EPIPE|EACCES|EAI_AGAIN)\b/;
+
+/**
+ * Traduce un fallo del explorador a un código HTTP honesto. El módulo `files`
+ * lanza `Error` llanos con mensajes para el usuario (ruta inválida, contenedor
+ * parado, límite de tamaño…): eso es un 400. Pero antes TODO salía como 400,
+ * también un socket de Docker caído o un error del daemon, y la UI (y los
+ * agentes que usan la API) los tomaban por un error de uso que reintentar no
+ * arregla. Los del socket van como 503 y los del daemon como 500.
+ */
+function sendFileError(reply: FastifyReply, err: unknown, fallback: string): FastifyReply {
+  const e = err as { code?: unknown; statusCode?: unknown; message?: unknown } | null;
+  const message = typeof e?.message === 'string' && e.message ? e.message : fallback;
+  // dockerode marca el fallo de red en `code`; `files.ts` a veces lo reenvuelve
+  // en un Error nuevo y solo queda el código dentro del mensaje.
+  if ((typeof e?.code === 'string' && SOCKET_ERROR.test(e.code)) || SOCKET_ERROR.test(message)) {
+    return reply.code(503).send({ error: 'Docker no responde en este momento. Inténtalo de nuevo en unos segundos.' });
+  }
+  // Respuesta de error del propio daemon (statusCode de la API de Docker).
+  if (typeof e?.statusCode === 'number') return reply.code(500).send({ error: message });
+  return reply.code(err instanceof Error ? 400 : 500).send({ error: message });
+}
+
 /**
  * Explorador de archivos por servicio (estilo gestor FTP), sobre el socket de
  * Docker: sin puertos ni credenciales de FTP. Requiere sesión y acceso al
@@ -48,8 +72,8 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
       const query = z.object({ path: z.string().max(4096).optional() }).parse(req.query);
       try {
         return { listing: await listDir(found.project, found.service, query.path ?? '/') };
-      } catch (err: any) {
-        return reply.code(400).send({ error: err?.message || 'No se pudo listar el directorio' });
+      } catch (err) {
+        return sendFileError(reply, err, 'No se pudo listar el directorio');
       }
     });
 
@@ -67,8 +91,8 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
         reply.header('Content-Disposition', `attachment; filename="${safeHeaderName(file.name)}"`);
         reply.type('application/octet-stream');
         return reply.send(file.content);
-      } catch (err: any) {
-        return reply.code(400).send({ error: err?.message || 'No se pudo descargar el archivo' });
+      } catch (err) {
+        return sendFileError(reply, err, 'No se pudo descargar el archivo');
       }
     });
 
@@ -84,8 +108,8 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
         await makeDir(found.project, found.service, body.path);
         audit(req, 'file_mkdir', { type: 'service', id, detail: `${found.service.name}: ${body.path}` });
         return { ok: true };
-      } catch (err: any) {
-        return reply.code(400).send({ error: err?.message || 'No se pudo crear el directorio' });
+      } catch (err) {
+        return sendFileError(reply, err, 'No se pudo crear el directorio');
       }
     });
 
@@ -101,8 +125,8 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
         await deletePath(found.project, found.service, body.path, body.recursive);
         audit(req, 'file_deleted', { type: 'service', id, detail: `${found.service.name}: ${body.path}${body.recursive ? ' (recursivo)' : ''}` });
         return { ok: true };
-      } catch (err: any) {
-        return reply.code(400).send({ error: err?.message || 'No se pudo borrar' });
+      } catch (err) {
+        return sendFileError(reply, err, 'No se pudo borrar');
       }
     });
   });
@@ -111,6 +135,9 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
   // límite de cuerpo ampliado, sin tocar el límite global de 1 MB del resto.
   app.register(async (upload) => {
     upload.addHook('preHandler', requireAuth);
+    // Mismo módulo que el resto del explorador: al vivir en otro scope no
+    // heredaba la gate y se podía subir con el módulo 'files' desactivado.
+    upload.addHook('preHandler', moduleGate('files'));
     upload.addContentTypeParser(
       'application/octet-stream',
       { parseAs: 'buffer', bodyLimit: MAX_UPLOAD_BYTES },
@@ -139,8 +166,8 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
         });
         reply.code(201);
         return { ok: true };
-      } catch (err: any) {
-        return reply.code(400).send({ error: err?.message || 'No se pudo subir el archivo' });
+      } catch (err) {
+        return sendFileError(reply, err, 'No se pudo subir el archivo');
       }
     });
   });

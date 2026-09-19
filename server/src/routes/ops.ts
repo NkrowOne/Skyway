@@ -15,7 +15,15 @@ import { getProject, getService } from '../db';
 import { dockerAvailable } from '../docker/client';
 import { containerName, execInContainer, getRuntime } from '../docker/containers';
 import { isWorkspaceActive, moduleAllowedForProject, workspaceOfProject } from '../quota';
+import { rateLimit } from '../ratelimit';
 import { ProjectRow, ServiceRow } from '../types';
+
+/**
+ * Tope de comandos por usuario y minuto. Cada exec abre un proceso dentro del
+ * contenedor y puede durar hasta un minuto: un script en bucle bastaba para
+ * saturar el socket de Docker de todo el servidor.
+ */
+const EXEC_POR_MINUTO = 20;
 
 function load(id: string): { service: ServiceRow; project: ProjectRow } | null {
   const service = getService(id);
@@ -29,7 +37,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
   /** Ejecuta un comando dentro del contenedor del servicio (migraciones, etc.). */
-  app.post('/api/services/:id/exec', async (req, reply) => {
+  app.post('/api/services/:id/exec', { preHandler: rateLimit({ max: EXEC_POR_MINUTO, windowMs: 60_000 }) }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const found = load(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });

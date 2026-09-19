@@ -923,6 +923,27 @@ details[open] > .details-body {
     font-variant-numeric: tabular-nums;
   }
   /*
+   * Enlace o botón de texto dentro de una frase: en táctil su área de
+   * pulsación crece 12px arriba y abajo (y 6 a los lados) sin mover nada ni
+   * agrandar su fondo, con un pseudoelemento que solo existe en pantallas
+   * estrechas. Un «ver alertas →» de 14px de alto no se acierta con el pulgar.
+   * No vale en elementos con `overflow: hidden` (`truncate`): ahí se recorta.
+   */
+  .tap {
+    position: relative;
+  }
+  .tap::after {
+    content: '';
+    position: absolute;
+    inset: -12px -6px;
+  }
+  @media (min-width: 640px) {
+    .tap::after {
+      content: none;
+    }
+  }
+
+  /*
    * Respeta el notch/gesto inferior en elementos anclados abajo (toasts,
    * barras sticky). Suma al relleno que ya tenga el elemento (`--pb`, que
    * pone quien lo use) en vez de sustituirlo: antes `safe-b py-3` dejaba el

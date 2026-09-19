@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.31.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.32.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -728,7 +728,7 @@ Los cuerpos son JSON salvo indicación; la subida de archivos es binaria.
 | GET | `/auth/passkeys` | auth | lista passkeys propias |
 | POST | `/auth/passkeys/options` | session | opciones de registro WebAuthn |
 | POST | `/auth/passkeys` | session | registra una passkey |
-| DELETE | `/auth/passkeys/:id` | auth | borra una passkey |
+| DELETE | `/auth/passkeys/:id` | session | borra una passkey (solo desde el navegador: un token de API no puede desarmar el segundo factor) |
 | POST | `/auth/passkey-login/options` | público (rate-limit) | opciones de login con passkey |
 | POST | `/auth/passkey-login` | público (rate-limit) | login con passkey (sin email) |
 
@@ -737,7 +737,7 @@ Los cuerpos son JSON salvo indicación; la subida de archivos es binaria.
 | --- | --- | --- | --- |
 | GET | `/tokens` | auth | lista tokens del usuario |
 | POST | `/tokens` | session | crea token (`{name, expiresDays?}`) → devuelve el valor una vez |
-| DELETE | `/tokens/:id` | auth | revoca un token |
+| DELETE | `/tokens/:id` | session | revoca un token (solo desde el navegador: un token no puede revocar a otros) |
 | GET | `/users` | admin | lista usuarios |
 | POST | `/users` | admin | crea usuario (`{email, password, role, projectIds}`) |
 | PATCH | `/users/:id` | admin | cambia rol / workspaces / contraseña |
@@ -962,11 +962,11 @@ como línea negativa; una factura emitida es inmutable y conserva su descuento.
 ### 7.3 Proyectos, variables compartidas y GitHub
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/projects` | auth | proyectos accesibles (con meta) |
-| POST | `/projects` | admin/owner | crea proyecto (`{name, client?, workspaceId?}`); el propietario en su workspace, dentro de la cuota |
-| GET | `/projects/:id` | +access | proyecto + servicios con runtime + `activeDeploys` (despliegues vivos por servicio) |
+| GET | `/projects` | auth | proyectos accesibles (con meta); la `config` de cada servicio sale sin `webhookSecret` y con los valores de `buildArgs` tapados |
+| POST | `/projects` | admin/owner | crea proyecto (`{name, client?, workspaceId?}`); el propietario en su workspace, dentro de la cuota (409 si su cuenta ya no existe) |
+| GET | `/projects/:id` | +access | proyecto + servicios con runtime + `activeDeploys` (despliegues vivos por servicio); `config` sin `webhookSecret` y con `buildArgs` tapados |
 | PATCH | `/projects/:id` | manage | renombra; el admin además reasigna de workspace |
-| DELETE | `/projects/:id?volumes=true` | manage | elimina proyecto (y volúmenes opcional) |
+| DELETE | `/projects/:id?volumes=true` | manage | elimina proyecto (y volúmenes opcional); el registro se borra aunque Docker falle a medias y los restos se listan en `warnings` |
 | POST | `/projects/:id/deploy-all` | +access | despliega repos e imágenes del proyecto |
 | GET | `/projects/:id/vars` | +access | variables compartidas |
 | PUT | `/projects/:id/vars` | +access | reemplaza variables compartidas |
@@ -992,8 +992,8 @@ como línea negativa; una factura emitida es inmutable y conserva su descuento.
 | GET | `/github/installations` | admin | todas las instalaciones (vista central) |
 | POST | `/github/installations/:rowId/sync` | +access\* | refresca desde GitHub (repos elegidos, suspensión) |
 | DELETE | `/github/installations/:rowId` | +access\* | quita la conexión (la App sigue instalada en GitHub) |
-| GET | `/github/installations/:rowId/repos` | +access | repos que la instalación deja ver |
-| GET | `/github/installations/:rowId/branches?repo=owner/repo` | +access | ramas del repo |
+| GET | `/github/installations/:rowId/repos` | +access | repos que la instalación deja ver (`?projectId=` opcional: con una instalación global, acota el permiso a ese proyecto) |
+| GET | `/github/installations/:rowId/branches?repo=owner/repo` | +access | ramas del repo (`?projectId=` opcional, igual que arriba) |
 
 \* Las instalaciones **globales** solo las gestiona el administrador.
 
@@ -1013,9 +1013,9 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada) |
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2) |
 | POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image) |
-| GET | `/services/:id` | +access | servicio + runtime + último deploy |
-| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente) |
-| DELETE | `/services/:id?volumes=true` | +access | elimina servicio |
+| GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
+| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); responde con `buildArgs` tapados |
+| DELETE | `/services/:id?volumes=true` | +access | elimina servicio; igual que en proyectos, devuelve `{ok, warnings}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
 | GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias) |
@@ -1080,14 +1080,14 @@ distroless), el explorador lo indica y no está disponible.
 ### 7.8 Operaciones, backups y sistema
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| POST | `/services/:id/exec` | +access | ejecuta un comando (`sh -c`) en el contenedor (60 s) |
+| POST | `/services/:id/exec` | +access | ejecuta un comando (`sh -c`) en el contenedor (60 s; 20 por minuto y usuario, después 429) |
 | GET | `/services/:id/backups` | +access | lista backups |
 | POST | `/services/:id/backups` | +access | crea backup (dump dentro del contenedor) |
 | GET | `/services/:id/backups/:file/download` | +access | descarga un backup |
 | POST | `/services/:id/backups/:file/restore` | +access | restaura (`{confirm:true}`) |
 | DELETE | `/services/:id/backups/:file` | +access | borra un backup |
 | GET | `/health` | público | estado + versión |
-| GET | `/system` | auth | versión, docker, nixpacks, host, disco |
+| GET | `/system` | auth | versión, docker, nixpacks, host, disco (`dataDir` solo para admin) |
 | GET | `/system/docker-usage` | admin | uso de Docker (imágenes/volúmenes/caché) |
 | POST | `/system/prune` | admin | libera imágenes colgantes y caché de build |
 | GET | `/system/backups` | admin | snapshots del propio skyway.db (+ retención) |
@@ -1110,7 +1110,7 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/alerts/read-all` | auth | marca todas como leídas |
 | POST | `/alerts/:id/resolve` | auth | resuelve una alerta accesible |
 | GET | `/monitor/overview` | auth | todos los servicios accesibles con estado/consumo |
-| GET | `/monitor/logs/search` | auth | busca texto en logs (`?q=&tail=&projectId=`) |
+| GET | `/monitor/logs/search` | auth | busca texto en logs (`?q=&tail=&projectId=`); 4 contenedores a la vez y 15 s en total (`timedOut`, `truncated`); 10 por minuto y usuario, después 429 |
 | GET | `/monitor/disk` | auth | disco por servicio (+ host/Docker si admin) |
 | GET | `/monitor/host-history` | auth | histórico de carga, RAM y disco del host (`?hours=`) |
 | GET | `/websites` | auth | vista de sitios web (servicios con dominio) |
@@ -1119,7 +1119,7 @@ distroless), el explorador lo indica y no está disponible.
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/domains/server-ip` | auth | IP del servidor (configurada o detectada) |
-| POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`) |
+| POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`); 30 por minuto y usuario, después 429 |
 | GET | `/public/status/:token` | público | página de estado pública (cacheada) |
 | GET | `/projects/:id/status-page` | +access | config de la página de estado |
 | POST | `/projects/:id/status-page` | admin | activa/desactiva y aviso |

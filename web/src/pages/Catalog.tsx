@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
+import { useLatched } from '../hooks';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { Button, ConfirmModal, EmptyState, ErrorState, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { BillingModel, Product, ProductCategory, UsageMeter } from '../types';
-import { cx, fmtMoney } from '../utils';
+import { cx, EMPTY_LIST, fmtMoney } from '../utils';
 
 const CATS: Record<ProductCategory, string> = {
   web: 'Web', ia: 'IA', app: 'App', hosting: 'Hosting', bbdd: 'BBDD', dominio: 'Dominio', soporte: 'Soporte', custom: 'A medida',
@@ -32,7 +33,12 @@ function priceSummary(p: Product): string {
   return `${fmtMoney(p.price_cents, p.currency)} · pago único`;
 }
 
+let tierSeq = 0;
+/** Id local del tramo: con el índice como clave, quitar uno del medio barajaba los campos. */
+const tierId = () => `t${Date.now().toString(36)}${++tierSeq}`;
+
 interface TierDraft {
+  id: string;
   upTo: string; // '' = último tramo (sin tope)
   unitUnits: string; // precio por unidad, en la moneda
 }
@@ -60,7 +66,7 @@ interface Draft {
 const EMPTY: Draft = {
   name: '', category: 'web', billingModel: 'subscription', priceUnits: '0', currency: 'EUR', interval: 'monthly',
   unit: 'mes', unitSize: '1', meter: 'ai_tokens_out', tierMode: 'graduated', taxRate: '21', irpfRate: '0', taxExempt: false,
-  description: '', active: true, tiers: [{ upTo: '', unitUnits: '0' }],
+  description: '', active: true, tiers: [{ id: tierId(), upTo: '', unitUnits: '0' }],
 };
 
 function fromProduct(p: Product): Draft {
@@ -71,7 +77,7 @@ function fromProduct(p: Product): Draft {
     meter: p.meter ?? 'ai_tokens_out', tierMode: p.tier_mode ?? 'graduated',
     taxRate: String(p.tax_rate), irpfRate: String(p.irpf_rate), taxExempt: !!p.tax_exempt,
     description: p.description ?? '', active: !!p.active,
-    tiers: p.tiers.length ? p.tiers.map((t) => ({ upTo: t.up_to === null ? '' : String(t.up_to), unitUnits: String(t.unit_cents / 100) })) : [{ upTo: '', unitUnits: '0' }],
+    tiers: p.tiers.length ? p.tiers.map((t) => ({ id: tierId(), upTo: t.up_to === null ? '' : String(t.up_to), unitUnits: String(t.unit_cents / 100) })) : [{ id: tierId(), upTo: '', unitUnits: '0' }],
   };
 }
 
@@ -81,6 +87,7 @@ export default function CatalogPage() {
   const q = useQuery({ queryKey: ['products'], queryFn: () => api.get<{ products: Product[] }>('/products') });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [toDelete, setToDelete] = useState<Product | null>(null);
+  const toDeleteShown = useLatched(toDelete);
   const isEdit = !!draft?.id;
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['products'] });
 
@@ -124,7 +131,7 @@ export default function CatalogPage() {
   const set = (patch: Partial<Draft>) => setDraft((d) => (d ? { ...d, ...patch } : d));
   const setTier = (i: number, patch: Partial<TierDraft>) => setDraft((d) => (d ? { ...d, tiers: d.tiers.map((t, idx) => (idx === i ? { ...t, ...patch } : t)) } : d));
 
-  const list = q.data?.products ?? [];
+  const list = q.data?.products ?? EMPTY_LIST;
   // Las categorías con más productos van primero: son las que el operador
   // busca; «A medida» es el cajón de lo que no encaja y cierra siempre la
   // lista. Con empate se respeta CAT_ORDER (sort es estable). Dentro de cada
@@ -144,7 +151,7 @@ export default function CatalogPage() {
 
   return (
     <div className="mx-auto max-w-[1000px] px-4 py-7 sm:px-6 sm:py-10">
-      <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt">
+      <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt max-sm:-mt-2 max-sm:mb-2 max-sm:py-2">
         <ArrowLeft size={13} /> Cuentas y clientes
       </Link>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
@@ -272,13 +279,13 @@ export default function CatalogPage() {
                     <span>Hasta (unidades)</span><span>Precio / unidad</span><span />
                   </div>
                   {draft.tiers.map((t, i) => (
-                    <div key={i} className="grid grid-cols-[1fr_1fr_36px] items-center gap-2">
+                    <div key={t.id} className="grid grid-cols-[1fr_1fr_36px] items-center gap-2">
                       <input className="input tnum" type="number" inputMode="numeric" min={1} placeholder="∞" value={t.upTo} onChange={(e) => setTier(i, { upTo: e.target.value })} />
                       <input className="input tnum" type="number" inputMode="decimal" min={0} step="0.001" value={t.unitUnits} onChange={(e) => setTier(i, { unitUnits: e.target.value })} />
                       <button type="button" onClick={() => set({ tiers: draft.tiers.filter((_, idx) => idx !== i) })} className="justify-self-center rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err disabled:opacity-30 max-sm:p-2.5" disabled={draft.tiers.length <= 1} title="Quitar tramo" aria-label="Quitar tramo"><Trash2 size={13} /></button>
                     </div>
                   ))}
-                  <button type="button" onClick={() => set({ tiers: [...draft.tiers, { upTo: '', unitUnits: '0' }] })} className="mt-1 inline-flex w-fit items-center gap-1 text-xs text-acc-soft hover:underline"><Plus size={12} /> Añadir tramo</button>
+                  <button type="button" onClick={() => set({ tiers: [...draft.tiers, { id: tierId(), upTo: '', unitUnits: '0' }] })} className="mt-1 inline-flex w-fit items-center gap-1 text-xs text-acc-soft hover:underline"><Plus size={12} /> Añadir tramo</button>
                 </div>
               </Field>
             )}
@@ -287,10 +294,10 @@ export default function CatalogPage() {
               <Field label="IVA (%)"><input className="input tnum" type="number" inputMode="decimal" min={0} max={100} value={draft.taxRate} onChange={(e) => set({ taxRate: e.target.value })} disabled={draft.taxExempt} /></Field>
               <Field label="IRPF (%)"><input className="input tnum" type="number" inputMode="decimal" min={0} max={100} value={draft.irpfRate} onChange={(e) => set({ irpfRate: e.target.value })} /></Field>
               <label className="mt-6 flex cursor-pointer items-center gap-2 text-sm text-sub">
-                <input type="checkbox" checked={draft.taxExempt} onChange={(e) => set({ taxExempt: e.target.checked })} className="accent-acc" /> Exento de IVA
+                <input type="checkbox" checked={draft.taxExempt} onChange={(e) => set({ taxExempt: e.target.checked })} className="h-4 w-4 shrink-0 accent-acc" /> Exento de IVA
               </label>
               <label className="mt-6 flex cursor-pointer items-center gap-2 text-sm text-sub">
-                <input type="checkbox" checked={draft.active} onChange={(e) => set({ active: e.target.checked })} className="accent-acc" /> Activo
+                <input type="checkbox" checked={draft.active} onChange={(e) => set({ active: e.target.checked })} className="h-4 w-4 shrink-0 accent-acc" /> Activo
               </label>
             </div>
 
@@ -308,10 +315,10 @@ export default function CatalogPage() {
         open={!!toDelete}
         onClose={() => setToDelete(null)}
         onConfirm={() => toDelete && remove.mutate(toDelete.id)}
-        title={toDelete?.in_use ? 'Archivar producto' : 'Eliminar producto'}
-        message={toDelete?.in_use
-          ? `«${toDelete?.name}» está contratado por alguna cuenta: se archivará (se conserva el histórico) en vez de borrarse.`
-          : `El producto «${toDelete?.name}» se elimina del catálogo.`}
+        title={toDeleteShown?.in_use ? 'Archivar producto' : 'Eliminar producto'}
+        message={toDeleteShown?.in_use
+          ? `«${toDeleteShown.name}» está contratado por alguna cuenta: se archivará (se conserva el histórico) en vez de borrarse.`
+          : `El producto «${toDeleteShown?.name ?? ''}» se elimina del catálogo.`}
         loading={remove.isPending}
       />
     </div>

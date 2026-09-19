@@ -16,31 +16,32 @@
  * él en vez de lanzar otro, así que da igual cuántas pestañas haya abiertas.
  */
 
-import { listProjects, listServices } from '../db';
+import { getProject, getService, listProjects, listServices } from '../db';
 import { dockerAvailable } from './client';
 import { configuredReplicas, getRuntime, getStats, replicaName } from './containers';
 import { ContainerState, ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
 
 /**
- * Contenedores consultados a la vez. El socket de Docker atiende en serie por
- * dentro, así que subirlo no acelera; lo que hace es evitar que un servidor con
- * muchos servicios encole cientos de peticiones simultáneas.
+ * Contenedores consultados a la vez, en TODO el muestreo. El socket de Docker
+ * atiende en serie por dentro, así que subirlo no acelera; lo que hace es
+ * evitar que un servidor con muchos servicios encole cientos de peticiones
+ * simultáneas.
  */
 const CONCURRENCY = 8;
 
 /**
- * Tope por llamada a Docker. El cliente se construye sin `timeout` y dockerode
- * no impone ninguno: una petición al socket que no vuelve, no vuelve nunca. Con
- * un muestreador compartido eso ya no afecta solo a quien preguntó —dejaría el
- * muestreo colgado y con él todo el panel—, así que aquí se corta.
+ * Tope por llamada a Docker. Aunque el cliente de consultas ya corta a los
+ * 30 s, con un muestreador compartido una llamada colgada no afecta solo a
+ * quien preguntó —dejaría el muestreo esperando y con él todo el panel—, así
+ * que aquí se rinde antes y se deja un hueco en la foto.
  */
 const CALL_TIMEOUT_MS = 8000;
 
 /**
- * Tope del muestreo entero, por si se cuelga algo que no sea una llamada a
- * Docker. Es la red de seguridad que garantiza que `inflight` siempre se
- * suelta: sin ella, un único cuelgue dejaría a todos los consumidores
- * posteriores esperando para siempre y solo un reinicio lo arreglaría.
+ * Tope de la ESPERA de un muestreo, por si se cuelga algo que no sea una
+ * llamada a Docker. Es la red de seguridad que garantiza que quien espera no
+ * se queda esperando para siempre. El muestreo físico sigue por debajo hasta
+ * terminar; ver `collectingLite`/`collectingFull`.
  */
 const COLLECT_TIMEOUT_MS = 20_000;
 
@@ -120,12 +121,22 @@ const EMPTY_RUNTIME: ServiceRuntime = {
 let cacheLite: Snapshot | null = null;
 let cacheFull: Snapshot | null = null;
 /**
- * Un muestreo en marcha por tipo. El barato NO se engancha al caro: esperar al
- * consumo de todo el servidor para pintar cuatro estados es justo lo que hacía
- * lento el panel, y repetir los `inspect` cuesta unas decenas de milisegundos.
+ * Espera en marcha por tipo: lo que ven los consumidores. El barato NO se
+ * engancha al caro: esperar al consumo de todo el servidor para pintar cuatro
+ * estados es justo lo que hacía lento el panel, y repetir los `inspect`
+ * cuesta unas decenas de milisegundos.
  */
 let inflightLite: Promise<Snapshot> | null = null;
 let inflightFull: Promise<Snapshot> | null = null;
+/**
+ * Muestreo FÍSICO en marcha por tipo: la llamada real a Docker. Es distinto
+ * de la espera de arriba porque esta puede agotar su plazo y resolverse
+ * mientras el muestreo sigue vivo por debajo. Sin esta bandera, el tick
+ * siguiente arrancaba otro muestreo encima del que aún no había terminado, y
+ * otro, hasta ahogar el socket justo cuando ya iba lento.
+ */
+let collectingLite: Promise<Snapshot> | null = null;
+let collectingFull: Promise<Snapshot> | null = null;
 /**
  * Se incrementa en cada invalidación. Un muestreo que arrancó antes de que se
  * tocaran los contenedores puede terminar después: sin este contador guardaría
@@ -133,6 +144,13 @@ let inflightFull: Promise<Snapshot> | null = null;
  * segundos más.
  */
 let epoch = 0;
+/**
+ * Servicios cuya entrada en la foto ya no vale (se acaban de desplegar): se
+ * vuelven a mirar en la lectura siguiente y se parchean en las fotos que
+ * haya, sin tirar el resto ni obligar a nadie a esperar un muestreo entero.
+ */
+const pending = new Set<string>();
+let repairing: Promise<void> | null = null;
 
 /**
  * Estado del servicio a partir del de sus réplicas: corre si TODAS corren; si
@@ -159,32 +177,29 @@ async function pooled<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[
   return out;
 }
 
-async function sampleService(
+/** Estado (y, si se pide, consumo) de UNA réplica. */
+async function sampleReplica(
   project: ProjectRow,
   service: ServiceRow,
+  index: number,
   withStats: boolean,
-): Promise<ServiceSample> {
-  const total = configuredReplicas(service);
-  const perReplica = await pooled(
-    Array.from({ length: total }, (_, i) => async (): Promise<ReplicaSample> => {
-      const name = replicaName(project, service, i + 1);
-      const runtime = await withTimeout<ServiceRuntime | null>(getRuntime(name), CALL_TIMEOUT_MS, () => null);
-      if (!runtime) {
-        return { index: i + 1, name, runtime: { ...EMPTY_RUNTIME, state: 'unknown' }, stats: null, unreachable: true };
-      }
-      // `stats` solo tiene sentido —y solo cuesta— si el contenedor corre, y
-      // solo se pide si alguien lo va a mirar: es la parte cara con diferencia.
-      // Que no conteste no invalida la réplica: se sabe su estado, falta el
-      // consumo.
-      const stats =
-        withStats && runtime.state === 'running'
-          ? await withTimeout(getStats(name), CALL_TIMEOUT_MS, () => null)
-          : null;
-      return { index: i + 1, name, runtime, stats, unreachable: false };
-    }),
-    CONCURRENCY,
-  );
+): Promise<ReplicaSample> {
+  const name = replicaName(project, service, index);
+  const runtime = await withTimeout<ServiceRuntime | null>(getRuntime(name), CALL_TIMEOUT_MS, () => null);
+  if (!runtime) {
+    return { index, name, runtime: { ...EMPTY_RUNTIME, state: 'unknown' }, stats: null, unreachable: true };
+  }
+  // `stats` solo tiene sentido —y solo cuesta— si el contenedor corre, y
+  // solo se pide si alguien lo va a mirar: es la parte cara con diferencia.
+  // Que no conteste no invalida la réplica: se sabe su estado, falta el
+  // consumo.
+  const stats =
+    withStats && runtime.state === 'running' ? await withTimeout(getStats(name), CALL_TIMEOUT_MS, () => null) : null;
+  return { index, name, runtime, stats, unreachable: false };
+}
 
+/** Muestra del servicio a partir de las de sus réplicas. */
+function assemble(serviceId: string, total: number, perReplica: ReplicaSample[]): ServiceSample {
   let aggregated: ServiceStats | null = null;
   for (const r of perReplica) {
     if (!r.stats) continue;
@@ -199,12 +214,22 @@ async function sampleService(
   }
 
   return {
-    serviceId: service.id,
+    serviceId,
     state: rollUpState(perReplica, total),
     replicas: { running: perReplica.filter((r) => r.runtime.state === 'running').length, total },
     stats: aggregated,
     perReplica,
   };
+}
+
+/** Muestra completa de un solo servicio (para parchear una foto existente). */
+async function sampleService(project: ProjectRow, service: ServiceRow, withStats: boolean): Promise<ServiceSample> {
+  const total = configuredReplicas(service);
+  const perReplica = await pooled(
+    Array.from({ length: total }, (_, i) => () => sampleReplica(project, service, i + 1, withStats)),
+    CONCURRENCY,
+  );
+  return assemble(service.id, total, perReplica);
 }
 
 async function collect(withStats: boolean): Promise<Snapshot> {
@@ -218,54 +243,125 @@ async function collect(withStats: boolean): Promise<Snapshot> {
   if (!(await withTimeout(dockerAvailable(), CALL_TIMEOUT_MS, () => false))) {
     return { at, docker: false, byService: new Map(), withStats };
   }
-  const targets: { project: ProjectRow; service: ServiceRow }[] = [];
+  // Tareas planas (servicio, réplica) bajo UN solo límite. Antes había un pool
+  // por servicio DENTRO del pool de servicios: 8×8 = 64 llamadas simultáneas
+  // al socket, justo lo que el límite quería evitar.
+  const targets: { project: ProjectRow; service: ServiceRow; total: number }[] = [];
+  const tasks: (() => Promise<ReplicaSample>)[] = [];
+  const owner: number[] = [];
   for (const project of listProjects()) {
-    for (const service of listServices(project.id)) targets.push({ project, service });
+    for (const service of listServices(project.id)) {
+      const total = configuredReplicas(service);
+      const t = targets.push({ project, service, total }) - 1;
+      for (let i = 1; i <= total; i++) {
+        tasks.push(() => sampleReplica(project, service, i, withStats));
+        owner.push(t);
+      }
+    }
   }
-  const results = await pooled(
-    targets.map((t) => () => sampleService(t.project, t.service, withStats)),
-    CONCURRENCY,
-  );
+  const samples = await pooled(tasks, CONCURRENCY);
+  const grouped = targets.map(() => [] as ReplicaSample[]);
+  samples.forEach((sample, i) => grouped[owner[i]].push(sample));
   const byService = new Map<string, ServiceSample>();
-  for (const sample of results) byService.set(sample.serviceId, sample);
+  targets.forEach((t, i) => byService.set(t.service.id, assemble(t.service.id, t.total, grouped[i])));
   return { at, docker: true, byService, withStats };
 }
 
-/** Lanza un muestreo de su tipo, o devuelve el que ya esté en marcha. */
-function refresh(withStats: boolean): Promise<Snapshot> {
-  const running = withStats ? inflightFull : inflightLite;
-  if (running) return running;
+/** Guarda una foto si nadie invalidó mientras se hacía y trae datos. */
+function store(snap: Snapshot, startedAt: number): void {
+  // No se guarda si por el medio alguien invalidó, ni si no hay datos: una
+  // foto vacía cacheada taparía la recuperación de Docker toda su ventana.
+  // La comparación por fecha evita que un muestreo que empezó antes y
+  // terminó después deje una foto más vieja que la que ya había.
+  if (epoch !== startedAt || !snap.docker) return;
+  if (!cacheLite || snap.at >= cacheLite.at) cacheLite = snap;
+  if (snap.withStats && (!cacheFull || snap.at >= cacheFull.at)) cacheFull = snap;
+}
 
+/** Lanza el muestreo físico de su tipo (uno como mucho por tipo). */
+function startCollect(withStats: boolean): Promise<Snapshot> {
   const startedAt = epoch;
-  const at = Date.now();
-  const work = withTimeout<Snapshot>(collect(withStats), COLLECT_TIMEOUT_MS, () => ({
-    at,
-    docker: false,
-    byService: new Map(),
-    withStats,
-  }))
+  const work = collect(withStats)
     .then((snap) => {
-      // No se guarda si por el medio alguien invalidó, ni si no hay datos: una
-      // foto vacía cacheada taparía la recuperación de Docker toda su ventana.
-      // La comparación por fecha evita que un muestreo que empezó antes y
-      // terminó después deje una foto más vieja que la que ya había.
-      if (epoch === startedAt && snap.docker) {
-        if (!cacheLite || snap.at >= cacheLite.at) cacheLite = snap;
-        if (snap.withStats && (!cacheFull || snap.at >= cacheFull.at)) cacheFull = snap;
-      }
+      store(snap, startedAt);
       return snap;
     })
     .finally(() => {
       if (withStats) {
-        if (inflightFull === work) inflightFull = null;
-      } else if (inflightLite === work) {
-        inflightLite = null;
+        if (collectingFull === work) collectingFull = null;
+      } else if (collectingLite === work) {
+        collectingLite = null;
       }
     });
+  if (withStats) collectingFull = work;
+  else collectingLite = work;
+  return work;
+}
+
+/** Espera (con plazo) al muestreo de su tipo, o al que ya esté en marcha. */
+function refresh(withStats: boolean): Promise<Snapshot> {
+  const running = withStats ? inflightFull : inflightLite;
+  if (running) return running;
+
+  const at = Date.now();
+  // Si el muestreo físico anterior sigue vivo (su espera agotó el plazo pero
+  // Docker aún no ha contestado), no se apila otro encima: se espera a ese.
+  const physical = (withStats ? collectingFull : collectingLite) ?? startCollect(withStats);
+  const work = withTimeout<Snapshot>(physical, COLLECT_TIMEOUT_MS, () => {
+    // Plazo agotado con el muestreo aún en marcha: mejor la foto que hay,
+    // aunque esté pasada, que declarar Docker caído durante un muestreo lento.
+    const stale = withStats ? cacheFull : cacheLite;
+    return stale ?? { at, docker: false, byService: new Map(), withStats };
+  }).finally(() => {
+    if (withStats) {
+      if (inflightFull === work) inflightFull = null;
+    } else if (inflightLite === work) {
+      inflightLite = null;
+    }
+  });
 
   if (withStats) inflightFull = work;
   else inflightLite = work;
   return work;
+}
+
+/**
+ * Vuelve a mirar los servicios pendientes y parchea su entrada en las fotos
+ * que haya. Varias lecturas a la vez comparten la misma reparación.
+ */
+function repairPending(): Promise<void> {
+  if (repairing) return repairing;
+  const ids = [...pending];
+  pending.clear();
+  repairing = (async () => {
+    // Sin foto no hay nada que parchear: el muestreo siguiente ya trae el
+    // estado nuevo.
+    if (!cacheLite && !cacheFull) return;
+    const withStats = !!cacheFull;
+    await Promise.all(
+      ids.map(async (id) => {
+        const service = getService(id);
+        const project = service ? getProject(service.project_id) : undefined;
+        if (!service || !project) {
+          cacheLite?.byService.delete(id);
+          cacheFull?.byService.delete(id);
+          return;
+        }
+        const sample = await withTimeout<ServiceSample | null>(
+          sampleService(project, service, withStats),
+          CALL_TIMEOUT_MS * 2,
+          () => null,
+        );
+        // Sin respuesta se queda la entrada anterior: peor sería inventar una.
+        if (!sample) return;
+        cacheLite?.byService.set(id, sample);
+        cacheFull?.byService.set(id, sample);
+      }),
+    );
+  })().finally(() => {
+    repairing = null;
+  });
+  return repairing;
 }
 
 /**
@@ -282,13 +378,17 @@ function refresh(withStats: boolean): Promise<Snapshot> {
  * lanza por detrás: el panel responde al instante y la lectura siguiente ya
  * trae lo nuevo. Solo se espera cuando no hay nada que enseñar todavía —el
  * arranque en frío— o justo después de una acción que invalidó la foto, que es
- * cuando el usuario sí quiere el estado recién mirado.
+ * cuando el usuario sí quiere el estado recién mirado. `wait: true` espera
+ * siempre a una foto que cumpla la antigüedad: lo pide quien prefiere datos
+ * nuevos a responder ya (el stream de métricas, que tiene su propio ritmo).
  */
-export async function dockerSnapshot(maxAgeMs: number, opts: { stats?: boolean } = {}): Promise<Snapshot> {
+export async function dockerSnapshot(maxAgeMs: number, opts: { stats?: boolean; wait?: boolean } = {}): Promise<Snapshot> {
   const needStats = opts.stats === true;
+  if (pending.size > 0) await repairPending();
   const usable = needStats ? cacheFull : cacheLite;
   if (usable && Date.now() - usable.at <= maxAgeMs) return usable;
   if (usable) {
+    if (opts.wait) return refresh(needStats);
     // Pasada pero servible: se entrega ya y se mira de nuevo por detrás.
     void refresh(needStats).catch(() => undefined);
     return usable;
@@ -331,9 +431,19 @@ export async function sampledRuntime(serviceId: string, maxAgeMs: number): Promi
  * Descarta la foto. La llaman las acciones que cambian contenedores (desplegar,
  * arrancar, parar) para que el panel refleje el cambio en la lectura siguiente
  * en vez de enseñar el estado viejo hasta que caduque.
+ *
+ * Con `serviceId` solo se invalida ESE servicio: se vuelve a mirar en la
+ * lectura siguiente y se parchea en la foto, y el resto del panel no tiene
+ * que esperar a un muestreo completo del servidor por un despliegue. Un
+ * muestreo que ya estuviera en marcha no se guarda (podría traer el estado
+ * anterior al cambio).
  */
-export function invalidateDockerSnapshot(): void {
+export function invalidateDockerSnapshot(serviceId?: string): void {
+  epoch += 1;
+  if (serviceId) {
+    pending.add(serviceId);
+    return;
+  }
   cacheLite = null;
   cacheFull = null;
-  epoch += 1;
 }

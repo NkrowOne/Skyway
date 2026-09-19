@@ -5,7 +5,7 @@ import { config } from './config';
 import { getApiTokenByHash, getProject, getService, getSetting, getUser, setSetting, touchApiToken, userHasProject } from './db';
 import { MODULE_LABEL, ModuleKey } from './modules';
 import { moduleEnabled, workspaceOfProject, workspacePlan } from './quota';
-import { UserRow } from './types';
+import { ProjectRow, UserRow } from './types';
 import { randomToken } from './util';
 
 declare module 'fastify' {
@@ -236,6 +236,17 @@ export function canAccessProject(user: UserRow, projectId: string): boolean {
   }
   // Un miembro accede a los proyectos que se le han asignado.
   return userHasProject(user.id, projectId);
+}
+
+/**
+ * Igual que `canAccessProject`, para cuando la fila del proyecto ya está en la
+ * mano (filtrar un listado): evita releer cada proyecto de la base de datos en
+ * cada sondeo del panel.
+ */
+export function canAccessProjectRow(user: UserRow, project: ProjectRow): boolean {
+  if (user.role === 'admin') return true;
+  if (user.role === 'owner' && user.workspace_id && project.workspace_id === user.workspace_id) return true;
+  return userHasProject(user.id, project.id);
 }
 
 /**

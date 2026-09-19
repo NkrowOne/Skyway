@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { Building2, CreditCard, Plus, SlidersHorizontal } from 'lucide-react';
 import { api } from '../api';
-import { Button, Chip, ErrorState, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, EmptyState, ErrorState, Field, Modal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { MiniMeter } from '../components/QuotaMeter';
 import { Me, Plan, Workspace } from '../types';
 import { cx, fmtMb, fmtMoney } from '../utils';
@@ -110,7 +110,21 @@ export default function WorkspacesPage() {
     [workspaces.data?.workspaces],
   );
 
-  if (isOwner) return null; // redirigiendo
+  if (isOwner) {
+    // Redirigiendo a su cuenta. Sin cuenta asignada no hay adónde ir: antes la
+    // página se quedaba en blanco sin decir nada.
+    if (me.data?.user?.workspaceId) return null;
+    return (
+      <div className="mx-auto max-w-[880px] px-4 py-10">
+        <div className="card">
+          <EmptyState
+            title="Tu usuario no tiene cuenta de cliente asignada"
+            description="Pide a un administrador que te asigne una cuenta para ver aquí sus proyectos, cuota y facturas."
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-[1120px] px-4 py-7 sm:px-6 sm:py-10">

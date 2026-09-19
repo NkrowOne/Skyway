@@ -1,7 +1,15 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { assertProjectAccess, requireAuth } from '../auth';
 import { audit } from '../audit';
-import { getDeployment, getProject, getService, listDeployments, saveDeploymentRuntimeLogs } from '../db';
+import {
+  deploymentSummary,
+  getDeployment,
+  getProject,
+  getService,
+  latestDeployment,
+  listDeployments,
+  saveDeploymentRuntimeLogs,
+} from '../db';
 import { cancelDeployment, triggerDeploy } from '../deploy/deployer';
 import { dockerAvailable } from '../docker/client';
 import { containerName, fetchLogsText, findContainer } from '../docker/containers';
@@ -40,7 +48,8 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/api/deployments/:id/cancel', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const deployment = getDeployment(id);
+    // Solo hacen falta estado y servicio: sin arrastrar el log de build entero.
+    const deployment = deploymentSummary(id);
     if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
     if (!serviceAccess(req, reply, deployment.service_id)) return reply;
     if (!ACTIVE.has(deployment.status)) {
@@ -55,7 +64,8 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/api/deployments/:id/rollback', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const deployment = getDeployment(id);
+    // Solo hacen falta estado, imagen y servicio: sin el log de build.
+    const deployment = deploymentSummary(id);
     if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
     if (!serviceAccess(req, reply, deployment.service_id)) return reply;
     if (deployment.status !== 'success' || !deployment.image_tag) {
@@ -118,7 +128,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       const info = await findContainer(cName);
       if (info) {
         const matchesDep = info.Config?.Labels?.['skyway.deployment'] === deployment.id;
-        const isLatest = listDeployments(deployment.service_id)[0]?.id === deployment.id;
+        const isLatest = latestDeployment(deployment.service_id)?.id === deployment.id;
         if (matchesDep || (!runtimeLogs && isLatest)) {
           isLiveRuntime = info.State.Running;
           try {

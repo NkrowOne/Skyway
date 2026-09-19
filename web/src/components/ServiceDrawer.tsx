@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, ChevronLeft, ExternalLink, Hammer, MoveHorizontal, Play, RefreshCw, Rocket, ScrollText, Square, Terminal, X } from 'lucide-react';
 import { api } from '../api';
@@ -81,13 +81,13 @@ export default function ServiceDrawer({
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const handleAttemptClose = () => {
+  const handleAttemptClose = useCallback(() => {
     if (isTabDirty) {
       setPendingClose(true);
       return;
     }
     onClose();
-  };
+  }, [isTabDirty, onClose]);
 
   const handleTabChange = (nextTab: string) => {
     if (nextTab === tab) return;
@@ -107,7 +107,7 @@ export default function ServiceDrawer({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, isTabDirty]);
+  }, [handleAttemptClose]);
 
   // Aviso del navegador si el usuario recarga la página con cambios sin guardar
   useEffect(() => {
@@ -131,7 +131,10 @@ export default function ServiceDrawer({
         /** Motor de la consola de consultas, o null si este servicio no tiene. */
         dbConsole: DbOverview['engine'] | null;
       }>(`/services/${serviceId}`),
-    refetchInterval: 4000,
+    // El estado vivo del contenedor ya llega por el stream de métricas del
+    // proyecto (latestMetrics); esto solo refresca el último despliegue y la
+    // configuración, y a 4 s sumaba tres sondeos con el panel abierto.
+    refetchInterval: 8000,
   });
 
   useEffect(() => {
@@ -572,6 +575,7 @@ export default function ServiceDrawer({
                 projectId={projectId}
                 onChanged={invalidate}
                 onNeedsRedeploy={() => setPendingRedeploy(true)}
+                onDirtyChange={setIsTabDirty}
                 onDeleted={() => {
                   invalidate();
                   onClose();

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 /**
  * Presencia con salida animada: mantiene el nodo montado `exitMs` tras cerrarse
@@ -71,6 +71,17 @@ export function useLocalStorage<T>(key: string, initial: T): [T, (v: T) => void]
     }
   };
   return [value, set];
+}
+
+/**
+ * Conserva el último valor no nulo. Para los diálogos de confirmación: el
+ * modal sigue montado 200 ms mientras se despide, y con el dato ya a null se
+ * leía «Eliminar "null"» o se vaciaba el cuerpo a mitad de la animación.
+ */
+export function useLatched<T>(value: T | null | undefined): T | null {
+  const ref = useRef<T | null>(value ?? null);
+  if (value !== null && value !== undefined) ref.current = value;
+  return ref.current;
 }
 
 /** true si el evento de teclado ocurre con el foco en un campo editable. */

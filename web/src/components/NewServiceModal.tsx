@@ -178,6 +178,13 @@ export default function NewServiceModal({
 
   const selectedStack = stacks.data?.stacks.find((s) => s.key === stackKey) ?? null;
 
+  // Solo hay algo que perder cuando se ha escrito o elegido algo: pasar de
+  // pantalla sin rellenar nada no debe pedir confirmación al cerrar.
+  const hasInput = Boolean(
+    name || repoUrl || branch !== 'main' || port || rootDir || template || image || imagePort ||
+    source !== NO_SOURCE || stackKey || tplInput || tplPlan || stackPrefix || stackDomain,
+  );
+
   // Plantillas del catálogo público de Railway, instaladas dentro del proyecto.
   const previewTemplate = useMutation({
     mutationFn: (template: string) =>
@@ -239,7 +246,7 @@ export default function NewServiceModal({
   };
 
   return (
-    <Modal open={open} onClose={close} title="Nuevo servicio" wide dirty={step !== 'pick'}>
+    <Modal open={open} onClose={close} title="Nuevo servicio" wide dirty={hasInput}>
       {step === 'pick' && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button

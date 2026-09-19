@@ -9,6 +9,7 @@ import {
   getProject,
   listAllGithubInstallations,
   listGithubInstallationsForProject,
+  listUserProjectIds,
   upsertGithubInstallation,
 } from '../db';
 import {
@@ -120,6 +121,49 @@ function installationAccess(
   }
   return assertProjectAccess(req, reply, row.project_id);
 }
+
+/**
+ * Acceso para USAR una instalación (listar sus repos y ramas), que es menos que
+ * gestionarla: elegir repo es parte del flujo normal de crear un servicio.
+ *
+ * - Ligada a un proyecto: hace falta acceso a ESE proyecto (si llega `projectId`
+ *   y no coincide, se rechaza: un proyecto solo usa sus instalaciones o las
+ *   globales, nunca las de otro).
+ * - Global: antes no se comprobaba nada, y cualquier autenticado —también un
+ *   miembro sin ningún proyecto asignado— podía enumerar los repos privados de
+ *   la App. Ahora, con `projectId` se exige acceso a ese proyecto (el caso normal
+ *   desde el asistente de servicio); sin él, basta ser admin o propietario, o un
+ *   miembro con al menos un proyecto asignado: quien puede desplegar en algún
+ *   sitio necesita ver el catálogo, quien no tiene dónde desplegar no.
+ */
+function installationUseAccess(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  row: GithubInstallationRow,
+  projectId: string | undefined,
+): boolean {
+  if (row.project_id) {
+    if (projectId && projectId !== row.project_id) {
+      reply.code(403).send({ error: 'Esta conexión de GitHub pertenece a otro proyecto' });
+      return false;
+    }
+    return assertProjectAccess(req, reply, row.project_id);
+  }
+  const user = currentUser(req)!;
+  if (user.role === 'admin') return true;
+  if (projectId) {
+    if (!getProject(projectId)) {
+      reply.code(404).send({ error: 'Proyecto no encontrado' });
+      return false;
+    }
+    return assertProjectAccess(req, reply, projectId);
+  }
+  if (user.role !== 'member' || listUserProjectIds(user.id).length > 0) return true;
+  reply.code(403).send({ error: 'No tienes ningún proyecto desde el que usar esta conexión de GitHub' });
+  return false;
+}
+
+const useQuerySchema = z.object({ projectId: z.string().trim().min(1).optional() });
 
 export async function githubRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
@@ -319,11 +363,10 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/github/installations/:rowId/repos', async (req, reply) => {
     const { rowId } = req.params as { rowId: string };
+    const query = useQuerySchema.parse(req.query);
     const row = getGithubInstallation(rowId);
     if (!row) return reply.code(404).send({ error: 'Instalación no encontrada' });
-    // Para LISTAR basta con acceso al proyecto (o que sea global): elegir un
-    // repo es parte del flujo normal de crear un servicio, no de gestionarla.
-    if (row.project_id && !assertProjectAccess(req, reply, row.project_id)) return reply;
+    if (!installationUseAccess(req, reply, row, query.projectId)) return reply;
     try {
       return { repos: await listInstallationRepos(row.installation_id) };
     } catch (err: any) {
@@ -334,12 +377,12 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/github/installations/:rowId/branches', async (req, reply) => {
     const { rowId } = req.params as { rowId: string };
-    const query = z
-      .object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'Formato de repo inválido (owner/repo)') })
+    const query = useQuerySchema
+      .extend({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'Formato de repo inválido (owner/repo)') })
       .parse(req.query);
     const row = getGithubInstallation(rowId);
     if (!row) return reply.code(404).send({ error: 'Instalación no encontrada' });
-    if (row.project_id && !assertProjectAccess(req, reply, row.project_id)) return reply;
+    if (!installationUseAccess(req, reply, row, query.projectId)) return reply;
     const [owner, repo] = query.repo.split('/');
     try {
       const token = await installationTokenFor(row);

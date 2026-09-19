@@ -123,13 +123,19 @@ export default function DataMigrationModal({
   };
 
   // Una copia lanzada antes de abrir el modal (o desde otra pestaña) se retoma.
+  // Depende del estado en sí, no de «¿está en marcha?»: una copia que llegaba
+  // ya terminada (success/failed) en la primera carga no disparaba el enganche
+  // y su log archivado no aparecía nunca.
+  const migrationStatus = state.data?.migration?.status ?? null;
   useEffect(() => {
-    if (open && state.data?.migration) attach();
+    if (open && migrationStatus) attach();
     return () => {
       streamRef.current?.close();
       cancelFlush();
     };
-  }, [open, state.data?.migration?.status === 'running']);
+    // `attach` cambia de identidad en cada render; abrirlo por cada render sería peor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, migrationStatus]);
 
   useEffect(() => {
     if (!open) {

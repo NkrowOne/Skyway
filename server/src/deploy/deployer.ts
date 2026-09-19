@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { ChildProcess, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -27,8 +27,11 @@ import { diagnose } from './diagnose';
 import { emitDeploy, emitDeployFeed, toDeployFeedItem } from '../events';
 import { docker, dockerAvailable } from '../docker/client';
 import {
+  assertImageRef,
   configuredReplicas,
   containerName,
+  demuxLogBuffer,
+  execInContainer,
   fetchLogsText,
   findContainer,
   imageExists,
@@ -60,6 +63,15 @@ import { DatabaseConfig, DeploymentRow, GitConfig, ImageConfig, ProjectRow, Serv
 import { now } from '../util';
 
 const MAX_LOG_CHARS = 400_000;
+/** Tope del log de ejecución que se archiva por despliegue (se guarda el final). */
+const MAX_RUNTIME_LOG_CHARS = 256 * 1024;
+/** Tope de un `docker pull`: un registro que no contesta no puede colgar el despliegue. */
+const PULL_TIMEOUT_MS = 15 * 60_000;
+/** Tope de `captureCommand` (inspecciones cortas con un contenedor efímero). */
+const CAPTURE_TIMEOUT_MS = 60_000;
+/** Cada cuánto se vuelca el log del despliegue a la BD (o antes, si crece mucho). */
+const LOG_FLUSH_MS = 3000;
+const LOG_FLUSH_BYTES = 8 * 1024;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -74,10 +86,75 @@ class CanceledError extends Error {
 
 interface ActiveJob {
   canceled: boolean;
-  procs: Set<{ kill: (signal?: string) => void }>;
+  /** Motivo si no lo canceló el usuario (apagado del servidor). */
+  cancelReason?: string;
+  procs: Set<ChildProcess>;
+  /** Esperas sin proceso que matar (la cola de build): se cortan por aquí. */
+  onCancel: Set<() => void>;
 }
 
 const activeJobs = new Map<string, ActiveJob>();
+/**
+ * Apagando: la cola no arranca más despliegues. Los que sigan en «queued» los
+ * marca como fallidos el siguiente arranque (markStaleDeploymentsFailed).
+ */
+let shuttingDown = false;
+
+/** Registra un proceso hijo en el trabajo para poder matarlo al cancelar. */
+function trackProc(job: ActiveJob): (p: ChildProcess) => void {
+  return (p) => {
+    job.procs.add(p);
+    p.on('exit', () => job.procs.delete(p));
+  };
+}
+
+/** SIGTERM y, si a los 3 s sigue vivo, SIGKILL. */
+function killProc(proc: ChildProcess): void {
+  try {
+    proc.kill('SIGTERM');
+    const killer = setTimeout(() => {
+      try {
+        // `killed` solo dice que se ENVIÓ una señal (el SIGTERM de arriba), no
+        // que el proceso haya muerto: mirándolo, el SIGKILL no llegaba nunca.
+        if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
+      } catch {
+        /* ya terminado */
+      }
+    }, 3000);
+    // Ni mantiene vivo el proceso al apagar ni queda pendiente si el hijo ya salió.
+    killer.unref();
+    proc.once('exit', () => clearTimeout(killer));
+  } catch {
+    /* ya terminado */
+  }
+}
+
+function abortJob(job: ActiveJob, reason?: string): void {
+  job.canceled = true;
+  if (reason) job.cancelReason = reason;
+  for (const proc of job.procs) killProc(proc);
+  for (const hook of job.onCancel) {
+    try {
+      hook();
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+/**
+ * Apagado del servidor: corta los despliegues en marcha (sus procesos hijos
+ * quedarían huérfanos y la fila en «building» para siempre) y espera un poco a
+ * que cierren para que puedan dejar su estado escrito antes de cerrar la BD.
+ */
+export async function abortActiveDeployments(graceMs = 3000): Promise<number> {
+  shuttingDown = true;
+  const count = activeJobs.size;
+  for (const job of activeJobs.values()) abortJob(job, 'Interrumpido por el apagado del servidor');
+  const deadline = Date.now() + graceMs;
+  while (activeJobs.size > 0 && Date.now() < deadline) await sleep(100);
+  return count;
+}
 
 /**
  * Anuncia el despliegue en el feed del proyecto. El canal por despliegue solo
@@ -100,21 +177,7 @@ function publishFeed(deploymentId: string): void {
 export function cancelDeployment(deploymentId: string): boolean {
   const job = activeJobs.get(deploymentId);
   if (job) {
-    job.canceled = true;
-    for (const proc of job.procs) {
-      try {
-        proc.kill('SIGTERM');
-        setTimeout(() => {
-          try {
-            if (!(proc as any).killed) proc.kill('SIGKILL');
-          } catch {
-            /* ya terminado */
-          }
-        }, 3000);
-      } catch {
-        /* ya terminado */
-      }
-    }
+    abortJob(job);
     return true;
   }
   const row = getDeployment(deploymentId);
@@ -133,15 +196,25 @@ interface DeployContext {
   flush: () => void;
 }
 
-function makeLogger(deploymentId: string): DeployContext['log'] & { buffer: () => string; stop: () => void } {
+type DeployLogger = DeployContext['log'] & { buffer: () => string; flush: () => void; stop: () => void };
+
+function makeLogger(deploymentId: string): DeployLogger {
   let buffer = '';
   let dirty = false;
-  const interval = setInterval(() => {
-    if (dirty) {
-      updateDeployment(deploymentId, { logs: buffer });
-      dirty = false;
-    }
-  }, 1000);
+  /** Longitud del búfer en la última escritura, para volcar antes si crece deprisa. */
+  let written = 0;
+  // Cada volcado REESCRIBE la columna entera (hasta 400 KB): hacerlo cada
+  // segundo durante un build parlanchín era una escritura grande por segundo
+  // en SQLite. Cada 3 s basta para seguirlo en vivo (el SSE ya lleva las
+  // líneas al instante), y si el búfer crece ≥ 8 KB se adelanta.
+  const flush = () => {
+    if (!dirty) return;
+    updateDeployment(deploymentId, { logs: buffer });
+    dirty = false;
+    written = buffer.length;
+  };
+  const interval = setInterval(flush, LOG_FLUSH_MS);
+  interval.unref();
 
   const log = ((line: string) => {
     // Sello ISO completo (YYYY-MM-DDTHH:mm:ss.sssZ) para que el visor pueda pintar
@@ -153,13 +226,15 @@ function makeLogger(deploymentId: string): DeployContext['log'] & { buffer: () =
     if (buffer.length < MAX_LOG_CHARS) {
       buffer += stamped + '\n';
       dirty = true;
+      if (buffer.length - written >= LOG_FLUSH_BYTES) flush();
     }
     emitDeploy(deploymentId, { type: 'log', line: stamped });
-  }) as any;
+  }) as DeployLogger;
   log.buffer = () => buffer;
+  log.flush = flush;
   log.stop = () => {
     clearInterval(interval);
-    updateDeployment(deploymentId, { logs: buffer });
+    flush();
   };
   return log;
 }
@@ -175,12 +250,20 @@ export async function archiveContainerLogs(cName: string, fallbackDeploymentId?:
     if (targetDepId) {
       const text = await fetchLogsText(cName, 3000, true);
       if (text && text.trim()) {
-        saveDeploymentRuntimeLogs(targetDepId, text);
+        saveDeploymentRuntimeLogs(targetDepId, tailChars(text, MAX_RUNTIME_LOG_CHARS));
       }
     }
   } catch {
     /* noop best-effort */
   }
+}
+
+/** Últimos `max` caracteres de un texto, cortando en un salto de línea. */
+function tailChars(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.length - max;
+  const nl = text.indexOf('\n', cut);
+  return `[… recortado …]\n${text.slice(nl >= 0 ? nl + 1 : cut)}`;
 }
 
 /** Crea un despliegue y lo encola. Devuelve la fila inmediatamente. */
@@ -217,12 +300,13 @@ export async function awaitDeployment(
 }
 
 async function runDeployment(deploymentId: string): Promise<void> {
+  if (shuttingDown) return;
   const deployment = getDeployment(deploymentId);
   if (!deployment || deployment.status !== 'queued') return;
   const service = getService(deployment.service_id);
   const project = service ? getProject(service.project_id) : undefined;
   const log = makeLogger(deploymentId);
-  const job: ActiveJob = { canceled: false, procs: new Set() };
+  const job: ActiveJob = { canceled: false, procs: new Set(), onCancel: new Set() };
   activeJobs.set(deploymentId, job);
 
   const setStatus = (status: DeploymentRow['status']) => {
@@ -252,9 +336,9 @@ async function runDeployment(deploymentId: string): Promise<void> {
     let image: string;
     let repoConfig: RailwayRepoConfig | null = null;
     if (service.type === 'database') {
-      image = await prepareDatabaseImage(service, log);
+      image = await prepareDatabaseImage(service, log, job);
     } else if (service.type === 'image') {
-      image = await preparePlainImage(service, log);
+      image = await preparePlainImage(service, log, job);
     } else if (deployment.image_tag) {
       image = deployment.image_tag;
       log(`Rollback a la imagen ${image}`);
@@ -282,44 +366,54 @@ async function runDeployment(deploymentId: string): Promise<void> {
     await deployContainer(project, service, image, deploymentId, log, repoConfig, job);
     checkCanceled();
 
-    // El intercambio acaba de cambiar los contenedores: se tira la foto
-    // compartida para que el panel enseñe el estado nuevo en la lectura
-    // siguiente, no el de la versión que acaba de irse.
-    invalidateDockerSnapshot();
-    setStatus('success');
-    updateDeployment(deploymentId, { finished_at: now() });
+    // El intercambio acaba de cambiar los contenedores de ESTE servicio: se
+    // renueva su entrada en la foto compartida para que el panel enseñe el
+    // estado nuevo en la lectura siguiente, no el de la versión que se fue.
+    invalidateDockerSnapshot(service.id);
+
+    // La purga va ANTES del estado final: escribe en este log, y todo lo que
+    // se escriba después del volcado final lo pisaría quien añada líneas al
+    // despliegue ya terminado (las pilas, con sus esperas y su SQL).
+    if (service.type === 'git' && !deployment.image_tag) {
+      await cleanupOldImages(project, service, log);
+    }
     // La última línea va ANTES del «done»: la ruta SSE cierra el canal 100 ms
     // después de ese evento y el «✔» llegaba tarde, o no llegaba.
     log('✔ Despliegue completado');
+    // Volcado completo ANTES del estado final: quien espere a ese estado lee
+    // el log entero y ninguna escritura tardía del logger pisa lo suyo.
+    log.flush();
+    setStatus('success');
+    updateDeployment(deploymentId, { finished_at: now() });
     emitDeploy(deploymentId, { type: 'done', status: 'success' });
     publishFeed(deploymentId);
 
     // Un despliegue correcto resuelve todas las alertas abiertas previas del servicio (caídas, fallos de deploy, memoria, etc.).
     resolveAllServiceAlerts(service.id, false);
-
-    if (service.type === 'git' && !deployment.image_tag) {
-      await cleanupOldImages(service.id, log);
-    }
   } catch (err: any) {
     if (err instanceof CanceledError || job.canceled) {
-      log('✖ Despliegue cancelado por el usuario');
-      updateDeployment(deploymentId, { status: 'canceled', error: 'Cancelado por el usuario', finished_at: now() });
+      const reason = job.cancelReason ?? 'Cancelado por el usuario';
+      log(`✖ ${reason}`);
+      log.flush();
+      updateDeployment(deploymentId, { status: 'canceled', error: reason, finished_at: now() });
       emitDeploy(deploymentId, { type: 'done', status: 'canceled', error: null });
       publishFeed(deploymentId);
       return;
     }
     // Un despliegue fallido también deja contenedores tocados (el intento
     // nuevo retirado, el anterior restaurado): la foto vieja ya no vale.
-    invalidateDockerSnapshot();
+    if (service) invalidateDockerSnapshot(service.id);
     const message = err?.message || String(err);
     log(`✖ Error: ${message}`);
-    updateDeployment(deploymentId, { status: 'failed', error: message, finished_at: now() });
 
-    const diag = diagnose(message, (log as any).buffer());
+    const diag = diagnose(message, log.buffer());
     if (diag) {
       setDeploymentDiagnosis(deploymentId, diag);
       log(`ℹ ${diag.title}: ${diag.cause}`);
     }
+    // Mismo orden que en el éxito: primero el log completo, después el estado.
+    log.flush();
+    updateDeployment(deploymentId, { status: 'failed', error: message, finished_at: now() });
     emitDeploy(deploymentId, { type: 'done', status: 'failed', error: message });
     publishFeed(deploymentId);
 
@@ -337,33 +431,50 @@ async function runDeployment(deploymentId: string): Promise<void> {
     }
   } finally {
     activeJobs.delete(deploymentId);
-    (log as any).stop();
+    // Único punto de parada del logger: cubre éxito, fallo y cancelación.
+    log.stop();
   }
 }
 
-async function preparePlainImage(service: ServiceRow, log: (l: string) => void): Promise<string> {
+/**
+ * Descarga una imagen si no está. La referencia se valida antes de ponerla en
+ * la línea de órdenes y va detrás de «--»: un nombre que empezara por «-» se
+ * tomaría por una opción de la CLI.
+ */
+async function pullImage(
+  image: string,
+  log: (l: string) => void,
+  job?: ActiveJob,
+  opts: { quietIfPresent?: boolean } = {},
+): Promise<void> {
+  assertImageRef(image);
+  if (await imageExists(image)) {
+    // La imagen auxiliar (busybox) no es noticia: solo se anuncia la del servicio.
+    if (!opts.quietIfPresent) log(`Imagen ${image} ya disponible`);
+    return;
+  }
+  log(`Descargando imagen ${image}...`);
+  await spawnLogged(
+    'docker',
+    ['pull', '--', image],
+    { timeoutMs: PULL_TIMEOUT_MS, onSpawn: job ? trackProc(job) : undefined },
+    log,
+  );
+}
+
+async function preparePlainImage(service: ServiceRow, log: (l: string) => void, job?: ActiveJob): Promise<string> {
   const cfg = service.config as ImageConfig;
   if (!cfg.image) throw new Error('El servicio no tiene imagen configurada');
-  if (!(await imageExists(cfg.image))) {
-    log(`Descargando imagen ${cfg.image}...`);
-    await spawnLogged('docker', ['pull', cfg.image], {}, log);
-  } else {
-    log(`Imagen ${cfg.image} ya disponible`);
-  }
+  await pullImage(cfg.image, log, job);
   return cfg.image;
 }
 
-async function prepareDatabaseImage(service: ServiceRow, log: (l: string) => void): Promise<string> {
+async function prepareDatabaseImage(service: ServiceRow, log: (l: string) => void, job?: ActiveJob): Promise<string> {
   const cfg = service.config as DatabaseConfig;
   const template = getTemplate(cfg.template);
   if (!template) throw new Error(`Plantilla desconocida: ${cfg.template}`);
   const image = `${template.image}:${effectiveDbVersion(template, cfg.version)}`;
-  if (!(await imageExists(image))) {
-    log(`Descargando imagen ${image}...`);
-    await spawnLogged('docker', ['pull', image], {}, log);
-  } else {
-    log(`Imagen ${image} ya disponible`);
-  }
+  await pullImage(image, log, job);
   return image;
 }
 
@@ -387,18 +498,41 @@ function ensureDatabaseEnv(service: ServiceRow, log: (l: string) => void): void 
   log(`Variables de conexión internas generadas (faltaban): ${missing.join(', ')}`);
 }
 
-/** Ejecuta un comando y captura su salida (a diferencia de spawnLogged, que la loguea). */
-function captureCommand(cmd: string, args: string[]): Promise<string> {
+/**
+ * Ejecuta un comando y captura su salida (a diferencia de spawnLogged, que la
+ * loguea). Con tope: es para inspecciones cortas, y sin él un `docker run`
+ * que no arranca dejaba el despliegue colgado. El hijo se registra en el
+ * trabajo para que Cancelar también lo alcance.
+ */
+function captureCommand(
+  cmd: string,
+  args: string[],
+  opts: { timeoutMs?: number; onSpawn?: (p: ChildProcess) => void } = {},
+): Promise<string> {
+  const timeoutMs = opts.timeoutMs ?? CAPTURE_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    opts.onSpawn?.(p);
     let out = '';
     let err = '';
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killProc(p);
+    }, timeoutMs);
+    timer.unref();
     p.stdout.on('data', (c) => (out += c.toString()));
     p.stderr.on('data', (c) => (err += c.toString()));
-    p.on('error', reject);
-    p.on('exit', (code) =>
-      code === 0 ? resolve(out) : reject(new Error(err.trim() || `código de salida ${code}`)),
-    );
+    p.on('error', (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      if (timedOut) reject(new Error(`${cmd} superó el tiempo máximo (${Math.round(timeoutMs / 1000)} s)`));
+      else if (code === 0) resolve(out);
+      else reject(new Error(err.trim() || `código de salida ${code}`));
+    });
   });
 }
 
@@ -414,6 +548,7 @@ async function assertPostgresVolumeCompatible(
   volume: string,
   version: string,
   log: (l: string) => void,
+  job?: ActiveJob,
 ): Promise<void> {
   const parsed = parseInt(version, 10);
   const target = Number.isInteger(parsed) ? parsed : 18; // latest/alpine → 18+
@@ -424,13 +559,15 @@ async function assertPostgresVolumeCompatible(
   }
   let report: string;
   try {
-    if (!(await imageExists('busybox:stable'))) {
-      await spawnLogged('docker', ['pull', 'busybox:stable'], {}, log);
-    }
-    report = await captureCommand('docker', [
-      'run', '--rm', '-v', `${volume}:/v:ro`, 'busybox:stable', 'sh', '-c',
-      'for f in /v/PG_VERSION /v/data/PG_VERSION /v/*/docker/PG_VERSION; do [ -s "$f" ] && echo "$f=$(cat "$f")"; done; true',
-    ]);
+    await pullImage(PROBE_IMAGE, log, job, { quietIfPresent: true });
+    report = await captureCommand(
+      'docker',
+      [
+        'run', '--rm', '-v', `${volume}:/v:ro`, '--', PROBE_IMAGE, 'sh', '-c',
+        'for f in /v/PG_VERSION /v/data/PG_VERSION /v/*/docker/PG_VERSION; do [ -s "$f" ] && echo "$f=$(cat "$f")"; done; true',
+      ],
+      { onSpawn: job ? trackProc(job) : undefined },
+    );
   } catch (err: any) {
     log(`⚠ No se pudo inspeccionar el volumen ${volume} (${err?.message || err}): se continúa.`);
     return;
@@ -540,10 +677,7 @@ async function buildGitImage(
   // que las variables del build siguen valiendo lo mismo, y dárselas al build.
   const env = resolveServiceEnv(service);
   const forceBuild = getDeployment(deploymentId)?.force_build === 1;
-  const onSpawn = (p: any) => {
-    job.procs.add(p);
-    p.on('exit', () => job.procs.delete(p));
-  };
+  const onSpawn = trackProc(job);
 
   // Atajo: si la cabeza de la rama ya se construyó con ÉXITO y con las mismas
   // entradas, la imagen resultante sería idéntica bit a bit. Redesplegar tras
@@ -567,7 +701,25 @@ async function buildGitImage(
     }
   }
 
-  await acquireBuildSlot();
+  // Mientras se espera hueco no hay ningún proceso que matar: Cancelar solo
+  // surte efecto si la espera se puede abandonar. Quien abandona no llegó a
+  // tener plaza, así que no pasa por el `release` de abajo.
+  let abandonWait: (() => void) | null = null;
+  const cancelWait = () => abandonWait?.();
+  job.onCancel.add(cancelWait);
+  try {
+    await acquireBuildSlot({
+      onWait: (abandon) => {
+        abandonWait = abandon;
+        if (job.canceled) abandon();
+      },
+    });
+  } catch (err) {
+    if (job.canceled) throw new CanceledError();
+    throw err;
+  } finally {
+    job.onCancel.delete(cancelWait);
+  }
   try {
     if (job.canceled) throw new CanceledError();
     const info = await cloneRepo(
@@ -616,7 +768,13 @@ async function buildGitImage(
     return { image, repoConfig };
   } finally {
     releaseBuildSlot();
-    fs.rmSync(workDir, { recursive: true, force: true });
+    // Asíncrono y sin lanzar: `rmSync` bloqueaba el proceso entero borrando un
+    // node_modules, y si fallaba su excepción tapaba el error real del build.
+    try {
+      await fs.promises.rm(workDir, { recursive: true, force: true });
+    } catch (err: any) {
+      log(`⚠ No se pudo borrar el directorio de trabajo ${workDir}: ${err?.message || err}`);
+    }
   }
 }
 
@@ -835,12 +993,7 @@ async function runPreDeploy(
   // el comando de arranque: con el de Nixpacks, un `sh -c` acababa arrancando
   // un shell vacío que salía con 0 —y esto se habría dado por ejecutado—.
   args.push(...(await runArgsFor(image, 'eval "$SKYWAY_PREDEPLOY_CMD"')));
-  const onSpawn = job
-    ? (p: any) => {
-        job.procs.add(p);
-        p.on('exit', () => job.procs.delete(p));
-      }
-    : undefined;
+  const onSpawn = job ? trackProc(job) : undefined;
   try {
     await spawnLogged('docker', args, { env: { ...env, SKYWAY_PREDEPLOY_CMD: command }, onSpawn }, log);
   } catch (err: any) {
@@ -955,7 +1108,7 @@ async function deployContainer(
     cpus = cfg.cpus ?? null;
     memoryMb = cfg.memoryMb ?? null;
     if (template.key === 'postgres') {
-      await assertPostgresVolumeCompatible(volumes[0].name, version, log);
+      await assertPostgresVolumeCompatible(volumes[0].name, version, log, job);
     }
   } else if (service.type === 'image') {
     const cfg = service.config as ImageConfig;
@@ -1098,7 +1251,14 @@ async function deployContainer(
       // Sin política: este contenedor se crea con `restartPolicy: 'no'` a
       // propósito —si muere, queremos verlo muerto— así que esperar reintentos
       // que Docker no va a hacer solo alargaría el fallo.
-      const verdict = await validateContainer(netName, `${service.slug}-next`, internalPort, healthcheckPath, tempName, log, probeTimeoutMs, null);
+      let verdict: { ok: boolean; reason: string };
+      try {
+        verdict = await validateContainer(netName, `${service.slug}-next`, internalPort, healthcheckPath, tempName, log, probeTimeoutMs, null, job);
+      } catch (err) {
+        // Cancelado a mitad: el contenedor de prueba no se queda vivo.
+        await removeContainer(tempName).catch(() => undefined);
+        throw err;
+      }
       if (!verdict.ok) {
         await appendContainerTail(tempName, log);
         await removeContainer(tempName);
@@ -1122,12 +1282,12 @@ async function deployContainer(
         // Ventana corta de asentamiento: con oldExists la versión ya pasó la
         // validación completa en `--next`, así que aquí solo se comprueba que
         // esta copia concreta no se cae nada más nacer.
-        const runtime = await settleContainer(rn, SETTLE_MS);
+        const runtime = await settleContainer(rn, SETTLE_MS, job);
         if (runtime.state !== 'running') {
           throw new Error(`estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'}`);
         }
         if (!oldExists && i === 1) {
-          const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, rn, log, probeTimeoutMs, restartPolicy);
+          const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, rn, log, probeTimeoutMs, restartPolicy, job);
           if (!verdict.ok) throw new Error(verdict.reason);
         }
       } catch (err: any) {
@@ -1150,15 +1310,19 @@ async function deployContainer(
       if (replicas > 1) log(`Réplica ${i}/${replicas} lista.`);
     }
 
-    // Scale-down: retira réplicas con índice mayor al configurado.
+    // Scale-down: retira las réplicas con índice mayor al configurado. Solo
+    // las que casan con el patrón EXACTO de réplica de este servicio y no
+    // están entre las legítimas: una regex suelta sobre el final del nombre
+    // tomaba un slug que acabara en «-r2» por una réplica sobrante y borraba
+    // el contenedor que se acababa de desplegar.
+    const legit = new Set(Array.from({ length: replicas }, (_, i) => replicaName(project, service, i + 1)));
+    const replicaPattern = new RegExp(`^${escapeRegExp(name)}-r\\d+$`);
     for (const c of await listServiceContainers(service.id)) {
-      const match = c.name.match(/-r(\d+)$/);
-      if (match && Number(match[1]) > replicas) {
-        log(`Retirando réplica sobrante ${c.name}...`);
-        await archiveContainerLogs(c.name);
-        await stopContainer(c.name);
-        await removeContainer(c.name);
-      }
+      if (!replicaPattern.test(c.name) || legit.has(c.name)) continue;
+      log(`Retirando réplica sobrante ${c.name}...`);
+      await archiveContainerLogs(c.name);
+      await stopContainer(c.name);
+      await removeContainer(c.name);
     }
     log(oldExists ? 'Intercambio completado: corte cero.' : 'Servicio en marcha.');
   } else {
@@ -1169,7 +1333,7 @@ async function deployContainer(
     }
     try {
       await runServiceContainer(spec);
-      const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, name, log, probeTimeoutMs, restartPolicy);
+      const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, name, log, probeTimeoutMs, restartPolicy, job);
       if (!verdict.ok) throw new Error(verdict.reason);
     } catch (err: any) {
       await appendContainerTail(name, log);
@@ -1249,11 +1413,82 @@ async function recoverStaleSwap(serviceId: string, log: (l: string) => void): Pr
  * `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`, que es lo que documenta Railway.
  */
 const PROBE_TIMEOUT_MS = 300_000;
-// Sondeo ágil: cada intento cuesta un `docker run busybox` (~0,3 s), así que
-// bajar el intervalo apenas añade carga y recorta segundos de la ventana entre
-// «el proceso ya responde» y «Skyway se entera».
-const PROBE_INTERVAL_MS = 1200;
+/** Imagen del contenedor auxiliar de las sondas e inspecciones. */
+const PROBE_IMAGE = 'busybox:stable';
+/** Tope de cada intento de sonda (el `wget` ya corta a los 3 s; esto cubre al exec). */
+const PROBE_ATTEMPT_TIMEOUT_MS = 8000;
 const GRACE_MS = 5000;
+
+/**
+ * Pausa entre sondas. Ágil al principio —hay procesos que responden al
+ * instante y cada segundo de espera se lo cobraba a TODOS los despliegues— y
+ * más espaciada cuanto más tarda: a los cinco minutos ya da igual enterarse
+ * dos segundos antes o después, y no hace falta martillear a Docker.
+ */
+function probeDelay(attempt: number): number {
+  if (attempt <= 10) return 1200; // ~12 s
+  if (attempt <= 25) return 2000; // hasta ~40 s
+  if (attempt <= 40) return 3000; // hasta ~1,5 min
+  return 5000;
+}
+
+/**
+ * Sonda HTTP del healthcheck: UN contenedor auxiliar (`busybox sleep`) en la
+ * red del proyecto durante toda la validación y un `exec wget` por intento.
+ * Antes cada intento era un `docker run --rm` completo —crear, arrancar,
+ * conectar a la red, destruir— cada 1,2 s durante hasta cinco minutos: unos
+ * 250 contenedores por despliegue lento, y el daemon lo notaba.
+ */
+class HealthProbe {
+  private id: string | null = null;
+
+  constructor(
+    private readonly netName: string,
+    private readonly name: string,
+  ) {}
+
+  async start(ttlSeconds: number): Promise<void> {
+    // Un resto de una validación interrumpida (Skyway cayó a mitad) no debe
+    // impedir la de ahora.
+    await removeContainer(this.name);
+    const c = await docker.createContainer({
+      name: this.name,
+      Image: PROBE_IMAGE,
+      // Se autodestruye pasado el plazo aunque nadie llegue a pararlo.
+      Cmd: ['sleep', String(ttlSeconds)],
+      Labels: { 'skyway.managed': 'true', 'skyway.probe': 'true' },
+      HostConfig: { NetworkMode: this.netName, AutoRemove: true },
+    });
+    this.id = c.id;
+    await c.start();
+  }
+
+  /** true si la URL respondió 2xx. La URL viaja por entorno, no por el shell. */
+  async probe(url: string): Promise<boolean> {
+    if (!this.id) return false;
+    try {
+      const res = await execInContainer(this.id, 'wget -q -T 3 -O /dev/null "$SKYWAY_PROBE_URL"', {
+        timeoutMs: PROBE_ATTEMPT_TIMEOUT_MS,
+        maxOutput: 1000,
+        env: [`SKYWAY_PROBE_URL=${url}`],
+      });
+      return res.exitCode === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (!this.id) return;
+    const id = this.id;
+    this.id = null;
+    try {
+      await docker.getContainer(id).remove({ force: true });
+    } catch {
+      /* ya se fue solo (AutoRemove) */
+    }
+  }
+}
 /**
  * Margen total cuando el repositorio declara una política que reintenta. Manda
  * la política: si pidió reintentos, se le dan de verdad en vez de sentenciar al
@@ -1272,10 +1507,11 @@ const SETTLE_MS = 1500;
  * Observa el contenedor durante `ms` y devuelve su estado. Corta en cuanto deja
  * de estar en marcha: un arranque fallido no tiene por qué agotar la ventana.
  */
-async function settleContainer(name: string, ms: number): Promise<Awaited<ReturnType<typeof getRuntime>>> {
+async function settleContainer(name: string, ms: number, job?: ActiveJob): Promise<Awaited<ReturnType<typeof getRuntime>>> {
   const until = Date.now() + ms;
   let runtime = await getRuntime(name);
   while (Date.now() < until) {
+    if (job?.canceled) throw new CanceledError();
     await sleep(GRACE_CHECK_MS);
     runtime = await getRuntime(name);
     if (runtime.state !== 'running') return runtime;
@@ -1296,30 +1532,43 @@ async function validateContainer(
   log: (l: string) => void,
   timeoutMs: number = PROBE_TIMEOUT_MS,
   restartPolicy: { Name: string; MaximumRetryCount?: number } | null = null,
+  job?: ActiveJob,
 ): Promise<{ ok: boolean; reason: string }> {
+  // Cancelar tiene que surtir efecto también aquí: son los bucles más largos
+  // del despliegue (hasta cinco minutos) y no tienen proceso hijo que matar.
+  const checkCanceled = () => {
+    if (job?.canceled) throw new CanceledError();
+  };
+
   if (healthcheckPath && port) {
     const path = healthcheckPath.startsWith('/') ? healthcheckPath : `/${healthcheckPath}`;
-    log(`Esperando healthcheck 2xx en http://${aliasHost}:${port}${path} (hasta ${Math.round(timeoutMs / 1000)}s)...`);
-    if (!(await imageExists('busybox:stable'))) {
-      await spawnLogged('docker', ['pull', 'busybox:stable'], {}, log);
-    }
-    const deadline = Date.now() + timeoutMs;
-    let attempts = 0;
-    // Sin espera previa: hay procesos que ya responden al instante y esperar
-    // un segundo «por si acaso» se lo cobraba a TODOS los despliegues.
-    while (Date.now() < deadline) {
-      attempts += 1;
-      const state = await getRuntime(containerRef);
-      if (state.state !== 'running') {
-        return { ok: false, reason: `el proceso murió durante el arranque (código ${state.exitCode ?? 'n/a'})` };
+    const url = `http://${aliasHost}:${port}${path}`;
+    log(`Esperando healthcheck 2xx en ${url} (hasta ${Math.round(timeoutMs / 1000)}s)...`);
+    await pullImage(PROBE_IMAGE, log, job, { quietIfPresent: true });
+    const probe = new HealthProbe(netName, `${containerRef}--probe`);
+    await probe.start(Math.ceil(timeoutMs / 1000) + 60);
+    try {
+      const deadline = Date.now() + timeoutMs;
+      let attempts = 0;
+      // Sin espera previa: hay procesos que ya responden al instante y esperar
+      // un segundo «por si acaso» se lo cobraba a TODOS los despliegues.
+      while (Date.now() < deadline) {
+        checkCanceled();
+        attempts += 1;
+        const state = await getRuntime(containerRef);
+        if (state.state !== 'running') {
+          return { ok: false, reason: `el proceso murió durante el arranque (código ${state.exitCode ?? 'n/a'})` };
+        }
+        if (await probe.probe(url)) {
+          log(`Healthcheck superado en el intento ${attempts}.`);
+          return { ok: true, reason: 'ok' };
+        }
+        await sleep(probeDelay(attempts));
       }
-      if (await probeOnce(netName, aliasHost, port, path)) {
-        log(`Healthcheck superado en el intento ${attempts}.`);
-        return { ok: true, reason: 'ok' };
-      }
-      await sleep(PROBE_INTERVAL_MS);
+      return { ok: false, reason: `el healthcheck ${path} no respondió 2xx en ${Math.round(timeoutMs / 1000)}s` };
+    } finally {
+      await probe.stop();
     }
-    return { ok: false, reason: `el healthcheck ${path} no respondió 2xx en ${Math.round(timeoutMs / 1000)}s` };
   }
 
   // Sin healthcheck no hay forma de saber que la versión nueva está bien: solo
@@ -1346,6 +1595,7 @@ async function validateContainer(
   let enPieDesde: number | null = inicio;
   let avisado = false;
   for (;;) {
+    checkCanceled();
     await sleep(GRACE_CHECK_MS);
     const runtime = await getRuntime(containerRef);
 
@@ -1375,42 +1625,7 @@ async function validateContainer(
   };
 }
 
-function probeOnce(netName: string, host: string, port: number, path: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const p = spawn('docker', [
-      'run', '--rm', '--network', netName, 'busybox:stable',
-      'wget', '-q', '-T', '3', '-O', '/dev/null', `http://${host}:${port}${path}`,
-    ], { stdio: 'ignore' });
-    p.on('error', () => resolve(false));
-    p.on('exit', (code) => resolve(code === 0));
-  });
-}
-
 /** Añade al log del despliegue las últimas líneas del contenedor fallido. */
-/**
- * Deshace el multiplexado de Docker.
- *
- * El flujo viene en tramas de 8 bytes de cabecera —tipo, tres ceros y el tamaño
- * en 4 bytes— seguidas de su carga, y una sola trama puede traer varias líneas.
- * Cortar 8 caracteres a CADA línea, como se hacía antes, se comía los primeros
- * caracteres de todas menos la primera; y con el contenedor en modo TTY no hay
- * cabecera ninguna, así que se cargaba el principio de todas. Si el primer byte
- * no parece una cabecera, se devuelve tal cual: es texto plano.
- */
-function demuxDockerLog(buf: Buffer): string {
-  const parts: string[] = [];
-  let i = 0;
-  while (i + 8 <= buf.length) {
-    if (buf[i] > 2 || buf[i + 1] !== 0 || buf[i + 2] !== 0 || buf[i + 3] !== 0) {
-      return buf.toString('utf8');
-    }
-    const size = buf.readUInt32BE(i + 4);
-    parts.push(buf.toString('utf8', i + 8, i + 8 + size));
-    i += 8 + size;
-  }
-  return parts.length > 0 ? parts.join('') : buf.toString('utf8');
-}
-
 async function appendContainerTail(name: string, log: (l: string) => void): Promise<void> {
   try {
     const info = await findContainer(name);
@@ -1421,7 +1636,9 @@ async function appendContainerTail(name: string, log: (l: string) => void): Prom
     // esfuerzo y deja fuera justo lo de antes —qué arrancó, qué no—, que suele
     // ser donde está la respuesta.
     const buf = (await container.logs({ stdout: true, stderr: true, tail: TAIL_LINES, follow: false })) as unknown as Buffer;
-    const text = demuxDockerLog(Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf)))
+    // El mismo demultiplexor que el visor de logs: tolera tramas truncadas y
+    // contenedores con TTY (texto plano, sin cabeceras).
+    const text = demuxLogBuffer(Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf)))
       .split('\n')
       .filter((l) => l.trim())
       .slice(-TAIL_LINES);
@@ -1439,16 +1656,41 @@ async function appendContainerTail(name: string, log: (l: string) => void): Prom
   }
 }
 
-async function cleanupOldImages(serviceId: string, log: (l: string) => void): Promise<void> {
+/** Imágenes correctas que se conservan (las de los últimos despliegues buenos). */
+const KEEP_IMAGES = 5;
+
+/**
+ * Purga las imágenes de despliegues antiguos. Varias filas comparten etiqueta
+ * —la imagen se reutiliza cuando el commit ya estaba construido—, así que una
+ * fila «antigua» puede apuntar a la imagen que se está sirviendo AHORA: se
+ * conservan las etiquetas de los últimos despliegues correctos y la que corre
+ * cada réplica, y solo se borra lo que no referencia ninguna de ellas.
+ */
+async function cleanupOldImages(project: ProjectRow, service: ServiceRow, log: (l: string) => void): Promise<void> {
   try {
-    const stale = successfulDeploymentsBeyond(serviceId, 5);
-    for (const dep of stale) {
-      if (dep.image_tag) {
-        await removeImage(dep.image_tag);
-      }
+    const stale = successfulDeploymentsBeyond(service.id, KEEP_IMAGES);
+    if (stale.length === 0) return;
+    const keep = new Set<string>();
+    for (const d of listDeployments(service.id, 50).filter((d) => d.status === 'success' && d.image_tag).slice(0, KEEP_IMAGES)) {
+      keep.add(d.image_tag!);
     }
-    if (stale.length > 0) log(`Purgadas ${stale.length} imágenes antiguas (se conservan las últimas 5)`);
+    for (let i = 1; i <= configuredReplicas(service); i++) {
+      const rt = await getRuntime(replicaName(project, service, i));
+      if (rt.image) keep.add(rt.image);
+    }
+    const doomed = new Set<string>();
+    for (const dep of stale) {
+      if (dep.image_tag && !keep.has(dep.image_tag)) doomed.add(dep.image_tag);
+    }
+    for (const tag of doomed) await removeImage(tag, log);
+    if (doomed.size > 0) {
+      log(`Purgadas ${doomed.size} imágenes antiguas (se conservan las de los últimos ${KEEP_IMAGES} despliegues correctos)`);
+    }
   } catch {
     // best-effort
   }
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

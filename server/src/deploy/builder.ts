@@ -34,10 +34,28 @@ export async function buildxAvailable(): Promise<boolean> {
   return buildxCache;
 }
 
+/** Tope de un clon: un repo normal tarda segundos; minutos es red rota. */
+export const CLONE_TIMEOUT_MS = 5 * 60_000;
+/** Tope de una compilación. Más allá es un build colgado, no uno lento. */
+export const BUILD_TIMEOUT_MS = 45 * 60_000;
+/** Margen entre el SIGTERM y el SIGKILL cuando se agota el tiempo. */
+const KILL_GRACE_MS = 5_000;
+
 export function spawnLogged(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; mask?: string[]; onSpawn?: (p: ReturnType<typeof spawn>) => void },
+  opts: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    mask?: string[];
+    onSpawn?: (p: ReturnType<typeof spawn>) => void;
+    /**
+     * Sin tope, un proceso que se queda colgado (un `git clone` contra una red
+     * rota, un build esperando un registro que no contesta) dejaba el
+     * despliegue en «building» para siempre y ocupando su plaza de build.
+     */
+    timeoutMs?: number;
+  },
   log: LogFn,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -58,15 +76,51 @@ export function spawnLogged(
     const feedErr = lineSplitter(masked);
     p.stdout.on('data', feedOut);
     p.stderr.on('data', feedErr);
-    p.on('error', (err) => reject(new Error(`No se pudo ejecutar ${cmd}: ${err.message}`)));
+
+    let timedOut = false;
+    let timer: NodeJS.Timeout | null = null;
+    if (opts.timeoutMs && opts.timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        log(`⚠ ${cmd} lleva ${Math.round(opts.timeoutMs! / 60_000)} min sin terminar: se interrumpe.`);
+        try {
+          p.kill('SIGTERM');
+        } catch {
+          /* ya terminó */
+        }
+        const killer = setTimeout(() => {
+          try {
+            // `killed` solo dice que se ENVIÓ una señal; que siga vivo lo dicen
+            // los códigos de salida.
+            if (p.exitCode === null && p.signalCode === null) p.kill('SIGKILL');
+          } catch {
+            /* ya terminó */
+          }
+        }, KILL_GRACE_MS);
+        killer.unref();
+        p.once('exit', () => clearTimeout(killer));
+      }, opts.timeoutMs);
+      timer.unref();
+    }
+
+    p.on('error', (err) => {
+      if (timer) clearTimeout(timer);
+      reject(new Error(`No se pudo ejecutar ${cmd}: ${err.message}`));
+    });
     // 'close' y no 'exit': 'exit' salta antes de vaciar stdout/stderr, y las
     // últimas líneas del build se colaban DESPUÉS del paso siguiente del
     // despliegue (o se perdían si el proceso ya había acabado).
-    p.on('close', (code) => {
+    p.on('close', (code, signal) => {
+      if (timer) clearTimeout(timer);
       feedOut.flush();
       feedErr.flush();
-      if (code === 0) resolve();
-      else reject(new Error(`${cmd} terminó con código ${code}`));
+      if (timedOut) {
+        reject(new Error(`${cmd} superó el tiempo máximo (${Math.round(opts.timeoutMs! / 60_000)} min) y se interrumpió`));
+      } else if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`${cmd} terminó con código ${code ?? `desconocido (señal ${signal})`}`));
+      }
     });
   });
 }
@@ -163,7 +217,7 @@ export async function cloneRepo(
       url,
       opts.dest,
     ],
-    { env: { GIT_TERMINAL_PROMPT: '0' }, mask, onSpawn: opts.onSpawn },
+    { env: { GIT_TERMINAL_PROMPT: '0' }, mask, onSpawn: opts.onSpawn, timeoutMs: CLONE_TIMEOUT_MS },
     log,
   );
   const info = await new Promise<CloneResult>((resolve) => {
@@ -432,7 +486,7 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDel
     await spawnLogged(
       'docker',
       ['build', '-t', opts.imageTag, '-f', dockerfile, ...cacheFlags, ...argFlags, ...envArgs, context],
-      { env: { DOCKER_BUILDKIT: buildkit ? '1' : '0' }, onSpawn: opts.onSpawn },
+      { env: { DOCKER_BUILDKIT: buildkit ? '1' : '0' }, onSpawn: opts.onSpawn, timeoutMs: BUILD_TIMEOUT_MS },
       log,
     );
     return { varsDelBuild };
@@ -471,7 +525,12 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDel
     for (const [k, v] of Object.entries({ ...paraElBuild, ...opts.buildArgs, ...opts.nixpacksEnv })) {
       envFlags.push('--env', `${k}=${v}`);
     }
-    await spawnLogged('nixpacks', ['build', context, '--name', opts.imageTag, ...envFlags], { onSpawn: opts.onSpawn }, log);
+    await spawnLogged(
+      'nixpacks',
+      ['build', context, '--name', opts.imageTag, ...envFlags],
+      { onSpawn: opts.onSpawn, timeoutMs: BUILD_TIMEOUT_MS },
+      log,
+    );
     return { varsDelBuild: paraElBuild };
   }
 

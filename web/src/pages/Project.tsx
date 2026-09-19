@@ -10,7 +10,7 @@ import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { ActiveDeploy, Me, MetricsSnapshot, Project, Service } from '../types';
-import { CMD_K_LABEL, cx, isActiveDeploy, serviceStatus } from '../utils';
+import { CMD_K_LABEL, cx, EMPTY_LIST, EMPTY_RECORD, isActiveDeploy, serviceStatus } from '../utils';
 
 // Carga diferida: el drawer del servicio (con sus 8 pestañas y modales) y los
 // modales de cabecera solo se descargan al abrirlos, no al entrar al proyecto.
@@ -166,6 +166,9 @@ export default function ProjectPage() {
   const [reportOpen, setReportOpen] = useState(false);
   // Menú «···» de la cabecera en móvil.
   const [menuOpen, setMenuOpen] = useState(false);
+  // Espejo del estado del stream para decidir el ritmo del sondeo (el hook
+  // del stream va después de la consulta y no puede alimentarla directamente).
+  const [streamLive, setStreamLive] = useState(false);
 
   const selectedId = searchParams.get('s');
   // Presencia del drawer: sigue montado durante su animación de despedida.
@@ -189,13 +192,17 @@ export default function ProjectPage() {
         alertCounts: Record<string, number>;
         activeDeploys: Record<string, ActiveDeploy>;
       }>(`/projects/${projectId}`),
-    refetchInterval: 4000,
+    // Con el stream vivo (métricas y fases de despliegue llegan por SSE y al
+    // terminar uno se invalida esta consulta) el sondeo es solo la red de
+    // seguridad por si el stream muere: cada 4 s era pedir lo mismo dos veces.
+    refetchInterval: streamLive ? 20_000 : 4000,
     enabled: !!projectId,
   });
 
   const { latest, historyRef, deploys, live } = useProjectStream(projectId, () => {
     queryClient.invalidateQueries({ queryKey: ['project', projectId] });
   });
+  useEffect(() => setStreamLive(live), [live]);
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
   const isAdmin = me.data?.user?.role === 'admin';
@@ -249,8 +256,8 @@ export default function ProjectPage() {
   const [serviceQuery, setServiceQuery] = useState('');
   const [serviceTypeFilter, setServiceTypeFilter] = useState<'all' | 'git' | 'database' | 'image' | 'alerts'>('all');
 
-  const services = project.data?.services ?? [];
-  const alertCounts = project.data?.alertCounts ?? {};
+  const services = project.data?.services ?? EMPTY_LIST;
+  const alertCounts = project.data?.alertCounts ?? EMPTY_RECORD;
   const activeDeploys = live ? deploys : project.data?.activeDeploys ?? {};
 
   const filteredServices = useMemo(() => {
@@ -272,6 +279,17 @@ export default function ProjectPage() {
       return true;
     });
   }, [services, serviceTypeFilter, serviceQuery, alertCounts]);
+
+  // Antes de cualquier `return` temprano: un hook después de ellos cambia el
+  // número de hooks entre el render de carga y el siguiente, y React revienta
+  // la página entera («Rendered more hooks than during the previous render»).
+  const openService = useCallback(
+    (id: string | null) => {
+      if (id) setSearchParams({ s: id });
+      else setSearchParams({});
+    },
+    [setSearchParams],
+  );
 
   if (project.isLoading) return <CanvasSkeleton />;
   if (project.isError || !project.data) {
@@ -322,13 +340,6 @@ export default function ProjectPage() {
     setDeleteOpen(true);
   };
 
-  const openService = useCallback(
-    (id: string | null) => {
-      if (id) setSearchParams({ s: id });
-      else setSearchParams({});
-    },
-    [setSearchParams],
-  );
 
   const hasDeployables = services.some((s) => s.type !== 'database');
 
@@ -817,7 +828,7 @@ export default function ProjectPage() {
             type="checkbox"
             checked={deleteVolumes}
             onChange={(e) => setDeleteVolumes(e.target.checked)}
-            className="accent-acc"
+            className="h-4 w-4 shrink-0 accent-acc"
           />
           Eliminar también los volúmenes (datos de las bases de datos)
         </label>

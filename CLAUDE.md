@@ -31,11 +31,14 @@ npm install
 npm run dev         # server :4000 + web :5173 (proxy /api)
 npm run build       # compila web y server
 npm run typecheck   # SIEMPRE antes de dar por terminado un cambio
+npm run lint        # reglas de hooks de React en la web (orden de hooks, dependencias)
 npm start           # producción, todo en :4000
 ```
 
 No hay suite de tests automatizada; **`npm run typecheck` es la verificación
 mínima obligatoria** tras tocar código, y `npm run build` para validar la web.
+Si tocas componentes React, pasa también `npm run lint`: un hook después de un
+`return` temprano compila sin quejas y rompe la página en producción.
 
 ## Convenciones
 

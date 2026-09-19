@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { StringDecoder } from 'string_decoder';
 
 export function id(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(8).toString('hex')}`;
@@ -79,6 +80,28 @@ export function safeEqual(a: string, b: string): boolean {
   return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
 }
 
+/**
+ * `JSON.parse` tolerante para datos ALMACENADOS (columnas JSON de SQLite,
+ * ajustes): una fila corrupta o vacía devuelve `fallback` en vez de tumbar la
+ * petición con un 500 opaco. Además exige que la forma coincida con la del valor
+ * por defecto (lista frente a objeto): un dato del tipo equivocado es igual de
+ * inservible que uno ilegible. No sustituye a zod para la entrada del usuario.
+ */
+export function safeParse<T>(json: string | null | undefined, fallback: T): T {
+  if (json == null || json === '') return fallback;
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return fallback;
+  }
+  if (Array.isArray(fallback)) return (Array.isArray(value) ? value : fallback) as T;
+  if (fallback !== null && typeof fallback === 'object') {
+    return (value !== null && typeof value === 'object' && !Array.isArray(value) ? value : fallback) as T;
+  }
+  return (value ?? fallback) as T;
+}
+
 export type LineFeed = ((chunk: Buffer | string) => void) & {
   /** Entrega lo que quede sin salto de línea final. Llamar al cerrar el stream. */
   flush: () => void;
@@ -88,11 +111,17 @@ export type LineFeed = ((chunk: Buffer | string) => void) & {
  * Trocea un buffer/string en líneas completas, conservando el resto pendiente.
  * `flush()` suelta el resto al acabar el stream: sin él, la última línea de
  * una herramienta que no termina en salto de línea se perdía.
+ *
+ * Los buffers se decodifican con `StringDecoder`: un carácter UTF-8 multibyte
+ * («ñ», «€», emoji) que cae partido entre dos trozos del stream salía como dos
+ * «�» con `chunk.toString()`; el decodificador retiene los bytes incompletos
+ * hasta que llega el resto.
  */
 export function lineSplitter(onLine: (line: string) => void): LineFeed {
   let pending = '';
+  const decoder = new StringDecoder('utf8');
   const feed = ((chunk: Buffer | string) => {
-    pending += chunk.toString();
+    pending += typeof chunk === 'string' ? chunk : decoder.write(chunk);
     let idx;
     while ((idx = pending.indexOf('\n')) >= 0) {
       const line = pending.slice(0, idx).replace(/\r$/, '');
@@ -105,7 +134,8 @@ export function lineSplitter(onLine: (line: string) => void): LineFeed {
     }
   }) as LineFeed;
   feed.flush = () => {
-    const rest = pending.replace(/\r$/, '');
+    // `end()` vacía lo que el decodificador retenía (bytes de un carácter a medias).
+    const rest = (pending + decoder.end()).replace(/\r$/, '');
     pending = '';
     if (rest.length > 0) onLine(rest);
   };

@@ -183,7 +183,10 @@ export async function statusRoutes(app: FastifyInstance): Promise<void> {
 
       const enabled = body.enabled ?? !!project.status_enabled;
       const token = project.status_token ?? randomToken(20);
-      if (body.enabled !== undefined) setProjectStatusPage(id, enabled, token);
+      // Si el token se acaba de generar se persiste SIEMPRE, aunque solo llegue
+      // `notice`: antes se devolvía uno recién inventado que no estaba en la BD y
+      // el enlace que la UI mostraba no funcionaba.
+      if (body.enabled !== undefined || !project.status_token) setProjectStatusPage(id, enabled, token);
       if (body.notice !== undefined) setProjectStatusNotice(id, body.notice || null);
       cache.delete(token);
 

@@ -92,7 +92,7 @@ export default function PlansPage() {
 
   return (
     <div className="mx-auto max-w-[1000px] px-4 py-7 sm:px-6 sm:py-10">
-      <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt">
+      <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt max-sm:-mt-2 max-sm:mb-2 max-sm:py-2">
         <ArrowLeft size={13} /> Cuentas y clientes
       </Link>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
@@ -228,10 +228,10 @@ export default function PlansPage() {
             </Field>
             <div className="flex flex-wrap items-center gap-4">
               <label className="flex cursor-pointer items-center gap-2 text-sm text-sub">
-                <input type="checkbox" checked={draft.is_default} onChange={(e) => setDraft({ ...draft, is_default: e.target.checked })} className="accent-acc" /> Plan por defecto
+                <input type="checkbox" checked={draft.is_default} onChange={(e) => setDraft({ ...draft, is_default: e.target.checked })} className="h-4 w-4 shrink-0 accent-acc" /> Plan por defecto
               </label>
               <label className="flex cursor-pointer items-center gap-2 text-sm text-sub">
-                <input type="checkbox" checked={draft.archived} onChange={(e) => setDraft({ ...draft, archived: e.target.checked })} className="accent-acc" /> Archivado
+                <input type="checkbox" checked={draft.archived} onChange={(e) => setDraft({ ...draft, archived: e.target.checked })} className="h-4 w-4 shrink-0 accent-acc" /> Archivado
               </label>
             </div>
             <div className="mt-1.5 flex justify-end gap-2">

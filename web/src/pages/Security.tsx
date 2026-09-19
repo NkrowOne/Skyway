@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ChevronDown, KeyRound, ScrollText } from 'lucide-react';
 import { api } from '../api';
+import { useMediaQuery } from '../hooks';
 import { Button, Chip, ErrorState, Field, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { AuditEntry, SecurityFinding, SecurityReport } from '../types';
 import { AUDIT_ACTION_LABEL, cx, fmtDateTime, SEVERITY_LABEL, SEVERITY_TONE } from '../utils';
@@ -95,6 +96,8 @@ export default function SecurityPage() {
   const [currentPw, setCurrentPw] = useState('');
   const [nextPw, setNextPw] = useState('');
   const [auditFilter, setAuditFilter] = useState('');
+  // Solo se pinta una de las dos vistas del registro (tarjetas o tabla).
+  const isMobile = useMediaQuery('(max-width: 639px)');
 
   const report = useQuery({
     queryKey: ['security'],
@@ -258,7 +261,7 @@ export default function SecurityPage() {
                     <Link
                       to={`/projects/${f.projectId}${f.serviceId ? `?s=${f.serviceId}` : ''}`}
                       onClick={(e) => e.stopPropagation()}
-                      className="ml-auto shrink-0 text-xs text-acc-soft hover:underline"
+                      className="tap ml-auto shrink-0 text-xs text-acc-soft hover:underline"
                     >
                       {f.projectName} →
                     </Link>
@@ -373,58 +376,63 @@ export default function SecurityPage() {
              * Móvil: cinco columnas no caben en 360px y la tabla obligaba a arrastrar de
              * lado para leer la acción. Cada entrada es una tarjeta con los mismos datos
              * en líneas; la tabla vuelve a partir de sm (patrón de ServiceRow en Monitor).
+             * Se pinta solo una de las dos: ocultar la otra por CSS metía las cien
+             * entradas dos veces en el DOM.
              */}
-            <ul className="sm:hidden">
-              {entries.map((entry) => {
-                const failed = esFallo(entry);
-                return (
-                  <li key={entry.id} className={cx('border-b border-line px-3.5 py-2.5 text-xs last:border-b-0', failed && 'bg-err/[.04]')}>
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className={cx('min-w-0 truncate font-medium', failed && 'text-err')}>
-                        {AUDIT_ACTION_LABEL[entry.action] ?? entry.action}
-                      </span>
-                      <span className="tnum shrink-0 font-mono text-micro text-subtle">{fmtDateTime(entry.ts)}</span>
-                    </div>
-                    <p className="mt-0.5 truncate text-sub">
-                      {entry.actor}
-                      {entry.ip && <span className="font-mono text-subtle"> · {entry.ip}</span>}
-                    </p>
-                    {(entry.detail ?? entry.target_id) && (
-                      <p className="mt-0.5 break-words text-subtle">{entry.detail ?? entry.target_id}</p>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-            <table className="hidden w-full border-collapse text-left text-xs sm:table">
-              <thead className="sticky top-0 z-[1] bg-surface2 text-sub">
-                <tr>
-                  {['Cuándo', 'Quién', 'Acción', 'Detalle', 'IP'].map((h) => (
-                    <th key={h} className="px-3.5 py-2 eyebrow">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
+            {isMobile ? (
+              <ul>
                 {entries.map((entry) => {
                   const failed = esFallo(entry);
                   return (
-                    <tr key={entry.id} className={cx('border-t border-line', failed && 'bg-err/[.04]')}>
-                      <td className="whitespace-nowrap px-3.5 py-2 font-mono text-xs text-subtle">{fmtDateTime(entry.ts)}</td>
-                      <td className="px-3.5 py-2">{entry.actor}</td>
-                      <td className="px-3.5 py-2">
-                        <span className={cx(failed && 'font-medium text-err')}>
+                    <li key={entry.id} className={cx('border-b border-line px-3.5 py-2.5 text-xs last:border-b-0', failed && 'bg-err/[.04]')}>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className={cx('min-w-0 truncate font-medium', failed && 'text-err')}>
                           {AUDIT_ACTION_LABEL[entry.action] ?? entry.action}
                         </span>
-                      </td>
-                      <td className="max-w-[240px] truncate px-3.5 py-2 text-sub">{entry.detail ?? entry.target_id ?? ''}</td>
-                      <td className="px-3.5 py-2 font-mono text-xs text-subtle">{entry.ip ?? ''}</td>
-                    </tr>
+                        <span className="tnum shrink-0 font-mono text-micro text-subtle">{fmtDateTime(entry.ts)}</span>
+                      </div>
+                      <p className="mt-0.5 truncate text-sub">
+                        {entry.actor}
+                        {entry.ip && <span className="font-mono text-subtle"> · {entry.ip}</span>}
+                      </p>
+                      {(entry.detail ?? entry.target_id) && (
+                        <p className="mt-0.5 break-words text-subtle">{entry.detail ?? entry.target_id}</p>
+                      )}
+                    </li>
                   );
                 })}
-              </tbody>
-            </table>
+              </ul>
+            ) : (
+              <table className="w-full border-collapse text-left text-xs">
+                <thead className="sticky top-0 z-[1] bg-surface2 text-sub">
+                  <tr>
+                    {['Cuándo', 'Quién', 'Acción', 'Detalle', 'IP'].map((h) => (
+                      <th key={h} className="px-3.5 py-2 eyebrow">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map((entry) => {
+                    const failed = esFallo(entry);
+                    return (
+                      <tr key={entry.id} className={cx('border-t border-line', failed && 'bg-err/[.04]')}>
+                        <td className="whitespace-nowrap px-3.5 py-2 font-mono text-xs text-subtle">{fmtDateTime(entry.ts)}</td>
+                        <td className="px-3.5 py-2">{entry.actor}</td>
+                        <td className="px-3.5 py-2">
+                          <span className={cx(failed && 'font-medium text-err')}>
+                            {AUDIT_ACTION_LABEL[entry.action] ?? entry.action}
+                          </span>
+                        </td>
+                        <td className="max-w-[240px] truncate px-3.5 py-2 text-sub">{entry.detail ?? entry.target_id ?? ''}</td>
+                        <td className="px-3.5 py-2 font-mono text-xs text-subtle">{entry.ip ?? ''}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
             {entries.length === 0 && <p className="px-3 py-6 text-center text-xs text-sub">Sin actividad registrada</p>}
           </div>
         )}

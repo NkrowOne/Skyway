@@ -165,7 +165,9 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
       return { passkey: { id: row.id, name: row.name, rp_id: row.rp_id, created_at: row.created_at } };
     });
 
-    secured.delete('/api/auth/passkeys/:id', async (req, reply) => {
+    // Borrar exige sesión de navegador, como registrar: un token de API robado no
+    // debe poder eliminar el segundo factor con el que el dueño recuperaría la cuenta.
+    secured.delete('/api/auth/passkeys/:id', { preHandler: requireSession }, async (req, reply) => {
       const user = currentUser(req)!;
       const { id } = req.params as { id: string };
       if (!deletePasskey(id, user.id)) return reply.code(404).send({ error: 'Passkey no encontrada' });

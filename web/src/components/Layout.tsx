@@ -91,7 +91,8 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
     }
   }, [open]);
 
-  const items = useMemo<PaletteItem[]>(() => {
+  // Cada fila lleva su posición en la lista filtrada: la necesita para saber si está seleccionada.
+  const items = useMemo<(PaletteItem & { idx: number })[]>(() => {
     const list: PaletteItem[] = (projects.data?.projects ?? []).flatMap((p) => {
       const pItem: PaletteItem = {
         key: `p-${p.id}`,
@@ -224,7 +225,9 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
     ];
     const q = query.trim().toLowerCase();
     const all = [...list, ...actions];
-    return q ? all.filter((i) => i.keywords.includes(q)) : all;
+    // El índice se fija aquí una vez: buscarlo con indexOf al pintar cada fila
+    // era cuadrático y se repetía con cada tecla.
+    return (q ? all.filter((i) => i.keywords.includes(q)) : all).map((item, idx) => ({ ...item, idx }));
   }, [projects.data, query, unread, isAdmin, isManager]);
 
   useEffect(() => {
@@ -238,12 +241,13 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
 
   if (!mounted) return null;
 
-  const go = (item: PaletteItem) => {
+  const go = (item: PaletteRow) => {
     onClose();
     navigate(item.to);
   };
 
   const groups: PaletteItem['group'][] = ['Proyectos y Servicios', 'Acciones rápidas'];
+  type PaletteRow = PaletteItem & { idx: number };
 
   return createPortal(
     <div
@@ -302,7 +306,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
               <div key={g}>
                 <p className="mx-2 mb-1.5 mt-1.5 eyebrow text-subtle">{g}</p>
                 {rows.map((item) => {
-                  const idx = items.indexOf(item);
+                  const idx = item.idx;
                   const selected = idx === sel;
                   return (
                     <button
@@ -415,13 +419,16 @@ function AlertBell() {
     refetchInterval: 15_000,
   });
 
+  // Solo se escucha mientras está abierto: cerrado, cada toque en la página
+  // pasaba por aquí para nada.
   useEffect(() => {
+    if (!open) return;
     const onClick = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     window.addEventListener('pointerdown', onClick);
     return () => window.removeEventListener('pointerdown', onClick);
-  }, []);
+  }, [open]);
 
   const unread = alerts.data?.unread ?? 0;
 
@@ -429,9 +436,13 @@ function AlertBell() {
     const next = !open;
     setOpen(next);
     if (next && unread > 0) {
-      await api.post('/alerts/read-all');
-      queryClient.invalidateQueries({ queryKey: ['alerts'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      try {
+        await api.post('/alerts/read-all');
+        queryClient.invalidateQueries({ queryKey: ['alerts'] });
+        queryClient.invalidateQueries({ queryKey: ['projects'] });
+      } catch {
+        /* el contador se queda; se reintenta al abrir de nuevo */
+      }
     }
   };
 
@@ -524,6 +535,29 @@ interface MenuItem {
 }
 
 /**
+ * Fila del menú. Vive fuera de MainMenu a propósito: definida dentro era un
+ * tipo de componente nuevo en cada render, y React desmontaba y volvía a
+ * montar todas las filas con cada cambio de ruta o de contador.
+ */
+function MenuRow({ item, active, onNavigate }: { item: MenuItem; active: boolean; onNavigate: () => void }) {
+  return (
+    <Link
+      to={item.to}
+      role="menuitem"
+      onClick={onNavigate}
+      className={cx(
+        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm max-sm:min-h-11',
+        active ? 'bg-acc/[.14] text-txt shadow-[inset_2px_0_0_var(--color-acc)]' : 'text-sub hover:bg-surface2 hover:text-txt',
+      )}
+    >
+      <span className={active ? 'text-acc-soft' : 'text-subtle'}>{item.icon}</span>
+      <span className="flex-1 truncate">{item.label}</span>
+      {item.meta}
+    </Link>
+  );
+}
+
+/**
  * Menú de tres rayas: agrupa la navegación por lo que es cada destino
  * (Plataforma / Negocio / Administración / Sesión) para descargar la topbar, que
  * solo conserva los accesos de uso y mantenimiento diarios. Reutiliza el patrón de
@@ -603,24 +637,7 @@ function MainMenu({
       ],
     });
 
-  const Row = ({ item }: { item: MenuItem }) => {
-    const active = location.pathname === item.to;
-    return (
-      <Link
-        to={item.to}
-        role="menuitem"
-        onClick={() => setOpen(false)}
-        className={cx(
-          'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm max-sm:min-h-11',
-          active ? 'bg-acc/[.14] text-txt shadow-[inset_2px_0_0_var(--color-acc)]' : 'text-sub hover:bg-surface2 hover:text-txt',
-        )}
-      >
-        <span className={active ? 'text-acc-soft' : 'text-subtle'}>{item.icon}</span>
-        <span className="flex-1 truncate">{item.label}</span>
-        {item.meta}
-      </Link>
-    );
-  };
+  const close = () => setOpen(false);
 
   return (
     <div className="relative" ref={ref}>
@@ -663,13 +680,17 @@ function MainMenu({
               <div key={g.label} className="mb-1 last:mb-0">
                 <p className="mx-2 mb-1 mt-1.5 eyebrow text-subtle">{g.label}</p>
                 {g.items.map((it) => (
-                  <Row key={it.to} item={it} />
+                  <MenuRow key={it.to} item={it} active={location.pathname === it.to} onNavigate={close} />
                 ))}
               </div>
             ))}
           </div>
           <div className="border-t border-line p-2">
-            <Row item={{ to: '/account', icon: <UserRound size={16} />, label: 'Mi perfil' }} />
+            <MenuRow
+              item={{ to: '/account', icon: <UserRound size={16} />, label: 'Mi perfil' }}
+              active={location.pathname === '/account'}
+              onNavigate={close}
+            />
             <button
               role="menuitem"
               onClick={() => {
@@ -799,7 +820,7 @@ export default function Layout() {
         )}
       >
         <div className="flex min-w-0 items-center gap-2.5">
-          <Link to="/" className="flex shrink-0 items-center gap-2 text-sm font-semibold text-txt">
+          <Link to="/" className="-mx-1.5 -my-1 flex min-h-10 shrink-0 items-center gap-2 px-1.5 py-1 text-sm font-semibold text-txt">
             <BrandMark />
             <span className={cx(!isHome && 'hidden md:inline')}>Skyway</span>
           </Link>

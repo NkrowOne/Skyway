@@ -103,11 +103,18 @@ export async function migrateRoutes(app: FastifyInstance): Promise<void> {
     if (!assertProjectManage(req, reply, found.project.id)) return reply;
 
     const channel = sseInit(reply);
+    // Margen para que el «done» salga antes de cerrar. Registrado en el canal:
+    // si el navegador cierra antes, el temporizador no queda vivo apuntando a
+    // un canal ya cerrado.
+    const closeSoon = (): void => {
+      const timer = setTimeout(() => channel.close(), 100);
+      channel.onClose(() => clearTimeout(timer));
+    };
     const unsubscribe = onDataMigration(id, (ev) => {
       if (ev.type === 'log') channel.send('log', { line: ev.line });
       else {
         channel.send('done', { status: ev.status });
-        setTimeout(() => channel.close(), 100);
+        closeSoon();
       }
     });
     channel.onClose(unsubscribe);
@@ -116,7 +123,7 @@ export async function migrateRoutes(app: FastifyInstance): Promise<void> {
     channel.send('snapshot', { logs: current?.logs ?? '', status: current?.status ?? null });
     if (current && current.status !== 'running') {
       channel.send('done', { status: current.status });
-      setTimeout(() => channel.close(), 100);
+      closeSoon();
     }
   });
 }

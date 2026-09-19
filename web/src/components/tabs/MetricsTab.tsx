@@ -4,12 +4,17 @@ import { ArrowDown, ArrowUp, Cpu, HardDrive, MemoryStick, Network } from 'lucide
 import { api } from '../../api';
 import { MetricPoint } from '../../pages/Project';
 import { MetricsSnapshot, Service, ServiceMetricHistory } from '../../types';
-import { cx, fmtBytes, fmtCores, fmtRate } from '../../utils';
+import { cx, EMPTY_LIST, fmtBytes, fmtCores, fmtRate } from '../../utils';
 import MetricChart from '../MetricChart';
 import { BandPoint, HistoryChart, NetBars, NetPoint } from '../HistoryChart';
 import { Segmented } from '../ui';
 
 type Mode = 'live' | 24 | 168 | 720;
+
+// Formateadores fijos: pasados como funciones nuevas en cada render anulaban el memo de las gráficas.
+const fmtCoresAxis = (v: number) => `${v.toFixed(v < 1 ? 2 : 1)}`;
+const fmtBytesAxis = (v: number) => fmtBytes(v);
+const fmtRateAxis = (v: number) => fmtRate(v);
 
 const MODES: { key: Mode; label: string }[] = [
   { key: 'live', label: 'En vivo' },
@@ -63,6 +68,37 @@ function LiveView({
   const memLimit = stats?.memLimit && stats.memLimit > 0 ? stats.memLimit : undefined;
   const memoryMb = service.config.memoryMb ?? null;
 
+  // Caudal de red: netRx/netTx son contadores ACUMULADOS del contenedor, así que
+  // el dato útil («cuánto se descarga/sube ahora») es su derivada. Se calcula el
+  // delta entre muestras consecutivas dividido por el tiempo; se recorta a 0 para
+  // no pintar picos negativos cuando el contador se reinicia (reinicio del contenedor).
+  //
+  // `history` es el MISMO array mutado por el stream, así que la identidad no
+  // sirve como dependencia: se usa su longitud y el sello de la última muestra.
+  // El hook va ANTES de los returns tempranos (reglas de hooks).
+  const lastTs = history.length ? history[history.length - 1].ts : 0;
+  const { netRate, cpuPts, memPts, rxPts, txPts } = useMemo(() => {
+    const rate: { ts: number; rx: number; tx: number }[] = [];
+    for (let i = 1; i < history.length; i++) {
+      const dt = (history[i].ts - history[i - 1].ts) / 1000;
+      if (dt <= 0) continue;
+      rate.push({
+        ts: history[i].ts,
+        rx: Math.max(0, history[i].rx - history[i - 1].rx) / dt,
+        tx: Math.max(0, history[i].tx - history[i - 1].tx) / dt,
+      });
+    }
+    return {
+      netRate: rate,
+      cpuPts: history.map((p) => ({ ts: p.ts, value: p.cpu / 100 })),
+      memPts: history.map((p) => ({ ts: p.ts, value: p.mem })),
+      rxPts: rate.map((p) => ({ ts: p.ts, value: p.rx })),
+      txPts: rate.map((p) => ({ ts: p.ts, value: p.tx })),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [history, history.length, lastTs]);
+  const lastRate = netRate.length ? netRate[netRate.length - 1] : null;
+
   if (latest && !latest.docker) {
     return <p className="p-6 text-center text-sm text-sub">Docker no está disponible: sin métricas.</p>;
   }
@@ -78,22 +114,6 @@ function LiveView({
   const allowance = cpus ? cpus * 100 : hostCores ? hostCores * 100 : null;
   const cpuPctOfLimit = stats && allowance ? (stats.cpuPercent / allowance) * 100 : null;
   const memPct = stats && memLimit ? (stats.memUsage / memLimit) * 100 : null;
-
-  // Caudal de red: netRx/netTx son contadores ACUMULADOS del contenedor, así que
-  // el dato útil («cuánto se descarga/sube ahora») es su derivada. Se calcula el
-  // delta entre muestras consecutivas dividido por el tiempo; se recorta a 0 para
-  // no pintar picos negativos cuando el contador se reinicia (reinicio del contenedor).
-  const netRate: { ts: number; rx: number; tx: number }[] = [];
-  for (let i = 1; i < history.length; i++) {
-    const dt = (history[i].ts - history[i - 1].ts) / 1000;
-    if (dt <= 0) continue;
-    netRate.push({
-      ts: history[i].ts,
-      rx: Math.max(0, history[i].rx - history[i - 1].rx) / dt,
-      tx: Math.max(0, history[i].tx - history[i - 1].tx) / dt,
-    });
-  }
-  const lastRate = netRate.length ? netRate[netRate.length - 1] : null;
 
   return (
     <div className="flex flex-col gap-3.5">
@@ -144,31 +164,31 @@ function LiveView({
         title="CPU · núcleos usados"
         color="var(--color-chart-1)"
         fillOpacity={0.14}
-        points={history.map((p) => ({ ts: p.ts, value: p.cpu / 100 }))}
-        format={(v) => `${v.toFixed(v < 1 ? 2 : 1)}`}
+        points={cpuPts}
+        format={fmtCoresAxis}
         fixedMax={cpus ?? undefined}
       />
       <MetricChart
         title={memLimit ? `Memoria · límite ${fmtBytes(memLimit)}` : 'Memoria'}
         color="var(--color-chart-2)"
         fillOpacity={0.12}
-        points={history.map((p) => ({ ts: p.ts, value: p.mem }))}
-        format={(v) => fmtBytes(v)}
+        points={memPts}
+        format={fmtBytesAxis}
         fixedMax={memLimit}
       />
       <MetricChart
         title="Red · descarga"
         color="var(--color-chart-3)"
         fillOpacity={0.12}
-        points={netRate.map((p) => ({ ts: p.ts, value: p.rx }))}
-        format={(v) => fmtRate(v)}
+        points={rxPts}
+        format={fmtRateAxis}
       />
       <MetricChart
         title="Red · subida"
         color="var(--color-chart-4)"
         fillOpacity={0.12}
-        points={netRate.map((p) => ({ ts: p.ts, value: p.tx }))}
-        format={(v) => fmtRate(v)}
+        points={txPts}
+        format={fmtRateAxis}
       />
       <p className="text-center text-xs text-subtle">
         Muestras cada 2,5 s · ventana de {Math.max(1, Math.round((history.length * 2.5) / 60))} min
@@ -192,7 +212,7 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
   // Agregados y series memoizados: el drawer re-renderiza con cada snapshot SSE
   // (~2,5 s) pero el histórico solo cambia cada 60 s. El hook va ANTES de los
   // returns tempranos (reglas de hooks); `points` es [] mientras carga.
-  const points = q.data?.points ?? [];
+  const points = q.data?.points ?? EMPTY_LIST;
   const { cpuAvg, cpuMax, memAvg, memMax, rxTotal, txTotal, diskLast, diskDelta, cpuPoints, memPoints, netPoints, diskPoints } = useMemo(() => {
     // Media del periodo PONDERADA por muestras: un cubo parcial del borde (con una
     // sola muestra) no debe pesar igual que uno lleno, o el número se dispara.
@@ -219,6 +239,14 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
     };
   }, [points]);
 
+  const memLimitBytes = memoryMb ? memoryMb * 1024 * 1024 : null;
+  const quotaBytes = diskMb ? diskMb * 1024 * 1024 : null;
+  // Objetos estables para el memo de las gráficas. También ANTES de los returns
+  // tempranos: un hook tras un return condicional rompe el orden de hooks.
+  const cpuThreshold = useMemo(() => (cpus ? { value: cpus, label: `límite ${cpus}` } : null), [cpus]);
+  const memThreshold = useMemo(() => (memLimitBytes ? { value: memLimitBytes, label: `límite ${memoryMb} MB` } : null), [memLimitBytes, memoryMb]);
+  const diskThreshold = useMemo(() => (quotaBytes ? { value: quotaBytes, label: `cuota ${diskMb} MB` } : null), [quotaBytes, diskMb]);
+
   if (q.isLoading) {
     return (
       <div aria-busy className="flex flex-col gap-3.5">
@@ -232,9 +260,6 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
   if (q.isError) {
     return <p className="p-6 text-center text-sm text-warn">No se pudo cargar el histórico: {(q.error as Error).message}</p>;
   }
-
-  const memLimitBytes = memoryMb ? memoryMb * 1024 * 1024 : null;
-  const quotaBytes = diskMb ? diskMb * 1024 * 1024 : null;
 
   return (
     <div className="flex flex-col gap-3.5">
@@ -271,8 +296,8 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
         points={cpuPoints}
         hours={hours}
         color="var(--color-chart-1)"
-        format={(v) => v.toFixed(v < 1 ? 2 : 1)}
-        threshold={cpus ? { value: cpus, label: `límite ${cpus}` } : null}
+        format={fmtCoresAxis}
+        threshold={cpuThreshold}
       />
       {/* Sin fixedMax: si un pico supera el límite, la banda lo muestra por
           encima de la línea de umbral en vez de aplastarlo contra el techo. */}
@@ -281,17 +306,17 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
         points={memPoints}
         hours={hours}
         color="var(--color-chart-2)"
-        format={(v) => fmtBytes(v)}
-        threshold={memLimitBytes ? { value: memLimitBytes, label: `límite ${memoryMb} MB` } : null}
+        format={fmtBytesAxis}
+        threshold={memThreshold}
       />
-      <NetBars points={netPoints} hours={hours} format={(v) => fmtBytes(v)} />
+      <NetBars points={netPoints} hours={hours} format={fmtBytesAxis} />
       <HistoryChart
         title="Disco ocupado"
         points={diskPoints}
         hours={hours}
         color="var(--color-chart-5)"
-        format={(v) => fmtBytes(v)}
-        threshold={quotaBytes ? { value: quotaBytes, label: `cuota ${diskMb} MB` } : null}
+        format={fmtBytesAxis}
+        threshold={diskThreshold}
       />
       <p className="text-center text-xs text-subtle">La banda va de la media al pico.</p>
     </div>

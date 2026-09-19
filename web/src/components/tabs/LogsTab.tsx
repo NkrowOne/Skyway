@@ -11,12 +11,11 @@ import { Deployment, DeploymentStatus } from '../../types';
 import {
   cx,
   DEPLOY_STATUS_LABEL,
-  DEPLOY_TRIGGER_LABEL,
   fmtDuration,
   isActiveDeploy,
   timeAgo,
 } from '../../utils';
-import LogViewer, { LogStage } from '../LogViewer';
+import LogViewer from '../LogViewer';
 import { Menu, Segmented, Skeleton, useToast } from '../ui';
 
 type Row = { line: string; cursor: string | null };
@@ -50,7 +49,8 @@ export default function LogsTab({
   const deploymentsQuery = useQuery({
     queryKey: ['deployments', serviceId],
     queryFn: () => api.get<{ deployments: Deployment[] }>(`/services/${serviceId}/deployments`),
-    refetchInterval: 5000,
+    // Igual que en Despliegues: solo hace falta ir rápido mientras sale uno.
+    refetchInterval: (q) => (q.state.data?.deployments.some((d) => isActiveDeploy(d.status)) ? 3000 : 15_000),
   });
 
   const deployments = deploymentsQuery.data?.deployments ?? [];
@@ -388,6 +388,15 @@ export default function LogsTab({
             : 'ready';
 
   // Descarga del log
+  // Estables para que el visor (en `memo`) no reciba funciones nuevas en cada render.
+  const handleFollowChange = useCallback((f: boolean) => {
+    followingRef.current = f;
+  }, []);
+  const refetchDeploymentLogs = deploymentLogsQuery.refetch;
+  const handleRetry = useCallback(() => {
+    void refetchDeploymentLogs();
+  }, [refetchDeploymentLogs]);
+
   const handleDownload = useCallback(async () => {
     try {
       if (isLiveMode && stageTab === 'runtime' && liveRows.length > 0) {
@@ -401,7 +410,7 @@ export default function LogsTab({
         a.href = url;
         a.download = `logs-app-${serviceId}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
         a.click();
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
       } else if (targetDepId) {
         const res = await fetch(`/api/deployments/${targetDepId}/logs/download`, {
           credentials: 'same-origin',
@@ -413,7 +422,7 @@ export default function LogsTab({
         a.href = url;
         a.download = `deploy-${targetDepId}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
         a.click();
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
       }
     } catch {
       toast('No se pudo descargar el log', 'err');
@@ -605,10 +614,9 @@ export default function LogsTab({
       <LogViewer
         lines={displayLines}
         toolbar
-        tailAnchor={isLiveMode}
         replicas={replicas}
         state={viewerState}
-        onRetry={() => deploymentLogsQuery.refetch()}
+        onRetry={handleRetry}
         emptyMessage={emptyNote ?? undefined}
         statusNote={
           isLiveMode && stageTab === 'runtime'
@@ -622,11 +630,8 @@ export default function LogsTab({
         onLoadOlder={isLiveMode && stageTab === 'runtime' ? loadOlderLive : undefined}
         canLoadOlder={isLiveMode && stageTab === 'runtime' && liveRows.length > 0 && !reachedStart}
         loadingOlder={loadingOlder}
-        reachedStart={isLiveMode && reachedStart && displayLines.length > 0}
         onDownload={handleDownload}
-        onFollowChange={(f) => {
-          followingRef.current = f;
-        }}
+        onFollowChange={handleFollowChange}
         downloadName={
           isLiveMode
             ? `logs-app-${serviceId}.txt`

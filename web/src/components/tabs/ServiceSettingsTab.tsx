@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { ChevronRight, Cpu, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
 import { api } from '../../api';
@@ -130,6 +130,7 @@ export default function ServiceSettingsTab({
   onChanged,
   onDeleted,
   onNeedsRedeploy,
+  onDirtyChange,
 }: {
   service: Service;
   projectId: string;
@@ -137,6 +138,8 @@ export default function ServiceSettingsTab({
   onDeleted: () => void;
   /** Aviso al panel de que hay cambios guardados que solo surten efecto al redesplegar. */
   onNeedsRedeploy?: () => void;
+  /** Avisa al panel de si hay cambios sin guardar, para que pida confirmación al cerrar o cambiar de pestaña. */
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const toast = useToast();
   const isGit = service.type === 'git';
@@ -153,6 +156,23 @@ export default function ServiceSettingsTab({
 
   const dirty = useMemo(() => JSON.stringify(form) !== JSON.stringify(baseline), [form, baseline]);
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+    return () => onDirtyChange?.(false);
+  }, [dirty, onDirtyChange]);
+
+  // Si el servicio cambia por fuera (otro usuario, un despliegue que fija el
+  // puerto detectado) y aquí no hay nada sin guardar, el formulario se pone al
+  // día. Con cambios a medias no se pisa lo que se está escribiendo.
+  useEffect(() => {
+    if (dirty) return;
+    const fresh = formFromService(service);
+    if (JSON.stringify(fresh) === JSON.stringify(baseline)) return;
+    setBaseline(fresh);
+    setForm(fresh);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [service]);
 
   const sources = useGithubSources(projectId, isGit);
   const hasSources = sources.installations.length > 0 || sources.connectors.length > 0;

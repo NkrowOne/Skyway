@@ -15,7 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../../api';
-import { cx } from '../../utils';
+import { cx, EMPTY_LIST, EMPTY_RECORD } from '../../utils';
 import { CopyButton, EditorBar, Segmented, Skeleton, useToast } from '../ui';
 
 interface ReferenceGroup {
@@ -55,7 +55,10 @@ function makeRow(key = '', value = ''): Row {
 const rowsFromVars = (vars: Record<string, string>): Row[] =>
   Object.entries(vars)
     .sort(([a], [b]) => a.localeCompare(b, 'es'))
-    .map(([key, value]) => makeRow(key, value));
+    // El id sale de la clave (única en lo guardado), no de un contador: con
+    // ids nuevos en cada recarga React remontaba todos los campos, se perdía
+    // el foco mientras escribías y se cerraban los valores revelados.
+    .map(([key, value]) => ({ id: `k:${key}`, key, value }));
 
 /** Variables típicas que casi toda app necesita, para añadirlas en un clic. */
 const SUGGESTED_VARS: { key: string; value: string; hint: string }[] = [
@@ -164,12 +167,16 @@ export default function VariablesTab({
     queryFn: () => api.get<EnvResponse>(`/services/${serviceId}/env`),
   });
 
+  // Solo se vuelve a leer del servidor cuando llegan datos NUEVOS. Antes
+  // dependía también de `dirty`: al guardar, `dirty` caía a false antes de
+  // que llegara la recarga y las filas volvían un instante a los valores viejos.
+  const syncedRef = useRef<EnvResponse | null>(null);
   useEffect(() => {
-    if (env.data && !dirty) {
-      const entries = rowsFromVars(env.data.vars);
-      setRows(entries);
-      setRawText(entries.map((r) => `${r.key}=${r.value}`).join('\n'));
-    }
+    if (!env.data || env.data === syncedRef.current || dirty) return;
+    syncedRef.current = env.data;
+    const entries = rowsFromVars(env.data.vars);
+    setRows(entries);
+    setRawText(entries.map((r) => `${r.key}=${r.value}`).join('\n'));
   }, [env.data, dirty]);
 
   const save = useMutation({
@@ -364,9 +371,9 @@ export default function VariablesTab({
     });
   };
 
-  const references = env.data?.references ?? [];
-  const resolved = env.data?.resolved ?? {};
-  const saved = env.data?.vars ?? {};
+  const references = env.data?.references ?? EMPTY_LIST;
+  const resolved = env.data?.resolved ?? EMPTY_RECORD;
+  const saved = env.data?.vars ?? EMPTY_RECORD;
 
   // Qué es nuevo, qué ha cambiado y qué se ha quitado respecto a lo guardado.
   const statusOf = (row: Row): RowStatus => {

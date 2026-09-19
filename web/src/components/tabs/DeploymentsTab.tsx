@@ -138,13 +138,16 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
 
 /** Explicación del fallo generada por el servidor (qué pasó y cómo arreglarlo). */
 function DiagnosisCard({ raw }: { raw: string | null }) {
-  if (!raw) return null;
-  let diagnosis: Diagnosis;
-  try {
-    diagnosis = JSON.parse(raw);
-  } catch {
-    return null;
-  }
+  // Se parsea una vez por texto, no en cada repintado del acordeón.
+  const diagnosis = useMemo<Diagnosis | null>(() => {
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as Diagnosis;
+    } catch {
+      return null;
+    }
+  }, [raw]);
+  if (!diagnosis) return null;
   return (
     <div className="rounded-lg border border-warn/30 bg-warn/[.06] p-3 text-xs">
       <p className="flex items-center gap-1.5 font-semibold text-warn">
@@ -365,7 +368,9 @@ export default function DeploymentsTab({
   const deployments = useQuery({
     queryKey: ['deployments', serviceId],
     queryFn: () => api.get<{ deployments: Deployment[] }>(`/services/${serviceId}/deployments`),
-    refetchInterval: 4000,
+    // Rápido solo mientras hay uno saliendo (el `done` del stream ya invalida
+    // esta consulta); con todo quieto, cada 4 s no aporta nada.
+    refetchInterval: (q) => (q.state.data?.deployments.some((d) => isActiveDeploy(d.status)) ? 3000 : 15_000),
   });
 
   const rollback = useMutation({
