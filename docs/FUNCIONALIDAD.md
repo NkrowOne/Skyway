@@ -580,15 +580,32 @@ despliegue, el sondeo y el webhook usen siempre la misma credencial:
    La conexión **no caduca** y no guarda credenciales: para clonar se emite un
    token de instalación de una hora, cacheado en memoria y renovado con margen.
    Una instalación puede ser **del proyecto** (la conecta el cliente) o
-   **global** (la conecta el administrador y sirve para todos).
+   **global** (la conecta el administrador y sirve para todos). Una instalación
+   ya conectada a otro proyecto o al servidor solo la reasigna el administrador
+   (el id que GitHub devuelve al instalar es adivinable). El nombre y el slug de
+   la App se **refrescan desde GitHub** (como mucho una vez cada 5 min):
+   renombrarla allí ya no deja en 404 su enlace ni el de «Conectar cuenta». El
+   enlace para elegir repos es la página real de ajustes de la instalación
+   (`github.com/settings/installations/<id>` u
+   `github.com/organizations/<login>/settings/installations/<id>`).
+   La App **solo ve los repos de las cuentas donde está instalada**: un repo
+   ajeno donde el usuario es solo colaborador no aparece en su lista.
 2. **Conector con token personal** (`connectorId`): lo anterior, disponible para
-   cuentas donde no se puede instalar una App. El token se guarda y se enmascara
-   en los logs.
+   cuentas donde no se puede instalar una App y para repos ajenos donde se es
+   colaborador (un token **clásico** con permiso `repo` ve todo lo que ve el
+   usuario; uno fine-grained, solo lo concedido). El token se guarda y se
+   enmascara en los logs.
 3. **Token global** (`settings.githubToken`): el atajo del administrador.
 
 Un servicio sin cuenta elegida busca una instalación que ya vea la cuenta del
 repositorio antes de caer al token global. Una instalación de OTRO proyecto no
 vale aunque se escriba su id a mano.
+
+En el panel, el selector de repos admite además **pegar la URL o escribir
+`owner/repo`**: si no está en la lista se comprueba al momento con la cuenta
+elegida (rutas `…/repos/lookup`) y, si esa cuenta no lo ve, el error explica el
+motivo y qué hacer. Bajo el campo de URL (al crear un servicio o en sus ajustes)
+un aviso dice si la cuenta elegida, el token global o nadie va a poder clonarlo.
 
 ### 5.5 Variables de compatibilidad con Railway
 
@@ -727,7 +744,7 @@ Los cuerpos son JSON salvo indicación; la subida de archivos es binaria.
 | POST | `/auth/password` | session | cambia la contraseña (invalida otras sesiones) |
 | GET | `/auth/passkeys` | auth | lista passkeys propias |
 | POST | `/auth/passkeys/options` | session | opciones de registro WebAuthn |
-| POST | `/auth/passkeys` | session | registra una passkey |
+| POST | `/auth/passkeys` | session | registra una passkey (409 si ya estaba registrada) |
 | DELETE | `/auth/passkeys/:id` | session | borra una passkey (solo desde el navegador: un token de API no puede desarmar el segundo factor) |
 | POST | `/auth/passkey-login/options` | público (rate-limit) | opciones de login con passkey |
 | POST | `/auth/passkey-login` | público (rate-limit) | login con passkey (sin email) |
@@ -735,7 +752,7 @@ Los cuerpos son JSON salvo indicación; la subida de archivos es binaria.
 ### 7.2 Tokens de API y usuarios
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/tokens` | auth | lista tokens del usuario |
+| GET | `/tokens` | auth | lista tokens del usuario (`last_used_at` se actualiza como mucho cada 60 s) |
 | POST | `/tokens` | session | crea token (`{name, expiresDays?}`) → devuelve el valor una vez |
 | DELETE | `/tokens/:id` | session | revoca un token (solo desde el navegador: un token no puede revocar a otros) |
 | GET | `/users` | admin | lista usuarios |
@@ -750,7 +767,7 @@ Niveles: **manage** = admin o propietario del workspace del recurso; **admin** =
 | --- | --- | --- | --- |
 | GET | `/modules` | auth | catálogo de módulos (capacidades) para las etiquetas de la UI |
 | GET | `/workspaces` | auth | admin: todas; propietario: la suya; miembro: ninguna. Incluye cuota, asignación y módulos |
-| POST | `/workspaces` | admin | crea una cuenta (`{name, planId?, billingEmail?, billingDay?}`) |
+| POST | `/workspaces` | admin | crea una cuenta (`{name, planId?, billingEmail?, billingDay?}`); un plan archivado no se contrata (400), aquí ni en el PATCH |
 | GET | `/workspaces/:id` | manage | cuenta + proyectos + sub-usuarios + `planHistory` (tramos de plan con su tarifa y sus fechas) |
 | PATCH | `/workspaces/:id` | admin | **live resize**: cuota, plan, concesión de módulos, estado (suspender), facturación. Cambiar de plan cierra el tramo vigente del historial y abre otro en la misma transacción |
 | DELETE | `/workspaces/:id` | admin | elimina la cuenta y sus sub-usuarios; sus proyectos quedan sin asignar |
@@ -762,15 +779,15 @@ Niveles: **manage** = admin o propietario del workspace del recurso; **admin** =
 | DELETE | `/workspaces/:id/members/:userId` | manage | elimina un sub-usuario del workspace |
 | GET | `/plans` | admin | lista de planes (con nº de cuentas que lo usan) |
 | POST | `/plans` | admin | crea un plan (usos incluidos + precio + `discount_pct` opcional) |
-| PATCH | `/plans/:id` | admin | edita un plan |
+| PATCH | `/plans/:id` | admin | edita un plan (409 al cambiar la moneda de uno contratado) |
 | DELETE | `/plans/:id` | admin | borra un plan (bloqueado si alguna cuenta lo usa) |
-| GET | `/workspaces/:id/invoices` | manage | facturas de la cuenta + datos del emisor (perfil fiscal), del cliente y si Stripe está activo |
+| GET | `/workspaces/:id/invoices` | manage | facturas de la cuenta (con `due_at`, el vencimiento congelado) + datos del emisor (perfil fiscal), del cliente y si Stripe está activo |
 | POST | `/workspaces/:id/invoices/generate` | admin | genera la factura del ciclo (plan + uso) con el IVA del perfil |
-| POST | `/workspaces/:id/invoices` | admin | crea un borrador a medida (`{lines[], taxRate?, irpfRate?, vatRegime?, operationDate?, notes?}`); cada línea admite su propio `taxRate` |
-| PATCH | `/invoices/:id` | admin | edita el borrador o transiciona el estado. **El contenido fiscal solo es editable en borrador**; una factura emitida es inmutable (409). Al emitir (`issued`/`paid`) congela emisor y destinatario, asigna nº de serie del ejercicio y bloquea (`locked`). Transiciones válidas: `draft→issued→paid`, `→void`; nunca vuelve a borrador |
+| POST | `/workspaces/:id/invoices` | admin | crea un borrador a medida (`{lines[], taxRate?, irpfRate?, vatRegime?, operationDate?, notes?}`); cada línea admite su propio `taxRate`; 400 si `periodEnd ≤ periodStart` |
+| PATCH | `/invoices/:id` | admin | edita el borrador o transiciona el estado. **El contenido fiscal solo es editable en borrador**; una factura emitida es inmutable (409). Al emitir (`issued`/`paid`) congela emisor y destinatario, asigna nº de serie del ejercicio y bloquea (`locked`). Transiciones válidas: `draft→issued→paid`, `→void`; nunca vuelve a borrador. Anular una factura con rectificativa viva → 409 (sería un doble abono) |
 | DELETE | `/invoices/:id` | admin | **solo borradores**; una factura emitida se conserva (409): debe anularse o rectificarse, nunca borrarse |
 | POST | `/invoices/:id/rectify` | admin | crea una **factura rectificativa** (borrador, serie REC) que corrige una emitida (`{reason, lines?, operationDate?}`); sin `lines` es anulación total, con `lines` correctas factura la diferencia; enlaza por `rectifies_invoice_id` |
-| POST | `/invoices/:id/stripe-link` | admin | emite la factura (alta antes del cobro) y crea/reutiliza el enlace de pago Stripe |
+| POST | `/invoices/:id/stripe-link` | admin | emite la factura (alta antes del cobro) y crea/reutiliza el enlace de pago Stripe; 400 si el total es ≤ 0 (antes de emitir), 409 si ya se está generando; el enlace guardado se renueva si Stripe lo da por caducado (`reused: true` solo si sigue abierto) |
 
 **Motor de factura conforme (RD 1619/2012).** El total se recomputa siempre en
 servidor: la cuota de IVA se agrupa por tipo y se redondea **una vez por base de
@@ -818,7 +835,7 @@ ciclo (`/invoices/generate`).
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/products` | auth | catálogo de productos (con sus tramos y si están en uso) |
-| POST | `/products` | admin | crea un producto (`{name, category, billingModel, priceCents, meter?, tierMode?, tiers?, taxRate?, …}`) |
+| POST | `/products` | admin | crea un producto (`{name, category, billingModel, priceCents, meter?, tierMode?, tiers?, taxRate?, …}`); `metered`/`tiered` exigen `meter` (400), también al editar |
 | PATCH | `/products/:id` | admin | edita un producto y sus tramos |
 | DELETE | `/products/:id` | admin | borra el producto; si está contratado se **archiva** (conserva el histórico) |
 | GET | `/workspaces/:id/subscriptions` | manage | suscripciones y cargos pendientes de la cuenta |
@@ -974,26 +991,29 @@ como línea negativa; una factura emitida es inmutable y conserva su descuento.
 | POST | `/projects/:id/connectors` | +access | conecta un token (`{name, token}`; se verifica contra GitHub) |
 | DELETE | `/connectors/:id` | +access | elimina un conector (sus servicios vuelven al token global) |
 | POST | `/connectors/:id/test` | +access | revalida el token guardado contra GitHub |
-| GET | `/connectors/:id/repos` | +access | repos visibles con ese token (para el selector) |
-| GET | `/connectors/:id/branches?repo=owner/repo` | +access | ramas del repo (la por defecto primero) |
+| GET | `/connectors/:id/repos` | +access | repos visibles con ese token (para el selector; hasta 1000, propios, de colaborador y de organización) |
+| GET | `/connectors/:id/repos/lookup?repo=` | +access | comprueba UN repo escrito a mano (`owner/repo` o URL) con ese token → `{repo}`; 404 con explicación si el token no lo ve |
+| GET | `/connectors/:id/branches?repo=owner/repo` | +access | ramas del repo (hasta 500, la por defecto primero) |
 | GET | `/connectors` | admin | todos los conectores de todos los proyectos (control central) |
 
 **GitHub App** (§5.4). Es el camino recomendado y convive con los conectores:
 
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/github/app` | auth | estado de la App (`configured`, slug, URL del webhook) |
+| GET | `/github/app` | auth | estado de la App (`configured`, slug, URL del webhook); nombre y slug refrescados desde GitHub (≤ 1 vez/5 min) |
 | POST | `/github/app/manifest` | admin+sesión | manifiesto y URL de acción para crear la App desde el navegador (`{org?}`) |
 | GET | `/github/app/setup?code&state` | admin+sesión | retorno de GitHub: canjea el código y guarda las credenciales |
 | POST | `/github/app/disconnect` | admin+sesión | olvida las credenciales (la App sigue existiendo en GitHub) |
 | GET | `/github/app/install?projectId=` | +access | 302 a GitHub para instalar la App (sin `projectId`, instalación global; solo admin) |
-| GET | `/github/app/installed?installation_id&state` | auth | retorno de la instalación: registra la cuenta conectada |
+| GET | `/github/app/installed?installation_id&state` | auth | retorno de la instalación: registra la cuenta conectada. Sin `state` válido, un administrador con sesión la registra como global; una instalación ya conectada a otro proyecto o al servidor la reasigna solo el admin (`?github=instalacion_ajena`) |
 | GET | `/projects/:id/github/installations` | +access | instalaciones usables desde el proyecto (las suyas y las globales) |
+| GET | `/projects/:id/github/lookup?repo=` | +access | comprueba un repo sin cuenta elegida: con el token global si lo hay, si no como anónimo → `{repo, credential: 'global'|'public'}`; 404 con explicación |
 | GET | `/github/installations` | admin | todas las instalaciones (vista central) |
 | POST | `/github/installations/:rowId/sync` | +access\* | refresca desde GitHub (repos elegidos, suspensión) |
 | DELETE | `/github/installations/:rowId` | +access\* | quita la conexión (la App sigue instalada en GitHub) |
 | GET | `/github/installations/:rowId/repos` | +access | repos que la instalación deja ver (`?projectId=` opcional: con una instalación global, acota el permiso a ese proyecto) |
-| GET | `/github/installations/:rowId/branches?repo=owner/repo` | +access | ramas del repo (`?projectId=` opcional, igual que arriba) |
+| GET | `/github/installations/:rowId/repos/lookup?repo=` | +access | comprueba UN repo escrito a mano (`owner/repo` o URL) con la instalación → `{repo}`; 404 con explicación si la App no lo ve (`?projectId=` opcional) |
+| GET | `/github/installations/:rowId/branches?repo=owner/repo` | +access | ramas del repo (hasta 500; `?projectId=` opcional, igual que arriba) |
 
 \* Las instalaciones **globales** solo las gestiona el administrador.
 
@@ -1139,13 +1159,14 @@ distroless), el explorador lo indica y no está disponible.
 
 | Variable | Por defecto | Descripción |
 | --- | --- | --- |
-| `PORT` | `4000` | puerto de la UI/API |
+| `PORT` | `4000` | puerto de la UI/API (un valor no numérico cae a 4000) |
 | `HOST` | `0.0.0.0` | interfaz de escucha |
 | `DATA_DIR` | `./data` | SQLite, builds y backups |
 | `WEB_DIST` | `web/dist` | web compilada a servir |
 | `JWT_SECRET` | generado | secreto de firma de sesiones (si no, se genera y persiste) |
 | `BUILD_CONCURRENCY` | núcleos − 1, en [2, 4] | builds simultáneos |
 | `TRUST_PROXY` | privadas/loopback | confianza en `X-Forwarded-*` (`true`/`false`/número/CIDRs) |
+| `CSRF_ORIGIN_CHECK` | `true` | guarda CSRF de las peticiones mutantes con cookie (`Sec-Fetch-Site`/`Origin` frente al host); `false` la desactiva si un proxy raro estorba |
 | `DOCKER_SOCK` | socket estándar | ruta alternativa al socket de Docker |
 | `LOG_LEVEL` | `info` | nivel de log de Fastify |
 

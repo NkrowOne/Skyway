@@ -28,6 +28,12 @@ recomendaciones a futuro.
 | 3 | Baja | Sesiones JWT | `jwt.verify` no fijaba el algoritmo (riesgo teórico de confusión de algoritmo). | Fijado `HS256` en firma (`signToken`) y verificación (`verifySession`). |
 | 4 | Baja | Anti fuerza bruta / DoS | Al superar 5000 IPs/retos, `attempts.clear()` y `authChallenges.clear()` borraban de golpe **todos** los contadores: un atacante inundando desde muchas IPs reseteaba el bloqueo de las víctimas. | Expulsión de las entradas **más antiguas** en vez de `clear()` global (`auth.ts`, `routes/passkeys.ts`). |
 | 5 | Media | Resiliencia de datos | Skyway hacía backups de las BBDD de los proyectos pero **no de su propia `skyway.db`** (usuarios, proyectos, variables, dominios, auditoría): una avería del disco perdía el panel entero. Tampoco se detectaba corrupción. | **Snapshot diario** del panel (~04:00, `VACUUM INTO`, consistente en caliente, retención 7, independiente de Docker) + creación manual, descarga y borrado desde Ajustes (solo admin, auditado); **`PRAGMA integrity_check` al arrancar** con alerta crítica y aviso de restauración si falla (`sysbackup.ts`, `scheduler.ts`, `index.ts`). |
+| 6 | Media | CSRF | La única defensa era `SameSite=Lax`, y las aplicaciones de los clientes viven en **subdominios del mismo sitio** que el panel (`*.rootDomain`): desde una de ellas, un `fetch` mutante con la cookie del panel pasaba. | Guarda en `app.ts` para toda petición mutante con cookie de sesión y sin `Authorization`: pasa si `Sec-Fetch-Site` es `same-origin`/`none`; sin esa cabecera, `Origin` debe coincidir con el host de la petición. Los webhooks (sin cookie) y los tokens `sky_…` (Bearer) no se ven afectados. Interruptor `CSRF_ORIGIN_CHECK=false`. |
+| 7 | Baja | Enumeración de usuarios | El login solo hacía scrypt si el correo existía: la diferencia de tiempo delataba qué cuentas hay. | scrypt **asíncrono** (no bloquea el bucle de eventos) y verificación contra un **hash señuelo** cuando el usuario no existe: misma respuesta y mismo coste. |
+| 8 | Baja | Fuga de detalles | Un 500 devolvía `err.message` tal cual (errores de SQLite con nombres de columna, rutas del disco). Las respuestas de la API podían quedar en la caché del navegador. | Los errores que no son del propio código salen como «Error interno»; `Cache-Control: no-store` en `/api/*`. |
+| 9 | Baja | WebAuthn | El origen esperado se tomaba de la cabecera `Origin` del cliente. | Se construye con protocolo y host de la petición; la cabecera solo se acepta si su host coincide. Una passkey ya registrada responde 409 en vez de 500. |
+| 10 | Media | Multi-inquilino (GitHub App) | El id de instalación que GitHub devuelve al instalar la App no iba ligado al estado firmado y es un entero adivinable: un miembro podía registrar en su proyecto una instalación **ajena** y clonar con ella repos privados de otro cliente. | Una instalación ya conectada a otro proyecto o al servidor solo la reasigna un administrador (`routes/github.ts`). |
+| 11 | Media | Reglas de Traefik | Los dominios llegaban como texto libre a la regla `Host(\`…\`)`, compartida por todo el servidor: una comilla invertida permitía redactar una regla que capturara el tráfico de otros clientes. | `domainSchema` (RFC 1123, minúsculas) en servicios, pilas, plantillas, `rootDomain` y el importador de Railway. |
 
 Todas verificadas: `npm run typecheck` y `npm run build` en verde, y *smoke test*
 del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
@@ -116,15 +122,21 @@ Estos no son defectos, sino consecuencias del propósito de la herramienta
   recomienda OWASP hoy (2¹⁷). No se sube ahora porque el formato `s2:` no versiona
   N y rompería los hashes existentes. Recomendación: introducir un prefijo `s3:`
   con N mayor, verificando ambos y re-hasheando al iniciar sesión.
-- **CSRF**: mitigado por `SameSite=Lax` y la ausencia de mutaciones por GET. Como
-  defensa en profundidad podría añadirse una comprobación de `Origin` en las rutas
-  mutantes con cookie.
 - **SSRF de administrador**: las URLs de webhook/Discord y la verificación DNS/IP
   las controla un admin o un usuario autenticado; el riesgo es bajo. Si se quiere,
   restringir los destinos a rangos públicos.
-- **Enumeración de usuarios por *timing***: el login hace scrypt solo si el usuario
-  existe, lo que deja una diferencia de tiempo medible. Menor; podría igualarse
-  con un hash señuelo.
+- **Límite de login solo por IP**: un ataque distribuido contra una cuenta no se
+  frena; un tope por cuenta abriría un bloqueo de la víctima a voluntad. Decisión
+  de producto.
+- **Cerrar sesión no revoca el JWT**: solo borra la cookie; un token robado sigue
+  valiendo hasta caducar (30 días) salvo que se rote el `session_epoch` (cierra
+  todos los dispositivos) o el secreto. Sin almacén de sesiones no hay revocación
+  individual.
+- **`audit_log` sin poda**: crece sin tope (un intento de login fallido, una
+  fila). Falta una política de retención (p. ej. un año).
+- **Informe de importación**: además de las contraseñas en los comandos, lo lee
+  cualquier miembro con acceso al proyecto; conviene acotarlo al administrador o
+  enmascararlo.
 
 ---
 
