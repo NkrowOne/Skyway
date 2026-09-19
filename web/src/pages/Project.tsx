@@ -235,7 +235,7 @@ export default function ProjectPage() {
   });
 
   const updateProject = useMutation({
-    // Solo el admin reasigna de empresa/workspace; el propietario únicamente renombra.
+    // Solo el admin reasigna el proyecto a otra cuenta; el propietario únicamente renombra.
     mutationFn: () => api.patch(`/projects/${projectId}`, { name: editName, ...(isAdmin ? { client: editClient } : {}) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['project', projectId] });
@@ -301,7 +301,7 @@ export default function ProjectPage() {
   }
 
   const { project: proj } = project.data;
-  // Gestión de estructura (renombrar/eliminar): admin o propietario del workspace del proyecto.
+  // Gestión de estructura (renombrar/eliminar): admin o propietario de la cuenta del proyecto.
   const isManager =
     isAdmin ||
     (me.data?.user?.role === 'owner' && !!me.data?.user?.workspaceId && proj.workspace_id === me.data?.user?.workspaceId);
@@ -395,51 +395,14 @@ export default function ProjectPage() {
             )}
           </div>
           {/*
-            * En el móvil estas siete acciones perdían su etiqueta y quedaban
-            * siete cuadrados iguales —uno de ellos borraba el proyecto—. Ahora
-            * ahí solo hay una acción a la vista y un menú donde cada cosa lleva
-            * su nombre escrito. En escritorio siguen en la barra, como estaban.
+            * La barra de escritorio lleva solo las acciones frecuentes, de la
+            * más general a la más concreta. Renombrar y eliminar son raras y la
+            * segunda es destructiva: van al menú «···» con su nombre escrito,
+            * no como dos iconos mudos al principio. En móvil ese mismo menú
+            * recoge también las acciones de la barra, que allí no caben.
             */}
           <div className="flex w-full items-center gap-2 sm:w-auto">
             <div className="hidden flex-wrap items-center gap-2 sm:flex">
-              {isManager && (
-                <>
-                  <button
-                    onClick={abrirEdicion}
-                    className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-txt"
-                    title={isAdmin ? 'Renombrar / empresa' : 'Renombrar'}
-                  >
-                    <Pencil size={14} />
-                  </button>
-                  <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-line" />
-                  <button
-                    onClick={abrirBorrado}
-                    className="press rounded-lg p-2 leading-none text-sub hover:bg-surface2 hover:text-err"
-                    title="Eliminar proyecto"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </>
-              )}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setStatusOpen(true)}
-                title="Página de estado pública para el cliente"
-              >
-                <Signal size={13} /> Página de estado
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setGithubOpen(true)}
-                title="Cuentas de GitHub cuyos repositorios se pueden desplegar aquí"
-              >
-                <ModuleLogo kind="github" size={13} /> GitHub
-              </Button>
-              <Button variant="secondary" size="sm" onClick={() => setSharedOpen(true)} title="Variables compartidas del proyecto">
-                <KeyRound size={13} /> Variables compartidas
-              </Button>
               {hasDeployables && (
                 <Button
                   variant="secondary"
@@ -451,18 +414,38 @@ export default function ProjectPage() {
                   <RefreshCw size={13} /> Desplegar todo
                 </Button>
               )}
+              <Button variant="secondary" size="sm" onClick={() => setSharedOpen(true)} title="Variables compartidas del proyecto">
+                <KeyRound size={13} /> Variables compartidas
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setGithubOpen(true)}
+                title="Cuentas de GitHub cuyos repositorios se pueden desplegar aquí"
+              >
+                <ModuleLogo kind="github" size={13} /> Cuentas de GitHub
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setStatusOpen(true)}
+                title="Página de estado pública para el cliente"
+              >
+                <Signal size={13} /> Página de estado
+              </Button>
             </div>
 
             <Button size="sm" className="max-sm:h-11 max-sm:flex-1" onClick={() => setNewOpen(true)}>
               <Plus size={14} /> Nuevo servicio
             </Button>
 
-            <div className="relative sm:hidden">
+            {/* Sin permiso de gestión el menú solo tendría sentido en móvil: en escritorio quedaría vacío. */}
+            <div className={cx('relative', !isManager && 'sm:hidden')}>
               <button
                 type="button"
                 onClick={() => setMenuOpen((o) => !o)}
                 aria-expanded={menuOpen}
-                className="press flex h-11 min-w-11 items-center justify-center rounded-lg border border-line bg-surface2 text-txt"
+                className="press flex h-11 min-w-11 items-center justify-center rounded-lg border border-line bg-surface2 text-txt sm:h-8 sm:min-w-8"
                 title="Más acciones del proyecto"
                 aria-label="Más acciones del proyecto"
               >
@@ -472,6 +455,7 @@ export default function ProjectPage() {
                 <div>
                   {hasDeployables && (
                     <MenuItem
+                      className="sm:hidden"
                       icon={<RefreshCw size={14} />}
                       onClick={() => {
                         setMenuOpen(false);
@@ -482,6 +466,7 @@ export default function ProjectPage() {
                     </MenuItem>
                   )}
                   <MenuItem
+                    className="sm:hidden"
                     icon={<KeyRound size={14} />}
                     onClick={() => {
                       setMenuOpen(false);
@@ -491,6 +476,7 @@ export default function ProjectPage() {
                     Variables compartidas
                   </MenuItem>
                   <MenuItem
+                    className="sm:hidden"
                     icon={<ModuleLogo kind="github" size={14} />}
                     onClick={() => {
                       setMenuOpen(false);
@@ -500,6 +486,7 @@ export default function ProjectPage() {
                     Cuentas de GitHub
                   </MenuItem>
                   <MenuItem
+                    className="sm:hidden"
                     icon={<Signal size={14} />}
                     onClick={() => {
                       setMenuOpen(false);
@@ -664,7 +651,6 @@ export default function ProjectPage() {
             <EmptyState
               icon={<Search />}
               title="Ningún servicio coincide"
-              description="Ni la búsqueda ni el filtro de tipo dejan pasar ninguno de los servicios del proyecto."
               action={
                 <Button
                   size="sm"
@@ -789,7 +775,7 @@ export default function ProjectPage() {
             <input className="input" value={editName} onChange={(e) => setEditName(e.target.value)} required />
           </Field>
           {isAdmin && (
-            <Field label="Empresa / cliente" hint="Vacío = sin empresa. Reasigna el proyecto a la cuenta de ese cliente.">
+            <Field label="Cuenta de cliente" hint="Vacío = sin cuenta.">
               <input className="input" value={editClient} onChange={(e) => setEditClient(e.target.value)} placeholder="Acme S.L." />
             </Field>
           )}

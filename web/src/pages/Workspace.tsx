@@ -147,8 +147,7 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
           )}
         </div>
         <p className="mb-4 text-xs text-subtle">
-          Acotada a todos los proyectos del cliente en total.{' '}
-          {isAdmin ? 'Amplíala o recórtala en vivo; los límites por servicio ya en marcha se aplican al volver a desplegar.' : 'La define tu proveedor.'}
+          {isAdmin ? 'Suma de todos los proyectos de la cuenta; los servicios en marcha aplican el cambio al redesplegar.' : 'Suma de todos los proyectos de la cuenta; la define tu proveedor.'}
         </p>
 
         <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
@@ -278,8 +277,8 @@ function ModulosTab({ detail, isAdmin, modules, onSaved }: { detail: Detail; isA
         <h2 className="text-base font-semibold">Módulos</h2>
         <p className="mt-1 text-xs text-subtle">
           {isAdmin
-            ? 'Concede o retira los módulos de esta cuenta. El cliente puede acotar (desactivar) los concedidos, nunca ampliarlos.'
-            : 'Activa o desactiva bajo tu cuenta los módulos incluidos en tu plan. No puedes activar los que no tengas concedidos.'}
+            ? 'Concede o retira módulos; el cliente solo puede desactivar los concedidos.'
+            : 'Activa o desactiva los módulos incluidos en tu plan.'}
         </p>
         <div className="mt-4 flex flex-col gap-5">
           {groups.map(([group, mods]) => (
@@ -424,7 +423,7 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
         <div className="min-w-0">
           <h2 className="text-base font-semibold">Usuarios de la cuenta</h2>
           <p className="mt-0.5 text-xs text-subtle">
-            {ws.allocation.members} de {ws.quota.maxMembers} · propietarios y miembros con acceso a proyectos de esta cuenta
+            {ws.allocation.members} de {ws.quota.maxMembers}
           </p>
         </div>
         <Button size="sm" onClick={() => setDraft({ email: '', password: '', role: 'member', projectIds: [] })}>
@@ -592,7 +591,7 @@ function UsoTab({ detail }: { detail: Detail }) {
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="flex min-w-0 items-center gap-1.5 text-sm text-sub">
-          <Gauge size={15} className="shrink-0 text-acc-soft" /> Consumo agregado de la cuenta en el tiempo
+          <Gauge size={15} className="shrink-0 text-acc-soft" /> Consumo de la cuenta
         </p>
         <Segmented size="sm" label="Periodo" options={DAY_RANGES.map((r) => ({ key: r.days, label: r.label }))} value={days} onChange={setDays} />
       </div>
@@ -705,6 +704,9 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
   // Emitir y marcar pagada son irreversibles: se confirman en un modal propio en
   // vez de con `window.confirm`, que en móvil sale como diálogo del sistema.
   const [confirming, setConfirming] = useState<{ inv: Invoice; status: 'issued' | 'paid' } | null>(null);
+  // Borrar un borrador también se confirma: la papelera está pegada a «Emitir» y
+  // un toque de más en móvil se llevaba el trabajo de revisar las líneas.
+  const [deleting, setDeleting] = useState<Invoice | null>(null);
 
   // Generar, anular o borrar una factura mueve también los CARGOS PUNTUALES (pasan
   // a facturados o vuelven a pendientes), así que hay que refrescar las dos listas:
@@ -731,7 +733,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
   });
   const remove = useMutation({
     mutationFn: (id: string) => api.del(`/invoices/${id}`),
-    onSuccess: () => { toast('Factura eliminada', 'ok'); invalidate(); },
+    onSuccess: () => { toast('Factura eliminada', 'ok'); setDeleting(null); invalidate(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
   const stripeLink = useMutation({
@@ -780,7 +782,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
           </div>
         )}
         <p className="mt-3 text-xs text-subtle">
-          Plan {ws.plan ? `${ws.plan.name} · ${ws.plan.price_cents === 0 ? 'gratis' : `${fmtMoney(ws.plan.price_cents, ws.plan.currency)}/${ws.plan.interval === 'yearly' ? 'año' : 'mes'}`}` : 'sin asignar'}. El uso incluido lo cubre el plan; lo que exceda se tarifica en la factura. Detalle en la pestaña «Uso».
+          Plan {ws.plan ? `${ws.plan.name} · ${ws.plan.price_cents === 0 ? 'gratis' : `${fmtMoney(ws.plan.price_cents, ws.plan.currency)}/${ws.plan.interval === 'yearly' ? 'año' : 'mes'}`}` : 'sin asignar'}. Lo que exceda el uso incluido se tarifica en la factura.
         </p>
       </section>
 
@@ -881,7 +883,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                       <Button size="sm" variant="ghost" onClick={() => setConfirming({ inv, status: 'issued' })}>
                         Emitir
                       </Button>
-                      <button onClick={() => remove.mutate(inv.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title="Eliminar borrador" aria-label="Eliminar borrador">
+                      <button onClick={() => setDeleting(inv)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title="Eliminar borrador" aria-label="Eliminar borrador">
                         <Trash2 size={14} />
                       </button>
                     </>
@@ -931,6 +933,19 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
         confirmLabel={confirming?.status === 'paid' ? 'Marcar pagada' : 'Emitir'}
         confirmVariant="primary"
         loading={setStatus.isPending}
+      />
+
+      <ConfirmModal
+        open={!!deleting}
+        onClose={() => setDeleting(null)}
+        onConfirm={() => deleting && remove.mutate(deleting.id)}
+        title="Eliminar borrador"
+        message={
+          deleting
+            ? `El borrador por ${fmtMoney(deleting.total_cents, deleting.currency)} (${fmtDate(deleting.period_start)} – ${fmtDate(deleting.period_end)}) se elimina. Los pagos únicos que incluía vuelven a quedar pendientes.`
+            : ''
+        }
+        loading={remove.isPending}
       />
 
       {viewing && data && <InvoiceView invoice={viewing} issuer={data.issuer} client={data.client} onClose={() => setViewing(null)} />}
@@ -1242,6 +1257,9 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
   const productsQ = useQuery({ queryKey: ['products'], queryFn: () => api.get<{ products: Product[] }>('/products'), staleTime: 60_000 });
   const [adding, setAdding] = useState(false);
   const [charge, setCharge] = useState(false);
+  // Suscripciones y cargos comparten la confirmación: en ambos casos se pierde
+  // algo que no se recupera (el precio pactado, el cargo pendiente).
+  const [toDelete, setToDelete] = useState<{ kind: 'sub' | 'charge'; id: string; name: string } | null>(null);
 
   const invalidate = () => { queryClient.invalidateQueries({ queryKey: ['ws-subs', workspaceId] }); onChanged(); };
   const setStatus = useMutation({
@@ -1251,12 +1269,12 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
   });
   const delSub = useMutation({
     mutationFn: (id: string) => api.del(`/subscriptions/${id}`),
-    onSuccess: () => { toast('Suscripción eliminada', 'ok'); invalidate(); },
+    onSuccess: () => { toast('Suscripción eliminada', 'ok'); setToDelete(null); invalidate(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
   const delCharge = useMutation({
     mutationFn: (id: string) => api.del(`/charges/${id}`),
-    onSuccess: () => { toast('Cargo eliminado', 'ok'); invalidate(); },
+    onSuccess: () => { toast('Cargo eliminado', 'ok'); setToDelete(null); invalidate(); },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
@@ -1273,7 +1291,7 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-line px-4 py-3">
         <h2 className="flex min-w-0 items-center gap-2 text-base font-semibold"><Boxes size={15} className="shrink-0 text-acc-soft" /> Servicios contratados</h2>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="secondary" onClick={() => setCharge(true)}><Plus size={13} /> Pago único</Button>
+          <Button size="sm" variant="ghost" onClick={() => setCharge(true)}><Plus size={13} /> Pago único</Button>
           <Button size="sm" onClick={() => setAdding(true)} disabled={subscribable.length === 0}><Plus size={13} /> Suscribir</Button>
         </div>
       </div>
@@ -1308,7 +1326,7 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
                 ) : s.status === 'paused' ? (
                   <button onClick={() => setStatus.mutate({ id: s.id, status: 'active' })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Reanudar" aria-label="Reanudar"><Play size={14} /></button>
                 ) : null}
-                <button onClick={() => delSub.mutate(s.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title="Eliminar" aria-label="Eliminar"><Trash2 size={14} /></button>
+                <button onClick={() => setToDelete({ kind: 'sub', id: s.id, name: s.product_name })} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title="Eliminar" aria-label="Eliminar"><Trash2 size={14} /></button>
               </div>
             </div>
           ))}
@@ -1321,12 +1339,30 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
                 </div>
                 <p className="mt-0.5 text-xs text-subtle tnum">{fmtMoney(c.unit_cents, currency)} × {c.qty} · IVA {c.tax_rate}%</p>
               </div>
-              <button onClick={() => delCharge.mutate(c.id)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title="Quitar cargo" aria-label="Quitar cargo"><Trash2 size={14} /></button>
+              <button onClick={() => setToDelete({ kind: 'charge', id: c.id, name: c.label })} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title="Quitar cargo" aria-label="Quitar cargo"><Trash2 size={14} /></button>
             </div>
           ))}
         </>
       )}
-      <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">Al generar la factura del ciclo se incluyen estas suscripciones (con su uso medido) y los pagos únicos pendientes (una sola vez).</p>
+      <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">La factura del ciclo incluye estas suscripciones, su uso medido y los pagos únicos pendientes.</p>
+
+      <ConfirmModal
+        open={!!toDelete}
+        onClose={() => setToDelete(null)}
+        onConfirm={() => {
+          if (!toDelete) return;
+          if (toDelete.kind === 'sub') delSub.mutate(toDelete.id);
+          else delCharge.mutate(toDelete.id);
+        }}
+        title={toDelete?.kind === 'charge' ? 'Quitar cargo' : 'Eliminar suscripción'}
+        message={
+          toDelete?.kind === 'charge'
+            ? `El cargo «${toDelete.name}» no se incluirá en la próxima factura.`
+            : `«${toDelete?.name ?? ''}» deja de facturarse a esta cuenta. Si tenía un precio pactado, se pierde.`
+        }
+        confirmLabel={toDelete?.kind === 'charge' ? 'Quitar' : 'Eliminar'}
+        loading={delSub.isPending || delCharge.isPending}
+      />
 
       {adding && <AddSubscriptionModal workspaceId={workspaceId} products={subscribable} onClose={() => setAdding(false)} onSaved={() => { setAdding(false); invalidate(); }} />}
       {charge && <AddChargeModal workspaceId={workspaceId} products={oneOffProducts} onClose={() => setCharge(false)} onSaved={() => { setCharge(false); invalidate(); }} />}
@@ -1536,7 +1572,7 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
         ))
       )}
       <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">
-        El cliente usa la clave contra <span className="font-mono">/gw/v1beta/models/&lt;modelo&gt;:generateContent</span>. El consumo se mide y se factura con los productos de IA del catálogo. El corte por impago es automático.
+        Se usa contra <span className="font-mono">/gw/v1beta/models/&lt;modelo&gt;:generateContent</span>; el consumo se factura con los productos de IA del catálogo.
       </p>
 
       <ConfirmModal
@@ -1619,7 +1655,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
     return (
       <section className="card p-5">
         <h2 className="text-base font-semibold">Precios de IA de este cliente</h2>
-        <p className="mt-2 text-xs text-subtle">Crea primero productos de IA (medidos por tokens) en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>. Luego podrás activarlos para este cliente en un clic y darle un precio propio.</p>
+        <p className="mt-2 text-xs text-subtle">Crea primero productos de IA en el <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>; después podrás activarlos aquí con un precio propio.</p>
       </section>
     );
   }
@@ -1636,7 +1672,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
       </div>
 
       {iaSubs.length === 0 ? (
-        <p className="px-4 py-8 text-center text-xs text-subtle">Este cliente aún no factura IA. Actívalo para cobrarle el consumo a los precios del catálogo; después puedes darle un precio propio por medidor.</p>
+        <p className="px-4 py-8 text-center text-xs text-subtle">Aún no factura IA. Actívalo para cobrar el consumo a precio de catálogo o con un precio propio por medidor.</p>
       ) : (
         iaSubs.map((s, i) => {
           const prod = productById.get(s.product_id);
@@ -1685,7 +1721,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
         })
       )}
       <p className="border-t border-line px-4 py-2.5 text-xs text-subtle">
-        Deja el precio vacío para usar el <a href="/catalog" className="text-acc-soft hover:underline">precio global</a> del catálogo. Un precio propio solo afecta a este cliente y no recibe el descuento por cuenta (ya es un precio pactado).
+        Vacío = <a href="/catalog" className="text-acc-soft hover:underline">precio del catálogo</a>; un precio propio es pactado y no recibe el descuento de la cuenta.
       </p>
     </section>
   );
@@ -1817,10 +1853,10 @@ export default function WorkspacePage() {
 
   const tabs = [
     { key: 'resumen', label: 'Resumen y cuota' },
-    { key: 'uso', label: 'Uso' },
-    { key: 'modulos', label: 'Módulos' },
-    { key: 'usuarios', label: 'Usuarios' },
     { key: 'facturacion', label: 'Facturación' },
+    { key: 'uso', label: 'Uso' },
+    { key: 'usuarios', label: 'Usuarios' },
+    { key: 'modulos', label: 'Módulos' },
   ];
 
   return (
@@ -1858,7 +1894,7 @@ export default function WorkspacePage() {
 
       {suspended && (
         <div className="mb-5 flex items-center gap-2 rounded-xl border border-warn/30 bg-warn/[.09] px-4 py-2.5 text-xs text-warn">
-          <Pause size={14} /> Cuenta suspendida: los despliegues y las operaciones nuevas están detenidos hasta reactivarla. Los servicios en marcha siguen vivos.
+          <Pause size={14} /> Cuenta suspendida: no admite despliegues ni operaciones nuevas; los servicios en marcha siguen vivos.
         </div>
       )}
 

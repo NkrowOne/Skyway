@@ -10,6 +10,7 @@ import { cx, fmtMoney } from '../utils';
 const CATS: Record<ProductCategory, string> = {
   web: 'Web', ia: 'IA', app: 'App', hosting: 'Hosting', bbdd: 'BBDD', dominio: 'Dominio', soporte: 'Soporte', custom: 'A medida',
 };
+/** Orden de partida (y de desempate): en la página las categorías se reordenan por número de productos. */
 const CAT_ORDER: ProductCategory[] = ['web', 'ia', 'app', 'hosting', 'bbdd', 'dominio', 'soporte', 'custom'];
 const MODELS: Record<BillingModel, string> = { flat_one_off: 'Pago único', subscription: 'Suscripción', metered: 'Por uso', tiered: 'Por tramos' };
 /** Explicación de cada modelo de precio (se muestra bajo el selector, para que quede claro cómo se cobra). */
@@ -124,13 +125,19 @@ export default function CatalogPage() {
   const setTier = (i: number, patch: Partial<TierDraft>) => setDraft((d) => (d ? { ...d, tiers: d.tiers.map((t, idx) => (idx === i ? { ...t, ...patch } : t)) } : d));
 
   const list = q.data?.products ?? [];
-  // Dentro de cada categoría, alfabético por nombre. `filter` ya devuelve una
-  // copia, así que ordenar no toca la caché de react-query.
+  // Las categorías con más productos van primero: son las que el operador
+  // busca; «A medida» es el cajón de lo que no encaja y cierra siempre la
+  // lista. Con empate se respeta CAT_ORDER (sort es estable). Dentro de cada
+  // categoría, alfabético por nombre. `filter` ya devuelve una copia, así que
+  // ordenar no toca la caché de react-query.
   const byCat = useMemo(
     () =>
-      CAT_ORDER.map((c) => ({ cat: c, items: list.filter((p) => p.category === c).sort((a, b) => a.name.localeCompare(b.name, 'es')) })).filter(
-        (g) => g.items.length,
-      ),
+      CAT_ORDER.map((c) => ({ cat: c, items: list.filter((p) => p.category === c).sort((a, b) => a.name.localeCompare(b.name, 'es')) }))
+        .filter((g) => g.items.length)
+        .sort((a, b) => {
+          if (a.cat === 'custom' || b.cat === 'custom') return a.cat === 'custom' ? 1 : -1;
+          return b.items.length - a.items.length;
+        }),
     [list],
   );
   const metered = draft && (draft.billingModel === 'metered' || draft.billingModel === 'tiered');

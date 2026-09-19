@@ -36,9 +36,9 @@ export default function AccountingPage() {
 
   const FILTERS: { key: '' | InvoiceStatus; label: string }[] = [
     { key: '', label: 'Todas' },
+    { key: 'draft', label: 'Borradores' },
     { key: 'issued', label: 'Emitidas' },
     { key: 'paid', label: 'Pagadas' },
-    { key: 'draft', label: 'Borradores' },
     { key: 'void', label: 'Anuladas' },
   ];
 
@@ -47,7 +47,7 @@ export default function AccountingPage() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Contabilidad</h1>
-          <p className="mt-1.5 text-sm text-sub">Ingresos de tu empresa: lo facturado a los clientes, lo cobrado y lo pendiente</p>
+          <p className="mt-1.5 text-sm text-sub">Lo facturado, lo cobrado y lo pendiente de cobro</p>
         </div>
         <a href="/api/accounting/export.csv" download className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface2 px-3.5 text-sm font-medium text-txt hover:border-acc/50">
           <Download size={15} /> Exportar CSV
@@ -249,21 +249,21 @@ function BillingAutomationSettings() {
     <section className="card p-5">
       <h2 className="flex items-center gap-2 text-base font-semibold"><CalendarClock size={15} className="text-acc-soft" /> Automatización de facturación</h2>
       <p className="mt-1 max-w-2xl text-xs text-subtle">
-        Skyway lleva la facturación recurrente por ti. Aquí decides cuánto hace solo —desde preparar el borrador hasta emitirlo— y qué ocurre cuando un cliente no paga. El scheduler lo revisa cada 10 minutos.
+        Qué hace Skyway solo en cada ciclo y qué pasa si un cliente no paga. Se revisa cada 10 minutos.
       </p>
 
       <div className="mt-4 flex flex-col divide-y divide-line rounded-xl border border-line">
         <div className="flex items-start justify-between gap-4 p-3.5">
           <div className="min-w-0">
             <p className="flex items-center gap-2 text-sm font-medium"><CalendarClock size={14} className="text-subtle" /> Generar el borrador del ciclo automáticamente</p>
-            <p className="mt-1 text-xs text-subtle">En el día de facturación de cada cuenta, Skyway reúne el plan, las suscripciones, el uso medido y los pagos únicos pendientes en un borrador de factura (no lo emite).</p>
+            <p className="mt-1 text-xs text-subtle">El día de cobro de cada cuenta, el plan, las suscripciones, el uso medido y los pagos únicos pendientes pasan a un borrador (sin emitir).</p>
           </div>
           <Toggle checked={draft.autoGenerate} onChange={(v) => set({ autoGenerate: v })} label="Generar el borrador del ciclo automáticamente" />
         </div>
         <div className={cx('flex items-start justify-between gap-4 p-3.5', !draft.autoGenerate && 'opacity-60')}>
           <div className="min-w-0">
             <p className="flex items-center gap-2 text-sm font-medium"><Zap size={14} className="text-warn" /> Emitir la factura automáticamente</p>
-            <p className="mt-1 text-xs text-subtle">Además de generarla, la <b>emite</b>: le asigna número de serie y la bloquea (inmutable). La emisión es un acto legal irreversible; actívalo solo si quieres que cada ciclo se numere y emita sin revisión previa. Apagado: revisas el borrador y lo emites tú.</p>
+            <p className="mt-1 text-xs text-subtle">Numera y bloquea el borrador sin revisión previa; es irreversible. Apagado: revisas el borrador y lo emites tú.</p>
           </div>
           <Toggle checked={draft.autoIssue} disabled={!draft.autoGenerate} onChange={(v) => set({ autoIssue: v })} label="Emitir la factura automáticamente" />
         </div>
@@ -271,8 +271,7 @@ function BillingAutomationSettings() {
           <div className="min-w-0">
             <p className="flex items-center gap-2 text-sm font-medium"><Send size={14} className="text-info" /> Enviar la factura al cliente al emitirla</p>
             <p className="mt-1 text-xs text-subtle">
-              Manda la factura en PDF al email de facturación de la cuenta, en cuanto se emite (a mano o automáticamente).
-              Requiere el servidor de correo configurado en «Datos de la empresa». Siempre puedes reenviarla desde la ficha de la cuenta.
+              Envía el PDF al email de facturación de la cuenta en cuanto se emite. Requiere el correo saliente configurado arriba.
             </p>
           </div>
           <Toggle checked={draft.emailOnIssue} onChange={(v) => set({ emailOnIssue: v })} label="Enviar la factura al cliente al emitirla" />
@@ -339,7 +338,7 @@ function AiGatewaySettings() {
       <section className="card p-5">
         <h2 className="text-base font-semibold">Gateway de IA (Gemini)</h2>
         <p className="mt-1 text-xs text-subtle">
-          Tu clave de Google Gemini. Skyway proxya las peticiones de los clientes con ella (nunca se expone), mide los tokens y los factura por cuenta. Cada cliente usa una clave <span className="font-mono">skai_…</span> propia, revocable. Admite <span className="font-mono">generateContent</span>, streaming SSE y API compatible con OpenAI.
+          Las peticiones de los clientes pasan por esta clave (nunca se expone) con una clave <span className="font-mono">skai_…</span> propia por cuenta, y el consumo se factura por cuenta.
         </p>
         <div className="mt-4 grid gap-3">
           <Field label="Clave de Gemini (API key de Google AI)" hint={q.data.hasGeminiKey ? 'ya configurada; vacío = no cambiar' : 'necesaria para que el proxy funcione'}>
@@ -448,7 +447,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
     <section className="card p-5">
       <h2 className="flex items-center gap-2 text-base font-semibold"><Coins size={15} className="text-ok" /> Cuánto ganas por modelo</h2>
       <p className="mt-1 max-w-2xl text-xs text-subtle">
-        Skyway trae el coste de cada modelo desde la tarifa vigente de Google; tú pones el margen que quieres. Te decimos a qué precio venderlo y cuánto ganas por millón de tokens. Después pon ese precio en el producto de IA del <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a> para cobrarlo.
+        Coste de Google + tu margen = precio de venta. El precio que cobras se fija en el producto de IA del <a href="/catalog" className="text-acc-soft hover:underline">catálogo</a>.
       </p>
 
       <PriceSyncBar
@@ -564,7 +563,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
         })}
       </div>
       <p className="mt-3 text-xs text-subtle">
-        «Lista Google» es la tarifa publicada en USD, antes de convertir a {s.currency}; tu coste real puede variar por volumen o por acuerdos con Google. Consulta el precio vigente en <a href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank" rel="noopener noreferrer" className="text-acc-soft hover:underline">ai.google.dev</a>.
+        «Lista Google» es la tarifa publicada en USD antes de convertir a {s.currency}; tu coste real puede variar (precio vigente en <a href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank" rel="noopener noreferrer" className="text-acc-soft hover:underline">ai.google.dev</a>).
       </p>
     </section>
   );
@@ -772,7 +771,7 @@ function CompanyProfile() {
     <div className="grid gap-5 lg:grid-cols-2">
       <section className="card p-5">
         <h2 className="flex items-center gap-2 text-base font-semibold"><Building2 size={15} className="text-acc-soft" /> Datos de la empresa emisora</h2>
-        <p className="mt-1 text-xs text-subtle">Aparecen en cada factura. Tú facturas a tus clientes.</p>
+        <p className="mt-1 text-xs text-subtle">Aparecen en cada factura.</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <Field label="Nombre / razón social"><input className="input" value={draft.companyName} onChange={(e) => set({ companyName: e.target.value })} placeholder="Skyway Cloud S.L." /></Field>
           <Field label="NIF / CIF"><input className="input" value={draft.taxId} onChange={(e) => set({ taxId: e.target.value })} placeholder="B12345678" /></Field>
@@ -816,7 +815,7 @@ function CompanyProfile() {
         <section className="card p-5">
           <h2 className="flex items-center gap-2 text-base font-semibold"><CreditCard size={15} className="text-acc-soft" /> Stripe (pago con tarjeta)</h2>
           <p className="mt-1 text-xs text-subtle">
-            Cobra facturas con tarjeta. Configura el webhook <span className="font-mono">/api/webhooks/stripe</span> en Stripe con el secreto de firma.
+            Webhook a dar de alta en Stripe, con el secreto de firma: <span className="font-mono">/api/webhooks/stripe</span>.
           </p>
           <div className="mt-4 grid gap-3">
             <Field label="Clave secreta (sk_…)" hint={stripe.hasSecretKey ? 'ya configurada; vacío = no cambiar' : 'necesaria para crear enlaces de pago'}>
@@ -831,9 +830,6 @@ function CompanyProfile() {
 
         <section className="card p-5">
           <h2 className="flex items-center gap-2 text-base font-semibold"><Send size={15} className="text-info" /> Correo saliente (envío de facturas)</h2>
-          <p className="mt-1 text-xs text-subtle">
-            Servidor SMTP con el que se envía la factura en PDF al email de facturación del cliente.
-          </p>
           <div className="mt-4 grid gap-3">
             <div className="grid gap-3 sm:grid-cols-[1fr_100px]">
               <Field label="Servidor"><input className="input" value={draft.smtpHost} onChange={(e) => set({ smtpHost: e.target.value })} placeholder="smtp.tuproveedor.com" /></Field>
