@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronDown, History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Check, ChevronDown, History, LifeBuoy, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, EMPTY_LIST, fmtDuration, isActiveDeploy, ServiceStatusKind, timeAgo } from '../../utils';
@@ -137,7 +138,7 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
 }
 
 /** Explicación del fallo generada por el servidor (qué pasó y cómo arreglarlo). */
-function DiagnosisCard({ raw }: { raw: string | null }) {
+function DiagnosisCard({ raw, serviceId }: { raw: string | null; serviceId: string }) {
   // Se parsea una vez por texto, no en cada repintado del acordeón.
   const diagnosis = useMemo<Diagnosis | null>(() => {
     if (!raw) return null;
@@ -158,6 +159,14 @@ function DiagnosisCard({ raw }: { raw: string | null }) {
         <span className="font-semibold text-ok">Cómo arreglarlo: </span>
         <span className="text-sub">{diagnosis.fix}</span>
       </p>
+      {/* El asistente cruza este diagnóstico con los logs de ejecución y la
+          FAQ: es el siguiente paso cuando el arreglo de arriba no basta. */}
+      <Link
+        to={`/help?service=${encodeURIComponent(serviceId)}&q=${encodeURIComponent('Mi despliegue falla')}`}
+        className="tap mt-2.5 inline-flex items-center gap-1.5 font-semibold text-acc-soft hover:underline max-sm:mt-3 max-sm:min-h-10"
+      >
+        <LifeBuoy size={12} aria-hidden /> Preguntar al asistente →
+      </Link>
     </div>
   );
 }
@@ -575,7 +584,7 @@ export default function DeploymentsTab({
                   {d.error && (
                     <p className="rounded-lg border border-err/30 bg-err/[.08] px-3 py-2 text-xs text-err">{d.error}</p>
                   )}
-                  <DiagnosisCard raw={d.diagnosis} />
+                  <DiagnosisCard raw={d.diagnosis} serviceId={serviceId} />
                   <DeploymentLogs deployment={d} />
                 </div>
               </Collapse>

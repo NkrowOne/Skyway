@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { ChevronRight, Cpu, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
+import { ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
 import { api } from '../../api';
 import { DbTemplate, Service } from '../../types';
 import { cx } from '../../utils';
@@ -90,6 +90,7 @@ interface FormState {
   diskMb: string;
   alertsMuted: boolean;
   autoDeploy: boolean;
+  autoImportEnv: boolean;
   healthcheckPath: string;
   replicas: string;
   volumePaths: string[];
@@ -119,6 +120,7 @@ function formFromService(service: Service): FormState {
     alertsMuted: !!(cfg as any).alertsMuted,
     // Opt-out: ausente = activado (solo `false` lo desactiva).
     autoDeploy: (cfg as any).autoDeploy !== false,
+    autoImportEnv: cfg.autoImportEnv !== false,
     healthcheckPath: cfg.healthcheckPath ?? '',
     replicas: String((cfg as any).replicas ?? 1),
     volumePaths: ((cfg as any).volumes ?? []).map((v: { containerPath: string }) => v.containerPath),
@@ -233,6 +235,7 @@ export default function ServiceSettingsTab({
           port: Number(form.port) || 3000,
           domains: form.domains,
           autoDeploy: form.autoDeploy,
+          autoImportEnv: form.autoImportEnv,
         });
       } else if (isImage) {
         Object.assign(config, {
@@ -460,6 +463,27 @@ export default function ServiceSettingsTab({
                 </ol>
               </div>
             </details>
+          </SectionCard>
+        )}
+
+        {isGit && (
+          <SectionCard icon={<FileText size={14} />} iconClass="text-sub" title="Variables del repositorio">
+            <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line bg-surface px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={form.autoImportEnv}
+                onChange={(e) => set('autoImportEnv', e.target.checked)}
+                className="mt-0.5 h-[15px] w-[15px] shrink-0 accent-acc max-sm:h-4 max-sm:w-4"
+              />
+              <span className="text-sm">
+                <span className="font-medium">Importar las variables del .env del repositorio al desplegar</span>
+                <span className="mt-1 block text-xs leading-relaxed text-subtle">
+                  Lee <span className="font-mono">.env.example</span>, <span className="font-mono">.env</span> y similares al
+                  clonar y crea las variables que falten. Nunca sobrescribe las que ya tienes; las que vienen sin valor quedan
+                  señaladas en la pestaña Variables.
+                </span>
+              </span>
+            </label>
           </SectionCard>
         )}
 

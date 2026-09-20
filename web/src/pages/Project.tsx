@@ -21,6 +21,9 @@ const GithubModal = lazy(() => import('../components/GithubModal'));
 const StatusPageModal = lazy(() => import('../components/StatusPageModal'));
 const ImportReportView = lazy(() => import('../components/RailwayImportModal').then((m) => ({ default: m.ImportReportView })));
 
+/** Pestañas del drawer que se pueden pedir por URL (`?tab=`). */
+const DRAWER_TABS = new Set(['db', 'deployments', 'logs', 'variables', 'backups', 'metrics', 'files', 'settings']);
+
 export interface MetricPoint {
   ts: number;
   cpu: number;
@@ -197,6 +200,10 @@ export default function ProjectPage() {
   const [streamLive, setStreamLive] = useState(false);
 
   const selectedId = searchParams.get('s');
+  // `?tab=` abre el drawer directamente en esa pestaña (enlaces desde la ayuda
+  // y las alertas). Solo se lee al montar el drawer; cambiar de pestaña no lo escribe.
+  const tabParam = searchParams.get('tab');
+  const initialTab = tabParam && DRAWER_TABS.has(tabParam) ? tabParam : null;
   // Presencia del drawer: sigue montado durante su animación de despedida.
   const drawer = usePresence(!!selectedId, 240);
   const lastServiceRef = useRef<Service | null>(null);
@@ -743,6 +750,7 @@ export default function ProjectPage() {
             latestMetrics={latest}
             historyRef={historyRef}
             closing={drawer.closing}
+            initialTab={initialTab}
             onClose={() => openService(null)}
           />
         </Suspense>

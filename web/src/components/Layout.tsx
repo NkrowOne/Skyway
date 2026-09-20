@@ -14,6 +14,7 @@ import {
   Globe,
   Landmark,
   Keyboard,
+  LifeBuoy,
   LogOut,
   Menu,
   Rocket,
@@ -48,6 +49,7 @@ const PAGE_LABEL: Record<string, string> = {
   '/security': 'Seguridad',
   '/settings': 'Ajustes',
   '/alerts': 'Alertas',
+  '/help': 'Ayuda',
   '/users': 'Usuarios',
   '/account': 'Mi perfil',
   '/monitor': 'Monitor',
@@ -149,6 +151,14 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
           ) : undefined,
         keywords: 'alertas avisos notificaciones',
         to: '/alerts',
+      },
+      {
+        key: 'a-help',
+        group: 'Acciones rápidas',
+        icon: <LifeBuoy size={15} className="text-subtle" />,
+        label: 'Ayuda y asistente',
+        keywords: 'ayuda asistente faq preguntas frecuentes soporte error falla no arranca importar env dominio',
+        to: '/help',
       },
       {
         key: 'a-account',
@@ -613,6 +623,7 @@ function MainMenu({
               <Chip size="sm" tone="err">{unread > 9 ? '9+' : unread}</Chip>
             ) : undefined,
         },
+        { to: '/help', icon: <LifeBuoy size={16} />, label: 'Ayuda' },
       ],
     },
   ];

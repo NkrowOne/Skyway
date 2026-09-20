@@ -55,6 +55,7 @@ import { apiHeadSha, parseGithubSlug } from '../github/client';
 import { resolveGitAuth } from '../github/resolve';
 import { isWorkspaceActive, workspaceOfProject } from '../quota';
 import { buildImage, cloneRepo, isBuildTimeVar, normalizeRepoUrl, spawnLogged } from './builder';
+import { importRepoEnv } from './envimport';
 import { dockerRestartPolicy, hasRailwayConfig, RailwayRepoConfig, readRailwayRepoConfig } from './railwayconfig';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
 import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
@@ -672,10 +673,11 @@ async function buildGitImage(
   const image = `skyway/${project.slug}-${service.slug}:${deploymentId.slice(-8)}`;
   const workDir = path.join(config.buildsDir, deploymentId);
   const token = await resolveCloneToken(project, cfg, log);
-  const buildKey = buildKeyFor(service, cfg);
+  let buildKey = buildKeyFor(service, cfg);
   // Un solo cálculo del entorno para las dos cosas que lo necesitan: comprobar
   // que las variables del build siguen valiendo lo mismo, y dárselas al build.
-  const env = resolveServiceEnv(service);
+  // Se recalcula si la importación del `.env` del repositorio añade variables.
+  let env = resolveServiceEnv(service);
   const forceBuild = getDeployment(deploymentId)?.force_build === 1;
   const onSpawn = trackProc(job);
 
@@ -727,6 +729,24 @@ async function buildGitImage(
       log,
     );
     if (job.canceled) throw new CanceledError();
+    // Las variables del `.env.example`/`.env` del repo se importan ANTES de
+    // construir: así las públicas (VITE_*, NEXT_PUBLIC_*…) entran en el build
+    // y todas llegan al contenedor de ESTE despliegue (deployContainer vuelve
+    // a resolver el entorno). Un fallo aquí no puede tirar el despliegue.
+    if (cfg.autoImportEnv !== false) {
+      try {
+        const contextDir = path.resolve(workDir, cfg.rootDir || '.');
+        const report = importRepoEnv({ service, workDir, contextDir, log });
+        if (report?.applied) {
+          env = resolveServiceEnv(service);
+          // La huella del build incluye las variables de build: con las recién
+          // importadas, la que se calculó antes de clonar ya no describe esta imagen.
+          buildKey = buildKeyFor(service, cfg);
+        }
+      } catch (err: any) {
+        log(`Variables: no se pudo leer el .env del repositorio (${err?.message || err})`);
+      }
+    }
     const repoConfig = readRailwayRepoConfig(workDir, cfg.rootDir, log);
     let builderPrevio: string | null = null;
     if (hasRailwayConfig(repoConfig) && repoConfig.source) {

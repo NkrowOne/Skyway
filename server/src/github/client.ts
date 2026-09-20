@@ -240,6 +240,72 @@ export async function listGithubBranches(token: string, owner: string, repo: str
   return names;
 }
 
+/** Tope de fichero que se descarga por la API de contenidos (mismo tope que los `.env` del checkout). */
+const REPO_FILE_MAX_BYTES = 64 * 1024;
+
+/** Ruta dentro del repo codificada segmento a segmento (las barras se conservan). */
+function encodeRepoPath(p: string): string {
+  return p.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+}
+
+/**
+ * Nombres de las entradas de un directorio del repo en `ref` (raíz con ''),
+ * o null si no existe, no es un directorio o la credencial no lo ve. Sirve
+ * para saber qué ficheros hay antes de pedirlos uno a uno y no gastar cuota
+ * en 404.
+ */
+export async function listRepoDir(
+  token: string | null,
+  owner: string,
+  repo: string,
+  dir: string,
+  ref: string,
+): Promise<string[] | null> {
+  const enc = (s: string) => encodeURIComponent(s);
+  const sub = encodeRepoPath(dir);
+  const res = await ghFetch(`/repos/${enc(owner)}/${enc(repo)}/contents${sub ? `/${sub}` : ''}?ref=${enc(ref)}`, {
+    token,
+    passthrough: [404],
+  });
+  if (res.status === 404) {
+    await res.text().catch(() => '');
+    return null;
+  }
+  const body: unknown = await res.json().catch(() => null);
+  if (!Array.isArray(body)) return null; // una ruta que es fichero devuelve un objeto
+  return body.map((e: any) => (typeof e?.name === 'string' ? e.name : '')).filter(Boolean);
+}
+
+/**
+ * Contenido de un fichero del repo en `ref` (texto UTF-8), o null si no existe,
+ * no es un fichero o pesa más de 64 KB. La API devuelve el contenido en base64
+ * hasta 1 MB; por encima no lo incluye, y aquí no hace falta llegar tan lejos.
+ */
+export async function getRepoFile(
+  token: string | null,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string,
+): Promise<string | null> {
+  const enc = (s: string) => encodeURIComponent(s);
+  const res = await ghFetch(`/repos/${enc(owner)}/${enc(repo)}/contents/${encodeRepoPath(path)}?ref=${enc(ref)}`, {
+    token,
+    passthrough: [404],
+  });
+  if (res.status === 404) {
+    await res.text().catch(() => '');
+    return null;
+  }
+  const body: any = await res.json().catch(() => null);
+  if (!body || body.type !== 'file') return null;
+  if (typeof body.size === 'number' && body.size > REPO_FILE_MAX_BYTES) return null;
+  if (body.encoding !== 'base64' || typeof body.content !== 'string') return null;
+  const buf = Buffer.from(body.content.replace(/\s+/g, ''), 'base64');
+  if (buf.length > REPO_FILE_MAX_BYTES) return null;
+  return buf.toString('utf8');
+}
+
 /** owner/repo a partir de una URL de repositorio de GitHub (o null si no lo es). */
 export function parseGithubSlug(repoUrl: string): { owner: string; repo: string } | null {
   const trimmed = repoUrl.trim().replace(/\.git$/, '');

@@ -25,6 +25,7 @@ const WorkspacePage = lazy(() => import('./pages/Workspace'));
 const PlansPage = lazy(() => import('./pages/Plans'));
 const CatalogPage = lazy(() => import('./pages/Catalog'));
 const AccountingPage = lazy(() => import('./pages/Accounting'));
+const HelpPage = lazy(() => import('./pages/Help'));
 
 const pageFallback = (
   <div className="flex h-full items-center justify-center">
@@ -90,6 +91,7 @@ export default function App() {
           <Route path="/sites" element={<SitesPage />} />
           <Route path="/account" element={<AccountPage />} />
           <Route path="/alerts" element={<AlertsPage />} />
+          <Route path="/help" element={<HelpPage />} />
           {/* Cuentas de cliente: admin (todas) y propietario (la suya). */}
           {(user?.role === 'admin' || user?.role === 'owner') && (
             <>

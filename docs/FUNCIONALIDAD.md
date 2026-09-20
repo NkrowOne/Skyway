@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.32.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.33.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -69,7 +69,10 @@ server/src/
     stackdeploy.ts      despliegue por etapas de una pila: espera de arranque + SQL de inicialización
     railwayconfig.ts    lectura de railway.json / railway.toml (config-as-code)
     diagnose.ts         diagnóstico de fallos y explicación de códigos de salida
-  github/client.ts      API de GitHub: validar tokens, listar repos y ramas, cabeza de rama con ETag
+    envimport.ts        detección e importación del .env / .env.example del repo (con validación)
+  help/                 ayuda para clientes: FAQ (faq.ts), reglas sobre logs de la app (runtime.ts)
+                        y asistente determinista + detección de errores por servicio (assistant.ts)
+  github/client.ts      API de GitHub: validar tokens, listar repos y ramas, cabeza de rama con ETag, leer un fichero del repo
   github/app.ts         GitHub App: alta por manifiesto, tokens de instalación, repos por instalación
   github/resolve.ts     con qué credencial se clona cada servicio (App → conector → token global)
   railway/client.ts     cliente GraphQL de Railway (solo en memoria)
@@ -83,7 +86,7 @@ web/src/
   types.ts              tipos del cliente (espejo de server/types)
   utils.ts              formateadores, etiquetas de estado/acción
   hooks.ts              useLocalStorage, useMediaQuery…
-  pages/                Dashboard, Proyecto, Monitor, Sitios, Estado, Ajustes…
+  pages/                Dashboard, Proyecto, Monitor, Sitios, Estado, Ajustes, Ayuda…
   components/           canvas de servicios, drawer con pestañas, gráficas
   components/GithubSource.tsx    selector unificado de cuenta de GitHub (App + tokens) y de repo
   components/GithubModal.tsx     conexiones de GitHub del proyecto
@@ -662,6 +665,29 @@ antes obligaba a entrar por SSH al servidor.
   desplegar, y con un despliegue vivo no se encola otro encima.
 - **Variables**: por servicio y compartidas por proyecto; referencias
   `${{Servicio.VAR}}` y `${{shared.VAR}}` resueltas al desplegar.
+- **Importación del `.env` del repositorio** (`deploy/envimport.ts`): al construir
+  un servicio git se buscan `.env.example`, `.env.sample`, `.env.template`,
+  `.env.dist`, `.env.defaults`, `example.env` y `.env` (este último manda) en el
+  directorio raíz del servicio y en la raíz del repo. Cada clave se valida
+  (nombre, reservadas como `PORT`/`RAILWAY_*`, ya definida en el servicio o en las
+  compartidas, tratada en una pasada anterior) y su valor se clasifica: útil →
+  se **importa**; vacío o de ejemplo (`changeme`, `<…>`, `your-…`) → queda
+  **pendiente** de rellenar; apunta a `localhost` → se ignora (dentro del
+  contenedor no existe). Nunca pisa una variable existente, escribe solo claves
+  en el log y deja un aviso en la campana. El informe se guarda en la config del
+  servicio (`envImport`, sin valores) y se puede desactivar por servicio
+  (`autoImportEnv: false`). Desde Variables → «Importar del repositorio» se hace
+  lo mismo sin clonar (API de contenidos de GitHub), con vista previa.
+- **Ayuda para clientes** (`help/`, página «Ayuda»): FAQ en español buscable por
+  categorías y un **asistente determinista** (sin LLM) que responde con las
+  preguntas coincidentes y, si la pregunta huele a fallo, **revisa el servicio**:
+  último despliegue fallido (reutiliza `diagnose.ts`), estado del contenedor,
+  referencias `${{…}}` sin resolver, variables pendientes del `.env` y patrones en
+  la cola de logs de la aplicación (variable ausente, conexión rechazada, puerto
+  ocupado, módulo no encontrado, memoria…). Cada hallazgo trae causa, arreglo,
+  la línea que lo delata (con secretos tapados) y enlaces a la pestaña del
+  servicio. «Detectar errores» pasa la misma revisión a todos los servicios
+  accesibles.
 - **Pilas de aplicaciones**: Supabase, WordPress, Ghost, n8n y Metabase con todos
   sus servicios, secretos generados y arranque ordenado (§5.1).
 - **Consola de consultas** (Consultas): explorador de tablas/colecciones/claves,
@@ -1040,6 +1066,7 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
 | GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias) |
 | PUT | `/services/:id/env` | +access | reemplaza variables del servicio |
+| POST | `/services/:id/env/import-repo` | +access | importa el `.env`/`.env.example` del repositorio de GitHub sin clonar: `{apply?: boolean}`; sin `apply` es vista previa (`report.imported[].value` relleno, nada se escribe); con `apply: true` crea las variables válidas, persiste el informe sin valores en `config.envImport` y devuelve `needsRedeploy`. Solo servicios git de GitHub (400 en el resto); 10 por minuto y usuario; auditado como `service_env_imported` |
 
 ### 7.5 Despliegues (logs por SSE)
 | Método | Ruta | Nivel | Descripción |
@@ -1152,6 +1179,13 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/webhooks/github/app` | público (HMAC de la App) | webhook **único** de la GitHub App: reparte cada push entre los servicios que apuntan a ese repo y esa rama y cuyo proyecto tenga conectada esa instalación; también sincroniza altas, bajas y suspensiones de instalaciones |
 | POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy por servicio en push (firma verificada); respeta `autoDeploy` y deduplica contra el último commit construido; complementa al sondeo interno de `autodeploy.ts` |
 | POST | `/webhooks/stripe` | público (firma Stripe) | marca la factura como pagada al confirmarse el cobro; firma `Stripe-Signature` verificada (HMAC-SHA256 con tolerancia temporal anti-replay); exige `payment_status == paid`; idempotente |
+
+### 7.11 Ayuda y asistente
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| GET | `/help/faq` | auth | `{categories, entries}`: preguntas frecuentes en español con categoría, palabras clave y enlaces internos |
+| POST | `/help/ask` | auth | `{question, serviceId?}` → `{answer, matches, issues, links}`. Determinista: busca en la FAQ (acentos y plurales normalizados) y, si la pregunta indica un fallo, revisa el servicio indicado (o el que nombre la pregunta) a fondo; sin servicio, revisa en ligero todos los accesibles. 30 por minuto y usuario; 404 si el servicio no es accesible |
+| GET | `/help/issues?serviceId=` | auth | `{issues, scanned}`: con `serviceId`, revisión profunda (incluye la cola de logs de la app); sin él, revisión ligera de hasta 60 servicios accesibles (despliegue fallido, contenedor caído o reiniciándose, referencias sin resolver, variables pendientes) |
 
 ---
 

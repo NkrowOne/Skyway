@@ -30,6 +30,7 @@ export default function ServiceDrawer({
   latestMetrics,
   historyRef,
   closing = false,
+  initialTab = null,
   onClose,
 }: {
   serviceId: string;
@@ -39,9 +40,11 @@ export default function ServiceDrawer({
   historyRef: React.MutableRefObject<Map<string, MetricPoint[]>>;
   /** El padre mantiene el drawer montado mientras se despide (usePresence). */
   closing?: boolean;
+  /** Pestaña pedida en la URL (`?tab=`): manda sobre la elección por defecto. */
+  initialTab?: string | null;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState('deployments');
+  const [tab, setTab] = useState(initialTab ?? 'deployments');
   /**
    * Al abrir una base de datos se entra por Consultas. «Despliegues» en un
    * Postgres de plantilla solo dice que se hizo un `pull`: a una base se viene
@@ -144,8 +147,21 @@ export default function ServiceDrawer({
   useEffect(() => {
     if (!detail.data || pestanaFijada.current === serviceId) return;
     pestanaFijada.current = serviceId;
-    if (detail.data.dbConsole) setTab('db');
-  }, [serviceId, detail.data]);
+    // Con una pestaña pedida por URL no se pisa: quien llega desde un enlace
+    // a «Variables» de una base de datos quiere Variables, no Consultas.
+    if (detail.data.dbConsole && !initialTab) setTab('db');
+  }, [serviceId, detail.data, initialTab]);
+
+  // Un enlace a otra pestaña del MISMO servicio no remonta el drawer (la clave
+  // es el id): se atiende aquí, con el mismo cuidado por los cambios sin guardar.
+  useEffect(() => {
+    if (!initialTab || initialTab === tab) return;
+    if (isTabDirty) setPendingTabChange(initialTab);
+    else setTab(initialTab);
+    // Solo reacciona al enlace: `tab` e `isTabDirty` cambian por otras vías y
+    // no deben volver a forzar la pestaña pedida.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTab]);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['service', serviceId] });
@@ -556,6 +572,8 @@ export default function ServiceDrawer({
             {tab === 'variables' && (
               <VariablesTab
                 serviceId={serviceId}
+                serviceType={service.type}
+                envImport={service.config.envImport ?? null}
                 onSaved={() => {
                   invalidate();
                   setPendingRedeploy(true);

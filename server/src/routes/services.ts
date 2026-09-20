@@ -31,6 +31,10 @@ import {
   workspacePlan,
 } from '../quota';
 import { archiveContainerLogs } from '../deploy/deployer';
+import { EnvFileSource, envImportContextFor, fetchRepoEnvFiles, finalizeEnvImport, planEnvImport } from '../deploy/envimport';
+import { GithubError, parseGithubSlug } from '../github/client';
+import { resolveGitToken } from '../github/resolve';
+import { rateLimit } from '../ratelimit';
 import { dockerAvailable } from '../docker/client';
 import {
   configuredReplicas,
@@ -58,6 +62,9 @@ const PANEL_MAX_AGE_MS = 4000;
 
 /** Con qué se tapan los valores de los build args en las respuestas de lectura. */
 const VALOR_TAPADO = '•••';
+
+/** Tope de importaciones del `.env` del repositorio por usuario y minuto (cada una son varias peticiones a GitHub). */
+const IMPORTACIONES_POR_MINUTO = 10;
 
 /**
  * Config con los valores de `buildArgs` tapados (se conservan las claves, para
@@ -162,6 +169,7 @@ const patchSchema = z.object({
       buildArgs: z.record(z.string()).optional(),
       alertsMuted: z.boolean().optional(),
       autoDeploy: z.boolean().optional(),
+      autoImportEnv: z.boolean().optional(),
       volumes: z.array(z.object({ containerPath: z.string().trim().min(1).regex(/^\//, 'Ruta absoluta requerida') })).optional(),
       replicas: z.coerce.number().int().min(1).max(10).optional(),
       backupSchedule: z.enum(['daily', 'weekly']).nullable().optional(),
@@ -351,6 +359,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         if (key === 'buildCmd' && found.service.type !== 'git') continue;
         if (key === 'builder' && found.service.type !== 'git') continue;
         if (key === 'autoDeploy' && found.service.type !== 'git') continue;
+        if (key === 'autoImportEnv' && found.service.type !== 'git') continue;
         // Campos que no aplican a bases de datos: se ignoran sin efecto.
         if (found.service.type === 'database' && ['replicas', 'healthcheckPath'].includes(key)) continue;
         if (found.service.type !== 'database' && ['backupSchedule', 'backupRetention'].includes(key)) continue;
@@ -675,6 +684,78 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     });
     return { ok: true, needsRedeploy: true };
   });
+
+  /**
+   * Importación de los `.env` del repositorio sin clonar, leyendo por la API
+   * de GitHub. Sin `apply` es una vista previa (con los valores, para que se
+   * vea qué entraría); con `apply: true` escribe las variables y guarda el
+   * informe en la config del servicio. Cada llamada son varias peticiones a
+   * GitHub con la credencial del servicio: de ahí el tope por usuario.
+   */
+  app.post(
+    '/api/services/:id/env/import-repo',
+    { preHandler: rateLimit({ max: IMPORTACIONES_POR_MINUTO, windowMs: 60_000 }) },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const found = loadService(id);
+      if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+      if (!assertProjectAccess(req, reply, found.project.id)) return reply;
+      const body = z.object({ apply: z.boolean().optional().default(false) }).parse(req.body ?? {});
+
+      const cfg = found.service.config as GitConfig;
+      const slug = found.service.type === 'git' ? parseGithubSlug(cfg.repoUrl) : null;
+      if (!slug) {
+        return reply.code(400).send({ error: 'Solo se puede importar de servicios desplegados desde un repositorio de GitHub' });
+      }
+
+      let files: EnvFileSource[];
+      try {
+        const token = await resolveGitToken(found.project, cfg);
+        files = await fetchRepoEnvFiles(token, slug, cfg.branch || 'main', cfg.rootDir);
+      } catch (err: any) {
+        if (err instanceof GithubError) return reply.code(502).send({ error: err.message });
+        throw err;
+      }
+
+      const plan = planEnvImport(files, envImportContextFor(found.service));
+      // Sin ficheros no hay nada que aplicar ni que recordar: no se persiste un informe vacío.
+      const apply = body.apply && files.length > 0;
+      const report = finalizeEnvImport(found.service, plan, { source: 'manual', apply });
+      const n = report.imported.length;
+      const m = report.pending.length;
+      const pendientes = m > 0 ? `; ${m === 1 ? '1 pendiente' : `${m} pendientes`} de valor` : '';
+
+      if (files.length === 0) {
+        const donde = cfg.rootDir && cfg.rootDir !== '.' ? `en «${cfg.rootDir}» ni en la raíz` : 'en la raíz';
+        return {
+          report,
+          message: `No se ha encontrado ningún fichero .env (.env.example, .env…) ${donde} del repositorio.`,
+        };
+      }
+      if (!body.apply) {
+        return {
+          report,
+          message:
+            n === 0 && m === 0
+              ? 'No hay variables nuevas que importar.'
+              : `Se ${n === 1 ? 'importaría 1 variable' : `importarían ${n} variables`}${pendientes}.`,
+        };
+      }
+      audit(req, 'service_env_imported', {
+        type: 'service',
+        id,
+        detail: `${found.service.name}: ${n} importadas, ${m} pendientes`,
+      });
+      return {
+        report,
+        needsRedeploy: true,
+        message:
+          n === 0
+            ? `No había variables nuevas que importar${pendientes}.`
+            : `${n === 1 ? 'Importada 1 variable' : `Importadas ${n} variables`}${pendientes}. Redespliega el servicio para que el contenedor las reciba.`,
+      };
+    },
+  );
 }
 
 function uniqueSlug(projectId: string, name: string): string {

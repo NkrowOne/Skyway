@@ -6,6 +6,7 @@ import {
   Copy,
   Eye,
   EyeOff,
+  FileDown,
   FileText,
   Layers,
   Plus,
@@ -15,8 +16,223 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../../api';
+import { maskValue } from '../../helpText';
+import { EnvImportReport, EnvImportResponse, EnvSkipReason } from '../../types';
 import { cx, EMPTY_LIST, EMPTY_RECORD } from '../../utils';
-import { CopyButton, EditorBar, Segmented, Skeleton, useToast } from '../ui';
+import { Button, CopyButton, EditorBar, Modal, Segmented, Skeleton, useToast } from '../ui';
+
+/** Por qué se dejó fuera una clave del .env del repositorio, en palabras. */
+const SKIP_REASON_LABEL: Record<EnvSkipReason, string> = {
+  invalid_key: 'nombre inválido',
+  reserved: 'reservada por Skyway',
+  placeholder: 'valor de ejemplo',
+  localhost: 'apunta a localhost',
+  exists: 'ya definida',
+  handled: 'tratada en una importación anterior',
+};
+
+/**
+ * Vista previa de la importación del .env del repositorio. Tres listas y una
+ * decisión: lo que entra, lo que hay que rellenar a mano y lo que se ignora
+ * (con su motivo). Los valores van tapados por defecto: pueden ser secretos.
+ */
+function ImportRepoModal({
+  open,
+  onClose,
+  report,
+  done,
+  applying,
+  onApply,
+  onAddPending,
+}: {
+  open: boolean;
+  onClose: () => void;
+  report: EnvImportReport | null;
+  /** Respuesta tras aplicar: el modal pasa a contar qué se hizo y qué queda. */
+  done: EnvImportResponse | null;
+  applying: boolean;
+  onApply: () => void;
+  onAddPending: (keys: string[]) => void;
+}) {
+  const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  // Cada vista previa empieza con todo tapado.
+  useEffect(() => {
+    if (open) setRevealed(new Set());
+  }, [open, report]);
+
+  if (!report) return null;
+  const pendingKeys = report.pending.map((p) => p.key);
+  const n = report.imported.length;
+
+  const listBox = 'divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface';
+
+  return (
+    <Modal open={open} onClose={onClose} title="Importar variables del repositorio" wide>
+      {done ? (
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-sub">{done.message}</p>
+          {done.report.pending.length > 0 && (
+            <div className="rounded-lg border border-warn/35 bg-warn/[.07] p-3 text-xs">
+              <p className="flex items-center gap-1.5 font-semibold text-warn">
+                <AlertTriangle size={13} /> {done.report.pending.length === 1 ? '1 variable sin valor' : `${done.report.pending.length} variables sin valor`}
+              </p>
+              <p className="mt-1 text-sub">
+                Vienen vacías o con un valor de ejemplo en el repositorio: hay que rellenarlas a mano.
+              </p>
+              <p className="mt-1.5 break-words font-mono text-txt">{done.report.pending.map((p) => p.key).join(', ')}</p>
+            </div>
+          )}
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="ghost" onClick={onClose} className="max-sm:h-11">
+              Cerrar
+            </Button>
+            {done.report.pending.length > 0 && (
+              <Button
+                onClick={() => {
+                  onAddPending(done.report.pending.map((p) => p.key));
+                  onClose();
+                }}
+                className="max-sm:h-11"
+              >
+                <Plus size={13} /> Añadir pendientes como filas vacías
+              </Button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {report.files.length === 0 ? (
+            <p className="rounded-lg border border-line bg-surface px-3 py-2.5 text-sm text-sub">
+              No se ha encontrado ningún <span className="font-mono text-txt">.env</span> ni{' '}
+              <span className="font-mono text-txt">.env.example</span> en el repositorio.
+            </p>
+          ) : (
+            <p className="text-xs text-subtle">
+              Leído de{' '}
+              {report.files.map((f, i) => (
+                <span key={f}>
+                  {i > 0 && ', '}
+                  <span className="font-mono text-txt">{f}</span>
+                </span>
+              ))}
+              {report.files.length > 1 && ' (el último manda si repiten clave)'}. Nada se guarda hasta que pulses «Importar».
+            </p>
+          )}
+
+          {/* Se importarán */}
+          <section>
+            <h4 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-txt">
+              Se importarán <span className="tnum font-mono text-xs text-subtle">{n}</span>
+            </h4>
+            {n === 0 ? (
+              <p className="text-xs text-subtle">Ninguna variable nueva con valor útil.</p>
+            ) : (
+              <ul className={listBox}>
+                {report.imported.map((v) => {
+                  const shown = revealed.has(v.key);
+                  return (
+                    <li key={v.key} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs sm:flex-nowrap">
+                      <span className="min-w-0 flex-1 truncate font-mono font-medium text-txt" title={v.key}>
+                        {v.key}
+                      </span>
+                      <span className="hidden shrink-0 text-subtle sm:inline">{v.file}</span>
+                      <span className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[45%]">
+                        <span className={cx('min-w-0 flex-1 truncate font-mono', shown ? 'text-sub' : 'text-subtle')}>
+                          {shown ? v.value ?? '' : maskValue(v.value ?? '')}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRevealed((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(v.key)) next.delete(v.key);
+                              else next.add(v.key);
+                              return next;
+                            })
+                          }
+                          className={cx(
+                            'press flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-subtle hover:bg-surface2 hover:text-txt sm:h-7 sm:w-7',
+                            shown && 'text-acc-soft',
+                          )}
+                          title={shown ? 'Ocultar valor' : 'Mostrar valor'}
+                          aria-label={shown ? `Ocultar el valor de ${v.key}` : `Mostrar el valor de ${v.key}`}
+                        >
+                          {shown ? <EyeOff size={13} /> : <Eye size={13} />}
+                        </button>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+
+          {/* Pendientes */}
+          {report.pending.length > 0 && (
+            <section>
+              <h4 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-txt">
+                Pendientes de valor <span className="tnum font-mono text-xs text-subtle">{report.pending.length}</span>
+              </h4>
+              <p className="mb-1.5 text-xs text-subtle">Vienen vacías o con un valor de ejemplo: hay que rellenarlas a mano.</p>
+              <ul className={listBox}>
+                {report.pending.map((v) => (
+                  <li key={v.key} className="flex items-center gap-3 px-3 py-2 text-xs">
+                    <span className="min-w-0 flex-1 truncate font-mono font-medium text-warn" title={v.key}>
+                      {v.key}
+                    </span>
+                    <span className="shrink-0 text-subtle">{v.file}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {/* Ignoradas */}
+          {report.skipped.length > 0 && (
+            <details className="group">
+              <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-sub hover:text-txt">
+                Ignoradas <span className="tnum font-mono text-xs text-subtle">{report.skipped.length}</span>
+                <span className="ml-auto text-xs font-normal text-subtle group-open:hidden">ver motivos</span>
+              </summary>
+              <ul className={cx(listBox, 'mt-1.5')}>
+                {report.skipped.map((v) => (
+                  <li key={`${v.key}:${v.file}`} className="flex items-center gap-3 px-3 py-2 text-xs">
+                    <span className="min-w-0 flex-1 truncate font-mono text-subtle" title={v.key}>
+                      {v.key}
+                    </span>
+                    <span className="shrink-0 text-subtle">{SKIP_REASON_LABEL[v.reason] ?? v.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
+            <Button variant="ghost" onClick={onClose} className="max-sm:h-11">
+              Cancelar
+            </Button>
+            {pendingKeys.length > 0 && (
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  onAddPending(pendingKeys);
+                  onClose();
+                }}
+                className="max-sm:h-11"
+                title="Inserta las claves sin valor en la tabla para que las rellenes"
+              >
+                <Plus size={13} /> Añadir pendientes como filas vacías
+              </Button>
+            )}
+            <Button onClick={onApply} loading={applying} disabled={n === 0} className="max-sm:h-11">
+              <FileDown size={13} /> {n === 1 ? 'Importar 1 variable' : `Importar ${n} variables`}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
 
 interface ReferenceGroup {
   service: string;
@@ -133,12 +349,18 @@ export function parseEnvText(text: string): { key: string; value: string }[] {
 
 export default function VariablesTab({
   serviceId,
+  serviceType,
+  envImport,
   onSaved,
   onDeploy,
   onNeedsRedeploy,
   onDirtyChange,
 }: {
   serviceId: string;
+  /** Solo los servicios git tienen un repositorio del que importar el .env. */
+  serviceType?: 'git' | 'database' | 'image';
+  /** Última importación del .env del repositorio (config del servicio). */
+  envImport?: EnvImportReport | null;
   onSaved: () => void;
   onDeploy?: () => void;
   onNeedsRedeploy?: () => void;
@@ -147,6 +369,9 @@ export default function VariablesTab({
   const toast = useToast();
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<Row[]>([]);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importReport, setImportReport] = useState<EnvImportReport | null>(null);
+  const [importDone, setImportDone] = useState<EnvImportResponse | null>(null);
   const [viewMode, setViewMode] = useState<'table' | 'raw'>('table');
   const [rawText, setRawText] = useState('');
   const [globalReveal, setGlobalReveal] = useState(false);
@@ -192,6 +417,58 @@ export default function VariablesTab({
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
+
+  /*
+   * Importación del .env del repositorio en dos pasos: vista previa (no
+   * escribe nada) y aplicación. Los 400 del servidor («solo servicios de
+   * GitHub», rate-limit…) llegan como toast, igual que el resto de errores.
+   */
+  const importPreview = useMutation({
+    mutationFn: () => api.post<EnvImportResponse>(`/services/${serviceId}/env/import-repo`, { apply: false }),
+    onSuccess: (res) => {
+      setImportReport(res.report);
+      setImportDone(null);
+      setImportOpen(true);
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const importApply = useMutation({
+    mutationFn: () => api.post<EnvImportResponse>(`/services/${serviceId}/env/import-repo`, { apply: true }),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['env', serviceId] });
+      toast(res.message, 'ok', {
+        action: onDeploy && res.needsRedeploy ? { label: 'Desplegar ahora', onClick: onDeploy } : undefined,
+      });
+      if (res.needsRedeploy) onNeedsRedeploy?.();
+      onSaved();
+      // Con pendientes el modal se queda para ofrecer añadirlas; si no, ya está.
+      if (res.report.pending.length > 0) setImportDone(res);
+      else setImportOpen(false);
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  /**
+   * Inserta las claves sin valor como filas vacías (o líneas `CLAVE=` en modo
+   * texto) para rellenarlas. Las que ya están en la tabla no se duplican.
+   */
+  const addPendingRows = (keys: string[]) => {
+    const present = new Set(rows.map((r) => r.key.trim()));
+    const fresh = keys.filter((k) => !present.has(k));
+    if (fresh.length === 0) {
+      toast('Esas variables ya están en la tabla', 'info');
+      return;
+    }
+    if (viewMode === 'raw') {
+      setRawText((prev) => [prev.trimEnd(), ...fresh.map((k) => `${k}=`)].filter(Boolean).join('\n'));
+    } else {
+      const newRows = fresh.map((k) => makeRow(k, ''));
+      setRows((prev) => [...prev, ...newRows]);
+      setTimeout(() => valueInputRefs.current.get(newRows[0].id)?.focus(), 50);
+    }
+    setDirty(true);
+    toast(fresh.length === 1 ? '1 fila añadida: rellena su valor y guarda' : `${fresh.length} filas añadidas: rellena sus valores y guarda`, 'ok');
+  };
 
   // Alternar vista tabla / texto plano
   const handleSwitchMode = (mode: 'table' | 'raw') => {
@@ -451,6 +728,20 @@ export default function VariablesTab({
     return rows.filter((r) => r.key.toLowerCase().includes(q) || r.value.toLowerCase().includes(q));
   }, [rows, searchQuery]);
 
+  /*
+   * Claves que el .env del repositorio trae sin valor y que aquí siguen sin
+   * existir. Se filtran contra las filas, no contra el informe: en cuanto se
+   * añade la fila el aviso deja de insistir, aunque el informe siga igual
+   * hasta el próximo despliegue.
+   */
+  const isGit = serviceType === 'git';
+  const pendingFromRepo = useMemo(() => {
+    if (!isGit || !envImport?.pending?.length) return EMPTY_LIST as { key: string; file: string }[];
+    const present = new Set(rows.map((r) => r.key.trim()));
+    return envImport.pending.filter((p) => !present.has(p.key));
+  }, [isGit, envImport, rows]);
+  const pendingFiles = useMemo(() => [...new Set(pendingFromRepo.map((p) => p.file))], [pendingFromRepo]);
+
   if (env.isLoading) {
     return (
       <div aria-busy className="flex flex-col gap-3 p-4 sm:px-5">
@@ -511,8 +802,49 @@ export default function VariablesTab({
                 </button>
               </>
             )}
+
+            {isGit && (
+              <button
+                type="button"
+                onClick={() => importPreview.mutate()}
+                disabled={importPreview.isPending || dirty}
+                className={cx(toolBtn, 'disabled:cursor-not-allowed disabled:opacity-45')}
+                title={
+                  dirty
+                    ? 'Guarda o descarta los cambios antes de importar'
+                    : 'Leer el .env / .env.example del repositorio y proponer las variables que faltan'
+                }
+                aria-label="Importar variables del repositorio"
+              >
+                <FileDown size={13} className={cx(importPreview.isPending && 'animate-pulse')} />
+                <span className="hidden sm:inline">Importar del repositorio</span>
+                <span className="sm:hidden">Importar</span>
+              </button>
+            )}
           </div>
         </div>
+
+        {/* ── Claves del .env del repositorio que siguen sin valor ── */}
+        {pendingFromRepo.length > 0 && (
+          <div className="rounded-xl border border-warn/35 bg-warn/[.07] p-3.5 text-xs">
+            <p className="flex items-center gap-1.5 font-semibold text-warn">
+              <AlertTriangle size={14} />
+              {pendingFromRepo.length === 1 ? 'Falta 1 valor del repositorio' : `Faltan ${pendingFromRepo.length} valores del repositorio`}
+            </p>
+            <p className="mt-1 text-sub">
+              Del <span className="font-mono text-txt">{pendingFiles.join(', ')}</span> del repositorio faltan valores para:{' '}
+              <span className="break-words font-mono text-txt">{pendingFromRepo.map((p) => p.key).join(', ')}</span>. Vienen vacías o
+              con un valor de ejemplo, así que hay que rellenarlas aquí.
+            </p>
+            <button
+              type="button"
+              onClick={() => addPendingRows(pendingFromRepo.map((p) => p.key))}
+              className="press mt-2.5 flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 text-xs font-semibold text-txt hover:bg-surface2 sm:h-8"
+            >
+              <Plus size={13} className="text-acc-soft" /> Añadir pendientes como filas vacías
+            </button>
+          </div>
+        )}
 
         {/* ── Aviso de migración desde Railway (si aplica) ── */}
         {railwayPending.length > 0 && (
@@ -839,6 +1171,16 @@ export default function VariablesTab({
         onDiscard={discard}
         saveLabel={dirty ? `Guardar (${rows.filter((r) => r.key.trim()).length})` : 'Guardar variables'}
         dirtyLabel={dirtyLabel}
+      />
+
+      <ImportRepoModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        report={importReport}
+        done={importDone}
+        applying={importApply.isPending}
+        onApply={() => importApply.mutate()}
+        onAddPending={addPendingRows}
       />
     </div>
   );
