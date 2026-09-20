@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../../api';
+import { EnvSuggestion } from '../../types';
 import { cx, EMPTY_LIST, EMPTY_RECORD } from '../../utils';
 import { CopyButton, EditorBar, Segmented, Skeleton, useToast } from '../ui';
 
@@ -26,24 +27,6 @@ interface ReferenceGroup {
   auto: string[];
   /** Lo que «Conectar a…» copia: la URL del motor en una base (tres en S3), la URL interna en una app. */
   connect: string[];
-}
-
-/** Una sugerencia de variable a partir de lo detectado en el repo (.env.example, package.json, schema.prisma…). */
-interface EnvSuggestion {
-  /** Clave a crear en este servicio. */
-  key: string;
-  /** Referencia lista para usar (`${{Postgres.DATABASE_URL}}`), o null si primero hay que crear la base de datos. */
-  value: string | null;
-  /** Motor implicado (postgres, redis, mysql, mongo, minio) o null. */
-  template: string | null;
-  /** Etiqueta del motor para la UI (PostgreSQL, Redis, MySQL, MongoDB, MinIO) o null. */
-  label: string | null;
-  /** Servicio del proyecto al que apunta `value`, si existe. */
-  service: string | null;
-  /** Variable del servicio destino que se referencia (DATABASE_URL…). Con `value` null, la que tendrá la base recién creada. */
-  refVar: string | null;
-  /** Por qué se sugiere: «.env.example», «package.json: @prisma/client», «schema.prisma: provider postgresql»… */
-  reason: string;
 }
 
 interface EnvResponse {

@@ -79,6 +79,20 @@ export function useLocalStorage<T>(key: string, initial: T): [T, (v: T) => void]
 }
 
 /**
+ * El valor de hace `ms` milisegundos de quietud. Para consultas que se disparan
+ * al escribir (una URL de repositorio, un directorio raíz): sin esto cada tecla
+ * era una petición a GitHub que además llegaba tarde y pisaba a la buena.
+ */
+export function useDebounced<T>(value: T, ms = 500): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), ms);
+    return () => clearTimeout(timer);
+  }, [value, ms]);
+  return debounced;
+}
+
+/**
  * Conserva el último valor no nulo. Para los diálogos de confirmación: el
  * modal sigue montado 200 ms mientras se despide, y con el dato ya a null se
  * leía «Eliminar "null"» o se vaciaba el cuerpo a mitad de la animación.

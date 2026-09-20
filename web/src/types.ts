@@ -84,6 +84,33 @@ export interface GithubAppStatus {
   webhookUrl: string;
 }
 
+/** Una propuesta de variable a partir de lo detectado en el repo (.env.example, package.json, schema.prisma…). */
+export interface EnvSuggestion {
+  /** Clave a crear en este servicio. */
+  key: string;
+  /** Referencia lista para usar (`${{Postgres.DATABASE_URL}}`), o null si primero hay que crear la base de datos. */
+  value: string | null;
+  /** Motor implicado (postgres, redis, mysql, mongo, minio) o null si es la URL pública del propio servicio. */
+  template: string | null;
+  /** Etiqueta del motor para la UI (PostgreSQL, Redis…) o null. */
+  label: string | null;
+  /** Servicio del proyecto al que apunta `value`, si existe. */
+  service: string | null;
+  /** Variable del servicio destino que se referencia (DATABASE_URL…). Con `value` null, la que tendrá la base recién creada. */
+  refVar: string | null;
+  /** Por qué se sugiere: «.env.example: REDIS_URL», «package.json: pg», «schema.prisma: provider postgresql»… */
+  reason: string;
+}
+
+/** Lo que la detección de dependencias propone para un servicio (GET /services/:id/env y /projects/:id/github/needs). */
+export interface EnvAdvice {
+  /** Motores detectados con su pista; null si nada o si no es un servicio de repositorio. */
+  needs: { engines: { template: string; label: string; evidence: string }[]; sources: string[] } | null;
+  suggestions: EnvSuggestion[];
+  /** Variables que el repositorio espera, sin propuesta automática y sin definir. */
+  missing: string[];
+}
+
 export interface GithubRepo {
   fullName: string;
   private: boolean;

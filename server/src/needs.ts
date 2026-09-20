@@ -1,6 +1,8 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { getEnv, getProjectVars } from './db';
+import { ghFetch } from './github/client';
 import { getTemplate } from './templates';
 import { DetectedNeeds, GitConfig, ServiceRow } from './types';
 import { ReferenceGroup } from './variables';
@@ -22,6 +24,21 @@ const MAX_FILE_BYTES = 512 * 1024;
 
 /** Ficheros de ejemplo de entorno, por orden de preferencia. */
 const ENV_EXAMPLE_FILES = ['.env.example', '.env.sample', '.env.template', '.env.dist', '.env.local.example', 'example.env'];
+const REQUIREMENTS_FILES = ['requirements.txt', 'requirements/base.txt', 'requirements/production.txt'];
+const PRISMA_FILES = ['prisma/schema.prisma', 'schema.prisma'];
+const COMPOSE_FILES = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
+/** Todo lo que la detección mira, relativo a cada raíz: es lo que se pide a GitHub antes de clonar. */
+export const CANDIDATE_FILES = [
+  ...ENV_EXAMPLE_FILES,
+  'package.json',
+  ...REQUIREMENTS_FILES,
+  'pyproject.toml',
+  'go.mod',
+  'Gemfile',
+  'composer.json',
+  ...PRISMA_FILES,
+  ...COMPOSE_FILES,
+];
 
 /*
  * Paquete → motor, por ecosistema. Solo librerías que no dejan duda: un ORM
@@ -245,7 +262,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
       }
     }
 
-    for (const name of ['requirements.txt', 'requirements/base.txt', 'requirements/production.txt']) {
+    for (const name of REQUIREMENTS_FILES) {
       const req = read(name);
       if (!req) continue;
       for (const line of req.text.split(/\r?\n/)) {
@@ -307,7 +324,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
     }
 
     // Prisma dice motor y variable en el mismo sitio, y es la pista más fiable de todas.
-    for (const name of ['prisma/schema.prisma', 'schema.prisma']) {
+    for (const name of PRISMA_FILES) {
       const schema = read(name);
       if (!schema) continue;
       const provider = schema.text.match(/provider\s*=\s*["'](\w+)["']/)?.[1]?.toLowerCase();
@@ -325,7 +342,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
     }
 
     // Un docker-compose de desarrollo retrata las dependencias mejor que nada.
-    for (const name of ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml']) {
+    for (const name of COMPOSE_FILES) {
       const compose = read(name);
       if (!compose) continue;
       for (const m of compose.text.matchAll(/^\s*image:\s*["']?(?:[a-z0-9.-]+\/)*([a-z0-9-]+)(?::[^\s"']+)?["']?\s*$/gim)) {
@@ -358,6 +375,57 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
   };
 }
 
+/**
+ * Lo mismo que `detectNeeds`, pero ANTES de que exista el servicio: se piden a
+ * GitHub solo los ficheros candidatos que el árbol del repositorio dice que
+ * existen (una llamada para el árbol y una por fichero), se dejan en un
+ * directorio temporal con sus rutas y se pasa por la misma detección. Así el
+ * asistente de alta y el despliegue no pueden discrepar.
+ */
+export async function detectNeedsFromGithub(
+  token: string | null,
+  owner: string,
+  repo: string,
+  ref: string,
+  rootDir?: string,
+): Promise<DetectedNeeds | null> {
+  const treeRes = await ghFetch(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`, { token });
+  const tree = (await treeRes.json()) as { tree?: { path: string; type: string }[]; truncated?: boolean };
+  const present = new Set((tree.tree ?? []).filter((t) => t.type === 'blob').map((t) => t.path));
+
+  const root = (rootDir || '.').replace(/^\.\/+/, '').replace(/\/+$/, '') || '.';
+  const roots = [...new Set([root, '.'])];
+  const candidates = roots.flatMap((r) => CANDIDATE_FILES.map((name) => (r === '.' ? name : `${r}/${name}`)));
+  // Con el árbol truncado (repos enormes) no se sabe qué hay: se piden todos y
+  // los 404 se ignoran. Es más caro, pero es la excepción.
+  const wanted = tree.truncated ? candidates : candidates.filter((p) => present.has(p));
+  if (wanted.length === 0) return null;
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'skyway-needs-'));
+  try {
+    await Promise.all(
+      wanted.map(async (p) => {
+        const encoded = p.split('/').map(encodeURIComponent).join('/');
+        const res = await ghFetch(`/repos/${owner}/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`, {
+          token,
+          passthrough: [404],
+        });
+        if (res.status === 404) return;
+        const body = (await res.json()) as { content?: string; encoding?: string; size?: number };
+        if (!body.content || body.encoding !== 'base64' || (body.size ?? 0) > MAX_FILE_BYTES) return;
+        const full = path.join(tmp, p);
+        // Las rutas vienen del árbol de git (sin «..»), pero un temporal no es sitio para fiarse.
+        if (!full.startsWith(tmp + path.sep)) return;
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        fs.writeFileSync(full, Buffer.from(body.content, 'base64'));
+      }),
+    );
+    return detectNeeds(tmp, rootDir);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 export interface EnvSuggestion {
   /** Clave a crear en el servicio. */
   key: string;
@@ -382,20 +450,40 @@ export interface EnvAdvice {
 
 const NO_ADVICE: EnvAdvice = { needs: null, suggestions: [], missing: [] };
 
+/** A quién se aconseja: basta con lo que cambia las propuestas, exista ya el servicio o no. */
+export interface AdviceTarget {
+  /** Nombre del servicio, para las referencias a su propia PUBLIC_URL. */
+  serviceName: string;
+  domains: string[];
+  /** Variables que ya tiene (propias y compartidas del proyecto). */
+  defined: Set<string>;
+}
+
+/** Propuestas para un servicio que ya existe: lo detectado en su último despliegue contra lo que tiene guardado. */
+export function adviseEnv(service: ServiceRow, references: ReferenceGroup[]): EnvAdvice {
+  if (service.type !== 'git') return NO_ADVICE;
+  const cfg = service.config as GitConfig;
+  return adviseNeeds(
+    cfg.needs,
+    {
+      serviceName: service.name,
+      domains: cfg.domains ?? [],
+      defined: new Set([...Object.keys(getProjectVars(service.project_id)), ...Object.keys(getEnv(service.id))]),
+    },
+    references,
+  );
+}
+
 /**
- * Convierte lo detectado en propuestas concretas para ESTE servicio, contra lo
- * que ya tiene: cada variable esperada que falte y se sepa de qué es, con la
+ * Convierte lo detectado en propuestas concretas, contra lo que el servicio ya
+ * tiene: cada variable esperada que falte y se sepa de qué es, con la
  * referencia al servicio del proyecto que la cubre, o sin valor si esa base no
  * existe todavía. Se calcula al pedirlo, no al desplegar: si entre medias se ha
  * creado la base o se ha añadido la variable, la propuesta cambia sola.
  */
-export function adviseEnv(service: ServiceRow, references: ReferenceGroup[]): EnvAdvice {
-  if (service.type !== 'git') return NO_ADVICE;
-  const cfg = service.config as GitConfig;
-  const needs = cfg.needs;
+export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: AdviceTarget, references: ReferenceGroup[]): EnvAdvice {
   if (!needs) return NO_ADVICE;
-
-  const defined = new Set([...Object.keys(getProjectVars(service.project_id)), ...Object.keys(getEnv(service.id))]);
+  const { defined } = target;
   const detected = new Set(needs.engines.map((e) => e.template));
   const sqlEngine: Engine = detected.has('mysql') && !detected.has('postgres') ? 'mysql' : 'postgres';
   const labelOf = (engine: string) => getTemplate(engine)?.label ?? engine;
@@ -433,14 +521,13 @@ export function adviseEnv(service: ServiceRow, references: ReferenceGroup[]): En
       continue;
     }
     if (PUBLIC_URL_RE.test(v)) {
-      const domains = cfg.domains ?? [];
-      if (domains[0]) {
+      if (target.domains[0]) {
         suggestions.push({
           key: v,
-          value: `\${{${service.name}.PUBLIC_URL}}`,
+          value: `\${{${target.serviceName}.PUBLIC_URL}}`,
           template: null,
           label: null,
-          service: service.name,
+          service: target.serviceName,
           refVar: 'PUBLIC_URL',
           reason: `${needs.envFile ?? 'el repositorio'}: ${v} · dominio público del servicio`,
         });

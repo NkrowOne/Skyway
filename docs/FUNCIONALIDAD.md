@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.32.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.33.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -672,6 +672,17 @@ conectar» (crea la base en el proyecto y añade las referencias de golpe). Nada
 esto escribe una variable por su cuenta: todo se propone y se aplica al guardar y
 redesplegar.
 
+Lo mismo **antes de crear el servicio**: al elegir repositorio y rama en «Nuevo
+servicio → Repositorio de GitHub», `GET /projects/:id/github/needs` pide a GitHub
+(con la credencial que vaya a clonar) solo los ficheros candidatos que el árbol
+del repo dice que existen, los pasa por la misma detección y devuelve las
+propuestas contra lo que ya hay en el proyecto. El asistente enseña una casilla
+por motor («Crear PostgreSQL y conectar (DATABASE_URL)», o «Conectar a
+<base existente>») y otra para añadir vacías las demás variables esperadas; al
+confirmar, crea primero las bases marcadas y el servicio nace con las
+referencias puestas (`env` en `POST /projects/:projectId/services`), antes de su primer
+despliegue. Todo desmarcable, y si GitHub no responde el alta sigue igual.
+
 **Compatibilidad con Railway.** En cada despliegue se rellenan las variables
 mágicas de Railway con el
 equivalente de Skyway, **sin pisar nunca** un valor definido por el usuario, para
@@ -1098,7 +1109,7 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[]}`; atómica (409 si choca un nombre); `domain` como en crear servicio; `services[].config` sin `webhookSecret` |
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada); 20 por minuto y usuario, después 429 |
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas |
-| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH |
+| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH; en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5) |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
 | PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
 | DELETE | `/services/:id?volumes=true` | +access | elimina servicio; igual que en proyectos, devuelve `{ok, warnings}` |
@@ -1206,6 +1217,7 @@ distroless), el explorador lo indica y no está disponible.
 | --- | --- | --- | --- |
 | GET | `/domains/server-ip` | auth | IP del servidor (configurada o detectada) |
 | GET | `/domains/config` | auth | `{rootDomain, tls}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin) |
+| GET | `/projects/:id/github/needs` | +access | dependencias del repo antes de crearlo (`repo`, `branch`, `rootDir?`, `source?`): `needs`, `suggestions`, `missing`, `envFile` (§5.5) |
 | POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`); 30 por minuto y usuario, después 429 |
 | GET | `/public/status/:token` | público | página de estado pública (cacheada) |
 | GET | `/projects/:id/status-page` | +access | config de la página de estado |

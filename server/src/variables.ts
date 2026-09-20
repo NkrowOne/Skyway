@@ -122,12 +122,20 @@ export interface ReferenceGroup {
 
 /** Referencias disponibles para la UI: variables compartidas + servicios hermanos. */
 export function availableReferences(service: ServiceRow): ReferenceGroup[] {
+  return projectReferences(service.project_id, service.id);
+}
+
+/**
+ * Lo mismo para un servicio que todavía no existe (el asistente de alta): todo
+ * lo que hay en el proyecto, sin nadie a quien excluir.
+ */
+export function projectReferences(projectId: string, excludeServiceId?: string): ReferenceGroup[] {
   const groups: ReferenceGroup[] = [];
-  const shared = getProjectVars(service.project_id);
+  const shared = getProjectVars(projectId);
   if (Object.keys(shared).length > 0) {
     groups.push({ service: 'shared', template: null, vars: Object.keys(shared), auto: [], connect: [] });
   }
-  const siblings = listServices(service.project_id).filter((s) => s.id !== service.id);
+  const siblings = listServices(projectId).filter((s) => s.id !== excludeServiceId);
   for (const s of siblings) {
     const template = s.type === 'database' ? (s.config as DatabaseConfig).template : null;
     const vars = getEnv(s.id);
