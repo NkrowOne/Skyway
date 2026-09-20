@@ -49,6 +49,7 @@ import {
 import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
 import { triggerDeploy } from '../deploy/deployer';
 import { getTemplate, templateList } from '../templates';
+import { adviseEnv } from '../needs';
 import { availableReferences, resolveServiceEnv } from '../variables';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceConfig, ServiceRow } from '../types';
 import { randomToken, slugify } from '../util';
@@ -649,10 +650,13 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
+    const references = availableReferences(found.service);
     return {
       vars: getEnv(id),
       resolved: resolveServiceEnv(found.service),
-      references: availableReferences(found.service),
+      references,
+      // Lo que el repositorio necesita y aún no tiene, como propuestas de un clic.
+      ...adviseEnv(found.service, references),
     };
   });
 

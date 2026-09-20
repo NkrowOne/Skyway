@@ -38,8 +38,9 @@ server/src/
   billingauto.ts        automatización: corte por impago (dunning), reactivación y factura automática del ciclo
   billingsettings.ts    ajustes de automatización (auto-generar/auto-emitir el ciclo, umbrales de morosidad)
   security.ts           escáner de seguridad (hallazgos + nota)
-  variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}
-  templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio)
+  variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}; variables de sistema (INTERNAL_URL, PUBLIC_URL…)
+  needs.ts              detección de dependencias del repo (librerías, schema.prisma, .env.example) y propuestas de variables
+  templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio) y qué variables de conexión exporta cada una
   stacks.ts             pilas de aplicaciones multi-servicio (Supabase, WordPress, Ghost, n8n, Metabase)
   dbconsole.ts          consola de consultas (psql/mysql/mongosh/redis-cli vía exec)
   files.ts              explorador de archivos por contenedor (tar sobre socket)
@@ -387,6 +388,7 @@ aplican **en caliente**.
 | `volumes` | ✓ | ✓ | fijo (su volumen) | conserva nombre al editar |
 | `replicas` (1–10) | ✓ | ✓ | 1 | requiere sin volúmenes ni hostPort |
 | `autoDeploy` | ✓ | — | — | sondeo de la rama; despliega al haber commit nuevo (opt-out) |
+| `needs` | ✓ | — | — | interno: dependencias detectadas en el repo en el último despliegue (§5.5). Se reescribe en cada clonado |
 | `backupSchedule`, `backupRetention` | — | — | ✓ | diario/semanal ~04:00 |
 | `alertsMuted` | ✓ | ✓ | ✓ | silencia alertas del servicio |
 
@@ -641,6 +643,34 @@ tabla: la lee el panel, el importador de Railway y la detección de dependencias
 un botón «Conectar a <servicio>» que inserta de golpe las referencias que falten:
 `DATABASE_URL=${{postgres.DATABASE_URL}}` para una base, `API_URL=${{api.INTERNAL_URL}}`
 para otra app. Se aplican, como todo, al guardar y redesplegar.
+
+**Detección de dependencias.** Al clonar un repositorio, antes de construir,
+`needs.ts` mira en sitios fijos (en `rootDir` y en la raíz, sin recorrer el
+árbol) qué motores usa y qué variables espera:
+
+- Librerías inequívocas: `package.json` (`pg`, `ioredis`, `mongoose`, `mysql2`,
+  `minio`, `@aws-sdk/client-s3`…), `requirements.txt`/`pyproject.toml`
+  (`psycopg2`, `redis`, `pymongo`, `boto3`…), `go.mod`, `Gemfile`,
+  `composer.json`. Un ORM multi-motor (typeorm, sqlalchemy, doctrine) no cuenta:
+  no dice qué base hay detrás.
+- `prisma/schema.prisma`: el `provider` da el motor y `env("…")` la variable.
+- `docker-compose.yml`: las imágenes `postgres`, `redis`, `mysql`, `mongo`, `minio`.
+- `.env.example` (o `.env.sample`, `.env.template`, `.env.dist`): los nombres de
+  variable que la app espera. Un `REDIS_URL` delata Redis aunque la librería no
+  esté en la lista; `DATABASE_URL` a secas asume PostgreSQL y lo dice.
+
+El resultado se guarda en `config.needs` del servicio y se cuenta en el log del
+despliegue («Dependencias detectadas…», «⚠ Faltan variables para esas
+dependencias…»). `GET /services/:id/env` lo convierte en `suggestions`
+(clave a crear, referencia lista si el proyecto ya tiene esa base, o `value:
+null` si hay que crearla), `missing` (variables esperadas sin propuesta
+automática) y `needs` (motores con su pista). Los nombres se casan por papel:
+`DB_HOST` → `${{Postgres.PGHOST}}`, `S3_ACCESS_KEY` → `${{MinIO.MINIO_ROOT_USER}}`,
+`NEXTAUTH_URL` → `${{<este servicio>.PUBLIC_URL}}` si tiene dominio. La pestaña
+Variables lo pinta como aviso con «Añadir», «Añadir todas» y «Crear <motor> y
+conectar» (crea la base en el proyecto y añade las referencias de golpe). Nada de
+esto escribe una variable por su cuenta: todo se propone y se aplica al guardar y
+redesplegar.
 
 **Compatibilidad con Railway.** En cada despliegue se rellenan las variables
 mágicas de Railway con el
@@ -1074,7 +1104,7 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | DELETE | `/services/:id?volumes=true` | +access | elimina servicio; igual que en proyectos, devuelve `{ok, warnings}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
-| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias; cada referencia trae `vars` guardadas, `auto` de sistema y `connect` para «Conectar a…») |
+| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, §5.5) |
 | PUT | `/services/:id/env` | +access | reemplaza variables del servicio |
 
 ### 7.5 Despliegues (logs por SSE)

@@ -556,6 +556,7 @@ export default function ServiceDrawer({
             {tab === 'variables' && (
               <VariablesTab
                 serviceId={serviceId}
+                projectId={projectId}
                 onSaved={() => {
                   invalidate();
                   setPendingRedeploy(true);

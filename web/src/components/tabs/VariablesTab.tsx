@@ -28,10 +28,33 @@ interface ReferenceGroup {
   connect: string[];
 }
 
+/** Una sugerencia de variable a partir de lo detectado en el repo (.env.example, package.json, schema.prisma…). */
+interface EnvSuggestion {
+  /** Clave a crear en este servicio. */
+  key: string;
+  /** Referencia lista para usar (`${{Postgres.DATABASE_URL}}`), o null si primero hay que crear la base de datos. */
+  value: string | null;
+  /** Motor implicado (postgres, redis, mysql, mongo, minio) o null. */
+  template: string | null;
+  /** Etiqueta del motor para la UI (PostgreSQL, Redis, MySQL, MongoDB, MinIO) o null. */
+  label: string | null;
+  /** Servicio del proyecto al que apunta `value`, si existe. */
+  service: string | null;
+  /** Variable del servicio destino que se referencia (DATABASE_URL…). Con `value` null, la que tendrá la base recién creada. */
+  refVar: string | null;
+  /** Por qué se sugiere: «.env.example», «package.json: @prisma/client», «schema.prisma: provider postgresql»… */
+  reason: string;
+}
+
 interface EnvResponse {
   vars: Record<string, string>;
   resolved: Record<string, string>;
   references: ReferenceGroup[];
+  /** Lo que la detección del último despliegue encontró en el repositorio; null si nada o si no es un servicio de repositorio. */
+  needs: { engines: { template: string; label: string; evidence: string }[]; sources: string[] } | null;
+  suggestions: EnvSuggestion[];
+  /** Variables que el repositorio espera (de .env.example) sin sugerencia automática y que no están definidas. */
+  missing: string[];
 }
 
 interface Row {
@@ -136,12 +159,14 @@ export function parseEnvText(text: string): { key: string; value: string }[] {
 
 export default function VariablesTab({
   serviceId,
+  projectId,
   onSaved,
   onDeploy,
   onNeedsRedeploy,
   onDirtyChange,
 }: {
   serviceId: string;
+  projectId: string;
   onSaved: () => void;
   onDeploy?: () => void;
   onNeedsRedeploy?: () => void;
@@ -458,6 +483,54 @@ export default function VariablesTab({
     return rows.filter((r) => r.key.toLowerCase().includes(q) || r.value.toLowerCase().includes(q));
   }, [rows, searchQuery]);
 
+  /*
+   * Dependencias detectadas en el repo: sugerencias y variables que faltan.
+   * Se comparan contra `rows` (no contra lo guardado) para que desaparezcan
+   * en vivo según se van añadiendo, antes incluso de guardar.
+   */
+  const pendingSuggestions = useMemo(
+    () => (env.data?.suggestions ?? EMPTY_LIST).filter((s) => !rows.some((r) => r.key.trim() === s.key)),
+    [env.data, rows],
+  );
+  const pendingMissing = useMemo(
+    () => (env.data?.missing ?? EMPTY_LIST).filter((k) => !rows.some((r) => r.key.trim() === k)),
+    [env.data, rows],
+  );
+  const pendingWithValue = useMemo(() => pendingSuggestions.filter((s) => s.value !== null), [pendingSuggestions]);
+
+  // Las que piden crear una base nueva se agrupan por motor: MinIO pide tres
+  // variables y solo hace falta un botón de «crear y conectar», no tres.
+  const pendingGroups = useMemo(() => {
+    const groups = new Map<string, EnvSuggestion[]>();
+    for (const s of pendingSuggestions) {
+      if (s.value !== null || !s.template) continue;
+      groups.set(s.template, [...(groups.get(s.template) ?? []), s]);
+    }
+    return Array.from(groups.values());
+  }, [pendingSuggestions]);
+
+  const hasPendingNeeds = pendingSuggestions.length > 0 || pendingMissing.length > 0;
+
+  // Crea la base de datos del grupo y, con la respuesta, conecta de golpe
+  // todas las variables que la referencian (una sola llamada aunque el
+  // grupo tenga varias claves, como MinIO).
+  const createDbAndConnect = useMutation({
+    mutationFn: (group: EnvSuggestion[]) =>
+      api.post<{ service: { id: string; name: string } }>(`/projects/${projectId}/services`, {
+        type: 'database',
+        template: group[0].template,
+      }),
+    onSuccess: (data, group) => {
+      queryClient.invalidateQueries({ queryKey: ['env', serviceId] });
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      setRows((prev) => [...prev, ...group.map((s) => makeRow(s.key, `\${{${data.service.name}.${s.refVar}}}`))]);
+      setDirty(true);
+      toast(`Creada ${data.service.name} y conectada en ${group.map((s) => s.key).join(', ')}. Guarda y despliega.`, 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
   if (env.isLoading) {
     return (
       <div aria-busy className="flex flex-col gap-3 p-4 sm:px-5">
@@ -555,6 +628,104 @@ export default function VariablesTab({
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* ── Dependencias detectadas en el repositorio ── */}
+        {hasPendingNeeds && (
+          <div className="rounded-xl border border-info/35 bg-info/[.07] p-3.5 text-xs">
+            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+              <p className="flex items-center gap-1.5 font-semibold text-info">
+                <Layers size={14} />
+                {/* Sin motores detectados (solo un .env.example) no hay nada que
+                    «necesitar»: se dice lo que hay, que son variables esperadas. */}
+                {env.data?.needs && env.data.needs.engines.length > 0
+                  ? `Este repositorio parece necesitar: ${env.data.needs.engines
+                      .map((e) => `${e.label} (${e.evidence})`)
+                      .join(' · ')}`
+                  : 'Variables que el repositorio espera:'}
+              </p>
+              {pendingWithValue.length >= 2 && (
+                <button
+                  type="button"
+                  className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info max-sm:py-1.5"
+                  onClick={() => {
+                    setRows((prev) => [...prev, ...pendingWithValue.map((s) => makeRow(s.key, s.value as string))]);
+                    setDirty(true);
+                    toast(`${pendingWithValue.length} variables añadidas`, 'ok');
+                  }}
+                >
+                  Añadir todas
+                </button>
+              )}
+            </div>
+
+            {pendingSuggestions.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                {pendingSuggestions.map((s) => {
+                  // Con `value` null, varias sugerencias del mismo motor comparten
+                  // grupo y un único botón de creación; solo la primera lo pinta.
+                  const group =
+                    s.value === null && s.template ? pendingGroups.find((g) => g[0].template === s.template) : undefined;
+                  const isGroupHead = group ? group[0] === s : false;
+                  const groupPending = group ? createDbAndConnect.isPending && createDbAndConnect.variables === group : false;
+                  const label = s.label ?? s.template ?? 'la base de datos';
+
+                  return (
+                    <div key={s.key} className="flex flex-wrap items-center gap-2" title={s.reason}>
+                      <span className="font-mono text-xs font-semibold text-txt">{s.key}</span>
+                      {s.value !== null ? (
+                        <>
+                          <span className="font-mono text-xs text-info">{s.value}</span>
+                          <button
+                            type="button"
+                            className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info max-sm:py-1.5"
+                            onClick={() => {
+                              setRows((prev) => [...prev, makeRow(s.key, s.value as string)]);
+                              setDirty(true);
+                              toast(`Añadida ${s.key}`, 'ok');
+                            }}
+                          >
+                            Añadir
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-sub">no hay {label} en el proyecto</span>
+                          {group && isGroupHead && (
+                            <button
+                              type="button"
+                              disabled={groupPending}
+                              className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info disabled:cursor-not-allowed disabled:opacity-60 max-sm:py-1.5"
+                              onClick={() => createDbAndConnect.mutate(group)}
+                            >
+                              {groupPending ? 'Creando…' : `Crear ${label} y conectar`}
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {pendingMissing.length > 0 && (
+              <p className={cx('text-sub', pendingSuggestions.length > 0 && 'mt-2.5')}>
+                Otras variables que el repositorio espera y no tienes:{' '}
+                <span className="font-mono text-txt">{pendingMissing.join(', ')}</span>{' '}
+                <button
+                  type="button"
+                  className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info max-sm:py-1.5"
+                  onClick={() => {
+                    setRows((prev) => [...prev, ...pendingMissing.map((k) => makeRow(k, ''))]);
+                    setDirty(true);
+                  }}
+                >
+                  Añadir vacías
+                </button>
+              </p>
+            )}
           </div>
         )}
 
