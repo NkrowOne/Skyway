@@ -1139,6 +1139,7 @@ distroless), el explorador lo indica y no está disponible.
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/domains/server-ip` | auth | IP del servidor (configurada o detectada) |
+| GET | `/domains/config` | auth | `{rootDomain, tls}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin) |
 | POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`); 30 por minuto y usuario, después 429 |
 | GET | `/public/status/:token` | público | página de estado pública (cacheada) |
 | GET | `/projects/:id/status-page` | +access | config de la página de estado |
