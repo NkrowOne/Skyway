@@ -15,6 +15,7 @@ import {
   getWorkspace,
   listServices,
   listUserProjectIds,
+  projectsBelongToWorkspace,
   listPlanPeriods,
   listWorkspaceAlerts,
   listWorkspaceProjects,
@@ -136,15 +137,6 @@ function publicMember(u: UserRow) {
     created_at: u.created_at,
     projectIds: u.role === 'member' ? listUserProjectIds(u.id) : [],
   };
-}
-
-/** Todos los proyectos de un workspace deben pertenecer a él (para asignar a un miembro). */
-function projectsInWorkspace(projectIds: string[], workspaceId: string): { ok: boolean; bad?: string } {
-  for (const pid of projectIds) {
-    const project = getProject(pid);
-    if (!project || project.workspace_id !== workspaceId) return { ok: false, bad: pid };
-  }
-  return { ok: true };
 }
 
 export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
@@ -393,7 +385,7 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(409).send({ error: `El workspace ha alcanzado su límite de ${summary.quota.maxMembers} usuarios. Un administrador puede ampliarlo.` });
     }
     if (role === 'member' && body.projectIds.length > 0) {
-      const check = projectsInWorkspace(body.projectIds, id);
+      const check = projectsBelongToWorkspace(body.projectIds, id);
       if (!check.ok) return reply.code(400).send({ error: 'Solo es posible asignar proyectos de este workspace' });
     }
 
@@ -430,7 +422,7 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     const requestedRole = callerIsAdmin ? body.role : body.role ? 'member' : undefined;
     const nextRole = requestedRole ?? (target.role as 'owner' | 'member');
     if (body.projectIds && nextRole === 'member') {
-      const check = projectsInWorkspace(body.projectIds, id);
+      const check = projectsBelongToWorkspace(body.projectIds, id);
       if (!check.ok) return reply.code(400).send({ error: 'Solo es posible asignar proyectos de este workspace' });
     }
 

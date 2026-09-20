@@ -782,8 +782,8 @@ Los cuerpos son JSON salvo indicación; la subida de archivos es binaria.
 | POST | `/tokens` | session | crea token (`{name, expiresDays?}`) → devuelve el valor una vez |
 | DELETE | `/tokens/:id` | session | revoca un token (solo desde el navegador: un token no puede revocar a otros) |
 | GET | `/users` | admin | lista usuarios |
-| POST | `/users` | admin | crea usuario (`{email, password, role, projectIds}`) |
-| PATCH | `/users/:id` | admin | cambia rol / workspaces / contraseña |
+| POST | `/users` | admin | crea usuario (`{email, password, role, projectIds, workspaceId?}`): un miembro puede nacer dentro de una cuenta de cliente (sus proyectos deben ser de esa cuenta; cuenta la cuota de usuarios); un administrador no admite cuenta (400) |
+| PATCH | `/users/:id` | admin | cambia rol / proyectos / contraseña / **cuenta** (`workspaceId`, `null` = sin cuenta). Es la única vía para mover un usuario de cuenta: se retiran sus proyectos salvo que lleguen los de la cuenta nueva en la misma petición; respeta la cuota de destino (409); un propietario no puede quedar sin cuenta; nadie cambia la suya propia. Auditado como `user_workspace_changed` |
 | DELETE | `/users/:id` | admin | elimina usuario (deja ≥1 admin) |
 
 ### 7.2.1 Cuentas de cliente, planes y facturación

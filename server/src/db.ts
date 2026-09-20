@@ -919,6 +919,19 @@ export function updateUserWorkspace(userId: string, workspaceId: string | null):
   db.prepare('UPDATE users SET workspace_id = ? WHERE id = ?').run(workspaceId, userId);
 }
 
+/**
+ * Todos los proyectos deben pertenecer al workspace (para asignarlos a un
+ * miembro). Vive aquí porque lo comprueban tanto la ficha de la cuenta como la
+ * gestión de usuarios de la plataforma: una sola regla, no dos copias.
+ */
+export function projectsBelongToWorkspace(projectIds: string[], workspaceId: string): { ok: boolean; bad?: string } {
+  for (const pid of projectIds) {
+    const project = getProject(pid);
+    if (!project || project.workspace_id !== workspaceId) return { ok: false, bad: pid };
+  }
+  return { ok: true };
+}
+
 /** Sub-usuarios (owner/member) de un workspace, en orden de alta. */
 export function listWorkspaceUsers(workspaceId: string): UserRow[] {
   return db

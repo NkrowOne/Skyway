@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Boxes, Fingerprint, KeyRound, Pencil, Plus, Shield, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { Button, Chip, ConfirmModal, EmptyState, ErrorState, Field, Modal, Skeleton, useToast } from '../components/ui';
-import { Me, Project, UserRole, UserSummary } from '../types';
+import { Me, Project, UserRole, UserSummary, Workspace } from '../types';
 import { cx, timeAgo } from '../utils';
 
 interface Draft {
@@ -12,10 +12,12 @@ interface Draft {
   email: string;
   password: string;
   role: UserRole;
+  /** Cuenta de cliente del miembro; null = sin cuenta. Los administradores no llevan. */
+  workspaceId: string | null;
   projectIds: string[];
 }
 
-const EMPTY: Draft = { email: '', password: '', role: 'member', projectIds: [] };
+const EMPTY: Draft = { email: '', password: '', role: 'member', workspaceId: null, projectIds: [] };
 
 function RoleChip({ role }: { role: UserRole }) {
   if (role === 'admin')
@@ -35,6 +37,7 @@ export default function UsersPage() {
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
   const users = useQuery({ queryKey: ['users'], queryFn: () => api.get<{ users: UserSummary[] }>('/users') });
   const projects = useQuery({ queryKey: ['projects'], queryFn: () => api.get<{ projects: Project[] }>('/projects') });
+  const workspaces = useQuery({ queryKey: ['workspaces'], queryFn: () => api.get<{ workspaces: Workspace[] }>('/workspaces') });
 
   const [draft, setDraft] = useState<Draft | null>(null);
   const [toDelete, setToDelete] = useState<UserSummary | null>(null);
@@ -46,9 +49,13 @@ export default function UsersPage() {
   const save = useMutation({
     mutationFn: async () => {
       const d = draft!;
+      // La cuenta viaja solo para miembros: un administrador no lleva ninguna y
+      // un propietario se gestiona desde su cuenta.
+      const cuenta = d.role === 'member' ? { workspaceId: d.workspaceId } : {};
       if (d.id) {
         return api.patch(`/users/${d.id}`, {
           role: d.role,
+          ...cuenta,
           projectIds: d.role === 'member' ? d.projectIds : [],
           ...(d.password ? { password: d.password } : {}),
         });
@@ -57,6 +64,7 @@ export default function UsersPage() {
         email: d.email.trim(),
         password: d.password,
         role: d.role,
+        ...cuenta,
         projectIds: d.role === 'member' ? d.projectIds : [],
       });
     },
@@ -83,6 +91,18 @@ export default function UsersPage() {
     setDraft((d) =>
       d ? { ...d, projectIds: d.projectIds.includes(id) ? d.projectIds.filter((p) => p !== id) : [...d.projectIds, id] } : d,
     );
+  // Cambiar de cuenta descarta las asignaciones: pertenecen a la cuenta anterior.
+  const changeWorkspace = (workspaceId: string | null) =>
+    setDraft((d) => (d && d.workspaceId !== workspaceId ? { ...d, workspaceId, projectIds: [] } : d));
+  // Con cuenta, solo sus proyectos; sin cuenta (usuarios antiguos), todos.
+  const assignableProjects = useMemo(() => {
+    const all = projects.data?.projects ?? [];
+    return draft?.workspaceId ? all.filter((p) => p.workspace_id === draft.workspaceId) : all;
+  }, [projects.data?.projects, draft?.workspaceId]);
+  const workspaceList = useMemo(
+    () => [...(workspaces.data?.workspaces ?? [])].sort((a, b) => a.name.localeCompare(b.name, 'es')),
+    [workspaces.data?.workspaces],
+  );
 
   // Alfabético por email (copia: la caché de react-query no se muta).
   const list = useMemo(
@@ -169,7 +189,9 @@ export default function UsersPage() {
             </div>
             <div className="flex shrink-0 items-center gap-1">
               <button
-                onClick={() => setDraft({ id: u.id, email: u.email, password: '', role: u.role, projectIds: u.projectIds })}
+                onClick={() =>
+                  setDraft({ id: u.id, email: u.email, password: '', role: u.role, workspaceId: u.workspaceId ?? null, projectIds: u.projectIds })
+                }
                 className="rounded-md p-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
                 title="Editar usuario"
                 aria-label="Editar usuario"
@@ -240,9 +262,43 @@ export default function UsersPage() {
               </div>
             </Field>
             {draft.role === 'member' && (
-              <Field label="Proyectos con acceso" hint={projects.data?.projects.length ? undefined : 'Todavía no hay proyectos creados'} group>
+              <Field
+                label="Cuenta de cliente"
+                hint={
+                  isEdit && draft.workspaceId !== (list.find((u) => u.id === draft.id)?.workspaceId ?? null)
+                    ? 'Al cambiar de cuenta se retiran los proyectos asignados; seleccione los de la cuenta nueva.'
+                    : 'Los proyectos disponibles son los de la cuenta seleccionada.'
+                }
+              >
+                <select
+                  className="input"
+                  value={draft.workspaceId ?? ''}
+                  onChange={(e) => changeWorkspace(e.target.value || null)}
+                  disabled={workspaces.isLoading}
+                >
+                  <option value="">Sin cuenta</option>
+                  {workspaceList.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+            {draft.role === 'member' && (
+              <Field
+                label="Proyectos con acceso"
+                hint={
+                  assignableProjects.length
+                    ? undefined
+                    : draft.workspaceId
+                      ? 'La cuenta seleccionada todavía no tiene proyectos'
+                      : 'Todavía no hay proyectos creados'
+                }
+                group
+              >
                 <div className="flex max-h-44 flex-col gap-1 overflow-y-auto rounded-lg border border-line bg-bg p-2">
-                  {(projects.data?.projects ?? []).map((p) => (
+                  {assignableProjects.map((p) => (
                     <label key={p.id} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface2">
                       <input
                         type="checkbox"
@@ -251,7 +307,7 @@ export default function UsersPage() {
                         className="h-4 w-4 shrink-0 accent-acc"
                       />
                       <span className="min-w-0 flex-1 truncate text-sm">{p.name}</span>
-                      {p.client && <span className="shrink-0 text-xs text-subtle">{p.client}</span>}
+                      {!draft.workspaceId && p.client && <span className="shrink-0 text-xs text-subtle">{p.client}</span>}
                     </label>
                   ))}
                 </div>

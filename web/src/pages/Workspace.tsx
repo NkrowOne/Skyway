@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
+  ArrowRightLeft,
   Boxes,
   CreditCard,
   Cpu,
@@ -425,6 +426,35 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Mover a otra cuenta (solo administrador): es la misma operación que en
+  // «Usuarios», por la ruta de usuarios de la plataforma; aquí solo se ofrece
+  // desde la ficha de la cuenta de origen.
+  const queryClient = useQueryClient();
+  const [toMove, setToMove] = useState<WorkspaceMember | null>(null);
+  const [moveTarget, setMoveTarget] = useState('');
+  const workspaces = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: () => api.get<{ workspaces: Workspace[] }>('/workspaces'),
+    enabled: isAdmin,
+  });
+  const otherWorkspaces = useMemo(
+    () => (workspaces.data?.workspaces ?? []).filter((w) => w.id !== ws.id).sort((a, b) => a.name.localeCompare(b.name, 'es')),
+    [workspaces.data?.workspaces, ws.id],
+  );
+  const move = useMutation({
+    mutationFn: () => api.patch(`/users/${toMove!.id}`, { workspaceId: moveTarget }),
+    onSuccess: () => {
+      toast(`Usuario movido a «${otherWorkspaces.find((w) => w.id === moveTarget)?.name ?? 'la otra cuenta'}»`, 'ok');
+      setToMove(null);
+      setMoveTarget('');
+      // La cuenta de destino cambia de recuento de usuarios.
+      queryClient.invalidateQueries({ queryKey: ['workspace', moveTarget] });
+      queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      onSaved();
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
   const projectName = (id: string) => detail.projects.find((p) => p.id === id)?.name ?? id;
   const toggleProject = (id: string) =>
     setDraft((d) => (d ? { ...d, projectIds: d.projectIds.includes(id) ? d.projectIds.filter((p) => p !== id) : [...d.projectIds, id] } : d));
@@ -469,6 +499,16 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
               <button onClick={() => setDraft({ id: m.id, email: m.email, password: '', role: m.role, projectIds: m.projectIds })} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Editar" aria-label="Editar">
                 <Pencil size={14} />
               </button>
+              {isAdmin && (
+                <button
+                  onClick={() => { setMoveTarget(''); setToMove(m); }}
+                  className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5"
+                  title="Mover a otra cuenta"
+                  aria-label="Mover a otra cuenta"
+                >
+                  <ArrowRightLeft size={14} />
+                </button>
+              )}
               <button onClick={() => setToDelete(m)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title="Eliminar" aria-label="Eliminar">
                 <Trash2 size={14} />
               </button>
@@ -541,6 +581,36 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
         message={`«${toDelete?.email}» perderá el acceso de inmediato. Sus proyectos y servicios no se modifican.`}
         loading={remove.isPending}
       />
+
+      <Modal open={!!toMove} onClose={() => setToMove(null)} title={`Mover ${toMove?.email ?? ''} a otra cuenta`}>
+        {toMove && (
+          <div className="flex flex-col gap-3.5">
+            <Field
+              label="Cuenta de destino"
+              hint={
+                otherWorkspaces.length
+                  ? 'El usuario conserva su rol y su contraseña. Sus proyectos asignados se retiran: pertenecen a esta cuenta.'
+                  : 'No hay otras cuentas a las que mover el usuario.'
+              }
+            >
+              <select className="input" value={moveTarget} onChange={(e) => setMoveTarget(e.target.value)} disabled={workspaces.isLoading}>
+                <option value="">Seleccione una cuenta</option>
+                {otherWorkspaces.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <div className="mt-1.5 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setToMove(null)}>Cancelar</Button>
+              <Button onClick={() => move.mutate()} loading={move.isPending} disabled={!moveTarget}>
+                Mover usuario
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </section>
   );
 }
