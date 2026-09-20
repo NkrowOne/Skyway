@@ -842,6 +842,16 @@ export interface DbTemplate {
   image: string;
   defaultVersion: string;
   port: number;
+  /** Qué variables de conexión exporta el motor, por su papel (ver `templates.ts` en el servidor). */
+  conn: {
+    main: string;
+    host?: string;
+    port?: string;
+    user?: string;
+    password?: string;
+    database?: string;
+    connect: string[];
+  };
 }
 
 /** Servicio de una pila de aplicaciones, tal y como lo describe el catálogo. */

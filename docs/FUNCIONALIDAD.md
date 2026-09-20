@@ -631,6 +631,17 @@ y Ajustes → Dirección interna ofrece la referencia lista para copiar: al camb
 el puerto o el dominio se actualiza sola, cosa que un `http://api:3000` pegado a
 mano no hace.
 
+**Conectar a…** Cada plantilla de base de datos declara en `templates.ts` qué
+variables de conexión exporta y con qué papel (`conn`: `main`, `host`, `port`,
+`user`, `password`, `database`) y el juego mínimo que otro servicio necesita para
+engancharse (`connect`: la URL; en MinIO, endpoint y credenciales). Es la única
+tabla: la lee el panel, el importador de Railway y la detección de dependencias.
+`GET /services/:id/env` devuelve por cada servicio del proyecto ese `connect`
+(en una app con puerto, `INTERNAL_URL`), y la pestaña Variables lo convierte en
+un botón «Conectar a <servicio>» que inserta de golpe las referencias que falten:
+`DATABASE_URL=${{postgres.DATABASE_URL}}` para una base, `API_URL=${{api.INTERNAL_URL}}`
+para otra app. Se aplican, como todo, al guardar y redesplegar.
+
 **Compatibilidad con Railway.** En cada despliegue se rellenan las variables
 mágicas de Railway con el
 equivalente de Skyway, **sin pisar nunca** un valor definido por el usuario, para
@@ -1052,7 +1063,7 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 ### 7.4 Servicios
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/templates` | auth | plantillas de BBDD disponibles |
+| GET | `/templates` | auth | plantillas de BBDD disponibles, con sus variables de conexión (`conn`) |
 | GET | `/stacks` | auth | catálogo de pilas de aplicaciones (§5.1) |
 | POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[]}`; atómica (409 si choca un nombre); `domain` como en crear servicio; `services[].config` sin `webhookSecret` |
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada); 20 por minuto y usuario, después 429 |
@@ -1063,7 +1074,7 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | DELETE | `/services/:id?volumes=true` | +access | elimina servicio; igual que en proyectos, devuelve `{ok, warnings}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
-| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias; cada referencia trae `vars` guardadas y `auto` de sistema) |
+| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias; cada referencia trae `vars` guardadas, `auto` de sistema y `connect` para «Conectar a…») |
 | PUT | `/services/:id/env` | +access | reemplaza variables del servicio |
 
 ### 7.5 Despliegues (logs por SSE)

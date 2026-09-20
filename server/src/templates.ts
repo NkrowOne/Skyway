@@ -1,5 +1,26 @@
 import { randomPassword } from './util';
 
+/**
+ * Qué variables de conexión exporta un motor, por su papel. Es lo que permite
+ * enganchar otro servicio sin saber si la URL se llama DATABASE_URL o
+ * MONGO_URL: el panel («Conectar a…»), el importador de Railway y la detección
+ * de dependencias leen esto, en vez de tener cada uno su propia tabla.
+ */
+export interface DbConn {
+  /** La URL completa (el endpoint, en MinIO): lo que casi toda app necesita. */
+  main: string;
+  host?: string;
+  port?: string;
+  user?: string;
+  password?: string;
+  database?: string;
+  /**
+   * Juego mínimo que «Conectar a…» copia como referencias en otro servicio.
+   * Una URL basta en casi todo; S3 no tiene URL con credenciales y necesita tres.
+   */
+  connect: string[];
+}
+
 export interface DbTemplate {
   key: string;
   label: string;
@@ -8,6 +29,7 @@ export interface DbTemplate {
   defaultVersion: string;
   port: number;
   volumePath: string;
+  conn: DbConn;
   /** Comando opcional (forma shell) que puede usar variables de entorno. */
   cmd?: string[];
   /**
@@ -32,6 +54,15 @@ export const DB_TEMPLATES: Record<string, DbTemplate> = {
     defaultVersion: '16-alpine',
     port: 5432,
     volumePath: '/var/lib/postgresql/data',
+    conn: {
+      main: 'DATABASE_URL',
+      host: 'PGHOST',
+      port: 'PGPORT',
+      user: 'PGUSER',
+      password: 'PGPASSWORD',
+      database: 'PGDATABASE',
+      connect: ['DATABASE_URL'],
+    },
     makeEnv: (slug, existing = {}) => {
       const user = existing.POSTGRES_USER || existing.PGUSER || 'skyway';
       const password = existing.POSTGRES_PASSWORD || existing.PGPASSWORD || randomPassword();
@@ -57,6 +88,7 @@ export const DB_TEMPLATES: Record<string, DbTemplate> = {
     defaultVersion: '7-alpine',
     port: 6379,
     volumePath: '/data',
+    conn: { main: 'REDIS_URL', host: 'REDIS_HOST', port: 'REDIS_PORT', password: 'REDIS_PASSWORD', connect: ['REDIS_URL'] },
     cmd: ['sh', '-c', 'redis-server --requirepass "$REDIS_PASSWORD" --appendonly yes'],
     makeEnv: (slug, existing = {}) => {
       const password = existing.REDIS_PASSWORD || randomPassword();
@@ -76,6 +108,15 @@ export const DB_TEMPLATES: Record<string, DbTemplate> = {
     defaultVersion: '8',
     port: 3306,
     volumePath: '/var/lib/mysql',
+    conn: {
+      main: 'MYSQL_URL',
+      host: 'MYSQL_HOST',
+      port: 'MYSQL_PORT',
+      user: 'MYSQL_USER',
+      password: 'MYSQL_PASSWORD',
+      database: 'MYSQL_DATABASE',
+      connect: ['MYSQL_URL'],
+    },
     makeEnv: (slug, existing = {}) => {
       const user = existing.MYSQL_USER || 'skyway';
       const password = existing.MYSQL_PASSWORD || randomPassword();
@@ -99,6 +140,14 @@ export const DB_TEMPLATES: Record<string, DbTemplate> = {
     defaultVersion: '7',
     port: 27017,
     volumePath: '/data/db',
+    conn: {
+      main: 'MONGO_URL',
+      host: 'MONGO_HOST',
+      port: 'MONGO_PORT',
+      user: 'MONGO_INITDB_ROOT_USERNAME',
+      password: 'MONGO_INITDB_ROOT_PASSWORD',
+      connect: ['MONGO_URL'],
+    },
     makeEnv: (slug, existing = {}) => {
       const user = existing.MONGO_INITDB_ROOT_USERNAME || 'skyway';
       const password = existing.MONGO_INITDB_ROOT_PASSWORD || randomPassword();
@@ -119,6 +168,12 @@ export const DB_TEMPLATES: Record<string, DbTemplate> = {
     defaultVersion: 'latest',
     port: 9000,
     volumePath: '/data',
+    conn: {
+      main: 'MINIO_ENDPOINT',
+      user: 'MINIO_ROOT_USER',
+      password: 'MINIO_ROOT_PASSWORD',
+      connect: ['MINIO_ENDPOINT', 'MINIO_ROOT_USER', 'MINIO_ROOT_PASSWORD'],
+    },
     cmd: ['sh', '-c', 'minio server /data --console-address ":9001"'],
     makeEnv: (slug, existing = {}) => {
       return {

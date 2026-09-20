@@ -112,6 +112,12 @@ export interface ReferenceGroup {
   vars: string[];
   /** Variables de sistema que ese servicio tiene ahora mismo (las calcula Skyway, no están guardadas). */
   auto: string[];
+  /**
+   * Lo que «Conectar a…» copia como referencias: en una base de datos, el juego
+   * mínimo de su motor (la URL; en S3, endpoint y credenciales); en una app con
+   * puerto, su URL interna. Vacío si no hay nada que conectar (un worker).
+   */
+  connect: string[];
 }
 
 /** Referencias disponibles para la UI: variables compartidas + servicios hermanos. */
@@ -119,7 +125,7 @@ export function availableReferences(service: ServiceRow): ReferenceGroup[] {
   const groups: ReferenceGroup[] = [];
   const shared = getProjectVars(service.project_id);
   if (Object.keys(shared).length > 0) {
-    groups.push({ service: 'shared', template: null, vars: Object.keys(shared), auto: [] });
+    groups.push({ service: 'shared', template: null, vars: Object.keys(shared), auto: [], connect: [] });
   }
   const siblings = listServices(service.project_id).filter((s) => s.id !== service.id);
   for (const s of siblings) {
@@ -127,8 +133,14 @@ export function availableReferences(service: ServiceRow): ReferenceGroup[] {
     const vars = getEnv(s.id);
     // Una variable guardada con el mismo nombre tapa a la de sistema: se
     // enseña una vez, como lo que es.
-    const auto = Object.keys(systemVars(s)).filter((k) => vars[k] === undefined);
-    groups.push({ service: s.name, template, vars: Object.keys(vars), auto });
+    const system = systemVars(s);
+    const auto = Object.keys(system).filter((k) => vars[k] === undefined);
+    // Solo lo que de verdad existe en ese servicio: una base a la que le
+    // borraron la URL a mano no puede ofrecer conectarse por ella.
+    const connect = template
+      ? (getTemplate(template)?.conn.connect ?? []).filter((k) => vars[k] !== undefined)
+      : ['INTERNAL_URL'].filter((k) => vars[k] !== undefined || system[k] !== undefined);
+    groups.push({ service: s.name, template, vars: Object.keys(vars), auto, connect });
   }
   return groups;
 }

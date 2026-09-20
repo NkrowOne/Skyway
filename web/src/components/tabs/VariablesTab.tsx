@@ -24,6 +24,8 @@ interface ReferenceGroup {
   vars: string[];
   /** Las que calcula Skyway (INTERNAL_URL, PUBLIC_URL…): no están guardadas, pero se referencian igual. */
   auto: string[];
+  /** Lo que «Conectar a…» copia: la URL del motor en una base (tres en S3), la URL interna en una app. */
+  connect: string[];
 }
 
 interface EnvResponse {
@@ -70,14 +72,13 @@ const SUGGESTED_VARS: { key: string; value: string; hint: string }[] = [
   { key: 'PORT', value: '3000', hint: 'Puerto de escucha de la aplicación' },
 ];
 
-/** Variable de conexión principal que exporta cada plantilla de base de datos. */
-const MAIN_VAR: Record<string, string> = {
-  postgres: 'DATABASE_URL',
-  redis: 'REDIS_URL',
-  mysql: 'MYSQL_URL',
-  mongo: 'MONGO_URL',
-  minio: 'MINIO_ENDPOINT',
-};
+/**
+ * Nombre con el que un servicio recibe la URL interna de otro: «api» → API_URL,
+ * «bot-lewspain» → BOT_LEWSPAIN_URL. En una base de datos la clave es la
+ * misma que exporta (DATABASE_URL), que es lo que las librerías buscan.
+ */
+const connectKey = (group: ReferenceGroup, v: string): string =>
+  group.template ? v : `${group.service.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'SERVICE'}_URL`;
 
 const RAILWAY_RE = /railway\.internal|railway\.app|rlwy\.net/i;
 
@@ -425,26 +426,30 @@ export default function VariablesTab({
     rows.forEach((row) => {
       if (!RAILWAY_RE.test(row.value) || isReference(row.value)) return;
       const template = guessTemplate(row.key, row.value);
-      const candidates = template
-        ? references.filter((g) => g.template === template && g.vars.includes(MAIN_VAR[template]))
-        : [];
+      const candidates = template ? references.filter((g) => g.template === template && g.connect.length > 0) : [];
       out.push({ id: row.id, key: row.key, candidates });
     });
     return out;
   }, [rows, references]);
 
+  /*
+   * «Conectar a…»: un botón por servicio del proyecto al que se pueda enganchar
+   * este, que inserta de golpe las referencias que hacen falta (qué son lo dice
+   * el servidor, según el motor). Desaparece cuando ya están todas.
+   */
+  const connectChips = useMemo(
+    () =>
+      references
+        .filter((g) => g.service !== 'shared' && g.connect.length > 0)
+        .map((g) => ({
+          service: g.service,
+          entries: g.connect.map((v) => ({ key: connectKey(g, v), value: `\${{${g.service}.${v}}}` })),
+        })),
+    [references],
+  );
+
   // Sugerencias rápidas
-  const suggestions = useMemo(() => {
-    const db = references
-      .filter((g) => g.template && MAIN_VAR[g.template] && g.vars.includes(MAIN_VAR[g.template]))
-      .map((g) => ({
-        key: MAIN_VAR[g.template!],
-        value: `\${{${g.service}.${MAIN_VAR[g.template!]}}}`,
-        hint: `Conexión a ${g.service} por la red interna del proyecto`,
-      }));
-    const seen = new Set<string>();
-    return [...db, ...SUGGESTED_VARS].filter((s) => !seen.has(s.key) && seen.add(s.key));
-  }, [references]);
+  const suggestions = SUGGESTED_VARS;
 
   // Filtrado por buscador
   const filteredRows = useMemo(() => {
@@ -531,7 +536,7 @@ export default function VariablesTab({
                 <div key={p.id} className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-xs font-semibold text-txt">{p.key}</span>
                   {p.candidates.map((g) => {
-                    const token = `\${{${g.service}.${MAIN_VAR[g.template!]}}}`;
+                    const token = `\${{${g.service}.${g.connect[0]}}}`;
                     return (
                       <button
                         key={g.service}
@@ -768,6 +773,34 @@ export default function VariablesTab({
 
         {/* ── Referencias y sugerencias ── */}
         <div className="flex flex-col gap-3">
+          {connectChips.some((c) => c.entries.some((e) => !rows.some((r) => r.key === e.key))) && (
+            <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
+              <span className="font-medium text-sub">Conectar a:</span>
+              {connectChips
+                .filter((c) => c.entries.some((e) => !rows.some((r) => r.key === e.key)))
+                .map((c) => {
+                  const pending = c.entries.filter((e) => !rows.some((r) => r.key === e.key));
+                  const hint = `Añade ${pending.map((e) => e.key).join(', ')} como referencia a ${c.service} por la red interna del proyecto`;
+                  return (
+                    <button
+                      key={c.service}
+                      type="button"
+                      className="press flex items-center gap-1 rounded-md border border-acc/40 bg-acc/[.06] px-2 py-0.5 text-xs font-medium text-acc-soft transition-colors hover:border-acc hover:bg-acc/10 max-sm:py-1.5"
+                      title={hint}
+                      aria-label={hint}
+                      onClick={() => {
+                        setRows((prev) => [...prev, ...pending.map((e) => makeRow(e.key, e.value))]);
+                        setDirty(true);
+                        toast(`Conectado a ${c.service}: ${pending.map((e) => e.key).join(', ')}`, 'ok');
+                      }}
+                    >
+                      <Plus size={12} /> {c.service}
+                    </button>
+                  );
+                })}
+            </div>
+          )}
+
           {suggestions.some((s) => !rows.some((r) => r.key === s.key)) && (
             <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
               <span className="font-medium text-sub">Habituales:</span>
