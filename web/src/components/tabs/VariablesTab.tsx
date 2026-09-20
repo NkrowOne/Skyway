@@ -22,6 +22,8 @@ interface ReferenceGroup {
   service: string;
   template: string | null;
   vars: string[];
+  /** Las que calcula Skyway (INTERNAL_URL, PUBLIC_URL…): no están guardadas, pero se referencian igual. */
+  auto: string[];
 }
 
 interface EnvResponse {
@@ -802,27 +804,40 @@ export default function VariablesTab({
                       {ref.service === 'shared' ? 'Variables compartidas' : ref.service}
                     </p>
                     <div className="flex flex-wrap gap-1.5">
-                      {ref.vars.map((v) => {
-                        const token = `\${{${ref.service}.${v}}}`;
-                        return (
-                          <button
-                            key={v}
-                            type="button"
-                            className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info hover:bg-info/10 max-sm:py-1.5"
-                            title={`Copiar ${token}`}
-                            aria-label={`Copiar ${token}`}
-                            onClick={() => {
-                              // El «Copiado» solo cuando de verdad se ha copiado.
-                              navigator.clipboard
-                                .writeText(token)
-                                .then(() => toast(`Copiado: ${token}`, 'ok'))
-                                .catch(() => toast('No se ha podido copiar al portapapeles', 'err'));
-                            }}
-                          >
-                            {v}
-                          </button>
-                        );
-                      })}
+                      {/* Las de sistema van detrás y en otro tono: no son
+                          variables del servicio, las calcula Skyway de su puerto
+                          y su dominio, y cambian con ellos. */}
+                      {[...ref.vars.map((v) => ({ v, auto: false })), ...(ref.auto ?? []).map((v) => ({ v, auto: true }))].map(
+                        ({ v, auto }) => {
+                          const token = `\${{${ref.service}.${v}}}`;
+                          const title = auto
+                            ? `Copiar ${token} · la calcula Skyway del puerto y el dominio de ${ref.service}`
+                            : `Copiar ${token}`;
+                          return (
+                            <button
+                              key={v}
+                              type="button"
+                              className={cx(
+                                'press rounded-md border px-2 py-0.5 font-mono text-xs transition-colors max-sm:py-1.5',
+                                auto
+                                  ? 'border-dashed border-acc/40 bg-surface text-acc-soft hover:border-acc hover:bg-acc/10'
+                                  : 'border-line bg-surface text-info hover:border-info hover:bg-info/10',
+                              )}
+                              title={title}
+                              aria-label={title}
+                              onClick={() => {
+                                // El «Copiado» solo cuando de verdad se ha copiado.
+                                navigator.clipboard
+                                  .writeText(token)
+                                  .then(() => toast(`Copiado: ${token}`, 'ok'))
+                                  .catch(() => toast('No se ha podido copiar al portapapeles', 'err'));
+                              }}
+                            >
+                              {v}
+                            </button>
+                          );
+                        },
+                      )}
                     </div>
                   </div>
                 ))}

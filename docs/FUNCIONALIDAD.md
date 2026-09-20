@@ -607,9 +607,32 @@ elegida (rutas `…/repos/lookup`) y, si esa cuenta no lo ve, el error explica e
 motivo y qué hacer. Bajo el campo de URL (al crear un servicio o en sus ajustes)
 un aviso dice si la cuenta elegida, el token global o nadie va a poder clonarlo.
 
-### 5.5 Variables de compatibilidad con Railway
+### 5.5 Variables de sistema y de compatibilidad con Railway
 
-En cada despliegue se rellenan las variables mágicas de Railway con el
+**Variables de sistema.** Skyway calcula de cada servicio, sin que nadie las
+escriba, por dónde se le llama dentro del proyecto y por qué dominio se le llega
+desde fuera (`systemVars` en `variables.ts`):
+
+| Variable | Valor | Cuándo existe |
+| --- | --- | --- |
+| `INTERNAL_HOST` | slug del servicio (su nombre DNS en la red del proyecto) | siempre |
+| `INTERNAL_PORT` | puerto interno (plantilla en BBDD; elegido en imagen; elegido o 3000 en repo) | si tiene puerto |
+| `INTERNAL_URL` | `http://<slug>:<puerto>` | repo/imagen con puerto (una BBDD ya exporta su `DATABASE_URL`, `REDIS_URL`…) |
+| `PUBLIC_DOMAIN` | primer dominio del servicio | si tiene dominio |
+| `PUBLIC_URL` | `https://<dominio>` (o `http://` sin Let's Encrypt) | si tiene dominio |
+
+Se usan de dos formas: **otro servicio las referencia** (`${{api.INTERNAL_URL}}`,
+`${{web.PUBLIC_URL}}`) y el resolutor las aplica cuando el servicio apuntado no
+tiene esa variable guardada; y **el propio servicio las recibe** en su entorno
+al desplegar, calculadas con el puerto y los dominios de ese despliegue. Una
+variable guardada con el mismo nombre gana siempre, en los dos casos. La
+pestaña Variables las enseña en «Referencias del proyecto» con trazo discontinuo,
+y Ajustes → Dirección interna ofrece la referencia lista para copiar: al cambiar
+el puerto o el dominio se actualiza sola, cosa que un `http://api:3000` pegado a
+mano no hace.
+
+**Compatibilidad con Railway.** En cada despliegue se rellenan las variables
+mágicas de Railway con el
 equivalente de Skyway, **sin pisar nunca** un valor definido por el usuario, para
 que una aplicación migrada que las lea siga funcionando:
 
@@ -661,7 +684,9 @@ antes obligaba a entrar por SSH al servidor.
   Las tres vías comparten estado: un commit ya construido no se vuelve a
   desplegar, y con un despliegue vivo no se encola otro encima.
 - **Variables**: por servicio y compartidas por proyecto; referencias
-  `${{Servicio.VAR}}` y `${{shared.VAR}}` resueltas al desplegar.
+  `${{Servicio.VAR}}` y `${{shared.VAR}}` resueltas al desplegar. Cada servicio
+  tiene además variables de sistema (`INTERNAL_URL`, `PUBLIC_URL`…) que Skyway
+  calcula de su puerto y su dominio (§5.5).
 - **Pilas de aplicaciones**: Supabase, WordPress, Ghost, n8n y Metabase con todos
   sus servicios, secretos generados y arranque ordenado (§5.1).
 - **Consola de consultas** (Consultas): explorador de tablas/colecciones/claves,
@@ -1038,7 +1063,7 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | DELETE | `/services/:id?volumes=true` | +access | elimina servicio; igual que en proyectos, devuelve `{ok, warnings}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
-| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias) |
+| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias; cada referencia trae `vars` guardadas y `auto` de sistema) |
 | PUT | `/services/:id/env` | +access | reemplaza variables del servicio |
 
 ### 7.5 Despliegues (logs por SSE)

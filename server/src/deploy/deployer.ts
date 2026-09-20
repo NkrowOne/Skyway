@@ -58,7 +58,7 @@ import { buildImage, cloneRepo, isBuildTimeVar, normalizeRepoUrl, spawnLogged } 
 import { dockerRestartPolicy, hasRailwayConfig, RailwayRepoConfig, readRailwayRepoConfig } from './railwayconfig';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
 import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
-import { resolveServiceEnv } from '../variables';
+import { resolveServiceEnv, systemVars } from '../variables';
 import { DatabaseConfig, DeploymentRow, GitConfig, ImageConfig, ProjectRow, ServiceRow } from '../types';
 import { now } from '../util';
 
@@ -1158,6 +1158,14 @@ async function deployContainer(
   env.SKYWAY_PROJECT = project.slug;
   env.SKYWAY_SERVICE = service.slug;
   env.SKYWAY_DEPLOYMENT = deploymentId;
+  // Las mismas variables de sistema que otro servicio puede referenciar
+  // (`${{api.PUBLIC_URL}}`), también dentro del propio contenedor: una app que
+  // monta enlaces absolutos las tiene sin escribir su dominio a mano. Con el
+  // puerto y los dominios de ESTE despliegue, no con lo guardado, y sin pisar
+  // nunca un valor que el usuario haya definido.
+  for (const [key, value] of Object.entries(systemVars(service, { port: internalPort, domains }))) {
+    if (env[key] === undefined) env[key] = value;
+  }
   applyRailwayCompatEnv(env, project, service, deploymentId, domains, internalPort, volumes);
 
   // Política de reinicio declarada en el repo (restartPolicyType de Railway).
