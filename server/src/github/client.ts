@@ -88,7 +88,7 @@ export async function ghFetch(path: string, req: GhRequest = {}): Promise<Respon
       });
     } catch (err: any) {
       if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
-        throw new GithubError(`GitHub no respondió en ${Math.round(timeoutMs / 1000)} s. Vuelve a intentarlo.`);
+        throw new GithubError(`GitHub no respondió en ${Math.round(timeoutMs / 1000)} s. Vuelva a intentarlo.`);
       }
       if (retriesLeft-- > 0) continue;
       throw new GithubError(`No se pudo conectar con GitHub: ${err?.cause?.message || err?.message || 'error de red'}`);

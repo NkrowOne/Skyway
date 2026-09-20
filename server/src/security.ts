@@ -34,7 +34,7 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
           severity: 'critical',
           title: `Base de datos expuesta a internet: ${service.name}`,
           detail: `"${service.name}" (${(cfg as DatabaseConfig).template}) publica el puerto TCP ${cfg.hostPort} en el host. Cualquiera que alcance la IP del servidor puede intentar conectarse y lanzar ataques de fuerza bruta contra las credenciales.`,
-          fix: 'Quita el "Puerto público" en Ajustes del servicio: los demás servicios del proyecto ya llegan por la red privada. Si necesitas acceso externo (p. ej. desde tu portátil), usa un túnel SSH (`ssh -L 5432:localhost:5432 servidor`) o una VPN como WireGuard/Tailscale.',
+          fix: 'Elimine el «Puerto público» en Ajustes del servicio: los demás servicios del proyecto ya acceden por la red privada. Si necesita acceso externo (p. ej. desde su equipo), utilice un túnel SSH (`ssh -L 5432:localhost:5432 servidor`) o una VPN como WireGuard/Tailscale.',
           ...base,
         });
       }
@@ -44,8 +44,8 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
           id: `app-hostport-${service.id}`,
           severity: 'warning',
           title: `Aplicación con puerto directo: ${service.name}`,
-          detail: `"${service.name}" publica el puerto ${cfg.hostPort} directamente, saltándose Traefik: sin TLS, sin dominio y expuesto en la IP del servidor.`,
-          fix: 'Usa un dominio (Ajustes del servicio → Dominios) para servir el tráfico a través de Traefik con TLS, y elimina el puerto público salvo que sea imprescindible.',
+          detail: `"${service.name}" publica el puerto ${cfg.hostPort} directamente, sin pasar por Traefik: sin TLS, sin dominio y expuesto en la IP del servidor.`,
+          fix: 'Utilice un dominio (Ajustes del servicio → Dominios) para servir el tráfico a través de Traefik con TLS, y elimine el puerto público salvo que sea imprescindible.',
           ...base,
         });
       }
@@ -55,8 +55,8 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
           id: `no-limits-${service.id}`,
           severity: 'warning',
           title: `Sin límites de recursos: ${service.name}`,
-          detail: `"${service.name}" puede consumir toda la CPU y RAM del servidor. Un pico de tráfico, una fuga de memoria o un ataque pueden tumbar los proyectos de todas las empresas a la vez.`,
-          fix: 'Define límites en Ajustes del servicio → Recursos (se aplican en caliente). Para varias empresas en el mismo servidor, limita todos los servicios y deja margen para el sistema.',
+          detail: `"${service.name}" puede consumir toda la CPU y RAM del servidor. Un pico de tráfico, una fuga de memoria o un ataque pueden detener los proyectos de todas las empresas a la vez.`,
+          fix: 'Defina límites en Ajustes del servicio → Recursos (se aplican en caliente). Con varias empresas en el mismo servidor, limite todos los servicios y deje margen para el sistema.',
           ...base,
         });
       }
@@ -70,8 +70,8 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
           id: `domain-no-port-${service.id}`,
           severity: 'warning',
           title: `Dominio que no enruta: ${service.name}`,
-          detail: `"${service.name}" tiene dominio (${(cfg.domains as string[]).join(', ')}) pero ningún puerto interno: Traefik no puede saber a qué puerto del contenedor entregar la petición, así que no crea la ruta ni pide certificado. El dominio responde 404 y con un certificado que no es el suyo, aunque el panel lo muestre configurado.`,
-          fix: 'Indica el puerto en el que escucha el servicio en Ajustes del servicio → Puerto interno y redespliega. Si es un worker sin HTTP, quítale el dominio.',
+          detail: `"${service.name}" tiene dominio (${(cfg.domains as string[]).join(', ')}) pero ningún puerto interno: Traefik no puede saber a qué puerto del contenedor entregar la petición, por lo que no crea la ruta ni solicita certificado. El dominio responde 404 y con un certificado que no le corresponde, aunque el panel lo muestre configurado.`,
+          fix: 'Indique el puerto en el que escucha el servicio en Ajustes del servicio → Puerto interno y vuelva a desplegar. Si es un worker sin HTTP, elimine el dominio.',
           ...base,
         });
       }
@@ -87,8 +87,8 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
       id: 'no-tls',
       severity: 'warning',
       title: 'Dominios sin TLS automático',
-      detail: `Hay servicios con dominio (${servicesWithDomains.slice(0, 5).join(', ')}) pero no hay email de Let's Encrypt configurado: el tráfico va por HTTP sin cifrar, incluidas contraseñas y cookies de tus clientes.`,
-      fix: 'Configura el email de Let\'s Encrypt en Ajustes → Dominios y TLS. Traefik emitirá y renovará certificados automáticamente para cada dominio.',
+      detail: `Hay servicios con dominio (${servicesWithDomains.slice(0, 5).join(', ')}) pero no hay correo electrónico de Let's Encrypt configurado: el tráfico circula por HTTP sin cifrar, incluidas las contraseñas y cookies de sus clientes.`,
+      fix: 'Configure el correo electrónico de Let\'s Encrypt en Ajustes → Dominios y TLS. Traefik emitirá y renovará los certificados automáticamente para cada dominio.',
     });
   }
 
@@ -99,15 +99,15 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
       severity: 'critical',
       title: `${failed.count} intentos de login fallidos en 24 h`,
       detail: `Posible ataque de fuerza bruta contra el panel. IPs implicadas: ${failed.ips.join(', ')}. Skyway limita los intentos por IP, pero el panel sigue siendo un objetivo.`,
-      fix: 'Si no reconoces los intentos: cambia la contraseña (Panel de seguridad → Sesiones), pon el panel detrás de VPN o restringe el puerto por firewall, y usa el dominio con TLS en lugar del puerto 4000 abierto.',
+      fix: 'Si no reconoce los intentos: cambie la contraseña (Panel de seguridad → Sesiones), sitúe el panel detrás de una VPN o restrinja el puerto mediante firewall, y utilice el dominio con TLS en lugar del puerto 4000 abierto.',
     });
   } else if (failed.count > 0) {
     findings.push({
       id: 'failed-logins',
       severity: 'info',
-      title: `${failed.count} intento(s) de login fallido(s) en 24 h`,
-      detail: `IPs: ${failed.ips.join(', ')}. Puede ser un error tuyo tecleando o un escaneo automático.`,
-      fix: 'Vigila el registro de actividad. Si crece, trata el panel como expuesto: VPN o firewall.',
+      title: `${failed.count} intento(s) de inicio de sesión fallido(s) en 24 h`,
+      detail: `IPs: ${failed.ips.join(', ')}. Puede tratarse de un error al introducir la contraseña o de un escaneo automático.`,
+      fix: 'Supervise el registro de actividad. Si el número aumenta, trate el panel como expuesto: VPN o firewall.',
     });
   }
 
@@ -119,8 +119,8 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
         id: 'disk-low',
         severity: freePct < 5 ? 'critical' : 'warning',
         title: `Disco casi lleno: ${Math.round(freePct)}% libre`,
-        detail: 'Sin espacio en disco fallan los builds, los logs y hasta las escrituras de las bases de datos de todos los proyectos.',
-        fix: 'Usa "Liberar espacio" en Ajustes → Sistema (purga imágenes colgantes y caché de build sin tocar volúmenes) y borra backups antiguos que ya hayas descargado.',
+        detail: 'Sin espacio en disco fallan las compilaciones, los registros e incluso las escrituras de las bases de datos de todos los proyectos.',
+        fix: 'Utilice «Liberar espacio» en Ajustes → Sistema (purga imágenes huérfanas y caché de compilación sin afectar a los volúmenes) y elimine las copias de seguridad antiguas que ya haya descargado.',
       });
     }
   }
@@ -130,17 +130,17 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
       id: 'no-channels',
       severity: 'info',
       title: 'Sin canal de notificaciones configurado',
-      detail: 'Las alertas (caídas, CPU/RAM, despliegues fallidos) solo se ven dentro del panel. Si un servicio de una empresa se cae de madrugada, no te enterarás.',
-      fix: 'Configura Discord, Telegram o un webhook en Ajustes → Alertas y notificaciones, y usa el botón de prueba.',
+      detail: 'Las alertas (caídas, CPU/RAM, despliegues fallidos) solo se muestran dentro del panel. Si un servicio de una empresa se cae fuera del horario laboral, no recibirá ningún aviso.',
+      fix: 'Configure Discord, Telegram o un webhook en Ajustes → Alertas y notificaciones, y utilice el botón de prueba.',
     });
   }
 
   findings.push({
     id: 'socket-info',
     severity: 'info',
-    title: 'Recuerda: Skyway controla el Docker del host',
-    detail: 'El panel monta /var/run/docker.sock: quien entre en Skyway controla todos los contenedores del servidor, de todas las empresas.',
-    fix: 'Contraseña larga y única, panel accesible solo por dominio con TLS (o VPN), y revisa el registro de actividad periódicamente.',
+    title: 'Skyway controla el Docker del host',
+    detail: 'El panel monta /var/run/docker.sock: quien acceda a Skyway controla todos los contenedores del servidor, de todas las empresas.',
+    fix: 'Utilice una contraseña larga y única, mantenga el panel accesible solo por dominio con TLS (o VPN) y revise el registro de actividad periódicamente.',
   });
 
   const critical = findings.filter((f) => f.severity === 'critical').length;

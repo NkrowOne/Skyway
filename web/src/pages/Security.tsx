@@ -124,7 +124,7 @@ export default function SecurityPage() {
   const rotateSessions = useMutation({
     mutationFn: () => api.post('/security/rotate-sessions'),
     onSuccess: () => {
-      toast('Todas las demás sesiones han sido invalidadas', 'ok');
+      toast('Se han invalidado todas las demás sesiones', 'ok');
       queryClient.invalidateQueries({ queryKey: ['audit'] });
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -180,7 +180,7 @@ export default function SecurityPage() {
             )}
             {counts.warning > 0 && (
               <Chip tone="warn">
-                <span className="tnum">{counts.warning}</span> aviso{counts.warning !== 1 && 's'}
+                <span className="tnum">{counts.warning}</span> advertencia{counts.warning !== 1 && 's'}
               </Chip>
             )}
             {counts.info > 0 && (
@@ -190,11 +190,11 @@ export default function SecurityPage() {
             )}
             {findings.length === 0 && (
               <Chip tone="ok" dot>
-                Sin hallazgos: todo en orden
+                Sin hallazgos
               </Chip>
             )}
           </div>
-          <p className="mt-2.5 text-xs text-sub">Cada hallazgo crítico resta 25 puntos y cada aviso, 10.</p>
+          <p className="mt-2.5 text-xs text-sub">Cada hallazgo crítico resta 25 puntos y cada advertencia, 10.</p>
         </div>
       </section>
 
@@ -247,7 +247,7 @@ export default function SecurityPage() {
                       })}
                     </div>
                     <p>
-                      <span className="font-semibold text-ok">Cómo arreglarlo: </span>
+                      <span className="font-semibold text-ok">Solución recomendada: </span>
                       <span className="text-sub">{f.fix}</span>
                     </p>
                   </div>
@@ -283,7 +283,7 @@ export default function SecurityPage() {
                 <div className="details-body mt-3 flex flex-col gap-2 border-t border-line pt-3 text-sm">
                   <p className="text-sub">{f.detail}</p>
                   <p>
-                    <span className="font-semibold text-ok">Cómo arreglarlo: </span>
+                    <span className="font-semibold text-ok">Solución recomendada: </span>
                     <span className="text-sub">{f.fix}</span>
                   </p>
                 </div>
@@ -298,7 +298,7 @@ export default function SecurityPage() {
           <SectionHeader
             icon={<KeyRound size={15} />}
             title="Contraseña y sesiones"
-            description="Cambia la contraseña o cierra las sesiones abiertas en otros navegadores"
+            description="Cambie la contraseña o cierre las sesiones abiertas en otros navegadores"
           />
         </div>
         <form
@@ -318,7 +318,7 @@ export default function SecurityPage() {
               required
             />
           </Field>
-          <Field label="Nueva contraseña" hint="Mínimo 8 caracteres; usa una larga y única">
+          <Field label="Nueva contraseña" hint="Mínimo 8 caracteres; se recomienda una contraseña larga y única">
             <input
               className="input"
               type="password"
@@ -415,7 +415,7 @@ export default function SecurityPage() {
               <table className="w-full border-collapse text-left text-xs">
                 <thead className="sticky top-0 z-[1] bg-surface2 text-sub">
                   <tr>
-                    {['Cuándo', 'Quién', 'Acción', 'Detalle', 'IP'].map((h) => (
+                    {['Fecha', 'Usuario', 'Acción', 'Detalle', 'IP'].map((h) => (
                       <th key={h} className="px-3.5 py-2 eyebrow">
                         {h}
                       </th>
@@ -442,7 +442,7 @@ export default function SecurityPage() {
                 </tbody>
               </table>
             )}
-            {entries.length === 0 && <p className="px-3 py-6 text-center text-xs text-sub">Sin actividad registrada</p>}
+            {entries.length === 0 && <p className="px-3 py-6 text-center text-xs text-sub">No hay actividad registrada</p>}
           </div>
         )}
       </section>

@@ -85,7 +85,7 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
         resolvedIps: [],
         expectedIp,
         message:
-          'Aún no existe registro DNS para este dominio (o no ha propagado). Crea el registro en tu proveedor y vuelve a comprobar: la propagación tarda de minutos a unas horas.',
+          'Aún no existe registro DNS para este dominio (o no se ha propagado). Cree el registro en su proveedor de DNS y vuelva a comprobarlo: la propagación tarda de minutos a unas horas.',
       };
     }
     return {
@@ -93,7 +93,7 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
       status: 'unknown',
       resolvedIps: [],
       expectedIp,
-      message: `No se pudo consultar el DNS (${err?.code || err?.message}). Reintenta en un momento.`,
+      message: `No se pudo consultar el DNS (${err?.code || err?.message}). Vuelva a intentarlo en unos instantes.`,
     };
   }
 
@@ -103,7 +103,7 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
       status: 'unknown',
       resolvedIps,
       expectedIp,
-      message: `El dominio resuelve a ${resolvedIps.join(', ')}. No se pudo determinar la IP de este servidor: configúrala en Ajustes → Dominios para verificar automáticamente.`,
+      message: `El dominio resuelve a ${resolvedIps.join(', ')}. No se pudo determinar la IP de este servidor: configúrela en Ajustes → Dominios para verificarla automáticamente.`,
     };
   }
 
@@ -113,7 +113,7 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
       status: 'ok',
       resolvedIps,
       expectedIp,
-      message: 'El dominio apunta a este servidor. El tráfico entrará por Traefik y, con Let\'s Encrypt configurado, el certificado se emite solo en la primera visita.',
+      message: 'El dominio apunta a este servidor. El tráfico entrará por Traefik y, con Let\'s Encrypt configurado, el certificado se emite automáticamente en la primera visita.',
     };
   }
 
@@ -122,6 +122,6 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
     status: 'wrong_ip',
     resolvedIps,
     expectedIp,
-    message: `El dominio apunta a ${resolvedIps.join(', ')} y este servidor es ${expectedIp}. Si usas Cloudflare u otro proxy delante, puede ser normal (comprueba que el proxy apunte a este servidor). Si no, corrige el registro A.`,
+    message: `El dominio apunta a ${resolvedIps.join(', ')} y este servidor es ${expectedIp}. Si utiliza Cloudflare u otro proxy intermedio, puede ser normal (compruebe que el proxy apunta a este servidor). En caso contrario, corrija el registro A.`,
   };
 }

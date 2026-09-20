@@ -338,11 +338,11 @@ const SUPABASE: StackDef = {
   memoryHintMb: 4096,
   defaultPrefix: 'supabase',
   notes: [
-    'Son 9 contenedores: cuenta con unos 4 GB de RAM libres y varios GB de disco.',
-    'El Studio y toda la API salen por el servicio «kong»: es el único que lleva dominio.',
-    'El acceso al Studio va protegido con usuario y contraseña: las variables DASHBOARD_* del servicio «db».',
-    'El alta pública de usuarios viene CERRADA: créalos desde el Studio, o pon GOTRUE_DISABLE_SIGNUP a false en el servicio «auth» cuando tu aplicación lo necesite.',
-    'No incluye Edge Functions (necesita montar el código de las funciones), el pooler ni analytics: se conecta directo a la base.',
+    'Son 9 contenedores: se requieren unos 4 GB de RAM libres y varios GB de disco.',
+    'El Studio y toda la API se sirven a través del servicio «kong»: es el único que lleva dominio.',
+    'El acceso al Studio está protegido con usuario y contraseña: las variables DASHBOARD_* del servicio «db».',
+    'El alta pública de usuarios está desactivada: créelos desde el Studio, o establezca GOTRUE_DISABLE_SIGNUP a false en el servicio «auth» cuando la aplicación lo necesite.',
+    'No incluye Edge Functions (requiere montar el código de las funciones), el pooler ni analytics: se conecta directamente a la base de datos.',
   ],
   makeSecrets: () => {
     // El secreto JWT firma las claves de API: debe generarse antes que ellas.
@@ -404,7 +404,7 @@ const SUPABASE: StackDef = {
     },
     {
       key: 'rest',
-      description: 'PostgREST: la API REST y GraphQL sobre tus tablas',
+      description: 'PostgREST: la API REST y GraphQL sobre sus tablas',
       icon: 'supabase',
       image: 'postgrest/postgrest:v14.12',
       port: 3000,
@@ -679,7 +679,7 @@ const GHOST: StackDef = {
   memoryHintMb: 1024,
   defaultPrefix: 'ghost',
   notes: [
-    'Ghost necesita saber su URL pública: si cambias el dominio, actualiza la variable «url» y redespliega.',
+    'Ghost necesita conocer su URL pública: si cambia el dominio, actualice la variable «url» y vuelva a desplegar.',
     'Para enviar correos hay que configurar las variables mail__* del servicio.',
   ],
   makeSecrets: () => ({}),
@@ -775,7 +775,7 @@ const N8N: StackDef = {
 const METABASE: StackDef = {
   key: 'metabase',
   label: 'Metabase + PostgreSQL',
-  description: 'Cuadros de mando y consultas sobre tus datos, con Postgres de respaldo.',
+  description: 'Cuadros de mando y consultas sobre sus datos, con Postgres de respaldo.',
   icon: 'metabase',
   logos: ['metabase', 'postgres'],
   docsUrl: 'https://www.metabase.com/docs/latest/installation-and-operation/running-metabase-on-docker',

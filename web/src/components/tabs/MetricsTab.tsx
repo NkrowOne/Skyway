@@ -100,7 +100,7 @@ function LiveView({
   const lastRate = netRate.length ? netRate[netRate.length - 1] : null;
 
   if (latest && !latest.docker) {
-    return <p className="p-6 text-center text-sm text-sub">Docker no está disponible: sin métricas.</p>;
+    return <p className="p-6 text-center text-sm text-sub">Docker no está disponible. No hay métricas.</p>;
   }
   if (!stats && history.length === 0) {
     return (
@@ -150,13 +150,13 @@ function LiveView({
           icon={<ArrowDown size={12} className="text-ok" />}
           label="Red · descarga"
           value={stats && lastRate ? fmtRate(lastRate.rx) : '—'}
-          sub={stats ? `${fmtBytes(stats.netRx)} en total` : 'recopilando…'}
+          sub={stats ? `${fmtBytes(stats.netRx)} en total` : 'Recopilando datos…'}
         />
         <Tile
           icon={<ArrowUp size={12} className="text-info" />}
           label="Red · subida"
           value={stats && lastRate ? fmtRate(lastRate.tx) : '—'}
-          sub={stats ? `${fmtBytes(stats.netTx)} en total` : 'recopilando…'}
+          sub={stats ? `${fmtBytes(stats.netTx)} en total` : 'Recopilando datos…'}
         />
       </div>
 
@@ -258,7 +258,7 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
     );
   }
   if (q.isError) {
-    return <p className="p-6 text-center text-sm text-warn">No se pudo cargar el histórico: {(q.error as Error).message}</p>;
+    return <p className="p-6 text-center text-sm text-warn">No se ha podido cargar el histórico: {(q.error as Error).message}</p>;
   }
 
   return (
@@ -318,7 +318,7 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
         format={fmtBytesAxis}
         threshold={diskThreshold}
       />
-      <p className="text-center text-xs text-subtle">La banda va de la media al pico.</p>
+      <p className="text-center text-xs text-subtle">La banda representa el intervalo entre la media y el pico.</p>
     </div>
   );
 }

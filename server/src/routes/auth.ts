@@ -63,7 +63,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/auth/login', async (req, reply) => {
     if (loginBlocked(req.ip)) {
       audit(req, 'login_blocked', { type: 'ip', id: req.ip });
-      return reply.code(429).send({ error: 'Demasiados intentos fallidos. Espera 15 minutos.' });
+      return reply.code(429).send({ error: 'Demasiados intentos fallidos. Espere 15 minutos.' });
     }
     const body = credentialsSchema.parse(req.body);
     const user = getUserByEmail(body.email.toLowerCase());

@@ -9,7 +9,7 @@ import { rateLimit } from '../ratelimit';
 const PREGUNTAS_POR_MINUTO = 30;
 
 const askSchema = z.object({
-  question: z.string().trim().min(1, 'Escribe una pregunta').max(500, 'La pregunta no puede superar los 500 caracteres'),
+  question: z.string().trim().min(1, 'Introduzca una pregunta').max(500, 'La pregunta no puede superar los 500 caracteres'),
   serviceId: z.string().trim().min(1).optional(),
 });
 

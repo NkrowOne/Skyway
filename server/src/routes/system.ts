@@ -228,7 +228,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     secured.post('/api/settings/alerts/test', { preHandler: requireAdmin }, async (_req, reply) => {
       const channels = channelsConfigured();
       if (channels.length === 0) {
-        return reply.code(400).send({ error: 'No hay ningún canal configurado. Guarda primero los ajustes.' });
+        return reply.code(400).send({ error: 'No hay ningún canal configurado. Guarde primero los ajustes.' });
       }
       const failures = await dispatchToChannels({
         severity: 'info',

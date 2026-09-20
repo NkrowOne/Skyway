@@ -50,7 +50,7 @@ const MIGRATED_WORKSPACE_INIT = {
   max_services: 500,
   max_members: 25,
   modules_override: JSON.stringify(ALL_MODULE_KEYS),
-  notes: 'Cuenta creada al migrar el campo «cliente». Revisa su plan y su cuota.',
+  notes: 'Cuenta creada al migrar el campo «cliente». Revise su plan y su cuota.',
 } as const;
 
 let db: Database.Database;
@@ -2526,7 +2526,7 @@ export function assignSeriesNumber(opts: {
       // código pedido ya existe con otra naturaleza, numerar aquí mezclaría ambas
       // en la misma serie correlativa: se corta antes de asignar número.
       throw new Error(
-        `La serie «${opts.code}» del ejercicio ${opts.year} ya está en uso para facturas de tipo «${s.kind}» y no puede compartirse con «${opts.kind}». Cambia el prefijo de factura en Contabilidad.`,
+        `La serie «${opts.code}» del ejercicio ${opts.year} ya está en uso para facturas de tipo «${s.kind}» y no puede compartirse con «${opts.kind}». Cambie el prefijo de factura en Contabilidad.`,
       );
     }
     const seq = s.next_seq;

@@ -26,7 +26,7 @@ export interface RateLimitOptions {
 /** Tope de claves seguidas por limitador: pasado, se expulsan las más antiguas. */
 const MAX_KEYS = 5000;
 
-const MENSAJE = 'Demasiadas peticiones, espera un momento';
+const MENSAJE = 'Demasiadas peticiones. Espere unos instantes';
 
 function claveDefecto(req: FastifyRequest): string {
   const user = currentUser(req);

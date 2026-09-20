@@ -41,7 +41,7 @@ function systemBackupTick(now: Date): void {
       title: 'Backup del panel fallido',
       message: `El backup diario de la base de datos de Skyway falló: ${(err?.message || err).toString().slice(0, 300)}`,
       explanation:
-        'Sin este backup, una avería del disco perdería usuarios, proyectos y configuración. Causa típica: disco lleno. Puedes lanzarlo manualmente desde Ajustes → Copia de seguridad del panel.',
+        'Sin esta copia de seguridad, una avería del disco supondría la pérdida de usuarios, proyectos y configuración. Causa habitual: disco lleno. Puede ejecutarla manualmente desde Ajustes → Copia de seguridad del panel.',
       dedupeKey: SYSTEM_BACKUP_DEDUPE,
     });
   }
@@ -99,7 +99,7 @@ async function tick(): Promise<void> {
           title: `Backup programado fallido: ${service.name}`,
           message: `El backup ${schedule === 'daily' ? 'diario' : 'semanal'} de "${service.name}" (${project.name}) falló: ${(err?.message || err).toString().slice(0, 300)}`,
           explanation:
-            'Se reintentará en el próximo ciclo (cada 10 min). Causas típicas: la base de datos no está en ejecución o el disco está lleno. Puedes lanzar uno manual desde la pestaña Backups para ver el error completo.',
+            'Se reintentará en el próximo ciclo (cada 10 min). Causas habituales: la base de datos no está en ejecución o el disco está lleno. Puede crear una copia manual desde la pestaña «Backups» para ver el error completo.',
           dedupe: true,
         });
       }

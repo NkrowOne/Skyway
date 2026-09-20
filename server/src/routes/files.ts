@@ -44,7 +44,7 @@ function sendFileError(reply: FastifyReply, err: unknown, fallback: string): Fas
   // dockerode marca el fallo de red en `code`; `files.ts` a veces lo reenvuelve
   // en un Error nuevo y solo queda el código dentro del mensaje.
   if ((typeof e?.code === 'string' && SOCKET_ERROR.test(e.code)) || SOCKET_ERROR.test(message)) {
-    return reply.code(503).send({ error: 'Docker no responde en este momento. Inténtalo de nuevo en unos segundos.' });
+    return reply.code(503).send({ error: 'Docker no responde en este momento. Vuelva a intentarlo en unos segundos.' });
   }
   // Respuesta de error del propio daemon (statusCode de la API de Docker).
   if (typeof e?.statusCode === 'number') return reply.code(500).send({ error: message });

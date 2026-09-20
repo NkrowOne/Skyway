@@ -18,7 +18,7 @@ const MODELS: Record<BillingModel, string> = { flat_one_off: 'Pago único', subs
 const MODEL_HELP: Record<BillingModel, string> = {
   flat_one_off: 'Pago único: se cobra una sola vez. En una cuenta se añade con «Pago único» y aparece una vez en la próxima factura (no se repite).',
   subscription: 'Suscripción: cuota fija recurrente que se cobra cada mes o cada año mientras esté activa.',
-  metered: 'Por uso: se cobra según el consumo medido en el ciclo (tokens de IA, CPU·h, unidades…), con un precio por unidad.',
+  metered: 'Por uso: se cobra según el consumo medido en el ciclo (tokens de IA, CPU·h, unidades, etc.), con un precio por unidad.',
   tiered: 'Por tramos: el precio por unidad cambia según el volumen consumido (progresivo o por volumen).',
 };
 const METERS: Record<UsageMeter, string> = {
@@ -157,7 +157,7 @@ export default function CatalogPage() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Catálogo</h1>
-          <p className="mt-1.5 text-sm text-sub">Los servicios que facturas: web, IA, hosting, bases de datos, dominios, soporte… con su modelo de precio. Se contratan por cuenta.</p>
+          <p className="mt-1.5 text-sm text-sub">Servicios facturables (web, IA, hosting, bases de datos, dominios, soporte, etc.) con su modelo de precio. Se contratan por cuenta.</p>
         </div>
         <Button onClick={() => setDraft({ ...EMPTY })}>
           <Plus size={15} /> Nuevo producto
@@ -178,8 +178,8 @@ export default function CatalogPage() {
       ) : byCat.length === 0 ? (
         <div className="card">
           <EmptyState
-            title="Sin productos todavía"
-            description="Crea el primero para poder facturar servicios a tus clientes."
+            title="Todavía no hay productos"
+            description="Cree el primero para poder facturar servicios a sus clientes."
             action={<Button onClick={() => setDraft({ ...EMPTY })}><Plus size={15} /> Nuevo producto</Button>}
           />
         </div>
@@ -198,7 +198,7 @@ export default function CatalogPage() {
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         <button onClick={() => setDraft(fromProduct(p))} className="rounded-md p-1.5 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5" title="Editar" aria-label="Editar"><Pencil size={14} /></button>
-                        <button onClick={() => setToDelete(p)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title={p.in_use ? 'En uso: se archivará' : 'Eliminar'} aria-label={p.in_use ? 'Archivar' : 'Eliminar'}><Trash2 size={14} /></button>
+                        <button onClick={() => setToDelete(p)} className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err max-sm:p-2.5" title={p.in_use ? 'En uso: se archivará en lugar de eliminarse' : 'Eliminar'} aria-label={p.in_use ? 'Archivar' : 'Eliminar'}><Trash2 size={14} /></button>
                       </div>
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs">
@@ -220,7 +220,7 @@ export default function CatalogPage() {
         {draft && (
           <div className="flex flex-col gap-3.5">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <div className="col-span-2"><Field label="Nombre"><input className="input" value={draft.name} onChange={(e) => set({ name: e.target.value })} autoFocus placeholder="Hosting Pro, IA GPT-4o…" /></Field></div>
+              <div className="col-span-2"><Field label="Nombre"><input className="input" value={draft.name} onChange={(e) => set({ name: e.target.value })} autoFocus placeholder="Hosting Pro, IA GPT-4o" /></Field></div>
               <Field label="Categoría">
                 <select className="input" value={draft.category} onChange={(e) => set({ category: e.target.value as ProductCategory })}>
                   {CAT_ORDER.map((c) => <option key={c} value={c}>{CATS[c]}</option>)}
@@ -240,7 +240,7 @@ export default function CatalogPage() {
                 <Field label={draft.billingModel === 'metered' ? 'Precio / unidad' : 'Precio'}><input className="input tnum" type="number" inputMode="decimal" min={0} step="0.01" value={draft.priceUnits} onChange={(e) => set({ priceUnits: e.target.value })} /></Field>
               )}
               <Field label="Moneda"><input className="input" maxLength={3} value={draft.currency} onChange={(e) => set({ currency: e.target.value })} /></Field>
-              <Field label="Unidad" hint="mes, 1k tokens, hora…"><input className="input" value={draft.unit} onChange={(e) => set({ unit: e.target.value })} /></Field>
+              <Field label="Unidad" hint="Por ejemplo: mes, 1k tokens, hora"><input className="input" value={draft.unit} onChange={(e) => set({ unit: e.target.value })} /></Field>
               {draft.billingModel === 'subscription' && (
                 <Field label="Periodo">
                   <select className="input" value={draft.interval} onChange={(e) => set({ interval: e.target.value as 'monthly' | 'yearly' })}>
@@ -258,7 +258,7 @@ export default function CatalogPage() {
                     {(Object.keys(METERS) as UsageMeter[]).map((m) => <option key={m} value={m}>{METERS[m]}</option>)}
                   </select>
                 </Field>
-                <Field label="Precio por cada" hint="unidades del medidor · 1000000 = por 1M tokens">
+                <Field label="Precio por cada" hint="Unidades del medidor · 1000000 = por 1M de tokens">
                   <input className="input tnum" type="number" inputMode="numeric" min={1} step={1} value={draft.unitSize} onChange={(e) => set({ unitSize: e.target.value })} />
                 </Field>
                 {draft.billingModel === 'tiered' && (
@@ -273,7 +273,7 @@ export default function CatalogPage() {
             )}
 
             {draft.billingModel === 'tiered' && (
-              <Field label="Tramos de precio" hint="«hasta» vacío = último tramo (sin tope)">
+              <Field label="Tramos de precio" hint="Si «hasta» se deja vacío, es el último tramo (sin límite)">
                 <div className="flex flex-col gap-1.5">
                   <div className="grid grid-cols-[1fr_1fr_36px] items-center gap-2 px-1 text-xs text-subtle">
                     <span>Hasta (unidades)</span><span>Precio / unidad</span><span />
@@ -282,7 +282,7 @@ export default function CatalogPage() {
                     <div key={t.id} className="grid grid-cols-[1fr_1fr_36px] items-center gap-2">
                       <input className="input tnum" type="number" inputMode="numeric" min={1} placeholder="∞" value={t.upTo} onChange={(e) => setTier(i, { upTo: e.target.value })} />
                       <input className="input tnum" type="number" inputMode="decimal" min={0} step="0.001" value={t.unitUnits} onChange={(e) => setTier(i, { unitUnits: e.target.value })} />
-                      <button type="button" onClick={() => set({ tiers: draft.tiers.filter((_, idx) => idx !== i) })} className="justify-self-center rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err disabled:opacity-30 max-sm:p-2.5" disabled={draft.tiers.length <= 1} title="Quitar tramo" aria-label="Quitar tramo"><Trash2 size={13} /></button>
+                      <button type="button" onClick={() => set({ tiers: draft.tiers.filter((_, idx) => idx !== i) })} className="justify-self-center rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err disabled:opacity-30 max-sm:p-2.5" disabled={draft.tiers.length <= 1} title="Eliminar tramo" aria-label="Eliminar tramo"><Trash2 size={13} /></button>
                     </div>
                   ))}
                   <button type="button" onClick={() => set({ tiers: [...draft.tiers, { id: tierId(), upTo: '', unitUnits: '0' }] })} className="mt-1 inline-flex w-fit items-center gap-1 text-xs text-acc-soft hover:underline"><Plus size={12} /> Añadir tramo</button>
@@ -301,7 +301,7 @@ export default function CatalogPage() {
               </label>
             </div>
 
-            <Field label="Descripción"><textarea className="input min-h-14" value={draft.description} onChange={(e) => set({ description: e.target.value })} placeholder="Qué incluye, para el cliente…" /></Field>
+            <Field label="Descripción"><textarea className="input min-h-14" value={draft.description} onChange={(e) => set({ description: e.target.value })} placeholder="Descripción del contenido, visible para el cliente" /></Field>
 
             <div className="mt-1.5 flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setDraft(null)}>Cancelar</Button>
@@ -317,8 +317,8 @@ export default function CatalogPage() {
         onConfirm={() => toDelete && remove.mutate(toDelete.id)}
         title={toDeleteShown?.in_use ? 'Archivar producto' : 'Eliminar producto'}
         message={toDeleteShown?.in_use
-          ? `«${toDeleteShown.name}» está contratado por alguna cuenta: se archivará (se conserva el histórico) en vez de borrarse.`
-          : `El producto «${toDeleteShown?.name ?? ''}» se elimina del catálogo.`}
+          ? `«${toDeleteShown.name}» está contratado por alguna cuenta: se archivará (se conserva el histórico) en lugar de eliminarse.`
+          : `El producto «${toDeleteShown?.name ?? ''}» se eliminará del catálogo.`}
         loading={remove.isPending}
       />
     </div>

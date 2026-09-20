@@ -63,7 +63,7 @@ export default function StatusPageModal({
     mutationFn: () => api.post<StatusPageConfig>(`/projects/${projectId}/status-page/rotate`),
     onSuccess: () => {
       invalidate();
-      toast('Enlace rotado: el anterior ya no funciona', 'ok');
+      toast('Enlace rotado. El enlace anterior ha dejado de funcionar.', 'ok');
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -81,7 +81,7 @@ export default function StatusPageModal({
       ) : (
         <div className="flex flex-col gap-4">
           <p className="text-sm leading-relaxed text-sub">
-            Estado, disponibilidad de 90 días e incidencias, sin necesidad de entrar al panel.
+            Muestra el estado, la disponibilidad de los últimos 90 días y las incidencias sin necesidad de acceder al panel.
           </p>
 
           <label className="flex min-h-11 cursor-pointer items-center justify-between gap-3 rounded-xl border border-line bg-bg px-4 py-3">
@@ -123,13 +123,13 @@ export default function StatusPageModal({
                       <Megaphone size={12} /> Aviso de mantenimiento
                     </>
                   }
-                  hint="Se muestra como aviso destacado en la página pública. Vacío = sin aviso."
+                  hint="Se muestra como aviso destacado en la página pública. Si se deja vacío, no se muestra ningún aviso."
                 >
                   <div className="flex flex-col gap-2">
                     <textarea
                       className="input min-h-[64px] resize-y py-2 text-sm leading-relaxed"
                       maxLength={500}
-                      placeholder="Ej: Mantenimiento programado el sábado de 02:00 a 03:00 — puede haber cortes breves."
+                      placeholder="Ejemplo: Mantenimiento programado el sábado de 02:00 a 03:00. Pueden producirse interrupciones breves."
                       value={notice}
                       onChange={(e) => setNotice(e.target.value)}
                     />
@@ -149,7 +149,7 @@ export default function StatusPageModal({
               {isAdmin && (
                 <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3.5">
                   <p className="min-w-0 flex-1 basis-48 text-xs leading-relaxed text-subtle">
-                    Al rotarlo, el enlace anterior deja de funcionar.
+                    Al rotar el enlace, el anterior deja de funcionar.
                   </p>
                   <Button size="sm" variant="secondary" className="shrink-0" onClick={() => rotate.mutate()} loading={rotate.isPending}>
                     <RefreshCw size={12} /> Rotar enlace

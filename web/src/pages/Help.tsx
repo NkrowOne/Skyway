@@ -123,7 +123,7 @@ function IssueCard({ issue }: { issue: HelpIssue }) {
       </p>
       <p className="mt-2 leading-relaxed text-sub">{issue.cause}</p>
       <p className="mt-1.5 leading-relaxed">
-        <span className="font-semibold text-ok">Cómo arreglarlo: </span>
+        <span className="font-semibold text-ok">Solución recomendada: </span>
         <span className="text-sub">{issue.fix}</span>
       </p>
       {issue.evidence && (
@@ -173,8 +173,8 @@ interface Msg {
   action?: Action;
 }
 
-const STARTERS = ['Mi despliegue falla', '¿Cómo añado un dominio?', '¿Cómo importo mi .env?'];
-const DETECT_LABEL = 'Detectar errores';
+const STARTERS = ['El despliegue ha fallado', 'Configurar un dominio', 'Importar variables desde .env'];
+const DETECT_LABEL = 'Comprobar servicios';
 
 interface ServiceOption {
   id: string;
@@ -192,12 +192,12 @@ function AssistantMessage({ msg, onRetry }: { msg: Msg; onRetry: (msg: Msg) => v
         {msg.pending ? (
           // El Spinner trae el relleno de una página entera: aquí es una línea.
           <div className="-my-7" aria-busy>
-            <Spinner label={msg.action?.kind === 'scan' ? 'Revisando servicios…' : 'Pensando…'} />
+            <Spinner label={msg.action?.kind === 'scan' ? 'Comprobando servicios…' : 'Preparando la respuesta…'} />
           </div>
         ) : msg.error ? (
           <ErrorState
             compact
-            title={msg.action?.kind === 'scan' ? 'No se han podido revisar los servicios' : 'No se ha podido responder'}
+            title={msg.action?.kind === 'scan' ? 'No se han podido comprobar los servicios' : 'No se ha podido generar la respuesta'}
             error={msg.error}
             onRetry={() => onRetry(msg)}
           />
@@ -282,11 +282,11 @@ export default function HelpPage() {
         const qs = action.serviceId ? `?serviceId=${encodeURIComponent(action.serviceId)}` : '';
         const res = await api.get<{ issues: HelpIssue[]; scanned: number }>(`/help/issues${qs}`);
         const n = res.scanned;
-        const revisado = n === 1 ? 'He revisado 1 servicio' : `He revisado ${n} servicios`;
+        const revisado = n === 1 ? 'Se ha revisado 1 servicio' : `Se han revisado ${n} servicios`;
         const text =
           res.issues.length === 0
-            ? `${revisado} y no he encontrado nada llamativo. Si algo falla igualmente, cuéntame qué ves (un error, un 502, que no arranca…) y lo miro con más detalle.`
-            : `${revisado} y he encontrado ${res.issues.length === 1 ? '1 problema' : `${res.issues.length} problemas`}. Empieza por el más grave:`;
+            ? `${revisado} y no se ha detectado ningún problema. Si el servicio sigue fallando, describa el síntoma observado (un error, una respuesta 502, un contenedor que no arranca) para obtener una revisión más detallada.`
+            : `${revisado} y se ${res.issues.length === 1 ? 'ha detectado 1 problema' : `han detectado ${res.issues.length} problemas`}. Se recomienda empezar por el más grave:`;
         patch(msgId, { pending: false, text, issues: res.issues });
       }
     } catch (err) {
@@ -355,7 +355,7 @@ export default function HelpPage() {
     <div className="mx-auto flex max-w-[1180px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
       <PageHeader
         title="Ayuda"
-        description="Pregunta en tus palabras, deja que el asistente revise tus servicios cuando algo falla y consulta las preguntas frecuentes."
+        description="Consulte la documentación, solicite una revisión del estado de sus servicios y acceda a las preguntas frecuentes."
       />
 
       {/* Móvil: asistente arriba y FAQ debajo. Escritorio: dos columnas. */}
@@ -368,7 +368,7 @@ export default function HelpPage() {
                 <LifeBuoy size={16} className="text-acc-soft" aria-hidden /> Asistente
               </h2>
               <p className="mt-0.5 text-xs leading-5 text-subtle">
-                Responde con la documentación y, si eliges un servicio, con sus despliegues y logs.
+                Responde a partir de la documentación y, si se selecciona un servicio, de sus despliegues y su registro.
               </p>
             </div>
           </div>
@@ -376,10 +376,10 @@ export default function HelpPage() {
           <div className="flex flex-col gap-4 px-4 py-4">
             {messages.length === 0 ? (
               <div className="flex flex-col gap-3 rounded-xl border border-dashed border-line px-4 py-5 text-center">
-                <p className="text-sm text-sub">¿Por dónde empezamos?</p>
+                <p className="text-sm text-sub">No hay consultas todavía.</p>
                 <p className="text-xs leading-5 text-subtle">
-                  Prueba con una de estas preguntas o escribe la tuya. Con «Detectar errores» reviso el estado, el último
-                  despliegue y los logs.
+                  Seleccione una de las consultas propuestas o escriba la suya. Con «Comprobar servicios» se revisan el estado,
+                  el último despliegue y el registro.
                 </p>
               </div>
             ) : (
@@ -415,7 +415,7 @@ export default function HelpPage() {
                 type="button"
                 onClick={() => send(DETECT_LABEL)}
                 className="press inline-flex items-center gap-1.5 rounded-full border border-acc/40 bg-acc/[.10] px-3 py-1.5 text-xs font-semibold text-acc-soft transition-colors hover:bg-acc/[.16] max-sm:min-h-10"
-                title={selectedService ? `Revisar ${selectedService.name}` : 'Revisar todos tus servicios'}
+                title={selectedService ? `Comprobar el servicio «${selectedService.name}»` : 'Comprobar todos los servicios'}
               >
                 <Stethoscope size={13} aria-hidden /> {DETECT_LABEL}
               </button>
@@ -431,7 +431,7 @@ export default function HelpPage() {
               <label className="block">
                 <span className="mb-1.5 block text-xs font-medium text-sub">Servicio (opcional)</span>
                 <select className="input" value={serviceId} onChange={(e) => setServiceId(e.target.value)} disabled={projects.isLoading}>
-                  <option value="">{services.length === 0 && !projects.isLoading ? 'Sin servicios en tus proyectos' : 'Todos mis servicios'}</option>
+                  <option value="">{services.length === 0 && !projects.isLoading ? 'No hay servicios en sus proyectos' : 'Todos los servicios'}</option>
                   {services.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.name} · {s.projectName}
@@ -447,24 +447,24 @@ export default function HelpPage() {
                   className="input min-w-0 flex-1 max-sm:h-11"
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
-                  placeholder="Escribe tu pregunta y pulsa Enter…"
+                  placeholder="Escriba su consulta y pulse Intro"
                   maxLength={500}
                   enterKeyHint="send"
                   autoComplete="off"
-                  aria-label="Pregunta para el asistente"
+                  aria-label="Consulta para el asistente"
                 />
                 <button
                   type="submit"
                   disabled={!draft.trim()}
                   className="press flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-acc text-white transition-[filter] hover:brightness-[1.12] disabled:cursor-not-allowed disabled:opacity-45 max-sm:h-11 max-sm:w-11"
                   title="Enviar"
-                  aria-label="Enviar pregunta"
+                  aria-label="Enviar consulta"
                 >
                   <SendHorizontal size={15} aria-hidden />
                 </button>
               </div>
               <p className="text-micro text-subtle">
-                El asistente es determinista: se basa en la documentación y en lo que ve de tus servicios, sin enviar nada fuera.
+                Las respuestas se generan a partir de la documentación y del estado de sus servicios. No se envía información a terceros.
               </p>
             </form>
           </div>
@@ -476,7 +476,7 @@ export default function HelpPage() {
             <h2 className="flex items-center gap-2 text-base font-semibold text-txt">
               <BookOpen size={16} className="text-sub" aria-hidden /> Preguntas frecuentes
             </h2>
-            <p className="mt-0.5 text-xs leading-5 text-subtle">Lo que más se pregunta, con el enlace a donde se arregla.</p>
+            <p className="mt-0.5 text-xs leading-5 text-subtle">Consultas habituales, con enlaces a la sección correspondiente.</p>
           </div>
 
           <div className="flex flex-col gap-3 px-4 py-4">
@@ -485,7 +485,7 @@ export default function HelpPage() {
               <input
                 value={faqQuery}
                 onChange={(e) => setFaqQuery(e.target.value)}
-                placeholder="Buscar en las preguntas…"
+                placeholder="Buscar en las preguntas frecuentes"
                 className="min-w-0 flex-1 bg-transparent text-sm text-txt outline-none placeholder:text-subtle"
                 aria-label="Buscar en las preguntas frecuentes"
                 autoComplete="off"
@@ -530,7 +530,7 @@ export default function HelpPage() {
 
             {faq.data && filteredFaq.length === 0 && (
               <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-line px-4 py-8 text-center text-xs text-subtle">
-                <p>Ninguna pregunta coincide{searching ? ` con «${faqQuery.trim()}»` : ''}.</p>
+                <p>No se ha encontrado ninguna pregunta{searching ? ` que coincida con «${faqQuery.trim()}»` : ' con los filtros aplicados'}.</p>
                 <button
                   type="button"
                   onClick={() => {
@@ -541,7 +541,7 @@ export default function HelpPage() {
                   }}
                   className="tap font-semibold text-acc-soft hover:underline"
                 >
-                  {searching ? 'Pregúntaselo al asistente →' : 'Quitar filtros'}
+                  {searching ? 'Consultar al asistente' : 'Quitar filtros'}
                 </button>
               </div>
             )}

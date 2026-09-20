@@ -111,7 +111,7 @@ function ResultTable({ result }: { result: DbQueryResult }) {
       </table>
       {allRows.length > rows.length && (
         <p className="border-t border-line bg-surface2 px-3 py-2 text-xs text-subtle">
-          Se muestran las primeras {MAX_RENDERED_ROWS} filas de {allRows.length}. Descarga el CSV o añade un LIMIT para ver el resto.
+          Se muestran las primeras {MAX_RENDERED_ROWS} filas de {allRows.length}. Descargue el CSV o añada un LIMIT para ver el resto.
         </p>
       )}
     </div>
@@ -220,7 +220,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
         <div className="flex items-start gap-2.5 rounded-xl border border-warn/30 bg-warn/[.08] px-4 py-3 text-sm text-warn">
           <TriangleAlert size={16} className="mt-px shrink-0" />
           <div>
-            <p className="font-medium">No se pudo abrir la consola</p>
+            <p className="font-medium">No se ha podido abrir la consola</p>
             <p className="mt-0.5 text-xs text-sub">{(overview.error as Error).message}</p>
             <Button size="sm" variant="secondary" className="mt-2.5" onClick={() => overview.refetch()}>
               <RefreshCw size={12} /> Reintentar
@@ -351,7 +351,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
               'ml-auto flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors max-sm:py-2',
               allowWrite ? 'border-warn/40 bg-warn/[.1] text-warn' : 'border-line text-sub hover:text-txt',
             )}
-            title="Sin marcar, solo se permiten consultas de lectura"
+            title="Si no está marcado, solo se permiten consultas de lectura"
           >
             <input
               type="checkbox"
@@ -457,7 +457,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
         <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-line py-10 text-center">
           <Database size={22} className="text-subtle" />
           <p className="max-w-xs text-xs leading-relaxed text-subtle">
-            Escribe una consulta o pulsa {overview.data?.overview.objectLabel === 'tablas' ? 'una tabla' : 'un objeto'} de arriba.
+            Escriba una consulta o seleccione {overview.data?.overview.objectLabel === 'tablas' ? 'una tabla' : 'un objeto'} de la lista superior.
           </p>
         </div>
       )}

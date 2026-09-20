@@ -66,7 +66,7 @@ export default function SharedVarsModal({
     onSuccess: () => {
       setDirty(false);
       queryClient.invalidateQueries({ queryKey: ['projectVars', projectId] });
-      toast('Variables compartidas guardadas. Redespliega los servicios para aplicarlas.', 'ok');
+      toast('Variables compartidas guardadas. Es necesario volver a desplegar los servicios para aplicarlas.', 'ok');
       onClose();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -76,14 +76,14 @@ export default function SharedVarsModal({
     <Modal open={open} onClose={onClose} title="Variables compartidas del proyecto" wide dirty={dirty}>
       <p className="mb-4 text-xs text-sub">
         Se inyectan automáticamente en <strong className="text-txt">todos los servicios</strong> del proyecto (si un
-        servicio define la misma clave, gana la suya). También puedes referenciarlas con{' '}
-        <span className="font-mono text-info">{'${{shared.VAR}}'}</span>. Útiles para lo común de una empresa: SMTP,
-        claves de API, zona horaria, entorno...
+        servicio define la misma clave, prevalece la del servicio). También pueden referenciarse con{' '}
+        <span className="font-mono text-info">{'${{shared.VAR}}'}</span>. Resultan útiles para valores comunes de la
+        empresa: SMTP, claves de API, zona horaria, entorno.
       </p>
       <div className="space-y-2">
         {rows.length === 0 && (
           <p className="py-4 text-center text-sm text-subtle">
-            Sin variables compartidas. Ejemplos típicos: <span className="font-mono text-xs">TZ</span>,{' '}
+            No hay variables compartidas. Ejemplos habituales: <span className="font-mono text-xs">TZ</span>,{' '}
             <span className="font-mono text-xs">SMTP_HOST</span>, <span className="font-mono text-xs">S3_BUCKET</span>
           </p>
         )}

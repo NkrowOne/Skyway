@@ -113,7 +113,7 @@ export async function resolveGitAuth(
       token: globalToken,
       source: globalToken ? 'global' : 'none',
       detail: null,
-      warning: 'La conexión de GitHub de este servicio ya no existe: se usa el token global si está configurado.',
+      warning: 'La conexión de GitHub de este servicio ya no existe: se utiliza el token global si está configurado.',
     };
   }
 
@@ -133,7 +133,7 @@ export async function resolveGitAuth(
       token: globalToken,
       source: globalToken ? 'global' : 'none',
       detail: null,
-      warning: 'El conector de GitHub de este servicio ya no existe: se usa el token global si está configurado.',
+      warning: 'El conector de GitHub de este servicio ya no existe: se utiliza el token global si está configurado.',
     };
   }
 

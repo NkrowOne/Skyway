@@ -159,7 +159,7 @@ export default function NewServiceModal({
     mutationFn: (body: Record<string, unknown>) =>
       api.post<{ service: Service; deployment: Deployment }>(`/projects/${projectId}/services`, body),
     onSuccess: (data) => {
-      toast('Servicio creado: desplegando...', 'ok');
+      toast('Servicio creado. Desplegando…', 'ok');
       reset();
       onCreated(data.service.id);
     },
@@ -170,7 +170,7 @@ export default function NewServiceModal({
     mutationFn: (body: Record<string, unknown>) =>
       api.post<{ services: Service[] }>(`/projects/${projectId}/stacks`, body),
     onSuccess: (data) => {
-      toast(`Pila creada: desplegando ${data.services.length} servicios...`, 'ok');
+      toast(`Pila creada. Desplegando ${data.services.length} servicios…`, 'ok');
       reset();
       onStackCreated ? onStackCreated() : onClose();
     },
@@ -201,7 +201,7 @@ export default function NewServiceModal({
     mutationFn: (body: Record<string, unknown>) =>
       api.post<{ services: Service[]; notes: string[] }>(`/projects/${projectId}/railway-templates`, body),
     onSuccess: (data) => {
-      toast(`Plantilla instalada: desplegando ${data.services.length} servicios...`, 'ok');
+      toast(`Plantilla instalada. Desplegando ${data.services.length} servicios…`, 'ok');
       reset();
       onStackCreated ? onStackCreated() : onClose();
     },
@@ -258,7 +258,7 @@ export default function NewServiceModal({
             <div>
               <h3 className="text-sm font-medium">Repositorio de GitHub</h3>
               <p className="mt-1 text-xs text-sub">
-                Clona, construye (Dockerfile o Nixpacks) y despliega automáticamente
+                Clona, compila (Dockerfile o Nixpacks) y despliega automáticamente
               </p>
             </div>
           </button>
@@ -291,7 +291,7 @@ export default function NewServiceModal({
             <LogoRow kinds={['docker']} size={24} />
             <div>
               <h3 className="text-sm font-medium">Imagen Docker</h3>
-              <p className="mt-1 text-xs text-sub">Cualquier imagen pública: Plausible, Uptime Kuma, Grafana...</p>
+              <p className="mt-1 text-xs text-sub">Cualquier imagen pública: Plausible, Uptime Kuma, Grafana, etc.</p>
             </div>
           </button>
         </div>
@@ -334,7 +334,7 @@ export default function NewServiceModal({
             className="mt-5 rounded-lg border border-line bg-bg p-3"
           >
             <p className="text-xs text-sub">
-              ¿No está la que buscas? Instala cualquier plantilla del catálogo de Railway en este proyecto.
+              También es posible instalar cualquier plantilla del catálogo de Railway en este proyecto.
             </p>
             <div className="mt-2 flex flex-wrap gap-2">
               <input
@@ -348,10 +348,10 @@ export default function NewServiceModal({
                 spellCheck={false}
               />
               <Button type="submit" variant="ghost" loading={previewTemplate.isPending} disabled={!tplInput.trim()}>
-                Ver qué crea
+                Ver servicios
               </Button>
             </div>
-            <p className="mt-2 text-xs text-subtle">Verás qué servicios crea antes de confirmar.</p>
+            <p className="mt-2 text-xs text-subtle">Se mostrarán los servicios que se crearán antes de confirmar.</p>
           </form>
 
           <div className="mt-4 flex justify-between">
@@ -430,7 +430,7 @@ export default function NewServiceModal({
                 spellCheck={false}
               />
             </Field>
-            <Field label="Dominio (opcional)" hint="Va al servicio de entrada de la plantilla">
+            <Field label="Dominio (opcional)" hint="Se asigna al servicio de entrada de la plantilla">
               <input
                 className="input font-mono"
                 placeholder="app.midominio.com"
@@ -530,7 +530,7 @@ export default function NewServiceModal({
           </div>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="Prefijo de los servicios" hint="Da nombre a cada servicio de la pila">
+            <Field label="Prefijo de los servicios" hint="Se antepone al nombre de cada servicio de la pila">
               <input
                 className="input font-mono"
                 value={stackPrefix}
@@ -543,7 +543,7 @@ export default function NewServiceModal({
             </Field>
             <Field
               label="Dominio (opcional)"
-              hint="Sin dominio la pila solo es accesible dentro del proyecto; puedes añadirlo después"
+              hint="Sin dominio, la pila solo es accesible dentro del proyecto; puede añadirse más adelante"
             >
               <input
                 className="input font-mono"
@@ -599,7 +599,7 @@ export default function NewServiceModal({
           }}
           className="space-y-4"
         >
-          <Field label="Imagen" hint="De Docker Hub, ghcr.io, etc. Incluye el tag si no quieres :latest">
+          <Field label="Imagen" hint="De Docker Hub, ghcr.io, etc. Indique la etiqueta si no desea usar :latest">
             <div className="relative">
               <input
                 className="input pr-10 font-mono"
@@ -627,9 +627,9 @@ export default function NewServiceModal({
           </Field>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Nombre (opcional)">
-              <input className="input" placeholder="se infiere de la imagen" value={name} onChange={(e) => setName(e.target.value)} />
+              <input className="input" placeholder="Se deduce de la imagen" value={name} onChange={(e) => setName(e.target.value)} />
             </Field>
-            <Field label="Puerto interno (opcional)" hint="Si sirve HTTP y quieres ponerle dominio">
+            <Field label="Puerto interno (opcional)" hint="Necesario si el servicio responde por HTTP y se le va a asignar un dominio">
               <input
                 className="input"
                 type="number"
@@ -656,7 +656,7 @@ export default function NewServiceModal({
           {hasSources ? (
             <Field
               label="Cuenta de GitHub"
-              hint="Eliges el repo de la cuenta conectada; «URL manual» clona con el token global del servidor"
+              hint="Seleccione el repositorio de la cuenta conectada; «URL manual» clona con el token global del servidor"
             >
               <GithubSourceSelect
                 sources={sources}
@@ -672,7 +672,7 @@ export default function NewServiceModal({
             </Field>
           ) : (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-line bg-bg px-3.5 py-3">
-              <p className="min-w-0 flex-1 text-xs text-sub">Sin cuenta conectada solo se clonan repos públicos.</p>
+              <p className="min-w-0 flex-1 text-xs text-sub">Sin una cuenta conectada solo es posible clonar repositorios públicos.</p>
               {sources.appConfigured && (
                 <Button
                   type="button"
@@ -689,7 +689,7 @@ export default function NewServiceModal({
           )}
 
           {source.kind !== 'none' ? (
-            <Field label="Repositorio" hint={selectedRepo ? undefined : 'Elige un repo de la cuenta conectada'}>
+            <Field label="Repositorio" hint={selectedRepo ? undefined : 'Seleccione un repositorio de la cuenta conectada'}>
               <GithubRepoPicker
                 source={source}
                 selected={selectedRepo}
@@ -703,7 +703,7 @@ export default function NewServiceModal({
           ) : (
             <Field
               label="Repositorio"
-              hint="URL completa o atajo owner/repo. Para repos privados conecta una cuenta de GitHub o usa el token de Ajustes."
+              hint="URL completa o formato abreviado owner/repo. Para repositorios privados, conecte una cuenta de GitHub o configure el token en Ajustes."
             >
               {/* type="text" y no "url" a propósito: el atajo «owner/repo» es
                   válido aquí y el navegador lo rechazaría como URL. */}
@@ -737,22 +737,22 @@ export default function NewServiceModal({
               )}
             </Field>
             <Field label="Nombre (opcional)">
-              <input className="input" placeholder="se infiere del repo" value={name} onChange={(e) => setName(e.target.value)} />
+              <input className="input" placeholder="Se deduce del repositorio" value={name} onChange={(e) => setName(e.target.value)} />
             </Field>
           </div>
           <Avanzado resumen="Puerto interno y directorio raíz">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Puerto interno" hint="Vacío = el que declare la imagen (EXPOSE); si no, 3000">
+              <Field label="Puerto interno" hint="Si se deja vacío, se usa el que declare la imagen (EXPOSE) o, en su defecto, 3000">
                 <input
                   className="input"
                   type="number"
                   inputMode="numeric"
-                  placeholder="automático"
+                  placeholder="Automático"
                   value={port}
                   onChange={(e) => setPort(e.target.value)}
                 />
               </Field>
-              <Field label="Directorio raíz" hint="Para monorepos, ej: apps/api">
+              <Field label="Directorio raíz" hint="Para monorepositorios; por ejemplo, apps/api">
                 <input className="input" placeholder="." value={rootDir} onChange={(e) => setRootDir(e.target.value)} />
               </Field>
             </div>

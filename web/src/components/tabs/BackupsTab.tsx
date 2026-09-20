@@ -31,7 +31,7 @@ function ScheduleSection({ service, onChanged }: { service: Service; onChanged: 
         },
       }),
     onSuccess: () => {
-      toast(schedule ? 'Copias automáticas activadas' : 'Copias automáticas desactivadas', 'ok');
+      toast(schedule ? 'Copias automáticas activadas.' : 'Copias automáticas desactivadas.', 'ok');
       onChanged();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -49,7 +49,7 @@ function ScheduleSection({ service, onChanged }: { service: Service; onChanged: 
       <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
         <Field label="Frecuencia">
           <select className="input" value={schedule} onChange={(e) => setSchedule(e.target.value)}>
-            <option value="">Desactivados</option>
+            <option value="">Desactivadas</option>
             <option value="daily">Diaria (~04:00)</option>
             <option value="weekly">Semanal (~04:00)</option>
           </select>
@@ -69,7 +69,7 @@ function ScheduleSection({ service, onChanged }: { service: Service; onChanged: 
           Guardar
         </Button>
       </div>
-      <p className="mt-2.5 text-xs text-subtle">Si una copia programada falla, recibirás una alerta.</p>
+      <p className="mt-2.5 text-xs text-subtle">Si una copia programada falla, se generará una alerta.</p>
     </div>
   );
 }
@@ -103,7 +103,7 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
   const restore = useMutation({
     mutationFn: (file: string) => api.post(`/services/${serviceId}/backups/${encodeURIComponent(file)}/restore`, { confirm: true }),
     onSuccess: () => {
-      toast('Copia restaurada', 'ok');
+      toast('Copia restaurada.', 'ok');
       setRestoreFile(null);
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -131,7 +131,7 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
   if (backups.data && !backups.data.supported) {
     return (
       <p className="p-6 text-center text-sm text-sub">
-        Este servicio no admite copias desde el panel (solo PostgreSQL, MySQL y MongoDB).
+        Este servicio no admite copias de seguridad desde el panel (solo PostgreSQL, MySQL y MongoDB).
       </p>
     );
   }
@@ -165,13 +165,13 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
 
       {create.isPending && (
         <p className="rounded-lg border border-warn/30 bg-warn/[.06] px-3 py-2 text-xs text-warn">
-          Creando la copia… con bases de datos grandes puede tardar varios minutos.
+          Creando la copia… Con bases de datos grandes puede tardar varios minutos.
         </p>
       )}
 
       {list.length === 0 && !create.isPending && (
         <div className="rounded-xl border border-line bg-bg">
-          <EmptyState icon={<Archive />} title="Aún no hay copias de esta base de datos" action={createNow} />
+          <EmptyState icon={<Archive />} title="No hay copias de esta base de datos" action={createNow} />
         </div>
       )}
 
@@ -235,7 +235,7 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
             <Database size={14} className="text-info" />
             Importar desde otra base de datos
           </h3>
-          <p className="mt-1 text-xs text-subtle">Vuelca aquí una base de datos externa a partir de su URL de conexión.</p>
+          <p className="mt-1 text-xs text-subtle">Importa el contenido de una base de datos externa a partir de su URL de conexión.</p>
         </div>
         <Button size="sm" variant="secondary" onClick={() => setMigrating(true)}>
           Copiar datos
@@ -259,8 +259,8 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
         onConfirm={() => restoreFile && restore.mutate(restoreFile)}
         loading={restore.isPending}
         title="Restaurar copia"
-        confirmLabel="Sí, restaurar"
-        message={`Se sobrescribirán los datos actuales de la base de datos con el contenido de "${restoreShown ?? ''}". Las aplicaciones conectadas verán el cambio al instante. ¿Continuar?`}
+        confirmLabel="Restaurar"
+        message={`Se sobrescribirán los datos actuales de la base de datos con el contenido de «${restoreShown ?? ''}». Las aplicaciones conectadas verán el cambio de inmediato.`}
       />
       <ConfirmModal
         open={!!deleteFile}
@@ -268,7 +268,7 @@ export default function BackupsTab({ serviceId, service, onChanged }: { serviceI
         onConfirm={() => deleteFile && remove.mutate(deleteFile)}
         loading={remove.isPending}
         title="Eliminar copia"
-        message={`Se eliminará "${deleteFile}" del servidor. Si no la has descargado, no habrá copia.`}
+        message={`Se eliminará «${deleteFile}» del servidor. Si no se ha descargado previamente, no quedará ninguna copia.`}
       />
     </div>
   );

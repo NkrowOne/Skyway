@@ -101,7 +101,7 @@ async function applyPostInit(
   // en verde, así que se marca en rojo y la pila no sigue.
   log(`✖ La inicialización falló (código ${res.exitCode ?? 'n/a'}):`);
   for (const line of res.output.trim().split('\n').slice(-15)) log(`  ${line}`);
-  log('Los roles conservan la contraseña de la imagen: corrige el error y vuelve a desplegar este servicio.');
+  log('Los roles conservan la contraseña de la imagen: corrija el error y vuelva a desplegar este servicio.');
   return false;
 }
 

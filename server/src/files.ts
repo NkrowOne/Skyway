@@ -207,7 +207,7 @@ export async function downloadFile(
   filePath: string,
 ): Promise<{ name: string; content: Buffer }> {
   const norm = normalizePath(filePath);
-  if (norm === '/') throw new Error('Selecciona un archivo, no la raíz.');
+  if (norm === '/') throw new Error('Seleccione un archivo, no la raíz.');
   const name = await requireRunning(project, service);
   const container = docker.getContainer(name);
 
@@ -242,8 +242,8 @@ export async function downloadFile(
         const scan = scanTarEntry(head);
         if (scan.status === 'need_more') continue;
         if (scan.status === 'end') throw new Error('El archivo está vacío o no se pudo leer.');
-        if (scan.typeflag === '5' || scan.name.endsWith('/')) throw new Error('Es un directorio: descarga archivos concretos.');
-        if (scan.typeflag === '2') throw new Error('Es un enlace simbólico: descarga el archivo al que apunta.');
+        if (scan.typeflag === '5' || scan.name.endsWith('/')) throw new Error('Es un directorio: descargue archivos concretos.');
+        if (scan.typeflag === '2') throw new Error('Es un enlace simbólico: descargue el archivo al que apunta.');
         if (scan.size > MAX_DOWNLOAD_BYTES) {
           throw new Error(`El archivo supera el límite de descarga (${Math.round(MAX_DOWNLOAD_BYTES / 1024 / 1024)} MB).`);
         }

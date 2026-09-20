@@ -37,7 +37,7 @@ function Monogram({ name }: { name: string }) {
 function ServiceStack({ services }: { services?: ProjectServiceSummary[] }) {
   if (!services || services.length === 0) {
     return (
-      <p className="mt-3 text-xs text-subtle">Sin servicios todavía</p>
+      <p className="mt-3 text-xs text-subtle">Todavía no hay servicios</p>
     );
   }
 
@@ -103,7 +103,7 @@ const ProjectCard = memo(function ProjectCard({ project }: { project: Project })
 
       <div className="mt-4 flex items-center justify-between border-t border-line pt-3 text-xs text-subtle">
         <span className="truncate">
-          {project.lastDeployAt ? `Último despliegue ${timeAgo(project.lastDeployAt)}` : 'Sin despliegues todavía'}
+          {project.lastDeployAt ? `Último despliegue ${timeAgo(project.lastDeployAt)}` : 'Todavía no hay despliegues'}
         </span>
         <ChevronRight size={14} className="shrink-0 transition-colors duration-[--dur-1] group-hover:text-txt" />
       </div>
@@ -294,7 +294,7 @@ export default function Dashboard() {
               type="text"
               value={projectQuery}
               onChange={(e) => setProjectQuery(e.target.value)}
-              placeholder="Buscar proyecto o servicio..."
+              placeholder="Buscar proyecto o servicio"
               className="input pl-9 pr-8"
             />
             {projectQuery && (
@@ -366,13 +366,13 @@ export default function Dashboard() {
           </svg>
           {isAdmin ? (
             <>
-              <p className="text-sm text-sub">Aún no tienes proyectos. Crea el primero para empezar a desplegar.</p>
+              <p className="text-sm text-sub">Todavía no hay proyectos. Cree el primero para empezar a desplegar.</p>
               <Button onClick={() => setCreateOpen(true)}>
                 <Plus size={15} /> Crear proyecto
               </Button>
             </>
           ) : (
-            <p className="text-sm text-sub">Aún no tienes proyectos asignados. Pide a un administrador que te dé acceso.</p>
+            <p className="text-sm text-sub">Todavía no tiene proyectos asignados. Solicite acceso a un administrador.</p>
           )}
         </div>
       )}
@@ -422,11 +422,11 @@ export default function Dashboard() {
           }}
           className="space-y-4"
         >
-          <Field label="Nombre" hint="Ej: web corporativa, api interna...">
+          <Field label="Nombre" hint="Por ejemplo: web corporativa, API interna">
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} autoFocus required />
           </Field>
           {isAdmin && (
-            <Field label="Cuenta de cliente (opcional)" hint="Asigna el proyecto a esa cuenta; si no existe, se crea">
+            <Field label="Cuenta de cliente (opcional)" hint="El proyecto se asigna a esa cuenta; si no existe, se crea">
               <input className="input" list="clients-list" value={client} onChange={(e) => setClient(e.target.value)} placeholder="Acme S.L." />
               <datalist id="clients-list">
                 {clients.map((c) => (

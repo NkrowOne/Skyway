@@ -806,7 +806,7 @@ function LogViewerImpl({
                 ref={searchRef}
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                placeholder="Buscar en los logs…"
+                placeholder="Buscar en el registro"
                 spellCheck={false}
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -861,7 +861,7 @@ function LogViewerImpl({
               onClick={onDownload ?? download}
               disabled={!onDownload && visible.length === 0}
               className="press flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40 sm:h-8"
-              title={onDownload ? 'Descargar el log completo' : 'Descargar el log'}
+              title={onDownload ? 'Descargar el registro completo' : 'Descargar el registro'}
             >
               <Download size={14} aria-hidden />
               <span>Descargar</span>
@@ -878,7 +878,7 @@ function LogViewerImpl({
                   'press flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors sm:h-8',
                   viewMenuOpen ? 'bg-surface2 text-txt' : 'text-sub hover:bg-surface2 hover:text-txt',
                 )}
-                title="Cómo se ve el registro"
+                title="Opciones de visualización del registro"
               >
                 <SlidersHorizontal size={14} aria-hidden />
                 <span>Vista</span>
@@ -933,7 +933,7 @@ function LogViewerImpl({
                     onClick={copyAll}
                     className={cx(visible.length === 0 && 'pointer-events-none opacity-40')}
                   >
-                    Copiar lo que se ve
+                    Copiar las líneas visibles
                   </MenuItem>
                   <MenuItem
                     icon={<ArrowUpToLine size={14} />}
@@ -1015,7 +1015,7 @@ function LogViewerImpl({
                 disabled={loadingOlder}
                 className="press inline-flex items-center gap-1.5 rounded-lg border border-line bg-term2 px-3 py-1 text-xs text-sub hover:text-txt disabled:opacity-50"
               >
-                {loadingOlder ? 'Cargando líneas anteriores…' : 'Cargar historial anterior ↑'}
+                {loadingOlder ? 'Cargando líneas anteriores…' : 'Cargar líneas anteriores'}
               </button>
             </div>
           )}
@@ -1023,12 +1023,12 @@ function LogViewerImpl({
           {visible.length === 0 ? (
             <div className="flex h-full min-h-[140px] items-center justify-center p-6 text-center font-sans">
               {state === 'loading' ? (
-                <Spinner label="Cargando los logs…" />
+                <Spinner label="Cargando el registro…" />
               ) : state === 'error' ? (
-                <ErrorState compact title="No se han podido cargar los logs" onRetry={onRetry} />
+                <ErrorState compact title="No se ha podido cargar el registro" onRetry={onRetry} />
               ) : (
                 <span className="max-w-sm text-balance text-xs leading-5 text-subtle">
-                  {filtering ? 'Ninguna línea coincide con los filtros aplicados.' : emptyMessage ?? 'Sin logs todavía…'}
+                  {filtering ? 'Ninguna línea coincide con los filtros aplicados.' : emptyMessage ?? 'No hay registros disponibles.'}
                 </span>
               )}
             </div>
@@ -1086,7 +1086,7 @@ function LogViewerImpl({
         ref={overlayRef}
         role="dialog"
         aria-modal="true"
-        aria-label={title ? `${title} — pantalla completa` : 'Consola de logs'}
+        aria-label={title ? `${title} — pantalla completa` : 'Consola de registro'}
         tabIndex={-1}
         // El relleno inferior respeta la barra de gestos del móvil: si no, el
         // botón «Ir al final» y la última línea quedaban debajo de ella.

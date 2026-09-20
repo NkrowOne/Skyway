@@ -23,12 +23,12 @@ import { Button, CopyButton, EditorBar, Modal, Segmented, Skeleton, useToast } f
 
 /** Por qué se dejó fuera una clave del .env del repositorio, en palabras. */
 const SKIP_REASON_LABEL: Record<EnvSkipReason, string> = {
-  invalid_key: 'nombre inválido',
+  invalid_key: 'nombre no válido',
   reserved: 'reservada por Skyway',
   placeholder: 'valor de ejemplo',
   localhost: 'apunta a localhost',
   exists: 'ya definida',
-  handled: 'tratada en una importación anterior',
+  handled: 'procesada en una importación anterior',
 };
 
 /**
@@ -77,7 +77,7 @@ function ImportRepoModal({
                 <AlertTriangle size={13} /> {done.report.pending.length === 1 ? '1 variable sin valor' : `${done.report.pending.length} variables sin valor`}
               </p>
               <p className="mt-1 text-sub">
-                Vienen vacías o con un valor de ejemplo en el repositorio: hay que rellenarlas a mano.
+                En el repositorio figuran vacías o con un valor de ejemplo. Es necesario introducir su valor manualmente.
               </p>
               <p className="mt-1.5 break-words font-mono text-txt">{done.report.pending.map((p) => p.key).join(', ')}</p>
             </div>
@@ -115,7 +115,7 @@ function ImportRepoModal({
                   <span className="font-mono text-txt">{f}</span>
                 </span>
               ))}
-              {report.files.length > 1 && ' (el último manda si repiten clave)'}. Nada se guarda hasta que pulses «Importar».
+              {report.files.length > 1 && ' (si una clave se repite, prevalece el último archivo)'}. No se guarda nada hasta que se pulse «Importar».
             </p>
           )}
 
@@ -125,7 +125,7 @@ function ImportRepoModal({
               Se importarán <span className="tnum font-mono text-xs text-subtle">{n}</span>
             </h4>
             {n === 0 ? (
-              <p className="text-xs text-subtle">Ninguna variable nueva con valor útil.</p>
+              <p className="text-xs text-subtle">No hay variables nuevas con un valor válido.</p>
             ) : (
               <ul className={listBox}>
                 {report.imported.map((v) => {
@@ -173,7 +173,7 @@ function ImportRepoModal({
               <h4 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-txt">
                 Pendientes de valor <span className="tnum font-mono text-xs text-subtle">{report.pending.length}</span>
               </h4>
-              <p className="mb-1.5 text-xs text-subtle">Vienen vacías o con un valor de ejemplo: hay que rellenarlas a mano.</p>
+              <p className="mb-1.5 text-xs text-subtle">Figuran vacías o con un valor de ejemplo. Es necesario introducir su valor manualmente.</p>
               <ul className={listBox}>
                 {report.pending.map((v) => (
                   <li key={v.key} className="flex items-center gap-3 px-3 py-2 text-xs">
@@ -192,7 +192,7 @@ function ImportRepoModal({
             <details className="group">
               <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-sub hover:text-txt">
                 Ignoradas <span className="tnum font-mono text-xs text-subtle">{report.skipped.length}</span>
-                <span className="ml-auto text-xs font-normal text-subtle group-open:hidden">ver motivos</span>
+                <span className="ml-auto text-xs font-normal text-subtle group-open:hidden">Ver motivos</span>
               </summary>
               <ul className={cx(listBox, 'mt-1.5')}>
                 {report.skipped.map((v) => (
@@ -219,7 +219,7 @@ function ImportRepoModal({
                   onClose();
                 }}
                 className="max-sm:h-11"
-                title="Inserta las claves sin valor en la tabla para que las rellenes"
+                title="Inserta las claves sin valor en la tabla para completarlas"
               >
                 <Plus size={13} /> Añadir pendientes como filas vacías
               </Button>
@@ -280,7 +280,7 @@ const rowsFromVars = (vars: Record<string, string>): Row[] =>
 const SUGGESTED_VARS: { key: string; value: string; hint: string }[] = [
   { key: 'NODE_ENV', value: 'production', hint: 'Modo de ejecución para apps Node' },
   { key: 'TZ', value: 'Europe/Madrid', hint: 'Zona horaria del contenedor' },
-  { key: 'LOG_LEVEL', value: 'info', hint: 'Nivel de logs de la aplicación' },
+  { key: 'LOG_LEVEL', value: 'info', hint: 'Nivel de registro de la aplicación' },
   { key: 'PORT', value: '3000', hint: 'Puerto de escucha de la aplicación' },
 ];
 
@@ -409,7 +409,7 @@ export default function VariablesTab({
     onSuccess: () => {
       setDirty(false);
       queryClient.invalidateQueries({ queryKey: ['env', serviceId] });
-      toast('Variables guardadas con éxito.', 'ok', {
+      toast('Variables guardadas.', 'ok', {
         action: onDeploy ? { label: 'Desplegar ahora', onClick: onDeploy } : undefined,
       });
       onNeedsRedeploy?.();
@@ -456,7 +456,7 @@ export default function VariablesTab({
     const present = new Set(rows.map((r) => r.key.trim()));
     const fresh = keys.filter((k) => !present.has(k));
     if (fresh.length === 0) {
-      toast('Esas variables ya están en la tabla', 'info');
+      toast('Las variables indicadas ya están en la tabla.', 'info');
       return;
     }
     if (viewMode === 'raw') {
@@ -467,7 +467,7 @@ export default function VariablesTab({
       setTimeout(() => valueInputRefs.current.get(newRows[0].id)?.focus(), 50);
     }
     setDirty(true);
-    toast(fresh.length === 1 ? '1 fila añadida: rellena su valor y guarda' : `${fresh.length} filas añadidas: rellena sus valores y guarda`, 'ok');
+    toast(fresh.length === 1 ? 'Se ha añadido 1 fila. Introduzca su valor y guarde los cambios.' : `Se han añadido ${fresh.length} filas. Introduzca sus valores y guarde los cambios.`, 'ok');
   };
 
   // Alternar vista tabla / texto plano
@@ -497,7 +497,7 @@ export default function VariablesTab({
         if (!trimmed || trimmed.startsWith('#')) continue;
         const eq = trimmed.indexOf('=');
         if (eq <= 0) {
-          toast(`Línea inválida: ${trimmed}`, 'err');
+          toast(`Línea no válida: ${trimmed}`, 'err');
           return;
         }
         vars[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1);
@@ -518,7 +518,7 @@ export default function VariablesTab({
     setRows(entries);
     setRawText(entries.map((r) => `${r.key}=${r.value}`).join('\n'));
     setDirty(false);
-    toast('Cambios descartados', 'info');
+    toast('Cambios descartados.', 'info');
   };
 
   // Alternar revelado individual
@@ -573,7 +573,7 @@ export default function VariablesTab({
     const parts = [added && `${added} nueva${added === 1 ? '' : 's'}`, updated && `${updated} actualizada${updated === 1 ? '' : 's'}`].filter(
       Boolean,
     );
-    toast(`Variables pegadas: ${parts.join(' · ')}`, 'ok');
+    toast(`Variables importadas: ${parts.join(' · ')}.`, 'ok');
   };
 
   /**
@@ -645,11 +645,11 @@ export default function VariablesTab({
       .writeText(text)
       .then(() => {
         setCopiedAll(true);
-        toast('Todas las variables copiadas al portapapeles en formato .env', 'ok');
+        toast('Se han copiado todas las variables al portapapeles en formato .env.', 'ok');
         setTimeout(() => setCopiedAll(false), 2000);
       })
       // Sin HTTPS o con el permiso denegado el portapapeles rechaza: antes no se decía nada.
-      .catch(() => toast('No se ha podido copiar al portapapeles', 'err'));
+      .catch(() => toast('No se ha podido copiar al portapapeles.', 'err'));
   };
 
   const references = env.data?.references ?? EMPTY_LIST;
@@ -681,7 +681,7 @@ export default function VariablesTab({
       changes.changed && `${changes.changed} cambiada${changes.changed === 1 ? '' : 's'}`,
       changes.removed && `${changes.removed} eliminada${changes.removed === 1 ? '' : 's'}`,
     ].filter(Boolean);
-    return parts.length ? `${parts.join(' · ')} · se aplican al redesplegar` : 'Cambios sin guardar · se aplican al redesplegar';
+    return parts.length ? `${parts.join(' · ')} · se aplicarán al volver a desplegar` : 'Cambios sin guardar · se aplicarán al volver a desplegar';
   }, [changes]);
 
   // Claves duplicadas
@@ -811,8 +811,8 @@ export default function VariablesTab({
                 className={cx(toolBtn, 'disabled:cursor-not-allowed disabled:opacity-45')}
                 title={
                   dirty
-                    ? 'Guarda o descarta los cambios antes de importar'
-                    : 'Leer el .env / .env.example del repositorio y proponer las variables que faltan'
+                    ? 'Guarde o descarte los cambios antes de importar'
+                    : 'Leer el .env o .env.example del repositorio y proponer las variables que faltan'
                 }
                 aria-label="Importar variables del repositorio"
               >
@@ -832,9 +832,9 @@ export default function VariablesTab({
               {pendingFromRepo.length === 1 ? 'Falta 1 valor del repositorio' : `Faltan ${pendingFromRepo.length} valores del repositorio`}
             </p>
             <p className="mt-1 text-sub">
-              Del <span className="font-mono text-txt">{pendingFiles.join(', ')}</span> del repositorio faltan valores para:{' '}
-              <span className="break-words font-mono text-txt">{pendingFromRepo.map((p) => p.key).join(', ')}</span>. Vienen vacías o
-              con un valor de ejemplo, así que hay que rellenarlas aquí.
+              El archivo <span className="font-mono text-txt">{pendingFiles.join(', ')}</span> del repositorio declara sin valor:{' '}
+              <span className="break-words font-mono text-txt">{pendingFromRepo.map((p) => p.key).join(', ')}</span>. Figuran vacías o
+              con un valor de ejemplo. Es necesario introducir su valor en esta pestaña.
             </p>
             <button
               type="button"
@@ -855,7 +855,7 @@ export default function VariablesTab({
                 ? '1 variable sigue apuntando a la red externa de Railway'
                 : `${railwayPending.length} variables siguen apuntando a la red externa de Railway`}
             </p>
-            <p className="mt-1 text-sub">Reconéctalas en un clic para usar la red interna del proyecto:</p>
+            <p className="mt-1 text-sub">Seleccione una referencia para conectarlas a través de la red interna del proyecto:</p>
             <div className="mt-2.5 flex flex-col gap-1.5">
               {railwayPending.map((p) => (
                 <div key={p.id} className="flex flex-wrap items-center gap-2">
@@ -870,10 +870,10 @@ export default function VariablesTab({
                         onClick={() => {
                           setRows((prev) => prev.map((r) => (r.id === p.id ? { ...r, value: token } : r)));
                           setDirty(true);
-                          toast(`Reconectado a ${g.service}`, 'ok');
+                          toast(`Variable conectada a «${g.service}».`, 'ok');
                         }}
                       >
-                        usar {token}
+                        Usar {token}
                       </button>
                     );
                   })}
@@ -887,8 +887,8 @@ export default function VariablesTab({
           /* ── Texto plano (.env) ── */
           <div className="flex flex-col gap-2">
             <p className="text-xs text-subtle">
-              Una variable por línea, en formato <code className="font-mono text-txt">CLAVE=valor</code>. Puedes pegar un
-              archivo .env entero.
+              Una variable por línea, en formato <code className="font-mono text-txt">CLAVE=valor</code>. Se puede pegar el
+              contenido completo de un archivo .env.
             </p>
             <textarea
               className="input min-h-[320px] w-full rounded-xl border border-line bg-term p-3.5 font-mono leading-relaxed text-txt/95 outline-none focus:border-acc sm:text-xs"
@@ -912,7 +912,7 @@ export default function VariablesTab({
                 <input
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filtrar por nombre o valor…"
+                  placeholder="Filtrar por nombre o valor"
                   spellCheck={false}
                   className="min-w-0 flex-1 bg-transparent text-xs text-txt outline-none placeholder:text-subtle"
                 />
@@ -935,13 +935,13 @@ export default function VariablesTab({
             {filteredRows.length === 0 ? (
               <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-line p-8 text-center text-xs text-subtle">
                 {searchQuery ? (
-                  <p>Ninguna variable coincide con «{searchQuery}»</p>
+                  <p>No se ha encontrado ninguna variable que coincida con «{searchQuery}».</p>
                 ) : (
                   <>
                     <Layers size={24} className="mb-2 opacity-40" />
-                    <p className="font-medium text-txt">Sin variables de entorno</p>
+                    <p className="font-medium text-txt">No hay variables de entorno</p>
                     <p className="mt-1 text-subtle">
-                      Añade una, o pega un .env entero en cualquier campo: se reparte solo.
+                      Añada una variable o pegue el contenido de un archivo .env en cualquier campo; las variables se separarán automáticamente.
                     </p>
                   </>
                 )}
@@ -1086,7 +1086,7 @@ export default function VariablesTab({
               <button
                 type="button"
                 onClick={handleAddRow}
-                title="Pega un .env en cualquier campo y se reparte en filas"
+                title="Si se pega el contenido de un archivo .env en cualquier campo, las variables se separarán en filas automáticamente"
                 className="press flex h-9 items-center gap-1.5 rounded-lg border border-dashed border-line2 px-3 text-xs font-semibold text-sub transition-colors hover:border-acc/50 hover:bg-surface2 hover:text-txt max-sm:flex-1 max-sm:justify-center"
               >
                 <Plus size={14} className="text-acc-soft" />
@@ -1100,7 +1100,7 @@ export default function VariablesTab({
         <div className="flex flex-col gap-3">
           {suggestions.some((s) => !rows.some((r) => r.key === s.key)) && (
             <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
-              <span className="font-medium text-sub">Habituales:</span>
+              <span className="font-medium text-sub">Variables frecuentes:</span>
               {suggestions
                 .filter((s) => !rows.some((r) => r.key === s.key))
                 .map((s) => (
@@ -1125,7 +1125,7 @@ export default function VariablesTab({
             <div className="rounded-xl border border-line bg-surface p-3.5 text-xs">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-1">
                 <span className="font-semibold text-sub">Referencias del proyecto</span>
-                <span className="text-xs text-subtle">Clic para copiar en formato {'${{...}}'}</span>
+                <span className="text-xs text-subtle">Seleccione una para copiarla en formato {'${{...}}'}</span>
               </div>
               <div className="flex flex-col gap-2.5">
                 {references.map((ref) => (
@@ -1148,7 +1148,7 @@ export default function VariablesTab({
                               navigator.clipboard
                                 .writeText(token)
                                 .then(() => toast(`Copiado: ${token}`, 'ok'))
-                                .catch(() => toast('No se ha podido copiar al portapapeles', 'err'));
+                                .catch(() => toast('No se ha podido copiar al portapapeles.', 'err'));
                             }}
                           >
                             {v}

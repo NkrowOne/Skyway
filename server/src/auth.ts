@@ -262,7 +262,7 @@ export function canAccessProjectRow(user: UserRow, project: ProjectRow): boolean
 export function assertProjectAccess(req: FastifyRequest, reply: FastifyReply, projectId: string): boolean {
   const user = currentUser(req)!;
   if (canAccessProject(user, projectId)) return true;
-  reply.code(403).send({ error: 'No tienes acceso a este workspace' });
+  reply.code(403).send({ error: 'No tiene acceso a este workspace' });
   return false;
 }
 
@@ -289,7 +289,7 @@ export function assertProjectManage(req: FastifyRequest, reply: FastifyReply, pr
 export function assertWorkspaceAccess(req: FastifyRequest, reply: FastifyReply, workspaceId: string): boolean {
   const user = currentUser(req)!;
   if (canManageWorkspace(user, workspaceId)) return true;
-  reply.code(403).send({ error: 'No tienes acceso a este workspace' });
+  reply.code(403).send({ error: 'No tiene acceso a este workspace' });
   return false;
 }
 

@@ -36,7 +36,7 @@ export async function securityRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/security/rotate-sessions', async (req, reply) => {
     if (config.jwtSecretEnv) {
       return reply.code(400).send({
-        error: 'JWT_SECRET viene de una variable de entorno: cámbialo ahí y reinicia Skyway para invalidar sesiones.',
+        error: 'JWT_SECRET procede de una variable de entorno: modifíquelo en ella y reinicie Skyway para invalidar las sesiones.',
       });
     }
     const userId = currentUser(req)!.id;

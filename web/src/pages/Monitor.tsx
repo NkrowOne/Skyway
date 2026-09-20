@@ -113,7 +113,7 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
       <div className="mb-3">
         <h2 className="flex items-center gap-2 text-base font-semibold">
           <ScrollText size={14} className="text-info" />
-          Buscar en los logs de todos los servicios
+          Buscar en los registros de todos los servicios
         </h2>
       </div>
       <form
@@ -127,7 +127,7 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
           <input
             className="input pl-9 font-mono text-xs"
-            placeholder='p. ej. "ECONNREFUSED", "500", "out of memory"…'
+            placeholder='Por ejemplo: ECONNREFUSED, 500, out of memory'
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
@@ -146,7 +146,7 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
           Buscar
         </Button>
       </form>
-      <p className="mt-1.5 text-micro text-subtle">Últimas ~400 líneas de cada contenedor.</p>
+      <p className="mt-1.5 text-micro text-subtle">Se buscan las últimas ~400 líneas de cada contenedor.</p>
 
       {search.isError && (
         <p className="mt-3 flex items-center gap-1.5 text-xs text-err">
@@ -158,7 +158,7 @@ function LogSearchPanel({ projects }: { projects: { id: string; name: string }[]
         <div className="mt-3.5">
           <p className="mb-2 text-xs text-subtle">
             {search.data.results.length === 0
-              ? `Sin coincidencias de «${submitted.q}» en ${search.data.scanned} contenedor(es).`
+              ? `No hay coincidencias de «${submitted.q}» en ${search.data.scanned} contenedor(es).`
               : `${search.data.results.length}${search.data.truncated ? '+' : ''} coincidencia(s) en ${search.data.scanned} contenedor(es).`}
           </p>
           <div className="max-h-[380px] overflow-y-auto rounded-lg border border-line bg-bg">
@@ -446,7 +446,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
                 size="sm"
                 onClick={() => prune.mutate()}
                 loading={prune.isPending}
-                title="Elimina imágenes colgantes y caché de build. Nunca toca volúmenes."
+                title="Elimina imágenes sin referencia y la caché de compilación. No afecta a los volúmenes."
               >
                 <Trash2 size={13} /> Liberar espacio
               </Button>
@@ -469,7 +469,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
           </p>
         </div>
         {data.services.length === 0 && (
-          <EmptyState compact icon={<Activity />} title="Sin servicios que medir" description="Despliega un servicio y sus métricas aparecerán aquí." />
+          <EmptyState compact icon={<Activity />} title="No hay servicios que medir" description="Despliegue un servicio y sus métricas se mostrarán aquí." />
         )}
         {/* En móvil la fila se parte en dos líneas (nombre + barra arriba, tamaño
             debajo) en vez de obligar a arrastrar de lado una tabla de 640px. */}
@@ -487,7 +487,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
                   key={s.serviceId}
                   onClick={() => navigate(`/projects/${s.projectId}?s=${s.serviceId}`)}
                   className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 border-b border-line/70 px-4 py-3 text-left transition-colors last:border-0 hover:bg-surface sm:grid-cols-[minmax(160px,1.4fr)_minmax(220px,2fr)_minmax(90px,auto)] sm:gap-3 sm:py-2.5"
-                  title={`${s.volumes.length} volumen(es): ${fmtBytes(volBytes)} · contenedor: ${fmtBytes(s.containerBytes)}${s.logBytes !== null ? ` · logs: ${fmtBytes(s.logBytes)}` : ''}`}
+                  title={`${s.volumes.length} volumen(es): ${fmtBytes(volBytes)} · contenedor: ${fmtBytes(s.containerBytes)}${s.logBytes !== null ? ` · registros: ${fmtBytes(s.logBytes)}` : ''}`}
                 >
                   <span className="min-w-0">
                     <span className="block truncate text-xs font-medium">{s.name}</span>
@@ -519,8 +519,8 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
           </div>
         </div>
         <p className="border-t border-line px-4 py-2.5 text-micro leading-relaxed text-subtle">
-          Se mide volúmenes + capa de escritura del contenedor (y logs si son legibles). La cuota se asigna en Ajustes
-          del servicio → Recursos; al superarla salta una alerta.
+          Se miden los volúmenes y la capa de escritura del contenedor (y los registros, si son legibles). La cuota se asigna
+          en Ajustes del servicio → Recursos; al superarla se genera una alerta.
         </p>
       </div>
     </div>
@@ -595,7 +595,7 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
           }
         >
           {/* La explicación de qué es la carga va en el title: quien la conoce no la quiere leer cada vez. */}
-          <div title="Procesos esperando CPU, de media. Por encima del número de núcleos, el servidor va saturado.">
+          <div title="Media de procesos en espera de CPU. Por encima del número de núcleos, el servidor está saturado.">
             <HistoryChart
               title={`Carga del sistema${cpus ? ` · ${cpus} núcleos` : ''}`}
               points={loadPoints}
@@ -623,7 +623,7 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
             threshold={diskTotal ? { value: diskTotal, label: `total ${fmtBytes(diskTotal)}` } : null}
             fixedMax={diskTotal ?? undefined}
           />
-          <p className="text-center text-xs text-subtle">La banda va de la media al pico.</p>
+          <p className="text-center text-xs text-subtle">La banda abarca desde la media hasta el máximo.</p>
         </Suspense>
       )}
     </div>
@@ -736,7 +736,7 @@ export default function MonitorPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">Monitor</h1>
         <p className="mt-1.5 text-sm text-sub">
-          Todos los servicios del servidor de un vistazo: estado, consumo, espacio y una lupa para los logs
+          Todos los servicios del servidor: estado, consumo, espacio y búsqueda en los registros
         </p>
       </div>
 
@@ -755,7 +755,7 @@ export default function MonitorPage() {
         <div className="card flex flex-col items-center gap-3 py-14 text-center">
           <TriangleAlert size={22} className="text-warn" />
           <p className="max-w-sm text-sm text-sub">
-            No se pudo cargar el monitor: {(overview.error as Error).message}
+            No se ha podido cargar el monitor: {(overview.error as Error).message}
           </p>
           <Button variant="secondary" size="sm" onClick={() => overview.refetch()}>
             <RefreshCw size={13} /> Reintentar
@@ -778,7 +778,7 @@ export default function MonitorPage() {
               icon={<TriangleAlert size={12} />}
               label="Caídos"
               value={down}
-              detail={down === 0 ? 'todo en orden' : 'requieren atención'}
+              detail={down === 0 ? 'ninguno' : 'requieren atención'}
               tone={down > 0 ? 'err' : 'ok'}
             />
             <StatTile
@@ -825,7 +825,7 @@ export default function MonitorPage() {
           <Segmented
             className="mb-4 sm:w-fit"
             full
-            label="Qué se está mirando"
+            label="Vista del monitor"
             value={view}
             onChange={(k) => setView(k as View)}
             options={[
@@ -849,7 +849,7 @@ export default function MonitorPage() {
                     <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
                     <input
                       className="input h-8 pl-8 text-xs"
-                      placeholder="Filtrar por nombre, proyecto, cliente o dominio…"
+                      placeholder="Filtrar por nombre, proyecto, cliente o dominio"
                       value={text}
                       onChange={(e) => setText(e.target.value)}
                     />
@@ -916,7 +916,7 @@ export default function MonitorPage() {
                         <EmptyState
                           compact
                           icon={<Server />}
-                          title="Aún no hay servicios desplegados"
+                          title="Todavía no hay servicios desplegados"
                           action={
                             <Link to="/" className="text-xs font-semibold text-acc-soft hover:underline">
                               Ir a proyectos →
@@ -981,7 +981,7 @@ export default function MonitorPage() {
           Actualización automática cada 6 s · {filtered.length !== services.length ? `${filtered.length} de ` : ''}
           {services.length} servicios
           {services.some((s) => s.startedAt && s.state === 'running')
-            ? ` · el más reciente arrancó ${timeAgo(Math.max(...services.filter((s) => s.startedAt).map((s) => Date.parse(s.startedAt!))))}`
+            ? ` · el más reciente se inició ${timeAgo(Math.max(...services.filter((s) => s.startedAt).map((s) => Date.parse(s.startedAt!))))}`
             : ''}
         </p>
       )}
@@ -991,8 +991,8 @@ export default function MonitorPage() {
         onClose={() => setConfirmRestart(null)}
         onConfirm={() => confirmRestart && restart.mutate(confirmRestart.id)}
         loading={!!confirmRestart && restarting.has(confirmRestart.id)}
-        title={`Reiniciar "${confirmRestart?.name ?? ''}"`}
-        message="El servicio quedará unos segundos sin responder mientras vuelve a arrancar."
+        title={`Reiniciar «${confirmRestart?.name ?? ''}»`}
+        message="El servicio dejará de responder durante unos segundos mientras se reinicia."
         confirmLabel="Reiniciar"
         confirmVariant="primary"
       />

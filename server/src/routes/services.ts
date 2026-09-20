@@ -248,7 +248,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       if (body.domains.length > 0 && !body.port) {
         return reply.code(400).send({
           error:
-            'Un servicio con dominio necesita puerto interno: Traefik tiene que saber a qué puerto del contenedor entregar la petición. Indica el puerto en el que escucha la imagen, o crea el servicio sin dominio si es un worker sin HTTP.',
+            'Un servicio con dominio requiere puerto interno: Traefik necesita saber a qué puerto del contenedor entregar la petición. Indique el puerto en el que escucha la imagen, o cree el servicio sin dominio si es un worker sin HTTP.',
         });
       }
       const slug = uniqueSlug(projectId, body.name);
@@ -705,7 +705,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       const cfg = found.service.config as GitConfig;
       const slug = found.service.type === 'git' ? parseGithubSlug(cfg.repoUrl) : null;
       if (!slug) {
-        return reply.code(400).send({ error: 'Solo se puede importar de servicios desplegados desde un repositorio de GitHub' });
+        return reply.code(400).send({ error: 'Solo es posible importar variables de servicios desplegados desde un repositorio de GitHub' });
       }
 
       let files: EnvFileSource[];
@@ -752,7 +752,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         message:
           n === 0
             ? `No había variables nuevas que importar${pendientes}.`
-            : `${n === 1 ? 'Importada 1 variable' : `Importadas ${n} variables`}${pendientes}. Redespliega el servicio para que el contenedor las reciba.`,
+            : `${n === 1 ? 'Se ha importado 1 variable' : `Se han importado ${n} variables`}${pendientes}. Es necesario volver a desplegar el servicio para que el contenedor las reciba.`,
       };
     },
   );

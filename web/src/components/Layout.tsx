@@ -128,7 +128,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
         key: 'a-monitor',
         group: 'Acciones rápidas',
         icon: <Activity size={15} className="text-subtle" />,
-        label: 'Monitor: todos los servicios y buscador de logs',
+        label: 'Monitor: todos los servicios y búsqueda en registros',
         keywords: 'monitor debug logs estado cpu ram disco buscar depurar',
         to: '/monitor',
       },
@@ -299,7 +299,7 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
                 go(items[sel]);
               }
             }}
-            placeholder="Busca proyectos, servicios o acciones…"
+            placeholder="Buscar proyectos, servicios o acciones"
             autoCapitalize="none"
             autoCorrect="off"
             enterKeyHint="go"
@@ -372,8 +372,8 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
     { label: 'Ir a sitios web', keys: ['g', 'w'] },
     { label: 'Ir a seguridad', keys: ['g', 's'] },
     { label: 'Ir a alertas', keys: ['g', 'a'] },
-    { label: 'Cerrar drawer / modales', keys: ['esc'] },
-    { label: 'Esta ayuda', keys: ['?'] },
+    { label: 'Cerrar panel lateral y diálogos', keys: ['esc'] },
+    { label: 'Mostrar esta ayuda', keys: ['?'] },
   ];
   return createPortal(
     <div
@@ -502,7 +502,7 @@ function AlertBell() {
               </p>
             ) : (
               (alerts.data?.alerts ?? []).length === 0 && (
-                <p className="px-3 py-6 text-center text-xs text-sub">Sin alertas. Todo en orden.</p>
+                <p className="px-3 py-6 text-center text-xs text-sub">No hay alertas.</p>
               )
             )}
             {alerts.data?.alerts.map((a) => (
@@ -862,7 +862,7 @@ export default function Layout() {
             className="hidden h-9 min-w-0 flex-[0_1_320px] items-center gap-2 rounded-lg border border-line bg-bg pl-3 pr-2 text-sm text-subtle transition-colors duration-[--dur-1] hover:border-line2 hover:text-sub sm:flex"
           >
             <Search size={14} className="shrink-0" />
-            <span className="flex-1 truncate text-left">Buscar o saltar a…</span>
+            <span className="flex-1 truncate text-left">Buscar o ir a…</span>
             <Kbd>{CMD_K_LABEL}</Kbd>
           </button>
         )}
@@ -929,7 +929,7 @@ export default function Layout() {
       {sys && !sys.docker && (
         <div className="flex items-center gap-2 border-b border-warn/30 bg-warn/10 px-4 py-2 text-xs text-warn">
           <AlertTriangle size={14} />
-          Docker no está disponible: los despliegues fallarán hasta que el daemon sea accesible.
+          Docker no está disponible: los despliegues fallarán hasta que el servicio de Docker vuelva a ser accesible.
         </div>
       )}
 

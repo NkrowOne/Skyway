@@ -87,7 +87,7 @@ const SiteCard = memo(function SiteCard({
 
       <div className="mt-3 flex min-h-[26px] flex-wrap items-center gap-1.5">
         {site.domains.length === 0 && site.hostPort === null && (
-          <span className="text-xs text-subtle">Sin dominio — añádelo en Ajustes del servicio</span>
+          <span className="text-xs text-subtle">Sin dominio — puede añadirlo en los ajustes del servicio</span>
         )}
         {site.domains.map((d) => (
           <a
@@ -229,7 +229,7 @@ export default function SitesPage() {
           <h1 className="flex items-center gap-2.5 text-2xl font-semibold leading-[30px]">
             <Globe size={22} className="text-acc-soft" /> Sitios web
           </h1>
-          <p className="mt-1.5 text-sm text-sub">Webs y servicios accesibles desde fuera del servidor.</p>
+          <p className="mt-1.5 text-sm text-sub">Sitios web y servicios accesibles desde fuera del servidor.</p>
         </div>
         {/* A 360px el buscador y el botón no caben en una fila: el campo ocupa todo el ancho y el botón baja. */}
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
@@ -237,7 +237,7 @@ export default function SitesPage() {
             <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
             <input
               className="input h-9 w-full pl-8 sm:w-56 sm:text-xs"
-              placeholder="Buscar servicio, dominio, proyecto…"
+              placeholder="Buscar servicio, dominio o proyecto"
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
@@ -263,7 +263,7 @@ export default function SitesPage() {
             <span className="tnum font-semibold text-txt">{withDomain}</span> con dominio
           </Chip>
           {!sites.data.tls && withDomain > 0 && (
-            <Link to="/settings" title="Configurar el email de Let's Encrypt en Ajustes">
+            <Link to="/settings" title="Configurar el correo electrónico de Let's Encrypt en Ajustes">
               <Chip tone="warn" icon={<Unlock size={11} aria-hidden />}>
                 TLS sin configurar
               </Chip>
@@ -283,7 +283,7 @@ export default function SitesPage() {
       {sites.isError && !sites.data && (
         <div className="card flex flex-col items-center gap-3 py-14 text-center">
           <Globe size={22} className="text-warn" />
-          <p className="max-w-sm text-sm text-sub">No se pudieron cargar los servicios: {(sites.error as Error).message}</p>
+          <p className="max-w-sm text-sm text-sub">No se han podido cargar los servicios: {(sites.error as Error).message}</p>
           <Button variant="secondary" size="sm" onClick={() => sites.refetch()}>
             <RefreshCw size={13} /> Reintentar
           </Button>
@@ -302,7 +302,7 @@ export default function SitesPage() {
             <circle cx="22" cy="14" r="1.3" fill="currentColor" />
             <circle cx="100" cy="58" r="1.3" fill="currentColor" />
           </svg>
-          <p className="max-w-sm text-sm text-sub">Aún no hay servicios accesibles desde fuera.</p>
+          <p className="max-w-sm text-sm text-sub">Todavía no hay servicios accesibles desde fuera del servidor.</p>
           <Link to="/" className="text-xs font-semibold text-acc-soft hover:underline">
             Ir a proyectos →
           </Link>
@@ -332,8 +332,8 @@ export default function SitesPage() {
         onClose={() => setConfirmRestart(null)}
         onConfirm={() => confirmRestart && restart.mutate(confirmRestart.id)}
         loading={!!confirmRestart && busyIds.has(confirmRestart.id)}
-        title={`Reiniciar "${confirmRestart?.name ?? ''}"`}
-        message="El servicio quedará unos segundos sin responder mientras vuelve a arrancar."
+        title={`Reiniciar «${confirmRestart?.name ?? ''}»`}
+        message="El servicio dejará de responder durante unos segundos mientras se reinicia."
         confirmLabel="Reiniciar"
         confirmVariant="primary"
       />
@@ -343,8 +343,8 @@ export default function SitesPage() {
         onClose={() => setConfirmDeploy(null)}
         onConfirm={() => confirmDeploy && deploy.mutate(confirmDeploy.id)}
         loading={!!confirmDeploy && busyIds.has(confirmDeploy.id)}
-        title={`Desplegar "${confirmDeploy?.name ?? ''}"`}
-        message="Se construirá y publicará la versión actual del repositorio o la imagen."
+        title={`Desplegar «${confirmDeploy?.name ?? ''}»`}
+        message="Se compilará y publicará la versión actual del repositorio o de la imagen."
         confirmLabel="Desplegar"
         confirmVariant="primary"
       />

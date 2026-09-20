@@ -140,14 +140,14 @@ export default function AccountPage() {
         icon={<Fingerprint size={15} />}
         iconClass="text-acc-soft"
         title="Passkeys"
-        description="Entra con huella, cara o PIN del dispositivo."
+        description="Inicie sesión con la huella, el rostro o el PIN del dispositivo."
         aside={
           passkeysSupported() ? (
             <Button size="sm" onClick={() => setPkModal(true)}>
               <Plus size={13} /> Añadir passkey
             </Button>
           ) : (
-            <span className="text-xs text-subtle">Tu navegador no soporta passkeys</span>
+            <span className="text-xs text-subtle">El navegador no admite passkeys</span>
           )
         }
       >
@@ -164,7 +164,7 @@ export default function AccountPage() {
           />
         ) : (passkeys.data?.passkeys ?? []).length === 0 ? (
           <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
-            {passkeys.isLoading ? 'Cargando…' : 'Sin passkeys todavía. Añade una para entrar sin contraseña.'}
+            {passkeys.isLoading ? 'Cargando…' : 'Todavía no hay passkeys. Añada una para iniciar sesión sin contraseña.'}
           </p>
         ) : (
           <div className="flex flex-col gap-2">
@@ -190,8 +190,8 @@ export default function AccountPage() {
           </div>
         )}
         <p className="mt-3 text-xs text-subtle">
-          Cada passkey queda ligada al dominio donde se creó (p. ej. <span className="font-mono">localhost</span> por túnel SSH, o tu
-          dominio público). Si cambias de dominio, registra una nueva desde él.
+          Cada passkey queda vinculada al dominio en el que se creó (por ejemplo, <span className="font-mono">localhost</span> mediante túnel SSH,
+          o el dominio público). Si cambia de dominio, registre una nueva desde él.
         </p>
       </Section>
 
@@ -199,7 +199,7 @@ export default function AccountPage() {
         icon={<Bot size={15} />}
         iconClass="text-info"
         title="Tokens de API"
-        description="Para automatizaciones y agentes (Claude, CI/CD): heredan tus permisos"
+        description="Para automatizaciones y agentes (Claude, CI/CD). Heredan los permisos de su usuario."
         aside={
           <Button size="sm" onClick={() => { setNewToken(null); setTokModal(true); }}>
             <Plus size={13} /> Crear token
@@ -217,7 +217,7 @@ export default function AccountPage() {
           />
         ) : (tokens.data?.tokens ?? []).length === 0 ? (
           <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
-            {tokens.isLoading ? 'Cargando…' : 'Sin tokens. Crea uno para controlar Skyway desde fuera del panel.'}
+            {tokens.isLoading ? 'Cargando…' : 'No hay tokens. Cree uno para controlar Skyway desde fuera del panel.'}
           </p>
         ) : (
           <div className="flex flex-col gap-2">
@@ -244,8 +244,8 @@ export default function AccountPage() {
           </div>
         )}
         <p className="mt-3 text-xs text-subtle">
-          Uso: <span className="font-mono">Authorization: Bearer sky_…</span> contra la API REST. El token completo solo se muestra al
-          crearlo.
+          Uso: <span className="font-mono">Authorization: Bearer sky_…</span> en las peticiones a la API REST. El token completo solo se
+          muestra al crearlo.
         </p>
       </Section>
 
@@ -258,7 +258,7 @@ export default function AccountPage() {
           <Field label="Contraseña actual">
             <input className="input" type="password" value={currentPw} onChange={(e) => setCurrentPw(e.target.value)} />
           </Field>
-          <Field label="Nueva contraseña" hint="mínimo 8 caracteres">
+          <Field label="Nueva contraseña" hint="Mínimo 8 caracteres">
             <input className="input" type="password" value={nextPw} onChange={(e) => setNextPw(e.target.value)} />
           </Field>
         </div>
@@ -284,7 +284,7 @@ export default function AccountPage() {
             if (!pkBusy) void addPasskey();
           }}
         >
-          <Field label="Nombre" hint="para reconocerla: «Portátil», «iPhone», «YubiKey»…">
+          <Field label="Nombre" hint="Nombre identificativo: «Portátil», «iPhone», «YubiKey»">
             <input
               className="input"
               value={pkName}
@@ -294,7 +294,7 @@ export default function AccountPage() {
               autoFocus
             />
           </Field>
-          <p className="mt-3 text-xs text-subtle">Tu navegador te pedirá la huella, cara o PIN del dispositivo.</p>
+          <p className="mt-3 text-xs text-subtle">El navegador solicitará la huella, el rostro o el PIN del dispositivo.</p>
           <div className="mt-5 flex justify-end gap-2">
             <Button type="button" variant="ghost" onClick={() => setPkModal(false)} disabled={pkBusy}>
               Cancelar
@@ -317,14 +317,14 @@ export default function AccountPage() {
         {newToken ? (
           <>
             <p className="text-sm text-sub">
-              Copia el token ahora: <strong>no volverá a mostrarse.</strong>
+              Copie el token ahora: <strong>no volverá a mostrarse.</strong>
             </p>
             <div className="mt-3 flex items-center gap-2 rounded-lg border border-line bg-bg px-3 py-2.5">
               <code className="min-w-0 flex-1 break-all font-mono text-xs">{newToken}</code>
               <CopyButton value={newToken} />
             </div>
             <div className="mt-5 flex justify-end">
-              <Button onClick={() => { setTokModal(false); setNewToken(null); }}>Hecho</Button>
+              <Button onClick={() => { setTokModal(false); setNewToken(null); }}>Aceptar</Button>
             </div>
           </>
         ) : (
@@ -335,10 +335,10 @@ export default function AccountPage() {
             }}
           >
             <div className="flex flex-col gap-3">
-              <Field label="Nombre" hint="quién lo usa: «Claude», «CI de GitHub»…">
+              <Field label="Nombre" hint="Quién lo utiliza: «Claude», «CI de GitHub»">
                 <input className="input" value={tokName} onChange={(e) => setTokName(e.target.value)} maxLength={60} autoFocus />
               </Field>
-              <Field label="Caducidad en días" hint="vacío = no caduca">
+              <Field label="Caducidad en días" hint="Si se deja vacío, el token no caduca">
                 <input
                   className="input tnum"
                   type="number"
@@ -367,7 +367,7 @@ export default function AccountPage() {
         onClose={() => setPkDelete(null)}
         onConfirm={() => pkDelete && removePasskey.mutate(pkDelete.id)}
         title="Eliminar passkey"
-        message={`«${pkDelete?.name}» dejará de servir para entrar. Asegúrate de conservar otra forma de acceso.`}
+        message={`«${pkDelete?.name}» dejará de ser válida para iniciar sesión. Asegúrese de conservar otra forma de acceso.`}
         loading={removePasskey.isPending}
       />
 
@@ -376,7 +376,7 @@ export default function AccountPage() {
         onClose={() => setTokDelete(null)}
         onConfirm={() => tokDelete && removeToken.mutate(tokDelete.id)}
         title="Revocar token"
-        message={`Las integraciones que usen «${tokDelete?.name}» dejarán de funcionar al momento.`}
+        message={`Las integraciones que usen «${tokDelete?.name}» dejarán de funcionar de inmediato.`}
         confirmLabel="Revocar"
         loading={removeToken.isPending}
       />

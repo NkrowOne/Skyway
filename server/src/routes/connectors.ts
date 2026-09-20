@@ -154,7 +154,7 @@ export async function connectorRoutes(app: FastifyInstance): Promise<void> {
     if (!connector) return reply.code(404).send({ error: 'Conector no encontrado' });
     if (!assertProjectAccess(req, reply, connector.project_id)) return reply;
     const slug = parseGithubSlug(query.repo);
-    if (!slug) return reply.code(400).send({ error: 'Escribe el repositorio como owner/repo o pega su URL de GitHub' });
+    if (!slug) return reply.code(400).send({ error: 'Introduzca el repositorio como owner/repo o pegue su URL de GitHub' });
     try {
       const repo = await lookupRepo(connector.token, slug.owner, slug.repo);
       if (repo) return { repo };

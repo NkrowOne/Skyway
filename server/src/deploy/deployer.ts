@@ -328,7 +328,7 @@ async function runDeployment(deploymentId: string): Promise<void> {
       throw new Error(`El workspace «${workspace.name}» está suspendido: los despliegues están detenidos hasta reactivarlo.`);
     }
     if (!(await dockerAvailable(true))) {
-      throw new Error('Docker no está disponible. Comprueba que el daemon está corriendo y que Skyway tiene acceso a /var/run/docker.sock');
+      throw new Error('Docker no está disponible. Compruebe que el daemon está en ejecución y que Skyway tiene acceso a /var/run/docker.sock');
     }
 
     log(`Despliegue de "${service.name}" en el proyecto "${project.name}" (${deployment.trigger})`);
@@ -344,7 +344,7 @@ async function runDeployment(deploymentId: string): Promise<void> {
       image = deployment.image_tag;
       log(`Rollback a la imagen ${image}`);
       if (!(await imageExists(image))) {
-        throw new Error(`La imagen ${image} ya no existe en el servidor (fue purgada). Haz un despliegue normal.`);
+        throw new Error(`La imagen ${image} ya no existe en el servidor (se purgó). Realice un despliegue normal.`);
       }
       // Volver a una versión anterior debe volver también a SU config-as-code:
       // si aquel commit declaraba otro comando de arranque, es el que toca.
@@ -589,17 +589,17 @@ async function assertPostgresVolumeCompatible(
   if (rootMajor === null && nestedMajor === null && newLayoutMajors.length === 0) return;
 
   const migra =
-    'Para cambiar de versión mayor: crea un Backup con la versión actual de los datos, cambia la versión en Ajustes, borra el servicio marcando «borrar también el volumen», recréalo y restaura el backup. Para empezar de cero basta con borrar el servicio con su volumen.';
+    'Para cambiar de versión mayor: cree una copia de seguridad con la versión actual de los datos, cambie la versión en Ajustes, elimine el servicio marcando «borrar también el volumen», vuelva a crearlo y restaure la copia. Para empezar de cero es suficiente con eliminar el servicio con su volumen.';
 
   if (rootMajor !== null) {
     if (target >= 18) {
       throw new Error(
-        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} con el formato antiguo (anterior a 18) y la imagen pedida es ${version}: Postgres 18+ no puede abrirlos directamente. Mantén la versión «${rootMajor}-alpine» en Ajustes para seguir funcionando, o migra. ${migra}`,
+        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} con el formato antiguo (anterior a 18) y la imagen solicitada es ${version}: Postgres 18+ no puede abrirlos directamente. Mantenga la versión «${rootMajor}-alpine» en Ajustes para seguir funcionando, o migre los datos. ${migra}`,
       );
     }
     if (rootMajor !== target) {
       throw new Error(
-        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} y la imagen pedida es ${version}: una versión mayor no puede abrir los datos de otra. Vuelve a la versión «${rootMajor}-alpine» o migra. ${migra}`,
+        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} y la imagen solicitada es ${version}: una versión mayor no puede abrir los datos de otra. Vuelva a la versión «${rootMajor}-alpine» o migre los datos. ${migra}`,
       );
     }
     return; // datos y versión coinciden (layout <18): arranque normal
@@ -607,7 +607,7 @@ async function assertPostgresVolumeCompatible(
 
   if (nestedMajor !== null) {
     throw new Error(
-      `El volumen ${volume} tiene los datos de PostgreSQL ${nestedMajor} en el subdirectorio data/ (los escribió un Postgres <18 montado en la ruta de 18+, un estado que esta versión de Skyway ya no produce). Con el servicio parado, muévelos a la raíz del volumen: docker run --rm -v ${volume}:/v busybox sh -c 'mv /v/data/* /v/ && rmdir /v/data' y usa la versión «${nestedMajor}-alpine»; o borra el servicio con su volumen para empezar de cero.`,
+      `El volumen ${volume} contiene los datos de PostgreSQL ${nestedMajor} en el subdirectorio data/ (los escribió un Postgres <18 montado en la ruta de 18+, un estado que esta versión de Skyway ya no produce). Con el servicio detenido, muévalos a la raíz del volumen: docker run --rm -v ${volume}:/v busybox sh -c 'mv /v/data/* /v/ && rmdir /v/data' y utilice la versión «${nestedMajor}-alpine»; o elimine el servicio con su volumen para empezar de cero.`,
     );
   }
 
@@ -615,7 +615,7 @@ async function assertPostgresVolumeCompatible(
   if (target < 18 || !newLayoutMajors.includes(target)) {
     const found = [...new Set(newLayoutMajors)].join(', ');
     throw new Error(
-      `El volumen ${volume} ya está inicializado con el formato de Postgres 18+ (datos de la versión ${found}) y la imagen pedida es ${version}. Usa la versión «${found}-alpine» (o superior con pg_upgrade manual), o migra. ${migra}`,
+      `El volumen ${volume} ya está inicializado con el formato de Postgres 18+ (datos de la versión ${found}) y la imagen solicitada es ${version}. Utilice la versión «${found}-alpine» (o superior con pg_upgrade manual), o migre los datos. ${migra}`,
     );
   }
 }
@@ -862,14 +862,14 @@ async function reuseBuiltImage(
   const cambiadas = changedBuildVars(previous.build_vars, env);
   if (cambiadas.length > 0) {
     log(
-      `El commit ${head.slice(0, 7)} ya estaba construido, pero ${cambiadas.join(', ')} entró en aquel build y su ` +
-        'valor ha cambiado: la imagen guardada lleva el valor viejo dentro, así que se compila de nuevo.',
+      `El commit ${head.slice(0, 7)} ya estaba construido, pero ${cambiadas.join(', ')} formó parte de aquella compilación y su ` +
+        'valor ha cambiado: la imagen guardada contiene el valor anterior, por lo que se compila de nuevo.',
     );
     return null;
   }
   log(
     `El commit ${head.slice(0, 7)} ya está construido con esta configuración: se reutiliza la imagen ${previous.image_tag} ` +
-      '(sin clonar ni compilar). Usa «Reconstruir» si quieres forzar una compilación limpia.',
+      '(sin clonar ni compilar). Utilice «Reconstruir» para forzar una compilación limpia.',
   );
   return previous;
 }
@@ -1018,7 +1018,7 @@ async function runPreDeploy(
     await spawnLogged('docker', args, { env: { ...env, SKYWAY_PREDEPLOY_CMD: command }, onSpawn }, log);
   } catch (err: any) {
     throw new Error(
-      `El comando previo al despliegue falló (${err?.message || err}). No se ha tocado la versión en marcha.`,
+      `El comando previo al despliegue falló (${err?.message || err}). La versión en ejecución no se ha modificado.`,
     );
   }
   log('Comando previo completado.');
@@ -1059,8 +1059,8 @@ async function resolveGitPort(
   if (nadieLoEligio && nuncaDesplegoBien && expuestos.length === 1) {
     const detectado = expuestos[0];
     log(
-      `Puerto interno detectado del EXPOSE de la imagen: ${detectado} (estaba el ${configurado} por defecto, que ` +
-        'nadie llegó a elegir). Queda guardado en Ajustes del servicio; cámbialo ahí si tu aplicación escucha en otro.',
+      `Puerto interno detectado a partir del EXPOSE de la imagen: ${detectado} (el valor por defecto era ${configurado}, ` +
+        'sin selección explícita). Se guarda en Ajustes del servicio; modifíquelo si la aplicación escucha en otro puerto.',
     );
     // Se persiste para que el panel, las etiquetas de Traefik y los despliegues
     // siguientes cuenten todos lo mismo, y para que esto deje de decidirse solo.
@@ -1069,9 +1069,9 @@ async function resolveGitPort(
   }
 
   log(
-    `⚠ La imagen declara EXPOSE ${expuestos.join(', ')} y el puerto interno del servicio es ${configurado}. Si tu ` +
-      `aplicación escucha donde dice la imagen y no en ${configurado}, Traefik enrutará a un puerto vacío (502) ` +
-      'aunque el despliegue se dé por bueno. Se respeta el configurado: cámbialo en Ajustes → Puerto interno si hace falta.',
+    `⚠ La imagen declara EXPOSE ${expuestos.join(', ')} y el puerto interno del servicio es ${configurado}. Si la ` +
+      `aplicación escucha en el puerto que indica la imagen y no en ${configurado}, Traefik enrutará a un puerto sin proceso (502) ` +
+      'aunque el despliegue se considere correcto. Se respeta el puerto configurado: modifíquelo en Ajustes → Puerto interno si es necesario.',
   );
   return configurado;
 }
@@ -1101,7 +1101,7 @@ async function deployContainer(
     .map(([key]) => key);
   if (sinResolver.length > 0) {
     log(
-      `⚠ Referencias sin resolver en ${sinResolver.join(', ')}: la variable apuntada ya no existe. ` +
+      `⚠ Referencias sin resolver en ${sinResolver.join(', ')}: la variable referenciada ya no existe. ` +
         'El contenedor arrancará con el texto literal ${{...}} como valor.',
     );
   }
@@ -1231,7 +1231,7 @@ async function deployContainer(
   // gestiona en el panel: se avisa en vez de aplicarlo a espaldas de nadie.
   if (repoConfig?.numReplicas && repoConfig.numReplicas !== configuredReplicas(service)) {
     log(
-      `ℹ La configuración del repositorio pide ${repoConfig.numReplicas} réplicas; en Skyway las réplicas se fijan en Ajustes del servicio (consumen cuota del workspace). Se mantienen ${configuredReplicas(service)}.`,
+      `ℹ La configuración del repositorio solicita ${repoConfig.numReplicas} réplicas; en Skyway las réplicas se establecen en Ajustes del servicio (consumen cuota del workspace). Se mantienen ${configuredReplicas(service)}.`,
     );
   }
   if (repoConfig?.watchPatterns.length) {
@@ -1247,7 +1247,7 @@ async function deployContainer(
   const replicas = configuredReplicas(service);
   if (replicas > 1 && (volumes.length > 0 || hostPort)) {
     throw new Error(
-      'Las réplicas requieren un servicio sin volúmenes y sin puerto público: varias copias no pueden compartir el mismo volumen de escritura ni el mismo puerto del host. Quita esas opciones o vuelve a 1 réplica.',
+      'Las réplicas requieren un servicio sin volúmenes y sin puerto público: varias copias no pueden compartir el mismo volumen de escritura ni el mismo puerto del host. Elimine esas opciones o vuelva a 1 réplica.',
     );
   }
 
@@ -1259,7 +1259,7 @@ async function deployContainer(
 
   if (canOverlap) {
     if (oldExists) {
-      log('Validando la versión nueva antes de tocar la actual (la vieja sigue sirviendo)...');
+      log('Validando la versión nueva antes de sustituir la actual (la versión anterior sigue en servicio)...');
       await runServiceContainer({
         ...spec,
         nameOverride: tempName,
@@ -1283,7 +1283,7 @@ async function deployContainer(
         await appendContainerTail(tempName, log);
         await removeContainer(tempName);
         throw new Error(
-          `La versión nueva no pasó la validación (${verdict.reason}). La versión anterior sigue en marcha SIN interrupción.`,
+          `La versión nueva no pasó la validación (${verdict.reason}). La versión anterior sigue en ejecución sin interrupción.`,
         );
       }
       await removeContainer(tempName);
@@ -1317,7 +1317,7 @@ async function deployContainer(
           log(`La réplica ${i} falló: restaurando su versión anterior...`);
           await renameContainer(rPrev, rn);
           throw new Error(
-            `La réplica ${i}/${replicas} falló (${err?.message || err}). Su versión anterior sigue en marcha; las réplicas ya actualizadas quedan con la versión nueva hasta el próximo despliegue.`,
+            `La réplica ${i}/${replicas} falló (${err?.message || err}). Su versión anterior sigue en ejecución; las réplicas ya actualizadas conservan la versión nueva hasta el próximo despliegue.`,
           );
         }
         throw new Error(`La réplica ${i}/${replicas} no arrancó (${err?.message || err}).`);
@@ -1344,7 +1344,7 @@ async function deployContainer(
       await stopContainer(c.name);
       await removeContainer(c.name);
     }
-    log(oldExists ? 'Intercambio completado: corte cero.' : 'Servicio en marcha.');
+    log(oldExists ? 'Intercambio completado sin interrupción del servicio.' : 'Servicio en ejecución.');
   } else {
     if (oldExists) {
       log('Servicio con estado (volúmenes/puerto fijo): intercambio con restauración automática...');
@@ -1367,7 +1367,7 @@ async function deployContainer(
         );
       }
       throw new Error(
-        `El contenedor terminó inesperadamente (${err?.message || err}). Revisa los logs del servicio.`,
+        `El contenedor terminó inesperadamente (${err?.message || err}). Consulte el registro del servicio.`,
       );
     }
     if (oldExists) {
@@ -1384,13 +1384,13 @@ async function deployContainer(
     // correcto, da por bueno que funciona.
     if (!internalPort) {
       log(
-        `⚠ ${domains.join(', ')}: el dominio NO enruta a este servicio. No tiene puerto interno, y Traefik necesita ` +
-          'saber a qué puerto del contenedor entregar la petición: no se crea la ruta ni se emite certificado, así ' +
-          'que el dominio responderá 404 y con un certificado que no es el suyo.',
+        `⚠ ${domains.join(', ')}: el dominio no enruta a este servicio. No tiene puerto interno, y Traefik necesita ` +
+          'saber a qué puerto del contenedor entregar la petición: no se crea la ruta ni se emite certificado, por ' +
+          'lo que el dominio responderá 404 y con un certificado que no le corresponde.',
       );
       log(
-        'Si el servicio sirve HTTP, indica su puerto en Ajustes del servicio → Puerto interno y redespliega. Si es ' +
-          'un worker sin HTTP, quítale el dominio: no lo necesita.',
+        'Si el servicio sirve HTTP, indique su puerto en Ajustes del servicio → Puerto interno y vuelva a desplegar. Si es ' +
+          'un worker sin HTTP, elimine el dominio: no es necesario.',
       );
     } else {
       log(`Dominios activos: ${domains.join(', ')}`);
@@ -1577,7 +1577,7 @@ async function validateContainer(
         attempts += 1;
         const state = await getRuntime(containerRef);
         if (state.state !== 'running') {
-          return { ok: false, reason: `el proceso murió durante el arranque (código ${state.exitCode ?? 'n/a'})` };
+          return { ok: false, reason: `el proceso finalizó durante el arranque (código ${state.exitCode ?? 'n/a'})` };
         }
         if (await probe.probe(url)) {
           log(`Healthcheck superado en el intento ${attempts}.`);
@@ -1604,7 +1604,7 @@ async function validateContainer(
   const budget = reintenta ? RESTART_WINDOW_MS : GRACE_MS;
   log(
     reintenta
-      ? `Sin healthcheck configurado: tiene que aguantar ${GRACE_MS / 1000}s seguidos en pie (hasta ${budget / 1000}s, porque el repositorio pide reintentos)...`
+      ? `Sin healthcheck configurado: el proceso debe mantenerse en ejecución ${GRACE_MS / 1000}s seguidos (hasta ${budget / 1000}s, porque el repositorio solicita reintentos)...`
       : `Sin healthcheck configurado: periodo de gracia de ${GRACE_MS / 1000}s...`,
   );
 
@@ -1631,7 +1631,7 @@ async function validateContainer(
         return { ok: false, reason: `el proceso terminó enseguida (estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'})` };
       }
       if (!avisado) {
-        log('El proceso se cayó al arrancar; Docker lo reintenta según la política del repositorio. Esperando a que se asiente...');
+        log('El proceso finalizó al arrancar; Docker lo reintenta según la política del repositorio. Esperando a que se estabilice...');
         avisado = true;
       }
     }
@@ -1640,7 +1640,7 @@ async function validateContainer(
   return {
     ok: false,
     reason: reintenta
-      ? `no logró mantenerse en pie ${GRACE_MS / 1000}s seguidos en ${budget / 1000}s: sigue cayéndose y reiniciándose`
+      ? `no se mantuvo en ejecución ${GRACE_MS / 1000}s seguidos en ${budget / 1000}s: continúa finalizando y reiniciándose`
       : 'el proceso no llegó a arrancar',
   };
 }

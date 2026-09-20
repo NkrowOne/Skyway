@@ -149,7 +149,7 @@ export async function analyzeRailwayProject(
   const domainsSkipped = detail.services.flatMap((s) => s.serviceDomains);
   if (domainsSkipped.length > 0) {
     warnings.push(
-      `Se omiten ${domainsSkipped.length} dominio(s) generados por Railway (*.up.railway.app): en Skyway genera los tuyos con tu dominio raíz o añade dominios propios.`,
+      `Se omiten ${domainsSkipped.length} dominio(s) generados por Railway (*.up.railway.app): en Skyway, genere los suyos con su dominio raíz o añada dominios propios.`,
     );
   }
 
@@ -187,7 +187,7 @@ async function planService(
   if (domains.invalid.length > 0) {
     // Se acotan en el informe para no reproducir un texto arbitrario largo.
     const lista = domains.invalid.map((d) => `«${d.slice(0, 60)}»`).join(', ');
-    notes.push(`Se descartan ${domains.invalid.length} dominio(s) con formato no válido: ${lista}. Añádelos a mano en Ajustes si procede.`);
+    notes.push(`Se descartan ${domains.invalid.length} dominio(s) con formato no válido: ${lista}. Añádalos manualmente en Ajustes si procede.`);
   }
   const base: PlannedService = {
     railwayName: raw.name,
@@ -210,7 +210,7 @@ async function planService(
   if (raw.healthcheckPath) base.healthcheckPath = raw.healthcheckPath;
   if (raw.numReplicas && raw.numReplicas > 1) {
     base.replicas = Math.min(raw.numReplicas, 10);
-    notes.push(`Railway tenía ${raw.numReplicas} réplicas: se importan (consumen cuota del workspace, revísalo en Ajustes).`);
+    notes.push(`Railway tenía ${raw.numReplicas} réplicas: se importan (consumen cuota del workspace; revíselo en Ajustes).`);
   }
   if (raw.cronSchedule) {
     notes.push(`El servicio tenía un cron en Railway («${raw.cronSchedule}»): Skyway aún no ejecuta servicios programados.`);
@@ -225,13 +225,13 @@ async function planService(
   const politicaReinicio = raw.restartPolicyType?.trim().toUpperCase() || null;
   if (politicaReinicio === 'NEVER') {
     notes.push(
-      'En Railway la política de reinicio era NEVER; en Skyway el contenedor se relanza igualmente (unless-stopped). ' +
-        'Si el servicio no debe revivir al terminar, declara «deploy.restartPolicyType: "NEVER"» en el railway.json del repositorio.',
+      'En Railway la política de reinicio era NEVER; en Skyway el contenedor se vuelve a iniciar igualmente (unless-stopped). ' +
+        'Si el servicio no debe reiniciarse al finalizar, declare «deploy.restartPolicyType: "NEVER"» en el railway.json del repositorio.',
     );
   } else if (politicaReinicio && politicaReinicio !== 'ON_FAILURE' && politicaReinicio !== 'ALWAYS') {
     notes.push(
-      `En Railway la política de reinicio era «${raw.restartPolicyType}», que Skyway no sabe traducir: el contenedor ` +
-        'se relanza con «unless-stopped». Puedes fijarla en el railway.json del repositorio (deploy.restartPolicyType).',
+      `En Railway la política de reinicio era «${raw.restartPolicyType}», que Skyway no puede traducir: el contenedor ` +
+        'se vuelve a iniciar con «unless-stopped». Puede fijarla en el railway.json del repositorio (deploy.restartPolicyType).',
     );
   }
 
@@ -251,12 +251,12 @@ async function planService(
     base.image = raw.image;
     base.port = explicitPort;
     base.startCmd = raw.startCommand ?? undefined;
-    if (!explicitPort) notes.push('Sin puerto conocido: configúralo en Ajustes si el servicio sirve HTTP.');
+    if (!explicitPort) notes.push('Sin puerto conocido: configúrelo en Ajustes si el servicio sirve HTTP.');
     // Derivadas de Postgres que no mapean a plantilla (postgis…): la 18+ exige
     // el volumen en /var/lib/postgresql y el montaje de Railway usa la ruta vieja.
     if (/postg/i.test(raw.image) && raw.volumeMounts.includes('/var/lib/postgresql/data')) {
       notes.push(
-        'Las imágenes basadas en Postgres 18+ se niegan a arrancar con el volumen montado en /var/lib/postgresql/data: si el contenedor entra en bucle de reinicio, cambia la ruta del volumen a /var/lib/postgresql en Ajustes.',
+        'Las imágenes basadas en Postgres 18+ no arrancan con el volumen montado en /var/lib/postgresql/data: si el contenedor entra en bucle de reinicio, cambie la ruta del volumen a /var/lib/postgresql en Ajustes.',
       );
     }
     return base;
@@ -266,22 +266,22 @@ async function planService(
     base.kind = 'git';
     base.repoUrl = `https://github.com/${raw.repo}`;
     base.branch = raw.branch ?? 'main';
-    if (!raw.branch) notes.push('Railway no expuso la rama: se asume "main", verifícala en Ajustes.');
+    if (!raw.branch) notes.push('Railway no expuso la rama: se asume «main»; verifíquela en Ajustes.');
     base.rootDir = raw.rootDirectory?.replace(/^\//, '') || undefined;
     base.startCmd = raw.startCommand ?? undefined;
     if (raw.startCommand) {
-      notes.push('Si el repo trae railway.json con deploy.startCommand, ese manda al desplegar (config-as-code, como en Railway).');
+      notes.push('Si el repositorio incluye railway.json con deploy.startCommand, ese comando prevalece al desplegar (config-as-code, como en Railway).');
     }
     base.port = explicitPort ?? 3000;
-    if (!explicitPort) notes.push('Puerto interno asumido 3000: ajústalo si tu app escucha en otro.');
+    if (!explicitPort) notes.push('Se asume el puerto interno 3000: ajústelo si la aplicación escucha en otro.');
     if (raw.buildCommand) {
       // Skyway construye con Nixpacks cuando no hay Dockerfile, igual que
       // Railway, y Nixpacks acepta el comando de compilación por variable.
       base.buildCmd = raw.buildCommand;
-      notes.push(`Build command de Railway («${raw.buildCommand}») trasladado: se aplica al construir con Nixpacks (si el repo trae Dockerfile, manda el Dockerfile).`);
+      notes.push(`Comando de compilación de Railway («${raw.buildCommand}») trasladado: se aplica al construir con Nixpacks (si el repositorio incluye Dockerfile, prevalece el Dockerfile).`);
     }
     if (raw.builder && raw.builder.toUpperCase() === 'DOCKERFILE') {
-      notes.push('Railway construía con Dockerfile: asegúrate de que el repositorio lo trae en la raíz o indica su ruta en Ajustes.');
+      notes.push('Railway construía con Dockerfile: compruebe que el repositorio lo incluye en la raíz o indique su ruta en Ajustes.');
     }
     return base;
   }
@@ -294,7 +294,7 @@ function flagRailwayHosts(vars: Record<string, string>, serviceName: string, war
   for (const [k, v] of Object.entries(vars)) {
     if (v.includes('${{')) continue; // las referencias se re-resuelven en Skyway
     if (RAILWAY_HOST_RE.test(v)) {
-      warnings.push(`Variable ${serviceName}.${k} apunta a infraestructura de Railway: revísala tras importar.`);
+      warnings.push(`La variable ${serviceName}.${k} apunta a infraestructura de Railway: revísela tras la importación.`);
     }
   }
 }
@@ -507,7 +507,7 @@ export function rewriteRailwayRefs(
         case 'RAILWAY_PUBLIC_DOMAIN':
         case 'RAILWAY_STATIC_URL':
           if (target?.domains[0]) return target.domains[0];
-          unresolved.push(`${varName} → ${match} (ese servicio no tiene dominio propio: añádeselo y sustituye a mano)`);
+          unresolved.push(`${varName} → ${match} (ese servicio no tiene dominio propio: añádale uno y sustituya el valor manualmente)`);
           return match;
         case 'RAILWAY_SERVICE_NAME':
           if (target) return target.slug;
@@ -772,20 +772,20 @@ export async function runRailwayImport(
   const gitCount = report.created.filter((c) => c.kind === 'repositorio').length;
   const domainCount = plan.services.flatMap((s) => s.domains).length;
   if (gitCount > 0) {
-    report.nextSteps.push(`Despliega los ${gitCount} servicio(s) de repositorio (botón Desplegar). Si alguno es privado, configura antes el token de GitHub en Ajustes.`);
+    report.nextSteps.push(`Despliegue los ${gitCount} servicio(s) de repositorio (botón «Desplegar»). Si alguno es privado, configure antes el token de GitHub en Ajustes.`);
   }
   if (report.dataCopy.some((d) => d.automatable)) {
-    report.nextSteps.push('Copia los datos de las bases de datos desde el informe («Copiar datos ahora»); el log va en vivo.');
+    report.nextSteps.push('Copie los datos de las bases de datos desde el informe («Copiar datos ahora»); el registro se muestra en tiempo real.');
   } else if (report.dataCopy.some((d) => d.command)) {
-    report.nextSteps.push('Copia los datos de las bases de datos con los comandos del informe (ejecútalos en el servidor).');
+    report.nextSteps.push('Copie los datos de las bases de datos con los comandos del informe (ejecútelos en el servidor).');
   }
   if (domainCount > 0) {
-    report.nextSteps.push(`Apunta el DNS de tus ${domainCount} dominio(s) a la IP de este servidor cuando quieras hacer el cambio.`);
+    report.nextSteps.push(`Apunte el DNS de sus ${domainCount} dominio(s) a la IP de este servidor cuando desee realizar el cambio.`);
   }
   report.nextSteps.push(
-    'Conecta la cuenta de GitHub del proyecto (botón «GitHub»): con la App los push despliegan solos, sin configurar webhooks.',
+    'Conecte la cuenta de GitHub del proyecto (botón «GitHub»): con la App, los push se despliegan automáticamente, sin configurar webhooks.',
   );
-  report.nextSteps.push('Cuando todo funcione, pausa o borra el proyecto en Railway.');
+  report.nextSteps.push('Cuando todo funcione correctamente, pause o elimine el proyecto en Railway.');
 
   setSetting(`importReport:${project.id}`, JSON.stringify(report));
   return { project, report };
@@ -831,11 +831,11 @@ function buildDataCopyEntry(
   };
 
   if (templateKey === 'redis') {
-    entry.note = 'Redis suele usarse como caché: normalmente no hace falta migrar datos. Si los necesitas, usa redis-cli --rdb.';
+    entry.note = 'Redis suele utilizarse como caché: normalmente no es necesario migrar datos. Si los necesita, utilice redis-cli --rdb.';
     return entry;
   }
   if (!publicUrl) {
-    entry.note = 'Railway no expone URL pública para esta base de datos: activa el TCP Proxy en Railway o exporta/importa manualmente.';
+    entry.note = 'Railway no expone URL pública para esta base de datos: active el TCP Proxy en Railway o exporte e importe los datos manualmente.';
     return entry;
   }
 
@@ -843,8 +843,8 @@ function buildDataCopyEntry(
   // («Copiar datos ahora») pasa la URL por variable de entorno y no tiene este
   // problema, así que ese es el camino que se recomienda.
   const manual = entry.automatable
-    ? 'La URL de origen lleva caracteres especiales: usa «Copiar datos ahora» desde el panel, que no pasa por el shell.'
-    : 'La URL de origen lleva caracteres especiales: exporta e importa manualmente con las herramientas del motor.';
+    ? 'La URL de origen contiene caracteres especiales: utilice «Copiar datos ahora» desde el panel, que no pasa por el shell.'
+    : 'La URL de origen contiene caracteres especiales: exporte e importe los datos manualmente con las herramientas del motor.';
 
   if (templateKey === 'postgres') {
     if (!shellSafe(publicUrl, version, localEnv.POSTGRES_PASSWORD)) {
@@ -852,7 +852,7 @@ function buildDataCopyEntry(
       return entry;
     }
     entry.command = `docker run --rm --network ${network} postgres:${version} sh -c 'pg_dump --no-owner --no-acl "${publicUrl}" | psql "postgresql://skyway:${localEnv.POSTGRES_PASSWORD}@${svcSlug}:5432/skyway"'`;
-    entry.note = 'Pulsa «Copiar datos ahora» para hacerlo desde el panel, o ejecuta el comando en el servidor. Copia esquema y datos.';
+    entry.note = 'Pulse «Copiar datos ahora» para realizarlo desde el panel, o ejecute el comando en el servidor. Copia esquema y datos.';
   } else if (templateKey === 'mysql') {
     const u = tryParseUrl(publicUrl);
     if (u) {
@@ -864,9 +864,9 @@ function buildDataCopyEntry(
         return entry;
       }
       entry.command = `docker run --rm --network ${network} mysql:${version} sh -c 'mysqldump --single-transaction -h ${u.hostname} -P ${u.port || '3306'} -u ${user} -p"${password}" ${db} | mysql -h ${svcSlug} -u skyway -p"${localEnv.MYSQL_PASSWORD}" skyway'`;
-      entry.note = 'Pulsa «Copiar datos ahora» para hacerlo desde el panel, o ejecuta el comando en el servidor.';
+      entry.note = 'Pulse «Copiar datos ahora» para realizarlo desde el panel, o ejecute el comando en el servidor.';
     } else {
-      entry.note = `No se pudo interpretar la URL pública (${publicUrl.slice(0, 40)}...): exporta con mysqldump manualmente.`;
+      entry.note = `No se pudo interpretar la URL pública (${publicUrl.slice(0, 40)}…): exporte los datos con mysqldump manualmente.`;
     }
   } else if (templateKey === 'mongo') {
     if (!shellSafe(publicUrl, version, localEnv.MONGO_INITDB_ROOT_PASSWORD)) {
@@ -874,9 +874,9 @@ function buildDataCopyEntry(
       return entry;
     }
     entry.command = `docker run --rm --network ${network} mongo:${version} sh -c 'mongodump --uri="${publicUrl}" --archive | mongorestore --uri="mongodb://skyway:${localEnv.MONGO_INITDB_ROOT_PASSWORD}@${svcSlug}:27017" --archive --drop'`;
-    entry.note = 'Pulsa «Copiar datos ahora» para hacerlo desde el panel, o ejecuta el comando en el servidor. Sustituye las colecciones existentes.';
+    entry.note = 'Pulse «Copiar datos ahora» para realizarlo desde el panel, o ejecute el comando en el servidor. Sustituye las colecciones existentes.';
   } else if (templateKey === 'minio') {
-    entry.note = 'Copia los objetos con `mc mirror` (MinIO Client) entre el bucket antiguo y el nuevo.';
+    entry.note = 'Copie los objetos con `mc mirror` (MinIO Client) entre el bucket antiguo y el nuevo.';
   }
   return entry;
 }

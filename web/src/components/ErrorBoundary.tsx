@@ -64,10 +64,10 @@ export default class ErrorBoundary extends Component<Props, State> {
           <AlertTriangle size={20} />
         </span>
         <div>
-          <p className="text-sm font-semibold">Algo se ha roto al pintar {this.props.scope ?? 'esta parte'}</p>
+          <p className="text-sm font-semibold">Se ha producido un error al mostrar {this.props.scope ?? 'esta sección'}</p>
           <p className="mx-auto mt-1.5 max-w-md text-xs text-sub">
-            El resto del panel sigue funcionando. Si vuelve a pasar en el mismo sitio, es un fallo de Skyway y no de tus
-            datos: el detalle está en la consola del navegador.
+            El resto del panel sigue funcionando. Si el error se repite en la misma sección, se trata de un fallo de Skyway
+            y no de sus datos; el detalle está disponible en la consola del navegador.
           </p>
         </div>
         <p className="max-w-lg break-words rounded-lg border border-line bg-bg px-3 py-2 font-mono text-xs text-subtle">

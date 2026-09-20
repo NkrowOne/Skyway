@@ -93,7 +93,7 @@ async function requireRunning(project: ProjectRow, service: ServiceRow): Promise
   const name = containerName(project, service);
   const runtime = await getRuntime(name);
   if (runtime.state !== 'running') {
-    throw new Error('La base de datos no está en ejecución: arráncala antes de consultar.');
+    throw new Error('La base de datos no está en ejecución: es necesario iniciarla antes de consultar.');
   }
   return name;
 }
@@ -284,7 +284,7 @@ export function assertReadOnly(engine: DbEngine, query: string): void {
     for (const stmt of splitSqlStatements(query)) {
       if (!SQL_READ_START.test(stmt)) {
         throw new Error(
-          'El modo solo lectura únicamente permite consultas SELECT/SHOW/EXPLAIN. Activa "Permitir escritura" para ejecutar cambios.',
+          'El modo de solo lectura únicamente permite consultas SELECT/SHOW/EXPLAIN. Active «Permitir escritura» para ejecutar cambios.',
         );
       }
     }
@@ -292,7 +292,7 @@ export function assertReadOnly(engine: DbEngine, query: string): void {
   }
   if (engine === 'mongo') {
     if (MONGO_WRITE.test(query.replace(MONGO_ADMIN_READ, '__admin_lectura('))) {
-      throw new Error('Esa operación modifica datos. Activa "Permitir escritura" para ejecutarla.');
+      throw new Error('Esta operación modifica datos. Active «Permitir escritura» para ejecutarla.');
     }
     return;
   }
@@ -306,10 +306,10 @@ export function assertReadOnly(engine: DbEngine, query: string): void {
     if (first === 'client') {
       const sub = words[1]?.toLowerCase() ?? '';
       if (['list', 'info', 'getname', 'id'].includes(sub)) continue;
-      throw new Error(`"CLIENT ${sub.toUpperCase()}" no es de lectura. Activa "Permitir escritura" para ejecutarlo.`);
+      throw new Error(`«CLIENT ${sub.toUpperCase()}» no es un comando de lectura. Active «Permitir escritura» para ejecutarlo.`);
     }
     if (!REDIS_READ.has(first)) {
-      throw new Error(`El comando "${first.toUpperCase()}" no es de lectura. Activa "Permitir escritura" para ejecutarlo.`);
+      throw new Error(`El comando «${first.toUpperCase()}» no es de lectura. Active «Permitir escritura» para ejecutarlo.`);
     }
   }
 }
@@ -469,12 +469,12 @@ async function mongoRun(name: string, query: string): Promise<QueryResult> {
   });
   if (res.timedOut) {
     throw new Error(
-      'Se agotó la espera (30 s). Ojo: la operación puede seguir ejecutándose dentro de MongoDB; revisa db.currentOp() si era pesada.',
+      'Se agotó el tiempo de espera (30 s). Tenga en cuenta que la operación puede seguir ejecutándose dentro de MongoDB; compruebe db.currentOp() si era una operación pesada.',
     );
   }
   if (res.exitCode === 126 || res.exitCode === 127) {
     throw new Error(
-      'Esta imagen de MongoDB no incluye mongosh (las 4.x y anteriores no lo traen). Sube la versión de la imagen en Ajustes del servicio para usar la consola.',
+      'Esta imagen de MongoDB no incluye mongosh (las versiones 4.x y anteriores no lo incluyen). Actualice la versión de la imagen en Ajustes del servicio para utilizar la consola.',
     );
   }
   if (res.exitCode !== null && res.exitCode !== 0) throw execError(res.output, 'La consulta falló.');
@@ -652,7 +652,7 @@ const RUNNERS: Record<DbEngine, EngineRunner> = {
     snippets: [
       { label: 'Tablas y tamaño', hint: 'Qué ocupa cada tabla', query: "SELECT c.relname AS tabla, pg_size_pretty(pg_total_relation_size(c.oid)) AS tamano, COALESCE(c.reltuples,0)::bigint AS filas_aprox\nFROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\nWHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')\nORDER BY pg_total_relation_size(c.oid) DESC;" },
       { label: 'Conexiones activas', hint: 'Quién está conectado ahora', query: "SELECT pid, usename, state, query_start, LEFT(query, 80) AS query\nFROM pg_stat_activity WHERE state <> 'idle' ORDER BY query_start;" },
-      { label: 'Columnas de una tabla', hint: 'Estructura (cambia el nombre)', query: "SELECT column_name, data_type, is_nullable, column_default\nFROM information_schema.columns WHERE table_name = 'mi_tabla' ORDER BY ordinal_position;" },
+      { label: 'Columnas de una tabla', hint: 'Estructura (sustituya el nombre)', query: "SELECT column_name, data_type, is_nullable, column_default\nFROM information_schema.columns WHERE table_name = 'mi_tabla' ORDER BY ordinal_position;" },
       { label: 'Índices sin usar', hint: 'Candidatos a eliminar', query: 'SELECT relname AS tabla, indexrelname AS indice, idx_scan AS usos\nFROM pg_stat_user_indexes ORDER BY idx_scan ASC LIMIT 20;' },
     ],
   },
@@ -664,7 +664,7 @@ const RUNNERS: Record<DbEngine, EngineRunner> = {
     snippets: [
       { label: 'Tablas y tamaño', hint: 'Qué ocupa cada tabla', query: "SELECT table_name AS tabla, ROUND((data_length+index_length)/1024/1024, 2) AS mb, table_rows AS filas_aprox\nFROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY (data_length+index_length) DESC;" },
       { label: 'Procesos activos', hint: 'Consultas en ejecución', query: 'SHOW FULL PROCESSLIST;' },
-      { label: 'Columnas de una tabla', hint: 'Estructura (cambia el nombre)', query: "SHOW COLUMNS FROM mi_tabla;" },
+      { label: 'Columnas de una tabla', hint: 'Estructura (sustituya el nombre)', query: "SHOW COLUMNS FROM mi_tabla;" },
       { label: 'Variables del servidor', hint: 'Configuración efectiva', query: "SHOW VARIABLES LIKE 'max_connections';" },
     ],
   },
@@ -681,7 +681,7 @@ const RUNNERS: Record<DbEngine, EngineRunner> = {
     },
     snippets: [
       { label: 'Bases y colecciones', hint: 'Qué hay en el servidor', query: 'db.adminCommand({ listDatabases: 1 })' },
-      { label: 'Primeros documentos', hint: 'Cambia base y colección', query: "db.getSiblingDB('mi_base').getCollection('mi_coleccion').find().limit(10)" },
+      { label: 'Primeros documentos', hint: 'Sustituya base de datos y colección', query: "db.getSiblingDB('mi_base').getCollection('mi_coleccion').find().limit(10)" },
       { label: 'Contar documentos', hint: 'Total de una colección', query: "db.getSiblingDB('mi_base').getCollection('mi_coleccion').countDocuments()" },
       { label: 'Operaciones en curso', hint: 'Qué está ejecutando el servidor', query: 'db.adminCommand({ currentOp: 1, active: true })' },
     ],

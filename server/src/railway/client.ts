@@ -58,7 +58,7 @@ async function gql<T>(token: string | null, query: string, variables: Record<str
       // Solo se prueba el siguiente endpoint en errores de red. Un timeout no:
       // encadenar dos esperas de 20 s deja al usuario mirando una rueda.
       if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
-        throw new RailwayError('Railway no respondió en 20 s. Vuelve a intentarlo en un momento.', 'network');
+        throw new RailwayError('Railway no respondió en 20 s. Vuelva a intentarlo en unos instantes.', 'network');
       }
       lastError = err;
       continue;
@@ -67,11 +67,11 @@ async function gql<T>(token: string | null, query: string, variables: Record<str
     // socket queda ocupado, y el importador hace una petición por servicio.
     const text = await res.text().catch(() => '');
     if (res.status === 401 || res.status === 403) {
-      throw new RailwayError('Railway rechazó el token (401/403). Comprueba que es un token de cuenta válido.', 'auth');
+      throw new RailwayError('Railway rechazó el token (401/403). Compruebe que es un token de cuenta válido.', 'auth');
     }
     if (res.status === 429) {
       const wait = Number(res.headers.get('retry-after'));
-      const cuando = Number.isFinite(wait) && wait > 0 ? ` Vuelve a intentarlo en ${Math.ceil(wait)} s.` : ' Espera un poco antes de reintentar.';
+      const cuando = Number.isFinite(wait) && wait > 0 ? ` Vuelva a intentarlo en ${Math.ceil(wait)} s.` : ' Espere unos instantes antes de volver a intentarlo.';
       throw new RailwayError(`Railway ha limitado las peticiones de este token (429).${cuando}`, 'ratelimit');
     }
     if (!res.ok) {
@@ -81,7 +81,7 @@ async function gql<T>(token: string | null, query: string, variables: Record<str
     if (!body) {
       // Un 200 que no es JSON es un proxy o una página de mantenimiento delante
       // de la API: no es nuestro token ni nuestra consulta.
-      throw new RailwayError('Railway devolvió una respuesta que no es JSON (¿mantenimiento?). Vuelve a intentarlo.', 'http');
+      throw new RailwayError('Railway devolvió una respuesta que no es JSON (posible mantenimiento). Vuelva a intentarlo.', 'http');
     }
     if (Array.isArray(body.errors) && body.errors.length > 0) {
       const messages = body.errors.map((e: any) => (typeof e?.message === 'string' ? e.message : 'error desconocido'));
@@ -236,7 +236,7 @@ export async function getRailwayProject(
   if (ultimoError) throw ultimoError;
 
   const project = data?.project;
-  if (!project) throw new RailwayError('Proyecto no encontrado en Railway (¿ID correcto y token con acceso?)');
+  if (!project) throw new RailwayError('Proyecto no encontrado en Railway. Compruebe el ID del proyecto y que el token tiene acceso.');
 
   const environments = edges(project.environments).map((e: any) => ({ id: e.id, name: e.name }));
   const envId =

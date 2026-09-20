@@ -395,8 +395,8 @@ export function finalizeEnvImport(
     }
     const aplicacion =
       opts.source === 'deploy'
-        ? 'Las importadas ya van en este despliegue.'
-        : 'Redespliega el servicio para que el contenedor reciba las importadas.';
+        ? 'Las variables importadas se aplican en este despliegue.'
+        : 'Es necesario volver a desplegar el servicio para que el contenedor reciba las variables importadas.';
     fireAlert({
       quiet: true,
       severity: pendientes.length > 0 ? 'warning' : 'info',
@@ -411,8 +411,8 @@ export function finalizeEnvImport(
       explanation:
         `${aplicacion} ` +
         (pendientes.length > 0
-          ? 'Las pendientes traen un valor vacío o de ejemplo en el repositorio: rellénalas en la pestaña Variables del servicio y redespliega.'
-          : 'Revísalas en la pestaña Variables del servicio.'),
+          ? 'Las variables pendientes tienen un valor vacío o de ejemplo en el repositorio. Complete su valor en la pestaña «Variables» del servicio y vuelva a desplegar.'
+          : 'Puede revisarlas en la pestaña «Variables» del servicio.'),
       dedupeKey: `env_imported:${service.id}`,
     });
   }
@@ -424,8 +424,8 @@ function logEnvImport(report: EnvImportReport, log: (line: string) => void): voi
   const ficheros = report.files;
   log(
     ficheros.length === 1
-      ? `Variables: encontrado ${ficheros[0]} en el repositorio.`
-      : `Variables: encontrados ${ficheros.slice(0, -1).join(', ')} y ${ficheros[ficheros.length - 1]} en el repositorio.`,
+      ? `Variables: se ha encontrado ${ficheros[0]} en el repositorio.`
+      : `Variables: se han encontrado ${ficheros.slice(0, -1).join(', ')} y ${ficheros[ficheros.length - 1]} en el repositorio.`,
   );
   const importadas = report.imported.map((i) => i.key);
   const pendientes = report.pending.map((p) => p.key);
@@ -433,12 +433,12 @@ function logEnvImport(report: EnvImportReport, log: (line: string) => void): voi
   // claves del fichero, una a una, y taparían lo que sí interesa.
   const ignoradas = report.skipped.filter((s) => s.reason !== 'exists' && s.reason !== 'handled');
   if (importadas.length > 0) {
-    log(`Variables: ${importadas.length === 1 ? 'importada 1' : `importadas ${importadas.length}`} (${listaClaves(importadas)}).`);
+    log(`Variables: ${importadas.length === 1 ? 'se ha importado 1' : `se han importado ${importadas.length}`} (${listaClaves(importadas)}).`);
   }
   if (pendientes.length > 0) {
     log(
-      `Variables: ${pendientes.length} ${pendientes.length === 1 ? 'pendiente' : 'pendientes'} de valor (${listaClaves(pendientes)}): ` +
-        `${pendientes.length === 1 ? 'rellénala' : 'rellénalas'} en la pestaña Variables.`,
+      `Variables: ${pendientes.length} ${pendientes.length === 1 ? 'pendiente' : 'pendientes'} de valor (${listaClaves(pendientes)}). ` +
+        'Complete su valor en la pestaña «Variables».',
     );
   }
   if (ignoradas.length > 0) {
@@ -447,7 +447,7 @@ function logEnvImport(report: EnvImportReport, log: (line: string) => void): voi
     log(`Variables: ${ignoradas.length} ${ignoradas.length === 1 ? 'ignorada' : 'ignoradas'} (${detalle.join(', ')}).`);
   }
   if (importadas.length === 0 && pendientes.length === 0 && ignoradas.length === 0) {
-    log('Variables: nada nuevo que importar.');
+    log('Variables: no hay variables nuevas que importar.');
   }
 }
 

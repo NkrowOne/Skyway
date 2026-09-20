@@ -34,7 +34,7 @@ async function main(): Promise<void> {
         title: 'Base de datos del panel dañada',
         message: `La comprobación de integridad de skyway.db falló al arrancar: ${integrity.slice(0, 300)}`,
         explanation:
-          'Restaura el snapshot más reciente (Ajustes → Copia de seguridad del panel, o /data/backups/skyway/) parando Skyway y reemplazando /data/skyway.db. Revisa también la salud del disco.',
+          'Restaure la copia más reciente (Ajustes → Copia de seguridad del panel, o /data/backups/skyway/) deteniendo Skyway y reemplazando /data/skyway.db. Compruebe también el estado del disco.',
         dedupeKey: 'system:db-integrity',
       });
     } catch {

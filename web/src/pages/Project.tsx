@@ -268,7 +268,7 @@ export default function ProjectPage() {
   const deployAll = useMutation({
     mutationFn: () => api.post<{ count: number }>(`/projects/${projectId}/deploy-all`),
     onSuccess: (res) => {
-      toast(`Desplegando ${res.count} servicio(s)...`, 'ok');
+      toast(`Desplegando ${res.count} servicio(s)…`, 'ok');
       queryClient.invalidateQueries({ queryKey: ['project', projectId] });
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -332,7 +332,7 @@ export default function ProjectPage() {
       return (
         <EmptyState
           title="Proyecto no encontrado"
-          description="Puede que se haya eliminado o que el enlace ya no sea válido."
+          description="Es posible que se haya eliminado o que el enlace ya no sea válido."
           action={
             <Link to="/" className="text-sm font-medium text-acc-soft hover:underline">
               Volver a proyectos
@@ -405,7 +405,7 @@ export default function ProjectPage() {
                 skyway-{proj.slug}
               </span>
               <CopyButton value={`skyway-${proj.slug}`} className="-ml-0.5 sm:p-0.5" title="Copiar nombre de la red" />
-              <span className="hidden sm:inline">— los servicios se resuelven entre sí por nombre</span>
+              <span className="hidden sm:inline">— los servicios se resuelven entre sí por su nombre</span>
             </p>
 
             {/* Resumen de salud de infraestructura en tiempo real */}
@@ -453,7 +453,7 @@ export default function ProjectPage() {
                   size="sm"
                   onClick={() => setDeployAllOpen(true)}
                   loading={deployAll.isPending}
-                  title="Redespliega todos los servicios de repo e imagen"
+                  title="Volver a desplegar todos los servicios de repositorio e imagen"
                 >
                   <RefreshCw size={13} /> Desplegar todo
                 </Button>
@@ -465,7 +465,7 @@ export default function ProjectPage() {
                 variant="secondary"
                 size="sm"
                 onClick={() => setGithubOpen(true)}
-                title="Cuentas de GitHub cuyos repositorios se pueden desplegar aquí"
+                title="Cuentas de GitHub cuyos repositorios se pueden desplegar en este proyecto"
               >
                 <ModuleLogo kind="github" size={13} /> Cuentas de GitHub
               </Button>
@@ -573,7 +573,7 @@ export default function ProjectPage() {
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
             <span className="flex min-w-0 flex-1 items-center gap-2 text-acc-soft">
               <FileText size={15} className="shrink-0" />
-              Proyecto importado de Railway: consulta el informe con los comandos de copia de datos y pasos pendientes.
+              Proyecto importado de Railway. Consulte el informe con los comandos de copia de datos y los pasos pendientes.
             </span>
             <span className="flex shrink-0 items-center gap-1">
               <Button size="sm" variant="secondary" onClick={() => setReportOpen(true)}>
@@ -600,7 +600,7 @@ export default function ProjectPage() {
               <input
                 value={serviceQuery}
                 onChange={(e) => setServiceQuery(e.target.value)}
-                placeholder="Buscar servicio por nombre, repo o imagen…"
+                placeholder="Buscar servicio por nombre, repositorio o imagen"
                 autoCapitalize="none"
                 autoCorrect="off"
                 enterKeyHint="search"
@@ -683,8 +683,8 @@ export default function ProjectPage() {
               <path d="M30 27h16M17 37h28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
             </svg>
             <p className="max-w-sm text-sm text-sub">
-              Este proyecto está vacío. Despliega un repositorio de GitHub, una aplicación completa
-              (Supabase, WordPress…) o una base de datos.
+              Este proyecto está vacío. Despliegue un repositorio de GitHub, una aplicación completa
+              (Supabase, WordPress, etc.) o una base de datos.
             </p>
             <Button onClick={() => setNewOpen(true)}>
               <Plus size={15} /> Añadir servicio
@@ -729,11 +729,11 @@ export default function ProjectPage() {
           <p className="mt-5 hidden text-xs text-subtle drawer:block">
             {selected ? (
               <>
-                Pulsa <kbd className="kbd">esc</kbd> para cerrar el panel · <kbd className="kbd">{CMD_K_LABEL}</kbd> para buscar
+                Pulse <kbd className="kbd">esc</kbd> para cerrar el panel · <kbd className="kbd">{CMD_K_LABEL}</kbd> para buscar
               </>
             ) : (
               <>
-                Abre un servicio para desplegar, ver logs y editar variables · <kbd className="kbd">{CMD_K_LABEL}</kbd> para buscar
+                Abra un servicio para desplegar, ver el registro y editar variables · <kbd className="kbd">{CMD_K_LABEL}</kbd> para buscar
               </>
             )}
           </p>
@@ -820,7 +820,7 @@ export default function ProjectPage() {
             <input className="input" value={editName} onChange={(e) => setEditName(e.target.value)} required />
           </Field>
           {isAdmin && (
-            <Field label="Cuenta de cliente" hint="Vacío = sin cuenta.">
+            <Field label="Cuenta de cliente" hint="Si se deja vacío, el proyecto no se asigna a ninguna cuenta.">
               <input className="input" value={editClient} onChange={(e) => setEditClient(e.target.value)} placeholder="Acme S.L." />
             </Field>
           )}
@@ -842,8 +842,8 @@ export default function ProjectPage() {
           deployAll.mutate();
           setDeployAllOpen(false);
         }}
-        title="Redesplegar todo el proyecto"
-        message={`Se lanzará un despliegue de cada servicio de repositorio e imagen. Cada uno tendrá un corte breve mientras arranca su versión nueva.`}
+        title="Volver a desplegar todo el proyecto"
+        message={`Se iniciará un despliegue de cada servicio de repositorio e imagen. Cada servicio sufrirá una interrupción breve mientras se inicia la nueva versión.`}
         confirmLabel="Desplegar todo"
         confirmVariant="secondary"
         loading={deployAll.isPending}
@@ -854,7 +854,7 @@ export default function ProjectPage() {
         onClose={() => setDeleteOpen(false)}
         onConfirm={() => removeProject.mutate()}
         loading={removeProject.isPending}
-        title={`Eliminar "${proj.name}"`}
+        title={`Eliminar «${proj.name}»`}
         message="Se detendrán y eliminarán todos los contenedores del proyecto. Esta acción no se puede deshacer."
       >
         <label className="mt-3 flex items-center gap-2 text-sm text-sub">

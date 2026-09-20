@@ -59,7 +59,7 @@ export default function App() {
   if (me.isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
-        <Spinner label="Cargando Skyway..." />
+        <Spinner label="Cargando Skyway…" />
       </div>
     );
   }
@@ -67,7 +67,7 @@ export default function App() {
   if (me.isError) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-sub">
-        <p>No se pudo conectar con el servidor de Skyway.</p>
+        <p>No se ha podido conectar con el servidor de Skyway.</p>
         <p className="font-mono text-xs">{String((me.error as Error).message)}</p>
       </div>
     );

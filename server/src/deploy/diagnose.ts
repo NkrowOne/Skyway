@@ -18,18 +18,18 @@ const has = (haystack: string, ...needles: string[]) => {
  * Qué mirar cuando la validación de salud falla. Si en el log consta que la
  * imagen expone otro puerto, eso va primero: explica una sonda que no responde
  * nunca aunque la aplicación esté perfectamente viva, y es de lo que más cuesta
- * ver a ojo.
+ * ver a simple vista.
  */
 function healthcheckFix(_error: string, logs: string): string {
   const base =
-    'Mira las "últimas líneas del contenedor fallido" en este log: ahí está el error de tu app. Comprueba también ' +
+    'Consulte las «últimas líneas del contenedor fallido» en este registro: contienen el error de la aplicación. Compruebe también ' +
     'que la ruta de healthcheck existe, responde 2xx sin autenticación y que el puerto interno es el correcto.';
   const desajuste = /declara EXPOSE ([\d, ]+) y el puerto interno del servicio es (\d+)/.exec(logs);
   if (!desajuste) return base;
   return (
-    `Arriba en este log ya se avisa: la imagen declara EXPOSE ${desajuste[1].trim()} y el servicio está configurado ` +
-    `en el ${desajuste[2]}. Si tu aplicación escucha donde dice la imagen, la sonda va a un puerto donde no hay ` +
-    `nadie y no responderá nunca. Corrige «Puerto interno» en Ajustes del servicio. ${base}`
+    `Este registro ya lo advierte más arriba: la imagen declara EXPOSE ${desajuste[1].trim()} y el servicio está configurado ` +
+    `en el ${desajuste[2]}. Si la aplicación escucha en el puerto que indica la imagen, la sonda consulta un puerto sin ` +
+    `proceso y no responderá nunca. Corrija «Puerto interno» en Ajustes del servicio. ${base}`
   );
 }
 
@@ -40,21 +40,21 @@ function healthcheckFix(_error: string, logs: string): string {
  */
 function cleanExitFix(_error: string, logs: string): string {
   const base =
-    'Que el comando de arranque SEA el proceso que se queda: `exec python main.py` en vez de lanzarlo en segundo ' +
-    'plano, o `wait` al final del script si de verdad lanzas varias cosas.';
+    'El comando de arranque debe ser el proceso que permanece en ejecución: `exec python main.py` en lugar de iniciarlo en segundo ' +
+    'plano, o `wait` al final del script si es necesario iniciar varios procesos.';
   if (has(logs, 'se ignora el Dockerfile')) {
     return (
-      'Este despliegue no se construyó como el que estaba funcionando: railway.json pide Nixpacks y se ignoró el ' +
-      'Dockerfile, así que el comando de arranque es otro. Comprueba que el comando que infiere Nixpacks (o el ' +
-      '`startCommand` de railway.json) es de verdad el proceso que se queda vivo. Si lo que funcionaba era el ' +
-      'Dockerfile, pon "builder": "DOCKERFILE" en railway.json. ' +
+      'Este despliegue no se construyó como el que estaba funcionando: railway.json solicita Nixpacks y se ignoró el ' +
+      'Dockerfile, por lo que el comando de arranque es distinto. Compruebe que el comando que infiere Nixpacks (o el ' +
+      '`startCommand` de railway.json) es realmente el proceso que permanece en ejecución. Si lo que funcionaba era el ' +
+      'Dockerfile, establezca "builder": "DOCKERFILE" en railway.json. ' +
       base
     );
   }
   return (
     base +
-    ' Si esto empezó al reconstruir y el commit es el mismo, mira también las dependencias: sin versiones fijadas, ' +
-    'cada build resuelve las últimas y la de hoy puede no ser la de la imagen que sigue corriendo.'
+    ' Si el problema comenzó al reconstruir y el commit es el mismo, revise también las dependencias: sin versiones fijadas, ' +
+    'cada compilación resuelve las últimas y la de hoy puede no ser la de la imagen que sigue en ejecución.'
   );
 }
 
@@ -66,18 +66,18 @@ function cleanExitFix(_error: string, logs: string): string {
 function credentialFix(_error: string, logs: string): string {
   if (has(logs, 'conector de GitHub')) {
     return (
-      'El token de ese conector ya no vale. Bórralo y vuelve a crearlo con un token nuevo en Ajustes del servicio → GitHub. ' +
-      'Mejor todavía: conecta la GitHub App al proyecto y elige esa conexión en el servicio — emite un token por despliegue ' +
-      'y no caduca, así que no vuelve a pasar.'
+      'El token de ese conector ya no es válido. Elimínelo y vuelva a crearlo con un token nuevo en Ajustes del servicio → GitHub. ' +
+      'Se recomienda conectar la GitHub App al proyecto y seleccionar esa conexión en el servicio: emite un token por despliegue ' +
+      'y no caduca, por lo que el problema no se repite.'
     );
   }
   if (has(logs, 'GitHub App')) {
     return (
-      'La instalación de la GitHub App ya no autoriza este repositorio: puede que se desinstalara, se suspendiera o se le ' +
-      'quitara el repo. Revísala en Ajustes → GitHub y, si hace falta, vuelve a instalarla en la cuenta.'
+      'La instalación de la GitHub App ya no autoriza este repositorio: es posible que se haya desinstalado, suspendido o que se ' +
+      'haya retirado el repositorio. Revísela en Ajustes → GitHub y, si es necesario, vuelva a instalarla en la cuenta.'
     );
   }
-  return 'El token global de GitHub ya no vale. Actualízalo en Ajustes → GitHub (necesita permiso `repo` para repos privados).';
+  return 'El token global de GitHub ya no es válido. Actualícelo en Ajustes → GitHub (requiere el permiso `repo` para repositorios privados).';
 }
 
 /**
@@ -88,9 +88,9 @@ const RULES: Rule[] = [
   {
     id: 'docker-unavailable',
     test: (e) => has(e, 'Docker no está disponible'),
-    title: 'Skyway no puede hablar con Docker',
-    cause: 'El daemon de Docker no responde en el socket configurado. Sin él no se puede construir ni arrancar nada.',
-    fix: 'Comprueba en el servidor que Docker está corriendo (`systemctl status docker`) y que el contenedor de Skyway monta `/var/run/docker.sock` (así viene en el docker-compose incluido).',
+    title: 'Skyway no puede comunicarse con Docker',
+    cause: 'El daemon de Docker no responde en el socket configurado. Sin él no es posible construir ni iniciar ningún contenedor.',
+    fix: 'Compruebe en el servidor que Docker está en ejecución (`systemctl status docker`) y que el contenedor de Skyway monta `/var/run/docker.sock` (así viene en el docker-compose incluido).',
   },
   // Las tres formas de fallar al clonar se separan a propósito: mandan a sitios
   // distintos y juntarlas hacía que un token caducado te dijera «configura un
@@ -100,17 +100,17 @@ const RULES: Rule[] = [
     test: (e, l) => has(e + l, 'invalid username or token', 'authentication failed', 'bad credentials'),
     title: 'GitHub rechazó la credencial',
     cause:
-      'Skyway sí envió una credencial, pero GitHub no la aceptó. Un token que funcionaba y deja de hacerlo está caducado, ' +
-      'revocado o se rotó en GitHub sin actualizarlo aquí (los tokens personales clásicos caducan solos).',
+      'Skyway envió una credencial, pero GitHub no la aceptó. Un token que funcionaba y deja de hacerlo ha caducado, ' +
+      'se ha revocado o se ha rotado en GitHub sin actualizarlo en Skyway (los tokens personales clásicos caducan automáticamente).',
     fix: credentialFix,
   },
   {
     id: 'git-no-credentials',
     test: (e, l) => has(e + l, 'could not read username', 'terminal prompts disabled'),
     title: 'El repositorio es privado y no hay credencial',
-    cause: 'GitHub pidió autenticación y Skyway no tenía ninguna credencial que ofrecer para este servicio.',
+    cause: 'GitHub solicitó autenticación y Skyway no disponía de ninguna credencial para este servicio.',
     fix:
-      'Conecta la GitHub App al proyecto (Ajustes → GitHub): es la opción que no caduca. Como alternativa, añade un token ' +
+      'Conecte la GitHub App al proyecto (Ajustes → GitHub): es la opción que no caduca. Como alternativa, añada un token ' +
       'personal en el conector del servicio o un token global en Ajustes → GitHub.',
   },
   {
@@ -118,150 +118,150 @@ const RULES: Rule[] = [
     test: (e, l) => has(e + l, 'repository not found'),
     title: 'No se pudo clonar el repositorio',
     cause:
-      'La URL no existe, o la credencial es válida pero no alcanza a ESTE repositorio. GitHub responde lo mismo en ambos ' +
-      'casos para no revelar si un repo privado existe.',
+      'La URL no existe, o la credencial es válida pero no tiene acceso a este repositorio en concreto. GitHub responde lo mismo en ambos ' +
+      'casos para no revelar si un repositorio privado existe.',
     fix:
-      'Comprueba la URL. Si es correcta: con la GitHub App, añade el repositorio a la instalación en GitHub; con un token ' +
-      'personal de alcance fino, dale acceso a este repositorio; con uno clásico, necesita el permiso `repo`.',
+      'Compruebe la URL. Si es correcta: con la GitHub App, añada el repositorio a la instalación en GitHub; con un token ' +
+      'personal de alcance restringido, concédale acceso a este repositorio; con uno clásico, requiere el permiso `repo`.',
   },
   {
     id: 'branch-not-found',
     test: (e, l) => has(e + l, 'remote branch', 'not found in upstream', "couldn't find remote ref"),
     title: 'La rama no existe',
-    cause: 'La rama configurada no existe en el repositorio remoto (¿se renombró o se borró?).',
-    fix: 'Comprueba el nombre exacto de la rama en GitHub (por ejemplo `main` vs `master`) y corrígelo en Ajustes del servicio.',
+    cause: 'La rama configurada no existe en el repositorio remoto (es posible que se haya renombrado o eliminado).',
+    fix: 'Compruebe el nombre exacto de la rama en GitHub (por ejemplo `main` frente a `master`) y corríjalo en Ajustes del servicio.',
   },
   {
     id: 'no-builder',
     test: (e) => has(e, 'No se encontró Dockerfile y Nixpacks no está instalado'),
-    title: 'No hay forma de construir este repositorio',
-    cause: 'El repo no tiene Dockerfile y el servidor no tiene Nixpacks instalado para detectar y construir el proyecto automáticamente.',
-    fix: 'Opción A: añade un `Dockerfile` al repositorio. Opción B: instala Nixpacks en el servidor (`curl -sSL https://nixpacks.com/install.sh | bash`); la imagen oficial de Skyway ya lo trae.',
+    title: 'No es posible construir este repositorio',
+    cause: 'El repositorio no tiene Dockerfile y el servidor no tiene Nixpacks instalado para detectar y construir el proyecto automáticamente.',
+    fix: 'Opción A: añada un `Dockerfile` al repositorio. Opción B: instale Nixpacks en el servidor (`curl -sSL https://nixpacks.com/install.sh | bash`); la imagen oficial de Skyway ya lo incluye.',
   },
   {
     id: 'oom-killed',
     test: (e, l) => has(e + l, 'código de salida: 137', 'exit code 137', 'oom-kill', 'out of memory'),
-    title: 'El proceso fue matado por falta de memoria (OOM)',
-    cause: 'El contenedor superó su límite de RAM (o el servidor se quedó sin memoria) y el kernel lo mató. El código de salida 137 = SIGKILL.',
-    fix: 'Sube el límite de RAM en Ajustes → Recursos del servicio (o quítalo), reduce el consumo de la app, o libera memoria del servidor. Si pasa durante el build, construye una imagen más ligera.',
+    title: 'El proceso se finalizó por falta de memoria (OOM)',
+    cause: 'El contenedor superó su límite de RAM (o el servidor se quedó sin memoria) y el kernel finalizó el proceso. El código de salida 137 corresponde a SIGKILL.',
+    fix: 'Aumente el límite de RAM en Ajustes → Recursos del servicio (o elimínelo), reduzca el consumo de la aplicación o libere memoria del servidor. Si ocurre durante la compilación, construya una imagen más ligera.',
   },
   {
     id: 'port-in-use',
     test: (e, l) => has(e + l, 'port is already allocated', 'address already in use'),
-    title: 'El puerto público ya está ocupado',
-    cause: 'Otro proceso o contenedor del servidor ya escucha en el puerto público que intentas asignar.',
-    fix: 'Cambia el "Puerto público" del servicio a uno libre, o quítalo y accede por dominio a través de Traefik (recomendado).',
+    title: 'El puerto público ya está en uso',
+    cause: 'Otro proceso o contenedor del servidor ya escucha en el puerto público que se intenta asignar.',
+    fix: 'Cambie el «Puerto público» del servicio a uno libre, o elimínelo y acceda por dominio a través de Traefik (recomendado).',
   },
   {
     id: 'no-space',
     test: (e, l) => has(e + l, 'no space left on device'),
     title: 'Sin espacio en disco',
-    cause: 'El disco del servidor está lleno: no se pueden escribir capas de imagen ni volúmenes.',
-    fix: 'Libera espacio: `docker system prune -a` borra imágenes y capas sin usar (revisa antes qué elimina). Skyway ya purga imágenes antiguas, pero otros contenedores/logs pueden estar ocupando disco.',
+    cause: 'El disco del servidor está lleno: no es posible escribir capas de imagen ni volúmenes.',
+    fix: 'Libere espacio: `docker system prune -a` elimina imágenes y capas sin usar (compruebe antes qué elimina). Skyway ya purga imágenes antiguas, pero otros contenedores o registros pueden estar ocupando disco.',
   },
   {
     id: 'registry-rate-limit',
     test: (e, l) => has(e + l, 'toomanyrequests', 'rate limit'),
     title: 'Límite de descargas de Docker Hub alcanzado',
     cause: 'Docker Hub limita las descargas anónimas de imágenes por IP (100 cada 6 horas).',
-    fix: 'Espera un rato y reintenta, o haz `docker login` en el servidor con una cuenta de Docker Hub para ampliar el límite.',
+    fix: 'Espere unos minutos y vuelva a intentarlo, o ejecute `docker login` en el servidor con una cuenta de Docker Hub para ampliar el límite.',
   },
   {
     id: 'pull-denied',
     test: (e, l) => has(e + l, 'pull access denied', 'manifest unknown', 'not found: manifest'),
     title: 'No se pudo descargar la imagen base',
     cause: 'La imagen o la versión (tag) indicada no existe públicamente, o requiere autenticación.',
-    fix: 'Revisa el nombre/versión de la imagen (en bases de datos, el campo "Versión"). Prueba con la versión por defecto de la plantilla.',
+    fix: 'Compruebe el nombre y la versión de la imagen (en bases de datos, el campo «Versión»). Pruebe con la versión por defecto de la plantilla.',
   },
   {
     id: 'exec-format',
     test: (e, l) => has(e + l, 'exec format error'),
     title: 'Arquitectura incompatible',
-    cause: 'La imagen se construyó para otra arquitectura de CPU (por ejemplo ARM vs x86) y el binario no puede ejecutarse en este servidor.',
-    fix: 'Construye para la arquitectura del servidor o usa imágenes base multi-arquitectura (la mayoría de las oficiales lo son).',
+    cause: 'La imagen se construyó para otra arquitectura de CPU (por ejemplo ARM frente a x86) y el binario no puede ejecutarse en este servidor.',
+    fix: 'Construya la imagen para la arquitectura del servidor o utilice imágenes base multiarquitectura (la mayoría de las oficiales lo son).',
   },
   {
     id: 'cmd-not-found',
     test: (e, l) => has(e + l, 'código de salida: 127', 'exit code 127', 'executable file not found', 'no such file or directory: unknown'),
     title: 'Comando de arranque no encontrado',
-    cause: 'El comando configurado (o el CMD de la imagen) no existe dentro del contenedor. Código 127 = "command not found".',
-    fix: 'Revisa el "Comando de arranque" en Ajustes del servicio (¿está instalada esa herramienta en la imagen?) o déjalo vacío para usar el CMD del Dockerfile.',
+    cause: 'El comando configurado (o el CMD de la imagen) no existe dentro del contenedor. El código 127 corresponde a «command not found».',
+    fix: 'Revise el «Comando de arranque» en Ajustes del servicio (compruebe que esa herramienta está instalada en la imagen) o déjelo vacío para utilizar el CMD del Dockerfile.',
   },
   {
     id: 'build-typescript',
     test: (e, l) => has(e, 'terminó con código') && /error TS\d+/.test(l),
     title: 'El compilador de TypeScript falló',
     cause:
-      'El build no llegó a empaquetar nada: `tsc` encontró errores de tipos. Ojo con el más habitual, «Cannot find module X»: casi nunca es un error de tipos, es que esa dependencia no está en la imagen. `npm ci` instala EXACTAMENTE lo que dice el package-lock.json de la raíz, así que un paquete que en tu máquina está en node_modules pero no declarado —o el package.json de un subproyecto que no es un workspace— aquí no existe. Los «implicitly has an any type» que salen detrás suelen ser el eco del módulo que falta, no errores independientes.',
+      'La compilación no llegó a empaquetar nada: `tsc` encontró errores de tipos. Tenga en cuenta el más habitual, «Cannot find module X»: casi nunca es un error de tipos, sino que esa dependencia no está en la imagen. `npm ci` instala exactamente lo que indica el package-lock.json de la raíz, por lo que un paquete que en su equipo está en node_modules pero no declarado (o el package.json de un subproyecto que no es un workspace) no existe en la imagen. Los errores «implicitly has an any type» que aparecen a continuación suelen ser consecuencia del módulo que falta, no errores independientes.',
     fix:
-      'Reproduce el build limpio en local: borra node_modules, `npm ci` y `npm run build`. Si falla igual, falta declarar la dependencia (`npm i -S paquete`, commiteando también el package-lock). Si el error viene de un subdirectorio que se despliega por su cuenta (un worker, una función), sácalo del build de la web quitándolo de las «references» del tsconfig raíz. Y revisa la versión de Node: si el log trae avisos EBADENGINE, fija la que necesitas con «engines.node» en package.json o con la variable NIXPACKS_NODE_VERSION del servicio.',
+      'Reproduzca la compilación limpia en local: elimine node_modules y ejecute `npm ci` y `npm run build`. Si falla igualmente, es necesario declarar la dependencia (`npm i -S paquete`, confirmando también el package-lock). Si el error procede de un subdirectorio que se despliega por separado (un worker, una función), exclúyalo de la compilación de la web retirándolo de las «references» del tsconfig raíz. Revise también la versión de Node: si el registro incluye avisos EBADENGINE, fije la versión necesaria con «engines.node» en package.json o con la variable NIXPACKS_NODE_VERSION del servicio.',
   },
   {
     id: 'build-npm',
     // «terminó con código» a secas: el fallo del gestor de paquetes es el mismo
     // se construya con Dockerfile o con Nixpacks, y antes solo casaba el primero.
     test: (e, l) => has(e, 'terminó con código') && has(l, 'npm err', 'yarn error', 'pnpm err'),
-    title: 'El build de Node.js falló',
-    cause: 'El gestor de paquetes falló durante la construcción de la imagen: suele ser una dependencia que no instala, un script de build que falla o una versión de Node incompatible.',
-    fix: 'Mira las últimas líneas del log (el error concreto de npm/yarn/pnpm está ahí). Comprueba que `npm run build` funciona en local con la misma versión de Node que usa tu Dockerfile.',
+    title: 'La compilación de Node.js falló',
+    cause: 'El gestor de paquetes falló durante la construcción de la imagen: suele deberse a una dependencia que no se instala, un script de compilación que falla o una versión de Node incompatible.',
+    fix: 'Consulte las últimas líneas del registro (contienen el error concreto de npm/yarn/pnpm). Compruebe que `npm run build` funciona en local con la misma versión de Node que utiliza el Dockerfile.',
   },
   {
     id: 'dockerfile-error',
     test: (e, l) => has(e + l, 'dockerfile parse error', 'unknown instruction', 'copy failed', 'file not found in build context'),
     title: 'Error en el Dockerfile',
-    cause: 'El Dockerfile tiene una instrucción inválida o referencia ficheros que no existen en el contexto de build (¿directorio raíz mal configurado?).',
-    fix: 'Revisa el Dockerfile y el campo "Directorio raíz" del servicio: las rutas de COPY/ADD son relativas a ese directorio.',
+    cause: 'El Dockerfile contiene una instrucción no válida o hace referencia a archivos que no existen en el contexto de compilación (es posible que el directorio raíz no esté bien configurado).',
+    fix: 'Revise el Dockerfile y el campo «Directorio raíz» del servicio: las rutas de COPY/ADD son relativas a ese directorio.',
   },
   {
     id: 'postgres18-volume-layout',
     test: (e, l) => has(e + l, 'unused mount/volume', 'appears to be PostgreSQL data in', 'docker-library/postgres/pull/1259'),
-    title: 'Postgres 18+ rechaza el volumen (cambio de formato en la 18)',
-    cause: 'Desde la 18, la imagen oficial guarda los datos en un subdirectorio versionado de /var/lib/postgresql y se niega a arrancar si el volumen está montado en la ruta antigua (/var/lib/postgresql/data) — aunque esté vacío — o si encuentra datos con el formato de una versión anterior.',
-    fix: 'Con Skyway 0.13.1+ basta con redesplegar: la ruta de montaje ya se elige según la versión. Si el volumen tiene datos de un Postgres anterior, mantén esa versión en Ajustes (p. ej. 16-alpine) o migra con Backups (volcado con la versión vieja y restauración en la nueva). Para empezar de cero, borra el servicio marcando «borrar también el volumen».',
+    title: 'Postgres 18+ rechaza el volumen (cambio de formato en la versión 18)',
+    cause: 'Desde la versión 18, la imagen oficial almacena los datos en un subdirectorio versionado de /var/lib/postgresql y no arranca si el volumen está montado en la ruta antigua (/var/lib/postgresql/data), aunque esté vacío, o si encuentra datos con el formato de una versión anterior.',
+    fix: 'Con Skyway 0.13.1 o superior es suficiente con volver a desplegar: la ruta de montaje se elige según la versión. Si el volumen contiene datos de un Postgres anterior, mantenga esa versión en Ajustes (p. ej. 16-alpine) o migre con Backups (volcado con la versión anterior y restauración en la nueva). Para empezar de cero, elimine el servicio marcando «borrar también el volumen».',
   },
   {
     id: 'postgres-version-mismatch',
     test: (e, l) => has(e + l, 'database files are incompatible with server', 'no puede abrir los datos de otra', 'formato antiguo (anterior a 18)', 'formato de Postgres 18+', 'subdirectorio data/'),
     title: 'La versión de Postgres no coincide con los datos del volumen',
-    cause: 'El volumen fue inicializado por otra versión mayor de PostgreSQL: una versión mayor no puede abrir directamente los datos creados por otra.',
-    fix: 'Vuelve en Ajustes a la versión que creó los datos, o migra: Backup con la versión original → cambia la versión → borra el servicio con su volumen → recréalo → restaura el backup. El propio error del despliegue indica la versión exacta que tiene el volumen.',
+    cause: 'El volumen se inicializó con otra versión mayor de PostgreSQL: una versión mayor no puede abrir directamente los datos creados por otra.',
+    fix: 'Vuelva en Ajustes a la versión que creó los datos, o migre: cree un backup con la versión original → cambie la versión → elimine el servicio con su volumen → vuelva a crearlo → restaure el backup. El propio error del despliegue indica la versión exacta que contiene el volumen.',
   },
   {
     // Va antes que 'healthcheck-failed': el mensaje contiene ambas señales y
     // salir con 0 tiene una causa muy concreta que merece decirse aparte.
     id: 'exited-clean',
     test: (e) => has(e, 'terminó enseguida') && has(e, 'código 0'),
-    title: 'El proceso terminó por su cuenta, sin error',
+    title: 'El proceso finalizó por sí mismo, sin error',
     cause:
-      'Código de salida 0 significa que el comando de arranque hizo su trabajo y terminó, no que se estrellara. Skyway ' +
-      'espera un proceso que se quede vivo: si el comando lanza la app en segundo plano y devuelve, o el script llega al ' +
-      'final, el contenedor se para y el despliegue se da por fallido.',
+      'El código de salida 0 indica que el comando de arranque completó su trabajo y finalizó, no que fallara. Skyway ' +
+      'espera un proceso que permanezca en ejecución: si el comando inicia la aplicación en segundo plano y finaliza, o el script llega al ' +
+      'final, el contenedor se detiene y el despliegue se considera fallido.',
     fix: cleanExitFix,
   },
   {
     id: 'healthcheck-failed',
     test: (e) => has(e, 'no pasó la validación', 'no respondió 2xx', 'Se restauró la versión anterior', 'Se mantuvo la versión anterior'),
     title: 'La versión nueva no superó la validación de salud',
-    cause: 'Skyway arrancó la versión nueva y la comprobó antes de retirar la anterior: o el proceso murió al arrancar, o el healthcheck no respondió 2xx a tiempo. La versión anterior sigue sirviendo.',
+    cause: 'Skyway inició la versión nueva y la comprobó antes de retirar la anterior: el proceso finalizó al arrancar o el healthcheck no respondió 2xx a tiempo. La versión anterior sigue en servicio.',
     fix: healthcheckFix,
   },
   {
     id: 'container-died',
     test: (e) => has(e, 'El contenedor terminó inesperadamente'),
-    title: 'La aplicación arrancó pero se cerró enseguida',
-    cause: 'La imagen se construyó bien, pero el proceso murió nada más arrancar: suele ser una variable de entorno que falta (p. ej. DATABASE_URL), un error de conexión a la base de datos, o un puerto interno mal configurado.',
-    fix: 'Abre la pestaña Logs del servicio para ver el error exacto de tu aplicación. Comprueba las Variables (¿faltan credenciales?) y que el "Puerto interno" coincide con el que escucha tu app.',
+    title: 'La aplicación arrancó pero se cerró inmediatamente',
+    cause: 'La imagen se construyó correctamente, pero el proceso finalizó nada más arrancar: suele deberse a una variable de entorno que falta (p. ej. DATABASE_URL), un error de conexión con la base de datos o un puerto interno mal configurado.',
+    fix: 'Abra la pestaña «Logs» del servicio para ver el error exacto de la aplicación. Compruebe las Variables (posibles credenciales ausentes) y que el «Puerto interno» coincide con el puerto en el que escucha la aplicación.',
   },
   {
     id: 'nixpacks-misdetect',
     test: (e, l) =>
       has(e, 'nixpacks terminó con código') &&
       has(l, 'Relative import path', 'deno cache', 'error: Module not found', 'no lockfile found', 'no start command could be found'),
-    title: 'Nixpacks detectó mal qué hay que construir',
+    title: 'Nixpacks no detectó correctamente qué construir',
     cause:
-      'El repositorio no tiene Dockerfile, así que Skyway recurre a Nixpacks, que adivina el tipo de proyecto mirando los ficheros del repo. En monorepos con varias apps y lenguajes mezclados (ejemplos de Deno, paquetes de Node, docs…) esa adivinanza falla: elige el runtime equivocado o un fichero de entrada que no es el de ninguna app real, y el build revienta con un error que no tiene que ver con tu código.',
+      'El repositorio no tiene Dockerfile, por lo que Skyway recurre a Nixpacks, que infiere el tipo de proyecto a partir de los archivos del repositorio. En monorepos con varias aplicaciones y lenguajes mezclados (ejemplos de Deno, paquetes de Node, documentación…) esa inferencia falla: selecciona un entorno de ejecución incorrecto o un archivo de entrada que no corresponde a ninguna aplicación real, y la compilación falla con un error ajeno a su código.',
     fix:
-      'Apunta el build a UNA aplicación concreta: pon el "Directorio raíz" del servicio al subdirectorio de esa app (p. ej. `apps/web`), y si esa app trae su propio Dockerfile indícalo en "Ruta del Dockerfile" (es relativa al directorio raíz). Ojo: los repos que en realidad son una pila de varios contenedores (Supabase, Mastodon, n8n con sus dependencias…) no se despliegan como un servicio único de Skyway; usa su docker-compose oficial o crea un servicio por imagen para cada pieza.',
+      'Dirija la compilación a una aplicación concreta: establezca el «Directorio raíz» del servicio en el subdirectorio de esa aplicación (p. ej. `apps/web`) y, si esa aplicación incluye su propio Dockerfile, indíquelo en «Ruta del Dockerfile» (relativa al directorio raíz). Tenga en cuenta que los repositorios que en realidad son una pila de varios contenedores (Supabase, Mastodon, n8n con sus dependencias…) no se despliegan como un único servicio de Skyway: utilice su docker-compose oficial o cree un servicio de imagen por cada componente.',
   },
   {
     id: 'build-node-version',
@@ -269,18 +269,18 @@ const RULES: Rule[] = [
     // bien, así que solo se apunta este diagnóstico cuando no ha casado ninguna
     // causa más concreta y el build sí ha fallado.
     test: (e, l) => has(e, 'terminó con código') && has(l, 'EBADENGINE', 'Unsupported engine'),
-    title: 'La versión de Node no es la que piden tus dependencias',
+    title: 'La versión de Node no es la que requieren las dependencias',
     cause:
-      'El log trae avisos «Unsupported engine»: alguna dependencia exige una versión de Node mayor que la que se usó para construir. Cuando el repositorio no dice qué versión quiere, Nixpacks elige una por defecto que se queda corta con paquetes recientes (Vite 7, supabase-js…), y el fallo aparece más tarde, al ejecutar el build, con un error que no menciona la versión.',
+      'El registro incluye avisos «Unsupported engine»: alguna dependencia exige una versión de Node superior a la utilizada para construir. Cuando el repositorio no indica qué versión necesita, Nixpacks selecciona una por defecto que resulta insuficiente con paquetes recientes (Vite 7, supabase-js…), y el fallo aparece más tarde, al ejecutar la compilación, con un error que no menciona la versión.',
     fix:
-      'Declara la versión en el propio repositorio, que es lo que Nixpacks mira: «engines»: { "node": ">=22" } en package.json, o un fichero .nvmrc. Si prefieres no tocar el repo, define la variable NIXPACKS_NODE_VERSION del servicio con el número mayor (por ejemplo 22): las variables del servicio llegan al build. Las versiones disponibles son las que trae el Nixpacks instalado: si necesitas una muy reciente, actualiza Skyway para que se reinstale.',
+      'Declare la versión en el propio repositorio, que es lo que Nixpacks consulta: «engines»: { "node": ">=22" } en package.json, o un archivo .nvmrc. Si prefiere no modificar el repositorio, defina la variable NIXPACKS_NODE_VERSION del servicio con el número de versión mayor (por ejemplo 22): las variables del servicio se aplican a la compilación. Las versiones disponibles son las que incluye el Nixpacks instalado: si necesita una muy reciente, actualice Skyway para que se reinstale.',
   },
   {
     id: 'build-generic',
     test: (e) => has(e, 'docker terminó con código', 'nixpacks terminó con código'),
     title: 'La construcción de la imagen falló',
-    cause: 'El proceso de build terminó con error. La causa concreta está en las últimas líneas del log de despliegue.',
-    fix: 'Revisa el log completo: el error real suele estar justo antes del final. Verifica que el proyecto compila en local.',
+    cause: 'El proceso de compilación finalizó con error. La causa concreta se encuentra en las últimas líneas del registro de despliegue.',
+    fix: 'Revise el registro completo: el error real suele estar justo antes del final. Compruebe que el proyecto compila en local.',
   },
 ];
 
@@ -301,8 +301,8 @@ export function diagnose(error: string | null, logs: string): Diagnosis | null {
   return {
     id: 'unknown',
     title: 'Fallo de despliegue',
-    cause: 'No se pudo identificar un patrón conocido en el error.',
-    fix: 'Revisa el log completo del despliegue; si la app llegó a arrancar, mira también la pestaña Logs del servicio.',
+    cause: 'No se ha podido identificar un patrón conocido en el error.',
+    fix: 'Revise el registro completo del despliegue; si la aplicación llegó a arrancar, consulte también la pestaña «Logs» del servicio.',
   };
 }
 
@@ -310,22 +310,22 @@ export function diagnose(error: string | null, logs: string): Diagnosis | null {
 export function explainExitCode(code: number | null): string {
   switch (code) {
     case 137:
-      return 'Código 137 (SIGKILL): normalmente el kernel mató el proceso por exceder el límite de memoria (OOM). Sube el límite de RAM o reduce el consumo.';
+      return 'Código 137 (SIGKILL): normalmente el kernel finalizó el proceso por exceder el límite de memoria (OOM). Aumente el límite de RAM o reduzca el consumo.';
     case 139:
-      return 'Código 139 (SIGSEGV): el proceso hizo un acceso inválido a memoria; suele ser un bug en la aplicación o una dependencia nativa incompatible.';
+      return 'Código 139 (SIGSEGV): el proceso realizó un acceso no válido a memoria; suele deberse a un error en la aplicación o a una dependencia nativa incompatible.';
     case 143:
-      return 'Código 143 (SIGTERM): el proceso recibió una señal de apagado. Si nadie lo detuvo manualmente, algo lo está terminando (¿reinicio de Docker?).';
+      return 'Código 143 (SIGTERM): el proceso recibió una señal de apagado. Si nadie lo detuvo manualmente, otro componente lo está finalizando (por ejemplo, un reinicio de Docker).';
     case 126:
       return 'Código 126: el comando de arranque existe pero no es ejecutable (permisos o formato).';
     case 127:
       return 'Código 127: el comando de arranque no existe dentro del contenedor.';
     case 1:
-      return 'Código 1: la aplicación terminó con error genérico; revisa sus logs para ver la excepción exacta.';
+      return 'Código 1: la aplicación finalizó con un error genérico; consulte su registro para ver la excepción exacta.';
     case 0:
-      return 'Código 0: el proceso terminó "bien" pero no debería haber terminado. ¿El comando de arranque ejecuta un proceso de larga duración?';
+      return 'Código 0: el proceso finalizó correctamente, pero no debería haber finalizado. Compruebe que el comando de arranque ejecuta un proceso de larga duración.';
     default:
       return code === null
         ? 'Sin código de salida registrado.'
-        : `Código de salida ${code}. Revisa los logs del servicio para ver el error de la aplicación.`;
+        : `Código de salida ${code}. Consulte el registro del servicio para ver el error de la aplicación.`;
   }
 }

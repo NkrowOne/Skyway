@@ -680,12 +680,12 @@ antes obligaba a entrar por SSH al servidor.
   lo mismo sin clonar (API de contenidos de GitHub), con vista previa.
 - **Ayuda para clientes** (`help/`, página «Ayuda»): FAQ en español buscable por
   categorías y un **asistente determinista** (sin LLM) que responde con las
-  preguntas coincidentes y, si la pregunta huele a fallo, **revisa el servicio**:
+  preguntas coincidentes y, si la pregunta describe un fallo, **revisa el servicio**:
   último despliegue fallido (reutiliza `diagnose.ts`), estado del contenedor,
   referencias `${{…}}` sin resolver, variables pendientes del `.env` y patrones en
   la cola de logs de la aplicación (variable ausente, conexión rechazada, puerto
   ocupado, módulo no encontrado, memoria…). Cada hallazgo trae causa, arreglo,
-  la línea que lo delata (con secretos tapados) y enlaces a la pestaña del
+  el detalle del registro (con secretos tapados) y enlaces a la pestaña del
   servicio. «Detectar errores» pasa la misma revisión a todos los servicios
   accesibles.
 - **Pilas de aplicaciones**: Supabase, WordPress, Ghost, n8n y Metabase con todos

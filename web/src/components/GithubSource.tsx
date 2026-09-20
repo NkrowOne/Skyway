@@ -125,7 +125,7 @@ export function useRepoLookup(source: GithubSource, projectId?: string) {
   const extra = source.kind === 'app' && projectId ? `&projectId=${enc(projectId)}` : '';
   return useMutation({
     mutationFn: (repo: string) => {
-      if (!path) throw new Error('Sin cuenta ni proyecto con los que comprobar el repositorio');
+      if (!path) throw new Error('No hay ninguna cuenta ni proyecto con los que comprobar el repositorio');
       return api.get<{ repo: GithubRepo; credential?: 'global' | 'public' }>(`${path}?repo=${enc(repo)}${extra}`);
     },
   });
@@ -250,7 +250,7 @@ export function GithubRepoPicker({
         <Search size={13} className="shrink-0 text-subtle" />
         <input
           className="h-8 w-full bg-transparent text-base outline-none placeholder:text-subtle sm:h-auto sm:text-xs"
-          placeholder="Filtrar, o pegar la URL de un repo…"
+          placeholder="Filtrar o pegar la URL de un repositorio"
           value={filter}
           onChange={(e) => onFilter(e.target.value)}
           onKeyDown={(e) => {
@@ -262,13 +262,13 @@ export function GithubRepoPicker({
           autoCapitalize="none"
           autoCorrect="off"
           spellCheck={false}
-          aria-label="Filtrar repositorios o escribir uno (owner/repo o URL)"
+          aria-label="Filtrar repositorios o indicar uno (owner/repo o URL)"
         />
       </div>
       {/* overscroll-contain: la lista vive dentro de un modal que ya scrollea; sin
           esto, llegar al final arrastraba consigo la hoja entera en móvil. */}
       <div className="max-h-44 overflow-y-auto overscroll-contain p-1.5">
-        {repos.isLoading && <Spinner label="Cargando repos…" />}
+        {repos.isLoading && <Spinner label="Cargando repositorios…" />}
         {repos.isError && (
           <ErrorState
             compact
@@ -289,11 +289,11 @@ export function GithubRepoPicker({
           <EmptyState
             compact
             icon={<Search />}
-            title={needle ? 'Ningún repositorio coincide' : 'Esta cuenta no expone ningún repositorio'}
+            title={needle ? 'Ningún repositorio coincide' : 'Esta cuenta no tiene ningún repositorio disponible'}
             description={
               needle
-                ? `Nada que case con «${filter}». Puedes escribir el repo como owner/repo o pegar su URL.`
-                : 'Da acceso a los repos que quieras desplegar desde la configuración de la App en GitHub, o escribe aquí owner/repo.'
+                ? `No hay resultados para «${filter}». Puede indicar el repositorio como owner/repo o pegar su URL.`
+                : 'Conceda acceso a los repositorios que desee desplegar desde la configuración de la App en GitHub, o indique aquí owner/repo.'
             }
           />
         )}
@@ -386,7 +386,7 @@ export function RepoAccessHint({
     const r = lookup.data.repo;
     const como =
       lookup.data.credential === 'public'
-        ? 'público: se clona sin cuenta'
+        ? 'público: se clona sin necesidad de cuenta'
         : lookup.data.credential === 'global'
           ? 'visible con el token global del servidor'
           : r.private

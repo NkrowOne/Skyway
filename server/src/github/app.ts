@@ -132,7 +132,7 @@ function appJwt(cfg: GithubAppConfig): string {
     return jwt.sign({ iat: nowSec - 60, exp: nowSec + 540, iss: cfg.appId }, cfg.privateKey, { algorithm: 'RS256' });
   } catch (err: any) {
     throw new GithubError(
-      `La clave privada de la GitHub App no es válida (${err?.message || 'error al firmar'}). Vuelve a conectar la App desde Ajustes.`,
+      `La clave privada de la GitHub App no es válida (${err?.message || 'error al firmar'}). Vuelva a conectar la App desde Ajustes.`,
     );
   }
 }
@@ -150,8 +150,8 @@ async function appFetch(cfg: GithubAppConfig, path: string, req: Omit<GhRequest,
   } catch (err) {
     if (err instanceof GithubError && err.status === 401) {
       throw new GithubError(
-        `GitHub rechazó la firma de la App (${err.message}). Suele ser el reloj del servidor desfasado (revisa NTP) ` +
-          'o una clave privada que ya no vale: en ese caso, vuelve a conectar la App desde Ajustes.',
+        `GitHub rechazó la firma de la App (${err.message}). Suele deberse a un desfase en el reloj del servidor (compruebe NTP) ` +
+          'o a una clave privada que ya no es válida: en ese caso, vuelva a conectar la App desde Ajustes.',
         401,
       );
     }
@@ -196,7 +196,7 @@ export async function installationToken(installationId: number): Promise<string>
     if (res.status === 404) {
       await res.text().catch(() => ''); // libera el socket antes de lanzar
       throw new GithubError(
-        'GitHub ya no conoce esa instalación de la App: se desinstaló desde GitHub. Vuelve a conectar la cuenta.',
+        'GitHub ya no reconoce esa instalación de la App: se desinstaló desde GitHub. Vuelva a conectar la cuenta.',
         404,
       );
     }
@@ -358,11 +358,11 @@ export async function convertManifestCode(code: string): Promise<GithubAppConfig
     // Es lo que devuelve GitHub cuando el código ya se canjeó (recarga de la
     // página de retorno) o pasó su hora de vida.
     await res.text().catch(() => '');
-    throw new GithubError('El código de creación de la App ya se usó o ha caducado: vuelve a crearla desde Ajustes.', 404);
+    throw new GithubError('El código de creación de la App ya se ha utilizado o ha caducado: vuelva a crearla desde Ajustes.', 404);
   }
   const body: any = await res.json().catch(() => ({}));
   if (!body?.id || !body?.pem || !body?.slug) {
-    throw new GithubError('GitHub no devolvió las credenciales de la App. Vuelve a intentarlo.');
+    throw new GithubError('GitHub no devolvió las credenciales de la App. Vuelva a intentarlo.');
   }
   setSetting(SETTING.appId, String(body.id));
   setSetting(SETTING.slug, String(body.slug));

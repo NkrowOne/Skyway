@@ -394,7 +394,7 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     }
     if (role === 'member' && body.projectIds.length > 0) {
       const check = projectsInWorkspace(body.projectIds, id);
-      if (!check.ok) return reply.code(400).send({ error: 'Solo puedes asignar proyectos de este workspace' });
+      if (!check.ok) return reply.code(400).send({ error: 'Solo es posible asignar proyectos de este workspace' });
     }
 
     const user = createUser(email, hashPassword(body.password), role, id);
@@ -415,7 +415,7 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(404).send({ error: 'Usuario no encontrado en este workspace' });
     }
     const me = currentUser(req)!;
-    if (target.id === me.id) return reply.code(400).send({ error: 'No puedes cambiar tu propia cuenta desde aquí' });
+    if (target.id === me.id) return reply.code(400).send({ error: 'No es posible modificar su propia cuenta desde este apartado' });
     // Un propietario no gestiona a otros propietarios: eso queda para el administrador.
     if (me.role !== 'admin' && target.role === 'owner') {
       return reply.code(403).send({ error: 'Solo un administrador puede gestionar a otro propietario.' });
@@ -431,7 +431,7 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     const nextRole = requestedRole ?? (target.role as 'owner' | 'member');
     if (body.projectIds && nextRole === 'member') {
       const check = projectsInWorkspace(body.projectIds, id);
-      if (!check.ok) return reply.code(400).send({ error: 'Solo puedes asignar proyectos de este workspace' });
+      if (!check.ok) return reply.code(400).send({ error: 'Solo es posible asignar proyectos de este workspace' });
     }
 
     transaction(() => {
@@ -455,7 +455,7 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(404).send({ error: 'Usuario no encontrado en este workspace' });
     }
     const me = currentUser(req)!;
-    if (target.id === me.id) return reply.code(400).send({ error: 'No puedes eliminar tu propia cuenta' });
+    if (target.id === me.id) return reply.code(400).send({ error: 'No es posible eliminar su propia cuenta' });
     if (me.role !== 'admin' && target.role === 'owner') {
       return reply.code(403).send({ error: 'Solo un administrador puede eliminar a otro propietario.' });
     }

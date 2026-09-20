@@ -317,9 +317,9 @@ describe('importRepoEnv (checkout en disco)', () => {
     expect((service.config as GitConfig).envImport).toBe(report);
 
     expect(lines).toEqual([
-      'Variables: encontrados .env.example, apps/api/.env.example y apps/api/.env en el repositorio.',
-      'Variables: importadas 3 (SHARED_FROM_ROOT, SMTP_HOST, SMTP_PASS).',
-      'Variables: 1 pendiente de valor (API_KEY): rellénala en la pestaña Variables.',
+      'Variables: se han encontrado .env.example, apps/api/.env.example y apps/api/.env en el repositorio.',
+      'Variables: se han importado 3 (SHARED_FROM_ROOT, SMTP_HOST, SMTP_PASS).',
+      'Variables: 1 pendiente de valor (API_KEY). Complete su valor en la pestaña «Variables».',
       'Variables: 2 ignoradas (PORT: reservada, DB_HOST: apunta a localhost).',
     ]);
     expect(lines.join('\n')).not.toContain('supersecreto');
@@ -368,7 +368,7 @@ describe('POST /api/services/:id/env/import-repo', () => {
   });
 
   it('responde 400 en un servicio que no es git o cuyo repo no es de GitHub', async () => {
-    const msg = 'Solo se puede importar de servicios desplegados desde un repositorio de GitHub';
+    const msg = 'Solo es posible importar variables de servicios desplegados desde un repositorio de GitHub';
     const db = await importRepo(dbId);
     expect(db.statusCode, db.body).toBe(400);
     expect(JSON.parse(db.body).error).toBe(msg);
@@ -416,7 +416,7 @@ describe('POST /api/services/:id/env/import-repo', () => {
     expect(r.statusCode, r.body).toBe(200);
     const body = JSON.parse(r.body);
     expect(body.needsRedeploy).toBe(true);
-    expect(body.message).toBe('Importadas 2 variables; 1 pendiente de valor. Redespliega el servicio para que el contenedor las reciba.');
+    expect(body.message).toBe('Se han importado 2 variables; 1 pendiente de valor. Es necesario volver a desplegar el servicio para que el contenedor las reciba.');
     expect(body.report.applied).toBe(true);
     expect(body.report.imported).toEqual([
       { key: 'DATABASE_URL', file: '.env.example' },

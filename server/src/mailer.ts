@@ -361,7 +361,7 @@ class SesionSmtp {
     // Un relé averiado que escupa datos sin salto de línea llenaría la memoria hasta
     // que venciera el temporizador; con el tope se corta en cuanto pasa de lo razonable.
     if (this.buf.length > MAX_RESPUESTA) {
-      this.romper(new MailError('El servidor SMTP envió una respuesta desmesurada; se corta la conexión.'));
+      this.romper(new MailError('El servidor SMTP envió una respuesta demasiado larga; se cierra la conexión.'));
       return;
     }
     for (;;) {
@@ -385,12 +385,12 @@ class SesionSmtp {
   private procesarLinea(linea: string): void {
     const m = linea.match(/^(\d{3})([ -]?)(.*)$/);
     if (!m) {
-      this.romper(new MailError(`El servidor SMTP devolvió una respuesta que no se entiende: «${linea.slice(0, 120)}».`));
+      this.romper(new MailError(`El servidor SMTP devolvió una respuesta no reconocida: «${linea.slice(0, 120)}».`));
       return;
     }
     this.lineas.push(m[3]);
     if (this.lineas.length > MAX_LINEAS) {
-      this.romper(new MailError('El servidor SMTP encadenó demasiadas líneas de respuesta; se corta la conexión.'));
+      this.romper(new MailError('El servidor SMTP envió demasiadas líneas de respuesta; se cierra la conexión.'));
       return;
     }
     // Una respuesta multilínea usa «-» como cuarto carácter; solo el espacio (o el
@@ -444,7 +444,7 @@ class SesionSmtp {
     const plazo = this.msRestantes();
     return new Promise<RespuestaSmtp>((resolver, rechazar) => {
       const temporizador = setTimeout(() => {
-        const err = new MailError(`El servidor SMTP no respondió en ${plazo} ms; se corta la conexión.`);
+        const err = new MailError(`El servidor SMTP no respondió en ${plazo} ms; se cierra la conexión.`);
         this.espera = null;
         this.romper(err);
         rechazar(err);
@@ -479,7 +479,7 @@ class SesionSmtp {
     const seguro = await new Promise<tls.TLSSocket>((resolver, rechazar) => {
       const temporizador = setTimeout(() => {
         plano.destroy();
-        rechazar(new MailError(`El apretón de manos TLS con ${host} no terminó a tiempo.`));
+        rechazar(new MailError(`La negociación TLS con ${host} no finalizó a tiempo.`));
       }, this.msRestantes());
       const cifrado = tls.connect({ socket: plano, servername: host, rejectUnauthorized: !permitirAutofirmado });
       cifrado.once('secureConnect', () => {
@@ -664,7 +664,7 @@ async function autenticar(sesion: SesionSmtp, cfg: SmtpConfig, ext: Map<string, 
     // «AUTH …» va enmascarado: la credencial nunca debe acabar en un log ni en la UI.
     throw new MailError(
       `El servidor SMTP rechazó las credenciales (AUTH ***): ${respuesta.code} ${textoSeguro(respuesta.text)}. ` +
-        'Revisa el usuario y la contraseña de correo en Ajustes.',
+        'Revise el usuario y la contraseña de correo en Ajustes.',
     );
   }
 }

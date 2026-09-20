@@ -95,13 +95,13 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     // Resolver el workspace destino según el rol.
     let workspace: WorkspaceRow | undefined;
     if (user.role === 'owner') {
-      if (!user.workspace_id) return reply.code(403).send({ error: 'Tu cuenta no tiene un workspace asignado' });
+      if (!user.workspace_id) return reply.code(403).send({ error: 'Su cuenta no tiene un workspace asignado' });
       workspace = getWorkspace(user.workspace_id);
       // No es un error de la petición: la cuenta apunta a un workspace que ya no
       // existe (borrado sin reasignar a sus usuarios). Solo el admin lo arregla.
       if (!workspace) {
         return reply.code(409).send({
-          error: 'El workspace de tu cuenta ya no existe. Pide a un administrador que reasigne tu usuario a un workspace.',
+          error: 'El workspace de su cuenta ya no existe. Solicite a un administrador que reasigne su usuario a un workspace.',
         });
       }
     } else if (body.workspaceId) {

@@ -225,7 +225,7 @@ describe('rutas de ayuda', () => {
     expect(r.statusCode, r.body).toBe(200);
     const body = JSON.parse(r.body) as AskResponse;
     expect(body.matches[0].id).toBe('anadir-dominio');
-    expect(body.answer).toContain('Esto puede ayudarte');
+    expect(body.answer).toContain('Documentación relacionada');
     expect(body.issues).toEqual([]);
   });
 
@@ -238,7 +238,7 @@ describe('rutas de ayuda', () => {
     });
     expect(r.statusCode, r.body).toBe(200);
     const body = JSON.parse(r.body) as AskResponse;
-    expect(body.answer).toContain('He revisado **api**');
+    expect(body.answer).toContain('Se ha revisado el servicio **api**');
     expect(body.issues.map((i) => i.id)).toContain('deploy-failed:healthcheck-failed');
     expect(body.issues[0].severity).toBe('critical');
     expect(body.links.some((l) => l.to.includes(`s=${serviceId}`))).toBe(true);

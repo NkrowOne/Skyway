@@ -86,7 +86,7 @@ async function requireRunning(project: ProjectRow, service: ServiceRow): Promise
   const name = containerName(project, service);
   const runtime = await getRuntime(name);
   if (runtime.state !== 'running') {
-    throw new Error('La base de datos no está en ejecución: arráncala antes.');
+    throw new Error('La base de datos no está en ejecución: es necesario iniciarla antes.');
   }
   return name;
 }
@@ -95,7 +95,7 @@ async function requireRunning(project: ProjectRow, service: ServiceRow): Promise
 export async function createBackup(project: ProjectRow, service: ServiceRow): Promise<BackupEntry> {
   const cfg = service.config as DatabaseConfig;
   const tpl = TEMPLATE_BACKUPS[cfg.template];
-  if (!tpl) throw new Error(`Backups no soportados para la plantilla ${cfg.template}`);
+  if (!tpl) throw new Error(`Las copias de seguridad no están disponibles para la plantilla ${cfg.template}`);
   const name = await requireRunning(project, service);
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -134,7 +134,7 @@ export async function createBackup(project: ProjectRow, service: ServiceRow): Pr
 
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
-      const err = new Error('El backup superó el tiempo máximo (10 min)');
+      const err = new Error('La copia de seguridad ha superado el tiempo máximo (10 min)');
       // Destruir la cabeza con error desmonta la cadena entera (pipeline
       // destruye gzip y el fichero) y corta el exec dentro del contenedor.
       stdout.destroy(err);
@@ -167,7 +167,7 @@ export async function createBackup(project: ProjectRow, service: ServiceRow): Pr
   const st = fs.statSync(full);
   if (st.size < 30) {
     fs.rmSync(full, { force: true });
-    throw new Error('El volcado salió vacío: revisa el estado de la base de datos.');
+    throw new Error('El volcado ha resultado vacío: compruebe el estado de la base de datos.');
   }
   return { file, size: st.size, createdAt: st.mtimeMs };
 }
@@ -176,9 +176,9 @@ export async function createBackup(project: ProjectRow, service: ServiceRow): Pr
 export async function restoreBackup(project: ProjectRow, service: ServiceRow, file: string): Promise<void> {
   const cfg = service.config as DatabaseConfig;
   const tpl = TEMPLATE_BACKUPS[cfg.template];
-  if (!tpl) throw new Error(`Backups no soportados para la plantilla ${cfg.template}`);
+  if (!tpl) throw new Error(`Las copias de seguridad no están disponibles para la plantilla ${cfg.template}`);
   const full = resolveBackupFile(service.id, file);
-  if (!full) throw new Error('Backup no encontrado');
+  if (!full) throw new Error('Copia de seguridad no encontrada');
   const name = await requireRunning(project, service);
 
   const container = docker.getContainer(name);
@@ -214,7 +214,7 @@ export async function restoreBackup(project: ProjectRow, service: ServiceRow, fi
     const source = fs.createReadStream(full);
     const gunzip = zlib.createGunzip();
     const timer = setTimeout(() => {
-      const err = new Error('La restauración superó el tiempo máximo (10 min)');
+      const err = new Error('La restauración ha superado el tiempo máximo (10 min)');
       // Se desmonta la cadena entera: el fichero deja de leerse, gunzip se
       // descarta y el socket con Docker se cierra.
       source.destroy(err);
@@ -243,7 +243,7 @@ export async function restoreBackup(project: ProjectRow, service: ServiceRow, fi
   }
   if (!sentAll) {
     throw new Error(
-      `El cliente terminó antes de recibir el backup completo: ${outText.slice(0, 500) || 'sin detalle'}`,
+      `El cliente finalizó antes de recibir la copia de seguridad completa: ${outText.slice(0, 500) || 'sin detalle'}`,
     );
   }
 }

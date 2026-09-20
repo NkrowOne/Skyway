@@ -21,7 +21,7 @@ function RoleChip({ role }: { role: UserRole }) {
   if (role === 'admin')
     return (
       <Chip size="sm" tone="info" icon={<Shield size={9} aria-hidden />}>
-        admin
+        administrador
       </Chip>
     );
   if (role === 'owner') return <Chip size="sm" tone="info">propietario</Chip>;
@@ -99,7 +99,7 @@ export default function UsersPage() {
             {list.length > 0 && <Chip>{list.length}</Chip>}
           </h1>
           <p className="mt-1.5 text-sm text-sub">
-            Administradores con control total del servidor, y miembros limitados a su cuenta de cliente
+            Administradores con control total del servidor y miembros limitados a su cuenta de cliente
           </p>
         </div>
         <Button onClick={() => setDraft({ ...EMPTY })}>
@@ -128,7 +128,7 @@ export default function UsersPage() {
           <EmptyState
             compact
             title="Todavía no hay usuarios"
-            description="Crea el primero para dar acceso al panel."
+            description="Cree el primero para dar acceso al panel."
             action={<Button size="sm" onClick={() => setDraft({ ...EMPTY })}><Plus size={13} /> Nuevo usuario</Button>}
           />
         ) : (
@@ -142,7 +142,7 @@ export default function UsersPage() {
                 <span className="truncate text-sm font-medium">{u.email}</span>
                 <RoleChip role={u.role} />
                 {u.id === me.data?.user?.id && (
-                  <Chip size="sm">tú</Chip>
+                  <Chip size="sm">usted</Chip>
                 )}
               </div>
               <div className="flex flex-wrap items-center gap-3 text-xs text-subtle">
@@ -180,7 +180,7 @@ export default function UsersPage() {
                 onClick={() => setToDelete(u)}
                 disabled={u.id === me.data?.user?.id}
                 className="rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err disabled:opacity-30 max-sm:p-2.5"
-                title={u.id === me.data?.user?.id ? 'No puedes eliminarte a ti mismo' : 'Eliminar usuario'}
+                title={u.id === me.data?.user?.id ? 'No es posible eliminar su propio usuario' : 'Eliminar usuario'}
                 aria-label="Eliminar usuario"
               >
                 <Trash2 size={14} />
@@ -195,7 +195,7 @@ export default function UsersPage() {
         {draft && (
           <div className="flex flex-col gap-3.5">
             {!isEdit && (
-              <Field label="Email">
+              <Field label="Correo electrónico">
                 <input
                   className="input"
                   type="email"
@@ -209,7 +209,7 @@ export default function UsersPage() {
             )}
             <Field
               label={isEdit ? 'Nueva contraseña' : 'Contraseña'}
-              hint={isEdit ? 'vacío = no cambiarla' : 'mínimo 8 caracteres; pídele que la cambie al entrar'}
+              hint={isEdit ? 'Si se deja vacío, la contraseña no cambia' : 'Mínimo 8 caracteres; se recomienda que el usuario la cambie al iniciar sesión'}
             >
               <input
                 className="input"
@@ -233,14 +233,14 @@ export default function UsersPage() {
                   >
                     <p className="text-sm font-semibold">{r === 'admin' ? 'Administrador' : 'Miembro'}</p>
                     <p className="mt-0.5 text-xs leading-snug text-subtle">
-                      {r === 'admin' ? 'Control total: servidor, usuarios y todas las cuentas' : 'Solo los proyectos que le asignes'}
+                      {r === 'admin' ? 'Control total: servidor, usuarios y todas las cuentas' : 'Solo los proyectos que se le asignen'}
                     </p>
                   </button>
                 ))}
               </div>
             </Field>
             {draft.role === 'member' && (
-              <Field label="Proyectos con acceso" hint={projects.data?.projects.length ? undefined : 'aún no hay proyectos creados'} group>
+              <Field label="Proyectos con acceso" hint={projects.data?.projects.length ? undefined : 'Todavía no hay proyectos creados'} group>
                 <div className="flex max-h-44 flex-col gap-1 overflow-y-auto rounded-lg border border-line bg-bg p-2">
                   {(projects.data?.projects ?? []).map((p) => (
                     <label key={p.id} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface2">
@@ -278,7 +278,7 @@ export default function UsersPage() {
         onClose={() => setToDelete(null)}
         onConfirm={() => toDelete && remove.mutate(toDelete.id)}
         title="Eliminar usuario"
-        message={`«${toDeleteShown?.email ?? ''}» perderá el acceso al momento; sus passkeys y tokens se revocan. Sus proyectos y servicios no se tocan.`}
+        message={`«${toDeleteShown?.email ?? ''}» perderá el acceso de inmediato y sus passkeys y tokens se revocarán. Sus proyectos y servicios no se modifican.`}
         loading={remove.isPending}
       />
     </div>
