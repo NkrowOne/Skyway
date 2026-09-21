@@ -38,8 +38,9 @@ server/src/
   billingauto.ts        automatización: corte por impago (dunning), reactivación y factura automática del ciclo
   billingsettings.ts    ajustes de automatización (auto-generar/auto-emitir el ciclo, umbrales de morosidad)
   security.ts           escáner de seguridad (hallazgos + nota)
-  variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}
-  templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio)
+  variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}; variables de sistema (INTERNAL_URL, PUBLIC_URL…)
+  needs.ts              detección de dependencias del repo (librerías, schema.prisma, .env.example) y propuestas de variables
+  templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio) y qué variables de conexión exporta cada una
   stacks.ts             pilas de aplicaciones multi-servicio (Supabase, WordPress, Ghost, n8n, Metabase)
   dbconsole.ts          consola de consultas (psql/mysql/mongosh/redis-cli vía exec)
   files.ts              explorador de archivos por contenedor (tar sobre socket)
@@ -390,6 +391,7 @@ aplican **en caliente**.
 | `volumes` | ✓ | ✓ | fijo (su volumen) | conserva nombre al editar |
 | `replicas` (1–10) | ✓ | ✓ | 1 | requiere sin volúmenes ni hostPort |
 | `autoDeploy` | ✓ | — | — | sondeo de la rama; despliega al haber commit nuevo (opt-out) |
+| `needs` | ✓ | — | — | interno: dependencias detectadas en el repo en el último despliegue (§5.5). Se reescribe en cada clonado |
 | `backupSchedule`, `backupRetention` | — | — | ✓ | diario/semanal ~04:00 |
 | `alertsMuted` | ✓ | ✓ | ✓ | silencia alertas del servicio |
 
@@ -610,9 +612,82 @@ elegida (rutas `…/repos/lookup`) y, si esa cuenta no lo ve, el error explica e
 motivo y qué hacer. Bajo el campo de URL (al crear un servicio o en sus ajustes)
 un aviso dice si la cuenta elegida, el token global o nadie va a poder clonarlo.
 
-### 5.5 Variables de compatibilidad con Railway
+### 5.5 Variables de sistema y de compatibilidad con Railway
 
-En cada despliegue se rellenan las variables mágicas de Railway con el
+**Variables de sistema.** Skyway calcula de cada servicio, sin que nadie las
+escriba, por dónde se le llama dentro del proyecto y por qué dominio se le llega
+desde fuera (`systemVars` en `variables.ts`):
+
+| Variable | Valor | Cuándo existe |
+| --- | --- | --- |
+| `INTERNAL_HOST` | slug del servicio (su nombre DNS en la red del proyecto) | siempre |
+| `INTERNAL_PORT` | puerto interno (plantilla en BBDD; elegido en imagen; elegido o 3000 en repo) | si tiene puerto |
+| `INTERNAL_URL` | `http://<slug>:<puerto>` | repo/imagen con puerto (una BBDD ya exporta su `DATABASE_URL`, `REDIS_URL`…) |
+| `PUBLIC_DOMAIN` | primer dominio del servicio | si tiene dominio |
+| `PUBLIC_URL` | `https://<dominio>` (o `http://` sin Let's Encrypt) | si tiene dominio |
+
+Se usan de dos formas: **otro servicio las referencia** (`${{api.INTERNAL_URL}}`,
+`${{web.PUBLIC_URL}}`) y el resolutor las aplica cuando el servicio apuntado no
+tiene esa variable guardada; y **el propio servicio las recibe** en su entorno
+al desplegar, calculadas con el puerto y los dominios de ese despliegue. Una
+variable guardada con el mismo nombre gana siempre, en los dos casos. La
+pestaña Variables las enseña en «Referencias del proyecto» con trazo discontinuo,
+y Ajustes → Dirección interna ofrece la referencia lista para copiar: al cambiar
+el puerto o el dominio se actualiza sola, cosa que un `http://api:3000` pegado a
+mano no hace.
+
+**Conectar a…** Cada plantilla de base de datos declara en `templates.ts` qué
+variables de conexión exporta y con qué papel (`conn`: `main`, `host`, `port`,
+`user`, `password`, `database`) y el juego mínimo que otro servicio necesita para
+engancharse (`connect`: la URL; en MinIO, endpoint y credenciales). Es la única
+tabla: la lee el panel, el importador de Railway y la detección de dependencias.
+`GET /services/:id/env` devuelve por cada servicio del proyecto ese `connect`
+(en una app con puerto, `INTERNAL_URL`), y la pestaña Variables lo convierte en
+un botón «Conectar a <servicio>» que inserta de golpe las referencias que falten:
+`DATABASE_URL=${{postgres.DATABASE_URL}}` para una base, `API_URL=${{api.INTERNAL_URL}}`
+para otra app. Se aplican, como todo, al guardar y redesplegar.
+
+**Detección de dependencias.** Al clonar un repositorio, antes de construir,
+`needs.ts` mira en sitios fijos (en `rootDir` y en la raíz, sin recorrer el
+árbol) qué motores usa y qué variables espera:
+
+- Librerías inequívocas: `package.json` (`pg`, `ioredis`, `mongoose`, `mysql2`,
+  `minio`, `@aws-sdk/client-s3`…), `requirements.txt`/`pyproject.toml`
+  (`psycopg2`, `redis`, `pymongo`, `boto3`…), `go.mod`, `Gemfile`,
+  `composer.json`. Un ORM multi-motor (typeorm, sqlalchemy, doctrine) no cuenta:
+  no dice qué base hay detrás.
+- `prisma/schema.prisma`: el `provider` da el motor y `env("…")` la variable.
+- `docker-compose.yml`: las imágenes `postgres`, `redis`, `mysql`, `mongo`, `minio`.
+- `.env.example` (o `.env.sample`, `.env.template`, `.env.dist`): los nombres de
+  variable que la app espera. Un `REDIS_URL` delata Redis aunque la librería no
+  esté en la lista; `DATABASE_URL` a secas asume PostgreSQL y lo dice.
+
+El resultado se guarda en `config.needs` del servicio y se cuenta en el log del
+despliegue («Dependencias detectadas…», «⚠ Faltan variables para esas
+dependencias…»). `GET /services/:id/env` lo convierte en `suggestions`
+(clave a crear, referencia lista si el proyecto ya tiene esa base, o `value:
+null` si hay que crearla), `missing` (variables esperadas sin propuesta
+automática) y `needs` (motores con su pista). Los nombres se casan por papel:
+`DB_HOST` → `${{Postgres.PGHOST}}`, `S3_ACCESS_KEY` → `${{MinIO.MINIO_ROOT_USER}}`,
+`NEXTAUTH_URL` → `${{<este servicio>.PUBLIC_URL}}` si tiene dominio. La pestaña
+Variables lo pinta como aviso con «Añadir», «Añadir todas» y «Crear <motor> y
+conectar» (crea la base en el proyecto y añade las referencias de golpe). Nada de
+esto escribe una variable por su cuenta: todo se propone y se aplica al guardar y
+redesplegar.
+
+Lo mismo **antes de crear el servicio**: al elegir repositorio y rama en «Nuevo
+servicio → Repositorio de GitHub», `GET /projects/:id/github/needs` pide a GitHub
+(con la credencial que vaya a clonar) solo los ficheros candidatos que el árbol
+del repo dice que existen, los pasa por la misma detección y devuelve las
+propuestas contra lo que ya hay en el proyecto. El asistente enseña una casilla
+por motor («Crear PostgreSQL y conectar (DATABASE_URL)», o «Conectar a
+<base existente>») y otra para añadir vacías las demás variables esperadas; al
+confirmar, crea primero las bases marcadas y el servicio nace con las
+referencias puestas (`env` en `POST /projects/:projectId/services`), antes de su primer
+despliegue. Todo desmarcable, y si GitHub no responde el alta sigue igual.
+
+**Compatibilidad con Railway.** En cada despliegue se rellenan las variables
+mágicas de Railway con el
 equivalente de Skyway, **sin pisar nunca** un valor definido por el usuario, para
 que una aplicación migrada que las lea siga funcionando:
 
@@ -664,6 +739,9 @@ antes obligaba a entrar por SSH al servidor.
   Las tres vías comparten estado: un commit ya construido no se vuelve a
   desplegar, y con un despliegue vivo no se encola otro encima.
 - **Variables**: por servicio y compartidas por proyecto; referencias
+  `${{Servicio.VAR}}` y `${{shared.VAR}}` resueltas al desplegar. Cada servicio
+  tiene además variables de sistema (`INTERNAL_URL`, `PUBLIC_URL`…) que Skyway
+  calcula de su puerto y su dominio (§5.5).
   `${{Servicio.VAR}}` y `${{shared.VAR}}` resueltas al desplegar.
 - **Importación del `.env` del repositorio** (`deploy/envimport.ts`): al construir
   un servicio git se buscan `.env.example`, `.env.sample`, `.env.template`,
@@ -1053,18 +1131,18 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 ### 7.4 Servicios
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/templates` | auth | plantillas de BBDD disponibles |
+| GET | `/templates` | auth | plantillas de BBDD disponibles, con sus variables de conexión (`conn`) |
 | GET | `/stacks` | auth | catálogo de pilas de aplicaciones (§5.1) |
 | POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[]}`; atómica (409 si choca un nombre); `domain` como en crear servicio; `services[].config` sin `webhookSecret` |
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada); 20 por minuto y usuario, después 429 |
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas |
-| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH |
+| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH; en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5) |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
 | PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
 | DELETE | `/services/:id?volumes=true` | +access | elimina servicio; igual que en proyectos, devuelve `{ok, warnings}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
-| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias) |
+| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, §5.5) |
 | PUT | `/services/:id/env` | +access | reemplaza variables del servicio |
 | POST | `/services/:id/env/import-repo` | +access | importa el `.env`/`.env.example` del repositorio de GitHub sin clonar: `{apply?: boolean}`; sin `apply` es vista previa (`report.imported[].value` relleno, nada se escribe); con `apply: true` crea las variables válidas, persiste el informe sin valores en `config.envImport` y devuelve `needsRedeploy`. Solo servicios git de GitHub (400 en el resto); 10 por minuto y usuario; auditado como `service_env_imported` |
 
@@ -1166,6 +1244,8 @@ distroless), el explorador lo indica y no está disponible.
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/domains/server-ip` | auth | IP del servidor (configurada o detectada) |
+| GET | `/domains/config` | auth | `{rootDomain, tls}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin) |
+| GET | `/projects/:id/github/needs` | +access | dependencias del repo antes de crearlo (`repo`, `branch`, `rootDir?`, `source?`): `needs`, `suggestions`, `missing`, `envFile` (§5.5) |
 | POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`); 30 por minuto y usuario, después 429 |
 | GET | `/public/status/:token` | público | página de estado pública (cacheada) |
 | GET | `/projects/:id/status-page` | +access | config de la página de estado |

@@ -5,8 +5,10 @@ import { assertProjectAccess, currentUser, jwtSecret, requireAdmin, requireAuth,
 import { audit } from '../audit';
 import {
   deleteGithubInstallation,
+  getGithubConnector,
   getGithubInstallation,
   getProject,
+  getProjectVars,
   getSetting,
   listAllGithubInstallations,
   listGithubInstallationsByNumber,
@@ -29,7 +31,9 @@ import {
 } from '../github/app';
 import { GithubError, getGithubRepo, listGithubBranches, parseGithubSlug } from '../github/client';
 import { installationTokenFor } from '../github/resolve';
+import { adviseNeeds, detectNeedsFromGithub } from '../needs';
 import { moduleAllowedForProject } from '../quota';
+import { projectReferences } from '../variables';
 import { GithubInstallationRow } from '../types';
 import { randomAlnum } from '../util';
 
@@ -477,6 +481,58 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
       const repo = await lookupRepo(token, slug.owner, slug.repo);
       if (repo) return { repo };
       return reply.code(404).send({ error: notVisibleMessage('app', row.account_login, slug.owner, slug.repo), reason: 'not_visible' });
+    } catch (err: any) {
+      if (err instanceof GithubError) return reply.code(502).send({ error: err.message });
+      throw err;
+    }
+  });
+
+  /**
+   * Dependencias del repositorio ANTES de crear el servicio: los mismos ficheros
+   * que la detección mira tras clonar, leídos por la API de GitHub con la
+   * credencial que vaya a clonar (`source`: `app:<id>`, `pat:<id>` o nada =
+   * token global/anónimo). Con eso el asistente de alta propone crear y
+   * conectar las bases que hagan falta, sin esperar al primer despliegue.
+   */
+  app.get('/api/projects/:id/github/needs', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const query = z
+      .object({
+        repo: z.string().trim().min(3).max(300),
+        branch: z.string().trim().min(1).max(200),
+        rootDir: z.string().trim().max(200).optional(),
+        source: z.string().trim().max(80).optional(),
+        name: z.string().trim().max(60).optional(),
+      })
+      .parse(req.query);
+    if (!getProject(id)) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectAccess(req, reply, id)) return reply;
+    const slug = parseGithubSlug(query.repo);
+    if (!slug) return reply.code(400).send({ error: 'Indique el repositorio como owner/repo o pegue su URL de GitHub' });
+
+    let token: string | null = getSetting('githubToken') || null;
+    if (query.source?.startsWith('app:')) {
+      const row = getGithubInstallation(query.source.slice(4));
+      if (!row) return reply.code(404).send({ error: 'Instalación no encontrada' });
+      if (!installationUseAccess(req, reply, row, id)) return reply;
+      token = await installationTokenFor(row).catch((err: any) => {
+        throw err instanceof GithubError ? err : new GithubError(err?.message || 'No se pudo obtener el token de la instalación');
+      });
+    } else if (query.source?.startsWith('pat:')) {
+      const connector = getGithubConnector(query.source.slice(4));
+      if (!connector || connector.project_id !== id) return reply.code(400).send({ error: 'Conector de GitHub desconocido en este proyecto' });
+      token = connector.token;
+    }
+
+    try {
+      const needs = await detectNeedsFromGithub(token, slug.owner, slug.repo, query.branch, query.rootDir || undefined);
+      const advice = adviseNeeds(
+        needs,
+        // Sin dominio todavía: las variables de URL pública se quedan en «missing».
+        { serviceName: query.name || slug.repo, domains: [], defined: new Set(Object.keys(getProjectVars(id))) },
+        projectReferences(id),
+      );
+      return { ...advice, envFile: needs?.envFile ?? null };
     } catch (err: any) {
       if (err instanceof GithubError) return reply.code(502).send({ error: err.message });
       throw err;

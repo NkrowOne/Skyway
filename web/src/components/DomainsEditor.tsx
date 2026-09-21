@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, ExternalLink, Globe, Plus, RefreshCw, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
+import { Me } from '../types';
 import { cx, Tone } from '../utils';
 import { Button, Chip, CopyButton, useToast } from './ui';
 
@@ -14,8 +15,10 @@ interface DomainCheck {
   message: string;
 }
 
-interface SettingsData {
-  settings: { rootDomain: string | null; letsencryptEmail: string | null };
+/** Lo que el servidor cuenta del dominio raíz y el TLS a cualquier usuario. */
+interface DomainsConfig {
+  rootDomain: string | null;
+  tls: boolean;
 }
 
 const STATUS_META: Record<DomainCheck['status'], { label: string; tone: Tone }> = {
@@ -180,7 +183,20 @@ export default function DomainsEditor({
   const [custom, setCustom] = useState('');
   const [newRootDomain, setNewRootDomain] = useState('');
 
-  const settings = useQuery({ queryKey: ['settings'], queryFn: () => api.get<SettingsData>('/settings') });
+  /*
+   * `GET /settings` es solo del admin. Un propietario que lo consultaba recibía
+   * 403, el editor creía que no había dominio raíz y le pintaba el formulario
+   * de «configúralo», que a su vez le contestaba 403 al guardar. La config que
+   * necesita el editor (dominio raíz y si hay TLS) la sirve /domains/config a
+   * cualquiera con sesión; el formulario solo lo ve quien puede rellenarlo.
+   */
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
+  const isAdmin = me.data?.user?.role === 'admin';
+  const config = useQuery({
+    queryKey: ['domainsConfig'],
+    queryFn: () => api.get<DomainsConfig>('/domains/config'),
+    staleTime: 60_000,
+  });
   const serverIp = useQuery({
     queryKey: ['serverIp'],
     queryFn: () => api.get<{ ip: string | null; source: string | null }>('/domains/server-ip'),
@@ -190,14 +206,15 @@ export default function DomainsEditor({
   const saveRootDomain = useMutation({
     mutationFn: () => api.put('/settings', { rootDomain: newRootDomain.trim().toLowerCase() }),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['domainsConfig'] });
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       toast('Dominio raíz guardado', 'ok');
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  const rootDomain = settings.data?.settings.rootDomain || null;
-  const tls = !!settings.data?.settings.letsencryptEmail;
+  const rootDomain = config.data?.rootDomain || null;
+  const tls = !!config.data?.tls;
   const ip = serverIp.data?.ip ?? null;
   const generated = rootDomain ? `${slug}.${rootDomain}` : null;
 
@@ -226,66 +243,80 @@ export default function DomainsEditor({
         </div>
       )}
 
-      {/* Subdominio automático */}
-      <div className="rounded-lg border border-dashed border-acc/40 bg-acc/[.06] p-3">
-        {rootDomain ? (
-          <>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="flex min-w-0 items-center gap-2 text-xs text-acc-soft">
-                <Globe size={13} className="shrink-0" />
-                <span className="truncate font-mono text-xs text-txt">{generated}</span>
-              </span>
-              <Button
-                size="sm"
-                variant="secondary"
-                className="h-[30px]"
-                disabled={!generated || domains.includes(generated)}
-                onClick={() => generated && add(generated)}
-              >
-                <Plus size={12} /> {domains.includes(generated!) ? 'Añadido' : 'Añadir subdominio'}
-              </Button>
-            </div>
-            <p className="mt-2 text-xs text-subtle">
-              Requiere un registro A comodín <span className="font-mono">*.{rootDomain}</span> apuntando a la IP del
-              servidor.
-            </p>
-          </>
-        ) : (
-          <>
-            <div className="flex items-center gap-2 text-xs font-medium text-acc-soft">
-              <Globe size={13} /> Subdominio automático
-            </div>
-            <div className="mt-2 flex flex-col gap-2 text-xs text-sub">
-              <p>
-                Configure una sola vez el <strong className="text-txt">dominio raíz</strong> (por ejemplo,{' '}
-                <span className="font-mono">apps.midominio.com</span>) y cada servicio podrá tener su subdominio con un clic.
-              </p>
-              <div className="flex gap-2">
-                <input
-                  className="input min-w-0 flex-1 font-mono sm:text-xs"
-                  placeholder="apps.midominio.com"
-                  value={newRootDomain}
-                  onChange={(e) => setNewRootDomain(e.target.value)}
-                  inputMode="url"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                />
+      {/* Subdominio automático. Hasta que llega la config no se pinta: si no,
+          durante la carga asomaba el formulario de «configura tu dominio raíz»
+          aunque ya estuviera configurado. */}
+      {config.data && (
+        <div className="rounded-lg border border-dashed border-acc/40 bg-acc/[.06] p-3">
+          {rootDomain ? (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="flex min-w-0 items-center gap-2 text-xs text-acc-soft">
+                  <Globe size={13} className="shrink-0" />
+                  <span className="truncate font-mono text-xs text-txt">{generated}</span>
+                </span>
                 <Button
                   size="sm"
                   variant="secondary"
-                  className="h-9"
-                  disabled={!newRootDomain.trim()}
-                  loading={saveRootDomain.isPending}
-                  onClick={() => saveRootDomain.mutate()}
+                  className="h-[30px]"
+                  disabled={!generated || domains.includes(generated)}
+                  onClick={() => generated && add(generated)}
                 >
-                  Guardar
+                  <Plus size={12} /> {domains.includes(generated!) ? 'Añadido' : 'Añadir subdominio'}
                 </Button>
               </div>
-            </div>
-          </>
-        )}
-      </div>
+              <p className="mt-2 text-xs text-subtle">
+                Requiere un registro A comodín <span className="font-mono">*.{rootDomain}</span> apuntando a la IP del
+                servidor.
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-2 text-xs font-medium text-acc-soft">
+                <Globe size={13} /> Subdominio automático
+              </div>
+              {isAdmin ? (
+                <div className="mt-2 flex flex-col gap-2 text-xs text-sub">
+                  <p>
+                    Configure una sola vez el <strong className="text-txt">dominio raíz</strong> (por ejemplo,{' '}
+                    <span className="font-mono">apps.midominio.com</span>) y cada servicio podrá tener su subdominio con
+                    un clic.
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      className="input min-w-0 flex-1 font-mono sm:text-xs"
+                      placeholder="apps.midominio.com"
+                      value={newRootDomain}
+                      onChange={(e) => setNewRootDomain(e.target.value)}
+                      inputMode="url"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                    />
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="h-9"
+                      disabled={!newRootDomain.trim()}
+                      loading={saveRootDomain.isPending}
+                      onClick={() => saveRootDomain.mutate()}
+                    >
+                      Guardar
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                /* Un propietario no puede tocar los ajustes del servidor: se le
+                   dice quién sí y se le señala el dominio propio, que sí es suyo. */
+                <p className="mt-2 text-xs text-sub">
+                  El administrador del servidor aún no ha configurado un dominio raíz. Mientras tanto es posible añadir
+                  un dominio propio en el campo inferior.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* Dominio propio */}
       <div className="flex gap-2">
@@ -320,9 +351,13 @@ export default function DomainsEditor({
         ) : (
           <Chip size="sm" tone="warn" dot>
             Sin TLS —{' '}
-            <Link to="/settings" className="text-acc-soft hover:underline">
-              Ajustes → Let's Encrypt
-            </Link>
+            {isAdmin ? (
+              <Link to="/settings" className="text-acc-soft hover:underline">
+                Ajustes → Let's Encrypt
+              </Link>
+            ) : (
+              'el administrador debe activar Let\'s Encrypt'
+            )}
           </Chip>
         )}
         <span>Los dominios se aplican al guardar y volver a desplegar.</span>

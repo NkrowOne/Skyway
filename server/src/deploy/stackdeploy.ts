@@ -180,7 +180,7 @@ export async function runStackDeploy(stack: DeployableStack, steps: StackStep[])
     );
 
     if (results.some((ok) => !ok)) {
-      aborted = `La pila «${stack.label}» se detuvo: un servicio del que este depende no llegó a arrancar. Arréglalo y despliega este servicio.`;
+      aborted = `La pila «${stack.label}» se detuvo: un servicio del que este depende no llegó a arrancar. Corrija ese servicio y vuelva a desplegar este.`;
     }
   }
 }

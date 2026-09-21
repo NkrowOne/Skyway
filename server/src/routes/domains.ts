@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAuth } from '../auth';
+import { getSetting } from '../db';
 import { checkDomain, getServerIp } from '../domains';
 import { rateLimit } from '../ratelimit';
 
@@ -17,6 +18,18 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
   app.get('/api/domains/server-ip', async () => getServerIp());
+
+  /**
+   * Lo que el editor de dominios necesita de los ajustes del servidor, para
+   * cualquier usuario. `GET /settings` es solo del admin: sin esto, a un
+   * propietario el panel le pintaba «configura tu dominio raíz» con un
+   * formulario que le contestaba 403, en vez del subdominio de su servicio.
+   * Ni el email de Let's Encrypt ni el resto de ajustes salen de aquí.
+   */
+  app.get('/api/domains/config', async () => ({
+    rootDomain: getSetting('rootDomain'),
+    tls: !!getSetting('letsencryptEmail'),
+  }));
 
   app.post('/api/domains/check', { preHandler: rateLimit({ max: CHECKS_POR_MINUTO, windowMs: 60_000 }) }, async (req, reply) => {
     const body = z.object({ domain: z.string().trim().toLowerCase().max(253) }).parse(req.body);

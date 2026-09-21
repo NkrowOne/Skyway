@@ -59,7 +59,8 @@ import { importRepoEnv } from './envimport';
 import { dockerRestartPolicy, hasRailwayConfig, RailwayRepoConfig, readRailwayRepoConfig } from './railwayconfig';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
 import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
-import { resolveServiceEnv } from '../variables';
+import { adviseEnv, detectNeeds } from '../needs';
+import { availableReferences, resolveServiceEnv, systemVars } from '../variables';
 import { DatabaseConfig, DeploymentRow, GitConfig, ImageConfig, ProjectRow, ServiceRow } from '../types';
 import { now } from '../util';
 
@@ -748,6 +749,7 @@ async function buildGitImage(
       }
     }
     const repoConfig = readRailwayRepoConfig(workDir, cfg.rootDir, log);
+    recordNeeds(service, cfg, workDir, log);
     let builderPrevio: string | null = null;
     if (hasRailwayConfig(repoConfig) && repoConfig.source) {
       log(`Configuración del repositorio leída de ${repoConfig.source} (config-as-code de Railway).`);
@@ -1178,6 +1180,14 @@ async function deployContainer(
   env.SKYWAY_PROJECT = project.slug;
   env.SKYWAY_SERVICE = service.slug;
   env.SKYWAY_DEPLOYMENT = deploymentId;
+  // Las mismas variables de sistema que otro servicio puede referenciar
+  // (`${{api.PUBLIC_URL}}`), también dentro del propio contenedor: una app que
+  // monta enlaces absolutos las tiene sin escribir su dominio a mano. Con el
+  // puerto y los dominios de ESTE despliegue, no con lo guardado, y sin pisar
+  // nunca un valor que el usuario haya definido.
+  for (const [key, value] of Object.entries(systemVars(service, { port: internalPort, domains }))) {
+    if (env[key] === undefined) env[key] = value;
+  }
   applyRailwayCompatEnv(env, project, service, deploymentId, domains, internalPort, volumes);
 
   // Política de reinicio declarada en el repo (restartPolicyType de Railway).
@@ -1398,6 +1408,51 @@ async function deployContainer(
   }
   if (hostPort && internalPort) {
     log(`Puerto publicado: ${hostPort} → ${internalPort}`);
+  }
+}
+
+/**
+ * Mira qué dependencias declara el repositorio recién clonado, lo guarda en la
+ * config del servicio (para que la pestaña Variables lo convierta en
+ * propuestas) y lo cuenta en el log del despliegue. Solo informa: la app
+ * arrancará igual sin `DATABASE_URL`, y eso es precisamente lo que aquí se
+ * intenta que no pase en silencio.
+ */
+function recordNeeds(service: ServiceRow, cfg: GitConfig, workDir: string, log: (l: string) => void): void {
+  let needs: ReturnType<typeof detectNeeds>;
+  try {
+    needs = detectNeeds(workDir, cfg.rootDir);
+  } catch (err: any) {
+    log(`ℹ No se pudieron inspeccionar las dependencias del repositorio: ${err?.message || err}`);
+    return;
+  }
+  // En memoria, para que las escrituras posteriores de esta config (el puerto
+  // detectado del EXPOSE) no la pierdan; y en la base releyendo la fila, para
+  // no pisar un ajuste que alguien haya guardado mientras se clonaba.
+  if (needs) cfg.needs = needs;
+  else delete cfg.needs;
+  const fresh = getService(service.id);
+  if (fresh) {
+    const freshCfg = { ...(fresh.config as GitConfig) };
+    if (needs) freshCfg.needs = needs;
+    else delete freshCfg.needs;
+    updateService(fresh.id, fresh.name, freshCfg);
+  }
+  if (!needs) return;
+
+  const advice = adviseEnv({ ...service, config: cfg }, availableReferences(service));
+  if (advice.needs && advice.needs.engines.length > 0) {
+    log(`Dependencias detectadas en el repositorio: ${advice.needs.engines.map((e) => `${e.label} (${e.evidence})`).join(', ')}.`);
+  }
+  const sinCubrir = advice.suggestions.filter((s) => s.template).map((s) => s.key);
+  if (sinCubrir.length > 0) {
+    log(
+      `⚠ Faltan variables para esas dependencias: ${sinCubrir.join(', ')}. En la pestaña Variables hay propuestas para ` +
+        'conectarlas en un clic (o crear la base que falte); se aplican al redesplegar.',
+    );
+  }
+  if (advice.missing.length > 0) {
+    log(`ℹ El repositorio espera además (${needs.envFile ?? 'variables de ejemplo'}) y no están definidas: ${advice.missing.join(', ')}.`);
   }
 }
 

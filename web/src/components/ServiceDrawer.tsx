@@ -574,6 +574,7 @@ export default function ServiceDrawer({
                 serviceId={serviceId}
                 serviceType={service.type}
                 envImport={service.config.envImport ?? null}
+                projectId={projectId}
                 onSaved={() => {
                   invalidate();
                   setPendingRedeploy(true);

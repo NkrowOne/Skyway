@@ -18,6 +18,7 @@ import {
 import { api } from '../../api';
 import { maskValue } from '../../helpText';
 import { EnvImportReport, EnvImportResponse, EnvSkipReason } from '../../types';
+import { EnvSuggestion } from '../../types';
 import { cx, EMPTY_LIST, EMPTY_RECORD } from '../../utils';
 import { Button, CopyButton, EditorBar, Modal, Segmented, Skeleton, useToast } from '../ui';
 
@@ -238,12 +239,21 @@ interface ReferenceGroup {
   service: string;
   template: string | null;
   vars: string[];
+  /** Las que calcula Skyway (INTERNAL_URL, PUBLIC_URL…): no están guardadas, pero se referencian igual. */
+  auto: string[];
+  /** Lo que «Conectar a…» copia: la URL del motor en una base (tres en S3), la URL interna en una app. */
+  connect: string[];
 }
 
 interface EnvResponse {
   vars: Record<string, string>;
   resolved: Record<string, string>;
   references: ReferenceGroup[];
+  /** Lo que la detección del último despliegue encontró en el repositorio; null si nada o si no es un servicio de repositorio. */
+  needs: { engines: { template: string; label: string; evidence: string }[]; sources: string[] } | null;
+  suggestions: EnvSuggestion[];
+  /** Variables que el repositorio espera (de .env.example) sin sugerencia automática y que no están definidas. */
+  missing: string[];
 }
 
 interface Row {
@@ -284,14 +294,13 @@ const SUGGESTED_VARS: { key: string; value: string; hint: string }[] = [
   { key: 'PORT', value: '3000', hint: 'Puerto de escucha de la aplicación' },
 ];
 
-/** Variable de conexión principal que exporta cada plantilla de base de datos. */
-const MAIN_VAR: Record<string, string> = {
-  postgres: 'DATABASE_URL',
-  redis: 'REDIS_URL',
-  mysql: 'MYSQL_URL',
-  mongo: 'MONGO_URL',
-  minio: 'MINIO_ENDPOINT',
-};
+/**
+ * Nombre con el que un servicio recibe la URL interna de otro: «api» → API_URL,
+ * «bot-lewspain» → BOT_LEWSPAIN_URL. En una base de datos la clave es la
+ * misma que exporta (DATABASE_URL), que es lo que las librerías buscan.
+ */
+const connectKey = (group: ReferenceGroup, v: string): string =>
+  group.template ? v : `${group.service.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'SERVICE'}_URL`;
 
 const RAILWAY_RE = /railway\.internal|railway\.app|rlwy\.net/i;
 
@@ -521,6 +530,7 @@ export default function VariablesTab({
   serviceId,
   serviceType,
   envImport,
+  projectId,
   onSaved,
   onDeploy,
   onNeedsRedeploy,
@@ -531,6 +541,7 @@ export default function VariablesTab({
   serviceType?: 'git' | 'database' | 'image';
   /** Última importación del .env del repositorio (config del servicio). */
   envImport?: EnvImportReport | null;
+  projectId: string;
   onSaved: () => void;
   onDeploy?: () => void;
   onNeedsRedeploy?: () => void;
@@ -890,26 +901,30 @@ export default function VariablesTab({
     rows.forEach((row) => {
       if (!RAILWAY_RE.test(row.value) || isReference(row.value)) return;
       const template = guessTemplate(row.key, row.value);
-      const candidates = template
-        ? references.filter((g) => g.template === template && g.vars.includes(MAIN_VAR[template]))
-        : [];
+      const candidates = template ? references.filter((g) => g.template === template && g.connect.length > 0) : [];
       out.push({ id: row.id, key: row.key, candidates });
     });
     return out;
   }, [rows, references]);
 
+  /*
+   * «Conectar a…»: un botón por servicio del proyecto al que se pueda enganchar
+   * este, que inserta de golpe las referencias que hacen falta (qué son lo dice
+   * el servidor, según el motor). Desaparece cuando ya están todas.
+   */
+  const connectChips = useMemo(
+    () =>
+      references
+        .filter((g) => g.service !== 'shared' && g.connect.length > 0)
+        .map((g) => ({
+          service: g.service,
+          entries: g.connect.map((v) => ({ key: connectKey(g, v), value: `\${{${g.service}.${v}}}` })),
+        })),
+    [references],
+  );
+
   // Sugerencias rápidas
-  const suggestions = useMemo(() => {
-    const db = references
-      .filter((g) => g.template && MAIN_VAR[g.template] && g.vars.includes(MAIN_VAR[g.template]))
-      .map((g) => ({
-        key: MAIN_VAR[g.template!],
-        value: `\${{${g.service}.${MAIN_VAR[g.template!]}}}`,
-        hint: `Conexión a ${g.service} por la red interna del proyecto`,
-      }));
-    const seen = new Set<string>();
-    return [...db, ...SUGGESTED_VARS].filter((s) => !seen.has(s.key) && seen.add(s.key));
-  }, [references]);
+  const suggestions = SUGGESTED_VARS;
 
   // Filtrado por buscador
   const filteredRows = useMemo(() => {
@@ -931,6 +946,57 @@ export default function VariablesTab({
     return envImport.pending.filter((p) => !present.has(p.key));
   }, [isGit, envImport, rows]);
   const pendingFiles = useMemo(() => [...new Set(pendingFromRepo.map((p) => p.file))], [pendingFromRepo]);
+
+  /*
+   * Dependencias detectadas en el repo: sugerencias y variables que faltan.
+   * Se comparan contra `rows` (no contra lo guardado) para que desaparezcan
+   * en vivo según se van añadiendo, antes incluso de guardar.
+   */
+  const pendingSuggestions = useMemo(
+    () => (env.data?.suggestions ?? EMPTY_LIST).filter((s) => !rows.some((r) => r.key.trim() === s.key)),
+    [env.data, rows],
+  );
+  const pendingMissing = useMemo(
+    () => (env.data?.missing ?? EMPTY_LIST).filter((k) => !rows.some((r) => r.key.trim() === k)),
+    [env.data, rows],
+  );
+  const pendingWithValue = useMemo(() => pendingSuggestions.filter((s) => s.value !== null), [pendingSuggestions]);
+
+  // Las que piden crear una base nueva se agrupan por motor: MinIO pide tres
+  // variables y solo hace falta un botón de «crear y conectar», no tres.
+  const pendingGroups = useMemo(() => {
+    const groups = new Map<string, EnvSuggestion[]>();
+    for (const s of pendingSuggestions) {
+      if (s.value !== null || !s.template) continue;
+      groups.set(s.template, [...(groups.get(s.template) ?? []), s]);
+    }
+    return Array.from(groups.values());
+  }, [pendingSuggestions]);
+
+  const hasPendingNeeds = pendingSuggestions.length > 0 || pendingMissing.length > 0;
+
+  // Crea la base de datos del grupo y, con la respuesta, conecta de golpe
+  // todas las variables que la referencian (una sola llamada aunque el
+  // grupo tenga varias claves, como MinIO).
+  const createDbAndConnect = useMutation({
+    mutationFn: (group: EnvSuggestion[]) =>
+      api.post<{ service: { id: string; name: string } }>(`/projects/${projectId}/services`, {
+        type: 'database',
+        template: group[0].template,
+      }),
+    onSuccess: (data, group) => {
+      queryClient.invalidateQueries({ queryKey: ['env', serviceId] });
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      setRows((prev) => [...prev, ...group.map((s) => makeRow(s.key, `\${{${data.service.name}.${s.refVar}}}`))]);
+      setDirty(true);
+      toast(
+        `Se ha creado «${data.service.name}» y se ha conectado en ${group.map((s) => s.key).join(', ')}. Guarde los cambios y vuelva a desplegar.`,
+        'ok',
+      );
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
 
   if (env.isLoading) {
     return (
@@ -1051,7 +1117,7 @@ export default function VariablesTab({
                 <div key={p.id} className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-xs font-semibold text-txt">{p.key}</span>
                   {p.candidates.map((g) => {
-                    const token = `\${{${g.service}.${MAIN_VAR[g.template!]}}}`;
+                    const token = `\${{${g.service}.${g.connect[0]}}}`;
                     return (
                       <button
                         key={g.service}
@@ -1070,6 +1136,104 @@ export default function VariablesTab({
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* ── Dependencias detectadas en el repositorio ── */}
+        {hasPendingNeeds && (
+          <div className="rounded-xl border border-info/35 bg-info/[.07] p-3.5 text-xs">
+            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+              <p className="flex items-center gap-1.5 font-semibold text-info">
+                <Layers size={14} />
+                {/* Sin motores detectados (solo un .env.example) no hay nada que
+                    «necesitar»: se dice lo que hay, que son variables esperadas. */}
+                {env.data?.needs && env.data.needs.engines.length > 0
+                  ? `Este repositorio parece necesitar: ${env.data.needs.engines
+                      .map((e) => `${e.label} (${e.evidence})`)
+                      .join(' · ')}`
+                  : 'Variables que el repositorio espera:'}
+              </p>
+              {pendingWithValue.length >= 2 && (
+                <button
+                  type="button"
+                  className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info max-sm:py-1.5"
+                  onClick={() => {
+                    setRows((prev) => [...prev, ...pendingWithValue.map((s) => makeRow(s.key, s.value as string))]);
+                    setDirty(true);
+                    toast(`${pendingWithValue.length} variables añadidas`, 'ok');
+                  }}
+                >
+                  Añadir todas
+                </button>
+              )}
+            </div>
+
+            {pendingSuggestions.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                {pendingSuggestions.map((s) => {
+                  // Con `value` null, varias sugerencias del mismo motor comparten
+                  // grupo y un único botón de creación; solo la primera lo pinta.
+                  const group =
+                    s.value === null && s.template ? pendingGroups.find((g) => g[0].template === s.template) : undefined;
+                  const isGroupHead = group ? group[0] === s : false;
+                  const groupPending = group ? createDbAndConnect.isPending && createDbAndConnect.variables === group : false;
+                  const label = s.label ?? s.template ?? 'la base de datos';
+
+                  return (
+                    <div key={s.key} className="flex flex-wrap items-center gap-2" title={s.reason}>
+                      <span className="font-mono text-xs font-semibold text-txt">{s.key}</span>
+                      {s.value !== null ? (
+                        <>
+                          <span className="font-mono text-xs text-info">{s.value}</span>
+                          <button
+                            type="button"
+                            className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info max-sm:py-1.5"
+                            onClick={() => {
+                              setRows((prev) => [...prev, makeRow(s.key, s.value as string)]);
+                              setDirty(true);
+                              toast(`Añadida ${s.key}`, 'ok');
+                            }}
+                          >
+                            Añadir
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-sub">no hay {label} en el proyecto</span>
+                          {group && isGroupHead && (
+                            <button
+                              type="button"
+                              disabled={groupPending}
+                              className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info disabled:cursor-not-allowed disabled:opacity-60 max-sm:py-1.5"
+                              onClick={() => createDbAndConnect.mutate(group)}
+                            >
+                              {groupPending ? 'Creando…' : `Crear ${label} y conectar`}
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {pendingMissing.length > 0 && (
+              <p className={cx('text-sub', pendingSuggestions.length > 0 && 'mt-2.5')}>
+                Otras variables que el repositorio espera y no están definidas:{' '}
+                <span className="font-mono text-txt">{pendingMissing.join(', ')}</span>{' '}
+                <button
+                  type="button"
+                  className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info max-sm:py-1.5"
+                  onClick={() => {
+                    setRows((prev) => [...prev, ...pendingMissing.map((k) => makeRow(k, ''))]);
+                    setDirty(true);
+                  }}
+                >
+                  Añadir vacías
+                </button>
+              </p>
+            )}
           </div>
         )}
 
@@ -1181,6 +1345,34 @@ export default function VariablesTab({
 
         {/* ── Referencias y sugerencias ── */}
         <div className="flex flex-col gap-3">
+          {connectChips.some((c) => c.entries.some((e) => !rows.some((r) => r.key === e.key))) && (
+            <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
+              <span className="font-medium text-sub">Conectar a:</span>
+              {connectChips
+                .filter((c) => c.entries.some((e) => !rows.some((r) => r.key === e.key)))
+                .map((c) => {
+                  const pending = c.entries.filter((e) => !rows.some((r) => r.key === e.key));
+                  const hint = `Añade ${pending.map((e) => e.key).join(', ')} como referencia a ${c.service} por la red interna del proyecto`;
+                  return (
+                    <button
+                      key={c.service}
+                      type="button"
+                      className="press flex items-center gap-1 rounded-md border border-acc/40 bg-acc/[.06] px-2 py-0.5 text-xs font-medium text-acc-soft transition-colors hover:border-acc hover:bg-acc/10 max-sm:py-1.5"
+                      title={hint}
+                      aria-label={hint}
+                      onClick={() => {
+                        setRows((prev) => [...prev, ...pending.map((e) => makeRow(e.key, e.value))]);
+                        setDirty(true);
+                        toast(`Conectado a ${c.service}: ${pending.map((e) => e.key).join(', ')}`, 'ok');
+                      }}
+                    >
+                      <Plus size={12} /> {c.service}
+                    </button>
+                  );
+                })}
+            </div>
+          )}
+
           {suggestions.some((s) => !rows.some((r) => r.key === s.key)) && (
             <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
               <span className="font-medium text-sub">Variables frecuentes:</span>
@@ -1217,27 +1409,40 @@ export default function VariablesTab({
                       {ref.service === 'shared' ? 'Variables compartidas' : ref.service}
                     </p>
                     <div className="flex flex-wrap gap-1.5">
-                      {ref.vars.map((v) => {
-                        const token = `\${{${ref.service}.${v}}}`;
-                        return (
-                          <button
-                            key={v}
-                            type="button"
-                            className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info hover:bg-info/10 max-sm:py-1.5"
-                            title={`Copiar ${token}`}
-                            aria-label={`Copiar ${token}`}
-                            onClick={() => {
-                              // El «Copiado» solo cuando de verdad se ha copiado.
-                              navigator.clipboard
-                                .writeText(token)
-                                .then(() => toast(`Copiado: ${token}`, 'ok'))
-                                .catch(() => toast('No se ha podido copiar al portapapeles.', 'err'));
-                            }}
-                          >
-                            {v}
-                          </button>
-                        );
-                      })}
+                      {/* Las de sistema van detrás y en otro tono: no son
+                          variables del servicio, las calcula Skyway de su puerto
+                          y su dominio, y cambian con ellos. */}
+                      {[...ref.vars.map((v) => ({ v, auto: false })), ...(ref.auto ?? []).map((v) => ({ v, auto: true }))].map(
+                        ({ v, auto }) => {
+                          const token = `\${{${ref.service}.${v}}}`;
+                          const title = auto
+                            ? `Copiar ${token} · la calcula Skyway del puerto y el dominio de ${ref.service}`
+                            : `Copiar ${token}`;
+                          return (
+                            <button
+                              key={v}
+                              type="button"
+                              className={cx(
+                                'press rounded-md border px-2 py-0.5 font-mono text-xs transition-colors max-sm:py-1.5',
+                                auto
+                                  ? 'border-dashed border-acc/40 bg-surface text-acc-soft hover:border-acc hover:bg-acc/10'
+                                  : 'border-line bg-surface text-info hover:border-info hover:bg-info/10',
+                              )}
+                              title={title}
+                              aria-label={title}
+                              onClick={() => {
+                                // El «Copiado» solo cuando de verdad se ha copiado.
+                                navigator.clipboard
+                                  .writeText(token)
+                                  .then(() => toast(`Copiado: ${token}`, 'ok'))
+                                  .catch(() => toast('No se ha podido copiar al portapapeles', 'err'));
+                              }}
+                            >
+                              {v}
+                            </button>
+                          );
+                        },
+                      )}
                     </div>
                   </div>
                 ))}
