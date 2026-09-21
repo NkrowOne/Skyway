@@ -367,7 +367,7 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDel
   const dockerfilePedido = !!opts.dockerfilePath && opts.dockerfilePath !== 'Dockerfile';
   if (dockerfilePedido && !hayDockerfile) {
     throw new Error(
-      `No existe el Dockerfile indicado (${path.relative(opts.repoDir, dockerfile)}). Corrige la ruta en los ajustes ` +
+      `No existe el Dockerfile indicado (${path.relative(opts.repoDir, dockerfile)}). Corrija la ruta en los ajustes ` +
         'del servicio, en railway.json o en RAILWAY_DOCKERFILE_PATH.',
     );
   }
@@ -387,7 +387,7 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDel
   if (aMano) {
     log(`Constructor fijado en los ajustes del servicio: ${elegido === 'dockerfile' ? 'Dockerfile' : 'Nixpacks'}.`);
     if (delFichero && delFichero !== forced) {
-      log(`ℹ El repositorio declara «${opts.builder}», pero manda lo elegido en Skyway.`);
+      log(`ℹ El repositorio declara «${opts.builder}», pero prevalece el constructor seleccionado en Skyway.`);
     }
   }
   // Railpack es el constructor por defecto de Railway desde 2025 e infiere
@@ -395,14 +395,14 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDel
   // Nixpacks es la mejor aproximación que hay, pero decirlo importa: si algo
   // sale con otra versión de la esperada, es por aquí.
   if (forced === 'RAILPACK') {
-    log('ℹ La configuración pide el constructor RAILPACK; Skyway construye con Nixpacks, que es parecido pero no idéntico (railpack.json no se lee).');
+    log('ℹ La configuración solicita el constructor RAILPACK; Skyway construye con Nixpacks, que es similar pero no idéntico (railpack.json no se lee).');
   }
   if (!aMano && forced && forced !== 'NIXPACKS' && forced !== 'RAILPACK' && forced !== 'DOCKERFILE') {
-    log(`⚠ Constructor «${opts.builder}» no reconocido: se ignora y se decide como siempre (Dockerfile si lo hay, si no Nixpacks).`);
+    log(`⚠ Constructor «${opts.builder}» no reconocido: se ignora y se aplica la regla habitual (Dockerfile si existe; en caso contrario, Nixpacks).`);
   }
   if (forced === 'DOCKERFILE' && !hayDockerfile) {
     throw new Error(
-      `Se pide construir con Dockerfile (${origen}), pero no hay ninguno en ${path.relative(opts.repoDir, dockerfile)}.`,
+      `Se solicita construir con Dockerfile (${origen}), pero no existe ninguno en ${path.relative(opts.repoDir, dockerfile)}.`,
     );
   }
 
@@ -412,8 +412,8 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDel
   // justo lo que hace que un servicio arranque de forma que nadie esperaba.
   if (aMano && forceNixpacks && !hayNixpacks) {
     throw new Error(
-      'Está elegido el constructor Nixpacks, pero nixpacks no está instalado en el servidor. Elige «Dockerfile del ' +
-        'repositorio» en Ajustes → Constructor, o instala nixpacks (https://nixpacks.com).',
+      'Está seleccionado el constructor Nixpacks, pero nixpacks no está instalado en el servidor. Seleccione «Dockerfile del ' +
+        'repositorio» en Ajustes → Constructor, o instale nixpacks (https://nixpacks.com).',
     );
   }
   // Un servicio que ya despliega bien no cambia de constructor por su cuenta.
@@ -429,9 +429,9 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDel
   if (forceNixpacks && hayDockerfile && !aMano && yaIbaConDockerfile) {
     respetarDockerfile = true;
     log(
-      `⚠ La configuración pide ${forced}, pero el último despliegue correcto se construyó con el Dockerfile del ` +
-        'repositorio: se mantiene ese, para no cambiarle el arranque a un servicio que va. Si de verdad quieres ' +
-        'Nixpacks, elígelo en Ajustes → Constructor.',
+      `⚠ La configuración solicita ${forced}, pero el último despliegue correcto se construyó con el Dockerfile del ` +
+        'repositorio: se mantiene este para no modificar el arranque de un servicio que funciona. Si desea utilizar ' +
+        'Nixpacks, selecciónelo en Ajustes → Constructor.',
     );
   } else if (forceNixpacks && hayDockerfile && !aMano && !hayNixpacks) {
     // Nixpacks es opcional en la imagen de Skyway (su instalación es
@@ -439,13 +439,13 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDel
     // delante es mejor respuesta que abortar el despliegue.
     respetarDockerfile = true;
     log(
-      `⚠ La configuración pide ${forced}, pero nixpacks no está instalado en el servidor: se construye con el ` +
+      `⚠ La configuración solicita ${forced}, pero nixpacks no está instalado en el servidor: se construye con el ` +
         'Dockerfile del repositorio.',
     );
   } else if (forceNixpacks && hayDockerfile) {
     log(
-      `⚠ El repositorio tiene Dockerfile, pero se pide el constructor ${forced} (${origen}): se ignora el Dockerfile ` +
-        `y se construye con Nixpacks. El comando de arranque será el que infiera Nixpacks, NO el CMD del Dockerfile.`,
+      `⚠ El repositorio tiene Dockerfile, pero se solicita el constructor ${forced} (${origen}): se ignora el Dockerfile ` +
+        `y se construye con Nixpacks. El comando de arranque será el que infiera Nixpacks, no el CMD del Dockerfile.`,
     );
   }
 
@@ -453,7 +453,7 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDel
     log(`Construyendo con Dockerfile (${path.relative(opts.repoDir, dockerfile)})...`);
     const buildkit = await buildxAvailable();
     if (!buildkit) {
-      log('⚠ docker buildx no está disponible: se usa el builder clásico. Reconstruye la imagen de Skyway para builds con BuildKit.');
+      log('⚠ docker buildx no está disponible: se utiliza el constructor clásico. Reconstruya la imagen de Skyway para compilar con BuildKit.');
     }
     // La imagen anterior lleva incrustados los metadatos de caché
     // (BUILDKIT_INLINE_CACHE) y sirve de origen de capas para esta: las etapas
@@ -518,8 +518,8 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDel
     }
     if (fuera.length > 0) {
       log(
-        `${fuera.length} variables más quedan solo para la ejecución: Nixpacks las grabaría en la imagen. Si alguna ` +
-          'hace falta al construir y no es secreta, añádela como argumento de compilación del servicio.',
+        `${fuera.length} variables más se reservan para la ejecución: Nixpacks las incluiría en la imagen. Si alguna ` +
+          'es necesaria al construir y no es secreta, añádala como argumento de compilación del servicio.',
       );
     }
     for (const [k, v] of Object.entries({ ...paraElBuild, ...opts.buildArgs, ...opts.nixpacksEnv })) {
@@ -535,6 +535,6 @@ export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDel
   }
 
   throw new Error(
-    'No se encontró Dockerfile y Nixpacks no está instalado. Añade un Dockerfile al repositorio o instala nixpacks en el servidor (https://nixpacks.com).',
+    'No se encontró Dockerfile y Nixpacks no está instalado. Añada un Dockerfile al repositorio o instale nixpacks en el servidor (https://nixpacks.com).',
   );
 }

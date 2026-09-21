@@ -45,12 +45,12 @@ function splitDnsName(domain: string): { name: string; zone: string } {
 
 function DnsInstructions({ domain, serverIp }: { domain: string; serverIp: string | null }) {
   const { name, zone } = splitDnsName(domain);
-  const ip = serverIp ?? 'IP-DE-TU-SERVIDOR';
+  const ip = serverIp ?? 'IP-DEL-SERVIDOR';
   return (
     <div className="mt-2 rounded-lg border border-line bg-surface2 p-3 text-xs">
       <p className="mb-2 text-sub">
-        En el panel DNS de <span className="font-mono text-txt">{zone}</span> (Cloudflare, IONOS, OVH, GoDaddy...) crea
-        este registro:
+        En el panel DNS de <span className="font-mono text-txt">{zone}</span> (Cloudflare, IONOS, OVH, GoDaddy, etc.) cree
+        el siguiente registro:
       </p>
       <div className="overflow-x-auto">
         <table className="w-full text-left">
@@ -76,7 +76,7 @@ function DnsInstructions({ domain, serverIp }: { domain: string; serverIp: strin
         </table>
       </div>
       <p className="mt-2 text-subtle">
-        La propagación suele tardar de 5 minutos a unas horas. Pulsa <RefreshCw size={10} className="inline" /> para
+        La propagación suele tardar entre 5 minutos y varias horas. Pulse <RefreshCw size={10} className="inline" /> para
         volver a comprobar.
       </p>
     </div>
@@ -148,8 +148,8 @@ function DomainRow({
           <button
             onClick={onRemove}
             className="press flex items-center justify-center rounded-md p-1 leading-none text-subtle transition-colors hover:bg-err/10 hover:text-err max-sm:h-10 max-sm:w-10"
-            title="Quitar"
-            aria-label={`Quitar ${domain}`}
+            title="Eliminar"
+            aria-label={`Eliminar ${domain}`}
           >
             <X size={12} />
           </button>
@@ -222,11 +222,11 @@ export default function DomainsEditor({
     const domain = raw.trim().toLowerCase();
     if (!domain) return;
     if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
-      toast(`"${domain}" no parece un dominio válido`, 'err');
+      toast(`«${domain}» no es un dominio válido`, 'err');
       return;
     }
     if (domains.includes(domain)) {
-      toast('Ese dominio ya está añadido', 'err');
+      toast('Este dominio ya está añadido', 'err');
       return;
     }
     onChange([...domains, domain]);
@@ -278,9 +278,9 @@ export default function DomainsEditor({
               {isAdmin ? (
                 <div className="mt-2 flex flex-col gap-2 text-xs text-sub">
                   <p>
-                    Configura una vez tu <strong className="text-txt">dominio raíz</strong> (ej:{' '}
-                    <span className="font-mono">apps.midominio.com</span>) y cada servicio tendrá su subdominio en un
-                    clic.
+                    Configure una sola vez el <strong className="text-txt">dominio raíz</strong> (por ejemplo,{' '}
+                    <span className="font-mono">apps.midominio.com</span>) y cada servicio podrá tener su subdominio con
+                    un clic.
                   </p>
                   <div className="flex gap-2">
                     <input
@@ -309,8 +309,8 @@ export default function DomainsEditor({
                 /* Un propietario no puede tocar los ajustes del servidor: se le
                    dice quién sí y se le señala el dominio propio, que sí es suyo. */
                 <p className="mt-2 text-xs text-sub">
-                  El administrador del servidor aún no ha configurado un dominio raíz. Mientras tanto puedes añadir
-                  un dominio propio aquí debajo.
+                  El administrador del servidor aún no ha configurado un dominio raíz. Mientras tanto es posible añadir
+                  un dominio propio en el campo inferior.
                 </p>
               )}
             </>
@@ -360,7 +360,7 @@ export default function DomainsEditor({
             )}
           </Chip>
         )}
-        <span>Los dominios se aplican al guardar y redesplegar.</span>
+        <span>Los dominios se aplican al guardar y volver a desplegar.</span>
       </div>
     </div>
   );

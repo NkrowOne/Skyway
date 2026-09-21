@@ -136,7 +136,7 @@ function Actualizado({ generatedAt }: { generatedAt: number }) {
     return () => clearInterval(t);
   }, []);
   const secondsAgo = Math.max(0, Math.round((now - generatedAt) / 1000));
-  return <span>Actualizado hace {secondsAgo < 5 ? 'unos segundos' : `${secondsAgo} s`} · se refresca solo</span>;
+  return <span>Actualizado hace {secondsAgo < 5 ? 'unos segundos' : `${secondsAgo} s`} · se actualiza automáticamente</span>;
 }
 
 export default function PublicStatusPage() {
@@ -254,7 +254,7 @@ export default function PublicStatusPage() {
 
         <section className="rounded-2xl border border-line bg-surface">
           {data.services.length === 0 && (
-            <EmptyState title="Aún no hay servicios publicados" description="Cuando se publique alguno, su estado aparecerá aquí." />
+            <EmptyState title="Todavía no hay servicios publicados" description="Cuando se publique alguno, su estado se mostrará aquí." />
           )}
           {data.services.map((s, idx) => {
             const meta = STATE_META[s.state];
@@ -271,7 +271,7 @@ export default function PublicStatusPage() {
                 </div>
                 <UptimeBars days={s.days} />
                 <div className="mt-2 flex items-center justify-between gap-2 text-micro text-subtle">
-                  <span className="shrink-0">hace {movil ? 30 : 90} días</span>
+                  <span className="shrink-0">últimos {movil ? 30 : 90} días</span>
                   <span className="tnum">
                     24 h: <span className="text-sub">{fmtPct(s.uptime24h)}</span> · 7 d:{' '}
                     <span className="text-sub">{fmtPct(s.uptime7d)}</span> · 90 d:{' '}

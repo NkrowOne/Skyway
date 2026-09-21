@@ -67,7 +67,7 @@ const KIND_META: Record<string, { label: string; icon: typeof GitBranch; cls: st
   git: { label: 'Repositorio', icon: GitBranch, cls: 'text-acc' },
   database: { label: 'Base de datos', icon: Database, cls: 'text-info' },
   image: { label: 'Imagen Docker', icon: Package, cls: 'text-warn' },
-  skipped: { label: 'Se omite', icon: Package, cls: 'text-sub' },
+  skipped: { label: 'Omitido', icon: Package, cls: 'text-sub' },
 };
 
 export function ImportReportView({ report }: { report: ImportReport }) {
@@ -77,7 +77,7 @@ export function ImportReportView({ report }: { report: ImportReport }) {
       <div className="flex items-center gap-2 text-ok">
         <CheckCircle2 size={18} />
         <p className="font-medium">
-          "{report.railwayProject}" (entorno {report.environment}) importado como "{report.projectName}"
+          «{report.railwayProject}» (entorno {report.environment}) importado como «{report.projectName}»
         </p>
       </div>
 
@@ -138,7 +138,7 @@ export function ImportReportView({ report }: { report: ImportReport }) {
 
       {report.warnings.length > 0 && (
         <div>
-          <h3 className="mb-2 eyebrow text-sub">Revisa esto</h3>
+          <h3 className="mb-2 eyebrow text-sub">Puntos a revisar</h3>
           <ul className="space-y-1 text-xs text-warn">
             {report.warnings.map((w, i) => (
               <li key={i} className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/5 px-3 py-2">
@@ -216,7 +216,7 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
       const res = await api.post<{ projects: RailwayProject[] }>('/import/railway/projects', { token });
       setProjects(res.projects);
       setStep('pick');
-      if (res.projects.length === 0) toast('El token es válido pero no se encontraron proyectos. Puedes pegar el ID a mano.', 'info');
+      if (res.projects.length === 0) toast('El token es válido, pero no se ha encontrado ningún proyecto. Puede indicar el ID del proyecto manualmente.', 'info');
     } catch (err) {
       toast((err as Error).message, 'err');
     } finally {
@@ -278,19 +278,19 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
           <div className="flex items-start gap-3 rounded-lg border border-line bg-surface2 p-3 text-xs text-sub">
             <TrainFront size={16} className="mt-0.5 shrink-0 text-acc" />
             <p>
-              Skyway leerá tus proyectos por la API oficial de Railway y recreará servicios, variables (las referencias{' '}
-              <span className="font-mono text-info">{'${{Servicio.VAR}}'}</span> funcionan igual), dominios propios y
-              volúmenes. El token se usa solo durante la importación y <strong className="text-txt">no se guarda</strong>.
+              Skyway leerá sus proyectos mediante la API oficial de Railway y recreará los servicios, las variables (las referencias{' '}
+              <span className="font-mono text-info">{'${{Servicio.VAR}}'}</span> funcionan igual), los dominios propios y los
+              volúmenes. El token se utiliza solo durante la importación y <strong className="text-txt">no se guarda</strong>.
             </p>
           </div>
           <Field
             label="Token de cuenta de Railway"
-            hint="Créalo en railway.com → Account Settings → Tokens (sin seleccionar equipo para ver también los personales)"
+            hint="Se crea en railway.com → Account Settings → Tokens (sin seleccionar equipo para incluir también los proyectos personales)"
           >
             <input
               className="input font-mono"
               type="password"
-              placeholder="xxxxxxxx-xxxx-..."
+              placeholder="xxxxxxxx-xxxx-…"
               value={token}
               onChange={(e) => setToken(e.target.value)}
               autoFocus
@@ -329,7 +329,7 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
             </div>
           )}
           <details className="text-xs text-sub" open={projects.length === 0}>
-            <summary className="cursor-pointer hover:text-txt">¿No aparece tu proyecto? Pega su ID</summary>
+            <summary className="cursor-pointer hover:text-txt">Indicar el ID de un proyecto que no aparece en la lista</summary>
             <form
               className="mt-2 flex flex-wrap gap-2"
               onSubmit={(e) => {
@@ -339,7 +339,7 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
             >
               <input
                 className="input min-w-0 flex-1 basis-48 font-mono sm:text-xs"
-                placeholder="ID del proyecto (Settings del proyecto en Railway)"
+                placeholder="ID del proyecto (ajustes del proyecto en Railway)"
                 value={manualId}
                 onChange={(e) => setManualId(e.target.value)}
                 autoCapitalize="none"
@@ -406,7 +406,7 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
                     <span className="min-w-0 truncate text-sm font-medium">{s.railwayName}</span>
                     <span className="text-xs text-sub">→ {meta.label}</span>
                     <span className="ml-auto text-xs text-sub">
-                      {s.varCount > 0 && `${s.varCount} vars`}
+                      {s.varCount > 0 && `${s.varCount} variables`}
                       {s.domains.length > 0 && ` · ${s.domains.length} dominio(s)`}
                       {s.volumeMounts.length > 0 && ` · ${s.volumeMounts.length} volumen(es)`}
                     </span>

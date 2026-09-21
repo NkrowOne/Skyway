@@ -141,7 +141,7 @@ export function resolveAllServiceAlerts(serviceId: string, notifyRecovery = fals
     enviarACanales({
       severity: 'info',
       title: 'Servicio recuperado',
-      message: `"${service?.name ?? serviceId}" se ha desplegado con éxito y ha resuelto sus incidencias.`,
+      message: `"${service?.name ?? serviceId}" se ha desplegado correctamente y sus incidencias se han resuelto.`,
       project: project?.name ?? null,
       service: service?.name ?? null,
     });

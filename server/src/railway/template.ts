@@ -168,12 +168,12 @@ function useLocalFiles(
       });
       if (rota) {
         delete svc.env[key];
-        warnings.push(`«${svc.templateName}»: se quita ${key}, que dependía de una variable del bucket.`);
+        warnings.push(`«${svc.templateName}»: se elimina ${key}, que dependía de una variable del bucket.`);
       }
     }
 
     svc.notes.push(
-      `Guarda los ficheros en un volumen propio (${backend.volume}) en vez de en el bucket «${bucketName}»: almacenamiento local, sin servidor de objetos de por medio.`,
+      `Guarda los ficheros en un volumen propio (${backend.volume}) en lugar de en el bucket «${bucketName}»: almacenamiento local, sin servidor de objetos intermedio.`,
     );
   }
 
@@ -273,7 +273,7 @@ function minioForBucket(
   }
   if (desconocidas.length > 0) {
     warnings.push(
-      `Del bucket «${bucketName}» no sé qué valor darle a ${desconocidas.join(', ')}: quedan vacías en el servicio de almacenamiento.`,
+      `No se ha podido determinar el valor de ${desconocidas.join(', ')} para el bucket «${bucketName}»: quedan vacías en el servicio de almacenamiento.`,
     );
   }
 
@@ -295,7 +295,7 @@ function minioForBucket(
     infra: true,
     notes: [
       `Sustituye al bucket «${bucketName}» de Railway: almacenamiento local en un volumen, con el bucket «${bucket}» ya creado.`,
-      'La consola web de MinIO escucha en el puerto 9001; para abrirla, publica ese puerto o añádele un dominio en Ajustes.',
+      'La consola web de MinIO escucha en el puerto 9001; para acceder a ella, publique ese puerto o añada un dominio en Ajustes.',
     ],
   };
 }
@@ -368,7 +368,7 @@ export async function planRailwayTemplate(
       }
     }
     if (pendientes.length > 0) {
-      notes.push(`Variables que la plantilla deja en tu mano: ${pendientes.join(', ')}. Rellénalas antes de desplegar.`);
+      notes.push(`Variables que la plantilla deja sin valor: ${pendientes.join(', ')}. Complete su valor antes de desplegar.`);
     }
     if (repo) {
       notes.push('Servicio de repositorio: Skyway lo construirá con su Dockerfile o con Nixpacks, no con el builder de Railway.');
@@ -411,13 +411,13 @@ export async function planRailwayTemplate(
     if (services.some((s) => s.templateName.toLowerCase() === bucketName.toLowerCase())) continue;
     if (useLocalFiles(services, bucketName, warnings)) {
       warnings.push(
-        `El bucket «${bucketName}» de Railway no hacía falta: los servicios que lo usaban guardan ahora en un volumen de este servidor.`,
+        `El bucket «${bucketName}» de Railway no es necesario: los servicios que lo utilizaban guardan ahora los datos en un volumen de este servidor.`,
       );
       continue;
     }
     services.push(minioForBucket(bucketName, prefix, slugUnico(bucketName), services, warnings));
     warnings.push(
-      `Para el bucket «${bucketName}» se añade un MinIO con el bucket ya creado y las credenciales cableadas: algún servicio necesita hablar S3 y no sé desactivárselo. Los ficheros viven igualmente en un volumen de este servidor, nada sale de él.`,
+      `Para el bucket «${bucketName}» se añade un MinIO con el bucket ya creado y las credenciales configuradas: algún servicio requiere S3 y no es posible desactivarlo. Los ficheros se almacenan igualmente en un volumen de este servidor; no se envía información al exterior.`,
     );
   }
 
@@ -428,7 +428,7 @@ export async function planRailwayTemplate(
   if (publicos.length > 1) {
     for (const s of publicos.slice(1)) s.public = false;
     warnings.push(
-      `La plantilla expone ${publicos.length} servicios a internet; aquí el dominio va a «${publicos[0].templateName}». A los demás añádeles el suyo en Ajustes.`,
+      `La plantilla expone ${publicos.length} servicios a internet; en Skyway el dominio se asigna a «${publicos[0].templateName}». Añada un dominio a los demás en Ajustes.`,
     );
   }
 

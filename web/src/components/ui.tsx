@@ -590,7 +590,7 @@ export function EditorBar({
   onSave,
   onDiscard,
   saveLabel = 'Guardar cambios',
-  dirtyLabel = 'Tienes cambios sin guardar',
+  dirtyLabel = 'Hay cambios sin guardar',
 }: {
   dirty: boolean;
   saving?: boolean;
@@ -840,7 +840,7 @@ export function Modal({
               type="button"
               onClick={pedirCierre}
               className="press -my-1 shrink-0 rounded-md p-1 text-sub transition-colors hover:bg-surface2 hover:text-txt max-sm:-my-2 max-sm:p-2.5"
-              title="Cerrar (esc)"
+              title="Cerrar (Esc)"
               aria-label="Cerrar"
             >
               <X size={16} />
@@ -853,8 +853,8 @@ export function Modal({
             sobre otro complica el foco sin ganar nada. */}
         {confirmandoCierre && (
           <div className="overlay-in absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-2xl bg-surface/95 p-6 text-center backdrop-blur-sm">
-            <p className="text-base font-semibold">Tienes cambios sin guardar</p>
-            <p className="max-w-xs text-xs leading-5 text-sub">Si sales ahora se pierden.</p>
+            <p className="text-base font-semibold">Hay cambios sin guardar</p>
+            <p className="max-w-xs text-xs leading-5 text-sub">Si cierra ahora, los cambios se perderán.</p>
             <div className="mt-1 flex gap-2">
               <Button variant="ghost" size="sm" onClick={() => setConfirmandoCierre(false)}>
                 Seguir editando
@@ -1039,7 +1039,7 @@ const TOAST_ICON = {
   info: <Info size={16} className="mt-px shrink-0 text-info" />,
 };
 
-const TOAST_TITLE = { ok: 'Hecho', err: 'Algo ha fallado', info: 'Aviso' };
+const TOAST_TITLE = { ok: 'Operación completada', err: 'Error', info: 'Información' };
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);

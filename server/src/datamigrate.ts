@@ -99,7 +99,7 @@ function parseUrl(raw: string): URL {
   try {
     url = new URL(raw.trim());
   } catch {
-    throw new Error('La URL de origen no es válida. Pega la cadena de conexión pública completa de la base de datos.');
+    throw new Error('La URL de origen no es válida. Introduzca la cadena de conexión pública completa de la base de datos.');
   }
   if (!url.hostname) throw new Error('La URL de origen no indica ningún servidor.');
   return url;
@@ -181,10 +181,10 @@ function planMigration(service: ServiceRow, project: ProjectRow, sourceUrl: stri
   }
 
   throw new Error(
-    `Skyway aún no sabe copiar datos de ${template.label}. ` +
+    `Skyway aún no admite la copia de datos de ${template.label}. ` +
       (template.key === 'redis'
-        ? 'Redis suele usarse como caché y no necesita migración; si la necesitas, usa redis-cli --rdb.'
-        : 'Cópialos con las herramientas del propio motor.'),
+        ? 'Redis suele utilizarse como caché y no requiere migración; si la necesita, utilice redis-cli --rdb.'
+        : 'Cópielos con las herramientas del propio motor.'),
   );
 }
 
@@ -337,7 +337,7 @@ export async function probeSource(service: ServiceRow, project: ProjectRow, sour
       } catch {
         /* ya terminó */
       }
-      resolve('El origen no respondió en 20 s. Comprueba que la URL es la pública y que el proxy TCP está activo.');
+      resolve('El origen no respondió en 20 s. Compruebe que la URL es la pública y que el proxy TCP está activo.');
     }, 20_000);
     p.on('error', (e) => {
       clearTimeout(timer);

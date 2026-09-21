@@ -268,7 +268,7 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
                 title: 'Cobro sobre una factura anulada',
                 message: `Stripe ha cobrado la sesión ${sessionId} de la factura ${outcome.invoice.number ?? outcome.invoice.id}, que está ANULADA.`,
                 explanation:
-                  'Una factura anulada es un estado terminal y no se marca como pagada. Revisa el cobro en Stripe: normalmente procede devolverlo, o imputarlo a la factura que sustituyó a la anulada.',
+                  'Una factura anulada es un estado terminal y no se marca como pagada. Revise el cobro en Stripe: normalmente procede devolverlo, o imputarlo a la factura que sustituyó a la anulada.',
                 dedupeKey: `stripe:anulada:${sessionId}`,
               });
               break;
@@ -280,7 +280,7 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
                 type: 'stripe_importe_descuadrado',
                 title: 'Cobro de Stripe con importe distinto al facturado',
                 message: `Sesión ${sessionId}: ${outcome.detail}.`,
-                explanation: 'La factura NO se ha marcado como pagada. Comprueba el cobro en Stripe antes de darla por cobrada a mano.',
+                explanation: 'La factura no se ha marcado como pagada. Compruebe el cobro en Stripe antes de marcarla como cobrada manualmente.',
                 dedupeKey: `stripe:descuadre:${sessionId}`,
               });
               break;
@@ -294,7 +294,7 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
                 type: 'stripe_cobro_duplicado',
                 title: 'Posible cobro duplicado en Stripe',
                 message: `Sesión ${sessionId} sobre la factura ${outcome.invoice.number ?? outcome.invoice.id}, que ${outcome.detail}.`,
-                explanation: 'La factura NO se ha vuelto a marcar como pagada. Comprueba en Stripe si procede devolver este cobro.',
+                explanation: 'La factura no se ha vuelto a marcar como pagada. Compruebe en Stripe si procede devolver este cobro.',
                 dedupeKey: `stripe:duplicado:${sessionId}`,
               });
               break;
@@ -305,7 +305,7 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
                 type: 'stripe_pago_huerfano',
                 title: 'Cobro de Stripe sin factura asociada',
                 message: `La sesión ${sessionId} se ha cobrado pero no corresponde a ninguna factura de Skyway.`,
-                explanation: 'Puede ser un enlace de una factura borrada o un cobro ajeno a Skyway. Revísalo en el panel de Stripe.',
+                explanation: 'Puede tratarse de un enlace de una factura eliminada o de un cobro ajeno a Skyway. Revíselo en el panel de Stripe.',
                 dedupeKey: `stripe:huerfano:${sessionId}`,
               });
               break;

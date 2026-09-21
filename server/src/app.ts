@@ -39,6 +39,7 @@ import { monitorRoutes } from './routes/monitor';
 import { metricsRoutes } from './routes/metrics';
 import { statusRoutes } from './routes/status';
 import { websiteRoutes } from './routes/websites';
+import { helpRoutes } from './routes/help';
 
 const METODOS_SEGUROS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -202,6 +203,7 @@ export function buildApp(): FastifyInstance {
   app.register(metricsRoutes);
   app.register(statusRoutes);
   app.register(websiteRoutes);
+  app.register(helpRoutes);
 
   // Sirve la UI compilada (producción) con fallback SPA optimizado en memoria y caché inmutable.
   const indexHtmlPath = path.join(config.webDist, 'index.html');

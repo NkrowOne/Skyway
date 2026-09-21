@@ -57,7 +57,7 @@ export async function alertRoutes(app: FastifyInstance): Promise<void> {
     if (!alert) return reply.code(404).send({ error: 'Alerta no encontrada o ya resuelta' });
     const user = currentUser(req)!;
     if (user.role !== 'admin' && (!alert.project_id || !canAccessProject(user, alert.project_id))) {
-      return reply.code(403).send({ error: 'No tienes acceso a esta alerta' });
+      return reply.code(403).send({ error: 'No tiene acceso a esta alerta' });
     }
     if (!resolveAlert(id)) return reply.code(404).send({ error: 'Alerta no encontrada o ya resuelta' });
     return { ok: true };

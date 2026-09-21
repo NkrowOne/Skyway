@@ -68,7 +68,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
         .object({
           token: tokenSchema,
           projectId: z.string().trim().min(1),
-          environmentId: z.string().trim().min(1, 'Elige un entorno'),
+          environmentId: z.string().trim().min(1, 'Seleccione un entorno'),
           projectName: z.string().trim().max(60).optional(),
           client: z.string().trim().max(60).optional(),
         })

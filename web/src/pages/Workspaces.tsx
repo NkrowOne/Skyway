@@ -119,8 +119,8 @@ export default function WorkspacesPage() {
       <div className="mx-auto max-w-[880px] px-4 py-10">
         <div className="card">
           <EmptyState
-            title="Tu usuario no tiene cuenta de cliente asignada"
-            description="Pide a un administrador que te asigne una cuenta para ver aquí sus proyectos, cuota y facturas."
+            title="Su usuario no tiene ninguna cuenta de cliente asignada"
+            description="Solicite a un administrador que le asigne una cuenta para consultar aquí sus proyectos, cuota y facturas."
           />
         </div>
       </div>
@@ -181,7 +181,7 @@ export default function WorkspacesPage() {
             <Building2 size={22} />
           </span>
           <p className="max-w-sm text-sm text-sub">
-            Aún no hay cuentas de cliente. Crea una para asignarle recursos, módulos y usuarios propios.
+            Todavía no hay cuentas de cliente. Cree una para asignarle recursos, módulos y usuarios propios.
           </p>
           {isAdmin && (
             <Button onClick={() => setDraft({ ...EMPTY, planId: plans.data?.plans.find((p) => p.is_default)?.id ?? '' })}>
@@ -208,10 +208,10 @@ export default function WorkspacesPage() {
             }}
             className="flex flex-col gap-3.5"
           >
-            <Field label="Nombre del cliente" hint="Ej: Acme S.L.">
+            <Field label="Nombre del cliente" hint="Por ejemplo: Acme S.L.">
               <input className="input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} autoFocus required />
             </Field>
-            <Field label="Plan" hint="Define los usos incluidos y el precio; se puede ajustar luego a medida">
+            <Field label="Plan" hint="Define los recursos incluidos y el precio; puede ajustarse después a medida">
               <select className="input" value={draft.planId} onChange={(e) => setDraft({ ...draft, planId: e.target.value })}>
                 <option value="">Sin plan (cuota mínima)</option>
                 {(plans.data?.plans ?? [])
@@ -224,7 +224,7 @@ export default function WorkspacesPage() {
               </select>
             </Field>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Email de facturación" hint="opcional">
+              <Field label="Correo electrónico de facturación" hint="Opcional">
                 <input className="input" type="email" autoComplete="email" autoCapitalize="none" value={draft.billingEmail} onChange={(e) => setDraft({ ...draft, billingEmail: e.target.value })} placeholder="pagos@acme.com" />
               </Field>
               <Field label="Día de cobro" hint="1–28 del mes">

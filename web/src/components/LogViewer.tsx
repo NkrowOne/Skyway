@@ -162,6 +162,83 @@ function timestampTooltip(ts: number | null, iso: string | null): string | undef
   return `Hora: ${iso}`;
 }
 
+/*
+ * Hora y tooltip de cada fila, calculados una sola vez por fila y formato. Con
+ * catorce mil filas en el buffer, formatearlas todas con `Intl` en cada ráfaga
+ * era el coste que dejaba el hilo principal del móvil sin responder. El
+ * formato relativo cambia con el reloj y no se cachea.
+ */
+const TS_CACHE = new WeakMap<ParsedRow, { by: Partial<Record<TimestampFormat, string>>; tip?: string; tipDone: boolean }>();
+function tsEntry(r: ParsedRow) {
+  let c = TS_CACHE.get(r);
+  if (!c) {
+    c = { by: {}, tipDone: false };
+    TS_CACHE.set(r, c);
+  }
+  return c;
+}
+function tsStringCached(r: ParsedRow, format: TimestampFormat): string {
+  if (format === 'relative') return formatTimestamp(r.ts, r.iso, format);
+  const c = tsEntry(r);
+  let s = c.by[format];
+  if (s === undefined) {
+    s = formatTimestamp(r.ts, r.iso, format);
+    c.by[format] = s;
+  }
+  return s;
+}
+function tsTooltipCached(r: ParsedRow): string | undefined {
+  const c = tsEntry(r);
+  if (!c.tipDone) {
+    c.tip = timestampTooltip(r.ts, r.iso);
+    c.tipDone = true;
+  }
+  return c.tip;
+}
+
+/**
+ * Cuántas filas se han recortado por delante entre dos versiones del buffer:
+ * `cur` debe ser `prev.slice(c)` más líneas nuevas al final. Devuelve -1 si no
+ * es así (otra fuente, historial cargado por delante). Se compara por
+ * identidad de objeto; las líneas repetidas comparten objeto, así que un
+ * candidato se verifica entero. Con un tope de candidatos: un log de líneas
+ * idénticas no puede convertir esto en un barrido cuadrático.
+ */
+export function findFrontCut(prev: ParsedRow[], cur: ParsedRow[]): number {
+  const first = cur[0];
+  let candidates = 0;
+  for (let c = 0; c < prev.length; c++) {
+    if (prev[c] !== first) continue;
+    if (++candidates > 64) return -1;
+    const kept = prev.length - c;
+    if (kept > cur.length) continue;
+    let ok = true;
+    for (let i = 1; i < kept; i++) {
+      if (prev[c + i] !== cur[i]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return c;
+  }
+  return -1;
+}
+
+interface VisibleRow {
+  /** Número de línea absoluto desde que se abrió el visor: no cambia al recortar el buffer por delante. */
+  n: number;
+  row: ParsedRow;
+  tsString: string;
+  tsTooltip?: string;
+}
+
+interface Chunk {
+  key: number;
+  rows: VisibleRow[];
+}
+
+const EMPTY_ROWS: ParsedRow[] = [];
+
 /** Resalta TODAS las coincidencias (sin distinguir mayúsculas) de `q` en la línea. */
 function highlight(line: string, q: string): React.ReactNode {
   if (!q) return line;
@@ -246,6 +323,44 @@ const LogRow = memo(function LogRow({
       >
         <span className="min-w-0 flex-1">{highlight(text, query)}</span>
       </span>
+    </div>
+  );
+});
+
+/**
+ * Un bloque de filas. Va en `memo` y recibe el mismo array mientras sus filas
+ * no cambien: así una ráfaga de líneas nuevas solo repinta el último bloque
+ * (y el primero, si el buffer se recortó), no las catorce mil filas.
+ */
+const LogChunk = memo(function LogChunk({
+  rows,
+  wrap,
+  gutter,
+  showTs,
+  query,
+}: {
+  rows: VisibleRow[];
+  wrap: boolean;
+  gutter: boolean;
+  showTs: boolean;
+  query: string;
+}) {
+  return (
+    <div className="log-chunk" style={{ '--rows': rows.length } as React.CSSProperties}>
+      {rows.map((v) => (
+        <LogRow
+          key={v.n}
+          n={v.n}
+          text={v.row.cleanText}
+          tsString={v.tsString}
+          tsTooltip={v.tsTooltip}
+          lvl={v.row.lvl}
+          wrap={wrap}
+          gutter={gutter}
+          showTs={showTs}
+          query={query}
+        />
+      ))}
     </div>
   );
 });
@@ -417,31 +532,82 @@ function LogViewerImpl({
     return { err, warn };
   }, [rows]);
 
-  // Filtrado de filas visibles
+  /*
+   * Filas visibles, calculadas de forma incremental. El buffer solo cambia de
+   * dos maneras entre ráfagas: líneas nuevas al final y, cuando está lleno,
+   * un recorte por delante. En ambos casos se conservan las filas ya
+   * calculadas (mismos objetos, mismo número de línea) y se procesan solo las
+   * nuevas. La numeración es absoluta: `base` cuenta lo recortado, así que
+   * una fila mantiene su número aunque el buffer se vacíe por delante, y
+   * React no vuelve a montar todas las filas en cada ráfaga.
+   */
+  const visRef = useRef<{ rows: ParsedRow[]; out: VisibleRow[]; key: string; base: number }>({
+    rows: EMPTY_ROWS,
+    out: [],
+    key: '',
+    base: 0,
+  });
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const out: { n: number; row: ParsedRow; tsString: string; tsTooltip?: string }[] = [];
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      if (level !== 'all' && r.lvl !== level) continue;
-      if (stage !== 'all' && r.stage !== 'all' && r.stage !== stage) continue;
-      if (q && !r.cleanText.toLowerCase().includes(q)) continue;
-      const tsString = formatTimestamp(r.ts, r.iso, tsFormat);
-      const tsTooltip = timestampTooltip(r.ts, r.iso);
-      out.push({ n: i + 1, row: r, tsString, tsTooltip });
+    const key = `${q}\u0000${level}\u0000${stage}\u0000${tsFormat}\u0000${tsFormat === 'relative' ? tick : 0}`;
+    const prev = visRef.current;
+    const matches = (r: ParsedRow) =>
+      (level === 'all' || r.lvl === level) &&
+      (stage === 'all' || r.stage === 'all' || r.stage === stage) &&
+      (!q || r.cleanText.toLowerCase().includes(q));
+
+    // Recorte por delante respecto a la ráfaga anterior; -1 = otra fuente o
+    // historial cargado por delante, y entonces la numeración vuelve a empezar.
+    const cut = prev.rows.length > 0 && rows.length > 0 ? findFrontCut(prev.rows, rows) : -1;
+    let base = cut >= 0 ? prev.base + cut : 0;
+    let out: VisibleRow[] | null = null;
+    let from = 0;
+    if (cut >= 0 && key === prev.key) {
+      let drop = 0;
+      while (drop < prev.out.length && prev.out[drop].n <= base) drop++;
+      out = prev.out.slice(drop);
+      from = prev.rows.length - cut;
     }
+    if (!out) {
+      out = [];
+      from = 0;
+      base = cut >= 0 ? base : 0;
+    }
+    for (let i = from; i < rows.length; i++) {
+      const r = rows[i];
+      if (!matches(r)) continue;
+      out.push({ n: base + i + 1, row: r, tsString: tsStringCached(r, tsFormat), tsTooltip: tsTooltipCached(r) });
+    }
+    visRef.current = { rows, out, key, base };
     return out;
     // `tick` solo refresca los relativos; no cambia qué filas se ven.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, filter, level, stage, tsFormat, tick]);
 
-  // Bloques virtualizados para alto rendimiento
+  /*
+   * Bloques alineados al número de línea absoluto (no a la posición en el
+   * array): un recorte por delante solo toca el primer bloque y una ráfaga
+   * solo el último. Un bloque cuyas filas no han cambiado conserva su objeto
+   * y `LogChunk` (memo) no lo repinta.
+   */
+  const chunksRef = useRef(new Map<number, Chunk>());
   const chunks = useMemo(() => {
-    const out: { key: number; rows: typeof visible }[] = [];
-    for (let i = 0; i < visible.length; i += CHUNK) {
-      const slice = visible.slice(i, i + CHUNK);
-      out.push({ key: slice[0].n, rows: slice });
+    const prevMap = chunksRef.current;
+    const nextMap = new Map<number, Chunk>();
+    const out: Chunk[] = [];
+    let i = 0;
+    while (i < visible.length) {
+      const bucket = Math.floor((visible[i].n - 1) / CHUNK);
+      let j = i + 1;
+      while (j < visible.length && Math.floor((visible[j].n - 1) / CHUNK) === bucket) j++;
+      const old = prevMap.get(bucket);
+      const reuse = old && old.rows.length === j - i && old.rows[0] === visible[i] && old.rows[old.rows.length - 1] === visible[j - 1];
+      const chunk: Chunk = reuse ? old : { key: bucket, rows: visible.slice(i, j) };
+      nextMap.set(bucket, chunk);
+      out.push(chunk);
+      i = j;
     }
+    chunksRef.current = nextMap;
     return out;
   }, [visible]);
 
@@ -457,15 +623,62 @@ function LogViewerImpl({
    * quedarse leyendo arriba mientras entraba texto.
    */
   const followRef = useRef(true);
+  /*
+   * En iOS, escribir `scrollTop` mientras hay un dedo en la pantalla —o durante
+   * la inercia justo después— cancela el gesto. Con líneas entrando sin parar,
+   * el seguimiento mandaba al fondo cada pocos milisegundos y era imposible
+   * arrastrar hacia arriba: el visor parecía bloqueado, y como en móvil ocupa
+   * la pantalla entera, parecía bloqueada la web. Mientras dura el gesto no se
+   * escribe el scroll; cuando se asienta, si toca seguir, se va al fondo.
+   */
+  const gestureRef = useRef(false);
+  const settleTimerRef = useRef(0);
+  const pendingBottomRef = useRef(false);
   const scrollToBottom = useCallback(() => {
     const el = ref.current;
     if (!el) return;
+    if (gestureRef.current) {
+      pendingBottomRef.current = true;
+      return;
+    }
     el.scrollTop = el.scrollHeight;
     // Un segundo intento tras el layout: las filas nuevas pueden medir
     // distinto una vez pintadas (ajuste de línea). Solo si nadie se ha movido.
     requestAnimationFrame(() => {
-      if (followRef.current && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+      if (followRef.current && !gestureRef.current && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
     });
+  }, []);
+  const beginGesture = useCallback(() => {
+    gestureRef.current = true;
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+  }, []);
+  // El gesto se da por acabado cuando dejan de llegar eventos de scroll un
+  // rato después de levantar el dedo (la inercia sigue emitiéndolos).
+  const settleSoon = useCallback(() => {
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+    settleTimerRef.current = window.setTimeout(() => {
+      settleTimerRef.current = 0;
+      gestureRef.current = false;
+      if (followRef.current && pendingBottomRef.current) {
+        pendingBottomRef.current = false;
+        scrollToBottom();
+      }
+    }, 180);
+  }, [scrollToBottom]);
+  useEffect(() => () => {
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+  }, []);
+
+  /*
+   * `overscroll-behavior: contain` solo cuando hay algo que desplazar (ver
+   * .log-body en index.css): un visor corto con ese contain se tragaba el
+   * gesto en iOS y la página de detrás no se movía.
+   */
+  const syncScrollable = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const scrollable = String(el.scrollHeight > el.clientHeight + 1);
+    if (el.dataset.scrollable !== scrollable) el.dataset.scrollable = scrollable;
   }, []);
 
   // Al recibir líneas con el seguimiento activo, al fondo ANTES de pintar (sin parpadeo).
@@ -485,7 +698,13 @@ function LogViewerImpl({
       unreadCountRef.current += delta;
       setUnreadCount(unreadCountRef.current);
     }
-  }, [visible.length, scrollToBottom]);
+    syncScrollable();
+  }, [visible.length, scrollToBottom, syncScrollable]);
+
+  // El ajuste de línea cambia el alto del contenido sin cambiar el del hueco.
+  useEffect(() => {
+    syncScrollable();
+  }, [wrap, maximized, syncScrollable]);
 
   // Si el hueco cambia de alto (acordeón, teclado del móvil, giro) y se estaba
   // siguiendo, el fondo sigue siendo el fondo.
@@ -493,11 +712,12 @@ function LogViewerImpl({
     const el = ref.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => {
-      if (followRef.current) el.scrollTop = el.scrollHeight;
+      syncScrollable();
+      if (followRef.current) scrollToBottom();
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [maximized]);
+  }, [maximized, scrollToBottom, syncScrollable]);
 
   const startFollowing = useCallback(() => {
     followRef.current = true;
@@ -589,6 +809,8 @@ function LogViewerImpl({
     lastTopRef.current = el.scrollTop;
     const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 45;
     followRef.current = isAtBottom;
+    // Scroll con el dedo levantado = inercia: el gesto sigue vivo hasta que pare.
+    if (gestureRef.current) settleSoon();
     if (scrollRaf.current) return;
     scrollRaf.current = requestAnimationFrame(() => {
       scrollRaf.current = 0;
@@ -750,7 +972,7 @@ function LogViewerImpl({
                 ref={searchRef}
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                placeholder="Buscar en los logs…"
+                placeholder="Buscar en el registro"
                 spellCheck={false}
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -805,7 +1027,7 @@ function LogViewerImpl({
               onClick={onDownload ?? download}
               disabled={!onDownload && visible.length === 0}
               className="press flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40 sm:h-8"
-              title={onDownload ? 'Descargar el log completo' : 'Descargar el log'}
+              title={onDownload ? 'Descargar el registro completo' : 'Descargar el registro'}
             >
               <Download size={14} aria-hidden />
               <span>Descargar</span>
@@ -822,7 +1044,7 @@ function LogViewerImpl({
                   'press flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors sm:h-8',
                   viewMenuOpen ? 'bg-surface2 text-txt' : 'text-sub hover:bg-surface2 hover:text-txt',
                 )}
-                title="Cómo se ve el registro"
+                title="Opciones de visualización del registro"
               >
                 <SlidersHorizontal size={14} aria-hidden />
                 <span>Vista</span>
@@ -877,7 +1099,7 @@ function LogViewerImpl({
                     onClick={copyAll}
                     className={cx(visible.length === 0 && 'pointer-events-none opacity-40')}
                   >
-                    Copiar lo que se ve
+                    Copiar las líneas visibles
                   </MenuItem>
                   <MenuItem
                     icon={<ArrowUpToLine size={14} />}
@@ -938,6 +1160,9 @@ function LogViewerImpl({
         <div
           ref={ref}
           onScroll={onScroll}
+          onTouchStart={beginGesture}
+          onTouchEnd={settleSoon}
+          onTouchCancel={settleSoon}
           className={cx(
             // Tamaño propio de terminal (fuera de la escala de la interfaz):
             // aquí manda la legibilidad de la monoespaciada, no la jerarquía.
@@ -956,7 +1181,7 @@ function LogViewerImpl({
                 disabled={loadingOlder}
                 className="press inline-flex items-center gap-1.5 rounded-lg border border-line bg-term2 px-3 py-1 text-xs text-sub hover:text-txt disabled:opacity-50"
               >
-                {loadingOlder ? 'Cargando líneas anteriores…' : 'Cargar historial anterior ↑'}
+                {loadingOlder ? 'Cargando líneas anteriores…' : 'Cargar líneas anteriores'}
               </button>
             </div>
           )}
@@ -964,37 +1189,18 @@ function LogViewerImpl({
           {visible.length === 0 ? (
             <div className="flex h-full min-h-[140px] items-center justify-center p-6 text-center font-sans">
               {state === 'loading' ? (
-                <Spinner label="Cargando los logs…" />
+                <Spinner label="Cargando el registro…" />
               ) : state === 'error' ? (
-                <ErrorState compact title="No se han podido cargar los logs" onRetry={onRetry} />
+                <ErrorState compact title="No se ha podido cargar el registro" onRetry={onRetry} />
               ) : (
                 <span className="max-w-sm text-balance text-xs leading-5 text-subtle">
-                  {filtering ? 'Ninguna línea coincide con los filtros aplicados.' : emptyMessage ?? 'Sin logs todavía…'}
+                  {filtering ? 'Ninguna línea coincide con los filtros aplicados.' : emptyMessage ?? 'No hay registros disponibles.'}
                 </span>
               )}
             </div>
           ) : (
             chunks.map((c) => (
-              <div
-                key={c.key}
-                className="log-chunk"
-                style={{ '--rows': c.rows.length } as React.CSSProperties}
-              >
-                {c.rows.map((v) => (
-                  <LogRow
-                    key={v.n}
-                    n={v.n}
-                    text={v.row.cleanText}
-                    tsString={v.tsString}
-                    tsTooltip={v.tsTooltip}
-                    lvl={v.row.lvl}
-                    wrap={wrap}
-                    gutter={gutter}
-                    showTs={showTs}
-                    query={filter}
-                  />
-                ))}
-              </div>
+              <LogChunk key={c.key} rows={c.rows} wrap={wrap} gutter={gutter} showTs={showTs} query={filter} />
             ))
           )}
         </div>
@@ -1027,7 +1233,7 @@ function LogViewerImpl({
         ref={overlayRef}
         role="dialog"
         aria-modal="true"
-        aria-label={title ? `${title} — pantalla completa` : 'Consola de logs'}
+        aria-label={title ? `${title} — pantalla completa` : 'Consola de registro'}
         tabIndex={-1}
         // El relleno inferior respeta la barra de gestos del móvil: si no, el
         // botón «Ir al final» y la última línea quedaban debajo de ella.

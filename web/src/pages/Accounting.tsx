@@ -48,7 +48,7 @@ export default function AccountingPage() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Contabilidad</h1>
-          <p className="mt-1.5 text-sm text-sub">Lo facturado, lo cobrado y lo pendiente de cobro</p>
+          <p className="mt-1.5 text-sm text-sub">Importes facturados, cobrados y pendientes de cobro</p>
         </div>
         <a href="/api/accounting/export.csv" download className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface2 px-3.5 text-sm font-medium text-txt hover:border-acc/50">
           <Download size={15} /> Exportar CSV
@@ -80,7 +80,7 @@ export default function AccountingPage() {
           {(s.byCurrency ?? []).filter((b) => b.currency !== cur).length > 0 && (
             <section className="card mt-3 px-4 py-3">
               <h2 className="text-base font-semibold">Facturación en otras monedas</h2>
-              <p className="mt-0.5 text-xs text-subtle">No se suman a los totales de arriba: cada divisa se contabiliza por separado.</p>
+              <p className="mt-0.5 text-xs text-subtle">No se suman a los totales anteriores: cada divisa se contabiliza por separado.</p>
               <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1.5">
                 {s.byCurrency!.filter((b) => b.currency !== cur).map((b) => (
                   <span key={b.currency} className="text-xs tnum">
@@ -102,7 +102,7 @@ export default function AccountingPage() {
                 <h2 className="text-base font-semibold">Por cliente</h2>
               </div>
               {byClient.length === 0 ? (
-                <p className="px-4 py-8 text-center text-xs text-subtle">Aún no hay facturación por cliente.</p>
+                <p className="px-4 py-8 text-center text-xs text-subtle">Todavía no hay facturación por cliente.</p>
               ) : (
                 byClient.map((c, i) => {
                   const pct = c.invoiced > 0 ? Math.round((c.paid / c.invoiced) * 100) : 0;
@@ -255,7 +255,7 @@ function BillingAutomationSettings() {
     <section className="card p-5">
       <h2 className="flex items-center gap-2 text-base font-semibold"><CalendarClock size={15} className="text-acc-soft" /> Automatización de facturación</h2>
       <p className="mt-1 max-w-2xl text-xs text-subtle">
-        Qué hace Skyway solo en cada ciclo y qué pasa si un cliente no paga. Se revisa cada 10 minutos.
+        Acciones que Skyway realiza automáticamente en cada ciclo y política aplicable en caso de impago. Se revisa cada 10 minutos.
       </p>
 
       <div className="mt-4 flex flex-col divide-y divide-line rounded-xl border border-line">
@@ -269,7 +269,7 @@ function BillingAutomationSettings() {
         <div className={cx('flex items-start justify-between gap-4 p-3.5', !draft.autoGenerate && 'opacity-60')}>
           <div className="min-w-0">
             <p className="flex items-center gap-2 text-sm font-medium"><Zap size={14} className="text-warn" /> Emitir la factura automáticamente</p>
-            <p className="mt-1 text-xs text-subtle">Numera y bloquea el borrador sin revisión previa; es irreversible. Apagado: revisas el borrador y lo emites tú.</p>
+            <p className="mt-1 text-xs text-subtle">Numera y bloquea el borrador sin revisión previa; es irreversible. Si está desactivado, el borrador debe revisarse y emitirse manualmente.</p>
           </div>
           <Toggle checked={draft.autoIssue} disabled={!draft.autoGenerate} onChange={(v) => set({ autoIssue: v })} label="Emitir la factura automáticamente" />
         </div>
@@ -277,7 +277,7 @@ function BillingAutomationSettings() {
           <div className="min-w-0">
             <p className="flex items-center gap-2 text-sm font-medium"><Send size={14} className="text-info" /> Enviar la factura al cliente al emitirla</p>
             <p className="mt-1 text-xs text-subtle">
-              Envía el PDF al email de facturación de la cuenta en cuanto se emite. Requiere el correo saliente configurado arriba.
+              Envía el PDF al correo electrónico de facturación de la cuenta en cuanto se emite. Requiere el correo saliente configurado en «Datos de la empresa».
             </p>
           </div>
           <Toggle checked={draft.emailOnIssue} onChange={(v) => set({ emailOnIssue: v })} label="Enviar la factura al cliente al emitirla" />
@@ -289,10 +289,10 @@ function BillingAutomationSettings() {
         Una factura emitida y no cobrada vence a los <b className="tnum text-sub">{terms}</b> días (condiciones de pago, en «Datos de la empresa»). Contando desde ese vencimiento:
       </p>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <Field label="Días para suspender el servicio" hint="suspende las claves de IA y pausa las suscripciones; reversible al pagar">
+        <Field label="Días para suspender el servicio" hint="Suspende las claves de IA y pausa las suscripciones; se revierte al pagar">
           <NumberInput className="input tnum" inputMode="numeric" min={0} max={365} value={draft.dunningGraceDays} onChange={(v) => set({ dunningGraceDays: v })} />
         </Field>
-        <Field label="Días para cancelar la cuenta" hint="revoca las claves y cancela las suscripciones; requiere alta manual">
+        <Field label="Días para cancelar la cuenta" hint="Revoca las claves y cancela las suscripciones; requiere un alta manual">
           <NumberInput className={cx('input tnum', invalid && 'border-err')} inputMode="numeric" min={0} max={365} value={draft.dunningCancelDays} onChange={(v) => set({ dunningCancelDays: v })} />
         </Field>
       </div>
@@ -308,7 +308,7 @@ function BillingAutomationSettings() {
       {invalid && <p className="mt-2 text-xs text-err">Los días para cancelar deben ser ≥ los días para suspender.</p>}
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 gap-y-2">
-        <p className="min-w-0 flex-1 text-xs text-subtle">Al cobrarse una factura vencida, el servicio se reactiva solo (salvo cuentas ya canceladas, que requieren alta manual).</p>
+        <p className="min-w-0 flex-1 text-xs text-subtle">Al cobrarse una factura vencida, el servicio se reactiva automáticamente (salvo en cuentas ya canceladas, que requieren un alta manual).</p>
         <Button size="sm" onClick={() => save.mutate()} loading={save.isPending} disabled={invalid}>Guardar</Button>
       </div>
     </section>
@@ -350,10 +350,10 @@ function AiGatewaySettings() {
           Las peticiones de los clientes pasan por esta clave (nunca se expone) con una clave <span className="font-mono">skai_…</span> propia por cuenta, y el consumo se factura por cuenta.
         </p>
         <div className="mt-4 grid gap-3">
-          <Field label="Clave de Gemini (API key de Google AI)" hint={q.data.hasGeminiKey ? 'ya configurada; vacío = no cambiar' : 'necesaria para que el proxy funcione'}>
+          <Field label="Clave de Gemini (API key de Google AI)" hint={q.data.hasGeminiKey ? 'Ya configurada; si se deja vacío, no cambia' : 'Necesaria para que el proxy funcione'}>
             <input className="input font-mono" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={q.data.hasGeminiKey ? '•••••••• configurada' : 'AIza…'} />
           </Field>
-          <Field label="Modelos permitidos" hint="separados por comas; los de imagen u otros quedan fuera a propósito">
+          <Field label="Modelos permitidos" hint="Separados por comas; los modelos de imagen y otros quedan excluidos deliberadamente">
             <textarea className="input min-h-16 font-mono text-xs" value={models} onChange={(e) => setModels(e.target.value)} placeholder="gemini-2.5-flash, gemini-2.5-pro" />
           </Field>
         </div>
@@ -374,9 +374,9 @@ function AiGatewaySettings() {
  * guía de precios (el PVP real se fija en el catálogo); no interviene en la factura.
  */
 const COST_TYPES = [
-  { key: 'out' as const, label: 'Salida', hint: 'lo que responde el modelo' },
-  { key: 'in' as const, label: 'Entrada', hint: 'el prompt que envías' },
-  { key: 'cache' as const, label: 'Caché', hint: 'contexto cacheado, más barato' },
+  { key: 'out' as const, label: 'Salida', hint: 'Respuesta del modelo' },
+  { key: 'in' as const, label: 'Entrada', hint: 'Prompt enviado' },
+  { key: 'cache' as const, label: 'Caché', hint: 'Contexto en caché, con menor coste' },
 ];
 
 const usdM = (n: number) => n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
@@ -403,7 +403,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
   const del = useMutation({
     mutationFn: (model: string) => api.del(`/ai/gateway/prices/${encodeURIComponent(model)}`),
     onSuccess: (_r, model: string) => {
-      toast('Modelo restablecido: vuelve a la tarifa automática', 'ok');
+      toast('Modelo restablecido a la tarifa automática', 'ok');
       setDrafts((prev) => { const next = { ...prev }; delete next[model]; return next; });
       queryClient.invalidateQueries({ queryKey: ['ai-model-prices'] });
     },
@@ -416,9 +416,9 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
     onSuccess: (r) => {
       setDrafts({});
       queryClient.invalidateQueries({ queryKey: ['ai-model-prices'] });
-      if (!r.ok) return toast(r.error || 'No se pudo actualizar la tarifa', 'err');
+      if (!r.ok) return toast(r.error || 'No se ha podido actualizar la tarifa', 'err');
       const changed = r.added.length + r.updated.length;
-      toast(changed ? `Tarifa actualizada (${changed} modelo${changed > 1 ? 's' : ''}, fuente ${r.source})` : 'La tarifa ya estaba al día', 'ok');
+      toast(changed ? `Tarifa actualizada (${changed} modelo${changed > 1 ? 's' : ''}, fuente ${r.source})` : 'La tarifa ya estaba actualizada', 'ok');
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -454,9 +454,9 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
   const rows = allowedModels.length ? allowedModels : q.data.models.map((m) => m.model);
   return (
     <section className="card p-5">
-      <h2 className="flex items-center gap-2 text-base font-semibold"><Coins size={15} className="text-ok" /> Cuánto ganas por modelo</h2>
+      <h2 className="flex items-center gap-2 text-base font-semibold"><Coins size={15} className="text-ok" /> Beneficio por modelo</h2>
       <p className="mt-1 max-w-2xl text-xs text-subtle">
-        Coste de Google + tu margen = precio de venta. El precio que cobras se fija en el producto de IA del <Link to="/catalog" className="tap text-acc-soft hover:underline">catálogo</Link>.
+        Coste de Google + margen = precio de venta. El precio que se cobra al cliente se fija en el producto de IA del <Link to="/catalog" className="tap text-acc-soft hover:underline">catálogo</Link>.
       </p>
 
       <PriceSyncBar
@@ -489,8 +489,8 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                       className={cx('rounded px-1.5 py-0.5 text-micro leading-none', existing.source === 'auto' ? 'bg-info/[.15] text-info' : 'bg-surface2 text-subtle')}
                       title={
                         existing.source === 'auto'
-                          ? `Coste tomado de la tarifa de Google${existing.synced_at ? ` (${timeAgo(existing.synced_at)})` : ''}. Si lo editas, pasa a manual.`
-                          : 'Coste fijado por ti: la actualización automática no lo toca. Restablece el modelo para volver al automático.'
+                          ? `Coste tomado de la tarifa de Google${existing.synced_at ? ` (${timeAgo(existing.synced_at)})` : ''}. Si se edita, pasa a manual.`
+                          : 'Coste fijado manualmente: la actualización automática no lo modifica. Restablezca el modelo para volver al automático.'
                       }
                     >
                       {existing.source === 'auto' ? 'auto' : 'manual'}
@@ -501,10 +501,10 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                   {profitOut != null ? (
                     <>
                       <p className="tnum text-lg font-semibold leading-none text-ok">{eurMd(profitOut, currency)}</p>
-                      <p className="mt-1 eyebrow text-subtle">ganas en salida</p>
+                      <p className="mt-1 eyebrow text-subtle">beneficio en salida</p>
                     </>
                   ) : (
-                    <p className="text-xs text-subtle">Añade coste y margen</p>
+                    <p className="text-xs text-subtle">Indique el coste y el margen</p>
                   )}
                 </div>
               </div>
@@ -532,8 +532,8 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
               {/* Coste → precio de venta, por tipo de token. */}
               <div className="mt-3 grid grid-cols-[64px_1fr_1fr] items-center gap-x-2 gap-y-1.5">
                 <span />
-                <span className="eyebrow text-subtle">Te cuesta {cur(currency)}/M</span>
-                <span className="text-right eyebrow text-subtle">Vendes a</span>
+                <span className="eyebrow text-subtle">Coste {cur(currency)}/M</span>
+                <span className="text-right eyebrow text-subtle">Precio de venta</span>
                 {COST_TYPES.map((t) => {
                   const price = priceOf(num(d[t.key]), margin);
                   return (
@@ -551,7 +551,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                 <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-micro text-subtle">
                   <span className="eyebrow">Lista Google · $/M</span>
                   <span className="tnum">entrada {usdM(ref.in)} · caché {usdM(ref.cache)} · salida {usdM(ref.out)}</span>
-                  <button className="tap text-acc-soft hover:underline" title="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" aria-label="Copiar estos precios a los campos de coste (ajústalos a tu coste real en €)" onClick={() => setDraft(model, { in: String(ref.in), cache: String(ref.cache), out: String(ref.out) })}>usar</button>
+                  <button className="tap text-acc-soft hover:underline" title="Copiar estos precios a los campos de coste (ajústelos al coste real en €)" aria-label="Copiar estos precios a los campos de coste (ajústelos al coste real en €)" onClick={() => setDraft(model, { in: String(ref.in), cache: String(ref.cache), out: String(ref.out) })}>usar</button>
                 </div>
               )}
 
@@ -559,7 +559,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                 {existing && (
                   <button
                     className="mr-auto rounded p-1.5 text-subtle hover:text-err max-sm:p-2.5"
-                    title={existing.source === 'manual' ? 'Descartar tu coste y volver a la tarifa automática de Google' : 'Borrar el coste guardado (la próxima actualización lo repone)'} aria-label={existing.source === 'manual' ? 'Descartar tu coste y volver a la tarifa automática de Google' : 'Borrar el coste guardado (la próxima actualización lo repone)'}
+                    title={existing.source === 'manual' ? 'Descartar el coste manual y volver a la tarifa automática de Google' : 'Eliminar el coste guardado (la próxima actualización lo repondrá)'} aria-label={existing.source === 'manual' ? 'Descartar el coste manual y volver a la tarifa automática de Google' : 'Eliminar el coste guardado (la próxima actualización lo repondrá)'}
                     onClick={() => del.mutate(model)}
                   >
                     <Trash2 size={13} />
@@ -572,7 +572,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
         })}
       </div>
       <p className="mt-3 text-xs text-subtle">
-        «Lista Google» es la tarifa publicada en USD antes de convertir a {s.currency}; tu coste real puede variar (precio vigente en <a href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank" rel="noopener noreferrer" className="text-acc-soft hover:underline">ai.google.dev</a>).
+        «Lista Google» es la tarifa publicada en USD antes de convertir a {s.currency}; el coste real puede variar (precio vigente en <a href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank" rel="noopener noreferrer" className="text-acc-soft hover:underline">ai.google.dev</a>).
       </p>
     </section>
   );
@@ -608,7 +608,7 @@ function PriceSyncBar({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="flex items-center gap-2 text-sm font-medium">
-            <RefreshCw size={14} className={cx('text-info', refreshing && 'animate-spin')} /> Tarifa de Google al día
+            <RefreshCw size={14} className={cx('text-info', refreshing && 'animate-spin')} /> Actualización de la tarifa de Google
           </p>
           <p className="mt-1 text-xs text-subtle">
             {sync.lastAt ? (
@@ -621,10 +621,10 @@ function PriceSyncBar({
                     {last.source === 'catálogo' && <> ({sync.catalogDate})</>}
                   </>
                 )}
-                {sync.auto && <> · se repite sola cada día</>}
+                {sync.auto && <> · se repite automáticamente cada día</>}
               </>
             ) : (
-              <>Todavía sin comprobar. Se hará sola en cuanto arranque el ciclo diario, o púlsalo ahora.</>
+              <>Todavía no se ha comprobado. Se realizará automáticamente al iniciarse el ciclo diario, o puede pulsar «Actualizar ahora».</>
             )}
           </p>
         </div>
@@ -640,9 +640,9 @@ function PriceSyncBar({
         <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-subtle">
           {!!last.updated.length && <span className="rounded bg-ok/[.15] px-2 py-0.5 text-ok">{last.updated.length} actualizado(s)</span>}
           {!!last.added.length && <span className="rounded bg-info/[.15] px-2 py-0.5 text-info">{last.added.length} nuevo(s)</span>}
-          {!!last.manual.length && <span className="rounded bg-surface2 px-2 py-0.5" title={last.manual.join(', ')}>{last.manual.length} a mano (respetado)</span>}
+          {!!last.manual.length && <span className="rounded bg-surface2 px-2 py-0.5" title={last.manual.join(', ')}>{last.manual.length} manual(es) (sin cambios)</span>}
           {!!last.missing.length && (
-            <span className="rounded bg-warn/[.15] px-2 py-0.5 text-warn" title="Google no publica tarifa por token para estos modelos; su coste se queda como esté">
+            <span className="rounded bg-warn/[.15] px-2 py-0.5 text-warn" title="Google no publica tarifa por token para estos modelos; su coste se mantiene sin cambios">
               sin tarifa: {last.missing.join(', ')}
             </span>
           )}
@@ -651,18 +651,18 @@ function PriceSyncBar({
 
       {!!last?.discovered.length && (
         <p className="mt-2 text-xs text-warn">
-          Modelos nuevos en Google con tarifa conocida: <span className="font-mono">{last.discovered.join(', ')}</span>. Añádelos arriba en «Modelos permitidos» si quieres venderlos.
+          Modelos nuevos en Google con tarifa conocida: <span className="font-mono">{last.discovered.join(', ')}</span>. Añádalos en «Modelos permitidos» si desea ofrecerlos.
         </p>
       )}
 
       <label className="mt-2 flex items-center gap-2 text-xs text-subtle">
         <input type="checkbox" className="h-4 w-4 shrink-0 accent-acc" checked={sync.autoAllow} onChange={(e) => onConfig({ autoAllow: e.target.checked })} disabled={savingConfig} />
-        Permitir solos los modelos nuevos que Google publique con tarifa conocida (si no, solo se avisa)
+        Permitir automáticamente los modelos nuevos que Google publique con tarifa conocida (en caso contrario, solo se avisa)
       </label>
 
       {/* Los dos ajustes que la automatización no puede adivinar. */}
       <div className="mt-3 grid gap-3 border-t border-line/60 pt-3 sm:grid-cols-2">
-        <Field label={`Cambio 1 USD → ${sync.currency}`} hint={sync.fxAt ? `referencia del BCE, ${timeAgo(sync.fxAt)}` : 'sin cambio guardado: fíjalo si el servidor no sale a internet'}>
+        <Field label={`Cambio 1 USD → ${sync.currency}`} hint={sync.fxAt ? `Referencia del BCE, ${timeAgo(sync.fxAt)}` : 'Sin tipo de cambio guardado; indíquelo si el servidor no tiene acceso a internet'}>
           <input
             className="input h-8 tnum"
             inputMode="decimal"
@@ -677,7 +677,7 @@ function PriceSyncBar({
             disabled={savingConfig}
           />
         </Field>
-        <Field label="Margen para modelos nuevos" hint="el que se estrena cuando aparece un modelo; los que ya tienen margen lo conservan">
+        <Field label="Margen para modelos nuevos" hint="Se aplica a los modelos que aparezcan; los que ya tienen margen lo conservan">
           <div className="relative">
             <input
               className="input h-8 tnum pr-6"
@@ -794,21 +794,21 @@ function CompanyProfile() {
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <Field label="Nombre / razón social"><input className="input" value={draft.companyName} onChange={(e) => set({ companyName: e.target.value })} placeholder="Skyway Cloud S.L." /></Field>
           <Field label="NIF / CIF"><input className="input" value={draft.taxId} onChange={(e) => set({ taxId: e.target.value })} placeholder="B12345678" /></Field>
-          <Field label="Email"><input className="input" type="email" autoComplete="email" autoCapitalize="none" value={draft.email} onChange={(e) => set({ email: e.target.value })} /></Field>
+          <Field label="Correo electrónico"><input className="input" type="email" autoComplete="email" autoCapitalize="none" value={draft.email} onChange={(e) => set({ email: e.target.value })} /></Field>
           <Field label="Teléfono"><input className="input" value={draft.phone} onChange={(e) => set({ phone: e.target.value })} /></Field>
         </div>
         <Field label="Dirección"><textarea className="input min-h-16" value={draft.address} onChange={(e) => set({ address: e.target.value })} /></Field>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Moneda"><input className="input" maxLength={3} value={draft.currency} onChange={(e) => set({ currency: e.target.value })} /></Field>
-          <Field label="Prefijo de serie" hint="Ej: FRA · numeración por ejercicio"><input className="input" maxLength={12} value={draft.invoicePrefix} onChange={(e) => set({ invoicePrefix: e.target.value })} /></Field>
+          <Field label="Prefijo de serie" hint="Por ejemplo, FRA · numeración por ejercicio"><input className="input" maxLength={12} value={draft.invoicePrefix} onChange={(e) => set({ invoicePrefix: e.target.value })} /></Field>
         </div>
         <div className="grid gap-3 sm:grid-cols-3">
           <Field label="IVA por defecto (%)"><NumberInput className="input tnum" inputMode="decimal" min={0} max={100} value={draft.vatRate} onChange={(v) => set({ vatRate: v })} /></Field>
-          <Field label="IRPF por defecto (%)" hint="0 si eres sociedad"><NumberInput className="input tnum" inputMode="decimal" min={0} max={100} value={draft.defaultIrpfRate} onChange={(v) => set({ defaultIrpfRate: v })} /></Field>
+          <Field label="IRPF por defecto (%)" hint="0 en el caso de sociedades"><NumberInput className="input tnum" inputMode="decimal" min={0} max={100} value={draft.defaultIrpfRate} onChange={(v) => set({ defaultIrpfRate: v })} /></Field>
           {/* El registro encadenado (invoice_ledger) está creado como reserva, pero
               la huella, el QR y la remisión a la AEAT aún no se implementan: el
               selector solo deja constancia de la intención, no activa nada. */}
-          <Field label="Modo Verifactu" hint="Preparado, aún no operativo">
+          <Field label="Modo Verifactu" hint="Preparado, todavía no operativo">
             <select className="input" value={draft.sifMode} onChange={(e) => set({ sifMode: e.target.value as BillingProfile['sifMode'] })}>
               <option value="no_verifactu">No Verifactu (local)</option>
               <option value="verifactu">Verifactu (AEAT) — pendiente de activar</option>
@@ -821,7 +821,7 @@ function CompanyProfile() {
       <div className="flex flex-col gap-5">
         <section className="card p-5">
           <h2 className="flex items-center gap-2 text-base font-semibold"><Landmark size={15} className="text-info" /> Transferencia bancaria</h2>
-          <p className="mt-1 text-xs text-subtle">Los datos que ve el cliente para pagar por transferencia.</p>
+          <p className="mt-1 text-xs text-subtle">Datos que se muestran al cliente para el pago por transferencia.</p>
           <div className="mt-4 grid gap-3">
             <Field label="IBAN"><input className="input font-mono" value={draft.iban} onChange={(e) => set({ iban: e.target.value })} placeholder="ES91 2100 0418 4502 0005 1332" /></Field>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -834,13 +834,13 @@ function CompanyProfile() {
         <section className="card p-5">
           <h2 className="flex items-center gap-2 text-base font-semibold"><CreditCard size={15} className="text-acc-soft" /> Stripe (pago con tarjeta)</h2>
           <p className="mt-1 text-xs text-subtle">
-            Webhook a dar de alta en Stripe, con el secreto de firma: <span className="font-mono">/api/webhooks/stripe</span>.
+            Webhook que debe darse de alta en Stripe, con el secreto de firma: <span className="font-mono">/api/webhooks/stripe</span>.
           </p>
           <div className="mt-4 grid gap-3">
-            <Field label="Clave secreta (sk_…)" hint={stripe.hasSecretKey ? 'ya configurada; vacío = no cambiar' : 'necesaria para crear enlaces de pago'}>
+            <Field label="Clave secreta (sk_…)" hint={stripe.hasSecretKey ? 'Ya configurada; si se deja vacío, no cambia' : 'Necesaria para crear enlaces de pago'}>
               <input className="input font-mono" type="password" value={draft.stripeSecretKey} onChange={(e) => set({ stripeSecretKey: e.target.value })} placeholder={stripe.hasSecretKey ? '•••••••• configurada' : 'sk_live_…'} />
             </Field>
-            <Field label="Secreto del webhook (whsec_…)" hint={stripe.hasWebhookSecret ? 'ya configurado; vacío = no cambiar' : 'verifica los eventos de pago'}>
+            <Field label="Secreto del webhook (whsec_…)" hint={stripe.hasWebhookSecret ? 'Ya configurado; si se deja vacío, no cambia' : 'Verifica los eventos de pago'}>
               <input className="input font-mono" type="password" value={draft.stripeWebhookSecret} onChange={(e) => set({ stripeWebhookSecret: e.target.value })} placeholder={stripe.hasWebhookSecret ? '•••••••• configurado' : 'whsec_…'} />
             </Field>
             <Field label="Clave publicable (pk_…)"><input className="input font-mono" value={draft.stripePublishableKey} onChange={(e) => set({ stripePublishableKey: e.target.value })} placeholder="pk_live_…" /></Field>
@@ -851,25 +851,25 @@ function CompanyProfile() {
           <h2 className="flex items-center gap-2 text-base font-semibold"><Send size={15} className="text-info" /> Correo saliente (envío de facturas)</h2>
           <div className="mt-4 grid gap-3">
             <div className="grid gap-3 sm:grid-cols-[1fr_100px]">
-              <Field label="Servidor"><input className="input" value={draft.smtpHost} onChange={(e) => set({ smtpHost: e.target.value })} placeholder="smtp.tuproveedor.com" /></Field>
+              <Field label="Servidor"><input className="input" value={draft.smtpHost} onChange={(e) => set({ smtpHost: e.target.value })} placeholder="smtp.proveedor.com" /></Field>
               <Field label="Puerto"><NumberInput className="input tnum" inputMode="numeric" min={1} max={65535} value={draft.smtpPort} emptyValue={587} onChange={(v) => set({ smtpPort: v })} /></Field>
             </div>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" className="h-4 w-4 shrink-0 accent-acc" checked={draft.smtpSecure} onChange={(e) => set({ smtpSecure: e.target.checked })} />
-              <span>TLS directo (puerto 465). Desmarcado usa STARTTLS si el servidor lo ofrece.</span>
+              <span>TLS directo (puerto 465). Si se desmarca, se utiliza STARTTLS cuando el servidor lo admite.</span>
             </label>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Usuario"><input className="input" value={draft.smtpUser} onChange={(e) => set({ smtpUser: e.target.value })} /></Field>
-              <Field label="Contraseña" hint={q.data.smtp.hasPassword ? 'ya configurada; vacío = no cambiar' : ''}>
+              <Field label="Contraseña" hint={q.data.smtp.hasPassword ? 'Ya configurada; si se deja vacío, no cambia' : ''}>
                 <input className="input font-mono" type="password" value={draft.smtpPass} onChange={(e) => set({ smtpPass: e.target.value })} placeholder={q.data.smtp.hasPassword ? '•••••••• configurada' : ''} />
               </Field>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Remitente" hint="Debe estar autorizado por el servidor"><input className="input" type="email" autoComplete="email" autoCapitalize="none" value={draft.smtpFrom} onChange={(e) => set({ smtpFrom: e.target.value })} placeholder="facturacion@tuempresa.com" /></Field>
+              <Field label="Remitente" hint="Debe estar autorizado por el servidor"><input className="input" type="email" autoComplete="email" autoCapitalize="none" value={draft.smtpFrom} onChange={(e) => set({ smtpFrom: e.target.value })} placeholder="facturacion@empresa.com" /></Field>
               <Field label="Nombre del remitente"><input className="input" value={draft.smtpFromName} onChange={(e) => set({ smtpFromName: e.target.value })} placeholder="Facturación Skyway" /></Field>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-3 gap-y-2">
-              <p className="min-w-0 flex-1 text-xs text-subtle">La prueba conecta y autentica, sin enviar ningún correo.</p>
+              <p className="min-w-0 flex-1 text-xs text-subtle">La prueba establece la conexión y la autenticación sin enviar ningún correo.</p>
               <Button size="sm" variant="secondary" loading={test.isPending} onClick={() => test.mutate()}>Probar conexión</Button>
             </div>
           </div>

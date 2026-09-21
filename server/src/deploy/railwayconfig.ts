@@ -197,13 +197,13 @@ export function readRailwayRepoConfig(
           // fichero. Skyway aún no lo aplica, y callarlo es lo peor que puede
           // hacer: quien lo usa cree que su configuración está activa.
           if (parsed?.environments && log) {
-            log(`⚠ ${rel} trae configuración por entorno («environments»), que Skyway todavía no aplica. Solo se lee la del nivel raíz.`);
+            log(`⚠ ${rel} incluye configuración por entorno («environments»), que Skyway todavía no aplica. Solo se lee la del nivel raíz.`);
           }
           return fromSections(parsed?.build, parsed?.deploy, rel);
         }
         const tables = parseToml(text);
         if (log && Object.keys(tables).some((k) => k.startsWith('environments.'))) {
-          log(`⚠ ${rel} trae configuración por entorno («[environments…]»), que Skyway todavía no aplica. Solo se lee la del nivel raíz.`);
+          log(`⚠ ${rel} incluye configuración por entorno («[environments…]»), que Skyway todavía no aplica. Solo se lee la del nivel raíz.`);
         }
         return fromSections(tables.build, tables.deploy, rel);
       } catch (err: any) {

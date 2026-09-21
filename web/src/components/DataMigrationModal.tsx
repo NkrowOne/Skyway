@@ -108,8 +108,8 @@ export default function DataMigrationModal({
       // stream ya no debe contarse como conexión perdida.
       if (streamRef.current === es) streamRef.current = null;
       es.close();
-      if (final === 'success') toast('Datos copiados', 'ok');
-      else if (final === 'failed') toast('La copia de datos falló: revisa el log', 'err');
+      if (final === 'success') toast('Se han copiado los datos', 'ok');
+      else if (final === 'failed') toast('La copia de datos ha fallado. Consulte el registro.', 'err');
     });
     es.onerror = () => {
       // El servidor cierra el stream al terminar y eso también dispara onerror;
@@ -148,7 +148,7 @@ export default function DataMigrationModal({
   const test = useMutation({
     mutationFn: () => api.post<{ ok: boolean; error?: string }>(`/services/${serviceId}/data-migration/test`, { sourceUrl }),
     onSuccess: (res) =>
-      setProbe(res.ok ? { ok: true, message: 'El origen responde.' } : { ok: false, message: res.error ?? 'Sin detalle' }),
+      setProbe(res.ok ? { ok: true, message: 'El origen responde correctamente.' } : { ok: false, message: res.error ?? 'Sin detalle disponible' }),
     onError: (err: Error) => setProbe({ ok: false, message: err.message }),
   });
 
@@ -194,20 +194,20 @@ export default function DataMigrationModal({
     <Modal open={open} onClose={() => { if (!running) onClose(); }} title={`Copiar datos a «${serviceName}»`} wide>
       {!supported ? (
         <p className="rounded-lg border border-line bg-bg px-3.5 py-3 text-xs text-sub">
-          Skyway aún no sabe copiar datos de este motor desde el panel. Usa las herramientas del propio motor o el
-          comando del informe de importación.
+          La copia de datos de este motor todavía no está disponible desde el panel. Utilice las herramientas del propio motor
+          o el comando del informe de importación.
         </p>
       ) : (
         <>
           <p className="text-xs text-sub">
-            Vuelca la base de origen sobre la de este servicio. El destino <b>se sobrescribe</b>: hazlo antes de que la
-            aplicación empiece a escribir aquí, o haz un backup primero.
+            Vuelca la base de datos de origen sobre la de este servicio. El destino <b>se sobrescribe</b>: se recomienda
+            realizarlo antes de que la aplicación empiece a escribir en él, o crear una copia de seguridad previamente.
           </p>
 
           <div className="mt-4">
             <Field
               label="URL de conexión del origen"
-              hint="La pública de Railway (DATABASE_PUBLIC_URL y equivalentes). Necesita el TCP Proxy activo para que este servidor llegue."
+              hint="La URL pública de Railway (DATABASE_PUBLIC_URL y equivalentes). Es necesario que el TCP Proxy esté activo para que este servidor pueda conectarse."
               error={probe && !probe.ok ? probe.message : null}
             >
               {/* type="text" y no "url": el navegador solo admite esquemas
@@ -265,7 +265,7 @@ export default function DataMigrationModal({
             )}
             {status === 'failed' && (
               <span className="flex items-center gap-1.5 text-xs text-err">
-                <AlertTriangle size={13} /> La copia falló
+                <AlertTriangle size={13} /> La copia ha fallado
               </span>
             )}
           </div>
@@ -285,9 +285,9 @@ export default function DataMigrationModal({
                 onRetry={streamLost ? attach : undefined}
                 statusNote={
                   streamLost
-                    ? 'Se perdió la conexión con el servidor: el log puede estar incompleto. Vuelve a conectar para seguir.'
+                    ? 'Se ha perdido la conexión con el servidor; el registro puede estar incompleto. Vuelva a conectar para continuar.'
                     : lines.length >= MAX_LINES
-                      ? `Se muestran las últimas ${MAX_LINES} líneas; el log completo está en la descarga.`
+                      ? `Se muestran las últimas ${MAX_LINES} líneas; el registro completo está disponible en la descarga.`
                       : null
                 }
               />

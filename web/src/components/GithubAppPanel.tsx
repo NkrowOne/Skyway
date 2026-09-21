@@ -45,7 +45,7 @@ export default function GithubAppPanel() {
     mutationFn: () => api.post('/github/app/disconnect'),
     onSuccess: () => {
       setDisconnecting(false);
-      toast('GitHub App desenlazada de este servidor', 'ok');
+      toast('Se ha desenlazado la GitHub App de este servidor', 'ok');
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -55,7 +55,7 @@ export default function GithubAppPanel() {
     mutationFn: (id: string) => api.del(`/github/installations/${id}`),
     onSuccess: () => {
       setToRemove(null);
-      toast('Cuenta de GitHub quitada', 'ok');
+      toast('Se ha eliminado la cuenta de GitHub', 'ok');
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -64,7 +64,7 @@ export default function GithubAppPanel() {
   const syncInstallation = useMutation({
     mutationFn: (id: string) => api.post(`/github/installations/${id}/sync`),
     onSuccess: () => {
-      toast('Cuenta actualizada desde GitHub', 'ok');
+      toast('Se ha actualizado la cuenta desde GitHub', 'ok');
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -78,14 +78,14 @@ export default function GithubAppPanel() {
   if (!app) {
     return (
       <div className="rounded-xl border border-dashed border-line bg-bg p-5">
-        <p className="text-sm font-medium">Crea la GitHub App de este servidor</p>
+        <p className="text-sm font-medium">Crear la GitHub App de este servidor</p>
         <p className="mt-1.5 max-w-xl text-xs text-sub">
-          GitHub abrirá un formulario ya relleno: solo hay que confirmarlo.
+          GitHub abrirá un formulario con los datos ya cumplimentados; solo es necesario confirmarlo.
         </p>
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
           <Field
             label="Organización (opcional)"
-            hint="Vacío = la App se crea en tu cuenta personal. Con nombre, en esa organización (necesitas ser propietario)."
+            hint="Si se deja vacío, la App se crea en su cuenta personal. Si indica un nombre, se crea en esa organización (es necesario ser propietario)."
           >
             <input
               className="input"
@@ -103,8 +103,8 @@ export default function GithubAppPanel() {
         </div>
         <p className="mt-3 flex items-start gap-1.5 text-xs text-subtle">
           <Zap size={12} className="mt-px shrink-0 text-acc-soft" />
-          Permisos que pide: leer el contenido y los metadatos de los repositorios, y recibir el evento «push». Ninguno
-          de escritura: Skyway nunca empuja a GitHub.
+          Permisos solicitados: lectura del contenido y de los metadatos de los repositorios, y recepción del evento «push».
+          No se solicita ningún permiso de escritura: Skyway nunca envía cambios a GitHub.
         </p>
       </div>
     );
@@ -155,7 +155,7 @@ export default function GithubAppPanel() {
       <div className="mt-4 border-t border-line pt-4">
         <h3 className="text-xs font-semibold">Cuentas conectadas</h3>
         <p className="mt-1 text-xs text-subtle">
-          Las marcadas «del servidor» sirven para todos los proyectos; el resto las conectó cada cliente en el suyo.
+          Las marcadas como «del servidor» están disponibles para todos los proyectos; el resto las conectó cada cliente en su proyecto.
         </p>
         {list.length === 0 ? (
           <div className="mt-3 rounded-lg border border-dashed border-line">
@@ -163,7 +163,7 @@ export default function GithubAppPanel() {
               compact
               icon={<ModuleLogo kind="github" size={22} />}
               title="Ninguna cuenta conectada"
-              description="Conecta una cuenta u organización de GitHub para desplegar sus repositorios desde aquí."
+              description="Conecte una cuenta u organización de GitHub para desplegar sus repositorios desde el panel."
             />
           </div>
         ) : (
@@ -186,7 +186,7 @@ export default function GithubAppPanel() {
                     )}
                   </p>
                   <p className="mt-px truncate text-xs text-subtle">
-                    {inst.repoSelection === 'all' ? 'todos los repos' : 'repos elegidos'} · conectada por {inst.createdBy} ·{' '}
+                    {inst.repoSelection === 'all' ? 'todos los repositorios' : 'repositorios seleccionados'} · conectada por {inst.createdBy} ·{' '}
                     {timeAgo(inst.createdAt)}
                     {inst.lastUsedAt ? ` · último despliegue ${timeAgo(inst.lastUsedAt)}` : ' · sin usar'}
                   </p>
@@ -197,8 +197,8 @@ export default function GithubAppPanel() {
                     target="_blank"
                     rel="noreferrer"
                     className="press rounded-md p-1 text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
-                    title="Elegir repositorios en GitHub"
-                    aria-label={`Elegir repositorios de @${inst.accountLogin} en GitHub`}
+                    title="Seleccionar repositorios en GitHub"
+                    aria-label={`Seleccionar repositorios de @${inst.accountLogin} en GitHub`}
                   >
                     <Settings2 size={13} />
                   </a>
@@ -214,8 +214,8 @@ export default function GithubAppPanel() {
                 <button
                   onClick={() => setToRemove(inst)}
                   className="press rounded-md p-1 text-subtle transition-colors hover:bg-err/10 hover:text-err max-sm:p-2.5"
-                  title="Quitar cuenta"
-                  aria-label={`Quitar la cuenta @${inst.accountLogin}`}
+                  title="Eliminar cuenta"
+                  aria-label={`Eliminar la cuenta @${inst.accountLogin}`}
                 >
                   <Trash2 size={13} />
                 </button>
@@ -230,7 +230,7 @@ export default function GithubAppPanel() {
         onClose={() => setDisconnecting(false)}
         onConfirm={() => disconnect.mutate()}
         title="Desenlazar la GitHub App"
-        message="Skyway olvidará las credenciales de la App: los servicios que clonen con ella pasarán al token global en el próximo despliegue y los push dejarán de desplegar solos. La App seguirá existiendo en GitHub; bórrala allí si además quieres revocarla."
+        message="Se eliminarán las credenciales de la App en Skyway: los servicios que clonen con ella pasarán a usar el token global en el próximo despliegue y los push dejarán de desplegar automáticamente. La App seguirá existiendo en GitHub; elimínela allí si además desea revocarla."
         confirmLabel="Desenlazar"
         loading={disconnect.isPending}
       />
@@ -239,9 +239,9 @@ export default function GithubAppPanel() {
         open={!!toRemove}
         onClose={() => setToRemove(null)}
         onConfirm={() => toRemove && removeInstallation.mutate(toRemove.id)}
-        title="Quitar cuenta de GitHub"
-        message={`Los servicios que usen @${toRemove?.accountLogin} pasarán al token global en el próximo despliegue. La App seguirá instalada en GitHub.`}
-        confirmLabel="Quitar"
+        title="Eliminar cuenta de GitHub"
+        message={`Los servicios que usen @${toRemove?.accountLogin} pasarán a usar el token global en el próximo despliegue. La App seguirá instalada en GitHub.`}
+        confirmLabel="Eliminar"
         loading={removeInstallation.isPending}
       />
     </>

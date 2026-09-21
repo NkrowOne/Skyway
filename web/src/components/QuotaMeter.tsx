@@ -53,7 +53,7 @@ export function QuotaMeter({
       </div>
       {(hint || over) && (
         <p className={cx('mt-1 text-xs', over ? 'text-err' : 'text-subtle')}>
-          {over ? `Asignado por encima del techo · ${format(used - ceiling)} de más` : hint}
+          {over ? `Asignación por encima del límite · ${format(used - ceiling)} de exceso` : hint}
         </p>
       )}
     </div>

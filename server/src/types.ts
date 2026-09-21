@@ -1,3 +1,5 @@
+import type { EnvImportReport } from './deploy/envimport';
+
 export type ServiceType = 'git' | 'database' | 'image';
 
 export interface VolumeMount {
@@ -77,6 +79,14 @@ export interface GitConfig {
    * disparan los commits posteriores.
    */
   autoDeploy?: boolean;
+  /**
+   * Importar al desplegar las variables del `.env.example`/`.env` del
+   * repositorio que el servicio aún no tenga. `false` lo desactiva; ausente =
+   * activado.
+   */
+  autoImportEnv?: boolean;
+  /** Última importación de variables del repositorio (sin valores). */
+  envImport?: EnvImportReport;
   /** Dependencias detectadas en el repositorio en el último despliegue (ver `DetectedNeeds`). */
   needs?: DetectedNeeds;
 }

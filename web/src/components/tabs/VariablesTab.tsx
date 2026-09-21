@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
@@ -6,6 +6,7 @@ import {
   Copy,
   Eye,
   EyeOff,
+  FileDown,
   FileText,
   Layers,
   Plus,
@@ -15,9 +16,224 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../../api';
+import { maskValue } from '../../helpText';
+import { EnvImportReport, EnvImportResponse, EnvSkipReason } from '../../types';
 import { EnvSuggestion } from '../../types';
 import { cx, EMPTY_LIST, EMPTY_RECORD } from '../../utils';
-import { CopyButton, EditorBar, Segmented, Skeleton, useToast } from '../ui';
+import { Button, CopyButton, EditorBar, Modal, Segmented, Skeleton, useToast } from '../ui';
+
+/** Por qué se dejó fuera una clave del .env del repositorio, en palabras. */
+const SKIP_REASON_LABEL: Record<EnvSkipReason, string> = {
+  invalid_key: 'nombre no válido',
+  reserved: 'reservada por Skyway',
+  placeholder: 'valor de ejemplo',
+  localhost: 'apunta a localhost',
+  exists: 'ya definida',
+  handled: 'procesada en una importación anterior',
+};
+
+/**
+ * Vista previa de la importación del .env del repositorio. Tres listas y una
+ * decisión: lo que entra, lo que hay que rellenar a mano y lo que se ignora
+ * (con su motivo). Los valores van tapados por defecto: pueden ser secretos.
+ */
+function ImportRepoModal({
+  open,
+  onClose,
+  report,
+  done,
+  applying,
+  onApply,
+  onAddPending,
+}: {
+  open: boolean;
+  onClose: () => void;
+  report: EnvImportReport | null;
+  /** Respuesta tras aplicar: el modal pasa a contar qué se hizo y qué queda. */
+  done: EnvImportResponse | null;
+  applying: boolean;
+  onApply: () => void;
+  onAddPending: (keys: string[]) => void;
+}) {
+  const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  // Cada vista previa empieza con todo tapado.
+  useEffect(() => {
+    if (open) setRevealed(new Set());
+  }, [open, report]);
+
+  if (!report) return null;
+  const pendingKeys = report.pending.map((p) => p.key);
+  const n = report.imported.length;
+
+  const listBox = 'divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface';
+
+  return (
+    <Modal open={open} onClose={onClose} title="Importar variables del repositorio" wide>
+      {done ? (
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-sub">{done.message}</p>
+          {done.report.pending.length > 0 && (
+            <div className="rounded-lg border border-warn/35 bg-warn/[.07] p-3 text-xs">
+              <p className="flex items-center gap-1.5 font-semibold text-warn">
+                <AlertTriangle size={13} /> {done.report.pending.length === 1 ? '1 variable sin valor' : `${done.report.pending.length} variables sin valor`}
+              </p>
+              <p className="mt-1 text-sub">
+                En el repositorio figuran vacías o con un valor de ejemplo. Es necesario introducir su valor manualmente.
+              </p>
+              <p className="mt-1.5 break-words font-mono text-txt">{done.report.pending.map((p) => p.key).join(', ')}</p>
+            </div>
+          )}
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="ghost" onClick={onClose} className="max-sm:h-11">
+              Cerrar
+            </Button>
+            {done.report.pending.length > 0 && (
+              <Button
+                onClick={() => {
+                  onAddPending(done.report.pending.map((p) => p.key));
+                  onClose();
+                }}
+                className="max-sm:h-11"
+              >
+                <Plus size={13} /> Añadir pendientes como filas vacías
+              </Button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {report.files.length === 0 ? (
+            <p className="rounded-lg border border-line bg-surface px-3 py-2.5 text-sm text-sub">
+              No se ha encontrado ningún <span className="font-mono text-txt">.env</span> ni{' '}
+              <span className="font-mono text-txt">.env.example</span> en el repositorio.
+            </p>
+          ) : (
+            <p className="text-xs text-subtle">
+              Leído de{' '}
+              {report.files.map((f, i) => (
+                <span key={f}>
+                  {i > 0 && ', '}
+                  <span className="font-mono text-txt">{f}</span>
+                </span>
+              ))}
+              {report.files.length > 1 && ' (si una clave se repite, prevalece el último archivo)'}. No se guarda nada hasta que se pulse «Importar».
+            </p>
+          )}
+
+          {/* Se importarán */}
+          <section>
+            <h4 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-txt">
+              Se importarán <span className="tnum font-mono text-xs text-subtle">{n}</span>
+            </h4>
+            {n === 0 ? (
+              <p className="text-xs text-subtle">No hay variables nuevas con un valor válido.</p>
+            ) : (
+              <ul className={listBox}>
+                {report.imported.map((v) => {
+                  const shown = revealed.has(v.key);
+                  return (
+                    <li key={v.key} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs sm:flex-nowrap">
+                      <span className="min-w-0 flex-1 truncate font-mono font-medium text-txt" title={v.key}>
+                        {v.key}
+                      </span>
+                      <span className="hidden shrink-0 text-subtle sm:inline">{v.file}</span>
+                      <span className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[45%]">
+                        <span className={cx('min-w-0 flex-1 truncate font-mono', shown ? 'text-sub' : 'text-subtle')}>
+                          {shown ? v.value ?? '' : maskValue(v.value ?? '')}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRevealed((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(v.key)) next.delete(v.key);
+                              else next.add(v.key);
+                              return next;
+                            })
+                          }
+                          className={cx(
+                            'press flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-subtle hover:bg-surface2 hover:text-txt sm:h-7 sm:w-7',
+                            shown && 'text-acc-soft',
+                          )}
+                          title={shown ? 'Ocultar valor' : 'Mostrar valor'}
+                          aria-label={shown ? `Ocultar el valor de ${v.key}` : `Mostrar el valor de ${v.key}`}
+                        >
+                          {shown ? <EyeOff size={13} /> : <Eye size={13} />}
+                        </button>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+
+          {/* Pendientes */}
+          {report.pending.length > 0 && (
+            <section>
+              <h4 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-txt">
+                Pendientes de valor <span className="tnum font-mono text-xs text-subtle">{report.pending.length}</span>
+              </h4>
+              <p className="mb-1.5 text-xs text-subtle">Figuran vacías o con un valor de ejemplo. Es necesario introducir su valor manualmente.</p>
+              <ul className={listBox}>
+                {report.pending.map((v) => (
+                  <li key={v.key} className="flex items-center gap-3 px-3 py-2 text-xs">
+                    <span className="min-w-0 flex-1 truncate font-mono font-medium text-warn" title={v.key}>
+                      {v.key}
+                    </span>
+                    <span className="shrink-0 text-subtle">{v.file}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {/* Ignoradas */}
+          {report.skipped.length > 0 && (
+            <details className="group">
+              <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-sub hover:text-txt">
+                Ignoradas <span className="tnum font-mono text-xs text-subtle">{report.skipped.length}</span>
+                <span className="ml-auto text-xs font-normal text-subtle group-open:hidden">Ver motivos</span>
+              </summary>
+              <ul className={cx(listBox, 'mt-1.5')}>
+                {report.skipped.map((v) => (
+                  <li key={`${v.key}:${v.file}`} className="flex items-center gap-3 px-3 py-2 text-xs">
+                    <span className="min-w-0 flex-1 truncate font-mono text-subtle" title={v.key}>
+                      {v.key}
+                    </span>
+                    <span className="shrink-0 text-subtle">{SKIP_REASON_LABEL[v.reason] ?? v.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
+            <Button variant="ghost" onClick={onClose} className="max-sm:h-11">
+              Cancelar
+            </Button>
+            {pendingKeys.length > 0 && (
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  onAddPending(pendingKeys);
+                  onClose();
+                }}
+                className="max-sm:h-11"
+                title="Inserta las claves sin valor en la tabla para completarlas"
+              >
+                <Plus size={13} /> Añadir pendientes como filas vacías
+              </Button>
+            )}
+            <Button onClick={onApply} loading={applying} disabled={n === 0} className="max-sm:h-11">
+              <FileDown size={13} /> {n === 1 ? 'Importar 1 variable' : `Importar ${n} variables`}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
 
 interface ReferenceGroup {
   service: string;
@@ -74,7 +290,7 @@ const rowsFromVars = (vars: Record<string, string>): Row[] =>
 const SUGGESTED_VARS: { key: string; value: string; hint: string }[] = [
   { key: 'NODE_ENV', value: 'production', hint: 'Modo de ejecución para apps Node' },
   { key: 'TZ', value: 'Europe/Madrid', hint: 'Zona horaria del contenedor' },
-  { key: 'LOG_LEVEL', value: 'info', hint: 'Nivel de logs de la aplicación' },
+  { key: 'LOG_LEVEL', value: 'info', hint: 'Nivel de registro de la aplicación' },
   { key: 'PORT', value: '3000', hint: 'Puerto de escucha de la aplicación' },
 ];
 
@@ -140,8 +356,180 @@ export function parseEnvText(text: string): { key: string; value: string }[] {
   return out;
 }
 
+
+/** Acciones de una fila: un objeto estable, para que las filas memoizadas no se repinten con cada tecla. */
+interface RowActions {
+  keyChange: (id: string, raw: string) => void;
+  valueChange: (id: string, value: string) => void;
+  paste: (id: string, field: 'key' | 'value', e: React.ClipboardEvent<HTMLInputElement>) => void;
+  toggleReveal: (id: string) => void;
+  remove: (id: string) => void;
+  addRow: () => void;
+  focusKey: (id: string) => void;
+  focusValue: (id: string) => void;
+}
+
+/*
+ * Los valores tapados se ocultan con CSS sobre un campo de texto, no con
+ * `type="password"`: en iOS un campo de contraseña activa el gestor de
+ * contraseñas y el llavero en cada pulsación y, con decenas de campos en la
+ * misma pantalla, la página deja de responder mientras escribe. Donde el
+ * navegador no admite ese CSS se conserva el campo de contraseña.
+ */
+const MASK_WITH_CSS = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('-webkit-text-security', 'disc');
+
+/**
+ * Una variable de la tabla. Va en `memo`: cada tecla actualiza una sola fila
+ * y las demás reciben exactamente las mismas props, así que no se repintan.
+ */
+const VariableRow = memo(function VariableRow({
+  row,
+  isLast,
+  isRevealed,
+  isRef,
+  isDup,
+  status,
+  resolvedValue,
+  nextRowId,
+  actions,
+  keyInputRefs,
+  valueInputRefs,
+}: {
+  row: Row;
+  isLast: boolean;
+  isRevealed: boolean;
+  isRef: boolean;
+  isDup: boolean;
+  status: RowStatus;
+  resolvedValue: string;
+  nextRowId: string | null;
+  actions: RowActions;
+  keyInputRefs: React.MutableRefObject<Map<string, HTMLInputElement>>;
+  valueInputRefs: React.MutableRefObject<Map<string, HTMLInputElement>>;
+}) {
+  const rail = status === 'new' ? 'bg-acc-soft' : status === 'changed' ? 'bg-warn' : 'bg-transparent';
+  const masked = !isRevealed && !isRef;
+  return (
+    <div
+      className={cx(
+        'group relative flex flex-col rounded-xl border border-line bg-surface transition-colors duration-150 sm:flex-row sm:items-stretch sm:rounded-none sm:border-0 sm:border-b sm:last:border-b-0 sm:hover:bg-surface2/40',
+        /*
+         * Lo nuevo y lo cambiado se ven sin leer: tinte suave
+         * de fondo, un riel de color a la izquierda y una
+         * etiqueta. Al guardar vuelven al gris de lo que ya está.
+         */
+        status === 'new' && 'border-acc/35 bg-acc/[.06] sm:bg-acc/[.05] sm:hover:bg-acc/[.08]',
+        status === 'changed' && 'border-warn/35 bg-warn/[.05] sm:bg-warn/[.04] sm:hover:bg-warn/[.07]',
+        isDup && 'bg-err/[.05] sm:bg-err/[.04]',
+      )}
+    >
+      <span aria-hidden className={cx('absolute inset-y-0 left-0 w-[3px] rounded-l-xl sm:rounded-none', rail)} />
+
+      {/* Nombre */}
+      <div className="relative flex min-w-0 items-center gap-2 pl-3.5 pr-2 pt-2 sm:w-[40%] sm:border-r sm:border-line sm:py-0 sm:pr-0">
+        <span className="eyebrow w-12 shrink-0 text-subtle sm:hidden">Nombre</span>
+        <input
+          ref={(el) => {
+            if (el) keyInputRefs.current.set(row.id, el);
+            else keyInputRefs.current.delete(row.id);
+          }}
+          className={cx(
+            'h-9 min-w-0 flex-1 rounded-md bg-transparent px-2 font-mono text-xs font-medium text-txt outline-none placeholder:text-subtle focus:bg-surface2/60 sm:h-auto sm:rounded-none sm:px-3.5 sm:py-2.5',
+            isDup && 'font-bold text-err',
+          )}
+          placeholder="NOMBRE_VARIABLE"
+          value={row.key}
+          spellCheck={false}
+          autoCapitalize="characters"
+          autoCorrect="off"
+          autoComplete="off"
+          onChange={(e) => actions.keyChange(row.id, e.target.value)}
+          onPaste={(e) => actions.paste(row.id, 'key', e)}
+          onKeyDown={(e) => {
+            if (e.key === '=' || e.key === 'Enter') {
+              e.preventDefault();
+              actions.focusValue(row.id);
+            }
+          }}
+        />
+        {isDup ? (
+          <span className="shrink-0 rounded bg-err/15 px-1.5 py-0.5 text-micro font-bold text-err sm:mr-2">Duplicada</span>
+        ) : status === 'new' ? (
+          <span className="shrink-0 rounded bg-acc/20 px-1.5 py-0.5 text-micro font-semibold text-acc-soft sm:mr-2">Nueva</span>
+        ) : status === 'changed' ? (
+          <span className="shrink-0 rounded bg-warn/15 px-1.5 py-0.5 text-micro font-semibold text-warn sm:mr-2">Cambiada</span>
+        ) : null}
+      </div>
+
+      {/* Valor + acciones */}
+      <div className="flex min-w-0 flex-1 items-center gap-2 pb-2 pl-3.5 pr-2 pt-1 sm:py-0 sm:pl-0">
+        <span className="eyebrow w-12 shrink-0 text-subtle sm:hidden">Valor</span>
+        <input
+          ref={(el) => {
+            if (el) valueInputRefs.current.set(row.id, el);
+            else valueInputRefs.current.delete(row.id);
+          }}
+          className={cx(
+            'h-9 min-w-0 flex-1 rounded-md bg-transparent px-2 font-mono text-xs outline-none placeholder:text-subtle focus:bg-surface2/60 sm:h-auto sm:rounded-none sm:px-3.5 sm:py-2.5',
+            isRef ? 'font-medium text-info' : isRevealed ? 'text-txt' : 'text-subtle',
+            masked && MASK_WITH_CSS && 'masked-value',
+          )}
+          placeholder={isRef ? '${{Servicio.VAR}}' : 'valor'}
+          type={masked && !MASK_WITH_CSS ? 'password' : 'text'}
+          value={row.value}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          autoComplete="off"
+          data-1p-ignore=""
+          data-lpignore="true"
+          data-form-type="other"
+          onChange={(e) => actions.valueChange(row.id, e.target.value)}
+          onPaste={(e) => actions.paste(row.id, 'value', e)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (isLast || !nextRowId) actions.addRow();
+              else actions.focusKey(nextRowId);
+            }
+          }}
+        />
+
+        <div className="flex shrink-0 items-center gap-0.5 sm:pr-2">
+          {!isRef && (
+            <button
+              type="button"
+              onClick={() => actions.toggleReveal(row.id)}
+              className={cx(
+                'press flex h-8 w-8 items-center justify-center rounded-md text-subtle transition-colors hover:bg-surface2 hover:text-txt sm:h-7 sm:w-7',
+                isRevealed && 'text-acc-soft',
+              )}
+              title={isRevealed ? 'Ocultar valor' : 'Mostrar valor'}
+              aria-label={isRevealed ? 'Ocultar valor' : 'Mostrar valor'}
+            >
+              {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
+            </button>
+          )}
+          <CopyButton value={resolvedValue} title="Copiar valor resuelto" />
+          <button
+            type="button"
+            onClick={() => actions.remove(row.id)}
+            className="press flex h-8 w-8 items-center justify-center rounded-md text-subtle transition-colors hover:bg-surface2 hover:text-err sm:h-7 sm:w-7"
+            title="Eliminar variable"
+            aria-label="Eliminar variable"
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export default function VariablesTab({
   serviceId,
+  serviceType,
+  envImport,
   projectId,
   onSaved,
   onDeploy,
@@ -149,6 +537,10 @@ export default function VariablesTab({
   onDirtyChange,
 }: {
   serviceId: string;
+  /** Solo los servicios git tienen un repositorio del que importar el .env. */
+  serviceType?: 'git' | 'database' | 'image';
+  /** Última importación del .env del repositorio (config del servicio). */
+  envImport?: EnvImportReport | null;
   projectId: string;
   onSaved: () => void;
   onDeploy?: () => void;
@@ -158,6 +550,9 @@ export default function VariablesTab({
   const toast = useToast();
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<Row[]>([]);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importReport, setImportReport] = useState<EnvImportReport | null>(null);
+  const [importDone, setImportDone] = useState<EnvImportResponse | null>(null);
   const [viewMode, setViewMode] = useState<'table' | 'raw'>('table');
   const [rawText, setRawText] = useState('');
   const [globalReveal, setGlobalReveal] = useState(false);
@@ -195,7 +590,7 @@ export default function VariablesTab({
     onSuccess: () => {
       setDirty(false);
       queryClient.invalidateQueries({ queryKey: ['env', serviceId] });
-      toast('Variables guardadas con éxito.', 'ok', {
+      toast('Variables guardadas.', 'ok', {
         action: onDeploy ? { label: 'Desplegar ahora', onClick: onDeploy } : undefined,
       });
       onNeedsRedeploy?.();
@@ -203,6 +598,58 @@ export default function VariablesTab({
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
+
+  /*
+   * Importación del .env del repositorio en dos pasos: vista previa (no
+   * escribe nada) y aplicación. Los 400 del servidor («solo servicios de
+   * GitHub», rate-limit…) llegan como toast, igual que el resto de errores.
+   */
+  const importPreview = useMutation({
+    mutationFn: () => api.post<EnvImportResponse>(`/services/${serviceId}/env/import-repo`, { apply: false }),
+    onSuccess: (res) => {
+      setImportReport(res.report);
+      setImportDone(null);
+      setImportOpen(true);
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const importApply = useMutation({
+    mutationFn: () => api.post<EnvImportResponse>(`/services/${serviceId}/env/import-repo`, { apply: true }),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['env', serviceId] });
+      toast(res.message, 'ok', {
+        action: onDeploy && res.needsRedeploy ? { label: 'Desplegar ahora', onClick: onDeploy } : undefined,
+      });
+      if (res.needsRedeploy) onNeedsRedeploy?.();
+      onSaved();
+      // Con pendientes el modal se queda para ofrecer añadirlas; si no, ya está.
+      if (res.report.pending.length > 0) setImportDone(res);
+      else setImportOpen(false);
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  /**
+   * Inserta las claves sin valor como filas vacías (o líneas `CLAVE=` en modo
+   * texto) para rellenarlas. Las que ya están en la tabla no se duplican.
+   */
+  const addPendingRows = (keys: string[]) => {
+    const present = new Set(rows.map((r) => r.key.trim()));
+    const fresh = keys.filter((k) => !present.has(k));
+    if (fresh.length === 0) {
+      toast('Las variables indicadas ya están en la tabla.', 'info');
+      return;
+    }
+    if (viewMode === 'raw') {
+      setRawText((prev) => [prev.trimEnd(), ...fresh.map((k) => `${k}=`)].filter(Boolean).join('\n'));
+    } else {
+      const newRows = fresh.map((k) => makeRow(k, ''));
+      setRows((prev) => [...prev, ...newRows]);
+      setTimeout(() => valueInputRefs.current.get(newRows[0].id)?.focus(), 50);
+    }
+    setDirty(true);
+    toast(fresh.length === 1 ? 'Se ha añadido 1 fila. Introduzca su valor y guarde los cambios.' : `Se han añadido ${fresh.length} filas. Introduzca sus valores y guarde los cambios.`, 'ok');
+  };
 
   // Alternar vista tabla / texto plano
   const handleSwitchMode = (mode: 'table' | 'raw') => {
@@ -231,7 +678,7 @@ export default function VariablesTab({
         if (!trimmed || trimmed.startsWith('#')) continue;
         const eq = trimmed.indexOf('=');
         if (eq <= 0) {
-          toast(`Línea inválida: ${trimmed}`, 'err');
+          toast(`Línea no válida: ${trimmed}`, 'err');
           return;
         }
         vars[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1);
@@ -252,7 +699,7 @@ export default function VariablesTab({
     setRows(entries);
     setRawText(entries.map((r) => `${r.key}=${r.value}`).join('\n'));
     setDirty(false);
-    toast('Cambios descartados', 'info');
+    toast('Cambios descartados.', 'info');
   };
 
   // Alternar revelado individual
@@ -275,6 +722,8 @@ export default function VariablesTab({
       setRevealedIds(new Set());
     }
   };
+
+
 
   /**
    * Mete varias variables de golpe partiendo de la fila `atId`: las claves que
@@ -307,7 +756,7 @@ export default function VariablesTab({
     const parts = [added && `${added} nueva${added === 1 ? '' : 's'}`, updated && `${updated} actualizada${updated === 1 ? '' : 's'}`].filter(
       Boolean,
     );
-    toast(`Variables pegadas: ${parts.join(' · ')}`, 'ok');
+    toast(`Variables importadas: ${parts.join(' · ')}.`, 'ok');
   };
 
   /**
@@ -372,6 +821,24 @@ export default function VariablesTab({
     setDirty(true);
   };
 
+  // Las filas son `memo`: reciben un objeto de acciones que no cambia entre
+  // renders y que llama siempre a la versión más reciente de cada manejador.
+  const latestHandlers = useRef({ handleKeyChange, handleValueChange, handlePaste, toggleRowReveal, handleDeleteRow, handleAddRow });
+  latestHandlers.current = { handleKeyChange, handleValueChange, handlePaste, toggleRowReveal, handleDeleteRow, handleAddRow };
+  const rowActions = useMemo<RowActions>(
+    () => ({
+      keyChange: (id, raw) => latestHandlers.current.handleKeyChange(id, raw),
+      valueChange: (id, value) => latestHandlers.current.handleValueChange(id, value),
+      paste: (id, field, e) => latestHandlers.current.handlePaste(id, field, e),
+      toggleReveal: (id) => latestHandlers.current.toggleRowReveal(id),
+      remove: (id) => latestHandlers.current.handleDeleteRow(id),
+      addRow: () => latestHandlers.current.handleAddRow(),
+      focusKey: (id) => keyInputRefs.current.get(id)?.focus(),
+      focusValue: (id) => valueInputRefs.current.get(id)?.focus(),
+    }),
+    [],
+  );
+
   // Copiar todo como formato .env
   const handleCopyAllAsEnv = () => {
     const text = rows.map((r) => `${r.key}=${r.value}`).join('\n');
@@ -379,11 +846,11 @@ export default function VariablesTab({
       .writeText(text)
       .then(() => {
         setCopiedAll(true);
-        toast('Todas las variables copiadas al portapapeles en formato .env', 'ok');
+        toast('Se han copiado todas las variables al portapapeles en formato .env.', 'ok');
         setTimeout(() => setCopiedAll(false), 2000);
       })
       // Sin HTTPS o con el permiso denegado el portapapeles rechaza: antes no se decía nada.
-      .catch(() => toast('No se ha podido copiar al portapapeles', 'err'));
+      .catch(() => toast('No se ha podido copiar al portapapeles.', 'err'));
   };
 
   const references = env.data?.references ?? EMPTY_LIST;
@@ -415,7 +882,7 @@ export default function VariablesTab({
       changes.changed && `${changes.changed} cambiada${changes.changed === 1 ? '' : 's'}`,
       changes.removed && `${changes.removed} eliminada${changes.removed === 1 ? '' : 's'}`,
     ].filter(Boolean);
-    return parts.length ? `${parts.join(' · ')} · se aplican al redesplegar` : 'Cambios sin guardar · se aplican al redesplegar';
+    return parts.length ? `${parts.join(' · ')} · se aplicarán al volver a desplegar` : 'Cambios sin guardar · se aplicarán al volver a desplegar';
   }, [changes]);
 
   // Claves duplicadas
@@ -467,6 +934,20 @@ export default function VariablesTab({
   }, [rows, searchQuery]);
 
   /*
+   * Claves que el .env del repositorio trae sin valor y que aquí siguen sin
+   * existir. Se filtran contra las filas, no contra el informe: en cuanto se
+   * añade la fila el aviso deja de insistir, aunque el informe siga igual
+   * hasta el próximo despliegue.
+   */
+  const isGit = serviceType === 'git';
+  const pendingFromRepo = useMemo(() => {
+    if (!isGit || !envImport?.pending?.length) return EMPTY_LIST as { key: string; file: string }[];
+    const present = new Set(rows.map((r) => r.key.trim()));
+    return envImport.pending.filter((p) => !present.has(p.key));
+  }, [isGit, envImport, rows]);
+  const pendingFiles = useMemo(() => [...new Set(pendingFromRepo.map((p) => p.file))], [pendingFromRepo]);
+
+  /*
    * Dependencias detectadas en el repo: sugerencias y variables que faltan.
    * Se comparan contra `rows` (no contra lo guardado) para que desaparezcan
    * en vivo según se van añadiendo, antes incluso de guardar.
@@ -509,7 +990,10 @@ export default function VariablesTab({
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       setRows((prev) => [...prev, ...group.map((s) => makeRow(s.key, `\${{${data.service.name}.${s.refVar}}}`))]);
       setDirty(true);
-      toast(`Creada ${data.service.name} y conectada en ${group.map((s) => s.key).join(', ')}. Guarda y despliega.`, 'ok');
+      toast(
+        `Se ha creado «${data.service.name}» y se ha conectado en ${group.map((s) => s.key).join(', ')}. Guarde los cambios y vuelva a desplegar.`,
+        'ok',
+      );
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -574,8 +1058,49 @@ export default function VariablesTab({
                 </button>
               </>
             )}
+
+            {isGit && (
+              <button
+                type="button"
+                onClick={() => importPreview.mutate()}
+                disabled={importPreview.isPending || dirty}
+                className={cx(toolBtn, 'disabled:cursor-not-allowed disabled:opacity-45')}
+                title={
+                  dirty
+                    ? 'Guarde o descarte los cambios antes de importar'
+                    : 'Leer el .env o .env.example del repositorio y proponer las variables que faltan'
+                }
+                aria-label="Importar variables del repositorio"
+              >
+                <FileDown size={13} className={cx(importPreview.isPending && 'animate-pulse')} />
+                <span className="hidden sm:inline">Importar del repositorio</span>
+                <span className="sm:hidden">Importar</span>
+              </button>
+            )}
           </div>
         </div>
+
+        {/* ── Claves del .env del repositorio que siguen sin valor ── */}
+        {pendingFromRepo.length > 0 && (
+          <div className="rounded-xl border border-warn/35 bg-warn/[.07] p-3.5 text-xs">
+            <p className="flex items-center gap-1.5 font-semibold text-warn">
+              <AlertTriangle size={14} />
+              {pendingFromRepo.length === 1 ? 'Falta 1 valor del repositorio' : `Faltan ${pendingFromRepo.length} valores del repositorio`}
+            </p>
+            <p className="mt-1 text-sub">
+              El archivo <span className="font-mono text-txt">{pendingFiles.join(', ')}</span> del repositorio declara sin valor:{' '}
+              <span className="break-words font-mono text-txt">{pendingFromRepo.map((p) => p.key).join(', ')}</span>. Figuran vacías o
+              con un valor de ejemplo. Es necesario introducir su valor en esta pestaña.
+            </p>
+            <button
+              type="button"
+              onClick={() => addPendingRows(pendingFromRepo.map((p) => p.key))}
+              className="press mt-2.5 flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 text-xs font-semibold text-txt hover:bg-surface2 sm:h-8"
+            >
+              <Plus size={13} className="text-acc-soft" /> Añadir pendientes como filas vacías
+            </button>
+          </div>
+        )}
 
         {/* ── Aviso de migración desde Railway (si aplica) ── */}
         {railwayPending.length > 0 && (
@@ -586,7 +1111,7 @@ export default function VariablesTab({
                 ? '1 variable sigue apuntando a la red externa de Railway'
                 : `${railwayPending.length} variables siguen apuntando a la red externa de Railway`}
             </p>
-            <p className="mt-1 text-sub">Reconéctalas en un clic para usar la red interna del proyecto:</p>
+            <p className="mt-1 text-sub">Seleccione una referencia para conectarlas a través de la red interna del proyecto:</p>
             <div className="mt-2.5 flex flex-col gap-1.5">
               {railwayPending.map((p) => (
                 <div key={p.id} className="flex flex-wrap items-center gap-2">
@@ -601,10 +1126,10 @@ export default function VariablesTab({
                         onClick={() => {
                           setRows((prev) => prev.map((r) => (r.id === p.id ? { ...r, value: token } : r)));
                           setDirty(true);
-                          toast(`Reconectado a ${g.service}`, 'ok');
+                          toast(`Variable conectada a «${g.service}».`, 'ok');
                         }}
                       >
-                        usar {token}
+                        Usar {token}
                       </button>
                     );
                   })}
@@ -695,7 +1220,7 @@ export default function VariablesTab({
 
             {pendingMissing.length > 0 && (
               <p className={cx('text-sub', pendingSuggestions.length > 0 && 'mt-2.5')}>
-                Otras variables que el repositorio espera y no tienes:{' '}
+                Otras variables que el repositorio espera y no están definidas:{' '}
                 <span className="font-mono text-txt">{pendingMissing.join(', ')}</span>{' '}
                 <button
                   type="button"
@@ -716,8 +1241,8 @@ export default function VariablesTab({
           /* ── Texto plano (.env) ── */
           <div className="flex flex-col gap-2">
             <p className="text-xs text-subtle">
-              Una variable por línea, en formato <code className="font-mono text-txt">CLAVE=valor</code>. Puedes pegar un
-              archivo .env entero.
+              Una variable por línea, en formato <code className="font-mono text-txt">CLAVE=valor</code>. Se puede pegar el
+              contenido completo de un archivo .env.
             </p>
             <textarea
               className="input min-h-[320px] w-full rounded-xl border border-line bg-term p-3.5 font-mono leading-relaxed text-txt/95 outline-none focus:border-acc sm:text-xs"
@@ -741,7 +1266,7 @@ export default function VariablesTab({
                 <input
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filtrar por nombre o valor…"
+                  placeholder="Filtrar por nombre o valor"
                   spellCheck={false}
                   className="min-w-0 flex-1 bg-transparent text-xs text-txt outline-none placeholder:text-subtle"
                 />
@@ -764,13 +1289,13 @@ export default function VariablesTab({
             {filteredRows.length === 0 ? (
               <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-line p-8 text-center text-xs text-subtle">
                 {searchQuery ? (
-                  <p>Ninguna variable coincide con «{searchQuery}»</p>
+                  <p>No se ha encontrado ninguna variable que coincida con «{searchQuery}».</p>
                 ) : (
                   <>
                     <Layers size={24} className="mb-2 opacity-40" />
-                    <p className="font-medium text-txt">Sin variables de entorno</p>
+                    <p className="font-medium text-txt">No hay variables de entorno</p>
                     <p className="mt-1 text-subtle">
-                      Añade una, o pega un .env entero en cualquier campo: se reparte solo.
+                      Añada una variable o pegue el contenido de un archivo .env en cualquier campo; las variables se separarán automáticamente.
                     </p>
                   </>
                 )}
@@ -783,129 +1308,22 @@ export default function VariablesTab({
                * En escritorio, una lista de filas con las dos columnas alineadas.
                */
               <div className="flex flex-col gap-2 sm:gap-0 sm:overflow-hidden sm:rounded-xl sm:border sm:border-line sm:bg-surface">
-                {filteredRows.map((row, index) => {
-                  const isRevealed = globalReveal || revealedIds.has(row.id);
-                  const isRef = isReference(row.value);
-                  const isDup = duplicates.has(row.key.trim());
-                  const status = statusOf(row);
-                  const rail =
-                    status === 'new' ? 'bg-acc-soft' : status === 'changed' ? 'bg-warn' : 'bg-transparent';
-
-                  return (
-                    <div
-                      key={row.id}
-                      className={cx(
-                        'group relative flex flex-col rounded-xl border border-line bg-surface transition-colors duration-150 sm:flex-row sm:items-stretch sm:rounded-none sm:border-0 sm:border-b sm:last:border-b-0 sm:hover:bg-surface2/40',
-                        /*
-                         * Lo nuevo y lo cambiado se ven sin leer: tinte suave
-                         * de fondo, un riel de color a la izquierda y una
-                         * etiqueta. Al guardar vuelven al gris de lo que ya está.
-                         */
-                        status === 'new' && 'border-acc/35 bg-acc/[.06] sm:bg-acc/[.05] sm:hover:bg-acc/[.08]',
-                        status === 'changed' && 'border-warn/35 bg-warn/[.05] sm:bg-warn/[.04] sm:hover:bg-warn/[.07]',
-                        isDup && 'bg-err/[.05] sm:bg-err/[.04]',
-                      )}
-                    >
-                      <span aria-hidden className={cx('absolute inset-y-0 left-0 w-[3px] rounded-l-xl sm:rounded-none', rail)} />
-
-                      {/* Nombre */}
-                      <div className="relative flex min-w-0 items-center gap-2 pl-3.5 pr-2 pt-2 sm:w-[40%] sm:border-r sm:border-line sm:py-0 sm:pr-0">
-                        <span className="eyebrow w-12 shrink-0 text-subtle sm:hidden">Nombre</span>
-                        <input
-                          ref={(el) => {
-                            if (el) keyInputRefs.current.set(row.id, el);
-                            else keyInputRefs.current.delete(row.id);
-                          }}
-                          className={cx(
-                            'h-9 min-w-0 flex-1 rounded-md bg-transparent px-2 font-mono text-xs font-medium text-txt outline-none placeholder:text-subtle focus:bg-surface2/60 sm:h-auto sm:rounded-none sm:px-3.5 sm:py-2.5',
-                            isDup && 'font-bold text-err',
-                          )}
-                          placeholder="NOMBRE_VARIABLE"
-                          value={row.key}
-                          spellCheck={false}
-                          autoCapitalize="characters"
-                          autoCorrect="off"
-                          onChange={(e) => handleKeyChange(row.id, e.target.value)}
-                          onPaste={(e) => handlePaste(row.id, 'key', e)}
-                          onKeyDown={(e) => {
-                            if (e.key === '=' || e.key === 'Enter') {
-                              e.preventDefault();
-                              valueInputRefs.current.get(row.id)?.focus();
-                            }
-                          }}
-                        />
-                        {isDup ? (
-                          <span className="shrink-0 rounded bg-err/15 px-1.5 py-0.5 text-micro font-bold text-err sm:mr-2">Duplicada</span>
-                        ) : status === 'new' ? (
-                          <span className="shrink-0 rounded bg-acc/20 px-1.5 py-0.5 text-micro font-semibold text-acc-soft sm:mr-2">Nueva</span>
-                        ) : status === 'changed' ? (
-                          <span className="shrink-0 rounded bg-warn/15 px-1.5 py-0.5 text-micro font-semibold text-warn sm:mr-2">Cambiada</span>
-                        ) : null}
-                      </div>
-
-                      {/* Valor + acciones */}
-                      <div className="flex min-w-0 flex-1 items-center gap-2 pb-2 pl-3.5 pr-2 pt-1 sm:py-0 sm:pl-0">
-                        <span className="eyebrow w-12 shrink-0 text-subtle sm:hidden">Valor</span>
-                        <input
-                          ref={(el) => {
-                            if (el) valueInputRefs.current.set(row.id, el);
-                            else valueInputRefs.current.delete(row.id);
-                          }}
-                          className={cx(
-                            'h-9 min-w-0 flex-1 rounded-md bg-transparent px-2 font-mono text-xs outline-none placeholder:text-subtle focus:bg-surface2/60 sm:h-auto sm:rounded-none sm:px-3.5 sm:py-2.5',
-                            isRef ? 'font-medium text-info' : isRevealed ? 'text-txt' : 'text-subtle',
-                          )}
-                          placeholder={isRef ? '${{Servicio.VAR}}' : 'valor'}
-                          type={isRevealed || isRef ? 'text' : 'password'}
-                          value={row.value}
-                          spellCheck={false}
-                          autoCapitalize="off"
-                          autoCorrect="off"
-                          onChange={(e) => handleValueChange(row.id, e.target.value)}
-                          onPaste={(e) => handlePaste(row.id, 'value', e)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              if (index === filteredRows.length - 1) {
-                                handleAddRow();
-                              } else {
-                                const nextRow = filteredRows[index + 1];
-                                if (nextRow) keyInputRefs.current.get(nextRow.id)?.focus();
-                              }
-                            }
-                          }}
-                        />
-
-                        <div className="flex shrink-0 items-center gap-0.5 sm:pr-2">
-                          {!isRef && (
-                            <button
-                              type="button"
-                              onClick={() => toggleRowReveal(row.id)}
-                              className={cx(
-                                'press flex h-8 w-8 items-center justify-center rounded-md text-subtle transition-colors hover:bg-surface2 hover:text-txt sm:h-7 sm:w-7',
-                                isRevealed && 'text-acc-soft',
-                              )}
-                              title={isRevealed ? 'Ocultar valor' : 'Mostrar valor'}
-                              aria-label={isRevealed ? 'Ocultar valor' : 'Mostrar valor'}
-                            >
-                              {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
-                            </button>
-                          )}
-                          <CopyButton value={resolved[row.key] ?? row.value} title="Copiar valor resuelto" />
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteRow(row.id)}
-                            className="press flex h-8 w-8 items-center justify-center rounded-md text-subtle transition-colors hover:bg-surface2 hover:text-err sm:h-7 sm:w-7"
-                            title="Eliminar variable"
-                            aria-label="Eliminar variable"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                {filteredRows.map((row, index) => (
+                  <VariableRow
+                    key={row.id}
+                    row={row}
+                    isLast={index === filteredRows.length - 1}
+                    isRevealed={globalReveal || revealedIds.has(row.id)}
+                    isRef={isReference(row.value)}
+                    isDup={duplicates.has(row.key.trim())}
+                    status={statusOf(row)}
+                    resolvedValue={resolved[row.key] ?? row.value}
+                    nextRowId={filteredRows[index + 1]?.id ?? null}
+                    actions={rowActions}
+                    keyInputRefs={keyInputRefs}
+                    valueInputRefs={valueInputRefs}
+                  />
+                ))}
               </div>
             )}
 
@@ -915,7 +1333,7 @@ export default function VariablesTab({
               <button
                 type="button"
                 onClick={handleAddRow}
-                title="Pega un .env en cualquier campo y se reparte en filas"
+                title="Si se pega el contenido de un archivo .env en cualquier campo, las variables se separarán en filas automáticamente"
                 className="press flex h-9 items-center gap-1.5 rounded-lg border border-dashed border-line2 px-3 text-xs font-semibold text-sub transition-colors hover:border-acc/50 hover:bg-surface2 hover:text-txt max-sm:flex-1 max-sm:justify-center"
               >
                 <Plus size={14} className="text-acc-soft" />
@@ -957,7 +1375,7 @@ export default function VariablesTab({
 
           {suggestions.some((s) => !rows.some((r) => r.key === s.key)) && (
             <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
-              <span className="font-medium text-sub">Habituales:</span>
+              <span className="font-medium text-sub">Variables frecuentes:</span>
               {suggestions
                 .filter((s) => !rows.some((r) => r.key === s.key))
                 .map((s) => (
@@ -982,7 +1400,7 @@ export default function VariablesTab({
             <div className="rounded-xl border border-line bg-surface p-3.5 text-xs">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-1">
                 <span className="font-semibold text-sub">Referencias del proyecto</span>
-                <span className="text-xs text-subtle">Clic para copiar en formato {'${{...}}'}</span>
+                <span className="text-xs text-subtle">Seleccione una para copiarla en formato {'${{...}}'}</span>
               </div>
               <div className="flex flex-col gap-2.5">
                 {references.map((ref) => (
@@ -1041,6 +1459,16 @@ export default function VariablesTab({
         onDiscard={discard}
         saveLabel={dirty ? `Guardar (${rows.filter((r) => r.key.trim()).length})` : 'Guardar variables'}
         dirtyLabel={dirtyLabel}
+      />
+
+      <ImportRepoModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        report={importReport}
+        done={importDone}
+        applying={importApply.isPending}
+        onApply={() => importApply.mutate()}
+        onAddPending={addPendingRows}
       />
     </div>
   );

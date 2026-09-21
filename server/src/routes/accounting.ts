@@ -180,7 +180,7 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
     // Activar el envío sin servidor de correo dejaría a cada emisión fallando en
     // silencio: se corta aquí, donde el operador puede leerlo.
     if (merged.emailOnIssue && !getSmtpSettings()) {
-      return reply.code(400).send({ error: 'Configura primero el servidor de correo saliente para poder enviar las facturas.' });
+      return reply.code(400).send({ error: 'Configure primero el servidor de correo saliente para poder enviar las facturas.' });
     }
     const automation = setBillingAutomation(body);
     audit(req, 'billing_automation_updated', { type: 'system', id: 'billing', detail: `auto-emisión ${automation.autoIssue ? 'on' : 'off'}` });

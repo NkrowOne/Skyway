@@ -359,7 +359,7 @@ export default function SettingsPage() {
     setTesting(true);
     try {
       const res = await api.post<{ ok: boolean; channels: string[]; failures: string[] }>('/settings/alerts/test');
-      if (res.failures.length > 0) toast(`Fallo en: ${res.failures.join(', ')}. Revisa la configuración.`, 'err');
+      if (res.failures.length > 0) toast(`Error en: ${res.failures.join(', ')}. Revise la configuración.`, 'err');
       else toast(`Notificación enviada a: ${res.channels.join(', ')}`, 'ok');
     } catch (err) {
       toast((err as Error).message, 'err');
@@ -414,18 +414,18 @@ export default function SettingsPage() {
               label="Dominio raíz"
               hint={
                 <>
-                  Requiere un registro A comodín <span className="font-mono">*.tudominio</span> apuntando a la IP del servidor.
+                  Requiere un registro A comodín <span className="font-mono">*.sudominio</span> apuntando a la IP del servidor.
                 </>
               }
             >
               <input className="input" placeholder="apps.midominio.com" value={rootDomain} onChange={(e) => setRootDomain(e.target.value)} />
             </Field>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Email para Let's Encrypt" hint="Con email definido, TLS automático en cada dominio">
+              <Field label="Correo electrónico para Let's Encrypt" hint="Con un correo definido, se emite un certificado TLS automático para cada dominio">
                 <input
                   className="input"
                   type="email"
-                  placeholder="tu@email.com"
+                  placeholder="usuario@dominio.com"
                   value={letsencryptEmail}
                   onChange={(e) => setLetsencryptEmail(e.target.value)}
                 />
@@ -438,8 +438,8 @@ export default function SettingsPage() {
                 }
                 hint={
                   serverIpInfo.data?.ip
-                    ? `Detectada: ${serverIpInfo.data.ip}. Rellénala solo si es incorrecta; verifica los DNS.`
-                    : 'No se pudo detectar automáticamente: indícala para verificar los DNS de tus dominios.'
+                    ? `Detectada: ${serverIpInfo.data.ip}. Indíquela solo si es incorrecta; se utiliza para verificar los DNS.`
+                    : 'No se ha podido detectar automáticamente. Indíquela para verificar los DNS de sus dominios.'
                 }
               >
                 <input
@@ -459,7 +459,7 @@ export default function SettingsPage() {
         icon={<ModuleLogo kind="github" size={15} />}
         iconClass="text-txt"
         title="GitHub"
-        description="Recomendado: se instala una vez por cuenta y no caduca."
+        description="Método recomendado: se instala una vez por cuenta y no caduca."
       >
         <GithubAppPanel />
       </SettingsSection>
@@ -473,17 +473,17 @@ export default function SettingsPage() {
             description={
               <>
                 Alternativa a la App: un token de acceso personal (permiso <span className="font-mono">repo</span>) que se
-                usa cuando el servicio no tiene ninguna conexión propia. Caduca y ve todo lo que ve esa cuenta.
+                utiliza cuando el servicio no tiene ninguna conexión propia. Caduca y accede a todo lo que ve esa cuenta.
               </>
             }
             aside={settings.data?.settings.hasGithubToken ? <OkPill label="Conectado" /> : undefined}
             pending={pending.github}
           >
-            <Field label="Token de GitHub" hint="Se usa para clonar y para los webhooks de auto-deploy de cada servicio">
+            <Field label="Token de GitHub" hint="Se utiliza para clonar y para los webhooks de despliegue automático de cada servicio">
               <input
                 className="input font-mono text-xs"
                 type="password"
-                placeholder={settings.data?.settings.hasGithubToken ? '••••••••••••  (escribir para reemplazar)' : 'ghp_... o github_pat_...'}
+                placeholder={settings.data?.settings.hasGithubToken ? '••••••••••••  (escriba para reemplazar)' : 'ghp_… o github_pat_…'}
                 value={githubToken}
                 onChange={(e) => {
                   setGithubToken(e.target.value);
@@ -510,7 +510,7 @@ export default function SettingsPage() {
                         : 'sin scopes clásicos'}
                     {githubTest.tokenType === 'classic' && !githubTest.scopes.includes('repo') && (
                       <span className="mt-1 flex items-start gap-1 text-warn">
-                        <AlertTriangle size={12} className="mt-0.5 shrink-0" /> Falta el permiso «repo»: no podrá clonar repositorios privados.
+                        <AlertTriangle size={12} className="mt-0.5 shrink-0" /> Falta el permiso «repo»: no será posible clonar repositorios privados.
                       </span>
                     )}
                   </>
@@ -526,7 +526,7 @@ export default function SettingsPage() {
                 size="sm"
                 onClick={testGithub}
                 loading={githubTesting}
-                title="Valida el token escrito, o el guardado si el campo está vacío"
+                title="Valida el token indicado o, si el campo está vacío, el guardado"
               >
                 Probar conexión
               </Button>
@@ -546,7 +546,7 @@ export default function SettingsPage() {
             <div className="mt-5 border-t border-line pt-4">
               <h3 className="text-xs font-semibold">Cuentas de GitHub de los clientes</h3>
               <p className="mt-1 text-xs text-subtle">
-                Cuentas que los clientes han conectado a sus proyectos. Sus servicios clonan con ellas en vez de con el
+                Cuentas que los clientes han conectado a sus proyectos. Sus servicios clonan con ellas en lugar de con el
                 token global.
               </p>
               {connectors.isLoading ? (
@@ -562,7 +562,7 @@ export default function SettingsPage() {
                 />
               ) : (connectors.data?.connectors.length ?? 0) === 0 ? (
                 <p className="mt-3 rounded-lg border border-dashed border-line px-3.5 py-3.5 text-center text-xs text-subtle">
-                  Ningún cliente ha conectado una cuenta todavía.
+                  Todavía ningún cliente ha conectado una cuenta.
                 </p>
               ) : (
                 <div className="mt-3 overflow-hidden rounded-lg border border-line">
@@ -600,7 +600,7 @@ export default function SettingsPage() {
             onClose={() => setConnectorToRevoke(null)}
             onConfirm={() => connectorToRevoke && revokeConnector.mutate(connectorToRevoke.id)}
             title="Revocar conector"
-            message={`«${connectorToRevoke?.name}» (@${connectorToRevoke?.gh_login}) de «${connectorToRevoke?.project_name}» dejará de usarse: sus servicios pasarán al token global en el próximo despliegue.`}
+            message={`«${connectorToRevoke?.name}» (@${connectorToRevoke?.gh_login}) de «${connectorToRevoke?.project_name}» dejará de utilizarse: sus servicios pasarán a usar el token global en el próximo despliegue.`}
             confirmLabel="Revocar"
             loading={revokeConnector.isPending}
           />
@@ -609,18 +609,18 @@ export default function SettingsPage() {
             icon={<BellRing size={15} />}
             iconClass="text-warn"
             title="Alertas y notificaciones"
-            description="Caídas, bucles de reinicio y CPU/RAM sostenidas, avisadas fuera del panel"
+            description="Notificación fuera del panel de caídas, bucles de reinicio y consumo sostenido de CPU/RAM"
             pending={pending.alerts}
           >
             {/* Tres columnas a 360px dejaban los campos en ~90px, sin sitio para el rótulo. */}
             <div className="mb-3.5 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <Field label="Umbral CPU (%)" hint="por defecto 90">
+              <Field label="Umbral CPU (%)" hint="Por defecto, 90">
                 <input className="input tnum" type="number" min={10} max={100} placeholder="90" value={cpuPct} onChange={(e) => setCpuPct(e.target.value)} />
               </Field>
-              <Field label="Umbral RAM (%)" hint="por defecto 90">
+              <Field label="Umbral RAM (%)" hint="Por defecto, 90">
                 <input className="input tnum" type="number" min={10} max={100} placeholder="90" value={memPct} onChange={(e) => setMemPct(e.target.value)} />
               </Field>
-              <Field label="Sostenido (min)" hint="por defecto 5">
+              <Field label="Sostenido (min)" hint="Por defecto, 5">
                 <input className="input tnum" type="number" min={1} max={120} placeholder="5" value={sustainMin} onChange={(e) => setSustainMin(e.target.value)} />
               </Field>
             </div>
@@ -638,17 +638,17 @@ export default function SettingsPage() {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <Field
                   label={<>Token del bot de Telegram {settings.data?.settings.hasTelegramToken && <OkPill label="configurado" />}</>}
-                  hint={settings.data?.settings.hasTelegramToken ? undefined : 'Crea un bot con @BotFather'}
+                  hint={settings.data?.settings.hasTelegramToken ? undefined : 'Cree un bot con @BotFather'}
                 >
                   <input
                     className="input font-mono text-xs"
                     type="password"
-                    placeholder={settings.data?.settings.hasTelegramToken ? '••••••••  (escribir para reemplazar)' : '123456:ABC...'}
+                    placeholder={settings.data?.settings.hasTelegramToken ? '••••••••  (escriba para reemplazar)' : '123456:ABC…'}
                     value={telegramToken}
                     onChange={(e) => setTelegramToken(e.target.value)}
                   />
                 </Field>
-                <Field label="Chat ID de Telegram" hint="Tu ID o el de un grupo (@userinfobot)">
+                <Field label="Chat ID de Telegram" hint="Su ID o el de un grupo (@userinfobot)">
                   <input
                     className="input font-mono text-xs"
                     placeholder="-100123456789"
@@ -708,7 +708,7 @@ export default function SettingsPage() {
               {/* La orden va pegada al aviso: sin Nixpacks, los repos sin Dockerfile no se construyen. */}
               {!sys.nixpacks && (
                 <p className="text-xs text-subtle">
-                  Instálalo: <span className="font-mono">curl -sSL https://nixpacks.com/install.sh | bash</span>
+                  Instalación: <span className="font-mono">curl -sSL https://nixpacks.com/install.sh | bash</span>
                 </p>
               )}
             </div>
@@ -743,7 +743,7 @@ export default function SettingsPage() {
                 variant="secondary"
                 onClick={() => prune.mutate()}
                 loading={prune.isPending}
-                title="Purga imágenes colgantes y caché de build. Nunca toca volúmenes."
+                title="Elimina imágenes sin referencia y la caché de compilación. No afecta a los volúmenes."
               >
                 <Trash2 size={13} /> Liberar espacio
               </Button>
@@ -759,8 +759,8 @@ export default function SettingsPage() {
         description={
           <>
             Copia diaria (~04:00) de la base de datos del panel: usuarios, proyectos, servicios y variables. Se conservan{' '}
-            {sysBackups.data?.retention ?? 7}. Las copias de las bases de datos de cada proyecto van aparte, en la pestaña
-            Backups del servicio.
+            {sysBackups.data?.retention ?? 7}. Las copias de las bases de datos de cada proyecto se gestionan por separado, en la
+            pestaña «Backups» del servicio.
           </>
         }
         aside={
@@ -782,7 +782,7 @@ export default function SettingsPage() {
           />
         ) : (sysBackups.data?.backups.length ?? 0) === 0 ? (
           <p className="rounded-lg border border-dashed border-line px-3.5 py-4 text-center text-xs text-subtle">
-            Aún no hay copias. La primera se creará esta madrugada, o pulsa «Crear ahora».
+            Todavía no hay copias. La primera se creará esta madrugada; también puede pulsar «Crear ahora».
           </p>
         ) : (
           <div className="overflow-hidden rounded-lg border border-line">
@@ -816,14 +816,14 @@ export default function SettingsPage() {
             ))}
           </div>
         )}
-        <p className="mt-3 text-xs text-subtle">Guarda alguna copia fuera del servidor.</p>
+        <p className="mt-3 text-xs text-subtle">Se recomienda conservar alguna copia fuera del servidor.</p>
         <details className="group animate-details mt-2">
           <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-sub hover:text-txt">
             <ChevronDown size={12} className="shrink-0 transition-transform duration-200 ease-out group-open:rotate-180" />
             Cómo restaurar
           </summary>
           <p className="details-body mt-1.5 text-xs leading-relaxed text-subtle">
-            Para el panel, sustituye <span className="font-mono">/data/skyway.db</span> por la copia y arráncalo de nuevo.
+            Para restaurar el panel, sustituya <span className="font-mono">/data/skyway.db</span> por la copia y reinicie el servicio.
           </p>
         </details>
       </SettingsSection>
@@ -833,7 +833,7 @@ export default function SettingsPage() {
         onClose={() => setBackupToDelete(null)}
         onConfirm={() => backupToDelete && deleteSysBackup.mutate(backupToDelete.file)}
         title="Eliminar copia"
-        message={`Se eliminará "${backupToDelete?.file ?? ''}". Si no la has descargado, no habrá copia.`}
+        message={`Se eliminará «${backupToDelete?.file ?? ''}». Si no la ha descargado, no quedará ninguna copia.`}
         loading={deleteSysBackup.isPending}
       />
 

@@ -142,7 +142,7 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
       const pending = regChallenges.get(user.id);
       regChallenges.delete(user.id);
       if (!pending || pending.expires < Date.now()) {
-        return reply.code(400).send({ error: 'El reto ha caducado, inténtalo de nuevo' });
+        return reply.code(400).send({ error: 'El reto ha caducado. Vuelva a intentarlo' });
       }
       let verification;
       try {
@@ -203,7 +203,7 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
   // ---- login con passkey (público, sin email: credenciales descubribles) ----
   app.post('/api/auth/passkey-login/options', async (req, reply) => {
     if (loginBlocked(req.ip)) {
-      return reply.code(429).send({ error: 'Demasiados intentos fallidos. Espera 15 minutos.' });
+      return reply.code(429).send({ error: 'Demasiados intentos fallidos. Espere 15 minutos.' });
     }
     const { rpId, origin } = rpInfo(req);
     const options = await generateAuthenticationOptions({
@@ -222,13 +222,13 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/auth/passkey-login', async (req, reply) => {
     if (loginBlocked(req.ip)) {
       audit(req, 'login_blocked', { type: 'ip', id: req.ip });
-      return reply.code(429).send({ error: 'Demasiados intentos fallidos. Espera 15 minutos.' });
+      return reply.code(429).send({ error: 'Demasiados intentos fallidos. Espere 15 minutos.' });
     }
     const body = z.object({ challengeId: z.string(), response: z.any() }).parse(req.body);
     const pending = authChallenges.get(body.challengeId);
     authChallenges.delete(body.challengeId);
     if (!pending || pending.expires < Date.now()) {
-      return reply.code(400).send({ error: 'El reto ha caducado, inténtalo de nuevo' });
+      return reply.code(400).send({ error: 'El reto ha caducado. Vuelva a intentarlo' });
     }
     const response = body.response as AuthenticationResponseJSON;
     const passkey = response?.id ? getPasskeyByCredentialId(response.id) : undefined;

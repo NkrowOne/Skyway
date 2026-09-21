@@ -74,7 +74,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const service = getService(deployment.service_id);
     if (!service) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (service.type !== 'git') {
-      return reply.code(400).send({ error: 'Solo los servicios de repositorio soportan rollback (los de imagen fija se redespliegan directamente)' });
+      return reply.code(400).send({ error: 'Solo los servicios de repositorio admiten volver a una versión anterior (los de imagen fija se vuelven a desplegar directamente)' });
     }
     markManualAction(service.id);
     audit(req, 'service_rollback', { type: 'service', id: service.id, detail: `${service.name} → ${deployment.image_tag}` });

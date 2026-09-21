@@ -69,7 +69,7 @@ export function createSystemBackup(): SystemBackupEntry {
   try {
     vacuumInto(tmp);
     const st = fs.statSync(tmp);
-    if (st.size < 4096) throw new Error('el snapshot salió sospechosamente vacío');
+    if (st.size < 4096) throw new Error('la copia generada tiene un tamaño anormalmente reducido');
     fs.renameSync(tmp, full);
   } catch (err) {
     fs.rmSync(tmp, { force: true });

@@ -79,7 +79,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
   const mkdir = useMutation({
     mutationFn: (path: string) => api.post(`/services/${serviceId}/files/mkdir`, { path }),
     onSuccess: () => {
-      toast('Carpeta creada', 'ok');
+      toast('Carpeta creada.', 'ok');
       setFolderOpen(false);
       setFolderName('');
       invalidate();
@@ -94,7 +94,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
         recursive: entry.type === 'dir',
       }),
     onSuccess: () => {
-      toast('Eliminado', 'ok');
+      toast('Elemento eliminado.', 'ok');
       setDeleting(null);
       invalidate();
     },
@@ -142,7 +142,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.error || `Error ${res.status}`);
       }
-      toast(`Subido: ${file.name}`, 'ok');
+      toast(`Archivo subido: ${file.name}`, 'ok');
       invalidate();
     } catch (err) {
       toast((err as Error).message, 'err');
@@ -222,7 +222,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
         <div className="flex items-start gap-2.5 rounded-xl border border-warn/30 bg-warn/[.08] px-4 py-3 text-sm text-warn">
           <TriangleAlert size={16} className="mt-px shrink-0" />
           <div>
-            <p className="font-medium">No se pudo abrir el explorador</p>
+            <p className="font-medium">No se ha podido abrir el explorador de archivos</p>
             <p className="mt-0.5 text-xs text-sub">{(listing.error as Error).message}</p>
             <Button size="sm" variant="secondary" className="mt-2.5" onClick={() => listing.refetch()}>
               <RefreshCw size={12} /> Reintentar
@@ -251,7 +251,7 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
             </div>
           )}
           {entries.length === 0 ? (
-            <EmptyState compact icon={<FolderOpen />} title="Sin archivos en esta carpeta" />
+            <EmptyState compact icon={<FolderOpen />} title="No hay archivos en esta carpeta" />
           ) : (
             entries.map((entry) => (
               <div
@@ -364,8 +364,8 @@ export default function FilesTab({ serviceId }: { serviceId: string }) {
         title={`Eliminar ${deletingShown?.type === 'dir' ? 'carpeta' : 'archivo'}`}
         message={
           deletingShown?.type === 'dir'
-            ? `Se eliminará la carpeta "${deletingShown.name}" y todo su contenido dentro del contenedor. Esta acción no se puede deshacer.`
-            : `Se eliminará "${deletingShown?.name ?? ''}" dentro del contenedor. Esta acción no se puede deshacer.`
+            ? `Se eliminará la carpeta «${deletingShown.name}» y todo su contenido dentro del contenedor. Esta acción no se puede deshacer.`
+            : `Se eliminará «${deletingShown?.name ?? ''}» dentro del contenedor. Esta acción no se puede deshacer.`
         }
       />
     </div>

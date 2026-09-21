@@ -20,6 +20,21 @@ import { Menu, Segmented, Skeleton, useToast } from '../ui';
 
 type Row = { line: string; cursor: string | null };
 
+/*
+ * Texto de cada fila para el visor, calculado una vez por objeto. Antes se
+ * concatenaba cursor y línea de las catorce mil filas en cada ráfaga: cadenas
+ * nuevas que el visor tenía que volver a buscar en su caché una a una.
+ */
+const LINE_TEXT = new WeakMap<Row, string>();
+function lineText(r: Row): string {
+  let s = LINE_TEXT.get(r);
+  if (s === undefined) {
+    s = r.cursor ? `${r.cursor} ${r.line}` : r.line;
+    LINE_TEXT.set(r, s);
+  }
+  return s;
+}
+
 const CAP_FOLLOWING = 14_000;
 const CAP_READING = 45_000;
 const OLDER_PAGE = 400;
@@ -188,7 +203,7 @@ export default function LogsTab({
      */
     es.onerror = () => {
       if (es.readyState === EventSource.CLOSED) {
-        setLiveNotice('Conexión perdida con el servidor. Reintentando…');
+        setLiveNotice('Se ha perdido la conexión con el servidor. Reintentando…');
         retryTimer = window.setTimeout(() => setStreamGen((g) => g + 1), 5000);
       } else {
         setLiveNotice('Reconectando…');
@@ -243,7 +258,7 @@ export default function LogsTab({
         setReachedStart(true);
       }
     } catch {
-      toast('No se pudieron cargar más líneas', 'err');
+      toast('No se han podido cargar más líneas.', 'err');
     } finally {
       loadingOlderRef.current = false;
       setLoadingOlder(false);
@@ -329,16 +344,16 @@ export default function LogsTab({
      * podía saber qué estaba mirando. Si no hay nada, se dice por qué.
      */
     if (stageTab === 'build') {
-      if (buildStreamId) return { displayLines: buildingLines, emptyNote: 'Esperando la primera línea del build…' };
+      if (buildStreamId) return { displayLines: buildingLines, emptyNote: 'Esperando la primera línea de la compilación…' };
       if (depData && bLines.length === 0) {
-        return { displayLines: bLines, emptyNote: 'Este despliegue no dejó salida de compilación.' };
+        return { displayLines: bLines, emptyNote: 'Este despliegue no ha generado salida de compilación.' };
       }
       return { displayLines: bLines, emptyNote: null };
     }
 
     if (isLiveMode) {
       if (liveRows.length > 0) {
-        return { displayLines: liveRows.map((r) => (r.cursor ? `${r.cursor} ${r.line}` : r.line)), emptyNote: null };
+        return { displayLines: liveRows.map(lineText), emptyNote: null };
       }
       /*
        * Enganchados y sin líneas: el contenedor existe y no ha escrito nada.
@@ -347,7 +362,7 @@ export default function LogsTab({
        * y un segundo después el stream las sustituía por sus 200: parecía que
        * el log se borraba solo.
        */
-      if (attached) return { displayLines: [], emptyNote: 'La aplicación todavía no ha escrito nada.' };
+      if (attached) return { displayLines: [], emptyNote: 'La aplicación no ha generado ninguna salida todavía.' };
       if (liveNotice) {
         return {
           displayLines: rLines,
@@ -358,12 +373,12 @@ export default function LogsTab({
     }
 
     if (isBuildingSelected) {
-      return { displayLines: [], emptyNote: 'Este despliegue aún se está construyendo: la aplicación no ha arrancado.' };
+      return { displayLines: [], emptyNote: 'Este despliegue todavía se está compilando: la aplicación no ha arrancado.' };
     }
     return {
       displayLines: rLines,
       emptyNote:
-        depData && rLines.length === 0 ? 'Este despliegue no guardó salida de la aplicación. Mira Compilación.' : null,
+        depData && rLines.length === 0 ? 'Este despliegue no ha guardado salida de la aplicación. Consulte la pestaña «Compilación».' : null,
     };
   }, [isLiveMode, liveRows, isBuildingSelected, buildStreamId, buildingLines, depData, stageTab, attached, liveNotice]);
 
@@ -425,7 +440,7 @@ export default function LogsTab({
         setTimeout(() => URL.revokeObjectURL(url), 2000);
       }
     } catch {
-      toast('No se pudo descargar el log', 'err');
+      toast('No se ha podido descargar el registro.', 'err');
     }
   }, [isLiveMode, stageTab, liveRows.length, serviceId, targetDepId, toast]);
 
@@ -443,8 +458,8 @@ export default function LogsTab({
 
   const getFriendlyTitle = (d: Deployment) => {
     if (d.commit_msg) return d.commit_msg;
-    if (d.trigger === 'rollback') return 'Vuelta a una versión anterior';
-    if (d.trigger === 'github') return `Push a rama ${d.commit_sha ? `(${d.commit_sha.slice(0, 7)})` : ''}`;
+    if (d.trigger === 'rollback') return 'Restauración de una versión anterior';
+    if (d.trigger === 'github') return `Push a la rama ${d.commit_sha ? `(${d.commit_sha.slice(0, 7)})` : ''}`;
     return 'Despliegue manual';
   };
 
@@ -467,7 +482,7 @@ export default function LogsTab({
             {isLiveMode ? (
               <div className="flex min-w-0 items-center gap-2 truncate">
                 <span className="pulse-soft h-2 w-2 shrink-0 rounded-full bg-ok" />
-                <span className="truncate font-semibold">Despliegue actual (En vivo)</span>
+                <span className="truncate font-semibold">Despliegue actual (en vivo)</span>
                 {activeDeploy && (
                   <span className="shrink-0 rounded bg-warn/15 px-1 py-0.5 text-micro font-semibold text-warn">
                     {DEPLOY_STATUS_LABEL[activeDeploy.status]}
@@ -529,7 +544,7 @@ export default function LogsTab({
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="pulse-soft h-2 w-2 shrink-0 rounded-full bg-ok" />
                   <div className="min-w-0">
-                    <p className="font-semibold text-txt">Despliegue actual (En vivo)</p>
+                    <p className="font-semibold text-txt">Despliegue actual (en vivo)</p>
                     <p className="truncate text-xs text-subtle">
                       {currentSuccessDeploy ? getFriendlyTitle(currentSuccessDeploy) : 'Salida en directo'}
                     </p>
@@ -576,7 +591,7 @@ export default function LogsTab({
                         )}
                         {d.status === 'failed' && (
                           <span className="shrink-0 rounded bg-err/15 px-1 py-0.5 text-micro font-semibold text-err">
-                            Falló
+                            Fallido
                           </span>
                         )}
                       </div>
@@ -600,7 +615,7 @@ export default function LogsTab({
         <Segmented
           full
           className="sm:w-fit"
-          label="Origen de los logs"
+          label="Origen del registro"
           value={stageTab}
           onChange={setStageTab}
           options={[

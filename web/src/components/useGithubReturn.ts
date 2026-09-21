@@ -13,7 +13,7 @@ import { useToast } from './ui';
 const RETURN_MESSAGE: Record<string, { text: string; tone: 'ok' | 'err' }> = {
   creada: { text: 'GitHub App creada y conectada.', tone: 'ok' },
   conectado: { text: 'Cuenta de GitHub conectada.', tone: 'ok' },
-  estado_invalido: { text: 'El enlace de GitHub caducó o no era de esta sesión. Vuelve a intentarlo.', tone: 'err' },
+  estado_invalido: { text: 'El enlace de GitHub ha caducado o no pertenece a esta sesión. Vuelva a intentarlo.', tone: 'err' },
   proyecto_no_existe: { text: 'El proyecto ya no existe.', tone: 'err' },
   instalacion_ajena: {
     text: 'Esa instalación de la App ya está conectada a otro proyecto o al servidor: solo un administrador puede compartirla.',

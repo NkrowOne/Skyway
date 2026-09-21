@@ -14,7 +14,7 @@ import { loginWithPasskey, passkeysSupported } from '../webauthn';
  * la situación, de la más rápida a la de último recurso.
  */
 function RecoveryModal({ open, onClose, onPasskey }: { open: boolean; onClose: () => void; onPasskey: (() => void) | null }) {
-  const cmd = 'docker compose exec skyway node dist/tools/reset-password.js tu@email.com';
+  const cmd = 'docker compose exec skyway node dist/tools/reset-password.js usuario@dominio.com';
   return (
     <Modal open={open} onClose={onClose} title="Recuperar el acceso">
       <div className="flex flex-col gap-5 text-sm leading-relaxed text-sub">
@@ -22,9 +22,9 @@ function RecoveryModal({ open, onClose, onPasskey }: { open: boolean; onClose: (
           <div>
             <p className="flex items-center gap-2 font-semibold text-txt">
               <Fingerprint size={14} className="text-acc-soft" />
-              ¿Registraste una passkey?
+              Acceso con passkey
             </p>
-            <p className="mt-1">Entra con ella y pon una contraseña nueva en Seguridad.</p>
+            <p className="mt-1">Si registró una passkey, inicie sesión con ella y establezca una contraseña nueva en «Seguridad».</p>
             <Button
               size="sm"
               variant="secondary"
@@ -34,24 +34,24 @@ function RecoveryModal({ open, onClose, onPasskey }: { open: boolean; onClose: (
                 onPasskey();
               }}
             >
-              <Fingerprint size={14} /> Entrar con passkey
+              <Fingerprint size={14} /> Iniciar sesión con passkey
             </Button>
           </div>
         )}
         <div>
           <p className="flex items-center gap-2 font-semibold text-txt">
             <Users2 size={14} className="text-info" />
-            ¿Hay otro administrador?
+            Otro administrador
           </p>
           <p className="mt-1">
-            Puede ponerte una contraseña nueva en <span className="text-txt">Usuarios → tu cuenta → Nueva contraseña</span>. Tus
-            sesiones antiguas se invalidan al momento.
+            Otro administrador puede establecerle una contraseña nueva en <span className="text-txt">Usuarios → su cuenta → Nueva contraseña</span>.
+            Las sesiones anteriores se invalidan de inmediato.
           </p>
         </div>
         <div>
           <p className="flex items-center gap-2 font-semibold text-txt">
             <TerminalSquare size={14} className="text-warn" />
-            ¿Eres el único admin? Desde el servidor:
+            Único administrador: desde el servidor
           </p>
           <div className="mt-2 flex items-center gap-1 rounded-lg border border-line bg-term px-3 py-2">
             <code className="min-w-0 flex-1 select-all whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-txt/90">
@@ -61,13 +61,13 @@ function RecoveryModal({ open, onClose, onPasskey }: { open: boolean; onClose: (
             <CopyButton value={cmd} title="Copiar comando" />
           </div>
           <p className="mt-1.5 text-xs text-subtle">
-            Imprime una contraseña temporal, cierra las demás sesiones y deja rastro en la auditoría. Sin Docker:{' '}
-            <code className="font-mono text-xs">npm run reset-password -w server -- tu@email.com</code>
+            El comando genera una contraseña temporal, cierra el resto de sesiones y queda registrado en la auditoría. Sin Docker:{' '}
+            <code className="font-mono text-xs">npm run reset-password -w server -- usuario@dominio.com</code>
           </p>
         </div>
         <p className="flex items-center gap-1.5 border-t border-line pt-3 text-xs text-subtle">
           <KeyRound size={12} className="shrink-0" />
-          Skyway no envía emails de restablecimiento: nadie puede pedir un reset en tu nombre desde fuera.
+          Skyway no envía correos de restablecimiento: nadie puede solicitar un restablecimiento en su nombre desde el exterior.
         </p>
       </div>
     </Modal>
@@ -103,7 +103,7 @@ export default function Login() {
     } catch (err) {
       // Cancelar el diálogo del navegador no es un error que mostrar.
       if ((err as DOMException)?.name !== 'NotAllowedError') {
-        fail(err instanceof ApiError ? err.message : 'No se pudo usar la passkey');
+        fail(err instanceof ApiError ? err.message : 'No se ha podido utilizar la passkey');
       }
     } finally {
       setPkLoading(false);
@@ -148,12 +148,12 @@ export default function Login() {
           <div className="mb-6 flex flex-col items-center gap-3.5 text-center">
             <BrandMark size={52} iconSize={24} radius={14} />
             <div>
-              <h1 className="text-xl font-semibold">Entrar en Skyway</h1>
-              <p className="mt-1 text-sm text-sub">Tu plataforma de despliegue auto-alojada</p>
+              <h1 className="text-xl font-semibold">Iniciar sesión en Skyway</h1>
+              <p className="mt-1 text-sm text-sub">Plataforma de despliegue auto-alojada</p>
             </div>
           </div>
           <form onSubmit={submit} className="flex flex-col gap-4">
-            <Field label="Email">
+            <Field label="Correo electrónico">
               {/* autocomplete webauthn: el teclado del móvil ofrece la passkey guardada al tocar el campo. */}
               <input
                 className="input"
@@ -178,7 +178,7 @@ export default function Login() {
                     onClick={() => setRecoveryOpen(true)}
                     className="-my-2 py-2 font-normal text-subtle transition-colors hover:text-acc-soft"
                   >
-                    ¿La has olvidado?
+                    Recuperar el acceso
                   </button>
                 </span>
               }
@@ -205,7 +205,7 @@ export default function Login() {
             </Field>
             {error && <p className="tab-in text-sm text-err">{error}</p>}
             <Button type="submit" size="lg" loading={loading} className="w-full">
-              Entrar
+              Iniciar sesión
             </Button>
           </form>
           {passkeysSupported() && (
@@ -216,13 +216,13 @@ export default function Login() {
                 <span className="h-px flex-1 bg-line" />
               </div>
               <Button variant="secondary" size="lg" loading={pkLoading} onClick={passkey} className="w-full">
-                <Fingerprint size={16} /> Entrar con passkey
+                <Fingerprint size={16} /> Iniciar sesión con passkey
               </Button>
             </>
           )}
         </div>
         <p className="mt-4 flex items-center justify-center gap-1.5 text-xs text-subtle">
-          <ShieldCheck size={12} /> Intentos limitados por IP · toda la actividad queda en el registro de actividad
+          <ShieldCheck size={12} /> Intentos limitados por IP · toda la actividad se anota en el registro de actividad
         </p>
       </div>
       <RecoveryModal

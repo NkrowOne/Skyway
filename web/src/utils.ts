@@ -120,7 +120,7 @@ export const STATE_LABEL: Record<ContainerState, string> = {
   paused: 'Pausado',
   created: 'Creado',
   removing: 'Eliminando',
-  dead: 'Muerto',
+  dead: 'Inoperativo',
   not_created: 'Sin desplegar',
   unknown: 'Desconocido',
 };
@@ -164,10 +164,10 @@ export interface ServiceStatus {
 /** Códigos de salida con nombre: el número solo no le dice nada a nadie. */
 function explainExit(code: number | null | undefined): string | undefined {
   if (code === null || code === undefined) return undefined;
-  if (code === 137) return 'sin memoria o matado (código 137)';
-  if (code === 143) return 'recibió SIGTERM (código 143)';
-  if (code === 0) return 'terminó sin error (código 0)';
-  return `salió con código ${code}`;
+  if (code === 137) return 'sin memoria o terminado por el sistema (código 137)';
+  if (code === 143) return 'detenido por SIGTERM (código 143)';
+  if (code === 0) return 'finalizó sin error (código 0)';
+  return `finalizó con código ${code}`;
 }
 
 /**
@@ -189,7 +189,7 @@ export function serviceStatus(
     case 'paused':
       return { kind: 'stopped', tone: 'warn', label: 'Pausado' };
     case 'created':
-      return { kind: 'stopped', tone: 'neutral', label: 'Creado', detail: 'aún no ha arrancado' };
+      return { kind: 'stopped', tone: 'neutral', label: 'Creado', detail: 'todavía no se ha iniciado' };
     case 'exited': {
       const manual = !!runtime?.stoppedAt || runtime?.exitCode === 0;
       if (manual) {
@@ -225,8 +225,8 @@ export const DEPLOY_TRIGGER_LABEL: Record<string, string> = {
   initial: 'creación',
   manual: 'manual',
   webhook: 'push',
-  autodeploy: 'auto-deploy',
-  rollback: 'vuelta atrás',
+  autodeploy: 'automático',
+  rollback: 'reversión',
   import: 'importación',
 };
 
@@ -238,8 +238,8 @@ export type Severity = 'critical' | 'warning' | 'info';
 
 export const SEVERITY_LABEL: Record<Severity, string> = {
   critical: 'Crítico',
-  warning: 'Aviso',
-  info: 'Info',
+  warning: 'Advertencia',
+  info: 'Información',
 };
 
 export const SEVERITY_TONE: Record<Severity, Tone> = {
@@ -254,18 +254,18 @@ export const ALERT_TYPE_LABEL: Record<string, string> = {
   cpu_high: 'CPU alta',
   mem_high: 'Memoria alta',
   deploy_failed: 'Despliegue fallido',
-  backup_failed: 'Backup fallido',
-  system_backup_failed: 'Backup del panel fallido',
-  db_integrity: 'BD del panel dañada',
+  backup_failed: 'Copia de seguridad fallida',
+  system_backup_failed: 'Copia de seguridad del panel fallida',
+  db_integrity: 'Base de datos del panel dañada',
   disk_quota: 'Espacio asignado superado',
-  disk_quota_soon: 'Espacio asignado al 90%',
+  disk_quota_soon: 'Espacio asignado al 90 %',
 };
 
 export const AUDIT_ACTION_LABEL: Record<string, string> = {
   setup: 'Cuenta creada',
   login: 'Inicio de sesión',
-  login_failed: 'Login fallido',
-  login_blocked: 'Login bloqueado (rate limit)',
+  login_failed: 'Inicio de sesión fallido',
+  login_blocked: 'Inicio de sesión bloqueado (límite de intentos)',
   logout: 'Cierre de sesión',
   password_changed: 'Contraseña cambiada',
   sessions_rotated: 'Sesiones invalidadas',
@@ -284,7 +284,7 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   service_env_updated: 'Variables actualizadas',
   settings_updated: 'Ajustes globales cambiados',
   webhook_push: 'Push recibido (webhook)',
-  autodeploy: 'Auto-deploy (commit nuevo)',
+  autodeploy: 'Despliegue automático (commit nuevo)',
   server_started: 'Servidor iniciado',
   railway_import: 'Proyecto importado de Railway',
   data_migration_started: 'Copia de datos iniciada',
@@ -298,14 +298,14 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   deployment_canceled: 'Despliegue cancelado',
   project_deploy_all: 'Despliegue de todo el proyecto',
   service_exec: 'Comando ejecutado en contenedor',
-  backup_created: 'Backup creado',
-  backup_downloaded: 'Backup descargado',
-  backup_restored: 'Backup restaurado',
-  backup_deleted: 'Backup eliminado',
-  system_backup_created: 'Backup del panel creado',
-  system_backup_downloaded: 'Backup del panel descargado',
-  system_backup_deleted: 'Backup del panel eliminado',
-  db_integrity_failed: 'Integridad de la BD del panel fallida',
+  backup_created: 'Copia de seguridad creada',
+  backup_downloaded: 'Copia de seguridad descargada',
+  backup_restored: 'Copia de seguridad restaurada',
+  backup_deleted: 'Copia de seguridad eliminada',
+  system_backup_created: 'Copia de seguridad del panel creada',
+  system_backup_downloaded: 'Copia de seguridad del panel descargada',
+  system_backup_deleted: 'Copia de seguridad del panel eliminada',
+  db_integrity_failed: 'Comprobación de integridad de la base de datos del panel fallida',
   system_prune: 'Espacio liberado (prune)',
   db_query: 'Consulta en base de datos',
   file_downloaded: 'Archivo descargado del contenedor',
@@ -345,3 +345,15 @@ export const CMD_ENTER_LABEL = isMac ? '⌘↵' : 'Ctrl+↵';
  */
 export const EMPTY_LIST: never[] = [];
 export const EMPTY_RECORD: Record<string, never> = {};
+
+/**
+ * `owner/repo` a partir de lo que alguien escribe o pega: el atajo, la URL de
+ * GitHub (con o sin `.git`, con o sin barra final) o null si no se reconoce.
+ */
+export function parseRepoInput(raw: string): string | null {
+  const t = raw.trim().replace(/\.git$/, '').replace(/\/+$/, '');
+  const direct = /^([\w.-]+)\/([\w.-]+)$/.exec(t);
+  if (direct) return `${direct[1]}/${direct[2]}`;
+  const url = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)/i.exec(t);
+  return url ? `${url[1]}/${url[2]}` : null;
+}

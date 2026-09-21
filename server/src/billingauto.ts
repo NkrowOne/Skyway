@@ -182,7 +182,7 @@ function dunningForWorkspace(workspaceId: string, overdue: InvoiceRow[], graceDa
       type: 'ws_cancelled',
       title: `Cuenta cancelada por impago — ${ws.name}`,
       message: `Claves revocadas y suscripciones canceladas tras ${daysOverdue} días de impago (${money}).`,
-      explanation: 'Las facturas emitidas se conservan por obligación fiscal; si procede, emite una rectificativa o dótala como incobrable.',
+      explanation: 'Las facturas emitidas se conservan por obligación fiscal; si procede, emita una rectificativa o dótela como incobrable.',
       dedupeKey: `ws:${workspaceId}:cancelled`,
     });
     auditSystem('dunning_cancelled', `${ws.name} (${daysOverdue}d, ${money})`);
@@ -298,7 +298,7 @@ export function billingCycleTick(now: Date): void {
             type: 'invoice_auto_issued',
             title: `Factura emitida automáticamente — ${ws.name}`,
             message: `Factura ${issued.number ?? issued.id} por ${money}.`,
-            explanation: 'Auto-emisión activada: revísala en la cuenta y envía el enlace de pago si procede.',
+            explanation: 'Emisión automática activada: revísela en la cuenta y envíe el enlace de pago si procede.',
             dedupeKey: `ws:${ws.id}:auto_issued:${issued.id}`,
           });
         } else {

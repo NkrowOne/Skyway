@@ -25,6 +25,7 @@ const WorkspacePage = lazy(() => import('./pages/Workspace'));
 const PlansPage = lazy(() => import('./pages/Plans'));
 const CatalogPage = lazy(() => import('./pages/Catalog'));
 const AccountingPage = lazy(() => import('./pages/Accounting'));
+const HelpPage = lazy(() => import('./pages/Help'));
 
 const pageFallback = (
   <div className="flex h-full items-center justify-center">
@@ -58,7 +59,7 @@ export default function App() {
   if (me.isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
-        <Spinner label="Cargando Skyway..." />
+        <Spinner label="Cargando Skyway…" />
       </div>
     );
   }
@@ -66,7 +67,7 @@ export default function App() {
   if (me.isError) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-sub">
-        <p>No se pudo conectar con el servidor de Skyway.</p>
+        <p>No se ha podido conectar con el servidor de Skyway.</p>
         <p className="font-mono text-xs">{String((me.error as Error).message)}</p>
       </div>
     );
@@ -90,6 +91,7 @@ export default function App() {
           <Route path="/sites" element={<SitesPage />} />
           <Route path="/account" element={<AccountPage />} />
           <Route path="/alerts" element={<AlertsPage />} />
+          <Route path="/help" element={<HelpPage />} />
           {/* Cuentas de cliente: admin (todas) y propietario (la suya). */}
           {(user?.role === 'admin' || user?.role === 'owner') && (
             <>

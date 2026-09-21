@@ -210,7 +210,7 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const params = z
         .object({
-          q: z.string().trim().min(2, 'Escribe al menos 2 caracteres').max(200),
+          q: z.string().trim().min(2, 'Introduzca al menos 2 caracteres').max(200),
           tail: z.coerce.number().int().min(50).max(1000).default(400),
           projectId: z.string().trim().optional(),
         })

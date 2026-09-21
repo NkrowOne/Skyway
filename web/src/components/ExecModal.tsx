@@ -74,7 +74,7 @@ export default function ExecModal({
         </form>
 
         <div className="flex flex-wrap items-center gap-1.5 text-xs text-sub">
-          <span>Rápidos:</span>
+          <span>Comandos rápidos:</span>
           {QUICK_COMMANDS.map((c) => (
             <button
               key={c}
@@ -94,7 +94,7 @@ export default function ExecModal({
           {/* En móvil la salida se acota al 40 % de la pantalla real (dvh): con
               el teclado abierto, 288 px fijos dejaban el campo de comando fuera. */}
           <pre className="h-[min(288px,40dvh)] overflow-auto overscroll-contain whitespace-pre-wrap break-all rounded-lg border border-line bg-term p-3 font-mono text-xs leading-relaxed text-txt/[.88] sm:h-72">
-            {running ? 'Ejecutando...' : result ? result.output || '(sin salida)' : 'La salida aparecerá aquí. El comando corre con `sh -c` dentro del contenedor.'}
+            {running ? 'Ejecutando…' : result ? result.output || '(sin salida)' : 'La salida se mostrará aquí. El comando se ejecuta con `sh -c` dentro del contenedor.'}
           </pre>
           {result && (
             <span
@@ -103,12 +103,12 @@ export default function ExecModal({
                 result.exitCode === 0 ? 'border-ok/40 bg-ok/10 text-ok' : 'border-err/40 bg-err/10 text-err',
               )}
             >
-              {result.timedOut ? 'timeout 60s' : `exit ${result.exitCode ?? '?'}`} · {(result.durationMs / 1000).toFixed(1)}s
+              {result.timedOut ? 'tiempo de espera agotado (60 s)' : `código de salida ${result.exitCode ?? '?'}`} · {(result.durationMs / 1000).toFixed(1)}s
               {result.truncated ? ' · salida truncada' : ''}
             </span>
           )}
         </div>
-        <p className="text-xs text-subtle">Límite 60 s. Queda en el registro de actividad.</p>
+        <p className="text-xs text-subtle">Límite de 60 s. La ejecución se anota en el registro de actividad.</p>
       </div>
     </Modal>
   );

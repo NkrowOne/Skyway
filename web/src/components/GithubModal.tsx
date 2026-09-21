@@ -87,7 +87,7 @@ export default function GithubModal({
       api.del(target.kind === 'app' ? `/github/installations/${target.id}` : `/connectors/${target.id}`),
     onSuccess: () => {
       setToDelete(null);
-      toast('Cuenta de GitHub quitada', 'ok');
+      toast('Se ha eliminado la cuenta de GitHub', 'ok');
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -96,7 +96,7 @@ export default function GithubModal({
   const syncInstallation = useMutation({
     mutationFn: (id: string) => api.post(`/github/installations/${id}/sync`),
     onSuccess: () => {
-      toast('Cuenta actualizada desde GitHub', 'ok');
+      toast('Se ha actualizado la cuenta desde GitHub', 'ok');
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -135,10 +135,10 @@ export default function GithubModal({
                       <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-surface2 text-txt">
                         <ModuleLogo kind="github" size={20} />
                       </span>
-                      <p className="mt-3 text-sm font-medium">Conecta tu cuenta de GitHub</p>
+                      <p className="mt-3 text-sm font-medium">Conectar una cuenta de GitHub</p>
                       <p className="mx-auto mt-1 max-w-md text-xs text-sub">
-                        Eliges en GitHub qué repositorios ve Skyway. Solo aparecen los de las cuentas donde instales la App;
-                        para un repo ajeno donde eres colaborador, usa un token personal (abajo).
+                        En GitHub se seleccionan los repositorios visibles para Skyway. Solo aparecen los de las cuentas donde se
+                        instale la App; para un repositorio ajeno en el que sea colaborador, utilice un token personal (más abajo).
                       </p>
                       <Button className="mt-4" onClick={connectAccount}>
                         <ModuleLogo kind="github" size={14} /> Conectar con GitHub
@@ -172,7 +172,7 @@ export default function GithubModal({
                                 )}
                               </p>
                               <p className="mt-px text-xs text-subtle">
-                                {inst.repoSelection === 'all' ? 'todos los repos de la cuenta' : 'solo los repos elegidos'} ·
+                                {inst.repoSelection === 'all' ? 'todos los repositorios de la cuenta' : 'solo los repositorios seleccionados'} ·
                                 conectada por {inst.createdBy} · {timeAgo(inst.createdAt)}
                                 {inst.lastUsedAt ? ` · último despliegue ${timeAgo(inst.lastUsedAt)}` : ' · sin usar'}
                               </p>
@@ -185,8 +185,8 @@ export default function GithubModal({
                                 target="_blank"
                                 rel="noreferrer"
                                 className="press rounded-md p-1.5 text-subtle transition-colors hover:bg-surface2 hover:text-txt max-sm:p-2.5"
-                                title="Elegir repositorios en GitHub"
-                                aria-label={`Elegir repositorios de @${inst.accountLogin} en GitHub`}
+                                title="Seleccionar repositorios en GitHub"
+                                aria-label={`Seleccionar repositorios de @${inst.accountLogin} en GitHub`}
                               >
                                 <Settings2 size={14} />
                               </a>
@@ -202,8 +202,8 @@ export default function GithubModal({
                             <button
                               onClick={() => setToDelete({ kind: 'app', id: inst.id, label: `@${inst.accountLogin}` })}
                               className="press rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err max-sm:p-2.5"
-                              title="Quitar cuenta"
-                              aria-label={`Quitar la cuenta @${inst.accountLogin}`}
+                              title="Eliminar cuenta"
+                              aria-label={`Eliminar la cuenta @${inst.accountLogin}`}
                             >
                               <Trash2 size={14} />
                             </button>
@@ -228,9 +228,9 @@ export default function GithubModal({
                       {/* El botón va aquí, no un enlace a Ajustes: este es el momento
                           en que hace falta la App, y mandar a buscarla a otra página
                           es donde la gente se rendía y se quedaba con los tokens. */}
-                      <p className="mt-3 text-sm font-medium">Conecta GitHub sin tokens</p>
+                      <p className="mt-3 text-sm font-medium">Conectar GitHub sin tokens</p>
                       <p className="mx-auto mt-1 max-w-md text-xs text-sub">
-                        Se crea una vez por servidor. Después cada cuenta se conecta con un clic.
+                        La App se crea una sola vez por servidor. Después, cada cuenta se conecta con un clic.
                       </p>
                       <Button className="mt-4" onClick={() => createApp.create(appOrg)} loading={createApp.pending}>
                         <ModuleLogo kind="github" size={14} /> Crear la App en GitHub
@@ -256,14 +256,14 @@ export default function GithubModal({
                               }}
                               className="shrink-0 hover:text-txt"
                             >
-                              cancelar
+                              Cancelar
                             </button>
                           </div>
                         ) : (
                           <>
-                            Se creará en tu cuenta personal.{' '}
+                            Se creará en su cuenta personal.{' '}
                             <button type="button" onClick={() => setOrgOpen(true)} className="font-medium text-acc-soft hover:underline">
-                              ¿En una organización?
+                              Crear en una organización
                             </button>
                           </>
                         )}
@@ -271,10 +271,10 @@ export default function GithubModal({
                     </>
                   ) : (
                     <>
-                      <p className="mt-3 text-sm font-medium">Este servidor aún no tiene GitHub App</p>
+                      <p className="mt-3 text-sm font-medium">Este servidor todavía no tiene GitHub App</p>
                       <p className="mx-auto mt-1 max-w-md text-xs text-sub">
-                        Pídele al administrador que la cree y podrás conectar repositorios sin tokens. Mientras tanto,
-                        usa un token personal.
+                        Solicite al administrador que la cree para poder conectar repositorios sin tokens. Mientras tanto,
+                        puede utilizar un token personal.
                       </p>
                     </>
                   )}
@@ -291,9 +291,9 @@ export default function GithubModal({
               </summary>
 
               <p className="mt-2 text-xs text-subtle">
-                Para cuentas donde no se puede instalar la App y para repos ajenos donde solo eres colaborador: un token
-                clásico con permiso «repo» ve todo lo que ve tu usuario (los fine-grained, solo lo que se les concede).
-                Caducan, así que la App es preferible cuando llegue.
+                Para cuentas en las que no se puede instalar la App y para repositorios ajenos en los que solo sea colaborador:
+                un token clásico con permiso «repo» accede a todo lo que ve su usuario (los de tipo fine-grained, solo a lo
+                que se les concede). Los tokens caducan, por lo que se recomienda la App en cuanto esté disponible.
               </p>
 
               {pats.length > 0 && (
@@ -321,8 +321,8 @@ export default function GithubModal({
                       <button
                         onClick={() => setToDelete({ kind: 'pat', id: c.id, label: `${c.name} (@${c.gh_login})` })}
                         className="press shrink-0 rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err max-sm:p-2.5"
-                        title="Quitar cuenta"
-                        aria-label={`Quitar la cuenta ${c.name}`}
+                        title="Eliminar cuenta"
+                        aria-label={`Eliminar la cuenta ${c.name}`}
                       >
                         <Trash2 size={14} />
                       </button>
@@ -340,17 +340,17 @@ export default function GithubModal({
                   }}
                 >
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <Field label="Nombre" hint="de quién es la cuenta: «GitHub de Acme»">
+                    <Field label="Nombre" hint="Titular de la cuenta; por ejemplo, «GitHub de Acme»">
                       <input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} autoFocus />
                     </Field>
                     <Field
                       label="Token de acceso personal"
-                      hint="github.com → Settings → Developer settings → Tokens (permiso «repo» o solo lectura de los repos)"
+                      hint="github.com → Settings → Developer settings → Tokens (permiso «repo» o solo lectura de los repositorios)"
                     >
                       <input
                         className="input font-mono sm:text-xs"
                         type="password"
-                        placeholder="ghp_... o github_pat_..."
+                        placeholder="ghp_… o github_pat_…"
                         value={token}
                         onChange={(e) => setToken(e.target.value)}
                         autoComplete="off"
@@ -380,7 +380,7 @@ export default function GithubModal({
 
             {apps.length === 0 && pats.length === 0 && connectors.data && !connectors.data.hasGlobalToken && (
               <p className="mt-4 rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
-                Sin cuenta conectada solo se clonan repos públicos.
+                Sin una cuenta conectada solo es posible clonar repositorios públicos.
               </p>
             )}
           </>
@@ -391,11 +391,11 @@ export default function GithubModal({
         open={!!toDelete}
         onClose={() => setToDelete(null)}
         onConfirm={() => toDelete && removeConnection.mutate(toDelete)}
-        title="Quitar cuenta de GitHub"
+        title="Eliminar cuenta de GitHub"
         message={
           toDeleteShown?.kind === 'app'
-            ? `Los servicios que usen ${toDeleteShown.label} pasarán a clonar con el token global del servidor en el próximo despliegue; si el repo es privado y ese token no lo ve, el despliegue fallará. La App seguirá instalada en GitHub: quítala allí si además quieres revocar el acceso.`
-            : `Los servicios que usen «${toDeleteShown?.label ?? ''}» pasarán a clonar con el token global del servidor en el próximo despliegue; si el repo es privado y ese token no lo ve, el despliegue fallará.`
+            ? `Los servicios que usen ${toDeleteShown.label} pasarán a clonar con el token global del servidor en el próximo despliegue; si el repositorio es privado y ese token no tiene acceso, el despliegue fallará. La App seguirá instalada en GitHub: elimínela allí si además desea revocar el acceso.`
+            : `Los servicios que usen «${toDeleteShown?.label ?? ''}» pasarán a clonar con el token global del servidor en el próximo despliegue; si el repositorio es privado y ese token no tiene acceso, el despliegue fallará.`
         }
         loading={removeConnection.isPending}
       />

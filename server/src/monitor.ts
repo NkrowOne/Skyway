@@ -165,8 +165,8 @@ async function tick(): Promise<void> {
           type: 'crash_loop',
           serviceId: service.id,
           title: `Bucle de reinicios: ${service.name}${replicaTag}`,
-          message: `"${service.name}"${replicaTag} se ha reiniciado ${restartDelta} veces en los últimos 10 minutos. Docker lo relanza (restart: unless-stopped) pero el proceso muere una y otra vez.`,
-          explanation: `${explainExitCode(runtime.exitCode)} Revisa la pestaña Logs del servicio: el error aparece justo antes de cada reinicio. Causas típicas: variable de entorno que falta, base de datos inaccesible o puerto interno equivocado.`,
+          message: `"${service.name}"${replicaTag} se ha reiniciado ${restartDelta} veces en los últimos 10 minutos. Docker lo vuelve a iniciar (restart: unless-stopped), pero el proceso finaliza repetidamente.`,
+          explanation: `${explainExitCode(runtime.exitCode)} Revise la pestaña «Logs» del servicio: el error aparece justo antes de cada reinicio. Causas habituales: una variable de entorno que falta, una base de datos inaccesible o un puerto interno incorrecto.`,
           dedupe: true,
         });
       } else if (restartDelta === 0 && runtime.state === 'running') {
@@ -198,8 +198,8 @@ async function tick(): Promise<void> {
                 type: 'cpu_high',
                 serviceId: service.id,
                 title: `CPU alta: ${service.name}`,
-                message: `"${service.name}" lleva ${Math.round((nowMs - entry.cpuHighSince) / 60000)} min usando ~${Math.round(cpuPct)}% de su CPU ${cfg.cpus ? `(límite ${cfg.cpus} núcleos)` : `(sin límite, ${hostCores} núcleos del host)`}.`,
-                explanation: 'Si es tráfico legítimo, sube el límite de CPU en Ajustes → Recursos. Si no, puede ser un bucle infinito o un proceso desbocado: revisa los logs. Sin límite configurado, este servicio puede acaparar la CPU del resto de proyectos.',
+                message: `"${service.name}" lleva ${Math.round((nowMs - entry.cpuHighSince) / 60000)} min utilizando aproximadamente el ${Math.round(cpuPct)}% de su CPU ${cfg.cpus ? `(límite ${cfg.cpus} núcleos)` : `(sin límite, ${hostCores} núcleos del host)`}.`,
+                explanation: 'Si se trata de tráfico legítimo, aumente el límite de CPU en Ajustes → Recursos. En caso contrario, puede deberse a un bucle infinito o a un proceso descontrolado: revise el registro. Sin límite configurado, este servicio puede acaparar la CPU del resto de proyectos.',
                 dedupe: true,
               });
             }
@@ -219,10 +219,10 @@ async function tick(): Promise<void> {
                   type: 'mem_high',
                   serviceId: service.id,
                   title: `Memoria alta: ${service.name}`,
-                  message: `"${service.name}" usa el ${Math.round(memPct)}% de ${hasLimit ? `su límite (${cfg.memoryMb} MB)` : 'la RAM del servidor'}.`,
+                  message: `"${service.name}" utiliza el ${Math.round(memPct)}% de ${hasLimit ? `su límite (${cfg.memoryMb} MB)` : 'la RAM del servidor'}.`,
                   explanation: hasLimit
-                    ? 'Si supera el límite, el kernel matará el proceso (OOM, código 137). Sube el límite de RAM o investiga una posible fuga de memoria.'
-                    : 'Este servicio no tiene límite de RAM y está consumiendo gran parte de la memoria del host: puede afectar a todos los proyectos. Ponle un límite en Ajustes → Recursos.',
+                    ? 'Si supera el límite, el kernel finalizará el proceso (OOM, código 137). Aumente el límite de RAM o investigue una posible fuga de memoria.'
+                    : 'Este servicio no tiene límite de RAM y está consumiendo gran parte de la memoria del host: puede afectar a todos los proyectos. Establezca un límite en Ajustes → Recursos.',
                   dedupe: true,
                 });
               }
@@ -323,9 +323,9 @@ async function checkDiskQuotas(): Promise<void> {
           type: 'disk_quota',
           serviceId: service.id,
           title: `Espacio asignado superado: ${service.name}`,
-          message: `"${service.name}" (${project.name}) usa ${fmtBytesEs(du.totalBytes)} de los ${du.quotaMb} MB asignados (${Math.round(pct)}%).`,
+          message: `"${service.name}" (${project.name}) utiliza ${fmtBytesEs(du.totalBytes)} de los ${du.quotaMb} MB asignados (${Math.round(pct)}%).`,
           explanation:
-            'La cuota es orientativa: el servicio sigue funcionando, pero está ocupando más disco del previsto. Revisa qué crece (datos de la base, uploads, logs) desde Monitor → Espacio, amplía la cuota en Ajustes del servicio o libera espacio.',
+            'La cuota es orientativa: el servicio sigue funcionando, pero ocupa más disco del previsto. Revise qué crece (datos de la base de datos, archivos subidos, registros) desde Monitor → Espacio, amplíe la cuota en Ajustes del servicio o libere espacio.',
           dedupe: true,
         });
       } else if (pct >= 90) {
@@ -335,7 +335,7 @@ async function checkDiskQuotas(): Promise<void> {
           type: 'disk_quota_soon',
           serviceId: service.id,
           title: `Espacio al ${Math.round(pct)}%: ${service.name}`,
-          message: `"${service.name}" (${project.name}) usa ${fmtBytesEs(du.totalBytes)} de los ${du.quotaMb} MB asignados. Al superar el 100% recibirás una alerta.`,
+          message: `"${service.name}" (${project.name}) utiliza ${fmtBytesEs(du.totalBytes)} de los ${du.quotaMb} MB asignados. Al superar el 100 % se generará una alerta.`,
           dedupe: true,
           quiet: true,
         });

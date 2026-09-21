@@ -168,7 +168,7 @@ export async function productRoutes(app: FastifyInstance): Promise<void> {
     // La moneda de un producto ya contratado no puede cambiar: las suscripciones
     // vivas la tienen congelada y la factura acabaría mezclando divisas.
     if (body.currency && body.currency.toUpperCase() !== p.currency.toUpperCase() && productInUse(id)) {
-      return reply.code(409).send({ error: 'El producto está contratado: no se puede cambiar su moneda. Archívalo y crea uno nuevo.' });
+      return reply.code(409).send({ error: 'El producto está contratado: no es posible cambiar su moneda. Archívelo y cree uno nuevo.' });
     }
     updateProduct(id, toRowFields(body));
     if (body.tiers !== undefined) replaceTiers(id, body.tiers);

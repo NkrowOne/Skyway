@@ -15,7 +15,8 @@
     "build": "npm run build -w web && npm run build -w server",
     "start": "node server/dist/index.js",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
-    "lint": "npm run lint -w web"
+    "lint": "npm run lint -w web",
+    "test": "npm run test -w server && npm run test -w web"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

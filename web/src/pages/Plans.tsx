@@ -104,7 +104,7 @@ export default function PlansPage() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Planes</h1>
-          <p className="mt-1.5 text-sm text-sub">Los usos incluidos y el precio que hereda cada cuenta. Se pueden ajustar a medida por cliente.</p>
+          <p className="mt-1.5 text-sm text-sub">Recursos incluidos y precio que hereda cada cuenta. Pueden ajustarse a medida por cliente.</p>
         </div>
         <Button onClick={() => setDraft({ ...EMPTY, modules: modules.data?.modules.map((m) => m.key) ?? [] })}>
           <Plus size={15} /> Nuevo plan
@@ -138,7 +138,7 @@ export default function PlansPage() {
         <div className="card">
           <EmptyState
             title="Todavía no hay planes"
-            description="Crea el primero para poder asignar cuotas y precios a las cuentas de cliente."
+            description="Cree el primero para poder asignar cuotas y precios a las cuentas de cliente."
           />
         </div>
       )}
@@ -165,7 +165,7 @@ export default function PlansPage() {
                   onClick={() => setToDelete(p)}
                   disabled={p.inUse > 0}
                   className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err disabled:opacity-30 max-sm:p-2.5"
-                  title={p.inUse > 0 ? 'En uso: archívalo o reasigna sus cuentas' : 'Eliminar'}
+                  title={p.inUse > 0 ? 'En uso: archívelo o reasigne sus cuentas' : 'Eliminar'}
                   aria-label="Eliminar"
                 >
                   <Trash2 size={14} />
@@ -209,7 +209,7 @@ export default function PlansPage() {
               <Field label="Proyectos"><input className="input tnum" type="number" inputMode="numeric" min={1} value={draft.max_projects} onChange={(e) => setDraft({ ...draft, max_projects: e.target.value })} /></Field>
               <Field label="Servicios"><input className="input tnum" type="number" inputMode="numeric" min={1} value={draft.max_services} onChange={(e) => setDraft({ ...draft, max_services: e.target.value })} /></Field>
               <Field label="Usuarios"><input className="input tnum" type="number" inputMode="numeric" min={1} value={draft.max_members} onChange={(e) => setDraft({ ...draft, max_members: e.target.value })} /></Field>
-              <Field label="Descuento (%)" hint="rebaja las facturas de sus cuentas"><input className="input tnum" type="number" inputMode="decimal" min={0} max={100} step="0.5" value={draft.discount_pct} onChange={(e) => setDraft({ ...draft, discount_pct: e.target.value })} /></Field>
+              <Field label="Descuento (%)" hint="Se aplica a las facturas de sus cuentas"><input className="input tnum" type="number" inputMode="decimal" min={0} max={100} step="0.5" value={draft.discount_pct} onChange={(e) => setDraft({ ...draft, discount_pct: e.target.value })} /></Field>
             </div>
             <Field label="Módulos incluidos" group>
               <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
@@ -253,7 +253,7 @@ export default function PlansPage() {
         onClose={() => setToDelete(null)}
         onConfirm={() => toDelete && remove.mutate(toDelete.id)}
         title="Eliminar plan"
-        message={`El plan «${toDelete?.name}» se elimina. Esta acción no afecta a cuentas (ninguna lo usa).`}
+        message={`Se eliminará el plan «${toDelete?.name}». Esta acción no afecta a ninguna cuenta (ninguna lo utiliza).`}
         loading={remove.isPending}
       />
     </div>

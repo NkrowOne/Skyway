@@ -180,7 +180,7 @@ const ServiceCard = memo(function ServiceCard({
                   ? `Caído · ${status.detail}`
                   : 'Caído'
                 : state === 'not_created'
-                  ? 'Todavía sin desplegar'
+                  ? 'Sin desplegar'
                   : 'Sin métricas'}
           </span>
         )}

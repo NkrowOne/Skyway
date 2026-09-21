@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { ChevronRight, Cpu, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
+import { ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
 import { api } from '../../api';
 import { DbTemplate, Service } from '../../types';
 import { cx } from '../../utils';
@@ -90,6 +90,7 @@ interface FormState {
   diskMb: string;
   alertsMuted: boolean;
   autoDeploy: boolean;
+  autoImportEnv: boolean;
   healthcheckPath: string;
   replicas: string;
   volumePaths: string[];
@@ -119,6 +120,7 @@ function formFromService(service: Service): FormState {
     alertsMuted: !!(cfg as any).alertsMuted,
     // Opt-out: ausente = activado (solo `false` lo desactiva).
     autoDeploy: (cfg as any).autoDeploy !== false,
+    autoImportEnv: cfg.autoImportEnv !== false,
     healthcheckPath: cfg.healthcheckPath ?? '',
     replicas: String((cfg as any).replicas ?? 1),
     volumePaths: ((cfg as any).volumes ?? []).map((v: { containerPath: string }) => v.containerPath),
@@ -235,6 +237,7 @@ export default function ServiceSettingsTab({
           port: Number(form.port) || 3000,
           domains: form.domains,
           autoDeploy: form.autoDeploy,
+          autoImportEnv: form.autoImportEnv,
         });
       } else if (isImage) {
         Object.assign(config, {
@@ -251,7 +254,7 @@ export default function ServiceSettingsTab({
     onSuccess: (data) => {
       setBaseline(form);
       flashSaved();
-      toast(data.needsRedeploy ? 'Guardado. Redespliega para aplicar los cambios.' : 'Guardado y aplicado.', 'ok');
+      toast(data.needsRedeploy ? 'Cambios guardados. Es necesario volver a desplegar para aplicarlos.' : 'Cambios guardados y aplicados.', 'ok');
       if (data.needsRedeploy) onNeedsRedeploy?.();
       onChanged();
     },
@@ -261,7 +264,7 @@ export default function ServiceSettingsTab({
   const remove = useMutation({
     mutationFn: () => api.del(`/services/${service.id}?volumes=${deleteVolumes}`),
     onSuccess: () => {
-      toast('Servicio eliminado', 'ok');
+      toast('Servicio eliminado.', 'ok');
       onDeleted();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -285,7 +288,7 @@ export default function ServiceSettingsTab({
           icon={<ModuleLogo kind={moduleKind(service)} size={14} />}
           iconClass="text-txt"
           title="General"
-          description="Origen, build y arranque del servicio"
+          description="Origen, compilación y arranque del servicio"
         >
           <div className="flex flex-col gap-3">
             <Field label="Nombre">
@@ -318,7 +321,7 @@ export default function ServiceSettingsTab({
                     hint="Cuenta conectada al proyecto (App o token), o el token global del servidor"
                     error={
                       danglingSource
-                        ? 'La cuenta que tenía este servicio ya no está conectada: se usará el token global hasta que elijas otra'
+                        ? 'La cuenta asociada a este servicio ya no está conectada. Se usará el token global hasta que se seleccione otra.'
                         : null
                     }
                   >
@@ -339,21 +342,21 @@ export default function ServiceSettingsTab({
                 </div>
                 <Avanzado resumen="Directorio, Dockerfile, constructor, comandos y healthcheck">
                   <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                    <Field label="Directorio raíz" hint="vacío = raíz del repo">
+                    <Field label="Directorio raíz" hint="Vacío: raíz del repositorio">
                       <input className="input" placeholder="apps/api" value={form.rootDir} onChange={(e) => set('rootDir', e.target.value)} />
                     </Field>
-                    <Field label="Dockerfile" hint="vacío = Dockerfile">
+                    <Field label="Dockerfile" hint="Vacío: Dockerfile">
                       <input className="input" placeholder="Dockerfile" value={form.dockerfilePath} onChange={(e) => set('dockerfilePath', e.target.value)} />
                     </Field>
                   </div>
-                  <Field label="Constructor" hint="Automático: Dockerfile si lo hay; si no, Nixpacks.">
+                  <Field label="Constructor" hint="Automático: Dockerfile si existe; en caso contrario, Nixpacks.">
                     <select className="input" value={form.builder} onChange={(e) => set('builder', e.target.value as FormState['builder'])}>
                       <option value="auto">Automático (recomendado)</option>
                       <option value="dockerfile">Dockerfile del repositorio</option>
                       <option value="nixpacks">Nixpacks</option>
                     </select>
                   </Field>
-                  <Field label="Comando de arranque" hint="Opcional: sobreescribe el CMD de la imagen">
+                  <Field label="Comando de arranque" hint="Opcional. Sobrescribe el CMD de la imagen.">
                     <input
                       className="input font-mono text-xs"
                       value={form.startCmd}
@@ -361,7 +364,7 @@ export default function ServiceSettingsTab({
                       placeholder="npm run start"
                     />
                   </Field>
-                  <Field label="Comando de compilación" hint="Solo sin Dockerfile (Nixpacks); con Dockerfile manda el Dockerfile.">
+                  <Field label="Comando de compilación" hint="Solo se aplica sin Dockerfile (Nixpacks); con Dockerfile prevalece el Dockerfile.">
                     <input
                       className="input font-mono text-xs"
                       value={form.buildCmd}
@@ -371,7 +374,7 @@ export default function ServiceSettingsTab({
                   </Field>
                   <Field
                     label="Ruta de healthcheck"
-                    hint="Opcional, ej: /health. Si responde 2xx la nueva versión se considera sana: despliegues sin corte con marcha atrás automática."
+                    hint="Opcional, por ejemplo /health. Si responde 2xx, la nueva versión se considera correcta: despliegues sin interrupción con reversión automática."
                   >
                     <input
                       className="input font-mono text-xs"
@@ -384,18 +387,18 @@ export default function ServiceSettingsTab({
               </>
             ) : isImage ? (
               <>
-                <Field label="Imagen" hint="Cambiarla requiere redesplegar">
+                <Field label="Imagen" hint="Al cambiarla es necesario volver a desplegar">
                   <input className="input font-mono text-xs" value={form.image} onChange={(e) => set('image', e.target.value)} />
                 </Field>
                 <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                  <Field label="Puerto interno" hint="vacío = sin HTTP">
+                  <Field label="Puerto interno" hint="Vacío: sin HTTP">
                     <input className="input tnum" type="number" inputMode="numeric" value={form.port} onChange={(e) => set('port', e.target.value)} />
                   </Field>
-                  <Field label="Comando de arranque" hint="opcional">
+                  <Field label="Comando de arranque" hint="Opcional">
                     <input className="input font-mono text-xs" value={form.startCmd} onChange={(e) => set('startCmd', e.target.value)} />
                   </Field>
                 </div>
-                <Field label="Ruta de healthcheck" hint="Opcional, ej: /healthz. Activa despliegues validados con marcha atrás automática.">
+                <Field label="Ruta de healthcheck" hint="Opcional, por ejemplo /healthz. Activa despliegues validados con reversión automática.">
                   <input
                     className="input font-mono text-xs"
                     value={form.healthcheckPath}
@@ -413,7 +416,7 @@ export default function ServiceSettingsTab({
         </SectionCard>
 
         {isGit && (
-          <SectionCard icon={<ModuleLogo kind="github" size={14} />} iconClass="text-txt" title="Auto-deploy">
+          <SectionCard icon={<ModuleLogo kind="github" size={14} />} iconClass="text-txt" title="Despliegue automático">
             <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line bg-surface px-3 py-2.5">
               <input
                 type="checkbox"
@@ -422,9 +425,9 @@ export default function ServiceSettingsTab({
                 className="mt-0.5 h-[15px] w-[15px] shrink-0 accent-acc max-sm:h-4 max-sm:w-4"
               />
               <span className="text-sm">
-                <span className="font-medium">Auto-desplegar al hacer push a <span className="font-mono">{form.branch}</span></span>
+                <span className="font-medium">Desplegar automáticamente al hacer push a <span className="font-mono">{form.branch}</span></span>
                 <span className="mt-1 block text-xs leading-relaxed text-subtle">
-                  Comprueba la rama cada pocos minutos. Apagado, ningún push despliega.
+                  La rama se comprueba cada pocos minutos. Si está desactivado, ningún push inicia un despliegue.
                 </span>
               </span>
             </label>
@@ -432,7 +435,7 @@ export default function ServiceSettingsTab({
             <details className="group mt-2.5">
               <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-subtle transition-colors hover:text-sub">
                 <ChevronRight size={12} className="shrink-0 text-subtle transition-transform group-open:rotate-90" />
-                ¿Lo quieres instantáneo? Configura además el webhook de GitHub
+                Despliegue inmediato: configurar el webhook de GitHub
               </summary>
               <div className="details-body mt-2 flex flex-col gap-2 text-xs">
                 <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
@@ -454,7 +457,7 @@ export default function ServiceSettingsTab({
                     En el repositorio: <span className="font-mono">Settings → Webhooks → Add webhook</span>.
                   </li>
                   <li>
-                    Pega la URL y el secreto; content type <span className="font-mono">application/json</span>.
+                    Introduzca la URL y el secreto; tipo de contenido <span className="font-mono">application/json</span>.
                   </li>
                   <li>
                     Evento: solo <span className="font-mono">push</span>.
@@ -462,6 +465,27 @@ export default function ServiceSettingsTab({
                 </ol>
               </div>
             </details>
+          </SectionCard>
+        )}
+
+        {isGit && (
+          <SectionCard icon={<FileText size={14} />} iconClass="text-sub" title="Variables del repositorio">
+            <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line bg-surface px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={form.autoImportEnv}
+                onChange={(e) => set('autoImportEnv', e.target.checked)}
+                className="mt-0.5 h-[15px] w-[15px] shrink-0 accent-acc max-sm:h-4 max-sm:w-4"
+              />
+              <span className="text-sm">
+                <span className="font-medium">Importar las variables del .env del repositorio al desplegar</span>
+                <span className="mt-1 block text-xs leading-relaxed text-subtle">
+                  Lee <span className="font-mono">.env.example</span>, <span className="font-mono">.env</span> y similares al
+                  clonar y crea las variables que falten. No sobrescribe las variables existentes; las que no tienen valor se
+                  indican en la pestaña «Variables».
+                </span>
+              </span>
+            </label>
           </SectionCard>
         )}
 
@@ -474,8 +498,8 @@ export default function ServiceSettingsTab({
                 contar que eso deja el dominio de adorno. */}
             {isImage && form.domains.length > 0 && !form.port.trim() && (
               <p className="mb-3 rounded-lg border border-warn/30 bg-warn/[.06] px-3 py-2 text-xs text-warn">
-                Sin puerto interno el dominio no funciona: responderá 404 con un certificado que no es el suyo. Indica
-                arriba el puerto en el que escucha, o quítale el dominio si es un worker sin HTTP.
+                Sin puerto interno el dominio no funciona: responderá 404 con un certificado que no le corresponde. Indique
+                el puerto de escucha en el campo anterior o retire el dominio si el servicio no atiende HTTP.
               </p>
             )}
             <DomainsEditor domains={form.domains} onChange={(d) => set('domains', d)} slug={service.slug} />
@@ -486,17 +510,17 @@ export default function ServiceSettingsTab({
           icon={<Network size={14} />}
           iconClass="text-ok"
           title="Dirección interna"
-          description="Con esto llegan los demás servicios del proyecto, sin salir a Internet"
+          description="Dirección por la que acceden los demás servicios del proyecto sin salir a Internet"
         >
           <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
             <span className="flex min-w-0 items-center gap-1.5">
               <span className="truncate font-mono text-xs">{internalAddress}</span>
               <CopyButton value={internalAddress} />
             </span>
-            {!internalPort && <span className="shrink-0 text-xs text-subtle">sin puerto HTTP</span>}
+            {!internalPort && <span className="shrink-0 text-xs text-subtle">Sin puerto HTTP</span>}
           </div>
           <p className="mt-2 text-xs leading-relaxed text-subtle">
-            Úsala en las variables de los demás servicios del proyecto: el dominio público daría un rodeo por Internet.
+            Utilice esta dirección en las variables de los demás servicios del proyecto: el dominio público enruta el tráfico a través de Internet.
           </p>
           {/* La referencia, mejor que la dirección literal: si cambia el puerto,
               la referencia se actualiza sola y el «api:3000» pegado a mano no.
@@ -514,7 +538,7 @@ export default function ServiceSettingsTab({
           {/* El puerto público es la otra cara de la misma pregunta —por dónde se
               llega al servicio—, así que vive aquí y no entre los límites de CPU y RAM. */}
           <div className="mt-3 grid grid-cols-2 gap-2.5">
-            <Field label="Puerto público" hint="vacío = solo red interna">
+            <Field label="Puerto público" hint="Vacío: solo red interna">
               <input className="input tnum" type="number" inputMode="numeric" placeholder={isGit ? '8080' : '5432'} value={form.hostPort} onChange={(e) => set('hostPort', e.target.value)} />
             </Field>
           </div>
@@ -524,30 +548,30 @@ export default function ServiceSettingsTab({
           icon={<Cpu size={14} />}
           iconClass="text-acc-soft"
           title="Recursos"
-          description="Los límites se aplican en caliente, sin reiniciar"
+          description="Los límites se aplican de inmediato, sin reiniciar el servicio"
         >
           <div className={cx('grid gap-2.5 grid-cols-2', isDb ? 'sm:grid-cols-3' : 'sm:grid-cols-4')}>
-            <Field label="CPUs" hint="vacío = sin límite">
+            <Field label="CPU" hint="Vacío: sin límite">
               <input className="input tnum" type="number" inputMode="decimal" step="0.1" min="0.1" placeholder="1.5" value={form.cpus} onChange={(e) => set('cpus', e.target.value)} />
             </Field>
-            <Field label="RAM (MB)" hint="vacío = sin límite">
+            <Field label="RAM (MB)" hint="Vacío: sin límite">
               <input className="input tnum" type="number" inputMode="numeric" min="32" placeholder="512" value={form.memoryMb} onChange={(e) => set('memoryMb', e.target.value)} />
             </Field>
-            <Field label="Disco (MB)" hint="No corta: avisa al superarlo.">
+            <Field label="Disco (MB)" hint="No limita el uso: genera un aviso al superarlo.">
               <input className="input tnum" type="number" inputMode="numeric" min="64" placeholder="2048" value={form.diskMb} onChange={(e) => set('diskMb', e.target.value)} />
             </Field>
             {!isDb && (
-              <Field label="Réplicas" hint="copias en balanceo">
+              <Field label="Réplicas" hint="Instancias con balanceo de carga">
                 <input className="input tnum" type="number" inputMode="numeric" min="1" max="10" value={form.replicas} onChange={(e) => set('replicas', e.target.value)} />
               </Field>
             )}
           </div>
           {!isDb && replicasN > 1 && (
             <p className="mt-2.5 rounded-lg border border-acc/30 bg-acc/[.08] px-3 py-2.5 text-xs text-sub">
-              Con {replicasN} réplicas el tráfico se reparte y los despliegues son rodantes: siempre queda una sirviendo.
-              Requiere servicio <strong className="text-txt">sin volúmenes ni puerto público</strong>
+              Con {replicasN} réplicas el tráfico se distribuye y los despliegues son progresivos: siempre queda una réplica en servicio.
+              Requiere un servicio <strong className="text-txt">sin volúmenes ni puerto público</strong>
               {(form.volumePaths.length > 0 || form.hostPort) && (
-                <span className="text-err"> — ahora mismo lo incumples: quítalos antes de guardar</span>
+                <span className="text-err"> — esta condición no se cumple actualmente: retírelos antes de guardar</span>
               )}
               .
             </p>
@@ -569,7 +593,7 @@ export default function ServiceSettingsTab({
             icon={<HardDrive size={14} />}
             iconClass="text-warn"
             title="Volúmenes persistentes"
-            description="Rutas que sobreviven a los redespliegues"
+            description="Rutas cuyo contenido se conserva entre despliegues"
           >
             <div className="flex flex-col gap-2">
               {form.volumePaths.map((p) => (
@@ -606,7 +630,7 @@ export default function ServiceSettingsTab({
                 </Button>
               </div>
               <p className="text-xs text-subtle">
-                Con volúmenes el despliegue tiene un corte breve. Quitar una ruta no borra los datos.
+                Con volúmenes, el despliegue implica una breve interrupción. Quitar una ruta no elimina los datos.
               </p>
             </div>
           </SectionCard>
@@ -640,8 +664,8 @@ export default function ServiceSettingsTab({
         onClose={() => setDeleteOpen(false)}
         onConfirm={() => remove.mutate()}
         loading={remove.isPending}
-        title={`Eliminar "${service.name}"`}
-        message="Se detendrá y eliminará el contenedor de este servicio."
+        title={`Eliminar «${service.name}»`}
+        message="Se detendrá y se eliminará el contenedor de este servicio."
       >
         <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-sub max-sm:min-h-10">
           <input type="checkbox" checked={deleteVolumes} onChange={(e) => setDeleteVolumes(e.target.checked)} className="accent-acc max-sm:h-4 max-sm:w-4" />

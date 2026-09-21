@@ -93,7 +93,7 @@ export async function planRoutes(app: FastifyInstance): Promise<void> {
     // suscripciones de sus cuentas se validaron contra la moneda antigua y el
     // ciclo siguiente abortaría por divisas mezcladas, con el ancla clavada.
     if (body.currency && body.currency !== plan.currency.toUpperCase() && countWorkspacesOnPlan(id) > 0) {
-      return reply.code(409).send({ error: 'El plan está contratado: no se puede cambiar su moneda. Archívalo y crea uno nuevo.' });
+      return reply.code(409).send({ error: 'El plan está contratado: no es posible cambiar su moneda. Archívelo y cree uno nuevo.' });
     }
     const fields: Record<string, unknown> = {};
     if (body.name !== undefined) fields.name = body.name;
@@ -125,7 +125,7 @@ export async function planRoutes(app: FastifyInstance): Promise<void> {
     const inUse = countWorkspacesOnPlan(id);
     if (inUse > 0) {
       return reply.code(409).send({
-        error: `No se puede borrar: ${inUse} workspace${inUse === 1 ? '' : 's'} usa${inUse === 1 ? '' : 'n'} este plan. Archívalo o reasigna esos workspaces a otro plan primero.`,
+        error: `No es posible eliminarlo: ${inUse} workspace${inUse === 1 ? '' : 's'} utiliza${inUse === 1 ? '' : 'n'} este plan. Archívelo o reasigne esos workspaces a otro plan primero.`,
       });
     }
     deletePlan(id);

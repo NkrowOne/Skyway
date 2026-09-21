@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronDown, History, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Check, ChevronDown, History, LifeBuoy, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
 import { api, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, EMPTY_LIST, fmtDuration, isActiveDeploy, ServiceStatusKind, timeAgo } from '../../utils';
@@ -65,7 +66,7 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
           <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-err/20 text-err font-bold text-micro">
             ✕
           </span>
-          {deployment.status === 'canceled' ? 'Despliegue cancelado' : 'Despliegue interrumpido con errores'}
+          {deployment.status === 'canceled' ? 'Despliegue cancelado' : 'Despliegue fallido'}
         </span>
         {deployment.finished_at && (
           <span className="font-mono text-micro text-subtle">
@@ -92,7 +93,7 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
               ? 'En cola de ejecución…'
               : deployment.status === 'building'
                 ? 'Compilando y empaquetando…'
-                : 'Iniciando contenedor y validando salud…'}
+                : 'Iniciando el contenedor y comprobando su estado…'}
           </span>
         </div>
         <span className="font-mono text-micro font-semibold text-warn">
@@ -137,7 +138,7 @@ function DeployProgress({ deployment }: { deployment: Deployment }) {
 }
 
 /** Explicación del fallo generada por el servidor (qué pasó y cómo arreglarlo). */
-function DiagnosisCard({ raw }: { raw: string | null }) {
+function DiagnosisCard({ raw, serviceId }: { raw: string | null; serviceId: string }) {
   // Se parsea una vez por texto, no en cada repintado del acordeón.
   const diagnosis = useMemo<Diagnosis | null>(() => {
     if (!raw) return null;
@@ -155,9 +156,17 @@ function DiagnosisCard({ raw }: { raw: string | null }) {
       </p>
       <p className="mt-1.5 text-sub">{diagnosis.cause}</p>
       <p className="mt-1.5">
-        <span className="font-semibold text-ok">Cómo arreglarlo: </span>
+        <span className="font-semibold text-ok">Solución recomendada: </span>
         <span className="text-sub">{diagnosis.fix}</span>
       </p>
+      {/* El asistente cruza este diagnóstico con los logs de ejecución y la
+          FAQ: es el siguiente paso cuando el arreglo de arriba no basta. */}
+      <Link
+        to={`/help?service=${encodeURIComponent(serviceId)}&q=${encodeURIComponent('El despliegue ha fallado')}`}
+        className="tap mt-2.5 inline-flex items-center gap-1.5 font-semibold text-acc-soft hover:underline max-sm:mt-3 max-sm:min-h-10"
+      >
+        <LifeBuoy size={12} aria-hidden /> Consultar al asistente
+      </Link>
     </div>
   );
 }
@@ -253,7 +262,7 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
       title={deployment.id}
       state={isLive || lines.length > 0 ? 'ready' : logsQuery.isLoading ? 'loading' : logsQuery.isError ? 'error' : 'ready'}
       onRetry={() => logsQuery.refetch()}
-      emptyMessage={isLive ? 'Esperando la primera línea del build…' : 'Este despliegue no dejó ningún registro.'}
+      emptyMessage={isLive ? 'Esperando la primera línea de la compilación…' : 'Este despliegue no ha generado ningún registro.'}
       downloadName={`deploy-${deployment.id}.txt`}
       className="h-[min(52dvh,420px)] overflow-hidden rounded-lg border border-line"
     />
@@ -376,7 +385,7 @@ export default function DeploymentsTab({
   const rollback = useMutation({
     mutationFn: (deploymentId: string) => api.post<{ deployment: Deployment }>(`/deployments/${deploymentId}/rollback`),
     onSuccess: (data) => {
-      toast('Volviendo a la versión anterior…', 'ok');
+      toast('Restaurando la versión anterior…', 'ok');
       toggle(data.deployment.id);
       queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
     },
@@ -386,7 +395,7 @@ export default function DeploymentsTab({
   const cancel = useMutation({
     mutationFn: (deploymentId: string) => api.post(`/deployments/${deploymentId}/cancel`),
     onSuccess: () => {
-      toast('Despliegue cancelado', 'ok');
+      toast('Despliegue cancelado.', 'ok');
       queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -449,8 +458,8 @@ export default function DeploymentsTab({
     return (
       <EmptyState
         icon={<History />}
-        title="Aún no hay despliegues"
-        description="Aparecerán aquí con su registro completo."
+        title="No hay despliegues"
+        description="Los despliegues aparecerán en esta lista con su registro completo."
       />
     );
   }
@@ -465,7 +474,7 @@ export default function DeploymentsTab({
           setRollbackTo(null);
         }}
         title="Volver a esta versión"
-        message={`El servicio se redesplegará con la imagen de «${rollbackTo?.commit_msg || rollbackTo?.id.slice(0, 8) || ''}». Habrá un corte breve mientras arranca.`}
+        message={`El servicio se volverá a desplegar con la imagen de «${rollbackTo?.commit_msg || rollbackTo?.id.slice(0, 8) || ''}». Se producirá una breve interrupción durante el arranque.`}
         confirmLabel="Volver a esta versión"
         confirmVariant="secondary"
         loading={rollback.isPending}
@@ -502,7 +511,7 @@ export default function DeploymentsTab({
                   <span className="block truncate text-sm font-medium">
                     {d.commit_msg ||
                       (d.trigger === 'rollback'
-                        ? 'Vuelta a una versión anterior'
+                        ? 'Restauración de una versión anterior'
                         : serviceType === 'database'
                           ? 'Despliegue de base de datos'
                           : 'Despliegue')}
@@ -530,8 +539,8 @@ export default function DeploymentsTab({
                     onClick={() => onNavigateToLogs(d.id)}
                     // Con el pulgar, 40px; con ratón, lo justo.
                     className="press flex h-10 items-center gap-1 rounded-lg border border-line bg-surface px-2.5 text-xs font-medium text-sub hover:bg-surface2 hover:text-txt sm:h-7 sm:px-2"
-                    title="Ver logs completos en la consola"
-                    aria-label="Ver logs completos en la consola"
+                    title="Ver el registro completo en la consola"
+                    aria-label="Ver el registro completo en la consola"
                   >
                     <ScrollText size={12} aria-hidden />
                     <span className="hidden sm:inline">Logs</span>
@@ -575,7 +584,7 @@ export default function DeploymentsTab({
                   {d.error && (
                     <p className="rounded-lg border border-err/30 bg-err/[.08] px-3 py-2 text-xs text-err">{d.error}</p>
                   )}
-                  <DiagnosisCard raw={d.diagnosis} />
+                  <DiagnosisCard raw={d.diagnosis} serviceId={serviceId} />
                   <DeploymentLogs deployment={d} />
                 </div>
               </Collapse>

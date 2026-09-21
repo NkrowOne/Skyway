@@ -122,9 +122,9 @@ const AlertCard = memo(function AlertCard({
                 className="ml-auto h-[30px] max-sm:h-10"
                 onClick={() => onResolve(alert.id)}
                 loading={resolving}
-                title="Las alertas se recuperan solas cuando la causa desaparece"
+                title="Las alertas se resuelven automáticamente cuando desaparece la causa"
               >
-                Marcar resuelta
+                Marcar como resuelta
               </Button>
             )}
           </div>
@@ -193,7 +193,7 @@ export default function AlertsPage() {
         <div>
           <h1 className="text-2xl font-semibold">Alertas</h1>
           <p className="mt-1.5 text-sm text-sub">
-            Caídas, bucles de reinicio, CPU/RAM altas y despliegues fallidos de todos los proyectos
+            Caídas, bucles de reinicio, consumo alto de CPU/RAM y despliegues fallidos de todos los proyectos
           </p>
         </div>
         <Segmented
@@ -213,7 +213,7 @@ export default function AlertsPage() {
 
       {sinCanal && (
         <p className="text-xs text-subtle">
-          Aún no recibes alertas fuera del panel.{' '}
+          Todavía no se envían alertas fuera del panel.{' '}
           <Link to="/settings" className="font-medium text-acc-soft hover:underline">
             Configurar Discord o Telegram →
           </Link>
@@ -243,7 +243,7 @@ export default function AlertsPage() {
         <div className="card flex flex-col items-center gap-3 py-16 text-center text-sm text-sub">
           {/* Verde solo cuando de verdad se sabe que no hay nada que mirar. */}
           <span aria-hidden className="pulse-soft h-2.5 w-2.5 rounded-full bg-ok" />
-          {openOnly ? 'No hay alertas activas. Todo en orden.' : 'Sin alertas registradas todavía.'}
+          {openOnly ? 'No hay alertas activas.' : 'Todavía no hay alertas registradas.'}
         </div>
       )}
 

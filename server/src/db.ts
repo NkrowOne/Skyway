@@ -50,7 +50,7 @@ const MIGRATED_WORKSPACE_INIT = {
   max_services: 500,
   max_members: 25,
   modules_override: JSON.stringify(ALL_MODULE_KEYS),
-  notes: 'Cuenta creada al migrar el campo «cliente». Revisa su plan y su cuota.',
+  notes: 'Cuenta creada al migrar el campo «cliente». Revise su plan y su cuota.',
 } as const;
 
 let db: Database.Database;
@@ -917,6 +917,19 @@ export function createUser(
 /** Cambia el workspace al que pertenece un usuario (owner/member). null en admins. */
 export function updateUserWorkspace(userId: string, workspaceId: string | null): void {
   db.prepare('UPDATE users SET workspace_id = ? WHERE id = ?').run(workspaceId, userId);
+}
+
+/**
+ * Todos los proyectos deben pertenecer al workspace (para asignarlos a un
+ * miembro). Vive aquí porque lo comprueban tanto la ficha de la cuenta como la
+ * gestión de usuarios de la plataforma: una sola regla, no dos copias.
+ */
+export function projectsBelongToWorkspace(projectIds: string[], workspaceId: string): { ok: boolean; bad?: string } {
+  for (const pid of projectIds) {
+    const project = getProject(pid);
+    if (!project || project.workspace_id !== workspaceId) return { ok: false, bad: pid };
+  }
+  return { ok: true };
 }
 
 /** Sub-usuarios (owner/member) de un workspace, en orden de alta. */
@@ -2526,7 +2539,7 @@ export function assignSeriesNumber(opts: {
       // código pedido ya existe con otra naturaleza, numerar aquí mezclaría ambas
       // en la misma serie correlativa: se corta antes de asignar número.
       throw new Error(
-        `La serie «${opts.code}» del ejercicio ${opts.year} ya está en uso para facturas de tipo «${s.kind}» y no puede compartirse con «${opts.kind}». Cambia el prefijo de factura en Contabilidad.`,
+        `La serie «${opts.code}» del ejercicio ${opts.year} ya está en uso para facturas de tipo «${s.kind}» y no puede compartirse con «${opts.kind}». Cambie el prefijo de factura en Contabilidad.`,
       );
     }
     const seq = s.next_seq;

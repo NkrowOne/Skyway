@@ -30,6 +30,7 @@ export default function ServiceDrawer({
   latestMetrics,
   historyRef,
   closing = false,
+  initialTab = null,
   onClose,
 }: {
   serviceId: string;
@@ -39,9 +40,11 @@ export default function ServiceDrawer({
   historyRef: React.MutableRefObject<Map<string, MetricPoint[]>>;
   /** El padre mantiene el drawer montado mientras se despide (usePresence). */
   closing?: boolean;
+  /** Pestaña pedida en la URL (`?tab=`): manda sobre la elección por defecto. */
+  initialTab?: string | null;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState('deployments');
+  const [tab, setTab] = useState(initialTab ?? 'deployments');
   /**
    * Al abrir una base de datos se entra por Consultas. «Despliegues» en un
    * Postgres de plantilla solo dice que se hizo un `pull`: a una base se viene
@@ -144,8 +147,21 @@ export default function ServiceDrawer({
   useEffect(() => {
     if (!detail.data || pestanaFijada.current === serviceId) return;
     pestanaFijada.current = serviceId;
-    if (detail.data.dbConsole) setTab('db');
-  }, [serviceId, detail.data]);
+    // Con una pestaña pedida por URL no se pisa: quien llega desde un enlace
+    // a «Variables» de una base de datos quiere Variables, no Consultas.
+    if (detail.data.dbConsole && !initialTab) setTab('db');
+  }, [serviceId, detail.data, initialTab]);
+
+  // Un enlace a otra pestaña del MISMO servicio no remonta el drawer (la clave
+  // es el id): se atiende aquí, con el mismo cuidado por los cambios sin guardar.
+  useEffect(() => {
+    if (!initialTab || initialTab === tab) return;
+    if (isTabDirty) setPendingTabChange(initialTab);
+    else setTab(initialTab);
+    // Solo reacciona al enlace: `tab` e `isTabDirty` cambian por otras vías y
+    // no deben volver a forzar la pestaña pedida.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTab]);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['service', serviceId] });
@@ -165,7 +181,7 @@ export default function ServiceDrawer({
     mutationFn: (force?: boolean) =>
       api.post<{ deployment: Deployment }>(`/services/${serviceId}/deploy`, force ? { force: true } : {}),
     onSuccess: (_data, force) => {
-      toast(force ? 'Reconstruyendo desde cero…' : 'Despliegue iniciado', 'ok');
+      toast(force ? 'Reconstruyendo la imagen desde cero…' : 'Despliegue iniciado.', 'ok');
       setPendingRedeploy(false);
       // Solo si no hay nada a medias: el salto a Despliegues desmontaba una
       // pestaña con cambios sin guardar y se perdían sin preguntar.
@@ -221,7 +237,7 @@ export default function ServiceDrawer({
       <button
         onClick={handleAttemptClose}
         className="press ml-auto flex min-h-10 min-w-10 items-center justify-center rounded-lg leading-none text-subtle hover:bg-surface2 hover:text-txt"
-        title="Cerrar (esc)"
+        title="Cerrar (Esc)"
         aria-label="Cerrar"
       >
         <X size={17} />
@@ -359,7 +375,7 @@ export default function ServiceDrawer({
                 type="button"
                 onClick={handleAttemptClose}
                 className="press rounded-lg p-1.5 leading-none text-subtle hover:bg-surface2 hover:text-txt"
-                title="Cerrar (esc)" aria-label="Cerrar (esc)"
+                title="Cerrar (Esc)" aria-label="Cerrar (Esc)"
               >
                 <X size={15} />
               </button>
@@ -469,7 +485,7 @@ export default function ServiceDrawer({
             <span className="min-w-0 leading-snug">
               <span className="font-semibold text-txt">Detenido</span>
               {service.stopped_at ? ` desde el panel ${timeAgo(service.stopped_at)}` : status.detail ? ` · ${status.detail}` : ''}.
-              {' '}No atiende peticiones hasta que lo inicies.
+              {' '}No atenderá peticiones hasta que se inicie.
             </span>
           </div>
         )}
@@ -478,14 +494,14 @@ export default function ServiceDrawer({
             <AlertTriangle size={13} className="shrink-0 text-err" aria-hidden />
             <span className="min-w-0 flex-1 leading-snug">
               <span className="font-semibold text-err">Caído</span>
-              {status.detail ? ` · ${status.detail}` : ''}. El error suele estar al final de los logs.
+              {status.detail ? ` · ${status.detail}` : ''}. El error suele encontrarse al final del registro.
             </span>
             <button
               type="button"
               onClick={() => handleTabChange('logs')}
               className="press flex h-9 shrink-0 items-center gap-1 rounded-lg border border-line bg-surface px-2.5 text-xs font-medium text-txt hover:bg-surface2 sm:h-7 sm:px-2"
             >
-              <ScrollText size={12} aria-hidden /> Ver logs
+              <ScrollText size={12} aria-hidden /> Ver registro
             </button>
           </div>
         )}
@@ -497,7 +513,7 @@ export default function ServiceDrawer({
                 <Rocket size={14} />
               </span>
               <span className="text-sub leading-snug">
-                <span className="font-semibold text-txt">Cambios guardados sin aplicar.</span> Se activan en el próximo despliegue.
+                <span className="font-semibold text-txt">Cambios guardados sin aplicar.</span> Se aplicarán en el próximo despliegue.
               </span>
             </span>
             <Button
@@ -556,6 +572,8 @@ export default function ServiceDrawer({
             {tab === 'variables' && (
               <VariablesTab
                 serviceId={serviceId}
+                serviceType={service.type}
+                envImport={service.config.envImport ?? null}
                 projectId={projectId}
                 onSaved={() => {
                   invalidate();
@@ -606,8 +624,8 @@ export default function ServiceDrawer({
         onClose={() => setConfirmVerb(null)}
         onConfirm={() => action.mutate('restart')}
         loading={action.isPending}
-        title={`Reiniciar "${service.name}"`}
-        message="El servicio quedará unos segundos sin responder mientras vuelve a arrancar."
+        title={`Reiniciar «${service.name}»`}
+        message="El servicio dejará de responder durante unos segundos mientras vuelve a arrancar."
         confirmLabel="Reiniciar"
         confirmVariant="primary"
       />
@@ -616,8 +634,8 @@ export default function ServiceDrawer({
         onClose={() => setConfirmVerb(null)}
         onConfirm={() => action.mutate('stop')}
         loading={action.isPending}
-        title={`Detener "${service.name}"`}
-        message="El servicio dejará de estar disponible hasta que lo vuelvas a iniciar."
+        title={`Detener «${service.name}»`}
+        message="El servicio dejará de estar disponible hasta que se vuelva a iniciar."
         confirmLabel="Detener"
         confirmVariant="danger"
       />
@@ -636,10 +654,10 @@ export default function ServiceDrawer({
           if (nextT) setTab(nextT);
           if (shouldClose) onClose();
         }}
-        title="¿Descartar cambios sin guardar?"
+        title="Descartar los cambios sin guardar"
         // Genérico: los cambios pueden venir de Variables o de Ajustes, y el
         // texto hablaba siempre de variables de entorno.
-        message="Tienes modificaciones sin guardar en esta pestaña. Si sales ahora, se perderán."
+        message="Hay cambios sin guardar en esta pestaña. Si sale ahora, se perderán."
         confirmLabel="Descartar y salir"
         confirmVariant="danger"
       />

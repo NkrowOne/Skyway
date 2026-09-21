@@ -55,12 +55,12 @@ export default function Setup() {
           <div className="mb-6 flex flex-col items-center gap-3.5 text-center">
             <BrandMark size={52} iconSize={24} radius={14} />
             <div>
-              <h1 className="text-xl font-semibold">Bienvenido a Skyway</h1>
-              <p className="mt-1 text-sm text-sub">Crea la cuenta de administrador para empezar</p>
+              <h1 className="text-xl font-semibold">Configuración inicial de Skyway</h1>
+              <p className="mt-1 text-sm text-sub">Cree la cuenta de administrador para comenzar</p>
             </div>
           </div>
           <form onSubmit={submit} className="flex flex-col gap-4">
-            <Field label="Email">
+            <Field label="Correo electrónico">
               <input
                 className="input"
                 type="email"
@@ -103,7 +103,7 @@ export default function Setup() {
           </form>
         </div>
         <p className="mt-4 flex items-center justify-center gap-1.5 text-xs text-subtle">
-          <ShieldCheck size={12} /> Intentos limitados por IP · toda la actividad queda en el registro de actividad
+          <ShieldCheck size={12} /> Intentos limitados por IP · toda la actividad se anota en el registro de actividad
         </p>
       </div>
     </div>

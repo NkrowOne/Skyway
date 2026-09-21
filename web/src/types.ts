@@ -683,6 +683,97 @@ export interface GitConfig {
   healthcheckPath?: string | null;
   replicas?: number;
   autoDeploy?: boolean;
+  /** Importar el .env del repositorio al desplegar; ausente = activado. */
+  autoImportEnv?: boolean;
+  /** Última importación del .env del repositorio (sin valores). */
+  envImport?: EnvImportReport;
+}
+
+// ---------- importación del .env del repositorio ----------
+
+export type EnvSkipReason = 'invalid_key' | 'reserved' | 'placeholder' | 'localhost' | 'exists' | 'handled';
+
+export interface EnvImportSkipped {
+  key: string;
+  file: string;
+  reason: EnvSkipReason;
+}
+
+export interface EnvImportPlan {
+  /** Ficheros encontrados, en orden de precedencia creciente (p. ej. ['.env.example', '.env']). */
+  files: string[];
+  /** Variables con valor útil que se van a crear (o se han creado). `value` solo en la vista previa. */
+  imported: { key: string; file: string; value?: string }[];
+  /** Clave válida pero sin valor útil (vacía o placeholder): hay que rellenarla a mano. */
+  pending: { key: string; file: string }[];
+  skipped: EnvImportSkipped[];
+}
+
+export interface EnvImportReport extends EnvImportPlan {
+  at: number;
+  applied: boolean;
+  /** Claves ya tratadas en cualquier pasada: nunca se vuelven a proponer. */
+  handled: string[];
+  source: 'deploy' | 'manual';
+}
+
+export interface EnvImportResponse {
+  report: EnvImportReport;
+  message: string;
+  needsRedeploy?: boolean;
+}
+
+// ---------- ayuda y asistente ----------
+
+export type FaqCategory =
+  | 'primeros-pasos'
+  | 'despliegues'
+  | 'variables'
+  | 'dominios'
+  | 'bases-de-datos'
+  | 'logs-y-errores'
+  | 'github'
+  | 'cuenta-y-facturacion'
+  | 'seguridad';
+
+/** Ruta interna de la web ('/projects/ID?s=SVC&tab=variables') o URL https externa. */
+export interface HelpLink {
+  label: string;
+  to: string;
+}
+
+export interface FaqEntry {
+  id: string;
+  category: FaqCategory;
+  question: string;
+  answer: string;
+  keywords: string[];
+  links?: HelpLink[];
+}
+
+export type IssueSeverity = 'critical' | 'warning' | 'info';
+
+export interface HelpIssue {
+  id: string;
+  severity: IssueSeverity;
+  serviceId: string;
+  serviceName: string;
+  projectId: string;
+  projectName: string;
+  title: string;
+  cause: string;
+  fix: string;
+  /** Línea de log que lo delata, recortada y sin secretos. */
+  evidence?: string;
+  links: HelpLink[];
+}
+
+export interface AskResponse {
+  /** Párrafos separados por '\n\n'; puede llevar **negritas** y listas con '- '. */
+  answer: string;
+  matches: FaqEntry[];
+  issues: HelpIssue[];
+  links: HelpLink[];
 }
 
 export interface DatabaseConfig {
