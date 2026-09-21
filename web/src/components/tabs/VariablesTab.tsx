@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
@@ -347,6 +347,176 @@ export function parseEnvText(text: string): { key: string; value: string }[] {
   return out;
 }
 
+
+/** Acciones de una fila: un objeto estable, para que las filas memoizadas no se repinten con cada tecla. */
+interface RowActions {
+  keyChange: (id: string, raw: string) => void;
+  valueChange: (id: string, value: string) => void;
+  paste: (id: string, field: 'key' | 'value', e: React.ClipboardEvent<HTMLInputElement>) => void;
+  toggleReveal: (id: string) => void;
+  remove: (id: string) => void;
+  addRow: () => void;
+  focusKey: (id: string) => void;
+  focusValue: (id: string) => void;
+}
+
+/*
+ * Los valores tapados se ocultan con CSS sobre un campo de texto, no con
+ * `type="password"`: en iOS un campo de contraseña activa el gestor de
+ * contraseñas y el llavero en cada pulsación y, con decenas de campos en la
+ * misma pantalla, la página deja de responder mientras escribe. Donde el
+ * navegador no admite ese CSS se conserva el campo de contraseña.
+ */
+const MASK_WITH_CSS = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('-webkit-text-security', 'disc');
+
+/**
+ * Una variable de la tabla. Va en `memo`: cada tecla actualiza una sola fila
+ * y las demás reciben exactamente las mismas props, así que no se repintan.
+ */
+const VariableRow = memo(function VariableRow({
+  row,
+  isLast,
+  isRevealed,
+  isRef,
+  isDup,
+  status,
+  resolvedValue,
+  nextRowId,
+  actions,
+  keyInputRefs,
+  valueInputRefs,
+}: {
+  row: Row;
+  isLast: boolean;
+  isRevealed: boolean;
+  isRef: boolean;
+  isDup: boolean;
+  status: RowStatus;
+  resolvedValue: string;
+  nextRowId: string | null;
+  actions: RowActions;
+  keyInputRefs: React.MutableRefObject<Map<string, HTMLInputElement>>;
+  valueInputRefs: React.MutableRefObject<Map<string, HTMLInputElement>>;
+}) {
+  const rail = status === 'new' ? 'bg-acc-soft' : status === 'changed' ? 'bg-warn' : 'bg-transparent';
+  const masked = !isRevealed && !isRef;
+  return (
+    <div
+      className={cx(
+        'group relative flex flex-col rounded-xl border border-line bg-surface transition-colors duration-150 sm:flex-row sm:items-stretch sm:rounded-none sm:border-0 sm:border-b sm:last:border-b-0 sm:hover:bg-surface2/40',
+        /*
+         * Lo nuevo y lo cambiado se ven sin leer: tinte suave
+         * de fondo, un riel de color a la izquierda y una
+         * etiqueta. Al guardar vuelven al gris de lo que ya está.
+         */
+        status === 'new' && 'border-acc/35 bg-acc/[.06] sm:bg-acc/[.05] sm:hover:bg-acc/[.08]',
+        status === 'changed' && 'border-warn/35 bg-warn/[.05] sm:bg-warn/[.04] sm:hover:bg-warn/[.07]',
+        isDup && 'bg-err/[.05] sm:bg-err/[.04]',
+      )}
+    >
+      <span aria-hidden className={cx('absolute inset-y-0 left-0 w-[3px] rounded-l-xl sm:rounded-none', rail)} />
+
+      {/* Nombre */}
+      <div className="relative flex min-w-0 items-center gap-2 pl-3.5 pr-2 pt-2 sm:w-[40%] sm:border-r sm:border-line sm:py-0 sm:pr-0">
+        <span className="eyebrow w-12 shrink-0 text-subtle sm:hidden">Nombre</span>
+        <input
+          ref={(el) => {
+            if (el) keyInputRefs.current.set(row.id, el);
+            else keyInputRefs.current.delete(row.id);
+          }}
+          className={cx(
+            'h-9 min-w-0 flex-1 rounded-md bg-transparent px-2 font-mono text-xs font-medium text-txt outline-none placeholder:text-subtle focus:bg-surface2/60 sm:h-auto sm:rounded-none sm:px-3.5 sm:py-2.5',
+            isDup && 'font-bold text-err',
+          )}
+          placeholder="NOMBRE_VARIABLE"
+          value={row.key}
+          spellCheck={false}
+          autoCapitalize="characters"
+          autoCorrect="off"
+          autoComplete="off"
+          onChange={(e) => actions.keyChange(row.id, e.target.value)}
+          onPaste={(e) => actions.paste(row.id, 'key', e)}
+          onKeyDown={(e) => {
+            if (e.key === '=' || e.key === 'Enter') {
+              e.preventDefault();
+              actions.focusValue(row.id);
+            }
+          }}
+        />
+        {isDup ? (
+          <span className="shrink-0 rounded bg-err/15 px-1.5 py-0.5 text-micro font-bold text-err sm:mr-2">Duplicada</span>
+        ) : status === 'new' ? (
+          <span className="shrink-0 rounded bg-acc/20 px-1.5 py-0.5 text-micro font-semibold text-acc-soft sm:mr-2">Nueva</span>
+        ) : status === 'changed' ? (
+          <span className="shrink-0 rounded bg-warn/15 px-1.5 py-0.5 text-micro font-semibold text-warn sm:mr-2">Cambiada</span>
+        ) : null}
+      </div>
+
+      {/* Valor + acciones */}
+      <div className="flex min-w-0 flex-1 items-center gap-2 pb-2 pl-3.5 pr-2 pt-1 sm:py-0 sm:pl-0">
+        <span className="eyebrow w-12 shrink-0 text-subtle sm:hidden">Valor</span>
+        <input
+          ref={(el) => {
+            if (el) valueInputRefs.current.set(row.id, el);
+            else valueInputRefs.current.delete(row.id);
+          }}
+          className={cx(
+            'h-9 min-w-0 flex-1 rounded-md bg-transparent px-2 font-mono text-xs outline-none placeholder:text-subtle focus:bg-surface2/60 sm:h-auto sm:rounded-none sm:px-3.5 sm:py-2.5',
+            isRef ? 'font-medium text-info' : isRevealed ? 'text-txt' : 'text-subtle',
+            masked && MASK_WITH_CSS && 'masked-value',
+          )}
+          placeholder={isRef ? '${{Servicio.VAR}}' : 'valor'}
+          type={masked && !MASK_WITH_CSS ? 'password' : 'text'}
+          value={row.value}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          autoComplete="off"
+          data-1p-ignore=""
+          data-lpignore="true"
+          data-form-type="other"
+          onChange={(e) => actions.valueChange(row.id, e.target.value)}
+          onPaste={(e) => actions.paste(row.id, 'value', e)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (isLast || !nextRowId) actions.addRow();
+              else actions.focusKey(nextRowId);
+            }
+          }}
+        />
+
+        <div className="flex shrink-0 items-center gap-0.5 sm:pr-2">
+          {!isRef && (
+            <button
+              type="button"
+              onClick={() => actions.toggleReveal(row.id)}
+              className={cx(
+                'press flex h-8 w-8 items-center justify-center rounded-md text-subtle transition-colors hover:bg-surface2 hover:text-txt sm:h-7 sm:w-7',
+                isRevealed && 'text-acc-soft',
+              )}
+              title={isRevealed ? 'Ocultar valor' : 'Mostrar valor'}
+              aria-label={isRevealed ? 'Ocultar valor' : 'Mostrar valor'}
+            >
+              {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
+            </button>
+          )}
+          <CopyButton value={resolvedValue} title="Copiar valor resuelto" />
+          <button
+            type="button"
+            onClick={() => actions.remove(row.id)}
+            className="press flex h-8 w-8 items-center justify-center rounded-md text-subtle transition-colors hover:bg-surface2 hover:text-err sm:h-7 sm:w-7"
+            title="Eliminar variable"
+            aria-label="Eliminar variable"
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export default function VariablesTab({
   serviceId,
   serviceType,
@@ -542,6 +712,8 @@ export default function VariablesTab({
     }
   };
 
+
+
   /**
    * Mete varias variables de golpe partiendo de la fila `atId`: las claves que
    * ya existen se actualizan en su sitio (pegar un .env encima no duplica), las
@@ -637,6 +809,24 @@ export default function VariablesTab({
     setRows((prev) => prev.filter((r) => r.id !== id));
     setDirty(true);
   };
+
+  // Las filas son `memo`: reciben un objeto de acciones que no cambia entre
+  // renders y que llama siempre a la versión más reciente de cada manejador.
+  const latestHandlers = useRef({ handleKeyChange, handleValueChange, handlePaste, toggleRowReveal, handleDeleteRow, handleAddRow });
+  latestHandlers.current = { handleKeyChange, handleValueChange, handlePaste, toggleRowReveal, handleDeleteRow, handleAddRow };
+  const rowActions = useMemo<RowActions>(
+    () => ({
+      keyChange: (id, raw) => latestHandlers.current.handleKeyChange(id, raw),
+      valueChange: (id, value) => latestHandlers.current.handleValueChange(id, value),
+      paste: (id, field, e) => latestHandlers.current.handlePaste(id, field, e),
+      toggleReveal: (id) => latestHandlers.current.toggleRowReveal(id),
+      remove: (id) => latestHandlers.current.handleDeleteRow(id),
+      addRow: () => latestHandlers.current.handleAddRow(),
+      focusKey: (id) => keyInputRefs.current.get(id)?.focus(),
+      focusValue: (id) => valueInputRefs.current.get(id)?.focus(),
+    }),
+    [],
+  );
 
   // Copiar todo como formato .env
   const handleCopyAllAsEnv = () => {
@@ -954,129 +1144,22 @@ export default function VariablesTab({
                * En escritorio, una lista de filas con las dos columnas alineadas.
                */
               <div className="flex flex-col gap-2 sm:gap-0 sm:overflow-hidden sm:rounded-xl sm:border sm:border-line sm:bg-surface">
-                {filteredRows.map((row, index) => {
-                  const isRevealed = globalReveal || revealedIds.has(row.id);
-                  const isRef = isReference(row.value);
-                  const isDup = duplicates.has(row.key.trim());
-                  const status = statusOf(row);
-                  const rail =
-                    status === 'new' ? 'bg-acc-soft' : status === 'changed' ? 'bg-warn' : 'bg-transparent';
-
-                  return (
-                    <div
-                      key={row.id}
-                      className={cx(
-                        'group relative flex flex-col rounded-xl border border-line bg-surface transition-colors duration-150 sm:flex-row sm:items-stretch sm:rounded-none sm:border-0 sm:border-b sm:last:border-b-0 sm:hover:bg-surface2/40',
-                        /*
-                         * Lo nuevo y lo cambiado se ven sin leer: tinte suave
-                         * de fondo, un riel de color a la izquierda y una
-                         * etiqueta. Al guardar vuelven al gris de lo que ya está.
-                         */
-                        status === 'new' && 'border-acc/35 bg-acc/[.06] sm:bg-acc/[.05] sm:hover:bg-acc/[.08]',
-                        status === 'changed' && 'border-warn/35 bg-warn/[.05] sm:bg-warn/[.04] sm:hover:bg-warn/[.07]',
-                        isDup && 'bg-err/[.05] sm:bg-err/[.04]',
-                      )}
-                    >
-                      <span aria-hidden className={cx('absolute inset-y-0 left-0 w-[3px] rounded-l-xl sm:rounded-none', rail)} />
-
-                      {/* Nombre */}
-                      <div className="relative flex min-w-0 items-center gap-2 pl-3.5 pr-2 pt-2 sm:w-[40%] sm:border-r sm:border-line sm:py-0 sm:pr-0">
-                        <span className="eyebrow w-12 shrink-0 text-subtle sm:hidden">Nombre</span>
-                        <input
-                          ref={(el) => {
-                            if (el) keyInputRefs.current.set(row.id, el);
-                            else keyInputRefs.current.delete(row.id);
-                          }}
-                          className={cx(
-                            'h-9 min-w-0 flex-1 rounded-md bg-transparent px-2 font-mono text-xs font-medium text-txt outline-none placeholder:text-subtle focus:bg-surface2/60 sm:h-auto sm:rounded-none sm:px-3.5 sm:py-2.5',
-                            isDup && 'font-bold text-err',
-                          )}
-                          placeholder="NOMBRE_VARIABLE"
-                          value={row.key}
-                          spellCheck={false}
-                          autoCapitalize="characters"
-                          autoCorrect="off"
-                          onChange={(e) => handleKeyChange(row.id, e.target.value)}
-                          onPaste={(e) => handlePaste(row.id, 'key', e)}
-                          onKeyDown={(e) => {
-                            if (e.key === '=' || e.key === 'Enter') {
-                              e.preventDefault();
-                              valueInputRefs.current.get(row.id)?.focus();
-                            }
-                          }}
-                        />
-                        {isDup ? (
-                          <span className="shrink-0 rounded bg-err/15 px-1.5 py-0.5 text-micro font-bold text-err sm:mr-2">Duplicada</span>
-                        ) : status === 'new' ? (
-                          <span className="shrink-0 rounded bg-acc/20 px-1.5 py-0.5 text-micro font-semibold text-acc-soft sm:mr-2">Nueva</span>
-                        ) : status === 'changed' ? (
-                          <span className="shrink-0 rounded bg-warn/15 px-1.5 py-0.5 text-micro font-semibold text-warn sm:mr-2">Cambiada</span>
-                        ) : null}
-                      </div>
-
-                      {/* Valor + acciones */}
-                      <div className="flex min-w-0 flex-1 items-center gap-2 pb-2 pl-3.5 pr-2 pt-1 sm:py-0 sm:pl-0">
-                        <span className="eyebrow w-12 shrink-0 text-subtle sm:hidden">Valor</span>
-                        <input
-                          ref={(el) => {
-                            if (el) valueInputRefs.current.set(row.id, el);
-                            else valueInputRefs.current.delete(row.id);
-                          }}
-                          className={cx(
-                            'h-9 min-w-0 flex-1 rounded-md bg-transparent px-2 font-mono text-xs outline-none placeholder:text-subtle focus:bg-surface2/60 sm:h-auto sm:rounded-none sm:px-3.5 sm:py-2.5',
-                            isRef ? 'font-medium text-info' : isRevealed ? 'text-txt' : 'text-subtle',
-                          )}
-                          placeholder={isRef ? '${{Servicio.VAR}}' : 'valor'}
-                          type={isRevealed || isRef ? 'text' : 'password'}
-                          value={row.value}
-                          spellCheck={false}
-                          autoCapitalize="off"
-                          autoCorrect="off"
-                          onChange={(e) => handleValueChange(row.id, e.target.value)}
-                          onPaste={(e) => handlePaste(row.id, 'value', e)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              if (index === filteredRows.length - 1) {
-                                handleAddRow();
-                              } else {
-                                const nextRow = filteredRows[index + 1];
-                                if (nextRow) keyInputRefs.current.get(nextRow.id)?.focus();
-                              }
-                            }
-                          }}
-                        />
-
-                        <div className="flex shrink-0 items-center gap-0.5 sm:pr-2">
-                          {!isRef && (
-                            <button
-                              type="button"
-                              onClick={() => toggleRowReveal(row.id)}
-                              className={cx(
-                                'press flex h-8 w-8 items-center justify-center rounded-md text-subtle transition-colors hover:bg-surface2 hover:text-txt sm:h-7 sm:w-7',
-                                isRevealed && 'text-acc-soft',
-                              )}
-                              title={isRevealed ? 'Ocultar valor' : 'Mostrar valor'}
-                              aria-label={isRevealed ? 'Ocultar valor' : 'Mostrar valor'}
-                            >
-                              {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
-                            </button>
-                          )}
-                          <CopyButton value={resolved[row.key] ?? row.value} title="Copiar valor resuelto" />
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteRow(row.id)}
-                            className="press flex h-8 w-8 items-center justify-center rounded-md text-subtle transition-colors hover:bg-surface2 hover:text-err sm:h-7 sm:w-7"
-                            title="Eliminar variable"
-                            aria-label="Eliminar variable"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                {filteredRows.map((row, index) => (
+                  <VariableRow
+                    key={row.id}
+                    row={row}
+                    isLast={index === filteredRows.length - 1}
+                    isRevealed={globalReveal || revealedIds.has(row.id)}
+                    isRef={isReference(row.value)}
+                    isDup={duplicates.has(row.key.trim())}
+                    status={statusOf(row)}
+                    resolvedValue={resolved[row.key] ?? row.value}
+                    nextRowId={filteredRows[index + 1]?.id ?? null}
+                    actions={rowActions}
+                    keyInputRefs={keyInputRefs}
+                    valueInputRefs={valueInputRefs}
+                  />
+                ))}
               </div>
             )}
 

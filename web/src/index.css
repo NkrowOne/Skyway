@@ -806,6 +806,13 @@ details[open] > .details-body {
   .input {
     @apply h-9 w-full rounded-lg border border-line bg-bg px-3 text-sm text-txt placeholder-subtle outline-none transition-[border-color,box-shadow] duration-[--dur-1];
   }
+  /*
+   * Valor tapado sobre un campo de texto normal (ver VariablesTab): evita
+   * `type="password"`, que en iOS despierta el gestor de contraseñas.
+   */
+  .masked-value {
+    -webkit-text-security: disc;
+  }
   /* Un <textarea> no puede tener alto fijo: recupera el relleno vertical. */
   textarea.input,
   select[multiple].input {

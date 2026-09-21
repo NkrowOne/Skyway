@@ -20,6 +20,21 @@ import { Menu, Segmented, Skeleton, useToast } from '../ui';
 
 type Row = { line: string; cursor: string | null };
 
+/*
+ * Texto de cada fila para el visor, calculado una vez por objeto. Antes se
+ * concatenaba cursor y línea de las catorce mil filas en cada ráfaga: cadenas
+ * nuevas que el visor tenía que volver a buscar en su caché una a una.
+ */
+const LINE_TEXT = new WeakMap<Row, string>();
+function lineText(r: Row): string {
+  let s = LINE_TEXT.get(r);
+  if (s === undefined) {
+    s = r.cursor ? `${r.cursor} ${r.line}` : r.line;
+    LINE_TEXT.set(r, s);
+  }
+  return s;
+}
+
 const CAP_FOLLOWING = 14_000;
 const CAP_READING = 45_000;
 const OLDER_PAGE = 400;
@@ -338,7 +353,7 @@ export default function LogsTab({
 
     if (isLiveMode) {
       if (liveRows.length > 0) {
-        return { displayLines: liveRows.map((r) => (r.cursor ? `${r.cursor} ${r.line}` : r.line)), emptyNote: null };
+        return { displayLines: liveRows.map(lineText), emptyNote: null };
       }
       /*
        * Enganchados y sin líneas: el contenedor existe y no ha escrito nada.
