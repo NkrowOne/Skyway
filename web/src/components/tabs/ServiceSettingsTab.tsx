@@ -201,6 +201,8 @@ export default function ServiceSettingsTab({
     ? dbTemplates.data?.templates.find((t) => t.key === cfg.template)?.port
     : cfg.port;
   const internalAddress = internalPort ? `${service.slug}:${internalPort}` : service.slug;
+  // Sin puerto no hay URL que ofrecer, pero el host sí se puede referenciar.
+  const internalReference = `\${{${service.slug}.${internalPort ? 'INTERNAL_URL' : 'INTERNAL_HOST'}}}`;
 
   const [saved, flashSaved] = useFlash();
   const save = useMutation({
@@ -496,6 +498,19 @@ export default function ServiceSettingsTab({
           <p className="mt-2 text-xs leading-relaxed text-subtle">
             Úsala en las variables de los demás servicios del proyecto: el dominio público daría un rodeo por Internet.
           </p>
+          {/* La referencia, mejor que la dirección literal: si cambia el puerto,
+              la referencia se actualiza sola y el «api:3000» pegado a mano no.
+              Una base de datos ya exporta su URL de motor, así que a ella no se
+              le ofrece. */}
+          {!isDb && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-subtle">
+              <span>Desde otro servicio, como referencia:</span>
+              <span className="inline-flex items-center gap-1 rounded-md border border-dashed border-acc/40 px-1.5 py-0.5 font-mono text-acc-soft">
+                {internalReference}
+                <CopyButton value={internalReference} />
+              </span>
+            </div>
+          )}
           {/* El puerto público es la otra cara de la misma pregunta —por dónde se
               llega al servicio—, así que vive aquí y no entre los límites de CPU y RAM. */}
           <div className="mt-3 grid grid-cols-2 gap-2.5">

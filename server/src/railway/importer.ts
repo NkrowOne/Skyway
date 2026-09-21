@@ -301,15 +301,6 @@ function flagRailwayHosts(vars: Record<string, string>, serviceName: string, war
 
 // ---------- reconexión de variables Railway → servicios nuevos ----------
 
-/** Variables de conexión que exporta cada plantilla, para reconstruir referencias. */
-const TEMPLATE_CONN: Record<string, { main: string; host?: string; port?: string }> = {
-  postgres: { main: 'DATABASE_URL', host: 'PGHOST', port: 'PGPORT' },
-  redis: { main: 'REDIS_URL', host: 'REDIS_HOST', port: 'REDIS_PORT' },
-  mysql: { main: 'MYSQL_URL', host: 'MYSQL_HOST', port: 'MYSQL_PORT' },
-  mongo: { main: 'MONGO_URL', host: 'MONGO_HOST', port: 'MONGO_PORT' },
-  minio: { main: 'MINIO_ENDPOINT' },
-};
-
 /** Esquema de URL → plantilla, para mapear por tipo cuando el host no identifica la base. */
 const SCHEME_TEMPLATE: [RegExp, string][] = [
   [/^postgres(?:ql)?:\/\//i, 'postgres'],
@@ -337,7 +328,8 @@ function collectDbTargets(services: PlannedService[]): DbTarget[] {
   const targets: DbTarget[] = [];
   for (const p of services) {
     if (p.kind !== 'database' || !p.template) continue;
-    const conn = TEMPLATE_CONN[p.template];
+    // Lo que exporta cada motor lo dice su plantilla, no una copia de aquí.
+    const conn = getTemplate(p.template)?.conn;
     if (!conn) continue;
     const privateHosts = new Set<string>();
     const publicHostPorts = new Set<string>();

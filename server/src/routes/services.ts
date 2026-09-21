@@ -49,6 +49,7 @@ import {
 import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
 import { triggerDeploy } from '../deploy/deployer';
 import { getTemplate, templateList } from '../templates';
+import { adviseEnv } from '../needs';
 import { availableReferences, resolveServiceEnv } from '../variables';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceConfig, ServiceRow } from '../types';
 import { randomToken, slugify } from '../util';
@@ -117,6 +118,10 @@ const createGitSchema = z.object({
   port: z.coerce.number().int().min(1).max(65535).optional(),
   domains: z.array(domainSchema).default([]),
   autoDeploy: z.boolean().default(true),
+  // Variables con las que nace el servicio (el asistente de alta las rellena
+  // con las referencias a las bases que acaba de crear). Van ANTES del primer
+  // despliegue: guardarlas después dejaba ese despliegue sin ellas.
+  env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'Nombre de variable inválido'), z.string()).optional(),
 });
 
 const createDbSchema = z.object({
@@ -279,6 +284,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         webhookSecret: randomToken(16),
       };
       service = createService(projectId, body.name, slug, 'git', cfg);
+      if (body.env && Object.keys(body.env).length > 0) setEnv(service.id, body.env);
     } else {
       const body = createDbSchema.parse(req.body);
       const template = getTemplate(body.template);
@@ -649,10 +655,13 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
+    const references = availableReferences(found.service);
     return {
       vars: getEnv(id),
       resolved: resolveServiceEnv(found.service),
-      references: availableReferences(found.service),
+      references,
+      // Lo que el repositorio necesita y aún no tiene, como propuestas de un clic.
+      ...adviseEnv(found.service, references),
     };
   });
 

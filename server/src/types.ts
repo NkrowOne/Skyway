@@ -5,6 +5,23 @@ export interface VolumeMount {
   containerPath: string;
 }
 
+/**
+ * Lo que la detección de dependencias encontró en el repositorio en el último
+ * despliegue (`needs.ts`): motores que parece usar y variables que espera. No
+ * lo edita nadie: se reescribe en cada clonado y se borra si deja de haber nada.
+ */
+export interface DetectedNeeds {
+  /** Motores (claves de DB_TEMPLATES) con la pista que los delata («package.json: pg»). */
+  engines: { template: string; evidence: string }[];
+  /** Nombres de variable del fichero de ejemplo de entorno, en su orden. */
+  expectedVars: string[];
+  /** Fichero del que salieron las variables esperadas (`.env.example`…), si hubo. */
+  envFile: string | null;
+  /** Ficheros del repositorio que aportaron algo, relativos a su raíz. */
+  sources: string[];
+  detectedAt: number;
+}
+
 export interface GitConfig {
   repoUrl: string;
   branch: string;
@@ -60,6 +77,8 @@ export interface GitConfig {
    * disparan los commits posteriores.
    */
   autoDeploy?: boolean;
+  /** Dependencias detectadas en el repositorio en el último despliegue (ver `DetectedNeeds`). */
+  needs?: DetectedNeeds;
 }
 
 export interface DatabaseConfig {
