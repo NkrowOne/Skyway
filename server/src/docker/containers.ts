@@ -2,6 +2,7 @@ import Docker from 'dockerode';
 import { PassThrough } from 'stream';
 import { StringDecoder } from 'string_decoder';
 import { docker, dockerQuery } from './client';
+import { countStrictlyBefore } from './logcursor';
 import { EDGE_NETWORK, projectNetworkName } from './networks';
 import { getSetting } from '../db';
 import { ContainerState, ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
@@ -608,41 +609,58 @@ function cursorToUnixSeconds(cursor: string): number | null {
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }
 
+/** Tope de líneas que se piden a Docker en una página hacia atrás. */
+const MAX_PAGE_TAIL = 20_000;
+
 /**
- * Paginación hacia atrás: como mucho `limit` líneas ANTERIORES al cursor dado
- * (o las últimas si no hay cursor), en orden cronológico y con su cursor.
- * `until` se redondea al alza al segundo entero —Docker filtra por segundos—,
- * así que se incluye todo ese segundo (sin huecos) y el solape lo descarta el
- * cliente por cursor. Con muchas líneas en el mismo segundo puede devolver
- * alguna repetida; deduplicar es responsabilidad de quien consume.
+ * Paginación hacia atrás: como mucho `limit` líneas ESTRICTAMENTE anteriores
+ * al cursor dado (o las últimas si no hay cursor), en orden cronológico y con
+ * su cursor. Docker filtra `until` por segundos enteros, así que la página
+ * cruda trae también las líneas del mismo segundo que el ancla, posteriores a
+ * ella: se recortan aquí. Si tras recortar no llega a `limit` y Docker había
+ * devuelto la página entera (hay más detrás), se vuelve a pedir con más cola,
+ * hasta un tope. Antes se devolvía la página cruda: en un contenedor que
+ * escribe cientos de líneas por segundo, la página entera caía dentro del
+ * segundo del ancla, el cliente la descartaba y daba el historial por
+ * terminado sin haber retrocedido una sola línea.
+ *
+ * `hasMore` dice si quedan líneas anteriores a las devueltas.
  */
 export async function fetchLogsBefore(
   name: string,
   limit: number,
   before: string | null,
-): Promise<{ cursor: string | null; line: string }[]> {
+): Promise<{ lines: { cursor: string | null; line: string }[]; hasMore: boolean }> {
   const c = dockerQuery.getContainer(name);
-  // `until` (segundos Unix) no está en los tipos de dockerode pero sí en la API
-  // de Docker; se fija `follow: false` como literal para elegir la sobrecarga.
-  const opts: Docker.ContainerLogsOptions & { follow: false; until?: number } = {
-    follow: false,
-    stdout: true,
-    stderr: true,
-    timestamps: true,
-    tail: limit,
-  };
-  if (before) {
-    const secs = cursorToUnixSeconds(before);
+  const secs = before ? cursorToUnixSeconds(before) : null;
+  let want = Math.max(1, limit);
+  for (;;) {
+    // `until` (segundos Unix) no está en los tipos de dockerode pero sí en la API
+    // de Docker; se fija `follow: false` como literal para elegir la sobrecarga.
+    const opts: Docker.ContainerLogsOptions & { follow: false; until?: number } = {
+      follow: false,
+      stdout: true,
+      stderr: true,
+      timestamps: true,
+      tail: want,
+    };
     if (secs !== null) opts.until = secs + 1;
+    const raw = (await c.logs(opts)) as unknown as Buffer;
+    const text = Buffer.isBuffer(raw) ? demuxLogBuffer(raw) : String(raw);
+    const all: { cursor: string | null; line: string }[] = [];
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.replace(/\r$/, '');
+      if (line) all.push(splitTimestamp(line));
+    }
+    const usable = before ? countStrictlyBefore(all, before) : all.length;
+    // Docker ha devuelto menos de lo pedido: ya no hay nada más antiguo.
+    const exhausted = all.length < want;
+    if (usable >= limit || exhausted || want >= MAX_PAGE_TAIL) {
+      const from = Math.max(0, usable - limit);
+      return { lines: all.slice(from, usable), hasMore: from > 0 || !exhausted };
+    }
+    want = Math.min(MAX_PAGE_TAIL, want * 4);
   }
-  const raw = (await c.logs(opts)) as unknown as Buffer;
-  const text = Buffer.isBuffer(raw) ? demuxLogBuffer(raw) : String(raw);
-  const out: { cursor: string | null; line: string }[] = [];
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine.replace(/\r$/, '');
-    if (line) out.push(splitTimestamp(line));
-  }
-  return out;
 }
 
 /**

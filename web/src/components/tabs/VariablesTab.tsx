@@ -19,7 +19,7 @@ import { api } from '../../api';
 import { maskValue } from '../../helpText';
 import { EnvImportReport, EnvImportResponse, EnvSkipReason } from '../../types';
 import { EnvSuggestion } from '../../types';
-import { cx, EMPTY_LIST, EMPTY_RECORD } from '../../utils';
+import { copyToClipboard, cx, EMPTY_LIST, EMPTY_RECORD } from '../../utils';
 import { Button, CopyButton, EditorBar, Modal, Segmented, Skeleton, useToast } from '../ui';
 
 /** Por qué se dejó fuera una clave del .env del repositorio, en palabras. */
@@ -842,15 +842,16 @@ export default function VariablesTab({
   // Copiar todo como formato .env
   const handleCopyAllAsEnv = () => {
     const text = rows.map((r) => `${r.key}=${r.value}`).join('\n');
-    navigator.clipboard
-      .writeText(text)
-      .then(() => {
+    void copyToClipboard(text).then((ok) => {
+      if (ok) {
         setCopiedAll(true);
         toast('Se han copiado todas las variables al portapapeles en formato .env.', 'ok');
         setTimeout(() => setCopiedAll(false), 2000);
-      })
-      // Sin HTTPS o con el permiso denegado el portapapeles rechaza: antes no se decía nada.
-      .catch(() => toast('No se ha podido copiar al portapapeles.', 'err'));
+      } else {
+        // Sin HTTPS o con el permiso denegado: antes no se decía nada.
+        toast('No se ha podido copiar al portapapeles.', 'err');
+      }
+    });
   };
 
   const references = env.data?.references ?? EMPTY_LIST;
@@ -1432,10 +1433,9 @@ export default function VariablesTab({
                               aria-label={title}
                               onClick={() => {
                                 // El «Copiado» solo cuando de verdad se ha copiado.
-                                navigator.clipboard
-                                  .writeText(token)
-                                  .then(() => toast(`Copiado: ${token}`, 'ok'))
-                                  .catch(() => toast('No se ha podido copiar al portapapeles', 'err'));
+                                void copyToClipboard(token).then((ok) =>
+                                  toast(ok ? `Copiado: ${token}` : 'No se ha podido copiar al portapapeles', ok ? 'ok' : 'err'),
+                                );
                               }}
                             >
                               {v}

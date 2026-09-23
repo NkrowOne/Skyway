@@ -204,7 +204,11 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     const q = z
       .object({
         limit: z.coerce.number().int().min(1).max(1000).default(300),
-        before: z.string().min(1).max(40).optional(),
+        // Un sello RFC3339 tal y como lo escribe Docker; otra cosa no es un cursor.
+        before: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/, 'Cursor no válido')
+          .optional(),
       })
       .parse(req.query);
 
@@ -213,9 +217,9 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
     const runtime = await getRuntime(name);
     if (runtime.state === 'not_created') return { lines: [], hasMore: false };
 
-    const lines = await fetchLogsBefore(name, q.limit, q.before ?? null);
-    // Si Docker devuelve la página completa es que probablemente hay más atrás.
-    return { lines, hasMore: lines.length >= q.limit };
+    // Solo líneas estrictamente anteriores al cursor; `hasMore` lo decide quien
+    // ha visto la página cruda de Docker, no el tamaño de la recortada.
+    return fetchLogsBefore(name, q.limit, q.before ?? null);
   });
 
   /**

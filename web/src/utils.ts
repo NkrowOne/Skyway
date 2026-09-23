@@ -357,3 +357,45 @@ export function parseRepoInput(raw: string): string | null {
   const url = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)/i.exec(t);
   return url ? `${url[1]}/${url[2]}` : null;
 }
+
+/**
+ * Copia texto al portapapeles y dice si lo ha conseguido.
+ *
+ * La API moderna solo existe en contextos seguros (HTTPS o localhost). Un
+ * panel auto-alojado que se abre por IP en la red local no lo es, y ahí
+ * `navigator.clipboard` ni siquiera existe: el botón de copiar fallaba con una
+ * excepción antes de llegar al `catch` y parecía no hacer nada. En ese caso se
+ * recurre al método clásico (área de texto oculta + `execCommand`), que sigue
+ * funcionando en HTTP. Debe llamarse dentro del gesto del usuario.
+ */
+export async function copyToClipboard(text: string): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      /* permiso denegado: se prueba el método clásico */
+    }
+  }
+  try {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.setAttribute('aria-hidden', 'true');
+    area.style.position = 'fixed';
+    area.style.top = '0';
+    area.style.left = '0';
+    area.style.width = '1px';
+    area.style.height = '1px';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.focus();
+    area.select();
+    area.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    area.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}

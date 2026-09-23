@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useLayoutEffe
 import { createPortal } from 'react-dom';
 import { AlertCircle, Check, CheckCircle2, Copy, Info, Loader2, X } from 'lucide-react';
 import { usePresence } from '../hooks';
-import { cx, Tone } from '../utils';
+import { copyToClipboard, cx, Tone } from '../utils';
 
 // ---------- Button ----------
 type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -997,12 +997,9 @@ export function CopyButton({ value, className, title = 'Copiar' }: { value: stri
       className={cx('press rounded-md p-1 text-subtle hover:bg-surface2 hover:text-txt max-sm:p-2.5', className)}
       title={title} aria-label={title}
       onClick={() => {
-        navigator.clipboard
-          .writeText(value)
-          .then(flash)
-          // Sin HTTPS o con el permiso denegado el portapapeles rechaza: antes
-          // era un rechazo sin capturar y el usuario no sabía que no se copió.
-          .catch(() => toast('No se ha podido copiar al portapapeles', 'err'));
+        // Sin HTTPS la API moderna no existe y se usa el método clásico; si
+        // tampoco puede (permiso denegado), se dice, en vez de callar.
+        void copyToClipboard(value).then((ok) => (ok ? flash() : toast('No se ha podido copiar al portapapeles', 'err')));
       }}
     >
       {copied ? <Check size={13} className="pop-in text-ok" /> : <Copy size={13} />}

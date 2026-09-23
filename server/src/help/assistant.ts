@@ -384,7 +384,7 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
   // 5. Escaneo profundo: la cola de logs de la aplicación.
   if (opts.deep && snap.docker && containerExists) {
     try {
-      const lines = await fetchLogsBefore(containerName(project, service), LOG_TAIL, null);
+      const { lines } = await fetchLogsBefore(containerName(project, service), LOG_TAIL, null);
       // Solo lo escrito desde el último arranque: un error de hace tres
       // despliegues no es un problema de hoy. Sin sello de arranque (parado o
       // reiniciándose) vale todo, que es donde está la causa de la caída.

@@ -18,21 +18,31 @@ import {
 import LogViewer from '../LogViewer';
 import { Menu, Segmented, Skeleton, useToast } from '../ui';
 
-type Row = { line: string; cursor: string | null };
-
-/*
- * Texto de cada fila para el visor, calculado una vez por objeto. Antes se
- * concatenaba cursor y línea de las catorce mil filas en cada ráfaga: cadenas
- * nuevas que el visor tenía que volver a buscar en su caché una a una.
+/** Línea tal y como la envía el servidor: texto y su cursor (sello de Docker). */
+type WireRow = { line: string; cursor: string | null };
+/**
+ * Fila del buffer en vivo. El texto que ve el visor (cursor + línea) se
+ * calcula UNA vez, al entrar: así cada ráfaga pasa al visor las mismas
+ * cadenas de siempre más las nuevas, y este reconoce el buffer con una
+ * comparación de punteros en vez de volver a buscar catorce mil textos.
  */
-const LINE_TEXT = new WeakMap<Row, string>();
-function lineText(r: Row): string {
-  let s = LINE_TEXT.get(r);
-  if (s === undefined) {
-    s = r.cursor ? `${r.cursor} ${r.line}` : r.line;
-    LINE_TEXT.set(r, s);
-  }
-  return s;
+type Row = WireRow & { text: string };
+
+function toRow(r: WireRow): Row {
+  return { line: r.line, cursor: r.cursor, text: r.cursor ? `${r.cursor} ${r.line}` : r.line };
+}
+const rowText = (r: Row): string => r.text;
+
+const RFC3339 = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/;
+/**
+ * Cursor con la fracción rellena a nueve cifras, para comparar como texto.
+ * Docker recorta los ceros finales del sello y «…00.1Z» ordenaba DESPUÉS de
+ * «…00.1000001Z» (la «Z» va detrás del «0»): una línea más antigua pasaba por
+ * más nueva y se descartaba al cargar historial.
+ */
+function cursorKey(c: string): string {
+  const m = RFC3339.exec(c);
+  return m ? `${m[1]}.${(m[2] ?? '').padEnd(9, '0')}${m[3]}` : c;
 }
 
 const CAP_FOLLOWING = 14_000;
@@ -151,7 +161,7 @@ export default function LogsTab({
     followingRef.current = true;
     let retryTimer = 0;
 
-    const pending: Row[] = [];
+    const pending: WireRow[] = [];
     let raf = 0;
     const flush = () => {
       raf = 0;
@@ -164,7 +174,7 @@ export default function LogsTab({
           if (seen.has(r.cursor)) continue;
           seen.add(r.cursor);
         }
-        add.push(r);
+        add.push(toRow(r));
       }
       if (!add.length) return;
       setLiveRows((prev) => {
@@ -184,7 +194,7 @@ export default function LogsTab({
 
     const es = openStream(`/services/${serviceId}/logs/stream`);
     es.addEventListener('log', (ev) => {
-      pending.push(JSON.parse((ev as MessageEvent).data) as Row);
+      pending.push(JSON.parse((ev as MessageEvent).data) as WireRow);
       if (!raf) raf = requestAnimationFrame(flush);
     });
     es.addEventListener('notice', (ev) => {
@@ -225,17 +235,20 @@ export default function LogsTab({
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     try {
-      const res = await api.get<{ lines: Row[]; hasMore: boolean }>(
+      const res = await api.get<{ lines: WireRow[]; hasMore: boolean }>(
         `/services/${serviceId}/logs/tail?limit=${OLDER_PAGE}&before=${encodeURIComponent(before)}`,
       );
       const seen = seenRef.current;
       /*
-       * Docker filtra `until` por segundos, así que la página puede traer
-       * líneas del mismo segundo que el ancla, posteriores a ella. Se quedan
-       * solo las estrictamente anteriores (el cursor RFC3339 ordena como
-       * texto): si no, iban a parar ENCIMA de líneas más antiguas.
+       * El servidor ya devuelve solo líneas estrictamente anteriores al ancla
+       * (Docker filtra `until` por segundos y él pide de más y recorta). Aquí
+       * queda la última guarda —por si el ancla cambió mientras respondía— y
+       * el descarte de las ya vistas.
        */
-      const fresh = res.lines.filter((r) => (!r.cursor || r.cursor < before) && (!r.cursor || !seen.has(r.cursor)));
+      const anchor = cursorKey(before);
+      const fresh = res.lines
+        .filter((r) => !r.cursor || (cursorKey(r.cursor) < anchor && !seen.has(r.cursor)))
+        .map(toRow);
       for (const r of fresh) if (r.cursor) seen.add(r.cursor);
       if (fresh.length) {
         setLiveRows((prev) => {
@@ -353,7 +366,7 @@ export default function LogsTab({
 
     if (isLiveMode) {
       if (liveRows.length > 0) {
-        return { displayLines: liveRows.map(lineText), emptyNote: null };
+        return { displayLines: liveRows.map(rowText), emptyNote: null };
       }
       /*
        * Enganchados y sin líneas: el contenedor existe y no ha escrito nada.
@@ -644,6 +657,7 @@ export default function LogsTab({
         }
         onLoadOlder={isLiveMode && stageTab === 'runtime' ? loadOlderLive : undefined}
         canLoadOlder={isLiveMode && stageTab === 'runtime' && liveRows.length > 0 && !reachedStart}
+        startReached={isLiveMode && stageTab === 'runtime' && reachedStart}
         loadingOlder={loadingOlder}
         onDownload={handleDownload}
         onFollowChange={handleFollowChange}
