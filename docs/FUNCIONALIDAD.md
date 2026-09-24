@@ -372,7 +372,7 @@ comparten `domains`, `hostPort`, `cpus`, `memoryMb`, `diskMb`, `healthcheckPath`
   previo al despliegue y la copia de datos entre bases: el comando y las URLs de
   conexión viajan por entorno y el shell los lee con `"$VAR"`. En el comando
   previo, además, los nombres que la CLI de Docker respeta en su entorno no se
-  le entregan como entorno (el pipeline de despliegue). `rootDir` y `dockerfilePath` se confinan al
+  le entregan como entorno (ver «Pipeline de despliegue»). `rootDir` y `dockerfilePath` se confinan al
   repositorio clonado (`paths.ts`).
 - **Superficie crítica**: quien accede a Skyway controla el Docker del host. El
   `docker-compose` publica la UI solo en `127.0.0.1:4000` (acceso por dominio+TLS
