@@ -1,5 +1,5 @@
 import { FastifyRequest } from 'fastify';
-import { canAccessProjectRow, currentUser } from '../auth';
+import { accessibleProjectRows, canAccessProjectRow, currentUser } from '../auth';
 import { getDeployment, getProject, getService, latestDeployment, listProjects, listServicesForProjects } from '../db';
 import { diagnose, explainExitCode } from '../deploy/diagnose';
 import { containerName, fetchLogsBefore } from '../docker/containers';
@@ -418,7 +418,7 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
  * `max`. El orden es el del listado de proyectos (más recientes primero).
  */
 export function accessibleServices(user: UserRow, max = MAX_SCAN): ServiceCtx[] {
-  const projects = listProjects().filter((p) => canAccessProjectRow(user, p));
+  const projects = accessibleProjectRows(user, listProjects());
   const byProject = listServicesForProjects(projects.map((p) => p.id));
   const out: ServiceCtx[] = [];
   for (const project of projects) {

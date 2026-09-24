@@ -680,6 +680,9 @@ export function initDb(): void {
     CREATE INDEX IF NOT EXISTS idx_service_metrics_ws ON service_metrics_hourly(workspace_id, hour);
     CREATE INDEX IF NOT EXISTS idx_usage_meter_ws ON usage_meter_hourly(workspace_id, meter, hour);
   `);
+  // La poda diaria borra por `ts`; sin índice era un barrido completo de una
+  // tabla que crece con cada petición de la pasarela de IA.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events(ts)');
   // Ancla de facturación: fin del último periodo facturado. Sustituye a derivar el
   // ciclo de `billing_day`, que refacturaba el tramo solapado al cambiar el día y
   // perdía el ciclo entero si el servidor estaba caído justo el día de cierre.
@@ -2067,6 +2070,24 @@ export function openAlertCountsByService(projectId: string): Record<string, numb
     .all(projectId) as { service_id: string; c: number }[];
   const out: Record<string, number> = {};
   for (const r of rows) out[r.service_id] = r.c;
+  return out;
+}
+
+/**
+ * `openAlertCountsByService` para varios proyectos en una consulta (por
+ * lotes). Las vistas globales (Monitor, Sitios) lo pedían proyecto a proyecto
+ * en cada sondeo.
+ */
+export function openAlertCountsByServiceForProjects(projectIds: string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const lote of lotes([...new Set(projectIds)])) {
+    const rows = stmt(
+      `SELECT service_id, COUNT(*) AS c FROM alerts
+        WHERE project_id IN (${lote.map(() => '?').join(',')}) AND resolved_at IS NULL AND service_id IS NOT NULL
+        GROUP BY service_id`,
+    ).all(...lote) as { service_id: string; c: number }[];
+    for (const r of rows) out[r.service_id] = r.c;
+  }
   return out;
 }
 

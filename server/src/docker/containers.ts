@@ -55,16 +55,17 @@ export function volumeName(project: ProjectRow, service: ServiceRow, suffix = 'd
   return `skyway-${project.slug}-${service.slug}-${suffix}`;
 }
 
-export async function findContainer(name: string): Promise<Docker.ContainerInspectInfo | null> {
+/** `signal` aborta la petición al daemon (el muestreador la corta al vencer su plazo). */
+export async function findContainer(name: string, signal?: AbortSignal): Promise<Docker.ContainerInspectInfo | null> {
   try {
-    return await dockerQuery.getContainer(name).inspect();
+    return await dockerQuery.getContainer(name).inspect(signal ? { abortSignal: signal } : undefined);
   } catch {
     return null;
   }
 }
 
-export async function getRuntime(name: string): Promise<ServiceRuntime> {
-  const info = await findContainer(name);
+export async function getRuntime(name: string, signal?: AbortSignal): Promise<ServiceRuntime> {
+  const info = await findContainer(name, signal);
   if (!info) {
     return { state: 'not_created', startedAt: null, exitCode: null, restartCount: 0, image: null };
   }
@@ -524,16 +525,17 @@ function rememberBaseline(name: string, s: DockerStatsSample): void {
   for (const [key, b] of cpuBaselines) if (nowMs - b.at > BASELINE_TTL_MS) cpuBaselines.delete(key);
 }
 
-export async function getStats(name: string): Promise<ServiceStats | null> {
+export async function getStats(name: string, signal?: AbortSignal): Promise<ServiceStats | null> {
   try {
     const c = dockerQuery.getContainer(name);
-    let s = (await c.stats({ stream: false, 'one-shot': true })) as unknown as DockerStatsSample;
+    // Los tipos de dockerode no declaran `abortSignal` en `stats`; la implementación lo reenvía.
+    let s = (await c.stats({ stream: false, 'one-shot': true, abortSignal: signal } as { stream: false })) as unknown as DockerStatsSample;
     let cpuPercent = cpuPercentFromBaseline(s, cpuBaselines.get(name));
     if (cpuPercent === null) {
       // Sin línea base que valga (primera lectura de este proceso, contenedor
       // recreado o contadores a cero): una lectura de dos muestras, que cuesta
       // ~1 s pero da ya un valor correcto. Solo pasa una vez por contenedor.
-      s = (await c.stats({ stream: false })) as unknown as DockerStatsSample;
+      s = (await c.stats({ stream: false, abortSignal: signal } as { stream: false })) as unknown as DockerStatsSample;
       cpuPercent = cpuPercentFromDocker(s);
     }
     rememberBaseline(name, s);

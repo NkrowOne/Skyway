@@ -32,6 +32,8 @@ import { sseInit } from '../sse';
  */
 const SAMPLE_MAX_AGE_MS = 3000;
 const METRICS_TICK_MS = 2500;
+/** Núcleos del host: no cambian en caliente, y `os.cpus()` construye la lista entera en cada llamada. */
+const HOST_CPUS = os.cpus().length;
 
 export async function streamRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
@@ -333,7 +335,7 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
           ts: snap.at,
           docker: true,
           host: {
-            cpus: os.cpus().length,
+            cpus: HOST_CPUS,
             load: Math.round(load * 100) / 100,
             totalMem: os.totalmem(),
             freeMem: os.freemem(),

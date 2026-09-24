@@ -25,9 +25,45 @@ export interface ServiceDiskUsage {
   quotaMb: number | null;
 }
 
+/** Totales de lo que ocupa Docker, para el administrador (Monitor → Espacio, Ajustes). */
+export interface DockerDiskTotals {
+  images: { count: number; size: number };
+  containers: { count: number; size: number };
+  volumes: { count: number; size: number };
+  buildCache: { size: number };
+}
+
 interface DiskSnapshot {
   ts: number;
   services: Map<string, ServiceDiskUsage>;
+  totals: DockerDiskTotals;
+}
+
+/**
+ * Tope de `docker system df`: mide cada volumen y cada capa de escritura y en
+ * un host grande puede tardar minutos. Sin tope, una llamada colgada dejaba
+ * el ciclo del monitor esperando para siempre, y con él las alertas de caída
+ * y el histórico.
+ */
+const DF_TIMEOUT_MS = 2 * 60_000;
+
+/**
+ * Los tipos de dockerode no declaran las opciones de `df`, pero la
+ * implementación reenvía `abortSignal` igual que en el resto de llamadas.
+ */
+function systemDf(): Promise<any> {
+  const df = docker.df as unknown as (opts: { abortSignal: AbortSignal }) => Promise<any>;
+  return df.call(docker, { abortSignal: AbortSignal.timeout(DF_TIMEOUT_MS) });
+}
+
+function totalsFrom(df: any): DockerDiskTotals {
+  const sum = (arr: any[], pick: (x: any) => number) => (arr || []).reduce((acc, x) => acc + (pick(x) || 0), 0);
+  return {
+    images: { count: (df.Images || []).length, size: df.LayersSize || sum(df.Images || [], (i) => i.Size) },
+    containers: { count: (df.Containers || []).length, size: sum(df.Containers || [], (c) => c.SizeRw) },
+    volumes: { count: (df.Volumes || []).length, size: sum(df.Volumes || [], (v) => Math.max(0, v.UsageData?.Size ?? 0)) },
+    buildCache: { size: sum(df.BuildCache || [], (b) => b.Size) },
+  };
 }
 
 let cached: DiskSnapshot | null = null;
@@ -57,7 +93,12 @@ async function containerLogBytes(id: string): Promise<number | null> {
   try {
     const info: any = await dockerQuery.getContainer(id).inspect();
     const logPath = info?.LogPath;
-    if (!logPath) return null;
+    if (!logPath) {
+      // Otro driver de log (sin fichero): tampoco hay nada que leer, y no
+      // tiene sentido repetir un `inspect` por contenedor en cada ronda.
+      logPathReadable = false;
+      return null;
+    }
     const st = await fs.promises.stat(logPath);
     logPathReadable = true;
     return st.size;
@@ -79,22 +120,21 @@ async function containerLogBytes(id: string): Promise<number | null> {
 async function collect(): Promise<DiskSnapshot> {
   const services = new Map<string, ServiceDiskUsage>();
 
-  let volumeSizes = new Map<string, number>();
+  // Sin `df` no hay tamaños, y unos ceros no son un dato: se cacheaban 60 s,
+  // el monitor los escribía en el histórico y daba por resueltas las alertas
+  // de cuota, que volvían a saltar —y a avisar por Discord o correo— cinco
+  // minutos después. Se falla, se conserva la foto anterior y se reintenta.
+  const df: any = await systemDf();
+  const volumeSizes = new Map<string, number>(
+    ((df.Volumes ?? []) as any[]).map((v) => [v.Name as string, Math.max(0, v.UsageData?.Size ?? 0)]),
+  );
   const containersByService = new Map<string, { id: string; sizeRw: number }[]>();
-  try {
-    const df: any = await docker.df();
-    volumeSizes = new Map(
-      ((df.Volumes ?? []) as any[]).map((v) => [v.Name as string, Math.max(0, v.UsageData?.Size ?? 0)]),
-    );
-    for (const c of (df.Containers ?? []) as any[]) {
-      const serviceId = c.Labels?.['skyway.service'];
-      if (typeof serviceId !== 'string' || !serviceId) continue;
-      const list = containersByService.get(serviceId) ?? [];
-      list.push({ id: c.Id as string, sizeRw: Math.max(0, c.SizeRw ?? 0) });
-      containersByService.set(serviceId, list);
-    }
-  } catch {
-    // sin df no hay tamaños: se devuelven ceros y se reintenta en el siguiente ciclo
+  for (const c of (df.Containers ?? []) as any[]) {
+    const serviceId = c.Labels?.['skyway.service'];
+    if (typeof serviceId !== 'string' || !serviceId) continue;
+    const list = containersByService.get(serviceId) ?? [];
+    list.push({ id: c.Id as string, sizeRw: Math.max(0, c.SizeRw ?? 0) });
+    containersByService.set(serviceId, list);
   }
 
   const projects = listProjects();
@@ -128,7 +168,7 @@ async function collect(): Promise<DiskSnapshot> {
     }
   }
 
-  return { ts: Date.now(), services };
+  return { ts: Date.now(), services, totals: totalsFrom(df) };
 }
 
 function start(): Promise<DiskSnapshot> {
@@ -170,4 +210,17 @@ export async function diskUsageByService(force = false): Promise<Map<string, Ser
     return cached.services;
   }
   return (await refresh(force)).services;
+}
+
+/**
+ * Totales de Docker (imágenes, contenedores, volúmenes, caché de build) con
+ * la misma caché de 60 s: antes las dos rutas de administración lanzaban su
+ * propio `df` sin tope en cada petición, encima del que ya hacía el desglose.
+ */
+export async function dockerDiskTotals(): Promise<DockerDiskTotals> {
+  if (cached) {
+    if (Date.now() - cached.ts >= CACHE_MS) void refresh().catch(() => {});
+    return cached.totals;
+  }
+  return (await refresh()).totals;
 }

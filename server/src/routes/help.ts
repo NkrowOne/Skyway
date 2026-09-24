@@ -5,7 +5,10 @@ import { accessibleService, ask, scanIssues } from '../help/assistant';
 import { FAQ, FAQ_CATEGORIES } from '../help/faq';
 import { rateLimit } from '../ratelimit';
 
-/** Preguntas al asistente por minuto y usuario: cada una puede leer logs de Docker. */
+/**
+ * Peticiones por minuto y usuario al asistente y al análisis de problemas: cada
+ * una puede leer logs de Docker (el análisis, los de hasta 60 servicios).
+ */
 const PREGUNTAS_POR_MINUTO = 30;
 
 const askSchema = z.object({
@@ -32,7 +35,7 @@ export async function helpRoutes(app: FastifyInstance): Promise<void> {
     return ask({ question: body.question, serviceId: body.serviceId, req });
   });
 
-  app.get('/api/help/issues', async (req, reply) => {
+  app.get('/api/help/issues', { preHandler: rateLimit({ max: PREGUNTAS_POR_MINUTO, windowMs: 60_000 }) }, async (req, reply) => {
     const q = z.object({ serviceId: z.string().trim().min(1).optional() }).parse(req.query);
     const result = await scanIssues(currentUser(req)!, q.serviceId);
     if (!result) return reply.code(404).send({ error: 'Servicio no encontrado' });

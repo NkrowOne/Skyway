@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { BellRing, Database, FileText, KeyRound, Layers, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
@@ -9,6 +9,7 @@ import { ModuleLogo } from '../components/ModuleIcon';
 import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
+import { clearLiveSnapshot, publishLiveSnapshot, useLiveSnapshot } from '../livemetrics';
 import { ActiveDeploy, Me, MetricsSnapshot, Project, Service } from '../types';
 import { CMD_K_LABEL, cx, EMPTY_LIST, EMPTY_RECORD, isActiveDeploy, serviceStatus } from '../utils';
 
@@ -46,7 +47,6 @@ const HISTORY_LIMIT = 120;
  * quedarse sin hueco para las peticiones normales.
  */
 function useProjectStream(projectId: string | undefined, onDeploySettled: () => void) {
-  const [latest, setLatest] = useState<MetricsSnapshot | null>(null);
   const [deploys, setDeploys] = useState<Record<string, ActiveDeploy>>({});
   const [live, setLive] = useState(false);
   // Se incrementa para reabrir el stream cuando el navegador lo da por perdido.
@@ -56,7 +56,7 @@ function useProjectStream(projectId: string | undefined, onDeploySettled: () => 
   const settledRef = useRef(onDeploySettled);
   settledRef.current = onDeploySettled;
 
-  // A qué proyecto pertenece lo acumulado en `historyRef`/`latest`.
+  // A qué proyecto pertenece lo acumulado en `historyRef` y en la foto en vivo.
   const historyForRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
@@ -68,17 +68,30 @@ function useProjectStream(projectId: string | undefined, onDeploySettled: () => 
     if (historyForRef.current !== projectId) {
       historyForRef.current = projectId;
       historyRef.current = new Map();
-      setLatest(null);
+      clearLiveSnapshot();
     }
     setDeploys({});
     setLive(false);
+
+    /*
+     * Con la pestaña oculta no se abre el stream: el sondeo de react-query se
+     * pausa solo, pero el SSE seguía vivo, y por cada pestaña de proyecto en
+     * segundo plano el servidor muestreaba Docker cada 2,5 s y React repintaba
+     * para nadie. Al volver a primer plano se abre (o se reabre) desde cero.
+     */
+    if (document.visibilityState === 'hidden') {
+      const onVisible = () => {
+        if (document.visibilityState === 'visible') setStreamGen((g) => g + 1);
+      };
+      document.addEventListener('visibilitychange', onVisible);
+      return () => document.removeEventListener('visibilitychange', onVisible);
+    }
     let retryTimer = 0;
 
     const es = openStream(`/projects/${projectId}/metrics/stream`);
 
     es.addEventListener('metrics', (ev) => {
       const snap: MetricsSnapshot = JSON.parse((ev as MessageEvent).data);
-      setLatest(snap);
       for (const [serviceId, entry] of Object.entries(snap.services)) {
         if (!entry.stats) continue;
         const arr = historyRef.current.get(serviceId) ?? [];
@@ -93,6 +106,8 @@ function useProjectStream(projectId: string | undefined, onDeploySettled: () => 
         if (arr.length > HISTORY_LIMIT) arr.shift();
         historyRef.current.set(serviceId, arr);
       }
+      // Fuera del estado de la página: cada consumidor se repinta solo con lo suyo.
+      publishLiveSnapshot(snap);
     });
 
     // Estado inicial de los despliegues vivos, al conectar.
@@ -128,14 +143,76 @@ function useProjectStream(projectId: string | undefined, onDeploySettled: () => 
       setLive(false);
       retryTimer = window.setTimeout(() => setStreamGen((g) => g + 1), 5000);
     };
+    // Al ocultarse la pestaña se cierra (relanzando el efecto, que arriba se
+    // queda a la espera de volver a primer plano).
+    const onHidden = () => {
+      if (document.visibilityState === 'hidden') setStreamGen((g) => g + 1);
+    };
+    document.addEventListener('visibilitychange', onHidden);
     return () => {
+      document.removeEventListener('visibilitychange', onHidden);
       if (retryTimer) window.clearTimeout(retryTimer);
       es.close();
     };
   }, [projectId, streamGen]);
 
-  return { latest, historyRef, deploys, live };
+  return { historyRef, deploys, live };
 }
+
+/**
+ * Resumen de salud de la cabecera. Es lo único de la página que lee la foto en
+ * vivo: así cada tick del stream lo repinta a él y a las tarjetas cuyo servicio
+ * cambió, no la página entera con sus filtros y modales.
+ */
+const HealthChips = memo(function HealthChips({
+  services,
+  alertServicesCount,
+  deployServicesCount,
+}: {
+  services: Service[];
+  alertServicesCount: number;
+  deployServicesCount: number;
+}) {
+  const latest = useLiveSnapshot();
+  const totalServices = services.length;
+  const runningCount = services.filter((s) => (latest?.services[s.id]?.state ?? s.runtime?.state) === 'running').length;
+  // Lo que se cayó solo: es lo único que justifica el rojo en el resumen.
+  const downCount = services.filter(
+    (s) =>
+      serviceStatus(latest?.services[s.id]?.state ?? s.runtime?.state ?? 'unknown', {
+        exitCode: s.runtime?.exitCode,
+        stoppedAt: s.stopped_at,
+      }).kind === 'down',
+  ).length;
+  return (
+    <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
+      {/* Verde solo cuando están todos en pie: «3/20 activos» en
+          verde decía justo lo contrario de lo que pasaba. Y rojo solo
+          si alguno se cayó: parados a mano, en gris. */}
+      <Chip
+        tone={downCount > 0 ? 'err' : runningCount === totalServices ? 'ok' : runningCount === 0 ? 'neutral' : 'warn'}
+        dot
+      >
+        <span className="tnum font-semibold">{runningCount}</span>/{totalServices} activos
+      </Chip>
+      {downCount > 0 && (
+        <Chip tone="err" dot>
+          <span className="tnum font-semibold">{downCount}</span> {downCount === 1 ? 'caído' : 'caídos'}
+        </Chip>
+      )}
+      {deployServicesCount > 0 && (
+        <Chip tone="warn" dot pulse>
+          <span className="tnum font-semibold">{deployServicesCount}</span> desplegando
+        </Chip>
+      )}
+      {alertServicesCount > 0 && (
+        <Chip tone="err" icon={<BellRing size={11} aria-hidden />}>
+          <span className="tnum font-semibold">{alertServicesCount}</span> con alertas
+        </Chip>
+      )}
+    </div>
+  );
+});
 
 function CanvasSkeleton() {
   return (
@@ -195,9 +272,9 @@ export default function ProjectPage() {
   const [reportOpen, setReportOpen] = useState(false);
   // Menú «···» de la cabecera en móvil.
   const [menuOpen, setMenuOpen] = useState(false);
-  // Espejo del estado del stream para decidir el ritmo del sondeo (el hook
-  // del stream va después de la consulta y no puede alimentarla directamente).
-  const [streamLive, setStreamLive] = useState(false);
+  // Estado del stream para decidir el ritmo del sondeo: el hook del stream va
+  // después de la consulta, así que se lee por una ref al programar cada refresco.
+  const liveRef = useRef(false);
 
   const selectedId = searchParams.get('s');
   // `?tab=` abre el drawer directamente en esa pestaña (enlaces desde la ayuda
@@ -228,14 +305,14 @@ export default function ProjectPage() {
     // Con el stream vivo (métricas y fases de despliegue llegan por SSE y al
     // terminar uno se invalida esta consulta) el sondeo es solo la red de
     // seguridad por si el stream muere: cada 4 s era pedir lo mismo dos veces.
-    refetchInterval: streamLive ? 20_000 : 4000,
+    refetchInterval: () => (liveRef.current ? 20_000 : 4000),
     enabled: !!projectId,
   });
 
-  const { latest, historyRef, deploys, live } = useProjectStream(projectId, () => {
+  const { historyRef, deploys, live } = useProjectStream(projectId, () => {
     queryClient.invalidateQueries({ queryKey: ['project', projectId] });
   });
-  useEffect(() => setStreamLive(live), [live]);
+  liveRef.current = live;
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
   const isAdmin = me.data?.user?.role === 'admin';
@@ -323,6 +400,9 @@ export default function ProjectPage() {
     },
     [setSearchParams],
   );
+  // Estable: una función nueva por render obligaba al drawer a repintarse
+  // (y a re-suscribir su tecla Esc) con cada cambio de la página.
+  const closeDrawer = useCallback(() => openService(null), [openService]);
 
   if (project.isLoading) return <CanvasSkeleton />;
   if (project.isError || !project.data) {
@@ -376,17 +456,8 @@ export default function ProjectPage() {
 
   const hasDeployables = services.some((s) => s.type !== 'database');
 
-  // Conteo de métricas agregadas del proyecto
+  // Conteo de métricas agregadas del proyecto (el estado en vivo lo pinta HealthChips).
   const totalServices = services.length;
-  const runningCount = services.filter((s) => (latest?.services[s.id]?.state ?? s.runtime?.state) === 'running').length;
-  // Lo que se cayó solo: es lo único que justifica el rojo en el resumen.
-  const downCount = services.filter(
-    (s) =>
-      serviceStatus(latest?.services[s.id]?.state ?? s.runtime?.state ?? 'unknown', {
-        exitCode: s.runtime?.exitCode,
-        stoppedAt: s.stopped_at,
-      }).kind === 'down',
-  ).length;
   const alertServicesCount = services.filter((s) => (alertCounts?.[s.id] ?? 0) > 0).length;
   const deployServicesCount = Object.keys(activeDeploys).length;
   const gitCount = services.filter((s) => s.type === 'git').length;
@@ -410,32 +481,7 @@ export default function ProjectPage() {
 
             {/* Resumen de salud de infraestructura en tiempo real */}
             {totalServices > 0 && (
-              <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
-                {/* Verde solo cuando están todos en pie: «3/20 activos» en
-                    verde decía justo lo contrario de lo que pasaba. Y rojo solo
-                    si alguno se cayó: parados a mano, en gris. */}
-                <Chip
-                  tone={downCount > 0 ? 'err' : runningCount === totalServices ? 'ok' : runningCount === 0 ? 'neutral' : 'warn'}
-                  dot
-                >
-                  <span className="tnum font-semibold">{runningCount}</span>/{totalServices} activos
-                </Chip>
-                {downCount > 0 && (
-                  <Chip tone="err" dot>
-                    <span className="tnum font-semibold">{downCount}</span> {downCount === 1 ? 'caído' : 'caídos'}
-                  </Chip>
-                )}
-                {deployServicesCount > 0 && (
-                  <Chip tone="warn" dot pulse>
-                    <span className="tnum font-semibold">{deployServicesCount}</span> desplegando
-                  </Chip>
-                )}
-                {alertServicesCount > 0 && (
-                  <Chip tone="err" icon={<BellRing size={11} aria-hidden />}>
-                    <span className="tnum font-semibold">{alertServicesCount}</span> con alertas
-                  </Chip>
-                )}
-              </div>
+              <HealthChips services={services} alertServicesCount={alertServicesCount} deployServicesCount={deployServicesCount} />
             )}
           </div>
           {/*
@@ -715,7 +761,6 @@ export default function ProjectPage() {
               <ServiceCard
                 key={s.id}
                 service={s}
-                metrics={latest?.services[s.id] ?? null}
                 alertCount={alertCounts?.[s.id] ?? 0}
                 deploy={activeDeploys[s.id] ?? null}
                 selected={s.id === selectedId}
@@ -747,11 +792,10 @@ export default function ProjectPage() {
             serviceId={drawerService.id}
             projectId={proj.id}
             projectName={proj.name}
-            latestMetrics={latest}
             historyRef={historyRef}
             closing={drawer.closing}
             initialTab={initialTab}
-            onClose={() => openService(null)}
+            onClose={closeDrawer}
           />
         </Suspense>
       )}

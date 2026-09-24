@@ -12,6 +12,7 @@ import {
   recordServiceDisk,
   recordServiceMetrics,
   recordUptimeSample,
+  transaction,
 } from './db';
 import { diskUsageByService, hostDisk } from './disk';
 import { dockerAvailable } from './docker/client';
@@ -20,7 +21,7 @@ import { dockerSnapshot } from './docker/sampler';
 import { explainExitCode } from './deploy/diagnose';
 import { netDelta, pruneNetCounters } from './metrics';
 import { ContainerState } from './types';
-import { fmtBytesEs } from './util';
+import { fmtBytesEs, withTimeout } from './util';
 
 const TICK_MS = 30_000;
 const RESTART_WINDOW_MS = 10 * 60_000;
@@ -62,6 +63,9 @@ function num(key: string, fallback: number): number {
  */
 const SAMPLE_MAX_AGE_MS = 15_000;
 
+/** `at` de la última foto evaluada, para no contar dos veces la misma en el histórico. */
+let lastSnapshotAt = -1;
+
 async function tick(): Promise<void> {
   // Histórico de carga y RAM del host: no depende de Docker, así que va ANTES
   // de la guarda. Con el daemon caído se dejaba de registrar justo cuando la
@@ -82,6 +86,11 @@ async function tick(): Promise<void> {
   // a contenedor y en serie: con `stats` tardando ~1 s, un servidor con treinta
   // servicios no llegaba a terminar el ciclo dentro de su propio intervalo.
   const snap = await dockerSnapshot(SAMPLE_MAX_AGE_MS, { stats: true });
+  // La misma foto que el tick anterior (un muestreo lento devolvió la caché,
+  // o el stream la renovó justo antes) no puede contar dos veces en el
+  // histórico: se evalúan las alertas igual, pero no se escribe telemetría.
+  const repeated = snap.at === lastSnapshotAt;
+  lastSnapshotAt = snap.at;
 
   const cpuThreshold = num('alertCpuPercent', 90);
   const memThreshold = num('alertMemPercent', 90);
@@ -100,184 +109,190 @@ async function tick(): Promise<void> {
     [...servicesByProject.values()].flatMap((services) => services.map((s) => s.id)),
   );
 
-  for (const project of projects) {
-    for (const service of servicesByProject.get(project.id) ?? []) {
-      const totalReplicas = configuredReplicas(service);
-      let runningReplicas = 0;
-      let anyReplicaSeen = false;
-      // Acumulador del consumo del servicio (suma de sus réplicas) para el histórico.
-      // Los contadores de red se guardan crudos y el delta se calcula al final:
-      // así una muestra incompleta (una réplica con stats caídos) no avanza la
-      // línea base y no pierde bytes en el siguiente tick.
-      const agg = { cpuPercent: 0, memUsage: 0, memLimit: 0 };
-      const rawNet: { name: string; rx: number; tx: number }[] = [];
-      let statsReplicas = 0;
-      for (let idx = 1; idx <= totalReplicas; idx++) {
-      const name = replicaName(project, service, idx);
-      const trackKey = `${service.id}#${idx}`;
-      const replicaTag = totalReplicas > 1 ? ` (réplica ${idx}/${totalReplicas})` : '';
-      const replica = snap.byService.get(service.id)?.perReplica.find((r) => r.index === idx);
-      // Sin dato fiable de esta réplica se salta el ciclo: interpretar el
-      // silencio de Docker como un cambio de estado dispararía alertas falsas.
-      if (!replica || replica.unreachable) continue;
-      const runtime = replica.runtime;
-      if (runtime.state !== 'not_created') anyReplicaSeen = true;
-      if (runtime.state === 'running') runningReplicas += 1;
-      const prev = tracked.get(trackKey);
-      const entry: Tracked = prev ?? {
-        state: runtime.state,
-        restartSamples: [],
-        cpuHighSince: null,
-        memHighSince: null,
-      };
+  // Una sola transacción por tick: cada servicio escribía su muestra de
+  // disponibilidad y la de consumo como dos confirmaciones sueltas (con
+  // cuarenta servicios, ochenta cada 30 s), y las páginas tocadas por varias
+  // se escribían en el WAL una vez por cada una. El bucle es síncrono.
+  transaction(() => {
+    for (const project of projects) {
+      for (const service of servicesByProject.get(project.id) ?? []) {
+        const totalReplicas = configuredReplicas(service);
+        let runningReplicas = 0;
+        let anyReplicaSeen = false;
+        // Acumulador del consumo del servicio (suma de sus réplicas) para el histórico.
+        // Los contadores de red se guardan crudos y el delta se calcula al final:
+        // así una muestra incompleta (una réplica con stats caídos) no avanza la
+        // línea base y no pierde bytes en el siguiente tick.
+        const agg = { cpuPercent: 0, memUsage: 0, memLimit: 0 };
+        const rawNet: { name: string; rx: number; tx: number }[] = [];
+        let statsReplicas = 0;
+        for (let idx = 1; idx <= totalReplicas; idx++) {
+        const name = replicaName(project, service, idx);
+        const trackKey = `${service.id}#${idx}`;
+        const replicaTag = totalReplicas > 1 ? ` (réplica ${idx}/${totalReplicas})` : '';
+        const replica = snap.byService.get(service.id)?.perReplica.find((r) => r.index === idx);
+        // Sin dato fiable de esta réplica se salta el ciclo: interpretar el
+        // silencio de Docker como un cambio de estado dispararía alertas falsas.
+        if (!replica || replica.unreachable) continue;
+        const runtime = replica.runtime;
+        if (runtime.state !== 'not_created') anyReplicaSeen = true;
+        if (runtime.state === 'running') runningReplicas += 1;
+        const prev = tracked.get(trackKey);
+        const entry: Tracked = prev ?? {
+          state: runtime.state,
+          restartSamples: [],
+          cpuHighSince: null,
+          memHighSince: null,
+        };
 
-      // --- caída del servicio ---
-      const wasUp = prev && (prev.state === 'running' || prev.state === 'restarting');
-      const isDown = runtime.state === 'exited' || runtime.state === 'dead';
-      // Un servicio parado adrede desde el panel no está «caído».
-      if (wasUp && isDown && !recentManualAction(service.id) && !service.stopped_at) {
-        fireAlert({
-          severity: 'critical',
-          type: 'service_down',
-          serviceId: service.id,
-          title: `Servicio caído: ${service.name}${replicaTag}`,
-          message: `El contenedor de "${service.name}"${replicaTag} (proyecto ${project.name}) se detuvo inesperadamente.`,
-          explanation: explainExitCode(runtime.exitCode),
-          dedupe: true,
-        });
-      }
-      if (runtime.state === 'running') {
-        // Resolución por estado, no por flanco: así se limpia también una alerta
-        // anterior a un reinicio de Skyway (con `tracked` vacío no hay transición
-        // observada). La notificación de "recuperado" sí que es solo del flanco.
-        const recovered = !!prev && prev.state !== 'running';
-        resolveServiceAlerts(service.id, 'service_down', recovered);
-        if (recovered) {
-          entry.cpuHighSince = null;
-          entry.memHighSince = null;
+        // --- caída del servicio ---
+        const wasUp = prev && (prev.state === 'running' || prev.state === 'restarting');
+        const isDown = runtime.state === 'exited' || runtime.state === 'dead';
+        // Un servicio parado adrede desde el panel no está «caído».
+        if (wasUp && isDown && !recentManualAction(service.id) && !service.stopped_at) {
+          fireAlert({
+            severity: 'critical',
+            type: 'service_down',
+            serviceId: service.id,
+            title: `Servicio caído: ${service.name}${replicaTag}`,
+            message: `El contenedor de "${service.name}"${replicaTag} (proyecto ${project.name}) se detuvo inesperadamente.`,
+            explanation: explainExitCode(runtime.exitCode),
+            dedupe: true,
+          });
         }
-      }
-
-      // --- bucle de reinicios ---
-      entry.restartSamples.push({ ts: nowMs, count: runtime.restartCount });
-      entry.restartSamples = entry.restartSamples.filter((s) => nowMs - s.ts < RESTART_WINDOW_MS);
-      const restartDelta = entry.restartSamples.length > 1
-        ? runtime.restartCount - entry.restartSamples[0].count
-        : 0;
-      if (restartDelta >= 3) {
-        fireAlert({
-          severity: 'critical',
-          type: 'crash_loop',
-          serviceId: service.id,
-          title: `Bucle de reinicios: ${service.name}${replicaTag}`,
-          message: `"${service.name}"${replicaTag} se ha reiniciado ${restartDelta} veces en los últimos 10 minutos. Docker lo vuelve a iniciar (restart: unless-stopped), pero el proceso finaliza repetidamente.`,
-          explanation: `${explainExitCode(runtime.exitCode)} Revise la pestaña «Logs» del servicio: el error aparece justo antes de cada reinicio. Causas habituales: una variable de entorno que falta, una base de datos inaccesible o un puerto interno incorrecto.`,
-          dedupe: true,
-        });
-      } else if (restartDelta === 0 && runtime.state === 'running') {
-        resolveServiceAlerts(service.id, 'crash_loop', false);
-      }
-
-      // --- uso de recursos ---
-      if (runtime.state === 'running') {
-        // La réplica corre: su contador de red debe sobrevivir aunque getStats
-        // falle puntualmente (si no, al recuperarse perdería el tramo del hueco).
-        seenReplicas.add(name);
-        const stats = replica.stats;
-        if (stats) {
-          // Muestra para el histórico: suma de todas las réplicas del servicio.
-          statsReplicas += 1;
-          agg.cpuPercent += stats.cpuPercent;
-          agg.memUsage += stats.memUsage;
-          agg.memLimit += stats.memLimit;
-          rawNet.push({ name, rx: stats.netRx, tx: stats.netTx });
-
-          const cfg = service.config as any;
-          const cpuAllowance = (cfg.cpus && cfg.cpus > 0 ? cfg.cpus : hostCores) * 100;
-          const cpuPct = (stats.cpuPercent / cpuAllowance) * 100;
-          if (cpuPct >= cpuThreshold) {
-            entry.cpuHighSince = entry.cpuHighSince ?? nowMs;
-            if (nowMs - entry.cpuHighSince >= sustainMs) {
-              fireAlert({
-                severity: 'warning',
-                type: 'cpu_high',
-                serviceId: service.id,
-                title: `CPU alta: ${service.name}`,
-                message: `"${service.name}" lleva ${Math.round((nowMs - entry.cpuHighSince) / 60000)} min utilizando aproximadamente el ${Math.round(cpuPct)}% de su CPU ${cfg.cpus ? `(límite ${cfg.cpus} núcleos)` : `(sin límite, ${hostCores} núcleos del host)`}.`,
-                explanation: 'Si se trata de tráfico legítimo, aumente el límite de CPU en Ajustes → Recursos. En caso contrario, puede deberse a un bucle infinito o a un proceso descontrolado: revise el registro. Sin límite configurado, este servicio puede acaparar la CPU del resto de proyectos.',
-                dedupe: true,
-              });
-            }
-          } else {
+        if (runtime.state === 'running') {
+          // Resolución por estado, no por flanco: así se limpia también una alerta
+          // anterior a un reinicio de Skyway (con `tracked` vacío no hay transición
+          // observada). La notificación de "recuperado" sí que es solo del flanco.
+          const recovered = !!prev && prev.state !== 'running';
+          resolveServiceAlerts(service.id, 'service_down', recovered);
+          if (recovered) {
             entry.cpuHighSince = null;
-            resolveServiceAlerts(service.id, 'cpu_high', false);
+            entry.memHighSince = null;
           }
+        }
 
-          if (stats.memLimit > 0) {
-            const memPct = (stats.memUsage / stats.memLimit) * 100;
-            const hasLimit = !!(cfg.memoryMb && cfg.memoryMb > 0);
-            if (memPct >= memThreshold) {
-              entry.memHighSince = entry.memHighSince ?? nowMs;
-              if (nowMs - entry.memHighSince >= sustainMs) {
+        // --- bucle de reinicios ---
+        entry.restartSamples.push({ ts: nowMs, count: runtime.restartCount });
+        entry.restartSamples = entry.restartSamples.filter((s) => nowMs - s.ts < RESTART_WINDOW_MS);
+        const restartDelta = entry.restartSamples.length > 1
+          ? runtime.restartCount - entry.restartSamples[0].count
+          : 0;
+        if (restartDelta >= 3) {
+          fireAlert({
+            severity: 'critical',
+            type: 'crash_loop',
+            serviceId: service.id,
+            title: `Bucle de reinicios: ${service.name}${replicaTag}`,
+            message: `"${service.name}"${replicaTag} se ha reiniciado ${restartDelta} veces en los últimos 10 minutos. Docker lo vuelve a iniciar (restart: unless-stopped), pero el proceso finaliza repetidamente.`,
+            explanation: `${explainExitCode(runtime.exitCode)} Revise la pestaña «Logs» del servicio: el error aparece justo antes de cada reinicio. Causas habituales: una variable de entorno que falta, una base de datos inaccesible o un puerto interno incorrecto.`,
+            dedupe: true,
+          });
+        } else if (restartDelta === 0 && runtime.state === 'running') {
+          resolveServiceAlerts(service.id, 'crash_loop', false);
+        }
+
+        // --- uso de recursos ---
+        if (runtime.state === 'running') {
+          // La réplica corre: su contador de red debe sobrevivir aunque getStats
+          // falle puntualmente (si no, al recuperarse perdería el tramo del hueco).
+          seenReplicas.add(name);
+          const stats = replica.stats;
+          if (stats) {
+            // Muestra para el histórico: suma de todas las réplicas del servicio.
+            statsReplicas += 1;
+            agg.cpuPercent += stats.cpuPercent;
+            agg.memUsage += stats.memUsage;
+            agg.memLimit += stats.memLimit;
+            rawNet.push({ name, rx: stats.netRx, tx: stats.netTx });
+
+            const cfg = service.config as any;
+            const cpuAllowance = (cfg.cpus && cfg.cpus > 0 ? cfg.cpus : hostCores) * 100;
+            const cpuPct = (stats.cpuPercent / cpuAllowance) * 100;
+            if (cpuPct >= cpuThreshold) {
+              entry.cpuHighSince = entry.cpuHighSince ?? nowMs;
+              if (nowMs - entry.cpuHighSince >= sustainMs) {
                 fireAlert({
                   severity: 'warning',
-                  type: 'mem_high',
+                  type: 'cpu_high',
                   serviceId: service.id,
-                  title: `Memoria alta: ${service.name}`,
-                  message: `"${service.name}" utiliza el ${Math.round(memPct)}% de ${hasLimit ? `su límite (${cfg.memoryMb} MB)` : 'la RAM del servidor'}.`,
-                  explanation: hasLimit
-                    ? 'Si supera el límite, el kernel finalizará el proceso (OOM, código 137). Aumente el límite de RAM o investigue una posible fuga de memoria.'
-                    : 'Este servicio no tiene límite de RAM y está consumiendo gran parte de la memoria del host: puede afectar a todos los proyectos. Establezca un límite en Ajustes → Recursos.',
+                  title: `CPU alta: ${service.name}`,
+                  message: `"${service.name}" lleva ${Math.round((nowMs - entry.cpuHighSince) / 60000)} min utilizando aproximadamente el ${Math.round(cpuPct)}% de su CPU ${cfg.cpus ? `(límite ${cfg.cpus} núcleos)` : `(sin límite, ${hostCores} núcleos del host)`}.`,
+                  explanation: 'Si se trata de tráfico legítimo, aumente el límite de CPU en Ajustes → Recursos. En caso contrario, puede deberse a un bucle infinito o a un proceso descontrolado: revise el registro. Sin límite configurado, este servicio puede acaparar la CPU del resto de proyectos.',
                   dedupe: true,
                 });
               }
             } else {
-              entry.memHighSince = null;
-              resolveServiceAlerts(service.id, 'mem_high', false);
+              entry.cpuHighSince = null;
+              resolveServiceAlerts(service.id, 'cpu_high', false);
+            }
+
+            if (stats.memLimit > 0) {
+              const memPct = (stats.memUsage / stats.memLimit) * 100;
+              const hasLimit = !!(cfg.memoryMb && cfg.memoryMb > 0);
+              if (memPct >= memThreshold) {
+                entry.memHighSince = entry.memHighSince ?? nowMs;
+                if (nowMs - entry.memHighSince >= sustainMs) {
+                  fireAlert({
+                    severity: 'warning',
+                    type: 'mem_high',
+                    serviceId: service.id,
+                    title: `Memoria alta: ${service.name}`,
+                    message: `"${service.name}" utiliza el ${Math.round(memPct)}% de ${hasLimit ? `su límite (${cfg.memoryMb} MB)` : 'la RAM del servidor'}.`,
+                    explanation: hasLimit
+                      ? 'Si supera el límite, el kernel finalizará el proceso (OOM, código 137). Aumente el límite de RAM o investigue una posible fuga de memoria.'
+                      : 'Este servicio no tiene límite de RAM y está consumiendo gran parte de la memoria del host: puede afectar a todos los proyectos. Establezca un límite en Ajustes → Recursos.',
+                    dedupe: true,
+                  });
+                }
+              } else {
+                entry.memHighSince = null;
+                resolveServiceAlerts(service.id, 'mem_high', false);
+              }
             }
           }
         }
-      }
 
-      entry.state = runtime.state;
-      tracked.set(trackKey, entry);
-      }
-
-      // Reconciliación del fallo de despliegue: si el despliegue VIGENTE es
-      // correcto, no hay un problema de despliegue activo aunque la alerta de
-      // fallo siga abierta (p. ej. se creó antes de existir la auto-resolución,
-      // o el servicio se recuperó sin un despliegue nuevo). Así la campana solo
-      // refleja problemas activos, sin que el usuario tenga que resolver a mano.
-      const latestDeploy = latestDeploys.get(service.id);
-      if (latestDeploy?.status === 'success') {
-        resolveServiceAlerts(service.id, 'deploy_failed', false);
-      }
-
-      // La telemetría es best-effort: un fallo de escritura (p. ej. disco lleno)
-      // no debe abortar el tick y dejar sin vigilar a los servicios siguientes.
-      try {
-        // Muestra de disponibilidad para las páginas de estado: cuenta como "en
-        // marcha" si al menos una réplica corre. Antes del primer despliegue no
-        // se registra nada (no penaliza el uptime).
-        if (anyReplicaSeen) recordUptimeSample(service.id, runningReplicas > 0);
-        // Muestra de consumo: solo si TODAS las réplicas en marcha dieron stats,
-        // para no sesgar la media con una lectura parcial. El delta de red se
-        // calcula aquí (avanza la línea base) únicamente cuando se registra.
-        if (statsReplicas > 0 && statsReplicas === runningReplicas) {
-          let netRxDelta = 0;
-          let netTxDelta = 0;
-          for (const r of rawNet) {
-            const d = netDelta(r.name, r.rx, r.tx);
-            netRxDelta += d.rx;
-            netTxDelta += d.tx;
-          }
-          recordServiceMetrics(service.id, { ...agg, netRxDelta, netTxDelta }, project.workspace_id);
+        entry.state = runtime.state;
+        tracked.set(trackKey, entry);
         }
-      } catch {
-        /* histórico best-effort: se reintenta en el siguiente tick */
+
+        // Reconciliación del fallo de despliegue: si el despliegue VIGENTE es
+        // correcto, no hay un problema de despliegue activo aunque la alerta de
+        // fallo siga abierta (p. ej. se creó antes de existir la auto-resolución,
+        // o el servicio se recuperó sin un despliegue nuevo). Así la campana solo
+        // refleja problemas activos, sin que el usuario tenga que resolver a mano.
+        const latestDeploy = latestDeploys.get(service.id);
+        if (latestDeploy?.status === 'success') {
+          resolveServiceAlerts(service.id, 'deploy_failed', false);
+        }
+
+        // La telemetría es best-effort: un fallo de escritura (p. ej. disco lleno)
+        // no debe abortar el tick y dejar sin vigilar a los servicios siguientes.
+        try {
+          // Muestra de disponibilidad para las páginas de estado: cuenta como "en
+          // marcha" si al menos una réplica corre. Antes del primer despliegue no
+          // se registra nada (no penaliza el uptime).
+          if (anyReplicaSeen && !repeated) recordUptimeSample(service.id, runningReplicas > 0);
+          // Muestra de consumo: solo si TODAS las réplicas en marcha dieron stats,
+          // para no sesgar la media con una lectura parcial. El delta de red se
+          // calcula aquí (avanza la línea base) únicamente cuando se registra.
+          if (!repeated && statsReplicas > 0 && statsReplicas === runningReplicas) {
+            let netRxDelta = 0;
+            let netTxDelta = 0;
+            for (const r of rawNet) {
+              const d = netDelta(r.name, r.rx, r.tx);
+              netRxDelta += d.rx;
+              netTxDelta += d.tx;
+            }
+            recordServiceMetrics(service.id, { ...agg, netRxDelta, netTxDelta }, project.workspace_id);
+          }
+        } catch {
+          /* histórico best-effort: se reintenta en el siguiente tick */
+        }
       }
     }
-  }
+  });
 
   // Se olvidan los contadores de red de réplicas que ya no corren.
   pruneNetCounters(seenReplicas);
@@ -357,6 +372,13 @@ let interval: NodeJS.Timeout | null = null;
 let tickCount = 0;
 let lastPrune = 0;
 let tickRunning = false;
+let diskRunning = false;
+/**
+ * Tope de la ronda de disco dentro del tick. `docker system df` puede tardar
+ * minutos en un host grande, y esperándolo aquí el tick de 30 s dejaba de
+ * vigilar caídas y de registrar el histórico hasta que volviera.
+ */
+const DISK_ROUND_TIMEOUT_MS = 3 * 60_000;
 
 export function startMonitor(log: { warn: (msg: string) => void }): void {
   if (interval) return;
@@ -373,12 +395,15 @@ export function startMonitor(log: { warn: (msg: string) => void }): void {
         log.warn(`monitor: ${err?.message || err}`);
       }
       tickCount += 1;
-      if (tickCount % DISK_CHECK_EVERY === 0) {
-        try {
-          await checkDiskQuotas();
-        } catch (err: any) {
-          log.warn(`monitor disco: ${err?.message || err}`);
-        }
+      if (tickCount % DISK_CHECK_EVERY === 0 && !diskRunning) {
+        diskRunning = true;
+        const round = checkDiskQuotas()
+          .catch((err: any) => log.warn(`monitor disco: ${err?.message || err}`))
+          .finally(() => {
+            diskRunning = false;
+          });
+        // Si se pasa del tope, la ronda sigue por detrás y el tick siguiente no la repite.
+        await withTimeout(round, DISK_ROUND_TIMEOUT_MS, () => undefined);
       }
       // Poda diaria del histórico de disponibilidad y de consumo (~90-92 días).
       if (Date.now() - lastPrune > 24 * 3600_000) {

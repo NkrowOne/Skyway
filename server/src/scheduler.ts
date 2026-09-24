@@ -7,11 +7,18 @@ import { listProjects, listServicesForProjects, resolveAlertsByDedupe } from './
 import { dockerAvailable } from './docker/client';
 import { createSystemBackup, listSystemBackups, pruneSystemBackups } from './sysbackup';
 import { DatabaseConfig } from './types';
+import { withDeadline } from './util';
 
 const TICK_MS = 10 * 60_000;
 /** Hora local a partir de la cual se ejecutan los backups programados. */
 const RUN_AFTER_HOUR = 4;
 const SYSTEM_BACKUP_DEDUPE = 'system:backup';
+/**
+ * Tope de un volcado programado. El `exec` del volcado va por el cliente de
+ * Docker sin tope, y un contenedor colgado dejaba el ciclo entero —backups,
+ * facturación, corte por impago— parado hasta reiniciar Skyway.
+ */
+const BACKUP_DEADLINE_MS = 12 * 60_000;
 
 function isDue(schedule: 'daily' | 'weekly', newestTs: number, now: Date): boolean {
   if (now.getHours() < RUN_AFTER_HOUR) return false;
@@ -84,7 +91,11 @@ async function tick(): Promise<void> {
       if (!isDue(schedule, newestTs, now)) continue;
 
       try {
-        const entry = await createBackup(project, service);
+        const entry = await withDeadline(
+          createBackup(project, service),
+          BACKUP_DEADLINE_MS,
+          'El volcado no ha terminado en 12 minutos y se ha dado por fallido',
+        );
         auditSystem('backup_created', `${service.name}: ${entry.file} (programado ${schedule})`);
         resolveServiceAlerts(service.id, 'backup_failed', false);
 

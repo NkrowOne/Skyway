@@ -20,7 +20,7 @@ import { maskValue } from '../../helpText';
 import { EnvImportReport, EnvImportResponse, EnvSkipReason } from '../../types';
 import { EnvSuggestion } from '../../types';
 import { copyToClipboard, cx, EMPTY_LIST, EMPTY_RECORD } from '../../utils';
-import { Button, CopyButton, EditorBar, Modal, Segmented, Skeleton, useToast } from '../ui';
+import { Button, CopyButton, EditorBar, ErrorState, Modal, Segmented, Skeleton, useToast } from '../ui';
 
 /** Por qué se dejó fuera una clave del .env del repositorio, en palabras. */
 const SKIP_REASON_LABEL: Record<EnvSkipReason, string> = {
@@ -671,6 +671,9 @@ export default function VariablesTab({
 
   // Validación y envío de cambios
   const submit = () => {
+    // Sin la carga inicial no hay nada que guardar: un PUT con las filas vacías
+    // borraría las variables reales del servicio.
+    if (!env.data) return;
     const vars: Record<string, string> = {};
     if (viewMode === 'raw') {
       for (const line of rawText.split('\n')) {
@@ -1005,6 +1008,25 @@ export default function VariablesTab({
         <Skeleton className="h-4 w-3/4" />
         <Skeleton className="h-48 w-full rounded-xl" />
         <Skeleton className="h-4 w-1/2" />
+      </div>
+    );
+  }
+
+  /*
+   * El editor solo existe con las variables cargadas. Si la consulta falla y
+   * se pintara igual, saldría vacío y «Guardar» machacaría las variables
+   * reales del servicio con un conjunto en blanco.
+   */
+  if (!env.data) {
+    return (
+      <div className="p-4 sm:px-5">
+        <ErrorState
+          compact
+          title="No se han podido cargar las variables"
+          error={env.error}
+          onRetry={() => env.refetch()}
+          retrying={env.isFetching}
+        />
       </div>
     );
   }

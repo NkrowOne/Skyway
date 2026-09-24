@@ -7,8 +7,8 @@ import { currentUser, requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { config } from '../config';
 import { getSetting, setSetting } from '../db';
-import { hostDisk } from '../disk';
-import { docker, dockerAvailable } from '../docker/client';
+import { dockerDiskTotals, hostDisk } from '../disk';
+import { dockerAvailable } from '../docker/client';
 import { nixpacksAvailable } from '../deploy/builder';
 import { channelsConfigured, dispatchToChannels } from '../notify';
 import { verifyGithubToken } from '../github/client';
@@ -37,6 +37,9 @@ const SETTINGS_KEYS = [
   'alertTelegramChat',
 ] as const;
 
+/** Núcleos del host: no cambian en caliente, y `os.cpus()` construye la lista entera en cada llamada. */
+const HOST_CPUS = os.cpus().length;
+
 export async function systemRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/health', async () => ({ ok: true, version: config.version }));
 
@@ -52,7 +55,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       host: {
         platform: os.platform(),
         arch: os.arch(),
-        cpus: os.cpus().length,
+        cpus: HOST_CPUS,
         totalMem: os.totalmem(),
         freeMem: os.freemem(),
         load: os.loadavg().map((n) => Math.round(n * 100) / 100),
@@ -66,19 +69,10 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     secured.get('/api/system/docker-usage', { preHandler: requireAdmin }, async (_req, reply) => {
       if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
       try {
-        const df: any = await docker.df();
-        const sum = (arr: any[], pick: (x: any) => number) => (arr || []).reduce((acc, x) => acc + (pick(x) || 0), 0);
-        return {
-          images: { count: (df.Images || []).length, size: df.LayersSize || sum(df.Images || [], (i) => i.Size) },
-          containers: { count: (df.Containers || []).length, size: sum(df.Containers || [], (c) => c.SizeRw) },
-          volumes: {
-            count: (df.Volumes || []).length,
-            size: sum(df.Volumes || [], (v) => Math.max(0, v.UsageData?.Size ?? 0)),
-          },
-          buildCache: { size: sum(df.BuildCache || [], (b) => b.Size) },
-        };
+        // Del mismo `df` cacheado (60 s) que usa Monitor: no un segundo `df` sin tope por petición.
+        return await dockerDiskTotals();
       } catch (err: any) {
-        return reply.code(500).send({ error: err?.message || 'No se pudo consultar el uso de Docker' });
+        return reply.code(503).send({ error: err?.message || 'No se pudo consultar el uso de Docker' });
       }
     });
 

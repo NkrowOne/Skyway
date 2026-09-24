@@ -154,8 +154,11 @@ convertía en el cuello de botella y el panel se movía a tirones.
   marcha se enganchan a él. Da igual cuántas pestañas haya abiertas.
 - **Invalidación explícita**: desplegar, arrancar, parar, reiniciar o borrar
   descarta la foto para que el cambio se vea en la lectura siguiente y no al
-  caducar. Un muestreo que arrancó antes de la invalidación no la pisa al
-  terminar.
+  caducar. Con un servicio concreto solo se vuelve a mirar ese servicio y se
+  parchea en la foto; un muestreo que arrancó antes de la invalidación se
+  guarda igual y ese servicio se repara otra vez por si trajo el estado
+  anterior (antes se tiraba la foto entera y, en una racha de despliegues, el
+  panel se quedaba sin foto fresca mientras Docker muestreaba sin parar).
 - **Un fallo de Docker no es un cambio de estado**: si el daemon no responde por
   una réplica, se marca inalcanzable y el monitor salta ese ciclo en vez de
   disparar una alerta de caída falsa.
@@ -228,8 +231,14 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
 3. **Comando previo** (`deploy.preDeployCommand` de la config-as-code): se
    ejecuta con la imagen y las variables nuevas contra la red del proyecto,
    **antes** de tocar la versión en marcha. Es donde suelen ir las migraciones;
-   si falla, el despliegue se aborta y lo que estaba sirviendo sigue igual. El
-   comando viaja en una variable de entorno, nunca interpolado en el shell.
+   si falla —o no termina en 30 minutos— el despliegue se aborta y lo que
+   estaba sirviendo sigue igual. El comando viaja en una variable de entorno,
+   nunca interpolado en el shell. Las variables con nombre reservado para la
+   propia CLI de Docker (`PATH`, `HOME`, `LD_*`, `DOCKER_*`, `GIT_*`, `NODE_*`,
+   `SSL_CERT_*`, `*_PROXY`…) se le pasan al contenedor como `--env CLAVE=VALOR`
+   y nunca entran en el entorno del proceso `docker` (`deploy/predeployenv.ts`):
+   con ellas en el entorno, quien edita variables elegía qué binario ejecuta
+   Skyway con el socket de Docker en la mano.
 4. **Despliegue del contenedor** (swap con validación):
    - **Corte cero** (servicios sin volúmenes ni puerto de host): se arranca la
      versión nueva en paralelo, se **valida** (healthcheck HTTP 2xx o periodo de
@@ -361,7 +370,10 @@ comparten `domains`, `hostPort`, `cpus`, `memoryMb`, `diskMb`, `healthcheckPath`
   exec, **nunca interpoladas en el shell**. La consola tiene modo solo-lectura
   por defecto (reforzado en el propio motor). El mismo patrón cubre el comando
   previo al despliegue y la copia de datos entre bases: el comando y las URLs de
-  conexión viajan por entorno y el shell los lee con `"$VAR"`.
+  conexión viajan por entorno y el shell los lee con `"$VAR"`. En el comando
+  previo, además, los nombres que la CLI de Docker respeta en su entorno no se
+  le entregan como entorno (el pipeline de despliegue). `rootDir` y `dockerfilePath` se confinan al
+  repositorio clonado (`paths.ts`).
 - **Superficie crítica**: quien accede a Skyway controla el Docker del host. El
   `docker-compose` publica la UI solo en `127.0.0.1:4000` (acceso por dominio+TLS
   vía Traefik, o túnel SSH). Recomendado: contraseña fuerte, dominio con TLS o
@@ -1219,7 +1231,7 @@ distroless), el explorador lo indica y no está disponible.
 | DELETE | `/services/:id/backups/:file` | +access | borra un backup |
 | GET | `/health` | público | estado + versión |
 | GET | `/system` | auth | versión, docker, nixpacks, host, disco (`dataDir` solo para admin) |
-| GET | `/system/docker-usage` | admin | uso de Docker (imágenes/volúmenes/caché) |
+| GET | `/system/docker-usage` | admin | uso de Docker (imágenes/volúmenes/caché), del mismo `df` cacheado 60 s que Monitor |
 | POST | `/system/prune` | admin | libera imágenes colgantes y caché de build |
 | GET | `/system/backups` | admin | snapshots del propio skyway.db (+ retención) |
 | POST | `/system/backups` | admin | crea un snapshot ahora (VACUUM INTO) |

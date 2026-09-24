@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { insideDir } from '../paths';
 import { lineSplitter } from '../util';
 
 export type LogFn = (line: string) => void;
@@ -346,14 +347,21 @@ function declaredArgs(dockerfile: string): Set<string> {
  */
 export async function buildImage(opts: BuildOpts, log: LogFn): Promise<{ varsDelBuild: Record<string, string> }> {
   const context = path.resolve(opts.repoDir, opts.rootDir || '.');
-  if (!context.startsWith(path.resolve(opts.repoDir))) {
+  if (!insideDir(opts.repoDir, context)) {
     throw new Error('rootDir fuera del repositorio');
   }
   if (!fs.existsSync(context)) {
     throw new Error(`El directorio raíz "${opts.rootDir}" no existe en el repositorio`);
   }
 
+  // La ruta del Dockerfile la escribe quien configura el servicio o el propio
+  // repositorio (railway.json): con `..` señalaría cualquier fichero del
+  // servidor, y `docker build -f` lo leería. Puede salirse del contexto (un
+  // monorepo con los Dockerfile en la raíz), pero no del repositorio.
   const dockerfile = path.join(context, opts.dockerfilePath || 'Dockerfile');
+  if (!insideDir(opts.repoDir, dockerfile)) {
+    throw new Error('dockerfilePath fuera del repositorio');
+  }
   const argFlags: string[] = [];
   for (const [k, v] of Object.entries(opts.buildArgs || {})) {
     argFlags.push('--build-arg', `${k}=${v}`);

@@ -35,6 +35,11 @@ type StateFilter = 'all' | 'running' | 'down' | 'stopped';
 type SortKey = 'default' | 'cpu' | 'mem' | 'disk';
 type View = 'services' | 'host' | 'disk';
 
+// Formateadores fijos: pasados como funciones nuevas en cada render anulaban el
+// memo de las gráficas del histórico del servidor.
+const fmtLoadAxis = (v: number) => v.toFixed(v < 10 ? 2 : 1);
+const fmtBytesAxis = (v: number) => fmtBytes(v);
+
 /** Tarjeta de indicador del host con barra de progreso opcional. */
 function StatTile({
   icon,
@@ -557,6 +562,11 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
     }),
     [points],
   );
+  // Los umbrales, memoizados por la misma razón: como literal en el JSX eran un
+  // objeto nuevo por render y las tres gráficas se repintaban cada 6 s.
+  const cpuThreshold = useMemo(() => (cpus ? { value: cpus, label: `${cpus} núcleos` } : null), [cpus]);
+  const memThreshold = useMemo(() => (memTotal ? { value: memTotal, label: `total ${fmtBytes(memTotal)}` } : null), [memTotal]);
+  const diskThreshold = useMemo(() => (diskTotal ? { value: diskTotal, label: `total ${fmtBytes(diskTotal)}` } : null), [diskTotal]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -601,8 +611,8 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
               points={loadPoints}
               hours={hours}
               color="var(--color-chart-1)"
-              format={(v) => v.toFixed(v < 10 ? 2 : 1)}
-              threshold={cpus ? { value: cpus, label: `${cpus} núcleos` } : null}
+              format={fmtLoadAxis}
+              threshold={cpuThreshold}
             />
           </div>
           <HistoryChart
@@ -610,8 +620,8 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
             points={memPoints}
             hours={hours}
             color="var(--color-chart-2)"
-            format={(v) => fmtBytes(v)}
-            threshold={memTotal ? { value: memTotal, label: `total ${fmtBytes(memTotal)}` } : null}
+            format={fmtBytesAxis}
+            threshold={memThreshold}
             fixedMax={memTotal ?? undefined}
           />
           <HistoryChart
@@ -619,8 +629,8 @@ function HostHistoryPanel({ cpus }: { cpus: number | undefined }) {
             points={diskPoints}
             hours={hours}
             color="var(--color-chart-5)"
-            format={(v) => fmtBytes(v)}
-            threshold={diskTotal ? { value: diskTotal, label: `total ${fmtBytes(diskTotal)}` } : null}
+            format={fmtBytesAxis}
+            threshold={diskThreshold}
             fixedMax={diskTotal ?? undefined}
           />
           <p className="text-center text-xs text-subtle">La banda abarca desde la media hasta el máximo.</p>
@@ -644,7 +654,10 @@ export default function MonitorPage() {
   const overview = useQuery({
     queryKey: ['monitorOverview'],
     queryFn: () => api.get<MonitorOverview>('/monitor/overview'),
-    refetchInterval: 6000,
+    // Solo la tabla de servicios necesita el ritmo de 6 s: «Servidor» y
+    // «Espacio» usan apenas `host.*` y no compensa pedir para eso las
+    // estadísticas de todos los contenedores.
+    refetchInterval: view === 'services' ? 6000 : 30_000,
   });
 
   // Un Set de ids en curso: `mutation.variables` solo refleja la ÚLTIMA
@@ -713,12 +726,21 @@ export default function MonitorPage() {
     return [...seen.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'es'));
   }, [services]);
 
-  const running = services.filter((s) => s.state === 'running').length;
-  // Una parada a mano no cuenta como problema: va con los detenidos.
-  const down = services.filter(
-    (s) => s.state === 'restarting' || serviceStatus(s.state, { exitCode: s.exitCode, stoppedAt: s.stoppedAt }).kind === 'down',
-  ).length;
-  const alerts = services.reduce((acc, s) => acc + s.alerts, 0);
+  // Contadores de cabecera y pie, una vez por respuesta: cada tecla del filtro
+  // re-renderiza la página entera y antes volvía a recorrer todos los servicios.
+  const { running, down, alerts, latestStartedAt } = useMemo(() => {
+    const started = services.filter((s) => s.startedAt).map((s) => Date.parse(s.startedAt!));
+    return {
+      running: services.filter((s) => s.state === 'running').length,
+      // Una parada a mano no cuenta como problema: va con los detenidos.
+      down: services.filter(
+        (s) => s.state === 'restarting' || serviceStatus(s.state, { exitCode: s.exitCode, stoppedAt: s.stoppedAt }).kind === 'down',
+      ).length,
+      alerts: services.reduce((acc, s) => acc + s.alerts, 0),
+      // El pie solo habla del último arranque si hay algo en marcha.
+      latestStartedAt: services.some((s) => s.startedAt && s.state === 'running') ? Math.max(...started) : null,
+    };
+  }, [services]);
   const host = overview.data?.host;
   const memPct = host ? ((host.totalMem - host.freeMem) / host.totalMem) * 100 : null;
   const diskPct = host?.disk ? ((host.disk.total - host.disk.free) / host.disk.total) * 100 : null;
@@ -978,11 +1000,10 @@ export default function MonitorPage() {
 
       {services.length > 0 && overview.data && (
         <p className="mt-4 text-right text-micro text-subtle">
-          Actualización automática cada 6 s · {filtered.length !== services.length ? `${filtered.length} de ` : ''}
+          Actualización automática cada {view === 'services' ? 6 : 30} s ·{' '}
+          {filtered.length !== services.length ? `${filtered.length} de ` : ''}
           {services.length} servicios
-          {services.some((s) => s.startedAt && s.state === 'running')
-            ? ` · el más reciente se inició ${timeAgo(Math.max(...services.filter((s) => s.startedAt).map((s) => Date.parse(s.startedAt!))))}`
-            : ''}
+          {latestStartedAt !== null ? ` · el más reciente se inició ${timeAgo(latestStartedAt)}` : ''}
         </p>
       )}
 

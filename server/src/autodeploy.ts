@@ -7,6 +7,7 @@ import { resolveGitToken } from './github/resolve';
 import { dockerAvailable } from './docker/client';
 import { markManualAction } from './monitor';
 import { GitConfig, ProjectRow } from './types';
+import { pooled } from './util';
 
 // El sondeo por API con ETag es tan barato (un 304 no consume cuota ni arranca
 // un proceso) que se puede mirar cada minuto sin coste apreciable: un push sin
@@ -22,19 +23,6 @@ const IN_PROGRESS = new Set(['queued', 'building', 'deploying']);
  * minuto.
  */
 const POLL_CONCURRENCY = 4;
-
-/** Ejecuta las tareas con un tope de concurrencia. */
-async function pooled(tasks: (() => Promise<void>)[], limit: number): Promise<void> {
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
-    for (;;) {
-      const i = next++;
-      if (i >= tasks.length) return;
-      await tasks[i]();
-    }
-  });
-  await Promise.all(workers);
-}
 
 /**
  * Auto-deploy por sondeo: cada cierto tiempo se consulta la cabeza de la rama

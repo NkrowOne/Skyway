@@ -17,6 +17,7 @@ import path from 'path';
 import { fireAlert } from '../alerts';
 import { getEnv, getProjectVars, getService, setEnv, updateService } from '../db';
 import { getRepoFile, listRepoDir } from '../github/client';
+import { insideDir } from '../paths';
 import { GitConfig, ServiceRow } from '../types';
 
 export type EnvSkipReason = 'invalid_key' | 'reserved' | 'placeholder' | 'localhost' | 'exists' | 'handled';
@@ -263,7 +264,7 @@ export function planEnvImport(files: EnvFileSource[], ctx: EnvImportContext): En
 export function scanRepoEnvFiles(workDir: string, contextDir: string): EnvFileSource[] {
   const root = path.resolve(workDir);
   const context = path.resolve(contextDir);
-  if (!context.startsWith(root)) throw new Error('rootDir fuera del repositorio');
+  if (!insideDir(root, context)) throw new Error('rootDir fuera del repositorio');
   const dirs = [...new Set([root, context])];
   const found: EnvFileSource[] = [];
   for (const name of ENV_FILE_CANDIDATES) {
