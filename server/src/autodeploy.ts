@@ -1,5 +1,5 @@
 import { auditSystem } from './audit';
-import { getSetting, lastBuiltCommitSha, latestDeployment, listProjects, listServices } from './db';
+import { getSetting, lastBuiltCommitSha, latestDeployment, listProjects, listServicesForProjects } from './db';
 import { remoteHeadSha } from './deploy/builder';
 import { triggerDeploy } from './deploy/deployer';
 import { apiHeadSha, parseGithubSlug } from './github/client';
@@ -7,6 +7,7 @@ import { resolveGitToken } from './github/resolve';
 import { dockerAvailable } from './docker/client';
 import { markManualAction } from './monitor';
 import { GitConfig, ProjectRow } from './types';
+import { pooled } from './util';
 
 // El sondeo por API con ETag es tan barato (un 304 no consume cuota ni arranca
 // un proceso) que se puede mirar cada minuto sin coste apreciable: un push sin
@@ -22,19 +23,6 @@ const IN_PROGRESS = new Set(['queued', 'building', 'deploying']);
  * minuto.
  */
 const POLL_CONCURRENCY = 4;
-
-/** Ejecuta las tareas con un tope de concurrencia. */
-async function pooled(tasks: (() => Promise<void>)[], limit: number): Promise<void> {
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
-    for (;;) {
-      const i = next++;
-      if (i >= tasks.length) return;
-      await tasks[i]();
-    }
-  });
-  await Promise.all(workers);
-}
 
 /**
  * Auto-deploy por sondeo: cada cierto tiempo se consulta la cabeza de la rama
@@ -96,8 +84,10 @@ async function tick(log: { warn: (msg: string) => void }): Promise<void> {
   // Servicios de repositorio con auto-deploy activo (ausente = activo).
   const targets: { id: string; name: string; branch: string; repoUrl: string; project: ProjectRow; cfg: GitConfig }[] = [];
   const active = new Set<string>();
-  for (const project of listProjects()) {
-    for (const service of listServices(project.id)) {
+  const projects = listProjects();
+  const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
+  for (const project of projects) {
+    for (const service of servicesByProject.get(project.id) ?? []) {
       if (service.type !== 'git') continue;
       const cfg = service.config as GitConfig;
       if (cfg.autoDeploy === false) continue;

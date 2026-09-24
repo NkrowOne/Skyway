@@ -3,15 +3,22 @@ import { auditSystem } from './audit';
 import { fireAlert, resolveServiceAlerts } from './alerts';
 import { billingAutomationTick } from './billingauto';
 import { backupSupported, createBackup, deleteBackup, listBackups } from './backups';
-import { listProjects, listServices, resolveAlertsByDedupe } from './db';
+import { listProjects, listServicesForProjects, resolveAlertsByDedupe } from './db';
 import { dockerAvailable } from './docker/client';
 import { createSystemBackup, listSystemBackups, pruneSystemBackups } from './sysbackup';
 import { DatabaseConfig } from './types';
+import { withDeadline } from './util';
 
 const TICK_MS = 10 * 60_000;
 /** Hora local a partir de la cual se ejecutan los backups programados. */
 const RUN_AFTER_HOUR = 4;
 const SYSTEM_BACKUP_DEDUPE = 'system:backup';
+/**
+ * Tope de un volcado programado. El `exec` del volcado va por el cliente de
+ * Docker sin tope, y un contenedor colgado dejaba el ciclo entero —backups,
+ * facturación, corte por impago— parado hasta reiniciar Skyway.
+ */
+const BACKUP_DEADLINE_MS = 12 * 60_000;
 
 function isDue(schedule: 'daily' | 'weekly', newestTs: number, now: Date): boolean {
   if (now.getHours() < RUN_AFTER_HOUR) return false;
@@ -70,8 +77,10 @@ async function tick(): Promise<void> {
   if (!(await dockerAvailable())) return;
   const now = nowDate;
 
-  for (const project of listProjects()) {
-    for (const service of listServices(project.id)) {
+  const projects = listProjects();
+  const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
+  for (const project of projects) {
+    for (const service of servicesByProject.get(project.id) ?? []) {
       if (service.type !== 'database' || !backupSupported(service)) continue;
       const cfg = service.config as DatabaseConfig;
       const schedule = cfg.backupSchedule;
@@ -82,7 +91,11 @@ async function tick(): Promise<void> {
       if (!isDue(schedule, newestTs, now)) continue;
 
       try {
-        const entry = await createBackup(project, service);
+        const entry = await withDeadline(
+          createBackup(project, service),
+          BACKUP_DEADLINE_MS,
+          'El volcado no ha terminado en 12 minutos y se ha dado por fallido',
+        );
         auditSystem('backup_created', `${service.name}: ${entry.file} (programado ${schedule})`);
         resolveServiceAlerts(service.id, 'backup_failed', false);
 

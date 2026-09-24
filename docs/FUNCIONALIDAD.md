@@ -124,22 +124,28 @@ web/src/
 Todo lo que necesita saber el estado real de los contenedores —la ficha del
 proyecto, la del servicio, el stream de métricas de cada pestaña, el monitor, la
 vista de Monitor, la página de estado y la de webs— lee de **una sola foto
-compartida**, no pregunta a Docker por su cuenta. Importa porque `stats` tarda
-alrededor de un segundo por contenedor: con varios consumidores en paralelo el
-socket de Docker se convertía en el cuello de botella y el panel se movía a
-tirones.
+compartida**, no pregunta a Docker por su cuenta. Importa porque el socket de
+Docker atiende en serie: con varios consumidores preguntando en paralelo se
+convertía en el cuello de botella y el panel se movía a tirones.
 
 - **Bajo demanda**: no hay temporizador de fondo. Cada consumidor dice cuánta
   antigüedad tolera (2 s el stream de métricas, 4 s las fichas, 5 s las vistas
   de conjunto, 15 s el monitor) y si la foto vigente sirve, se la lleva sin
   tocar Docker.
-- **El consumo es opcional** (`{ stats: true }`). `inspect` cuesta decenas de
-  milisegundos y `stats` cerca de un segundo por contenedor, así que solo lo
-  piden los tres que lo miran: el stream de métricas, la vista de Monitor y el
-  vigilante de fondo. Las fichas de proyecto y servicio, Sitios y la página de
-  estado solo enseñan estados; hacerlas esperar al consumo de todo el servidor
-  las volvía lentísimas. Hay dos cachés, porque una foto con consumo vale para
-  todo pero una sin consumo no vale a quien lo necesita.
+- **El consumo es opcional** (`{ stats: true }`). Solo lo piden los tres que
+  lo miran: el stream de métricas, la vista de Monitor y el vigilante de fondo.
+  Las fichas de proyecto y servicio, Sitios y la página de estado solo enseñan
+  estados. Hay dos cachés, porque una foto con consumo vale para todo pero una
+  sin consumo no vale a quien lo necesita.
+- **`stats` en modo `one-shot`** (`docker/cpu.ts`). Sin él, el daemon toma dos
+  muestras separadas un segundo para poder calcular la CPU, y ese segundo por
+  contenedor era lo que hacía lento cada muestreo (treinta contenedores, unos
+  cuatro segundos con ocho consultas a la vez). Con `one-shot` contesta al
+  instante con una sola muestra y el porcentaje se calcula restando la lectura
+  anterior del mismo contenedor (misma fórmula que `docker stats`, sobre el
+  intervalo real entre muestreos). La primera lectura de cada contenedor —y la
+  de uno recreado o con los contadores a cero— sigue pidiendo las dos muestras,
+  para dar un valor correcto desde el principio.
 - **Nunca bloquea con la caché caliente**: si la foto está pasada pero sirve, se
   entrega al instante y el muestreo se lanza por detrás. Solo se espera en el
   arranque en frío y justo después de una acción que invalidó la foto, que es
@@ -148,8 +154,11 @@ tirones.
   marcha se enganchan a él. Da igual cuántas pestañas haya abiertas.
 - **Invalidación explícita**: desplegar, arrancar, parar, reiniciar o borrar
   descarta la foto para que el cambio se vea en la lectura siguiente y no al
-  caducar. Un muestreo que arrancó antes de la invalidación no la pisa al
-  terminar.
+  caducar. Con un servicio concreto solo se vuelve a mirar ese servicio y se
+  parchea en la foto; un muestreo que arrancó antes de la invalidación se
+  guarda igual y ese servicio se repara otra vez por si trajo el estado
+  anterior (antes se tiraba la foto entera y, en una racha de despliegues, el
+  panel se quedaba sin foto fresca mientras Docker muestreaba sin parar).
 - **Un fallo de Docker no es un cambio de estado**: si el daemon no responde por
   una réplica, se marca inalcanzable y el monitor salta ese ciclo en vez de
   disparar una alerta de caída falsa.
@@ -222,8 +231,14 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
 3. **Comando previo** (`deploy.preDeployCommand` de la config-as-code): se
    ejecuta con la imagen y las variables nuevas contra la red del proyecto,
    **antes** de tocar la versión en marcha. Es donde suelen ir las migraciones;
-   si falla, el despliegue se aborta y lo que estaba sirviendo sigue igual. El
-   comando viaja en una variable de entorno, nunca interpolado en el shell.
+   si falla —o no termina en 30 minutos— el despliegue se aborta y lo que
+   estaba sirviendo sigue igual. El comando viaja en una variable de entorno,
+   nunca interpolado en el shell. Las variables con nombre reservado para la
+   propia CLI de Docker (`PATH`, `HOME`, `LD_*`, `DOCKER_*`, `GIT_*`, `NODE_*`,
+   `SSL_CERT_*`, `*_PROXY`…) se le pasan al contenedor como `--env CLAVE=VALOR`
+   y nunca entran en el entorno del proceso `docker` (`deploy/predeployenv.ts`):
+   con ellas en el entorno, quien edita variables elegía qué binario ejecuta
+   Skyway con el socket de Docker en la mano.
 4. **Despliegue del contenedor** (swap con validación):
    - **Corte cero** (servicios sin volúmenes ni puerto de host): se arranca la
      versión nueva en paralelo, se **valida** (healthcheck HTTP 2xx o periodo de
@@ -355,7 +370,10 @@ comparten `domains`, `hostPort`, `cpus`, `memoryMb`, `diskMb`, `healthcheckPath`
   exec, **nunca interpoladas en el shell**. La consola tiene modo solo-lectura
   por defecto (reforzado en el propio motor). El mismo patrón cubre el comando
   previo al despliegue y la copia de datos entre bases: el comando y las URLs de
-  conexión viajan por entorno y el shell los lee con `"$VAR"`.
+  conexión viajan por entorno y el shell los lee con `"$VAR"`. En el comando
+  previo, además, los nombres que la CLI de Docker respeta en su entorno no se
+  le entregan como entorno (ver «Pipeline de despliegue»). `rootDir` y `dockerfilePath` se confinan al
+  repositorio clonado (`paths.ts`).
 - **Superficie crítica**: quien accede a Skyway controla el Docker del host. El
   `docker-compose` publica la UI solo en `127.0.0.1:4000` (acceso por dominio+TLS
   vía Traefik, o túnel SSH). Recomendado: contraseña fuerte, dominio con TLS o
@@ -1156,7 +1174,7 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | GET | `/deployments/:id/logs/stream` | +access | **SSE** de build/deploy |
 | GET | `/projects/:id/deploys/stream` | +access | **SSE** del feed de despliegues del proyecto (evento `snapshot` + un `deploy` por cambio de fase). Independiente: pensado para agentes y automatizaciones que solo quieren los despliegues |
 | GET | `/services/:id/logs/stream` | +access | **SSE** de logs de ejecución de todas las réplicas (cada línea con su cursor de tiempo, que viaja también como `id` del evento; las réplicas 2..n llevan prefijo `[rN]`). Si el contenedor se sustituye o se para, avisa (`notice`) y se vuelve a enganchar solo. Al reconectar, `Last-Event-ID` reanuda desde ese cursor |
-| GET | `/services/:id/logs/tail` | +access | páginado hacia atrás: líneas anteriores a un cursor (`?limit=&before=`) para cargar historial al subir |
+| GET | `/services/:id/logs/tail` | +access | páginado hacia atrás: solo líneas **estrictamente** anteriores a un cursor (`?limit=&before=`) para cargar historial al subir. Docker filtra por segundos enteros: se pide de más y se recorta, y `hasMore` dice si queda historial |
 | GET | `/services/:id/logs/download` | +access | descarga íntegra del log del contenedor como adjunto de texto (`?timestamps=1` para incluir sellos) |
 | GET | `/projects/:id/metrics/stream` | +access | **SSE** de métricas en vivo del proyecto: `metrics` cada 2,5 s y, por la misma conexión, los despliegues (`deploys` al conectar + un `deploy` por cambio de fase). El panel abre solo esta, no las dos |
 | GET | `/services/:id/metrics/history` | +access | histórico de consumo del servicio (`?hours=`): CPU/RAM (media y pico), red y disco |
@@ -1213,7 +1231,7 @@ distroless), el explorador lo indica y no está disponible.
 | DELETE | `/services/:id/backups/:file` | +access | borra un backup |
 | GET | `/health` | público | estado + versión |
 | GET | `/system` | auth | versión, docker, nixpacks, host, disco (`dataDir` solo para admin) |
-| GET | `/system/docker-usage` | admin | uso de Docker (imágenes/volúmenes/caché) |
+| GET | `/system/docker-usage` | admin | uso de Docker (imágenes/volúmenes/caché), del mismo `df` cacheado 60 s que Monitor |
 | POST | `/system/prune` | admin | libera imágenes colgantes y caché de build |
 | GET | `/system/backups` | admin | snapshots del propio skyway.db (+ retención) |
 | POST | `/system/backups` | admin | crea un snapshot ahora (VACUUM INTO) |

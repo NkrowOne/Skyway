@@ -27,6 +27,19 @@ const CatalogPage = lazy(() => import('./pages/Catalog'));
 const AccountingPage = lazy(() => import('./pages/Accounting'));
 const HelpPage = lazy(() => import('./pages/Help'));
 
+/*
+ * Precarga del chunk de la ruta de entrada. Sin ella, la primera visita
+ * encadena tres viajes en serie antes de pedir un solo dato: el marco, luego
+ * /auth/me y solo entonces el chunk de la página, que a su vez lanza sus
+ * consultas. Pedirlo ya, en paralelo con /auth/me, ahorra un viaje entero;
+ * Vite reutiliza este mismo import para el `lazy` de la ruta.
+ */
+function precargarRuta(pathname: string) {
+  if (pathname === '/') void import('./pages/Dashboard');
+  else if (/^\/projects\//.test(pathname)) void import('./pages/Project');
+}
+precargarRuta(window.location.pathname);
+
 const pageFallback = (
   <div className="flex h-full items-center justify-center">
     <Spinner />

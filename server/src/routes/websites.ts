@@ -1,11 +1,11 @@
 import { FastifyInstance } from 'fastify';
-import { canAccessProjectRow, currentUser, requireAuth } from '../auth';
+import { accessibleProjectRows, currentUser, requireAuth } from '../auth';
 import {
   getSetting,
   latestDeploymentsByService,
   listProjects,
   listServicesForProjects,
-  openAlertCountsByService,
+  openAlertCountsByServiceForProjects,
 } from '../db';
 import { aggregateReplicaState, configuredReplicas } from '../docker/containers';
 import { dockerSnapshot } from '../docker/sampler';
@@ -31,13 +31,13 @@ export async function websiteRoutes(app: FastifyInstance): Promise<void> {
 
     // Servicios y últimos despliegues de todos los proyectos en dos consultas:
     // la vista se sondea cada 8 s y antes hacía dos por servicio.
-    const projects = listProjects().filter((p) => canAccessProjectRow(user, p));
+    const projects = accessibleProjectRows(user, listProjects());
     const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
     const sitios = [...servicesByProject.values()].flat().filter((s) => s.type !== 'database');
     const lastDeploys = latestDeploymentsByService(sitios.map((s) => s.id));
+    const alertCounts = openAlertCountsByServiceForProjects(projects.map((p) => p.id));
 
     for (const project of projects) {
-      const alertCounts = openAlertCountsByService(project.id);
       for (const service of servicesByProject.get(project.id) ?? []) {
         if (service.type === 'database') continue;
         const cfg = service.config as any;

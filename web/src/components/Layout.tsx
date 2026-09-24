@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { api } from '../api';
-import { isEditableTarget, usePresence } from '../hooks';
+import { isEditableTarget, useMediaQuery, usePresence } from '../hooks';
 import { Alert, Me, Project, Service, SystemInfo } from '../types';
 import { CMD_K_LABEL, cx, fmtBytes, SEVERITY_TONE, timeAgo } from '../utils';
 import { ModuleLogo, moduleKind } from './ModuleIcon';
@@ -746,10 +746,13 @@ export default function Layout() {
   const isAdmin = role === 'admin';
   const isManager = isAdmin || role === 'owner';
 
+  // La píldora CPU/RAM de la topbar solo se ve a partir de `nav` (1100 px); por
+  // debajo, /system solo alimenta el aviso de Docker, que tolera ir más lento.
+  const wide = useMediaQuery('(min-width: 1100px)');
   const system = useQuery({
     queryKey: ['system'],
     queryFn: () => api.get<SystemInfo>('/system'),
-    refetchInterval: 30_000,
+    refetchInterval: wide ? 30_000 : 120_000,
   });
 
   const bell = useQuery({

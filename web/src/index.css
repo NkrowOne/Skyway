@@ -618,22 +618,28 @@ details[open] > .details-body {
 /*
  * ── Consola de logs profesional ───────────────────────────────────────────
  * Un mismo primitivo sirve para logs de servicio y de despliegue, incrustado
- * o a pantalla completa. El cuerpo virtualiza por TRAMOS: las filas se agrupan
- * en bloques y es el bloque el que lleva content-visibility. Así el navegador
- * evalúa la visibilidad de ~cientos de bloques en vez de decenas de miles de
- * filas —el coste que congelaba el móvil al hacer scroll de la página—, y las
- * filas de un bloque fuera de pantalla no maquetan ni pintan.
+ * o a pantalla completa. El cuerpo pinta solo una VENTANA: las filas se
+ * agrupan en bloques y en el DOM están únicamente los bloques cercanos al
+ * hueco visible; el resto es relleno (padding del lienzo) con su alto medido
+ * o estimado. Antes las catorce mil filas del buffer vivían en el DOM con
+ * content-visibility, y el móvil las tenía que sostener igual: al llegar una
+ * ráfaga el gesto de scroll se quedaba clavado.
  */
 .log-chunk {
+  /* Un bloque cambia sin invalidar la maquetación de sus vecinos. */
   contain: layout style;
-  /*
-   * Sin esto, las 14.000 filas del buffer se maquetan enteras en cada línea
-   * nueva: en un iPhone el hilo principal no daba abasto y el gesto de scroll
-   * se quedaba clavado. El alto estimado (filas × alto de línea) solo se usa
-   * hasta que el bloque se pinta una vez; después `auto` recuerda el real.
-   */
-  content-visibility: auto;
-  contain-intrinsic-size: auto calc(var(--rows, 48) * var(--log-line-h, 22px));
+}
+.log-canvas {
+  box-sizing: border-box;
+}
+/* Sonda de medida: mismo tipo y tamaño que las filas, fuera del flujo y sin pintar. */
+.log-probe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  white-space: pre;
+  pointer-events: none;
 }
 .log-body {
   overflow-y: auto !important;

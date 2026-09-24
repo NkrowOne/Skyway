@@ -55,7 +55,29 @@ const MIGRATED_WORKSPACE_INIT = {
 
 let db: Database.Database;
 
+/**
+ * Caché de sentencias preparadas. `db.prepare()` compila el SQL en cada
+ * llamada —unos 10 µs de más por consulta, medidos—, y entre las decenas de
+ * consultas de una petición del panel y las de cada tick del monitor sumaba
+ * milisegundos sin aportar nada. Una sentencia pertenece a la conexión con la
+ * que se preparó, así que la caché se vacía al abrir y al cerrar la base.
+ */
+const stmtCache = new Map<string, Database.Statement<unknown[], unknown>>();
+/** Tope de seguridad: el SQL con listas `IN (?,?,…)` de tamaño variable no debe crecer sin fin. */
+const STMT_CACHE_MAX = 1000;
+
+function stmt(sql: string): Database.Statement<unknown[], unknown> {
+  let s = stmtCache.get(sql);
+  if (!s) {
+    if (stmtCache.size >= STMT_CACHE_MAX) stmtCache.clear();
+    s = db.prepare(sql);
+    stmtCache.set(sql, s);
+  }
+  return s;
+}
+
 export function initDb(): void {
+  stmtCache.clear();
   db = new Database(path.join(config.dataDir, 'skyway.db'));
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
@@ -658,6 +680,9 @@ export function initDb(): void {
     CREATE INDEX IF NOT EXISTS idx_service_metrics_ws ON service_metrics_hourly(workspace_id, hour);
     CREATE INDEX IF NOT EXISTS idx_usage_meter_ws ON usage_meter_hourly(workspace_id, meter, hour);
   `);
+  // La poda diaria borra por `ts`; sin índice era un barrido completo de una
+  // tabla que crece con cada petición de la pasarela de IA.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events(ts)');
   // Ancla de facturación: fin del último periodo facturado. Sustituye a derivar el
   // ciclo de `billing_day`, que refacturaba el tramo solapado al cambiar el día y
   // perdía el ciclo entero si el servidor estaba caído justo el día de cierre.
@@ -726,8 +751,7 @@ function backfillUsageAttribution(): void {
     // Solo se da por hecha cuando ya no queda ninguna fila sin titular resoluble:
     // así una instalación que se actualizó antes de tiempo lo reintenta al
     // arrancar, en vez de quedarse con el histórico sin atribuir para siempre.
-    const pendientes = (db
-      .prepare(
+    const pendientes = (stmt(
         `SELECT COUNT(*) AS c FROM service_metrics_hourly m
          WHERE m.workspace_id IS NULL
            AND EXISTS (SELECT 1 FROM services s JOIN projects p ON p.id = s.project_id
@@ -744,7 +768,7 @@ function backfillUsageAttribution(): void {
  * los suyos. Idempotente: si ya hay algún plan, no toca nada.
  */
 function seedDefaultPlans(): void {
-  const count = (db.prepare('SELECT COUNT(*) AS c FROM plans').get() as any).c as number;
+  const count = (stmt('SELECT COUNT(*) AS c FROM plans').get() as any).c as number;
   if (count > 0) return;
   const base: Omit<PlanRow, 'id' | 'created_at'>[] = [
     {
@@ -766,7 +790,7 @@ function seedDefaultPlans(): void {
       is_default: 0, archived: 0, discount_pct: 0,
     },
   ];
-  const ins = db.prepare(
+  const ins = stmt(
     `INSERT INTO plans (id, name, slug, price_cents, currency, interval, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules, is_default, archived, created_at)
      VALUES (@id, @name, @slug, @price_cents, @currency, @interval, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules, @is_default, @archived, @created_at)`,
   );
@@ -785,13 +809,12 @@ function seedDefaultPlans(): void {
  */
 function migrateClientsToWorkspaces(): void {
   if (getSetting('migrations:workspaces_v1') === 'done') return;
-  const rows = db
-    .prepare("SELECT id, client FROM projects WHERE client IS NOT NULL AND TRIM(client) <> '' AND workspace_id IS NULL")
+  const rows = stmt("SELECT id, client FROM projects WHERE client IS NOT NULL AND TRIM(client) <> '' AND workspace_id IS NULL")
     .all() as { id: string; client: string }[];
   const tx = db.transaction(() => {
     // Índice de workspaces existentes por nombre normalizado (evita duplicados en reejecución).
     const existing = new Map<string, string>();
-    for (const w of db.prepare('SELECT id, name FROM workspaces').all() as { id: string; name: string }[]) {
+    for (const w of stmt('SELECT id, name FROM workspaces').all() as { id: string; name: string }[]) {
       existing.set(w.name.trim().toLowerCase(), w.id);
     }
     for (const row of rows) {
@@ -803,7 +826,7 @@ function migrateClientsToWorkspaces(): void {
         wsId = ws.id;
         existing.set(key, wsId);
       }
-      db.prepare('UPDATE projects SET workspace_id = ? WHERE id = ?').run(wsId, row.id);
+      stmt('UPDATE projects SET workspace_id = ? WHERE id = ?').run(wsId, row.id);
     }
     setSetting('migrations:workspaces_v1', 'done');
   });
@@ -822,7 +845,7 @@ function ensureColumn(table: string, column: string, ddl: string): void {
  * (VACUUM INTO): sirve como snapshot de backup incluso con la BD en uso.
  */
 export function vacuumInto(dest: string): void {
-  db.prepare('VACUUM INTO ?').run(dest);
+  stmt('VACUUM INTO ?').run(dest);
 }
 
 /**
@@ -848,6 +871,7 @@ export function checkIntegrity(): string | null {
  * se llevaría una base incompleta.
  */
 export function closeDb(): void {
+  stmtCache.clear();
   try {
     db.close();
   } catch {
@@ -895,7 +919,7 @@ function lotes<T>(items: T[], size = IN_BATCH): T[][] {
 
 // ---------- users ----------
 export function countUsers(): number {
-  return (db.prepare('SELECT COUNT(*) AS c FROM users').get() as any).c;
+  return (stmt('SELECT COUNT(*) AS c FROM users').get() as any).c;
 }
 
 export function createUser(
@@ -908,7 +932,7 @@ export function createUser(
     id: id('usr'), email, password_hash: passwordHash, role, session_epoch: 0,
     created_at: now(), workspace_id: workspaceId,
   };
-  db.prepare('INSERT INTO users (id, email, password_hash, role, workspace_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+  stmt('INSERT INTO users (id, email, password_hash, role, workspace_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
     row.id, row.email, row.password_hash, row.role, row.workspace_id, row.created_at,
   );
   return row;
@@ -916,7 +940,7 @@ export function createUser(
 
 /** Cambia el workspace al que pertenece un usuario (owner/member). null en admins. */
 export function updateUserWorkspace(userId: string, workspaceId: string | null): void {
-  db.prepare('UPDATE users SET workspace_id = ? WHERE id = ?').run(workspaceId, userId);
+  stmt('UPDATE users SET workspace_id = ? WHERE id = ?').run(workspaceId, userId);
 }
 
 /**
@@ -934,40 +958,39 @@ export function projectsBelongToWorkspace(projectIds: string[], workspaceId: str
 
 /** Sub-usuarios (owner/member) de un workspace, en orden de alta. */
 export function listWorkspaceUsers(workspaceId: string): UserRow[] {
-  return db
-    .prepare('SELECT * FROM users WHERE workspace_id = ? ORDER BY created_at ASC')
+  return stmt('SELECT * FROM users WHERE workspace_id = ? ORDER BY created_at ASC')
     .all(workspaceId) as UserRow[];
 }
 
 export function countWorkspaceMembers(workspaceId: string): number {
-  return (db.prepare('SELECT COUNT(*) AS c FROM users WHERE workspace_id = ?').get(workspaceId) as any).c;
+  return (stmt('SELECT COUNT(*) AS c FROM users WHERE workspace_id = ?').get(workspaceId) as any).c;
 }
 
 export function listUsers(): UserRow[] {
-  return db.prepare('SELECT * FROM users ORDER BY created_at ASC').all() as UserRow[];
+  return stmt('SELECT * FROM users ORDER BY created_at ASC').all() as UserRow[];
 }
 
 export function countAdmins(): number {
-  return (db.prepare("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").get() as any).c;
+  return (stmt("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").get() as any).c;
 }
 
 export function updateUserRole(userId: string, role: UserRole): void {
-  db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, userId);
+  stmt('UPDATE users SET role = ? WHERE id = ?').run(role, userId);
 }
 
 export function deleteUser(userId: string): void {
-  db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+  stmt('DELETE FROM users WHERE id = ?').run(userId);
 }
 
 // ---------- workspaces por usuario ----------
 export function listUserProjectIds(userId: string): string[] {
-  return (db.prepare('SELECT project_id FROM user_projects WHERE user_id = ?').all(userId) as any[])
+  return (stmt('SELECT project_id FROM user_projects WHERE user_id = ?').all(userId) as any[])
     .map((r) => r.project_id);
 }
 
 export function setUserProjects(userId: string, projectIds: string[]): void {
-  const del = db.prepare('DELETE FROM user_projects WHERE user_id = ?');
-  const ins = db.prepare('INSERT OR IGNORE INTO user_projects (user_id, project_id) VALUES (?, ?)');
+  const del = stmt('DELETE FROM user_projects WHERE user_id = ?');
+  const ins = stmt('INSERT OR IGNORE INTO user_projects (user_id, project_id) VALUES (?, ?)');
   const tx = db.transaction(() => {
     del.run(userId);
     for (const pid of projectIds) ins.run(userId, pid);
@@ -976,18 +999,18 @@ export function setUserProjects(userId: string, projectIds: string[]): void {
 }
 
 export function userHasProject(userId: string, projectId: string): boolean {
-  return !!db.prepare('SELECT 1 FROM user_projects WHERE user_id = ? AND project_id = ?').get(userId, projectId);
+  return !!stmt('SELECT 1 FROM user_projects WHERE user_id = ? AND project_id = ?').get(userId, projectId);
 }
 
 /** Elimina todas las asignaciones de un proyecto (al reasignarlo de workspace, para no dejar accesos colgando). */
 export function clearProjectMemberships(projectId: string): void {
-  db.prepare('DELETE FROM user_projects WHERE project_id = ?').run(projectId);
+  stmt('DELETE FROM user_projects WHERE project_id = ?').run(projectId);
 }
 
 // ---------- passkeys ----------
 export function insertPasskey(row: Omit<PasskeyRow, 'id' | 'created_at' | 'last_used_at'>): PasskeyRow {
   const full: PasskeyRow = { ...row, id: id('pky'), created_at: now(), last_used_at: null };
-  db.prepare(
+  stmt(
     `INSERT INTO passkeys (id, user_id, credential_id, public_key, counter, transports, device_type, backed_up, rp_id, name, created_at, last_used_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(full.id, full.user_id, full.credential_id, full.public_key, full.counter, full.transports, full.device_type, full.backed_up, full.rp_id, full.name, full.created_at, full.last_used_at);
@@ -995,29 +1018,29 @@ export function insertPasskey(row: Omit<PasskeyRow, 'id' | 'created_at' | 'last_
 }
 
 export function listPasskeys(userId: string): PasskeyRow[] {
-  return db.prepare('SELECT * FROM passkeys WHERE user_id = ? ORDER BY created_at ASC').all(userId) as PasskeyRow[];
+  return stmt('SELECT * FROM passkeys WHERE user_id = ? ORDER BY created_at ASC').all(userId) as PasskeyRow[];
 }
 
 export function countPasskeys(userId: string): number {
-  return (db.prepare('SELECT COUNT(*) AS c FROM passkeys WHERE user_id = ?').get(userId) as any).c;
+  return (stmt('SELECT COUNT(*) AS c FROM passkeys WHERE user_id = ?').get(userId) as any).c;
 }
 
 export function getPasskeyByCredentialId(credentialId: string): PasskeyRow | undefined {
-  return db.prepare('SELECT * FROM passkeys WHERE credential_id = ?').get(credentialId) as PasskeyRow | undefined;
+  return stmt('SELECT * FROM passkeys WHERE credential_id = ?').get(credentialId) as PasskeyRow | undefined;
 }
 
 export function touchPasskey(passkeyId: string, counter: number): void {
-  db.prepare('UPDATE passkeys SET counter = ?, last_used_at = ? WHERE id = ?').run(counter, now(), passkeyId);
+  stmt('UPDATE passkeys SET counter = ?, last_used_at = ? WHERE id = ?').run(counter, now(), passkeyId);
 }
 
 export function deletePasskey(passkeyId: string, userId: string): boolean {
-  return db.prepare('DELETE FROM passkeys WHERE id = ? AND user_id = ?').run(passkeyId, userId).changes > 0;
+  return stmt('DELETE FROM passkeys WHERE id = ? AND user_id = ?').run(passkeyId, userId).changes > 0;
 }
 
 // ---------- tokens de API ----------
 export function insertApiToken(row: Omit<ApiTokenRow, 'id' | 'created_at' | 'last_used_at'>): ApiTokenRow {
   const full: ApiTokenRow = { ...row, id: id('tok'), created_at: now(), last_used_at: null };
-  db.prepare(
+  stmt(
     `INSERT INTO api_tokens (id, user_id, name, token_hash, prefix, created_at, last_used_at, expires_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(full.id, full.user_id, full.name, full.token_hash, full.prefix, full.created_at, full.last_used_at, full.expires_at);
@@ -1025,49 +1048,49 @@ export function insertApiToken(row: Omit<ApiTokenRow, 'id' | 'created_at' | 'las
 }
 
 export function listApiTokens(userId: string): ApiTokenRow[] {
-  return db.prepare('SELECT * FROM api_tokens WHERE user_id = ? ORDER BY created_at ASC').all(userId) as ApiTokenRow[];
+  return stmt('SELECT * FROM api_tokens WHERE user_id = ? ORDER BY created_at ASC').all(userId) as ApiTokenRow[];
 }
 
 export function countApiTokens(userId: string): number {
-  return (db.prepare('SELECT COUNT(*) AS c FROM api_tokens WHERE user_id = ?').get(userId) as any).c;
+  return (stmt('SELECT COUNT(*) AS c FROM api_tokens WHERE user_id = ?').get(userId) as any).c;
 }
 
 export function getApiTokenByHash(tokenHash: string): ApiTokenRow | undefined {
-  return db.prepare('SELECT * FROM api_tokens WHERE token_hash = ?').get(tokenHash) as ApiTokenRow | undefined;
+  return stmt('SELECT * FROM api_tokens WHERE token_hash = ?').get(tokenHash) as ApiTokenRow | undefined;
 }
 
 export function touchApiToken(tokenId: string): void {
-  db.prepare('UPDATE api_tokens SET last_used_at = ? WHERE id = ?').run(now(), tokenId);
+  stmt('UPDATE api_tokens SET last_used_at = ? WHERE id = ?').run(now(), tokenId);
 }
 
 export function deleteApiToken(tokenId: string, userId: string): boolean {
-  return db.prepare('DELETE FROM api_tokens WHERE id = ? AND user_id = ?').run(tokenId, userId).changes > 0;
+  return stmt('DELETE FROM api_tokens WHERE id = ? AND user_id = ?').run(tokenId, userId).changes > 0;
 }
 
 export function getUserByEmail(email: string): UserRow | undefined {
-  return db.prepare('SELECT * FROM users WHERE email = ?').get(email) as UserRow | undefined;
+  return stmt('SELECT * FROM users WHERE email = ?').get(email) as UserRow | undefined;
 }
 
 export function getUser(userId: string): UserRow | undefined {
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as UserRow | undefined;
+  return stmt('SELECT * FROM users WHERE id = ?').get(userId) as UserRow | undefined;
 }
 
 /** Cambia la contraseña e invalida las sesiones y cookies previas del usuario (bump de epoch). */
 export function updateUserPassword(userId: string, passwordHash: string): void {
-  db.prepare('UPDATE users SET password_hash = ?, session_epoch = session_epoch + 1 WHERE id = ?').run(passwordHash, userId);
+  stmt('UPDATE users SET password_hash = ?, session_epoch = session_epoch + 1 WHERE id = ?').run(passwordHash, userId);
 }
 
 // ---------- settings ----------
 export function getSetting(key: string): string | null {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as any;
+  const row = stmt('SELECT value FROM settings WHERE key = ?').get(key) as any;
   return row ? row.value : null;
 }
 
 export function setSetting(key: string, value: string | null): void {
   if (value === null || value === '') {
-    db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+    stmt('DELETE FROM settings WHERE key = ?').run(key);
   } else {
-    db.prepare(
+    stmt(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     ).run(key, value);
   }
@@ -1084,7 +1107,7 @@ export function createProject(
     id: id('prj'), name, slug, client, workspace_id: workspaceId, created_at: now(),
     status_token: null, status_enabled: 0, status_notice: null,
   };
-  db.prepare('INSERT INTO projects (id, name, slug, client, workspace_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+  stmt('INSERT INTO projects (id, name, slug, client, workspace_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
     row.id, row.name, row.slug, row.client, row.workspace_id, row.created_at,
   );
   return row;
@@ -1092,13 +1115,12 @@ export function createProject(
 
 /** Proyectos de un workspace (para cuota agregada y listados del cliente). */
 export function listWorkspaceProjects(workspaceId: string): ProjectRow[] {
-  return db
-    .prepare('SELECT * FROM projects WHERE workspace_id = ? ORDER BY created_at DESC')
+  return stmt('SELECT * FROM projects WHERE workspace_id = ? ORDER BY created_at DESC')
     .all(workspaceId) as ProjectRow[];
 }
 
 export function countWorkspaceProjects(workspaceId: string): number {
-  return (db.prepare('SELECT COUNT(*) AS c FROM projects WHERE workspace_id = ?').get(workspaceId) as any).c;
+  return (stmt('SELECT COUNT(*) AS c FROM projects WHERE workspace_id = ?').get(workspaceId) as any).c;
 }
 
 /**
@@ -1107,7 +1129,7 @@ export function countWorkspaceProjects(workspaceId: string): number {
  */
 export function setProjectWorkspace(projectId: string, workspaceId: string | null, clientName: string | null): void {
   db.transaction(() => {
-    db.prepare('UPDATE projects SET workspace_id = ?, client = ? WHERE id = ?').run(workspaceId, clientName, projectId);
+    stmt('UPDATE projects SET workspace_id = ?, client = ? WHERE id = ?').run(workspaceId, clientName, projectId);
     if (!workspaceId) return;
     // El alta normal crea el proyecto SIN cuenta, despliega los servicios y asigna
     // el cliente días después: durante ese tiempo los cubos horarios se escriben
@@ -1115,11 +1137,11 @@ export function setProjectWorkspace(projectId: string, workspaceId: string | nul
     // cuenta se adopta el consumo aún SIN TITULAR de sus servicios. El filtro
     // `workspace_id IS NULL` es lo que impide que una reasignación entre cuentas
     // se lleve consigo el consumo ya atribuido (y ya facturado) a la anterior.
-    db.prepare(
+    stmt(
       `UPDATE service_metrics_hourly SET workspace_id = ?
        WHERE workspace_id IS NULL AND service_id IN (SELECT id FROM services WHERE project_id = ?)`,
     ).run(workspaceId, projectId);
-    db.prepare(
+    stmt(
       `UPDATE usage_meter_hourly SET workspace_id = ?
        WHERE workspace_id IS NULL AND subject_type = 'service'
          AND subject_id IN (SELECT id FROM services WHERE project_id = ?)`,
@@ -1128,51 +1150,50 @@ export function setProjectWorkspace(projectId: string, workspaceId: string | nul
 }
 
 export function listProjects(): ProjectRow[] {
-  return db.prepare('SELECT * FROM projects ORDER BY created_at DESC').all() as ProjectRow[];
+  return stmt('SELECT * FROM projects ORDER BY created_at DESC').all() as ProjectRow[];
 }
 
 export function getProject(projectId: string): ProjectRow | undefined {
-  return db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as ProjectRow | undefined;
+  return stmt('SELECT * FROM projects WHERE id = ?').get(projectId) as ProjectRow | undefined;
 }
 
 export function projectSlugExists(slug: string): boolean {
-  return !!db.prepare('SELECT 1 FROM projects WHERE slug = ?').get(slug);
+  return !!stmt('SELECT 1 FROM projects WHERE slug = ?').get(slug);
 }
 
 export function updateProjectMeta(projectId: string, name: string, client: string | null): void {
-  db.prepare('UPDATE projects SET name = ?, client = ? WHERE id = ?').run(name, client, projectId);
+  stmt('UPDATE projects SET name = ?, client = ? WHERE id = ?').run(name, client, projectId);
 }
 
 export function deleteProject(projectId: string): void {
-  db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
+  stmt('DELETE FROM projects WHERE id = ?').run(projectId);
 }
 
 // ---------- página de estado pública ----------
 export function getProjectByStatusToken(token: string): ProjectRow | undefined {
-  return db
-    .prepare('SELECT * FROM projects WHERE status_token = ? AND status_enabled = 1')
+  return stmt('SELECT * FROM projects WHERE status_token = ? AND status_enabled = 1')
     .get(token) as ProjectRow | undefined;
 }
 
 export function setProjectStatusPage(projectId: string, enabled: boolean, token?: string | null): void {
   if (token !== undefined) {
-    db.prepare('UPDATE projects SET status_enabled = ?, status_token = ? WHERE id = ?')
+    stmt('UPDATE projects SET status_enabled = ?, status_token = ? WHERE id = ?')
       .run(enabled ? 1 : 0, token, projectId);
   } else {
-    db.prepare('UPDATE projects SET status_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, projectId);
+    stmt('UPDATE projects SET status_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, projectId);
   }
 }
 
 /** Aviso de mantenimiento que se muestra como banner en la página de estado. */
 export function setProjectStatusNotice(projectId: string, notice: string | null): void {
-  db.prepare('UPDATE projects SET status_notice = ? WHERE id = ?').run(notice, projectId);
+  stmt('UPDATE projects SET status_notice = ? WHERE id = ?').run(notice, projectId);
 }
 
 // ---------- histórico de disponibilidad ----------
 /** Registra una muestra del monitor (una por servicio y tick) agregada por hora. */
 export function recordUptimeSample(serviceId: string, up: boolean): void {
   const hour = Math.floor(now() / 3_600_000);
-  db.prepare(
+  stmt(
     `INSERT INTO uptime_hourly (service_id, hour, up, total) VALUES (?, ?, ?, 1)
      ON CONFLICT(service_id, hour) DO UPDATE SET up = up + excluded.up, total = total + 1`,
   ).run(serviceId, hour, up ? 1 : 0);
@@ -1181,8 +1202,7 @@ export function recordUptimeSample(serviceId: string, up: boolean): void {
 /** Disponibilidad acumulada de las últimas `hours` horas: NULL si no hay datos. */
 export function uptimePercent(serviceId: string, hours: number): number | null {
   const from = Math.floor(now() / 3_600_000) - hours;
-  const row = db
-    .prepare('SELECT SUM(up) AS up, SUM(total) AS total FROM uptime_hourly WHERE service_id = ? AND hour > ?')
+  const row = stmt('SELECT SUM(up) AS up, SUM(total) AS total FROM uptime_hourly WHERE service_id = ? AND hour > ?')
     .get(serviceId, from) as { up: number | null; total: number | null };
   if (!row.total) return null;
   return Math.round(((row.up ?? 0) / row.total) * 10000) / 100;
@@ -1198,8 +1218,7 @@ export function uptimePercentBatch(serviceIds: string[], hours: number): Map<str
   const out = new Map<string, number | null>();
   for (const sid of serviceIds) out.set(sid, null);
   for (const lote of lotes([...out.keys()])) {
-    const rows = db
-      .prepare(
+    const rows = stmt(
         `SELECT service_id, SUM(up) AS up, SUM(total) AS total FROM uptime_hourly
           WHERE service_id IN (${lote.map(() => '?').join(',')}) AND hour > ? GROUP BY service_id`,
       )
@@ -1215,8 +1234,7 @@ export function uptimePercentBatch(serviceIds: string[], hours: number): Map<str
 /** Disponibilidad por día (UTC) de los últimos `days` días, para las barras de la página de estado. */
 export function uptimeDaily(serviceId: string, days: number): { day: number; up: number; total: number }[] {
   const fromHour = Math.floor(now() / 3_600_000) - days * 24;
-  return db
-    .prepare(
+  return stmt(
       `SELECT (hour / 24) AS day, SUM(up) AS up, SUM(total) AS total
        FROM uptime_hourly WHERE service_id = ? AND hour > ? GROUP BY day ORDER BY day ASC`,
     )
@@ -1226,8 +1244,8 @@ export function uptimeDaily(serviceId: string, days: number): { day: number; up:
 /** Borra el histórico de disponibilidad viejo y el de servicios eliminados. */
 export function pruneUptime(keepDays = 92): void {
   const cutoff = Math.floor(now() / 3_600_000) - keepDays * 24;
-  db.prepare('DELETE FROM uptime_hourly WHERE hour < ?').run(cutoff);
-  db.prepare('DELETE FROM uptime_hourly WHERE service_id NOT IN (SELECT id FROM services)').run();
+  stmt('DELETE FROM uptime_hourly WHERE hour < ?').run(cutoff);
+  stmt('DELETE FROM uptime_hourly WHERE service_id NOT IN (SELECT id FROM services)').run();
 }
 
 // ---------- histórico de consumo (CPU/RAM/red/disco) ----------
@@ -1241,7 +1259,7 @@ export function recordServiceMetrics(serviceId: string, s: ServiceMetricSample, 
   // `workspace_id` solo se fija al CREAR el cubo: el titular de una hora ya
   // empezada no cambia a media hora. Una reasignación de proyecto surte efecto
   // desde el cubo siguiente (granularidad de una hora, la del propio medidor).
-  db.prepare(
+  stmt(
     `INSERT INTO service_metrics_hourly
        (service_id, hour, workspace_id, samples, cpu_sum, cpu_max, mem_sum, mem_max, mem_limit_last, net_rx, net_tx)
      VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
@@ -1261,7 +1279,7 @@ export function recordServiceMetrics(serviceId: string, s: ServiceMetricSample, 
 /** Registra la foto de disco de un servicio en el cubo horario actual (sobrescribe). */
 export function recordServiceDisk(serviceId: string, totalBytes: number, workspaceId: string | null = null): void {
   const hour = Math.floor(now() / 3_600_000);
-  db.prepare(
+  stmt(
     `INSERT INTO service_metrics_hourly (service_id, hour, workspace_id, disk_last) VALUES (?, ?, ?, ?)
      ON CONFLICT(service_id, hour) DO UPDATE SET
        disk_last = excluded.disk_last,
@@ -1272,7 +1290,7 @@ export function recordServiceDisk(serviceId: string, totalBytes: number, workspa
 /** Acumula una muestra de carga y RAM del host en su cubo horario. */
 export function recordHostMetrics(load: number, memUsed: number, memTotal: number): void {
   const hour = Math.floor(now() / 3_600_000);
-  db.prepare(
+  stmt(
     `INSERT INTO host_metrics_hourly
        (hour, samples, load_sum, load_max, mem_used_sum, mem_used_max, mem_total_last)
      VALUES (?, 1, ?, ?, ?, ?, ?)
@@ -1289,7 +1307,7 @@ export function recordHostMetrics(load: number, memUsed: number, memTotal: numbe
 /** Registra la foto de disco del host en el cubo horario actual (sobrescribe). */
 export function recordHostDisk(diskUsed: number, diskTotal: number): void {
   const hour = Math.floor(now() / 3_600_000);
-  db.prepare(
+  stmt(
     `INSERT INTO host_metrics_hourly (hour, disk_used_last, disk_total_last) VALUES (?, ?, ?)
      ON CONFLICT(hour) DO UPDATE SET disk_used_last = excluded.disk_used_last, disk_total_last = excluded.disk_total_last`,
   ).run(hour, diskUsed, diskTotal);
@@ -1298,16 +1316,14 @@ export function recordHostDisk(diskUsed: number, diskTotal: number): void {
 /** Filas horarias del histórico de un servicio de las últimas `hours` horas (orden ascendente). */
 export function serviceMetricsRange(serviceId: string, hours: number): ServiceMetricHour[] {
   const from = Math.floor(now() / 3_600_000) - hours;
-  return db
-    .prepare('SELECT * FROM service_metrics_hourly WHERE service_id = ? AND hour > ? ORDER BY hour ASC')
+  return stmt('SELECT * FROM service_metrics_hourly WHERE service_id = ? AND hour > ? ORDER BY hour ASC')
     .all(serviceId, from) as ServiceMetricHour[];
 }
 
 /** Filas horarias del histórico del host de las últimas `hours` horas (orden ascendente). */
 export function hostMetricsRange(hours: number): HostMetricHour[] {
   const from = Math.floor(now() / 3_600_000) - hours;
-  return db
-    .prepare('SELECT * FROM host_metrics_hourly WHERE hour > ? ORDER BY hour ASC')
+  return stmt('SELECT * FROM host_metrics_hourly WHERE hour > ? ORDER BY hour ASC')
     .all(from) as HostMetricHour[];
 }
 
@@ -1319,10 +1335,10 @@ export function hostMetricsRange(hours: number): HostMetricHour[] {
  */
 export function pruneMetrics(keepDays = 90): void {
   const cutoff = Math.floor(now() / 3_600_000) - keepDays * 24;
-  db.prepare('DELETE FROM service_metrics_hourly WHERE hour < ?').run(cutoff);
-  db.prepare('DELETE FROM host_metrics_hourly WHERE hour < ?').run(cutoff);
-  db.prepare('DELETE FROM usage_meter_hourly WHERE hour < ?').run(cutoff);
-  db.prepare('DELETE FROM usage_events WHERE ts < ?').run(cutoff * 3_600_000);
+  stmt('DELETE FROM service_metrics_hourly WHERE hour < ?').run(cutoff);
+  stmt('DELETE FROM host_metrics_hourly WHERE hour < ?').run(cutoff);
+  stmt('DELETE FROM usage_meter_hourly WHERE hour < ?').run(cutoff);
+  stmt('DELETE FROM usage_events WHERE ts < ?').run(cutoff * 3_600_000);
   pruneResolvedAlerts();
 }
 
@@ -1336,7 +1352,7 @@ const ALERTAS_RESUELTAS_DIAS = 90;
 
 function pruneResolvedAlerts(): void {
   const cutoff = now() - ALERTAS_RESUELTAS_DIAS * 86_400_000;
-  db.prepare('DELETE FROM alerts WHERE resolved_at IS NOT NULL AND resolved_at < ?').run(cutoff);
+  stmt('DELETE FROM alerts WHERE resolved_at IS NOT NULL AND resolved_at < ?').run(cutoff);
 }
 
 // ---------- services ----------
@@ -1348,14 +1364,14 @@ export function createService(
   cfg: ServiceConfig,
 ): ServiceRow {
   const row = { id: id('svc'), project_id: projectId, name, slug, type, config: cfg, created_at: now() };
-  db.prepare(
+  stmt(
     'INSERT INTO services (id, project_id, name, slug, type, config, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
   ).run(row.id, row.project_id, row.name, row.slug, row.type, JSON.stringify(cfg), row.created_at);
   return row as ServiceRow;
 }
 
 export function listServices(projectId: string): ServiceRow[] {
-  return (db.prepare('SELECT * FROM services WHERE project_id = ? ORDER BY created_at ASC').all(projectId) as any[])
+  return (stmt('SELECT * FROM services WHERE project_id = ? ORDER BY created_at ASC').all(projectId) as any[])
     .map(parseService);
 }
 
@@ -1368,8 +1384,7 @@ export function listServicesForProjects(projectIds: string[]): Map<string, Servi
   const out = new Map<string, ServiceRow[]>();
   for (const pid of projectIds) out.set(pid, []);
   for (const lote of lotes([...out.keys()])) {
-    const rows = db
-      .prepare(
+    const rows = stmt(
         `SELECT * FROM services WHERE project_id IN (${lote.map(() => '?').join(',')}) ORDER BY created_at ASC`,
       )
       .all(...lote) as any[];
@@ -1379,38 +1394,38 @@ export function listServicesForProjects(projectIds: string[]): Map<string, Servi
 }
 
 export function getService(serviceId: string): ServiceRow | undefined {
-  const row = db.prepare('SELECT * FROM services WHERE id = ?').get(serviceId) as any;
+  const row = stmt('SELECT * FROM services WHERE id = ?').get(serviceId) as any;
   return row ? parseService(row) : undefined;
 }
 
 export function serviceSlugExists(projectId: string, slug: string): boolean {
-  return !!db.prepare('SELECT 1 FROM services WHERE project_id = ? AND slug = ?').get(projectId, slug);
+  return !!stmt('SELECT 1 FROM services WHERE project_id = ? AND slug = ?').get(projectId, slug);
 }
 
 /** Marca (o borra) que el servicio fue detenido adrede por una persona. */
 export function setServiceStopped(serviceId: string, stopped: boolean): void {
-  db.prepare('UPDATE services SET stopped_at = ? WHERE id = ?').run(stopped ? now() : null, serviceId);
+  stmt('UPDATE services SET stopped_at = ? WHERE id = ?').run(stopped ? now() : null, serviceId);
 }
 
 export function updateService(serviceId: string, name: string, cfg: ServiceConfig): void {
-  db.prepare('UPDATE services SET name = ?, config = ? WHERE id = ?').run(name, JSON.stringify(cfg), serviceId);
+  stmt('UPDATE services SET name = ?, config = ? WHERE id = ?').run(name, JSON.stringify(cfg), serviceId);
 }
 
 export function deleteService(serviceId: string): void {
-  db.prepare('DELETE FROM services WHERE id = ?').run(serviceId);
+  stmt('DELETE FROM services WHERE id = ?').run(serviceId);
 }
 
 // ---------- env vars ----------
 export function getEnv(serviceId: string): Record<string, string> {
-  const rows = db.prepare('SELECT key, value FROM env_vars WHERE service_id = ? ORDER BY key').all(serviceId) as any[];
+  const rows = stmt('SELECT key, value FROM env_vars WHERE service_id = ? ORDER BY key').all(serviceId) as any[];
   const out: Record<string, string> = {};
   for (const r of rows) out[r.key] = r.value;
   return out;
 }
 
 export function setEnv(serviceId: string, vars: Record<string, string>): void {
-  const del = db.prepare('DELETE FROM env_vars WHERE service_id = ?');
-  const ins = db.prepare('INSERT INTO env_vars (service_id, key, value) VALUES (?, ?, ?)');
+  const del = stmt('DELETE FROM env_vars WHERE service_id = ?');
+  const ins = stmt('INSERT INTO env_vars (service_id, key, value) VALUES (?, ?, ?)');
   const tx = db.transaction(() => {
     del.run(serviceId);
     for (const [k, v] of Object.entries(vars)) ins.run(serviceId, k, v);
@@ -1445,7 +1460,7 @@ export function createDeployment(
   // Las dos escrituras van juntas: un despliegue creado con el servicio aún
   // marcado como «parado adrede» lo pintaría en gris mientras se construye.
   db.transaction(() => {
-    db.prepare(
+    stmt(
       `INSERT INTO deployments (id, service_id, status, trigger, commit_sha, commit_msg, image_tag, logs, error, force_build, created_at, finished_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(row.id, row.service_id, row.status, row.trigger, row.commit_sha, row.commit_msg, row.image_tag, row.logs, row.error, row.force_build, row.created_at, row.finished_at);
@@ -1485,16 +1500,16 @@ export function updateDeployment(
   const keys = Object.keys(fields).filter((k) => DEPLOYMENT_COLUMNS.has(k));
   if (keys.length === 0) return;
   const sets = keys.map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE deployments SET ${sets} WHERE id = ?`).run(...keys.map((k) => (fields as any)[k]), deploymentId);
+  stmt(`UPDATE deployments SET ${sets} WHERE id = ?`).run(...keys.map((k) => (fields as any)[k]), deploymentId);
 }
 
 /** Guarda o archiva los logs de ejecución de un contenedor para un despliegue. */
 export function saveDeploymentRuntimeLogs(deploymentId: string, runtimeLogs: string): void {
-  db.prepare('UPDATE deployments SET runtime_logs = ? WHERE id = ?').run(runtimeLogs, deploymentId);
+  stmt('UPDATE deployments SET runtime_logs = ? WHERE id = ?').run(runtimeLogs, deploymentId);
 }
 
 export function getDeployment(deploymentId: string): DeploymentRow | undefined {
-  return db.prepare('SELECT * FROM deployments WHERE id = ?').get(deploymentId) as DeploymentRow | undefined;
+  return stmt('SELECT * FROM deployments WHERE id = ?').get(deploymentId) as DeploymentRow | undefined;
 }
 
 /**
@@ -1502,8 +1517,7 @@ export function getDeployment(deploymentId: string): DeploymentRow | undefined {
  * avisos del feed, que se emiten varias veces por despliegue y no lo necesitan.
  */
 export function deploymentSummary(deploymentId: string): DeploymentRow | undefined {
-  const row = db
-    .prepare(
+  const row = stmt(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
               build_key, repo_config, force_build, created_at, finished_at
          FROM deployments WHERE id = ?`,
@@ -1513,8 +1527,7 @@ export function deploymentSummary(deploymentId: string): DeploymentRow | undefin
 }
 
 export function listDeployments(serviceId: string, limit = 20): DeploymentRow[] {
-  return db
-    .prepare(
+  return stmt(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
               build_key, repo_config, force_build, created_at, finished_at
          FROM deployments WHERE service_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
@@ -1530,8 +1543,7 @@ export function listDeployments(serviceId: string, limit = 20): DeploymentRow[] 
  * exactamente los mismos bits.
  */
 export function reusableBuild(serviceId: string, commitSha: string, buildKey: string): DeploymentRow | undefined {
-  return db
-    .prepare(
+  return stmt(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
               build_key, repo_config, build_vars, force_build, created_at, finished_at
          FROM deployments
@@ -1548,8 +1560,7 @@ export function reusableBuild(serviceId: string, commitSha: string, buildKey: st
  * configuración arrancaría una mezcla de las dos versiones.
  */
 export function deploymentForImage(serviceId: string, imageTag: string): DeploymentRow | undefined {
-  const row = db
-    .prepare(
+  const row = stmt(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
               build_key, repo_config, force_build, created_at, finished_at
          FROM deployments
@@ -1562,8 +1573,7 @@ export function deploymentForImage(serviceId: string, imageTag: string): Deploym
 
 /** Imagen del último despliegue correcto: sirve de caché de capas para el build. */
 export function lastSuccessfulImage(serviceId: string): string | null {
-  const row = db
-    .prepare(
+  const row = stmt(
       `SELECT image_tag FROM deployments
         WHERE service_id = ? AND status = 'success' AND image_tag IS NOT NULL
         ORDER BY created_at DESC LIMIT 1`,
@@ -1578,8 +1588,7 @@ export function lastSuccessfulImage(serviceId: string): string | null {
  * el log de build entero (hasta 400 KB) más el de ejecución archivado.
  */
 export function latestDeployment(serviceId: string): DeploymentRow | undefined {
-  const row = db
-    .prepare(
+  const row = stmt(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
               build_key, repo_config, force_build, created_at, finished_at
          FROM deployments WHERE service_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
@@ -1597,8 +1606,7 @@ export function latestDeploymentsByService(serviceIds: string[]): Map<string, De
   const out = new Map<string, DeploymentRow>();
   for (const lote of lotes([...new Set(serviceIds)])) {
     const placeholders = lote.map(() => '?').join(',');
-    const rows = db
-      .prepare(
+    const rows = stmt(
         `SELECT d.id, d.service_id, d.status, d.trigger, d.commit_sha, d.commit_msg, d.image_tag, d.error, d.diagnosis,
                 d.build_key, d.repo_config, d.force_build, d.created_at, d.finished_at
            FROM deployments d
@@ -1625,8 +1633,7 @@ export const ACTIVE_DEPLOY_STATES = ['queued', 'building', 'deploying'] as const
  * tener que abrir el panel del servicio.
  */
 export function activeDeploymentsByProject(projectId: string): Record<string, DeploymentRow> {
-  const rows = db
-    .prepare(
+  const rows = stmt(
       `SELECT d.id, d.service_id, d.status, d.trigger, d.commit_sha, d.commit_msg, d.image_tag,
               d.error, d.diagnosis, d.build_key, d.repo_config, d.force_build, d.created_at, d.finished_at
          FROM deployments d JOIN services s ON s.id = d.service_id
@@ -1648,8 +1655,7 @@ export function activeDeploymentsByProject(projectId: string): Record<string, De
  * sondeo— y evitar duplicados y bucles.
  */
 export function lastBuiltCommitSha(serviceId: string): string | null {
-  const row = db
-    .prepare('SELECT commit_sha FROM deployments WHERE service_id = ? AND commit_sha IS NOT NULL ORDER BY created_at DESC LIMIT 1')
+  const row = stmt('SELECT commit_sha FROM deployments WHERE service_id = ? AND commit_sha IS NOT NULL ORDER BY created_at DESC LIMIT 1')
     .get(serviceId) as { commit_sha: string } | undefined;
   return row?.commit_sha ?? null;
 }
@@ -1660,8 +1666,7 @@ export function lastBuiltCommitSha(serviceId: string): string | null {
  * arrastraba el log de build entero (hasta 400 KB) de todo el histórico.
  */
 export function successfulDeploymentsBeyond(serviceId: string, keep: number): DeploymentRow[] {
-  return db
-    .prepare(
+  return stmt(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
               build_key, repo_config, force_build, created_at, finished_at
          FROM deployments WHERE service_id = ? AND status = 'success' AND image_tag IS NOT NULL
@@ -1672,7 +1677,7 @@ export function successfulDeploymentsBeyond(serviceId: string, keep: number): De
 }
 
 export function setDeploymentDiagnosis(deploymentId: string, diagnosis: object | null): void {
-  db.prepare('UPDATE deployments SET diagnosis = ? WHERE id = ?').run(
+  stmt('UPDATE deployments SET diagnosis = ? WHERE id = ?').run(
     diagnosis ? JSON.stringify(diagnosis) : null,
     deploymentId,
   );
@@ -1680,15 +1685,15 @@ export function setDeploymentDiagnosis(deploymentId: string, diagnosis: object |
 
 // ---------- variables compartidas de proyecto ----------
 export function getProjectVars(projectId: string): Record<string, string> {
-  const rows = db.prepare('SELECT key, value FROM project_vars WHERE project_id = ? ORDER BY key').all(projectId) as any[];
+  const rows = stmt('SELECT key, value FROM project_vars WHERE project_id = ? ORDER BY key').all(projectId) as any[];
   const out: Record<string, string> = {};
   for (const r of rows) out[r.key] = r.value;
   return out;
 }
 
 export function setProjectVars(projectId: string, vars: Record<string, string>): void {
-  const del = db.prepare('DELETE FROM project_vars WHERE project_id = ?');
-  const ins = db.prepare('INSERT INTO project_vars (project_id, key, value) VALUES (?, ?, ?)');
+  const del = stmt('DELETE FROM project_vars WHERE project_id = ?');
+  const ins = stmt('INSERT INTO project_vars (project_id, key, value) VALUES (?, ?, ?)');
   const tx = db.transaction(() => {
     del.run(projectId);
     for (const [k, v] of Object.entries(vars)) ins.run(projectId, k, v);
@@ -1701,7 +1706,7 @@ export function insertGithubConnector(
   row: Omit<GithubConnectorRow, 'id' | 'created_at' | 'last_used_at'>,
 ): GithubConnectorRow {
   const full: GithubConnectorRow = { ...row, id: id('ghc'), created_at: now(), last_used_at: null };
-  db.prepare(
+  stmt(
     `INSERT INTO github_connectors (id, project_id, name, token, gh_login, token_type, created_by, created_at, last_used_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(full.id, full.project_id, full.name, full.token, full.gh_login, full.token_type, full.created_by, full.created_at, full.last_used_at);
@@ -1709,15 +1714,13 @@ export function insertGithubConnector(
 }
 
 export function listGithubConnectors(projectId: string): GithubConnectorRow[] {
-  return db
-    .prepare('SELECT * FROM github_connectors WHERE project_id = ? ORDER BY created_at ASC')
+  return stmt('SELECT * FROM github_connectors WHERE project_id = ? ORDER BY created_at ASC')
     .all(projectId) as GithubConnectorRow[];
 }
 
 /** Todos los conectores con su proyecto, para el panel de control del admin. */
 export function listAllGithubConnectors(): (GithubConnectorRow & { project_name: string; project_client: string | null })[] {
-  return db
-    .prepare(
+  return stmt(
       `SELECT c.*, p.name AS project_name, p.client AS project_client
        FROM github_connectors c JOIN projects p ON p.id = c.project_id
        ORDER BY p.name ASC, c.created_at ASC`,
@@ -1726,15 +1729,15 @@ export function listAllGithubConnectors(): (GithubConnectorRow & { project_name:
 }
 
 export function getGithubConnector(connectorId: string): GithubConnectorRow | undefined {
-  return db.prepare('SELECT * FROM github_connectors WHERE id = ?').get(connectorId) as GithubConnectorRow | undefined;
+  return stmt('SELECT * FROM github_connectors WHERE id = ?').get(connectorId) as GithubConnectorRow | undefined;
 }
 
 export function countGithubConnectors(projectId: string): number {
-  return (db.prepare('SELECT COUNT(*) AS c FROM github_connectors WHERE project_id = ?').get(projectId) as any).c;
+  return (stmt('SELECT COUNT(*) AS c FROM github_connectors WHERE project_id = ?').get(projectId) as any).c;
 }
 
 export function touchGithubConnector(connectorId: string): void {
-  db.prepare('UPDATE github_connectors SET last_used_at = ? WHERE id = ?').run(now(), connectorId);
+  stmt('UPDATE github_connectors SET last_used_at = ? WHERE id = ?').run(now(), connectorId);
 }
 
 // ---------- instalaciones de la GitHub App ----------
@@ -1752,8 +1755,7 @@ export function upsertGithubInstallation(row: {
   created_by: string;
   suspended?: boolean;
 }): GithubInstallationRow {
-  const existing = db
-    .prepare(
+  const existing = stmt(
       row.project_id === null
         ? 'SELECT * FROM github_installations WHERE installation_id = ? AND project_id IS NULL'
         : 'SELECT * FROM github_installations WHERE installation_id = ? AND project_id = ?',
@@ -1763,7 +1765,7 @@ export function upsertGithubInstallation(row: {
     | undefined;
 
   if (existing) {
-    db.prepare(
+    stmt(
       `UPDATE github_installations
           SET account_login = ?, account_type = ?, repo_selection = ?, suspended = ?
         WHERE id = ?`,
@@ -1783,7 +1785,7 @@ export function upsertGithubInstallation(row: {
     last_used_at: null,
     suspended: row.suspended ? 1 : 0,
   };
-  db.prepare(
+  stmt(
     `INSERT INTO github_installations
        (id, installation_id, account_login, account_type, repo_selection, project_id, created_by, created_at, last_used_at, suspended)
      VALUES (@id, @installation_id, @account_login, @account_type, @repo_selection, @project_id, @created_by, @created_at, @last_used_at, @suspended)`,
@@ -1793,8 +1795,7 @@ export function upsertGithubInstallation(row: {
 
 /** Instalaciones utilizables desde un proyecto: las suyas y las globales. */
 export function listGithubInstallationsForProject(projectId: string): GithubInstallationRow[] {
-  return db
-    .prepare(
+  return stmt(
       `SELECT * FROM github_installations
         WHERE project_id = ? OR project_id IS NULL
         ORDER BY project_id IS NULL, account_login`,
@@ -1803,8 +1804,7 @@ export function listGithubInstallationsForProject(projectId: string): GithubInst
 }
 
 export function listAllGithubInstallations(): (GithubInstallationRow & { project_name: string | null })[] {
-  return db
-    .prepare(
+  return stmt(
       `SELECT i.*, p.name AS project_name
          FROM github_installations i LEFT JOIN projects p ON p.id = i.project_id
         ORDER BY i.created_at DESC`,
@@ -1813,43 +1813,42 @@ export function listAllGithubInstallations(): (GithubInstallationRow & { project
 }
 
 export function getGithubInstallation(rowId: string): GithubInstallationRow | undefined {
-  return db.prepare('SELECT * FROM github_installations WHERE id = ?').get(rowId) as GithubInstallationRow | undefined;
+  return stmt('SELECT * FROM github_installations WHERE id = ?').get(rowId) as GithubInstallationRow | undefined;
 }
 
 /** Filas (posiblemente varias, una por proyecto) de un número de instalación. */
 export function listGithubInstallationsByNumber(installationId: number): GithubInstallationRow[] {
-  return db
-    .prepare('SELECT * FROM github_installations WHERE installation_id = ?')
+  return stmt('SELECT * FROM github_installations WHERE installation_id = ?')
     .all(installationId) as GithubInstallationRow[];
 }
 
 export function touchGithubInstallation(rowId: string): void {
-  db.prepare('UPDATE github_installations SET last_used_at = ? WHERE id = ?').run(now(), rowId);
+  stmt('UPDATE github_installations SET last_used_at = ? WHERE id = ?').run(now(), rowId);
 }
 
 export function setGithubInstallationSuspended(installationId: number, suspended: boolean): void {
-  db.prepare('UPDATE github_installations SET suspended = ? WHERE installation_id = ?').run(
+  stmt('UPDATE github_installations SET suspended = ? WHERE installation_id = ?').run(
     suspended ? 1 : 0,
     installationId,
   );
 }
 
 export function deleteGithubInstallation(rowId: string): boolean {
-  return db.prepare('DELETE FROM github_installations WHERE id = ?').run(rowId).changes > 0;
+  return stmt('DELETE FROM github_installations WHERE id = ?').run(rowId).changes > 0;
 }
 
 /** Borra todas las filas de una instalación (la desinstalaron desde GitHub). */
 export function deleteGithubInstallationsByNumber(installationId: number): number {
-  return db.prepare('DELETE FROM github_installations WHERE installation_id = ?').run(installationId).changes;
+  return stmt('DELETE FROM github_installations WHERE installation_id = ?').run(installationId).changes;
 }
 
 export function deleteGithubConnector(connectorId: string): boolean {
-  return db.prepare('DELETE FROM github_connectors WHERE id = ?').run(connectorId).changes > 0;
+  return stmt('DELETE FROM github_connectors WHERE id = ?').run(connectorId).changes > 0;
 }
 
 // ---------- auditoría ----------
 export function insertAudit(entry: Omit<AuditRow, 'id' | 'ts'>): void {
-  db.prepare(
+  stmt(
     'INSERT INTO audit_log (id, ts, actor, action, target_type, target_id, detail, ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(id('aud'), now(), entry.actor, entry.action, entry.target_type, entry.target_id, entry.detail, entry.ip);
 }
@@ -1860,11 +1859,10 @@ export function listAudit(opts: { limit?: number; action?: string; projectId?: s
     // Es un filtro por PREFIJO literal: `%` y `_` escritos por el usuario se
     // escapan para que no actúen como comodines y devuelvan todo el registro.
     const prefijo = opts.action.replace(/[\\%_]/g, (c) => `\\${c}`);
-    return db
-      .prepare("SELECT * FROM audit_log WHERE action LIKE ? ESCAPE '\\' ORDER BY ts DESC LIMIT ?")
+    return stmt("SELECT * FROM audit_log WHERE action LIKE ? ESCAPE '\\' ORDER BY ts DESC LIMIT ?")
       .all(`${prefijo}%`, limit) as AuditRow[];
   }
-  return db.prepare('SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?').all(limit) as AuditRow[];
+  return stmt('SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?').all(limit) as AuditRow[];
 }
 
 export function countFailedLogins(sinceMs: number): { count: number; ips: string[] } {
@@ -1873,11 +1871,10 @@ export function countFailedLogins(sinceMs: number): { count: number; ips: string
   // panel de seguridad era lo que lo hacía lento justo cuando más se mira.
   const since = now() - sinceMs;
   const count = (
-    db.prepare("SELECT COUNT(*) AS c FROM audit_log WHERE action = 'login_failed' AND ts > ?").get(since) as { c: number }
+    stmt("SELECT COUNT(*) AS c FROM audit_log WHERE action = 'login_failed' AND ts > ?").get(since) as { c: number }
   ).c;
   const ips = (
-    db
-      .prepare("SELECT DISTINCT COALESCE(ip, '?') AS ip FROM audit_log WHERE action = 'login_failed' AND ts > ? LIMIT 10")
+    stmt("SELECT DISTINCT COALESCE(ip, '?') AS ip FROM audit_log WHERE action = 'login_failed' AND ts > ? LIMIT 10")
       .all(since) as { ip: string }[]
   ).map((r) => r.ip);
   return { count, ips };
@@ -1902,8 +1899,7 @@ export function insertAlert(alert: {
 
 function insertAlertTx(alert: Parameters<typeof insertAlert>[0]): AlertRow | null {
   if (alert.dedupe_key) {
-    const open = db
-      .prepare('SELECT id FROM alerts WHERE dedupe_key = ? AND resolved_at IS NULL')
+    const open = stmt('SELECT id FROM alerts WHERE dedupe_key = ? AND resolved_at IS NULL')
       .get(alert.dedupe_key);
     if (open) return null;
   }
@@ -1921,7 +1917,7 @@ function insertAlertTx(alert: Parameters<typeof insertAlert>[0]): AlertRow | nul
     resolved_at: null,
     read_at: null,
   };
-  db.prepare(
+  stmt(
     `INSERT INTO alerts (id, ts, severity, type, project_id, service_id, workspace_id, title, message, explanation, dedupe_key, resolved_at, read_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(row.id, row.ts, row.severity, row.type, row.project_id, row.service_id, alert.workspace_id ?? null, row.title, row.message, row.explanation, row.dedupe_key, row.resolved_at, row.read_at);
@@ -1933,7 +1929,7 @@ export function listWorkspaceAlerts(workspaceId: string, openOnly = true): Alert
   const sql = openOnly
     ? 'SELECT * FROM alerts WHERE workspace_id = ? AND resolved_at IS NULL ORDER BY ts DESC LIMIT 50'
     : 'SELECT * FROM alerts WHERE workspace_id = ? ORDER BY ts DESC LIMIT 50';
-  return db.prepare(sql).all(workspaceId) as AlertRow[];
+  return stmt(sql).all(workspaceId) as AlertRow[];
 }
 
 export function listAlerts(opts: { limit?: number; openOnly?: boolean; projectIds?: string[] } = {}): AlertRow[] {
@@ -1948,43 +1944,42 @@ export function listAlerts(opts: { limit?: number; openOnly?: boolean; projectId
     params.push(...opts.projectIds);
   }
   const sql = `SELECT * FROM alerts${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY ts DESC LIMIT ?`;
-  return db.prepare(sql).all(...params, limit) as AlertRow[];
+  return stmt(sql).all(...params, limit) as AlertRow[];
 }
 
 export function getAlert(alertId: string): AlertRow | undefined {
-  return db.prepare('SELECT * FROM alerts WHERE id = ?').get(alertId) as AlertRow | undefined;
+  return stmt('SELECT * FROM alerts WHERE id = ?').get(alertId) as AlertRow | undefined;
 }
 
 export function countUnreadAlerts(projectIds?: string[]): number {
   if (projectIds) {
     if (projectIds.length === 0) return 0;
     const sql = `SELECT COUNT(*) AS c FROM alerts WHERE read_at IS NULL AND project_id IN (${projectIds.map(() => '?').join(',')})`;
-    return (db.prepare(sql).get(...projectIds) as any).c;
+    return (stmt(sql).get(...projectIds) as any).c;
   }
-  return (db.prepare('SELECT COUNT(*) AS c FROM alerts WHERE read_at IS NULL').get() as any).c;
+  return (stmt('SELECT COUNT(*) AS c FROM alerts WHERE read_at IS NULL').get() as any).c;
 }
 
 export function markAlertsRead(projectIds?: string[]): void {
   if (projectIds) {
     if (projectIds.length === 0) return;
     const sql = `UPDATE alerts SET read_at = ? WHERE read_at IS NULL AND project_id IN (${projectIds.map(() => '?').join(',')})`;
-    db.prepare(sql).run(now(), ...projectIds);
+    stmt(sql).run(now(), ...projectIds);
     return;
   }
-  db.prepare('UPDATE alerts SET read_at = ? WHERE read_at IS NULL').run(now());
+  stmt('UPDATE alerts SET read_at = ? WHERE read_at IS NULL').run(now());
 }
 
 export function resolveAlert(alertId: string): boolean {
-  const res = db.prepare('UPDATE alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL').run(now(), alertId);
+  const res = stmt('UPDATE alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL').run(now(), alertId);
   return res.changes > 0;
 }
 
 export function resolveAlertsByDedupe(dedupeKey: string): AlertRow[] {
-  const open = db
-    .prepare('SELECT * FROM alerts WHERE dedupe_key = ? AND resolved_at IS NULL')
+  const open = stmt('SELECT * FROM alerts WHERE dedupe_key = ? AND resolved_at IS NULL')
     .all(dedupeKey) as AlertRow[];
   if (open.length > 0) {
-    db.prepare('UPDATE alerts SET resolved_at = ? WHERE dedupe_key = ? AND resolved_at IS NULL').run(now(), dedupeKey);
+    stmt('UPDATE alerts SET resolved_at = ? WHERE dedupe_key = ? AND resolved_at IS NULL').run(now(), dedupeKey);
   }
   return open;
 }
@@ -1996,11 +1991,10 @@ export function resolveAlertsByDedupe(dedupeKey: string): AlertRow[] {
  * clave (p. ej. `deploy_failed` antiguas), que si no se quedarían abiertas para siempre.
  */
 export function resolveOpenServiceAlerts(serviceId: string, type: string): AlertRow[] {
-  const open = db
-    .prepare('SELECT * FROM alerts WHERE service_id = ? AND type = ? AND resolved_at IS NULL')
+  const open = stmt('SELECT * FROM alerts WHERE service_id = ? AND type = ? AND resolved_at IS NULL')
     .all(serviceId, type) as AlertRow[];
   if (open.length > 0) {
-    db.prepare('UPDATE alerts SET resolved_at = ? WHERE service_id = ? AND type = ? AND resolved_at IS NULL').run(
+    stmt('UPDATE alerts SET resolved_at = ? WHERE service_id = ? AND type = ? AND resolved_at IS NULL').run(
       now(),
       serviceId,
       type,
@@ -2011,11 +2005,10 @@ export function resolveOpenServiceAlerts(serviceId: string, type: string): Alert
 
 /** Resuelve TODAS las alertas abiertas de un servicio sin importar el tipo. */
 export function resolveAllOpenServiceAlerts(serviceId: string): AlertRow[] {
-  const open = db
-    .prepare('SELECT * FROM alerts WHERE service_id = ? AND resolved_at IS NULL')
+  const open = stmt('SELECT * FROM alerts WHERE service_id = ? AND resolved_at IS NULL')
     .all(serviceId) as AlertRow[];
   if (open.length > 0) {
-    db.prepare('UPDATE alerts SET resolved_at = ? WHERE service_id = ? AND resolved_at IS NULL').run(
+    stmt('UPDATE alerts SET resolved_at = ? WHERE service_id = ? AND resolved_at IS NULL').run(
       now(),
       serviceId,
     );
@@ -2032,8 +2025,7 @@ export function resolveAllOpenServiceAlerts(serviceId: string): AlertRow[] {
 export function listProjectIncidents(projectId: string, types: string[], resolvedSince: number): AlertRow[] {
   if (types.length === 0) return [];
   const placeholders = types.map(() => '?').join(',');
-  return db
-    .prepare(
+  return stmt(
       `SELECT * FROM alerts WHERE project_id = ? AND type IN (${placeholders})
        AND (resolved_at IS NULL OR resolved_at > ?) ORDER BY ts DESC LIMIT 20`,
     )
@@ -2053,18 +2045,15 @@ export function projectDashboardMeta(): Record<string, ProjectDashboardMeta> {
   const entry = (pid: string): ProjectDashboardMeta =>
     (out[pid] ??= { lastDeployAt: null, openAlerts: 0, activeDeploys: 0 });
 
-  const deploys = db
-    .prepare('SELECT s.project_id AS pid, MAX(d.created_at) AS m FROM deployments d JOIN services s ON s.id = d.service_id GROUP BY s.project_id')
+  const deploys = stmt('SELECT s.project_id AS pid, MAX(d.created_at) AS m FROM deployments d JOIN services s ON s.id = d.service_id GROUP BY s.project_id')
     .all() as { pid: string; m: number }[];
   for (const r of deploys) entry(r.pid).lastDeployAt = r.m;
 
-  const alerts = db
-    .prepare('SELECT project_id AS pid, COUNT(*) AS c FROM alerts WHERE resolved_at IS NULL AND project_id IS NOT NULL GROUP BY project_id')
+  const alerts = stmt('SELECT project_id AS pid, COUNT(*) AS c FROM alerts WHERE resolved_at IS NULL AND project_id IS NOT NULL GROUP BY project_id')
     .all() as { pid: string; c: number }[];
   for (const r of alerts) entry(r.pid).openAlerts = r.c;
 
-  const running = db
-    .prepare(
+  const running = stmt(
       `SELECT s.project_id AS pid, COUNT(*) AS c
          FROM deployments d JOIN services s ON s.id = d.service_id
         WHERE d.status IN ('queued', 'building', 'deploying')
@@ -2077,17 +2066,33 @@ export function projectDashboardMeta(): Record<string, ProjectDashboardMeta> {
 }
 
 export function openAlertCountsByService(projectId: string): Record<string, number> {
-  const rows = db
-    .prepare('SELECT service_id, COUNT(*) AS c FROM alerts WHERE project_id = ? AND resolved_at IS NULL AND service_id IS NOT NULL GROUP BY service_id')
+  const rows = stmt('SELECT service_id, COUNT(*) AS c FROM alerts WHERE project_id = ? AND resolved_at IS NULL AND service_id IS NOT NULL GROUP BY service_id')
     .all(projectId) as { service_id: string; c: number }[];
   const out: Record<string, number> = {};
   for (const r of rows) out[r.service_id] = r.c;
   return out;
 }
 
+/**
+ * `openAlertCountsByService` para varios proyectos en una consulta (por
+ * lotes). Las vistas globales (Monitor, Sitios) lo pedían proyecto a proyecto
+ * en cada sondeo.
+ */
+export function openAlertCountsByServiceForProjects(projectIds: string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const lote of lotes([...new Set(projectIds)])) {
+    const rows = stmt(
+      `SELECT service_id, COUNT(*) AS c FROM alerts
+        WHERE project_id IN (${lote.map(() => '?').join(',')}) AND resolved_at IS NULL AND service_id IS NOT NULL
+        GROUP BY service_id`,
+    ).all(...lote) as { service_id: string; c: number }[];
+    for (const r of rows) out[r.service_id] = r.c;
+  }
+  return out;
+}
+
 export function markStaleDeploymentsFailed(): number {
-  const res = db
-    .prepare(
+  const res = stmt(
       `UPDATE deployments SET status = 'failed', error = 'Interrumpido por reinicio del servidor', finished_at = ?
        WHERE status IN ('queued', 'building', 'deploying')`,
     )
@@ -2100,21 +2105,21 @@ export function listPlans(includeArchived = true): PlanRow[] {
   const sql = includeArchived
     ? 'SELECT * FROM plans ORDER BY price_cents ASC, created_at ASC'
     : 'SELECT * FROM plans WHERE archived = 0 ORDER BY price_cents ASC, created_at ASC';
-  return db.prepare(sql).all() as PlanRow[];
+  return stmt(sql).all() as PlanRow[];
 }
 
 export function getPlan(planId: string): PlanRow | undefined {
-  return db.prepare('SELECT * FROM plans WHERE id = ?').get(planId) as PlanRow | undefined;
+  return stmt('SELECT * FROM plans WHERE id = ?').get(planId) as PlanRow | undefined;
 }
 
 export function getDefaultPlan(): PlanRow | undefined {
-  return db.prepare('SELECT * FROM plans WHERE is_default = 1 AND archived = 0 ORDER BY created_at ASC LIMIT 1').get() as
+  return stmt('SELECT * FROM plans WHERE is_default = 1 AND archived = 0 ORDER BY created_at ASC LIMIT 1').get() as
     | PlanRow
     | undefined;
 }
 
 export function planSlugExists(slug: string): boolean {
-  return !!db.prepare('SELECT 1 FROM plans WHERE slug = ?').get(slug);
+  return !!stmt('SELECT 1 FROM plans WHERE slug = ?').get(slug);
 }
 
 type PlanInput = Omit<PlanRow, 'id' | 'slug' | 'created_at'>;
@@ -2124,7 +2129,7 @@ export function createPlan(name: string, fields: Omit<PlanInput, 'name'>): PlanR
   let i = 2;
   while (planSlugExists(slug)) slug = `${slugify(name)}-${i++}`;
   const row: PlanRow = { ...fields, name, id: id('pln'), slug, created_at: now() };
-  db.prepare(
+  stmt(
     `INSERT INTO plans (id, name, slug, price_cents, currency, interval, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules, is_default, archived, discount_pct, created_at)
      VALUES (@id, @name, @slug, @price_cents, @currency, @interval, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules, @is_default, @archived, @discount_pct, @created_at)`,
   ).run(row);
@@ -2141,20 +2146,20 @@ export function updatePlan(planId: string, fields: Record<string, unknown>): voi
   const keys = Object.keys(fields).filter((k) => PLAN_COLUMNS.has(k));
   if (keys.length === 0) return;
   const sets = keys.map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE plans SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), planId);
+  stmt(`UPDATE plans SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), planId);
   if (fields.is_default === 1) clearOtherDefaultPlans(planId);
 }
 
 function clearOtherDefaultPlans(keepId: string): void {
-  db.prepare('UPDATE plans SET is_default = 0 WHERE id <> ?').run(keepId);
+  stmt('UPDATE plans SET is_default = 0 WHERE id <> ?').run(keepId);
 }
 
 export function deletePlan(planId: string): void {
-  db.prepare('DELETE FROM plans WHERE id = ?').run(planId);
+  stmt('DELETE FROM plans WHERE id = ?').run(planId);
 }
 
 export function countWorkspacesOnPlan(planId: string): number {
-  return (db.prepare('SELECT COUNT(*) AS c FROM workspaces WHERE plan_id = ?').get(planId) as any).c;
+  return (stmt('SELECT COUNT(*) AS c FROM workspaces WHERE plan_id = ?').get(planId) as any).c;
 }
 
 // ---------- workspaces (cuentas de cliente) ----------
@@ -2162,7 +2167,7 @@ function uniqueWorkspaceSlug(name: string): string {
   const base = slugify(name);
   let slug = base;
   let i = 2;
-  while (db.prepare('SELECT 1 FROM workspaces WHERE slug = ?').get(slug)) slug = `${base}-${i++}`;
+  while (stmt('SELECT 1 FROM workspaces WHERE slug = ?').get(slug)) slug = `${base}-${i++}`;
   return slug;
 }
 
@@ -2214,7 +2219,7 @@ export function createWorkspaceRow(name: string, init: WorkspaceInit = {}): Work
     notes: init.notes ?? null,
     created_at: now(),
   };
-  db.prepare(
+  stmt(
     `INSERT INTO workspaces (id, name, slug, plan_id, cpu_cores, memory_mb, disk_mb, max_projects, max_services, max_members, modules_override, owner_disabled_modules, status, billing_email, billing_tax_id, billing_address, billing_country, billing_day, plan_since, last_billed_period_end, notes, created_at)
      VALUES (@id, @name, @slug, @plan_id, @cpu_cores, @memory_mb, @disk_mb, @max_projects, @max_services, @max_members, @modules_override, @owner_disabled_modules, @status, @billing_email, @billing_tax_id, @billing_address, @billing_country, @billing_day, @plan_since, @last_billed_period_end, @notes, @created_at)`,
   ).run(row);
@@ -2224,7 +2229,7 @@ export function createWorkspaceRow(name: string, init: WorkspaceInit = {}): Work
 }
 
 export function listWorkspaces(): WorkspaceRow[] {
-  return db.prepare('SELECT * FROM workspaces ORDER BY name ASC').all() as WorkspaceRow[];
+  return stmt('SELECT * FROM workspaces ORDER BY name ASC').all() as WorkspaceRow[];
 }
 
 /**
@@ -2234,7 +2239,7 @@ export function listWorkspaces(): WorkspaceRow[] {
  */
 export function getOrCreateWorkspaceByName(name: string): WorkspaceRow {
   const key = name.trim().toLowerCase();
-  const existing = (db.prepare('SELECT * FROM workspaces').all() as WorkspaceRow[]).find(
+  const existing = (stmt('SELECT * FROM workspaces').all() as WorkspaceRow[]).find(
     (w) => w.name.trim().toLowerCase() === key,
   );
   if (existing) return existing;
@@ -2242,7 +2247,7 @@ export function getOrCreateWorkspaceByName(name: string): WorkspaceRow {
 }
 
 export function getWorkspace(workspaceId: string): WorkspaceRow | undefined {
-  return db.prepare('SELECT * FROM workspaces WHERE id = ?').get(workspaceId) as WorkspaceRow | undefined;
+  return stmt('SELECT * FROM workspaces WHERE id = ?').get(workspaceId) as WorkspaceRow | undefined;
 }
 
 const WORKSPACE_COLUMNS = new Set([
@@ -2257,18 +2262,18 @@ export function updateWorkspace(workspaceId: string, fields: Record<string, unkn
   const keys = Object.keys(fields).filter((k) => WORKSPACE_COLUMNS.has(k));
   if (keys.length === 0) return;
   const sets = keys.map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE workspaces SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), workspaceId);
+  stmt(`UPDATE workspaces SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), workspaceId);
   // Al renombrar, refresca el reflejo denormalizado en sus proyectos (agrupación de la UI).
   if (typeof fields.name === 'string') {
-    db.prepare('UPDATE projects SET client = ? WHERE workspace_id = ?').run(fields.name, workspaceId);
+    stmt('UPDATE projects SET client = ? WHERE workspace_id = ?').run(fields.name, workspaceId);
   }
 }
 
 export function deleteWorkspace(workspaceId: string): void {
   // Los proyectos quedan sin asignar (no se borran): SET NULL manual + limpia el reflejo.
-  db.prepare('UPDATE projects SET workspace_id = NULL, client = NULL WHERE workspace_id = ?').run(workspaceId);
+  stmt('UPDATE projects SET workspace_id = NULL, client = NULL WHERE workspace_id = ?').run(workspaceId);
   // Los sub-usuarios del workspace se quedan huérfanos: se borran en cascada lógica desde la ruta.
-  db.prepare('DELETE FROM workspaces WHERE id = ?').run(workspaceId);
+  stmt('DELETE FROM workspaces WHERE id = ?').run(workspaceId);
 }
 
 // ---------- historial de plan por tramos ----------
@@ -2278,8 +2283,7 @@ export function deleteWorkspace(workspaceId: string): void {
  * parte nada (si no, editar el nombre de la cuenta trocearía el historial).
  */
 export function recordPlanChange(workspaceId: string, planId: string | null, atMs = now()): void {
-  const abierto = db
-    .prepare('SELECT * FROM workspace_plan_periods WHERE workspace_id = ? AND to_ms IS NULL ORDER BY from_ms DESC LIMIT 1')
+  const abierto = stmt('SELECT * FROM workspace_plan_periods WHERE workspace_id = ? AND to_ms IS NULL ORDER BY from_ms DESC LIMIT 1')
     .get(workspaceId) as PlanPeriodRow | undefined;
   if (abierto && abierto.plan_id === planId) return;
   const plan = planId ? getPlan(planId) : undefined;
@@ -2287,10 +2291,10 @@ export function recordPlanChange(workspaceId: string, planId: string | null, atM
     if (abierto) {
       // Un tramo que se cerraría en su propio instante de apertura (dos cambios de
       // plan seguidos) no cubre nada y solo ensuciaría el historial: se descarta.
-      if (abierto.from_ms >= atMs) db.prepare('DELETE FROM workspace_plan_periods WHERE id = ?').run(abierto.id);
-      else db.prepare('UPDATE workspace_plan_periods SET to_ms = ? WHERE id = ?').run(atMs, abierto.id);
+      if (abierto.from_ms >= atMs) stmt('DELETE FROM workspace_plan_periods WHERE id = ?').run(abierto.id);
+      else stmt('UPDATE workspace_plan_periods SET to_ms = ? WHERE id = ?').run(atMs, abierto.id);
     }
-    db.prepare(
+    stmt(
       `INSERT INTO workspace_plan_periods (id, workspace_id, plan_id, plan_name, price_cents, currency, interval, from_ms, to_ms, created_at)
        VALUES (@id, @workspace_id, @plan_id, @plan_name, @price_cents, @currency, @interval, @from_ms, NULL, @created_at)`,
     ).run({
@@ -2313,8 +2317,7 @@ export function recordPlanChange(workspaceId: string, planId: string | null, atM
  * respaldo (el plan vigente para todo el ciclo, que es lo que se hacía antes).
  */
 export function listPlanPeriodsInRange(workspaceId: string, from: number, to: number): PlanPeriodRow[] {
-  return db
-    .prepare(
+  return stmt(
       `SELECT * FROM workspace_plan_periods
         WHERE workspace_id = ? AND from_ms < ? AND (to_ms IS NULL OR to_ms > ?)
         ORDER BY from_ms ASC`,
@@ -2324,8 +2327,7 @@ export function listPlanPeriodsInRange(workspaceId: string, from: number, to: nu
 
 /** Historial completo de una cuenta, del más reciente al más antiguo (ficha y auditoría). */
 export function listPlanPeriods(workspaceId: string): PlanPeriodRow[] {
-  return db
-    .prepare('SELECT * FROM workspace_plan_periods WHERE workspace_id = ? ORDER BY from_ms DESC')
+  return stmt('SELECT * FROM workspace_plan_periods WHERE workspace_id = ? ORDER BY from_ms DESC')
     .all(workspaceId) as PlanPeriodRow[];
 }
 
@@ -2335,8 +2337,7 @@ export function listPlanPeriods(workspaceId: string): PlanPeriodRow[] {
  * devengara una segunda anualidad ya cobrada.
  */
 export function planContractedSince(workspaceId: string, planId: string): number | null {
-  const row = db
-    .prepare('SELECT MIN(from_ms) AS m FROM workspace_plan_periods WHERE workspace_id = ? AND plan_id = ?')
+  const row = stmt('SELECT MIN(from_ms) AS m FROM workspace_plan_periods WHERE workspace_id = ? AND plan_id = ?')
     .get(workspaceId, planId) as { m: number | null };
   return row.m ?? null;
 }
@@ -2351,8 +2352,7 @@ export function planContractedSince(workspaceId: string, planId: string): number
 function backfillPlanPeriods(): void {
   if (getSetting('migrations:plan_periods_v1') === 'done') return;
   db.transaction(() => {
-    const sinHistorial = db
-      .prepare(
+    const sinHistorial = stmt(
         `SELECT w.id, w.plan_id, w.plan_since, w.created_at FROM workspaces w
           WHERE NOT EXISTS (SELECT 1 FROM workspace_plan_periods p WHERE p.workspace_id = w.id)`,
       )
@@ -2366,8 +2366,7 @@ function backfillPlanPeriods(): void {
 /** Todos los servicios de todos los proyectos de un workspace (para la cuota agregada). */
 export function listWorkspaceServices(workspaceId: string): ServiceRow[] {
   return (
-    db
-      .prepare(
+    stmt(
         `SELECT s.* FROM services s JOIN projects p ON p.id = s.project_id WHERE p.workspace_id = ? ORDER BY s.created_at ASC`,
       )
       .all(workspaceId) as any[]
@@ -2376,8 +2375,7 @@ export function listWorkspaceServices(workspaceId: string): ServiceRow[] {
 
 export function countWorkspaceServices(workspaceId: string): number {
   return (
-    db
-      .prepare('SELECT COUNT(*) AS c FROM services s JOIN projects p ON p.id = s.project_id WHERE p.workspace_id = ?')
+    stmt('SELECT COUNT(*) AS c FROM services s JOIN projects p ON p.id = s.project_id WHERE p.workspace_id = ?')
       .get(workspaceId) as any
   ).c;
 }
@@ -2388,8 +2386,7 @@ export function workspaceUsageRange(
   fromHour: number,
   toHour: number,
 ): { buckets: number; cpuCorePctHours: number; memByteHours: number; cpuMax: number; memMax: number; diskMax: number } {
-  const row = db
-    .prepare(
+  const row = stmt(
       `SELECT
          COUNT(*) AS buckets,
          COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.cpu_sum * 1.0 / m.samples ELSE 0 END), 0) AS cpuCorePctHours,
@@ -2413,13 +2410,12 @@ export function workspaceUsageRange(
 
 // ---------- facturas ----------
 export function listInvoices(workspaceId: string): InvoiceRow[] {
-  return db
-    .prepare('SELECT * FROM workspace_invoices WHERE workspace_id = ? ORDER BY period_start DESC, created_at DESC')
+  return stmt('SELECT * FROM workspace_invoices WHERE workspace_id = ? ORDER BY period_start DESC, created_at DESC')
     .all(workspaceId) as InvoiceRow[];
 }
 
 export function getInvoice(invoiceId: string): InvoiceRow | undefined {
-  return db.prepare('SELECT * FROM workspace_invoices WHERE id = ?').get(invoiceId) as InvoiceRow | undefined;
+  return stmt('SELECT * FROM workspace_invoices WHERE id = ?').get(invoiceId) as InvoiceRow | undefined;
 }
 
 /** Valores por defecto de las columnas fiscales/opcionales de una factura nueva. */
@@ -2438,7 +2434,7 @@ type InvoiceCore = Pick<
 
 export function createInvoice(row: InvoiceCore & Partial<InvoiceRow>): InvoiceRow {
   const full: InvoiceRow = { ...INVOICE_DEFAULTS, ...row, id: id('inv'), created_at: now() };
-  db.prepare(
+  stmt(
     `INSERT INTO workspace_invoices (
        id, workspace_id, series_id, number, invoice_type, rectifies_invoice_id, rectify_reason,
        period_start, period_end, operation_date, status, currency, subtotal_cents, tax_cents, tax_rate,
@@ -2467,7 +2463,7 @@ export function updateInvoice(invoiceId: string, fields: Record<string, unknown>
   const keys = Object.keys(fields).filter((k) => INVOICE_COLUMNS.has(k));
   if (keys.length === 0) return;
   const sets = keys.map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE workspace_invoices SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), invoiceId);
+  stmt(`UPDATE workspace_invoices SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), invoiceId);
 }
 
 /**
@@ -2475,7 +2471,7 @@ export function updateInvoice(invoiceId: string, fields: Record<string, unknown>
  * (al borrarla o anularla), para que no se pierdan y vuelvan a la próxima factura.
  */
 export function reopenChargesForInvoice(invoiceId: string): void {
-  db.prepare("UPDATE pending_charges SET status = 'pending', invoice_id = NULL WHERE invoice_id = ? AND status = 'invoiced'").run(invoiceId);
+  stmt("UPDATE pending_charges SET status = 'pending', invoice_id = NULL WHERE invoice_id = ? AND status = 'invoiced'").run(invoiceId);
 }
 
 /**
@@ -2488,18 +2484,18 @@ export function reopenChargesNotIn(invoiceId: string, keepIds: string[]): void {
   const sql = keepIds.length
     ? `UPDATE pending_charges SET status = 'pending', invoice_id = NULL WHERE invoice_id = ? AND status = 'invoiced' AND id NOT IN (${marcadores})`
     : "UPDATE pending_charges SET status = 'pending', invoice_id = NULL WHERE invoice_id = ? AND status = 'invoiced'";
-  db.prepare(sql).run(invoiceId, ...keepIds);
+  stmt(sql).run(invoiceId, ...keepIds);
 }
 
 export function deleteInvoice(invoiceId: string): void {
   db.transaction(() => {
     reopenChargesForInvoice(invoiceId); // no perder los cargos enlazados
-    db.prepare('DELETE FROM workspace_invoices WHERE id = ?').run(invoiceId);
+    stmt('DELETE FROM workspace_invoices WHERE id = ?').run(invoiceId);
   })();
 }
 
 export function getInvoiceByStripeSession(sessionId: string): InvoiceRow | undefined {
-  return db.prepare('SELECT * FROM workspace_invoices WHERE stripe_session_id = ?').get(sessionId) as InvoiceRow | undefined;
+  return stmt('SELECT * FROM workspace_invoices WHERE stripe_session_id = ?').get(sessionId) as InvoiceRow | undefined;
 }
 
 /** ¿Tiene el workspace facturas (opcionalmente solo las que ya no son borrador)? */
@@ -2507,7 +2503,7 @@ export function workspaceHasInvoices(workspaceId: string, nonDraftOnly = false):
   const sql = nonDraftOnly
     ? "SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND status <> 'draft' LIMIT 1"
     : 'SELECT 1 FROM workspace_invoices WHERE workspace_id = ? LIMIT 1';
-  return !!db.prepare(sql).get(workspaceId);
+  return !!stmt(sql).get(workspaceId);
 }
 
 /**
@@ -2523,7 +2519,7 @@ export function assignSeriesNumber(opts: {
   padding?: number;
 }): { seriesId: string; number: string; seq: number } {
   return db.transaction(() => {
-    let s = db.prepare('SELECT * FROM invoice_series WHERE code = ? AND year = ?').get(opts.code, opts.year) as
+    let s = stmt('SELECT * FROM invoice_series WHERE code = ? AND year = ?').get(opts.code, opts.year) as
       | InvoiceSeriesRow
       | undefined;
     if (!s) {
@@ -2531,7 +2527,7 @@ export function assignSeriesNumber(opts: {
         id: id('ser'), code: opts.code, year: opts.year, prefix: opts.prefix,
         padding: opts.padding ?? 4, next_seq: 1, kind: opts.kind, created_at: now(),
       };
-      db.prepare(
+      stmt(
         'INSERT INTO invoice_series (id, code, year, prefix, padding, next_seq, kind, created_at) VALUES (@id, @code, @year, @prefix, @padding, @next_seq, @kind, @created_at)',
       ).run(s);
     } else if (s.kind !== opts.kind) {
@@ -2543,7 +2539,7 @@ export function assignSeriesNumber(opts: {
       );
     }
     const seq = s.next_seq;
-    db.prepare('UPDATE invoice_series SET next_seq = ? WHERE id = ?').run(seq + 1, s.id);
+    stmt('UPDATE invoice_series SET next_seq = ? WHERE id = ?').run(seq + 1, s.id);
     const p = (s.prefix || '').trim();
     const number = `${p}${p ? '-' : ''}${opts.year}-${String(seq).padStart(s.padding, '0')}`;
     return { seriesId: s.id, number, seq };
@@ -2551,7 +2547,7 @@ export function assignSeriesNumber(opts: {
 }
 
 export function listInvoiceSeries(): InvoiceSeriesRow[] {
-  return db.prepare('SELECT * FROM invoice_series ORDER BY year DESC, code ASC').all() as InvoiceSeriesRow[];
+  return stmt('SELECT * FROM invoice_series ORDER BY year DESC, code ASC').all() as InvoiceSeriesRow[];
 }
 
 /** Todas las facturas de todos los workspaces, con el nombre del cliente, para la contabilidad. */
@@ -2574,7 +2570,7 @@ export function listAllInvoices(filter: { status?: string; fromMs?: number; toMs
      LEFT JOIN workspaces w ON w.id = i.workspace_id
      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
      ORDER BY i.created_at DESC`;
-  return db.prepare(sql).all(...params) as (InvoiceRow & { workspace_name: string | null })[];
+  return stmt(sql).all(...params) as (InvoiceRow & { workspace_name: string | null })[];
 }
 
 /**
@@ -2588,8 +2584,7 @@ export function workspaceUsageSeries(
   toHour: number,
   bucketHours: number,
 ): { t: number; cpuCoreHours: number; ramGbHours: number; diskGb: number; netBytes: number }[] {
-  const rows = db
-    .prepare(
+  const rows = stmt(
       // CAST a INTEGER: la división debe ser entera (cubo por día/hora); si no, la
       // clave sale fraccionaria y no casa con la rejilla entera del bucle de abajo.
       `SELECT CAST(m.hour / ? AS INTEGER) AS bucket,
@@ -2635,8 +2630,7 @@ export function workspaceUsageByProject(
   fromHour: number,
   toHour: number,
 ): { projectId: string; name: string; cpuCoreHours: number; ramGbHours: number }[] {
-  return db
-    .prepare(
+  return stmt(
       `SELECT p.id AS projectId, p.name AS name,
          COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.cpu_sum * 1.0 / m.samples ELSE 0 END), 0) / 100.0 AS cpuCoreHours,
          COALESCE(SUM(CASE WHEN m.samples > 0 THEN m.mem_sum * 1.0 / m.samples ELSE 0 END), 0) / 1e9 AS ramGbHours
@@ -2655,7 +2649,7 @@ function uniqueProductSlug(name: string): string {
   const base = slugify(name) || 'producto';
   let candidate = base;
   let n = 2;
-  while (db.prepare('SELECT 1 FROM catalog_products WHERE slug = ?').get(candidate)) {
+  while (stmt('SELECT 1 FROM catalog_products WHERE slug = ?').get(candidate)) {
     candidate = `${base}-${n++}`;
   }
   return candidate;
@@ -2665,11 +2659,11 @@ export function listProducts(includeArchived = false): ProductRow[] {
   const sql = includeArchived
     ? 'SELECT * FROM catalog_products ORDER BY archived ASC, category ASC, name ASC'
     : 'SELECT * FROM catalog_products WHERE archived = 0 ORDER BY category ASC, name ASC';
-  return db.prepare(sql).all() as ProductRow[];
+  return stmt(sql).all() as ProductRow[];
 }
 
 export function getProduct(productId: string): ProductRow | undefined {
-  return db.prepare('SELECT * FROM catalog_products WHERE id = ?').get(productId) as ProductRow | undefined;
+  return stmt('SELECT * FROM catalog_products WHERE id = ?').get(productId) as ProductRow | undefined;
 }
 
 const PRODUCT_DEFAULTS = {
@@ -2680,7 +2674,7 @@ const PRODUCT_DEFAULTS = {
 
 export function createProduct(row: Pick<ProductRow, 'name'> & Partial<ProductRow>): ProductRow {
   const full: ProductRow = { ...PRODUCT_DEFAULTS, ...row, id: id('prd'), slug: uniqueProductSlug(row.name), created_at: now() };
-  db.prepare(
+  stmt(
     `INSERT INTO catalog_products (id, name, slug, category, billing_model, price_cents, currency, interval, unit, unit_size, meter, tier_mode, tax_rate, irpf_rate, tax_exempt, modules, description, active, archived, created_at)
      VALUES (@id, @name, @slug, @category, @billing_model, @price_cents, @currency, @interval, @unit, @unit_size, @meter, @tier_mode, @tax_rate, @irpf_rate, @tax_exempt, @modules, @description, @active, @archived, @created_at)`,
   ).run(full);
@@ -2696,11 +2690,11 @@ export function updateProduct(productId: string, fields: Record<string, unknown>
   const keys = Object.keys(fields).filter((k) => PRODUCT_COLUMNS.has(k));
   if (keys.length === 0) return;
   const sets = keys.map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE catalog_products SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), productId);
+  stmt(`UPDATE catalog_products SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), productId);
 }
 
 export function deleteProduct(productId: string): void {
-  db.prepare('DELETE FROM catalog_products WHERE id = ?').run(productId);
+  stmt('DELETE FROM catalog_products WHERE id = ?').run(productId);
 }
 
 /** ¿Hay alguna suscripción (activa o pausada) que use este producto? */
@@ -2711,18 +2705,18 @@ export function deleteProduct(productId: string): void {
  * UI ofreciera un borrado que la BD rechazaba con un 500 opaco.
  */
 export function productInUse(productId: string): boolean {
-  return !!db.prepare('SELECT 1 FROM workspace_subscriptions WHERE product_id = ? LIMIT 1').get(productId);
+  return !!stmt('SELECT 1 FROM workspace_subscriptions WHERE product_id = ? LIMIT 1').get(productId);
 }
 
 export function listTiers(productId: string): PriceTierRow[] {
-  return db.prepare('SELECT * FROM catalog_price_tiers WHERE product_id = ? ORDER BY sort ASC').all(productId) as PriceTierRow[];
+  return stmt('SELECT * FROM catalog_price_tiers WHERE product_id = ? ORDER BY sort ASC').all(productId) as PriceTierRow[];
 }
 
 /** Reemplaza el conjunto de tramos de un producto (todo o nada). */
 export function replaceTiers(productId: string, tiers: { upTo: number | null; unitCents: number; flatCents: number }[]): void {
   db.transaction(() => {
-    db.prepare('DELETE FROM catalog_price_tiers WHERE product_id = ?').run(productId);
-    const ins = db.prepare(
+    stmt('DELETE FROM catalog_price_tiers WHERE product_id = ?').run(productId);
+    const ins = stmt(
       'INSERT INTO catalog_price_tiers (id, product_id, up_to, unit_cents, flat_cents, sort, created_at) VALUES (@id, @product_id, @up_to, @unit_cents, @flat_cents, @sort, @created_at)',
     );
     tiers.forEach((t, i) =>
@@ -2733,14 +2727,12 @@ export function replaceTiers(productId: string, tiers: { upTo: number | null; un
 
 // ---------- suscripciones ----------
 export function listSubscriptions(workspaceId: string): SubscriptionRow[] {
-  return db
-    .prepare("SELECT * FROM workspace_subscriptions WHERE workspace_id = ? ORDER BY status ASC, created_at DESC")
+  return stmt("SELECT * FROM workspace_subscriptions WHERE workspace_id = ? ORDER BY status ASC, created_at DESC")
     .all(workspaceId) as SubscriptionRow[];
 }
 
 export function listActiveSubscriptions(workspaceId: string): SubscriptionRow[] {
-  return db
-    .prepare("SELECT * FROM workspace_subscriptions WHERE workspace_id = ? AND status = 'active' ORDER BY created_at ASC")
+  return stmt("SELECT * FROM workspace_subscriptions WHERE workspace_id = ? AND status = 'active' ORDER BY created_at ASC")
     .all(workspaceId) as SubscriptionRow[];
 }
 
@@ -2751,8 +2743,7 @@ export function listActiveSubscriptions(workspaceId: string): SubscriptionRow[] 
  * el periodo servido de toda baja a mitad de mes.
  */
 export function listBillableSubscriptions(workspaceId: string, cycleStart: number): SubscriptionRow[] {
-  return db
-    .prepare(
+  return stmt(
       `SELECT * FROM workspace_subscriptions
        WHERE workspace_id = ?
          AND (status = 'active' OR (status IN ('cancelled','paused') AND COALESCE(status_changed_at, cancelled_at) >= ?))
@@ -2762,12 +2753,12 @@ export function listBillableSubscriptions(workspaceId: string, cycleStart: numbe
 }
 
 export function getSubscription(subId: string): SubscriptionRow | undefined {
-  return db.prepare('SELECT * FROM workspace_subscriptions WHERE id = ?').get(subId) as SubscriptionRow | undefined;
+  return stmt('SELECT * FROM workspace_subscriptions WHERE id = ?').get(subId) as SubscriptionRow | undefined;
 }
 
 export function createSubscription(row: Omit<SubscriptionRow, 'id' | 'created_at' | 'status_changed_at' | 'paused_by'>): SubscriptionRow {
   const full: SubscriptionRow = { ...row, id: id('sub'), status_changed_at: row.started_at, paused_by: null, created_at: now() };
-  db.prepare(
+  stmt(
     `INSERT INTO workspace_subscriptions (id, workspace_id, product_id, service_id, qty, unit_cents, currency, interval, status, anchor_day, started_at, cancelled_at, status_changed_at, paused_by, created_at)
      VALUES (@id, @workspace_id, @product_id, @service_id, @qty, @unit_cents, @currency, @interval, @status, @anchor_day, @started_at, @cancelled_at, @status_changed_at, @paused_by, @created_at)`,
   ).run(full);
@@ -2782,11 +2773,11 @@ export function updateSubscription(subId: string, fields: Record<string, unknown
   const keys = Object.keys(fields).filter((k) => SUBSCRIPTION_COLUMNS.has(k));
   if (keys.length === 0) return;
   const sets = keys.map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE workspace_subscriptions SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), subId);
+  stmt(`UPDATE workspace_subscriptions SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), subId);
 }
 
 export function deleteSubscription(subId: string): void {
-  db.prepare('DELETE FROM workspace_subscriptions WHERE id = ?').run(subId);
+  stmt('DELETE FROM workspace_subscriptions WHERE id = ?').run(subId);
 }
 
 /** Cambia el estado de todas las suscripciones de un workspace (corte/reactivación). */
@@ -2796,21 +2787,19 @@ export function deleteSubscription(subId: string): void {
  * regularizar el pago solo revive lo que cortó la morosidad.
  */
 export function setWorkspaceSubscriptionsStatus(workspaceId: string, from: string, to: string, actor: 'dunning' | 'manual' = 'dunning'): number {
-  return db
-    .prepare('UPDATE workspace_subscriptions SET status = ?, status_changed_at = ?, paused_by = ? WHERE workspace_id = ? AND status = ?')
+  return stmt('UPDATE workspace_subscriptions SET status = ?, status_changed_at = ?, paused_by = ? WHERE workspace_id = ? AND status = ?')
     .run(to, now(), to === 'active' ? null : actor, workspaceId, from).changes;
 }
 
 /** Reactiva solo las suscripciones que cortó la morosidad, no las pausadas a mano. */
 export function reviveDunningSubscriptions(workspaceId: string, from: string): number {
-  return db
-    .prepare("UPDATE workspace_subscriptions SET status = 'active', status_changed_at = ?, paused_by = NULL WHERE workspace_id = ? AND status = ? AND paused_by = 'dunning'")
+  return stmt("UPDATE workspace_subscriptions SET status = 'active', status_changed_at = ?, paused_by = NULL WHERE workspace_id = ? AND status = ? AND paused_by = 'dunning'")
     .run(now(), workspaceId, from).changes;
 }
 
 /** Facturas emitidas y aún no cobradas (candidatas a morosidad). */
 export function listUnpaidIssuedInvoices(): InvoiceRow[] {
-  return db.prepare("SELECT * FROM workspace_invoices WHERE status = 'issued' AND paid_at IS NULL ORDER BY issued_at ASC").all() as InvoiceRow[];
+  return stmt("SELECT * FROM workspace_invoices WHERE status = 'issued' AND paid_at IS NULL ORDER BY issued_at ASC").all() as InvoiceRow[];
 }
 
 /**
@@ -2825,10 +2814,9 @@ export function listUnpaidIssuedInvoices(): InvoiceRow[] {
  */
 export function invoiceExistsForCycle(workspaceId: string, periodStart: number, periodEnd?: number): boolean {
   if (periodEnd === undefined) {
-    return !!db.prepare("SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? AND status <> 'void' LIMIT 1").get(workspaceId, periodStart);
+    return !!stmt("SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? AND status <> 'void' LIMIT 1").get(workspaceId, periodStart);
   }
-  return !!db
-    .prepare(
+  return !!stmt(
       `SELECT 1 FROM workspace_invoices
        WHERE workspace_id = ? AND period_start = ? AND status <> 'void'
          AND (status <> 'draft' OR created_at >= ?)
@@ -2843,8 +2831,7 @@ export function invoiceExistsForCycle(workspaceId: string, periodStart: number, 
  * ancla no debe darlo por cerrado (`performEmission` la avanza al expedir).
  */
 export function issuedInvoiceExistsForCycle(workspaceId: string, periodStart: number): boolean {
-  return !!db
-    .prepare("SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? AND status NOT IN ('void','draft') LIMIT 1")
+  return !!stmt("SELECT 1 FROM workspace_invoices WHERE workspace_id = ? AND period_start = ? AND status NOT IN ('void','draft') LIMIT 1")
     .get(workspaceId, periodStart);
 }
 
@@ -2855,8 +2842,7 @@ export function issuedInvoiceExistsForCycle(workspaceId: string, periodStart: nu
  * `period_start` y borrarlas se llevaría por delante el trabajo del operador.
  */
 export function openDraftForCycle(workspaceId: string, periodStart: number): InvoiceRow | undefined {
-  return db
-    .prepare(
+  return stmt(
       `SELECT * FROM workspace_invoices
        WHERE workspace_id = ? AND period_start = ? AND status = 'draft'
          AND origin = 'cycle' AND invoice_type = 'normal'
@@ -2867,28 +2853,26 @@ export function openDraftForCycle(workspaceId: string, periodStart: number): Inv
 
 /** Rectificativas vivas (no anuladas) que corrigen una factura dada. */
 export function listRectificationsOf(invoiceId: string): InvoiceRow[] {
-  return db
-    .prepare("SELECT * FROM workspace_invoices WHERE rectifies_invoice_id = ? AND status <> 'void' ORDER BY created_at ASC")
+  return stmt("SELECT * FROM workspace_invoices WHERE rectifies_invoice_id = ? AND status <> 'void' ORDER BY created_at ASC")
     .all(invoiceId) as InvoiceRow[];
 }
 
 // ---------- cargos puntuales pendientes ----------
 export function listPendingCharges(workspaceId: string, status?: PendingChargeRow['status']): PendingChargeRow[] {
   if (status) {
-    return db
-      .prepare('SELECT * FROM pending_charges WHERE workspace_id = ? AND status = ? ORDER BY created_at DESC')
+    return stmt('SELECT * FROM pending_charges WHERE workspace_id = ? AND status = ? ORDER BY created_at DESC')
       .all(workspaceId, status) as PendingChargeRow[];
   }
-  return db.prepare('SELECT * FROM pending_charges WHERE workspace_id = ? ORDER BY created_at DESC').all(workspaceId) as PendingChargeRow[];
+  return stmt('SELECT * FROM pending_charges WHERE workspace_id = ? ORDER BY created_at DESC').all(workspaceId) as PendingChargeRow[];
 }
 
 export function getPendingCharge(chargeId: string): PendingChargeRow | undefined {
-  return db.prepare('SELECT * FROM pending_charges WHERE id = ?').get(chargeId) as PendingChargeRow | undefined;
+  return stmt('SELECT * FROM pending_charges WHERE id = ?').get(chargeId) as PendingChargeRow | undefined;
 }
 
 export function createPendingCharge(row: Omit<PendingChargeRow, 'id' | 'created_at' | 'status' | 'invoice_id'>): PendingChargeRow {
   const full: PendingChargeRow = { ...row, id: id('chg'), status: 'pending', invoice_id: null, created_at: now() };
-  db.prepare(
+  stmt(
     `INSERT INTO pending_charges (id, workspace_id, product_id, label, kind, qty, unit_cents, tax_rate, irpf_rate, status, invoice_id, created_at)
      VALUES (@id, @workspace_id, @product_id, @label, @kind, @qty, @unit_cents, @tax_rate, @irpf_rate, @status, @invoice_id, @created_at)`,
   ).run(full);
@@ -2896,15 +2880,15 @@ export function createPendingCharge(row: Omit<PendingChargeRow, 'id' | 'created_
 }
 
 export function cancelPendingCharge(chargeId: string): void {
-  db.prepare("UPDATE pending_charges SET status = 'cancelled' WHERE id = ? AND status = 'pending'").run(chargeId);
+  stmt("UPDATE pending_charges SET status = 'cancelled' WHERE id = ? AND status = 'pending'").run(chargeId);
 }
 
 /** Marca varios cargos como facturados, enlazándolos a la factura. */
 export function markChargesInvoiced(chargeIds: string[], invoiceId: string): void {
   if (chargeIds.length === 0) return;
-  const stmt = db.prepare("UPDATE pending_charges SET status = 'invoiced', invoice_id = ? WHERE id = ? AND status = 'pending'");
+  const marcar = stmt("UPDATE pending_charges SET status = 'invoiced', invoice_id = ? WHERE id = ? AND status = 'pending'");
   db.transaction(() => {
-    for (const cid of chargeIds) stmt.run(invoiceId, cid);
+    for (const cid of chargeIds) marcar.run(invoiceId, cid);
   })();
 }
 
@@ -2925,12 +2909,10 @@ export function ingestUsageEvent(evt: {
   const workspaceId =
     evt.subjectType === 'workspace'
       ? evt.subjectId
-      : ((db
-          .prepare('SELECT p.workspace_id AS ws FROM services s JOIN projects p ON p.id = s.project_id WHERE s.id = ?')
+      : ((stmt('SELECT p.workspace_id AS ws FROM services s JOIN projects p ON p.id = s.project_id WHERE s.id = ?')
           .get(evt.subjectId) as { ws: string | null } | undefined)?.ws ?? null);
   return db.transaction(() => {
-    const res = db
-      .prepare(
+    const res = stmt(
         `INSERT OR IGNORE INTO usage_events (id, idempotency_key, subject_type, subject_id, meter, quantity, product_id, ts, metadata)
          VALUES (@id, @idempotency_key, @subject_type, @subject_id, @meter, @quantity, @product_id, @ts, @metadata)`,
       )
@@ -2940,7 +2922,7 @@ export function ingestUsageEvent(evt: {
       });
     if (res.changes === 0) return false; // idempotency_key ya visto
     const hour = Math.floor(evt.ts / 3_600_000);
-    db.prepare(
+    stmt(
       `INSERT INTO usage_meter_hourly (subject_type, subject_id, meter, hour, quantity, workspace_id)
        VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(subject_id, meter, hour) DO UPDATE SET
@@ -2958,8 +2940,7 @@ export function ingestUsageEvent(evt: {
  * proyecto de cuenta cambiaría retroactivamente lo ya consumido.
  */
 export function workspaceMeterUsage(workspaceId: string, meter: string, fromHour: number, toHour: number): number {
-  const row = db
-    .prepare(
+  const row = stmt(
       `SELECT COALESCE(SUM(u.quantity), 0) AS total
        FROM usage_meter_hourly u
        WHERE u.meter = ? AND u.hour >= ? AND u.hour < ? AND u.workspace_id = ?`,
@@ -2977,7 +2958,7 @@ export function createWorkspaceApiKey(
     cycle_anchor: null, rate_limit_rpm: null, last_used_at: null, expires_at: null, created_by: null, revoked_at: null,
     ...row, id: id('wak'), created_at: now(),
   };
-  db.prepare(
+  stmt(
     `INSERT INTO workspace_api_keys (id, workspace_id, name, key_hash, prefix, provider, allowed_models, status, budget_cents_month, spend_cents_cycle, cycle_anchor, rate_limit_rpm, last_used_at, expires_at, created_by, created_at, revoked_at)
      VALUES (@id, @workspace_id, @name, @key_hash, @prefix, @provider, @allowed_models, @status, @budget_cents_month, @spend_cents_cycle, @cycle_anchor, @rate_limit_rpm, @last_used_at, @expires_at, @created_by, @created_at, @revoked_at)`,
   ).run(full);
@@ -2985,18 +2966,17 @@ export function createWorkspaceApiKey(
 }
 
 export function listWorkspaceApiKeys(workspaceId: string): WorkspaceApiKeyRow[] {
-  return db
-    .prepare("SELECT * FROM workspace_api_keys WHERE workspace_id = ? AND status <> 'revoked' ORDER BY created_at DESC")
+  return stmt("SELECT * FROM workspace_api_keys WHERE workspace_id = ? AND status <> 'revoked' ORDER BY created_at DESC")
     .all(workspaceId) as WorkspaceApiKeyRow[];
 }
 
 export function getWorkspaceApiKey(keyId: string): WorkspaceApiKeyRow | undefined {
-  return db.prepare('SELECT * FROM workspace_api_keys WHERE id = ?').get(keyId) as WorkspaceApiKeyRow | undefined;
+  return stmt('SELECT * FROM workspace_api_keys WHERE id = ?').get(keyId) as WorkspaceApiKeyRow | undefined;
 }
 
 /** Busca una clave por su hash. Se consulta en CADA petición del proxy (sin caché), para que suspender/revocar surta efecto al instante. */
 export function getWorkspaceApiKeyByHash(hash: string): WorkspaceApiKeyRow | undefined {
-  return db.prepare('SELECT * FROM workspace_api_keys WHERE key_hash = ?').get(hash) as WorkspaceApiKeyRow | undefined;
+  return stmt('SELECT * FROM workspace_api_keys WHERE key_hash = ?').get(hash) as WorkspaceApiKeyRow | undefined;
 }
 
 // `suspended_by` entra en la lista blanca: sin él, desbloquear una clave a mano
@@ -3008,20 +2988,18 @@ export function updateWorkspaceApiKey(keyId: string, fields: Record<string, unkn
   const keys = Object.keys(fields).filter((k) => WS_API_KEY_COLUMNS.has(k));
   if (keys.length === 0) return;
   const sets = keys.map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE workspace_api_keys SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), keyId);
+  stmt(`UPDATE workspace_api_keys SET ${sets} WHERE id = ?`).run(...keys.map((k) => fields[k]), keyId);
 }
 
 /** Cambia el estado de TODAS las claves de un workspace (corte/reactivación por impago). */
 export function setWorkspaceKeysStatus(workspaceId: string, from: string, to: string, actor: 'dunning' | 'manual' = 'dunning'): number {
-  return db
-    .prepare('UPDATE workspace_api_keys SET status = ?, suspended_by = ? WHERE workspace_id = ? AND status = ?')
+  return stmt('UPDATE workspace_api_keys SET status = ?, suspended_by = ? WHERE workspace_id = ? AND status = ?')
     .run(to, to === 'active' ? null : actor, workspaceId, from).changes;
 }
 
 /** Reactiva solo las claves que suspendió la morosidad, no las cortadas a mano. */
 export function reviveDunningKeys(workspaceId: string, from: string): number {
-  return db
-    .prepare("UPDATE workspace_api_keys SET status = 'active', suspended_by = NULL WHERE workspace_id = ? AND status = ? AND suspended_by = 'dunning'")
+  return stmt("UPDATE workspace_api_keys SET status = 'active', suspended_by = NULL WHERE workspace_id = ? AND status = ? AND suspended_by = 'dunning'")
     .run(workspaceId, from).changes;
 }
 
@@ -3029,28 +3007,28 @@ export function reviveDunningKeys(workspaceId: string, from: string): number {
 export function touchWorkspaceApiKey(keyId: string, lastUsed: number | null): void {
   const t = now();
   if (lastUsed && t - lastUsed < 60_000) return;
-  db.prepare('UPDATE workspace_api_keys SET last_used_at = ? WHERE id = ?').run(t, keyId);
+  stmt('UPDATE workspace_api_keys SET last_used_at = ? WHERE id = ?').run(t, keyId);
 }
 
 /** Acumula gasto del ciclo en la clave (para el tope de presupuesto). */
 export function incrementWorkspaceApiKeySpend(keyId: string, cents: number): void {
   if (cents <= 0) return;
-  db.prepare('UPDATE workspace_api_keys SET spend_cents_cycle = spend_cents_cycle + ? WHERE id = ?').run(Math.round(cents), keyId);
+  stmt('UPDATE workspace_api_keys SET spend_cents_cycle = spend_cents_cycle + ? WHERE id = ?').run(Math.round(cents), keyId);
 }
 
 /** Reancla el contador de gasto de la clave al inicio del ciclo actual (reset mensual). */
 export function resetWorkspaceApiKeyCycle(keyId: string, cycleStart: number): void {
-  db.prepare('UPDATE workspace_api_keys SET spend_cents_cycle = 0, cycle_anchor = ? WHERE id = ?').run(cycleStart, keyId);
+  stmt('UPDATE workspace_api_keys SET spend_cents_cycle = 0, cycle_anchor = ? WHERE id = ?').run(cycleStart, keyId);
 }
 
 // ---------- coste del operador por modelo (margen; Fase 2) ----------
 
 /** Coste registrado del operador por modelo (micro-céntimos por millón de tokens). */
 export function listModelPrices(): AiModelPriceRow[] {
-  return db.prepare('SELECT * FROM ai_model_prices ORDER BY model ASC').all() as AiModelPriceRow[];
+  return stmt('SELECT * FROM ai_model_prices ORDER BY model ASC').all() as AiModelPriceRow[];
 }
 export function getModelPrice(model: string): AiModelPriceRow | undefined {
-  return db.prepare('SELECT * FROM ai_model_prices WHERE model = ?').get(model) as AiModelPriceRow | undefined;
+  return stmt('SELECT * FROM ai_model_prices WHERE model = ?').get(model) as AiModelPriceRow | undefined;
 }
 /** Alta o actualización (upsert) del coste de un modelo. Valores en micro-céntimos por Mtok. */
 export function setModelPrice(p: {
@@ -3063,7 +3041,7 @@ export function setModelPrice(p: {
   source?: 'auto' | 'manual';
   synced_at?: number | null;
 }): AiModelPriceRow {
-  db.prepare(
+  stmt(
     `INSERT INTO ai_model_prices (model, cost_micros_in, cost_micros_cache, cost_micros_out, margin_pct, currency, source, synced_at, updated_at)
      VALUES (@model, @cost_micros_in, @cost_micros_cache, @cost_micros_out, @margin_pct, @currency, @source, @synced_at, @updated_at)
      ON CONFLICT(model) DO UPDATE SET
@@ -3090,5 +3068,5 @@ export function setModelPrice(p: {
   return getModelPrice(p.model)!;
 }
 export function deleteModelPrice(model: string): number {
-  return db.prepare('DELETE FROM ai_model_prices WHERE model = ?').run(model).changes;
+  return stmt('DELETE FROM ai_model_prices WHERE model = ?').run(model).changes;
 }

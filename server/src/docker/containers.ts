@@ -2,6 +2,8 @@ import Docker from 'dockerode';
 import { PassThrough } from 'stream';
 import { StringDecoder } from 'string_decoder';
 import { docker, dockerQuery } from './client';
+import { baselineFrom, CpuBaseline, cpuPercentFromBaseline, cpuPercentFromDocker, DockerStatsSample } from './cpu';
+import { countStrictlyBefore } from './logcursor';
 import { EDGE_NETWORK, projectNetworkName } from './networks';
 import { getSetting } from '../db';
 import { ContainerState, ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
@@ -53,16 +55,17 @@ export function volumeName(project: ProjectRow, service: ServiceRow, suffix = 'd
   return `skyway-${project.slug}-${service.slug}-${suffix}`;
 }
 
-export async function findContainer(name: string): Promise<Docker.ContainerInspectInfo | null> {
+/** `signal` aborta la petición al daemon (el muestreador la corta al vencer su plazo). */
+export async function findContainer(name: string, signal?: AbortSignal): Promise<Docker.ContainerInspectInfo | null> {
   try {
-    return await dockerQuery.getContainer(name).inspect();
+    return await dockerQuery.getContainer(name).inspect(signal ? { abortSignal: signal } : undefined);
   } catch {
     return null;
   }
 }
 
-export async function getRuntime(name: string): Promise<ServiceRuntime> {
-  const info = await findContainer(name);
+export async function getRuntime(name: string, signal?: AbortSignal): Promise<ServiceRuntime> {
+  const info = await findContainer(name, signal);
   if (!info) {
     return { state: 'not_created', startedAt: null, exitCode: null, restartCount: 0, image: null };
   }
@@ -501,17 +504,44 @@ export async function updateResources(
   await c.update(update);
 }
 
-export async function getStats(name: string): Promise<ServiceStats | null> {
+/**
+ * Última lectura de los contadores de CPU por contenedor (ver `docker/cpu.ts`).
+ * Con ella `stats` se pide en modo `one-shot`, que contesta al instante, en vez
+ * de esperar el segundo que tarda el daemon en tomar dos muestras: un muestreo
+ * completo del servidor pasa de «un segundo por contenedor» a unas decenas de
+ * milisegundos por contenedor.
+ */
+const cpuBaselines = new Map<string, CpuBaseline>();
+/** Las líneas base de contenedores que dejan de muestrearse se olvidan pasado este tiempo. */
+const BASELINE_TTL_MS = 10 * 60_000;
+let lastBaselineSweep = 0;
+
+function rememberBaseline(name: string, s: DockerStatsSample): void {
+  const nowMs = Date.now();
+  cpuBaselines.set(name, baselineFrom(s, nowMs));
+  // Barrido esporádico: un servicio borrado no deja su entrada para siempre.
+  if (nowMs - lastBaselineSweep < BASELINE_TTL_MS) return;
+  lastBaselineSweep = nowMs;
+  for (const [key, b] of cpuBaselines) if (nowMs - b.at > BASELINE_TTL_MS) cpuBaselines.delete(key);
+}
+
+export async function getStats(name: string, signal?: AbortSignal): Promise<ServiceStats | null> {
   try {
     const c = dockerQuery.getContainer(name);
-    const s: any = await c.stats({ stream: false });
-    const cpuDelta = (s.cpu_stats?.cpu_usage?.total_usage || 0) - (s.precpu_stats?.cpu_usage?.total_usage || 0);
-    const sysDelta = (s.cpu_stats?.system_cpu_usage || 0) - (s.precpu_stats?.system_cpu_usage || 0);
-    const onlineCpus = s.cpu_stats?.online_cpus || 1;
-    const cpuPercent = sysDelta > 0 && cpuDelta > 0 ? (cpuDelta / sysDelta) * onlineCpus * 100 : 0;
+    // Los tipos de dockerode no declaran `abortSignal` en `stats`; la implementación lo reenvía.
+    let s = (await c.stats({ stream: false, 'one-shot': true, abortSignal: signal } as { stream: false })) as unknown as DockerStatsSample;
+    let cpuPercent = cpuPercentFromBaseline(s, cpuBaselines.get(name));
+    if (cpuPercent === null) {
+      // Sin línea base que valga (primera lectura de este proceso, contenedor
+      // recreado o contadores a cero): una lectura de dos muestras, que cuesta
+      // ~1 s pero da ya un valor correcto. Solo pasa una vez por contenedor.
+      s = (await c.stats({ stream: false, abortSignal: signal } as { stream: false })) as unknown as DockerStatsSample;
+      cpuPercent = cpuPercentFromDocker(s);
+    }
+    rememberBaseline(name, s);
     let netRx = 0;
     let netTx = 0;
-    for (const nw of Object.values(s.networks || {}) as any[]) {
+    for (const nw of Object.values(s.networks ?? {})) {
       netRx += nw.rx_bytes || 0;
       netTx += nw.tx_bytes || 0;
     }
@@ -608,41 +638,58 @@ function cursorToUnixSeconds(cursor: string): number | null {
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }
 
+/** Tope de líneas que se piden a Docker en una página hacia atrás. */
+const MAX_PAGE_TAIL = 20_000;
+
 /**
- * Paginación hacia atrás: como mucho `limit` líneas ANTERIORES al cursor dado
- * (o las últimas si no hay cursor), en orden cronológico y con su cursor.
- * `until` se redondea al alza al segundo entero —Docker filtra por segundos—,
- * así que se incluye todo ese segundo (sin huecos) y el solape lo descarta el
- * cliente por cursor. Con muchas líneas en el mismo segundo puede devolver
- * alguna repetida; deduplicar es responsabilidad de quien consume.
+ * Paginación hacia atrás: como mucho `limit` líneas ESTRICTAMENTE anteriores
+ * al cursor dado (o las últimas si no hay cursor), en orden cronológico y con
+ * su cursor. Docker filtra `until` por segundos enteros, así que la página
+ * cruda trae también las líneas del mismo segundo que el ancla, posteriores a
+ * ella: se recortan aquí. Si tras recortar no llega a `limit` y Docker había
+ * devuelto la página entera (hay más detrás), se vuelve a pedir con más cola,
+ * hasta un tope. Antes se devolvía la página cruda: en un contenedor que
+ * escribe cientos de líneas por segundo, la página entera caía dentro del
+ * segundo del ancla, el cliente la descartaba y daba el historial por
+ * terminado sin haber retrocedido una sola línea.
+ *
+ * `hasMore` dice si quedan líneas anteriores a las devueltas.
  */
 export async function fetchLogsBefore(
   name: string,
   limit: number,
   before: string | null,
-): Promise<{ cursor: string | null; line: string }[]> {
+): Promise<{ lines: { cursor: string | null; line: string }[]; hasMore: boolean }> {
   const c = dockerQuery.getContainer(name);
-  // `until` (segundos Unix) no está en los tipos de dockerode pero sí en la API
-  // de Docker; se fija `follow: false` como literal para elegir la sobrecarga.
-  const opts: Docker.ContainerLogsOptions & { follow: false; until?: number } = {
-    follow: false,
-    stdout: true,
-    stderr: true,
-    timestamps: true,
-    tail: limit,
-  };
-  if (before) {
-    const secs = cursorToUnixSeconds(before);
+  const secs = before ? cursorToUnixSeconds(before) : null;
+  let want = Math.max(1, limit);
+  for (;;) {
+    // `until` (segundos Unix) no está en los tipos de dockerode pero sí en la API
+    // de Docker; se fija `follow: false` como literal para elegir la sobrecarga.
+    const opts: Docker.ContainerLogsOptions & { follow: false; until?: number } = {
+      follow: false,
+      stdout: true,
+      stderr: true,
+      timestamps: true,
+      tail: want,
+    };
     if (secs !== null) opts.until = secs + 1;
+    const raw = (await c.logs(opts)) as unknown as Buffer;
+    const text = Buffer.isBuffer(raw) ? demuxLogBuffer(raw) : String(raw);
+    const all: { cursor: string | null; line: string }[] = [];
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.replace(/\r$/, '');
+      if (line) all.push(splitTimestamp(line));
+    }
+    const usable = before ? countStrictlyBefore(all, before) : all.length;
+    // Docker ha devuelto menos de lo pedido: ya no hay nada más antiguo.
+    const exhausted = all.length < want;
+    if (usable >= limit || exhausted || want >= MAX_PAGE_TAIL) {
+      const from = Math.max(0, usable - limit);
+      return { lines: all.slice(from, usable), hasMore: from > 0 || !exhausted };
+    }
+    want = Math.min(MAX_PAGE_TAIL, want * 4);
   }
-  const raw = (await c.logs(opts)) as unknown as Buffer;
-  const text = Buffer.isBuffer(raw) ? demuxLogBuffer(raw) : String(raw);
-  const out: { cursor: string | null; line: string }[] = [];
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine.replace(/\r$/, '');
-    if (line) out.push(splitTimestamp(line));
-  }
-  return out;
 }
 
 /**

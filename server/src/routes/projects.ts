@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, assertProjectManage, canAccessProjectRow, currentUser, requireAuth } from '../auth';
+import { accessibleProjectRows, assertProjectAccess, assertProjectManage, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
 import {
   activeDeploymentsByProject,
@@ -60,7 +60,7 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/projects', async (req) => {
     const user = currentUser(req)!;
-    const projects = listProjects().filter((p) => canAccessProjectRow(user, p));
+    const projects = accessibleProjectRows(user, listProjects());
     const meta = projectDashboardMeta();
     // Una consulta para los servicios de todos los proyectos: el panel sondea
     // esto cada 8 s y antes lanzaba una por proyecto.

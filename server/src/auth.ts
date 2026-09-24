@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from './config';
-import { getApiTokenByHash, getProject, getService, getSetting, getUser, setSetting, touchApiToken, userHasProject } from './db';
+import { getApiTokenByHash, getProject, getService, getSetting, getUser, listUserProjectIds, setSetting, touchApiToken, userHasProject } from './db';
 import { MODULE_LABEL, ModuleKey } from './modules';
 import { moduleEnabled, workspaceOfProject, workspacePlan } from './quota';
 import { ProjectRow, UserRow } from './types';
@@ -253,6 +253,19 @@ export function canAccessProjectRow(user: UserRow, project: ProjectRow): boolean
   if (user.role === 'admin') return true;
   if (user.role === 'owner' && user.workspace_id && project.workspace_id === user.workspace_id) return true;
   return userHasProject(user.id, project.id);
+}
+
+/**
+ * Los proyectos de `projects` que el usuario puede ver. Para un miembro, sus
+ * asignaciones se leen UNA vez: filtrar con `canAccessProjectRow` era una
+ * consulta por proyecto en cada sondeo del panel (Monitor cada 6 s, Sitios y
+ * el panel general cada 8 s).
+ */
+export function accessibleProjectRows(user: UserRow, projects: ProjectRow[]): ProjectRow[] {
+  if (user.role === 'admin') return projects;
+  const own = user.role === 'owner' && user.workspace_id ? user.workspace_id : null;
+  const assigned = new Set(listUserProjectIds(user.id));
+  return projects.filter((p) => (own !== null && p.workspace_id === own) || assigned.has(p.id));
 }
 
 /**

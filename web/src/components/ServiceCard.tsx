@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { BellRing, Globe } from 'lucide-react';
-import { ActiveDeploy, ContainerState, Service, ServiceStats } from '../types';
+import { useServiceLive } from '../livemetrics';
+import { ActiveDeploy, Service } from '../types';
 import { cx, DEPLOY_STATUS_LABEL, fmtBytes, fmtCores, fmtMb, serviceStatus } from '../utils';
 import { DeploySweep } from './DeployBadge';
 import { ModuleChip, moduleKind } from './ModuleIcon';
@@ -18,27 +19,28 @@ const TEMPLATE_LABEL: Record<string, string> = {
 const CPU_ALERT = 0.9;
 
 /**
- * Memoizada: el stream de métricas llega cada 2,5 s y volvía a pintar las
- * veinte tarjetas de la rejilla aunque solo cambiara una cifra en dos. En un
- * móvil eso se notaba al hacer scroll. `onSelect` recibe el id para que el
- * padre pueda pasar siempre la misma función.
+ * Memoizada, y con las métricas en vivo leídas por suscripción propia
+ * (`useServiceLive`): el stream llega cada 2,5 s y, con la foto entera como
+ * prop, volvía a pintar las veinte tarjetas de la rejilla aunque solo cambiara
+ * una cifra en dos —en un móvil se notaba al hacer scroll—. Ahora cada tarjeta
+ * se repinta solo cuando cambia SU servicio. `onSelect` recibe el id para que
+ * el padre pueda pasar siempre la misma función.
  */
 const ServiceCard = memo(function ServiceCard({
   service,
-  metrics,
   alertCount = 0,
   deploy = null,
   selected,
   onSelect,
 }: {
   service: Service;
-  metrics: { state: ContainerState; stats: ServiceStats | null; replicas?: { running: number; total: number } } | null;
   alertCount?: number;
   /** Despliegue vivo del servicio, si lo hay. */
   deploy?: ActiveDeploy | null;
   selected: boolean;
   onSelect: (id: string) => void;
 }) {
+  const metrics = useServiceLive(service.id);
   const state = metrics?.state ?? service.runtime?.state ?? 'unknown';
   // El estado vivo viene del stream; el porqué (código de salida, parada
   // manual) viaja con el servicio. Juntos distinguen «parado» de «caído».

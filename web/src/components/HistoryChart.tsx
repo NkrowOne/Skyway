@@ -128,6 +128,23 @@ function HistoryChartImpl({
   );
 
   const segs = useMemo(() => contiguous(nodes), [nodes]);
+  // Trazados SVG por tramo, serializados una sola vez por serie: cada movimiento
+  // del puntero re-renderiza (hover) y antes volvía a pasar todos los puntos por
+  // toFixed en cada pasada. El color se aplica al pintar, no en las cadenas.
+  const paths = useMemo(
+    () =>
+      segs.map((seg) => {
+        const top = seg.map((nd) => `${nd.x.toFixed(1)},${nd.maxY.toFixed(1)}`);
+        const bottom = [...seg].reverse().map((nd) => `${nd.x.toFixed(1)},${nd.avgY.toFixed(1)}`);
+        return {
+          seg,
+          band: seg.length > 1 ? `M${top.join('L')}L${bottom.join('L')}Z` : '',
+          line: seg.map((nd, k) => `${k === 0 ? 'M' : 'L'}${nd.x.toFixed(1)},${nd.avgY.toFixed(1)}`).join(''),
+          peak: seg.map((nd, k) => `${k === 0 ? 'M' : 'L'}${nd.x.toFixed(1)},${nd.maxY.toFixed(1)}`).join(''),
+        };
+      }),
+    [segs],
+  );
   const gridYs = [0.25, 0.5, 0.75, 1].map((f) => ({ y: PAD_LINE.top + innerH * (1 - f), v: max * f }));
   const thY = threshold ? PAD_LINE.top + innerH - (Math.min(threshold.value, max) / max) * innerH : null;
 
@@ -221,31 +238,24 @@ function HistoryChartImpl({
             ))}
 
             {/* Banda media→pico y línea de media, por tramos (los huecos se cortan). */}
-            {segs.map((seg, si) => {
-              const top = seg.map((nd) => `${nd.x.toFixed(1)},${nd.maxY.toFixed(1)}`);
-              const bottom = [...seg].reverse().map((nd) => `${nd.x.toFixed(1)},${nd.avgY.toFixed(1)}`);
-              const band = seg.length > 1 ? `M${top.join('L')}L${bottom.join('L')}Z` : '';
-              const line = seg.map((nd, k) => `${k === 0 ? 'M' : 'L'}${nd.x.toFixed(1)},${nd.avgY.toFixed(1)}`).join('');
-              const peak = seg.map((nd, k) => `${k === 0 ? 'M' : 'L'}${nd.x.toFixed(1)},${nd.maxY.toFixed(1)}`).join('');
-              return (
-                <g key={si}>
-                  {band && <path d={band} fill={color} opacity={0.12} className="chart-area" />}
-                  {seg.length > 1 && <path d={peak} fill="none" stroke={color} strokeWidth="1" opacity="0.4" strokeLinejoin="round" />}
-                  <path
-                    d={line}
-                    fill="none"
-                    stroke={color}
-                    strokeWidth="2"
-                    strokeLinejoin="round"
-                    strokeLinecap="round"
-                    pathLength={1}
-                    className="chart-line"
-                  />
-                  {/* Un solo punto aislado no dibuja línea: un círculo lo hace visible. */}
-                  {seg.length === 1 && <circle cx={seg[0].x} cy={seg[0].avgY} r="2.5" fill={color} />}
-                </g>
-              );
-            })}
+            {paths.map(({ seg, band, line, peak }, si) => (
+              <g key={si}>
+                {band && <path d={band} fill={color} opacity={0.12} className="chart-area" />}
+                {seg.length > 1 && <path d={peak} fill="none" stroke={color} strokeWidth="1" opacity="0.4" strokeLinejoin="round" />}
+                <path
+                  d={line}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth="2"
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  pathLength={1}
+                  className="chart-line"
+                />
+                {/* Un solo punto aislado no dibuja línea: un círculo lo hace visible. */}
+                {seg.length === 1 && <circle cx={seg[0].x} cy={seg[0].avgY} r="2.5" fill={color} />}
+              </g>
+            ))}
 
             {thY !== null && threshold && (
               <>

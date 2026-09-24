@@ -186,3 +186,57 @@ export function lineSplitter(onLine: (line: string) => void): LineFeed {
   };
   return feed;
 }
+
+/**
+ * Espera a `work` como mucho `ms`; al vencer el plazo —o si el trabajo falla—
+ * se resuelve con lo que diga `onFail`. Nunca rechaza: quien lo usa prefiere
+ * un hueco en los datos a quedarse colgado, porque el cliente de Docker no
+ * impone ningún tope propio. `onTimeout` avisa al vencer, para abortar la
+ * petición subyacente y que no siga ocupando el socket. El reloj no mantiene
+ * vivo el proceso mientras se apaga.
+ */
+export function withTimeout<T>(work: Promise<T>, ms: number, onFail: () => T, onTimeout?: () => void): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let settled = false;
+    const finish = (value: T): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      finish(onFail());
+      onTimeout?.();
+    }, Math.max(1, ms));
+    timer.unref();
+    work.then(finish, () => finish(onFail()));
+  });
+}
+
+/**
+ * Como `withTimeout`, pero RECHAZA al vencer con `message` y deja pasar el
+ * error real de `work` si es este quien falla: para quien necesita contar
+ * qué pasó (una alerta, un log) y no solo seguir adelante.
+ */
+export function withDeadline<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), Math.max(1, ms));
+    timer.unref();
+    work.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
+
+/** Ejecuta las tareas con un tope de concurrencia, conservando el orden de los resultados. */
+export async function pooled<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
+  const out = new Array<T>(tasks.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= tasks.length) return;
+      out[i] = await tasks[i]();
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}

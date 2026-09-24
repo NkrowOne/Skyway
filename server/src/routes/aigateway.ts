@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { assertWorkspaceAccess, currentUser, hashApiToken, requireAdmin, requireAuth, requireSession } from '../auth';
@@ -162,14 +163,43 @@ function usageMetadataFromOpenAI(usage: any): any | null {
 }
 
 /**
+ * Corte de la petición al proveedor atado a la respuesta al cliente.
+ *
+ * Sin él, cuando el navegador o el SDK se iban a mitad de un stream, Skyway
+ * seguía leyendo el flujo de Gemini hasta el final (hasta 5 min) y facturando
+ * al workspace tokens que nadie recibió. La señal se aborta al cerrarse la
+ * respuesta al cliente y al vencer el tope global; la combinación se hace a
+ * mano porque Node 20.0 no trae `AbortSignal.any`. `release` se llama al
+ * terminar para no retener la petición durante los 5 min del temporizador.
+ */
+function abortWithClient(reply: FastifyReply, timeoutMs: number): { signal: AbortSignal; release: () => void } {
+  const controller = new AbortController();
+  const onClose = () => controller.abort();
+  reply.raw.on('close', onClose);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref(); // como `AbortSignal.timeout`: no mantiene vivo el proceso
+  return {
+    signal: controller.signal,
+    release: () => {
+      clearTimeout(timer);
+      reply.raw.off('close', onClose);
+    },
+  };
+}
+
+/**
  * Reenvía un cuerpo SSE de `upstream` al cliente byte a byte y, en paralelo, parsea
  * las líneas `data:` para quedarse con el ÚLTIMO uso (Google/OpenAI lo emiten al
  * final). Al cerrar el flujo, `onUsage` recibe ese uso y su id para facturar.
- * Debe llamarse solo cuando `upstream.ok` y hay cuerpo; toma control de la respuesta.
+ * Respeta la contrapresión del cliente (no pide más al proveedor mientras el
+ * socket no drene) y se detiene en cuanto `signal` aborta (cliente cerrado o
+ * tope vencido). Debe llamarse solo cuando `upstream.ok` y hay cuerpo; toma
+ * control de la respuesta.
  */
 async function pipeSse(
   upstream: Response,
   reply: FastifyReply,
+  signal: AbortSignal,
   onUsage: (usage: any, id: string | null) => void,
   pick: (obj: any) => { usage?: any; id?: string },
 ): Promise<void> {
@@ -188,9 +218,15 @@ async function pipeSse(
   let id: string | null = null;
   try {
     for (;;) {
+      if (signal.aborted) break;
       const { done, value } = await reader.read();
       if (done) break;
-      raw.write(Buffer.from(value)); // passthrough exacto (bytes) al cliente
+      const drained = raw.write(Buffer.from(value)); // passthrough exacto (bytes) al cliente
+      // `write` devuelve false cuando el cliente no da abasto: se espera al
+      // 'drain' antes de pedir más al proveedor, en vez de acumularlo todo en
+      // memoria. Si mientras tanto el cliente se va o vence el tope, `signal`
+      // corta la espera (un socket destruido no emite 'drain' jamás).
+      if (!drained) await once(raw, 'drain', { signal });
       pending += decoder.decode(value, { stream: true });
       let nl: number;
       while ((nl = pending.indexOf('\n')) >= 0) {
@@ -209,7 +245,7 @@ async function pipeSse(
       }
     }
   } catch {
-    /* corte del upstream o del cliente: cerramos con lo que haya */
+    /* corte del upstream, del cliente o del tope (`signal`): cerramos con lo que haya */
   } finally {
     try {
       raw.end();
@@ -222,8 +258,12 @@ async function pipeSse(
       /* nada que cancelar */
     }
   }
-  // La respuesta ya está cerrada: un fallo al medir no debe propagarse (sería un
-  // error sin salida posible). Se registra en la medición idempotente, reintentable.
+  // Se factura el último uso recibido. Si el flujo se cortó antes del final es
+  // el de lo que de verdad se reenvió: Google lo emite acumulado en cada trozo;
+  // la API compatible con OpenAI solo en el último, y entonces no hay nada que
+  // medir. La respuesta ya está cerrada: un fallo al medir no debe propagarse
+  // (sería un error sin salida posible). Se registra en la medición idempotente,
+  // reintentable.
   try {
     onUsage(lastUsage, id);
   } catch {
@@ -264,29 +304,35 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
       // Streaming: SSE de Google (?alt=sse) reenviado tal cual, midiendo al cerrar.
       if (action === 'streamGenerateContent') {
         const url = `${getGeminiBaseUrl()}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
-        let upstream: Response;
+        const link = abortWithClient(reply, 300_000);
         try {
-          upstream = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
-            body: JSON.stringify(req.body ?? {}),
-            signal: AbortSignal.timeout(300_000),
-          });
-        } catch (err: any) {
-          return reply.code(502).send({ error: { code: 502, message: `No se pudo contactar con Gemini: ${err?.message || 'error de red'}` } });
+          let upstream: Response;
+          try {
+            upstream = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
+              body: JSON.stringify(req.body ?? {}),
+              signal: link.signal,
+            });
+          } catch (err: any) {
+            return reply.code(502).send({ error: { code: 502, message: `No se pudo contactar con Gemini: ${err?.message || 'error de red'}` } });
+          }
+          // Error antes del stream: Google responde JSON (no SSE); se reenvía tal cual.
+          if (!upstream.ok || !upstream.body) {
+            const data = await upstream.json().catch(() => ({}));
+            return reply.code(upstream.status).send(data);
+          }
+          await pipeSse(
+            upstream,
+            reply,
+            link.signal,
+            (usage, id) => billUsage(ctx, model, usage, id),
+            (obj) => ({ usage: obj.usageMetadata, id: obj.responseId }),
+          );
+          return reply;
+        } finally {
+          link.release();
         }
-        // Error antes del stream: Google responde JSON (no SSE); se reenvía tal cual.
-        if (!upstream.ok || !upstream.body) {
-          const data = await upstream.json().catch(() => ({}));
-          return reply.code(upstream.status).send(data);
-        }
-        await pipeSse(
-          upstream,
-          reply,
-          (usage, id) => billUsage(ctx, model, usage, id),
-          (obj) => ({ usage: obj.usageMetadata, id: obj.responseId }),
-        );
-        return reply;
       }
 
       // generateContent (sin streaming).
@@ -324,34 +370,44 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
       // Forzamos el uso en el último chunk del stream para poder facturar.
       if (stream) outBody.stream_options = { ...(body.stream_options || {}), include_usage: true };
       const url = `${getGeminiBaseUrl()}/v1beta/openai/chat/completions`;
-      let upstream: Response;
+      // En streaming, la petición al proveedor muere con la respuesta al cliente
+      // (ver abortWithClient). Sin streaming basta el tope: Google cobra la
+      // respuesta entera se espere o no a recibirla, y así queda facturada.
+      const link = stream ? abortWithClient(reply, 300_000) : null;
+      const signal = link ? link.signal : AbortSignal.timeout(120_000);
       try {
-        upstream = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${geminiKey}` },
-          body: JSON.stringify(outBody),
-          signal: AbortSignal.timeout(stream ? 300_000 : 120_000),
-        });
-      } catch (err: any) {
-        return reply.code(502).send({ error: { code: 502, message: `No se pudo contactar con Gemini: ${err?.message || 'error de red'}` } });
-      }
+        let upstream: Response;
+        try {
+          upstream = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${geminiKey}` },
+            body: JSON.stringify(outBody),
+            signal,
+          });
+        } catch (err: any) {
+          return reply.code(502).send({ error: { code: 502, message: `No se pudo contactar con Gemini: ${err?.message || 'error de red'}` } });
+        }
 
-      if (!stream) {
-        const data = await upstream.json().catch(() => ({}));
-        billUsage(ctx, model, usageMetadataFromOpenAI(data?.usage), (data?.id as string) || null);
-        return reply.code(upstream.status).send(data);
+        if (!stream) {
+          const data = await upstream.json().catch(() => ({}));
+          billUsage(ctx, model, usageMetadataFromOpenAI(data?.usage), (data?.id as string) || null);
+          return reply.code(upstream.status).send(data);
+        }
+        if (!upstream.ok || !upstream.body) {
+          const data = await upstream.json().catch(() => ({}));
+          return reply.code(upstream.status).send(data);
+        }
+        await pipeSse(
+          upstream,
+          reply,
+          signal,
+          (usage, id) => billUsage(ctx, model, usageMetadataFromOpenAI(usage), id),
+          (obj) => ({ usage: obj.usage, id: obj.id }),
+        );
+        return reply;
+      } finally {
+        link?.release();
       }
-      if (!upstream.ok || !upstream.body) {
-        const data = await upstream.json().catch(() => ({}));
-        return reply.code(upstream.status).send(data);
-      }
-      await pipeSse(
-        upstream,
-        reply,
-        (usage, id) => billUsage(ctx, model, usageMetadataFromOpenAI(usage), id),
-        (obj) => ({ usage: obj.usage, id: obj.id }),
-      );
-      return reply;
     });
 
     // Lista de modelos que esta clave puede usar (allowlist del operador ∩ de la clave).

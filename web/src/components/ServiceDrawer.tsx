@@ -4,7 +4,8 @@ import { AlertTriangle, ChevronLeft, ExternalLink, Hammer, MoveHorizontal, Play,
 import { api } from '../api';
 import { useLatch, useLocalStorage, useMediaQuery } from '../hooks';
 import { MetricPoint } from '../pages/Project';
-import { Deployment, DbOverview, MetricsSnapshot, Project, Runtime, Service } from '../types';
+import { useServiceLiveReplicas, useServiceLiveState } from '../livemetrics';
+import { Deployment, DbOverview, Project, Runtime, Service } from '../types';
 import { cx, DEPLOY_STATUS_LABEL, isActiveDeploy, serviceStatus, timeAgo } from '../utils';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import DeploymentsTab from './tabs/DeploymentsTab';
@@ -27,7 +28,6 @@ export default function ServiceDrawer({
   serviceId,
   projectId,
   projectName,
-  latestMetrics,
   historyRef,
   closing = false,
   initialTab = null,
@@ -36,7 +36,6 @@ export default function ServiceDrawer({
   serviceId: string;
   projectId: string;
   projectName: string;
-  latestMetrics: MetricsSnapshot | null;
   historyRef: React.MutableRefObject<Map<string, MetricPoint[]>>;
   /** El padre mantiene el drawer montado mientras se despide (usePresence). */
   closing?: boolean;
@@ -45,6 +44,10 @@ export default function ServiceDrawer({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState(initialTab ?? 'deployments');
+  // Estado y réplicas en vivo por suscripción propia: el drawer ya no recibe la
+  // foto entera y no se repinta —con su pestaña abierta— en cada tick del stream.
+  const liveState = useServiceLiveState(serviceId);
+  const liveReplicas = useServiceLiveReplicas(serviceId);
   /**
    * Al abrir una base de datos se entra por Consultas. «Despliegues» en un
    * Postgres de plantilla solo dice que se hizo un `pull`: a una base se viene
@@ -139,7 +142,7 @@ export default function ServiceDrawer({
         dbConsole: DbOverview['engine'] | null;
       }>(`/services/${serviceId}`),
     // El estado vivo del contenedor ya llega por el stream de métricas del
-    // proyecto (latestMetrics); esto solo refresca el último despliegue y la
+    // proyecto (livemetrics); esto solo refresca el último despliegue y la
     // configuración, y a 4 s sumaba tres sondeos con el panel abierto.
     refetchInterval: 8000,
   });
@@ -296,8 +299,8 @@ export default function ServiceDrawer({
     detail.data.latestDeployment && isActiveDeploy(detail.data.latestDeployment.status)
       ? detail.data.latestDeployment
       : null;
-  const state = latestMetrics?.services[serviceId]?.state ?? runtime.state;
-  const replicas = latestMetrics?.services[serviceId]?.replicas;
+  const state = liveState ?? runtime.state;
+  const replicas = liveReplicas ?? undefined;
   const isRunning = state === 'running' || state === 'restarting';
   // «Detenido» (gris, lo paró alguien) y «Caído» (rojo, se murió solo) son
   // cosas distintas y aquí, con el porqué a mano, se separan.
@@ -587,7 +590,7 @@ export default function ServiceDrawer({
             )}
             {tab === 'backups' && <BackupsTab serviceId={serviceId} service={service} onChanged={invalidate} />}
             {tab === 'files' && <FilesTab serviceId={serviceId} />}
-            {tab === 'metrics' && <MetricsTab serviceId={serviceId} service={service} latest={latestMetrics} historyRef={historyRef} />}
+            {tab === 'metrics' && <MetricsTab serviceId={serviceId} service={service} historyRef={historyRef} />}
             {tab === 'logs' && (
               <LogsTab
                 serviceId={serviceId}

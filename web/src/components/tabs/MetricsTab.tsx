@@ -3,7 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, Cpu, HardDrive, MemoryStick, Network } from 'lucide-react';
 import { api } from '../../api';
 import { MetricPoint } from '../../pages/Project';
-import { MetricsSnapshot, Service, ServiceMetricHistory } from '../../types';
+import { useLiveSnapshot } from '../../livemetrics';
+import { Service, ServiceMetricHistory } from '../../types';
 import { cx, EMPTY_LIST, fmtBytes, fmtCores, fmtRate } from '../../utils';
 import MetricChart from '../MetricChart';
 import { BandPoint, HistoryChart, NetBars, NetPoint } from '../HistoryChart';
@@ -50,17 +51,9 @@ function Tile({
   );
 }
 
-function LiveView({
-  serviceId,
-  latest,
-  history,
-  service,
-}: {
-  serviceId: string;
-  latest: MetricsSnapshot | null;
-  history: MetricPoint[];
-  service: Service;
-}) {
+function LiveView({ serviceId, history, service }: { serviceId: string; history: MetricPoint[]; service: Service }) {
+  // La vista en vivo es la que sí quiere repintarse con cada foto del stream.
+  const latest = useLiveSnapshot();
   const entry = latest?.services[serviceId];
   const stats = entry?.stats ?? null;
   const cpus = service.config.cpus ?? null;
@@ -326,12 +319,10 @@ function HistoryView({ serviceId, service, hours }: { serviceId: string; service
 export default function MetricsTab({
   serviceId,
   service,
-  latest,
   historyRef,
 }: {
   serviceId: string;
   service: Service;
-  latest: MetricsSnapshot | null;
   historyRef: React.MutableRefObject<Map<string, MetricPoint[]>>;
 }) {
   const [mode, setMode] = useState<Mode>('live');
@@ -353,7 +344,7 @@ export default function MetricsTab({
 
       <div key={String(mode)} className="tab-in">
         {mode === 'live' ? (
-          <LiveView serviceId={serviceId} latest={latest} history={history} service={service} />
+          <LiveView serviceId={serviceId} history={history} service={service} />
         ) : (
           <HistoryView serviceId={serviceId} service={service} hours={mode} />
         )}

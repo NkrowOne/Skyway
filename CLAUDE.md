@@ -5,7 +5,9 @@ modelo de seguridad y **toda la API REST**), consulta
 **[docs/FUNCIONALIDAD.md](docs/FUNCIONALIDAD.md)**. Para el estado de seguridad,
 **[docs/AUDITORIA.md](docs/AUDITORIA.md)**; para el de clientes y facturación
 (devengo, IVA/IRPF, series, morosidad, Stripe),
-**[docs/AUDITORIA-FACTURACION.md](docs/AUDITORIA-FACTURACION.md)**. Para control
+**[docs/AUDITORIA-FACTURACION.md](docs/AUDITORIA-FACTURACION.md)**; para el de
+rendimiento y calidad del código (hallazgos, cambios aplicados y pendientes),
+**[docs/AUDITORIA-RENDIMIENTO.md](docs/AUDITORIA-RENDIMIENTO.md)**. Para control
 remoto por API/agentes, **[docs/CONTROL-REMOTO.md](docs/CONTROL-REMOTO.md)**.
 
 ## Qué es

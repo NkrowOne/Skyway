@@ -16,10 +16,11 @@
  * él en vez de lanzar otro, así que da igual cuántas pestañas haya abiertas.
  */
 
-import { getProject, getService, listProjects, listServices } from '../db';
+import { getProject, getService, listProjects, listServicesForProjects } from '../db';
 import { dockerAvailable } from './client';
 import { configuredReplicas, getRuntime, getStats, replicaName } from './containers';
 import { ContainerState, ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
+import { pooled, withTimeout } from '../util';
 
 /**
  * Contenedores consultados a la vez, en TODO el muestreo. El socket de Docker
@@ -44,27 +45,6 @@ const CALL_TIMEOUT_MS = 8000;
  * terminar; ver `collectingLite`/`collectingFull`.
  */
 const COLLECT_TIMEOUT_MS = 20_000;
-
-/**
- * Espera con tope, sin rechazar nunca: al vencer el plazo —o si el trabajo
- * falla— se resuelve con lo que diga `onFail`. Quien muestrea prefiere un hueco
- * en la foto antes que quedarse esperando.
- */
-function withTimeout<T>(work: Promise<T>, ms: number, onFail: () => T): Promise<T> {
-  return new Promise<T>((resolve) => {
-    let settled = false;
-    function finish(value: T): void {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    }
-    const timer = setTimeout(() => finish(onFail()), ms);
-    // El reloj no debe mantener vivo el proceso mientras se apaga.
-    timer.unref();
-    work.then(finish, () => finish(onFail()));
-  });
-}
 
 export interface ReplicaSample {
   /** Índice 1..n de la réplica (el monitor lleva su seguimiento por índice). */
@@ -150,6 +130,8 @@ let epoch = 0;
  * haya, sin tirar el resto ni obligar a nadie a esperar un muestreo entero.
  */
 const pending = new Set<string>();
+/** Instante de la última invalidación de cada servicio (ver `store`). */
+const invalidated = new Map<string, number>();
 let repairing: Promise<void> | null = null;
 
 /**
@@ -162,21 +144,6 @@ function rollUpState(perReplica: ReplicaSample[], total: number): ContainerState
   return perReplica[0]?.runtime.state ?? 'not_created';
 }
 
-/** Ejecuta las tareas con un tope de concurrencia, conservando el orden. */
-async function pooled<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
-  const out = new Array<T>(tasks.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
-    for (;;) {
-      const i = next++;
-      if (i >= tasks.length) return;
-      out[i] = await tasks[i]();
-    }
-  });
-  await Promise.all(workers);
-  return out;
-}
-
 /** Estado (y, si se pide, consumo) de UNA réplica. */
 async function sampleReplica(
   project: ProjectRow,
@@ -185,16 +152,27 @@ async function sampleReplica(
   withStats: boolean,
 ): Promise<ReplicaSample> {
   const name = replicaName(project, service, index);
-  const runtime = await withTimeout<ServiceRuntime | null>(getRuntime(name), CALL_TIMEOUT_MS, () => null);
+  // Al vencer el plazo se ABORTA la petición: si no, seguía viva en el socket
+  // hasta el tope de 30 s del cliente y el pool arrancaba otras encima, justo
+  // cuando el daemon ya iba lento (el apilamiento que el pool quiere evitar).
+  const inspectAbort = new AbortController();
+  const runtime = await withTimeout<ServiceRuntime | null>(
+    getRuntime(name, inspectAbort.signal),
+    CALL_TIMEOUT_MS,
+    () => null,
+    () => inspectAbort.abort(),
+  );
   if (!runtime) {
     return { index, name, runtime: { ...EMPTY_RUNTIME, state: 'unknown' }, stats: null, unreachable: true };
   }
   // `stats` solo tiene sentido —y solo cuesta— si el contenedor corre, y
-  // solo se pide si alguien lo va a mirar: es la parte cara con diferencia.
-  // Que no conteste no invalida la réplica: se sabe su estado, falta el
-  // consumo.
-  const stats =
-    withStats && runtime.state === 'running' ? await withTimeout(getStats(name), CALL_TIMEOUT_MS, () => null) : null;
+  // solo se pide si alguien lo va a mirar. Que no conteste no invalida la
+  // réplica: se sabe su estado, falta el consumo.
+  let stats: ServiceStats | null = null;
+  if (withStats && runtime.state === 'running') {
+    const statsAbort = new AbortController();
+    stats = await withTimeout(getStats(name, statsAbort.signal), CALL_TIMEOUT_MS, () => null, () => statsAbort.abort());
+  }
   return { index, name, runtime, stats, unreachable: false };
 }
 
@@ -249,8 +227,12 @@ async function collect(withStats: boolean): Promise<Snapshot> {
   const targets: { project: ProjectRow; service: ServiceRow; total: number }[] = [];
   const tasks: (() => Promise<ReplicaSample>)[] = [];
   const owner: number[] = [];
-  for (const project of listProjects()) {
-    for (const service of listServices(project.id)) {
+  // Una consulta para los servicios de todos los proyectos (antes una por
+  // proyecto en cada muestreo, es decir, cada pocos segundos).
+  const projects = listProjects();
+  const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
+  for (const project of projects) {
+    for (const service of servicesByProject.get(project.id) ?? []) {
       const total = configuredReplicas(service);
       const t = targets.push({ project, service, total }) - 1;
       for (let i = 1; i <= total; i++) {
@@ -274,6 +256,14 @@ function store(snap: Snapshot, startedAt: number): void {
   // La comparación por fecha evita que un muestreo que empezó antes y
   // terminó después deje una foto más vieja que la que ya había.
   if (epoch !== startedAt || !snap.docker) return;
+  // Un servicio invalidado DESPUÉS de empezar este muestreo puede venir con
+  // el estado anterior al cambio: se marca para repararlo en la lectura
+  // siguiente, en vez de tirar la foto entera. Tirarla dejaba, en una racha
+  // de despliegues, al panel sin foto fresca y a Docker muestreando sin parar.
+  for (const [id, at] of invalidated) {
+    if (at > snap.at) pending.add(id);
+    else invalidated.delete(id);
+  }
   if (!cacheLite || snap.at >= cacheLite.at) cacheLite = snap;
   if (snap.withStats && (!cacheFull || snap.at >= cacheFull.at)) cacheFull = snap;
 }
@@ -435,15 +425,16 @@ export async function sampledRuntime(serviceId: string, maxAgeMs: number): Promi
  * Con `serviceId` solo se invalida ESE servicio: se vuelve a mirar en la
  * lectura siguiente y se parchea en la foto, y el resto del panel no tiene
  * que esperar a un muestreo completo del servidor por un despliegue. Un
- * muestreo que ya estuviera en marcha no se guarda (podría traer el estado
- * anterior al cambio).
+ * muestreo que ya estuviera en marcha se guarda igual, pero ese servicio se
+ * vuelve a reparar por si trajo el estado anterior al cambio (ver `store`).
  */
 export function invalidateDockerSnapshot(serviceId?: string): void {
-  epoch += 1;
   if (serviceId) {
     pending.add(serviceId);
+    invalidated.set(serviceId, Date.now());
     return;
   }
+  epoch += 1;
   cacheLite = null;
   cacheFull = null;
 }

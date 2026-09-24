@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2 } from 'lucide-react';
 import { api } from '../api';
-import { Button, Modal, useToast } from './ui';
+import { Button, ErrorState, Modal, Skeleton, useToast } from './ui';
 
 interface Row {
   /** Clave estable para React: por posición, borrar una fila del medio barajaba los campos. */
@@ -72,6 +72,13 @@ export default function SharedVarsModal({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  /*
+   * Solo se edita con las variables cargadas. Si la consulta falla y se
+   * pudiera añadir y guardar igual, el PUT llevaría solo las filas nuevas y
+   * borraría las variables reales del proyecto.
+   */
+  const ready = !!vars.data;
+
   return (
     <Modal open={open} onClose={onClose} title="Variables compartidas del proyecto" wide dirty={dirty}>
       <p className="mb-4 text-xs text-sub">
@@ -80,14 +87,29 @@ export default function SharedVarsModal({
         <span className="font-mono text-info">{'${{shared.VAR}}'}</span>. Resultan útiles para valores comunes de la
         empresa: SMTP, claves de API, zona horaria, entorno.
       </p>
+      {vars.isLoading && (
+        <div aria-busy className="mb-2 flex flex-col gap-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      )}
+      {vars.isError && !vars.data && (
+        <ErrorState
+          compact
+          title="No se han podido cargar las variables compartidas"
+          error={vars.error}
+          onRetry={() => vars.refetch()}
+          retrying={vars.isFetching}
+        />
+      )}
       <div className="space-y-2">
-        {rows.length === 0 && (
+        {ready && rows.length === 0 && (
           <p className="py-4 text-center text-sm text-subtle">
             No hay variables compartidas. Ejemplos habituales: <span className="font-mono text-xs">TZ</span>,{' '}
             <span className="font-mono text-xs">SMTP_HOST</span>, <span className="font-mono text-xs">S3_BUCKET</span>
           </p>
         )}
-        {rows.map((row, i) => (
+        {ready && rows.map((row, i) => (
           <div key={row.id} className="flex items-center gap-2">
             <input
               className="input w-2/5 min-w-0 font-mono sm:text-xs"
@@ -133,6 +155,7 @@ export default function SharedVarsModal({
         <Button
           size="sm"
           variant="outline"
+          disabled={!ready}
           onClick={() => {
             setRows([...rows, { id: `n:${Date.now()}_${++rowSeq}`, key: '', value: '' }]);
             setDirty(true);
@@ -145,7 +168,7 @@ export default function SharedVarsModal({
         <Button variant="ghost" onClick={onClose}>
           Cancelar
         </Button>
-        <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty}>
+        <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty || !ready}>
           Guardar
         </Button>
       </div>

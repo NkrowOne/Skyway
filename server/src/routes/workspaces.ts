@@ -37,7 +37,7 @@ import { grantedModules, workspaceQuotaSummary, workspacePlan } from '../quota';
 import { DEFAULT_COUNTRY, normalizeCountry } from '../countries';
 import { MODULES, sanitizeModules } from '../modules';
 import { UserRow, WorkspaceRow } from '../types';
-import { hashPassword } from '../util';
+import { hashPasswordAsync } from '../util';
 
 const HOUR_MS = 3_600_000;
 
@@ -389,7 +389,7 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
       if (!check.ok) return reply.code(400).send({ error: 'Solo es posible asignar proyectos de este workspace' });
     }
 
-    const user = createUser(email, hashPassword(body.password), role, id);
+    const user = createUser(email, await hashPasswordAsync(body.password), role, id);
     if (role === 'member') setUserProjects(user.id, body.projectIds);
     audit(req, 'workspace_member_created', { type: 'user', id: user.id, detail: `${email} (${role}) en ${ws.name}` });
     reply.code(201);
@@ -426,12 +426,15 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
       if (!check.ok) return reply.code(400).send({ error: 'Solo es posible asignar proyectos de este workspace' });
     }
 
+    // El hash (scrypt) se calcula antes, en el pool de hilos: la transacción de
+    // SQLite es síncrona y calcularlo dentro bloquearía el bucle de eventos.
+    const passwordHash = body.password ? await hashPasswordAsync(body.password) : null;
     transaction(() => {
       if (requestedRole && requestedRole !== target.role) updateUserRole(userId, requestedRole);
       // Un propietario no tiene asignaciones de proyecto; un miembro sí.
       if (nextRole === 'owner') setUserProjects(userId, []);
       else if (body.projectIds) setUserProjects(userId, body.projectIds);
-      if (body.password) updateUserPassword(userId, hashPassword(body.password));
+      if (passwordHash) updateUserPassword(userId, passwordHash);
     });
     audit(req, 'workspace_member_updated', { type: 'user', id: userId, detail: `${target.email} en ${ws.name}` });
     return { member: publicMember(getUser(userId)!) };

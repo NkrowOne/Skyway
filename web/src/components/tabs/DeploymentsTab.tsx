@@ -216,7 +216,12 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
     es.addEventListener('snapshot', (ev) => {
       const data = JSON.parse((ev as MessageEvent).data);
       pending.length = 0;
-      if (raf) cancelAnimationFrame(raf);
+      if (raf) {
+        cancelAnimationFrame(raf);
+        // Sin reponerlo, `log` creía que seguía habiendo un pintado programado
+        // y no pedía otro: la consola se congelaba tras cada (re)conexión.
+        raf = 0;
+      }
       setStreamLines(data.logs ? data.logs.split('\n').filter(Boolean) : []);
     });
     es.addEventListener('log', (ev) => {

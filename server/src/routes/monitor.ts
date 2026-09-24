@@ -1,19 +1,19 @@
 import os from 'os';
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { canAccessProjectRow, currentUser, requireAuth } from '../auth';
+import { accessibleProjectRows, currentUser, requireAuth } from '../auth';
 import {
   hostMetricsRange,
   latestDeploymentsByService,
   listProjects,
   listServicesForProjects,
-  openAlertCountsByService,
+  openAlertCountsByServiceForProjects,
   uptimePercentBatch,
 } from '../db';
 import { explainExitCode } from '../deploy/diagnose';
-import { diskUsageByService, hostDisk } from '../disk';
+import { diskUsageByService, dockerDiskTotals, hostDisk, ServiceDiskUsage } from '../disk';
 import { bucketHostMetrics } from '../metrics';
-import { docker, dockerAvailable } from '../docker/client';
+import { dockerAvailable } from '../docker/client';
 import {
   aggregateReplicaState,
   configuredReplicas,
@@ -23,11 +23,11 @@ import {
 import { dockerSnapshot } from '../docker/sampler';
 import { rateLimit } from '../ratelimit';
 import { ContainerState, ProjectRow, ServiceRow } from '../types';
+import { pooled, withTimeout } from '../util';
 
 /** Proyectos visibles para el usuario de la petición (admin: todos). */
-function accessibleProjects(req: any): ProjectRow[] {
-  const user = currentUser(req)!;
-  return listProjects().filter((p) => canAccessProjectRow(user, p));
+function accessibleProjects(req: FastifyRequest): ProjectRow[] {
+  return accessibleProjectRows(currentUser(req)!, listProjects());
 }
 
 /**
@@ -49,41 +49,6 @@ const HOST_CPUS = os.cpus().length;
 const BUSQUEDAS_POR_MINUTO = 10;
 const BUSQUEDA_PLAZO_MS = 15_000;
 const BUSQUEDA_CONCURRENCIA = 4;
-
-/** Ejecuta las tareas con un tope de concurrencia, conservando el orden. */
-async function pooled<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
-  const out = new Array<T>(tasks.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
-    for (;;) {
-      const i = next++;
-      if (i >= tasks.length) return;
-      out[i] = await tasks[i]();
-    }
-  });
-  await Promise.all(workers);
-  return out;
-}
-
-/**
- * Espera a `work` como mucho `ms`; al vencer, `onFail`. Nunca rechaza: quien
- * busca prefiere un contenedor sin resultado a quedarse colgado, porque el
- * cliente de Docker no impone ningún tope propio.
- */
-function withTimeout<T>(work: Promise<T>, ms: number, onFail: () => T): Promise<T> {
-  return new Promise<T>((resolve) => {
-    let settled = false;
-    const finish = (value: T): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    };
-    const timer = setTimeout(() => finish(onFail()), Math.max(1, ms));
-    timer.unref();
-    work.then(finish, () => finish(onFail()));
-  });
-}
 
 export async function monitorRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
@@ -109,10 +74,10 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
     const serviceIds = allServices.map((s) => s.id);
     const lastDeploys = latestDeploymentsByService(serviceIds);
     const uptime24h = uptimePercentBatch(serviceIds, 24);
+    const alertCounts = openAlertCountsByServiceForProjects(projects.map((p) => p.id));
 
     const services: any[] = [];
     for (const project of projects) {
-      const alertCounts = openAlertCountsByService(project.id);
       for (const service of servicesByProject.get(project.id) ?? []) {
         const cfg = service.config as any;
         const total = configuredReplicas(service);
@@ -287,7 +252,14 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/monitor/disk', async (req, reply) => {
     if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
     const user = currentUser(req)!;
-    const usage = await diskUsageByService();
+    let usage: Map<string, ServiceDiskUsage>;
+    try {
+      usage = await diskUsageByService();
+    } catch {
+      // Sin `df` (daemon que no contesta a tiempo) no hay desglose que dar:
+      // el mismo 503 que cuando falta el daemon, no un error interno.
+      return reply.code(503).send({ error: 'Docker no ha respondido a la consulta de espacio. Inténtelo de nuevo en unos instantes' });
+    }
     const services: any[] = [];
     const projects = accessibleProjects(req);
     const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
@@ -311,21 +283,9 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
     }
     services.sort((a, b) => b.totalBytes - a.totalBytes);
 
-    let dockerTotals: any = null;
-    if (user.role === 'admin') {
-      try {
-        const df: any = await docker.df();
-        const sum = (arr: any[], pick: (x: any) => number) => (arr || []).reduce((acc, x) => acc + (pick(x) || 0), 0);
-        dockerTotals = {
-          images: { count: (df.Images || []).length, size: df.LayersSize || sum(df.Images || [], (i) => i.Size) },
-          containers: { count: (df.Containers || []).length, size: sum(df.Containers || [], (c) => c.SizeRw) },
-          volumes: { count: (df.Volumes || []).length, size: sum(df.Volumes || [], (v) => Math.max(0, v.UsageData?.Size ?? 0)) },
-          buildCache: { size: sum(df.BuildCache || [], (b) => b.Size) },
-        };
-      } catch {
-        /* df no disponible */
-      }
-    }
+    // Los totales salen del mismo `df` cacheado que el desglose: antes era un
+    // segundo `df` sin tope en cada carga de la vista.
+    const dockerTotals = user.role === 'admin' ? await dockerDiskTotals().catch(() => null) : null;
 
     return { host: await hostDisk(), docker: dockerTotals, services };
   });

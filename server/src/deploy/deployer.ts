@@ -56,6 +56,7 @@ import { resolveGitAuth } from '../github/resolve';
 import { isWorkspaceActive, workspaceOfProject } from '../quota';
 import { buildImage, cloneRepo, isBuildTimeVar, normalizeRepoUrl, spawnLogged } from './builder';
 import { importRepoEnv } from './envimport';
+import { partitionPreDeployEnv } from './predeployenv';
 import { dockerRestartPolicy, hasRailwayConfig, RailwayRepoConfig, readRailwayRepoConfig } from './railwayconfig';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
 import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
@@ -71,9 +72,17 @@ const MAX_RUNTIME_LOG_CHARS = 256 * 1024;
 const PULL_TIMEOUT_MS = 15 * 60_000;
 /** Tope de `captureCommand` (inspecciones cortas con un contenedor efímero). */
 const CAPTURE_TIMEOUT_MS = 60_000;
+/**
+ * Tope del comando previo al despliegue: una migración colgada (un bloqueo en
+ * la base de datos, una red que no contesta) dejaba el despliegue en
+ * «deploying» para siempre, con la plaza de build ocupada.
+ */
+const PRE_DEPLOY_TIMEOUT_MS = 30 * 60_000;
 /** Cada cuánto se vuelca el log del despliegue a la BD (o antes, si crece mucho). */
 const LOG_FLUSH_MS = 3000;
 const LOG_FLUSH_BYTES = 8 * 1024;
+/** Distancia mínima entre dos volcados adelantados por tamaño. */
+const LOG_FLUSH_MIN_GAP_MS = 1000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -205,15 +214,21 @@ function makeLogger(deploymentId: string): DeployLogger {
   let dirty = false;
   /** Longitud del búfer en la última escritura, para volcar antes si crece deprisa. */
   let written = 0;
+  /** Instante del último volcado, para espaciar los adelantos por tamaño. */
+  let lastFlushAt = 0;
   // Cada volcado REESCRIBE la columna entera (hasta 400 KB): hacerlo cada
   // segundo durante un build parlanchín era una escritura grande por segundo
   // en SQLite. Cada 3 s basta para seguirlo en vivo (el SSE ya lleva las
-  // líneas al instante), y si el búfer crece ≥ 8 KB se adelanta.
+  // líneas al instante), y si el búfer crece ≥ 8 KB se adelanta, pero como
+  // mucho una vez por segundo: sin ese freno, un build que suelta 400 KB
+  // reescribía ~50 veces un búfer de hasta 200 KB. El volcado del temporizador
+  // y el final (`stop`) no esperan a nada.
   const flush = () => {
     if (!dirty) return;
     updateDeployment(deploymentId, { logs: buffer });
     dirty = false;
     written = buffer.length;
+    lastFlushAt = Date.now();
   };
   const interval = setInterval(flush, LOG_FLUSH_MS);
   interval.unref();
@@ -228,7 +243,7 @@ function makeLogger(deploymentId: string): DeployLogger {
     if (buffer.length < MAX_LOG_CHARS) {
       buffer += stamped + '\n';
       dirty = true;
-      if (buffer.length - written >= LOG_FLUSH_BYTES) flush();
+      if (buffer.length - written >= LOG_FLUSH_BYTES && Date.now() - lastFlushAt >= LOG_FLUSH_MIN_GAP_MS) flush();
     }
     emitDeploy(deploymentId, { type: 'log', line: stamped });
   }) as DeployLogger;
@@ -1008,8 +1023,14 @@ async function runPreDeploy(
   job?: ActiveJob,
 ): Promise<void> {
   log(`Ejecutando el comando previo al despliegue: ${command}`);
+  // Las variables llegan al contenedor por dos vías según su nombre: las que el
+  // propio CLI de Docker respetaría en su entorno (PATH, LD_*, DOCKER_HOST…)
+  // van con su valor en la línea de órdenes y nunca entran en el entorno del
+  // proceso `docker`; el resto, como entorno del hijo más `--env CLAVE`.
+  const { inherited, explicit } = partitionPreDeployEnv(env);
   const args = ['run', '--rm', '--network', projectNetworkName(project)];
-  for (const key of Object.keys(env)) args.push('--env', key);
+  for (const key of Object.keys(inherited)) args.push('--env', key);
+  for (const [key, value] of Object.entries(explicit)) args.push('--env', `${key}=${value}`);
   args.push('--env', 'SKYWAY_PREDEPLOY_CMD');
   // Cómo se le entrega la orden depende del ENTRYPOINT de la imagen, igual que
   // el comando de arranque: con el de Nixpacks, un `sh -c` acababa arrancando
@@ -1017,7 +1038,12 @@ async function runPreDeploy(
   args.push(...(await runArgsFor(image, 'eval "$SKYWAY_PREDEPLOY_CMD"')));
   const onSpawn = job ? trackProc(job) : undefined;
   try {
-    await spawnLogged('docker', args, { env: { ...env, SKYWAY_PREDEPLOY_CMD: command }, onSpawn }, log);
+    await spawnLogged(
+      'docker',
+      args,
+      { env: { ...inherited, SKYWAY_PREDEPLOY_CMD: command }, onSpawn, timeoutMs: PRE_DEPLOY_TIMEOUT_MS },
+      log,
+    );
   } catch (err: any) {
     throw new Error(
       `El comando previo al despliegue falló (${err?.message || err}). La versión en ejecución no se ha modificado.`,
