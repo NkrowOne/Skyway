@@ -2,7 +2,7 @@ import os from 'os';
 import { fireAlert, resolveServiceAlerts } from './alerts';
 import {
   getSetting,
-  listDeployments,
+  latestDeploymentsByService,
   listProjects,
   listServicesForProjects,
   pruneMetrics,
@@ -94,6 +94,11 @@ async function tick(): Promise<void> {
   // Una consulta para todos los servicios en vez de una por proyecto cada 30 s.
   const projects = listProjects();
   const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
+  // El último despliegue de cada servicio, en una consulta: antes era una por
+  // servicio y tick, y con decenas de servicios eran decenas cada 30 s.
+  const latestDeploys = latestDeploymentsByService(
+    [...servicesByProject.values()].flatMap((services) => services.map((s) => s.id)),
+  );
 
   for (const project of projects) {
     for (const service of servicesByProject.get(project.id) ?? []) {
@@ -243,7 +248,7 @@ async function tick(): Promise<void> {
       // fallo siga abierta (p. ej. se creó antes de existir la auto-resolución,
       // o el servicio se recuperó sin un despliegue nuevo). Así la campana solo
       // refleja problemas activos, sin que el usuario tenga que resolver a mano.
-      const latestDeploy = listDeployments(service.id, 1)[0];
+      const latestDeploy = latestDeploys.get(service.id);
       if (latestDeploy?.status === 'success') {
         resolveServiceAlerts(service.id, 'deploy_failed', false);
       }

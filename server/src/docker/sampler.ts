@@ -16,7 +16,7 @@
  * él en vez de lanzar otro, así que da igual cuántas pestañas haya abiertas.
  */
 
-import { getProject, getService, listProjects, listServices } from '../db';
+import { getProject, getService, listProjects, listServicesForProjects } from '../db';
 import { dockerAvailable } from './client';
 import { configuredReplicas, getRuntime, getStats, replicaName } from './containers';
 import { ContainerState, ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
@@ -249,8 +249,12 @@ async function collect(withStats: boolean): Promise<Snapshot> {
   const targets: { project: ProjectRow; service: ServiceRow; total: number }[] = [];
   const tasks: (() => Promise<ReplicaSample>)[] = [];
   const owner: number[] = [];
-  for (const project of listProjects()) {
-    for (const service of listServices(project.id)) {
+  // Una consulta para los servicios de todos los proyectos (antes una por
+  // proyecto en cada muestreo, es decir, cada pocos segundos).
+  const projects = listProjects();
+  const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
+  for (const project of projects) {
+    for (const service of servicesByProject.get(project.id) ?? []) {
       const total = configuredReplicas(service);
       const t = targets.push({ project, service, total }) - 1;
       for (let i = 1; i <= total; i++) {

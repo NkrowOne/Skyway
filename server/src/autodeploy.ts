@@ -1,5 +1,5 @@
 import { auditSystem } from './audit';
-import { getSetting, lastBuiltCommitSha, latestDeployment, listProjects, listServices } from './db';
+import { getSetting, lastBuiltCommitSha, latestDeployment, listProjects, listServicesForProjects } from './db';
 import { remoteHeadSha } from './deploy/builder';
 import { triggerDeploy } from './deploy/deployer';
 import { apiHeadSha, parseGithubSlug } from './github/client';
@@ -96,8 +96,10 @@ async function tick(log: { warn: (msg: string) => void }): Promise<void> {
   // Servicios de repositorio con auto-deploy activo (ausente = activo).
   const targets: { id: string; name: string; branch: string; repoUrl: string; project: ProjectRow; cfg: GitConfig }[] = [];
   const active = new Set<string>();
-  for (const project of listProjects()) {
-    for (const service of listServices(project.id)) {
+  const projects = listProjects();
+  const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
+  for (const project of projects) {
+    for (const service of servicesByProject.get(project.id) ?? []) {
       if (service.type !== 'git') continue;
       const cfg = service.config as GitConfig;
       if (cfg.autoDeploy === false) continue;

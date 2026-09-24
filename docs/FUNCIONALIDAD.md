@@ -124,22 +124,28 @@ web/src/
 Todo lo que necesita saber el estado real de los contenedores —la ficha del
 proyecto, la del servicio, el stream de métricas de cada pestaña, el monitor, la
 vista de Monitor, la página de estado y la de webs— lee de **una sola foto
-compartida**, no pregunta a Docker por su cuenta. Importa porque `stats` tarda
-alrededor de un segundo por contenedor: con varios consumidores en paralelo el
-socket de Docker se convertía en el cuello de botella y el panel se movía a
-tirones.
+compartida**, no pregunta a Docker por su cuenta. Importa porque el socket de
+Docker atiende en serie: con varios consumidores preguntando en paralelo se
+convertía en el cuello de botella y el panel se movía a tirones.
 
 - **Bajo demanda**: no hay temporizador de fondo. Cada consumidor dice cuánta
   antigüedad tolera (2 s el stream de métricas, 4 s las fichas, 5 s las vistas
   de conjunto, 15 s el monitor) y si la foto vigente sirve, se la lleva sin
   tocar Docker.
-- **El consumo es opcional** (`{ stats: true }`). `inspect` cuesta decenas de
-  milisegundos y `stats` cerca de un segundo por contenedor, así que solo lo
-  piden los tres que lo miran: el stream de métricas, la vista de Monitor y el
-  vigilante de fondo. Las fichas de proyecto y servicio, Sitios y la página de
-  estado solo enseñan estados; hacerlas esperar al consumo de todo el servidor
-  las volvía lentísimas. Hay dos cachés, porque una foto con consumo vale para
-  todo pero una sin consumo no vale a quien lo necesita.
+- **El consumo es opcional** (`{ stats: true }`). Solo lo piden los tres que
+  lo miran: el stream de métricas, la vista de Monitor y el vigilante de fondo.
+  Las fichas de proyecto y servicio, Sitios y la página de estado solo enseñan
+  estados. Hay dos cachés, porque una foto con consumo vale para todo pero una
+  sin consumo no vale a quien lo necesita.
+- **`stats` en modo `one-shot`** (`docker/cpu.ts`). Sin él, el daemon toma dos
+  muestras separadas un segundo para poder calcular la CPU, y ese segundo por
+  contenedor era lo que hacía lento cada muestreo (treinta contenedores, unos
+  cuatro segundos con ocho consultas a la vez). Con `one-shot` contesta al
+  instante con una sola muestra y el porcentaje se calcula restando la lectura
+  anterior del mismo contenedor (misma fórmula que `docker stats`, sobre el
+  intervalo real entre muestreos). La primera lectura de cada contenedor —y la
+  de uno recreado o con los contadores a cero— sigue pidiendo las dos muestras,
+  para dar un valor correcto desde el principio.
 - **Nunca bloquea con la caché caliente**: si la foto está pasada pero sirve, se
   entrega al instante y el muestreo se lanza por detrás. Solo se espera en el
   arranque en frío y justo después de una acción que invalidó la foto, que es

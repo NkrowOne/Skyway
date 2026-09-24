@@ -2,6 +2,7 @@ import Docker from 'dockerode';
 import { PassThrough } from 'stream';
 import { StringDecoder } from 'string_decoder';
 import { docker, dockerQuery } from './client';
+import { baselineFrom, CpuBaseline, cpuPercentFromBaseline, cpuPercentFromDocker, DockerStatsSample } from './cpu';
 import { countStrictlyBefore } from './logcursor';
 import { EDGE_NETWORK, projectNetworkName } from './networks';
 import { getSetting } from '../db';
@@ -502,17 +503,43 @@ export async function updateResources(
   await c.update(update);
 }
 
+/**
+ * Última lectura de los contadores de CPU por contenedor (ver `docker/cpu.ts`).
+ * Con ella `stats` se pide en modo `one-shot`, que contesta al instante, en vez
+ * de esperar el segundo que tarda el daemon en tomar dos muestras: un muestreo
+ * completo del servidor pasa de «un segundo por contenedor» a unas decenas de
+ * milisegundos por contenedor.
+ */
+const cpuBaselines = new Map<string, CpuBaseline>();
+/** Las líneas base de contenedores que dejan de muestrearse se olvidan pasado este tiempo. */
+const BASELINE_TTL_MS = 10 * 60_000;
+let lastBaselineSweep = 0;
+
+function rememberBaseline(name: string, s: DockerStatsSample): void {
+  const nowMs = Date.now();
+  cpuBaselines.set(name, baselineFrom(s, nowMs));
+  // Barrido esporádico: un servicio borrado no deja su entrada para siempre.
+  if (nowMs - lastBaselineSweep < BASELINE_TTL_MS) return;
+  lastBaselineSweep = nowMs;
+  for (const [key, b] of cpuBaselines) if (nowMs - b.at > BASELINE_TTL_MS) cpuBaselines.delete(key);
+}
+
 export async function getStats(name: string): Promise<ServiceStats | null> {
   try {
     const c = dockerQuery.getContainer(name);
-    const s: any = await c.stats({ stream: false });
-    const cpuDelta = (s.cpu_stats?.cpu_usage?.total_usage || 0) - (s.precpu_stats?.cpu_usage?.total_usage || 0);
-    const sysDelta = (s.cpu_stats?.system_cpu_usage || 0) - (s.precpu_stats?.system_cpu_usage || 0);
-    const onlineCpus = s.cpu_stats?.online_cpus || 1;
-    const cpuPercent = sysDelta > 0 && cpuDelta > 0 ? (cpuDelta / sysDelta) * onlineCpus * 100 : 0;
+    let s = (await c.stats({ stream: false, 'one-shot': true })) as unknown as DockerStatsSample;
+    let cpuPercent = cpuPercentFromBaseline(s, cpuBaselines.get(name));
+    if (cpuPercent === null) {
+      // Sin línea base que valga (primera lectura de este proceso, contenedor
+      // recreado o contadores a cero): una lectura de dos muestras, que cuesta
+      // ~1 s pero da ya un valor correcto. Solo pasa una vez por contenedor.
+      s = (await c.stats({ stream: false })) as unknown as DockerStatsSample;
+      cpuPercent = cpuPercentFromDocker(s);
+    }
+    rememberBaseline(name, s);
     let netRx = 0;
     let netTx = 0;
-    for (const nw of Object.values(s.networks || {}) as any[]) {
+    for (const nw of Object.values(s.networks ?? {})) {
       netRx += nw.rx_bytes || 0;
       netTx += nw.tx_bytes || 0;
     }

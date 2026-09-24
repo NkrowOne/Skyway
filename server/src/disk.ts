@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { config } from './config';
-import { listProjects, listServices } from './db';
+import { listProjects, listServicesForProjects } from './db';
 import { docker, dockerQuery } from './docker/client';
 import { volumeName } from './docker/containers';
 import { ProjectRow, ServiceRow } from './types';
@@ -97,8 +97,10 @@ async function collect(): Promise<DiskSnapshot> {
     // sin df no hay tamaños: se devuelven ceros y se reintenta en el siguiente ciclo
   }
 
-  for (const project of listProjects()) {
-    for (const service of listServices(project.id)) {
+  const projects = listProjects();
+  const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
+  for (const project of projects) {
+    for (const service of servicesByProject.get(project.id) ?? []) {
       const cfg = service.config as any;
       const entry: ServiceDiskUsage = {
         serviceId: service.id,

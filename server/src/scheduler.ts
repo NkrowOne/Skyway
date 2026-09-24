@@ -3,7 +3,7 @@ import { auditSystem } from './audit';
 import { fireAlert, resolveServiceAlerts } from './alerts';
 import { billingAutomationTick } from './billingauto';
 import { backupSupported, createBackup, deleteBackup, listBackups } from './backups';
-import { listProjects, listServices, resolveAlertsByDedupe } from './db';
+import { listProjects, listServicesForProjects, resolveAlertsByDedupe } from './db';
 import { dockerAvailable } from './docker/client';
 import { createSystemBackup, listSystemBackups, pruneSystemBackups } from './sysbackup';
 import { DatabaseConfig } from './types';
@@ -70,8 +70,10 @@ async function tick(): Promise<void> {
   if (!(await dockerAvailable())) return;
   const now = nowDate;
 
-  for (const project of listProjects()) {
-    for (const service of listServices(project.id)) {
+  const projects = listProjects();
+  const servicesByProject = listServicesForProjects(projects.map((p) => p.id));
+  for (const project of projects) {
+    for (const service of servicesByProject.get(project.id) ?? []) {
       if (service.type !== 'database' || !backupSupported(service)) continue;
       const cfg = service.config as DatabaseConfig;
       const schedule = cfg.backupSchedule;
