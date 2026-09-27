@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
+  Ban,
   ChevronDown,
   Cloud,
   ExternalLink,
@@ -19,6 +20,8 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import {
+  MailApiKey,
+  MailAppPassword,
   MailCloudflarePlan,
   MailCloudflareResult,
   MailDomain,
@@ -27,7 +30,7 @@ import {
   ProjectMailView,
   Service,
 } from '../types';
-import { cx, fmtBytes, fmtDateTime, Tone } from '../utils';
+import { cx, fmtBytes, fmtDateTime, safeHref, Tone } from '../utils';
 import {
   Button,
   Chip,
@@ -56,6 +59,9 @@ import {
  */
 
 type MailTab = 'domains' | 'mailboxes' | 'connect';
+
+/** Credencial de envío pendiente de confirmar su revocación. */
+type CredentialToRevoke = { kind: 'app'; item: MailAppPassword } | { kind: 'key'; item: MailApiKey };
 
 /** Contraseña recién generada, pendiente de copiar o de enviar por enlace. */
 interface SecretShown {
@@ -95,8 +101,9 @@ export default function MailModal({
   const [resetBox, setResetBox] = useState<MailMailbox | null>(null);
   const [deleteBox, setDeleteBox] = useState<MailMailbox | null>(null);
   const [unlinkOpen, setUnlinkOpen] = useState(false);
+  const [revokeCred, setRevokeCred] = useState<CredentialToRevoke | null>(null);
   const [secret, setSecret] = useState<SecretShown | null>(null);
-  const childOpen = !!cfDomain || !!resetBox || !!deleteBox || unlinkOpen;
+  const childOpen = !!cfDomain || !!resetBox || !!deleteBox || unlinkOpen || !!revokeCred;
 
   const view = useQuery({
     queryKey: mailKey(projectId),
@@ -140,13 +147,31 @@ export default function MailModal({
       setUnlinkOpen(false);
       setSecret(null);
       invalidate();
+      queryClient.invalidateQueries({ queryKey: ['mailOptions', projectId] });
       toast('Correo desactivado en el proyecto', 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const revoke = useMutation({
+    mutationFn: (c: CredentialToRevoke) =>
+      api.del(
+        c.kind === 'app'
+          ? `/projects/${projectId}/mail/app-passwords/${c.item.id}`
+          : `/projects/${projectId}/mail/api-keys/${c.item.id}`,
+      ),
+    onSuccess: (_res, c) => {
+      setRevokeCred(null);
+      invalidate();
+      toast(c.kind === 'app' ? 'Contraseña de aplicación revocada' : 'Clave de API revocada', 'ok');
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
   const data = view.data;
   const canManage = !!data?.canManage;
+  // Mailway envía la URL del panel: solo se pinta como enlace si es http(s).
+  const panelHref = safeHref(data?.panelUrl);
 
   let body: React.ReactNode;
   if (view.isLoading) {
@@ -234,8 +259,16 @@ export default function MailModal({
     );
   } else {
     const summary = data.summary;
+    const blocked = data.accountSuspended || summary.client.suspended;
     body = (
       <div className="flex flex-col gap-4">
+        {blocked && (
+          <p role="alert" className="rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
+            {data.accountSuspended
+              ? 'La cuenta de este proyecto está suspendida: no es posible crear dominios ni buzones, ni conectar servicios. Lo ya creado sigue funcionando.'
+              : 'El cliente de correo de este proyecto está suspendido en Mailway: no es posible crear dominios ni buzones, ni conectar servicios.'}
+          </p>
+        )}
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-sub">
           <span className="min-w-0">
             Cliente de correo <span className="font-semibold text-txt">{summary.client.name}</span>
@@ -272,6 +305,7 @@ export default function MailModal({
         {tab === 'domains' && (
           <DomainsTab
             projectId={projectId}
+            blocked={blocked}
             domains={summary.domains}
             cloudflare={data.features?.cloudflare !== false}
             onInvalidate={invalidate}
@@ -281,6 +315,7 @@ export default function MailModal({
         {tab === 'mailboxes' && (
           <MailboxesTab
             projectId={projectId}
+            blocked={blocked}
             view={data}
             secret={secret}
             onSecret={setSecret}
@@ -293,17 +328,19 @@ export default function MailModal({
         {tab === 'connect' && (
           <ConnectTab
             projectId={projectId}
+            blocked={blocked}
             view={data}
             services={services}
             onClose={onClose}
             onGoMailboxes={() => setTab('mailboxes')}
+            onRevoke={setRevokeCred}
           />
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3.5">
-          {data.panelUrl ? (
+          {panelHref ? (
             <a
-              href={data.panelUrl}
+              href={panelHref}
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-1 text-xs font-medium text-acc-soft hover:underline"
@@ -363,7 +400,7 @@ export default function MailModal({
         onConfirm={() => deleteBox && deleteMailbox.mutate(deleteBox)}
         loading={deleteMailbox.isPending}
         title="Eliminar buzón"
-        message={`Se eliminará ${deleteBox?.email ?? ''} con todos sus mensajes. Los servicios que envíen con este buzón dejarán de poder hacerlo. Esta acción no se puede deshacer.`}
+        message={`Se eliminará ${deleteBox?.email ?? ''} con todos sus mensajes. Las claves de API que Skyway creó con este buzón como remitente se revocarán, y los servicios que envíen con él dejarán de poder hacerlo. Esta acción no se puede deshacer.`}
         confirmLabel="Eliminar buzón"
       />
 
@@ -373,15 +410,31 @@ export default function MailModal({
         onConfirm={() => unlink.mutate()}
         loading={unlink.isPending}
         title="Desactivar el correo del proyecto"
-        message="El proyecto dejará de estar vinculado a su cliente de correo. Los dominios, buzones y mensajes se conservan en Mailway y el correo sigue funcionando; solo deja de gestionarse desde Skyway."
+        message="El proyecto dejará de estar vinculado a su cliente de correo. Los dominios, buzones y mensajes se conservan en Mailway y el correo sigue funcionando; solo deja de gestionarse desde Skyway. Si vuelve a activar el correo más adelante, podrá recuperar este mismo cliente con sus dominios y buzones."
         confirmLabel="Desactivar correo"
         confirmVariant="secondary"
+      />
+
+      <ConfirmModal
+        open={!!revokeCred}
+        onClose={() => setRevokeCred(null)}
+        onConfirm={() => revokeCred && revoke.mutate(revokeCred)}
+        loading={revoke.isPending}
+        title={revokeCred?.kind === 'key' ? 'Revocar clave de API' : 'Revocar contraseña de aplicación'}
+        message={
+          revokeCred
+            ? `«${revokeCred.item.name}» (${revokeCred.kind === 'key' ? revokeCred.item.senderEmail : revokeCred.item.email}) dejará de funcionar de inmediato. Los servicios que la utilicen no podrán enviar correo hasta que se vuelvan a conectar.`
+            : ''
+        }
+        confirmLabel="Revocar"
       />
     </>
   );
 }
 
 // ---------- activación ----------
+
+type ActivateMode = 'create' | 'existing' | 'previous';
 
 function ActivateForm({
   projectId,
@@ -395,8 +448,10 @@ function ActivateForm({
   onDone: () => void;
 }) {
   const toast = useToast();
-  const [mode, setMode] = useState<'create' | 'existing'>('create');
-  const [name, setName] = useState(projectName);
+  // null: aún sin elegir (se propone recuperar el cliente anterior si se puede).
+  const [chosenMode, setMode] = useState<ActivateMode | null>(null);
+  // null: sin tocar; se usa el nombre que propone el servidor.
+  const [editedName, setName] = useState<string | null>(null);
   const [planId, setPlanId] = useState('');
   const [contactEmail, setContactEmail] = useState('');
   const [clientId, setClientId] = useState('');
@@ -405,22 +460,34 @@ function ActivateForm({
     queryKey: ['mailOptions', projectId],
     queryFn: () => api.get<MailOptions>(`/projects/${projectId}/mail/options`),
   });
-  // Plan por defecto: el primero, en cuanto se conocen.
-  const firstPlan = options.data?.plans[0]?.id ?? '';
+  // Plan por defecto: el predeterminado de la instancia, en cuanto se conoce.
+  const defaultPlanId = options.data?.defaultPlanId ?? options.data?.plans[0]?.id ?? '';
   useEffect(() => {
-    if (firstPlan) setPlanId((p) => p || firstPlan);
-  }, [firstPlan]);
+    if (defaultPlanId) setPlanId((p) => p || defaultPlanId);
+  }, [defaultPlanId]);
+
+  const previousAvailable = !!options.data?.previous?.available;
+  const mode: ActivateMode = chosenMode ?? (previousAvailable ? 'previous' : 'create');
+  const name = editedName ?? options.data?.defaultName ?? projectName;
 
   const activate = useMutation({
     mutationFn: () =>
       api.post(
         `/projects/${projectId}/mail/link`,
         mode === 'create'
-          ? { mode, name: name.trim() || undefined, planId: planId || undefined, contactEmail: contactEmail.trim() || undefined }
-          : { mode, clientId },
+          ? {
+              mode,
+              name: name.trim() || undefined,
+              // Solo el administrador elige el plan; al propietario se le asigna el predeterminado.
+              planId: options.data?.canChoosePlan ? planId || undefined : undefined,
+              contactEmail: contactEmail.trim() || undefined,
+            }
+          : mode === 'existing'
+            ? { mode, clientId }
+            : { mode },
       ),
     onSuccess: () => {
-      toast('Correo activado en el proyecto', 'ok');
+      toast(mode === 'previous' ? 'Correo activado con el cliente anterior' : 'Correo activado en el proyecto', 'ok');
       onDone();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -439,8 +506,16 @@ function ActivateForm({
     );
   }
 
-  const { plans, clients } = options.data;
-  const canSubmit = mode === 'create' ? !!name.trim() : !!clientId;
+  const { plans, clients, canChoosePlan, previous } = options.data;
+  const assignedPlan = plans.find((p) => p.id === planId) ?? plans[0];
+  const canSubmit = mode === 'create' ? name.trim().length >= 2 : mode === 'existing' ? !!clientId : previousAvailable;
+  const modes: { key: ActivateMode; label: string }[] = [
+    ...(previousAvailable ? [{ key: 'previous' as const, label: 'Recuperar cliente anterior' }] : []),
+    { key: 'create', label: 'Crear cliente nuevo' },
+    ...(isAdmin ? [{ key: 'existing' as const, label: 'Vincular cliente existente' }] : []),
+  ];
+  const planLabel = (p: MailOptions['plans'][number]) =>
+    `${p.name} · ${p.maxDomains} dominio(s), ${p.maxMailboxes} buzones de ${fmtBytes(p.mailboxQuotaMb * 1024 * 1024)}`;
 
   return (
     <form
@@ -455,33 +530,49 @@ function ActivateForm({
         conectarlos a los servicios.
       </p>
 
-      {isAdmin && (
-        <Segmented
-          full
-          label="Origen del cliente de correo"
-          value={mode}
-          onChange={setMode}
-          options={[
-            { key: 'create', label: 'Crear cliente nuevo' },
-            { key: 'existing', label: 'Vincular cliente existente' },
-          ]}
-        />
+      {modes.length > 1 && (
+        <Segmented full label="Origen del cliente de correo" value={mode} onChange={setMode} options={modes} />
       )}
 
-      {mode === 'create' ? (
+      {previous && !previous.available && (
+        <p className="rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
+          {previous.reason ?? `No es posible recuperar el cliente anterior «${previous.clientName}».`} Si crea un cliente nuevo,
+          los dominios del cliente anterior no se podrán añadir de nuevo mientras sigan dados de alta en Mailway.
+        </p>
+      )}
+
+      {mode === 'previous' && previous ? (
+        <p className="rounded-lg border border-line bg-bg px-3 py-2.5 text-sm text-sub">
+          Se volverá a vincular el cliente <span className="font-semibold text-txt">{previous.clientName}</span>, que este proyecto
+          utilizaba antes, con sus dominios, buzones y credenciales.
+        </p>
+      ) : mode === 'create' ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Nombre del cliente">
-            <input className="input" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} required />
+          <Field label="Nombre del cliente" hint="Entre 2 y 80 caracteres.">
+            <input
+              className="input"
+              value={name}
+              minLength={2}
+              maxLength={80}
+              onChange={(e) => setName(e.target.value)}
+              required
+            />
           </Field>
-          <Field label="Plan de correo" hint={plans.length === 0 ? 'Mailway no tiene planes: se aplicará el predeterminado.' : undefined}>
-            <select className="input" value={planId} onChange={(e) => setPlanId(e.target.value)} disabled={plans.length === 0}>
-              {plans.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} · {p.maxDomains} dominio(s), {p.maxMailboxes} buzones de {fmtBytes(p.mailboxQuotaMb * 1024 * 1024)}
-                </option>
-              ))}
-            </select>
-          </Field>
+          {canChoosePlan ? (
+            <Field label="Plan de correo" hint={plans.length === 0 ? 'Mailway no tiene planes: se aplicará el predeterminado.' : undefined}>
+              <select className="input" value={planId} onChange={(e) => setPlanId(e.target.value)} disabled={plans.length === 0}>
+                {plans.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {planLabel(p)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          ) : (
+            <Field label="Plan de correo" hint="Lo asigna el administrador de la plataforma.">
+              <input className="input text-sub" readOnly value={assignedPlan ? planLabel(assignedPlan) : 'Plan predeterminado de Mailway'} />
+            </Field>
+          )}
           <Field label="Correo electrónico de contacto" hint="Opcional. Mailway lo utiliza para los avisos del cliente.">
             <input
               className="input"
@@ -519,12 +610,14 @@ function ActivateForm({
 
 function DomainsTab({
   projectId,
+  blocked,
   domains,
   cloudflare,
   onInvalidate,
   onCloudflare,
 }: {
   projectId: string;
+  blocked: boolean;
   domains: MailDomain[];
   cloudflare: boolean;
   onInvalidate: () => void;
@@ -549,7 +642,7 @@ function DomainsTab({
         className="flex flex-col gap-2 sm:flex-row"
         onSubmit={(e) => {
           e.preventDefault();
-          if (domain.trim()) add.mutate(domain.trim());
+          if (domain.trim() && !blocked) add.mutate(domain.trim());
         }}
       >
         <input
@@ -561,7 +654,7 @@ function DomainsTab({
           autoCapitalize="none"
           spellCheck={false}
         />
-        <Button type="submit" variant="secondary" loading={add.isPending} disabled={!domain.trim()} className="max-sm:h-11">
+        <Button type="submit" variant="secondary" loading={add.isPending} disabled={!domain.trim() || blocked} className="max-sm:h-11">
           <Globe size={13} /> Añadir dominio
         </Button>
       </form>
@@ -902,6 +995,7 @@ function CloudflareDialog({
 
 function MailboxesTab({
   projectId,
+  blocked,
   view,
   secret,
   onSecret,
@@ -911,6 +1005,7 @@ function MailboxesTab({
   onGoDomains,
 }: {
   projectId: string;
+  blocked: boolean;
   view: ProjectMailView;
   secret: SecretShown | null;
   onSecret: (s: SecretShown | null) => void;
@@ -964,61 +1059,74 @@ function MailboxesTab({
     <div className="flex flex-col gap-3">
       {secret && <SecretPanel projectId={projectId} secret={secret} onDismiss={() => onSecret(null)} />}
 
-      <form
-        className="flex flex-col gap-2 rounded-lg border border-line bg-bg p-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (localPart.trim() && selectedDomain) create.mutate();
-        }}
-      >
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5">
-            <input
-              className="input min-w-0 flex-1 font-mono text-xs"
-              placeholder="info"
-              value={localPart}
-              onChange={(e) => setLocalPart(e.target.value)}
-              aria-label="Nombre del buzón"
-              autoCapitalize="none"
-              spellCheck={false}
-            />
-            <span className="shrink-0 text-xs text-subtle">@</span>
-            {summary.domains.length === 1 ? (
-              <span className="min-w-0 truncate font-mono text-xs text-sub">{selectedDomain?.domain}</span>
-            ) : (
-              <select
+      {view.canManage ? (
+        <form
+          className="flex flex-col gap-2 rounded-lg border border-line bg-bg p-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (localPart.trim() && selectedDomain && !blocked) create.mutate();
+          }}
+        >
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+              <input
                 className="input min-w-0 flex-1 font-mono text-xs"
-                value={selectedDomain?.id ?? ''}
-                onChange={(e) => setDomainId(e.target.value)}
-                aria-label="Dominio del buzón"
-              >
-                {summary.domains.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.domain}
-                  </option>
-                ))}
-              </select>
-            )}
+                placeholder="info"
+                value={localPart}
+                onChange={(e) => setLocalPart(e.target.value)}
+                aria-label="Nombre del buzón"
+                autoCapitalize="none"
+                spellCheck={false}
+              />
+              <span className="shrink-0 text-xs text-subtle">@</span>
+              {summary.domains.length === 1 ? (
+                <span className="min-w-0 truncate font-mono text-xs text-sub">{selectedDomain?.domain}</span>
+              ) : (
+                <select
+                  className="input min-w-0 flex-1 font-mono text-xs"
+                  value={selectedDomain?.id ?? ''}
+                  onChange={(e) => setDomainId(e.target.value)}
+                  aria-label="Dominio del buzón"
+                >
+                  {summary.domains.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.domain}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            <input
+              className="input sm:w-44"
+              placeholder="Nombre visible (opcional)"
+              value={displayName}
+              maxLength={80}
+              onChange={(e) => setDisplayName(e.target.value)}
+              aria-label="Nombre visible"
+            />
+            <Button type="submit" loading={create.isPending} disabled={!localPart.trim() || blocked} className="max-sm:h-11">
+              <Inbox size={13} /> Crear buzón
+            </Button>
           </div>
-          <input
-            className="input sm:w-44"
-            placeholder="Nombre visible (opcional)"
-            value={displayName}
-            maxLength={120}
-            onChange={(e) => setDisplayName(e.target.value)}
-            aria-label="Nombre visible"
-          />
-          <Button type="submit" loading={create.isPending} disabled={!localPart.trim()} className="max-sm:h-11">
-            <Inbox size={13} /> Crear buzón
-          </Button>
-        </div>
-        {selectedDomain && selectedDomain.status !== 'active' && (
-          <p className="text-xs text-warn">
-            El dominio {selectedDomain.domain} aún no está verificado: el buzón no recibirá correo hasta que sus registros DNS sean
-            correctos.
-          </p>
-        )}
-      </form>
+          {!view.isAdmin && (
+            <p className="text-xs text-subtle">
+              Los nombres reservados a la administración del dominio (postmaster, abuse, admin, hostmaster, webmaster, root…) solo
+              los puede crear un administrador de la plataforma.
+            </p>
+          )}
+          {selectedDomain && selectedDomain.status !== 'active' && (
+            <p className="text-xs text-warn">
+              El dominio {selectedDomain.domain} aún no está verificado: el buzón no recibirá correo hasta que sus registros DNS sean
+              correctos.
+            </p>
+          )}
+        </form>
+      ) : (
+        <p className="rounded-lg border border-line bg-bg px-3 py-2.5 text-xs text-sub">
+          Solo el propietario de la cuenta o un administrador puede crear buzones. Desde aquí puede enviar a cada titular el enlace de
+          configuración de su buzón.
+        </p>
+      )}
 
       {summary.mailboxes.length === 0 ? (
         <EmptyState
@@ -1236,16 +1344,20 @@ const MODE_HELP: Record<'smtp' | 'api', { title: string; text: string; vars: str
 
 function ConnectTab({
   projectId,
+  blocked,
   view,
   services,
   onClose,
   onGoMailboxes,
+  onRevoke,
 }: {
   projectId: string;
+  blocked: boolean;
   view: ProjectMailView;
   services: Service[];
   onClose: () => void;
   onGoMailboxes: () => void;
+  onRevoke: (c: CredentialToRevoke) => void;
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -1255,14 +1367,24 @@ function ConnectTab({
   const [mailboxId, setMailboxId] = useState(mailboxes[0]?.id ?? '');
   const [mode, setMode] = useState<'smtp' | 'api'>('smtp');
   const [redeploy, setRedeploy] = useState(false);
-  const [result, setResult] = useState<{ serviceId: string; serviceName: string; keys: string[]; needsRedeploy: boolean } | null>(null);
+  const [result, setResult] = useState<{
+    serviceId: string;
+    serviceName: string;
+    keys: string[];
+    needsRedeploy: boolean;
+    revoked: number;
+  } | null>(null);
 
   const service = deployables.find((s) => s.id === serviceId) ?? deployables[0];
   const mailbox = mailboxes.find((m) => m.id === mailboxId) ?? mailboxes[0];
+  // Credenciales vigentes del cliente: las revocadas ya no hacen nada y solo
+  // alargarían la lista.
+  const appPasswords = (view.summary?.appPasswords ?? []).filter((a) => !a.revokedAt);
+  const apiKeys = (view.summary?.apiKeys ?? []).filter((k) => !k.revokedAt);
 
   const connect = useMutation({
     mutationFn: () =>
-      api.post<{ ok: boolean; keys: string[]; needsRedeploy: boolean }>(`/projects/${projectId}/mail/connect`, {
+      api.post<{ ok: boolean; keys: string[]; needsRedeploy: boolean; revoked?: number }>(`/projects/${projectId}/mail/connect`, {
         serviceId: service?.id,
         mailboxId: mailbox?.id,
         mode,
@@ -1270,7 +1392,7 @@ function ConnectTab({
       }),
     onSuccess: (res) => {
       if (!service) return;
-      setResult({ serviceId: service.id, serviceName: service.name, keys: res.keys, needsRedeploy: res.needsRedeploy });
+      setResult({ serviceId: service.id, serviceName: service.name, keys: res.keys, needsRedeploy: res.needsRedeploy, revoked: res.revoked ?? 0 });
       queryClient.invalidateQueries({ queryKey: ['env', service.id] });
       queryClient.invalidateQueries({ queryKey: mailKey(projectId) });
       if (!res.needsRedeploy) queryClient.invalidateQueries({ queryKey: ['project', projectId] });
@@ -1354,6 +1476,10 @@ function ConnectTab({
           ))}{' '}
           Si ya existen, se sustituyen; el resto de variables se conservan.
         </p>
+        <p className="mt-1.5">
+          Si el servicio ya estaba conectado en este modo, la credencial anterior se revoca: hasta que se vuelva a desplegar, el
+          servicio no podrá enviar correo.
+        </p>
       </div>
 
       <label className="flex items-center gap-2 text-sm text-sub">
@@ -1366,7 +1492,7 @@ function ConnectTab({
       )}
 
       <div className="flex justify-end">
-        <Button onClick={() => connect.mutate()} loading={connect.isPending} disabled={!view.canManage || !service || !mailbox}>
+        <Button onClick={() => connect.mutate()} loading={connect.isPending} disabled={!view.canManage || !service || !mailbox || blocked}>
           <Plug size={13} /> Conectar
         </Button>
       </div>
@@ -1384,6 +1510,7 @@ function ConnectTab({
             ))}{' '}
             Los valores no se muestran aquí; puede consultarlos en la pestaña «Variables» del servicio.
           </p>
+          {result.revoked > 0 && <p className="mt-1">Se ha revocado la credencial que el servicio tenía antes.</p>}
           <p className="mt-1">
             {result.needsRedeploy
               ? 'Es necesario volver a desplegar el servicio para aplicar los cambios.'
@@ -1397,6 +1524,78 @@ function ConnectTab({
             Ver las variables del servicio
           </Link>
         </div>
+      )}
+
+      {(appPasswords.length > 0 || apiKeys.length > 0) && (
+        <div className="border-t border-line pt-3.5">
+          <p className="flex items-center gap-1.5 text-xs font-medium text-sub">
+            <KeyRound size={13} /> Credenciales de envío vigentes
+          </p>
+          <p className="mt-0.5 text-xs text-subtle">
+            Contraseñas de aplicación y claves de API del cliente de correo. Revoque las que ya no se utilicen: dejan de funcionar al
+            instante.
+          </p>
+          <div className="mt-2 rounded-lg border border-line">
+            {appPasswords.map((a) => (
+              <CredentialRow
+                key={a.id}
+                kind="SMTP"
+                name={a.name}
+                detail={a.email}
+                createdAt={a.createdAt}
+                canManage={view.canManage}
+                onRevoke={() => onRevoke({ kind: 'app', item: a })}
+              />
+            ))}
+            {apiKeys.map((k) => (
+              <CredentialRow
+                key={k.id}
+                kind="API"
+                name={k.name}
+                detail={`${k.prefix}… · ${k.senderEmail}${k.lastUsedAt ? ` · último uso ${fmtDateTime(k.lastUsedAt)}` : ''}`}
+                createdAt={k.createdAt}
+                canManage={view.canManage}
+                onRevoke={() => onRevoke({ kind: 'key', item: k })}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CredentialRow({
+  kind,
+  name,
+  detail,
+  createdAt,
+  canManage,
+  onRevoke,
+}: {
+  kind: 'SMTP' | 'API';
+  name: string;
+  detail: string;
+  createdAt: number | null;
+  canManage: boolean;
+  onRevoke: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 border-b border-line/60 bg-bg px-3.5 py-2.5 last:border-b-0">
+      <div className="min-w-0 flex-1">
+        <p className="flex flex-wrap items-center gap-2">
+          <Chip size="sm">{kind}</Chip>
+          <span className="break-all font-mono text-xs text-txt">{name}</span>
+        </p>
+        <p className="mt-0.5 break-all text-xs text-subtle">
+          {detail}
+          {createdAt ? ` · creada ${fmtDateTime(createdAt)}` : ''}
+        </p>
+      </div>
+      {canManage && (
+        <Button size="sm" variant="ghost" onClick={onRevoke} className="shrink-0 text-err hover:bg-err/[.1]">
+          <Ban size={12} /> Revocar
+        </Button>
       )}
     </div>
   );

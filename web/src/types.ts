@@ -1238,7 +1238,17 @@ export interface MailwayConfigView {
   internalUrl: string | null;
   hasToken: boolean;
   panelUrl: string | null;
+  /** Plan con el que se crea el cliente cuando no lo elige un administrador. */
+  defaultPlanId: string | null;
   traefik: MailwayBridgeStatus | null;
+}
+
+export interface MailPlan {
+  id: string;
+  name: string;
+  maxDomains: number;
+  maxMailboxes: number;
+  mailboxQuotaMb: number;
 }
 
 export interface MailwayTestResult {
@@ -1247,8 +1257,8 @@ export interface MailwayTestResult {
     version: string;
     brandName: string;
     mailHostname: string;
-    webmailUrl: string;
-    panelUrl: string;
+    webmailUrl: string | null;
+    panelUrl: string | null;
     role: 'admin' | 'client' | null;
     email: string | null;
     features: { cloudflare: boolean; autoconfig: boolean; portal: boolean };
@@ -1298,14 +1308,36 @@ export interface MailMailbox {
   createdAt: number | null;
 }
 
+export interface MailApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  senderMailboxId: string | null;
+  senderEmail: string;
+  /** La creó Skyway al conectar un servicio (nombre «Skyway · <servicio>»). */
+  createdBySkyway: boolean;
+  lastUsedAt: number | null;
+  revokedAt: number | null;
+  createdAt: number | null;
+}
+
+export interface MailAppPassword {
+  id: string;
+  mailboxId: string;
+  email: string;
+  name: string;
+  createdAt: number | null;
+  revokedAt: number | null;
+}
+
 export interface MailSummary {
   client: { id: string; name: string; slug: string; suspended: boolean };
   plan: { id: string; name: string; maxDomains: number; maxMailboxes: number; mailboxQuotaMb: number } | null;
   usage: { domains: number; mailboxes: number };
   domains: MailDomain[];
   mailboxes: MailMailbox[];
-  apiKeys: { id: string; name: string; prefix: string; senderEmail: string; lastUsedAt: number | null; revokedAt: number | null; createdAt: number | null }[];
-  appPasswords: { id: string; mailboxId: string; email: string; name: string; createdAt: number | null; revokedAt: number | null }[];
+  apiKeys: MailApiKey[];
+  appPasswords: MailAppPassword[];
   connection: {
     imap: { host: string; port: number; security: string } | null;
     submission: { host: string; port: number; security: string } | null;
@@ -1318,6 +1350,8 @@ export interface ProjectMailView {
   configured: boolean;
   canManage: boolean;
   isAdmin: boolean;
+  /** La cuenta del proyecto está suspendida: no se puede crear nada. */
+  accountSuspended: boolean;
   linked: boolean;
   notice?: string | null;
   panelUrl: string | null;
@@ -1327,8 +1361,14 @@ export interface ProjectMailView {
 }
 
 export interface MailOptions {
-  plans: { id: string; name: string; maxDomains: number; maxMailboxes: number; mailboxQuotaMb: number }[];
+  /** Todos los planes para el administrador; para el propietario, solo el que se le asignará. */
+  plans: MailPlan[];
   clients: { id: string; name: string; available: boolean; linkedTo: string | null }[];
+  defaultPlanId: string | null;
+  canChoosePlan: boolean;
+  defaultName: string;
+  /** Cliente que el proyecto tenía antes de desactivar el correo. */
+  previous: { clientName: string; available: boolean; reason: string | null } | null;
 }
 
 export interface MailCloudflarePlan {

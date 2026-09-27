@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cx, fmtBytes, fmtCores, fmtDuration, fmtMb, fmtMoney, parseRepoInput, stripAnsi, timeAgo } from '../src/utils';
+import { cx, fmtBytes, fmtCores, fmtDuration, fmtMb, fmtMoney, parseRepoInput, safeHref, stripAnsi, timeAgo } from '../src/utils';
 import { parseEnvText } from '../src/components/tabs/VariablesTab';
 
 describe('parseRepoInput', () => {
@@ -16,6 +16,19 @@ describe('parseRepoInput', () => {
     expect(parseRepoInput('solo-un-nombre')).toBeNull();
     expect(parseRepoInput('https://gitlab.com/a/b')).toBeNull();
     expect(parseRepoInput('a/b/c')).toBeNull();
+  });
+});
+
+describe('safeHref', () => {
+  it('solo admite enlaces http y https', () => {
+    expect(safeHref('https://mail.example.com/panel')).toBe('https://mail.example.com/panel');
+    expect(safeHref('http://mail.example.com')).toBe('http://mail.example.com');
+    expect(safeHref('javascript:alert(1)')).toBeNull();
+    expect(safeHref(' JavaScript:alert(1)')).toBeNull();
+    expect(safeHref('data:text/html,<script>alert(1)</script>')).toBeNull();
+    expect(safeHref('//evil.example.com')).toBeNull();
+    expect(safeHref('')).toBeNull();
+    expect(safeHref(null)).toBeNull();
   });
 });
 

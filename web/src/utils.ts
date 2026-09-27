@@ -326,7 +326,25 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   mailway_mailbox_deleted: 'Buzón eliminado',
   mailway_setup_link_created: 'Enlace de configuración de buzón creado',
   mailway_service_connected: 'Correo conectado a un servicio',
+  mailway_disconnected: 'Mailway desconectado',
+  mailway_app_password_revoked: 'Contraseña de aplicación revocada',
+  mailway_api_key_revoked: 'Clave de API de correo revocada',
 };
+
+/**
+ * La URL si se puede usar como enlace (http o https); si no, null. Las
+ * direcciones que llegan de servicios externos (Mailway) se pintan en `href`,
+ * y un `javascript:` se ejecutaría con la sesión del panel al pulsarlo.
+ */
+export function safeHref(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? url : null;
+  } catch {
+    return null;
+  }
+}
 
 export function fmtDateTime(ts: number): string {
   return dateFmt({ day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(ts));

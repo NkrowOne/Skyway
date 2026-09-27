@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ChevronDown, ExternalLink, Trash2 } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ExternalLink, Trash2, Unplug } from 'lucide-react';
 import { api } from '../api';
-import { MailwayConfigView, MailwayTestResult, Project } from '../types';
-import { cx, timeAgo } from '../utils';
-import { Button, ErrorState, Field, Skeleton, useFlash, useToast } from './ui';
+import { MailPlan, MailwayConfigView, MailwayTestResult, Project } from '../types';
+import { cx, fmtBytes, safeHref, timeAgo } from '../utils';
+import { Button, ConfirmModal, ErrorState, Field, Skeleton, useFlash, useToast } from './ui';
 
 /**
  * Conexión con Mailway (Ajustes → Correo). Es una sección de acción inmediata,
@@ -18,6 +18,8 @@ export default function MailwaySettings() {
   const [baseUrl, setBaseUrl] = useState('');
   const [serviceId, setServiceId] = useState('');
   const [token, setToken] = useState('');
+  const [defaultPlanId, setDefaultPlanId] = useState('');
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
   const [test, setTest] = useState<{ ok: true; result: MailwayTestResult } | { ok: false; message: string } | null>(null);
   const [saved, flashSaved] = useFlash();
 
@@ -32,11 +34,23 @@ export default function MailwaySettings() {
     staleTime: 30_000,
   });
 
+  // Planes de la instancia, para elegir con cuál se crean los clientes de los
+  // proyectos cuando no los activa un administrador.
+  const plans = useQuery({
+    queryKey: ['mailwayPlans'],
+    queryFn: () => api.get<{ plans: MailPlan[]; defaultPlanId: string | null }>('/mailway/plans'),
+    enabled: !!config.data?.configured,
+    staleTime: 60_000,
+    retry: false,
+  });
+
   // Los campos se rellenan cuando cambia el valor guardado, no en cada recarga.
   const savedBaseUrl = config.data?.baseUrl ?? '';
   const savedServiceId = config.data?.serviceId ?? '';
+  const savedDefaultPlanId = config.data?.defaultPlanId ?? '';
   useEffect(() => setBaseUrl(savedBaseUrl), [savedBaseUrl]);
   useEffect(() => setServiceId(savedServiceId), [savedServiceId]);
+  useEffect(() => setDefaultPlanId(savedDefaultPlanId), [savedDefaultPlanId]);
 
   const candidates = useMemo(
     () =>
@@ -46,10 +60,12 @@ export default function MailwaySettings() {
     [projects.data],
   );
 
-  const dirty = !!config.data && (baseUrl.trim() !== savedBaseUrl || serviceId !== savedServiceId || !!token.trim());
+  const dirty =
+    !!config.data &&
+    (baseUrl.trim() !== savedBaseUrl || serviceId !== savedServiceId || defaultPlanId !== savedDefaultPlanId || !!token.trim());
 
   const save = useMutation({
-    mutationFn: (body: { baseUrl?: string; serviceId?: string; token?: string }) =>
+    mutationFn: (body: { baseUrl?: string; serviceId?: string; token?: string; defaultPlanId?: string }) =>
       api.put<{ ok: boolean; config: MailwayConfigView }>('/mailway/config', body),
     onSuccess: (res) => {
       queryClient.setQueryData(['mailwayConfig'], res.config);
@@ -57,6 +73,20 @@ export default function MailwaySettings() {
       setToken('');
       flashSaved();
       toast('Configuración de Mailway guardada', 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const disconnect = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; config: MailwayConfigView }>('/mailway/disconnect'),
+    onSuccess: (res) => {
+      setDisconnectOpen(false);
+      queryClient.setQueryData(['mailwayConfig'], res.config);
+      queryClient.invalidateQueries({ queryKey: ['mailwayStatus'] });
+      queryClient.removeQueries({ queryKey: ['mailwayPlans'] });
+      setToken('');
+      setTest(null);
+      toast('Mailway desconectado', 'ok');
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -91,9 +121,21 @@ export default function MailwaySettings() {
 
   const cfg = config.data;
   const bridge = cfg.traefik;
+  const panelHref = safeHref(cfg.panelUrl);
+  const planList = plans.data?.plans ?? [];
+  const canDisconnect = cfg.hasToken || !!cfg.baseUrl || !!cfg.serviceId || (bridge?.routers ?? 0) > 0;
 
   return (
     <div className="flex flex-col gap-3.5">
+      <ConfirmModal
+        open={disconnectOpen}
+        onClose={() => setDisconnectOpen(false)}
+        onConfirm={() => disconnect.mutate()}
+        loading={disconnect.isPending}
+        title="Desconectar Mailway"
+        message="Se eliminarán la dirección, el token de gestión, el servicio del panel y el plan predeterminado, y se retirarán de Traefik las rutas de los dominios propios de los clientes de Mailway (webmail de marca blanca y autoconfiguración), que dejarán de responder a través de este servidor. Los proyectos conservan su vínculo con el cliente de correo, y los clientes, buzones y mensajes se conservan en Mailway."
+        confirmLabel="Desconectar Mailway"
+      />
       <ol className="list-decimal space-y-1 rounded-lg border border-line bg-bg py-3 pl-8 pr-3.5 text-xs leading-5 text-sub">
         <li>
           En Mailway → <span className="font-medium text-txt">Conexiones → Tokens de gestión</span>, cree un token de administrador
@@ -160,6 +202,30 @@ export default function MailwaySettings() {
         </Field>
       </div>
 
+      {cfg.configured && (
+        <Field
+          label="Plan predeterminado de los proyectos"
+          hint="Plan con el que se crea el cliente de correo cuando lo activa el propietario de un proyecto. Solo un administrador puede elegir otro."
+        >
+          <select
+            className="input"
+            value={defaultPlanId}
+            onChange={(e) => setDefaultPlanId(e.target.value)}
+            disabled={plans.isLoading || plans.isError}
+          >
+            <option value="">{plans.isError ? 'No se han podido cargar los planes' : 'El primero de Mailway'}</option>
+            {planList.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} · {p.maxDomains} dominio(s), {p.maxMailboxes} buzones de {fmtBytes(p.mailboxQuotaMb * 1024 * 1024)}
+              </option>
+            ))}
+            {defaultPlanId && !plans.isLoading && !planList.some((p) => p.id === defaultPlanId) && (
+              <option value={defaultPlanId}>{defaultPlanId} (no existe en Mailway)</option>
+            )}
+          </select>
+        </Field>
+      )}
+
       {test && (
         <div
           role={test.ok ? 'status' : 'alert'}
@@ -201,6 +267,7 @@ export default function MailwaySettings() {
             save.mutate({
               baseUrl: baseUrl.trim(),
               serviceId,
+              defaultPlanId,
               ...(token.trim() ? { token: token.trim() } : {}),
             })
           }
@@ -217,13 +284,19 @@ export default function MailwaySettings() {
             onClick={() => save.mutate({ token: '' })}
             loading={save.isPending}
             className="text-err hover:bg-err/[.1]"
+            title="Deja de usar el token. Los dominios ya publicados en Traefik se mantienen hasta desconectar Mailway."
           >
             <Trash2 size={13} /> Eliminar token
           </Button>
         )}
-        {cfg.panelUrl && (
+        {canDisconnect && (
+          <Button variant="ghost" size="sm" onClick={() => setDisconnectOpen(true)} className="text-err hover:bg-err/[.1]">
+            <Unplug size={13} /> Desconectar Mailway
+          </Button>
+        )}
+        {panelHref && (
           <a
-            href={cfg.panelUrl}
+            href={panelHref}
             target="_blank"
             rel="noreferrer"
             className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-acc-soft hover:underline"
@@ -247,6 +320,10 @@ export default function MailwaySettings() {
               {bridge.syncedAt ? ` Última lectura correcta: ${timeAgo(bridge.syncedAt)}.` : ''}
             </p>
             {bridge.error && <p className="text-warn">{bridge.error} Se mantiene la última configuración correcta.</p>}
+            <p>
+              Eliminar el token o cambiar la dirección no retira estas rutas, para que el webmail de los clientes siga
+              funcionando; solo las retira «Desconectar Mailway».
+            </p>
             {bridge.dropped.length > 0 && (
               <>
                 <p className="font-medium text-sub">Rutas descartadas por seguridad:</p>
