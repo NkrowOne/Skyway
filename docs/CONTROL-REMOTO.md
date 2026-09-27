@@ -79,6 +79,42 @@ Notas:
 - Revocar un token (Mi perfil → papelera) corta el acceso al instante.
 - Ponles caducidad si son para tareas puntuales.
 
+### Correo (Mailway) a través de Skyway
+
+Si el administrador ha conectado Mailway (Ajustes → Correo), el correo de cada
+proyecto se gestiona con el mismo token de Skyway: no hace falta un token de
+Mailway en el script, y el token solo alcanza el cliente de correo de los
+proyectos a los que da acceso (cada dominio y buzón se comprueba contra el
+proyecto). Referencia completa en `docs/FUNCIONALIDAD.md` §7.12.
+
+```bash
+# Estado del correo del proyecto (dominios con su estado DNS, buzones, uso)
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail"
+
+# Activarlo (propietario o admin): crea el cliente de correo del proyecto
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"mode":"create"}' "$BASE/api/projects/PROJ_ID/mail/link"
+
+# Añadir un dominio, ver sus registros DNS y verificarlo
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"domain":"suempresa.com"}' "$BASE/api/projects/PROJ_ID/mail/domains"
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/dns"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/verify"
+
+# Crear un buzón (la respuesta trae la contraseña UNA sola vez)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"domainId":"DOM_ID","localPart":"info"}' "$BASE/api/projects/PROJ_ID/mail/mailboxes"
+
+# Conectar un servicio por SMTP y volver a desplegarlo (solo devuelve los nombres de las variables)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"serviceId":"SVC_ID","mailboxId":"MBX_ID","mode":"smtp","redeploy":true}' \
+  "$BASE/api/projects/PROJ_ID/mail/connect"
+```
+
+Configurar la conexión (`PUT /api/mailway/config`) exige sesión de navegador de
+un administrador, como el resto de credenciales persistentes; con un token de
+API se puede consultar (`GET /api/mailway/config`) y probar (`POST /api/mailway/test`).
+
 ### CLI rápida: el comando `skyway`
 
 Para el día a día hay un script en `scripts/skyway` que envuelve la API: elige el

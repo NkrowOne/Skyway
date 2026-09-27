@@ -85,6 +85,27 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   [AUDITORIA-FACTURACION.md](AUDITORIA-FACTURACION.md), que corrigió 34 defectos —
   dos de ellos críticos— y deja 13 puntos pendientes.
 
+- **Integración con Mailway (correo)** (`mailway.ts`, `mailwaytraefik.ts`,
+  `routes/mailway.ts`): el token de gestión `mwt_…` es de **administrador** de
+  Mailway, así que el aislamiento entre proyectos lo impone Skyway: cada ruta con
+  `:domainId`/`:mailboxId` lo busca primero en el resumen del cliente vinculado
+  al proyecto y, si no es suyo, responde **404 sin llamar a Mailway**; si la
+  referencia externa del cliente deja de ser `skyway:project:<id>`, 409. Activar,
+  desactivar, conectar servicios, aplicar DNS en Cloudflare, restablecer
+  contraseñas y borrar buzones exigen gestionar el proyecto; vincular un cliente
+  existente, ser admin. El token nunca se devuelve ni se audita; contraseñas,
+  claves `mw_…` y URLs de enlaces de configuración tampoco (la respuesta de
+  «conectar» solo lista nombres de variables). Configurarlo exige sesión de
+  navegador. Un fallo de Mailway nunca se traduce en 401 (cerraría la sesión).
+  **Puente de Traefik** (`GET /api/traefik/mailway`, sin sesión): 404 si la
+  petición llega reenviada por Traefik; la configuración de Mailway se reescribe
+  a una forma mínima —solo `Host()` con nombres completos, sin colisión con el
+  dominio del panel (`SKYWAY_DOMAIN`) ni con ningún dominio de un servicio,
+  servicios `http://<contenedor>` (sin IP, sin puntos, sin `skyway`/Traefik ni
+  contenedores de otros proyectos), solo middlewares de redirección a HTTPS,
+  entradas `web`/`websecure` y el emisor `le`—, y la copia de reserva se vuelve a
+  sanear en cada uso. Pruebas en `server/test/mailway*.test.ts`.
+
 ---
 
 ## 3. Riesgos aceptados por diseño
@@ -108,6 +129,12 @@ Estos no son defectos, sino consecuencias del propósito de la herramienta
   limitado al workspace (`assertProjectAccess`), su alta/baja queda auditada y el
   admin puede revocarlos todos desde Ajustes. Recomendación al cliente: token
   *fine-grained* de solo lectura limitado a los repos que va a desplegar.
+- **Token de gestión de Mailway en claro**: se guarda en `settings` como el
+  `githubToken` global, porque se envía tal cual a Mailway. Solo lo escribe un
+  admin con sesión de navegador y la API nunca lo devuelve. El puente de Traefik
+  responde sin autenticación a quien llegue por la red interna (una aplicación
+  de la red `skyway-edge` podría leer los dominios de marca blanca publicados):
+  son dominios públicos y nombres de contenedor, sin secretos.
 
 ---
 
