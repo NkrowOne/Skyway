@@ -1,7 +1,7 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { BellRing, Database, FileText, KeyRound, Layers, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
+import { BellRing, Database, FileText, KeyRound, Layers, Mail, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
 import { ApiError, api, openStream } from '../api';
 import { useLatch, usePresence } from '../hooks';
 import { Button, Chip, ConfirmModal, CopyButton, EmptyState, ErrorState, Field, Menu, MenuItem, Modal, Skeleton, useToast } from '../components/ui';
@@ -10,7 +10,7 @@ import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { clearLiveSnapshot, publishLiveSnapshot, useLiveSnapshot } from '../livemetrics';
-import { ActiveDeploy, Me, MetricsSnapshot, Project, Service } from '../types';
+import { ActiveDeploy, MailwayStatus, Me, MetricsSnapshot, Project, Service } from '../types';
 import { CMD_K_LABEL, cx, EMPTY_LIST, EMPTY_RECORD, isActiveDeploy, serviceStatus } from '../utils';
 
 // Carga diferida: el drawer del servicio (con sus 8 pestañas y modales) y los
@@ -20,6 +20,7 @@ const NewServiceModal = lazy(() => import('../components/NewServiceModal'));
 const SharedVarsModal = lazy(() => import('../components/SharedVarsModal'));
 const GithubModal = lazy(() => import('../components/GithubModal'));
 const StatusPageModal = lazy(() => import('../components/StatusPageModal'));
+const MailModal = lazy(() => import('../components/MailModal'));
 const ImportReportView = lazy(() => import('../components/RailwayImportModal').then((m) => ({ default: m.ImportReportView })));
 
 /** Pestañas del drawer que se pueden pedir por URL (`?tab=`). */
@@ -266,6 +267,7 @@ export default function ProjectPage() {
   const [sharedOpen, setSharedOpen] = useState(false);
   const [githubOpen, setGithubOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
+  const [mailOpen, setMailOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
   const [editClient, setEditClient] = useState('');
@@ -291,6 +293,7 @@ export default function ProjectPage() {
   const sharedLatched = useLatch(sharedOpen);
   const githubLatched = useLatch(githubOpen);
   const statusLatched = useLatch(statusOpen);
+  const mailLatched = useLatch(mailOpen);
 
   const project = useQuery({
     queryKey: ['project', projectId],
@@ -316,6 +319,14 @@ export default function ProjectPage() {
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
   const isAdmin = me.data?.user?.role === 'admin';
+  // El botón «Correo» solo aparece con Mailway conectado; el administrador lo
+  // ve siempre, porque desde él llega a la configuración.
+  const mailStatus = useQuery({
+    queryKey: ['mailwayStatus'],
+    queryFn: () => api.get<MailwayStatus>('/mailway/status'),
+    staleTime: 300_000,
+  });
+  const showMail = isAdmin || !!mailStatus.data?.configured;
 
   const importReport = useQuery({
     queryKey: ['importReport', projectId],
@@ -523,6 +534,16 @@ export default function ProjectPage() {
               >
                 <Signal size={13} /> Página de estado
               </Button>
+              {showMail && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setMailOpen(true)}
+                  title="Dominios de correo, buzones y envío de correo desde los servicios"
+                >
+                  <Mail size={13} /> Correo
+                </Button>
+              )}
             </div>
 
             <Button size="sm" className="max-sm:h-11 max-sm:flex-1" onClick={() => setNewOpen(true)}>
@@ -585,6 +606,18 @@ export default function ProjectPage() {
                   >
                     Página de estado
                   </MenuItem>
+                  {showMail && (
+                    <MenuItem
+                      className="sm:hidden"
+                      icon={<Mail size={14} />}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        setMailOpen(true);
+                      }}
+                    >
+                      Correo
+                    </MenuItem>
+                  )}
                   {isManager && (
                     <>
                       <MenuItem
@@ -836,6 +869,18 @@ export default function ProjectPage() {
       {statusLatched && (
         <Suspense fallback={null}>
           <StatusPageModal open={statusOpen} onClose={() => setStatusOpen(false)} projectId={proj.id} isAdmin={!!isAdmin} />
+        </Suspense>
+      )}
+
+      {mailLatched && (
+        <Suspense fallback={null}>
+          <MailModal
+            open={mailOpen}
+            onClose={() => setMailOpen(false)}
+            projectId={proj.id}
+            projectName={proj.name}
+            services={services}
+          />
         </Suspense>
       )}
 

@@ -259,6 +259,19 @@ export const FAQ: FaqEntry[] = [
       'Para no escribir los hosts manualmente, utilice referencias `${{Servicio.VARIABLE}}` en Variables.',
     keywords: ['interno', 'interna', 'red', 'privada', 'conectar servicios', 'hostname', 'host', 'puerto publico', 'exponer', 'direccion interna', 'nombre del servicio'],
   },
+  {
+    id: 'correo-mailway',
+    category: 'dominios',
+    question: '¿Cómo creo buzones de correo con mi dominio y los conecto a mi aplicación?',
+    answer:
+      'En la página del proyecto, pulse **Correo**. La primera vez, el propietario de la cuenta pulsa **Activar correo**, que crea el cliente de correo del proyecto con el plan elegido.\n\n' +
+      '- **Dominios**: añada el dominio (`suempresa.com`) y cree en su proveedor de DNS los registros que se indican en **Registros DNS** (MX, SPF, DKIM y DMARC). Si el dominio está en Cloudflare, **Configurar en Cloudflare** muestra los cambios y los aplica. **Verificar ahora** comprueba el estado.\n' +
+      '- **Buzones**: cree las direcciones que necesite. La contraseña se muestra **una sola vez**; para configurar el correo en un teléfono o en un ordenador, envíe al titular el **enlace de configuración**.\n' +
+      '- **Conectar a un servicio**: elija el servicio y el buzón remitente. En modo **SMTP** se añaden `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`… con una contraseña de aplicación propia; en modo **API**, `MAILWAY_API_URL`, `MAILWAY_API_KEY` y `MAIL_FROM`. Es necesario volver a desplegar el servicio para aplicarlas.\n\n' +
+      'Si el botón **Correo** indica que no está disponible, el plan de la cuenta no incluye el módulo «Correo» o el administrador aún no ha conectado Mailway.',
+    keywords: ['correo', 'email', 'e-mail', 'mail', 'buzon', 'buzones', 'smtp', 'mx', 'dkim', 'spf', 'dmarc', 'mailway', 'enviar correos', 'nodemailer', 'webmail', 'cuenta de correo'],
+    links: [{ label: 'Configurar Mailway (administrador)', to: '/settings#mailway' }],
+  },
 
   // ---------- bases de datos ----------
   {

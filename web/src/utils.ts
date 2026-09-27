@@ -228,6 +228,7 @@ export const DEPLOY_TRIGGER_LABEL: Record<string, string> = {
   autodeploy: 'automático',
   rollback: 'reversión',
   import: 'importación',
+  mailway: 'correo',
 };
 
 export function isActiveDeploy(status: DeploymentStatus): boolean {
@@ -314,6 +315,17 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   file_mkdir: 'Carpeta creada en el contenedor',
   status_page_updated: 'Página de estado actualizada',
   status_page_rotated: 'Enlace de página de estado rotado',
+  mailway_config_updated: 'Conexión con Mailway modificada',
+  mailway_linked: 'Correo activado en el proyecto',
+  mailway_link_restored: 'Vínculo de correo recuperado',
+  mailway_unlinked: 'Correo desactivado en el proyecto',
+  mailway_domain_added: 'Dominio de correo añadido',
+  mailway_dns_applied: 'Registros DNS de correo aplicados en Cloudflare',
+  mailway_mailbox_created: 'Buzón creado',
+  mailway_mailbox_password_reset: 'Contraseña de buzón restablecida',
+  mailway_mailbox_deleted: 'Buzón eliminado',
+  mailway_setup_link_created: 'Enlace de configuración de buzón creado',
+  mailway_service_connected: 'Correo conectado a un servicio',
 };
 
 export function fmtDateTime(ts: number): string {

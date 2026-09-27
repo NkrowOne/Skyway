@@ -1215,3 +1215,142 @@ export interface PublicStatus {
   }[];
   generatedAt: number;
 }
+
+// ---------- correo (integración con Mailway) ----------
+
+export interface MailwayStatus {
+  configured: boolean;
+  panelUrl: string | null;
+}
+
+export interface MailwayBridgeStatus {
+  routers: number;
+  dropped: string[];
+  syncedAt: number | null;
+  error: string | null;
+}
+
+export interface MailwayConfigView {
+  configured: boolean;
+  baseUrl: string | null;
+  serviceId: string | null;
+  serviceName: string | null;
+  internalUrl: string | null;
+  hasToken: boolean;
+  panelUrl: string | null;
+  traefik: MailwayBridgeStatus | null;
+}
+
+export interface MailwayTestResult {
+  ok: boolean;
+  info: {
+    version: string;
+    brandName: string;
+    mailHostname: string;
+    webmailUrl: string;
+    panelUrl: string;
+    role: 'admin' | 'client' | null;
+    email: string | null;
+    features: { cloudflare: boolean; autoconfig: boolean; portal: boolean };
+  };
+  warnings: string[];
+}
+
+export type MailDnsCheckStatus = 'ok' | 'missing' | 'mismatch' | 'unknown';
+
+export interface MailDomain {
+  id: string;
+  domain: string;
+  status: 'pending_dns' | 'active' | 'error';
+  verifiedAt: number | null;
+  lastCheckedAt: number | null;
+  createdAt: number | null;
+  cloudflare: boolean;
+  dns: {
+    requiredTotal: number;
+    requiredOk: number;
+    allRequiredOk: boolean;
+    checkedAt: number | null;
+    checks: {
+      id: string;
+      label: string;
+      type: string;
+      name: string;
+      expected: string;
+      found: string | null;
+      status: MailDnsCheckStatus;
+      required: boolean;
+      help: string | null;
+    }[];
+  };
+}
+
+export interface MailMailbox {
+  id: string;
+  domainId: string;
+  domain: string;
+  localPart: string;
+  email: string;
+  displayName: string;
+  quotaMb: number;
+  usedBytes: number | null;
+  status: 'active' | 'suspended';
+  createdAt: number | null;
+}
+
+export interface MailSummary {
+  client: { id: string; name: string; slug: string; suspended: boolean };
+  plan: { id: string; name: string; maxDomains: number; maxMailboxes: number; mailboxQuotaMb: number } | null;
+  usage: { domains: number; mailboxes: number };
+  domains: MailDomain[];
+  mailboxes: MailMailbox[];
+  apiKeys: { id: string; name: string; prefix: string; senderEmail: string; lastUsedAt: number | null; revokedAt: number | null; createdAt: number | null }[];
+  appPasswords: { id: string; mailboxId: string; email: string; name: string; createdAt: number | null; revokedAt: number | null }[];
+  connection: {
+    imap: { host: string; port: number; security: string } | null;
+    submission: { host: string; port: number; security: string } | null;
+    webmailUrl: string | null;
+  };
+}
+
+export interface ProjectMailView {
+  moduleEnabled: boolean;
+  configured: boolean;
+  canManage: boolean;
+  isAdmin: boolean;
+  linked: boolean;
+  notice?: string | null;
+  panelUrl: string | null;
+  features: { cloudflare: boolean; autoconfig: boolean; portal: boolean } | null;
+  link?: { clientId: string; clientName: string; createdAt: number; createdBy: string | null };
+  summary?: MailSummary;
+}
+
+export interface MailOptions {
+  plans: { id: string; name: string; maxDomains: number; maxMailboxes: number; mailboxQuotaMb: number }[];
+  clients: { id: string; name: string; available: boolean; linkedTo: string | null }[];
+}
+
+export interface MailCloudflarePlan {
+  available: boolean;
+  reason: string | null;
+  account: { label: string } | null;
+  zone: { name: string; status: string } | null;
+  changes: {
+    action: 'create' | 'update' | 'keep' | 'conflict';
+    type: string;
+    name: string;
+    content: string;
+    priority: number | null;
+    current: string | null;
+    reason: string;
+    required: boolean;
+  }[];
+  summary: { create: number; update: number; keep: number; conflict: number };
+}
+
+export interface MailCloudflareResult {
+  applied: { action: string; type: string; name: string }[];
+  errors: { type: string; name: string; error: string }[];
+  domain: MailDomain | null;
+}

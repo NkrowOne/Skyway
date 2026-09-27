@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
-import { AlertTriangle, BellRing, CheckCircle2, ChevronDown, Cpu, DatabaseBackup, Download, Globe, KeyRound, Trash2 } from 'lucide-react';
+import { AlertTriangle, BellRing, CheckCircle2, ChevronDown, Cpu, DatabaseBackup, Download, Globe, KeyRound, Mail, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import GithubAppPanel from '../components/GithubAppPanel';
+import MailwaySettings from '../components/MailwaySettings';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { ModuleLogo } from '../components/ModuleIcon';
 import { Button, Chip, ConfirmModal, ErrorState, Field, Skeleton, useFlash, useToast } from '../components/ui';
@@ -462,6 +463,18 @@ export default function SettingsPage() {
         description="Método recomendado: se instala una vez por cuenta y no caduca."
       >
         <GithubAppPanel />
+      </SettingsSection>
+
+      {/* Fuera del bloque de ajustes cargados, como GitHub: tiene sus propias
+          consultas y así el enlace /settings#mailway encuentra la sección al entrar. */}
+      <SettingsSection
+        id="mailway"
+        icon={<Mail size={15} />}
+        iconClass="text-acc-soft"
+        title="Correo (Mailway)"
+        description="Conexión con el servicio de correo Mailway. Desde cada proyecto se pueden crear dominios de correo y buzones, y conectarlos a los servicios mediante variables SMTP o de API. Esta sección se guarda con su propio botón."
+      >
+        <MailwaySettings />
       </SettingsSection>
 
       {settingsReady && (

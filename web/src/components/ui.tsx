@@ -411,6 +411,9 @@ export function Menu({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
+        // Esc cierra el menú y nada más: sin esto, un menú abierto dentro de
+        // un diálogo cerraba también el diálogo (ambos escuchan en window).
+        e.stopPropagation();
         onCloseRef.current();
       }
     };
@@ -427,10 +430,11 @@ export function Menu({
     };
     // pointerdown cubre ratón y dedo: con mousedown, en iOS el toque fuera
     // llegaba tarde (tras el touchend) o no llegaba dentro de un scroll.
-    window.addEventListener('keydown', onKey);
+    // En captura: se atiende antes que los diálogos, que escuchan en burbuja.
+    window.addEventListener('keydown', onKey, true);
     window.addEventListener('pointerdown', onDown);
     return () => {
-      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('pointerdown', onDown);
     };
   }, [open]);
