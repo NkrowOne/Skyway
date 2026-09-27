@@ -21,6 +21,7 @@ import {
   projectSlugExists,
   setProjectVars,
   setProjectWorkspace,
+  setSetting,
   updateProjectMeta,
 } from '../db';
 import { publicServiceConfig } from './services';
@@ -31,7 +32,7 @@ import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '.
 import { projectNetworkName, removeNetwork } from '../docker/networks';
 import { triggerDeploy } from '../deploy/deployer';
 import { markManualAction } from '../monitor';
-import { mailwayConfigured, unlinkClient } from '../mailway';
+import { mailwayConfigured, previousClientKey, releaseProjectClient } from '../mailway';
 import { effectiveQuota, isWorkspaceActive, workspacePlan } from '../quota';
 import { ServiceRow, ServiceRuntime, WorkspaceRow } from '../types';
 import { slugify } from '../util';
@@ -253,12 +254,14 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     }
     // El vínculo de correo se borra con el proyecto (ON DELETE CASCADE); en
     // Mailway se suelta la referencia en segundo plano para que el cliente no
-    // quede apuntando a un proyecto que ya no existe. Sus buzones siguen allí.
+    // quede apuntando a un proyecto que ya no existe (solo si todavía la
+    // lleva: si es de otra integración no se toca). Sus buzones siguen allí.
     const mailLink = getMailwayLink(id);
     deleteProject(id);
+    setSetting(previousClientKey(id), null);
     invalidateDockerSnapshot();
     if (mailLink && mailwayConfigured()) {
-      void unlinkClient(mailLink.client_id).catch((err: unknown) => {
+      void releaseProjectClient(id, mailLink.client_id).catch((err: unknown) => {
         req.log.warn({ clientId: mailLink.client_id }, `No se pudo soltar el cliente de Mailway: ${(err as Error)?.message ?? err}`);
       });
     }

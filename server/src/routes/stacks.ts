@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
+import { domainClaimError } from '../domainguard';
 import { markManualAction } from '../monitor';
 import {
   countWorkspaceServices,
@@ -160,6 +161,10 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
     if (body.domain && !moduleAllowedForProject(projectId, 'domains', isAdmin)) {
       return reply.code(403).send({ error: 'El módulo «Dominios y TLS» no está activo en este workspace.' });
     }
+    if (body.domain) {
+      const conflicto = domainClaimError([body.domain], { projectId, serviceId: null, isAdmin });
+      if (conflicto) return reply.code(409).send({ error: conflicto });
+    }
 
     const prefix = uniquePrefix(
       projectId,
@@ -287,6 +292,10 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
     const isAdmin = currentUser(req)!.role === 'admin';
     if (body.domain && !moduleAllowedForProject(projectId, 'domains', isAdmin)) {
       return reply.code(403).send({ error: 'El módulo «Dominios y TLS» no está activo en este workspace.' });
+    }
+    if (body.domain) {
+      const conflicto = domainClaimError([body.domain], { projectId, serviceId: null, isAdmin });
+      if (conflicto) return reply.code(409).send({ error: conflicto });
     }
 
     const plan = await planRailwayTemplate(code, { prefix: body.prefix, projectName: project.name });

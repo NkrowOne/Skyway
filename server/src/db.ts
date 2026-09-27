@@ -1765,6 +1765,18 @@ export function findServiceIdByDomain(domain: string): string | undefined {
   return serviceDomainRows().find((r) => r.domains.includes(wanted))?.id;
 }
 
+/**
+ * Todos los servicios que tienen asignado ese dominio. Normalmente uno o
+ * ninguno; puede haber más en instalaciones anteriores a la comprobación de
+ * dominios únicos (`domainguard.ts`), y quien pregunta tiene que verlos todos.
+ */
+export function serviceIdsForDomain(domain: string): string[] {
+  const wanted = domain.trim().toLowerCase();
+  return serviceDomainRows()
+    .filter((r) => r.domains.includes(wanted))
+    .map((r) => r.id);
+}
+
 function serviceDomainRows(): { id: string; domains: string[] }[] {
   const out: { id: string; domains: string[] }[] = [];
   for (const row of stmt('SELECT id, config FROM services').all() as { id: string; config: string }[]) {

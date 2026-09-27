@@ -11,8 +11,9 @@
  * (`routes/mailway.ts`), que comprueban cada dominio y buzón contra el cliente
  * vinculado al proyecto antes de actuar.
  */
-import { getProject, getService, getSetting, setSetting } from './db';
+import { findServiceIdByDomain, getProject, getService, getSetting, setSetting } from './db';
 import { containerName } from './docker/containers';
+import { ProjectRow, ServiceRow } from './types';
 
 /** Claves de Ajustes. El token y el de Traefik son secretos: solo se leen aquí. */
 export const MAILWAY_SETTING = {
@@ -21,7 +22,20 @@ export const MAILWAY_SETTING = {
   serviceId: 'mailway.serviceId',
   traefikToken: 'mailway.traefikToken',
   traefikCache: 'mailway.traefikCache',
+  /** Plan con el que se crea el cliente cuando no lo elige un administrador. */
+  defaultPlanId: 'mailway.defaultPlanId',
+  /** Hosts públicos de la instancia (panel, webmail, servidor de correo), en JSON. */
+  hosts: 'mailway.hosts',
 } as const;
+
+/**
+ * Cliente de correo que tenía un proyecto antes de desactivarlo (`{clientId,
+ * clientName}` en JSON). Permite al propietario recuperarlo al reactivar: el
+ * cliente conserva sus dominios en Mailway y crear otro chocaría con ellos.
+ */
+export function previousClientKey(projectId: string): string {
+  return `mailway.previousClient:${projectId}`;
+}
 
 /** Prefijo de la referencia externa con la que Mailway identifica al proyecto. */
 export function projectExternalRef(projectId: string): string {
@@ -254,6 +268,34 @@ export function normalizeBaseUrl(url: string | null | undefined): string | null 
 }
 
 /**
+ * La URL si es http(s); si no, null. Las direcciones que llegan de Mailway
+ * (panel, webmail, enlaces) acaban en un `href` de la interfaz: un
+ * `javascript:` enviado por un Mailway comprometido se ejecutaría en la sesión
+ * de Skyway de quien pulsara el enlace.
+ */
+export function safeHttpUrl(url: unknown): string | null {
+  if (typeof url !== 'string' || !url.trim()) return null;
+  try {
+    const parsed = new URL(url.trim());
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+    if (parsed.username || parsed.password) return null;
+    return url.trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Host (en minúsculas, sin puerto) de una URL, o null. */
+export function hostOf(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Dirección interna del panel de Mailway cuando lo despliega este mismo Skyway:
  * el nombre del contenedor en la red `skyway-edge`. Solo está en esa red si el
  * servicio tiene algún dominio (así lo conecta el desplegador), y hablarle por
@@ -273,6 +315,82 @@ export function internalPanelUrl(serviceId: string | null): string | null {
 }
 
 /**
+ * Proyecto de Skyway en el que se ejecuta Mailway: el del servicio del panel
+ * configurado o, si no lo hay, el del servicio que sirve el dominio de la URL
+ * pública. Esto último solo se deduce en un proyecto de la plataforma (sin
+ * cuenta de cliente): si un cliente se hubiera asignado antes ese dominio, su
+ * proyecto pasaría por el de Mailway y recibiría el token y las rutas del
+ * puente. En ese caso hay que seleccionar el servicio del panel en Ajustes.
+ */
+export function mailwayProject(cfg: MailwayConfig = readMailwayConfig()): ProjectRow | null {
+  let service: ServiceRow | undefined;
+  if (cfg.serviceId) {
+    service = getService(cfg.serviceId);
+  } else {
+    const host = hostOf(cfg.baseUrl);
+    const serviceId = host ? findServiceIdByDomain(host) : undefined;
+    service = serviceId ? getService(serviceId) : undefined;
+    if (service && getProject(service.project_id)?.workspace_id) return null;
+  }
+  return (service && getProject(service.project_id)) || null;
+}
+
+/**
+ * Servicio de Skyway ajeno a Mailway que sirve el dominio de la URL pública, o
+ * null si no hay ninguno. Por esa URL viaja el token de gestión (de
+ * administrador): si el dominio lo sirve el servicio de otro cliente, Traefik
+ * le entregaría la petición con el token dentro.
+ */
+export function publicBaseConflict(cfg: MailwayConfig = readMailwayConfig()): ServiceRow | null {
+  const host = hostOf(cfg.baseUrl);
+  if (!host) return null;
+  const serviceId = findServiceIdByDomain(host);
+  const service = serviceId ? getService(serviceId) : undefined;
+  if (!service) return null;
+  const project = mailwayProject(cfg);
+  return project && service.project_id === project.id ? null : service;
+}
+
+const URL_PUBLICA_AJENA =
+  'La URL pública de Mailway corresponde a un dominio que Skyway asigna a un servicio que no es el panel de Mailway, ' +
+  'y por seguridad no se envía el token de gestión por ella. Un administrador debe seleccionar el servicio del panel ' +
+  'o corregir la URL en Ajustes → Correo (Mailway).';
+
+/**
+ * Hosts públicos de la instancia de Mailway: el de la URL configurada y los que
+ * anunció Mailway (panel, webmail y servidor de correo). Ningún servicio de un
+ * cliente puede asignárselos: con una regla de Traefik más larga se quedaría
+ * con el tráfico del webmail o del panel (y con el token de Skyway).
+ */
+export function mailwayReservedHosts(cfg: MailwayConfig = readMailwayConfig()): string[] {
+  const out = new Set<string>();
+  const base = hostOf(cfg.baseUrl);
+  if (base) out.add(base);
+  const stored = getSetting(MAILWAY_SETTING.hosts);
+  if (stored) {
+    try {
+      const list = JSON.parse(stored) as unknown;
+      if (Array.isArray(list)) for (const h of list) if (typeof h === 'string' && h) out.add(h.toLowerCase());
+    } catch {
+      /* valor ilegible: se reescribe con la próxima lectura de la instancia */
+    }
+  }
+  return [...out];
+}
+
+function rememberInstanceHosts(info: MailwayInfo): void {
+  const hosts = new Set<string>();
+  for (const url of [info.panelUrl, info.webmailUrl]) {
+    const host = hostOf(safeHttpUrl(url));
+    if (host) hosts.add(host);
+  }
+  const mail = typeof info.mailHostname === 'string' ? info.mailHostname.trim().toLowerCase() : '';
+  if (/^[a-z0-9.-]{1,253}$/.test(mail)) hosts.add(mail);
+  const json = JSON.stringify([...hosts].sort());
+  if (getSetting(MAILWAY_SETTING.hosts) !== json) setSetting(MAILWAY_SETTING.hosts, json);
+}
+
+/**
  * Hasta cuándo se salta la dirección interna tras un fallo de conexión. Fuera
  * de Docker (desarrollo) el nombre del contenedor no resuelve nunca, y probarlo
  * en cada petición sumaba una consulta DNS fallida a todas.
@@ -284,7 +402,7 @@ function candidateBases(cfg: MailwayConfig): string[] {
   const out: string[] = [];
   const internal = internalPanelUrl(cfg.serviceId);
   if (internal && (internalDownUntil.get(internal) ?? 0) < Date.now()) out.push(internal);
-  if (cfg.baseUrl && !out.includes(cfg.baseUrl)) out.push(cfg.baseUrl);
+  if (cfg.baseUrl && !out.includes(cfg.baseUrl) && !publicBaseConflict(cfg)) out.push(cfg.baseUrl);
   // Sin URL pública, la interna se intenta aunque haya fallado hace poco: no hay alternativa.
   if (out.length === 0 && internal) out.push(internal);
   return out;
@@ -344,6 +462,7 @@ async function requestMailway<T>(path: string, opts: RequestOpts = {}): Promise<
   }
   const bases = candidateBases(cfg);
   if (bases.length === 0) {
+    if (cfg.baseUrl) throw new MailwayError('config', URL_PUBLICA_AJENA);
     throw new MailwayError('config', 'No se ha configurado la dirección del panel de Mailway.');
   }
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
@@ -378,13 +497,16 @@ async function requestMailway<T>(path: string, opts: RequestOpts = {}): Promise<
           'Compruebe la dirección configurada y que el panel esté en funcionamiento.',
       );
     }
-    return parseResponse<T>(res);
+    return parseResponse<T>(res, opts.headers ? 'el token de Traefik' : 'el token de gestión');
   }
   // Inalcanzable: el bucle o devuelve o lanza en la última dirección.
   throw new MailwayError('network', 'No se ha podido conectar con Mailway.');
 }
 
-async function parseResponse<T>(res: Response): Promise<T> {
+/** Códigos del 401 de Mailway que explican por qué no vale el token (revocado, caducado…). */
+const MOTIVOS_401 = new Set(['token_revoked', 'token_expired', 'token_user_disabled']);
+
+async function parseResponse<T>(res: Response, credencial: string): Promise<T> {
   const text = await res.text().catch(() => '');
   let body: unknown;
   try {
@@ -404,9 +526,12 @@ async function parseResponse<T>(res: Response): Promise<T> {
     );
   }
   if (res.status === 401) {
+    // Con el motivo concreto el administrador sabe si tiene que crear otro
+    // token o reactivar al usuario, en vez de probar a ciegas.
+    const motivo = mensaje && code && MOTIVOS_401.has(code) ? ` Motivo: ${/[.!?]$/.test(mensaje) ? mensaje : `${mensaje}.`}` : '';
     throw new MailwayError(
       'auth',
-      'Mailway ha rechazado el token de gestión (401). Revise el token en Ajustes → Correo (Mailway).',
+      `Mailway ha rechazado ${credencial} (401).${motivo} Revise el token en Ajustes → Correo (Mailway).`,
       401,
       code,
     );
@@ -453,6 +578,7 @@ export async function getInfo(opts: { config?: MailwayConfig; fresh?: boolean } 
   }
   if (!opts.config) {
     infoCache = { info, at: Date.now() };
+    rememberInstanceHosts(info);
     const traefikToken = info.traefik?.token;
     if (typeof traefikToken === 'string' && traefikToken && getSetting(MAILWAY_SETTING.traefikToken) !== traefikToken) {
       setSetting(MAILWAY_SETTING.traefikToken, traefikToken);
@@ -472,9 +598,9 @@ export function resetMailwayCaches(): void {
   internalDownUntil.clear();
 }
 
-/** URL pública del panel para los enlaces que ve el usuario. */
+/** URL pública del panel para los enlaces que ve el usuario (siempre http o https). */
 export function publicPanelUrl(cfg: MailwayConfig = readMailwayConfig()): string | null {
-  return normalizeBaseUrl(cachedInfo()?.panelUrl) ?? cfg.baseUrl;
+  return normalizeBaseUrl(safeHttpUrl(cachedInfo()?.panelUrl)) ?? cfg.baseUrl;
 }
 
 // ---------- planes y clientes ----------
@@ -527,6 +653,24 @@ export async function unlinkClient(clientId: string): Promise<MailwayClient | nu
   return res.client ?? null;
 }
 
+/**
+ * Suelta en Mailway la referencia del proyecto, pero solo si el cliente
+ * vinculado todavía la lleva. Si ya es de otra integración (o no tiene
+ * ninguna), borrarla desvincularía algo que no es de este proyecto: Mailway
+ * pone la referencia a null sin mirar cuál era. Devuelve si se ha soltado.
+ */
+export async function releaseProjectClient(projectId: string, clientId: string): Promise<boolean> {
+  const owner = await getClientByRef(projectExternalRef(projectId));
+  if (!owner || owner.id !== clientId) return false;
+  try {
+    await unlinkClient(clientId);
+  } catch (err) {
+    if (err instanceof MailwayError && err.status === 404) return false;
+    throw err;
+  }
+  return true;
+}
+
 export async function getSummary(clientId: string): Promise<MailwaySummary> {
   const res = await mailwayFetch<Partial<MailwaySummary>>(`/api/integrations/clients/${enc(clientId)}/summary`);
   if (!res.client || typeof res.client.id !== 'string') {
@@ -561,15 +705,29 @@ export async function getDomainDns(domainId: string): Promise<MailwayDnsRecord[]
   return Array.isArray(res.records) ? res.records : [];
 }
 
-export function getCloudflarePlan(domainId: string): Promise<MailwayCloudflarePlan> {
-  return mailwayFetch<MailwayCloudflarePlan>(`/api/domains/${enc(domainId)}/cloudflare`);
+/**
+ * `soloCliente` pide a Mailway que use únicamente las cuentas de Cloudflare del
+ * propio cliente. Skyway habla con un token de administrador, y sin esto
+ * Mailway resolvería la zona también con las cuentas de la instancia: el
+ * propietario de un proyecto podría leer y reescribir el DNS de las zonas del
+ * operador dando de alta como dominio de correo uno que viva en ellas.
+ */
+function cloudflareQuery(soloCliente: boolean | undefined): string {
+  return soloCliente ? '?soloCliente=1' : '';
 }
 
-export function applyCloudflare(domainId: string, opts: { replaceConflicts?: boolean }): Promise<MailwayCloudflareResult> {
-  return mailwayFetch<MailwayCloudflareResult>(`/api/domains/${enc(domainId)}/cloudflare/apply`, {
-    method: 'POST',
-    body: { replaceConflicts: !!opts.replaceConflicts },
-  });
+export function getCloudflarePlan(domainId: string, opts: { soloCliente?: boolean } = {}): Promise<MailwayCloudflarePlan> {
+  return mailwayFetch<MailwayCloudflarePlan>(`/api/domains/${enc(domainId)}/cloudflare${cloudflareQuery(opts.soloCliente)}`);
+}
+
+export function applyCloudflare(
+  domainId: string,
+  opts: { replaceConflicts?: boolean; soloCliente?: boolean },
+): Promise<MailwayCloudflareResult> {
+  return mailwayFetch<MailwayCloudflareResult>(
+    `/api/domains/${enc(domainId)}/cloudflare/apply${cloudflareQuery(opts.soloCliente)}`,
+    { method: 'POST', body: { replaceConflicts: !!opts.replaceConflicts } },
+  );
 }
 
 // ---------- buzones ----------
@@ -609,12 +767,22 @@ export function createAppPassword(
   return mailwayFetch(`/api/mailboxes/${enc(mailboxId)}/app-passwords`, { method: 'POST', body: { name } });
 }
 
+/** Revoca una contraseña de aplicación: deja de funcionar al instante. */
+export async function revokeAppPassword(mailboxId: string, appId: string): Promise<void> {
+  await mailwayFetch(`/api/mailboxes/${enc(mailboxId)}/app-passwords/${enc(appId)}`, { method: 'DELETE' });
+}
+
 export function createApiKey(input: {
   clientId: string;
   name: string;
   senderMailboxId: string;
 }): Promise<{ key: string; info: MailwayApiKeyInfo }> {
   return mailwayFetch('/api/apikeys', { method: 'POST', body: input });
+}
+
+/** Revoca una clave de la API de envío (Mailway retira también su contraseña SMTP interna). */
+export async function revokeApiKey(keyId: string): Promise<void> {
+  await mailwayFetch(`/api/apikeys/${enc(keyId)}`, { method: 'DELETE' });
 }
 
 // ---------- Traefik ----------

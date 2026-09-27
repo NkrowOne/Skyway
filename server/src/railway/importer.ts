@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { domainClaimError } from '../domainguard';
 import {
   createProject,
   createService,
@@ -619,6 +620,23 @@ export async function runRailwayImport(
   // importado quede sujeto a su cuota y facturación (no huérfano).
   const workspace = opts.client?.trim() ? getOrCreateWorkspaceByName(opts.client.trim()) : undefined;
   const project = createProject(name, slug, workspace?.name ?? null, workspace?.id ?? null);
+
+  // Los dominios propios de Railway se asignan tal cual: los que ya usa otro
+  // servicio de este servidor (o el panel) se omiten con una nota, en vez de
+  // abortar la importación entera o repartir un dominio entre dos servicios.
+  const asignados = new Set<string>();
+  for (const planned of plan.services) {
+    const omitidos: string[] = [];
+    planned.domains = planned.domains.filter((d) => {
+      const conflicto = asignados.has(d)
+        ? `El dominio ${d} ya se asigna a otro servicio de esta importación.`
+        : domainClaimError([d], { projectId: project.id, serviceId: null, isAdmin: true });
+      if (conflicto) omitidos.push(conflicto);
+      else asignados.add(d);
+      return !conflicto;
+    });
+    for (const motivo of omitidos) planned.notes.push(`Dominio omitido: ${motivo}`);
+  }
 
   const report: ImportReport = {
     ts: Date.now(),

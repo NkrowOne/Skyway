@@ -14,18 +14,24 @@
  *     encaja en una forma mínima y conocida; el resto se descarta y se anota.
  *
  * Si Mailway no responde, se sirve la última configuración buena (memoria y
- * Ajustes): devolver una vacía haría que Traefik retirase todas las rutas.
+ * Ajustes): devolver una vacía haría que Traefik retirase todas las rutas. Lo
+ * mismo si se elimina el token o la dirección: los dominios de los clientes
+ * siguen publicados hasta que un administrador desconecta Mailway de forma
+ * explícita («Desconectar Mailway», `forgetMailwayTraefik`), que es lo único
+ * que las retira. Rotar o corregir la configuración no deja sin webmail a
+ * nadie.
  * Nunca se responde con error: el proveedor HTTP de Traefik entra en
  * reintentos con espera creciente ante cualquier respuesta distinta de 200.
  */
-import { findServiceIdByDomain, getProject, getService, getSetting, listAssignedDomains, setSetting } from './db';
+import { getSetting, listAssignedDomains, listServices, setSetting } from './db';
+import { configuredReplicas, replicaName } from './docker/containers';
 import {
   MAILWAY_SETTING,
   MailwayError,
   getInfo,
   getTraefikConfig,
   mailwayConfigured,
-  readMailwayConfig,
+  mailwayProject,
 } from './mailway';
 
 // ---------- saneado (función pura) ----------
@@ -274,39 +280,45 @@ export function stableStringify(value: unknown): string {
 
 // ---------- puente con estado ----------
 
-/** Contenedores que nunca pueden ser destino: el propio panel, Traefik y el host. */
-const BACKENDS_VETADOS = new Set(['skyway', 'skyway-traefik', 'traefik', 'localhost']);
+/**
+ * Contenedores propios de Mailway que no despliega Skyway (webmail, servidor de
+ * correo; `mailway-webmail` por defecto). Skyway nombra los suyos
+ * `skyway-<proyecto>-<servicio>` y no crea alias en la red de Traefik, así que
+ * ningún cliente puede tener un contenedor con este prefijo.
+ */
+const PREFIJO_MAILWAY = 'mailway-';
 
 /**
- * Prefijo de los contenedores del proyecto de Skyway donde vive Mailway. Se
- * toma del servicio configurado o, si no lo hay, del servicio que sirve el
- * dominio de la URL pública. Los contenedores de OTROS proyectos
- * (`skyway-<otro>-…`) no pueden ser destino: una ruta de Mailway no debe poder
- * exponer la aplicación de otro cliente bajo un dominio distinto.
+ * Nombres exactos de los contenedores del proyecto de Skyway donde vive Mailway
+ * (con sus réplicas). Se comparan enteros, nunca por prefijo: `skyway-correo-`
+ * también es el principio de los contenedores del proyecto «correo-x», que es
+ * de otro cliente.
  */
-function mailwayContainerPrefix(): string | null {
-  const cfg = readMailwayConfig();
-  let serviceId = cfg.serviceId;
-  if (!serviceId && cfg.baseUrl) {
-    try {
-      serviceId = findServiceIdByDomain(new URL(cfg.baseUrl).hostname) ?? null;
-    } catch {
-      serviceId = null;
-    }
+function mailwayContainerNames(): Set<string> {
+  const project = mailwayProject();
+  const names = new Set<string>();
+  if (!project) return names;
+  for (const service of listServices(project.id)) {
+    if (service.type === 'database') continue;
+    for (let i = 1; i <= configuredReplicas(service); i++) names.add(replicaName(project, service, i));
   }
-  const service = serviceId ? getService(serviceId) : undefined;
-  const project = service ? getProject(service.project_id) : undefined;
-  return project ? `skyway-${project.slug}-` : null;
+  return names;
 }
 
+/**
+ * Qué acepta el puente. Destinos: los contenedores `mailway-…` y los del
+ * proyecto de Mailway, y nada más. Una lista de prohibidos no bastaba: un
+ * nombre de una sola etiqueta como `localhost`, `metadata` o el de otro
+ * contenedor de la máquina (un proxy del socket de Docker, un panel de
+ * administración) lo resuelve Traefik fuera del alcance de Mailway.
+ */
 export function bridgeOptions(): SanitizeOptions {
   const reserved = listAssignedDomains();
   for (const d of (process.env.SKYWAY_DOMAIN ?? '').split(',')) if (d.trim()) reserved.push(d.trim().toLowerCase());
-  const prefix = mailwayContainerPrefix();
+  const names = mailwayContainerNames();
   return {
     reservedHosts: reserved,
-    allowBackendHost: (host) =>
-      !BACKENDS_VETADOS.has(host) && (!host.startsWith('skyway-') || (!!prefix && host.startsWith(prefix))),
+    allowBackendHost: (host) => (host.startsWith(PREFIJO_MAILWAY) && host.length > PREFIJO_MAILWAY.length) || names.has(host),
   };
 }
 
@@ -385,9 +397,27 @@ async function fetchRaw(): Promise<unknown> {
   }
 }
 
+const SIN_CONFIGURAR =
+  'La conexión con Mailway no está configurada (sin token o sin dirección). Se mantienen las últimas rutas publicadas hasta que un administrador desconecte Mailway.';
+
 /** Configuración dinámica para el proveedor HTTP de Traefik. Nunca lanza. */
 export async function mailwayTraefikConfig(log?: Logger): Promise<TraefikDynamicConfig> {
-  if (!mailwayConfigured()) return {};
+  if (!mailwayConfigured()) {
+    // Sin token no se puede leer nada nuevo, pero retirar las rutas dejaría sin
+    // webmail a los clientes por un token rotado o borrado por error: solo las
+    // retira «Desconectar Mailway». Se re-sanea igualmente con los dominios de ahora.
+    const config = lastGood(bridgeOptions());
+    const routers = countRouters(config);
+    state = {
+      config,
+      fetchedAt: Date.now(),
+      syncedAt: state?.syncedAt ?? null,
+      routers,
+      dropped: state?.dropped ?? [],
+      error: routers > 0 ? SIN_CONFIGURAR : null,
+    };
+    return config;
+  }
   if (state && Date.now() - state.fetchedAt < MIN_INTERVAL_MS) return state.config;
   if (inflight) return inflight;
 
@@ -430,4 +460,39 @@ export function mailwayTraefikStatus(): BridgeStatus | null {
 export function resetMailwayTraefikState(): void {
   state = null;
   lastWarn = null;
+}
+
+/**
+ * Retira todas las rutas de Mailway: borra también la última configuración
+ * buena guardada. Solo lo hace «Desconectar Mailway»; el siguiente sondeo de
+ * Traefik recibe una configuración vacía.
+ */
+export function forgetMailwayTraefik(): void {
+  setSetting(MAILWAY_SETTING.traefikCache, null);
+  resetMailwayTraefikState();
+}
+
+/**
+ * Dominios que publica ahora el puente (la última configuración buena, ya
+ * saneada). Ningún servicio de un cliente puede asignárselos: el saneado
+ * retiraría la ruta de Mailway y el webmail de ese dominio pasaría a ser suyo.
+ */
+export function mailwayPublishedHosts(): string[] {
+  let config: unknown = state?.config ?? null;
+  if (!config) {
+    const stored = getSetting(MAILWAY_SETTING.traefikCache);
+    if (stored) {
+      try {
+        config = JSON.parse(stored);
+      } catch {
+        config = null;
+      }
+    }
+  }
+  const routers = isObject(config) && isObject(config.http) && isObject(config.http.routers) ? config.http.routers : {};
+  const hosts = new Set<string>();
+  for (const def of Object.values(routers)) {
+    for (const h of (isObject(def) ? parseHostRule(def.rule) : null) ?? []) hosts.add(h);
+  }
+  return [...hosts];
 }

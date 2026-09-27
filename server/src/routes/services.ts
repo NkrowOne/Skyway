@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { assertProjectAccess, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { dbConsoleEngine } from '../dbconsole';
+import { domainClaimError } from '../domainguard';
 import { markManualAction } from '../monitor';
 import {
   countWorkspaceServices,
@@ -242,6 +243,12 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (Array.isArray(reqDomains) && reqDomains.length > 0 && !moduleAllowedForProject(projectId, 'domains', isAdmin)) {
       return reply.code(403).send({ error: 'El módulo «Dominios y TLS» no está activo en este workspace.' });
     }
+    if (base.type !== 'database') {
+      // Antes de crear nada: un dominio de otro (o del panel) no se reparte.
+      const { domains } = z.object({ domains: z.array(domainSchema).default([]) }).parse(req.body);
+      const conflicto = domainClaimError(domains, { projectId, serviceId: null, isAdmin });
+      if (conflicto) return reply.code(409).send({ error: conflicto });
+    }
 
     let service: ServiceRow;
     if (base.type === 'image') {
@@ -450,6 +457,19 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    // Dominios únicos en todo el servidor (y nunca los del panel ni los de
+    // Mailway): vale también para proyectos sin cuenta y para el administrador.
+    const oldDomainList = (oldCfg.domains ?? []) as string[];
+    if (Array.isArray(newCfg.domains)) {
+      const conflicto = domainClaimError(newCfg.domains as string[], {
+        projectId: found.project.id,
+        serviceId: found.service.id,
+        isAdmin: currentUser(req)!.role === 'admin',
+        current: oldDomainList,
+      });
+      if (conflicto) return reply.code(409).send({ error: conflicto });
+    }
+
     // Cuota agregada y módulos del workspace (recursos acotados a todos los proyectos en total).
     const workspace = workspaceOfProject(found.project.id);
     if (workspace) {
@@ -458,7 +478,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(403).send({ error: 'El módulo «Escalado horizontal» no está activo en este workspace.' });
       }
       // Solo se bloquea AÑADIR dominios o ACTIVAR backups programados (no conservar los existentes).
-      const oldDomains = new Set<string>((oldCfg.domains ?? []) as string[]);
+      const oldDomains = new Set<string>(oldDomainList);
       if (
         Array.isArray(newCfg.domains) &&
         (newCfg.domains as string[]).some((d) => !oldDomains.has(d)) &&

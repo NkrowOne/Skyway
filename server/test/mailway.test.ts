@@ -1,8 +1,10 @@
 /**
  * Integración con Mailway: configuración, correo por proyecto, aislamiento
  * entre clientes, conexión de servicios y puente de Traefik. Mailway se
- * sustituye por un doble en memoria detrás de `fetch` que sigue el contrato
- * de su API de integraciones, así se prueba también el cliente HTTP real.
+ * sustituye por un doble en memoria detrás de `fetch` (`mailwayfake.ts`) que
+ * sigue el contrato de su API de integraciones, así se prueba también el
+ * cliente HTTP real. Las regresiones de la revisión de seguridad están en
+ * `mailway-seguridad.test.ts`.
  */
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,243 +31,12 @@ import { resetMailwayCaches } from '../src/mailway';
 import { resetMailwayTraefikState } from '../src/mailwaytraefik';
 import type { GitConfig, ProjectRow, ServiceRow, UserRow } from '../src/types';
 import { hashPassword, randomToken } from '../src/util';
+import { FakeClient, MW_BASE, MW_TOKEN, TRAEFIK_TOKEN, fakeFetch, mw } from './mailwayfake';
 
 // El cuerpo de una respuesta HTTP es frontera: se inspecciona sin tipar.
 type Json = any;
 
 const SAME_ORIGIN = { 'sec-fetch-site': 'same-origin' };
-const MW_BASE = 'https://mail-panel.example.com';
-const MW_TOKEN = 'mwt_0123abcd_EsteEsElSecretoDeGestion';
-const TRAEFIK_TOKEN = 'traefik-token-secreto-1';
-
-// ---------- doble de Mailway ----------
-
-interface FakeClient {
-  id: string;
-  name: string;
-  slug: string;
-  externalRef: string | null;
-  suspended: boolean;
-  planId: string;
-}
-interface FakeDomain {
-  id: string;
-  clientId: string;
-  domain: string;
-  status: 'pending_dns' | 'active' | 'error';
-}
-interface FakeMailbox {
-  id: string;
-  domainId: string;
-  domain: string;
-  localPart: string;
-  email: string;
-  displayName: string;
-  quotaMb: number;
-  status: 'active';
-  usedBytes: number | null;
-}
-
-const mw = {
-  role: 'admin' as 'admin' | 'client',
-  traefikToken: TRAEFIK_TOKEN,
-  down: false,
-  clients: [] as FakeClient[],
-  domains: [] as FakeDomain[],
-  mailboxes: [] as FakeMailbox[],
-  traefikConfig: {} as unknown,
-  /** Peticiones recibidas: método, ruta y cabeceras de autenticación. */
-  calls: [] as { method: string; path: string; auth: string | null; traefik: string | null; host: string }[],
-  seq: 0,
-  /** Hosts a los que «no se llega» (contenedores fuera de Docker). */
-  unreachable: new Set<string>(),
-};
-
-const nextId = (p: string) => `${p}_${++mw.seq}`;
-
-function json(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
-}
-
-function domainRecord(d: FakeDomain) {
-  return {
-    ...d,
-    dkimSelector: 'mw1',
-    dnsStatus: { checks: [], requiredTotal: 4, requiredOk: d.status === 'active' ? 4 : 1, allRequiredOk: d.status === 'active', checkedAt: 1 },
-    lastCheckedAt: null,
-    verifiedAt: null,
-    createdAt: 1,
-    cloudflare: null,
-  };
-}
-
-async function fakeFetch(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
-  const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
-  const method = (init.method ?? 'GET').toUpperCase();
-  const headers = new Headers(init.headers);
-  mw.calls.push({
-    method,
-    path: url.pathname + url.search,
-    auth: headers.get('authorization'),
-    traefik: headers.get('x-mailway-token'),
-    host: url.host,
-  });
-  if (mw.unreachable.has(url.hostname)) {
-    throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } });
-  }
-  if (mw.down) throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
-  if (url.origin !== MW_BASE) return json(404, { error: 'Host desconocido' });
-
-  const path = url.pathname;
-  const body = init.body ? JSON.parse(String(init.body)) : {};
-
-  if (path === '/api/traefik/config') {
-    if (headers.get('x-mailway-token') !== mw.traefikToken) return json(401, { error: 'Token no válido.' });
-    return json(200, mw.traefikConfig);
-  }
-  if (headers.get('authorization') !== `Bearer ${MW_TOKEN}`) return json(401, { error: 'No autenticado', code: 'unauthorized' });
-
-  const admin = mw.role === 'admin';
-  const forbidden = () => json(403, { error: 'No tienes permiso para hacer esto.', code: 'forbidden' });
-  let m: RegExpMatchArray | null;
-
-  if (path === '/api/integrations/info' && method === 'GET') {
-    return json(200, {
-      version: '1.0.0',
-      brandName: 'Correo Demo',
-      mailHostname: 'mail.example.com',
-      webmailUrl: 'https://webmail.example.com',
-      panelUrl: MW_BASE,
-      imap: { host: 'mail.example.com', port: 993, security: 'SSL/TLS' },
-      smtp: { host: 'mail.example.com', port: 465, security: 'SSL/TLS' },
-      submission: { host: 'mail.example.com', port: 587, security: 'STARTTLS' },
-      user: { id: 'usr_1', email: 'admin@mail.example.com', name: 'Admin', role: mw.role, clientId: null },
-      features: { cloudflare: true, autoconfig: true, portal: true },
-      traefik: admin ? { configPath: '/api/traefik/config', token: mw.traefikToken } : null,
-    });
-  }
-  if (path === '/api/plans') {
-    return json(200, { plans: [{ id: 'pln_1', name: 'Básico', maxDomains: 2, maxMailboxes: 10, maxAliases: 10, mailboxQuotaMb: 1024 }] });
-  }
-  if (path === '/api/clients' && method === 'GET') {
-    if (!admin) return forbidden();
-    return json(200, { clients: mw.clients });
-  }
-  if (path === '/api/integrations/clients/ensure' && method === 'POST') {
-    if (!admin) return forbidden();
-    const existing = mw.clients.find((c) => c.externalRef === body.externalRef);
-    if (existing) return json(200, { client: existing, created: false });
-    const client: FakeClient = {
-      id: nextId('cli'),
-      name: body.name,
-      slug: String(body.name).toLowerCase(),
-      externalRef: body.externalRef,
-      suspended: false,
-      planId: body.planId ?? 'pln_1',
-    };
-    mw.clients.push(client);
-    return json(200, { client, created: true });
-  }
-  if (path === '/api/integrations/clients/by-ref') {
-    if (!admin) return forbidden();
-    const client = mw.clients.find((c) => c.externalRef === url.searchParams.get('externalRef'));
-    return client ? json(200, { client }) : json(404, { error: 'Cliente no encontrado.', code: 'not_found' });
-  }
-  if ((m = path.match(/^\/api\/integrations\/clients\/([^/]+)\/link$/))) {
-    if (!admin) return forbidden();
-    const client = mw.clients.find((c) => c.id === m![1]);
-    if (!client) return json(404, { error: 'Cliente no encontrado.' });
-    if (method === 'PUT') {
-      if (mw.clients.some((c) => c.id !== client.id && c.externalRef === body.externalRef)) {
-        return json(409, { error: 'Otro cliente ya usa esa referencia.', code: 'conflict' });
-      }
-      client.externalRef = body.externalRef;
-    } else {
-      client.externalRef = null;
-    }
-    return json(200, { client });
-  }
-  if ((m = path.match(/^\/api\/integrations\/clients\/([^/]+)\/summary$/))) {
-    const client = mw.clients.find((c) => c.id === m![1]);
-    if (!client) return json(404, { error: 'Cliente no encontrado.', code: 'not_found' });
-    const domains = mw.domains.filter((d) => d.clientId === client.id);
-    const ids = new Set(domains.map((d) => d.id));
-    const mailboxes = mw.mailboxes.filter((b) => ids.has(b.domainId));
-    return json(200, {
-      client,
-      plan: { id: 'pln_1', name: 'Básico', maxDomains: 2, maxMailboxes: 10, maxAliases: 10, mailboxQuotaMb: 1024 },
-      usage: { domains: domains.length, mailboxes: mailboxes.length },
-      domains: domains.map(domainRecord),
-      mailboxes,
-      apiKeys: [],
-      appPasswords: [],
-      connection: { imap: null, submission: null, webmailUrl: 'https://webmail.example.com' },
-    });
-  }
-  if (path === '/api/domains' && method === 'POST') {
-    const d: FakeDomain = { id: nextId('dom'), clientId: body.clientId, domain: body.domain, status: 'pending_dns' };
-    mw.domains.push(d);
-    return json(200, { domain: domainRecord(d) });
-  }
-  if ((m = path.match(/^\/api\/domains\/([^/]+)\/(verify|dns|cloudflare|cloudflare\/apply)$/))) {
-    const d = mw.domains.find((x) => x.id === m![1]);
-    if (!d) return json(404, { error: 'Dominio no encontrado.' });
-    if (m[2] === 'verify') {
-      d.status = 'active';
-      return json(200, { domain: domainRecord(d) });
-    }
-    if (m[2] === 'dns') return json(200, { records: [{ type: 'MX', name: d.domain, content: '10 mail.example.com' }] });
-    if (m[2] === 'cloudflare') {
-      return json(200, {
-        available: true,
-        account: { id: 'cfa_1', label: 'Cuenta' },
-        zone: { id: 'z1', name: d.domain, status: 'active' },
-        changes: [{ action: 'create', type: 'MX', name: d.domain, content: 'mail.example.com', priority: 10, reason: 'Falta', required: true }],
-        summary: { create: 1, update: 0, keep: 0, conflict: 0 },
-      });
-    }
-    return json(200, { applied: [{ action: 'create', type: 'MX', name: d.domain }], errors: [], domain: domainRecord(d) });
-  }
-  if (path === '/api/mailboxes' && method === 'POST') {
-    const d = mw.domains.find((x) => x.id === body.domainId);
-    if (!d) return json(404, { error: 'Dominio no encontrado.' });
-    const b: FakeMailbox = {
-      id: nextId('mbx'),
-      domainId: d.id,
-      domain: d.domain,
-      localPart: body.localPart,
-      email: `${body.localPart}@${d.domain}`,
-      displayName: body.displayName ?? '',
-      quotaMb: 1024,
-      status: 'active',
-      usedBytes: 2048,
-    };
-    mw.mailboxes.push(b);
-    return json(200, { mailbox: b, password: 'Contraseña-Del-Buzon-1' });
-  }
-  if ((m = path.match(/^\/api\/mailboxes\/([^/]+)(\/password|\/setup-links|\/app-passwords)?$/))) {
-    const b = mw.mailboxes.find((x) => x.id === m![1]);
-    if (!b) return json(404, { error: 'Buzón no encontrado.' });
-    if (!m[2] && method === 'DELETE') {
-      mw.mailboxes = mw.mailboxes.filter((x) => x.id !== b.id);
-      return json(200, { ok: true });
-    }
-    if (m[2] === '/password') return json(200, { ok: true, password: 'Contraseña-Nueva-2' });
-    if (m[2] === '/setup-links') {
-      return json(200, { link: { id: 'lnk_1', url: `${MW_BASE}/conectar/tok-secreto`, expiresAt: 99, hasPassword: !!body.password } });
-    }
-    if (m[2] === '/app-passwords') {
-      return json(200, {
-        appPassword: { id: nextId('app'), mailboxId: b.id, email: b.email, name: body.name, createdAt: 1, revokedAt: null },
-        password: 'ContraseñaDeAplicacion-Secreta',
-      });
-    }
-  }
-  if (path === '/api/apikeys' && method === 'POST') {
-    return json(200, { key: 'mw_ClaveApiSecreta', info: { id: nextId('key'), name: body.name, prefix: 'mw_Clav' } });
-  }
-  return json(404, { error: `Ruta no simulada: ${method} ${path}` });
-}
 
 // ---------- preparación ----------
 
@@ -514,7 +285,10 @@ describe('correo de un proyecto', () => {
     r = await call('POST', `/api/projects/${projA.id}/mail/domains`, memberHeaders, { domain: 'x`) || PathPrefix(`/' });
     expect(r.status).toBe(400);
 
+    // Crear un buzón entrega una contraseña: solo el propietario o un administrador.
     r = await call('POST', `/api/projects/${projA.id}/mail/mailboxes`, memberHeaders, { domainId: domainA, localPart: 'Hola' });
+    expect(r.status).toBe(403);
+    r = await call('POST', `/api/projects/${projA.id}/mail/mailboxes`, ownerHeaders, { domainId: domainA, localPart: 'Hola' });
     expect(r.status, r.raw).toBe(201);
     expect(r.json.password).toBe('Contraseña-Del-Buzon-1');
     expect(r.json.mailbox.email).toBe('hola@tienda.example');
@@ -581,7 +355,13 @@ describe('correo de un proyecto', () => {
     r = await call('POST', `/api/projects/${projA.id}/mail/mailboxes/${mailboxA}/setup-link`, memberHeaders, { includePassword: true });
     expect(r.status, r.raw).toBe(200);
     expect(r.json.hasPassword).toBe(false);
+    // Con contraseña, solo quien gestiona el proyecto (Mailway la comprueba: sería un oráculo).
     r = await call('POST', `/api/projects/${projA.id}/mail/mailboxes/${mailboxA}/setup-link`, memberHeaders, {
+      includePassword: true,
+      password: 'Contraseña-Nueva-2',
+    });
+    expect(r.status).toBe(403);
+    r = await call('POST', `/api/projects/${projA.id}/mail/mailboxes/${mailboxA}/setup-link`, ownerHeaders, {
       includePassword: true,
       password: 'Contraseña-Nueva-2',
     });
@@ -617,13 +397,15 @@ describe('correo de un proyecto', () => {
     expect(r.json).toMatchObject({ ok: true, needsRedeploy: true });
     expect(r.json.keys).toEqual(['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM']);
     expect(r.raw).not.toContain('ContraseñaDeAplicacion');
+    const smtpPass = getEnv(apiService.id).SMTP_PASS;
+    expect(smtpPass).toMatch(/^ContraseñaDeAplicacion-Secreta-/);
     expect(getEnv(apiService.id)).toEqual({
       EXISTENTE: 'se-conserva',
       SMTP_HOST: 'mail.example.com',
       SMTP_PORT: '587',
       SMTP_SECURE: 'false',
       SMTP_USER: 'hola@tienda.example',
-      SMTP_PASS: 'ContraseñaDeAplicacion-Secreta',
+      SMTP_PASS: smtpPass,
       SMTP_FROM: 'hola@tienda.example',
     });
     const appPwCall = mw.calls.find((c) => c.path.endsWith('/app-passwords'));
@@ -638,9 +420,9 @@ describe('correo de un proyecto', () => {
     expect(r.json.keys).toEqual(['MAILWAY_API_URL', 'MAILWAY_API_KEY', 'MAIL_FROM']);
     expect(r.raw).not.toContain('ClaveApiSecreta');
     const env = getEnv(apiService.id);
-    expect(env.MAILWAY_API_KEY).toBe('mw_ClaveApiSecreta');
+    expect(env.MAILWAY_API_KEY).toMatch(/^mw_ClaveApiSecreta_/);
     expect(env.MAILWAY_API_URL).toBe(MW_BASE);
-    expect(env.SMTP_PASS).toBe('ContraseñaDeAplicacion-Secreta');
+    expect(env.SMTP_PASS).toBe(smtpPass);
     expect(env.EXISTENTE).toBe('se-conserva');
 
     for (const a of listAudit({ action: 'mailway_service_connected' })) {
