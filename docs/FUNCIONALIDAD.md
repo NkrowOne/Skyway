@@ -30,9 +30,12 @@ server/src/
   company.ts            perfil fiscal de la empresa emisora + claves de Stripe (en settings)
   stripe.ts             cliente mínimo de Stripe (Checkout Session + verificación de firma de webhook)
   mailway.ts            cliente de la API de integraciones de Mailway (correo): configuración en settings,
-                        dirección interna del panel si lo despliega Skyway, token de gestión `mwt_…` (Bearer)
+                        dirección interna del panel si lo despliega Skyway, token de gestión `mwt_…` (Bearer),
+                        proyecto de Mailway en Skyway y hosts reservados de la instancia
   mailwaytraefik.ts     puente de Traefik para Mailway: lee sus rutas, las sanea (solo Host() hacia
                         contenedores de Mailway, sin dominios de Skyway) y guarda la última buena
+  domainguard.ts        qué dominios puede asignarse un servicio: únicos en el servidor, nunca el del
+                        panel (`SKYWAY_DOMAIN`) ni, fuera del proyecto de Mailway, los de Mailway
   pricing.ts            cálculo de precios por tramos (graduated/volume) del catálogo
   aigateway.ts          gateway de IA: config (clave de Gemini del operador, modelos), medición de tokens,
                         streaming SSE, API compatible con OpenAI y coste/margen por modelo
@@ -292,7 +295,7 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `ai_model_prices` | coste del operador por modelo y margen objetivo: `model` (PK), `cost_micros_in`/`cost_micros_cache`/`cost_micros_out` (micro-céntimos por millón de tokens), `margin_pct` (margen objetivo s/ venta, guía el PVP sugerido), `currency`, `source` (`auto` = lo mantiene la sincronización con la tarifa de Google, `manual` = fijado por el operador y respetado), `synced_at`, `updated_at`. Informativo; no interviene en la factura |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
-| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada)… |
+| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada; `mailway.defaultPlanId`, plan con el que se crea el cliente si no lo elige un administrador; `mailway.hosts`, hosts públicos que anuncia la instancia; `mailway.previousClient:<projectId>`, cliente que tenía el proyecto antes de desactivar el correo)… |
 | `projects` | `id`, `name`, `slug` (único), `workspace_id` (cuenta de cliente), `client` (reflejo denormalizado del nombre del workspace para la UI), página de estado (`status_token`, `status_enabled`, `status_notice`) |
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
@@ -862,15 +865,28 @@ antes obligaba a entrar por SSH al servidor.
   servicio**: SMTP (contraseña de aplicación propia → `SMTP_HOST`, `SMTP_PORT`,
   `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`) o API de envío (clave
   `mw_…` → `MAILWAY_API_URL`, `MAILWAY_API_KEY`, `MAIL_FROM`); las variables se
-  **fusionan** con las existentes y la respuesta solo lista sus nombres.
+  **fusionan** con las existentes y la respuesta solo lista sus nombres. Volver
+  a conectar un servicio **revoca la credencial anterior** del mismo tipo que
+  Skyway creó para él (`skyway:<servicio>` o `Skyway · <servicio>`), y las
+  credenciales vigentes se listan y se revocan desde la misma pestaña.
   Aislamiento: como el token es de administrador, **cada dominio y buzón se
   comprueba contra el resumen del cliente vinculado** antes de actuar (si no es
-  suyo, 404 sin llegar a Mailway). Módulo de plan `mail` («Correo»).
+  suyo, 404 sin llegar a Mailway) y la referencia externa del cliente tiene que
+  ser exactamente la del proyecto. El plan lo elige el administrador (el
+  propietario recibe el predeterminado de Ajustes → Correo), los buzones los
+  crean el propietario o el administrador (los nombres reservados —postmaster,
+  abuse, admin, hostmaster, webmaster, root…— solo el administrador) y, con la
+  cuenta suspendida, no se crea nada. Desactivar el correo recuerda el cliente
+  y reactivarlo permite **recuperar ese mismo cliente** con sus dominios.
+  Módulo de plan `mail` («Correo»).
   **Puente de Traefik**: Traefik lee `GET /api/traefik/mailway` (proveedor HTTP,
   cada 15 s); Skyway obtiene la configuración de Mailway y la **sanea** (solo
-  reglas `Host()` hacia contenedores de Mailway, nunca un dominio del panel
-  o de un servicio de Skyway, solo redirecciones a HTTPS y el emisor `le`) y, si
-  Mailway no responde, sirve la última configuración buena.
+  reglas `Host()` hacia contenedores `mailway-…` o del proyecto de Mailway,
+  comparados por nombre completo, nunca un dominio del panel o de un servicio de
+  Skyway, solo redirecciones a HTTPS y el emisor `le`) y, si Mailway no responde
+  o se quita el token, sirve la última configuración buena: solo «Desconectar
+  Mailway» retira las rutas. A la inversa, ningún servicio de un cliente puede
+  asignarse un dominio que publique Mailway ni los de su panel y webmail.
 - **Passkeys (WebAuthn)** y **tokens de API** para automatización/agentes.
 
 ---
@@ -1177,12 +1193,12 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | --- | --- | --- | --- |
 | GET | `/templates` | auth | plantillas de BBDD disponibles, con sus variables de conexión (`conn`) |
 | GET | `/stacks` | auth | catálogo de pilas de aplicaciones (§5.1) |
-| POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[]}`; atómica (409 si choca un nombre); `domain` como en crear servicio; `services[].config` sin `webhookSecret` |
+| POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[]}`; atómica (409 si choca un nombre); `domain` como en crear servicio (409 si ya lo usa otro servicio o está reservado); `services[].config` sin `webhookSecret` |
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada); 20 por minuto y usuario, después 429 |
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas |
-| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH; en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5) |
+| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH, y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo o un dominio que publica en Traefik) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5) |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
-| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
+| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
 | DELETE | `/services/:id?volumes=true` | +access | elimina servicio; igual que en proyectos, devuelve `{ok, warnings}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
@@ -1299,7 +1315,7 @@ distroless), el explorador lo indica y no está disponible.
 | DELETE | `/projects/:id/import-report` | +access | borra el informe (auditado como `import_report_deleted`) |
 | POST | `/import/railway/projects` | admin | lista proyectos de Railway (`{token}`) |
 | POST | `/import/railway/analyze` | admin | plan de importación (sin valores de variables) |
-| POST | `/import/railway/run` | admin | ejecuta la importación |
+| POST | `/import/railway/run` | admin | ejecuta la importación; los dominios propios que ya usa otro servicio (o el panel) se omiten con una nota en el informe |
 | POST | `/webhooks/github/app` | público (HMAC de la App) | webhook **único** de la GitHub App: reparte cada push entre los servicios que apuntan a ese repo y esa rama y cuyo proyecto tenga conectada esa instalación; también sincroniza altas, bajas y suspensiones de instalaciones |
 | POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy por servicio en push (firma verificada); respeta `autoDeploy` y deduplica contra el último commit construido; complementa al sondeo interno de `autodeploy.ts` |
 | POST | `/webhooks/stripe` | público (firma Stripe) | marca la factura como pagada al confirmarse el cobro; firma `Stripe-Signature` verificada (HMAC-SHA256 con tolerancia temporal anti-replay); exige `payment_status == paid`; idempotente |
@@ -1322,28 +1338,37 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | --- | --- | --- | --- |
 | GET | `/traefik/mailway` | público¹ | configuración dinámica **saneada** para el proveedor HTTP de Traefik (`{}` sin Mailway). ¹Responde 404 si la petición trae `X-Forwarded-*`/`X-Real-IP`/`Forwarded` (llegó desde internet a través de Traefik). Siempre 200: si Mailway falla, la última buena (memoria → `settings`), vuelta a sanear |
 | GET | `/mailway/status` | auth | `{configured, panelUrl}` (la interfaz decide si muestra «Correo») |
-| GET | `/mailway/config` | admin | `{configured, baseUrl, serviceId, serviceName, internalUrl, hasToken, panelUrl, traefik:{routers, dropped, syncedAt, error}}`. Nunca devuelve el token |
-| PUT | `/mailway/config` | admin + session | `{baseUrl?, token?, serviceId?}` (`''` borra). `token` debe empezar por `mwt_`. Audita `mailway_config_updated` (campos, sin valores) |
-| POST | `/mailway/test` | admin | `{baseUrl?, token?, serviceId?}` opcionales (probar sin guardar) → `{ok, info:{version, brandName, mailHostname, webmailUrl, panelUrl, role, email, features}, warnings}`; avisa si el token no es de administrador. 12/min |
-| GET | `/projects/:id/mail` | auth + access | `{moduleEnabled, configured, canManage, isAdmin, linked, notice?, panelUrl, features, link?, summary?}`. Recupera el vínculo si Mailway tiene un cliente con la referencia del proyecto; si el cliente ya no existe, suelta el vínculo local |
-| GET | `/projects/:id/mail/options` | manage | `{plans, clients}` (clientes solo para el administrador, con `available`/`linkedTo`) |
-| POST | `/projects/:id/mail/link` | manage | `{mode:'create', name?, planId?, contactEmail?}` (ensure por referencia externa) o `{mode:'existing', clientId}` (solo admin; 409 si ya está vinculado) |
-| DELETE | `/projects/:id/mail/link` | manage | suelta la referencia en Mailway (los datos se conservan) y el vínculo local |
-| POST | `/projects/:id/mail/domains` | auth + access | `{domain}` → `{domain}` (201) |
+| GET | `/mailway/config` | admin | `{configured, baseUrl, serviceId, serviceName, internalUrl, hasToken, panelUrl, defaultPlanId, traefik:{routers, dropped, syncedAt, error}}`. Nunca devuelve el token |
+| PUT | `/mailway/config` | admin + session | `{baseUrl?, token?, serviceId?, defaultPlanId?}` (`''` borra). `token` debe empezar por `mwt_`. Si cambian la URL o el servicio, 400 cuando el dominio de la URL lo sirve un servicio de Skyway que no es del proyecto de Mailway (el token viajaría hasta él). Quitar el token **no** retira las rutas de Traefik. Audita `mailway_config_updated` (campos, sin valores) |
+| POST | `/mailway/disconnect` | admin + session | borra dirección, token, servicio, plan predeterminado y hosts, y **retira las rutas de Mailway de Traefik** (y su copia guardada). Los vínculos de los proyectos se conservan. Audita `mailway_disconnected` |
+| GET | `/mailway/plans` | admin | `{plans, defaultPlanId}` para elegir el plan predeterminado |
+| POST | `/mailway/test` | admin | `{baseUrl?, token?, serviceId?}` opcionales (probar sin guardar) → `{ok, info:{version, brandName, mailHostname, webmailUrl, panelUrl, role, email, features}, warnings}`; avisa si el token no es de administrador. Las URLs que no son http(s) llegan como `null`. 12/min |
+| GET | `/projects/:id/mail` | auth + access | `{moduleEnabled, configured, canManage, isAdmin, accountSuspended, linked, notice?, panelUrl, features, link?, summary?}`. Recupera el vínculo si Mailway tiene un cliente con la referencia del proyecto; si el cliente ya no existe o ya no lleva exactamente esa referencia, `notice` lo explica (sin `summary`) y se puede desactivar. `summary.apiKeys[]` incluye `senderMailboxId` y `createdBySkyway` |
+| GET | `/projects/:id/mail/options` | manage | `{plans, clients, defaultPlanId, canChoosePlan, defaultName, previous}`: el administrador ve todos los planes y los clientes (con `available`/`linkedTo`); el propietario, solo el plan que se le asignará. `previous` = `{clientName, available, reason}` del cliente anterior del proyecto |
+| POST | `/projects/:id/mail/link` | manage | `{mode:'create', name?(2-80), planId?, contactEmail?}` (ensure por referencia externa; `planId` distinto del predeterminado → 403 salvo admin; sin nombre, el del proyecto o «Proyecto X» si tiene 1 carácter), `{mode:'previous'}` (recupera el cliente anterior si su referencia está libre; 409 si otra integración lo tiene) o `{mode:'existing', clientId}` (solo admin; 409 si ya está vinculado). 403 con la cuenta suspendida |
+| DELETE | `/projects/:id/mail/link` | manage | suelta la referencia en Mailway **solo si el cliente todavía la lleva** (si es de otra integración no se toca), borra el vínculo local y recuerda el cliente → `{ok, released}` |
+| POST | `/projects/:id/mail/domains` | auth + access | `{domain}` → `{domain}` (201). Comprueba la referencia del cliente; 403 con la cuenta suspendida, 409 con el cliente suspendido en Mailway |
 | POST | `/projects/:id/mail/domains/:domainId/verify` | auth + access | vuelve a comprobar el DNS |
 | GET | `/projects/:id/mail/domains/:domainId/dns` | auth + access | `{records:[{type,name,content}]}` |
-| GET | `/projects/:id/mail/domains/:domainId/cloudflare` | auth + access | plan de cambios `{available, reason, account, zone, changes[], summary}` |
-| POST | `/projects/:id/mail/domains/:domainId/cloudflare/apply` | manage | `{replaceConflicts?}` → `{applied, errors, domain}` |
-| POST | `/projects/:id/mail/mailboxes` | auth + access | `{domainId, localPart, displayName?}` → `{mailbox, password}` (la contraseña, **una sola vez**) |
+| GET | `/projects/:id/mail/domains/:domainId/cloudflare` | auth + access | plan de cambios `{available, reason, account, zone, changes[], summary}`. Si quien pide no es admin, se envía `?soloCliente=1`: Mailway solo usa las cuentas de Cloudflare del cliente, nunca las de la instancia |
+| POST | `/projects/:id/mail/domains/:domainId/cloudflare/apply` | manage | `{replaceConflicts?}` → `{applied, errors, domain}` (con `?soloCliente=1` para quien no es admin) |
+| POST | `/projects/:id/mail/mailboxes` | manage | `{domainId, localPart, displayName?(≤80)}` → `{mailbox, password}` (la contraseña, **una sola vez**). `localPart` como en Mailway: `a-z0-9._-`, sin `+`. Los nombres reservados (abuse, admin, administrator, hostmaster, postmaster, root, security, ssladmin, webmaster) solo los crea un admin (403) |
 | POST | `/projects/:id/mail/mailboxes/:mailboxId/password` | manage | nueva contraseña (una vez); los dispositivos deben reconfigurarse |
-| POST | `/projects/:id/mail/mailboxes/:mailboxId/setup-link` | auth + access | `{includePassword?, password?}` → `{url, expiresAt, hasPassword}`; la contraseña solo se incluye si se aporta. La URL no se audita |
-| DELETE | `/projects/:id/mail/mailboxes/:mailboxId` | manage | elimina el buzón |
-| POST | `/projects/:id/mail/connect` | manage | `{serviceId, mailboxId, mode:'smtp'\|'api', redeploy?}` → `{ok, keys, needsRedeploy, deploymentId}`. El servicio debe ser del proyecto y no de base de datos. Fusiona las variables; nunca devuelve ni audita los valores. Con `redeploy`, despliegue con disparador `mailway` |
+| POST | `/projects/:id/mail/mailboxes/:mailboxId/setup-link` | auth + access | `{includePassword?, password?}` → `{url, expiresAt, hasPassword}`; la contraseña solo se incluye si se aporta, y entonces exige **manage** y un tope de 5 cada 10 min por usuario (Mailway la comprueba). La URL no se audita |
+| DELETE | `/projects/:id/mail/mailboxes/:mailboxId` | manage | revoca antes las claves de API `Skyway · …` con ese buzón como remitente y elimina el buzón → `{ok, revokedApiKeys}`; si queda otra clave activa, 409 de Mailway |
+| DELETE | `/projects/:id/mail/app-passwords/:appId` | manage | revoca una contraseña de aplicación del cliente (404 si no es suya). Audita `mailway_app_password_revoked` |
+| DELETE | `/projects/:id/mail/api-keys/:keyId` | manage | revoca una clave de API del cliente (404 si no es suya). Audita `mailway_api_key_revoked` |
+| POST | `/projects/:id/mail/connect` | manage | `{serviceId, mailboxId, mode:'smtp'\|'api', redeploy?}` → `{ok, keys, needsRedeploy, deploymentId, revoked}`. El servicio debe ser del proyecto y no de base de datos. Revoca antes la credencial del mismo tipo que Skyway creó para el servicio (`skyway:<slug>` o `Skyway · <slug>`, ≤ 60 caracteres). Fusiona las variables; nunca devuelve ni audita los valores. Con `redeploy`, despliegue con disparador `mailway` |
 
-Todas las rutas con `:domainId`/`:mailboxId` comprueban antes, con el resumen del
-cliente vinculado, que el recurso es de ese cliente: si no, **404** sin llamar a
-Mailway. Si la referencia externa del cliente ya no es la del proyecto, **409**.
-Borrar un proyecto suelta en segundo plano la referencia de su cliente en Mailway.
+Todas las rutas con `:domainId`/`:mailboxId`/`:appId`/`:keyId` comprueban antes,
+con el resumen del cliente vinculado, que el recurso es de ese cliente: si no,
+**404** sin llamar a Mailway. Si la referencia externa del cliente no es
+exactamente `skyway:project:<id>` (vacía incluida), **409** en todas las rutas
+de proyecto. El 401 de Mailway se traslada como 502 con su motivo (token
+revocado, caducado o de un usuario desactivado). Las URLs que llegan de Mailway
+(panel, webmail, enlaces) solo se devuelven si son http(s). Borrar un proyecto
+suelta en segundo plano la referencia de su cliente en Mailway (solo si todavía
+es la suya).
 
 ---
 
@@ -1361,7 +1386,7 @@ Borrar un proyecto suelta en segundo plano la referencia de su cliente en Mailwa
 | `CSRF_ORIGIN_CHECK` | `true` | guarda CSRF de las peticiones mutantes con cookie (`Sec-Fetch-Site`/`Origin` frente al host); `false` la desactiva si un proxy raro estorba |
 | `DOCKER_SOCK` | socket estándar | ruta alternativa al socket de Docker |
 | `LOG_LEVEL` | `info` | nivel de log de Fastify |
-| `SKYWAY_DOMAIN` | — | dominio del panel (docker-compose lo pasa): el puente de Traefik de Mailway nunca acepta una ruta para él |
+| `SKYWAY_DOMAIN` | — | dominio del panel (docker-compose lo pasa; admite varios separados por comas): ningún servicio puede asignárselo y el puente de Traefik de Mailway nunca acepta una ruta para él |
 
 Ajustes en la UI (tabla `settings`, solo admin): `rootDomain`, `letsencryptEmail`,
 `serverIp`, `githubToken`, umbrales de alerta y canales (Discord/Telegram/webhook).

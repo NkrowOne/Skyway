@@ -91,7 +91,9 @@ proyecto). Referencia completa en `docs/FUNCIONALIDAD.md` §7.12.
 # Estado del correo del proyecto (dominios con su estado DNS, buzones, uso)
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail"
 
-# Activarlo (propietario o admin): crea el cliente de correo del proyecto
+# Activarlo (propietario o admin): crea el cliente de correo del proyecto con el
+# plan predeterminado (solo un admin puede pasar "planId"). Tras desactivarlo,
+# {"mode":"previous"} recupera el mismo cliente con sus dominios.
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"mode":"create"}' "$BASE/api/projects/PROJ_ID/mail/link"
 
@@ -101,19 +103,33 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/dns"
 curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/verify"
 
-# Crear un buzón (la respuesta trae la contraseña UNA sola vez)
+# Crear un buzón (propietario o admin; la respuesta trae la contraseña UNA sola vez)
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"domainId":"DOM_ID","localPart":"info"}' "$BASE/api/projects/PROJ_ID/mail/mailboxes"
 
-# Conectar un servicio por SMTP y volver a desplegarlo (solo devuelve los nombres de las variables)
+# Conectar un servicio por SMTP y volver a desplegarlo (solo devuelve los nombres
+# de las variables; la credencial SMTP anterior de ese servicio se revoca)
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"serviceId":"SVC_ID","mailboxId":"MBX_ID","mode":"smtp","redeploy":true}' \
   "$BASE/api/projects/PROJ_ID/mail/connect"
+
+# Revocar una contraseña de aplicación o una clave de API del cliente
+# (los ids están en summary.appPasswords / summary.apiKeys de GET .../mail)
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/app-passwords/APP_ID"
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/api-keys/KEY_ID"
 ```
 
-Configurar la conexión (`PUT /api/mailway/config`) exige sesión de navegador de
-un administrador, como el resto de credenciales persistentes; con un token de
-API se puede consultar (`GET /api/mailway/config`) y probar (`POST /api/mailway/test`).
+Un token de un usuario que no es admin: no elige el plan de Mailway, no crea
+buzones de nombre reservado (postmaster, abuse, admin…) y, en Cloudflare, solo
+usa las cuentas del propio cliente. Los enlaces de configuración con contraseña
+exigen ser propietario o admin y tienen un tope de 5 cada 10 minutos.
+
+Configurar la conexión (`PUT /api/mailway/config`) y desconectarla
+(`POST /api/mailway/disconnect`, que además retira de Traefik las rutas de
+Mailway) exigen sesión de navegador de un administrador, como el resto de
+credenciales persistentes; con un token de API se puede consultar
+(`GET /api/mailway/config`, `GET /api/mailway/plans`) y probar
+(`POST /api/mailway/test`). Quitar el token no retira las rutas publicadas.
 
 ### CLI rápida: el comando `skyway`
 

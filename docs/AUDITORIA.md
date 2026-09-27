@@ -88,23 +88,56 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
 - **Integración con Mailway (correo)** (`mailway.ts`, `mailwaytraefik.ts`,
   `routes/mailway.ts`): el token de gestión `mwt_…` es de **administrador** de
   Mailway, así que el aislamiento entre proyectos lo impone Skyway: cada ruta con
-  `:domainId`/`:mailboxId` lo busca primero en el resumen del cliente vinculado
-  al proyecto y, si no es suyo, responde **404 sin llamar a Mailway**; si la
-  referencia externa del cliente deja de ser `skyway:project:<id>`, 409. Activar,
-  desactivar, conectar servicios, aplicar DNS en Cloudflare, restablecer
-  contraseñas y borrar buzones exigen gestionar el proyecto; vincular un cliente
-  existente, ser admin. El token nunca se devuelve ni se audita; contraseñas,
-  claves `mw_…` y URLs de enlaces de configuración tampoco (la respuesta de
-  «conectar» solo lista nombres de variables). Configurarlo exige sesión de
-  navegador. Un fallo de Mailway nunca se traduce en 401 (cerraría la sesión).
+  `:domainId`/`:mailboxId`/`:appId`/`:keyId` lo busca primero en el resumen del
+  cliente vinculado al proyecto y, si no es suyo, responde **404 sin llamar a
+  Mailway**; si la referencia externa del cliente no es exactamente
+  `skyway:project:<id>` (también vacía), 409 en **todas** las rutas de proyecto,
+  incluida el alta de dominios. Activar, desactivar, crear buzones, conectar
+  servicios, revocar credenciales, aplicar DNS en Cloudflare, restablecer
+  contraseñas, crear enlaces **con contraseña** (además con tope de 5 cada 10 min:
+  Mailway la comprueba y sería un oráculo) y borrar buzones exigen gestionar el
+  proyecto; vincular un cliente existente, elegir el plan y crear buzones de
+  nombre reservado (postmaster, abuse, admin, hostmaster, webmaster, root…), ser
+  admin. Con la cuenta suspendida (o el cliente suspendido en Mailway) no se crea
+  nada. Para quien no es admin, el plan y la aplicación de DNS en Cloudflare van
+  con `?soloCliente=1`: Mailway no usa las cuentas de Cloudflare de la instancia
+  (el propietario de un proyecto podía leer y reescribir zonas del operador).
+  Desactivar solo retira la referencia en Mailway si todavía es la del proyecto.
+  Volver a conectar un servicio revoca la credencial anterior. El token nunca se
+  devuelve ni se audita; contraseñas, claves `mw_…` y URLs de enlaces de
+  configuración tampoco (la respuesta de «conectar» solo lista nombres de
+  variables). Configurarlo y desconectarlo exigen sesión de navegador. Un fallo
+  de Mailway nunca se traduce en 401 (cerraría la sesión). Las URLs que llegan
+  de Mailway solo se devuelven —y la web solo las enlaza— si son http(s).
+  **El token no viaja por un dominio ajeno**: si el dominio de la URL pública lo
+  sirve un servicio de Skyway que no es del proyecto de Mailway, Skyway no la usa
+  (solo la dirección interna del panel) y no deja guardarla.
   **Puente de Traefik** (`GET /api/traefik/mailway`, sin sesión): 404 si la
   petición llega reenviada por Traefik; la configuración de Mailway se reescribe
   a una forma mínima —solo `Host()` con nombres completos, sin colisión con el
   dominio del panel (`SKYWAY_DOMAIN`) ni con ningún dominio de un servicio,
-  servicios `http://<contenedor>` (sin IP, sin puntos, sin `skyway`/Traefik ni
-  contenedores de otros proyectos), solo middlewares de redirección a HTTPS,
-  entradas `web`/`websecure` y el emisor `le`—, y la copia de reserva se vuelve a
-  sanear en cada uso. Pruebas en `server/test/mailway*.test.ts`.
+  servicios `http://<contenedor>` solo hacia contenedores `mailway-…` o del
+  proyecto de Mailway **comparados por nombre completo** (ni IP, ni nombres de
+  una etiqueta como `localhost` o `metadata`, ni `skyway`/Traefik, ni el
+  proyecto «correo-x» cuando Mailway vive en «correo»), solo middlewares de
+  redirección a HTTPS, entradas `web`/`websecure` y el emisor `le`—, y la copia
+  de reserva se vuelve a sanear en cada uso. Sin token se sigue sirviendo la
+  última configuración buena; solo «Desconectar Mailway» la retira.
+  Pruebas en `server/test/mailway*.test.ts` (las regresiones de la revisión, en
+  `mailway-seguridad.test.ts`).
+
+- **Dominios únicos entre servicios** (`domainguard.ts`, antes sin comprobar):
+  Traefik es compartido y, cuando dos routers encajan con el mismo host, gana la
+  regla más larga, así que un propietario podía quedarse con el dominio de otro
+  cliente, con el del panel de Skyway o con los de Mailway (por el de su panel
+  viaja el token de administrador de Skyway) solo con añadirlo a su servicio
+  junto a otro nombre más largo. Ahora crear un servicio, editar sus dominios,
+  crear una pila o una plantilla de Railway rechaza (409) un dominio nuevo que ya
+  sirve otro servicio o que es el del panel (`SKYWAY_DOMAIN`), para todos; y, para
+  quien no es admin y fuera del proyecto de Mailway, los hosts de Mailway (su URL
+  pública, panel, webmail, servidor de correo y los dominios que publica el
+  puente). La importación de Railway omite los que chocan, con una nota. Los
+  dominios que un servicio ya tenía no se revisan (se puede seguir editando).
 
 ---
 
@@ -135,6 +168,15 @@ Estos no son defectos, sino consecuencias del propósito de la herramienta
   responde sin autenticación a quien llegue por la red interna (una aplicación
   de la red `skyway-edge` podría leer los dominios de marca blanca publicados):
   son dominios públicos y nombres de contenedor, sin secretos.
+- **Rutas de Mailway sin token**: quitar el token o la dirección deja publicadas
+  en Traefik las últimas rutas buenas (re-saneadas con los dominios de ahora),
+  para no dejar sin webmail a los clientes por un token rotado o borrado por
+  error. Retirarlas es una acción explícita del admin («Desconectar Mailway»).
+- **Administrador y dominios de Mailway**: el admin puede asignar a cualquier
+  servicio los hosts de Mailway (lo necesita para desplegar el propio panel); la
+  unicidad y el dominio del panel sí se le aplican. Los contenedores
+  `mailway-…` se admiten como destino del puente sin estar en Skyway: Skyway
+  nunca crea contenedores ni alias con ese prefijo en la red de Traefik.
 
 ---
 
