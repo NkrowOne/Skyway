@@ -387,9 +387,47 @@ describe('cuentas suspendidas (R4)', () => {
   });
 });
 
+// ======================= propiedad del dominio =======================
+
+describe('propiedad del dominio en Mailway', () => {
+  it('un dominio sin propiedad probada lo indica con su TXT, y Mailway no deja crear buzones hasta verificarlo', async () => {
+    mw.requireOwnership = true;
+    try {
+      let r = await call('POST', `/api/projects/${projA.id}/mail/domains`, ownerA, { domain: 'migracion.example' });
+      expect(r.status, r.raw).toBe(201);
+      const id = r.json.domain.id;
+      expect(r.json.domain.ownershipPending).toBe(true);
+      expect(r.json.domain.ownershipRecord).toEqual({ type: 'TXT', name: '_mailway.migracion.example', content: `mailway-verificacion=${id}` });
+
+      r = await call('POST', `/api/projects/${projA.id}/mail/mailboxes`, ownerA, { domainId: id, localPart: 'info' });
+      expect(r.status).toBe(409);
+      expect(r.json.error).toMatch(/comprobar que el dominio es suyo/);
+
+      r = await call('POST', `/api/projects/${projA.id}/mail/domains/${id}/verify`, ownerA);
+      expect(r.json.domain.ownershipPending).toBe(false);
+      expect(r.json.domain.ownershipVerifiedAt).toBeTruthy();
+      r = await call('POST', `/api/projects/${projA.id}/mail/mailboxes`, ownerA, { domainId: id, localPart: 'info' });
+      expect(r.status, r.raw).toBe(201);
+    } finally {
+      mw.requireOwnership = false;
+    }
+  });
+});
+
 // ======================= Cloudflare (C1) =======================
 
 describe('Cloudflare solo con las cuentas del cliente (C1)', () => {
+  it('el alta de dominios de quien no es administrador también lleva soloCliente', async () => {
+    let r = await call('POST', `/api/projects/${projA.id}/mail/domains`, memberA, { domain: 'alta-cliente.example' });
+    expect(r.status, r.raw).toBe(201);
+    r = await call('POST', `/api/projects/${projA.id}/mail/domains`, admin(), { domain: 'alta-admin.example' });
+    expect(r.status, r.raw).toBe(201);
+    expect(mailwayCalls((c) => c.method === 'POST' && c.path.startsWith('/api/domains')).map((c) => c.path)).toEqual([
+      '/api/domains?soloCliente=1',
+      '/api/domains',
+    ]);
+  });
+
   it('quien no es administrador pide a Mailway que no use las cuentas de la instancia', async () => {
     let r = await call('GET', `/api/projects/${projA.id}/mail/domains/${domainA}/cloudflare`, memberA);
     expect(r.status, r.raw).toBe(200);

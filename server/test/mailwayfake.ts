@@ -24,6 +24,8 @@ export interface FakeDomain {
   clientId: string;
   domain: string;
   status: 'pending_dns' | 'active' | 'error';
+  /** null = propiedad sin probar: Mailway no deja crear buzones. */
+  ownershipVerifiedAt: number | null;
 }
 export interface FakeMailbox {
   id: string;
@@ -82,6 +84,8 @@ export const mw = {
   traefikConfig: {} as unknown,
   /** Campos con los que se sobrescribe la respuesta de `/api/integrations/info`. */
   infoOverride: {} as Record<string, unknown>,
+  /** Si es true, los dominios nuevos nacen con la propiedad pendiente (como Mailway). */
+  requireOwnership: false,
   /** Si se indica, toda petición con Bearer recibe este 401 (token revocado, caducado…). */
   reject401: null as { error: string; code: string } | null,
   /** Peticiones recibidas: método, ruta (con consulta), cabeceras de autenticación y cuerpo. */
@@ -108,6 +112,8 @@ function domainRecord(d: FakeDomain) {
     verifiedAt: null,
     createdAt: 1,
     cloudflare: null,
+    ownershipVerifiedAt: d.ownershipVerifiedAt,
+    ownershipRecord: { type: 'TXT', name: `_mailway.${d.domain}`, content: `mailway-verificacion=${d.id}` },
   };
 }
 
@@ -205,7 +211,11 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
       }
       client.externalRef = String(b.externalRef);
     } else {
-      // Como Mailway: la referencia se borra sea cual sea.
+      // Como Mailway: con ?externalRef solo se borra si sigue siendo esa.
+      const expected = url.searchParams.get('externalRef');
+      if (expected !== null && client.externalRef !== null && client.externalRef !== expected) {
+        return json(409, { error: 'Referencia distinta.', code: 'external_ref_mismatch' });
+      }
       client.externalRef = null;
     }
     return json(200, { client });
@@ -230,7 +240,13 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
     });
   }
   if (path === '/api/domains' && method === 'POST') {
-    const d: FakeDomain = { id: nextId('dom'), clientId: String(b.clientId), domain: String(b.domain), status: 'pending_dns' };
+    const d: FakeDomain = {
+      id: nextId('dom'),
+      clientId: String(b.clientId),
+      domain: String(b.domain),
+      status: 'pending_dns',
+      ownershipVerifiedAt: mw.requireOwnership ? null : 1,
+    };
     mw.domains.push(d);
     return json(200, { domain: domainRecord(d) });
   }
@@ -239,6 +255,7 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
     if (!d) return json(404, { error: 'Dominio no encontrado.' });
     if (m[2] === 'verify') {
       d.status = 'active';
+      d.ownershipVerifiedAt ??= Date.now();
       return json(200, { domain: domainRecord(d) });
     }
     if (m[2] === 'dns') return json(200, { records: [{ type: 'MX', name: d.domain, content: '10 mail.example.com' }] });
@@ -256,6 +273,12 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
   if (path === '/api/mailboxes' && method === 'POST') {
     const d = mw.domains.find((x) => x.id === b.domainId);
     if (!d) return json(404, { error: 'Dominio no encontrado.' });
+    if (d.ownershipVerifiedAt === null) {
+      return json(409, {
+        error: `Antes de crear buzones o alias en ${d.domain} es necesario comprobar que el dominio es suyo.`,
+        code: 'domain_ownership_pending',
+      });
+    }
     const localPart = String(b.localPart ?? '');
     if (!LOCAL_PART_MAILWAY.test(localPart)) {
       return badRequest('El nombre del buzón solo puede contener letras minúsculas, números, puntos, guiones y guiones bajos.');

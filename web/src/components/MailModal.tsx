@@ -734,6 +734,11 @@ function DomainCard({
             <Chip size="sm" tone={status.tone} dot>
               {status.label}
             </Chip>
+            {domain.ownershipPending && (
+              <Chip size="sm" tone="warn" dot>
+                Propiedad pendiente
+              </Chip>
+            )}
           </p>
           <p className="tnum mt-0.5 text-xs text-subtle">
             {domain.dns.requiredTotal > 0
@@ -753,6 +758,28 @@ function DomainCard({
           )}
         </div>
       </div>
+
+      {domain.ownershipPending && (
+        <div className="border-t border-line/60 px-3.5 py-2.5 text-xs text-sub">
+          <p>
+            Antes de crear buzones es necesario comprobar que el dominio es suyo: apunte el registro MX a este servidor de correo o
+            añada el siguiente registro en el proveedor de DNS del dominio y pulse «Verificar ahora».
+          </p>
+          {domain.ownershipRecord && (
+            <div className="mt-2 flex flex-col gap-1 rounded-md border border-line bg-surface px-3 py-2 sm:flex-row sm:items-start sm:gap-3">
+              <span className="w-14 shrink-0 font-mono font-semibold text-txt">{domain.ownershipRecord.type}</span>
+              <span className="flex min-w-0 items-start gap-1 sm:w-48 sm:shrink-0">
+                <span className="min-w-0 break-all font-mono text-sub">{domain.ownershipRecord.name}</span>
+                <CopyButton value={domain.ownershipRecord.name} title="Copiar nombre" className="-my-0.5 shrink-0" />
+              </span>
+              <span className="flex min-w-0 flex-1 items-start gap-1">
+                <span className="min-w-0 flex-1 break-all font-mono text-txt">{domain.ownershipRecord.content}</span>
+                <CopyButton value={domain.ownershipRecord.content} title="Copiar valor" className="-my-0.5 shrink-0" />
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {pendientes.length > 0 && (
         <ul className="space-y-1 border-t border-line/60 px-3.5 py-2.5 text-xs">
@@ -1064,7 +1091,7 @@ function MailboxesTab({
           className="flex flex-col gap-2 rounded-lg border border-line bg-bg p-3"
           onSubmit={(e) => {
             e.preventDefault();
-            if (localPart.trim() && selectedDomain && !blocked) create.mutate();
+            if (localPart.trim() && selectedDomain && !blocked && !selectedDomain.ownershipPending) create.mutate();
           }}
         >
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -1104,7 +1131,12 @@ function MailboxesTab({
               onChange={(e) => setDisplayName(e.target.value)}
               aria-label="Nombre visible"
             />
-            <Button type="submit" loading={create.isPending} disabled={!localPart.trim() || blocked} className="max-sm:h-11">
+            <Button
+              type="submit"
+              loading={create.isPending}
+              disabled={!localPart.trim() || blocked || !!selectedDomain?.ownershipPending}
+              className="max-sm:h-11"
+            >
               <Inbox size={13} /> Crear buzón
             </Button>
           </div>
@@ -1114,7 +1146,12 @@ function MailboxesTab({
               los puede crear un administrador de la plataforma.
             </p>
           )}
-          {selectedDomain && selectedDomain.status !== 'active' && (
+          {selectedDomain?.ownershipPending ? (
+            <p className="text-xs text-warn">
+              La propiedad del dominio {selectedDomain.domain} está pendiente de comprobar: no es posible crear buzones en él hasta
+              verificarla. Los pasos se indican en la pestaña «Dominios».
+            </p>
+          ) : selectedDomain && selectedDomain.status !== 'active' && (
             <p className="text-xs text-warn">
               El dominio {selectedDomain.domain} aún no está verificado: el buzón no recibirá correo hasta que sus registros DNS sean
               correctos.

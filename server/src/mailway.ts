@@ -141,6 +141,14 @@ export interface MailwayDomain {
   verifiedAt?: number | null;
   createdAt?: number;
   cloudflare?: { accountId: string; zoneId: string } | null;
+  /**
+   * Cuándo probó Mailway que el dominio es del cliente (MX o TXT de
+   * verificación). null = pendiente: Mailway no deja crear buzones ni alias.
+   * Ausente en versiones de Mailway anteriores a esta comprobación.
+   */
+  ownershipVerifiedAt?: number | null;
+  /** Registro TXT que prueba la propiedad sin tocar el MX. */
+  ownershipRecord?: { type: string; name: string; content: string } | null;
 }
 
 export interface MailwayMailbox {
@@ -646,8 +654,12 @@ export async function linkClient(clientId: string, externalRef: string): Promise
   return res.client;
 }
 
-export async function unlinkClient(clientId: string): Promise<MailwayClient | null> {
-  const res = await mailwayFetch<{ client?: MailwayClient }>(`/api/integrations/clients/${enc(clientId)}/link`, {
+export async function unlinkClient(clientId: string, expectedRef?: string): Promise<MailwayClient | null> {
+  // Con la referencia esperada, Mailway solo la borra si sigue siendo esa
+  // (409 external_ref_mismatch si no): cierra la carrera entre comprobarla y
+  // desvincular. Un Mailway anterior ignora el parámetro.
+  const query = expectedRef ? `?externalRef=${enc(expectedRef)}` : '';
+  const res = await mailwayFetch<{ client?: MailwayClient }>(`/api/integrations/clients/${enc(clientId)}/link${query}`, {
     method: 'DELETE',
   });
   return res.client ?? null;
@@ -663,9 +675,9 @@ export async function releaseProjectClient(projectId: string, clientId: string):
   const owner = await getClientByRef(projectExternalRef(projectId));
   if (!owner || owner.id !== clientId) return false;
   try {
-    await unlinkClient(clientId);
+    await unlinkClient(clientId, projectExternalRef(projectId));
   } catch (err) {
-    if (err instanceof MailwayError && err.status === 404) return false;
+    if (err instanceof MailwayError && (err.status === 404 || err.status === 409)) return false;
     throw err;
   }
   return true;
@@ -690,8 +702,16 @@ export async function getSummary(clientId: string): Promise<MailwaySummary> {
 
 // ---------- dominios ----------
 
-export async function createDomain(clientId: string, domain: string): Promise<MailwayDomain> {
-  const res = await mailwayFetch<{ domain: MailwayDomain }>('/api/domains', { method: 'POST', body: { domain, clientId } });
+/**
+ * Skyway no pide el DNS automático en el alta (`autoDns`), pero `soloCliente`
+ * viaja igualmente para quien no es administrador: si algún día se pide, el
+ * alta no podrá escribir en las zonas de Cloudflare del operador.
+ */
+export async function createDomain(clientId: string, domain: string, opts: { soloCliente?: boolean } = {}): Promise<MailwayDomain> {
+  const res = await mailwayFetch<{ domain: MailwayDomain }>(`/api/domains${cloudflareQuery(opts.soloCliente)}`, {
+    method: 'POST',
+    body: { domain, clientId },
+  });
   return res.domain;
 }
 

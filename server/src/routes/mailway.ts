@@ -335,6 +335,11 @@ function ownMailbox(summary: MailwaySummary, mailboxId: string): MailwayMailbox 
 
 // ---------- formas públicas (solo campos conocidos: nada que Mailway añada sin revisar) ----------
 
+function publicOwnershipRecord(r: MailwayDomain['ownershipRecord']) {
+  if (!r || typeof r.name !== 'string' || typeof r.content !== 'string') return null;
+  return { type: typeof r.type === 'string' ? r.type : 'TXT', name: r.name, content: r.content };
+}
+
 function publicDomain(d: MailwayDomain) {
   const s = d.dnsStatus ?? {};
   return {
@@ -345,6 +350,11 @@ function publicDomain(d: MailwayDomain) {
     lastCheckedAt: d.lastCheckedAt ?? null,
     createdAt: d.createdAt ?? null,
     cloudflare: !!d.cloudflare,
+    // Un Mailway sin la comprobación de propiedad no manda el campo: entonces
+    // no hay nada pendiente que mostrar.
+    ownershipVerifiedAt: d.ownershipVerifiedAt ?? null,
+    ownershipPending: 'ownershipVerifiedAt' in d && d.ownershipVerifiedAt === null,
+    ownershipRecord: publicOwnershipRecord(d.ownershipRecord),
     dns: {
       requiredTotal: typeof s.requiredTotal === 'number' ? s.requiredTotal : 0,
       requiredOk: typeof s.requiredOk === 'number' ? s.requiredOk : 0,
@@ -974,7 +984,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         // Como en el resto de rutas: el cliente tiene que seguir siendo el del proyecto.
         const summary = await ownedSummary(ctx.project, link);
         assertClientActive(summary);
-        const domain = await createDomain(link.client_id, body.domain);
+        const domain = await createDomain(link.client_id, body.domain, { soloCliente: !ctx.isAdmin });
         audit(req, 'mailway_domain_added', { type: 'project', id: ctx.project.id, detail: `${ctx.project.name}: ${body.domain}` });
         reply.code(201);
         return { domain: publicDomain(domain) };

@@ -99,8 +99,8 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   proyecto; vincular un cliente existente, elegir el plan y crear buzones de
   nombre reservado (postmaster, abuse, admin, hostmaster, webmaster, root…), ser
   admin. Con la cuenta suspendida (o el cliente suspendido en Mailway) no se crea
-  nada. Para quien no es admin, el plan y la aplicación de DNS en Cloudflare van
-  con `?soloCliente=1`: Mailway no usa las cuentas de Cloudflare de la instancia
+  nada. Para quien no es admin, el plan y la aplicación de DNS en Cloudflare (y
+  el alta de dominios) van con `?soloCliente=1`: Mailway no usa las cuentas de Cloudflare de la instancia
   (el propietario de un proyecto podía leer y reescribir zonas del operador).
   Desactivar solo retira la referencia en Mailway si todavía es la del proyecto.
   Volver a conectar un servicio revoca la credencial anterior. El token nunca se

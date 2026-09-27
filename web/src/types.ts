@@ -1276,6 +1276,12 @@ export interface MailDomain {
   lastCheckedAt: number | null;
   createdAt: number | null;
   cloudflare: boolean;
+  /** Cuándo probó Mailway que el dominio es del cliente (MX o TXT). */
+  ownershipVerifiedAt: number | null;
+  /** Propiedad sin probar: Mailway no deja crear buzones en el dominio. */
+  ownershipPending: boolean;
+  /** Registro TXT que prueba la propiedad sin cambiar el MX. */
+  ownershipRecord: { type: string; name: string; content: string } | null;
   dns: {
     requiredTotal: number;
     requiredOk: number;
