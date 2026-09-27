@@ -8,6 +8,7 @@ import {
   createProject,
   countWorkspaceProjects,
   deleteProject,
+  getMailwayLink,
   getOrCreateWorkspaceByName,
   getProject,
   getProjectVars,
@@ -30,6 +31,7 @@ import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '.
 import { projectNetworkName, removeNetwork } from '../docker/networks';
 import { triggerDeploy } from '../deploy/deployer';
 import { markManualAction } from '../monitor';
+import { mailwayConfigured, unlinkClient } from '../mailway';
 import { effectiveQuota, isWorkspaceActive, workspacePlan } from '../quota';
 import { ServiceRow, ServiceRuntime, WorkspaceRow } from '../types';
 import { slugify } from '../util';
@@ -249,8 +251,17 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     } else {
       warnings.push('Docker no está disponible: los contenedores, volúmenes y la red del proyecto no se han retirado.');
     }
+    // El vínculo de correo se borra con el proyecto (ON DELETE CASCADE); en
+    // Mailway se suelta la referencia en segundo plano para que el cliente no
+    // quede apuntando a un proyecto que ya no existe. Sus buzones siguen allí.
+    const mailLink = getMailwayLink(id);
     deleteProject(id);
     invalidateDockerSnapshot();
+    if (mailLink && mailwayConfigured()) {
+      void unlinkClient(mailLink.client_id).catch((err: unknown) => {
+        req.log.warn({ clientId: mailLink.client_id }, `No se pudo soltar el cliente de Mailway: ${(err as Error)?.message ?? err}`);
+      });
+    }
     audit(req, 'project_deleted', {
       type: 'project',
       id,

@@ -16,7 +16,8 @@ export type ModuleKey =
   | 'status_page'
   | 'metrics'
   | 'replicas'
-  | 'exec';
+  | 'exec'
+  | 'mail';
 
 export interface ModuleDef {
   key: ModuleKey;
@@ -38,6 +39,7 @@ export const MODULES: ModuleDef[] = [
   { key: 'domains', label: 'Dominios y TLS', description: 'Dominios propios con certificado automático vía Traefik.', group: 'Red' },
   { key: 'status_page', label: 'Página de estado', description: 'Dashboard público de disponibilidad compartible por enlace.', group: 'Red' },
   { key: 'github', label: 'Conectores de GitHub', description: 'Conectar cuentas de GitHub para desplegar repos privados del cliente.', group: 'Red' },
+  { key: 'mail', label: 'Correo', description: 'Dominios de correo y buzones en Mailway, y su conexión con los servicios del proyecto.', group: 'Red' },
 ];
 
 export const ALL_MODULE_KEYS: ModuleKey[] = MODULES.map((m) => m.key);

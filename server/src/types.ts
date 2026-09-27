@@ -840,6 +840,19 @@ export interface ApiTokenRow {
 }
 
 /**
+ * Proyecto con correo activado: su cliente en Mailway. No guarda credenciales;
+ * todo se opera con el token de gestión global de Ajustes, y el vínculo es lo
+ * que acota a qué cliente puede tocar cada proyecto.
+ */
+export interface MailwayLinkRow {
+  project_id: string;
+  client_id: string;
+  client_name: string;
+  created_by: string | null; // email de quien lo activó
+  created_at: number;
+}
+
+/**
  * Conector de GitHub ligado a un proyecto: un cliente conecta su propio token
  * para desplegar sus repos privados sin depender del token global del admin.
  * El token se necesita en claro para clonar; jamás se devuelve por la API.
