@@ -5,6 +5,7 @@ import { api } from '../../api';
 import { DbTemplate, Service } from '../../types';
 import { cx } from '../../utils';
 import DomainsEditor from '../DomainsEditor';
+import MailwayWizard from '../MailwayWizard';
 import {
   GithubSource,
   GithubSourceSelect,
@@ -503,6 +504,7 @@ export default function ServiceSettingsTab({
               </p>
             )}
             <DomainsEditor domains={form.domains} onChange={(d) => set('domains', d)} slug={service.slug} />
+            <MailwayWizard serviceId={service.id} savedDomains={'domains' in service.config ? service.config.domains || [] : []} />
           </SectionCard>
         )}
 

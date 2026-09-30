@@ -12,6 +12,9 @@ services:
     restart: unless-stopped
     environment:
       DATA_DIR: /data
+      MAILWAY_URL: ${MAILWAY_URL:-}
+      MAILWAY_INTEGRATION_TOKEN: ${MAILWAY_INTEGRATION_TOKEN:-}
+      MAILWAY_INSTANCE_ID: ${MAILWAY_INSTANCE_ID:-skyway}
       # JWT_SECRET: define uno propio si quieres sesiones estables entre reinstalaciones
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -44,6 +47,10 @@ services:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
       - --providers.docker.network=skyway-edge
+      - --providers.http.endpoint=http://skyway:4000/api/mailway/traefik
+      - --providers.http.pollInterval=30s
+      - --providers.http.pollTimeout=10s
+      - --providers.http.headers.X-Skyway-Mailway-Token=${MAILWAY_INTEGRATION_TOKEN:-disabled}
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
       - --certificatesresolvers.le.acme.email=${LETSENCRYPT_EMAIL:-noreply@example.com}
