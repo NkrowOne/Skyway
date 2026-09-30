@@ -30,6 +30,7 @@ import { importRoutes } from './routes/import';
 import { migrateRoutes } from './routes/migrate';
 import { opsRoutes } from './routes/ops';
 import { domainRoutes } from './routes/domains';
+import { mailwayRoutes } from './routes/mailway';
 import { passkeyRoutes } from './routes/passkeys';
 import { tokenRoutes } from './routes/tokens';
 import { userRoutes } from './routes/users';
@@ -194,6 +195,7 @@ export function buildApp(): FastifyInstance {
   app.register(migrateRoutes);
   app.register(opsRoutes);
   app.register(domainRoutes);
+  app.register(mailwayRoutes);
   app.register(passkeyRoutes);
   app.register(tokenRoutes);
   app.register(userRoutes);

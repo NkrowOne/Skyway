@@ -6,6 +6,10 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 
 ## Características
 
+- **Correo con Mailway** — asistente para el dominio raíz, cuentas iniciales,
+  `webmail.<dominio>` y archivo DNS para importar en Cloudflare.
+  [Conectar Mailway](docs/MAILWAY.md).
+
 - **Importador de Railway** — migra tus proyectos existentes en minutos: un asistente lee tu cuenta por la API oficial de Railway y recrea servicios, variables (con sus referencias), dominios propios y volúmenes, y **copia los datos de las bases de datos desde el propio panel**, con el log en vivo. Lee además la configuración del repositorio (`railway.json` / `railway.toml`) y rellena las variables `RAILWAY_*` en tiempo de ejecución, para que una aplicación migrada siga funcionando tal cual. Ver [Migrar desde Railway](#migrar-desde-railway).
 - **Despliegue desde GitHub** — conecta tu cuenta con la **GitHub App** de tu servidor (un clic, sin tokens que caduquen), elige el repo de una lista y Skyway clona, construye y despliega. Usa el `Dockerfile` del repo o, si no hay, [Nixpacks](https://nixpacks.com) (el mismo builder que usa Railway).
 - **Imágenes Docker** — despliega cualquier imagen pública (n8n, Plausible, Uptime Kuma...) como un servicio más, con dominio, volúmenes y límites.
