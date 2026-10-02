@@ -14,7 +14,7 @@ import { loginWithPasskey, passkeysSupported } from '../webauthn';
  * la situación, de la más rápida a la de último recurso.
  */
 function RecoveryModal({ open, onClose, onPasskey }: { open: boolean; onClose: () => void; onPasskey: (() => void) | null }) {
-  const cmd = 'docker compose exec skyway node dist/tools/reset-password.js usuario@dominio.com';
+  const cmd = 'docker exec -it skyway node server/dist/tools/reset-password.js usuario@dominio.com';
   return (
     <Modal open={open} onClose={onClose} title="Recuperar el acceso">
       <div className="flex flex-col gap-5 text-sm leading-relaxed text-sub">

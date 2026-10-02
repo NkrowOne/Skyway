@@ -24,6 +24,7 @@ server/src/
   types.ts              tipos compartidos (filas, configs de servicio…)
   util.ts               id/token/slug, hashPassword (scrypt), hmac, safeEqual
   auth.ts               sesiones JWT (cookie httpOnly), tokens API, roles, rate-limit
+  apitokens.ts          emisión de tokens de API `sky_…` (`emitirTokenApi`): la comparten Mi perfil y `tools/token.ts`
   audit.ts              registro de auditoría (actor, acción, IP)
   modules.ts            catálogo de módulos (capacidades que un plan/workspace activa)
   quota.ts              cuota efectiva, asignación agregada de recursos y módulos por workspace
@@ -35,6 +36,9 @@ server/src/
                         (webmail con el dominio del cliente) y fichero de zona (`stripWebRecords` retira los
                         registros web del dominio raíz y de www; `appendWebRecords` añade los de los servicios
                         del proyecto y el del webmail)
+  mailwayconfig.ts      probar y guardar la conexión con Mailway (`probarConexionMailway`, `guardarConfigMailway`):
+                        validación de la URL, del token y del servicio del panel, y auditoría; la comparten
+                        Ajustes → Correo (Mailway) y la herramienta de terminal `tools/mailway.ts`
   mailconnect.ts        correo visto desde un servicio: cliente vinculado del proyecto (`ownedSummary`), nombres
                         con los que el servicio recibe el correo (`mailConnectNames`) y alta de la credencial
                         (`connectServiceMail`); lo comparten «Conectar a un servicio» y el plan de integraciones
@@ -103,7 +107,11 @@ server/src/
   railway/client.ts     cliente GraphQL de Railway (solo en memoria)
   railway/importer.ts   análisis y ejecución de la importación desde Railway
   routes/               una ruta por área (ver §7 API)
-  tools/reset-password.ts  CLI de emergencia para restablecer contraseña
+  tools/                herramientas de terminal del servidor, sin red ni sesión (ver §9):
+    reset-password.ts   restablecer la contraseña de un usuario (último recurso)
+    token.ts            crear (con caducidad) y revocar tokens de API; la usa el instalador de Mailway
+    mailway.ts          conectar Mailway como Ajustes → Correo, con el token `mwt_…` por la entrada estándar
+    argumentos.ts       opciones `--clave valor`, mensajes de error y E/S comunes (inyectable en las pruebas)
 
 web/src/
   main.tsx, App.tsx     arranque React + router
@@ -351,7 +359,9 @@ aprobación); database añade `template`, `version`, `backupSchedule`, `backupRe
   claro solo se muestra al crearlos. Heredan los permisos del usuario, son
   revocables y caducables, y quedan auditados. Crear tokens/passkeys exige
   **sesión de navegador** (`requireSession`), no un token: un token robado no
-  puede fabricarse acceso persistente.
+  puede fabricarse acceso persistente. La única otra vía es la terminal del
+  servidor (`tools/token.ts`, §9), sin endpoint HTTP: quien la ejecuta ya
+  controla el Docker en el que corre Skyway.
 - **Roles**: `admin` (control total del servidor), `owner` (propietario de un
   workspace: gestiona sus proyectos, crea sub-usuarios en él, acota sus módulos y
   ve su facturación; nunca toca ajustes del servidor, otros workspaces, su propia
@@ -1029,6 +1039,9 @@ Los cuerpos son JSON salvo indicación; la subida de archivos es binaria.
 | PATCH | `/users/:id` | admin | cambia rol / proyectos / contraseña / **cuenta** (`workspaceId`, `null` = sin cuenta). Es la única vía para mover un usuario de cuenta: se retiran sus proyectos salvo que lleguen los de la cuenta nueva en la misma petición; respeta la cuota de destino (409); un propietario no puede quedar sin cuenta; nadie cambia la suya propia. Auditado como `user_workspace_changed` |
 | DELETE | `/users/:id` | admin | elimina usuario (deja ≥1 admin) |
 
+Desde la terminal del servidor, `tools/token.js` crea tokens iguales a los de `POST /tokens` (de un
+administrador y con caducidad obligatoria) y los revoca, sin HTTP (§9).
+
 ### 7.2.1 Cuentas de cliente, planes y facturación
 Niveles: **manage** = admin o propietario del workspace del recurso; **admin** = solo administrador de plataforma.
 
@@ -1446,7 +1459,7 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | GET | `/traefik/mailway` | público¹ | configuración dinámica **saneada** para el proveedor HTTP de Traefik (`{}` sin Mailway). ¹Responde 404 si la petición trae `X-Forwarded-*`/`X-Real-IP`/`Forwarded` (llegó desde internet a través de Traefik). Siempre 200: si Mailway falla, la última buena (memoria → `settings`), vuelta a sanear. En cada lectura obtiene también, en paralelo y con plazo de 5 s, todos los nombres de marca blanca de la instancia (`GET /api/whitelabel/domains`), que ningún servicio de un cliente puede asignarse; si falla, se conserva la lista anterior |
 | GET | `/mailway/status` | auth | `{configured, panelUrl}` (la interfaz decide si muestra «Correo») |
 | GET | `/mailway/config` | admin | `{configured, baseUrl, serviceId, serviceName, internalUrl, hasToken, panelUrl, defaultPlanId, traefik:{routers, dropped, syncedAt, error}}`. Nunca devuelve el token |
-| PUT | `/mailway/config` | admin + session | `{baseUrl?, token?, serviceId?, defaultPlanId?}` (`''` borra). `token` debe empezar por `mwt_`. Si cambian la URL o el servicio, 400 cuando el dominio de la URL lo sirve un servicio de Skyway que no es del proyecto de Mailway (el token viajaría hasta él). Quitar el token **no** retira las rutas de Traefik. Audita `mailway_config_updated` (campos, sin valores) |
+| PUT | `/mailway/config` | admin + session | `{baseUrl?, token?, serviceId?, defaultPlanId?}` (`''` borra). `token` debe empezar por `mwt_`. Si cambian la URL o el servicio, 400 cuando el dominio de la URL lo sirve un servicio de Skyway que no es del proyecto de Mailway (el token viajaría hasta él). Quitar el token **no** retira las rutas de Traefik. Audita `mailway_config_updated` (campos, sin valores). Desde la terminal del servidor hace lo mismo `tools/mailway.js conectar` (§9), con el actor `sistema` |
 | POST | `/mailway/disconnect` | admin + session | borra dirección, token, servicio, plan predeterminado y hosts, **retira las rutas de Mailway de Traefik** (y su copia guardada) y libera los nombres de marca blanca reservados. Los vínculos de los proyectos se conservan. Audita `mailway_disconnected` |
 | GET | `/mailway/plans` | admin | `{plans, defaultPlanId}` para elegir el plan predeterminado |
 | POST | `/mailway/test` | admin | `{baseUrl?, token?, serviceId?}` opcionales (probar sin guardar) → `{ok, info:{version, brandName, mailHostname, webmailUrl, panelUrl, role, email, features}, warnings}`; avisa si el token no es de administrador. Las URLs que no son http(s) llegan como `null`. 12/min |
@@ -1529,8 +1542,17 @@ npm run lint         # reglas de hooks de React en la web
 npm test             # vitest: server/test (base SQLite temporal, sin Docker) y web/test
 
 # Restablecer contraseña desde el servidor (último recurso):
-docker compose exec skyway node dist/tools/reset-password.js <email> [nueva]
+docker exec -it skyway node server/dist/tools/reset-password.js <email> [nueva]
 npm run reset-password -w server -- <email> [nueva]
+
+# Token de API de corta duración (stdout: {"id":"tok_…","token":"sky_…"}) y su revocación:
+docker exec skyway node server/dist/tools/token.js crear --nombre "Instalador" --caduca-min 60 [--email admin@…]
+docker exec skyway node server/dist/tools/token.js revocar --id tok_…
+
+# Conectar Mailway como Ajustes → Correo (Mailway); el token mwt_ SOLO por la entrada estándar
+# (stdout: {"ok":true,"version":"…","brandName":"…"}):
+printf '%s' "$TOKEN_MWT" | docker exec -i skyway node server/dist/tools/mailway.js \
+  conectar --servicio panel --proyecto mailway --url https://mail-panel.tudominio.com
 
 # Restaurar la BD del panel desde un snapshot (proceso manual a propósito):
 docker compose stop skyway
@@ -1538,6 +1560,43 @@ docker run --rm -v skyway_skyway-data:/data alpine \
   sh -c 'cp /data/backups/skyway/<snapshot>.db /data/skyway.db'
 docker compose start skyway
 ```
+
+**Herramientas de terminal.** Viven en `server/src/tools/` y se compilan con el
+resto a `server/dist/tools/`; en la imagen, el directorio de trabajo es `/app`
+y el contenedor se llama `skyway`. No tienen endpoint HTTP a propósito: quien
+puede ejecutarlas ya administra la máquina. Abren la misma base de datos que el
+panel en marcha (SQLite en WAL) y terminan con código 0 si todo ha ido bien o
+con código 1 y el motivo en stderr; el resultado, cuando lo hay, es una sola
+línea JSON en stdout. Las opciones son `--clave valor`; un argumento suelto, una
+opción desconocida o repetida es un error.
+
+- `token.js crear --nombre <texto> --caduca-min <N> [--email <admin>]`: token
+  de API igual que los de Mi perfil → Tokens de API (`apitokens.ts`), para el
+  primer administrador o el indicado (tiene que ser administrador), con
+  caducidad obligatoria de 1 minuto a 3650 días. Audita `token_created` con el
+  actor `sistema` y el correo del dueño, nunca el valor.
+  `token.js revocar --id <tok_…>` lo borra y audita `token_deleted`; si ya no
+  existe, también termina con código 0 (`{"ok":true,"revoked":false}`).
+- `mailway.js conectar --servicio <id|slug> [--proyecto <id|slug>] [--url <URL>]`:
+  lee el token de gestión `mwt_…` de la **entrada estándar** (un argumento
+  quedaría en el historial y en `ps`: cualquier argumento con `mwt_` o la opción
+  `--token` se rechaza antes de leer nada, y desde un terminal no se espera).
+  Sin `--proyecto`, el slug del servicio tiene que ser único en todo Skyway.
+  Prueba la conexión con esos valores (`probarConexionMailway`, lo mismo que
+  «Probar conexión») y, solo si responde, los guarda con `guardarConfigMailway`
+  (lo mismo que «Guardar» en Ajustes → Correo (Mailway): misma validación,
+  incluido el 400 si la URL pública la sirve otro servicio, y misma auditoría
+  `mailway_config_updated`, con el actor `sistema`). Sin `--url` conserva la URL
+  guardada. Los avisos de la prueba (por ejemplo, un token que no es de
+  administrador) van a stderr con el prefijo `Aviso:` y no impiden guardar. El
+  panel en marcha es otro proceso: lee la configuración de la base en cada
+  petición y vuelve a pedir el token de Traefik en la siguiente lectura del
+  puente; lo que tuviera en caché de la instancia anterior caduca en 5 minutos.
+
+Las dos últimas las usa el instalador de Mailway (modo junto a Skyway) para
+emparejar los paneles sin pasos manuales: crea un token de Skyway de 60 minutos
+si no se le ha dado uno, despliega el panel de Mailway, conecta con el token de
+gestión que le devuelve Mailway y revoca el token de Skyway al terminar.
 
 Despliegue con Docker: ver el `README.md` y el `docker-compose.yml` (incluye
 Traefik y publica la UI solo en `127.0.0.1:4000`).

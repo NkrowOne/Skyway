@@ -78,6 +78,15 @@ Notas:
   `usuario · token:nombre`, así siempre se sabe qué automatización hizo qué.
 - Revocar un token (Mi perfil → papelera) corta el acceso al instante.
 - Ponles caducidad si son para tareas puntuales.
+- Un script que corre **en el propio servidor** (como el instalador de Mailway)
+  puede crear y revocar su token sin pasar por el panel, con la herramienta de
+  terminal `tools/token.js` (`docs/FUNCIONALIDAD.md` §9):
+
+  ```bash
+  TOKEN_JSON=$(docker exec skyway node server/dist/tools/token.js crear --nombre "Mi script" --caduca-min 60)
+  # … usar el token de "token" con la API …
+  docker exec skyway node server/dist/tools/token.js revocar --id "$(printf '%s' "$TOKEN_JSON" | jq -r .id)"
+  ```
 
 ### Correo (Mailway) a través de Skyway
 
@@ -145,6 +154,10 @@ Mailway) exigen sesión de navegador de un administrador, como el resto de
 credenciales persistentes; con un token de API se puede consultar
 (`GET /api/mailway/config`, `GET /api/mailway/plans`) y probar
 (`POST /api/mailway/test`). Quitar el token no retira las rutas publicadas.
+Desde la terminal del servidor, `tools/mailway.js conectar` prueba y guarda la
+conexión igual que Ajustes → Correo, con el token `mwt_…` por la entrada
+estándar (nunca como argumento); es lo que usa el instalador de Mailway para
+emparejar los dos paneles (`docs/FUNCIONALIDAD.md` §9).
 
 ### CLI rápida: el comando `skyway`
 

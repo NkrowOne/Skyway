@@ -31,9 +31,20 @@ export function audit(
   }
 }
 
-export function auditSystem(action: string, detail?: string): void {
+/**
+ * Registra una acción sin petición HTTP detrás (tareas programadas, arranque,
+ * herramientas de terminal del servidor), con «sistema» como actor.
+ */
+export function auditSystem(action: string, detail?: string, target?: { type: string; id: string }): void {
   try {
-    insertAudit({ actor: 'sistema', action, target_type: null, target_id: null, detail: detail ?? null, ip: null });
+    insertAudit({
+      actor: 'sistema',
+      action,
+      target_type: target?.type ?? null,
+      target_id: target?.id ?? null,
+      detail: detail ?? null,
+      ip: null,
+    });
   } catch {
     /* noop */
   }

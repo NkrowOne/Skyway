@@ -78,6 +78,17 @@ Abre `http://IP-DEL-SERVIDOR:4000` (o `http://tu-dominio`) y crea la cuenta de a
 10. **Vigila y depura desde el Monitor** (icono de actividad, o `g m`) — todos los servicios con su consumo y espacio; si algo falla, busca el texto del error en los logs de todos los contenedores a la vez.
 11. **Comparte el estado con tu cliente** — en el proyecto, botón **Página de estado**: actívala y pásale el enlace. Verá disponibilidad e incidencias sin entrar al panel.
 
+## Añadir el correo (Mailway)
+
+[Mailway](https://github.com/NkrowOne/Mailway) es el servicio de correo que se integra con Skyway (botón **Correo** de cada proyecto). Se instala en el mismo servidor, con Skyway ya en marcha y su cuenta de administrador creada:
+
+```bash
+git clone https://github.com/NkrowOne/Mailway.git
+sudo bash Mailway/deploy/instalar.sh
+```
+
+El emparejado es automático: el instalador despliega el panel de Mailway como un proyecto de Skyway (con un token de Skyway de corta duración que crea desde el servidor y revoca al terminar), crea el administrador de Mailway y deja hecha la conexión de **Ajustes → Correo (Mailway)**. Al final muestra el correo de ese administrador y, si lo acaba de crear, su contraseña (una sola vez). Si el emparejado falla, la instalación no se interrumpe: se repite solo ese paso con `sudo bash deploy/instalar.sh --emparejar` desde la carpeta de Mailway. Requisitos (DNS del servidor de correo, puertos) en la [guía de despliegue de Mailway](https://github.com/NkrowOne/Mailway/blob/main/docs/DESPLIEGUE-SKYWAY.md); las herramientas de terminal que usa están en [docs/FUNCIONALIDAD.md](docs/FUNCIONALIDAD.md) §9.
+
 ## Migrar desde Railway
 
 1. Crea un **token de cuenta** en Railway (Account Settings → Tokens). No selecciones equipo si también quieres ver tus proyectos personales.
@@ -138,6 +149,7 @@ server/src/
   docker/                 contenedores, redes, stats, logs
   deploy/                 builder (git+docker/nixpacks), orquestador, cola
   routes/                 API REST + SSE + webhooks (+ monitor, websites, status público)
+  tools/                  herramientas de terminal: contraseña, tokens de API y conexión con Mailway
 web/src/
   pages/                  Dashboard, Proyecto, Monitor, Sitios, Estado público...
   components/             canvas de servicios, drawer con pestañas, gráficas

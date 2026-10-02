@@ -1097,6 +1097,15 @@ export function deleteApiToken(tokenId: string, userId: string): boolean {
   return stmt('DELETE FROM api_tokens WHERE id = ? AND user_id = ?').run(tokenId, userId).changes > 0;
 }
 
+export function getApiToken(tokenId: string): ApiTokenRow | undefined {
+  return stmt('SELECT * FROM api_tokens WHERE id = ?').get(tokenId) as ApiTokenRow | undefined;
+}
+
+/** Revoca un token sea de quien sea: solo para la terminal del servidor (`tools/token.ts`). */
+export function deleteApiTokenById(tokenId: string): boolean {
+  return stmt('DELETE FROM api_tokens WHERE id = ?').run(tokenId).changes > 0;
+}
+
 export function getUserByEmail(email: string): UserRow | undefined {
   return stmt('SELECT * FROM users WHERE email = ?').get(email) as UserRow | undefined;
 }

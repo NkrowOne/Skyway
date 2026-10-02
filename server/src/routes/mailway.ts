@@ -21,7 +21,6 @@ import {
   MAILWAY_SETTING,
   MailwayApiKeyInfo,
   MailwayAppPasswordInfo,
-  MailwayConfig,
   MailwayDnsInstruction,
   MailwayDomain,
   MailwayError,
@@ -55,10 +54,8 @@ import {
   listWhitelabelDomains,
   mailwayConfigured,
   mailwayReservedHosts,
-  normalizeBaseUrl,
   previousClientKey,
   projectExternalRef,
-  publicBaseConflict,
   publicPanelUrl,
   readMailwayConfig,
   releaseProjectClient,
@@ -77,7 +74,6 @@ import {
   mailwayTraefikConfig,
   mailwayTraefikStatus,
   reserveWhitelabelHost,
-  resetMailwayTraefikState,
   stableStringify,
 } from '../mailwaytraefik';
 import {
@@ -97,6 +93,7 @@ import {
   serviceOfProject,
 } from '../mailconnect';
 import { LOCAL_PART_RE } from '../mailenv';
+import { guardarConfigMailway, mailwayConfigSchema, probarConexionMailway } from '../mailwayconfig';
 import { markManualAction } from '../monitor';
 import { isWorkspaceActive, moduleAllowedForProject, workspaceOfProject } from '../quota';
 import { rateLimit } from '../ratelimit';
@@ -548,58 +545,6 @@ function configView() {
   };
 }
 
-/** Valida una URL de panel: http(s), sin credenciales, consulta ni fragmento. */
-function parsePanelUrl(raw: string): string {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw httpError(400, 'La URL del panel de Mailway no es válida.');
-  }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw httpError(400, 'La URL del panel de Mailway debe empezar por https:// o http://.');
-  }
-  if (url.username || url.password || url.search || url.hash) {
-    throw httpError(400, 'La URL del panel de Mailway no puede incluir credenciales, parámetros ni fragmentos.');
-  }
-  return normalizeBaseUrl(url.toString())!;
-}
-
-const TOKEN_RE = /^mwt_[A-Za-z0-9_-]{8,500}$/;
-
-const configSchema = z.object({
-  baseUrl: z.string().trim().max(500).optional(),
-  token: z.string().trim().max(520).optional(),
-  serviceId: z.string().trim().max(100).optional(),
-  defaultPlanId: z
-    .string()
-    .trim()
-    .max(64)
-    .regex(/^[A-Za-z0-9_-]*$/, 'Identificador de plan no válido')
-    .optional(),
-});
-
-/**
- * Motivo por el que no se puede usar la URL pública, si su dominio lo sirve un
- * servicio de Skyway que no es el panel de Mailway (el token viajaría hasta
- * él). Nombra el servicio: esta comprobación solo la ve el administrador.
- */
-function baseConflictMessage(cfg: MailwayConfig): string | null {
-  const service = publicBaseConflict(cfg);
-  if (!service) return null;
-  const project = getProject(service.project_id);
-  return (
-    `El dominio de la URL pública lo sirve el servicio «${project?.name ?? '?'} / ${service.name}» de Skyway, que no es el panel de Mailway. ` +
-    'Si ese servicio ejecuta el panel, selecciónalo en «Servicio del panel de Mailway»; si no, corrige la URL. El token de gestión no se envía por un dominio de otro servicio.'
-  );
-}
-
-function checkService(serviceId: string): void {
-  const service = getService(serviceId);
-  if (!service) throw httpError(400, 'El servicio indicado no existe.');
-  if (service.type === 'database') throw httpError(400, 'El panel de Mailway no puede ser un servicio de base de datos.');
-}
-
 // ---------- rutas ----------
 
 const linkSchema = z.discriminatedUnion('mode', [
@@ -644,64 +589,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
     secured.get('/api/mailway/config', { preHandler: requireAdmin }, async () => configView());
 
     secured.put('/api/mailway/config', { preHandler: [requireAdmin, requireSession] }, async (req) => {
-      const body = configSchema.parse(req.body ?? {});
-      const before = readMailwayConfig();
-      const next: MailwayConfig = { ...before };
-      const cambios: string[] = [];
-
-      if (body.baseUrl !== undefined) next.baseUrl = body.baseUrl === '' ? null : parsePanelUrl(body.baseUrl);
-      if (body.token !== undefined) {
-        if (body.token !== '' && !TOKEN_RE.test(body.token)) {
-          throw httpError(400, 'El token de gestión no es válido: debe empezar por «mwt_» (Mailway → Conexiones → Tokens de gestión).');
-        }
-        next.token = body.token === '' ? null : body.token;
-      }
-      if (body.serviceId !== undefined) {
-        if (body.serviceId !== '') checkService(body.serviceId);
-        next.serviceId = body.serviceId === '' ? null : body.serviceId;
-      }
-      // Al cambiar la dirección o el servicio se valida la combinación final
-      // antes de guardar nada: una URL cuyo dominio sirve otro servicio de
-      // Skyway recibiría el token. Sin tocarlas (p. ej., para quitar el token)
-      // no se bloquea al administrador.
-      if (next.baseUrl !== before.baseUrl || next.serviceId !== before.serviceId) {
-        const conflicto = baseConflictMessage(next);
-        if (conflicto) throw httpError(400, conflicto);
-      }
-
-      if (next.baseUrl !== before.baseUrl) {
-        setSetting(MAILWAY_SETTING.baseUrl, next.baseUrl);
-        cambios.push(next.baseUrl ? 'URL del panel' : 'URL del panel (eliminada)');
-      }
-      if (next.token !== before.token) {
-        setSetting(MAILWAY_SETTING.token, next.token);
-        cambios.push(next.token ? 'token de gestión' : 'token de gestión (eliminado)');
-      }
-      if (next.serviceId !== before.serviceId) {
-        setSetting(MAILWAY_SETTING.serviceId, next.serviceId);
-        cambios.push(next.serviceId ? 'servicio del panel' : 'servicio del panel (eliminado)');
-      }
-      let cambioPlan = false;
-      if (body.defaultPlanId !== undefined) {
-        const value = body.defaultPlanId || null;
-        if (value !== (getSetting(MAILWAY_SETTING.defaultPlanId) || null)) {
-          setSetting(MAILWAY_SETTING.defaultPlanId, value);
-          cambioPlan = true;
-        }
-      }
-
-      if (cambios.length > 0) {
-        // Otra instancia u otro token: lo aprendido de la anterior no vale. La
-        // última configuración de Traefik se conserva (también sin token):
-        // solo «Desconectar Mailway» retira las rutas.
-        resetMailwayCaches();
-        setSetting(MAILWAY_SETTING.traefikToken, null);
-        resetMailwayTraefikState();
-      }
-      if (cambioPlan) cambios.push('plan predeterminado');
-      if (cambios.length > 0) {
-        audit(req, 'mailway_config_updated', { type: 'system', id: 'mailway', detail: cambios.join(', ') });
-      }
+      guardarConfigMailway(mailwayConfigSchema.parse(req.body ?? {}), (action, target) => audit(req, action, target));
       return { ok: true, config: configView() };
     });
 
@@ -748,62 +636,9 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
     secured.post(
       '/api/mailway/test',
       { preHandler: [requireAdmin, rateLimit({ max: 12, windowMs: 60_000 })] },
-      guarded(async (req, reply) => {
-        const body = configSchema.parse(req.body ?? {});
-        const saved = readMailwayConfig();
-        const override = !!(body.baseUrl || body.token || body.serviceId);
-        if (body.token && !TOKEN_RE.test(body.token)) {
-          return reply.code(400).send({ error: 'El token de gestión no es válido: debe empezar por «mwt_».' });
-        }
-        if (body.serviceId) checkService(body.serviceId);
-        // Probar OTRA dirección con el token GUARDADO lo enviaría allí: con un
-        // token de API de Skyway sería una forma de sacar una credencial
-        // persistente, así que exige sesión de navegador, como guardarla.
-        if ((body.baseUrl || body.serviceId) && !body.token && req.authMethod !== 'cookie') {
-          return reply.code(403).send({ error: 'Probar otra dirección con el token guardado requiere una sesión de navegador.' });
-        }
-        const cfg: MailwayConfig = {
-          baseUrl: body.baseUrl ? parsePanelUrl(body.baseUrl) : saved.baseUrl,
-          token: body.token || saved.token,
-          serviceId: body.serviceId || saved.serviceId,
-        };
-        if (!cfg.token) {
-          return reply.code(400).send({ error: 'Introduce el token de gestión de Mailway o guárdalo antes de probar la conexión.' });
-        }
-        if (!cfg.baseUrl && !internalPanelUrl(cfg.serviceId)) {
-          return reply.code(400).send({ error: 'Indica la URL pública del panel de Mailway o el servicio de Skyway que lo ejecuta.' });
-        }
-        const conflicto = baseConflictMessage(cfg);
-        if (conflicto && !internalPanelUrl(cfg.serviceId)) return reply.code(400).send({ error: conflicto });
-        const info = override ? await getInfo({ config: cfg }) : await getInfo({ fresh: true });
-        const warnings: string[] = [];
-        if (conflicto) warnings.push(conflicto);
-        if (info.user?.role !== 'admin') {
-          warnings.push(
-            'El token pertenece a un usuario que no es administrador de Mailway: no será posible activar el correo en los proyectos ni publicar en Traefik los dominios propios de los clientes.',
-          );
-        } else if (!info.traefik?.token) {
-          warnings.push('Mailway no ha facilitado el token de Traefik: los dominios propios de los clientes no se publicarán automáticamente.');
-        }
-        return {
-          ok: true,
-          info: {
-            version: info.version,
-            brandName: info.brandName,
-            mailHostname: info.mailHostname,
-            webmailUrl: safeHttpUrl(info.webmailUrl),
-            panelUrl: safeHttpUrl(info.panelUrl),
-            role: info.user?.role ?? null,
-            email: info.user?.email ?? null,
-            features: {
-              cloudflare: !!info.features?.cloudflare,
-              autoconfig: !!info.features?.autoconfig,
-              portal: !!info.features?.portal,
-            },
-          },
-          warnings,
-        };
-      }),
+      guarded(async (req) =>
+        probarConexionMailway(mailwayConfigSchema.parse(req.body ?? {}), { sesionNavegador: req.authMethod === 'cookie' }),
+      ),
     );
 
     // ---------- correo de un proyecto ----------
