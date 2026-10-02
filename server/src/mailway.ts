@@ -922,6 +922,15 @@ export function zoneOwners(zone: string, domain: string): Map<string, Set<string
 const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
 const NOMBRE_DNS_RE = /^(?=.{1,253}\.?$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.?$/;
 
+/**
+ * Texto libre como comentario de una sola línea del fichero de zona. Un salto
+ * de línea (o cualquier carácter de control) dentro de la nota cerraría el
+ * comentario y lo que siguiera se importaría como un registro DNS más.
+ */
+function zoneComment(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').trim();
+}
+
 /** Registro web que Skyway añade al fichero de zona. */
 export interface WebZoneRecord {
   name: string;
@@ -979,7 +988,7 @@ export function appendWebRecords(
   const w = input.webmail;
   if (w || input.webmailNote) {
     lines.push(';', ';  Webmail del cliente');
-    if (input.webmailNote) lines.push(`;  ${input.webmailNote}`);
+    if (input.webmailNote) lines.push(`;  ${zoneComment(input.webmailNote)}`);
     const name = w?.name.toLowerCase().replace(/\.$/, '') ?? '';
     const valueOk = w && (w.type === 'A' ? IPV4_RE.test(w.value) : NOMBRE_DNS_RE.test(w.value.toLowerCase()));
     if (w && inZone(name) && NOMBRE_DNS_RE.test(name) && valueOk && !input.webmailNote) {

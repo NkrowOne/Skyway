@@ -9,9 +9,19 @@
  *   del propio servicio, valores literales y huecos vacíos. No dan acceso a
  *   nada que la web no tuviera ya (su código corre en el contenedor igual).
  * - Lo que da acceso a algo (crear o conectar una base de datos, crear un
- *   buzón o una credencial de correo) lo aprueba quien gestiona el proyecto:
- *   administrador o propietario de la cuenta. Si lo aplica un miembro, queda
- *   como «Cambios pendientes de aprobar».
+ *   buzón o una credencial de correo) necesita que una persona lo apruebe: en
+ *   un despliegue nunca se aplica solo. Las bases las aprueba cualquiera con
+ *   acceso al proyecto, con la misma regla que crearlas a mano (módulo «Bases
+ *   de datos» y cuota, `dbCreateBlock`); el correo, quien gestiona el
+ *   proyecto (administrador o propietario de la cuenta), como «Conectar a un
+ *   servicio». Lo que no puede aprobar quien aplica queda como «Cambios
+ *   pendientes de aprobar».
+ * - La aprobación va ligada a lo que se ha revisado: el plan lleva una huella
+ *   (`fingerprint`) de lo privilegiado y aplicarlo exige esa huella. Si entre
+ *   ver el plan y aprobarlo cambia (un push con otro manifiesto), no se aprueba
+ *   nada a ciegas. Reutilizar en SMTP un buzón que ya existe pide además una
+ *   confirmación explícita: su contraseña de aplicación da acceso IMAP a todo
+ *   el buzón.
  * - Nunca se pisa una variable puesta a mano (`managedenv.ts`), nunca `PORT`
  *   ni `SKYWAY_*`, y todo queda dentro del proyecto: las bases se buscan entre
  *   sus servicios y el correo es el de su cliente de Mailway.
@@ -51,6 +61,7 @@ import {
   mailConnectNames,
   mailOrigin,
   ownedSummary,
+  partialConnectionMessage,
 } from './mailconnect';
 import { MailMode, MailRole, mailValue } from './mailenv';
 import { MailwayError, MailwayInfo, MailwayMailbox, MailwaySummary, createMailbox, getInfo, mailwayConfigured } from './mailway';
@@ -92,6 +103,14 @@ export interface PlanResource {
   status: PlanStatus;
   reason: string | null;
   evidence: string | null;
+  /** Quien consulta el plan puede aprobar este recurso (bases: acceso al proyecto; correo: gestionarlo). */
+  canApprove: boolean;
+  /**
+   * Lo que hay que confirmar expresamente para aprobarlo, o null. Hoy, solo
+   * reutilizar en SMTP un buzón que ya existe: su contraseña de aplicación da
+   * acceso IMAP y SMTP a todo su correo.
+   */
+  confirmation: string | null;
 }
 
 export interface IntegrationPlan {
@@ -100,9 +119,15 @@ export interface IntegrationPlan {
   manifestError: string | null;
   resources: PlanResource[];
   vars: PlanVar[];
-  /** Variables privilegiadas por aplicar: las aprueba quien gestiona el proyecto. */
+  /** Variables privilegiadas por aplicar: necesitan que alguien las apruebe. */
   pendingApproval: string[];
+  /** Quien consulta el plan puede aprobar todo lo pendiente (ver `PlanResource.canApprove`). */
   canApprove: boolean;
+  /**
+   * Huella de lo privilegiado por aplicar (recursos y variables). Aprobar exige
+   * enviarla: si el plan ha cambiado desde que se revisó, no coincide.
+   */
+  fingerprint: string;
 }
 
 /** Servicio al que va el plan: el que existe o el que se va a crear con el asistente. */
@@ -128,6 +153,7 @@ const MAIL_ROLE_LABEL: Record<MailRole, string> = {
 };
 
 const MANUAL = 'Tiene un valor puesto a mano: no se modifica.';
+export const PLAN_CAMBIADO = 'El plan ha cambiado desde que lo revisaste: revísalo de nuevo antes de aprobarlo.';
 const SIN_DOMINIO = 'El servicio todavía no tiene dominio: se definirá cuando lo tenga y vuelvas a desplegar.';
 
 /** Fila provisional para planificar un servicio que aún no existe (asistente de alta). */
@@ -278,8 +304,10 @@ export function buildPlan(opts: {
     resources: [],
     vars: [],
     pendingApproval: [],
-    canApprove: !!user && canManageProject(user, project),
+    canApprove: false,
+    fingerprint: '',
   };
+  plan.fingerprint = planFingerprint(plan);
   if (!needs) return plan;
   // Un manifiesto roto no aplica nada, ni siquiera la detección: lo que la web
   // quería decir está en ese fichero, y adivinarlo sería peor.
@@ -319,10 +347,13 @@ export function buildPlan(opts: {
         // Un secreto generado no se regenera jamás: rotarlo cerraría sesiones
         // o dejaría ilegibles los datos cifrados con él. Si ya tiene valor,
         // está hecho (lo generó Skyway) o es de quien lo puso.
+        // Lo que Skyway importó del `.env.example` y nadie ha tocado tampoco
+        // es un secreto: es el valor público del repositorio y se sustituye.
         const current = state.env[name];
+        const imported = state.managed[name]?.origin === 'import' && managedUnchanged(state, name);
         let status: PlanStatus = 'apply';
         if (current === undefined ? !!state.shared[name] : current !== '' && !managedUnchanged(state, name)) status = 'manual';
-        else if (current !== undefined && current !== '') status = 'done';
+        else if (current !== undefined && current !== '' && !imported) status = 'done';
         addVar({
           name,
           from: 'generate',
@@ -414,6 +445,11 @@ export function buildPlan(opts: {
       status: anyBlocked ? 'blocked' : anyApply ? 'apply' : 'done',
       reason: anyBlocked ? block : null,
       evidence: wants[0].evidence,
+      // La misma regla que crear la base a mano (POST …/services) o escribir la
+      // referencia en Variables: acceso al proyecto, que ya exigen las rutas, y
+      // el módulo y la cuota, que ya bloquean el recurso arriba.
+      canApprove: !!user,
+      confirmation: null,
     });
   }
 
@@ -467,30 +503,73 @@ export function buildPlan(opts: {
       });
     }
     const noSecret = names.secretRequested && !names.secretPlaced && anyApply;
+    // Con el servidor (o el puerto, o el usuario) de otro proveedor puesto a
+    // mano, la credencial de Mailway acabaría en ese tercero: tampoco se aplica.
+    const partial = !noSecret && names.conflicts.length > 0 && anyApply;
     const anyBlocked = plan.vars.some((v) => v.resource === 'mail' && v.status === 'blocked');
+    const existing = mail?.mailbox?.existing ?? null;
+    // Un buzón que ya existe puede ser el de una persona: su contraseña de
+    // aplicación abre todo su correo por IMAP. Si el servicio ya tiene una de
+    // Skyway en ESE buzón, volver a conectarlo no da nada nuevo.
+    const holdsCredential =
+      !!existing && !!mail?.summary && mail.summary.appPasswords.some((a) => !a.revokedAt && a.name === credName && a.mailboxId === existing.id);
+    const status: PlanStatus = anyBlocked || noSecret || partial ? 'blocked' : anyApply ? 'apply' : 'done';
     plan.resources.push({
       key: 'mail',
       label: 'Correo',
-      action: mail?.mailbox ? (mail.mailbox.existing ? 'reuse' : 'create') : null,
+      action: mail?.mailbox ? (existing ? 'reuse' : 'create') : null,
       target: mail?.mailbox?.email ?? `${wantsMail.mailbox}@…`,
       mode,
-      status: anyBlocked || noSecret ? 'blocked' : anyApply ? 'apply' : 'done',
-      reason: anyBlocked ? blocked : noSecret ? 'Las variables de la credencial tienen un valor puesto a mano: Skyway no las sobrescribe.' : null,
+      status,
+      reason: anyBlocked
+        ? blocked
+        : noSecret
+          ? 'Las variables de la credencial tienen un valor puesto a mano: Skyway no las sobrescribe.'
+          : partial
+            ? partialConnectionMessage(names.conflicts)
+            : null,
       evidence: wantsMail.evidence,
+      canApprove: !!user && canManageProject(user, project),
+      confirmation:
+        status === 'apply' && mode === 'smtp' && existing && names.secretRequested && !holdsCredential
+          ? `El buzón ${existing.email} ya existe: su contraseña de aplicación da acceso IMAP y SMTP a todo su correo, y la leerá ` +
+            'cualquiera que vea las variables del servicio. Apruébalo solo si ese buzón es para los envíos de la web.'
+          : null,
     });
-    // Sin sitio para la credencial no hay nada que aprobar: se dice en el recurso.
-    if (noSecret) {
+    // Sin sitio para la credencial, o con la conexión a medias, no hay nada que aprobar: se dice en el recurso.
+    if (noSecret || partial) {
       for (const v of plan.vars) {
         if (v.resource === 'mail' && v.status === 'apply') {
           v.status = 'blocked';
-          v.reason = 'La credencial no cabe en ninguna variable libre.';
+          v.reason = noSecret ? 'La credencial no cabe en ninguna variable libre.' : 'La conexión quedaría a medias: revisa el motivo del correo.';
         }
       }
     }
   }
 
   plan.pendingApproval = plan.vars.filter((v) => v.privileged && v.status === 'apply').map((v) => v.name);
+  const pendingResources = plan.resources.filter((r) => r.status === 'apply');
+  plan.canApprove = !!user && pendingResources.every((r) => r.canApprove);
+  plan.fingerprint = planFingerprint(plan);
   return plan;
+}
+
+/**
+ * Huella de lo privilegiado que se aplicaría: qué recursos (crear o reutilizar,
+ * cuál, en qué modo, si piden confirmación) y qué variables con qué origen. Lo
+ * inofensivo no entra: se aplica igual sin aprobación. Determinista para el
+ * mismo estado, sea quien sea quien lo consulte.
+ */
+function planFingerprint(plan: IntegrationPlan): string {
+  const resources = plan.resources
+    .filter((r) => r.status === 'apply')
+    .map((r) => [r.key, r.action, r.target, r.mode, r.confirmation !== null])
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const vars = plan.vars
+    .filter((v) => v.privileged && v.status === 'apply')
+    .map((v) => [v.name, v.from, v.resource])
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  return crypto.createHash('sha256').update(JSON.stringify({ resources, vars })).digest('hex').slice(0, 32);
 }
 
 /** Buzón que pide el plan (manifiesto o, por defecto, `no-reply`). */
@@ -501,16 +580,22 @@ export function planMailbox(needs: DetectedNeeds | null | undefined): string | n
   return needs.mail ? 'no-reply' : null;
 }
 
-/** Plan con el estado del correo consultado en Mailway (para enseñarlo o aplicarlo). */
+/**
+ * Plan con el estado del correo consultado en Mailway (para enseñarlo o
+ * aplicarlo). Los datos del servidor de envío (`withInfo`) se consultan si
+ * quien mira puede aprobar el correo, tanto al enseñarlo como al aplicarlo:
+ * con ellos se decide qué variables de correo se tocan, y la huella de lo
+ * enseñado tiene que ser la de lo que se aplicará.
+ */
 export async function planWithMail(opts: {
   project: ProjectRow;
   user: UserRow;
   target: PlanTarget;
   needs: DetectedNeeds | null | undefined;
-  withInfo?: boolean;
 }): Promise<{ plan: IntegrationPlan; mail: MailContext | null }> {
   const mailbox = planMailbox(opts.needs);
-  const mail = mailbox ? await mailContext(opts.project, opts.user, opts.target.domains, mailbox, !!opts.withInfo) : null;
+  const withInfo = canManageProject(opts.user, opts.project);
+  const mail = mailbox ? await mailContext(opts.project, opts.user, opts.target.domains, mailbox, withInfo) : null;
   return { plan: buildPlan({ ...opts, mail }), mail };
 }
 
@@ -545,19 +630,43 @@ function createDatabaseService(projectId: string, engine: string): ServiceRow {
   return db;
 }
 
-/**
- * Aplica el plan de un servicio existente con los permisos de `user`: lo
- * inofensivo siempre; lo privilegiado solo si gestiona el proyecto (y no está
- * en `skip`), y si no, queda pendiente. Lo que falla de un recurso (Mailway
- * caído) no impide aplicar el resto: se informa en `errors`. Recalcula
- * `integrationsPending` del servicio.
- */
-export async function applyPlan(opts: {
+/** El plan recalculado no es el que se revisó: no se aplica nada (lo lanza `applyPlan` con `onMismatch: 'reject'`). */
+export class PlanChangedError extends Error {
+  readonly statusCode = 409;
+  constructor(readonly plan: IntegrationPlan) {
+    super(PLAN_CAMBIADO);
+  }
+}
+
+export interface ApplyOptions {
   project: ProjectRow;
   user: UserRow;
   service: ServiceRow;
   skip?: ReadonlySet<string>;
-}): Promise<{ result: ApplyResult; plan: IntegrationPlan }> {
+  /**
+   * Huella del plan que se ha revisado (`IntegrationPlan.fingerprint`). Sin
+   * ella no se aprueba nada privilegiado: queda pendiente.
+   */
+  expect?: string;
+  /** Confirmación expresa del acceso al buzón que se reutiliza (`PlanResource.confirmation`). */
+  confirmMailboxAccess?: boolean;
+  /**
+   * Si la huella no coincide: `reject` lanza `PlanChangedError` sin aplicar
+   * nada (la ruta de aplicar); `pending` aplica lo inofensivo y deja lo
+   * privilegiado pendiente (el alta, donde el servicio ya existe).
+   */
+  onMismatch?: 'reject' | 'pending';
+}
+
+/**
+ * Aplica el plan de un servicio existente con los permisos de `user`: lo
+ * inofensivo siempre; lo privilegiado, si lo puede aprobar (`canApprove` de
+ * cada recurso), coincide la huella revisada (`expect`) y no está en `skip`;
+ * si no, queda pendiente. Lo que falla de un recurso (Mailway caído) no impide
+ * aplicar el resto: se informa en `errors`. Recalcula `integrationsPending`
+ * del servicio.
+ */
+export async function applyPlan(opts: ApplyOptions): Promise<{ result: ApplyResult; plan: IntegrationPlan }> {
   // Dos «Aplicar» seguidos crearían dos bases o dos credenciales.
   if (applying.has(opts.service.id)) throw httpError(409, 'Ya se está aplicando el plan de este servicio. Espera a que termine.');
   applying.add(opts.service.id);
@@ -570,20 +679,24 @@ export async function applyPlan(opts: {
 
 const applying = new Set<string>();
 
-async function applyPlanLocked(opts: {
-  project: ProjectRow;
-  user: UserRow;
-  service: ServiceRow;
-  skip?: ReadonlySet<string>;
-}): Promise<{ result: ApplyResult; plan: IntegrationPlan }> {
+async function applyPlanLocked(opts: ApplyOptions): Promise<{ result: ApplyResult; plan: IntegrationPlan }> {
   const { project, user } = opts;
   const skip = opts.skip ?? new Set<string>();
   const service = getService(opts.service.id) ?? opts.service;
   const cfg = service.config as GitConfig;
   const target: PlanTarget = { service, domains: cfg.domains ?? [] };
-  const canApprove = canManageProject(user, project);
-  const { plan, mail } = await planWithMail({ project, user, target, needs: cfg.needs, withInfo: canApprove });
+  const { plan, mail } = await planWithMail({ project, user, target, needs: cfg.needs });
   const result: ApplyResult = { applied: [], pending: [], kept: [], blocked: [], created: [], errors: [] };
+  // La aprobación vale para el plan revisado, no para el que haya ahora: entre
+  // verlo y pulsar el botón, un push puede haber cambiado el manifiesto.
+  const matches = opts.expect !== undefined && opts.expect === plan.fingerprint;
+  if (opts.expect !== undefined && !matches) {
+    if (opts.onMismatch !== 'pending') throw new PlanChangedError(plan);
+    if (plan.pendingApproval.length > 0) {
+      result.errors.push('El plan ha cambiado desde que lo revisaste: lo que requiere aprobación ha quedado pendiente. Revísalo en Variables → Integraciones.');
+    }
+  }
+  const approved = (key: string) => matches && !skip.has(key) && !!plan.resources.find((r) => r.key === key)?.canApprove;
 
   // Lo inofensivo.
   const harmless: Record<string, { value: string; origin: string }> = {};
@@ -606,7 +719,7 @@ async function applyPlanLocked(opts: {
   for (const res of plan.resources.filter((r) => r.key !== 'mail')) {
     const vars = plan.vars.filter((v) => v.resource === res.key && v.status === 'apply');
     if (vars.length === 0) continue;
-    if (!canApprove || skip.has(res.key)) {
+    if (!approved(res.key)) {
       result.pending.push(...vars.map((v) => v.name));
       continue;
     }
@@ -635,8 +748,11 @@ async function applyPlanLocked(opts: {
   const mailRes = plan.resources.find((r) => r.key === 'mail');
   const mailVars = plan.vars.filter((v) => v.resource === 'mail' && v.status === 'apply');
   if (mailRes && mailVars.length > 0 && mailRes.status === 'apply') {
-    if (!canApprove || skip.has('mail')) {
+    if (!approved('mail')) {
       result.pending.push(...mailVars.map((v) => v.name));
+    } else if (mailRes.confirmation && !opts.confirmMailboxAccess) {
+      result.pending.push(...mailVars.map((v) => v.name));
+      result.errors.push(`Correo: no se ha conectado ${mailRes.target}. ${mailRes.confirmation} Confírmalo para aplicarlo.`);
     } else if (mail?.available && mail.link && mail.summary && mail.info && mail.mailbox && mailRes.mode) {
       try {
         let mailbox = mail.mailbox.existing;
@@ -728,7 +844,8 @@ export function reconcileOnDeploy(service: ServiceRow, cfg: GitConfig, log: (lin
     const recursos = plan.resources.filter((r) => r.status === 'apply').map((r) => r.label);
     log(
       `⚠ ${needs.manifestFile} pide cambios que requieren aprobación (${recursos.join(', ')}: ${pending.join(', ')}). ` +
-        'El despliegue continúa con lo ya aprobado; quien gestiona el proyecto puede aprobarlos en Variables → Integraciones.',
+        'El despliegue continúa con lo ya aprobado. Apruébalos en Variables → Integraciones: las bases de datos, cualquiera con ' +
+        'acceso al proyecto; el correo, quien gestiona el proyecto.',
     );
   }
   cfg.integrationsPending = pending.length > 0 ? pending : undefined;
@@ -745,12 +862,9 @@ export function reconcileOnDeploy(service: ServiceRow, cfg: GitConfig, log: (lin
  * para que nazca con sus variables. Nunca lanza: el servicio ya existe y un
  * GitHub o un Mailway caídos no pueden dejarlo a medias; se informa en `error`.
  */
-export async function applyPlanFromRepo(opts: {
-  project: ProjectRow;
-  user: UserRow;
-  service: ServiceRow;
-  skip?: ReadonlySet<string>;
-}): Promise<{ result: ApplyResult | null; plan: IntegrationPlan | null; error: string | null }> {
+export async function applyPlanFromRepo(
+  opts: Omit<ApplyOptions, 'onMismatch'>,
+): Promise<{ result: ApplyResult | null; plan: IntegrationPlan | null; error: string | null }> {
   const cfg = opts.service.config as GitConfig;
   const slug = parseGithubSlug(cfg.repoUrl);
   if (!slug) return { result: null, plan: null, error: 'El plan de integraciones solo está disponible para repositorios de GitHub.' };
@@ -762,7 +876,9 @@ export async function applyPlanFromRepo(opts: {
     if (needs) freshCfg.needs = needs;
     else delete freshCfg.needs;
     updateService(fresh.id, fresh.name, freshCfg);
-    const { result, plan } = await applyPlan({ ...opts, service: { ...fresh, config: freshCfg } });
+    // El repositorio se vuelve a leer ahora: si no es lo que el asistente
+    // enseñó (`expect`), lo privilegiado queda pendiente en vez de aprobarse.
+    const { result, plan } = await applyPlan({ ...opts, service: { ...fresh, config: freshCfg }, onMismatch: 'pending' });
     return { result, plan, error: null };
   } catch (err) {
     return { result: null, plan: null, error: `No se ha podido aplicar el plan: ${(err as Error)?.message || err}` };

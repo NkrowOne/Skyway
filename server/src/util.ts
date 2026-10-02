@@ -40,6 +40,15 @@ export function slugify(name: string): string {
   return slug || 'svc';
 }
 
+/**
+ * Nombre visible sin saltos de línea ni caracteres de control. Los nombres de
+ * proyecto y de servicio acaban en avisos, registros, correos y documentos que
+ * se entregan (el fichero de zona): con un salto de línea, un nombre podía
+ * escribir líneas propias dentro de ellos.
+ */
+export const VISIBLE_NAME_RE = /^[^\u0000-\u001f\u007f-\u009f\u2028\u2029]*$/;
+export const VISIBLE_NAME_ERROR = 'El nombre no puede contener saltos de línea ni caracteres de control.';
+
 export function now(): number {
   return Date.now();
 }

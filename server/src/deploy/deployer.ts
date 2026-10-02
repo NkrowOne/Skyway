@@ -704,8 +704,28 @@ async function buildGitImage(
   // entero a no hacer nada. Se consulta la cabeza por API (barato) antes de
   // pedir hueco de build, así que ni siquiera ocupa un slot de compilación.
   if (!forceBuild) {
-    const reused = await reuseBuiltImage(service.id, cfg, token, buildKey, env, log);
+    let reused = await reuseBuiltImage(service.id, cfg, token, buildKey, env, log);
+    // Reutilizar la imagen no puede saltarse el manifiesto: el despliegue
+    // vuelve a aplicar el `skyway.json` del commit (el que se guardó al
+    // clonarlo, porque es el mismo) para que, p. ej., la URL propia se defina
+    // al añadir el dominio y redesplegar, o se regenere un secreto borrado.
+    if (reused && reconcileReusedBuild(service, cfg, log)) {
+      env = resolveServiceEnv(service);
+      const nuevaKey = buildKeyFor(service, cfg);
+      const cambiadas = changedBuildVars(reused.build_vars, env);
+      if (nuevaKey !== buildKey || cambiadas.length > 0) {
+        // Ha definido variables que entran en la compilación (VITE_*, NEXT_PUBLIC_*…):
+        // la imagen guardada no las lleva y hay que compilar.
+        log('El manifiesto ha definido variables que forman parte de la compilación: se compila de nuevo.');
+        buildKey = nuevaKey;
+        reused = null;
+      }
+    }
     if (reused) {
+      log(
+        `El commit ${reused.commit_sha?.slice(0, 7) ?? '?'} ya está construido con esta configuración: se reutiliza la imagen ${reused.image_tag} ` +
+          '(sin clonar ni compilar). Utiliza «Reconstruir» para forzar una compilación limpia.',
+      );
       updateDeployment(deploymentId, {
         commit_sha: reused.commit_sha,
         commit_msg: reused.commit_msg,
@@ -889,10 +909,8 @@ async function reuseBuiltImage(
     );
     return null;
   }
-  log(
-    `El commit ${head.slice(0, 7)} ya está construido con esta configuración: se reutiliza la imagen ${previous.image_tag} ` +
-      '(sin clonar ni compilar). Utiliza «Reconstruir» para forzar una compilación limpia.',
-  );
+  // El aviso de que se reutiliza lo da quien llama: antes vuelve a aplicar el
+  // manifiesto, y eso puede obligar a compilar.
   return previous;
 }
 
@@ -1439,6 +1457,21 @@ async function deployContainer(
   }
   if (hostPort && internalPort) {
     log(`Puerto publicado: ${hostPort} → ${internalPort}`);
+  }
+}
+
+/**
+ * El manifiesto en un despliegue que reutiliza la imagen (sin clonar): se
+ * aplica el `cfg.needs` guardado, que es el del mismo commit. Mismo trato que
+ * en `recordNeeds`: un fallo aquí no tira el despliegue. Devuelve si ha
+ * escrito variables.
+ */
+function reconcileReusedBuild(service: ServiceRow, cfg: GitConfig, log: (l: string) => void): boolean {
+  try {
+    return reconcileOnDeploy(service, cfg, log);
+  } catch (err: any) {
+    log(`ℹ No se pudo aplicar el manifiesto del repositorio: ${err?.message || err}`);
+    return false;
   }
 }
 

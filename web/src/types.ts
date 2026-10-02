@@ -124,7 +124,7 @@ export interface PlanVar {
   /** postgres.DATABASE_URL, mail.password, self.public_url, generate, value o empty. */
   from: string;
   resource: string | null;
-  /** Requiere la aprobación de quien gestiona el proyecto. */
+  /** Requiere que una persona lo apruebe (ver `PlanResource.canApprove`): en un despliegue no se aplica solo. */
   privileged: boolean;
   status: PlanStatus;
   /** Lo que se escribirá (una referencia, «32 bytes aleatorios»…). Nunca un secreto. */
@@ -141,6 +141,10 @@ export interface PlanResource {
   status: PlanStatus;
   reason: string | null;
   evidence: string | null;
+  /** Quien mira puede aprobarlo: las bases, cualquiera con acceso al proyecto; el correo, quien lo gestiona. */
+  canApprove: boolean;
+  /** Lo que hay que confirmar expresamente para aprobarlo (reutilizar un buzón que ya existe), o null. */
+  confirmation: string | null;
 }
 
 export interface IntegrationPlan {
@@ -151,6 +155,8 @@ export interface IntegrationPlan {
   vars: PlanVar[];
   pendingApproval: string[];
   canApprove: boolean;
+  /** Huella de lo privilegiado: aprobar la envía, y si el plan ha cambiado el servidor responde 409. */
+  fingerprint: string;
 }
 
 export interface PlanApplyResult {
@@ -738,7 +744,7 @@ export interface GitConfig {
   autoImportEnv?: boolean;
   /** Última importación del .env del repositorio (sin valores). */
   envImport?: EnvImportReport;
-  /** Variables que pide el skyway.json y esperan la aprobación de quien gestiona el proyecto. */
+  /** Variables que pide el skyway.json y esperan aprobación (bases: cualquiera con acceso; correo: quien gestiona el proyecto). */
   integrationsPending?: string[];
 }
 

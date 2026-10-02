@@ -103,9 +103,10 @@ export interface GitConfig {
   /** Dependencias detectadas en el repositorio en el último despliegue (ver `DetectedNeeds`). */
   needs?: DetectedNeeds;
   /**
-   * Variables que el `skyway.json` del repositorio pide y que necesitan la
-   * aprobación de quien gestiona el proyecto (base de datos, correo): el panel
-   * las muestra como «Cambios pendientes de aprobar». Lo recalcula cada
+   * Variables que el `skyway.json` del repositorio pide y que necesitan que
+   * alguien las apruebe (una base, de cualquiera con acceso al proyecto; el
+   * correo, de quien lo gestiona): el panel las muestra como «Cambios
+   * pendientes de aprobar». Lo recalcula cada
    * despliegue y cada aplicación del plan (`integrations.ts`); ausente o vacío
    * = nada pendiente.
    */

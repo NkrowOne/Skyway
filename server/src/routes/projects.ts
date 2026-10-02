@@ -35,10 +35,10 @@ import { markManualAction } from '../monitor';
 import { mailwayConfigured, previousClientKey, releaseProjectClient } from '../mailway';
 import { effectiveQuota, isWorkspaceActive, workspacePlan } from '../quota';
 import { ServiceRow, ServiceRuntime, WorkspaceRow } from '../types';
-import { slugify } from '../util';
+import { slugify, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
 
 const projectSchema = z.object({
-  name: z.string().trim().min(1, 'Nombre requerido').max(60),
+  name: z.string().trim().min(1, 'Nombre requerido').max(60).regex(VISIBLE_NAME_RE, VISIBLE_NAME_ERROR),
   // Texto de cliente: reutiliza o crea un workspace con ese nombre (compat con el flujo anterior).
   client: z.string().trim().max(80).optional(),
   // Asignación explícita a un workspace (admin). null desasigna.

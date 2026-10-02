@@ -504,17 +504,18 @@ function projectHostsUnder(projectId: string, zone: string): string[] {
  * Registro del webmail del cliente en `webmail.<dominio>`, si está dado de
  * alta: el que indica Mailway (el CNAME recomendado o, si no, el primero). Si
  * el nombre no se puede utilizar (lo sirve un servicio de Skyway, es el del
- * panel…), no se incluye y se dice por qué.
+ * panel…), no se incluye y se dice por qué. El motivo es siempre el genérico,
+ * también para el administrador: el fichero de zona se entrega al cliente (y se
+ * importa en su DNS), así que no puede nombrar servicios ni proyectos ajenos.
  */
 async function webmailZoneRecord(
   clientId: string,
   domain: MailwayDomain,
-  isAdmin: boolean,
 ): Promise<{ webmail: WebZoneRecord | null; webmailNote: string | null }> {
   const hostname = webmailHostname(domain);
   const found = await findWebmail(clientId, hostname);
   if (!found) return { webmail: null, webmailNote: null };
-  const conflicto = webmailHostError(hostname, { isAdmin });
+  const conflicto = webmailHostError(hostname, { isAdmin: false });
   if (conflicto) return { webmail: null, webmailNote: `No se incluye ${hostname}: ${conflicto}` };
   const view = await getWhitelabelDomain(found.id);
   ownedWebmail(view.domain, clientId, hostname);
@@ -1020,7 +1021,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           serverIp: getSetting('serverIp') || null,
           hosts: projectHostsUnder(ctx.project.id, domain.domain),
           // El webmail es un añadido: si Mailway no lo devuelve, el fichero de correo se descarga igual.
-          ...(await webmailZoneRecord(link.client_id, domain, ctx.isAdmin).catch((err: unknown) => {
+          ...(await webmailZoneRecord(link.client_id, domain).catch((err: unknown) => {
             if (!(err instanceof MailwayError)) throw err;
             return { webmail: null, webmailNote: `No se ha podido consultar el webmail en Mailway: ${err.message}` };
           })),
@@ -1375,6 +1376,8 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           keys: names.targets.map((t) => t.name),
           kept: names.kept,
           secretPlaced: names.secretPlaced,
+          // Servidor, puerto o URL de otro proveedor puestos a mano: conectar respondería 409.
+          conflicts: names.conflicts,
         };
       }),
     );

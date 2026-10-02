@@ -129,10 +129,20 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   -d '{"domainId":"DOM_ID","localPart":"info"}' "$BASE/api/projects/PROJ_ID/mail/mailboxes"
 
 # Conectar un servicio por SMTP y volver a desplegarlo (solo devuelve los nombres
-# de las variables; la credencial SMTP anterior de ese servicio se revoca)
+# de las variables; la credencial SMTP anterior de ese servicio se revoca). Si el
+# servidor, el puerto o el usuario están puestos a mano con otro valor, 409 sin
+# crear nada: la vista previa (…/mail/connect/preview) lo dice en «conflicts».
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"serviceId":"SVC_ID","mailboxId":"MBX_ID","mode":"smtp","redeploy":true}' \
   "$BASE/api/projects/PROJ_ID/mail/connect"
+
+# Plan de integraciones de una web (skyway.json o detección): revisarlo y
+# aprobarlo con su huella. Si el plan ha cambiado desde que se leyó, 409 con el
+# plan nuevo y nada aplicado. Reutilizar en SMTP un buzón que ya existe exige
+# además "confirmMailboxAccess": true (el plan lo explica en «confirmation»).
+FP=$(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/services/SVC_ID/integrations" | jq -r .plan.fingerprint)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"expect\":\"$FP\",\"redeploy\":true}" "$BASE/api/services/SVC_ID/integrations/apply"
 
 # Revocar una contraseña de aplicación o una clave de API del cliente
 # (los ids están en summary.appPasswords / summary.apiKeys de GET .../mail)

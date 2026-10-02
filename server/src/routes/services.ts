@@ -54,11 +54,11 @@ import {
 import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
 import { triggerDeploy } from '../deploy/deployer';
 import { getTemplate, templateList } from '../templates';
-import { applyPlan, applyPlanFromRepo, ApplyResult, planWithMail } from '../integrations';
+import { applyPlan, applyPlanFromRepo, ApplyResult, PlanChangedError, planWithMail } from '../integrations';
 import { adviseEnv } from '../needs';
 import { availableReferences, resolveServiceEnv } from '../variables';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceConfig, ServiceRow } from '../types';
-import { randomToken } from '../util';
+import { randomToken, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
 
 /** Antigüedad tolerada de la foto de Docker en las lecturas del panel. */
 const PANEL_MAX_AGE_MS = 4000;
@@ -111,10 +111,12 @@ export const domainSchema = z
 
 /** Recursos del plan de integraciones que se pueden omitir al aplicarlo. */
 const planSkipSchema = z.array(z.enum(['postgres', 'redis', 'mysql', 'mongo', 'minio', 'mail', 'empty'])).max(10);
+/** Huella del plan revisado (`IntegrationPlan.fingerprint`): sin ella no se aprueba nada privilegiado. */
+const planExpectSchema = z.string().regex(/^[0-9a-f]{32}$/, 'Huella del plan no válida');
 
 const createGitSchema = z.object({
   type: z.literal('git'),
-  name: z.string().trim().min(1).max(60),
+  name: z.string().trim().min(1).max(60).regex(VISIBLE_NAME_RE, VISIBLE_NAME_ERROR),
   repoUrl: z.string().trim().min(3, 'Repositorio requerido'),
   connectorId: z.string().trim().optional(),
   githubInstallationId: z.string().trim().optional(),
@@ -136,20 +138,26 @@ const createGitSchema = z.object({
   env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'Nombre de variable inválido'), z.string()).optional(),
   // Aplicar el plan de integraciones del repositorio (skyway.json o la
   // detección) antes del primer despliegue. `skip`: recursos que no se quieren
-  // (un motor, `mail` o `empty`).
-  plan: z.object({ skip: planSkipSchema.optional() }).strict().optional(),
+  // (un motor, `mail` o `empty`). `expect`: huella del plan que se ha enseñado
+  // (GET …/github/needs); si al crear el repositorio dice otra cosa, lo
+  // privilegiado queda pendiente. `confirmMailboxAccess`: confirmación del
+  // acceso al buzón que se reutiliza, si el plan la pide.
+  plan: z
+    .object({ skip: planSkipSchema.optional(), expect: planExpectSchema.optional(), confirmMailboxAccess: z.boolean().optional() })
+    .strict()
+    .optional(),
 });
 
 const createDbSchema = z.object({
   type: z.literal('database'),
-  name: z.string().trim().min(1).max(60).optional(),
+  name: z.string().trim().min(1).max(60).regex(VISIBLE_NAME_RE, VISIBLE_NAME_ERROR).optional(),
   template: z.string(),
   version: z.string().trim().optional(),
 });
 
 const createImageSchema = z.object({
   type: z.literal('image'),
-  name: z.string().trim().min(1).max(60),
+  name: z.string().trim().min(1).max(60).regex(VISIBLE_NAME_RE, VISIBLE_NAME_ERROR),
   image: z.string().trim().min(1, 'Imagen requerida'),
   port: z.coerce.number().int().min(1).max(65535).optional(),
   startCmd: z.string().trim().optional(),
@@ -157,7 +165,7 @@ const createImageSchema = z.object({
 });
 
 const patchSchema = z.object({
-  name: z.string().trim().min(1).max(60).optional(),
+  name: z.string().trim().min(1).max(60).regex(VISIBLE_NAME_RE, VISIBLE_NAME_ERROR).optional(),
   config: z
     .object({
       repoUrl: z.string().trim().min(3).optional(),
@@ -310,7 +318,14 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       service = createService(projectId, body.name, slug, 'git', cfg);
       if (body.env && Object.keys(body.env).length > 0) setEnv(service.id, body.env);
       if (body.plan) {
-        planOutcome = await applyPlanFromRepo({ project, user, service, skip: new Set(body.plan.skip ?? []) });
+        planOutcome = await applyPlanFromRepo({
+          project,
+          user,
+          service,
+          skip: new Set(body.plan.skip ?? []),
+          expect: body.plan.expect,
+          confirmMailboxAccess: body.plan.confirmMailboxAccess,
+        });
         if (planOutcome.error) req.log.warn({ serviceId: service.id }, planOutcome.error);
         if (planOutcome.result) auditPlan(req, service, planOutcome.result);
         service = getService(service.id) ?? service;
@@ -363,9 +378,13 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
 
   /**
    * Aplica el plan con un solo botón. Lo inofensivo lo aplica cualquiera con
-   * acceso al proyecto; las bases de datos y el correo solo quien lo gestiona
-   * (administrador o propietario): para los demás quedan pendientes. Nunca
-   * pisa una variable puesta a mano. `redeploy` despliega si se ha escrito algo.
+   * acceso al proyecto, y las bases de datos también (la misma regla que
+   * crearlas a mano); el correo, solo quien lo gestiona (administrador o
+   * propietario): para los demás queda pendiente. Lo privilegiado se aprueba
+   * con la huella del plan revisado (`expect`): sin ella queda pendiente, y si
+   * el plan ha cambiado desde entonces responde 409 con el plan nuevo sin
+   * aplicar nada. Nunca pisa una variable puesta a mano. `redeploy` despliega
+   * si se ha escrito algo.
    */
   app.post(
     '/api/services/:id/integrations/apply',
@@ -377,15 +396,31 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       if (!assertProjectAccess(req, reply, found.project.id)) return reply;
       if (found.service.type !== 'git') return reply.code(400).send({ error: 'El plan de integraciones solo existe en los servicios de repositorio.' });
       const body = z
-        .object({ skip: planSkipSchema.optional(), redeploy: z.boolean().optional().default(false) })
+        .object({
+          skip: planSkipSchema.optional(),
+          expect: planExpectSchema.optional(),
+          confirmMailboxAccess: z.boolean().optional(),
+          redeploy: z.boolean().optional().default(false),
+        })
         .strict()
         .parse(req.body ?? {});
-      const { result, plan } = await applyPlan({
-        project: found.project,
-        user: currentUser(req)!,
-        service: found.service,
-        skip: new Set(body.skip ?? []),
-      });
+      let applied: Awaited<ReturnType<typeof applyPlan>>;
+      try {
+        applied = await applyPlan({
+          project: found.project,
+          user: currentUser(req)!,
+          service: found.service,
+          skip: new Set(body.skip ?? []),
+          expect: body.expect,
+          confirmMailboxAccess: body.confirmMailboxAccess,
+          onMismatch: 'reject',
+        });
+      } catch (err) {
+        // Con el plan nuevo: la vista lo enseña antes de volver a ofrecer el botón.
+        if (err instanceof PlanChangedError) return reply.code(409).send({ error: err.message, plan: err.plan });
+        throw err;
+      }
+      const { result, plan } = applied;
       auditPlan(req, found.service, result);
       let deploymentId: string | null = null;
       if (body.redeploy && result.applied.length > 0) {

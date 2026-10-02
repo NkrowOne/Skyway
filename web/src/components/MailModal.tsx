@@ -1828,7 +1828,7 @@ function ConnectTab({
   const preview = useQuery({
     queryKey: ['mailConnectPreview', projectId, service?.id, mode],
     queryFn: () =>
-      api.get<{ keys: string[]; kept: string[]; secretPlaced: boolean; suggestedMode: 'smtp' | 'api' | null }>(
+      api.get<{ keys: string[]; kept: string[]; secretPlaced: boolean; conflicts?: string[]; suggestedMode: 'smtp' | 'api' | null }>(
         `/projects/${projectId}/mail/connect/preview?${new URLSearchParams({ serviceId: service!.id, mode })}`,
       ),
     enabled: !!service && view.linked,
@@ -1895,6 +1895,8 @@ function ConnectTab({
   const names = preview.data?.keys ?? help.vars;
   const kept = preview.data?.kept ?? [];
   const suggested = preview.data?.suggestedMode ?? null;
+  // Servidor, puerto o URL de otro proveedor puestos a mano: la conexión quedaría a medias.
+  const conflicts = preview.data?.secretPlaced ? (preview.data.conflicts ?? []) : [];
 
   return (
     <div className="flex flex-col gap-3.5">
@@ -1954,6 +1956,13 @@ function ConnectTab({
             )}
           </p>
         )}
+        {conflicts.length > 0 && (
+          <p className="mt-1.5 text-warn">
+            <span className="font-mono">{conflicts.join(', ')}</span> {conflicts.length === 1 ? 'tiene' : 'tienen'} un valor puesto a mano
+            distinto del de Mailway: con la credencial de Mailway, la web se conectaría a otro servidor. Elimina o vacía{' '}
+            {conflicts.length === 1 ? 'esa variable' : 'esas variables'} en la pestaña «Variables» del servicio para conectar el correo.
+          </p>
+        )}
         <p className="mt-1.5">
           Si el servicio ya estaba conectado en este modo, la credencial anterior se revoca: hasta que se vuelva a desplegar, el
           servicio no podrá enviar correo.
@@ -1970,7 +1979,11 @@ function ConnectTab({
       )}
 
       <div className="flex justify-end">
-        <Button onClick={() => connect.mutate()} loading={connect.isPending} disabled={!view.canManage || !service || !mailbox || blocked}>
+        <Button
+          onClick={() => connect.mutate()}
+          loading={connect.isPending}
+          disabled={!view.canManage || !service || !mailbox || blocked || conflicts.length > 0}
+        >
           <Plug size={13} /> Conectar
         </Button>
       </div>

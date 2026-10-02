@@ -34,6 +34,7 @@ import {
   updateService,
   writeManagedEnv,
 } from '../src/db';
+import { importRepoEnv } from '../src/deploy/envimport';
 import { reconcileOnDeploy } from '../src/integrations';
 import { appendWebRecords } from '../src/mailway';
 import { mailTargets, mailVarsOf } from '../src/mailenv';
@@ -122,6 +123,29 @@ function needsFrom(files: Record<string, string>): DetectedNeeds | null {
       fs.writeFileSync(path.join(dir, name), text);
     }
     return detectNeeds(dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Huella del plan que ve `who`: lo que la web envía al aprobar. */
+async function fingerprintOf(serviceId: string, who: Record<string, string>): Promise<string> {
+  const r = await call('GET', `/api/services/${serviceId}/integrations`, who);
+  expect(r.status, r.raw).toBe(200);
+  return r.json.plan.fingerprint as string;
+}
+
+/** Aprobar como en la web: con la huella del plan que se acaba de ver. */
+async function approve(serviceId: string, who: Record<string, string>, extra: Record<string, unknown> = {}) {
+  return call('POST', `/api/services/${serviceId}/integrations/apply`, who, { expect: await fingerprintOf(serviceId, who), ...extra });
+}
+
+/** Lo que hace el primer despliegue con el `.env.example` del repositorio: importar lo que tiene valor. */
+function importExample(service: ServiceRow, example: string): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skyway-import-test-'));
+  try {
+    fs.writeFileSync(path.join(dir, '.env.example'), example);
+    importRepoEnv({ service: getService(service.id)!, workDir: dir, contextDir: dir, log: () => {} });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -389,6 +413,79 @@ describe('conectar un servicio: nombres que espera la web', () => {
     }
   });
 
+  it('Laravel: lo que el primer despliegue importó del .env.example es de Skyway y se sustituye al conectar', async () => {
+    // El .env.example por defecto de Laravel: «mailpit» y «null» no son valores
+    // de ejemplo para la importación, así que el primer despliegue los importa.
+    const example = [
+      'APP_NAME=Laravel',
+      'MAIL_MAILER=smtp',
+      'MAIL_HOST=mailpit',
+      'MAIL_PORT=1025',
+      'MAIL_USERNAME=null',
+      'MAIL_PASSWORD=null',
+      'MAIL_ENCRYPTION=null',
+      'MAIL_FROM_ADDRESS="hello@example.com"',
+      'MAIL_FROM_NAME="${APP_NAME}"',
+      '',
+    ].join('\n');
+    const svc = webService(projA, 'LaravelImportado', { '.env.example': example });
+    importExample(svc, example);
+    expect(getEnv(svc.id)).toMatchObject({ MAIL_HOST: 'mailpit', MAIL_PORT: '1025', MAIL_USERNAME: 'null', MAIL_PASSWORD: 'null' });
+    expect(getManagedEnv(svc.id).MAIL_HOST.origin).toBe('import');
+
+    const preview = await call('GET', `/api/projects/${projA.id}/mail/connect/preview?serviceId=${svc.id}&mode=smtp`, ownerA);
+    expect(preview.json).toMatchObject({ kept: [], conflicts: [], secretPlaced: true });
+    const r = await call('POST', `/api/projects/${projA.id}/mail/connect`, ownerA, { serviceId: svc.id, mailboxId, mode: 'smtp' });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.kept).toEqual([]);
+    const env = getEnv(svc.id);
+    expect(env).toMatchObject({
+      MAIL_HOST: 'mail.example.com',
+      MAIL_PORT: '587',
+      MAIL_USERNAME: 'avisos@tienda.es',
+      MAIL_ENCRYPTION: 'tls',
+      MAIL_FROM_ADDRESS: 'avisos@tienda.es',
+      // Lo que no es de correo se queda como se importó.
+      APP_NAME: 'Laravel',
+      MAIL_MAILER: 'smtp',
+    });
+    expect(env.MAIL_PASSWORD).toMatch(/^ContraseñaDeAplicacion-Secreta-/);
+    expect(getManagedEnv(svc.id).MAIL_HOST.origin).toBe('mail.smtp.host');
+  });
+
+  it('un servidor de otro proveedor: importado se sustituye; puesto a mano, no se conecta a medias', async () => {
+    const example = 'SMTP_HOST=smtp.gmail.com\nSMTP_PORT=587\nSMTP_USER=\nSMTP_PASS=\n';
+    const files = { 'package.json': JSON.stringify({ dependencies: { nodemailer: '^6' } }), '.env.example': example };
+    const importado = webService(projA, 'GmailImportado', files);
+    importExample(importado, example);
+    expect(getEnv(importado.id).SMTP_HOST).toBe('smtp.gmail.com');
+    let r = await call('POST', `/api/projects/${projA.id}/mail/connect`, ownerA, { serviceId: importado.id, mailboxId, mode: 'smtp' });
+    expect(r.status, r.raw).toBe(200);
+    expect(getEnv(importado.id)).toMatchObject({ SMTP_HOST: 'mail.example.com', SMTP_USER: 'avisos@tienda.es' });
+
+    // Puesto a mano: escribir solo la credencial la mandaría a Gmail.
+    const aMano = webService(projA, 'GmailAMano', files);
+    setEnv(aMano.id, { SMTP_HOST: 'smtp.gmail.com' });
+    const preview = await call('GET', `/api/projects/${projA.id}/mail/connect/preview?serviceId=${aMano.id}&mode=smtp`, ownerA);
+    expect(preview.json.conflicts).toEqual(['SMTP_HOST']);
+    const apps = mw.appPasswords.length;
+    r = await call('POST', `/api/projects/${projA.id}/mail/connect`, ownerA, { serviceId: aMano.id, mailboxId, mode: 'smtp' });
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/SMTP_HOST tiene un valor puesto a mano distinto del de Mailway/);
+    expect(mw.appPasswords.length).toBe(apps);
+    expect(getEnv(aMano.id)).toEqual({ SMTP_HOST: 'smtp.gmail.com' });
+
+    // El plan de un manifiesto tampoco lo aplica: lo deja bloqueado con el motivo.
+    const manifiesto = webService(projA, 'GmailManifiesto', {
+      'skyway.json': JSON.stringify({ version: 1, integrations: { mail: {} }, env: { SMTP_SERVER: { from: 'mail.host' }, SMTP_PASSWORD: { from: 'mail.password' } } }),
+    });
+    setEnv(manifiesto.id, { SMTP_SERVER: 'smtp.gmail.com' });
+    const plan = (await call('GET', `/api/services/${manifiesto.id}/integrations`, ownerA)).json.plan;
+    expect(plan.resources[0]).toMatchObject({ key: 'mail', status: 'blocked' });
+    expect(plan.resources[0].reason).toMatch(/SMTP_SERVER tiene un valor puesto a mano distinto del de Mailway/);
+    expect(plan.pendingApproval).toEqual([]);
+  });
+
   it('aislamiento: la vista previa de un servicio de otro proyecto es 404', async () => {
     const svcB = createService(projB.id, 'Web', 'web', 'git', gitCfg());
     const r = await call('GET', `/api/projects/${projA.id}/mail/connect/preview?serviceId=${svcB.id}`, ownerA);
@@ -407,9 +504,18 @@ describe('plan de integraciones', () => {
     expect(r.status, r.raw).toBe(200);
     const plan = r.json.plan;
     expect(plan.source).toBe('manifest');
+    // La base la puede aprobar un miembro (como crearla a mano); el correo, no.
     expect(plan.canApprove).toBe(false);
-    expect(plan.resources.find((x: Json) => x.key === 'postgres')).toMatchObject({ action: 'create', status: 'apply' });
-    expect(plan.resources.find((x: Json) => x.key === 'mail')).toMatchObject({ action: 'create', target: 'no-reply@tienda.es', status: 'apply', mode: 'smtp' });
+    expect(plan.fingerprint).toMatch(/^[0-9a-f]{32}$/);
+    expect(plan.resources.find((x: Json) => x.key === 'postgres')).toMatchObject({ action: 'create', status: 'apply', canApprove: true });
+    expect(plan.resources.find((x: Json) => x.key === 'mail')).toMatchObject({
+      action: 'create',
+      target: 'no-reply@tienda.es',
+      status: 'apply',
+      mode: 'smtp',
+      canApprove: false,
+      confirmation: null,
+    });
     const byName = Object.fromEntries(plan.vars.map((v: Json) => [v.name, v]));
     expect(byName.SESSION_SECRET).toMatchObject({ privileged: false, status: 'apply', detail: '32 bytes aleatorios' });
     expect(byName.APP_URL).toMatchObject({ privileged: false, status: 'apply', detail: '${{tienda.PUBLIC_URL}}' });
@@ -421,7 +527,7 @@ describe('plan de integraciones', () => {
     expect(getEnv(svc.id)).toEqual({});
   });
 
-  it('un miembro aplica lo inofensivo; la base y el correo quedan pendientes de aprobar', async () => {
+  it('sin la huella del plan revisado solo se aplica lo inofensivo: la base y el correo quedan pendientes', async () => {
     const svc = webService(projA, 'Miembro', { 'skyway.json': MANIFIESTO }, ['miembro.tienda.es']);
     setEnv(svc.id, { APP_NAME: 'Puesto a mano' });
     const r = await call('POST', `/api/services/${svc.id}/integrations/apply`, memberA, {});
@@ -445,13 +551,26 @@ describe('plan de integraciones', () => {
     expect(getEnv(svc.id).SESSION_SECRET).toBe(env.SESSION_SECRET);
   });
 
-  it('quien gestiona el proyecto lo aprueba: crea la base, el buzón y la credencial con los nombres del manifiesto', async () => {
+  it('un miembro aprueba la base (la misma regla que crearla a mano), pero el correo sigue pendiente', async () => {
+    const svc = webService(projA, 'Miembro2', { 'skyway.json': MANIFIESTO }, ['miembro2.tienda.es']);
+    const apps = mw.appPasswords.length;
+    const r = await approve(svc.id, memberA);
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.result.created).toEqual(['PostgreSQL']);
+    expect(getEnv(svc.id).DATABASE_URL).toBe('${{PostgreSQL.DATABASE_URL}}');
+    expect(r.json.result.pending.sort()).toEqual(['MAIL_FROM_ADDRESS', 'SMTP_LOGIN', 'SMTP_PASSWORD', 'SMTP_SERVER']);
+    expect(getEnv(svc.id).SMTP_PASSWORD).toBeUndefined();
+    expect(mw.appPasswords.length).toBe(apps);
+    expect((getService(svc.id)!.config as GitConfig).integrationsPending?.sort()).toEqual(r.json.result.pending.sort());
+  });
+
+  it('quien gestiona el proyecto lo aprueba: reutiliza la base y crea el buzón y la credencial con los nombres del manifiesto', async () => {
     const svc = webService(projA, 'Propietario', { 'skyway.json': MANIFIESTO }, ['propietario.tienda.es']);
-    const r = await call('POST', `/api/services/${svc.id}/integrations/apply`, ownerA, {});
+    const r = await approve(svc.id, ownerA);
     expect(r.status, r.raw).toBe(200);
     expect(r.json.result.pending).toEqual([]);
     expect(r.json.result.errors).toEqual([]);
-    expect(r.json.result.created).toEqual(['PostgreSQL', 'no-reply@tienda.es']);
+    expect(r.json.result.created).toEqual(['no-reply@tienda.es']);
     const env = getEnv(svc.id);
     expect(env.DATABASE_URL).toBe('${{PostgreSQL.DATABASE_URL}}');
     expect(env).toMatchObject({ SMTP_SERVER: 'mail.example.com', SMTP_LOGIN: 'no-reply@tienda.es', MAIL_FROM_ADDRESS: 'no-reply@tienda.es' });
@@ -465,7 +584,7 @@ describe('plan de integraciones', () => {
 
     // Una segunda web del proyecto reutiliza esa base y ese buzón.
     const otra = webService(projA, 'Segunda', { 'skyway.json': MANIFIESTO });
-    const r2 = await call('POST', `/api/services/${otra.id}/integrations/apply`, ownerA, {});
+    const r2 = await approve(otra.id, ownerA);
     expect(r2.status, r2.raw).toBe(200);
     expect(r2.json.result.created).toEqual([]);
     expect(getEnv(otra.id).DATABASE_URL).toBe('${{PostgreSQL.DATABASE_URL}}');
@@ -537,6 +656,93 @@ describe('plan de integraciones', () => {
   });
 });
 
+describe('aprobación ligada al plan revisado', () => {
+  const conBuzon = (mailbox: string) =>
+    JSON.stringify({
+      version: 1,
+      integrations: { mail: { mode: 'smtp', mailbox } },
+      env: { SMTP_LOGIN: { from: 'mail.user' }, SMTP_PASSWORD: { from: 'mail.password' }, APP_NAME: { value: 'Web' } },
+    });
+
+  it('si el manifiesto cambia entre ver el plan y aprobarlo, responde 409 con el plan nuevo y no aplica nada', async () => {
+    // El buzón personal de dirección, creado a mano.
+    let r = await call('POST', `/api/projects/${projA.id}/mail/mailboxes`, ownerA, { domainId: domainA, localPart: 'direccion' });
+    expect(r.status, r.raw).toBe(201);
+    const direccionId = r.json.mailbox.id as string;
+    const svc = webService(projA, 'Cambiante', { 'skyway.json': conBuzon('envios') });
+
+    // El propietario ve «crear el buzón envios@tienda.es».
+    r = await call('GET', `/api/services/${svc.id}/integrations`, ownerA);
+    expect(r.json.plan.resources[0]).toMatchObject({ key: 'mail', action: 'create', target: 'envios@tienda.es', confirmation: null });
+    const visto = r.json.plan.fingerprint as string;
+
+    // Un push con otro manifiesto y su despliegue (lo que hace recordNeeds).
+    const cfg = getService(svc.id)!.config as GitConfig;
+    updateService(svc.id, svc.name, { ...cfg, needs: needsFrom({ 'skyway.json': conBuzon('direccion') })! });
+
+    // «Aprobar y aplicar» con lo que vio: no se aprueba otra cosa a ciegas.
+    const antes = { apps: mw.appPasswords.length, buzones: mw.mailboxes.length };
+    r = await call('POST', `/api/services/${svc.id}/integrations/apply`, ownerA, { redeploy: true, expect: visto });
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/El plan ha cambiado desde que lo revisaste/);
+    expect(r.json.plan.resources[0]).toMatchObject({ key: 'mail', action: 'reuse', target: 'direccion@tienda.es' });
+    expect(r.json.plan.fingerprint).not.toBe(visto);
+    expect(mw.appPasswords.length).toBe(antes.apps);
+    expect(mw.mailboxes.length).toBe(antes.buzones);
+    expect(getEnv(svc.id)).toEqual({});
+
+    // Revisado de nuevo: reutilizar un buzón que ya existe pide confirmar el acceso.
+    const nuevo = r.json.plan;
+    expect(nuevo.resources[0].confirmation).toMatch(/direccion@tienda\.es ya existe: su contraseña de aplicación da acceso IMAP y SMTP/);
+    r = await call('POST', `/api/services/${svc.id}/integrations/apply`, ownerA, { expect: nuevo.fingerprint });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.result.pending.sort()).toEqual(['SMTP_LOGIN', 'SMTP_PASSWORD']);
+    expect(r.json.result.errors.join(' ')).toMatch(/Confírmalo para aplicarlo/);
+    expect(getEnv(svc.id).SMTP_PASSWORD).toBeUndefined();
+    expect(getEnv(svc.id).APP_NAME).toBe('Web');
+    expect(mw.appPasswords.some((a) => a.mailboxId === direccionId && !a.revokedAt)).toBe(false);
+
+    // Con la confirmación expresa, sí.
+    r = await call('POST', `/api/services/${svc.id}/integrations/apply`, ownerA, { expect: nuevo.fingerprint, confirmMailboxAccess: true });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.result.pending).toEqual([]);
+    expect(getEnv(svc.id).SMTP_LOGIN).toBe('direccion@tienda.es');
+    expect(mw.appPasswords.filter((a) => a.mailboxId === direccionId && !a.revokedAt).length).toBe(1);
+  });
+
+  it('una huella con otro formato se rechaza antes de aplicar nada', async () => {
+    const svc = webService(projA, 'HuellaMala', { 'skyway.json': conBuzon('envios') });
+    const r = await call('POST', `/api/services/${svc.id}/integrations/apply`, ownerA, { expect: 'x' });
+    expect(r.status).toBe(400);
+    expect(getEnv(svc.id)).toEqual({});
+  });
+
+  it('en el alta, si el repositorio cambia entre el plan y la creación, lo privilegiado queda pendiente', async () => {
+    const uno = { version: 1, env: { DATABASE_URL: { from: 'postgres.url' }, APP_NAME: { value: 'Uno' } } };
+    repos.set('acme/cambia', { 'skyway.json': JSON.stringify(uno) });
+    const q = new URLSearchParams({ repo: 'acme/cambia', branch: 'main', name: 'Cambia' });
+    const visto = await call('GET', `/api/projects/${projA.id}/github/needs?${q}`, ownerA);
+    expect(visto.status, visto.raw).toBe(200);
+    // Entre medias, el repositorio pasa a pedir también Redis.
+    repos.set('acme/cambia', { 'skyway.json': JSON.stringify({ ...uno, env: { ...uno.env, CACHE_URL: { from: 'redis.url' } } }) });
+    const r = await call('POST', `/api/projects/${projA.id}/services`, ownerA, {
+      type: 'git',
+      name: 'Cambia',
+      repoUrl: 'acme/cambia',
+      branch: 'main',
+      plan: { expect: visto.json.plan.fingerprint },
+    });
+    expect(r.status, r.raw).toBe(201);
+    await sleep(200);
+    expect(r.json.plan.result.errors.join(' ')).toMatch(/El plan ha cambiado desde que lo revisaste/);
+    const env = getEnv(r.json.service.id);
+    expect(env.APP_NAME).toBe('Uno');
+    expect(env.DATABASE_URL).toBeUndefined();
+    expect(env.CACHE_URL).toBeUndefined();
+    expect((getService(r.json.service.id)!.config as GitConfig).integrationsPending?.sort()).toEqual(['CACHE_URL', 'DATABASE_URL']);
+  });
+});
+
 describe('despliegues posteriores', () => {
   it('lo inofensivo nuevo se aplica; lo privilegiado nuevo queda pendiente y se avisa en el registro', async () => {
     const svc = webService(projA, 'Evoluciona', { 'skyway.json': JSON.stringify({ version: 1, env: { SECRET_KEY: { generate: {} } } }) });
@@ -559,11 +765,27 @@ describe('despliegues posteriores', () => {
     expect(log.join('\n')).toMatch(/pide cambios que requieren aprobación \(Redis: CACHE_URL\)\. El despliegue continúa con lo ya aprobado/);
     expect((getService(svc.id)!.config as GitConfig).integrationsPending).toEqual(['CACHE_URL']);
 
-    // Quien gestiona el proyecto lo aprueba desde el panel.
-    const r = await call('POST', `/api/services/${svc.id}/integrations/apply`, ownerA, {});
+    // Cualquiera con acceso al proyecto lo aprueba desde el panel (es una base).
+    const r = await approve(svc.id, memberA);
     expect(r.status, r.raw).toBe(200);
     expect(getEnv(svc.id).CACHE_URL).toMatch(/^\$\{\{Redis\.REDIS_URL\}\}$/);
     expect((getService(svc.id)!.config as GitConfig).integrationsPending).toBeUndefined();
+  });
+
+  it('un secreto que el manifiesto pide generar sustituye el valor de ejemplo importado del repositorio', async () => {
+    const example = 'SECRET_KEY=dev-secret-123\n';
+    const svc = webService(projA, 'SecretoImportado', {
+      'skyway.json': JSON.stringify({ version: 1, env: { SECRET_KEY: { generate: {} } } }),
+      '.env.example': example,
+    });
+    importExample(svc, example);
+    expect(getEnv(svc.id).SECRET_KEY).toBe('dev-secret-123');
+    reconcileOnDeploy(getService(svc.id)!, getService(svc.id)!.config as GitConfig, () => {});
+    const generado = getEnv(svc.id).SECRET_KEY;
+    expect(generado).toMatch(/^[0-9a-f]{64}$/);
+    // Ya generado, no se vuelve a tocar.
+    reconcileOnDeploy(getService(svc.id)!, getService(svc.id)!.config as GitConfig, () => {});
+    expect(getEnv(svc.id).SECRET_KEY).toBe(generado);
   });
 
   it('una variable gestionada que alguien cambia a mano pasa a ser suya', async () => {
@@ -597,17 +819,25 @@ describe('alta desde un repositorio con el plan', () => {
     expect(r.json.plan.resources.find((x: Json) => x.key === 'postgres')).toMatchObject({ action: 'reuse', target: 'PostgreSQL' });
     expect(r.json.plan.vars.find((v: Json) => v.name === 'APP_URL').status).toBe('blocked');
 
+    // Quien lo crea aprueba lo que ha visto (su huella). El buzón no-reply ya
+    // existe (lo creó el plan de otra web): reutilizarlo se confirma aparte.
+    const visto = await call('GET', `/api/projects/${projA.id}/github/needs?${q}`, ownerA);
+    expect(visto.json.plan.canApprove).toBe(true);
+    const correo = visto.json.plan.resources.find((x: Json) => x.key === 'mail');
+    expect(correo).toMatchObject({ action: 'reuse', target: 'no-reply@tienda.es' });
+    expect(correo.confirmation).toMatch(/acceso IMAP y SMTP a todo su correo/);
     r = await call('POST', `/api/projects/${projA.id}/services`, ownerA, {
       type: 'git',
       name: 'Escaparate',
       repoUrl: 'https://github.com/acme/tienda',
       branch: 'main',
-      plan: {},
+      plan: { expect: visto.json.plan.fingerprint, confirmMailboxAccess: true },
     });
     expect(r.status, r.raw).toBe(201);
     await sleep(200);
     const id = r.json.service.id as string;
     expect(r.json.plan.error).toBeNull();
+    expect(r.json.plan.result.errors, JSON.stringify(r.json.plan.result)).toEqual([]);
     expect(r.json.plan.result.applied).toEqual(expect.arrayContaining(['SESSION_SECRET', 'DATABASE_URL', 'SMTP_PASSWORD']));
     const env = getEnv(id);
     expect(env.DATABASE_URL).toBe('${{PostgreSQL.DATABASE_URL}}');
@@ -616,27 +846,31 @@ describe('alta desde un repositorio con el plan', () => {
     expect(r.raw).not.toContain('Secreta');
   });
 
-  it('un miembro crea el servicio con lo inofensivo y deja el resto pendiente; «skip» omite recursos', async () => {
+  it('un miembro crea el servicio con la base conectada y el correo pendiente; «skip» omite recursos', async () => {
     repos.set('acme/miembro', { 'skyway.json': MANIFIESTO });
+    const q = (name: string) => new URLSearchParams({ repo: 'acme/miembro', branch: 'main', name });
+    const visto = await call('GET', `/api/projects/${projA.id}/github/needs?${q('Del miembro')}`, memberA);
     let r = await call('POST', `/api/projects/${projA.id}/services`, memberA, {
       type: 'git',
       name: 'Del miembro',
       repoUrl: 'acme/miembro',
       branch: 'main',
-      plan: {},
+      plan: { expect: visto.json.plan.fingerprint },
     });
     expect(r.status, r.raw).toBe(201);
     await sleep(200);
-    expect(r.json.plan.result.pending.length).toBeGreaterThan(0);
-    expect(getEnv(r.json.service.id).DATABASE_URL).toBeUndefined();
-    expect((getService(r.json.service.id)!.config as GitConfig).integrationsPending).toContain('DATABASE_URL');
+    // Como antes con el asistente: el servicio nace con DATABASE_URL.
+    expect(getEnv(r.json.service.id).DATABASE_URL).toBe('${{PostgreSQL.DATABASE_URL}}');
+    expect(r.json.plan.result.pending.sort()).toEqual(['MAIL_FROM_ADDRESS', 'SMTP_LOGIN', 'SMTP_PASSWORD', 'SMTP_SERVER']);
+    expect((getService(r.json.service.id)!.config as GitConfig).integrationsPending).not.toContain('DATABASE_URL');
 
+    const vistoOwner = await call('GET', `/api/projects/${projA.id}/github/needs?${q('Sin correo')}`, ownerA);
     r = await call('POST', `/api/projects/${projA.id}/services`, ownerA, {
       type: 'git',
       name: 'Sin correo',
       repoUrl: 'acme/miembro',
       branch: 'main',
-      plan: { skip: ['mail'] },
+      plan: { skip: ['mail'], expect: vistoOwner.json.plan.fingerprint },
     });
     expect(r.status, r.raw).toBe(201);
     await sleep(200);
@@ -718,5 +952,47 @@ describe('fichero de zona con los registros web del proyecto', () => {
     r = await call('GET', `/api/projects/${projB.id}/mail/domains/${domainA}/zonefile`, ownerB);
     expect([404, 409]).toContain(r.status);
     expect(mw.calls.some((c) => c.path.includes('/zonefile'))).toBe(false);
+  });
+
+  it('función pura: una nota con saltos de línea no puede escribir registros fuera del comentario', () => {
+    const { zone } = appendWebRecords('$TTL 3600\n', 'tienda.es', {
+      serverIp: null,
+      hosts: [],
+      webmail: null,
+      webmailNote: 'No se incluye webmail.tienda.es: x\ntienda.es. 60 IN MX 1 mx.atacante.example. ;\r\notra',
+    });
+    const lineas = zone.split('\n').filter((l) => l.includes('atacante'));
+    expect(lineas.length).toBe(1);
+    expect(lineas[0].startsWith(';')).toBe(true);
+  });
+
+  it('descargada por el administrador, no nombra servicios ni proyectos ajenos ni lleva líneas suyas', async () => {
+    // Un servicio de B con el nombre del webmail de A y un salto de línea en el
+    // nombre (guardado antes de que se validara): lo que intentaba colarse.
+    const nombre = 'x\ntienda.es. 60 IN MX 1 mx.atacante.example. ;';
+    createService(projB.id, nombre, 'colado', 'git', gitCfg(['webmail.tienda.es']));
+    const r = await call('GET', `/api/projects/${projA.id}/mail/domains/${domainA}/zonefile`, admin());
+    expect(r.status, r.raw).toBe(200);
+    expect(r.raw).toMatch(/No se incluye webmail\.tienda\.es: El dominio webmail\.tienda\.es está asignado a un servicio de Skyway/);
+    expect(r.raw).not.toContain('atacante');
+    expect(r.raw).not.toContain('«Otro');
+    expect(r.raw).not.toContain('webmail.tienda.es.\t3600');
+  });
+
+  it('los nombres de proyecto y de servicio no admiten saltos de línea ni caracteres de control', async () => {
+    const svc = createService(projA.id, 'Normal', 'normal', 'git', gitCfg());
+    let r = await call('PATCH', `/api/services/${svc.id}`, ownerA, { name: 'x\ntienda.es. 60 IN MX 1 mx.atacante.example.' });
+    expect(r.status).toBe(400);
+    expect(r.json.error).toMatch(/saltos de línea ni caracteres de control/);
+    expect(getService(svc.id)!.name).toBe('Normal');
+    r = await call('POST', `/api/projects/${projA.id}/services`, ownerA, { type: 'image', name: 'a\u0000b', image: 'nginx' });
+    expect(r.status).toBe(400);
+    r = await call('POST', '/api/projects', admin(), { name: 'Proyecto\r\nfalso' });
+    expect(r.status).toBe(400);
+    r = await call('PATCH', `/api/projects/${projA.id}`, admin(), { name: 'Tienda\nfalsa' });
+    expect(r.status).toBe(400);
+    // Un nombre con tildes y espacios sigue valiendo.
+    r = await call('PATCH', `/api/services/${svc.id}`, ownerA, { name: 'Página de inicio' });
+    expect(r.status, r.raw).toBe(200);
   });
 });

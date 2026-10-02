@@ -394,6 +394,20 @@ describe('correo de un proyecto', () => {
     });
     expect(r.status).toBe(404);
 
+    // SMTP_HOST tiene otro servidor puesto a mano: escribir la credencial a su
+    // lado la mandaría a ese servidor. No se conecta (ni se crea nada en Mailway).
+    r = await call('POST', `/api/projects/${projA.id}/mail/connect`, ownerHeaders, {
+      serviceId: apiService.id,
+      mailboxId: mailboxA,
+      mode: 'smtp',
+    });
+    expect(r.status, r.raw).toBe(409);
+    expect(r.json.error).toMatch(/SMTP_HOST tiene un valor puesto a mano distinto del de Mailway/);
+    expect(mw.calls.some((c) => c.path.endsWith('/app-passwords'))).toBe(false);
+    expect(getEnv(apiService.id)).toEqual({ EXISTENTE: 'se-conserva', SMTP_HOST: 'antiguo.example.com' });
+
+    // Un remitente puesto a mano no impide conectar: se respeta y se informa.
+    setEnv(apiService.id, { EXISTENTE: 'se-conserva', SMTP_FROM: 'ventas@tienda.example' });
     r = await call('POST', `/api/projects/${projA.id}/mail/connect`, ownerHeaders, {
       serviceId: apiService.id,
       mailboxId: mailboxA,
@@ -401,20 +415,19 @@ describe('correo de un proyecto', () => {
     });
     expect(r.status, r.raw).toBe(200);
     expect(r.json).toMatchObject({ ok: true, needsRedeploy: true });
-    // SMTP_HOST tenía otro valor puesto a mano: se respeta y se informa.
-    expect(r.json.keys).toEqual(['SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM']);
-    expect(r.json.kept).toEqual(['SMTP_HOST']);
+    expect(r.json.keys).toEqual(['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS']);
+    expect(r.json.kept).toEqual(['SMTP_FROM']);
     expect(r.raw).not.toContain('ContraseñaDeAplicacion');
     const smtpPass = getEnv(apiService.id).SMTP_PASS;
     expect(smtpPass).toMatch(/^ContraseñaDeAplicacion-Secreta-/);
     expect(getEnv(apiService.id)).toEqual({
       EXISTENTE: 'se-conserva',
-      SMTP_HOST: 'antiguo.example.com',
+      SMTP_HOST: 'mail.example.com',
       SMTP_PORT: '587',
       SMTP_SECURE: 'false',
       SMTP_USER: 'hola@tienda.example',
       SMTP_PASS: smtpPass,
-      SMTP_FROM: 'hola@tienda.example',
+      SMTP_FROM: 'ventas@tienda.example',
     });
     const appPwCall = mw.calls.find((c) => c.path.endsWith('/app-passwords'));
     expect(appPwCall).toBeDefined();

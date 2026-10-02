@@ -56,6 +56,17 @@ export const SECRET_ROLES: Record<MailMode, readonly MailRole[]> = {
 };
 
 /**
+ * Papeles que dicen a DÓNDE y con QUÉ usuario se presenta la credencial. Si uno
+ * de ellos se queda con un valor puesto a mano distinto del de Mailway y se
+ * escribe la credencial, la web queda conectada a medias: en el peor caso,
+ * envía la contraseña de Mailway al servidor de otro proveedor.
+ */
+export const CONNECTION_ROLES: Record<MailMode, readonly MailRole[]> = {
+  smtp: ['host', 'port', 'user'],
+  api: ['api_url'],
+};
+
+/**
  * Nombres que Skyway escribe cuando la web no dice nada (los de siempre, que
  * se mantienen para no romper los servicios ya conectados). El orden es el de
  * la respuesta.

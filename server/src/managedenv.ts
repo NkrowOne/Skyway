@@ -4,7 +4,9 @@
  * **nunca se pisa una variable que alguien haya puesto a mano con otro valor**.
  * Se puede escribir si no existe, si está vacía (un hueco del `.env.example`),
  * si ya tiene ese mismo valor o si la escribió Skyway y nadie la ha cambiado
- * desde entonces (su hash sigue casando, ver `service_managed_env`).
+ * desde entonces (su hash sigue casando, ver `service_managed_env`). Lo que
+ * Skyway importó del `.env` del repositorio cuenta como escrito por Skyway
+ * (origen `import`): es el valor de ejemplo del repositorio, no uno elegido.
  */
 import { getEnv, getManagedEnv, getProjectVars, hashEnvValue, ManagedEnvEntry } from './db';
 import { ServiceRow } from './types';

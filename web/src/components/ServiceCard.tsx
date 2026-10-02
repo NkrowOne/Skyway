@@ -118,7 +118,7 @@ const ServiceCard = memo(function ServiceCard({
            * de decir si el servicio seguía en pie.
            */}
           {deploy && <Chip size="sm" tone="warn" dot pulse>{DEPLOY_STATUS_LABEL[deploy.status]}</Chip>}
-          {/* El skyway.json pide algo que tiene que aprobar quien gestiona el proyecto (Variables → Integraciones). */}
+          {/* El skyway.json pide algo que tiene que aprobar alguien (Variables → Integraciones). */}
           {(service.config.integrationsPending?.length ?? 0) > 0 && (
             <Chip size="sm" tone="warn" title={`Cambios pendientes de aprobar: ${service.config.integrationsPending!.join(', ')}`}>
               Pendiente de aprobar

@@ -25,7 +25,7 @@ import {
   useGithubBranches,
   useGithubSources,
 } from './GithubSource';
-import { IntegrationPlanView, planHasContent } from './IntegrationPlan';
+import { IntegrationPlanView, mailConfirmation, planHasContent } from './IntegrationPlan';
 import { ModuleKind, ModuleLogo, isModuleKind, moduleFg, moduleKind } from './ModuleIcon';
 import { Button, Field, Modal, Spinner, useToast } from './ui';
 
@@ -123,6 +123,8 @@ export default function NewServiceModal({
   const [stackDomain, setStackDomain] = useState('');
   // Recursos del plan que se omiten (un motor, `mail` o `empty`); vacío = todo.
   const [planSkip, setPlanSkip] = useState<Set<string>>(new Set());
+  // Confirmación expresa del acceso al buzón que el plan reutiliza (si la pide).
+  const [planConfirmMail, setPlanConfirmMail] = useState(false);
 
   const templates = useQuery({
     queryKey: ['templates'],
@@ -179,6 +181,8 @@ export default function NewServiceModal({
   // Otro repo, otras casillas: lo desmarcado para uno no vale para el siguiente.
   useEffect(() => setPlanSkip(new Set()), [debouncedRepo, debouncedBranch, debouncedRootDir, source]);
   const plan = needs.data?.plan ?? null;
+  // La confirmación del buzón vale para el plan que se ha visto, no para otro.
+  useEffect(() => setPlanConfirmMail(false), [plan?.fingerprint]);
   const showPlan = planHasContent(plan);
   const planApplies = showPlan && !plan.manifestError && plan.vars.some((v) => v.status === 'apply');
 
@@ -200,6 +204,7 @@ export default function NewServiceModal({
     setTplInput('');
     setTplPlan(null);
     setPlanSkip(new Set());
+    setPlanConfirmMail(false);
   };
 
   const close = () => {
@@ -292,7 +297,9 @@ export default function NewServiceModal({
   const submitGit = (e: React.FormEvent) => {
     e.preventDefault();
     // El plan lo aplica el servidor (con los permisos de quien crea el
-    // servicio) antes del primer despliegue: un solo botón para todo.
+    // servicio) antes del primer despliegue: un solo botón para todo. La
+    // huella (`expect`) liga la aprobación a lo que se ha enseñado: si al
+    // crear el repositorio pide otra cosa, lo privilegiado queda pendiente.
     create.mutate({
       type: 'git',
       name: inferredName,
@@ -302,7 +309,15 @@ export default function NewServiceModal({
       ...(rootDir.trim() ? { rootDir: rootDir.trim() } : {}),
       ...(source.kind === 'app' ? { githubInstallationId: source.id } : {}),
       ...(source.kind === 'pat' ? { connectorId: source.id } : {}),
-      ...(planApplies ? { plan: { skip: [...planSkip] } } : {}),
+      ...(plan && planApplies
+        ? {
+            plan: {
+              skip: [...planSkip],
+              expect: plan.fingerprint,
+              ...(mailConfirmation(plan) ? { confirmMailboxAccess: planConfirmMail } : {}),
+            },
+          }
+        : {}),
     });
   };
 
@@ -846,6 +861,8 @@ export default function NewServiceModal({
                   <IntegrationPlanView
                     plan={plan}
                     skip={planSkip}
+                    confirmMail={planConfirmMail}
+                    onConfirmMail={setPlanConfirmMail}
                     onToggle={(key, include) =>
                       setPlanSkip((prev) => {
                         const next = new Set(prev);

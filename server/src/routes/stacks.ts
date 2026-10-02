@@ -27,7 +27,7 @@ import { planRailwayTemplate, rewriteTemplateRefs } from '../railway/template';
 import { getStack, renderStackEnv, stackList, StackRenderCtx } from '../stacks';
 import { getTemplate } from '../templates';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from '../types';
-import { randomToken, slugify } from '../util';
+import { randomToken, slugify, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
 import { domainSchema, publicServiceConfig } from './services';
 
 /**
@@ -67,7 +67,7 @@ function crearAtomico(fn: () => void): string | null {
 const createSchema = z.object({
   stack: z.string().trim().min(1),
   /** Prefijo de los nombres de servicio (`<prefijo>-db`, `<prefijo>-kong`...). */
-  prefix: z.string().trim().min(1).max(40).optional(),
+  prefix: z.string().trim().min(1).max(40).regex(VISIBLE_NAME_RE, VISIBLE_NAME_ERROR).optional(),
   // El mismo validador que crear/editar servicio: el dominio acaba en la regla
   // Host() de Traefik y ahí no puede entrar texto libre.
   domain: domainSchema.optional(),
@@ -89,7 +89,7 @@ function uniquePrefix(projectId: string, base: string, keys: string[]): string {
 
 const templateSchema = z.object({
   template: z.string().trim().min(1, 'Indica la plantilla de Railway'),
-  prefix: z.string().trim().min(1).max(40).optional(),
+  prefix: z.string().trim().min(1).max(40).regex(VISIBLE_NAME_RE, VISIBLE_NAME_ERROR).optional(),
   domain: domainSchema.optional(),
 });
 

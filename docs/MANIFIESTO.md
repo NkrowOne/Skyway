@@ -96,31 +96,69 @@ construye el plan **sin efectos**:
 
 «Crear, aplicar el plan y desplegar» crea el servicio, vuelve a leer el
 manifiesto, aplica el plan y lanza el primer despliegue con todo puesto. Cada
-recurso se puede desmarcar antes.
+recurso se puede desmarcar antes. La aprobación vale para el plan que se ha
+enseñado (ver *La aprobación va ligada a lo revisado*): si al crear el servicio
+el repositorio pide otra cosa, lo inofensivo se aplica, lo que requiere
+aprobación queda pendiente y se avisa.
 
 ### Quién aprueba qué
 
 | Qué | Quién lo aplica |
 | --- | --- |
 | Secretos generados, URL propia, valores literales, variables vacías | Cualquiera con acceso al proyecto, sin preguntar: no dan acceso a nada nuevo. |
-| Crear o conectar una base de datos, crear un buzón, crear una credencial de correo | Quien **gestiona el proyecto** (administrador o propietario de la cuenta). Si lo aplica un miembro, queda como *Cambios pendientes de aprobar*. |
+| Crear o conectar una base de datos | Cualquiera con acceso al proyecto, con la misma regla que crearla a mano en «Nuevo servicio» o escribir su referencia en Variables: módulo «Bases de datos» y cuota de servicios. |
+| Crear un buzón o una credencial de correo | Quien **gestiona el proyecto** (administrador o propietario de la cuenta), como «Conectar a un servicio». Si lo aplica un miembro, queda como *Cambios pendientes de aprobar*. |
 
-Además se respetan los módulos de la cuenta («Bases de datos», «Correo»), la
-cuota de servicios y la suspensión de la cuenta.
+Lo que requiere aprobación nunca se aplica solo en un despliegue (lo dispara
+un push, no una persona): queda pendiente hasta que alguien con permiso lo
+apruebe. Además se respetan los módulos de la cuenta («Bases de datos»,
+«Correo»), la cuota de servicios y la suspensión de la cuenta.
+
+### La aprobación va ligada a lo revisado
+
+El plan lleva una **huella** (`fingerprint`) de lo que requiere aprobación: qué
+recursos (crear o reutilizar, cuál, en qué modo) y qué variables con qué
+origen. Aprobar envía la huella del plan que se ha visto (`expect`):
+
+- Sin huella, lo que requiere aprobación queda pendiente; lo inofensivo se
+  aplica.
+- Si el plan ha cambiado desde que se vio (un push con otro manifiesto entre
+  verlo y pulsar el botón), «Aprobar y aplicar» responde **409** con el plan
+  nuevo y no aplica nada; el panel lo vuelve a enseñar antes de ofrecer el
+  botón otra vez. En el alta, el servicio se crea igual, lo inofensivo se
+  aplica y lo demás queda pendiente.
+- **Reutilizar en SMTP un buzón que ya existe** pide además una confirmación
+  expresa (`confirmMailboxAccess`): su contraseña de aplicación da acceso IMAP
+  y SMTP a todo el correo del buzón, y la puede leer cualquiera que vea las
+  variables del servicio. El plan lo explica en `confirmation`; sin
+  confirmarlo, el correo queda pendiente. No hace falta si el servicio ya
+  tiene su credencial de Skyway en ese mismo buzón, ni para un buzón que el
+  plan crea, ni en modo API (la clave solo envía).
 
 ### Reglas que no cambian
 
 - **Nunca se sobrescribe una variable puesta a mano.** Skyway recuerda el hash
   de lo que escribió (`service_managed_env`); si alguien cambia el valor, la
-  variable pasa a ser suya y el plan la marca como *Puesta a mano*.
+  variable pasa a ser suya y el plan la marca como *Puesta a mano*. Lo que el
+  despliegue importó del `.env.example` y nadie ha tocado **no** cuenta como
+  puesto a mano (origen `import`): es el valor de ejemplo del repositorio
+  (`MAIL_HOST=mailpit` en Laravel), y el plan o el correo lo sustituyen.
 - **Un secreto generado no se regenera nunca**: rotarlo cerraría sesiones o
-  dejaría ilegibles los datos cifrados con él.
+  dejaría ilegibles los datos cifrados con él. El valor de ejemplo importado
+  del repositorio no es un secreto generado: `generate` lo sustituye.
 - Si la credencial de correo no cabe en ninguna variable libre (todas puestas a
   mano), no se crea.
+- Si cabe, pero el servidor, el puerto, el usuario o la URL de la API están
+  puestos a mano con otro valor, tampoco: la web quedaría conectada a medias,
+  con la credencial de Mailway y el servidor de otro proveedor (que la
+  recibiría). El plan deja el correo bloqueado con el nombre de esas variables.
 
 ## En cada despliegue
 
-El despliegue vuelve a leer el manifiesto del commit que despliega:
+El despliegue vuelve a leer el manifiesto del commit que despliega, también
+cuando reutiliza la imagen de ese mismo commit sin clonar (entonces aplica el
+que guardó al clonarlo). Si eso define una variable que entra en la
+compilación (`NEXT_PUBLIC_*`, `VITE_*`…), no reutiliza la imagen y compila:
 
 - Lo **inofensivo nuevo** (un secreto, un valor literal, la URL propia cuando ya
   hay dominio) se aplica sin preguntar y entra ya en ese despliegue. El
@@ -128,16 +166,17 @@ El despliegue vuelve a leer el manifiesto del commit que despliega:
 - Lo **privilegiado nuevo** (otra base, el correo) no se aplica: el servicio
   muestra «Cambios pendientes de aprobar» (en su tarjeta y en Variables →
   Integraciones), el registro lo avisa y el despliegue continúa con lo ya
-  aprobado. Quien gestiona el proyecto lo aprueba con «Aprobar y aplicar».
+  aprobado. Se aprueba con «Aprobar y aplicar» (las bases, cualquiera con
+  acceso al proyecto; el correo, quien lo gestiona).
 
 ## API
 
 | Método | Ruta | Descripción |
 | --- | --- | --- |
 | GET | `/api/projects/:id/github/needs` | Además de la detección, `plan`: el plan sin efectos para el repositorio (`repo`, `branch`, `rootDir?`, `source?`, `name?`). |
-| POST | `/api/projects/:projectId/services` | Con `type: 'git'` y `plan: { skip?: [...] }`, aplica el plan antes del primer despliegue. `skip` omite recursos: `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail` o `empty`. La respuesta añade `plan: { result, plan, error }`. |
-| GET | `/api/services/:id/integrations` | `{ plan, pending }` del servicio contra su estado actual. |
-| POST | `/api/services/:id/integrations/apply` | `{ skip?, redeploy? }` → `{ result, plan, needsRedeploy, deploymentId }`. `result` = `{ applied, pending, kept, blocked, created, errors }`, solo nombres. Auditado como `service_integrations_applied`. |
+| POST | `/api/projects/:projectId/services` | Con `type: 'git'` y `plan: { skip?: [...], expect?, confirmMailboxAccess? }`, aplica el plan antes del primer despliegue. `skip` omite recursos: `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail` o `empty`. `expect` es la huella del plan de `github/needs`; sin ella, o si no coincide, lo que requiere aprobación queda pendiente (con un aviso en `errors` si no coincide). La respuesta añade `plan: { result, plan, error }`. |
+| GET | `/api/services/:id/integrations` | `{ plan, pending }` del servicio contra su estado actual. `plan.fingerprint` es la huella; cada recurso trae `canApprove` (si quien consulta puede aprobarlo) y `confirmation` (lo que hay que confirmar, o null). |
+| POST | `/api/services/:id/integrations/apply` | `{ skip?, expect?, confirmMailboxAccess?, redeploy? }` → `{ result, plan, needsRedeploy, deploymentId }`. `result` = `{ applied, pending, kept, blocked, created, errors }`, solo nombres. Sin `expect`, lo que requiere aprobación queda pendiente; si `expect` no es la huella actual, **409** `{ error, plan }` sin aplicar nada. Auditado como `service_integrations_applied`. |
 
 Detalle de la detección, de los nombres por alias y de la conexión con el
 correo en [FUNCIONALIDAD.md](FUNCIONALIDAD.md) §5.5 y §5.7.

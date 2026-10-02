@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Mail, PackageCheck } from 'lucide-react';
-import { api } from '../api';
+import { useEffect, useState } from 'react';
+import { api, ApiError } from '../api';
 import { IntegrationPlan, PlanApplyResult, PlanResource, PlanStatus, PlanVar } from '../types';
 import { cx, Tone } from '../utils';
 import { isModuleKind, ModuleLogo, moduleFg } from './ModuleIcon';
@@ -34,20 +35,41 @@ function resourceText(r: PlanResource): string {
   return r.action === 'reuse' ? `${r.label}: conectar a «${r.target}» del proyecto` : `${r.label}: crear la base en el proyecto`;
 }
 
+/** Recurso del que depende una variable privilegiada. */
+function resourceOf(plan: IntegrationPlan, v: PlanVar): PlanResource | undefined {
+  return plan.resources.find((r) => r.key === v.resource);
+}
+
+/** ¿Hay algo que quien mira el plan pueda aplicar ahora (lo inofensivo o lo que puede aprobar)? */
+export function planHasApplicable(plan: IntegrationPlan): boolean {
+  return plan.vars.some((v) => v.status === 'apply' && (!v.privileged || !!resourceOf(plan, v)?.canApprove));
+}
+
+/** Recurso que pide confirmar expresamente el acceso al buzón, si quien mira puede aprobarlo. */
+export function mailConfirmation(plan: IntegrationPlan): PlanResource | null {
+  return plan.resources.find((r) => r.key === 'mail' && r.status === 'apply' && r.canApprove && !!r.confirmation) ?? null;
+}
+
 /**
  * El plan de integraciones de una web (lo que pide su skyway.json o lo que se
  * ha detectado): recursos que se crean o reutilizan y variables que se
  * escriben, con su estado. Sin efectos: aplicarlo es cosa de quien lo enseña.
- * Con `onToggle`, cada recurso por aplicar lleva una casilla para omitirlo.
+ * Con `onToggle`, cada recurso por aplicar lleva una casilla para omitirlo; con
+ * `onConfirmMail`, el buzón que se reutiliza lleva la casilla que confirma el
+ * acceso que da su credencial (sin marcarla, el correo queda pendiente).
  */
 export function IntegrationPlanView({
   plan,
   skip,
   onToggle,
+  confirmMail,
+  onConfirmMail,
 }: {
   plan: IntegrationPlan;
   skip?: ReadonlySet<string>;
   onToggle?: (key: string, include: boolean) => void;
+  confirmMail?: boolean;
+  onConfirmMail?: (confirmed: boolean) => void;
 }) {
   if (plan.manifestError) {
     return (
@@ -58,13 +80,15 @@ export function IntegrationPlanView({
   }
   const hasEmpty = plan.vars.some((v) => v.from === 'empty' && v.status === 'apply');
   const harmless = plan.vars.filter((v) => !v.privileged);
+  const noApprovable = plan.resources.filter((r) => r.status === 'apply' && !r.canApprove);
   return (
     <div className="flex flex-col gap-2.5 text-xs">
       {plan.resources.length > 0 && (
         <div className="flex flex-col gap-1.5">
           {plan.resources.map((r) => {
-            const chip = statusChip(r.status, true, plan.canApprove);
+            const chip = statusChip(r.status, true, r.canApprove);
             const togglable = !!onToggle && r.status === 'apply';
+            const confirm = r.status === 'apply' && r.canApprove && r.confirmation && !skip?.has(r.key) ? r.confirmation : null;
             const kind = isModuleKind(r.key) ? r.key : null;
             const body = (
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -86,8 +110,8 @@ export function IntegrationPlanView({
                 </span>
               </span>
             );
-            return togglable ? (
-              <label key={r.key} className="flex cursor-pointer items-start gap-2">
+            const row = togglable ? (
+              <label className="flex cursor-pointer items-start gap-2">
                 <input
                   type="checkbox"
                   className="mt-0.5 accent-acc"
@@ -97,8 +121,25 @@ export function IntegrationPlanView({
                 {body}
               </label>
             ) : (
-              <div key={r.key} className="flex items-start gap-2">
-                {body}
+              <div className="flex items-start gap-2">{body}</div>
+            );
+            return (
+              <div key={r.key} className="flex flex-col gap-1">
+                {row}
+                {confirm &&
+                  (onConfirmMail ? (
+                    <label className="ml-5 flex cursor-pointer items-start gap-2 rounded-md border border-warn/35 bg-warn/[.07] px-2.5 py-2 text-warn">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 accent-acc"
+                        checked={!!confirmMail}
+                        onChange={(e) => onConfirmMail(e.target.checked)}
+                      />
+                      <span>{confirm} Marca la casilla para confirmarlo; si no, el correo queda pendiente.</span>
+                    </label>
+                  ) : (
+                    <p className="ml-5 text-warn">{confirm}</p>
+                  ))}
               </div>
             );
           })}
@@ -132,10 +173,10 @@ export function IntegrationPlanView({
         </div>
       )}
 
-      {plan.pendingApproval.length > 0 && !plan.canApprove && (
+      {noApprovable.length > 0 && (
         <p className="text-subtle">
-          La base de datos y el correo los aprueba quien gestiona el proyecto (propietario de la cuenta o administrador): hasta
-          entonces, el servicio se despliega con lo demás.
+          El correo lo aprueba quien gestiona el proyecto (propietario de la cuenta o administrador): hasta entonces, el servicio
+          se despliega con lo demás.
         </p>
       )}
     </div>
@@ -161,11 +202,17 @@ export function IntegrationsPanel({ serviceId, dirty }: { serviceId: string; dir
     queryFn: () => api.get<{ plan: IntegrationPlan | null; pending: string[] }>(`/services/${serviceId}/integrations`),
     staleTime: 30_000,
   });
+  const plan = q.data?.plan;
+  // La confirmación del buzón vale para el plan que se ha visto: otro plan, otra casilla.
+  const [confirmMail, setConfirmMail] = useState(false);
+  useEffect(() => setConfirmMail(false), [plan?.fingerprint]);
   const apply = useMutation({
-    mutationFn: () =>
+    // La huella liga la aprobación a lo que se ve: si el plan ha cambiado
+    // desde entonces (un push con otro manifiesto), el servidor no aplica nada.
+    mutationFn: (p: IntegrationPlan) =>
       api.post<{ result: PlanApplyResult; plan: IntegrationPlan; needsRedeploy: boolean; deploymentId: string | null }>(
         `/services/${serviceId}/integrations/apply`,
-        { redeploy: true },
+        { redeploy: true, expect: p.fingerprint, ...(mailConfirmation(p) ? { confirmMailboxAccess: confirmMail } : {}) },
       ),
     onSuccess: (res) => {
       queryClient.setQueryData(['integrations', serviceId], { plan: res.plan, pending: res.result.pending });
@@ -177,13 +224,17 @@ export function IntegrationsPanel({ serviceId, dirty }: { serviceId: string; dir
       if (res.result.errors.length > 0) partes.push(res.result.errors.join(' '));
       toast(partes.join(' ') || 'No había nada que aplicar.', res.result.errors.length > 0 ? 'err' : 'ok');
     },
-    onError: (err: Error) => toast(err.message, 'err'),
+    onError: (err: Error) => {
+      // El plan ha cambiado: se vuelve a pedir y el botón no vuelve hasta tenerlo.
+      if (err instanceof ApiError && err.status === 409) queryClient.invalidateQueries({ queryKey: ['integrations', serviceId] });
+      toast(err.message, 'err');
+    },
   });
 
-  const plan = q.data?.plan;
   if (!plan || plan.source !== 'manifest' || !planHasContent(plan)) return null;
-  const porAplicar = plan.vars.some((v) => v.status === 'apply' && (!v.privileged || plan.canApprove));
+  const porAplicar = planHasApplicable(plan);
   const pendientes = plan.pendingApproval.length > 0;
+  const aprueba = pendientes && plan.resources.some((r) => r.status === 'apply' && r.canApprove);
 
   return (
     <div className={cx('rounded-xl border p-3.5', pendientes ? 'border-warn/35 bg-warn/[.07]' : 'border-line bg-surface')}>
@@ -196,17 +247,17 @@ export function IntegrationsPanel({ serviceId, dirty }: { serviceId: string; dir
         {porAplicar && (
           <Button
             size="sm"
-            variant={pendientes && plan.canApprove ? 'primary' : 'secondary'}
+            variant={aprueba ? 'primary' : 'secondary'}
             loading={apply.isPending}
-            disabled={dirty}
+            disabled={dirty || q.isFetching}
             title={dirty ? 'Guarda o descarta los cambios antes de aplicar el plan' : undefined}
-            onClick={() => apply.mutate()}
+            onClick={() => apply.mutate(plan)}
           >
-            {pendientes && plan.canApprove ? 'Aprobar y aplicar' : 'Aplicar'}
+            {aprueba ? 'Aprobar y aplicar' : 'Aplicar'}
           </Button>
         )}
       </div>
-      <IntegrationPlanView plan={plan} />
+      <IntegrationPlanView plan={plan} confirmMail={confirmMail} onConfirmMail={setConfirmMail} />
     </div>
   );
 }

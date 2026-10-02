@@ -21,7 +21,7 @@ import {
   revokeApiKey,
   revokeAppPassword,
 } from './mailway';
-import { MailMode, MailRole, ROLES_BY_MODE, SECRET_ROLES, mailTargets, mailValue, mailVarsOf } from './mailenv';
+import { CONNECTION_ROLES, MailMode, MailRole, ROLES_BY_MODE, SECRET_ROLES, mailTargets, mailValue, mailVarsOf } from './mailenv';
 import { envStateOf, writeDecision } from './managedenv';
 import { isWorkspaceActive, workspaceOfProject } from './quota';
 import { GitConfig, MailwayLinkRow, ProjectRow, ServiceRow } from './types';
@@ -188,6 +188,24 @@ export interface MailConnectNames {
    * (`mail.from`) para enviar con otro proveedor: entonces no se crea ninguna.
    */
   secretRequested: boolean;
+  /**
+   * Variables de conexión (servidor, puerto, usuario, URL de la API) puestas a
+   * mano con un valor distinto del de Mailway. Con alguna, escribir la
+   * credencial dejaría la web conectada a medias, así que no se conecta. Solo
+   * las que se pueden comparar: sin conocer el valor de Mailway (la vista
+   * previa no sabe el buzón) no se da por conflicto.
+   */
+  conflicts: string[];
+}
+
+/** Mensaje del 409 cuando la conexión quedaría a medias (ver `MailConnectNames.conflicts`). */
+export function partialConnectionMessage(conflicts: string[]): string {
+  const una = conflicts.length === 1;
+  return (
+    `${conflicts.join(', ')} ${una ? 'tiene' : 'tienen'} un valor puesto a mano distinto del de Mailway: escribir solo la credencial ` +
+    'dejaría la web conectada a medias, con la credencial de Mailway y el servidor, el puerto o el usuario de otro proveedor. ' +
+    `${una ? 'Elimínala o vacíala' : 'Elimínalas o vacíalas'} en la pestaña «Variables» del servicio si quieres que ${una ? 'la gestione' : 'las gestione'} Skyway.`
+  );
 }
 
 /**
@@ -195,7 +213,10 @@ export interface MailConnectNames {
  * espera (manifiesto o `.env.example`), los de siempre para lo que no nombra,
  * y los que Skyway ya escribió en una conexión anterior (para que no se queden
  * con una credencial revocada). Ninguno que alguien haya puesto a mano con
- * otro valor: esos van en `kept`. `hadCredential` dice si el servicio ya tenía
+ * otro valor: esos van en `kept` y, si dicen a dónde se conecta la web, también
+ * en `conflicts` (entonces no se conecta). Lo que Skyway importó del
+ * `.env.example` y nadie ha tocado cuenta como suyo: es un valor de ejemplo, no
+ * una decisión de nadie (ver `finalizeEnvImport`). `hadCredential` dice si el servicio ya tenía
  * una credencial de Skyway de este tipo: entonces los nombres de siempre se
  * consideran de Skyway aunque sean anteriores a llevar la cuenta de lo escrito.
  */
@@ -230,18 +251,28 @@ export function mailConnectNames(
     }
   }
   const values = { host: known.host ?? null, port: known.port ?? null, user: known.from ?? null, password: null, from: known.from ?? null, apiUrl: known.apiUrl ?? null, apiKey: null };
+  const connectionRoles = new Set(CONNECTION_ROLES[mode]);
   const targets: MailTarget[] = [];
   const kept: string[] = [];
+  const conflicts: string[] = [];
   for (const c of candidates) {
-    if (writeDecision(state, c.name, mailValue(c.role, values), legacy) === 'write') targets.push(c);
-    else kept.push(c.name);
+    const value = mailValue(c.role, values);
+    if (writeDecision(state, c.name, value, legacy) === 'write') {
+      targets.push(c);
+    } else {
+      kept.push(c.name);
+      if (connectionRoles.has(c.role) && value !== null) conflicts.push(c.name);
+    }
   }
   const secretRoles = new Set(SECRET_ROLES[mode]);
+  const secretRequested = candidates.some((c) => secretRoles.has(c.role));
   return {
     targets,
     kept,
     secretPlaced: targets.some((t) => secretRoles.has(t.role)),
-    secretRequested: candidates.some((c) => secretRoles.has(c.role)),
+    secretRequested,
+    // Sin credencial que escribir (solo el remitente) no hay nada que pueda salir mal.
+    conflicts: secretRequested ? conflicts : [],
   };
 }
 
@@ -269,7 +300,8 @@ export interface MailConnectResult {
  * revoca: su variable se va a sobrescribir, y sin revocarla seguiría siendo
  * válida sin que nadie la use (y Mailway limita las contraseñas de aplicación
  * activas por buzón). Si la credencial no cabe en ninguna variable (todas
- * puestas a mano), no se crea nada.
+ * puestas a mano), o si cabe pero el servidor, el puerto o el usuario están
+ * puestos a mano con otro valor, no se crea nada (409).
  */
 export async function connectServiceMail(opts: {
   project: ProjectRow;
@@ -304,6 +336,12 @@ export async function connectServiceMail(opts: {
       `No se ha conectado el correo: ${secretas} ${names.kept.length === 1 ? 'tiene' : 'tienen'} un valor puesto a mano y Skyway no lo sobrescribe. ` +
         'Elimínala o vacíala en la pestaña «Variables» del servicio si quieres que la gestione Skyway.',
     );
+  }
+  // La regla de no pisar va variable a variable: sin esto, la credencial de
+  // Mailway se escribiría junto al servidor de otro proveedor puesto a mano, y
+  // la web se la enviaría a ese tercero. Antes de crear nada en Mailway.
+  if (names.conflicts.length > 0) {
+    throw httpError(409, `No se ha conectado el correo: ${partialConnectionMessage(names.conflicts)}`);
   }
 
   let revoked = 0;

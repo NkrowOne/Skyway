@@ -1484,7 +1484,7 @@ export function setEnv(serviceId: string, vars: Record<string, string>): void {
 // ---------- variables gestionadas por Skyway ----------
 
 export interface ManagedEnvEntry {
-  /** De dónde salió: `mail.password`, `postgres.url`, `generate`, `value`, `self.public_url`… */
+  /** De dónde salió: `mail.smtp.password`, `postgres.DATABASE_URL`, `generate`, `value`, `self.public_url`, `import` (del `.env` del repositorio)… */
   origin: string;
   valueHash: string;
 }
