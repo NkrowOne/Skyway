@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { parse as parseDomain } from 'tldts';
 import { z } from 'zod';
 import { assertProjectAccess, assertProjectManage, currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
 import { audit } from '../audit';
@@ -12,27 +13,34 @@ import {
   getSetting,
   insertMailwayLink,
   listMailwayLinks,
+  listServices,
   setEnv,
   setSetting,
 } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
+import { panelDomains, webmailHostError } from '../domainguard';
 import {
   MAILWAY_SETTING,
   MailwayApiKeyInfo,
   MailwayAppPasswordInfo,
   MailwayConfig,
+  MailwayDnsInstruction,
   MailwayDomain,
   MailwayError,
   MailwayMailbox,
   MailwayPlan,
   MailwaySummary,
+  MailwayWhitelabelDomain,
+  ZONE_LEVELS,
   applyCloudflare,
+  applyWhitelabelCloudflare,
   cachedInfo,
   createApiKey,
   createAppPassword,
   createDomain,
   createMailbox,
   createSetupLink,
+  createWhitelabelDomain,
   deleteMailbox,
   ensureClient,
   getClientByRef,
@@ -40,11 +48,15 @@ import {
   getDomainDns,
   getInfo,
   getSummary,
+  getWhitelabelDomain,
+  getZoneFile,
   internalPanelUrl,
   linkClient,
   listClients,
   listPlans,
+  listWhitelabelDomains,
   mailwayConfigured,
+  mailwayReservedHosts,
   normalizeBaseUrl,
   previousClientKey,
   projectExternalRef,
@@ -57,7 +69,10 @@ import {
   revokeApiKey,
   revokeAppPassword,
   safeHttpUrl,
+  setPrimaryWebmail,
+  stripWebRecords,
   verifyDomain,
+  verifyWhitelabelDomain,
 } from '../mailway';
 import {
   forgetMailwayTraefik,
@@ -463,6 +478,118 @@ async function tryInfo(): Promise<void> {
   }
 }
 
+// ---------- dominios sugeridos ----------
+
+/**
+ * Dominio registrable de un nombre (empresa.com de api.empresa.com) según la
+ * lista de sufijos públicos, o null. Solo bajo un sufijo de ICANN: bajo uno
+ * privado (github.io, duckdns.org…) el nombre lo reparte un proveedor entre
+ * sus usuarios, y el dominio registrable es del proveedor, no del cliente.
+ */
+function registrableDomain(host: string): string | null {
+  const p = parseDomain(host.trim().toLowerCase(), { allowPrivateDomains: true });
+  if (p.isIp || !p.isIcann || !p.domain) return null;
+  return p.domain;
+}
+
+/** Son atajos del formulario, no un inventario. */
+const MAX_SUGERENCIAS = 8;
+
+/**
+ * Dominios de correo que se proponen al proyecto: los registrables de los
+ * dominios de sus servicios (api.empresa.com → empresa.com), sin los que ya
+ * tiene su cliente de correo ni los de la plataforma: el del panel, el raíz
+ * con el que se generan los subdominios de los servicios y los de la instancia
+ * de Mailway. Que un servicio cuelgue de esos dominios no los hace del cliente.
+ */
+function suggestedDomains(projectId: string, existing: string[]): string[] {
+  const fuera = new Set(existing.filter((d) => typeof d === 'string').map((d) => d.toLowerCase()));
+  for (const host of [...panelDomains(), getSetting('rootDomain') ?? '', ...mailwayReservedHosts()]) {
+    const reg = host ? registrableDomain(host) : null;
+    if (reg) fuera.add(reg);
+  }
+  const out: string[] = [];
+  for (const service of listServices(projectId)) {
+    const domains = (service.config as { domains?: unknown }).domains;
+    if (!Array.isArray(domains)) continue;
+    for (const d of domains) {
+      const reg = typeof d === 'string' ? registrableDomain(d) : null;
+      if (reg && !fuera.has(reg) && !out.includes(reg)) out.push(reg);
+    }
+  }
+  return out.slice(0, MAX_SUGERENCIAS);
+}
+
+// ---------- webmail con el dominio del cliente (marca blanca) ----------
+
+const WEBMAIL_STATUS = new Set(['pending_dns', 'issuing', 'active', 'error']);
+/** Nombre de host completo en minúsculas, con al menos un punto. */
+const HOST_RE = /^(?=.{4,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+/**
+ * El webmail de un dominio de correo vive siempre en `webmail.<dominio>`: el
+ * nombre lo fija Skyway a partir del dominio del cliente, nunca quien llama.
+ */
+function webmailHostname(domain: MailwayDomain): string {
+  return `webmail.${domain.domain.toLowerCase()}`;
+}
+
+/**
+ * El dominio propio del cliente con ese nombre, o null. Se filtra también por
+ * cliente: con el token de administrador, un Mailway que ignorase `clientId`
+ * devolvería los de todos los clientes.
+ */
+async function findWebmail(clientId: string, hostname: string): Promise<MailwayWhitelabelDomain | null> {
+  const list = await listWhitelabelDomains(clientId);
+  return (
+    list.find((d) => d.clientId === clientId && typeof d.hostname === 'string' && d.hostname.toLowerCase() === hostname) ?? null
+  );
+}
+
+async function requireWebmail(clientId: string, hostname: string): Promise<MailwayWhitelabelDomain> {
+  const found = await findWebmail(clientId, hostname);
+  if (!found) throw httpError(404, `El webmail ${hostname} no está configurado en este proyecto.`);
+  return found;
+}
+
+/** Lo que devuelve Mailway tiene que ser ese mismo nombre y del cliente vinculado. */
+function ownedWebmail(d: MailwayWhitelabelDomain | undefined, clientId: string, hostname: string): MailwayWhitelabelDomain {
+  if (!d || d.clientId !== clientId || typeof d.hostname !== 'string' || d.hostname.toLowerCase() !== hostname) {
+    throw new MailwayError('http', 'La respuesta de Mailway no corresponde al webmail de este dominio.', 502);
+  }
+  return d;
+}
+
+function publicInstructions(list: MailwayDnsInstruction[] | undefined) {
+  return (Array.isArray(list) ? list : [])
+    .filter((i) => i && typeof i.type === 'string' && typeof i.name === 'string' && typeof i.value === 'string')
+    .map((i) => ({
+      type: i.type,
+      name: i.name,
+      value: i.value,
+      recommended: !!i.recommended,
+      help: typeof i.help === 'string' ? i.help : null,
+    }));
+}
+
+function publicWebmail(d: MailwayWhitelabelDomain, instructions?: MailwayDnsInstruction[]) {
+  const hostname = d.hostname.toLowerCase();
+  const status = WEBMAIL_STATUS.has(d.status) ? d.status : 'error';
+  return {
+    hostname,
+    kind: d.kind === 'panel' ? ('panel' as const) : ('webmail' as const),
+    status,
+    detail: typeof d.detail === 'string' ? d.detail : '',
+    lastCheckedAt: d.lastCheckedAt ?? null,
+    activatedAt: d.activatedAt ?? null,
+    createdAt: d.createdAt ?? null,
+    isPrimary: !!d.isPrimary,
+    // El enlace lo forma Skyway con el nombre validado, no llega de Mailway.
+    url: status === 'active' && HOST_RE.test(hostname) ? `https://${hostname}` : null,
+    instructions: publicInstructions(instructions),
+  };
+}
+
 // ---------- configuración (administrador) ----------
 
 function configView() {
@@ -749,6 +876,8 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
      * Estado del correo del proyecto. Si Skyway no tiene el vínculo pero
      * Mailway conserva un cliente con la referencia del proyecto (base del
      * panel restaurada, vínculo creado desde otro Skyway), se recupera solo.
+     * `suggestedDomains` propone, para activar el correo o añadir un dominio,
+     * los dominios registrables de los servicios del proyecto.
      */
     secured.get(
       '/api/projects/:id/mail',
@@ -768,7 +897,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           accountSuspended: !!workspace && !isWorkspaceActive(workspace),
         };
         if (!base.moduleEnabled || !base.configured) {
-          return { ...base, linked: false, panelUrl: base.configured ? publicPanelUrl() : null, features: null };
+          return { ...base, linked: false, panelUrl: base.configured ? publicPanelUrl() : null, features: null, suggestedDomains: [] };
         }
 
         await tryInfo();
@@ -787,7 +916,9 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
             audit(req, 'mailway_link_restored', { type: 'project', id, detail: `${project.name} → ${client.name}` });
           }
         }
-        if (!link) return { ...base, linked: false, panelUrl: publicPanelUrl(), features: featuresOf() };
+        if (!link) {
+          return { ...base, linked: false, panelUrl: publicPanelUrl(), features: featuresOf(), suggestedDomains: suggestedDomains(id, []) };
+        }
 
         let summary: MailwaySummary;
         try {
@@ -804,7 +935,15 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
                 ? err.message
                 : null;
           if (notice) {
-            return { ...base, linked: true, link: publicLink(link), notice, panelUrl: publicPanelUrl(), features: featuresOf() };
+            return {
+              ...base,
+              linked: true,
+              link: publicLink(link),
+              notice,
+              panelUrl: publicPanelUrl(),
+              features: featuresOf(),
+              suggestedDomains: [],
+            };
           }
           throw err;
         }
@@ -815,6 +954,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           summary: publicSummary(summary),
           panelUrl: publicPanelUrl(),
           features: featuresOf(),
+          suggestedDomains: suggestedDomains(id, summary.domains.map((d) => d.domain)),
         };
       }),
     );
@@ -1071,6 +1211,176 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           errors: errors.map((e) => ({ type: e.type, name: e.name, error: e.error })),
           domain: result.domain ? publicDomain(result.domain) : null,
         };
+      }),
+    );
+
+    /**
+     * Fichero de zona BIND del dominio, para importarlo en el proveedor de DNS
+     * (en Cloudflare: DNS → Registros → Importar y exportar). Lo genera Mailway
+     * (`?nivel=obligatorios|recomendados|completo`, recomendados por defecto);
+     * Skyway comprueba antes que el dominio es del cliente del proyecto y
+     * retira los registros web del dominio raíz y de www (`stripWebRecords`):
+     * importarlo nunca debe sustituir la web del dominio.
+     */
+    secured.get(
+      '/api/projects/:id/mail/domains/:domainId/zonefile',
+      { preHandler: rateLimit({ max: 20, windowMs: 60_000 }) },
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply);
+        if (!ctx) return reply;
+        const { domainId } = req.params as { domainId: string };
+        const { nivel } = z
+          .object({
+            nivel: z
+              .enum(ZONE_LEVELS, { errorMap: () => ({ message: 'Nivel no válido: usa obligatorios, recomendados o completo.' }) })
+              .default('recomendados'),
+          })
+          .parse(req.query ?? {});
+        const summary = await ownedSummary(ctx.project, requireLink(ctx.project));
+        const domain = ownDomain(summary, domainId);
+        const { zone, removed } = stripWebRecords(await getZoneFile(domainId, nivel), domain.domain);
+        if (removed > 0) req.log.warn({ domain: domain.domain, removed }, 'Mailway: registros web retirados del fichero de zona');
+        const fichero = `${domain.domain.replace(/[^A-Za-z0-9.-]+/g, '_')}-mailway-${nivel}.txt`;
+        return reply
+          .type('text/plain; charset=utf-8')
+          .header('Content-Disposition', `attachment; filename="${fichero}"`)
+          .send(zone);
+      }),
+    );
+
+    // ---------- webmail con el dominio del cliente ----------
+
+    /**
+     * Webmail del dominio en `webmail.<dominio>` (marca blanca de Mailway):
+     * estado, registro DNS que indica Mailway y, en `conflict`, el motivo por
+     * el que el nombre no se puede utilizar (lo sirve un servicio de Skyway, es
+     * el del panel o uno de Mailway).
+     */
+    secured.get(
+      '/api/projects/:id/mail/domains/:domainId/webmail',
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply);
+        if (!ctx) return reply;
+        const { domainId } = req.params as { domainId: string };
+        const link = requireLink(ctx.project);
+        const domain = ownDomain(await ownedSummary(ctx.project, link), domainId);
+        const hostname = webmailHostname(domain);
+        const found = await findWebmail(link.client_id, hostname);
+        let webmail = null;
+        if (found) {
+          const view = await getWhitelabelDomain(found.id);
+          webmail = publicWebmail(ownedWebmail(view.domain, link.client_id, hostname), view.instructions);
+        }
+        return { hostname, webmail, conflict: webmailHostError(hostname, { isAdmin: ctx.isAdmin }) };
+      }),
+    );
+
+    /**
+     * Da de alta `webmail.<dominio>` en la marca blanca de Mailway para el
+     * cliente del proyecto. Mailway exige además que la propiedad del dominio
+     * esté comprobada (400 `domain_not_verified`, con su mensaje) y limita los
+     * dominios propios por cliente.
+     */
+    secured.post(
+      '/api/projects/:id/mail/domains/:domainId/webmail',
+      { preHandler: rateLimit({ max: 10, windowMs: 60_000 }) },
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply, { manage: true });
+        if (!ctx) return reply;
+        const { domainId } = req.params as { domainId: string };
+        const link = requireLink(ctx.project);
+        assertAccountActive(ctx.project);
+        const summary = await ownedSummary(ctx.project, link);
+        assertClientActive(summary);
+        const hostname = webmailHostname(ownDomain(summary, domainId));
+        const conflicto = webmailHostError(hostname, { isAdmin: ctx.isAdmin });
+        if (conflicto) throw httpError(409, conflicto);
+        if (await findWebmail(link.client_id, hostname)) {
+          throw httpError(409, `El webmail ${hostname} ya está configurado en este proyecto.`);
+        }
+        const res = await createWhitelabelDomain({ hostname, clientId: link.client_id });
+        const created = ownedWebmail(res.domain, link.client_id, hostname);
+        audit(req, 'mailway_webmail_created', { type: 'project', id: ctx.project.id, detail: `${ctx.project.name}: ${hostname}` });
+        reply.code(201);
+        return { webmail: publicWebmail(created, res.instructions) };
+      }),
+    );
+
+    /** Comprueba el DNS y el certificado del webmail y avanza su estado. */
+    secured.post(
+      '/api/projects/:id/mail/domains/:domainId/webmail/verify',
+      { preHandler: rateLimit({ max: 30, windowMs: 60_000 }) },
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply);
+        if (!ctx) return reply;
+        const { domainId } = req.params as { domainId: string };
+        const link = requireLink(ctx.project);
+        const hostname = webmailHostname(ownDomain(await ownedSummary(ctx.project, link), domainId));
+        const found = await requireWebmail(link.client_id, hostname);
+        const res = await verifyWhitelabelDomain(found.id);
+        return {
+          webmail: publicWebmail(ownedWebmail(res.domain, link.client_id, hostname), res.instructions),
+          conflict: webmailHostError(hostname, { isAdmin: ctx.isAdmin }),
+        };
+      }),
+    );
+
+    /**
+     * Crea en Cloudflare el registro del webmail. Mailway nunca sustituye un
+     * registro que ya exista con otro valor: lo devuelve en `skipped`.
+     */
+    secured.post(
+      '/api/projects/:id/mail/domains/:domainId/webmail/cloudflare',
+      { preHandler: rateLimit({ max: 10, windowMs: 60_000 }) },
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply, { manage: true });
+        if (!ctx) return reply;
+        const { domainId } = req.params as { domainId: string };
+        const link = requireLink(ctx.project);
+        const hostname = webmailHostname(ownDomain(await ownedSummary(ctx.project, link), domainId));
+        const found = await requireWebmail(link.client_id, hostname);
+        // El registro lleva el nombre a este servidor: si lo sirve un servicio de Skyway, no se crea.
+        const conflicto = webmailHostError(hostname, { isAdmin: ctx.isAdmin });
+        if (conflicto) throw httpError(409, conflicto);
+        // Quien no es administrador de Skyway solo usa las cuentas de Cloudflare del propio cliente.
+        const result = await applyWhitelabelCloudflare(found.id, { soloCliente: !ctx.isAdmin });
+        const applied = Array.isArray(result.applied) ? result.applied : [];
+        const errors = Array.isArray(result.errors) ? result.errors : [];
+        const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+        audit(req, 'mailway_webmail_dns_applied', {
+          type: 'project',
+          id: ctx.project.id,
+          detail:
+            `${hostname}: ${applied.length} cambio(s)` +
+            `${errors.length ? `, ${errors.length} error(es)` : ''}${skipped.length ? `, ${skipped.length} sin aplicar` : ''}`,
+        });
+        return {
+          applied: applied.map((a) => ({ action: a.action, type: a.type, name: a.name })),
+          errors: errors.map((e) => ({ type: e.type, name: e.name, error: e.error })),
+          skipped: skipped.map((s) => ({ type: s.type, name: s.name, reason: s.reason })),
+          webmail: result.domain ? publicWebmail(ownedWebmail(result.domain, link.client_id, hostname)) : null,
+        };
+      }),
+    );
+
+    /** Marca el webmail como principal del cliente: el que usan sus enlaces y datos de conexión. */
+    secured.post(
+      '/api/projects/:id/mail/domains/:domainId/webmail/primary',
+      { preHandler: rateLimit({ max: 10, windowMs: 60_000 }) },
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply, { manage: true });
+        if (!ctx) return reply;
+        const { domainId } = req.params as { domainId: string };
+        const link = requireLink(ctx.project);
+        const hostname = webmailHostname(ownDomain(await ownedSummary(ctx.project, link), domainId));
+        const found = await requireWebmail(link.client_id, hostname);
+        // El principal es la dirección que Mailway da a los titulares: nunca un nombre que sirve otro servicio.
+        const conflicto = webmailHostError(hostname, { isAdmin: ctx.isAdmin });
+        if (conflicto) throw httpError(409, conflicto);
+        const res = await setPrimaryWebmail(found.id);
+        const webmail = ownedWebmail(res.domain, link.client_id, hostname);
+        audit(req, 'mailway_webmail_primary', { type: 'project', id: ctx.project.id, detail: `${ctx.project.name}: ${hostname}` });
+        return { webmail: publicWebmail(webmail) };
       }),
     );
 

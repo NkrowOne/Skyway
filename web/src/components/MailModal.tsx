@@ -6,6 +6,7 @@ import {
   Ban,
   ChevronDown,
   Cloud,
+  Download,
   ExternalLink,
   Globe,
   Inbox,
@@ -14,7 +15,9 @@ import {
   Mail,
   MoreHorizontal,
   Plug,
+  Plus,
   RefreshCw,
+  Star,
   Trash2,
   Unlink,
 } from 'lucide-react';
@@ -27,6 +30,10 @@ import {
   MailDomain,
   MailMailbox,
   MailOptions,
+  MailWebmail,
+  MailWebmailCloudflareResult,
+  MailWebmailStatus,
+  MailWebmailView,
   ProjectMailView,
   Service,
 } from '../types';
@@ -50,8 +57,10 @@ import {
 
 /**
  * Correo del proyecto (integración con Mailway): activar el cliente de correo,
- * dominios con sus registros DNS (y Cloudflare), buzones y la conexión de los
- * servicios por SMTP o por la API de envío.
+ * dominios con sus registros DNS (Cloudflare o fichero de zona) y su webmail en
+ * `webmail.<dominio>`, buzones y la conexión de los servicios por SMTP o por la
+ * API de envío. Los dominios de los servicios del proyecto se proponen como
+ * dominios de correo.
  *
  * Las contraseñas y los enlaces de configuración se muestran UNA vez, en el
  * momento en que Mailway los genera: Skyway no los guarda ni puede volver a
@@ -78,6 +87,38 @@ const DOMAIN_STATUS: Record<MailDomain['status'], { tone: Tone; label: string }>
   pending_dns: { tone: 'warn', label: 'Pendiente' },
   error: { tone: 'err', label: 'Error' },
 };
+
+/** Estados del webmail con el dominio del cliente, en el orden en que los recorre. */
+const WEBMAIL_STATUS: Record<MailWebmailStatus, { tone: Tone; label: string }> = {
+  pending_dns: { tone: 'warn', label: 'Esperando DNS' },
+  issuing: { tone: 'info', label: 'Emitiendo certificado' },
+  active: { tone: 'ok', label: 'En servicio' },
+  error: { tone: 'err', label: 'Error' },
+};
+
+/**
+ * Buzones que casi todo dominio necesita. Sin postmaster ni abuse: son de la
+ * administración del dominio y solo los crea un administrador de la plataforma.
+ */
+const BUZONES_HABITUALES = ['info', 'contacto', 'no-reply'];
+
+/**
+ * Descarga un fichero de la API con la sesión del navegador. Un error llega en
+ * JSON (`{ error }`) y se lanza con su mensaje para mostrarlo.
+ */
+async function downloadFromApi(path: string, filename: string): Promise<void> {
+  const res = await fetch(`/api${path}`, { credentials: 'same-origin' });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error || `Error ${res.status}`);
+  }
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
 
 export default function MailModal({
   open,
@@ -228,7 +269,13 @@ export default function MailModal({
           <p className="mb-4 rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">{data.notice}</p>
         )}
         {canManage ? (
-          <ActivateForm projectId={projectId} projectName={projectName} isAdmin={data.isAdmin} onDone={invalidate} />
+          <ActivateForm
+            projectId={projectId}
+            projectName={projectName}
+            isAdmin={data.isAdmin}
+            suggestedDomains={data.suggestedDomains ?? []}
+            onDone={invalidate}
+          />
         ) : (
           <EmptyState
             compact
@@ -306,7 +353,9 @@ export default function MailModal({
           <DomainsTab
             projectId={projectId}
             blocked={blocked}
+            canManage={canManage}
             domains={summary.domains}
+            suggestedDomains={data.suggestedDomains ?? []}
             cloudflare={data.features?.cloudflare !== false}
             onInvalidate={invalidate}
             onCloudflare={setCfDomain}
@@ -440,11 +489,14 @@ function ActivateForm({
   projectId,
   projectName,
   isAdmin,
+  suggestedDomains,
   onDone,
 }: {
   projectId: string;
   projectName: string;
   isAdmin: boolean;
+  /** Dominios de los servicios del proyecto: se pueden añadir en el mismo paso. */
+  suggestedDomains: string[];
   onDone: () => void;
 }) {
   const toast = useToast();
@@ -455,6 +507,7 @@ function ActivateForm({
   const [planId, setPlanId] = useState('');
   const [contactEmail, setContactEmail] = useState('');
   const [clientId, setClientId] = useState('');
+  const [extraDomains, setExtraDomains] = useState<string[]>([]);
 
   const options = useQuery({
     queryKey: ['mailOptions', projectId],
@@ -471,8 +524,8 @@ function ActivateForm({
   const name = editedName ?? options.data?.defaultName ?? projectName;
 
   const activate = useMutation({
-    mutationFn: () =>
-      api.post(
+    mutationFn: async () => {
+      await api.post(
         `/projects/${projectId}/mail/link`,
         mode === 'create'
           ? {
@@ -485,9 +538,34 @@ function ActivateForm({
           : mode === 'existing'
             ? { mode, clientId }
             : { mode },
-      ),
-    onSuccess: () => {
-      toast(mode === 'previous' ? 'Correo activado con el cliente anterior' : 'Correo activado en el proyecto', 'ok');
+      );
+      // Los dominios elegidos se añaden con el cliente ya creado. Si alguno
+      // falla (lo tiene otro cliente, supera el plan), el correo queda activado
+      // igualmente y se indica cuál.
+      const added: string[] = [];
+      const failed: string[] = [];
+      if (mode === 'create') {
+        for (const domain of extraDomains.filter((d) => suggestedDomains.includes(d))) {
+          try {
+            await api.post(`/projects/${projectId}/mail/domains`, { domain });
+            added.push(domain);
+          } catch (err) {
+            failed.push(`${domain}: ${(err as Error).message}`);
+          }
+        }
+      }
+      return { added, failed };
+    },
+    onSuccess: ({ added, failed }) => {
+      toast(
+        mode === 'previous'
+          ? 'Correo activado con el cliente anterior'
+          : added.length === 0
+            ? 'Correo activado en el proyecto'
+            : `Correo activado en el proyecto con ${added.length === 1 ? 'el dominio' : 'los dominios'} ${added.join(', ')}`,
+        'ok',
+      );
+      for (const f of failed) toast(`No se ha podido añadir el dominio ${f}`, 'err');
       onDone();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -582,6 +660,31 @@ function ActivateForm({
               onChange={(e) => setContactEmail(e.target.value)}
             />
           </Field>
+          {suggestedDomains.length > 0 && (
+            <div className="sm:col-span-2">
+              <Field
+                group
+                label="Dominios de correo"
+                hint="Dominios de los servicios del proyecto. Los seleccionados se añaden al activar el correo; podrás añadir otros después."
+              >
+                <div className="flex flex-wrap gap-x-4 gap-y-2">
+                  {suggestedDomains.map((d) => (
+                    <label key={d} className="flex min-w-0 items-center gap-2 text-sm text-sub">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 shrink-0 accent-acc"
+                        checked={extraDomains.includes(d)}
+                        onChange={(e) =>
+                          setExtraDomains((prev) => (e.target.checked ? [...prev, d] : prev.filter((x) => x !== d)))
+                        }
+                      />
+                      <span className="break-all font-mono text-xs text-txt">{d}</span>
+                    </label>
+                  ))}
+                </div>
+              </Field>
+            </div>
+          )}
         </div>
       ) : (
         <Field label="Cliente de Mailway" hint="Los clientes ya vinculados a otro proyecto o integración no se pueden seleccionar.">
@@ -611,14 +714,18 @@ function ActivateForm({
 function DomainsTab({
   projectId,
   blocked,
+  canManage,
   domains,
+  suggestedDomains,
   cloudflare,
   onInvalidate,
   onCloudflare,
 }: {
   projectId: string;
   blocked: boolean;
+  canManage: boolean;
   domains: MailDomain[];
+  suggestedDomains: string[];
   cloudflare: boolean;
   onInvalidate: () => void;
   onCloudflare: (d: MailDomain) => void;
@@ -659,6 +766,25 @@ function DomainsTab({
         </Button>
       </form>
 
+      {suggestedDomains.length > 0 && !blocked && (
+        <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
+          <span className="font-medium text-sub">Dominios de los servicios del proyecto:</span>
+          {suggestedDomains.map((d) => (
+            <button
+              key={d}
+              type="button"
+              disabled={add.isPending}
+              onClick={() => add.mutate(d)}
+              title={`Añadir ${d} como dominio de correo`}
+              aria-label={`Añadir ${d} como dominio de correo`}
+              className="press flex items-center gap-1 rounded-md border border-acc/40 bg-acc/[.06] px-2 py-0.5 font-mono text-xs font-medium text-acc-soft transition-colors hover:border-acc hover:bg-acc/10 disabled:cursor-not-allowed disabled:opacity-45 max-sm:py-1.5"
+            >
+              <Plus size={12} /> {d}
+            </button>
+          ))}
+        </div>
+      )}
+
       {domains.length === 0 ? (
         <EmptyState
           compact
@@ -673,6 +799,8 @@ function DomainsTab({
             key={d.id}
             projectId={projectId}
             domain={d}
+            blocked={blocked}
+            canManage={canManage}
             cloudflare={cloudflare}
             onInvalidate={onInvalidate}
             onCloudflare={() => onCloudflare(d)}
@@ -686,19 +814,36 @@ function DomainsTab({
 function DomainCard({
   projectId,
   domain,
+  blocked,
+  canManage,
   cloudflare,
   onInvalidate,
   onCloudflare,
 }: {
   projectId: string;
   domain: MailDomain;
+  blocked: boolean;
+  canManage: boolean;
   cloudflare: boolean;
   onInvalidate: () => void;
   onCloudflare: () => void;
 }) {
   const toast = useToast();
   const [showDns, setShowDns] = useState(false);
+  const [showWebmail, setShowWebmail] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const status = DOMAIN_STATUS[domain.status] ?? DOMAIN_STATUS.pending_dns;
+
+  const downloadZone = async () => {
+    setDownloading(true);
+    try {
+      await downloadFromApi(`/projects/${projectId}/mail/domains/${domain.id}/zonefile`, `${domain.domain}-mailway-recomendados.txt`);
+    } catch (err) {
+      toast((err as Error).message, 'err');
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   const dns = useQuery({
     queryKey: ['mailDns', projectId, domain.id],
@@ -841,9 +986,245 @@ function DomainCard({
                     </div>
                   ))}
                 </div>
+                <div className="mt-2.5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs leading-5 text-subtle">
+                    Para crear todos los registros de una vez, descarga el fichero de zona e impórtalo en Cloudflare, en DNS →
+                    Registros → Importar y exportar, sin activar el proxy. No incluye registros de la web del dominio; si el
+                    dominio ya tiene un registro SPF, conserva solo uno.
+                  </p>
+                  <Button size="sm" variant="secondary" onClick={() => void downloadZone()} loading={downloading} className="shrink-0">
+                    <Download size={12} /> Descargar fichero de zona
+                  </Button>
+                </div>
               </>
             )}
           </div>
+        )}
+      </div>
+
+      <div className="border-t border-line/60">
+        <button
+          type="button"
+          onClick={() => setShowWebmail((v) => !v)}
+          aria-expanded={showWebmail}
+          className="flex w-full items-center gap-1.5 px-3.5 py-2 text-left text-xs font-medium text-sub hover:text-txt max-sm:py-3"
+        >
+          <ChevronDown size={12} className={cx('shrink-0 transition-transform duration-200', showWebmail && 'rotate-180')} />
+          <span className="min-w-0 break-all">Webmail en webmail.{domain.domain}</span>
+        </button>
+        {showWebmail && (
+          <div className="px-3.5 pb-3">
+            <WebmailSection projectId={projectId} domain={domain} blocked={blocked} canManage={canManage} cloudflare={cloudflare} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Webmail del dominio en `webmail.<dominio>` (marca blanca de Mailway): los
+ * titulares entran al webmail con el dominio de su empresa y un certificado
+ * propio. Se consulta al desplegar la sección: cada consulta pasa por Mailway.
+ */
+function WebmailSection({
+  projectId,
+  domain,
+  blocked,
+  canManage,
+  cloudflare,
+}: {
+  projectId: string;
+  domain: MailDomain;
+  blocked: boolean;
+  canManage: boolean;
+  cloudflare: boolean;
+}) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const base = `/projects/${projectId}/mail/domains/${domain.id}/webmail`;
+  const view = useQuery({
+    queryKey: ['mailWebmail', projectId, domain.id],
+    queryFn: () => api.get<MailWebmailView>(base),
+    staleTime: 15_000,
+  });
+  // Marcar uno como principal cambia también los de los demás dominios.
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['mailWebmail', projectId] });
+  const onError = (err: Error) => toast(err.message, 'err');
+
+  const create = useMutation({
+    mutationFn: () => api.post<{ webmail: MailWebmail }>(base),
+    onSuccess: (res) => {
+      refresh();
+      toast(`Webmail ${res.webmail.hostname} configurado. Crea su registro DNS para ponerlo en servicio.`, 'ok');
+    },
+    onError,
+  });
+
+  const verify = useMutation({
+    mutationFn: () => api.post<{ webmail: MailWebmail }>(`${base}/verify`),
+    onSuccess: (res) => {
+      refresh();
+      const st = WEBMAIL_STATUS[res.webmail.status] ?? WEBMAIL_STATUS.error;
+      toast(
+        `Estado de ${res.webmail.hostname}: ${st.label}`,
+        res.webmail.status === 'active' ? 'ok' : res.webmail.status === 'error' ? 'err' : 'info',
+      );
+    },
+    onError,
+  });
+
+  const applyCf = useMutation({
+    mutationFn: () => api.post<MailWebmailCloudflareResult>(`${base}/cloudflare`),
+    onSuccess: (res) => {
+      refresh();
+      if (res.errors.length > 0) toast(res.errors.map((e) => e.error).join(' '), 'err');
+      else if (res.skipped.length > 0) toast(`No se ha creado el registro: ${res.skipped.map((s) => s.reason).join(' ')}`, 'err');
+      else if (res.applied.length > 0) toast('Registro DNS creado en Cloudflare. La propagación puede tardar unos minutos.', 'ok');
+      else toast('El registro DNS ya existía en Cloudflare con el valor correcto.', 'info');
+    },
+    onError,
+  });
+
+  const primary = useMutation({
+    mutationFn: () => api.post<{ webmail: MailWebmail }>(`${base}/primary`),
+    onSuccess: (res) => {
+      refresh();
+      toast(`${res.webmail.hostname} es ahora el webmail principal del cliente de correo.`, 'ok');
+    },
+    onError,
+  });
+
+  if (view.isLoading) return <Skeleton className="h-16 w-full rounded-md" />;
+  if (view.isError || !view.data) {
+    return (
+      <ErrorState
+        compact
+        title="No se ha podido consultar el webmail"
+        error={view.error}
+        onRetry={() => view.refetch()}
+        retrying={view.isFetching}
+      />
+    );
+  }
+
+  const { hostname, webmail, conflict } = view.data;
+
+  if (!webmail) {
+    return (
+      <div className="flex flex-col gap-2 text-xs leading-5 text-sub">
+        <p>
+          Opcional. Los titulares de los buzones podrán acceder al webmail en{' '}
+          <span className="break-all font-mono text-txt">{hostname}</span>, con un certificado propio, en lugar de en la dirección
+          general del servicio de correo.
+        </p>
+        {conflict ? (
+          <p className="text-warn">{conflict}</p>
+        ) : domain.ownershipPending ? (
+          <p className="text-warn">Antes es necesario comprobar la propiedad del dominio. Los pasos se indican en esta misma ficha.</p>
+        ) : null}
+        {canManage ? (
+          <div>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => create.mutate()}
+              loading={create.isPending}
+              disabled={!!conflict || domain.ownershipPending || blocked}
+            >
+              <Globe size={12} /> Configurar webmail
+            </Button>
+          </div>
+        ) : (
+          <p className="text-subtle">Solo el propietario de la cuenta o un administrador puede configurarlo.</p>
+        )}
+      </div>
+    );
+  }
+
+  const st = WEBMAIL_STATUS[webmail.status] ?? WEBMAIL_STATUS.error;
+  const webmailHref = safeHref(webmail.url);
+
+  return (
+    <div className="flex flex-col gap-2 text-xs leading-5">
+      <p className="flex flex-wrap items-center gap-2">
+        <span className="break-all font-mono font-medium text-txt">{webmail.hostname}</span>
+        <Chip size="sm" tone={st.tone} dot>
+          {st.label}
+        </Chip>
+        {webmail.isPrimary && <Chip size="sm">Principal</Chip>}
+      </p>
+      {webmail.kind === 'panel' && (
+        <p className="text-subtle">Este nombre está configurado en Mailway como acceso al panel, no al webmail.</p>
+      )}
+      {webmail.detail && (
+        <p className="text-sub">
+          {webmail.detail}
+          {webmail.lastCheckedAt ? <span className="text-subtle"> · comprobado {fmtDateTime(webmail.lastCheckedAt)}</span> : null}
+        </p>
+      )}
+      {conflict && <p className="text-warn">{conflict}</p>}
+
+      {webmail.status !== 'active' && webmail.instructions.length > 0 && (
+        <>
+          <p className="text-subtle">
+            Crea este registro en el proveedor de DNS del dominio y pulsa «Comprobar». El certificado se emite automáticamente
+            cuando el registro apunta al servidor.
+          </p>
+          <div className="overflow-hidden rounded-md border border-line">
+            {webmail.instructions.map((i, idx) => (
+              <div key={`${i.type}-${i.name}-${idx}`} className="border-b border-line/60 bg-surface px-3 py-2 last:border-b-0">
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:gap-3">
+                  <span className="w-14 shrink-0 font-mono font-semibold text-txt">{i.type}</span>
+                  <span className="flex min-w-0 items-start gap-1 sm:w-48 sm:shrink-0">
+                    <span className="min-w-0 break-all font-mono text-sub">{i.name}</span>
+                    <CopyButton value={i.name} title="Copiar nombre" className="-my-0.5 shrink-0" />
+                  </span>
+                  <span className="flex min-w-0 flex-1 items-start gap-1">
+                    <span className="min-w-0 flex-1 break-all font-mono text-txt">{i.value}</span>
+                    <CopyButton value={i.value} title="Copiar valor" className="-my-0.5 shrink-0" />
+                  </span>
+                </div>
+                {(i.recommended || i.help) && (
+                  <p className="mt-1 text-subtle">
+                    {i.recommended && (
+                      <Chip size="sm" tone="ok" dot className="mr-1.5 align-middle">
+                        Recomendado
+                      </Chip>
+                    )}
+                    {i.help}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button size="sm" variant="secondary" onClick={() => verify.mutate()} loading={verify.isPending}>
+          <RefreshCw size={12} /> Comprobar
+        </Button>
+        {cloudflare && canManage && webmail.status !== 'active' && (
+          <Button size="sm" variant="secondary" onClick={() => applyCf.mutate()} loading={applyCf.isPending} disabled={!!conflict}>
+            <Cloud size={12} /> Crear registro en Cloudflare
+          </Button>
+        )}
+        {canManage && webmail.status === 'active' && !webmail.isPrimary && !conflict && (
+          <Button size="sm" variant="ghost" onClick={() => primary.mutate()} loading={primary.isPending}>
+            <Star size={12} /> Marcar como principal
+          </Button>
+        )}
+        {/* Con el nombre en otro servicio, el enlace llevaría a ese servicio y no al webmail. */}
+        {webmailHref && !conflict && (
+          <a
+            href={webmailHref}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 px-1 font-medium text-acc-soft hover:underline"
+          >
+            Abrir webmail <ExternalLink size={12} />
+          </a>
         )}
       </div>
     </div>
@@ -1047,6 +1428,10 @@ function MailboxesTab({
   const [localPart, setLocalPart] = useState('');
   const [displayName, setDisplayName] = useState('');
   const selectedDomain = summary.domains.find((d) => d.id === domainId) ?? summary.domains[0];
+  // Los habituales que el dominio elegido aún no tiene.
+  const habituales = BUZONES_HABITUALES.filter(
+    (l) => !summary.mailboxes.some((m) => m.domainId === selectedDomain?.id && m.localPart === l),
+  );
 
   const create = useMutation({
     mutationFn: () =>
@@ -1140,6 +1525,23 @@ function MailboxesTab({
               <Inbox size={13} /> Crear buzón
             </Button>
           </div>
+          {habituales.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
+              <span className="font-medium text-sub">Buzones habituales:</span>
+              {habituales.map((l) => (
+                <button
+                  key={l}
+                  type="button"
+                  onClick={() => setLocalPart(l)}
+                  title={`Utilizar «${l}» como nombre del buzón`}
+                  aria-label={`Utilizar «${l}» como nombre del buzón`}
+                  className="press rounded-md border border-line bg-surface2/60 px-2 py-0.5 font-mono text-xs text-sub transition-colors hover:border-acc/40 hover:text-txt max-sm:py-1.5"
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+          )}
           {!view.isAdmin && (
             <p className="text-xs text-subtle">
               Los nombres reservados a la administración del dominio (postmaster, abuse, admin, hostmaster, webmaster, root…) solo

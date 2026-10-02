@@ -454,6 +454,8 @@ interface RequestOpts {
   timeoutMs?: number;
   /** Cabeceras de autenticación propias; por defecto, el token de gestión como Bearer. */
   headers?: Record<string, string>;
+  /** La respuesta correcta es texto plano (un fichero), no JSON. Los errores siguen llegando en JSON. */
+  text?: boolean;
 }
 
 /**
@@ -463,7 +465,10 @@ interface RequestOpts {
  */
 async function requestMailway<T>(path: string, opts: RequestOpts = {}): Promise<T> {
   const cfg = opts.config ?? readMailwayConfig();
-  const headers: Record<string, string> = { Accept: 'application/json', ...(opts.headers ?? {}) };
+  const headers: Record<string, string> = {
+    Accept: opts.text ? 'text/plain, application/json' : 'application/json',
+    ...(opts.headers ?? {}),
+  };
   if (!opts.headers) {
     if (!cfg.token) throw new MailwayError('config', 'No se ha configurado ningún token de gestión de Mailway.');
     headers.Authorization = `Bearer ${cfg.token}`;
@@ -505,7 +510,7 @@ async function requestMailway<T>(path: string, opts: RequestOpts = {}): Promise<
           'Comprueba la dirección configurada y que el panel esté en funcionamiento.',
       );
     }
-    return parseResponse<T>(res, opts.headers ? 'el token de Traefik' : 'el token de gestión');
+    return parseResponse<T>(res, opts.headers ? 'el token de Traefik' : 'el token de gestión', !!opts.text);
   }
   // Inalcanzable: el bucle o devuelve o lanza en la última dirección.
   throw new MailwayError('network', 'No se ha podido conectar con Mailway.');
@@ -514,7 +519,13 @@ async function requestMailway<T>(path: string, opts: RequestOpts = {}): Promise<
 /** Códigos del 401 de Mailway que explican por qué no vale el token (revocado, caducado…). */
 const MOTIVOS_401 = new Set(['token_revoked', 'token_expired', 'token_user_disabled']);
 
-async function parseResponse<T>(res: Response, credencial: string): Promise<T> {
+/**
+ * Tamaño máximo de un fichero de texto de Mailway (un fichero de zona ocupa
+ * pocos KB). Lo que lo supera no es lo que se ha pedido.
+ */
+const MAX_TEXTO = 512 * 1024;
+
+async function parseResponse<T>(res: Response, credencial: string, texto = false): Promise<T> {
   const text = await res.text().catch(() => '');
   let body: unknown;
   try {
@@ -546,6 +557,18 @@ async function parseResponse<T>(res: Response, credencial: string): Promise<T> {
   }
   if (!res.ok) {
     throw new MailwayError('http', mensaje ?? `Mailway ha respondido con el código HTTP ${res.status}.`, res.status, code);
+  }
+  if (texto) {
+    // Un Mailway sin la ruta podría contestar 200 con la página de su panel:
+    // eso no es el fichero pedido y no se entrega como si lo fuera.
+    if (!/^text\/plain\b/i.test(res.headers.get('content-type') ?? '') || text.length > MAX_TEXTO) {
+      throw new MailwayError(
+        'http',
+        'La respuesta de Mailway no es un fichero de texto válido. Comprueba que la versión de Mailway admite esta función.',
+        502,
+      );
+    }
+    return text as T;
   }
   if (body === undefined || typeof body !== 'object' || body === null) {
     throw new MailwayError(
@@ -750,6 +773,113 @@ export function applyCloudflare(
   );
 }
 
+// ---------- fichero de zona ----------
+
+/** Niveles del fichero de zona de Mailway: obligatorios, recomendados (por defecto) o todos. */
+export const ZONE_LEVELS = ['obligatorios', 'recomendados', 'completo'] as const;
+export type MailwayZoneLevel = (typeof ZONE_LEVELS)[number];
+
+/** Fichero de zona BIND con los registros de correo del dominio, tal como lo genera Mailway. */
+export function getZoneFile(domainId: string, nivel: MailwayZoneLevel): Promise<string> {
+  return requestMailway<string>(`/api/domains/${enc(domainId)}/zonefile?nivel=${enc(nivel)}`, { text: true });
+}
+
+/**
+ * Tipos de registro que publican la web de un nombre (A, AAAA, CNAME y los
+ * HTTPS/SVCB que consultan los navegadores). El correo no los necesita en el
+ * dominio raíz ni en www.
+ */
+const TIPOS_WEB = new Set(['A', 'AAAA', 'CNAME', 'HTTPS', 'SVCB']);
+const CLASES_DNS = new Set(['IN', 'CH', 'HS', 'CS']);
+const TTL_RE = /^\d+[smhdw]?$/i;
+
+/** La línea sin su comentario («;» fuera de comillas) y el saldo de paréntesis que abre o cierra. */
+function analizarLinea(line: string): { code: string; parens: number } {
+  let quoted = false;
+  let parens = 0;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '\\') {
+      i++;
+    } else if (c === '"') {
+      quoted = !quoted;
+    } else if (!quoted) {
+      if (c === ';') return { code: line.slice(0, i), parens };
+      if (c === '(') parens++;
+      else if (c === ')') parens--;
+    }
+  }
+  return { code: line, parens };
+}
+
+/** Nombre absoluto, en minúsculas y sin punto final, de un propietario del fichero de zona. */
+function nombreAbsoluto(name: string, origin: string): string {
+  const n = name.toLowerCase();
+  if (n === '@') return origin;
+  if (n.endsWith('.')) return n.slice(0, -1);
+  return `${n}.${origin}`;
+}
+
+/**
+ * Retira del fichero de zona los registros web (A, AAAA, CNAME, HTTPS y SVCB)
+ * del dominio raíz y de www. El fichero se importa en el proveedor de DNS del
+ * dominio, donde suele estar ya la web del cliente, alojada en Skyway o en otro
+ * sitio: un registro de esos nombres la sustituiría. Mailway no los genera (su
+ * selección solo trae MX, TXT, SRV y los CNAME de autoconfiguración), así que
+ * esto es una defensa por si eso cambia o la respuesta no es la esperada.
+ *
+ * Entiende lo que admite un importador de BIND: nombres absolutos, relativos y
+ * «@», `$ORIGIN`, líneas sin propietario (heredan el de la anterior) y
+ * registros partidos en varias líneas entre paréntesis.
+ */
+export function stripWebRecords(zone: string, domain: string): { zone: string; removed: number } {
+  const apex = domain.trim().toLowerCase().replace(/\.$/, '');
+  const web = new Set([apex, `www.${apex}`]);
+  let origin = apex;
+  let owner: string | null = null;
+  let depth = 0;
+  let skipping = false;
+  let removed = 0;
+  const out: string[] = [];
+  for (const line of zone.split(/\r?\n/)) {
+    const { code, parens } = analizarLinea(line);
+    if (depth > 0) {
+      // Continuación de un registro entre paréntesis: corre la suerte de su primera línea.
+      depth += parens;
+      if (!skipping) out.push(line);
+      continue;
+    }
+    skipping = false;
+    if (!code.trim()) {
+      out.push(line);
+      continue;
+    }
+    const tokens = code.trim().split(/\s+/);
+    if (tokens[0].startsWith('$')) {
+      if (tokens[0].toUpperCase() === '$ORIGIN' && tokens[1]) origin = nombreAbsoluto(tokens[1], origin);
+      out.push(line);
+      continue;
+    }
+    let i = 0;
+    if (!/^\s/.test(code)) owner = nombreAbsoluto(tokens[i++], origin);
+    // TTL y clase pueden ir en cualquier orden antes del tipo.
+    while (i < tokens.length && (TTL_RE.test(tokens[i]) || CLASES_DNS.has(tokens[i].toUpperCase()))) i++;
+    const type = (tokens[i] ?? '').toUpperCase();
+    depth = Math.max(0, parens);
+    if (owner !== null && web.has(owner) && TIPOS_WEB.has(type)) {
+      removed++;
+      skipping = true;
+      continue;
+    }
+    out.push(line);
+  }
+  if (removed === 0) return { zone, removed };
+  const aviso =
+    `;  Skyway ha retirado ${removed} registro(s) A, AAAA, CNAME, HTTPS o SVCB de ${apex} o www.${apex}: ` +
+    'el fichero de correo no debe modificar la web del dominio.';
+  return { zone: [aviso, ';', ...out].join('\n'), removed };
+}
+
 // ---------- buzones ----------
 
 export function createMailbox(input: {
@@ -803,6 +933,90 @@ export function createApiKey(input: {
 /** Revoca una clave de la API de envío (Mailway retira también su contraseña SMTP interna). */
 export async function revokeApiKey(keyId: string): Promise<void> {
   await mailwayFetch(`/api/apikeys/${enc(keyId)}`, { method: 'DELETE' });
+}
+
+// ---------- marca blanca (webmail con el dominio del cliente) ----------
+
+export type MailwayWhitelabelStatus = 'pending_dns' | 'issuing' | 'active' | 'error';
+
+/** Dominio propio de un cliente (marca blanca): sirve su webmail o su panel con certificado propio. */
+export interface MailwayWhitelabelDomain {
+  id: string;
+  clientId: string;
+  hostname: string;
+  kind: 'webmail' | 'panel';
+  status: MailwayWhitelabelStatus;
+  detail?: string;
+  lastCheckedAt?: number | null;
+  activatedAt?: number | null;
+  createdAt?: number;
+  /** Webmail principal del cliente: el que usan sus enlaces y datos de conexión. */
+  isPrimary?: boolean;
+}
+
+/** Registro que hay que crear para que el nombre apunte al servidor (CNAME recomendado o A). */
+export interface MailwayDnsInstruction {
+  type: string;
+  name: string;
+  value: string;
+  recommended?: boolean;
+  help?: string;
+}
+
+export interface MailwayWhitelabelView {
+  domain: MailwayWhitelabelDomain;
+  instructions?: MailwayDnsInstruction[];
+}
+
+export interface MailwayWhitelabelCloudflareResult {
+  applied?: { action: string; type: string; name: string }[];
+  errors?: { type: string; name: string; error: string }[];
+  /** Conflictos que Mailway no ha tocado (ya hay otro registro con ese nombre). */
+  skipped?: { type: string; name: string; reason: string }[];
+  domain?: MailwayWhitelabelDomain;
+}
+
+/** Dominios propios de un cliente. La consulta va filtrada por cliente (con un token de administrador). */
+export async function listWhitelabelDomains(clientId: string): Promise<MailwayWhitelabelDomain[]> {
+  const res = await mailwayFetch<{ domains?: MailwayWhitelabelDomain[] }>(`/api/whitelabel/domains?clientId=${enc(clientId)}`);
+  return Array.isArray(res.domains) ? res.domains : [];
+}
+
+export function getWhitelabelDomain(id: string): Promise<MailwayWhitelabelView> {
+  return mailwayFetch<MailwayWhitelabelView>(`/api/whitelabel/domains/${enc(id)}`);
+}
+
+/**
+ * Da de alta el webmail del cliente en `hostname`. Mailway exige que sea un
+ * subdominio de un dominio de correo del cliente con la propiedad comprobada.
+ */
+export function createWhitelabelDomain(input: { hostname: string; clientId: string }): Promise<MailwayWhitelabelView> {
+  return mailwayFetch<MailwayWhitelabelView>('/api/whitelabel/domains', {
+    method: 'POST',
+    body: { hostname: input.hostname, clientId: input.clientId, kind: 'webmail' },
+  });
+}
+
+/** Comprueba el DNS y el certificado del nombre y avanza su estado. */
+export function verifyWhitelabelDomain(id: string): Promise<MailwayWhitelabelView> {
+  return mailwayFetch<MailwayWhitelabelView>(`/api/whitelabel/domains/${enc(id)}/verify`, { method: 'POST' });
+}
+
+/**
+ * Crea en Cloudflare el registro del nombre. Nunca reemplaza un registro que ya
+ * exista con otro valor: Mailway lo devuelve en `skipped`. `soloCliente`, como
+ * en los dominios de correo.
+ */
+export function applyWhitelabelCloudflare(id: string, opts: { soloCliente?: boolean }): Promise<MailwayWhitelabelCloudflareResult> {
+  return mailwayFetch<MailwayWhitelabelCloudflareResult>(
+    `/api/whitelabel/domains/${enc(id)}/cloudflare${cloudflareQuery(opts.soloCliente)}`,
+    { method: 'POST', body: {} },
+  );
+}
+
+/** Marca el webmail como principal de su cliente (debe estar en servicio). */
+export function setPrimaryWebmail(id: string): Promise<{ domain: MailwayWhitelabelDomain }> {
+  return mailwayFetch(`/api/whitelabel/domains/${enc(id)}/primary`, { method: 'POST' });
 }
 
 // ---------- Traefik ----------

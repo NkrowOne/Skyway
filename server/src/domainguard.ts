@@ -27,7 +27,7 @@ export interface DomainClaim {
 }
 
 /** Dominios del panel de Skyway (`SKYWAY_DOMAIN`, admite una lista separada por comas). */
-function panelDomains(): Set<string> {
+export function panelDomains(): Set<string> {
   return new Set(
     (process.env.SKYWAY_DOMAIN ?? '')
       .split(',')
@@ -76,6 +76,35 @@ export function domainClaimError(domains: Iterable<string>, claim: DomainClaim):
         return `El dominio ${domain} lo utiliza el servicio de correo (Mailway) y no se puede asignar a este servicio.`;
       }
     }
+  }
+  return null;
+}
+
+/**
+ * Motivo por el que un nombre no puede ser el webmail de marca blanca de un
+ * cliente de correo (`webmail.<dominio>`), o null si puede serlo.
+ *
+ * Es la regla inversa a la de los servicios: el puente de Traefik descarta
+ * las rutas de Mailway para los dominios que ya sirve Skyway, así que con el
+ * nombre de un servicio (de cualquier proyecto, también del mismo) el webmail
+ * no llegaría a funcionar, y el del panel nunca se reparte. Los nombres de la
+ * propia instancia de Mailway también los rechaza Mailway; aquí se comprueban
+ * antes de llamarle. Como en `domainClaimError`, solo el administrador ve qué
+ * servicio tiene el nombre.
+ */
+export function webmailHostError(hostname: string, opts: { isAdmin: boolean }): string | null {
+  const host = hostname.trim().toLowerCase();
+  if (panelDomains().has(host)) {
+    return `El dominio ${host} es el del panel de Skyway y no se puede utilizar para el webmail.`;
+  }
+  const servicios = serviceIdsForDomain(host);
+  if (servicios.length > 0) {
+    return opts.isAdmin
+      ? `El dominio ${host} está asignado al servicio ${serviceLabel(servicios[0])}. Retíralo de ese servicio antes de utilizarlo para el webmail.`
+      : `El dominio ${host} está asignado a un servicio de Skyway y no se puede utilizar para el webmail.`;
+  }
+  if (mailwayReservedHosts().includes(host)) {
+    return `El dominio ${host} lo utiliza el servicio de correo (Mailway) y no se puede utilizar para el webmail de un cliente.`;
   }
   return null;
 }

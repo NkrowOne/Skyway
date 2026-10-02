@@ -1364,6 +1364,42 @@ export interface ProjectMailView {
   features: { cloudflare: boolean; autoconfig: boolean; portal: boolean } | null;
   link?: { clientId: string; clientName: string; createdAt: number; createdBy: string | null };
   summary?: MailSummary;
+  /** Dominios registrables de los servicios del proyecto que el cliente de correo aún no tiene. */
+  suggestedDomains: string[];
+}
+
+export type MailWebmailStatus = 'pending_dns' | 'issuing' | 'active' | 'error';
+
+/** Webmail de un dominio de correo en `webmail.<dominio>` (marca blanca de Mailway). */
+export interface MailWebmail {
+  hostname: string;
+  kind: 'webmail' | 'panel';
+  status: MailWebmailStatus;
+  /** Último resultado de la comprobación, redactado por Mailway. */
+  detail: string;
+  lastCheckedAt: number | null;
+  activatedAt: number | null;
+  createdAt: number | null;
+  /** Webmail principal del cliente: el que usan sus enlaces y datos de conexión. */
+  isPrimary: boolean;
+  /** Solo en servicio. */
+  url: string | null;
+  /** Registro que hay que crear para apuntar el nombre al servidor (CNAME recomendado o A). */
+  instructions: { type: string; name: string; value: string; recommended: boolean; help: string | null }[];
+}
+
+export interface MailWebmailView {
+  hostname: string;
+  webmail: MailWebmail | null;
+  /** Motivo por el que el nombre no se puede utilizar (lo sirve un servicio, es el del panel…). */
+  conflict: string | null;
+}
+
+export interface MailWebmailCloudflareResult {
+  applied: { action: string; type: string; name: string }[];
+  errors: { type: string; name: string; error: string }[];
+  skipped: { type: string; name: string; reason: string }[];
+  webmail: MailWebmail | null;
 }
 
 export interface MailOptions {

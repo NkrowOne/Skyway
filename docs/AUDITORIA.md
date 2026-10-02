@@ -112,6 +112,16 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   **El token no viaja por un dominio ajeno**: si el dominio de la URL pública lo
   sirve un servicio de Skyway que no es del proyecto de Mailway, Skyway no la usa
   (solo la dirección interna del panel) y no deja guardarla.
+  **Webmail con el dominio del cliente** (marca blanca, `…/domains/:domainId/webmail`):
+  las rutas no aceptan identificadores de marca blanca; el nombre (`webmail.<dominio>`)
+  se deriva del dominio del cliente, el dominio propio se busca entre los del
+  cliente vinculado (filtrado también en Skyway) y la respuesta de Mailway tiene
+  que ser de ese cliente y ese nombre. Crearlo exige gestionar el proyecto y la
+  cuenta y el cliente activos; ni se crea, ni se marca como principal, ni se
+  crea su registro en Cloudflare (con `soloCliente=1` para quien no es admin) si
+  el nombre lo sirve cualquier servicio de Skyway, es el del panel o de la
+  instancia de Mailway (`webmailHostError`). El **fichero de zona** se sirve sin
+  registros A, AAAA, CNAME, HTTPS ni SVCB del dominio raíz ni de www.
   **Puente de Traefik** (`GET /api/traefik/mailway`, sin sesión): 404 si la
   petición llega reenviada por Traefik; la configuración de Mailway se reescribe
   a una forma mínima —solo `Host()` con nombres completos, sin colisión con el
@@ -206,6 +216,13 @@ Estos no son defectos, sino consecuencias del propósito de la herramienta
 - **Informe de importación**: además de las contraseñas en los comandos, lo lee
   cualquier miembro con acceso al proyecto; conviene acotarlo al administrador o
   enmascararlo.
+- **Webmail de marca blanca esperando DNS**: hasta que Mailway lo publica
+  («Emitiendo certificado» o «En servicio»), Skyway no conoce el nombre, y otro
+  cliente puede asignar `webmail.<dominio>` a un servicio (los dominios de los
+  servicios se reparten por orden de llegada); el puente daría entonces la ruta a
+  ese servicio. Skyway lo indica (`conflict`) y no lo marca como principal ni
+  crea su registro, pero no lo impide. Recomendación: reservar en Skyway los
+  nombres de webmail creados desde un proyecto mientras esperan DNS.
 
 ---
 

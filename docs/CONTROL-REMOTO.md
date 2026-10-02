@@ -88,7 +88,8 @@ proyectos a los que da acceso (cada dominio y buzón se comprueba contra el
 proyecto). Referencia completa en `docs/FUNCIONALIDAD.md` §7.12.
 
 ```bash
-# Estado del correo del proyecto (dominios con su estado DNS, buzones, uso)
+# Estado del correo del proyecto (dominios con su estado DNS, buzones, uso y, en
+# suggestedDomains, los dominios de los servicios del proyecto que aún no tiene)
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail"
 
 # Activarlo (propietario o admin): crea el cliente de correo del proyecto con el
@@ -102,6 +103,17 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   -d '{"domain":"tuempresa.com"}' "$BASE/api/projects/PROJ_ID/mail/domains"
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/dns"
 curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/verify"
+
+# Fichero de zona para importarlo en Cloudflare (DNS → Registros → Importar y
+# exportar). No incluye registros de la web del dominio raíz ni de www.
+curl -s -H "Authorization: Bearer $TOKEN" -o zona.txt "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/zonefile"
+
+# Webmail con el dominio del cliente en webmail.<dominio> (propietario o admin):
+# alta (la respuesta trae en webmail.instructions el registro DNS que hay que
+# crear), comprobación y, si el DNS está en Cloudflare, creación del registro
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/webmail"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/webmail/verify"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/webmail/cloudflare"
 
 # Crear un buzón (propietario o admin; la respuesta trae la contraseña UNA sola vez)
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -121,7 +133,9 @@ curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/
 
 Un token de un usuario que no es admin: no elige el plan de Mailway, no crea
 buzones de nombre reservado (postmaster, abuse, admin…) y, en Cloudflare, solo
-usa las cuentas del propio cliente. Los enlaces de configuración con contraseña
+usa las cuentas del propio cliente (también para el registro del webmail). El
+webmail nunca se crea con un nombre que ya sirve un servicio de Skyway ni con el
+del panel. Los enlaces de configuración con contraseña
 exigen ser propietario o admin y tienen un tope de 5 cada 10 minutos.
 
 Configurar la conexión (`PUT /api/mailway/config`) y desconectarla
