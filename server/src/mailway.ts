@@ -26,6 +26,8 @@ export const MAILWAY_SETTING = {
   defaultPlanId: 'mailway.defaultPlanId',
   /** Hosts públicos de la instancia (panel, webmail, servidor de correo), en JSON. */
   hosts: 'mailway.hosts',
+  /** Nombres de marca blanca de todos los clientes, en cualquier estado (última lista buena, JSON). */
+  whitelabelHosts: 'mailway.whitelabelHosts',
 } as const;
 
 /**
@@ -980,6 +982,20 @@ export interface MailwayWhitelabelCloudflareResult {
 export async function listWhitelabelDomains(clientId: string): Promise<MailwayWhitelabelDomain[]> {
   const res = await mailwayFetch<{ domains?: MailwayWhitelabelDomain[] }>(`/api/whitelabel/domains?clientId=${enc(clientId)}`);
   return Array.isArray(res.domains) ? res.domains : [];
+}
+
+/**
+ * Dominios propios de TODOS los clientes, en cualquier estado (sin `clientId`,
+ * con un token de administrador). Plazo corto: se lee junto a las rutas del
+ * puente de Traefik, que no puede esperar. Una respuesta sin la lista es un
+ * fallo, no una lista vacía: vaciarla liberaría los nombres reservados.
+ */
+export async function listAllWhitelabelDomains(timeoutMs = 5000): Promise<MailwayWhitelabelDomain[]> {
+  const res = await requestMailway<{ domains?: MailwayWhitelabelDomain[] }>('/api/whitelabel/domains', { timeoutMs });
+  if (!Array.isArray(res.domains)) {
+    throw new MailwayError('http', 'La respuesta de Mailway no incluye la lista de dominios propios.', 502);
+  }
+  return res.domains;
 }
 
 export function getWhitelabelDomain(id: string): Promise<MailwayWhitelabelView> {

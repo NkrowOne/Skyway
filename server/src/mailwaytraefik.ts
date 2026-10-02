@@ -22,6 +22,10 @@
  * nadie.
  * Nunca se responde con error: el proveedor HTTP de Traefik entra en
  * reintentos con espera creciente ante cualquier respuesta distinta de 200.
+ *
+ * Con la misma cadencia se lee la lista de nombres de marca blanca de toda la
+ * instancia, en cualquier estado (`mailwayWhitelabelHosts`), con la que
+ * `domainguard.ts` reserva también los que aún esperan DNS.
  */
 import { getSetting, listAssignedDomains, listServices, setSetting } from './db';
 import { configuredReplicas, replicaName } from './docker/containers';
@@ -30,6 +34,7 @@ import {
   MailwayError,
   getInfo,
   getTraefikConfig,
+  listAllWhitelabelDomains,
   mailwayConfigured,
   mailwayProject,
 } from './mailway';
@@ -343,7 +348,12 @@ const WARN_EVERY_MS = 10 * 60_000;
 
 let state: BridgeState | null = null;
 let inflight: Promise<TraefikDynamicConfig> | null = null;
-let lastWarn: { message: string; at: number } | null = null;
+/**
+ * Último aviso de cada mensaje. Por mensaje y no uno solo: con Mailway caído
+ * fallan a la vez las rutas y la lista de marca blanca, y alternar los dos
+ * avisos los repetiría en cada sondeo.
+ */
+const lastWarns = new Map<string, number>();
 
 type Logger = { warn: (obj: object, msg: string) => void };
 
@@ -353,9 +363,81 @@ function countRouters(cfg: TraefikDynamicConfig): number {
 
 function warnOnce(log: Logger | undefined, message: string, extra: object = {}): void {
   if (!log) return;
-  if (lastWarn && lastWarn.message === message && Date.now() - lastWarn.at < WARN_EVERY_MS) return;
-  lastWarn = { message, at: Date.now() };
+  const at = lastWarns.get(message);
+  if (at !== undefined && Date.now() - at < WARN_EVERY_MS) return;
+  if (lastWarns.size >= 50) lastWarns.clear();
+  lastWarns.set(message, Date.now());
   log.warn(extra, message);
+}
+
+// ---------- nombres de marca blanca de la instancia ----------
+
+/**
+ * Nombres de marca blanca de TODOS los clientes de Mailway, en cualquier estado
+ * («Esperando DNS» incluido). Mailway solo publica en Traefik los que ya
+ * apuntan aquí: mientras uno espera DNS, el puente no lo conoce, y sin esta
+ * lista otro cliente podía asignárselo a un servicio y quedarse con el tráfico
+ * del webmail (y con las contraseñas que se escribieran en él) en cuanto el DNS
+ * apuntase a este servidor. Si Mailway no responde se conserva la última lista
+ * buena (memoria y Ajustes); solo «Desconectar Mailway» la vacía.
+ */
+let whitelabelHosts: string[] | null = null;
+
+function hostList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const hosts = raw
+    .filter((h): h is string => typeof h === 'string')
+    .map((h) => h.trim().toLowerCase())
+    .filter((h) => FQDN_RE.test(h));
+  return [...new Set(hosts)].sort();
+}
+
+function rememberWhitelabelHosts(hosts: string[]): void {
+  whitelabelHosts = hosts;
+  const json = JSON.stringify(hosts);
+  if (getSetting(MAILWAY_SETTING.whitelabelHosts) !== json) setSetting(MAILWAY_SETTING.whitelabelHosts, json);
+}
+
+/** Nombres de marca blanca de la instancia según la última lista buena. */
+export function mailwayWhitelabelHosts(): string[] {
+  if (whitelabelHosts) return whitelabelHosts;
+  let stored: unknown = null;
+  try {
+    stored = JSON.parse(getSetting(MAILWAY_SETTING.whitelabelHosts) ?? 'null');
+  } catch {
+    stored = null;
+  }
+  whitelabelHosts = hostList(stored);
+  return whitelabelHosts;
+}
+
+/**
+ * Nombres reservados desde Skyway mientras una lectura estaba en curso: esa
+ * lectura pudo salir antes del alta y no traerlos, y no debe soltarlos.
+ */
+let reservadosDuranteLectura = new Set<string>();
+
+/**
+ * Reserva al momento un nombre que se acaba de dar de alta desde Skyway, sin
+ * esperar a la siguiente lectura: es justo cuando más tiempo pasará esperando DNS.
+ */
+export function reserveWhitelabelHost(hostname: string): void {
+  reservadosDuranteLectura.add(hostname.trim().toLowerCase());
+  rememberWhitelabelHosts(hostList([...mailwayWhitelabelHosts(), hostname]));
+}
+
+/** Lee la lista de Mailway. Nunca lanza: si falla, se conserva la anterior. */
+async function refreshWhitelabelHosts(log?: Logger): Promise<void> {
+  // Solo hay una lectura a la vez (la del puente, compartida por `inflight`).
+  reservadosDuranteLectura = new Set();
+  try {
+    const domains = await listAllWhitelabelDomains();
+    const leidos = domains.map((d) => (d && typeof d === 'object' ? d.hostname : null));
+    rememberWhitelabelHosts(hostList([...leidos, ...reservadosDuranteLectura]));
+  } catch (err) {
+    const message = err instanceof MailwayError ? err.message : 'Error inesperado.';
+    warnOnce(log, `No se ha podido leer la lista de dominios de marca blanca de Mailway: ${message}`);
+  }
 }
 
 /** Última configuración buena conocida, vuelta a sanear con los dominios de AHORA. */
@@ -423,6 +505,8 @@ export async function mailwayTraefikConfig(log?: Logger): Promise<TraefikDynamic
 
   inflight = (async () => {
     const opts = bridgeOptions();
+    // En paralelo y con plazo corto: no retrasa la respuesta a Traefik.
+    const nombres = refreshWhitelabelHosts(log);
     try {
       const raw = await fetchRaw();
       const { config, dropped } = sanitizeTraefikConfig(raw, opts);
@@ -444,6 +528,8 @@ export async function mailwayTraefikConfig(log?: Logger): Promise<TraefikDynamic
         error: message,
       };
       return config;
+    } finally {
+      await nombres;
     }
   })().finally(() => {
     inflight = null;
@@ -456,19 +542,27 @@ export function mailwayTraefikStatus(): BridgeStatus | null {
   return { routers: state.routers, dropped: state.dropped, syncedAt: state.syncedAt, error: state.error };
 }
 
-/** Olvida el estado en memoria (al cambiar la configuración y en las pruebas). */
+/**
+ * Olvida el estado en memoria (al cambiar la configuración y en las pruebas).
+ * Las copias guardadas en Ajustes (rutas y nombres de marca blanca) se
+ * conservan: son la última configuración buena.
+ */
 export function resetMailwayTraefikState(): void {
   state = null;
-  lastWarn = null;
+  whitelabelHosts = null;
+  reservadosDuranteLectura = new Set();
+  lastWarns.clear();
 }
 
 /**
  * Retira todas las rutas de Mailway: borra también la última configuración
- * buena guardada. Solo lo hace «Desconectar Mailway»; el siguiente sondeo de
- * Traefik recibe una configuración vacía.
+ * buena guardada y libera los nombres de marca blanca reservados. Solo lo hace
+ * «Desconectar Mailway»; el siguiente sondeo de Traefik recibe una
+ * configuración vacía.
  */
 export function forgetMailwayTraefik(): void {
   setSetting(MAILWAY_SETTING.traefikCache, null);
+  setSetting(MAILWAY_SETTING.whitelabelHosts, null);
   resetMailwayTraefikState();
 }
 

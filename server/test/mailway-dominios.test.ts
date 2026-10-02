@@ -15,6 +15,8 @@ import {
   createUser,
   createWorkspaceRow,
   getMailwayLink,
+  getService,
+  getSetting,
   initDb,
   insertApiToken,
   listAudit,
@@ -23,8 +25,10 @@ import {
   updateService,
   updateWorkspace,
 } from '../src/db';
+import { domainClaimError } from '../src/domainguard';
 import { stripWebRecords } from '../src/mailway';
-import type { GitConfig, ProjectRow, UserRow } from '../src/types';
+import { mailwayPublishedHosts, resetMailwayTraefikState } from '../src/mailwaytraefik';
+import type { GitConfig, ProjectRow, ServiceRow, UserRow } from '../src/types';
 import { hashPassword, randomToken } from '../src/util';
 import { MW_BASE, MW_TOKEN, fakeFetch, mw } from './mailwayfake';
 
@@ -41,12 +45,15 @@ const admin = () => ({ cookie: adminCookie, ...SAME_ORIGIN });
 let wsA: { id: string };
 let projA: ProjectRow;
 let projB: ProjectRow;
+let svcA: ServiceRow;
+let svcB: ServiceRow;
 let ownerA: Record<string, string>;
 let memberA: Record<string, string>;
 let ownerB: Record<string, string>;
 let domainEmpresa = '';
 let domainPendiente = '';
 let domainB = '';
+let domainTienda = '';
 
 function bearerFor(user: UserRow): Record<string, string> {
   const secret = `${API_TOKEN_PREFIX}${randomToken(24)}`;
@@ -54,7 +61,7 @@ function bearerFor(user: UserRow): Record<string, string> {
   return { authorization: `Bearer ${secret}` };
 }
 
-async function call(method: 'GET' | 'POST' | 'PUT', url: string, headers: Record<string, string>, body?: unknown) {
+async function call(method: 'GET' | 'POST' | 'PUT' | 'PATCH', url: string, headers: Record<string, string>, body?: unknown) {
   const r = await app.inject({
     method,
     url,
@@ -108,7 +115,7 @@ beforeAll(async () => {
   const member = createUser('member@example.com', hashPassword('contraseña1'), 'member', wsA.id);
   setUserProjects(member.id, [projA.id]);
   memberA = bearerFor(member);
-  createService(
+  svcA = createService(
     projA.id,
     'Web',
     'web',
@@ -129,7 +136,7 @@ beforeAll(async () => {
   projB = createProject('Otro', 'otro', null, wsB.id);
   ownerB = bearerFor(createUser('ownerb@example.com', hashPassword('contraseña1'), 'owner', wsB.id));
   // Un servicio de otro proyecto que ya sirve el nombre del webmail de un dominio de A.
-  createService(projB.id, 'Web', 'web', 'git', gitCfg(['webmail.otraempresa.com']));
+  svcB = createService(projB.id, 'Web', 'web', 'git', gitCfg(['webmail.otraempresa.com']));
 });
 
 afterAll(async () => {
@@ -411,7 +418,8 @@ describe('webmail en webmail.<dominio>', () => {
     try {
       r = await call('POST', `/api/projects/${projA.id}/mail/domains`, ownerA, { domain: 'tienda.es' });
       expect(r.status, r.raw).toBe(201);
-      r = await call('POST', webmailUrl(projA.id, r.json.domain.id), ownerA);
+      domainTienda = r.json.domain.id;
+      r = await call('POST', webmailUrl(projA.id, domainTienda), ownerA);
       expect(r.status).toBe(409);
       expect(r.json.error).toMatch(/es el del panel de Skyway/);
     } finally {
@@ -448,5 +456,116 @@ describe('webmail en webmail.<dominio>', () => {
     } finally {
       updateWorkspace(wsA.id, { status: 'active' });
     }
+  });
+});
+
+// ======================= nombres de marca blanca reservados =======================
+
+describe('nombres de marca blanca reservados (también los que esperan DNS)', () => {
+  const MAILWAY_USA = /lo utiliza el servicio de correo \(Mailway\)/;
+  const claim = (domain: string, projectId: string, isAdmin = false) =>
+    domainClaimError([domain], { projectId, serviceId: null, isAdmin });
+  /** Añade un dominio a los que ya tiene el servicio (PATCH, como la interfaz). */
+  const addDomain = (headers: Record<string, string>, svc: ServiceRow, domain: string) => {
+    const actuales = ((getService(svc.id)!.config as GitConfig).domains ?? []) as string[];
+    return call('PATCH', `/api/services/${svc.id}`, headers, { config: { domains: [...actuales, domain] } });
+  };
+  /** Una lectura del puente, como la que hace Traefik cada 15 s. */
+  const sondeoTraefik = () => app.inject({ method: 'GET', url: '/api/traefik/mailway' });
+
+  it('el webmail creado desde Skyway queda reservado al momento, sin esperar a la lectura del puente', async () => {
+    // El puente aún no ha leído nada en estas pruebas: la reserva es la del alta.
+    expect(mailwayPublishedHosts()).toEqual([]);
+    expect(JSON.parse(getSetting('mailway.whitelabelHosts') ?? '[]')).toEqual(['webmail.empresa.com']);
+    const r = await addDomain(ownerB, svcB, 'webmail.empresa.com');
+    expect(r.status, r.raw).toBe(409);
+    expect(r.json.error).toMatch(MAILWAY_USA);
+  });
+
+  it('un nombre de otro cliente que espera DNS no se puede asignar a un servicio (salvo el administrador)', async () => {
+    mw.whitelabel.push({
+      id: 'wld_pendiente',
+      clientId: clientOf(projB.id).id,
+      hostname: 'webmail.ajeno.com',
+      kind: 'webmail',
+      status: 'pending_dns',
+      detail: '',
+      lastCheckedAt: null,
+      activatedAt: null,
+      createdAt: 1,
+      isPrimary: false,
+    });
+    // Antes de la siguiente lectura, Skyway aún no lo conoce.
+    expect(claim('webmail.ajeno.com', projA.id)).toBeNull();
+
+    const t = await sondeoTraefik();
+    expect(t.statusCode).toBe(200);
+    // Toda la instancia: la consulta va sin `clientId`.
+    expect(mw.calls.filter((c) => c.path.startsWith('/api/whitelabel/domains')).map((c) => c.path)).toEqual(['/api/whitelabel/domains']);
+    expect(JSON.parse(getSetting('mailway.whitelabelHosts') ?? '[]')).toEqual(['webmail.ajeno.com', 'webmail.empresa.com']);
+
+    let r = await addDomain(ownerA, svcA, 'webmail.ajeno.com');
+    expect(r.status, r.raw).toBe(409);
+    expect(r.json.error).toMatch(MAILWAY_USA);
+    r = await call('POST', `/api/projects/${projA.id}/services`, ownerA, {
+      type: 'image',
+      name: 'Suplantador',
+      image: 'nginx',
+      port: 80,
+      domains: ['webmail.ajeno.com'],
+    });
+    expect(r.status, r.raw).toBe(409);
+    expect(r.json.error).toMatch(MAILWAY_USA);
+    // Las pilas y las plantillas pasan por la misma comprobación; el administrador, no.
+    expect(claim('webmail.ajeno.com', projA.id)).toMatch(MAILWAY_USA);
+    expect(claim('webmail.ajeno.com', projA.id, true)).toBeNull();
+  });
+
+  it('con Mailway caído se conserva la última lista (también tras reiniciar el panel)', async () => {
+    resetMailwayTraefikState(); // sin memoria: como tras un reinicio
+    mw.down = true;
+    try {
+      const t = await sondeoTraefik();
+      expect(t.statusCode).toBe(200);
+      expect(claim('webmail.ajeno.com', projA.id)).toMatch(MAILWAY_USA);
+      const r = await addDomain(ownerA, svcA, 'webmail.ajeno.com');
+      expect(r.status).toBe(409);
+    } finally {
+      mw.down = false;
+    }
+  });
+
+  it('un nombre que Mailway ya no tiene se libera en la siguiente lectura', async () => {
+    mw.whitelabel = mw.whitelabel.filter((w) => w.id !== 'wld_pendiente');
+    resetMailwayTraefikState();
+    expect((await sondeoTraefik()).statusCode).toBe(200);
+    expect(claim('webmail.ajeno.com', projA.id)).toBeNull();
+    expect(claim('webmail.empresa.com', projB.id)).toMatch(MAILWAY_USA);
+  });
+
+  it('un alta durante una lectura en curso no se pierde cuando la lectura termina', async () => {
+    resetMailwayTraefikState();
+    mw.whitelabelListDelayMs = 80;
+    try {
+      const lectura = sondeoTraefik();
+      // La lectura del puente ya tiene su lista (sin el alta) y está esperando.
+      await vi.waitFor(() => expect(mw.calls.some((c) => c.path === '/api/whitelabel/domains')).toBe(true));
+      const r = await call('POST', webmailUrl(projA.id, domainTienda), ownerA);
+      expect(r.status, r.raw).toBe(201);
+      expect((await lectura).statusCode).toBe(200);
+    } finally {
+      mw.whitelabelListDelayMs = 0;
+    }
+    expect(JSON.parse(getSetting('mailway.whitelabelHosts') ?? '[]')).toContain('webmail.tienda.es');
+    expect(claim('webmail.tienda.es', projB.id)).toMatch(MAILWAY_USA);
+  });
+
+  it('«Desconectar Mailway» libera los nombres reservados', async () => {
+    const r = await call('POST', '/api/mailway/disconnect', admin());
+    expect(r.status, r.raw).toBe(200);
+    expect(getSetting('mailway.whitelabelHosts')).toBeNull();
+    expect(claim('webmail.empresa.com', projB.id)).toBeNull();
+    const p = await addDomain(ownerB, svcB, 'webmail.empresa.com');
+    expect(p.status, p.raw).toBe(200);
   });
 });

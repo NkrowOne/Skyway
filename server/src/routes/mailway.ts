@@ -78,6 +78,7 @@ import {
   forgetMailwayTraefik,
   mailwayTraefikConfig,
   mailwayTraefikStatus,
+  reserveWhitelabelHost,
   resetMailwayTraefikState,
   stableStringify,
 } from '../mailwaytraefik';
@@ -1300,6 +1301,9 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         }
         const res = await createWhitelabelDomain({ hostname, clientId: link.client_id });
         const created = ownedWebmail(res.domain, link.client_id, hostname);
+        // Reservado ya, sin esperar a la siguiente lectura del puente: mientras
+        // espera DNS, ningún servicio de otro cliente puede asignárselo.
+        reserveWhitelabelHost(hostname);
         audit(req, 'mailway_webmail_created', { type: 'project', id: ctx.project.id, detail: `${ctx.project.name}: ${hostname}` });
         reply.code(201);
         return { webmail: publicWebmail(created, res.instructions) };

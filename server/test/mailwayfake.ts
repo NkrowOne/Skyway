@@ -103,6 +103,12 @@ export const mw = {
   whitelabelDnsOk: false,
   /** Líneas que se añaden al final del fichero de zona (registros que Mailway no debería enviar). */
   zoneExtra: [] as string[],
+  /**
+   * Retraso de la lista de dominios propios de TODOS los clientes (la del
+   * puente). La lista se calcula ANTES de esperar, como una respuesta que salió
+   * de Mailway antes de un alta posterior.
+   */
+  whitelabelListDelayMs: 0,
   traefikConfig: {} as unknown,
   /** Campos con los que se sobrescribe la respuesta de `/api/integrations/info`. */
   infoOverride: {} as Record<string, unknown>,
@@ -363,10 +369,14 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
     });
   }
   if (path === '/api/whitelabel/domains' && method === 'GET') {
-    // Como Mailway con un token de administrador: filtra por `clientId` si se indica.
+    // Como Mailway con un token de administrador: con `clientId`, los de ese
+    // cliente; sin él, los de TODOS los clientes en cualquier estado (la lista
+    // con la que Skyway reserva los nombres que aún esperan DNS).
     if (!admin) return forbidden();
     const clientId = url.searchParams.get('clientId');
-    return json(200, { domains: mw.whitelabel.filter((w) => !clientId || w.clientId === clientId) });
+    const respuesta = json(200, { domains: mw.whitelabel.filter((w) => !clientId || w.clientId === clientId) });
+    if (!clientId && mw.whitelabelListDelayMs > 0) await new Promise((r) => setTimeout(r, mw.whitelabelListDelayMs));
+    return respuesta;
   }
   if (path === '/api/whitelabel/domains' && method === 'POST') {
     const clientId = typeof b.clientId === 'string' ? b.clientId : '';

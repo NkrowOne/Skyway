@@ -10,10 +10,16 @@
  *
  * La comprobación solo mira los dominios NUEVOS de cada cambio: un servicio que
  * ya tuviera uno en conflicto antes de esta regla puede seguir editándose.
+ *
+ * Los de Mailway son su URL pública, su panel, su webmail y su servidor de
+ * correo, los que publica el puente de Traefik y los nombres de marca blanca de
+ * todos sus clientes en cualquier estado: uno que aún espera DNS no está
+ * publicado, pero en cuanto apunte aquí el servicio que lo tuviera se quedaría
+ * con el tráfico de ese webmail.
  */
 import { getProject, getService, serviceIdsForDomain } from './db';
 import { mailwayProject, mailwayReservedHosts } from './mailway';
-import { mailwayPublishedHosts } from './mailwaytraefik';
+import { mailwayPublishedHosts, mailwayWhitelabelHosts } from './mailwaytraefik';
 
 export interface DomainClaim {
   /** Proyecto del servicio que reclama los dominios. */
@@ -69,7 +75,7 @@ export function domainClaimError(domains: Iterable<string>, claim: DomainClaim):
         : `El dominio ${domain} ya está asignado a otro servicio. Cada dominio solo puede servir a un servicio.`;
     }
     if (claim.isAdmin) continue;
-    if (!mailway) mailway = new Set([...mailwayReservedHosts(), ...mailwayPublishedHosts()]);
+    if (!mailway) mailway = new Set([...mailwayReservedHosts(), ...mailwayPublishedHosts(), ...mailwayWhitelabelHosts()]);
     if (mailway.has(domain)) {
       if (mailwayProjectId === undefined) mailwayProjectId = mailwayProject()?.id ?? null;
       if (mailwayProjectId !== claim.projectId) {
@@ -90,7 +96,8 @@ export function domainClaimError(domains: Iterable<string>, claim: DomainClaim):
  * no llegaría a funcionar, y el del panel nunca se reparte. Los nombres de la
  * propia instancia de Mailway también los rechaza Mailway; aquí se comprueban
  * antes de llamarle. Como en `domainClaimError`, solo el administrador ve qué
- * servicio tiene el nombre.
+ * servicio tiene el nombre. No mira los nombres de marca blanca reservados: el
+ * propio webmail está entre ellos, y los de otros clientes ya los rechaza Mailway.
  */
 export function webmailHostError(hostname: string, opts: { isAdmin: boolean }): string | null {
   const host = hostname.trim().toLowerCase();

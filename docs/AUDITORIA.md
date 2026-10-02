@@ -148,6 +148,17 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   pública, panel, webmail, servidor de correo y los dominios que publica el
   puente). La importación de Railway omite los que chocan, con una nota. Los
   dominios que un servicio ya tenía no se revisan (se puede seguir editando).
+  **Nombres de marca blanca que esperan DNS** (cerrado): Mailway solo publica en
+  Traefik los dominios propios que ya apuntan al servidor, así que mientras uno
+  esperaba DNS otro cliente podía asignar ese nombre (`webmail.<dominio>`) a un
+  servicio y quedarse con el tráfico del webmail —y con las contraseñas que se
+  escribieran en él— en cuanto el DNS apuntase aquí. Ahora el puente obtiene en
+  cada lectura todos los nombres de marca blanca de la instancia, en cualquier
+  estado (`GET /api/whitelabel/domains` sin `clientId`, con plazo corto y en
+  paralelo), conserva la última lista buena si Mailway no responde (memoria y
+  `settings`) y `domainguard.ts` los reserva igual que los publicados. El
+  webmail creado desde un proyecto se reserva al darlo de alta, sin esperar a la
+  lectura siguiente, y «Desconectar Mailway» libera la lista.
 
 ---
 
@@ -216,13 +227,6 @@ Estos no son defectos, sino consecuencias del propósito de la herramienta
 - **Informe de importación**: además de las contraseñas en los comandos, lo lee
   cualquier miembro con acceso al proyecto; conviene acotarlo al administrador o
   enmascararlo.
-- **Webmail de marca blanca esperando DNS**: hasta que Mailway lo publica
-  («Emitiendo certificado» o «En servicio»), Skyway no conoce el nombre, y otro
-  cliente puede asignar `webmail.<dominio>` a un servicio (los dominios de los
-  servicios se reparten por orden de llegada); el puente daría entonces la ruta a
-  ese servicio. Skyway lo indica (`conflict`) y no lo marca como principal ni
-  crea su registro, pero no lo impide. Recomendación: reservar en Skyway los
-  nombres de webmail creados desde un proyecto mientras esperan DNS.
 
 ---
 

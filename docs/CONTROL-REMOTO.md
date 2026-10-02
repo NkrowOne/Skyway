@@ -135,7 +135,8 @@ Un token de un usuario que no es admin: no elige el plan de Mailway, no crea
 buzones de nombre reservado (postmaster, abuse, admin…) y, en Cloudflare, solo
 usa las cuentas del propio cliente (también para el registro del webmail). El
 webmail nunca se crea con un nombre que ya sirve un servicio de Skyway ni con el
-del panel. Los enlaces de configuración con contraseña
+del panel y, a la inversa, ningún servicio puede asignarse un nombre de marca
+blanca de Mailway, tampoco mientras espera DNS (409). Los enlaces de configuración con contraseña
 exigen ser propietario o admin y tienen un tope de 5 cada 10 minutos.
 
 Configurar la conexión (`PUT /api/mailway/config`) y desconectarla
