@@ -179,7 +179,7 @@ export default function CatalogPage() {
         <div className="card">
           <EmptyState
             title="Todavía no hay productos"
-            description="Cree el primero para poder facturar servicios a sus clientes."
+            description="Crea el primero para poder facturar servicios a tus clientes."
             action={<Button onClick={() => setDraft({ ...EMPTY })}><Plus size={15} /> Nuevo producto</Button>}
           />
         </div>

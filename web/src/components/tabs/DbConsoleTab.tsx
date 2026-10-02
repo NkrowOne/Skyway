@@ -111,7 +111,7 @@ function ResultTable({ result }: { result: DbQueryResult }) {
       </table>
       {allRows.length > rows.length && (
         <p className="border-t border-line bg-surface2 px-3 py-2 text-xs text-subtle">
-          Se muestran las primeras {MAX_RENDERED_ROWS} filas de {allRows.length}. Descargue el CSV o añada un LIMIT para ver el resto.
+          Se muestran las primeras {MAX_RENDERED_ROWS} filas de {allRows.length}. Descarga el CSV o añade un LIMIT para ver el resto.
         </p>
       )}
     </div>
@@ -457,7 +457,7 @@ export default function DbConsoleTab({ serviceId }: { serviceId: string }) {
         <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-line py-10 text-center">
           <Database size={22} className="text-subtle" />
           <p className="max-w-xs text-xs leading-relaxed text-subtle">
-            Escriba una consulta o seleccione {overview.data?.overview.objectLabel === 'tablas' ? 'una tabla' : 'un objeto'} de la lista superior.
+            Escribe una consulta o selecciona {overview.data?.overview.objectLabel === 'tablas' ? 'una tabla' : 'un objeto'} de la lista superior.
           </p>
         </div>
       )}

@@ -94,7 +94,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'La aplicación lee una variable de entorno que no existe en el contenedor. Las variables se inyectan al crear el contenedor: una variable añadida después no se aplica hasta el siguiente despliegue.',
     fix:
-      'Añada la variable en la pestaña «Variables» (o compruebe el nombre exacto, mayúsculas incluidas) y pulse «Desplegar». Si procede del .env.example del repositorio, la opción «Importar del repositorio» la propone con su archivo de origen.',
+      'Añade la variable en la pestaña «Variables» (o comprueba el nombre exacto, mayúsculas incluidas) y pulsa «Desplegar». Si procede del .env.example del repositorio, la opción «Importar del repositorio» la propone con su archivo de origen.',
   },
   {
     id: 'prisma',
@@ -104,7 +104,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'El cliente de Prisma no se generó durante la compilación (`@prisma/client did not initialize`) o no alcanza la base de datos (códigos P1000–P1003: credenciales, host o base de datos inexistente).',
     fix:
-      'Si es un error de inicialización, añada `npx prisma generate` a la compilación (script `postinstall` o Comando de compilación). Si es P1001/P1000, compruebe que DATABASE_URL es una referencia `${{Base.DATABASE_URL}}` y que la base de datos está en ejecución; si faltan tablas, ejecute `prisma migrate deploy` en el comando de arranque.',
+      'Si es un error de inicialización, añade `npx prisma generate` a la compilación (script `postinstall` o Comando de compilación). Si es P1001/P1000, comprueba que DATABASE_URL es una referencia `${{Base.DATABASE_URL}}` y que la base de datos está en ejecución; si faltan tablas, ejecuta `prisma migrate deploy` en el comando de arranque.',
   },
   {
     id: 'mongo',
@@ -114,7 +114,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'El controlador de MongoDB no encuentra el servidor o este rechaza la conexión: host incorrecto (`localhost` no es la base de datos dentro del contenedor), servicio detenido o credenciales incorrectas en la URL.',
     fix:
-      'Utilice `${{NombreDelMongo.MONGO_URL}}` en Variables en lugar de una URL escrita manualmente, compruebe que el servicio de MongoDB está en ejecución y que la URL incluye `authSource=admin` si el usuario es el generado por Skyway.',
+      'Utiliza `${{NombreDelMongo.MONGO_URL}}` en Variables en lugar de una URL escrita manualmente, comprueba que el servicio de MongoDB está en ejecución y que la URL incluye `authSource=admin` si el usuario es el generado por Skyway.',
   },
   {
     id: 'redis',
@@ -124,7 +124,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'El cliente de Redis no alcanza el servidor (host o puerto incorrectos, servicio detenido) o el servidor exige contraseña y no se envía (`NOAUTH`/`WRONGPASS`).',
     fix:
-      'Utilice la referencia `${{NombreDelRedis.REDIS_URL}}` en Variables: incluye host interno, puerto y contraseña. Si utiliza variables independientes, el host es el nombre del servicio de Redis, no localhost.',
+      'Utiliza la referencia `${{NombreDelRedis.REDIS_URL}}` en Variables: incluye host interno, puerto y contraseña. Si utilizas variables independientes, el host es el nombre del servicio de Redis, no localhost.',
   },
   {
     id: 'db-connection-refused',
@@ -134,7 +134,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'La aplicación intenta conectar con un host que no responde (`ECONNREFUSED`) o que no existe (`ENOTFOUND`/`EAI_AGAIN`). Dentro del contenedor, `localhost` es el propio contenedor, no la base de datos; y una referencia `${{…}}` sin resolver deja el texto literal como host.',
     fix:
-      'Compruebe en Variables que el host es el nombre interno del servicio de destino (preferiblemente mediante una referencia `${{Base.DATABASE_URL}}`), que ese servicio está en ejecución y que pertenece al mismo proyecto. A continuación, vuelva a desplegar.',
+      'Comprueba en Variables que el host es el nombre interno del servicio de destino (preferiblemente mediante una referencia `${{Base.DATABASE_URL}}`), que ese servicio está en ejecución y que pertenece al mismo proyecto. A continuación, vuelve a desplegar.',
   },
   {
     id: 'db-auth-failed',
@@ -144,7 +144,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'Usuario o contraseña incorrectos: un valor copiado manualmente y rotado después, una referencia que apunta a otra variable, o un usuario que no existe en esa base de datos.',
     fix:
-      'En Variables, sustituya el valor por la referencia a la base de datos (`${{Base.DATABASE_URL}}` o `${{Base.PGPASSWORD}}`) y vuelva a desplegar. Las credenciales reales están en la pestaña «Variables» del servicio de base de datos.',
+      'En Variables, sustituye el valor por la referencia a la base de datos (`${{Base.DATABASE_URL}}` o `${{Base.PGPASSWORD}}`) y vuelve a desplegar. Las credenciales reales están en la pestaña «Variables» del servicio de base de datos.',
   },
   {
     id: 'db-missing-object',
@@ -154,7 +154,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'La base de datos existe y responde, pero el esquema no es el que espera el código: las migraciones no se han ejecutado, la conexión apunta a otra base de datos o la URL contiene un nombre de base de datos distinto del creado.',
     fix:
-      'Ejecute las migraciones al arrancar (por ejemplo `npx prisma migrate deploy && npm start` o `python manage.py migrate && gunicorn …` en el Comando de arranque) o ejecútelas una vez desde la pestaña «Consultas». Compruebe también el nombre de la base de datos en la URL.',
+      'Ejecuta las migraciones al arrancar (por ejemplo `npx prisma migrate deploy && npm start` o `python manage.py migrate && gunicorn …` en el Comando de arranque) o ejecútalas una vez desde la pestaña «Consultas». Comprueba también el nombre de la base de datos en la URL.',
   },
   {
     id: 'port-in-use',
@@ -164,7 +164,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'Dos procesos del mismo contenedor intentan escuchar en el mismo puerto: el comando de arranque inicia la aplicación dos veces, o un proceso auxiliar (un worker, un proxy) utiliza el mismo `PORT`.',
     fix:
-      'Revise el Comando de arranque para que solo un proceso escuche en `PORT`; si necesita dos procesos que escuchen, sepárelos en dos servicios o asigne un puerto fijo distinto al segundo.',
+      'Revisa el Comando de arranque para que solo un proceso escuche en `PORT`; si necesitas dos procesos que escuchen, sepáralos en dos servicios o asigna un puerto fijo distinto al segundo.',
   },
   {
     id: 'permission-denied',
@@ -174,7 +174,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'El proceso no puede leer, escribir o ejecutar un recurso: un volumen montado con un propietario distinto del usuario de la imagen, un archivo sin permiso de ejecución o un puerto privilegiado (< 1024) con un usuario sin privilegios.',
     fix:
-      'Si se trata de un volumen, ajuste el propietario en el Dockerfile (`RUN chown -R app:app /data`) o inicie el proceso como root; si es un script, aplique `chmod +x` en el repositorio; si es el puerto, utilice uno ≥ 1024 (3000, 8080) y ajuste el Puerto interno.',
+      'Si se trata de un volumen, ajusta el propietario en el Dockerfile (`RUN chown -R app:app /data`) o inicia el proceso como root; si es un script, aplica `chmod +x` en el repositorio; si es el puerto, utiliza uno ≥ 1024 (3000, 8080) y ajusta el Puerto interno.',
   },
   {
     id: 'module-not-found',
@@ -184,7 +184,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'El código importa un módulo que no está en la imagen: una dependencia que no figura en `package.json`/`requirements.txt`, una `devDependency` necesaria en producción, o un archivo compilado que la compilación no generó.',
     fix:
-      'Declare la dependencia y confirme el lockfile en el repositorio (`npm i -S paquete`); si es una devDependency necesaria en ejecución, muévala a dependencies o no utilice `--omit=dev`. Si es un archivo de `dist/`, compruebe que la compilación (`npm run build`) se ejecuta antes del arranque.',
+      'Declara la dependencia y confirma el lockfile en el repositorio (`npm i -S paquete`); si es una devDependency necesaria en ejecución, muévela a dependencies o no utilices `--omit=dev`. Si es un archivo de `dist/`, comprueba que la compilación (`npm run build`) se ejecuta antes del arranque.',
   },
   {
     id: 'out-of-memory',
@@ -194,7 +194,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'La aplicación superó la RAM asignada al servicio y el sistema finalizó el proceso (código de salida 137), o el entorno de ejecución se detuvo por falta de heap.',
     fix:
-      'Aumente la RAM en Ajustes → Recursos (se aplica en caliente) o reduzca el consumo: en Node, ajuste `NODE_OPTIONS=--max-old-space-size=…` al límite; en Python, revise las cargas en memoria de archivos grandes. Si ocurre durante la compilación, construya una imagen más ligera.',
+      'Aumenta la RAM en Ajustes → Recursos (se aplica en caliente) o reduce el consumo: en Node, ajusta `NODE_OPTIONS=--max-old-space-size=…` al límite; en Python, revisa las cargas en memoria de archivos grandes. Si ocurre durante la compilación, construye una imagen más ligera.',
   },
   {
     id: 'listen-localhost',
@@ -204,7 +204,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'El proceso está en ejecución, pero escucha en `127.0.0.1`/`localhost`: desde fuera del contenedor (Traefik, el healthcheck, otros servicios) no es posible acceder a esa dirección, por lo que el dominio responde 502 y la validación de salud falla.',
     fix:
-      'Configure la aplicación para que escuche en `0.0.0.0` (`app.listen(PORT, "0.0.0.0")`, `--host 0.0.0.0` en Vite/uvicorn/Next, `HOST=0.0.0.0` en los frameworks que lo leen) y vuelva a desplegar.',
+      'Configura la aplicación para que escuche en `0.0.0.0` (`app.listen(PORT, "0.0.0.0")`, `--host 0.0.0.0` en Vite/uvicorn/Next, `HOST=0.0.0.0` en los frameworks que lo leen) y vuelve a desplegar.',
   },
   {
     id: 'ssl',
@@ -214,7 +214,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'El cliente y el servidor no coinciden en el cifrado: la base de datos gestionada del proyecto no utiliza SSL en la red interna y el cliente lo exige, o bien un servicio externo presenta un certificado que el contenedor no reconoce.',
     fix:
-      'Para bases de datos del proyecto, elimine `sslmode=require`/`ssl: true` o establezca `sslmode=disable`: el tráfico no sale de la red privada. Para servicios externos con certificado propio, añada la CA a la imagen o configure el cliente para aceptarla (no desactive la verificación en producción sin conocer la causa).',
+      'Para bases de datos del proyecto, elimina `sslmode=require`/`ssl: true` o establece `sslmode=disable`: el tráfico no sale de la red privada. Para servicios externos con certificado propio, añade la CA a la imagen o configura el cliente para aceptarla (no desactives la verificación en producción sin conocer la causa).',
   },
   {
     id: 'cors',
@@ -224,7 +224,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'El frontend se sirve desde un dominio y llama a la API en otro, y la API no envía la cabecera `Access-Control-Allow-Origin` para ese origen (o la envía para el dominio antiguo).',
     fix:
-      'Configure el origen permitido en la API con el dominio real del frontend (normalmente una variable como `CORS_ORIGIN` o `FRONTEND_URL` en Variables) y vuelva a desplegar; o sirva frontend y API bajo el mismo dominio.',
+      'Configura el origen permitido en la API con el dominio real del frontend (normalmente una variable como `CORS_ORIGIN` o `FRONTEND_URL` en Variables) y vuelve a desplegar; o sirve frontend y API bajo el mismo dominio.',
   },
   {
     id: 'unhandled-exception',
@@ -234,7 +234,7 @@ const RULES: RuntimeRule[] = [
     cause:
       'La aplicación generó una excepción que no se capturó y el proceso finalizó (o el entorno de ejecución la marcó como fatal). Las líneas siguientes del registro suelen incluir el mensaje concreto y el archivo.',
     fix:
-      'Consulte las líneas inmediatamente posteriores en la pestaña «Logs» para ver la excepción exacta. Si aparece en cada arranque, suele ser un problema de configuración (variables, conexiones); si es esporádica, captúrela en el código y registre el contexto.',
+      'Consulta las líneas inmediatamente posteriores en la pestaña «Logs» para ver la excepción exacta. Si aparece en cada arranque, suele ser un problema de configuración (variables, conexiones); si es esporádica, captúrala en el código y registra el contexto.',
   },
 ];
 

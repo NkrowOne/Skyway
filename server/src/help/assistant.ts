@@ -243,7 +243,7 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
             severity: 'critical',
             title: 'El servicio se reinicia en bucle',
             cause: `El proceso finaliza nada más arrancar y Docker lo vuelve a iniciar repetidamente. ${explainExitCode(runtime.exitCode)}`,
-            fix: 'Consulte las últimas líneas de la pestaña «Logs»: la excepción que provoca el cierre aparece justo antes de cada reinicio. Suele deberse a una variable que falta, una conexión con la base de datos que no se establece o un puerto interno incorrecto.',
+            fix: 'Consulta las últimas líneas de la pestaña «Logs»: la excepción que provoca el cierre aparece justo antes de cada reinicio. Suele deberse a una variable que falta, una conexión con la base de datos que no se establece o un puerto interno incorrecto.',
             links: [drawerLink(ctx, 'logs', 'Ver registro'), drawerLink(ctx, 'variables', 'Revisar variables')],
           }),
         );
@@ -257,7 +257,7 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
               severity: 'info',
               title: 'El servicio está detenido manualmente',
               cause: 'Se pulsó «Detener»: el contenedor conserva su imagen, variables y volúmenes, pero no atiende peticiones ni genera alertas.',
-              fix: 'Pulse «Iniciar» en la cabecera del servicio para que vuelva a estar en servicio.',
+              fix: 'Pulsa «Iniciar» en la cabecera del servicio para que vuelva a estar en servicio.',
               links: [drawerLink(ctx, null, 'Abrir servicio')],
             }),
           );
@@ -268,7 +268,7 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
               severity: 'critical',
               title: 'El servicio está caído',
               cause: `El contenedor finalizó y no se ha vuelto a iniciar. ${explainExitCode(runtime.exitCode)}`,
-              fix: 'Consulte la pestaña «Logs» para ver con qué error finalizó; corrija la causa (variables, conexiones, memoria) y pulse «Iniciar» o «Desplegar».',
+              fix: 'Consulta la pestaña «Logs» para ver con qué error finalizó; corrige la causa (variables, conexiones, memoria) y pulsa «Iniciar» o «Desplegar».',
               links: [drawerLink(ctx, 'logs', 'Ver registro'), drawerLink(ctx, null, 'Abrir servicio')],
             }),
           );
@@ -281,7 +281,7 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
             severity: 'warning',
             title: 'El contenedor está pausado',
             cause: 'Docker mantiene el contenedor en pausa: el proceso existe pero no ejecuta nada ni responde.',
-            fix: 'Pulse «Reiniciar» en la cabecera del servicio para que vuelva a ejecutarse.',
+            fix: 'Pulsa «Reiniciar» en la cabecera del servicio para que vuelva a ejecutarse.',
             links: [drawerLink(ctx, null, 'Abrir servicio')],
           }),
         );
@@ -293,7 +293,7 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
             severity: 'warning',
             title: 'El contenedor existe pero no llegó a arrancar',
             cause: 'Docker creó el contenedor y el arranque no se completó (un fallo en el propio arranque o un despliegue interrumpido).',
-            fix: 'Pulse «Desplegar» para recrearlo; si se repite, el registro del despliegue indicará por qué no arranca.',
+            fix: 'Pulsa «Desplegar» para recrearlo; si se repite, el registro del despliegue indicará por qué no arranca.',
             links: [drawerLink(ctx, 'deployments', 'Ver despliegues')],
           }),
         );
@@ -306,7 +306,7 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
               severity: 'warning',
               title: `Solo ${sample.replicas.running} de ${sample.replicas.total} réplicas están en marcha`,
               cause: 'Alguna réplica ha finalizado y no se ha recuperado. El servicio sigue en funcionamiento con menos capacidad.',
-              fix: 'En la pestaña «Logs», filtre por la réplica caída ([r2], [r3]…) para ver con qué error finalizó, y pulse «Reiniciar» para iniciarlas todas.',
+              fix: 'En la pestaña «Logs», filtra por la réplica caída ([r2], [r3]…) para ver con qué error finalizó, y pulsa «Reiniciar» para iniciarlas todas.',
               links: [drawerLink(ctx, 'logs', 'Ver registro')],
             }),
           );
@@ -318,7 +318,7 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
               severity: 'warning',
               title: `Docker ha reiniciado el servicio ${runtime.restartCount} veces`,
               cause: 'El contenedor está en ejecución en este momento, pero se ha caído varias veces desde que se creó: hay una causa intermitente (memoria, una excepción esporádica, una dependencia que deja de responder).',
-              fix: 'Revise la pestaña «Logs» en torno a cada reinicio y la pestaña «Métricas» para comprobar si la memoria alcanza el límite antes de cada caída.',
+              fix: 'Revisa la pestaña «Logs» en torno a cada reinicio y la pestaña «Métricas» para comprobar si la memoria alcanza el límite antes de cada caída.',
               links: [drawerLink(ctx, 'logs', 'Ver registro'), drawerLink(ctx, 'metrics', 'Ver métricas')],
             }),
           );
@@ -333,7 +333,7 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
               severity: 'warning',
               title: 'El contenedor ya no existe',
               cause: 'El último despliegue finalizó correctamente, pero el contenedor no existe en Docker: se eliminó fuera del panel o se limpió el servidor.',
-              fix: 'Pulse «Desplegar»: se reutiliza la imagen del último despliegue correcto y el contenedor se recrea en unos segundos.',
+              fix: 'Pulsa «Desplegar»: se reutiliza la imagen del último despliegue correcto y el contenedor se recrea en unos segundos.',
               links: [drawerLink(ctx, 'deployments', 'Ver despliegues')],
             }),
           );
@@ -358,7 +358,7 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
         severity: 'warning',
         title: `${unresolved.length === 1 ? 'Una referencia' : `${unresolved.length} referencias`} de variables sin resolver`,
         cause: 'Alguna variable utiliza una referencia `${{Servicio.VAR}}` cuyo servicio o variable no existe en este proyecto (es posible que el servicio se haya renombrado). El contenedor recibe el texto literal y la aplicación falla al conectar.',
-        fix: 'En la pestaña «Variables», corrija el nombre del servicio o de la variable referenciada (el panel «Referencias del proyecto» muestra las válidas) y vuelva a desplegar.',
+        fix: 'En la pestaña «Variables», corrige el nombre del servicio o de la variable referenciada (el panel «Referencias del proyecto» muestra las válidas) y vuelve a desplegar.',
         evidence: toEvidence(unresolved.join('; ')),
         links: [drawerLink(ctx, 'variables', 'Revisar variables')],
       }),
@@ -374,7 +374,7 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
         severity: 'warning',
         title: `${pending.length === 1 ? 'Una variable' : `${pending.length} variables`} del .env del repositorio sin valor`,
         cause: `El .env de ejemplo del repositorio declara ${pending.join(', ')} sin un valor útil, y el servicio no las tiene definidas. Si el código las necesita, fallará al arrancar.`,
-        fix: 'Complete su valor en la pestaña «Variables» (el aviso de la cabecera las añade como filas vacías) y pulse «Desplegar».',
+        fix: 'Completa su valor en la pestaña «Variables» (el aviso de la cabecera las añade como filas vacías) y pulsa «Desplegar».',
         evidence: toEvidence(pending.join(', ')),
         links: [drawerLink(ctx, 'variables', 'Completar variables')],
       }),
@@ -493,7 +493,7 @@ function describeIssues(ctx: ServiceCtx, issues: HelpIssue[]): string[] {
   if (issues.length === 0) {
     return [
       `Se ha revisado el servicio **${name}** (último despliegue, estado del contenedor, variables y registro reciente) y no se ha detectado ningún problema conocido.`,
-      'Si el problema persiste, abra la pestaña «Logs» e indique en la consulta el error que aparece: con el texto exacto la revisión es más precisa.',
+      'Si el problema persiste, abre la pestaña «Logs» e indica en la consulta el error que aparece: con el texto exacto la revisión es más precisa.',
     ];
   }
   const [top, ...rest] = issues;
@@ -510,9 +510,9 @@ function describeIssues(ctx: ServiceCtx, issues: HelpIssue[]): string[] {
 }
 
 const NOTHING_FOUND = [
-  'No se ha encontrado una respuesta para esta consulta. El asistente puede ayudarle con la mayoría de las operaciones del panel. Ejemplos de consulta:',
+  'No se ha encontrado una respuesta para esta consulta. El asistente puede ayudarte con la mayoría de las operaciones del panel. Ejemplos de consulta:',
   '- «¿Cómo añado un dominio a mi servicio?»\n- «Mi despliegue falla» (con el servicio seleccionado, se revisa en detalle)\n- «¿Cómo importo el .env de mi repositorio?»',
-  'También puede consultar todas las preguntas frecuentes por categoría en la página de Ayuda.',
+  'También puedes consultar todas las preguntas frecuentes por categoría en la página de Ayuda.',
 ];
 
 const HELP_LINK: HelpLink = { label: 'Preguntas frecuentes', to: '/help' };
@@ -555,7 +555,7 @@ export async function ask(input: { question: string; serviceId?: string; req: Fa
   } else if (errorIntent) {
     const scan = candidates ?? accessibleServices(user);
     if (scan.length === 0) {
-      paragraphs.push('No hay ningún servicio que revisar. Cree uno desde el proyecto con **Nuevo servicio** y, si se produce un error al desplegar, realice de nuevo la consulta.');
+      paragraphs.push('No hay ningún servicio que revisar. Crea uno desde el proyecto con **Nuevo servicio** y, si se produce un error al desplegar, realiza de nuevo la consulta.');
     } else {
       const withIssues: { ctx: ServiceCtx; issues: HelpIssue[] }[] = [];
       for (const ctx of scan) {
@@ -564,20 +564,20 @@ export async function ask(input: { question: string; serviceId?: string; req: Fa
       }
       if (withIssues.length === 0) {
         paragraphs.push(
-          `Se ${scan.length === 1 ? 'ha revisado su único servicio' : `han revisado sus ${scan.length} servicios`} y no se han detectado despliegues fallidos, contenedores caídos ni variables sin resolver.`,
-          'Si el problema está en el registro de una aplicación concreta, seleccione el servicio en el selector (o indíquelo en la consulta) para revisarlo en detalle.',
+          `Se ${scan.length === 1 ? 'ha revisado tu único servicio' : `han revisado tus ${scan.length} servicios`} y no se han detectado despliegues fallidos, contenedores caídos ni variables sin resolver.`,
+          'Si el problema está en el registro de una aplicación concreta, selecciona el servicio en el selector (o indícalo en la consulta) para revisarlo en detalle.',
         );
       } else if (withIssues.length === 1) {
         const only = withIssues[0].ctx;
         issues.push(...(await detectServiceIssues(only.service, { deep: true })));
-        paragraphs.push(`De sus ${scan.length} servicios, solo **${only.service.name}** presenta problemas.`, ...describeIssues(only, issues));
+        paragraphs.push(`De tus ${scan.length} servicios, solo **${only.service.name}** presenta problemas.`, ...describeIssues(only, issues));
         links.push(drawerLink(only, 'logs', `Abrir ${only.service.name}`));
       } else {
         for (const w of withIssues) issues.push(...w.issues);
         paragraphs.push(
           `Se han revisado ${scan.length} servicios y se han detectado problemas en ${withIssues.length}:`,
           withIssues.map((w) => `- **${w.ctx.service.name}** (${w.ctx.project.name}): ${w.issues[0].title}`).join('\n'),
-          'Seleccione uno en el selector de servicio, o indíquelo en la consulta, para revisarlo en detalle junto con su registro.',
+          'Selecciona uno en el selector de servicio, o indícalo en la consulta, para revisarlo en detalle junto con su registro.',
         );
         for (const w of withIssues) links.push(drawerLink(w.ctx, null, `Abrir ${w.ctx.service.name}`));
       }

@@ -341,7 +341,7 @@ const SUPABASE: StackDef = {
     'Son 9 contenedores: se requieren unos 4 GB de RAM libres y varios GB de disco.',
     'El Studio y toda la API se sirven a través del servicio «kong»: es el único que lleva dominio.',
     'El acceso al Studio está protegido con usuario y contraseña: las variables DASHBOARD_* del servicio «db».',
-    'El alta pública de usuarios está desactivada: créelos desde el Studio, o establezca GOTRUE_DISABLE_SIGNUP a false en el servicio «auth» cuando la aplicación lo necesite.',
+    'El alta pública de usuarios está desactivada: créalos desde el Studio, o establece GOTRUE_DISABLE_SIGNUP a false en el servicio «auth» cuando la aplicación lo necesite.',
     'No incluye Edge Functions (requiere montar el código de las funciones), el pooler ni analytics: se conecta directamente a la base de datos.',
   ],
   makeSecrets: () => {
@@ -679,7 +679,7 @@ const GHOST: StackDef = {
   memoryHintMb: 1024,
   defaultPrefix: 'ghost',
   notes: [
-    'Ghost necesita conocer su URL pública: si cambia el dominio, actualice la variable «url» y vuelva a desplegar.',
+    'Ghost necesita conocer su URL pública: si cambia el dominio, actualiza la variable «url» y vuelve a desplegar.',
     'Para enviar correos hay que configurar las variables mail__* del servicio.',
   ],
   makeSecrets: () => ({}),
@@ -775,7 +775,7 @@ const N8N: StackDef = {
 const METABASE: StackDef = {
   key: 'metabase',
   label: 'Metabase + PostgreSQL',
-  description: 'Cuadros de mando y consultas sobre sus datos, con Postgres de respaldo.',
+  description: 'Cuadros de mando y consultas sobre tus datos, con Postgres de respaldo.',
   icon: 'metabase',
   logos: ['metabase', 'postgres'],
   docsUrl: 'https://www.metabase.com/docs/latest/installation-and-operation/running-metabase-on-docker',

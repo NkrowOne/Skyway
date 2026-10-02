@@ -8,7 +8,9 @@ modelo de seguridad y **toda la API REST**), consulta
 **[docs/AUDITORIA-FACTURACION.md](docs/AUDITORIA-FACTURACION.md)**; para el de
 rendimiento y calidad del código (hallazgos, cambios aplicados y pendientes),
 **[docs/AUDITORIA-RENDIMIENTO.md](docs/AUDITORIA-RENDIMIENTO.md)**. Para control
-remoto por API/agentes, **[docs/CONTROL-REMOTO.md](docs/CONTROL-REMOTO.md)**.
+remoto por API/agentes, **[docs/CONTROL-REMOTO.md](docs/CONTROL-REMOTO.md)**. El
+manifiesto `skyway.json` de las webs (plan de integraciones con bases y correo)
+está en **[docs/MANIFIESTO.md](docs/MANIFIESTO.md)**.
 
 ## Qué es
 
@@ -54,7 +56,7 @@ Si arreglas un fallo con una prueba que lo reproduce, mejor.
 - **Idioma**: código, comentarios, mensajes de UI y de error en **español**.
   Los comentarios explican el *porqué*, no el *qué*.
 - **Registro de los textos de usuario**: profesional y neutro, como el software
-  de empresa en español (tratamiento de usted, construcciones impersonales,
+  actual en español (tuteo, construcciones impersonales cuando encajen,
   botones en infinitivo, sin coloquialismos ni metáforas ni humor). La guía
   completa, con terminología y ejemplos, está en
   **[docs/ESTILO-TEXTOS.md](docs/ESTILO-TEXTOS.md)**; se aplica a interfaz,

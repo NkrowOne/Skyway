@@ -1,4 +1,5 @@
 import type { EnvImportReport } from './deploy/envimport';
+import type { SkywayManifest } from './manifest';
 
 export type ServiceType = 'git' | 'database' | 'image';
 
@@ -21,6 +22,18 @@ export interface DetectedNeeds {
   envFile: string | null;
   /** Ficheros del repositorio que aportaron algo, relativos a su raíz. */
   sources: string[];
+  /**
+   * La web envía correo (por una librería o por sus variables): modo que se
+   * propone (API si pide `MAILWAY_API_*`; SMTP si no) y los nombres EXACTOS de
+   * las variables de correo que espera, con su papel (ver `mailenv.ts`).
+   */
+  mail?: { mode: 'smtp' | 'api'; vars: { name: string; role: string }[]; evidence: string[] } | null;
+  /** `skyway.json` validado (ver `manifest.ts`); null si no hay o no es válido. */
+  manifest?: SkywayManifest | null;
+  /** Fichero del manifiesto, relativo a la raíz del repositorio, si lo hay (válido o no). */
+  manifestFile?: string | null;
+  /** Por qué no se ha podido usar el manifiesto, si lo hay y no es válido. */
+  manifestError?: string | null;
   detectedAt: number;
 }
 
@@ -89,6 +102,15 @@ export interface GitConfig {
   envImport?: EnvImportReport;
   /** Dependencias detectadas en el repositorio en el último despliegue (ver `DetectedNeeds`). */
   needs?: DetectedNeeds;
+  /**
+   * Variables que el `skyway.json` del repositorio pide y que necesitan que
+   * alguien las apruebe (una base, de cualquiera con acceso al proyecto; el
+   * correo, de quien lo gestiona): el panel las muestra como «Cambios
+   * pendientes de aprobar». Lo recalcula cada
+   * despliegue y cada aplicación del plan (`integrations.ts`); ausente o vacío
+   * = nada pendiente.
+   */
+  integrationsPending?: string[];
 }
 
 export interface DatabaseConfig {
@@ -837,6 +859,19 @@ export interface ApiTokenRow {
   created_at: number;
   last_used_at: number | null;
   expires_at: number | null;
+}
+
+/**
+ * Proyecto con correo activado: su cliente en Mailway. No guarda credenciales;
+ * todo se opera con el token de gestión global de Ajustes, y el vínculo es lo
+ * que acota a qué cliente puede tocar cada proyecto.
+ */
+export interface MailwayLinkRow {
+  project_id: string;
+  client_id: string;
+  client_name: string;
+  created_by: string | null; // email de quien lo activó
+  created_at: number;
 }
 
 /**

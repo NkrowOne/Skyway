@@ -148,7 +148,7 @@ export default function UsersPage() {
           <EmptyState
             compact
             title="Todavía no hay usuarios"
-            description="Cree el primero para dar acceso al panel."
+            description="Crea el primero para dar acceso al panel."
             action={<Button size="sm" onClick={() => setDraft({ ...EMPTY })}><Plus size={13} /> Nuevo usuario</Button>}
           />
         ) : (
@@ -162,7 +162,7 @@ export default function UsersPage() {
                 <span className="truncate text-sm font-medium">{u.email}</span>
                 <RoleChip role={u.role} />
                 {u.id === me.data?.user?.id && (
-                  <Chip size="sm">usted</Chip>
+                  <Chip size="sm">tú</Chip>
                 )}
               </div>
               <div className="flex flex-wrap items-center gap-3 text-xs text-subtle">
@@ -202,7 +202,7 @@ export default function UsersPage() {
                 onClick={() => setToDelete(u)}
                 disabled={u.id === me.data?.user?.id}
                 className="rounded-md p-1.5 text-subtle transition-colors hover:bg-err/[.12] hover:text-err disabled:opacity-30 max-sm:p-2.5"
-                title={u.id === me.data?.user?.id ? 'No es posible eliminar su propio usuario' : 'Eliminar usuario'}
+                title={u.id === me.data?.user?.id ? 'No es posible eliminar tu propio usuario' : 'Eliminar usuario'}
                 aria-label="Eliminar usuario"
               >
                 <Trash2 size={14} />
@@ -266,7 +266,7 @@ export default function UsersPage() {
                 label="Cuenta de cliente"
                 hint={
                   isEdit && draft.workspaceId !== (list.find((u) => u.id === draft.id)?.workspaceId ?? null)
-                    ? 'Al cambiar de cuenta se retiran los proyectos asignados; seleccione los de la cuenta nueva.'
+                    ? 'Al cambiar de cuenta se retiran los proyectos asignados; selecciona los de la cuenta nueva.'
                     : 'Los proyectos disponibles son los de la cuenta seleccionada.'
                 }
               >

@@ -411,6 +411,9 @@ export function Menu({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
+        // Esc cierra el menú y nada más: sin esto, un menú abierto dentro de
+        // un diálogo cerraba también el diálogo (ambos escuchan en window).
+        e.stopPropagation();
         onCloseRef.current();
       }
     };
@@ -427,10 +430,11 @@ export function Menu({
     };
     // pointerdown cubre ratón y dedo: con mousedown, en iOS el toque fuera
     // llegaba tarde (tras el touchend) o no llegaba dentro de un scroll.
-    window.addEventListener('keydown', onKey);
+    // En captura: se atiende antes que los diálogos, que escuchan en burbuja.
+    window.addEventListener('keydown', onKey, true);
     window.addEventListener('pointerdown', onDown);
     return () => {
-      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('pointerdown', onDown);
     };
   }, [open]);
@@ -854,7 +858,7 @@ export function Modal({
         {confirmandoCierre && (
           <div className="overlay-in absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-2xl bg-surface/95 p-6 text-center backdrop-blur-sm">
             <p className="text-base font-semibold">Hay cambios sin guardar</p>
-            <p className="max-w-xs text-xs leading-5 text-sub">Si cierra ahora, los cambios se perderán.</p>
+            <p className="max-w-xs text-xs leading-5 text-sub">Si cierras ahora, los cambios se perderán.</p>
             <div className="mt-1 flex gap-2">
               <Button variant="ghost" size="sm" onClick={() => setConfirmandoCierre(false)}>
                 Seguir editando

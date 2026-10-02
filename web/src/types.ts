@@ -109,6 +109,63 @@ export interface EnvAdvice {
   suggestions: EnvSuggestion[];
   /** Variables que el repositorio espera, sin propuesta automática y sin definir. */
   missing: string[];
+  /** La web envía correo: modo propuesto y variables de correo que espera (las rellena «Correo → Conectar»). */
+  mail?: { mode: 'smtp' | 'api'; vars: { name: string; role: string }[]; evidence: string[] } | null;
+  /** skyway.json del repositorio y, si no es válido, el motivo. */
+  manifest?: { file: string; error: string | null } | null;
+}
+
+// ---------- plan de integraciones (skyway.json o detección) ----------
+
+export type PlanStatus = 'apply' | 'done' | 'manual' | 'blocked';
+
+export interface PlanVar {
+  name: string;
+  /** postgres.DATABASE_URL, mail.password, self.public_url, generate, value o empty. */
+  from: string;
+  resource: string | null;
+  /** Requiere que una persona lo apruebe (ver `PlanResource.canApprove`): en un despliegue no se aplica solo. */
+  privileged: boolean;
+  status: PlanStatus;
+  /** Lo que se escribirá (una referencia, «32 bytes aleatorios»…). Nunca un secreto. */
+  detail: string | null;
+  reason: string | null;
+}
+
+export interface PlanResource {
+  key: string;
+  label: string;
+  action: 'create' | 'reuse' | null;
+  target: string | null;
+  mode: 'smtp' | 'api' | null;
+  status: PlanStatus;
+  reason: string | null;
+  evidence: string | null;
+  /** Quien mira puede aprobarlo: las bases, cualquiera con acceso al proyecto; el correo, quien lo gestiona. */
+  canApprove: boolean;
+  /** Lo que hay que confirmar expresamente para aprobarlo (reutilizar un buzón que ya existe), o null. */
+  confirmation: string | null;
+}
+
+export interface IntegrationPlan {
+  source: 'manifest' | 'detection' | null;
+  manifestFile: string | null;
+  manifestError: string | null;
+  resources: PlanResource[];
+  vars: PlanVar[];
+  pendingApproval: string[];
+  canApprove: boolean;
+  /** Huella de lo privilegiado: aprobar la envía, y si el plan ha cambiado el servidor responde 409. */
+  fingerprint: string;
+}
+
+export interface PlanApplyResult {
+  applied: string[];
+  pending: string[];
+  kept: string[];
+  blocked: { name: string; reason: string }[];
+  created: string[];
+  errors: string[];
 }
 
 export interface GithubRepo {
@@ -687,6 +744,8 @@ export interface GitConfig {
   autoImportEnv?: boolean;
   /** Última importación del .env del repositorio (sin valores). */
   envImport?: EnvImportReport;
+  /** Variables que pide el skyway.json y esperan aprobación (bases: cualquiera con acceso; correo: quien gestiona el proyecto). */
+  integrationsPending?: string[];
 }
 
 // ---------- importación del .env del repositorio ----------
@@ -1214,4 +1273,225 @@ export interface PublicStatus {
     severity: AlertSeverity;
   }[];
   generatedAt: number;
+}
+
+// ---------- correo (integración con Mailway) ----------
+
+export interface MailwayStatus {
+  configured: boolean;
+  panelUrl: string | null;
+}
+
+export interface MailwayBridgeStatus {
+  routers: number;
+  dropped: string[];
+  syncedAt: number | null;
+  error: string | null;
+}
+
+export interface MailwayConfigView {
+  configured: boolean;
+  baseUrl: string | null;
+  serviceId: string | null;
+  serviceName: string | null;
+  internalUrl: string | null;
+  hasToken: boolean;
+  panelUrl: string | null;
+  /** Plan con el que se crea el cliente cuando no lo elige un administrador. */
+  defaultPlanId: string | null;
+  traefik: MailwayBridgeStatus | null;
+}
+
+export interface MailPlan {
+  id: string;
+  name: string;
+  maxDomains: number;
+  maxMailboxes: number;
+  mailboxQuotaMb: number;
+}
+
+export interface MailwayTestResult {
+  ok: boolean;
+  info: {
+    version: string;
+    brandName: string;
+    mailHostname: string;
+    webmailUrl: string | null;
+    panelUrl: string | null;
+    role: 'admin' | 'client' | null;
+    email: string | null;
+    features: { cloudflare: boolean; autoconfig: boolean; portal: boolean };
+  };
+  warnings: string[];
+}
+
+export type MailDnsCheckStatus = 'ok' | 'missing' | 'mismatch' | 'unknown';
+
+export interface MailDomain {
+  id: string;
+  domain: string;
+  status: 'pending_dns' | 'active' | 'error';
+  verifiedAt: number | null;
+  lastCheckedAt: number | null;
+  createdAt: number | null;
+  cloudflare: boolean;
+  /** Cuándo probó Mailway que el dominio es del cliente (MX o TXT). */
+  ownershipVerifiedAt: number | null;
+  /** Propiedad sin probar: Mailway no deja crear buzones en el dominio. */
+  ownershipPending: boolean;
+  /** Registro TXT que prueba la propiedad sin cambiar el MX. */
+  ownershipRecord: { type: string; name: string; content: string } | null;
+  dns: {
+    requiredTotal: number;
+    requiredOk: number;
+    allRequiredOk: boolean;
+    checkedAt: number | null;
+    checks: {
+      id: string;
+      label: string;
+      type: string;
+      name: string;
+      expected: string;
+      found: string | null;
+      status: MailDnsCheckStatus;
+      required: boolean;
+      help: string | null;
+    }[];
+  };
+}
+
+export interface MailMailbox {
+  id: string;
+  domainId: string;
+  domain: string;
+  localPart: string;
+  email: string;
+  displayName: string;
+  quotaMb: number;
+  usedBytes: number | null;
+  status: 'active' | 'suspended';
+  createdAt: number | null;
+}
+
+export interface MailApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  senderMailboxId: string | null;
+  senderEmail: string;
+  /** La creó Skyway al conectar un servicio (nombre «Skyway · <servicio>»). */
+  createdBySkyway: boolean;
+  lastUsedAt: number | null;
+  revokedAt: number | null;
+  createdAt: number | null;
+}
+
+export interface MailAppPassword {
+  id: string;
+  mailboxId: string;
+  email: string;
+  name: string;
+  createdAt: number | null;
+  revokedAt: number | null;
+}
+
+export interface MailSummary {
+  client: { id: string; name: string; slug: string; suspended: boolean };
+  plan: { id: string; name: string; maxDomains: number; maxMailboxes: number; mailboxQuotaMb: number } | null;
+  usage: { domains: number; mailboxes: number };
+  domains: MailDomain[];
+  mailboxes: MailMailbox[];
+  apiKeys: MailApiKey[];
+  appPasswords: MailAppPassword[];
+  connection: {
+    imap: { host: string; port: number; security: string } | null;
+    submission: { host: string; port: number; security: string } | null;
+    webmailUrl: string | null;
+  };
+}
+
+export interface ProjectMailView {
+  moduleEnabled: boolean;
+  configured: boolean;
+  canManage: boolean;
+  isAdmin: boolean;
+  /** La cuenta del proyecto está suspendida: no se puede crear nada. */
+  accountSuspended: boolean;
+  linked: boolean;
+  notice?: string | null;
+  panelUrl: string | null;
+  features: { cloudflare: boolean; autoconfig: boolean; portal: boolean } | null;
+  link?: { clientId: string; clientName: string; createdAt: number; createdBy: string | null };
+  summary?: MailSummary;
+  /** Dominios registrables de los servicios del proyecto que el cliente de correo aún no tiene. */
+  suggestedDomains: string[];
+}
+
+export type MailWebmailStatus = 'pending_dns' | 'issuing' | 'active' | 'error';
+
+/** Webmail de un dominio de correo en `webmail.<dominio>` (marca blanca de Mailway). */
+export interface MailWebmail {
+  hostname: string;
+  kind: 'webmail' | 'panel';
+  status: MailWebmailStatus;
+  /** Último resultado de la comprobación, redactado por Mailway. */
+  detail: string;
+  lastCheckedAt: number | null;
+  activatedAt: number | null;
+  createdAt: number | null;
+  /** Webmail principal del cliente: el que usan sus enlaces y datos de conexión. */
+  isPrimary: boolean;
+  /** Solo en servicio. */
+  url: string | null;
+  /** Registro que hay que crear para apuntar el nombre al servidor (CNAME recomendado o A). */
+  instructions: { type: string; name: string; value: string; recommended: boolean; help: string | null }[];
+}
+
+export interface MailWebmailView {
+  hostname: string;
+  webmail: MailWebmail | null;
+  /** Motivo por el que el nombre no se puede utilizar (lo sirve un servicio, es el del panel…). */
+  conflict: string | null;
+}
+
+export interface MailWebmailCloudflareResult {
+  applied: { action: string; type: string; name: string }[];
+  errors: { type: string; name: string; error: string }[];
+  skipped: { type: string; name: string; reason: string }[];
+  webmail: MailWebmail | null;
+}
+
+export interface MailOptions {
+  /** Todos los planes para el administrador; para el propietario, solo el que se le asignará. */
+  plans: MailPlan[];
+  clients: { id: string; name: string; available: boolean; linkedTo: string | null }[];
+  defaultPlanId: string | null;
+  canChoosePlan: boolean;
+  defaultName: string;
+  /** Cliente que el proyecto tenía antes de desactivar el correo. */
+  previous: { clientName: string; available: boolean; reason: string | null } | null;
+}
+
+export interface MailCloudflarePlan {
+  available: boolean;
+  reason: string | null;
+  account: { label: string } | null;
+  zone: { name: string; status: string } | null;
+  changes: {
+    action: 'create' | 'update' | 'keep' | 'conflict';
+    type: string;
+    name: string;
+    content: string;
+    priority: number | null;
+    current: string | null;
+    reason: string;
+    required: boolean;
+  }[];
+  summary: { create: number; update: number; keep: number; conflict: number };
+}
+
+export interface MailCloudflareResult {
+  applied: { action: string; type: string; name: string }[];
+  errors: { type: string; name: string; error: string }[];
+  domain: MailDomain | null;
 }

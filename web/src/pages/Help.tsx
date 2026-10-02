@@ -285,7 +285,7 @@ export default function HelpPage() {
         const revisado = n === 1 ? 'Se ha revisado 1 servicio' : `Se han revisado ${n} servicios`;
         const text =
           res.issues.length === 0
-            ? `${revisado} y no se ha detectado ningún problema. Si el servicio sigue fallando, describa el síntoma observado (un error, una respuesta 502, un contenedor que no arranca) para obtener una revisión más detallada.`
+            ? `${revisado} y no se ha detectado ningún problema. Si el servicio sigue fallando, describe el síntoma observado (un error, una respuesta 502, un contenedor que no arranca) para obtener una revisión más detallada.`
             : `${revisado} y se ${res.issues.length === 1 ? 'ha detectado 1 problema' : `han detectado ${res.issues.length} problemas`}. Se recomienda empezar por el más grave:`;
         patch(msgId, { pending: false, text, issues: res.issues });
       }
@@ -355,7 +355,7 @@ export default function HelpPage() {
     <div className="mx-auto flex max-w-[1180px] flex-col gap-5 px-4 py-7 sm:px-6 sm:py-10">
       <PageHeader
         title="Ayuda"
-        description="Consulte la documentación, solicite una revisión del estado de sus servicios y acceda a las preguntas frecuentes."
+        description="Consulta la documentación, solicita una revisión del estado de tus servicios y accede a las preguntas frecuentes."
       />
 
       {/* Móvil: asistente arriba y FAQ debajo. Escritorio: dos columnas. */}
@@ -378,7 +378,7 @@ export default function HelpPage() {
               <div className="flex flex-col gap-3 rounded-xl border border-dashed border-line px-4 py-5 text-center">
                 <p className="text-sm text-sub">No hay consultas todavía.</p>
                 <p className="text-xs leading-5 text-subtle">
-                  Seleccione una de las consultas propuestas o escriba la suya. Con «Comprobar servicios» se revisan el estado,
+                  Selecciona una de las consultas propuestas o escribe la tuya. Con «Comprobar servicios» se revisan el estado,
                   el último despliegue y el registro.
                 </p>
               </div>
@@ -431,7 +431,7 @@ export default function HelpPage() {
               <label className="block">
                 <span className="mb-1.5 block text-xs font-medium text-sub">Servicio (opcional)</span>
                 <select className="input" value={serviceId} onChange={(e) => setServiceId(e.target.value)} disabled={projects.isLoading}>
-                  <option value="">{services.length === 0 && !projects.isLoading ? 'No hay servicios en sus proyectos' : 'Todos los servicios'}</option>
+                  <option value="">{services.length === 0 && !projects.isLoading ? 'No hay servicios en tus proyectos' : 'Todos los servicios'}</option>
                   {services.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.name} · {s.projectName}
@@ -447,7 +447,7 @@ export default function HelpPage() {
                   className="input min-w-0 flex-1 max-sm:h-11"
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
-                  placeholder="Escriba su consulta y pulse Intro"
+                  placeholder="Escribe tu consulta y pulsa Intro"
                   maxLength={500}
                   enterKeyHint="send"
                   autoComplete="off"
@@ -464,7 +464,7 @@ export default function HelpPage() {
                 </button>
               </div>
               <p className="text-micro text-subtle">
-                Las respuestas se generan a partir de la documentación y del estado de sus servicios. No se envía información a terceros.
+                Las respuestas se generan a partir de la documentación y del estado de tus servicios. No se envía información a terceros.
               </p>
             </form>
           </div>

@@ -3,7 +3,7 @@
  * p. ej. el único admin bloqueado). No hay endpoint HTTP para esto a propósito:
  * quien puede ejecutarlo ya administra la máquina.
  *
- *   docker compose exec skyway node dist/tools/reset-password.js <email> [nueva-contraseña]
+ *   docker exec -it skyway node server/dist/tools/reset-password.js <email> [nueva-contraseña]
  *   npm run reset-password -w server -- <email> [nueva-contraseña]
  *   SKYWAY_NEW_PASSWORD='...' npm run reset-password -w server -- <email>
  *

@@ -15,7 +15,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fireAlert } from '../alerts';
-import { getEnv, getProjectVars, getService, setEnv, updateService } from '../db';
+import { getEnv, getProjectVars, getService, updateService, writeManagedEnv } from '../db';
 import { getRepoFile, listRepoDir } from '../github/client';
 import { insideDir } from '../paths';
 import { GitConfig, ServiceRow } from '../types';
@@ -369,9 +369,15 @@ export function finalizeEnvImport(
   if (!opts.apply) return report;
 
   if (plan.imported.length > 0) {
-    const nuevas: Record<string, string> = {};
-    for (const { key, value } of plan.imported) nuevas[key] = value ?? '';
-    setEnv(service.id, { ...getEnv(service.id), ...nuevas });
+    // Se apuntan como escritas por Skyway (origen `import`, con el hash del
+    // valor): son valores de ejemplo del repositorio, no una decisión de
+    // nadie. Sin esto, «Conectar a un servicio» y el plan de integraciones las
+    // tomaban por puestas a mano y no las tocaban: el `MAIL_HOST=mailpit` del
+    // `.env.example` de Laravel se quedaba junto a la credencial de Mailway.
+    // En cuanto alguien cambia el valor, el hash deja de casar y pasa a ser suyo.
+    const nuevas: Record<string, { value: string; origin: string }> = {};
+    for (const { key, value } of plan.imported) nuevas[key] = { value: value ?? '', origin: 'import' };
+    writeManagedEnv(service.id, nuevas);
   }
 
   // Se relee el servicio: la config en memoria de quien llama puede ser
@@ -412,8 +418,8 @@ export function finalizeEnvImport(
       explanation:
         `${aplicacion} ` +
         (pendientes.length > 0
-          ? 'Las variables pendientes tienen un valor vacío o de ejemplo en el repositorio. Complete su valor en la pestaña «Variables» del servicio y vuelva a desplegar.'
-          : 'Puede revisarlas en la pestaña «Variables» del servicio.'),
+          ? 'Las variables pendientes tienen un valor vacío o de ejemplo en el repositorio. Completa su valor en la pestaña «Variables» del servicio y vuelve a desplegar.'
+          : 'Puedes revisarlas en la pestaña «Variables» del servicio.'),
       dedupeKey: `env_imported:${service.id}`,
     });
   }
@@ -439,7 +445,7 @@ function logEnvImport(report: EnvImportReport, log: (line: string) => void): voi
   if (pendientes.length > 0) {
     log(
       `Variables: ${pendientes.length} ${pendientes.length === 1 ? 'pendiente' : 'pendientes'} de valor (${listaClaves(pendientes)}). ` +
-        'Complete su valor en la pestaña «Variables».',
+        'Completa su valor en la pestaña «Variables».',
     );
   }
   if (ignoradas.length > 0) {

@@ -162,7 +162,7 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
           )}
         </div>
         <p className="mb-4 text-xs text-subtle">
-          {isAdmin ? 'Suma de todos los proyectos de la cuenta; los servicios en ejecución aplican el cambio al volver a desplegar.' : 'Suma de todos los proyectos de la cuenta; la define su proveedor.'}
+          {isAdmin ? 'Suma de todos los proyectos de la cuenta; los servicios en ejecución aplican el cambio al volver a desplegar.' : 'Suma de todos los proyectos de la cuenta; la define tu proveedor.'}
         </p>
 
         <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
@@ -223,7 +223,7 @@ function ResumenTab({ detail, isAdmin, plans, onSaved }: { detail: Detail; isAdm
 
         {(ws.allocation.unlimited.cpu > 0 || ws.allocation.unlimited.memory > 0) && (
           <p className="mt-4 rounded-lg border border-warn/25 bg-warn/[.08] px-3 py-2 text-xs text-warn">
-            Hay servicios sin límite de recursos: no reservan cuota, pero pueden crecer sin límite. Asígneles CPU/RAM en sus ajustes para acotarlos.
+            Hay servicios sin límite de recursos: no reservan cuota, pero pueden crecer sin límite. Asígnales CPU/RAM en sus ajustes para acotarlos.
           </p>
         )}
       </section>
@@ -293,7 +293,7 @@ function ModulosTab({ detail, isAdmin, modules, onSaved }: { detail: Detail; isA
         <p className="mt-1 text-xs text-subtle">
           {isAdmin
             ? 'Concede o retira módulos; el cliente solo puede desactivar los concedidos.'
-            : 'Active o desactive los módulos incluidos en su plan.'}
+            : 'Activa o desactiva los módulos incluidos en tu plan.'}
         </p>
         <div className="mt-4 flex flex-col gap-5">
           {groups.map(([group, mods]) => (
@@ -475,7 +475,7 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
         </Button>
       </div>
       {members.length === 0 ? (
-        <p className="px-4 py-8 text-center text-xs text-subtle">No hay usuarios. Cree uno para dar acceso a esta cuenta.</p>
+        <p className="px-4 py-8 text-center text-xs text-subtle">No hay usuarios. Crea uno para dar acceso a esta cuenta.</p>
       ) : (
         members.map((m, i) => (
           <div key={m.id} className={cx('flex flex-wrap items-center gap-3 px-4 py-3', i > 0 && 'border-t border-line')}>
@@ -594,7 +594,7 @@ function UsuariosTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin: bo
               }
             >
               <select className="input" value={moveTarget} onChange={(e) => setMoveTarget(e.target.value)} disabled={workspaces.isLoading}>
-                <option value="">Seleccione una cuenta</option>
+                <option value="">Selecciona una cuenta</option>
                 {otherWorkspaces.map((w) => (
                   <option key={w.id} value={w.id}>
                     {w.name}
@@ -914,7 +914,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
           <EmptyState
             compact
             title="Todavía no hay facturas"
-            description={isAdmin ? 'Genere la factura del ciclo o cree una a medida.' : 'Las facturas de su cuenta se mostrarán aquí.'}
+            description={isAdmin ? 'Genera la factura del ciclo o crea una a medida.' : 'Las facturas de tu cuenta se mostrarán aquí.'}
           />
         ) : (
           data!.invoices.map((inv, i) => (
@@ -1397,7 +1397,7 @@ function SubscriptionsSection({ workspaceId, currency, onChanged }: { workspaceI
         <ErrorState compact title="No se han podido cargar los servicios contratados" error={subsQ.error} onRetry={() => subsQ.refetch()} retrying={subsQ.isFetching} />
       ) : subs.length === 0 && charges.length === 0 ? (
         <p className="px-4 py-8 text-center text-xs text-subtle">
-          No hay servicios contratados. {activeProducts.length === 0 ? 'Cree primero productos en el catálogo.' : 'Suscriba la cuenta a un producto recurrente o añada un pago único del catálogo.'}
+          No hay servicios contratados. {activeProducts.length === 0 ? 'Crea primero productos en el catálogo.' : 'Suscribe la cuenta a un producto recurrente o añade un pago único del catálogo.'}
         </p>
       ) : (
         <>
@@ -1627,7 +1627,7 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
       ) : q.isError ? (
         <ErrorState compact title="No se han podido cargar las claves" error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching} />
       ) : keys.length === 0 ? (
-        <p className="px-4 py-8 text-center text-xs text-subtle">No hay claves. Emita una para que el cliente consuma Gemini a través del proxy y se le facture el uso.</p>
+        <p className="px-4 py-8 text-center text-xs text-subtle">No hay claves. Emite una para que el cliente consuma Gemini a través del proxy y se le facture el uso.</p>
       ) : (
         keys.map((k, i) => (
           <div key={k.id} className={cx('flex flex-wrap items-center gap-3 px-4 py-3', i > 0 && 'border-t border-line')}>
@@ -1699,9 +1699,9 @@ function AiKeysSection({ workspaceId, currency }: { workspaceId: string; currenc
       </Modal>
 
       {/* Modal: mostrar el secreto una sola vez */}
-      <Modal open={!!secret} onClose={() => setSecret(null)} title="Copie la clave ahora">
+      <Modal open={!!secret} onClose={() => setSecret(null)} title="Copia la clave ahora">
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-sub">La clave se muestra una sola vez. Guárdela en un lugar seguro; no será posible volver a consultarla.</p>
+          <p className="text-sm text-sub">La clave se muestra una sola vez. Guárdala en un lugar seguro; no será posible volver a consultarla.</p>
           <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-bg px-3 py-2.5">
             <code className="min-w-0 flex-1 truncate font-mono text-xs">{secret}</code>
             {secret && <CopyButton value={secret} title="Copiar clave" />}
@@ -1759,7 +1759,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
     return (
       <section className="card p-5">
         <h2 className="text-base font-semibold">Precios de IA de este cliente</h2>
-        <p className="mt-2 text-xs text-subtle">Cree primero productos de IA en el <Link to="/catalog" className="tap text-acc-soft hover:underline">catálogo</Link>; después podrá activarlos aquí con un precio propio.</p>
+        <p className="mt-2 text-xs text-subtle">Crea primero productos de IA en el <Link to="/catalog" className="tap text-acc-soft hover:underline">catálogo</Link>; después podrás activarlos aquí con un precio propio.</p>
       </section>
     );
   }
@@ -1776,7 +1776,7 @@ function AiPricingSection({ workspaceId, currency }: { workspaceId: string; curr
       </div>
 
       {iaSubs.length === 0 ? (
-        <p className="px-4 py-8 text-center text-xs text-subtle">Todavía no se factura IA a este cliente. Actívela para cobrar el consumo a precio de catálogo o con un precio propio por medidor.</p>
+        <p className="px-4 py-8 text-center text-xs text-subtle">Todavía no se factura IA a este cliente. Actívala para cobrar el consumo a precio de catálogo o con un precio propio por medidor.</p>
       ) : (
         iaSubs.map((s, i) => {
           const prod = productById.get(s.product_id);

@@ -138,7 +138,7 @@ export default function PlansPage() {
         <div className="card">
           <EmptyState
             title="Todavía no hay planes"
-            description="Cree el primero para poder asignar cuotas y precios a las cuentas de cliente."
+            description="Crea el primero para poder asignar cuotas y precios a las cuentas de cliente."
           />
         </div>
       )}
@@ -165,7 +165,7 @@ export default function PlansPage() {
                   onClick={() => setToDelete(p)}
                   disabled={p.inUse > 0}
                   className="rounded-md p-1.5 text-subtle hover:bg-err/[.12] hover:text-err disabled:opacity-30 max-sm:p-2.5"
-                  title={p.inUse > 0 ? 'En uso: archívelo o reasigne sus cuentas' : 'Eliminar'}
+                  title={p.inUse > 0 ? 'En uso: archívalo o reasigna sus cuentas' : 'Eliminar'}
                   aria-label="Eliminar"
                 >
                   <Trash2 size={14} />

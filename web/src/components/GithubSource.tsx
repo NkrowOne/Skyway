@@ -292,8 +292,8 @@ export function GithubRepoPicker({
             title={needle ? 'Ningún repositorio coincide' : 'Esta cuenta no tiene ningún repositorio disponible'}
             description={
               needle
-                ? `No hay resultados para «${filter}». Puede indicar el repositorio como owner/repo o pegar su URL.`
-                : 'Conceda acceso a los repositorios que desee desplegar desde la configuración de la App en GitHub, o indique aquí owner/repo.'
+                ? `No hay resultados para «${filter}». Puedes indicar el repositorio como owner/repo o pegar su URL.`
+                : 'Concede acceso a los repositorios que quieras desplegar desde la configuración de la App en GitHub, o indica aquí owner/repo.'
             }
           />
         )}

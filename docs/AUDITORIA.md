@@ -34,6 +34,9 @@ recomendaciones a futuro.
 | 9 | Baja | WebAuthn | El origen esperado se tomaba de la cabecera `Origin` del cliente. | Se construye con protocolo y host de la petición; la cabecera solo se acepta si su host coincide. Una passkey ya registrada responde 409 en vez de 500. |
 | 10 | Media | Multi-inquilino (GitHub App) | El id de instalación que GitHub devuelve al instalar la App no iba ligado al estado firmado y es un entero adivinable: un miembro podía registrar en su proyecto una instalación **ajena** y clonar con ella repos privados de otro cliente. | Una instalación ya conectada a otro proyecto o al servidor solo la reasigna un administrador (`routes/github.ts`). |
 | 11 | Media | Reglas de Traefik | Los dominios llegaban como texto libre a la regla `Host(\`…\`)`, compartida por todo el servidor: una comilla invertida permitía redactar una regla que capturara el tráfico de otros clientes. | `domainSchema` (RFC 1123, minúsculas) en servicios, pilas, plantillas, `rootDomain` y el importador de Railway. |
+| 12 | Media | Fichero de zona (correo) | Descargado por un administrador, la nota del webmail nombraba el proyecto y el servicio que tenía el nombre (de otro cliente) y se escribía tal cual tras `;`: un nombre de servicio con un salto de línea añadía registros DNS propios (un MX hacia otro servidor) a la zona que el cliente importa. | La nota es siempre la genérica (no nombra servicios ni proyectos) y todo texto libre de un comentario va en una sola línea (`zoneComment`). Los nombres de proyecto y de servicio ya no admiten saltos de línea ni caracteres de control (`VISIBLE_NAME_RE`). |
+| 13 | Media | Plan de integraciones | La aprobación de lo privilegiado del `skyway.json` no iba ligada al plan revisado: si un push cambiaba el manifiesto entre ver el plan y pulsar «Aprobar y aplicar», se aprobaba otro recurso, p. ej. una contraseña de aplicación (acceso IMAP) del buzón personal de dirección, legible después por cualquier miembro en las variables del servicio. | El plan lleva una huella de lo privilegiado (`fingerprint`) y aprobar la exige (`expect`): si no coincide, 409 con el plan nuevo sin aplicar nada (en el alta, queda pendiente). Reutilizar en SMTP un buzón que ya existe pide además una confirmación expresa (`confirmMailboxAccess`). |
+| 14 | Media | Correo de los servicios | La regla de no pisar variables puestas a mano iba variable a variable: con el servidor de otro proveedor puesto a mano (o importado del `.env.example`, que contaba como puesto a mano), «Conectar a un servicio» escribía la credencial de Mailway a su lado y la web se la enviaba a ese tercero. | Lo importado del repositorio y sin tocar es de Skyway (`service_managed_env`, origen `import`) y se sustituye; si el servidor, el puerto, el usuario o la URL de la API siguen puestos a mano con otro valor, 409 sin crear la credencial (también en el plan). |
 
 Todas verificadas: `npm run typecheck` y `npm run build` en verde, y *smoke test*
 del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
@@ -85,6 +88,81 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   [AUDITORIA-FACTURACION.md](AUDITORIA-FACTURACION.md), que corrigió 34 defectos —
   dos de ellos críticos— y deja 13 puntos pendientes.
 
+- **Integración con Mailway (correo)** (`mailway.ts`, `mailwaytraefik.ts`,
+  `routes/mailway.ts`): el token de gestión `mwt_…` es de **administrador** de
+  Mailway, así que el aislamiento entre proyectos lo impone Skyway: cada ruta con
+  `:domainId`/`:mailboxId`/`:appId`/`:keyId` lo busca primero en el resumen del
+  cliente vinculado al proyecto y, si no es suyo, responde **404 sin llamar a
+  Mailway**; si la referencia externa del cliente no es exactamente
+  `skyway:project:<id>` (también vacía), 409 en **todas** las rutas de proyecto,
+  incluida el alta de dominios. Activar, desactivar, crear buzones, conectar
+  servicios, revocar credenciales, aplicar DNS en Cloudflare, restablecer
+  contraseñas, crear enlaces **con contraseña** (además con tope de 5 cada 10 min:
+  Mailway la comprueba y sería un oráculo) y borrar buzones exigen gestionar el
+  proyecto; vincular un cliente existente, elegir el plan y crear buzones de
+  nombre reservado (postmaster, abuse, admin, hostmaster, webmaster, root…), ser
+  admin. Con la cuenta suspendida (o el cliente suspendido en Mailway) no se crea
+  nada. Para quien no es admin, el plan y la aplicación de DNS en Cloudflare (y
+  el alta de dominios) van con `?soloCliente=1`: Mailway no usa las cuentas de Cloudflare de la instancia
+  (el propietario de un proyecto podía leer y reescribir zonas del operador).
+  Desactivar solo retira la referencia en Mailway si todavía es la del proyecto.
+  Volver a conectar un servicio revoca la credencial anterior. El token nunca se
+  devuelve ni se audita; contraseñas, claves `mw_…` y URLs de enlaces de
+  configuración tampoco (la respuesta de «conectar» solo lista nombres de
+  variables). Configurarlo y desconectarlo exigen sesión de navegador. Un fallo
+  de Mailway nunca se traduce en 401 (cerraría la sesión). Las URLs que llegan
+  de Mailway solo se devuelven —y la web solo las enlaza— si son http(s).
+  **El token no viaja por un dominio ajeno**: si el dominio de la URL pública lo
+  sirve un servicio de Skyway que no es del proyecto de Mailway, Skyway no la usa
+  (solo la dirección interna del panel) y no deja guardarla.
+  **Webmail con el dominio del cliente** (marca blanca, `…/domains/:domainId/webmail`):
+  las rutas no aceptan identificadores de marca blanca; el nombre (`webmail.<dominio>`)
+  se deriva del dominio del cliente, el dominio propio se busca entre los del
+  cliente vinculado (filtrado también en Skyway) y la respuesta de Mailway tiene
+  que ser de ese cliente y ese nombre. Crearlo exige gestionar el proyecto y la
+  cuenta y el cliente activos; ni se crea, ni se marca como principal, ni se
+  crea su registro en Cloudflare (con `soloCliente=1` para quien no es admin) si
+  el nombre lo sirve cualquier servicio de Skyway, es el del panel o de la
+  instancia de Mailway (`webmailHostError`). El **fichero de zona** se sirve sin
+  registros A, AAAA, CNAME, HTTPS ni SVCB del dominio raíz ni de www.
+  **Puente de Traefik** (`GET /api/traefik/mailway`, sin sesión): 404 si la
+  petición llega reenviada por Traefik; la configuración de Mailway se reescribe
+  a una forma mínima —solo `Host()` con nombres completos, sin colisión con el
+  dominio del panel (`SKYWAY_DOMAIN`) ni con ningún dominio de un servicio,
+  servicios `http://<contenedor>` solo hacia contenedores `mailway-…` o del
+  proyecto de Mailway **comparados por nombre completo** (ni IP, ni nombres de
+  una etiqueta como `localhost` o `metadata`, ni `skyway`/Traefik, ni el
+  proyecto «correo-x» cuando Mailway vive en «correo»), solo middlewares de
+  redirección a HTTPS, entradas `web`/`websecure` y el emisor `le`—, y la copia
+  de reserva se vuelve a sanear en cada uso. Sin token se sigue sirviendo la
+  última configuración buena; solo «Desconectar Mailway» la retira.
+  Pruebas en `server/test/mailway*.test.ts` (las regresiones de la revisión, en
+  `mailway-seguridad.test.ts`).
+
+- **Dominios únicos entre servicios** (`domainguard.ts`, antes sin comprobar):
+  Traefik es compartido y, cuando dos routers encajan con el mismo host, gana la
+  regla más larga, así que un propietario podía quedarse con el dominio de otro
+  cliente, con el del panel de Skyway o con los de Mailway (por el de su panel
+  viaja el token de administrador de Skyway) solo con añadirlo a su servicio
+  junto a otro nombre más largo. Ahora crear un servicio, editar sus dominios,
+  crear una pila o una plantilla de Railway rechaza (409) un dominio nuevo que ya
+  sirve otro servicio o que es el del panel (`SKYWAY_DOMAIN`), para todos; y, para
+  quien no es admin y fuera del proyecto de Mailway, los hosts de Mailway (su URL
+  pública, panel, webmail, servidor de correo y los dominios que publica el
+  puente). La importación de Railway omite los que chocan, con una nota. Los
+  dominios que un servicio ya tenía no se revisan (se puede seguir editando).
+  **Nombres de marca blanca que esperan DNS** (cerrado): Mailway solo publica en
+  Traefik los dominios propios que ya apuntan al servidor, así que mientras uno
+  esperaba DNS otro cliente podía asignar ese nombre (`webmail.<dominio>`) a un
+  servicio y quedarse con el tráfico del webmail —y con las contraseñas que se
+  escribieran en él— en cuanto el DNS apuntase aquí. Ahora el puente obtiene en
+  cada lectura todos los nombres de marca blanca de la instancia, en cualquier
+  estado (`GET /api/whitelabel/domains` sin `clientId`, con plazo corto y en
+  paralelo), conserva la última lista buena si Mailway no responde (memoria y
+  `settings`) y `domainguard.ts` los reserva igual que los publicados. El
+  webmail creado desde un proyecto se reserva al darlo de alta, sin esperar a la
+  lectura siguiente, y «Desconectar Mailway» libera la lista.
+
 ---
 
 ## 3. Riesgos aceptados por diseño
@@ -108,6 +186,21 @@ Estos no son defectos, sino consecuencias del propósito de la herramienta
   limitado al workspace (`assertProjectAccess`), su alta/baja queda auditada y el
   admin puede revocarlos todos desde Ajustes. Recomendación al cliente: token
   *fine-grained* de solo lectura limitado a los repos que va a desplegar.
+- **Token de gestión de Mailway en claro**: se guarda en `settings` como el
+  `githubToken` global, porque se envía tal cual a Mailway. Solo lo escribe un
+  admin con sesión de navegador y la API nunca lo devuelve. El puente de Traefik
+  responde sin autenticación a quien llegue por la red interna (una aplicación
+  de la red `skyway-edge` podría leer los dominios de marca blanca publicados):
+  son dominios públicos y nombres de contenedor, sin secretos.
+- **Rutas de Mailway sin token**: quitar el token o la dirección deja publicadas
+  en Traefik las últimas rutas buenas (re-saneadas con los dominios de ahora),
+  para no dejar sin webmail a los clientes por un token rotado o borrado por
+  error. Retirarlas es una acción explícita del admin («Desconectar Mailway»).
+- **Administrador y dominios de Mailway**: el admin puede asignar a cualquier
+  servicio los hosts de Mailway (lo necesita para desplegar el propio panel); la
+  unicidad y el dominio del panel sí se le aplican. Los contenedores
+  `mailway-…` se admiten como destino del puente sin estar en Skyway: Skyway
+  nunca crea contenedores ni alias con ese prefijo en la red de Traefik.
 
 ---
 

@@ -3,6 +3,8 @@ import os from 'os';
 import path from 'path';
 import { getEnv, getProjectVars } from './db';
 import { ghFetch } from './github/client';
+import { MailMode, mailRoleOf, mailVarsOf, suggestedMailMode } from './mailenv';
+import { MANIFEST_FILE, MANIFEST_MAX_BYTES, parseManifest } from './manifest';
 import { getTemplate } from './templates';
 import { DetectedNeeds, GitConfig, ServiceRow } from './types';
 import { ReferenceGroup } from './variables';
@@ -13,7 +15,9 @@ import { ReferenceGroup } from './variables';
  * espera (por su `.env.example`). Con eso el panel propone las referencias que
  * faltan —o crear la base que no existe— en vez de dejar que la app arranque
  * sin `DATABASE_URL` y falle a los diez segundos con un mensaje que no habla de
- * variables. Solo se PROPONE: nada de esto escribe una variable por su cuenta.
+ * variables. También ve si la web envía correo (y con qué nombres de variable)
+ * y lee su manifiesto `skyway.json`, si lo trae. Solo se PROPONE: nada de esto
+ * escribe una variable por su cuenta (eso lo decide `integrations.ts`).
  */
 
 type Engine = 'postgres' | 'redis' | 'mysql' | 'mongo' | 'minio';
@@ -38,6 +42,7 @@ export const CANDIDATE_FILES = [
   'composer.json',
   ...PRISMA_FILES,
   ...COMPOSE_FILES,
+  MANIFEST_FILE,
 ];
 
 /*
@@ -134,6 +139,57 @@ const COMPOSE_IMAGE: Record<string, Engine> = {
   minio: 'minio',
 };
 
+/*
+ * Librerías con las que una web envía correo. Que una web use Resend o
+ * SendGrid no quiere decir que vaya a usar Mailway, pero sí que espera un
+ * remitente y una credencial: se propone conectarle el correo del proyecto.
+ */
+const NPM_MAIL = new Set([
+  'nodemailer',
+  'resend',
+  '@sendgrid/mail',
+  'postmark',
+  'emailjs',
+  'mailgun.js',
+  'mailgun-js',
+  'mailersend',
+  '@getbrevo/brevo',
+  '@mailchimp/mailchimp_transactional',
+]);
+const PYPI_MAIL = new Set([
+  'flask-mail',
+  'flask-mailman',
+  'fastapi-mail',
+  'django-anymail',
+  'sendgrid',
+  'postmarker',
+  'resend',
+  'yagmail',
+  'aiosmtplib',
+  'mailjet-rest',
+  'redmail',
+]);
+const GEM_MAIL = new Set(['mail', 'pony', 'postmark', 'postmark-rails', 'sendgrid-ruby', 'resend', 'mailgun-ruby']);
+const COMPOSER_MAIL = new Set([
+  'phpmailer/phpmailer',
+  'symfony/mailer',
+  'swiftmailer/swiftmailer',
+  'resend/resend-php',
+  'resend/resend-laravel',
+  'sendgrid/sendgrid',
+  'wildbit/postmark-php',
+  'mailgun/mailgun-php',
+]);
+const GO_MAIL: RegExp[] = [
+  /gopkg\.in\/gomail\.v2/,
+  /github\.com\/go-gomail\/gomail/,
+  /github\.com\/wneessen\/go-mail/,
+  /github\.com\/jordan-wright\/email/,
+  /github\.com\/xhit\/go-simple-mail/,
+  /github\.com\/resend\/resend-go/,
+  /github\.com\/sendgrid\/sendgrid-go/,
+];
+
 /**
  * Nombre de variable → (motor, papel). `sql` es «la base relacional que haya»:
  * `DATABASE_URL` o `DB_HOST` valen igual para Postgres y MySQL, y lo decide lo
@@ -220,12 +276,37 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
 
   let expectedVars: string[] = [];
   let envFile: string | null = null;
+  const mailEvidence: string[] = [];
+  const mailFound = (evidence: string, source: string) => {
+    if (!mailEvidence.includes(evidence)) mailEvidence.push(evidence);
+    sources.add(source);
+  };
+  let manifestFile: string | null = null;
+  let manifestText: string | null = null;
+  let manifestTooBig = false;
 
   for (const dir of roots) {
     const read = (name: string): { text: string; rel: string } | null => {
       const text = readSmall(path.join(dir, name));
       return text === null ? null : { text, rel: rel(path.join(dir, name)) };
     };
+
+    // El manifiesto más cercano a la aplicación manda (el del directorio raíz
+    // del servicio antes que el de la raíz del monorepo), como el .env.example.
+    if (manifestFile === null) {
+      const full = path.join(dir, MANIFEST_FILE);
+      try {
+        const st = fs.statSync(full);
+        if (st.isFile()) {
+          manifestFile = rel(full);
+          manifestTooBig = st.size > MANIFEST_MAX_BYTES;
+          if (!manifestTooBig) manifestText = fs.readFileSync(full, 'utf8');
+          sources.add(manifestFile);
+        }
+      } catch {
+        /* sin manifiesto */
+      }
+    }
 
     // Variables esperadas: el primer fichero de ejemplo que aparezca manda.
     if (!envFile) {
@@ -257,6 +338,10 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
             sources.add(pkg.rel);
           }
         }
+        // Solo las de producción: un nodemailer de desarrollo (pruebas) no es correo de la web.
+        for (const name of Object.keys(parsed.dependencies ?? {})) {
+          if (NPM_MAIL.has(name)) mailFound(`${pkg.rel}: ${name}`, pkg.rel);
+        }
       } catch {
         /* un package.json roto ya lo contará el build */
       }
@@ -272,6 +357,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           found(engine, `${req.rel}: ${n}`);
           sources.add(req.rel);
         }
+        if (n && PYPI_MAIL.has(n)) mailFound(`${req.rel}: ${n}`, req.rel);
       }
     }
     const pyproject = read('pyproject.toml');
@@ -284,6 +370,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           found(engine, `${pyproject.rel}: ${n}`);
           sources.add(pyproject.rel);
         }
+        if (PYPI_MAIL.has(n)) mailFound(`${pyproject.rel}: ${n}`, pyproject.rel);
       }
     }
 
@@ -295,6 +382,10 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           sources.add(gomod.rel);
         }
       }
+      for (const re of GO_MAIL) {
+        const hit = gomod.text.match(re);
+        if (hit) mailFound(`${gomod.rel}: ${hit[0]}`, gomod.rel);
+      }
     }
 
     const gemfile = read('Gemfile');
@@ -305,6 +396,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           found(engine, `${gemfile.rel}: ${m[1]}`);
           sources.add(gemfile.rel);
         }
+        if (GEM_MAIL.has(m[1])) mailFound(`${gemfile.rel}: ${m[1]}`, gemfile.rel);
       }
     }
 
@@ -317,6 +409,9 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
             found(engine, `${composer.rel}: ${name}`);
             sources.add(composer.rel);
           }
+        }
+        for (const name of Object.keys(parsed.require ?? {})) {
+          if (COMPOSER_MAIL.has(name)) mailFound(`${composer.rel}: ${name}`, composer.rel);
         }
       } catch {
         /* idem */
@@ -365,12 +460,31 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
     else if (!engines.has('postgres') && !engines.has('mysql')) found('postgres', `${envFile}: ${v} (se asume PostgreSQL)`);
   }
 
-  if (engines.size === 0 && expectedVars.length === 0) return null;
+  // Correo por las variables: las de papel conocido (`MAIL_PASSWORD`,
+  // `EMAIL_HOST_USER`…) y cualquier `SMTP_*`. Un `EMAIL_VERIFICATION` suelto
+  // no cuenta: `EMAIL_` y `MAIL_` también se usan para cosas que no son enviar.
+  const mailVars = mailVarsOf(expectedVars);
+  const smtpSueltas = expectedVars.filter((v) => /^SMTP_/.test(v) && !mailRoleOf(v));
+  const porVariables = [...mailVars.map((v) => v.name), ...smtpSueltas];
+  if (porVariables.length > 0 && envFile) mailFound(`${envFile}: ${porVariables.slice(0, 4).join(', ')}${porVariables.length > 4 ? ', …' : ''}`, envFile);
+  const mail =
+    mailEvidence.length > 0 ? { mode: suggestedMailMode(mailVars) as MailMode, vars: mailVars, evidence: mailEvidence } : null;
+
+  let manifest: ReturnType<typeof parseManifest> | null = null;
+  if (manifestFile !== null) {
+    manifest = manifestTooBig ? { manifest: null, error: `${MANIFEST_FILE} ocupa más de 64 KB.` } : parseManifest(manifestText ?? '');
+  }
+
+  if (engines.size === 0 && expectedVars.length === 0 && !mail && manifestFile === null) return null;
   return {
     engines: [...engines.entries()].map(([template, evidence]) => ({ template, evidence })),
     expectedVars,
     envFile,
     sources: [...sources],
+    mail,
+    manifest: manifest?.manifest ?? null,
+    manifestFile,
+    manifestError: manifest?.error ?? null,
     detectedAt: Date.now(),
   };
 }
@@ -446,9 +560,17 @@ export interface EnvAdvice {
   suggestions: EnvSuggestion[];
   /** Variables que el repositorio espera, sin sugerencia automática y sin definir. */
   missing: string[];
+  /**
+   * La web envía correo: modo propuesto y variables de correo que espera
+   * (todas, definidas o no). Esas no van en `missing`: las rellena «Correo →
+   * Conectar a un servicio» o el plan de integraciones.
+   */
+  mail: { mode: 'smtp' | 'api'; vars: { name: string; role: string }[]; evidence: string[] } | null;
+  /** `skyway.json` del repositorio: su fichero y, si no es válido, el motivo. */
+  manifest: { file: string; error: string | null } | null;
 }
 
-const NO_ADVICE: EnvAdvice = { needs: null, suggestions: [], missing: [] };
+const NO_ADVICE: EnvAdvice = { needs: null, suggestions: [], missing: [], mail: null, manifest: null };
 
 /** A quién se aconseja: basta con lo que cambia las propuestas, exista ya el servicio o no. */
 export interface AdviceTarget {
@@ -494,6 +616,13 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
   const suggestions: EnvSuggestion[] = [];
   const missing: string[] = [];
   const covered = new Set<string>();
+  // Lo que declara el manifiesto lo resuelve el plan de integraciones, y las
+  // variables de correo, la conexión con el correo: proponerlas aquí también
+  // sería decir lo mismo dos veces (y con otra referencia).
+  const handledElsewhere = new Set<string>([
+    ...Object.keys(needs.manifest?.env ?? {}),
+    ...(needs.mail?.vars ?? []).map((v) => v.name),
+  ]);
   const propose = (key: string, engine: Engine, role: Role, reason: string): boolean => {
     const refVar = getTemplate(engine)?.conn[role];
     if (!refVar) return false;
@@ -512,7 +641,7 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
   };
 
   for (const v of needs.expectedVars) {
-    if (defined.has(v) || AUTO_COVERED_RE.test(v)) continue;
+    if (defined.has(v) || AUTO_COVERED_RE.test(v) || handledElsewhere.has(v)) continue;
     const hit = VAR_PATTERNS.find((p) => p.re.test(v));
     if (hit) {
       const engine = hit.engine === 'sql' ? sqlEngine : hit.engine;
@@ -545,7 +674,7 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
     const template = getTemplate(engine);
     if (!template) continue;
     for (const key of template.conn.connect) {
-      if (defined.has(key)) continue;
+      if (defined.has(key) || handledElsewhere.has(key)) continue;
       const role = (Object.entries(template.conn) as [string, unknown][]).find(([r, name]) => r !== 'connect' && name === key)?.[0] as
         | Role
         | undefined;
@@ -561,5 +690,7 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
     },
     suggestions: suggestions.filter((s) => !seen.has(s.key) && seen.add(s.key)),
     missing,
+    mail: needs.mail ?? null,
+    manifest: needs.manifestFile ? { file: needs.manifestFile, error: needs.manifestError ?? null } : null,
   };
 }

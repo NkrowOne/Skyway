@@ -228,6 +228,7 @@ export const DEPLOY_TRIGGER_LABEL: Record<string, string> = {
   autodeploy: 'automático',
   rollback: 'reversión',
   import: 'importación',
+  mailway: 'correo',
 };
 
 export function isActiveDeploy(status: DeploymentStatus): boolean {
@@ -314,7 +315,39 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   file_mkdir: 'Carpeta creada en el contenedor',
   status_page_updated: 'Página de estado actualizada',
   status_page_rotated: 'Enlace de página de estado rotado',
+  mailway_config_updated: 'Conexión con Mailway modificada',
+  mailway_linked: 'Correo activado en el proyecto',
+  mailway_link_restored: 'Vínculo de correo recuperado',
+  mailway_unlinked: 'Correo desactivado en el proyecto',
+  mailway_domain_added: 'Dominio de correo añadido',
+  mailway_dns_applied: 'Registros DNS de correo aplicados en Cloudflare',
+  mailway_webmail_created: 'Webmail con el dominio del cliente configurado',
+  mailway_webmail_dns_applied: 'Registro DNS del webmail creado en Cloudflare',
+  mailway_webmail_primary: 'Webmail principal del cliente de correo modificado',
+  mailway_mailbox_created: 'Buzón creado',
+  mailway_mailbox_password_reset: 'Contraseña de buzón restablecida',
+  mailway_mailbox_deleted: 'Buzón eliminado',
+  mailway_setup_link_created: 'Enlace de configuración de buzón creado',
+  mailway_service_connected: 'Correo conectado a un servicio',
+  mailway_disconnected: 'Mailway desconectado',
+  mailway_app_password_revoked: 'Contraseña de aplicación revocada',
+  mailway_api_key_revoked: 'Clave de API de correo revocada',
 };
+
+/**
+ * La URL si se puede usar como enlace (http o https); si no, null. Las
+ * direcciones que llegan de servicios externos (Mailway) se pintan en `href`,
+ * y un `javascript:` se ejecutaría con la sesión del panel al pulsarlo.
+ */
+export function safeHref(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? url : null;
+  } catch {
+    return null;
+  }
+}
 
 export function fmtDateTime(ts: number): string {
   return dateFmt({ day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(ts));

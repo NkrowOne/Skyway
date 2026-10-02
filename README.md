@@ -18,11 +18,12 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 - **Dominios y TLS sin saber de DNS** — asistente estilo Railway: subdominio generado en un clic (con un comodín configurado una sola vez), o dominio propio con la tabla exacta de registros DNS a crear (tipo, nombre y la IP de tu servidor autodetectada) y **verificación en vivo** del DNS ("correcto ✓ / esperando propagación / apunta a otra IP"). Traefik enruta y, con Let's Encrypt, el certificado se emite solo.
 - **Despliegues sin corte** — la versión nueva se arranca y se **valida** (healthcheck HTTP o periodo de gracia) antes de retirar la anterior. Sin volúmenes ni puertos fijos el intercambio es de **corte cero** (ambas conviven unos segundos tras el proxy); con estado, intercambio con **restauración automática**: si la nueva falla, la anterior vuelve sola. Un deploy roto ya no puede tumbar un servicio en producción.
 - **Logs en tiempo real** — logs de build y de ejecución en streaming (SSE) y descargables, historial de despliegues, **cancelación** de despliegues en curso y **rollback** a cualquier versión anterior.
-- **Monitor global** — una página con **todos los servicios del servidor**: estado en vivo, CPU, RAM, disco, uptime 24 h, reinicios y alertas, con filtros, **ordenación por consumo** (¿quién se come la CPU?), reinicio en un clic y explicación del error cuando algo está caído. Incluye un **buscador de logs entre todos los contenedores** (filtrable por proyecto): escribe "ECONNREFUSED" o "500" y te dice en qué servicio y cuándo, con enlace directo.
+- **Monitor global** — una página con **todos los servicios del servidor**: estado en vivo, CPU, RAM, disco, uptime 24 h, reinicios y alertas, con filtros, **ordenación por consumo** (para localizar qué servicio consume más CPU), reinicio en un clic y explicación del error cuando algo está caído. Incluye un **buscador de logs entre todos los contenedores** (filtrable por proyecto): escribe "ECONNREFUSED" o "500" y te dice en qué servicio y cuándo, con enlace directo.
 - **Consola de consultas a las bases de datos** — pestaña **Consultas** en cada PostgreSQL, MySQL, MongoDB y Redis: explorador de tablas/colecciones/claves con tamaños (clic = ver contenido, botón de columnas = ver estructura; en Redis detecta el tipo de la clave y usa GET/HGETALL/LRANGE... según toque), resultados en tabla **exportables a CSV/JSON**, snippets típicos, historial y **modo solo lectura por defecto** (las escrituras requieren activarlas a propósito). Todo corre dentro del contenedor con su cliente oficial: sin exponer puertos ni credenciales.
 - **Explorador de archivos (gestor tipo FTP)** — pestaña **Archivos** en cada servicio (app, módulo o base de datos): navega el sistema de ficheros del contenedor, **descarga**, **sube** (hasta 100 MB), **crea carpetas** y **borra**, sin abrir un servidor FTP ni gestionar credenciales — va por el socket de Docker con tu sesión del panel. Cada cambio queda en la auditoría.
 - **Asignación de espacio en disco** — cuota orientativa por servicio (MB) vigilada por el monitor con **aviso previo al 90 % y alerta al superarla**, y la vista **Monitor → Espacio**: qué ocupa cada servicio (volúmenes, contenedor, cuota con barra), qué ocupa Docker (imágenes, caché de build...) y el botón de **liberar espacio** sin tocar volúmenes. Los logs json de cada contenedor rotan solos (10 MB × 3) para que no se coman el disco.
 - **Página de estado para clientes** — activa en cada proyecto un **dashboard público con enlace compartible** (sin login): estado en vivo de los servicios, disponibilidad de los últimos 90 días con barras diarias, uptime 24 h/7 d/90 d, incidencias y un **aviso de mantenimiento** editable desde el panel. El enlace se puede rotar si se filtra.
+- **Correo de tus proyectos con Mailway** — conecta Skyway con tu servicio de correo [Mailway](https://github.com/NkrowOne/Mailway) y, desde el botón **Correo** de cada proyecto, activa el correo del cliente, añade sus dominios (registros DNS listos para copiar y aplicación directa en **Cloudflare**), crea buzones con **enlace de configuración** para los dispositivos y **conecta un servicio** en un clic: Skyway crea una contraseña de aplicación (SMTP) o una clave de la API de envío y añade las variables `SMTP_*` o `MAILWAY_*` al servicio. Los dominios de marca blanca de Mailway se publican solos en Traefik, filtrados para que nunca puedan ocupar un dominio de Skyway, y ningún servicio de un cliente puede ocupar los de Mailway.
 - **Vista de sitios web** — todas las webs y apps desplegadas en un solo sitio: dominio clicable con candado TLS, estado, réplicas, último deploy y acciones rápidas (abrir, desplegar, reiniciar), filtrables por cliente o dominio.
 - **Backups de bases de datos** — volcado comprimido de PostgreSQL/MySQL/MongoDB en un clic o **programado (diario/semanal, ~04:00) con retención automática**; descarga, restauración y borrado desde el panel, y alerta si un backup programado falla. Además, Skyway hace un **snapshot diario de su propia base de datos** (usuarios, proyectos, variables…) con retención, descargable desde Ajustes, y **verifica la integridad** de su BD en cada arranque.
 - **Réplicas con balanceo** — varias copias de un servicio repartiéndose el tráfico (Traefik + DNS interno) con **actualización rodante** réplica a réplica: siempre queda alguna sirviendo. Monitorización y métricas agregadas por réplica.
@@ -76,6 +77,17 @@ Abre `http://IP-DEL-SERVIDOR:4000` (o `http://tu-dominio`) y crea la cuenta de a
 9. **Revisa el panel de seguridad** (icono del escudo) — corrige los hallazgos hasta subir la nota: límites de recursos en todos los servicios, TLS activado, sin puertos de bases de datos expuestos.
 10. **Vigila y depura desde el Monitor** (icono de actividad, o `g m`) — todos los servicios con su consumo y espacio; si algo falla, busca el texto del error en los logs de todos los contenedores a la vez.
 11. **Comparte el estado con tu cliente** — en el proyecto, botón **Página de estado**: actívala y pásale el enlace. Verá disponibilidad e incidencias sin entrar al panel.
+
+## Añadir el correo (Mailway)
+
+[Mailway](https://github.com/NkrowOne/Mailway) es el servicio de correo que se integra con Skyway (botón **Correo** de cada proyecto). Se instala en el mismo servidor, con Skyway ya en marcha y su cuenta de administrador creada:
+
+```bash
+git clone https://github.com/NkrowOne/Mailway.git
+sudo bash Mailway/deploy/instalar.sh
+```
+
+El emparejado es automático: el instalador despliega el panel de Mailway como un proyecto de Skyway (con un token de Skyway de corta duración que crea desde el servidor y revoca al terminar), crea el administrador de Mailway y deja hecha la conexión de **Ajustes → Correo (Mailway)**. Al final muestra el correo de ese administrador y, si lo acaba de crear, su contraseña (una sola vez). Si el emparejado falla, la instalación no se interrumpe: se repite solo ese paso con `sudo bash deploy/instalar.sh --emparejar` desde la carpeta de Mailway. Requisitos (DNS del servidor de correo, puertos) en la [guía de despliegue de Mailway](https://github.com/NkrowOne/Mailway/blob/main/docs/DESPLIEGUE-SKYWAY.md); las herramientas de terminal que usa están en [docs/FUNCIONALIDAD.md](docs/FUNCIONALIDAD.md) §9.
 
 ## Migrar desde Railway
 
@@ -137,6 +149,7 @@ server/src/
   docker/                 contenedores, redes, stats, logs
   deploy/                 builder (git+docker/nixpacks), orquestador, cola
   routes/                 API REST + SSE + webhooks (+ monitor, websites, status público)
+  tools/                  herramientas de terminal: contraseña, tokens de API y conexión con Mailway
 web/src/
   pages/                  Dashboard, Proyecto, Monitor, Sitios, Estado público...
   components/             canvas de servicios, drawer con pestañas, gráficas
@@ -160,13 +173,13 @@ web/src/
 | `TRUST_PROXY`         | privadas    | Confianza en `X-Forwarded-*` para la IP real (rangos privados/loopback por defecto; `true`/`false`/nº/CIDRs) |
 | `DOCKER_SOCK`         | socket std  | Ruta alternativa al socket de Docker           |
 
-En **Ajustes** (UI): dominio raíz para subdominios generados, email de Let's Encrypt y la **GitHub App** del servidor (o, como alternativa, un token global de GitHub para repos privados).
+En **Ajustes** (UI): dominio raíz para subdominios generados, email de Let's Encrypt, la **GitHub App** del servidor (o, como alternativa, un token global de GitHub para repos privados) y la conexión con **Mailway** (Ajustes → Correo: URL del panel o su servicio en Skyway y un token de gestión de administrador `mwt_…`).
 
 ## ¿Y Kubernetes?
 
 Kubernetes es un orquestador pensado para repartir contenedores entre **flotas de servidores**: decide en qué máquina corre cada cosa, mueve cargas cuando un nodo muere y escala horizontalmente. Ese es su valor — y en un **único servidor dedicado no aporta nada de eso**, pero sí cobra su peaje: cientos de MB de RAM para su propio plano de control (RAM que dejarían de tener tus aplicaciones) y una complejidad operativa enorme (pods, ingresses, PVCs, RBAC...).
 
-Por eso Skyway usa Docker a pelo y, en su lugar, incorpora de forma nativa lo que de Kubernetes sí tiene sentido en una máquina: **despliegues validados sin corte con marcha atrás automática y healthchecks** (ver arriba). Si algún día pasas a 2-3 servidores o más, entonces sí: la capa de orquestación de Skyway está aislada en `server/src/docker/`, y se podría añadir un driver de Kubernetes (k3s) manteniendo el mismo panel. Hasta entonces, cada MB del servidor trabaja para tus proyectos.
+Por eso Skyway usa Docker directamente, sin orquestador, y en su lugar incorpora de forma nativa lo que de Kubernetes sí tiene sentido en una máquina: **despliegues validados sin corte con marcha atrás automática y healthchecks** (ver arriba). Si algún día pasas a 2-3 servidores o más, entonces sí: la capa de orquestación de Skyway está aislada en `server/src/docker/`, y se podría añadir un driver de Kubernetes (k3s) manteniendo el mismo panel. Hasta entonces, cada MB del servidor trabaja para tus proyectos.
 
 ## Notas y límites actuales
 

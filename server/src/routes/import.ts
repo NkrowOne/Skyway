@@ -5,7 +5,7 @@ import { audit } from '../audit';
 import { getProject, getSetting, setSetting } from '../db';
 import { listRailwayProjects } from '../railway/client';
 import { analyzeRailwayProject, runRailwayImport } from '../railway/importer';
-import { safeParse } from '../util';
+import { safeParse, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
 
 const tokenSchema = z.string().trim().min(10, 'Token de Railway requerido');
 
@@ -68,8 +68,8 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
         .object({
           token: tokenSchema,
           projectId: z.string().trim().min(1),
-          environmentId: z.string().trim().min(1, 'Seleccione un entorno'),
-          projectName: z.string().trim().max(60).optional(),
+          environmentId: z.string().trim().min(1, 'Selecciona un entorno'),
+          projectName: z.string().trim().max(60).regex(VISIBLE_NAME_RE, VISIBLE_NAME_ERROR).optional(),
           client: z.string().trim().max(60).optional(),
         })
         .parse(req.body);

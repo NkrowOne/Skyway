@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import crypto from 'crypto';
 import path from 'path';
 import { config } from './config';
 import {
@@ -13,6 +14,7 @@ import {
   HostMetricHour,
   InvoiceRow,
   InvoiceSeriesRow,
+  MailwayLinkRow,
   PendingChargeRow,
   PriceTierRow,
   ProductRow,
@@ -50,7 +52,7 @@ const MIGRATED_WORKSPACE_INIT = {
   max_services: 500,
   max_members: 25,
   modules_override: JSON.stringify(ALL_MODULE_KEYS),
-  notes: 'Cuenta creada al migrar el campo «cliente». Revise su plan y su cuota.',
+  notes: 'Cuenta creada al migrar el campo «cliente». Revisa su plan y su cuota.',
 } as const;
 
 let db: Database.Database;
@@ -594,6 +596,34 @@ export function initDb(): void {
     CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace ON workspace_subscriptions(workspace_id);
     CREATE INDEX IF NOT EXISTS idx_pending_charges_workspace ON pending_charges(workspace_id, status);
     CREATE INDEX IF NOT EXISTS idx_usage_meter_lookup ON usage_meter_hourly(subject_id, meter, hour);
+    -- Vínculo proyecto ↔ cliente de Mailway (correo). En Mailway el cliente
+    -- lleva la referencia externa «skyway:project:<id>», que es la fuente de
+    -- verdad; esta fila es su espejo local para no preguntar a Mailway en cada
+    -- vista y para comprobar que un dominio o buzón pertenece al proyecto.
+    -- Un cliente solo puede estar vinculado a un proyecto: la referencia
+    -- externa es única en Mailway y dos proyectos compartiendo cliente verían
+    -- (y borrarían) los buzones del otro.
+    CREATE TABLE IF NOT EXISTS mailway_links (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      client_id TEXT NOT NULL,
+      client_name TEXT NOT NULL DEFAULT '',
+      created_by TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_mailway_links_client ON mailway_links(client_id);
+    -- Variables que escribió Skyway por su cuenta (correo, plan de
+    -- integraciones) con el hash del valor que escribió. Es lo que permite
+    -- distinguir una variable que Skyway puede actualizar de una que alguien ha
+    -- puesto o cambiado a mano, que no se pisa nunca: si el valor actual ya no
+    -- casa con el hash, es de quien lo cambió. Solo hashes: nada recuperable.
+    CREATE TABLE IF NOT EXISTS service_managed_env (
+      service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      value_hash TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (service_id, key)
+    );
   `);
 
   // Facturación de empresa: número, impuestos, método de pago y datos de Stripe.
@@ -780,13 +810,13 @@ function seedDefaultPlans(): void {
     {
       name: 'Pro', slug: 'pro', price_cents: 2900, currency: 'EUR', interval: 'monthly',
       cpu_cores: 4, memory_mb: 8192, disk_mb: 51200, max_projects: 10, max_services: 30, max_members: 8,
-      modules: JSON.stringify(['databases', 'dbconsole', 'backups', 'files', 'exec', 'metrics', 'replicas', 'domains', 'status_page', 'github']),
+      modules: JSON.stringify(['databases', 'dbconsole', 'backups', 'files', 'exec', 'metrics', 'replicas', 'domains', 'status_page', 'github', 'mail']),
       is_default: 0, archived: 0, discount_pct: 0,
     },
     {
       name: 'Escala', slug: 'escala', price_cents: 9900, currency: 'EUR', interval: 'monthly',
       cpu_cores: 16, memory_mb: 32768, disk_mb: 256000, max_projects: 50, max_services: 200, max_members: 25,
-      modules: JSON.stringify(['databases', 'dbconsole', 'backups', 'files', 'exec', 'metrics', 'replicas', 'domains', 'status_page', 'github']),
+      modules: JSON.stringify(['databases', 'dbconsole', 'backups', 'files', 'exec', 'metrics', 'replicas', 'domains', 'status_page', 'github', 'mail']),
       is_default: 0, archived: 0, discount_pct: 0,
     },
   ];
@@ -1065,6 +1095,15 @@ export function touchApiToken(tokenId: string): void {
 
 export function deleteApiToken(tokenId: string, userId: string): boolean {
   return stmt('DELETE FROM api_tokens WHERE id = ? AND user_id = ?').run(tokenId, userId).changes > 0;
+}
+
+export function getApiToken(tokenId: string): ApiTokenRow | undefined {
+  return stmt('SELECT * FROM api_tokens WHERE id = ?').get(tokenId) as ApiTokenRow | undefined;
+}
+
+/** Revoca un token sea de quien sea: solo para la terminal del servidor (`tools/token.ts`). */
+export function deleteApiTokenById(tokenId: string): boolean {
+  return stmt('DELETE FROM api_tokens WHERE id = ?').run(tokenId).changes > 0;
 }
 
 export function getUserByEmail(email: string): UserRow | undefined {
@@ -1402,6 +1441,15 @@ export function serviceSlugExists(projectId: string, slug: string): boolean {
   return !!stmt('SELECT 1 FROM services WHERE project_id = ? AND slug = ?').get(projectId, slug);
 }
 
+/** Slug libre en el proyecto para un servicio con ese nombre (`web`, `web-2`…). */
+export function uniqueServiceSlug(projectId: string, name: string): string {
+  const base = slugify(name);
+  let slug = base;
+  let i = 2;
+  while (serviceSlugExists(projectId, slug)) slug = `${base}-${i++}`;
+  return slug;
+}
+
 /** Marca (o borra) que el servicio fue detenido adrede por una persona. */
 export function setServiceStopped(serviceId: string, stopped: boolean): void {
   stmt('UPDATE services SET stopped_at = ? WHERE id = ?').run(stopped ? now() : null, serviceId);
@@ -1431,6 +1479,54 @@ export function setEnv(serviceId: string, vars: Record<string, string>): void {
     for (const [k, v] of Object.entries(vars)) ins.run(serviceId, k, v);
   });
   tx();
+}
+
+// ---------- variables gestionadas por Skyway ----------
+
+export interface ManagedEnvEntry {
+  /** De dónde salió: `mail.smtp.password`, `postgres.DATABASE_URL`, `generate`, `value`, `self.public_url`, `import` (del `.env` del repositorio)… */
+  origin: string;
+  valueHash: string;
+}
+
+export function hashEnvValue(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+export function getManagedEnv(serviceId: string): Record<string, ManagedEnvEntry> {
+  const rows = stmt('SELECT key, origin, value_hash FROM service_managed_env WHERE service_id = ?').all(serviceId) as {
+    key: string;
+    origin: string;
+    value_hash: string;
+  }[];
+  const out: Record<string, ManagedEnvEntry> = {};
+  for (const r of rows) out[r.key] = { origin: r.origin, valueHash: r.value_hash };
+  return out;
+}
+
+/**
+ * Escribe variables del servicio en nombre de Skyway: las fusiona con las que
+ * ya tiene (en una transacción) y recuerda el hash de cada valor escrito. Quien
+ * llama ya ha decidido que se pueden escribir (`canWriteEnv`).
+ */
+export function writeManagedEnv(serviceId: string, entries: Record<string, { value: string; origin: string }>): void {
+  const keys = Object.keys(entries);
+  if (keys.length === 0) return;
+  const upsertVar = stmt(
+    'INSERT INTO env_vars (service_id, key, value) VALUES (?, ?, ?) ON CONFLICT(service_id, key) DO UPDATE SET value = excluded.value',
+  );
+  const upsertManaged = stmt(
+    `INSERT INTO service_managed_env (service_id, key, origin, value_hash, updated_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(service_id, key) DO UPDATE SET origin = excluded.origin, value_hash = excluded.value_hash, updated_at = excluded.updated_at`,
+  );
+  const at = now();
+  db.transaction(() => {
+    for (const key of keys) {
+      const { value, origin } = entries[key];
+      upsertVar.run(serviceId, key, value);
+      upsertManaged.run(serviceId, key, origin, hashEnvValue(value), at);
+    }
+  })();
 }
 
 // ---------- deployments ----------
@@ -1699,6 +1795,83 @@ export function setProjectVars(projectId: string, vars: Record<string, string>):
     for (const [k, v] of Object.entries(vars)) ins.run(projectId, k, v);
   });
   tx();
+}
+
+// ---------- correo: vínculo proyecto ↔ cliente de Mailway ----------
+export function getMailwayLink(projectId: string): MailwayLinkRow | undefined {
+  return stmt('SELECT * FROM mailway_links WHERE project_id = ?').get(projectId) as MailwayLinkRow | undefined;
+}
+
+export function getMailwayLinkByClient(clientId: string): MailwayLinkRow | undefined {
+  return stmt('SELECT * FROM mailway_links WHERE client_id = ?').get(clientId) as MailwayLinkRow | undefined;
+}
+
+/** Vínculos con el nombre de su proyecto: el formulario de vincular un cliente existente dice cuál está ocupado. */
+export function listMailwayLinks(): (MailwayLinkRow & { project_name: string })[] {
+  return stmt(
+      `SELECT l.*, p.name AS project_name FROM mailway_links l JOIN projects p ON p.id = l.project_id
+       ORDER BY l.created_at ASC`,
+    )
+    .all() as (MailwayLinkRow & { project_name: string })[];
+}
+
+export function insertMailwayLink(row: Omit<MailwayLinkRow, 'created_at'>): MailwayLinkRow {
+  const full: MailwayLinkRow = { ...row, created_at: now() };
+  stmt(
+    `INSERT INTO mailway_links (project_id, client_id, client_name, created_by, created_at) VALUES (?, ?, ?, ?, ?)`,
+  ).run(full.project_id, full.client_id, full.client_name, full.created_by, full.created_at);
+  return full;
+}
+
+export function deleteMailwayLink(projectId: string): void {
+  stmt('DELETE FROM mailway_links WHERE project_id = ?').run(projectId);
+}
+
+/**
+ * Todos los dominios asignados a servicios de Skyway, en minúsculas. El puente
+ * de Traefik de Mailway los usa para no aceptar nunca una ruta que se apropie
+ * de un dominio que ya sirve una aplicación del panel. Lee solo la columna de
+ * configuración y tolera filas ilegibles, como `parseService`.
+ */
+export function listAssignedDomains(): string[] {
+  const out = new Set<string>();
+  for (const row of serviceDomainRows()) for (const d of row.domains) out.add(d);
+  return [...out];
+}
+
+/** El servicio que sirve ese dominio (o undefined). */
+export function findServiceIdByDomain(domain: string): string | undefined {
+  const wanted = domain.trim().toLowerCase();
+  return serviceDomainRows().find((r) => r.domains.includes(wanted))?.id;
+}
+
+/**
+ * Todos los servicios que tienen asignado ese dominio. Normalmente uno o
+ * ninguno; puede haber más en instalaciones anteriores a la comprobación de
+ * dominios únicos (`domainguard.ts`), y quien pregunta tiene que verlos todos.
+ */
+export function serviceIdsForDomain(domain: string): string[] {
+  const wanted = domain.trim().toLowerCase();
+  return serviceDomainRows()
+    .filter((r) => r.domains.includes(wanted))
+    .map((r) => r.id);
+}
+
+function serviceDomainRows(): { id: string; domains: string[] }[] {
+  const out: { id: string; domains: string[] }[] = [];
+  for (const row of stmt('SELECT id, config FROM services').all() as { id: string; config: string }[]) {
+    try {
+      const cfg = JSON.parse(row.config) as { domains?: unknown };
+      if (!Array.isArray(cfg?.domains)) continue;
+      const domains = cfg.domains
+        .filter((d): d is string => typeof d === 'string' && d.trim() !== '')
+        .map((d) => d.trim().toLowerCase());
+      if (domains.length > 0) out.push({ id: row.id, domains });
+    } catch {
+      /* fila ilegible: ya la avisa parseService */
+    }
+  }
+  return out;
 }
 
 // ---------- conectores de GitHub por proyecto ----------
@@ -2535,7 +2708,7 @@ export function assignSeriesNumber(opts: {
       // código pedido ya existe con otra naturaleza, numerar aquí mezclaría ambas
       // en la misma serie correlativa: se corta antes de asignar número.
       throw new Error(
-        `La serie «${opts.code}» del ejercicio ${opts.year} ya está en uso para facturas de tipo «${s.kind}» y no puede compartirse con «${opts.kind}». Cambie el prefijo de factura en Contabilidad.`,
+        `La serie «${opts.code}» del ejercicio ${opts.year} ya está en uso para facturas de tipo «${s.kind}» y no puede compartirse con «${opts.kind}». Cambia el prefijo de factura en Contabilidad.`,
       );
     }
     const seq = s.next_seq;

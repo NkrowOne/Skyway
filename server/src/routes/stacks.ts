@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
+import { domainClaimError } from '../domainguard';
 import { markManualAction } from '../monitor';
 import {
   countWorkspaceServices,
@@ -26,7 +27,7 @@ import { planRailwayTemplate, rewriteTemplateRefs } from '../railway/template';
 import { getStack, renderStackEnv, stackList, StackRenderCtx } from '../stacks';
 import { getTemplate } from '../templates';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from '../types';
-import { randomToken, slugify } from '../util';
+import { randomToken, slugify, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
 import { domainSchema, publicServiceConfig } from './services';
 
 /**
@@ -57,7 +58,7 @@ function crearAtomico(fn: () => void): string | null {
   } catch (err) {
     const code = String((err as { code?: unknown } | null)?.code ?? '');
     if (code.startsWith('SQLITE_CONSTRAINT')) {
-      return 'Ya existe un servicio con uno de esos nombres en el proyecto: utilice otro prefijo.';
+      return 'Ya existe un servicio con uno de esos nombres en el proyecto: utiliza otro prefijo.';
     }
     throw err;
   }
@@ -66,7 +67,7 @@ function crearAtomico(fn: () => void): string | null {
 const createSchema = z.object({
   stack: z.string().trim().min(1),
   /** Prefijo de los nombres de servicio (`<prefijo>-db`, `<prefijo>-kong`...). */
-  prefix: z.string().trim().min(1).max(40).optional(),
+  prefix: z.string().trim().min(1).max(40).regex(VISIBLE_NAME_RE, VISIBLE_NAME_ERROR).optional(),
   // El mismo validador que crear/editar servicio: el dominio acaba en la regla
   // Host() de Traefik y ahí no puede entrar texto libre.
   domain: domainSchema.optional(),
@@ -88,7 +89,7 @@ function uniquePrefix(projectId: string, base: string, keys: string[]): string {
 
 const templateSchema = z.object({
   template: z.string().trim().min(1, 'Indica la plantilla de Railway'),
-  prefix: z.string().trim().min(1).max(40).optional(),
+  prefix: z.string().trim().min(1).max(40).regex(VISIBLE_NAME_RE, VISIBLE_NAME_ERROR).optional(),
   domain: domainSchema.optional(),
 });
 
@@ -104,7 +105,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/railway-templates/preview', { preHandler: rateLimit({ max: PREVIEWS_POR_MINUTO, windowMs: 60_000 }) }, async (req, reply) => {
     const body = z.object({ template: z.string().trim().min(1), prefix: z.string().trim().max(40).optional() }).parse(req.body);
     const code = parseTemplateCode(body.template);
-    if (!code) return reply.code(400).send({ error: 'No se reconoce la plantilla: introduzca su URL de Railway o su código.' });
+    if (!code) return reply.code(400).send({ error: 'No se reconoce la plantilla: introduce su URL de Railway o su código.' });
     const plan = await planRailwayTemplate(code, { prefix: body.prefix, projectName: '' });
     return {
       plan: {
@@ -159,6 +160,10 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
     }
     if (body.domain && !moduleAllowedForProject(projectId, 'domains', isAdmin)) {
       return reply.code(403).send({ error: 'El módulo «Dominios y TLS» no está activo en este workspace.' });
+    }
+    if (body.domain) {
+      const conflicto = domainClaimError([body.domain], { projectId, serviceId: null, isAdmin });
+      if (conflicto) return reply.code(409).send({ error: conflicto });
     }
 
     const prefix = uniquePrefix(
@@ -282,11 +287,15 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
 
     const body = templateSchema.parse(req.body);
     const code = parseTemplateCode(body.template);
-    if (!code) return reply.code(400).send({ error: 'No se reconoce la plantilla: introduzca su URL de Railway o su código.' });
+    if (!code) return reply.code(400).send({ error: 'No se reconoce la plantilla: introduce su URL de Railway o su código.' });
 
     const isAdmin = currentUser(req)!.role === 'admin';
     if (body.domain && !moduleAllowedForProject(projectId, 'domains', isAdmin)) {
       return reply.code(403).send({ error: 'El módulo «Dominios y TLS» no está activo en este workspace.' });
+    }
+    if (body.domain) {
+      const conflicto = domainClaimError([body.domain], { projectId, serviceId: null, isAdmin });
+      if (conflicto) return reply.code(409).send({ error: conflicto });
     }
 
     const plan = await planRailwayTemplate(code, { prefix: body.prefix, projectName: project.name });

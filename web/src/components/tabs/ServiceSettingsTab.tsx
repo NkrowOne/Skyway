@@ -457,7 +457,7 @@ export default function ServiceSettingsTab({
                     En el repositorio: <span className="font-mono">Settings → Webhooks → Add webhook</span>.
                   </li>
                   <li>
-                    Introduzca la URL y el secreto; tipo de contenido <span className="font-mono">application/json</span>.
+                    Introduce la URL y el secreto; tipo de contenido <span className="font-mono">application/json</span>.
                   </li>
                   <li>
                     Evento: solo <span className="font-mono">push</span>.
@@ -498,8 +498,8 @@ export default function ServiceSettingsTab({
                 contar que eso deja el dominio de adorno. */}
             {isImage && form.domains.length > 0 && !form.port.trim() && (
               <p className="mb-3 rounded-lg border border-warn/30 bg-warn/[.06] px-3 py-2 text-xs text-warn">
-                Sin puerto interno el dominio no funciona: responderá 404 con un certificado que no le corresponde. Indique
-                el puerto de escucha en el campo anterior o retire el dominio si el servicio no atiende HTTP.
+                Sin puerto interno el dominio no funciona: responderá 404 con un certificado que no le corresponde. Indica
+                el puerto de escucha en el campo anterior o retira el dominio si el servicio no atiende HTTP.
               </p>
             )}
             <DomainsEditor domains={form.domains} onChange={(d) => set('domains', d)} slug={service.slug} />
@@ -520,7 +520,7 @@ export default function ServiceSettingsTab({
             {!internalPort && <span className="shrink-0 text-xs text-subtle">Sin puerto HTTP</span>}
           </div>
           <p className="mt-2 text-xs leading-relaxed text-subtle">
-            Utilice esta dirección en las variables de los demás servicios del proyecto: el dominio público enruta el tráfico a través de Internet.
+            Utiliza esta dirección en las variables de los demás servicios del proyecto: el dominio público enruta el tráfico a través de Internet.
           </p>
           {/* La referencia, mejor que la dirección literal: si cambia el puerto,
               la referencia se actualiza sola y el «api:3000» pegado a mano no.
@@ -571,7 +571,7 @@ export default function ServiceSettingsTab({
               Con {replicasN} réplicas el tráfico se distribuye y los despliegues son progresivos: siempre queda una réplica en servicio.
               Requiere un servicio <strong className="text-txt">sin volúmenes ni puerto público</strong>
               {(form.volumePaths.length > 0 || form.hostPort) && (
-                <span className="text-err"> — esta condición no se cumple actualmente: retírelos antes de guardar</span>
+                <span className="text-err"> — esta condición no se cumple actualmente: retíralos antes de guardar</span>
               )}
               .
             </p>

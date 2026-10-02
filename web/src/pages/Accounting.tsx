@@ -490,7 +490,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                       title={
                         existing.source === 'auto'
                           ? `Coste tomado de la tarifa de Google${existing.synced_at ? ` (${timeAgo(existing.synced_at)})` : ''}. Si se edita, pasa a manual.`
-                          : 'Coste fijado manualmente: la actualización automática no lo modifica. Restablezca el modelo para volver al automático.'
+                          : 'Coste fijado manualmente: la actualización automática no lo modifica. Restablece el modelo para volver al automático.'
                       }
                     >
                       {existing.source === 'auto' ? 'auto' : 'manual'}
@@ -504,7 +504,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                       <p className="mt-1 eyebrow text-subtle">beneficio en salida</p>
                     </>
                   ) : (
-                    <p className="text-xs text-subtle">Indique el coste y el margen</p>
+                    <p className="text-xs text-subtle">Indica el coste y el margen</p>
                   )}
                 </div>
               </div>
@@ -551,7 +551,7 @@ function ModelCostMargin({ allowedModels }: { allowedModels: string[] }) {
                 <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-micro text-subtle">
                   <span className="eyebrow">Lista Google · $/M</span>
                   <span className="tnum">entrada {usdM(ref.in)} · caché {usdM(ref.cache)} · salida {usdM(ref.out)}</span>
-                  <button className="tap text-acc-soft hover:underline" title="Copiar estos precios a los campos de coste (ajústelos al coste real en €)" aria-label="Copiar estos precios a los campos de coste (ajústelos al coste real en €)" onClick={() => setDraft(model, { in: String(ref.in), cache: String(ref.cache), out: String(ref.out) })}>usar</button>
+                  <button className="tap text-acc-soft hover:underline" title="Copiar estos precios a los campos de coste (ajústalos al coste real en €)" aria-label="Copiar estos precios a los campos de coste (ajústalos al coste real en €)" onClick={() => setDraft(model, { in: String(ref.in), cache: String(ref.cache), out: String(ref.out) })}>usar</button>
                 </div>
               )}
 
@@ -624,7 +624,7 @@ function PriceSyncBar({
                 {sync.auto && <> · se repite automáticamente cada día</>}
               </>
             ) : (
-              <>Todavía no se ha comprobado. Se realizará automáticamente al iniciarse el ciclo diario, o puede pulsar «Actualizar ahora».</>
+              <>Todavía no se ha comprobado. Se realizará automáticamente al iniciarse el ciclo diario, o puedes pulsar «Actualizar ahora».</>
             )}
           </p>
         </div>
@@ -651,7 +651,7 @@ function PriceSyncBar({
 
       {!!last?.discovered.length && (
         <p className="mt-2 text-xs text-warn">
-          Modelos nuevos en Google con tarifa conocida: <span className="font-mono">{last.discovered.join(', ')}</span>. Añádalos en «Modelos permitidos» si desea ofrecerlos.
+          Modelos nuevos en Google con tarifa conocida: <span className="font-mono">{last.discovered.join(', ')}</span>. Añádelos en «Modelos permitidos» si quieres ofrecerlos.
         </p>
       )}
 
@@ -662,7 +662,7 @@ function PriceSyncBar({
 
       {/* Los dos ajustes que la automatización no puede adivinar. */}
       <div className="mt-3 grid gap-3 border-t border-line/60 pt-3 sm:grid-cols-2">
-        <Field label={`Cambio 1 USD → ${sync.currency}`} hint={sync.fxAt ? `Referencia del BCE, ${timeAgo(sync.fxAt)}` : 'Sin tipo de cambio guardado; indíquelo si el servidor no tiene acceso a internet'}>
+        <Field label={`Cambio 1 USD → ${sync.currency}`} hint={sync.fxAt ? `Referencia del BCE, ${timeAgo(sync.fxAt)}` : 'Sin tipo de cambio guardado; indícalo si el servidor no tiene acceso a internet'}>
           <input
             className="input h-8 tnum"
             inputMode="decimal"

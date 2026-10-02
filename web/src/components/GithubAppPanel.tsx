@@ -85,7 +85,7 @@ export default function GithubAppPanel() {
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
           <Field
             label="Organización (opcional)"
-            hint="Si se deja vacío, la App se crea en su cuenta personal. Si indica un nombre, se crea en esa organización (es necesario ser propietario)."
+            hint="Si se deja vacío, la App se crea en tu cuenta personal. Si indicas un nombre, se crea en esa organización (es necesario ser propietario)."
           >
             <input
               className="input"
@@ -163,7 +163,7 @@ export default function GithubAppPanel() {
               compact
               icon={<ModuleLogo kind="github" size={22} />}
               title="Ninguna cuenta conectada"
-              description="Conecte una cuenta u organización de GitHub para desplegar sus repositorios desde el panel."
+              description="Conecta una cuenta u organización de GitHub para desplegar sus repositorios desde el panel."
             />
           </div>
         ) : (
@@ -230,7 +230,7 @@ export default function GithubAppPanel() {
         onClose={() => setDisconnecting(false)}
         onConfirm={() => disconnect.mutate()}
         title="Desenlazar la GitHub App"
-        message="Se eliminarán las credenciales de la App en Skyway: los servicios que clonen con ella pasarán a usar el token global en el próximo despliegue y los push dejarán de desplegar automáticamente. La App seguirá existiendo en GitHub; elimínela allí si además desea revocarla."
+        message="Se eliminarán las credenciales de la App en Skyway: los servicios que clonen con ella pasarán a usar el token global en el próximo despliegue y los push dejarán de desplegar automáticamente. La App seguirá existiendo en GitHub; elimínala allí si además quieres revocarla."
         confirmLabel="Desenlazar"
         loading={disconnect.isPending}
       />

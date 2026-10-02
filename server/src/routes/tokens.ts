@@ -1,12 +1,12 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { API_TOKEN_PREFIX, currentUser, hashApiToken, requireAuth, requireSession } from '../auth';
+import { emitirTokenApi, nombreTokenSchema } from '../apitokens';
+import { currentUser, requireAuth, requireSession } from '../auth';
 import { audit } from '../audit';
-import { deleteApiToken, insertApiToken, listApiTokens } from '../db';
-import { randomToken } from '../util';
+import { deleteApiToken, listApiTokens } from '../db';
 
 const createSchema = z.object({
-  name: z.string().trim().min(1, 'Nombre requerido').max(60),
+  name: nombreTokenSchema,
   expiresDays: z.coerce.number().int().min(1).max(3650).nullable().optional(),
 });
 
@@ -37,13 +37,10 @@ export async function tokenRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/tokens', { preHandler: requireSession }, async (req, reply) => {
     const user = currentUser(req)!;
     const body = createSchema.parse(req.body);
-    const token = `${API_TOKEN_PREFIX}${randomToken(24)}`; // sky_ + 48 hex
-    const row = insertApiToken({
-      user_id: user.id,
+    const { token, row } = emitirTokenApi({
+      userId: user.id,
       name: body.name,
-      token_hash: hashApiToken(token),
-      prefix: token.slice(0, API_TOKEN_PREFIX.length + 8),
-      expires_at: body.expiresDays ? Date.now() + body.expiresDays * 24 * 3600 * 1000 : null,
+      expiresAt: body.expiresDays ? Date.now() + body.expiresDays * 24 * 3600 * 1000 : null,
     });
     audit(req, 'token_created', { type: 'token', id: row.id, detail: body.name });
     reply.code(201);

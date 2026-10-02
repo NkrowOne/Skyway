@@ -474,7 +474,7 @@ function DiskPanel({ isAdmin }: { isAdmin: boolean }) {
           </p>
         </div>
         {data.services.length === 0 && (
-          <EmptyState compact icon={<Activity />} title="No hay servicios que medir" description="Despliegue un servicio y sus métricas se mostrarán aquí." />
+          <EmptyState compact icon={<Activity />} title="No hay servicios que medir" description="Despliega un servicio y sus métricas se mostrarán aquí." />
         )}
         {/* En móvil la fila se parte en dos líneas (nombre + barra arriba, tamaño
             debajo) en vez de obligar a arrastrar de lado una tabla de 640px. */}

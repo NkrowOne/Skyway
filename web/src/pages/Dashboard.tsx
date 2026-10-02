@@ -366,13 +366,13 @@ export default function Dashboard() {
           </svg>
           {isAdmin ? (
             <>
-              <p className="text-sm text-sub">Todavía no hay proyectos. Cree el primero para empezar a desplegar.</p>
+              <p className="text-sm text-sub">Todavía no hay proyectos. Crea el primero para empezar a desplegar.</p>
               <Button onClick={() => setCreateOpen(true)}>
                 <Plus size={15} /> Crear proyecto
               </Button>
             </>
           ) : (
-            <p className="text-sm text-sub">Todavía no tiene proyectos asignados. Solicite acceso a un administrador.</p>
+            <p className="text-sm text-sub">Todavía no tienes proyectos asignados. Solicita acceso a un administrador.</p>
           )}
         </div>
       )}

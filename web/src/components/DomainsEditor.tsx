@@ -49,7 +49,7 @@ function DnsInstructions({ domain, serverIp }: { domain: string; serverIp: strin
   return (
     <div className="mt-2 rounded-lg border border-line bg-surface2 p-3 text-xs">
       <p className="mb-2 text-sub">
-        En el panel DNS de <span className="font-mono text-txt">{zone}</span> (Cloudflare, IONOS, OVH, GoDaddy, etc.) cree
+        En el panel DNS de <span className="font-mono text-txt">{zone}</span> (Cloudflare, IONOS, OVH, GoDaddy, etc.) crea
         el siguiente registro:
       </p>
       <div className="overflow-x-auto">
@@ -76,7 +76,7 @@ function DnsInstructions({ domain, serverIp }: { domain: string; serverIp: strin
         </table>
       </div>
       <p className="mt-2 text-subtle">
-        La propagación suele tardar entre 5 minutos y varias horas. Pulse <RefreshCw size={10} className="inline" /> para
+        La propagación suele tardar entre 5 minutos y varias horas. Pulsa <RefreshCw size={10} className="inline" /> para
         volver a comprobar.
       </p>
     </div>
@@ -278,7 +278,7 @@ export default function DomainsEditor({
               {isAdmin ? (
                 <div className="mt-2 flex flex-col gap-2 text-xs text-sub">
                   <p>
-                    Configure una sola vez el <strong className="text-txt">dominio raíz</strong> (por ejemplo,{' '}
+                    Configura una sola vez el <strong className="text-txt">dominio raíz</strong> (por ejemplo,{' '}
                     <span className="font-mono">apps.midominio.com</span>) y cada servicio podrá tener su subdominio con
                     un clic.
                   </p>

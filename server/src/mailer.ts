@@ -664,7 +664,7 @@ async function autenticar(sesion: SesionSmtp, cfg: SmtpConfig, ext: Map<string, 
     // «AUTH …» va enmascarado: la credencial nunca debe acabar en un log ni en la UI.
     throw new MailError(
       `El servidor SMTP rechazó las credenciales (AUTH ***): ${respuesta.code} ${textoSeguro(respuesta.text)}. ` +
-        'Revise el usuario y la contraseña de correo en Ajustes.',
+        'Revisa el usuario y la contraseña de correo en Ajustes.',
     );
   }
 }

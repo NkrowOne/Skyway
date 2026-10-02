@@ -175,7 +175,7 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const params = z
         .object({
-          q: z.string().trim().min(2, 'Introduzca al menos 2 caracteres').max(200),
+          q: z.string().trim().min(2, 'Introduce al menos 2 caracteres').max(200),
           tail: z.coerce.number().int().min(50).max(1000).default(400),
           projectId: z.string().trim().optional(),
         })
@@ -258,7 +258,7 @@ export async function monitorRoutes(app: FastifyInstance): Promise<void> {
     } catch {
       // Sin `df` (daemon que no contesta a tiempo) no hay desglose que dar:
       // el mismo 503 que cuando falta el daemon, no un error interno.
-      return reply.code(503).send({ error: 'Docker no ha respondido a la consulta de espacio. Inténtelo de nuevo en unos instantes' });
+      return reply.code(503).send({ error: 'Docker no ha respondido a la consulta de espacio. Inténtalo de nuevo en unos instantes' });
     }
     const services: any[] = [];
     const projects = accessibleProjects(req);

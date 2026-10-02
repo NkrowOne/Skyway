@@ -85,7 +85,7 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
         resolvedIps: [],
         expectedIp,
         message:
-          'Aún no existe registro DNS para este dominio (o no se ha propagado). Cree el registro en su proveedor de DNS y vuelva a comprobarlo: la propagación tarda de minutos a unas horas.',
+          'Aún no existe registro DNS para este dominio (o no se ha propagado). Crea el registro en tu proveedor de DNS y vuelve a comprobarlo: la propagación tarda de minutos a unas horas.',
       };
     }
     return {
@@ -93,7 +93,7 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
       status: 'unknown',
       resolvedIps: [],
       expectedIp,
-      message: `No se pudo consultar el DNS (${err?.code || err?.message}). Vuelva a intentarlo en unos instantes.`,
+      message: `No se pudo consultar el DNS (${err?.code || err?.message}). Vuelve a intentarlo en unos instantes.`,
     };
   }
 
@@ -103,7 +103,7 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
       status: 'unknown',
       resolvedIps,
       expectedIp,
-      message: `El dominio resuelve a ${resolvedIps.join(', ')}. No se pudo determinar la IP de este servidor: configúrela en Ajustes → Dominios para verificarla automáticamente.`,
+      message: `El dominio resuelve a ${resolvedIps.join(', ')}. No se pudo determinar la IP de este servidor: configúrala en Ajustes → Dominios para verificarla automáticamente.`,
     };
   }
 
@@ -122,6 +122,6 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
     status: 'wrong_ip',
     resolvedIps,
     expectedIp,
-    message: `El dominio apunta a ${resolvedIps.join(', ')} y este servidor es ${expectedIp}. Si utiliza Cloudflare u otro proxy intermedio, puede ser normal (compruebe que el proxy apunta a este servidor). En caso contrario, corrija el registro A.`,
+    message: `El dominio apunta a ${resolvedIps.join(', ')} y este servidor es ${expectedIp}. Si utilizas Cloudflare u otro proxy intermedio, puede ser normal (comprueba que el proxy apunta a este servidor). En caso contrario, corrige el registro A.`,
   };
 }

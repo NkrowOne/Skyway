@@ -56,7 +56,7 @@ export default function Setup() {
             <BrandMark size={52} iconSize={24} radius={14} />
             <div>
               <h1 className="text-xl font-semibold">Configuración inicial de Skyway</h1>
-              <p className="mt-1 text-sm text-sub">Cree la cuenta de administrador para comenzar</p>
+              <p className="mt-1 text-sm text-sub">Crea la cuenta de administrador para comenzar</p>
             </div>
           </div>
           <form onSubmit={submit} className="flex flex-col gap-4">

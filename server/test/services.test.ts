@@ -89,6 +89,44 @@ describe('dominios', () => {
     const service = await readService(gitId);
     expect(service.config.domains).toEqual(['app.example.com', 'www.example.com']);
   });
+
+  // Traefik es único para todo el servidor: dos servicios con el mismo host
+  // compiten por él y gana la regla más larga.
+  it('un dominio que ya usa otro servicio no se puede asignar, ni al crear ni al editar', async () => {
+    let r = await createService({ type: 'git', name: 'copia', repoUrl: 'https://github.com/x/y', branch: 'main', domains: ['APP.example.com'] });
+    expect(r.statusCode, r.body).toBe(409);
+    expect(JSON.parse(r.body).error).toMatch(/ya está asignado/);
+
+    r = await createService({ type: 'image', name: 'web2', image: 'nginx', port: 80 });
+    expect(r.statusCode, r.body).toBe(201);
+    const otro = JSON.parse(r.body).service.id as string;
+    r = await patchService(otro, { config: { domains: ['www.example.com'] } });
+    expect(r.statusCode, r.body).toBe(409);
+    r = await patchService(otro, { config: { domains: ['libre.example.com'] } });
+    expect(r.statusCode, r.body).toBe(200);
+
+    // El propio servicio conserva los suyos al guardar cualquier otro cambio.
+    r = await patchService(gitId, { config: { domains: ['app.example.com', 'www.example.com'], branch: 'main' } });
+    expect(r.statusCode, r.body).toBe(200);
+  });
+
+  it('el dominio del panel de Skyway (SKYWAY_DOMAIN) no se puede asignar a un servicio', async () => {
+    process.env.SKYWAY_DOMAIN = 'skyway.example.com';
+    try {
+      const r = await patchService(gitId, { config: { domains: ['app.example.com', 'Skyway.Example.com'] } });
+      expect(r.statusCode, r.body).toBe(409);
+      expect(JSON.parse(r.body).error).toMatch(/panel de Skyway/);
+      const stack = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/stacks`,
+        headers: { cookie, ...SAME_ORIGIN },
+        payload: { stack: 'supabase', domain: 'skyway.example.com' },
+      });
+      expect(stack.statusCode, stack.body).toBe(409);
+    } finally {
+      delete process.env.SKYWAY_DOMAIN;
+    }
+  });
 });
 
 describe('secretos en la configuración', () => {

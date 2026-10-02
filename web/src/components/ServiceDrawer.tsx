@@ -660,7 +660,7 @@ export default function ServiceDrawer({
         title="Descartar los cambios sin guardar"
         // Genérico: los cambios pueden venir de Variables o de Ajustes, y el
         // texto hablaba siempre de variables de entorno.
-        message="Hay cambios sin guardar en esta pestaña. Si sale ahora, se perderán."
+        message="Hay cambios sin guardar en esta pestaña. Si sales ahora, se perderán."
         confirmLabel="Descartar y salir"
         confirmVariant="danger"
       />

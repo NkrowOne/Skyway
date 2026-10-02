@@ -298,7 +298,7 @@ export default function SecurityPage() {
           <SectionHeader
             icon={<KeyRound size={15} />}
             title="Contraseña y sesiones"
-            description="Cambie la contraseña o cierre las sesiones abiertas en otros navegadores"
+            description="Cambia la contraseña o cierra las sesiones abiertas en otros navegadores"
           />
         </div>
         <form

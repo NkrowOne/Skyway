@@ -78,6 +78,96 @@ Notas:
   `usuario · token:nombre`, así siempre se sabe qué automatización hizo qué.
 - Revocar un token (Mi perfil → papelera) corta el acceso al instante.
 - Ponles caducidad si son para tareas puntuales.
+- Un script que corre **en el propio servidor** (como el instalador de Mailway)
+  puede crear y revocar su token sin pasar por el panel, con la herramienta de
+  terminal `tools/token.js` (`docs/FUNCIONALIDAD.md` §9):
+
+  ```bash
+  TOKEN_JSON=$(docker exec skyway node server/dist/tools/token.js crear --nombre "Mi script" --caduca-min 60)
+  # … usar el token de "token" con la API …
+  docker exec skyway node server/dist/tools/token.js revocar --id "$(printf '%s' "$TOKEN_JSON" | jq -r .id)"
+  ```
+
+### Correo (Mailway) a través de Skyway
+
+Si el administrador ha conectado Mailway (Ajustes → Correo), el correo de cada
+proyecto se gestiona con el mismo token de Skyway: no hace falta un token de
+Mailway en el script, y el token solo alcanza el cliente de correo de los
+proyectos a los que da acceso (cada dominio y buzón se comprueba contra el
+proyecto). Referencia completa en `docs/FUNCIONALIDAD.md` §7.12.
+
+```bash
+# Estado del correo del proyecto (dominios con su estado DNS, buzones, uso y, en
+# suggestedDomains, los dominios de los servicios del proyecto que aún no tiene)
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail"
+
+# Activarlo (propietario o admin): crea el cliente de correo del proyecto con el
+# plan predeterminado (solo un admin puede pasar "planId"). Tras desactivarlo,
+# {"mode":"previous"} recupera el mismo cliente con sus dominios.
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"mode":"create"}' "$BASE/api/projects/PROJ_ID/mail/link"
+
+# Añadir un dominio, ver sus registros DNS y verificarlo
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"domain":"tuempresa.com"}' "$BASE/api/projects/PROJ_ID/mail/domains"
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/dns"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/verify"
+
+# Fichero de zona para importarlo en Cloudflare (DNS → Registros → Importar y
+# exportar). No incluye registros de la web del dominio raíz ni de www.
+curl -s -H "Authorization: Bearer $TOKEN" -o zona.txt "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/zonefile"
+
+# Webmail con el dominio del cliente en webmail.<dominio> (propietario o admin):
+# alta (la respuesta trae en webmail.instructions el registro DNS que hay que
+# crear), comprobación y, si el DNS está en Cloudflare, creación del registro
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/webmail"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/webmail/verify"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/webmail/cloudflare"
+
+# Crear un buzón (propietario o admin; la respuesta trae la contraseña UNA sola vez)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"domainId":"DOM_ID","localPart":"info"}' "$BASE/api/projects/PROJ_ID/mail/mailboxes"
+
+# Conectar un servicio por SMTP y volver a desplegarlo (solo devuelve los nombres
+# de las variables; la credencial SMTP anterior de ese servicio se revoca). Si el
+# servidor, el puerto o el usuario están puestos a mano con otro valor, 409 sin
+# crear nada: la vista previa (…/mail/connect/preview) lo dice en «conflicts».
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"serviceId":"SVC_ID","mailboxId":"MBX_ID","mode":"smtp","redeploy":true}' \
+  "$BASE/api/projects/PROJ_ID/mail/connect"
+
+# Plan de integraciones de una web (skyway.json o detección): revisarlo y
+# aprobarlo con su huella. Si el plan ha cambiado desde que se leyó, 409 con el
+# plan nuevo y nada aplicado. Reutilizar en SMTP un buzón que ya existe exige
+# además "confirmMailboxAccess": true (el plan lo explica en «confirmation»).
+FP=$(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/services/SVC_ID/integrations" | jq -r .plan.fingerprint)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"expect\":\"$FP\",\"redeploy\":true}" "$BASE/api/services/SVC_ID/integrations/apply"
+
+# Revocar una contraseña de aplicación o una clave de API del cliente
+# (los ids están en summary.appPasswords / summary.apiKeys de GET .../mail)
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/app-passwords/APP_ID"
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/api-keys/KEY_ID"
+```
+
+Un token de un usuario que no es admin: no elige el plan de Mailway, no crea
+buzones de nombre reservado (postmaster, abuse, admin…) y, en Cloudflare, solo
+usa las cuentas del propio cliente (también para el registro del webmail). El
+webmail nunca se crea con un nombre que ya sirve un servicio de Skyway ni con el
+del panel y, a la inversa, ningún servicio puede asignarse un nombre de marca
+blanca de Mailway, tampoco mientras espera DNS (409). Los enlaces de configuración con contraseña
+exigen ser propietario o admin y tienen un tope de 5 cada 10 minutos.
+
+Configurar la conexión (`PUT /api/mailway/config`) y desconectarla
+(`POST /api/mailway/disconnect`, que además retira de Traefik las rutas de
+Mailway) exigen sesión de navegador de un administrador, como el resto de
+credenciales persistentes; con un token de API se puede consultar
+(`GET /api/mailway/config`, `GET /api/mailway/plans`) y probar
+(`POST /api/mailway/test`). Quitar el token no retira las rutas publicadas.
+Desde la terminal del servidor, `tools/mailway.js conectar` prueba y guarda la
+conexión igual que Ajustes → Correo, con el token `mwt_…` por la entrada
+estándar (nunca como argumento); es lo que usa el instalador de Mailway para
+emparejar los dos paneles (`docs/FUNCIONALIDAD.md` §9).
 
 ### CLI rápida: el comando `skyway`
 

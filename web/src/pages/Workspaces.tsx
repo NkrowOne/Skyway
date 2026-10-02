@@ -119,8 +119,8 @@ export default function WorkspacesPage() {
       <div className="mx-auto max-w-[880px] px-4 py-10">
         <div className="card">
           <EmptyState
-            title="Su usuario no tiene ninguna cuenta de cliente asignada"
-            description="Solicite a un administrador que le asigne una cuenta para consultar aquí sus proyectos, cuota y facturas."
+            title="Tu usuario no tiene ninguna cuenta de cliente asignada"
+            description="Solicita a un administrador que te asigne una cuenta para consultar aquí tus proyectos, cuota y facturas."
           />
         </div>
       </div>
@@ -181,7 +181,7 @@ export default function WorkspacesPage() {
             <Building2 size={22} />
           </span>
           <p className="max-w-sm text-sm text-sub">
-            Todavía no hay cuentas de cliente. Cree una para asignarle recursos, módulos y usuarios propios.
+            Todavía no hay cuentas de cliente. Crea una para asignarle recursos, módulos y usuarios propios.
           </p>
           {isAdmin && (
             <Button onClick={() => setDraft({ ...EMPTY, planId: plans.data?.plans.find((p) => p.is_default)?.id ?? '' })}>

@@ -12,6 +12,9 @@ services:
     restart: unless-stopped
     environment:
       DATA_DIR: /data
+      # Dominio del panel: el puente de Traefik de Mailway nunca acepta una ruta
+      # para este dominio (ver /api/traefik/mailway).
+      SKYWAY_DOMAIN: ${SKYWAY_DOMAIN:-}
       # JWT_SECRET: define uno propio si quieres sesiones estables entre reinstalaciones
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -50,6 +53,16 @@ services:
       - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
       - --certificatesresolvers.le.acme.httpchallenge=true
       - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      # Rutas de Mailway (webmail de marca blanca y autoconfiguración de los
+      # dominios de correo de los clientes). Traefik las lee de Skyway, que las
+      # obtiene de Mailway y las filtra: solo reglas Host() hacia contenedores
+      # de Mailway y nunca un dominio que ya sirva Skyway. Sin Mailway
+      # configurado, Skyway responde una configuración vacía y no cambia nada.
+      - --providers.http.endpoint=http://skyway:4000/api/traefik/mailway
+      - --providers.http.pollInterval=15s
+      # Holgura sobre los 5 s que Skyway espera a Mailway antes de servir la
+      # última configuración buena.
+      - --providers.http.pollTimeout=10s
     ports:
       - "80:80"
       - "443:443"

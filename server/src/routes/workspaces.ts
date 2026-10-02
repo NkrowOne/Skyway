@@ -407,7 +407,7 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(404).send({ error: 'Usuario no encontrado en este workspace' });
     }
     const me = currentUser(req)!;
-    if (target.id === me.id) return reply.code(400).send({ error: 'No es posible modificar su propia cuenta desde este apartado' });
+    if (target.id === me.id) return reply.code(400).send({ error: 'No es posible modificar tu propia cuenta desde este apartado' });
     // Un propietario no gestiona a otros propietarios: eso queda para el administrador.
     if (me.role !== 'admin' && target.role === 'owner') {
       return reply.code(403).send({ error: 'Solo un administrador puede gestionar a otro propietario.' });
@@ -450,7 +450,7 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(404).send({ error: 'Usuario no encontrado en este workspace' });
     }
     const me = currentUser(req)!;
-    if (target.id === me.id) return reply.code(400).send({ error: 'No es posible eliminar su propia cuenta' });
+    if (target.id === me.id) return reply.code(400).send({ error: 'No es posible eliminar tu propia cuenta' });
     if (me.role !== 'admin' && target.role === 'owner') {
       return reply.code(403).send({ error: 'Solo un administrador puede eliminar a otro propietario.' });
     }

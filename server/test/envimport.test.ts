@@ -319,7 +319,7 @@ describe('importRepoEnv (checkout en disco)', () => {
     expect(lines).toEqual([
       'Variables: se han encontrado .env.example, apps/api/.env.example y apps/api/.env en el repositorio.',
       'Variables: se han importado 3 (SHARED_FROM_ROOT, SMTP_HOST, SMTP_PASS).',
-      'Variables: 1 pendiente de valor (API_KEY). Complete su valor en la pestaña «Variables».',
+      'Variables: 1 pendiente de valor (API_KEY). Completa su valor en la pestaña «Variables».',
       'Variables: 2 ignoradas (PORT: reservada, DB_HOST: apunta a localhost).',
     ]);
     expect(lines.join('\n')).not.toContain('supersecreto');
