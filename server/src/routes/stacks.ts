@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
+import { dnsAutomaticoAdmin } from '../cloudflaredns';
 import { domainClaimError } from '../domainguard';
 import { markManualAction } from '../monitor';
 import {
@@ -271,8 +272,11 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
       req.log.error({ err, stack: stack.key }, 'fallo desplegando la pila');
     });
 
+    // Solo para un administrador con token de Cloudflare; nunca hace fallar el alta.
+    const dns = body.domain ? await dnsAutomaticoAdmin(req, [body.domain], { type: 'project', id: projectId }) : undefined;
+
     reply.code(201);
-    return { stack: stack.key, prefix, publicUrl, services: publicServices(created) };
+    return { stack: stack.key, prefix, publicUrl, services: publicServices(created), ...(dns ? { dns } : {}) };
   });
 
   /**
@@ -376,6 +380,8 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
       req.log.error({ err, template: plan.code }, 'fallo desplegando la plantilla de Railway');
     });
 
+    const dns = body.domain ? await dnsAutomaticoAdmin(req, [body.domain], { type: 'project', id: projectId }) : undefined;
+
     reply.code(201);
     return {
       template: plan.code,
@@ -384,6 +390,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
       warnings: plan.warnings,
       services: publicServices(created),
       notes: plan.services.flatMap((s) => s.notes.map((n) => `${s.templateName}: ${n}`)),
+      ...(dns ? { dns } : {}),
     };
   });
 }

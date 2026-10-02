@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
 import { api } from '../../api';
-import { DbTemplate, Service } from '../../types';
+import { DbTemplate, DnsAutoResult, Service } from '../../types';
 import { cx } from '../../utils';
+import { avisoDns } from '../DnsAutoResult';
 import DomainsEditor from '../DomainsEditor';
 import {
   GithubSource,
@@ -156,6 +157,9 @@ export default function ServiceSettingsTab({
   const [newVolumePath, setNewVolumePath] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteVolumes, setDeleteVolumes] = useState(false);
+  /** DNS automático en Cloudflare de los dominios guardados (solo llega para un administrador con token). */
+  const [dnsResults, setDnsResults] = useState<Record<string, DnsAutoResult>>({});
+  const queryClient = useQueryClient();
 
   const dirty = useMemo(() => JSON.stringify(form) !== JSON.stringify(baseline), [form, baseline]);
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
@@ -249,12 +253,22 @@ export default function ServiceSettingsTab({
       } else {
         Object.assign(config, { version: form.version.trim() || cfg.version });
       }
-      return api.patch<{ service: Service; needsRedeploy: boolean }>(`/services/${service.id}`, { name: form.name, config });
+      return api.patch<{ service: Service; needsRedeploy: boolean; dns?: DnsAutoResult[] }>(`/services/${service.id}`, {
+        name: form.name,
+        config,
+      });
     },
     onSuccess: (data) => {
       setBaseline(form);
       flashSaved();
       toast(data.needsRedeploy ? 'Cambios guardados. Es necesario volver a desplegar para aplicarlos.' : 'Cambios guardados y aplicados.', 'ok');
+      const aviso = avisoDns(data.dns);
+      if (aviso && data.dns) {
+        toast(aviso.message, aviso.kind);
+        setDnsResults((prev) => ({ ...prev, ...Object.fromEntries(data.dns!.map((r) => [r.domain, r])) }));
+        // Un registro recién creado: que la comprobación del DNS no espere a caducar.
+        for (const r of data.dns) if (r.action === 'created') queryClient.invalidateQueries({ queryKey: ['domainCheck', r.domain] });
+      }
       if (data.needsRedeploy) onNeedsRedeploy?.();
       onChanged();
     },
@@ -502,7 +516,7 @@ export default function ServiceSettingsTab({
                 el puerto de escucha en el campo anterior o retira el dominio si el servicio no atiende HTTP.
               </p>
             )}
-            <DomainsEditor domains={form.domains} onChange={(d) => set('domains', d)} slug={service.slug} />
+            <DomainsEditor domains={form.domains} onChange={(d) => set('domains', d)} slug={service.slug} dnsResults={dnsResults} />
           </SectionCard>
         )}
 

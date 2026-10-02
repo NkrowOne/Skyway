@@ -727,17 +727,50 @@ export async function getSummary(clientId: string): Promise<MailwaySummary> {
 
 // ---------- dominios ----------
 
+/** Resultado del DNS automático del alta de un dominio de correo. */
+export interface MailwayAutoDnsResult {
+  applied: { action: string; type: string; name: string }[];
+  errors: { type: string; name: string; error: string }[];
+  /** Conflictos que Mailway no ha tocado (nunca reemplaza en el alta). */
+  skipped: { type: string; name: string; reason: string }[];
+}
+
+export interface MailwayCreatedDomain {
+  domain: MailwayDomain;
+  /** null si no se pidió el DNS automático o no se llegó a aplicar. */
+  cloudflare: MailwayAutoDnsResult | null;
+  /** Por qué no se ha aplicado (sin cuenta de Cloudflare que contenga la zona…). */
+  cloudflareReason: string | null;
+}
+
 /**
- * Skyway no pide el DNS automático en el alta (`autoDns`), pero `soloCliente`
- * viaja igualmente para quien no es administrador: si algún día se pide, el
- * alta no podrá escribir en las zonas de Cloudflare del operador.
+ * Da de alta el dominio en el cliente. `autoDns` pide a Mailway que cree en
+ * Cloudflare los registros que faltan sin reemplazar ninguno; Skyway solo lo
+ * pide para un administrador. Para quien no lo es, `autoDns` viaja en false y
+ * con `soloCliente`: el alta nunca escribe en las zonas de Cloudflare del
+ * operador, ni aunque Mailway decidiera aplicar el DNS por su cuenta.
  */
-export async function createDomain(clientId: string, domain: string, opts: { soloCliente?: boolean } = {}): Promise<MailwayDomain> {
-  const res = await mailwayFetch<{ domain: MailwayDomain }>(`/api/domains${cloudflareQuery(opts.soloCliente)}`, {
-    method: 'POST',
-    body: { domain, clientId },
-  });
-  return res.domain;
+export async function createDomain(
+  clientId: string,
+  domain: string,
+  opts: { soloCliente?: boolean; autoDns?: boolean } = {},
+): Promise<MailwayCreatedDomain> {
+  const res = await mailwayFetch<{ domain: MailwayDomain; cloudflare?: Partial<MailwayAutoDnsResult> | null; cloudflareReason?: unknown }>(
+    `/api/domains${cloudflareQuery(opts.soloCliente)}`,
+    { method: 'POST', body: { domain, clientId, autoDns: !!opts.autoDns } },
+  );
+  const cf = res.cloudflare && typeof res.cloudflare === 'object' ? res.cloudflare : null;
+  return {
+    domain: res.domain,
+    cloudflare: cf
+      ? {
+          applied: Array.isArray(cf.applied) ? cf.applied : [],
+          errors: Array.isArray(cf.errors) ? cf.errors : [],
+          skipped: Array.isArray(cf.skipped) ? cf.skipped : [],
+        }
+      : null,
+    cloudflareReason: typeof res.cloudflareReason === 'string' ? res.cloudflareReason : null,
+  };
 }
 
 export async function verifyDomain(domainId: string): Promise<MailwayDomain> {
@@ -759,6 +792,24 @@ export async function getDomainDns(domainId: string): Promise<MailwayDnsRecord[]
  */
 function cloudflareQuery(soloCliente: boolean | undefined): string {
   return soloCliente ? '?soloCliente=1' : '';
+}
+
+/** Cuenta de Cloudflare conectada en Mailway (sin el token, que Mailway nunca devuelve). */
+export interface MailwayCloudflareAccount {
+  id: string;
+  /** null = cuenta de la instancia (del operador). */
+  clientId: string | null;
+  label: string;
+}
+
+/**
+ * Cuentas de Cloudflare propias del cliente. Se filtran también aquí por
+ * cliente: con el token de administrador, un Mailway que ignorase `clientId`
+ * devolvería las de todos, incluidas las de la instancia.
+ */
+export async function listClientCloudflareAccounts(clientId: string): Promise<MailwayCloudflareAccount[]> {
+  const res = await mailwayFetch<{ accounts?: MailwayCloudflareAccount[] }>(`/api/cloudflare/accounts?clientId=${enc(clientId)}`);
+  return (Array.isArray(res.accounts) ? res.accounts : []).filter((a) => a && typeof a.id === 'string' && a.clientId === clientId);
 }
 
 export function getCloudflarePlan(domainId: string, opts: { soloCliente?: boolean } = {}): Promise<MailwayCloudflarePlan> {

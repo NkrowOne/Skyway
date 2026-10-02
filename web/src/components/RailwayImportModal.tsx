@@ -2,6 +2,8 @@ import { lazy, Suspense, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, ArrowRight, CheckCircle2, Database, GitBranch, Package, TrainFront } from 'lucide-react';
 import { api } from '../api';
+import { DnsAutoResult } from '../types';
+import { avisoDns } from './DnsAutoResult';
 import { Button, CopyButton, Field, Modal, useToast } from './ui';
 import { cx } from '../utils';
 
@@ -248,7 +250,7 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
     if (!selectedId || !envId) return;
     setBusy(true);
     try {
-      const res = await api.post<{ project: { id: string }; report: ImportReport }>('/import/railway/run', {
+      const res = await api.post<{ project: { id: string }; report: ImportReport; dns?: DnsAutoResult[] }>('/import/railway/run', {
         token,
         projectId: selectedId,
         environmentId: envId,
@@ -258,6 +260,9 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
       setReport(res.report);
       setStep('done');
       toast('Proyecto importado', 'ok');
+      // Con el token de Cloudflare: los dominios que aún apuntan a Railway son conflictos y no se tocan.
+      const aviso = avisoDns(res.dns);
+      if (aviso) toast(aviso.message, aviso.kind);
     } catch (err) {
       toast((err as Error).message, 'err');
     } finally {

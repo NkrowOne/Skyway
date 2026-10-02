@@ -163,6 +163,30 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   webmail creado desde un proyecto se reserva al darlo de alta, sin esperar a la
   lectura siguiente, y «Desconectar Mailway» libera la lista.
 
+- **Token de Cloudflare del operador solo para el administrador**
+  (`cloudflaredns.ts`, `cloudflareconfig.ts`): el token da acceso a las zonas
+  del operador, así que si una acción de un cliente lo usara, cualquier
+  propietario o miembro podría escribir en ellas dando de alta como dominio de
+  su servicio un nombre que viva en esas zonas. La regla se comprueba **dentro**
+  del DNS automático con el usuario de la petición (`role === 'admin'`, cookie o
+  token `sky_` de un admin), antes de leer el token o la IP: para cualquier otro
+  no sale ninguna petición. Las pruebas lo verifican con un `fetch` que anota
+  cualquier llamada (`server/test/cloudflare.test.ts`). Solo se procesan los
+  dominios **nuevos** de cada petición: un administrador que guarda el servicio
+  de un cliente no crea los registros de los dominios que puso el cliente. En el
+  correo, Skyway solo pide `autoDns` a Mailway para un administrador; para los
+  demás viaja `autoDns: false` con `?soloCliente=1`, y el registro automático
+  del webmail también es solo del administrador. Como Mailway guarda en el
+  dominio la cuenta con la que aplicó su DNS (también la de la instancia), para
+  quien no es administrador Skyway comprueba antes de pedir el plan o aplicarlo
+  que esa cuenta sea del propio cliente; si no, responde sin llamar a Mailway
+  (defensa propia, independiente de la versión de Mailway). El cliente de Cloudflare no
+  tiene métodos para cambiar ni borrar registros: lo existente se respeta y un
+  conflicto se informa. El token solo viaja en la cabecera `Authorization` a
+  `api.cloudflare.com`; los mensajes de error no lo incluyen y la herramienta
+  de terminal lo lee solo de la entrada estándar (un token en los argumentos se
+  rechaza antes de leer nada).
+
 ---
 
 ## 3. Riesgos aceptados por diseño
@@ -192,6 +216,14 @@ Estos no son defectos, sino consecuencias del propósito de la herramienta
   responde sin autenticación a quien llegue por la red interna (una aplicación
   de la red `skyway-edge` podría leer los dominios de marca blanca publicados):
   son dominios públicos y nombres de contenedor, sin secretos.
+- **Token de Cloudflare del operador en claro**: se guarda en `settings`
+  (`cloudflare.token`) como el token de Mailway, porque se envía tal cual a
+  Cloudflare; por tanto viaja también en las copias de `skyway.db`. Solo lo
+  escribe un admin con sesión de navegador (o la terminal del servidor), se
+  verifica antes de guardarlo y la API nunca lo devuelve (solo los últimos 4
+  caracteres y las zonas que ve); la auditoría no lo incluye. Recomendación:
+  un token limitado a «Zone · Zone · Read» y «Zone · DNS · Edit» sobre las
+  zonas necesarias, nunca la clave global (se rechaza).
 - **Rutas de Mailway sin token**: quitar el token o la dirección deja publicadas
   en Traefik las últimas rutas buenas (re-saneadas con los dominios de ahora),
   para no dejar sin webmail a los clientes por un token rotado o borrado por

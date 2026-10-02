@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
+import { dnsAutomaticoAdmin } from '../cloudflaredns';
 import { dbConsoleEngine } from '../dbconsole';
 import { domainClaimError } from '../domainguard';
 import { markManualAction } from '../monitor';
@@ -347,11 +348,18 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     audit(req, 'service_created', { type: 'service', id: service.id, detail: `${service.name} (${service.type})` });
     markManualAction(service.id);
     const deployment = triggerDeploy(service.id, 'initial');
+    // Solo para un administrador con token de Cloudflare (lo comprueba
+    // `dnsAutomaticoAdmin`); nunca hace fallar el alta, que ya está hecha.
+    const dns = await dnsAutomaticoAdmin(req, (service.config as { domains?: string[] }).domains ?? [], {
+      type: 'service',
+      id: service.id,
+    });
     reply.code(201);
     return {
       service,
       deployment,
       ...(planOutcome ? { plan: { result: planOutcome.result, plan: planOutcome.plan, error: planOutcome.error } } : {}),
+      ...(dns ? { dns } : {}),
     };
   });
 
@@ -651,7 +659,11 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
 
     const updated = getService(id)!;
     audit(req, 'service_updated', { type: 'service', id, detail: updated.name });
-    return { service: { ...updated, config: maskBuildArgs(updated.config) }, needsRedeploy };
+    // DNS automático solo de los dominios NUEVOS: los que ya tenía el servicio
+    // (quizá añadidos por el cliente) nunca se tocan al guardar otra cosa.
+    const nuevos = ((newCfg.domains ?? []) as string[]).filter((d) => !oldDomainList.includes(d));
+    const dns = await dnsAutomaticoAdmin(req, nuevos, { type: 'service', id });
+    return { service: { ...updated, config: maskBuildArgs(updated.config) }, needsRedeploy, ...(dns ? { dns } : {}) };
   });
 
   app.delete('/api/services/:id', async (req, reply) => {

@@ -422,10 +422,11 @@ describe('Cloudflare solo con las cuentas del cliente (C1)', () => {
     expect(r.status, r.raw).toBe(201);
     r = await call('POST', `/api/projects/${projA.id}/mail/domains`, admin(), { domain: 'alta-admin.example' });
     expect(r.status, r.raw).toBe(201);
-    expect(mailwayCalls((c) => c.method === 'POST' && c.path.startsWith('/api/domains')).map((c) => c.path)).toEqual([
-      '/api/domains?soloCliente=1',
-      '/api/domains',
-    ]);
+    const altas = mailwayCalls((c) => c.method === 'POST' && c.path.startsWith('/api/domains'));
+    expect(altas.map((c) => c.path)).toEqual(['/api/domains?soloCliente=1', '/api/domains']);
+    // El DNS automático en el alta solo lo pide el administrador; el del
+    // miembro viaja explícitamente en false, además de con soloCliente.
+    expect(altas.map((c) => (c.body as Json).autoDns)).toEqual([false, true]);
   });
 
   it('quien no es administrador pide a Mailway que no use las cuentas de la instancia', async () => {

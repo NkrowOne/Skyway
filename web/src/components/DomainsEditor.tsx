@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, ExternalLink, Globe, Plus, RefreshCw, X } from 'lucide-react';
+import { CheckCircle2, Cloud, ExternalLink, Globe, Plus, RefreshCw, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
-import { Me } from '../types';
+import { CloudflareConfigView, DnsAutoResult, Me } from '../types';
 import { cx, Tone } from '../utils';
+import { DnsAutoChip } from './DnsAutoResult';
 import { Button, Chip, CopyButton, useToast } from './ui';
 
 interface DomainCheck {
@@ -87,11 +88,14 @@ function DomainRow({
   domain,
   serverIp,
   tls,
+  dns,
   onRemove,
 }: {
   domain: string;
   serverIp: string | null;
   tls: boolean;
+  /** Resultado del DNS automático en Cloudflare del último guardado (solo administrador). */
+  dns?: DnsAutoResult;
   onRemove: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -155,6 +159,13 @@ function DomainRow({
           </button>
         </span>
       </div>
+      {/* En su propia línea y con salto: junto al dominio no cabe en móvil. */}
+      {dns && (
+        <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-sub">
+          <DnsAutoChip result={dns} />
+          <span className="min-w-0 break-words">{dns.message}</span>
+        </p>
+      )}
       {(expanded || status === 'no_record' || status === 'wrong_ip') && (
         <div className="mt-1.5">
           {check.data && <p className="text-xs text-sub">{check.data.check.message}</p>}
@@ -173,10 +184,13 @@ export default function DomainsEditor({
   domains,
   onChange,
   slug,
+  dnsResults,
 }: {
   domains: string[];
   onChange: (domains: string[]) => void;
   slug: string;
+  /** Resultado del DNS automático por dominio, tras guardar (solo lo recibe un administrador). */
+  dnsResults?: Record<string, DnsAutoResult>;
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -196,6 +210,15 @@ export default function DomainsEditor({
     queryKey: ['domainsConfig'],
     queryFn: () => api.get<DomainsConfig>('/domains/config'),
     staleTime: 60_000,
+  });
+  // Solo el administrador lo consulta (la ruta es suya): si tiene token, el
+  // DNS de los dominios nuevos se configura solo al guardar.
+  const cloudflare = useQuery({
+    queryKey: ['cloudflareConfig'],
+    queryFn: () => api.get<CloudflareConfigView>('/cloudflare/config'),
+    enabled: isAdmin,
+    staleTime: 60_000,
+    retry: false,
   });
   const serverIp = useQuery({
     queryKey: ['serverIp'],
@@ -238,7 +261,14 @@ export default function DomainsEditor({
       {domains.length > 0 && (
         <div className="flex flex-col gap-2">
           {domains.map((d) => (
-            <DomainRow key={d} domain={d} serverIp={ip} tls={tls} onRemove={() => onChange(domains.filter((x) => x !== d))} />
+            <DomainRow
+              key={d}
+              domain={d}
+              serverIp={ip}
+              tls={tls}
+              dns={dnsResults?.[d]}
+              onRemove={() => onChange(domains.filter((x) => x !== d))}
+            />
           ))}
         </div>
       )}
@@ -362,6 +392,15 @@ export default function DomainsEditor({
         )}
         <span>Los dominios se aplican al guardar y volver a desplegar.</span>
       </div>
+      {isAdmin && cloudflare.data?.configured && (
+        <p className="flex items-start gap-1.5 text-xs text-subtle">
+          <Cloud size={12} className="mt-0.5 shrink-0 text-warn" />
+          <span>
+            DNS automático: al guardar, los dominios nuevos que estén en tu Cloudflare reciben su registro A hacia este servidor
+            (sin proxy). Si ya existe un registro con ese nombre no se modifica: se indica como conflicto.
+          </span>
+        </p>
+      )}
     </div>
   );
 }

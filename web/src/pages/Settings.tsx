@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
-import { AlertTriangle, BellRing, CheckCircle2, ChevronDown, Cpu, DatabaseBackup, Download, Globe, KeyRound, Mail, Trash2 } from 'lucide-react';
+import { AlertTriangle, BellRing, CheckCircle2, ChevronDown, Cloud, Cpu, DatabaseBackup, Download, Globe, KeyRound, Mail, Trash2 } from 'lucide-react';
 import { api } from '../api';
+import CloudflareSettings from '../components/CloudflareSettings';
 import GithubAppPanel from '../components/GithubAppPanel';
 import MailwaySettings from '../components/MailwaySettings';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
@@ -454,6 +455,18 @@ export default function SettingsPage() {
           </div>
         </SettingsSection>
       )}
+
+      {/* Fuera del bloque de ajustes cargados, como GitHub y Mailway: tiene su
+          propia consulta y su propio botón (el token solo se escribe). */}
+      <SettingsSection
+        id="cloudflare"
+        icon={<Cloud size={15} />}
+        iconClass="text-warn"
+        title="Cloudflare (DNS automático)"
+        description="Token de Cloudflare del administrador. Con él, los dominios nuevos que des de alta en los servicios —también en proyectos de clientes— se configuran solos en tu Cloudflare, sin modificar registros existentes. Las acciones de los clientes nunca lo usan. Esta sección se guarda con su propio botón."
+      >
+        <CloudflareSettings />
+      </SettingsSection>
 
       <SettingsSection
         id="github"

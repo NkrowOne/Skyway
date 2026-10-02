@@ -230,6 +230,17 @@ export const FAQ: FaqEntry[] = [
     keywords: ['dominio', 'domain', 'dns', 'registro a', 'cname', 'https', 'ssl', 'tls', 'certificado', 'subdominio', 'traefik', 'lets encrypt', 'apuntar', 'ip'],
   },
   {
+    id: 'dns-automatico-cloudflare',
+    category: 'dominios',
+    question: '¿Se crea automáticamente el registro DNS de mis dominios en Cloudflare?',
+    answer:
+      'Solo cuando el dominio lo da de alta el **administrador de la plataforma** y ha conectado su cuenta de Cloudflare en **Ajustes → Cloudflare**. En ese caso, al guardar, los dominios nuevos que estén en sus zonas reciben un registro **A** hacia la IP del servidor, sin proxy, y el panel muestra el resultado de cada uno («DNS creado en Cloudflare», «DNS ya configurado», «Conflicto en Cloudflare» u «omitido» si el dominio no está en su Cloudflare).\n\n' +
+      'Nunca se modifica ni se borra un registro existente: si el nombre ya tiene un registro A, AAAA o CNAME que apunta a otro sitio, se indica como **conflicto** y hay que cambiarlo a mano. Los dominios de correo que da de alta el administrador también reciben sus registros (MX, SPF, DKIM, DMARC…) con las cuentas de Cloudflare de Mailway.\n\n' +
+      'Cuando el dominio lo añade el propietario o un miembro de la cuenta, el DNS no se toca: crea tú el registro en tu proveedor de DNS (el panel indica cuál) o, para el correo, usa **Configurar en Cloudflare** con una cuenta de Cloudflare de tu cliente de correo.',
+    keywords: ['cloudflare', 'dns automatico', 'automatico', 'registro a', 'zona', 'conflicto', 'token', 'crear registro', 'apuntar', 'no se crea el dns', 'proxy'],
+    links: [{ label: 'Configurar Cloudflare (administrador)', to: '/settings#cloudflare' }],
+  },
+  {
     id: 'dominio-502',
     category: 'dominios',
     question: 'Mi dominio responde 502 Bad Gateway o 404. ¿Cuál es la causa?',

@@ -1302,6 +1302,38 @@ export interface MailwayConfigView {
   traefik: MailwayBridgeStatus | null;
 }
 
+/** Ajustes → Cloudflare: el token del administrador nunca vuelve, solo su pista. */
+export interface CloudflareConfigView {
+  configured: boolean;
+  /** Últimos 4 caracteres del token guardado. */
+  hint: string | null;
+  zones: { names: string[]; total: number; checkedAt: number } | null;
+  lastError: { message: string; at: number } | null;
+  createTokenUrl: string;
+}
+
+export interface CloudflareTestResult {
+  ok: true;
+  zones: { names: string[]; total: number; checkedAt: number };
+}
+
+/**
+ * Resultado del DNS automático en Cloudflare de un dominio de servicio (solo
+ * llega en las respuestas de un administrador con token configurado).
+ */
+export interface DnsAutoResult {
+  domain: string;
+  action: 'created' | 'kept' | 'conflict' | 'skipped' | 'error';
+  message: string;
+}
+
+/** DNS automático del alta de un dominio de correo (Mailway, solo administrador). */
+export interface MailAutoDnsResult {
+  applied: { action: string; type: string; name: string }[];
+  errors: { type: string; name: string; error: string }[];
+  skipped: { type: string; name: string; reason: string }[];
+}
+
 export interface MailPlan {
   id: string;
   name: string;

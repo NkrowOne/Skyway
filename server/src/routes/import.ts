@@ -2,7 +2,8 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
-import { getProject, getSetting, setSetting } from '../db';
+import { dnsAutomaticoAdmin } from '../cloudflaredns';
+import { getProject, getSetting, listServices, setSetting } from '../db';
 import { listRailwayProjects } from '../railway/client';
 import { analyzeRailwayProject, runRailwayImport } from '../railway/importer';
 import { safeParse, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
@@ -82,8 +83,13 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
         id: project.id,
         detail: `${report.railwayProject} (${report.environment}) → ${report.created.length} servicios`,
       });
+      // Los dominios que traía de Railway apuntan todavía allí: si ya tienen
+      // registro, es un conflicto que se informa y no se toca (el cambio de
+      // DNS lo decide el administrador cuando quiera migrar el tráfico).
+      const dominios = listServices(project.id).flatMap((s) => ((s.config as { domains?: string[] }).domains ?? []));
+      const dns = await dnsAutomaticoAdmin(req, dominios, { type: 'project', id: project.id });
       reply.code(201);
-      return { project, report };
+      return { project, report, ...(dns ? { dns } : {}) };
     });
   });
 }

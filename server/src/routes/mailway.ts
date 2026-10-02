@@ -20,6 +20,7 @@ import { panelDomains, webmailHostError } from '../domainguard';
 import {
   MAILWAY_SETTING,
   MailwayApiKeyInfo,
+  MailwayAutoDnsResult,
   MailwayAppPasswordInfo,
   MailwayDnsInstruction,
   MailwayDomain,
@@ -49,6 +50,7 @@ import {
   getZoneFile,
   internalPanelUrl,
   linkClient,
+  listClientCloudflareAccounts,
   listClients,
   listPlans,
   listWhitelabelDomains,
@@ -241,6 +243,27 @@ function ownDomain(summary: MailwaySummary, domainId: string): MailwayDomain {
   const domain = summary.domains.find((d) => d.id === domainId);
   if (!domain) throw httpError(404, 'Dominio no encontrado en este proyecto');
   return domain;
+}
+
+const CUENTA_DE_LA_PLATAFORMA =
+  'El DNS de este dominio en Cloudflare lo gestiona el administrador de la plataforma con su propia cuenta. ' +
+  'Conecta en Mailway una cuenta de Cloudflare del cliente que contenga la zona o solicita al administrador que aplique los cambios.';
+
+/**
+ * ¿El dominio quedó asociado en Mailway a una cuenta de Cloudflare que no es
+ * del cliente? Pasa cuando un administrador aplica su DNS con las cuentas de
+ * la instancia (el alta automática lo hace): Mailway guarda esa cuenta en el
+ * dominio y, en versiones que la aceptan sin mirar quién pide, la usaría
+ * también con `soloCliente`. Para quien no es administrador, Skyway lo
+ * comprueba ANTES de pedir el plan o aplicarlo: ni siquiera para leer debe
+ * usarse el token del operador en nombre de un cliente. Solo consulta las
+ * cuentas del propio cliente.
+ */
+async function asociadoACuentaAjena(clientId: string, domain: MailwayDomain): Promise<boolean> {
+  const asociada = domain.cloudflare?.accountId;
+  if (!asociada) return false;
+  const propias = await listClientCloudflareAccounts(clientId);
+  return !propias.some((a) => a.id === asociada);
 }
 
 function ownMailbox(summary: MailwaySummary, mailboxId: string): MailwayMailbox {
@@ -446,6 +469,63 @@ function ownedWebmail(d: MailwayWhitelabelDomain | undefined, clientId: string, 
     throw new MailwayError('http', 'La respuesta de Mailway no corresponde al webmail de este dominio.', 502);
   }
   return d;
+}
+
+/** Resultado de Cloudflare tal como sale hacia la web: solo los campos conocidos. */
+function publicAutoDns(r: MailwayAutoDnsResult): MailwayAutoDnsResult {
+  return {
+    applied: r.applied.map((a) => ({ action: a.action, type: a.type, name: a.name })),
+    errors: r.errors.map((e) => ({ type: e.type, name: e.name, error: e.error })),
+    skipped: r.skipped.map((x) => ({ type: x.type, name: x.name, reason: x.reason })),
+  };
+}
+
+interface WebmailDnsAutomatico {
+  cloudflare: MailwayAutoDnsResult | null;
+  cloudflareReason: string | null;
+  domain: MailwayWhitelabelDomain | undefined;
+}
+
+/**
+ * Registro del webmail en Cloudflare justo después de darlo de alta, como el
+ * botón «Crear registro en Cloudflare». Solo lo llama la ruta para un administrador:
+ * va sin `soloCliente`, así que Mailway puede usar las cuentas de la
+ * instancia, que nunca se usan en nombre de un cliente. Si Mailway no tiene
+ * ninguna cuenta de Cloudflare no se intenta; un fallo no deshace el alta y
+ * vuelve como motivo. Mailway nunca reemplaza un registro existente aquí
+ * (lo devuelve en `skipped`).
+ */
+async function webmailDnsAutomatico(
+  req: FastifyRequest,
+  project: ProjectRow,
+  whitelabelId: string,
+  hostname: string,
+): Promise<WebmailDnsAutomatico | null> {
+  try {
+    const info = await getInfo();
+    if (!info.features?.cloudflare) return null;
+    const result = await applyWhitelabelCloudflare(whitelabelId, { soloCliente: false });
+    const applied = Array.isArray(result.applied) ? result.applied : [];
+    const errors = Array.isArray(result.errors) ? result.errors : [];
+    const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+    audit(req, 'mailway_webmail_dns_applied', {
+      type: 'project',
+      id: project.id,
+      detail:
+        `${hostname}: ${applied.length} cambio(s)` +
+        `${errors.length ? `, ${errors.length} error(es)` : ''}${skipped.length ? `, ${skipped.length} sin aplicar` : ''} (automático al configurarlo)`,
+    });
+    return { cloudflare: publicAutoDns({ applied, errors, skipped }), cloudflareReason: null, domain: result.domain };
+  } catch (err) {
+    // El webmail ya está creado: ningún fallo de aquí hace fallar el alta.
+    if (err instanceof MailwayError) return { cloudflare: null, cloudflareReason: messageFor(err), domain: undefined };
+    req.log.warn({ err: (err as Error)?.message }, 'Registro automático del webmail en Cloudflare');
+    return {
+      cloudflare: null,
+      cloudflareReason: 'No se ha podido crear el registro en Cloudflare. Utiliza «Crear registro en Cloudflare» en el webmail del dominio.',
+      domain: undefined,
+    };
+  }
 }
 
 function publicInstructions(list: MailwayDnsInstruction[] | undefined) {
@@ -896,10 +976,25 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         // Como en el resto de rutas: el cliente tiene que seguir siendo el del proyecto.
         const summary = await ownedSummary(ctx.project, link);
         assertClientActive(summary);
-        const domain = await createDomain(link.client_id, body.domain, { soloCliente: !ctx.isAdmin });
-        audit(req, 'mailway_domain_added', { type: 'project', id: ctx.project.id, detail: `${ctx.project.name}: ${body.domain}` });
+        // DNS automático en Cloudflare solo para el administrador (con las
+        // cuentas de Mailway, también las de la instancia). Para cualquier otro,
+        // `autoDns: false` y `soloCliente`: el alta de un cliente nunca escribe
+        // en las zonas del operador.
+        const created = await createDomain(link.client_id, body.domain, { soloCliente: !ctx.isAdmin, autoDns: ctx.isAdmin });
+        const cf = created.cloudflare;
+        audit(req, 'mailway_domain_added', {
+          type: 'project',
+          id: ctx.project.id,
+          detail:
+            `${ctx.project.name}: ${body.domain}` +
+            (cf ? ` (DNS en Cloudflare: ${cf.applied.length} cambio(s)${cf.errors.length ? `, ${cf.errors.length} error(es)` : ''}${cf.skipped.length ? `, ${cf.skipped.length} sin aplicar` : ''})` : ''),
+        });
         reply.code(201);
-        return { domain: publicDomain(domain) };
+        return {
+          domain: publicDomain(created.domain),
+          cloudflare: cf ? publicAutoDns(cf) : null,
+          cloudflareReason: created.cloudflareReason,
+        };
       }),
     );
 
@@ -935,10 +1030,21 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         const ctx = projectCtx(req, reply);
         if (!ctx) return reply;
         const { domainId } = req.params as { domainId: string };
-        const summary = await ownedSummary(ctx.project, requireLink(ctx.project));
-        ownDomain(summary, domainId);
+        const link = requireLink(ctx.project);
+        const summary = await ownedSummary(ctx.project, link);
+        const domain = ownDomain(summary, domainId);
         // Quien no es administrador de Skyway solo puede usar las cuentas de
         // Cloudflare del propio cliente, nunca las del operador.
+        if (!ctx.isAdmin && (await asociadoACuentaAjena(link.client_id, domain))) {
+          return {
+            available: false,
+            reason: CUENTA_DE_LA_PLATAFORMA,
+            account: null,
+            zone: null,
+            changes: [],
+            summary: { create: 0, update: 0, keep: 0, conflict: 0 },
+          };
+        }
         const plan = await getCloudflarePlan(domainId, { soloCliente: !ctx.isAdmin });
         return {
           available: !!plan.available,
@@ -968,8 +1074,10 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         if (!ctx) return reply;
         const { domainId } = req.params as { domainId: string };
         const body = z.object({ replaceConflicts: z.boolean().optional() }).parse(req.body ?? {});
-        const summary = await ownedSummary(ctx.project, requireLink(ctx.project));
+        const link = requireLink(ctx.project);
+        const summary = await ownedSummary(ctx.project, link);
         const domain = ownDomain(summary, domainId);
+        if (!ctx.isAdmin && (await asociadoACuentaAjena(link.client_id, domain))) throw httpError(409, CUENTA_DE_LA_PLATAFORMA);
         const result = await applyCloudflare(domainId, { replaceConflicts: body.replaceConflicts, soloCliente: !ctx.isAdmin });
         const applied = Array.isArray(result.applied) ? result.applied : [];
         const errors = Array.isArray(result.errors) ? result.errors : [];
@@ -1085,13 +1193,23 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           throw httpError(409, `El webmail ${hostname} ya está configurado en este proyecto.`);
         }
         const res = await createWhitelabelDomain({ hostname, clientId: link.client_id });
-        const created = ownedWebmail(res.domain, link.client_id, hostname);
+        let created = ownedWebmail(res.domain, link.client_id, hostname);
         // Reservado ya, sin esperar a la siguiente lectura del puente: mientras
         // espera DNS, ningún servicio de otro cliente puede asignárselo.
         reserveWhitelabelHost(hostname);
         audit(req, 'mailway_webmail_created', { type: 'project', id: ctx.project.id, detail: `${ctx.project.name}: ${hostname}` });
+        const auto = ctx.isAdmin ? await webmailDnsAutomatico(req, ctx.project, created.id, hostname) : null;
+        // El estado tras crear el registro, solo si es ese mismo nombre y cliente
+        // (si no, se queda el del alta: el webmail ya está creado).
+        const tras = auto?.domain;
+        if (tras && tras.clientId === link.client_id && typeof tras.hostname === 'string' && tras.hostname.toLowerCase() === hostname) {
+          created = tras;
+        }
         reply.code(201);
-        return { webmail: publicWebmail(created, res.instructions) };
+        return {
+          webmail: publicWebmail(created, res.instructions),
+          ...(auto ? { cloudflare: auto.cloudflare, cloudflareReason: auto.cloudflareReason } : {}),
+        };
       }),
     );
 
