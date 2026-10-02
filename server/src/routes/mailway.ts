@@ -1,11 +1,10 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { parse as parseDomain } from 'tldts';
 import { z } from 'zod';
-import { assertProjectAccess, assertProjectManage, currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
+import { assertProjectAccess, assertProjectManage, canManageProject, currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
 import { audit } from '../audit';
 import {
   deleteMailwayLink,
-  getEnv,
   getMailwayLink,
   getMailwayLinkByClient,
   getProject,
@@ -14,7 +13,6 @@ import {
   insertMailwayLink,
   listMailwayLinks,
   listServices,
-  setEnv,
   setSetting,
 } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
@@ -31,12 +29,12 @@ import {
   MailwayPlan,
   MailwaySummary,
   MailwayWhitelabelDomain,
+  WebZoneRecord,
   ZONE_LEVELS,
+  appendWebRecords,
   applyCloudflare,
   applyWhitelabelCloudflare,
   cachedInfo,
-  createApiKey,
-  createAppPassword,
   createDomain,
   createMailbox,
   createSetupLink,
@@ -82,61 +80,30 @@ import {
   resetMailwayTraefikState,
   stableStringify,
 } from '../mailwaytraefik';
+import {
+  BUZONES_RESERVADOS,
+  NO_CONFIGURADO,
+  PREFIJO_CLAVE,
+  assertAccountActive,
+  assertClientActive,
+  connectServiceMail,
+  httpError,
+  isRefError,
+  knownMailValues,
+  mailConnectNames,
+  ownedSummary,
+  requireLink,
+  revokeIgnoringGone,
+  serviceOfProject,
+} from '../mailconnect';
+import { LOCAL_PART_RE } from '../mailenv';
 import { markManualAction } from '../monitor';
 import { isWorkspaceActive, moduleAllowedForProject, workspaceOfProject } from '../quota';
 import { rateLimit } from '../ratelimit';
-import { MailwayLinkRow, ProjectRow, ServiceRow, UserRow } from '../types';
+import { MailwayLinkRow, ProjectRow, UserRow } from '../types';
 import { domainSchema } from './services';
 
 const MODULO_INACTIVO = 'El módulo «Correo» no está activo en este workspace.';
-const NO_CONFIGURADO =
-  'La integración con Mailway no está configurada. Un administrador puede configurarla en Ajustes → Correo (Mailway).';
-const NO_VINCULADO = 'El correo no está activado en este proyecto.';
-const CUENTA_SUSPENDIDA =
-  'La cuenta de este proyecto está suspendida: no es posible activar el correo, crear dominios ni buzones, ni conectar servicios.';
-const CLIENTE_SUSPENDIDO =
-  'El cliente de correo de este proyecto está suspendido en Mailway: no es posible crear dominios ni buzones, ni conectar servicios.';
-
-/**
- * Nombres de buzón reservados a la administración del dominio (RFC 2142 y las
- * direcciones que las autoridades de certificación aceptan para validar un
- * dominio). Quien los recibe puede obtener certificados o recibir los avisos
- * de abuso del dominio: solo los crea un administrador de la plataforma.
- */
-const BUZONES_RESERVADOS = new Set([
-  'abuse',
-  'admin',
-  'administrator',
-  'hostmaster',
-  'postmaster',
-  'root',
-  'security',
-  'ssladmin',
-  'webmaster',
-]);
-
-/** Prefijo de las claves de API que crea Skyway (así se distinguen de las demás del cliente). */
-const PREFIJO_CLAVE = 'Skyway · ';
-
-/**
- * Nombre de la clave de API de un servicio. Mailway admite 60 caracteres, y el
- * slug del servicio (≤ 35) es estable aunque se renombren proyecto o servicio:
- * con él se encuentra la clave anterior al volver a conectar. El proyecto no
- * hace falta, porque el cliente de correo ya es el del proyecto.
- */
-function apiKeyName(service: ServiceRow): string {
-  return `${PREFIJO_CLAVE}${service.slug}`.slice(0, 60);
-}
-
-/** Nombre de la contraseña de aplicación de un servicio (mismo criterio que la clave). */
-function appPasswordName(service: ServiceRow): string {
-  return `skyway:${service.slug}`.slice(0, 60);
-}
-
-/** Error con código HTTP que el manejador global devuelve tal cual. */
-function httpError(status: number, message: string): Error {
-  return Object.assign(new Error(message), { statusCode: status });
-}
 
 /**
  * Código con el que se contesta un fallo de Mailway. Los 400/404/409/429 de
@@ -178,11 +145,6 @@ function guarded(fn: Handler): Handler {
   };
 }
 
-function canManageProject(user: UserRow, project: ProjectRow): boolean {
-  if (user.role === 'admin') return true;
-  return user.role === 'owner' && !!user.workspace_id && project.workspace_id === user.workspace_id;
-}
-
 interface ProjectCtx {
   project: ProjectRow;
   user: UserRow;
@@ -210,65 +172,6 @@ function projectCtx(req: FastifyRequest, reply: FastifyReply, opts: { manage?: b
   }
   if (opts.manage && !assertProjectManage(req, reply, id)) return null;
   return { project, user, isAdmin };
-}
-
-function requireLink(project: ProjectRow): MailwayLinkRow {
-  if (!mailwayConfigured()) throw httpError(409, NO_CONFIGURADO);
-  const link = getMailwayLink(project.id);
-  if (!link) throw httpError(409, NO_VINCULADO);
-  return link;
-}
-
-/**
- * Crear (cliente, dominios, buzones, credenciales) exige que la cuenta del
- * proyecto esté activa, como crear servicios. Lo ya creado sigue funcionando.
- */
-function assertAccountActive(project: ProjectRow): void {
-  const workspace = workspaceOfProject(project.id);
-  if (workspace && !isWorkspaceActive(workspace)) throw httpError(403, CUENTA_SUSPENDIDA);
-}
-
-function assertClientActive(summary: MailwaySummary): void {
-  if (summary.client.suspended) throw httpError(409, CLIENTE_SUSPENDIDO);
-}
-
-/** Error de referencia externa: la vista lo convierte en un aviso en lugar de fallar. */
-function refError(message: string): Error {
-  return Object.assign(httpError(409, message), { mailwayRef: true });
-}
-
-function isRefError(err: unknown): err is Error {
-  return !!err && typeof err === 'object' && (err as { mailwayRef?: unknown }).mailwayRef === true;
-}
-
-/**
- * Resumen del cliente vinculado, comprobando que sigue siendo el de ESTE
- * proyecto. Skyway habla con Mailway con un token de administrador: si la
- * referencia externa del cliente no es exactamente la del proyecto (se ha
- * desvinculado o vinculado a otra cosa desde Mailway), no se opera sobre él.
- * Una referencia vacía tampoco vale: puede ser un cliente que el operador ha
- * retirado a propósito de este proyecto.
- */
-async function ownedSummary(project: ProjectRow, link: MailwayLinkRow): Promise<MailwaySummary> {
-  const summary = await getSummary(link.client_id);
-  const expected = projectExternalRef(project.id);
-  if (summary.client.id !== link.client_id) {
-    throw new MailwayError('http', 'La respuesta de Mailway no corresponde al cliente vinculado.', 502);
-  }
-  const ref = summary.client.externalRef ?? null;
-  if (ref === null) {
-    throw refError(
-      `El cliente de Mailway «${summary.client.name}» ya no está vinculado a este proyecto: se ha retirado su referencia desde Mailway. ` +
-        'Desactiva el correo en este proyecto; después podrás activarlo de nuevo recuperando ese mismo cliente.',
-    );
-  }
-  if (ref !== expected) {
-    throw refError(
-      `El cliente de Mailway «${summary.client.name}» está vinculado a otra integración. ` +
-        'Desactiva el correo en este proyecto; el cliente y sus buzones se conservan en Mailway.',
-    );
-  }
-  return summary;
 }
 
 // ---------- cliente anterior (reactivar sin perder los dominios) ----------
@@ -447,19 +350,6 @@ function publicPlan(p: MailwayPlan) {
   return { id: p.id, name: p.name, maxDomains: p.maxDomains, maxMailboxes: p.maxMailboxes, mailboxQuotaMb: p.mailboxQuotaMb };
 }
 
-/**
- * Revoca sin fallar si la credencial ya no existe o ya estaba revocada (404 o
- * 409 de Mailway): el objetivo, que deje de funcionar, ya se cumple.
- */
-async function revokeIgnoringGone(fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-  } catch (err) {
-    if (err instanceof MailwayError && (err.status === 404 || err.status === 409)) return;
-    throw err;
-  }
-}
-
 function publicLink(link: MailwayLinkRow) {
   return { clientId: link.client_id, clientName: link.client_name, createdAt: link.created_at, createdBy: link.created_by };
 }
@@ -591,6 +481,54 @@ function publicWebmail(d: MailwayWhitelabelDomain, instructions?: MailwayDnsInst
   };
 }
 
+// ---------- registros web del fichero de zona ----------
+
+/**
+ * Dominios de los servicios del proyecto que cuelgan de la zona (el propio
+ * dominio o un subdominio). Solo de ESTE proyecto: los de otros proyectos no
+ * se mencionan nunca, aunque compartan dominio.
+ */
+function projectHostsUnder(projectId: string, zone: string): string[] {
+  const apex = zone.toLowerCase();
+  const out: string[] = [];
+  for (const service of listServices(projectId)) {
+    const domains = (service.config as { domains?: unknown }).domains;
+    if (!Array.isArray(domains)) continue;
+    for (const d of domains) {
+      if (typeof d !== 'string') continue;
+      const host = d.toLowerCase();
+      if ((host === apex || host.endsWith(`.${apex}`)) && !out.includes(host)) out.push(host);
+    }
+  }
+  return out;
+}
+
+/**
+ * Registro del webmail del cliente en `webmail.<dominio>`, si está dado de
+ * alta: el que indica Mailway (el CNAME recomendado o, si no, el primero). Si
+ * el nombre no se puede utilizar (lo sirve un servicio de Skyway, es el del
+ * panel…), no se incluye y se dice por qué.
+ */
+async function webmailZoneRecord(
+  clientId: string,
+  domain: MailwayDomain,
+  isAdmin: boolean,
+): Promise<{ webmail: WebZoneRecord | null; webmailNote: string | null }> {
+  const hostname = webmailHostname(domain);
+  const found = await findWebmail(clientId, hostname);
+  if (!found) return { webmail: null, webmailNote: null };
+  const conflicto = webmailHostError(hostname, { isAdmin });
+  if (conflicto) return { webmail: null, webmailNote: `No se incluye ${hostname}: ${conflicto}` };
+  const view = await getWhitelabelDomain(found.id);
+  ownedWebmail(view.domain, clientId, hostname);
+  const instrucciones = publicInstructions(view.instructions).filter(
+    (i) => (i.type === 'CNAME' || i.type === 'A') && i.name.toLowerCase().replace(/\.$/, '') === hostname,
+  );
+  const elegida = instrucciones.find((i) => i.recommended) ?? instrucciones[0];
+  if (!elegida) return { webmail: null, webmailNote: `No se incluye ${hostname}: Mailway no ha indicado su registro.` };
+  return { webmail: { name: hostname, type: elegida.type as 'A' | 'CNAME', value: elegida.value }, webmailNote: null };
+}
+
 // ---------- configuración (administrador) ----------
 
 function configView() {
@@ -675,9 +613,6 @@ const linkSchema = z.discriminatedUnion('mode', [
   // Recuperar el cliente que el proyecto tenía antes de desactivar el correo.
   z.object({ mode: z.literal('previous') }),
 ]);
-
-/** Mismo criterio que Mailway: sin «+» (no admite subdirecciones) y sin empezar ni acabar en signo. */
-const LOCAL_PART_RE = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 
 export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
   /**
@@ -1219,9 +1154,11 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
      * Fichero de zona BIND del dominio, para importarlo en el proveedor de DNS
      * (en Cloudflare: DNS → Registros → Importar y exportar). Lo genera Mailway
      * (`?nivel=obligatorios|recomendados|completo`, recomendados por defecto);
-     * Skyway comprueba antes que el dominio es del cliente del proyecto y
-     * retira los registros web del dominio raíz y de www (`stripWebRecords`):
-     * importarlo nunca debe sustituir la web del dominio.
+     * Skyway comprueba antes que el dominio es del cliente del proyecto,
+     * retira los registros web que pudiera traer del dominio raíz y de www
+     * (`stripWebRecords`) y añade, en secciones propias, los de los servicios
+     * de ESTE proyecto que cuelgan del dominio y el del webmail del cliente
+     * (`appendWebRecords`): un solo fichero deja la zona completa.
      */
     secured.get(
       '/api/projects/:id/mail/domains/:domainId/zonefile',
@@ -1237,10 +1174,22 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
               .default('recomendados'),
           })
           .parse(req.query ?? {});
-        const summary = await ownedSummary(ctx.project, requireLink(ctx.project));
+        const link = requireLink(ctx.project);
+        const summary = await ownedSummary(ctx.project, link);
         const domain = ownDomain(summary, domainId);
-        const { zone, removed } = stripWebRecords(await getZoneFile(domainId, nivel), domain.domain);
-        if (removed > 0) req.log.warn({ domain: domain.domain, removed }, 'Mailway: registros web retirados del fichero de zona');
+        const stripped = stripWebRecords(await getZoneFile(domainId, nivel), domain.domain);
+        if (stripped.removed > 0) {
+          req.log.warn({ domain: domain.domain, removed: stripped.removed }, 'Mailway: registros web retirados del fichero de zona');
+        }
+        const { zone } = appendWebRecords(stripped.zone, domain.domain, {
+          serverIp: getSetting('serverIp') || null,
+          hosts: projectHostsUnder(ctx.project.id, domain.domain),
+          // El webmail es un añadido: si Mailway no lo devuelve, el fichero de correo se descarga igual.
+          ...(await webmailZoneRecord(link.client_id, domain, ctx.isAdmin).catch((err: unknown) => {
+            if (!(err instanceof MailwayError)) throw err;
+            return { webmail: null, webmailNote: `No se ha podido consultar el webmail en Mailway: ${err.message}` };
+          })),
+        });
         const fichero = `${domain.domain.replace(/[^A-Za-z0-9.-]+/g, '_')}-mailway-${nivel}.txt`;
         return reply
           .type('text/plain; charset=utf-8')
@@ -1567,13 +1516,41 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
     // ---------- conectar un servicio ----------
 
     /**
-     * Crea en Mailway una credencial de envío para el buzón y la inyecta en las
-     * variables del servicio (fusionando: las demás se conservan). Devuelve
-     * solo los NOMBRES de las variables: los valores son secretos y ya están
-     * donde tienen que estar. La credencial del mismo tipo que Skyway creó
-     * antes para este servicio se revoca: la variable que la guardaba se va a
-     * sobrescribir, y sin revocarla seguiría siendo válida sin que nadie la
-     * use (y Mailway limita las contraseñas de aplicación activas por buzón).
+     * Nombres con los que el servicio recibiría el correo en cada modo, sin
+     * crear nada: los que su web espera (`skyway.json` o `.env.example`), los
+     * de siempre para lo que no nombra y, en `kept`, los que tienen un valor
+     * puesto a mano y no se tocarían. Así la pestaña lo dice antes de conectar.
+     */
+    secured.get(
+      '/api/projects/:id/mail/connect/preview',
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply);
+        if (!ctx) return reply;
+        const query = z
+          .object({ serviceId: z.string().trim().min(1).max(100), mode: z.enum(['smtp', 'api']).default('smtp') })
+          .parse(req.query ?? {});
+        const service = serviceOfProject(ctx.project.id, query.serviceId);
+        requireLink(ctx.project);
+        // Solo para comparar valores no secretos (servidor, puerto): sin red si no se conoce aún.
+        const names = mailConnectNames(service, query.mode, knownMailValues(cachedInfo(), query.mode, null), false);
+        const needs = service.type === 'git' ? (service.config as { needs?: { mail?: { mode: string } | null } }).needs : undefined;
+        return {
+          mode: query.mode,
+          suggestedMode: needs?.mail?.mode ?? null,
+          keys: names.targets.map((t) => t.name),
+          kept: names.kept,
+          secretPlaced: names.secretPlaced,
+        };
+      }),
+    );
+
+    /**
+     * Crea en Mailway una credencial de envío para el buzón y la escribe en las
+     * variables del servicio con los nombres que su web espera (ver
+     * `mailConnectNames`), sin pisar ninguna que alguien haya puesto a mano.
+     * Devuelve solo los NOMBRES: los valores son secretos y ya están donde
+     * tienen que estar. La credencial del mismo tipo que Skyway creó antes para
+     * este servicio se revoca.
      */
     secured.post(
       '/api/projects/:id/mail/connect',
@@ -1589,53 +1566,23 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
             redeploy: z.boolean().optional().default(false),
           })
           .parse(req.body);
-        const service = getService(body.serviceId);
-        if (!service || service.project_id !== ctx.project.id) throw httpError(404, 'Servicio no encontrado en este proyecto');
-        if (service.type === 'database') throw httpError(400, 'No es posible conectar el correo a un servicio de base de datos.');
+        const service = serviceOfProject(ctx.project.id, body.serviceId);
         assertAccountActive(ctx.project);
         const link = requireLink(ctx.project);
         const summary = await ownedSummary(ctx.project, link);
         assertClientActive(summary);
         const mailbox = ownMailbox(summary, body.mailboxId);
         const info = await getInfo();
+        const { keys, kept, revoked } = await connectServiceMail({
+          project: ctx.project,
+          link,
+          summary,
+          service,
+          mailbox,
+          mode: body.mode,
+          info,
+        });
 
-        let vars: Record<string, string>;
-        let revoked = 0;
-        if (body.mode === 'smtp') {
-          // Las aplicaciones no están en la red interna del correo: salen por
-          // el nombre público y el puerto de envío autenticado (587, STARTTLS).
-          const host = info.submission?.host || info.mailHostname;
-          if (!host) throw new MailwayError('http', 'Mailway no ha indicado el servidor de envío (submission).', 502);
-          const name = appPasswordName(service);
-          for (const old of summary.appPasswords.filter((a) => !a.revokedAt && a.name === name)) {
-            await revokeIgnoringGone(() => revokeAppPassword(old.mailboxId, old.id));
-            revoked++;
-          }
-          const appPassword = await createAppPassword(mailbox.id, name);
-          if (!appPassword?.password) throw new MailwayError('http', 'Mailway no ha devuelto la contraseña de aplicación.', 502);
-          vars = {
-            SMTP_HOST: host,
-            SMTP_PORT: String(info.submission?.port || 587),
-            SMTP_SECURE: 'false',
-            SMTP_USER: mailbox.email,
-            SMTP_PASS: appPassword.password,
-            SMTP_FROM: mailbox.email,
-          };
-        } else {
-          const apiUrl = publicPanelUrl();
-          if (!apiUrl) throw new MailwayError('config', 'No se conoce la URL pública de Mailway: configúrala en Ajustes → Correo (Mailway).');
-          const name = apiKeyName(service);
-          for (const old of summary.apiKeys.filter((k) => !k.revokedAt && k.name === name)) {
-            await revokeIgnoringGone(() => revokeApiKey(old.id));
-            revoked++;
-          }
-          const res = await createApiKey({ clientId: link.client_id, name, senderMailboxId: mailbox.id });
-          if (!res?.key) throw new MailwayError('http', 'Mailway no ha devuelto la clave de API.', 502);
-          vars = { MAILWAY_API_URL: apiUrl, MAILWAY_API_KEY: res.key, MAIL_FROM: mailbox.email };
-        }
-
-        setEnv(service.id, { ...getEnv(service.id), ...vars });
-        const keys = Object.keys(vars);
         let deploymentId: string | null = null;
         if (body.redeploy) {
           markManualAction(service.id);
@@ -1646,9 +1593,10 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           id: service.id,
           detail:
             `${service.name} ← ${mailbox.email} (${body.mode === 'smtp' ? 'SMTP' : 'API'}): ${keys.join(', ')}` +
+            `${kept.length ? ` · sin tocar (puestas a mano): ${kept.join(', ')}` : ''}` +
             `${revoked ? ` · ${revoked} credencial(es) anterior(es) revocada(s)` : ''}${body.redeploy ? ' · despliegue iniciado' : ''}`,
         });
-        return { ok: true, keys, needsRedeploy: !body.redeploy, deploymentId, revoked };
+        return { ok: true, keys, kept, needsRedeploy: !body.redeploy, deploymentId, revoked };
       }),
     );
   });

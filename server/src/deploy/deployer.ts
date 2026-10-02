@@ -60,6 +60,7 @@ import { partitionPreDeployEnv } from './predeployenv';
 import { dockerRestartPolicy, hasRailwayConfig, RailwayRepoConfig, readRailwayRepoConfig } from './railwayconfig';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
 import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
+import { reconcileOnDeploy } from '../integrations';
 import { adviseEnv, detectNeeds } from '../needs';
 import { availableReferences, resolveServiceEnv, systemVars } from '../variables';
 import { DatabaseConfig, DeploymentRow, GitConfig, ImageConfig, ProjectRow, ServiceRow } from '../types';
@@ -764,7 +765,11 @@ async function buildGitImage(
       }
     }
     const repoConfig = readRailwayRepoConfig(workDir, cfg.rootDir, log);
-    recordNeeds(service, cfg, workDir, log);
+    if (recordNeeds(service, cfg, workDir, log)) {
+      // El manifiesto ha definido variables (secretos generados, su URL): entran ya en este build.
+      env = resolveServiceEnv(service);
+      buildKey = buildKeyFor(service, cfg);
+    }
     let builderPrevio: string | null = null;
     if (hasRailwayConfig(repoConfig) && repoConfig.source) {
       log(`Configuración del repositorio leída de ${repoConfig.source} (config-as-code de Railway).`);
@@ -1440,17 +1445,19 @@ async function deployContainer(
 /**
  * Mira qué dependencias declara el repositorio recién clonado, lo guarda en la
  * config del servicio (para que la pestaña Variables lo convierta en
- * propuestas) y lo cuenta en el log del despliegue. Solo informa: la app
- * arrancará igual sin `DATABASE_URL`, y eso es precisamente lo que aquí se
- * intenta que no pase en silencio.
+ * propuestas) y lo cuenta en el log del despliegue. De la detección solo
+ * informa: la app arrancará igual sin `DATABASE_URL`, y eso es precisamente lo
+ * que aquí se intenta que no pase en silencio. Del manifiesto `skyway.json`
+ * aplica lo inofensivo y anota lo que requiere aprobación
+ * (`reconcileOnDeploy`). Devuelve si ha escrito variables.
  */
-function recordNeeds(service: ServiceRow, cfg: GitConfig, workDir: string, log: (l: string) => void): void {
+function recordNeeds(service: ServiceRow, cfg: GitConfig, workDir: string, log: (l: string) => void): boolean {
   let needs: ReturnType<typeof detectNeeds>;
   try {
     needs = detectNeeds(workDir, cfg.rootDir);
   } catch (err: any) {
     log(`ℹ No se pudieron inspeccionar las dependencias del repositorio: ${err?.message || err}`);
-    return;
+    return false;
   }
   // En memoria, para que las escrituras posteriores de esta config (el puerto
   // detectado del EXPOSE) no la pierdan; y en la base releyendo la fila, para
@@ -1464,7 +1471,13 @@ function recordNeeds(service: ServiceRow, cfg: GitConfig, workDir: string, log: 
     else delete freshCfg.needs;
     updateService(fresh.id, fresh.name, freshCfg);
   }
-  if (!needs) return;
+  let changed = false;
+  try {
+    changed = reconcileOnDeploy(service, cfg, log);
+  } catch (err: any) {
+    log(`ℹ No se pudo aplicar el manifiesto del repositorio: ${err?.message || err}`);
+  }
+  if (!needs) return changed;
 
   const advice = adviseEnv({ ...service, config: cfg }, availableReferences(service));
   if (advice.needs && advice.needs.engines.length > 0) {
@@ -1480,6 +1493,16 @@ function recordNeeds(service: ServiceRow, cfg: GitConfig, workDir: string, log: 
   if (advice.missing.length > 0) {
     log(`ℹ El repositorio espera además (${needs.envFile ?? 'variables de ejemplo'}) y no están definidas: ${advice.missing.join(', ')}.`);
   }
+  if (advice.mail && !needs.manifest) {
+    const sinDefinir = advice.mail.vars.map((v) => v.name).filter((k) => !(k in getEnv(service.id)));
+    log(
+      `La web envía correo (${advice.mail.evidence.join(' · ')}).` +
+        (sinDefinir.length > 0
+          ? ` Faltan ${sinDefinir.join(', ')}: conéctala desde Correo → Conectar a un servicio, que las escribe con esos nombres.`
+          : ''),
+    );
+  }
+  return changed;
 }
 
 /** Repara restos de un intercambio interrumpido (caída del servidor a mitad). */

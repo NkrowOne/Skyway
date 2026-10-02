@@ -31,6 +31,7 @@ import {
 } from '../github/app';
 import { GithubError, getGithubRepo, listGithubBranches, parseGithubSlug } from '../github/client';
 import { installationTokenFor } from '../github/resolve';
+import { draftService, planWithMail } from '../integrations';
 import { adviseNeeds, detectNeedsFromGithub } from '../needs';
 import { moduleAllowedForProject } from '../quota';
 import { projectReferences } from '../variables';
@@ -532,7 +533,16 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
         { serviceName: query.name || slug.repo, domains: [], defined: new Set(Object.keys(getProjectVars(id))) },
         projectReferences(id),
       );
-      return { ...advice, envFile: needs?.envFile ?? null };
+      // El plan que aplicaría «Crear y desplegar», sin efectos: lo que pide el
+      // skyway.json (o la detección) contra lo que ya hay en el proyecto.
+      const project = getProject(id)!;
+      const { plan } = await planWithMail({
+        project,
+        user: currentUser(req)!,
+        target: { service: draftService(project, query.name || slug.repo, needs), domains: [] },
+        needs,
+      });
+      return { ...advice, envFile: needs?.envFile ?? null, plan };
     } catch (err: any) {
       if (err instanceof GithubError) return reply.code(502).send({ error: err.message });
       throw err;

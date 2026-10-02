@@ -1,9 +1,19 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { ChevronRight, ExternalLink, Loader2 } from 'lucide-react';
 import { api } from '../api';
 import { useDebounced } from '../hooks';
-import { DbTemplate, Deployment, EnvAdvice, EnvSuggestion, GithubRepo, RailwayTemplatePlan, Service, Stack } from '../types';
+import {
+  DbTemplate,
+  Deployment,
+  EnvAdvice,
+  GithubRepo,
+  IntegrationPlan,
+  PlanApplyResult,
+  RailwayTemplatePlan,
+  Service,
+  Stack,
+} from '../types';
 import { cx } from '../utils';
 import {
   GithubRepoPicker,
@@ -15,6 +25,7 @@ import {
   useGithubBranches,
   useGithubSources,
 } from './GithubSource';
+import { IntegrationPlanView, planHasContent } from './IntegrationPlan';
 import { ModuleKind, ModuleLogo, isModuleKind, moduleFg, moduleKind } from './ModuleIcon';
 import { Button, Field, Modal, Spinner, useToast } from './ui';
 
@@ -110,10 +121,8 @@ export default function NewServiceModal({
   const [tplPlan, setTplPlan] = useState<RailwayTemplatePlan | null>(null);
   const [stackPrefix, setStackPrefix] = useState('');
   const [stackDomain, setStackDomain] = useState('');
-  // Casillas del asistente de dependencias, por motor (y «missing»); ausente = marcada.
-  const [depChecks, setDepChecks] = useState<Record<string, boolean>>({});
-  // Creando las bases antes del servicio: el botón tiene que saberlo.
-  const [wiring, setWiring] = useState(false);
+  // Recursos del plan que se omiten (un motor, `mail` o `empty`); vacío = todo.
+  const [planSkip, setPlanSkip] = useState<Set<string>>(new Set());
 
   const templates = useQuery({
     queryKey: ['templates'],
@@ -138,25 +147,29 @@ export default function NewServiceModal({
   const branches = useGithubBranches(source, selectedRepo, open && step === 'git');
 
   /*
-   * Dependencias que declara el repositorio, leídas por la API de GitHub antes
-   * de crear nada: con ellas se sale del asistente con las bases creadas y
-   * conectadas. Con retardo sobre lo que se teclea, que si no cada letra de la
-   * URL era una petición.
+   * Plan de integraciones del repositorio, leído por la API de GitHub antes de
+   * crear nada: lo que pide su skyway.json o, si no lo trae, lo detectado
+   * (bases de datos, correo, variables). Al crear el servicio, el servidor lo
+   * vuelve a leer y lo aplica antes del primer despliegue. Con retardo sobre lo
+   * que se teclea, que si no cada letra de la URL era una petición.
    */
   const debouncedRepo = useDebounced(selectedRepo, 700);
   const debouncedBranch = useDebounced(branch.trim(), 700);
   const debouncedRootDir = useDebounced(rootDir.trim(), 700);
-  const needsKey = `${encodeSource(source)}|${debouncedRepo}|${debouncedBranch}|${debouncedRootDir}`;
+  const inferredName = name.trim() || repoUrl.split('/').filter(Boolean).pop()?.replace(/\.git$/, '') || 'app';
+  const debouncedName = useDebounced(inferredName, 700);
+  const needsKey = `${encodeSource(source)}|${debouncedRepo}|${debouncedBranch}|${debouncedRootDir}|${debouncedName}`;
   const needsEnabled = open && step === 'git' && /^[\w.-]+\/[\w.-]+$/.test(debouncedRepo) && !!debouncedBranch;
   const needs = useQuery({
     queryKey: ['githubNeeds', projectId, needsKey],
     queryFn: () =>
-      api.get<EnvAdvice & { envFile: string | null }>(
+      api.get<EnvAdvice & { envFile: string | null; plan: IntegrationPlan | null }>(
         `/projects/${projectId}/github/needs?${new URLSearchParams({
           repo: debouncedRepo,
           branch: debouncedBranch,
           rootDir: debouncedRootDir,
           source: encodeSource(source),
+          name: debouncedName,
         })}`,
       ),
     enabled: needsEnabled,
@@ -164,19 +177,10 @@ export default function NewServiceModal({
     retry: false,
   });
   // Otro repo, otras casillas: lo desmarcado para uno no vale para el siguiente.
-  useEffect(() => setDepChecks({}), [needsKey]);
-
-  // Una casilla por motor: MinIO pide tres variables y se crea una sola vez.
-  const depGroups = useMemo(() => {
-    const groups = new Map<string, { template: string; label: string; existing: string | null; items: EnvSuggestion[] }>();
-    for (const s of needs.data?.suggestions ?? []) {
-      if (!s.template) continue;
-      const g = groups.get(s.template) ?? { template: s.template, label: s.label ?? s.template, existing: s.service, items: [] };
-      g.items.push(s);
-      groups.set(s.template, g);
-    }
-    return [...groups.values()];
-  }, [needs.data]);
+  useEffect(() => setPlanSkip(new Set()), [debouncedRepo, debouncedBranch, debouncedRootDir, source]);
+  const plan = needs.data?.plan ?? null;
+  const showPlan = planHasContent(plan);
+  const planApplies = showPlan && !plan.manifestError && plan.vars.some((v) => v.status === 'apply');
 
   const reset = () => {
     setStep('pick');
@@ -195,7 +199,7 @@ export default function NewServiceModal({
     setStackDomain('');
     setTplInput('');
     setTplPlan(null);
-    setDepChecks({});
+    setPlanSkip(new Set());
   };
 
   const close = () => {
@@ -205,9 +209,24 @@ export default function NewServiceModal({
 
   const create = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      api.post<{ service: Service; deployment: Deployment }>(`/projects/${projectId}/services`, body),
+      api.post<{
+        service: Service;
+        deployment: Deployment;
+        plan?: { result: PlanApplyResult | null; plan: IntegrationPlan | null; error: string | null };
+      }>(`/projects/${projectId}/services`, body),
     onSuccess: (data) => {
-      toast('Servicio creado. Desplegando…', 'ok');
+      const outcome = data.plan;
+      if (outcome?.error) {
+        toast(`Servicio creado. ${outcome.error} Puedes aplicarlo después desde Variables.`, 'err');
+      } else if (outcome?.result && (outcome.result.pending.length > 0 || outcome.result.errors.length > 0)) {
+        const partes = [
+          outcome.result.pending.length > 0 ? `${outcome.result.pending.length} cambio(s) quedan pendientes de aprobar` : '',
+          ...outcome.result.errors,
+        ].filter(Boolean);
+        toast(`Servicio creado. Desplegando con lo aplicado: ${partes.join('. ')}.`, 'ok');
+      } else {
+        toast('Servicio creado. Desplegando…', 'ok');
+      }
       reset();
       onCreated(data.service.id);
     },
@@ -270,40 +289,10 @@ export default function NewServiceModal({
     });
   };
 
-  const submitGit = async (e: React.FormEvent) => {
+  const submitGit = (e: React.FormEvent) => {
     e.preventDefault();
-    const inferredName = name.trim() || repoUrl.split('/').filter(Boolean).pop()?.replace(/\.git$/, '') || 'app';
-
-    // Primero las bases marcadas que no existan, y con sus nombres las
-    // referencias; el servicio nace ya con ellas, antes de su primer despliegue.
-    const env: Record<string, string> = {};
-    const advice = needs.data;
-    if (advice && !needs.isFetching) {
-      setWiring(true);
-      try {
-        for (const g of depGroups) {
-          if (depChecks[g.template] === false) continue;
-          let provider = g.existing;
-          if (!provider) {
-            const created = await api.post<{ service: Service }>(`/projects/${projectId}/services`, {
-              type: 'database',
-              template: g.template,
-            });
-            provider = created.service.name;
-          }
-          for (const s of g.items) if (s.refVar) env[s.key] = `\${{${s.service ?? provider}.${s.refVar}}}`;
-        }
-        if (depChecks.missing !== false) for (const k of advice.missing) env[k] = '';
-      } catch (err) {
-        // Las bases ya creadas se quedan (son útiles igual); el servicio no se
-        // crea a medias: se avisa y se puede volver a intentar.
-        toast((err as Error).message, 'err');
-        setWiring(false);
-        return;
-      }
-      setWiring(false);
-    }
-
+    // El plan lo aplica el servidor (con los permisos de quien crea el
+    // servicio) antes del primer despliegue: un solo botón para todo.
     create.mutate({
       type: 'git',
       name: inferredName,
@@ -313,7 +302,7 @@ export default function NewServiceModal({
       ...(rootDir.trim() ? { rootDir: rootDir.trim() } : {}),
       ...(source.kind === 'app' ? { githubInstallationId: source.id } : {}),
       ...(source.kind === 'pat' ? { connectorId: source.id } : {}),
-      ...(Object.keys(env).length > 0 ? { env } : {}),
+      ...(planApplies ? { plan: { skip: [...planSkip] } } : {}),
     });
   };
 
@@ -821,12 +810,14 @@ export default function NewServiceModal({
             </Field>
           </div>
 
-          {/* Solo se propone: cada casilla se puede quitar, y lo que no se haga
-              aquí se puede hacer luego desde Variables con las mismas propuestas. */}
+          {/* El plan se enseña antes de crear nada; cada recurso se puede
+              omitir, y lo que no se aplique aquí se aplica después desde Variables. */}
           {needsEnabled && (
             <div className="rounded-lg border border-dashed border-line bg-bg px-3.5 py-3 text-xs">
               <div className="flex items-center justify-between gap-2">
-                <span className="font-medium text-sub">Dependencias del repositorio</span>
+                <span className="font-medium text-sub">
+                  {plan?.source === 'manifest' ? `Plan de ${plan.manifestFile}` : 'Plan según el repositorio'}
+                </span>
                 {needs.isFetching && (
                   <span className="flex items-center gap-1.5 text-subtle">
                     <Loader2 size={12} className="animate-spin" aria-hidden /> Analizando…
@@ -835,59 +826,35 @@ export default function NewServiceModal({
               </div>
               {needs.isError && !needs.isFetching && (
                 <p className="mt-1.5 text-subtle">
-                  No se pudo analizar el repositorio ({(needs.error as Error).message}). Podrás conectar sus bases después,
-                  desde Variables.
+                  No se ha podido analizar el repositorio ({(needs.error as Error).message}). Podrás conectar sus bases y su correo
+                  después, desde Variables y Correo.
                 </p>
               )}
-              {needs.data && !needs.isFetching && depGroups.length === 0 && needs.data.missing.length === 0 && (
+              {needs.data && !needs.isFetching && !showPlan && (
                 <p className="mt-1.5 text-subtle">
-                  No se han detectado bases de datos ni variables de ejemplo. Si las necesitas, podrás conectarlas desde
+                  No se han detectado bases de datos, correo ni variables de ejemplo. Si las necesitas, podrás conectarlas desde
                   Variables.
                 </p>
               )}
-              {needs.data && !needs.isFetching && (depGroups.length > 0 || needs.data.missing.length > 0) && (
-                <div className="mt-2 flex flex-col gap-1.5">
-                  {needs.data.needs && needs.data.needs.engines.length > 0 && (
+              {needs.data && !needs.isFetching && showPlan && (
+                <div className="mt-2 flex flex-col gap-2">
+                  {plan.source === 'detection' && needs.data.needs && needs.data.needs.engines.length > 0 && (
                     <p className="text-subtle">
                       Parece necesitar: {needs.data.needs.engines.map((e) => `${e.label} (${e.evidence})`).join(' · ')}
                     </p>
                   )}
-                  {depGroups.map((g) => (
-                    <label key={g.template} className="flex cursor-pointer items-start gap-2">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 accent-acc"
-                        checked={depChecks[g.template] !== false}
-                        onChange={(e) => setDepChecks((prev) => ({ ...prev, [g.template]: e.target.checked }))}
-                      />
-                      <span className="text-sub">
-                        {g.existing ? (
-                          <>
-                            Conectar a <span className="font-medium text-txt">{g.existing}</span>
-                          </>
-                        ) : (
-                          <>
-                            Crear <span className="font-medium text-txt">{g.label}</span> y conectar
-                          </>
-                        )}{' '}
-                        <span className="font-mono text-subtle">({g.items.map((s) => s.key).join(', ')})</span>
-                      </span>
-                    </label>
-                  ))}
-                  {needs.data.missing.length > 0 && (
-                    <label className="flex cursor-pointer items-start gap-2">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 accent-acc"
-                        checked={depChecks.missing !== false}
-                        onChange={(e) => setDepChecks((prev) => ({ ...prev, missing: e.target.checked }))}
-                      />
-                      <span className="text-sub">
-                        Añadir vacías las demás variables que espera:{' '}
-                        <span className="font-mono text-subtle">{needs.data.missing.join(', ')}</span>
-                      </span>
-                    </label>
-                  )}
+                  <IntegrationPlanView
+                    plan={plan}
+                    skip={planSkip}
+                    onToggle={(key, include) =>
+                      setPlanSkip((prev) => {
+                        const next = new Set(prev);
+                        if (include) next.delete(key);
+                        else next.add(key);
+                        return next;
+                      })
+                    }
+                  />
                 </div>
               )}
             </div>
@@ -914,8 +881,8 @@ export default function NewServiceModal({
             <Button type="button" variant="ghost" onClick={() => setStep('pick')}>
               Atrás
             </Button>
-            <Button type="submit" loading={wiring || create.isPending} disabled={!repoUrl.trim() || needs.isFetching}>
-              {wiring ? 'Creando las bases…' : 'Crear y desplegar'}
+            <Button type="submit" loading={create.isPending} disabled={!repoUrl.trim() || needs.isFetching}>
+              {planApplies ? 'Crear, aplicar el plan y desplegar' : 'Crear y desplegar'}
             </Button>
           </div>
         </form>

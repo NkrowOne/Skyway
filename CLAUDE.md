@@ -8,7 +8,9 @@ modelo de seguridad y **toda la API REST**), consulta
 **[docs/AUDITORIA-FACTURACION.md](docs/AUDITORIA-FACTURACION.md)**; para el de
 rendimiento y calidad del código (hallazgos, cambios aplicados y pendientes),
 **[docs/AUDITORIA-RENDIMIENTO.md](docs/AUDITORIA-RENDIMIENTO.md)**. Para control
-remoto por API/agentes, **[docs/CONTROL-REMOTO.md](docs/CONTROL-REMOTO.md)**.
+remoto por API/agentes, **[docs/CONTROL-REMOTO.md](docs/CONTROL-REMOTO.md)**. El
+manifiesto `skyway.json` de las webs (plan de integraciones con bases y correo)
+está en **[docs/MANIFIESTO.md](docs/MANIFIESTO.md)**.
 
 ## Qué es
 

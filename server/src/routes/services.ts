@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
@@ -16,9 +16,9 @@ import {
   getService,
   latestDeployment,
   listServices,
-  serviceSlugExists,
   setEnv,
   setServiceStopped,
+  uniqueServiceSlug,
   updateService,
 } from '../db';
 import {
@@ -54,10 +54,11 @@ import {
 import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
 import { triggerDeploy } from '../deploy/deployer';
 import { getTemplate, templateList } from '../templates';
+import { applyPlan, applyPlanFromRepo, ApplyResult, planWithMail } from '../integrations';
 import { adviseEnv } from '../needs';
 import { availableReferences, resolveServiceEnv } from '../variables';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceConfig, ServiceRow } from '../types';
-import { randomToken, slugify } from '../util';
+import { randomToken } from '../util';
 
 /** Antigüedad tolerada de la foto de Docker en las lecturas del panel. */
 const PANEL_MAX_AGE_MS = 4000;
@@ -108,6 +109,9 @@ export const domainSchema = z
   .transform((d) => d.toLowerCase())
   .refine((d) => HOSTNAME.test(d), 'Dominio no válido: solo letras, números, guiones y puntos');
 
+/** Recursos del plan de integraciones que se pueden omitir al aplicarlo. */
+const planSkipSchema = z.array(z.enum(['postgres', 'redis', 'mysql', 'mongo', 'minio', 'mail', 'empty'])).max(10);
+
 const createGitSchema = z.object({
   type: z.literal('git'),
   name: z.string().trim().min(1).max(60),
@@ -130,6 +134,10 @@ const createGitSchema = z.object({
   // con las referencias a las bases que acaba de crear). Van ANTES del primer
   // despliegue: guardarlas después dejaba ese despliegue sin ellas.
   env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'Nombre de variable inválido'), z.string()).optional(),
+  // Aplicar el plan de integraciones del repositorio (skyway.json o la
+  // detección) antes del primer despliegue. `skip`: recursos que no se quieren
+  // (un motor, `mail` o `empty`).
+  plan: z.object({ skip: planSkipSchema.optional() }).strict().optional(),
 });
 
 const createDbSchema = z.object({
@@ -251,6 +259,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     }
 
     let service: ServiceRow;
+    let planOutcome: Awaited<ReturnType<typeof applyPlanFromRepo>> | null = null;
     if (base.type === 'image') {
       const body = createImageSchema.parse(req.body);
       // Un dominio sin puerto no enruta a nada y el panel lo enseñaría como
@@ -263,7 +272,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
             'Un servicio con dominio requiere puerto interno: Traefik necesita saber a qué puerto del contenedor entregar la petición. Indica el puerto en el que escucha la imagen, o crea el servicio sin dominio si es un worker sin HTTP.',
         });
       }
-      const slug = uniqueSlug(projectId, body.name);
+      const slug = uniqueServiceSlug(projectId, body.name);
       const cfg: ImageConfig = {
         image: body.image,
         port: body.port ?? null,
@@ -279,7 +288,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       if (body.githubInstallationId && !installationVisibleFrom(body.githubInstallationId, projectId)) {
         return reply.code(400).send({ error: 'Conexión de GitHub desconocida en este proyecto' });
       }
-      const slug = uniqueSlug(projectId, body.name);
+      const slug = uniqueServiceSlug(projectId, body.name);
       const cfg: GitConfig = {
         repoUrl: body.repoUrl,
         connectorId: body.connectorId || undefined,
@@ -300,12 +309,18 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       };
       service = createService(projectId, body.name, slug, 'git', cfg);
       if (body.env && Object.keys(body.env).length > 0) setEnv(service.id, body.env);
+      if (body.plan) {
+        planOutcome = await applyPlanFromRepo({ project, user, service, skip: new Set(body.plan.skip ?? []) });
+        if (planOutcome.error) req.log.warn({ serviceId: service.id }, planOutcome.error);
+        if (planOutcome.result) auditPlan(req, service, planOutcome.result);
+        service = getService(service.id) ?? service;
+      }
     } else {
       const body = createDbSchema.parse(req.body);
       const template = getTemplate(body.template);
       if (!template) return reply.code(400).send({ error: `Plantilla desconocida: ${body.template}` });
       const name = body.name || template.label;
-      const slug = uniqueSlug(projectId, name);
+      const slug = uniqueServiceSlug(projectId, name);
       const cfg: DatabaseConfig = {
         template: template.key,
         version: body.version || template.defaultVersion,
@@ -318,8 +333,68 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     markManualAction(service.id);
     const deployment = triggerDeploy(service.id, 'initial');
     reply.code(201);
-    return { service, deployment };
+    return {
+      service,
+      deployment,
+      ...(planOutcome ? { plan: { result: planOutcome.result, plan: planOutcome.plan, error: planOutcome.error } } : {}),
+    };
   });
+
+  /**
+   * Plan de integraciones del servicio (sin efectos): lo que pide su
+   * `skyway.json` o la detección del último despliegue, contra el estado
+   * actual, con lo que ya está, lo que se aplicaría y lo pendiente de aprobar.
+   */
+  app.get('/api/services/:id/integrations', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const found = loadService(id);
+    if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
+    if (found.service.type !== 'git') return { plan: null, pending: [] };
+    const cfg = found.service.config as GitConfig;
+    const { plan } = await planWithMail({
+      project: found.project,
+      user: currentUser(req)!,
+      target: { service: found.service, domains: cfg.domains ?? [] },
+      needs: cfg.needs,
+    });
+    return { plan, pending: cfg.integrationsPending ?? [] };
+  });
+
+  /**
+   * Aplica el plan con un solo botón. Lo inofensivo lo aplica cualquiera con
+   * acceso al proyecto; las bases de datos y el correo solo quien lo gestiona
+   * (administrador o propietario): para los demás quedan pendientes. Nunca
+   * pisa una variable puesta a mano. `redeploy` despliega si se ha escrito algo.
+   */
+  app.post(
+    '/api/services/:id/integrations/apply',
+    { preHandler: rateLimit({ max: 10, windowMs: 60_000 }) },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const found = loadService(id);
+      if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+      if (!assertProjectAccess(req, reply, found.project.id)) return reply;
+      if (found.service.type !== 'git') return reply.code(400).send({ error: 'El plan de integraciones solo existe en los servicios de repositorio.' });
+      const body = z
+        .object({ skip: planSkipSchema.optional(), redeploy: z.boolean().optional().default(false) })
+        .strict()
+        .parse(req.body ?? {});
+      const { result, plan } = await applyPlan({
+        project: found.project,
+        user: currentUser(req)!,
+        service: found.service,
+        skip: new Set(body.skip ?? []),
+      });
+      auditPlan(req, found.service, result);
+      let deploymentId: string | null = null;
+      if (body.redeploy && result.applied.length > 0) {
+        markManualAction(id);
+        deploymentId = triggerDeploy(id, 'manual').id;
+      }
+      return { result, plan, needsRedeploy: result.applied.length > 0 && !deploymentId, deploymentId };
+    },
+  );
 
   app.get('/api/services/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -787,10 +862,17 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
   );
 }
 
-function uniqueSlug(projectId: string, name: string): string {
-  const base = slugify(name);
-  let slug = base;
-  let i = 2;
-  while (serviceSlugExists(projectId, slug)) slug = `${base}-${i++}`;
-  return slug;
+/**
+ * Deja constancia de lo que ha hecho el plan: nombres de variables y recursos
+ * creados, nunca valores (hay secretos generados y credenciales).
+ */
+function auditPlan(req: FastifyRequest, service: ServiceRow, result: ApplyResult): void {
+  if (result.applied.length === 0 && result.created.length === 0 && result.pending.length === 0) return;
+  const partes = [
+    result.applied.length ? `aplicadas: ${result.applied.join(', ')}` : '',
+    result.created.length ? `creados: ${result.created.join(', ')}` : '',
+    result.pending.length ? `pendientes de aprobar: ${result.pending.join(', ')}` : '',
+    result.kept.length ? `sin tocar (puestas a mano): ${result.kept.join(', ')}` : '',
+  ].filter(Boolean);
+  audit(req, 'service_integrations_applied', { type: 'service', id: service.id, detail: `${service.name} · ${partes.join(' · ')}` });
 }

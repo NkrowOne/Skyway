@@ -989,8 +989,9 @@ function DomainCard({
                 <div className="mt-2.5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-xs leading-5 text-subtle">
                     Para crear todos los registros de una vez, descarga el fichero de zona e impórtalo en Cloudflare, en DNS →
-                    Registros → Importar y exportar, sin activar el proxy. No incluye registros de la web del dominio; si el
-                    dominio ya tiene un registro SPF, conserva solo uno.
+                    Registros → Importar y exportar, sin activar el proxy. Incluye también, en su propia sección, los registros
+                    de los servicios de este proyecto que usan el dominio y el del webmail; si el dominio ya tiene un registro
+                    SPF, conserva solo uno.
                   </p>
                   <Button size="sm" variant="secondary" onClick={() => void downloadZone()} loading={downloading} className="shrink-0">
                     <Download size={12} /> Descargar fichero de zona
@@ -1810,6 +1811,7 @@ function ConnectTab({
     serviceId: string;
     serviceName: string;
     keys: string[];
+    kept: string[];
     needsRedeploy: boolean;
     revoked: number;
   } | null>(null);
@@ -1821,9 +1823,22 @@ function ConnectTab({
   const appPasswords = (view.summary?.appPasswords ?? []).filter((a) => !a.revokedAt);
   const apiKeys = (view.summary?.apiKeys ?? []).filter((k) => !k.revokedAt);
 
+  // Con qué nombres recibe el servicio el correo: los que espera su web (su
+  // .env.example o su skyway.json) y, si no los nombra, los de siempre.
+  const preview = useQuery({
+    queryKey: ['mailConnectPreview', projectId, service?.id, mode],
+    queryFn: () =>
+      api.get<{ keys: string[]; kept: string[]; secretPlaced: boolean; suggestedMode: 'smtp' | 'api' | null }>(
+        `/projects/${projectId}/mail/connect/preview?${new URLSearchParams({ serviceId: service!.id, mode })}`,
+      ),
+    enabled: !!service && view.linked,
+    staleTime: 15_000,
+    retry: false,
+  });
+
   const connect = useMutation({
     mutationFn: () =>
-      api.post<{ ok: boolean; keys: string[]; needsRedeploy: boolean; revoked?: number }>(`/projects/${projectId}/mail/connect`, {
+      api.post<{ ok: boolean; keys: string[]; kept?: string[]; needsRedeploy: boolean; revoked?: number }>(`/projects/${projectId}/mail/connect`, {
         serviceId: service?.id,
         mailboxId: mailbox?.id,
         mode,
@@ -1831,8 +1846,16 @@ function ConnectTab({
       }),
     onSuccess: (res) => {
       if (!service) return;
-      setResult({ serviceId: service.id, serviceName: service.name, keys: res.keys, needsRedeploy: res.needsRedeploy, revoked: res.revoked ?? 0 });
+      setResult({
+        serviceId: service.id,
+        serviceName: service.name,
+        keys: res.keys,
+        kept: res.kept ?? [],
+        needsRedeploy: res.needsRedeploy,
+        revoked: res.revoked ?? 0,
+      });
       queryClient.invalidateQueries({ queryKey: ['env', service.id] });
+      queryClient.invalidateQueries({ queryKey: ['mailConnectPreview', projectId, service.id] });
       queryClient.invalidateQueries({ queryKey: mailKey(projectId) });
       if (!res.needsRedeploy) queryClient.invalidateQueries({ queryKey: ['project', projectId] });
       toast(`Correo conectado a ${service.name}`, 'ok');
@@ -1869,6 +1892,9 @@ function ConnectTab({
   }
 
   const help = MODE_HELP[mode];
+  const names = preview.data?.keys ?? help.vars;
+  const kept = preview.data?.kept ?? [];
+  const suggested = preview.data?.suggestedMode ?? null;
 
   return (
     <div className="flex flex-col gap-3.5">
@@ -1905,16 +1931,29 @@ function ConnectTab({
       />
       <div className="rounded-lg border border-line bg-bg px-3.5 py-3 text-xs leading-5 text-sub">
         <p>{help.text}</p>
+        {suggested && suggested !== mode && (
+          <p className="mt-1.5 text-warn">
+            La web de este servicio espera {suggested === 'api' ? 'la API de envío' : 'SMTP'}: comprueba el modo antes de conectar.
+          </p>
+        )}
         <p className="mt-1.5">
-          Variables que se añaden al servicio:{' '}
-          {help.vars.map((v, i) => (
+          Variables que se añaden al servicio{preview.data ? ', con los nombres que espera su web' : ''}:{' '}
+          {names.map((v, i) => (
             <span key={v}>
               <span className="font-mono text-txt">{v}</span>
-              {i < help.vars.length - 1 ? ', ' : '.'}
+              {i < names.length - 1 ? ', ' : '.'}
             </span>
           ))}{' '}
-          Si ya existen, se sustituyen; el resto de variables se conservan.
+          Las que ya tienen un valor puesto a mano no se modifican; el resto de variables se conservan.
         </p>
+        {kept.length > 0 && (
+          <p className="mt-1.5">
+            Se conservan sin cambios: <span className="font-mono text-txt">{kept.join(', ')}</span>.
+            {preview.data && !preview.data.secretPlaced && (
+              <span className="text-warn"> La credencial no cabe en ninguna variable: elimina o vacía la que tiene un valor puesto a mano.</span>
+            )}
+          </p>
+        )}
         <p className="mt-1.5">
           Si el servicio ya estaba conectado en este modo, la credencial anterior se revoca: hasta que se vuelva a desplegar, el
           servicio no podrá enviar correo.
@@ -1949,6 +1988,11 @@ function ConnectTab({
             ))}{' '}
             Los valores no se muestran aquí; puedes consultarlos en la pestaña «Variables» del servicio.
           </p>
+          {result.kept.length > 0 && (
+            <p className="mt-1">
+              No se han modificado, porque tienen un valor puesto a mano: <span className="font-mono text-txt">{result.kept.join(', ')}</span>.
+            </p>
+          )}
           {result.revoked > 0 && <p className="mt-1">Se ha revocado la credencial que el servicio tenía antes.</p>}
           <p className="mt-1">
             {result.needsRedeploy

@@ -379,7 +379,7 @@ describe('correo de un proyecto', () => {
     }
   });
 
-  it('conectar un servicio fusiona las variables y no devuelve ni audita secretos', async () => {
+  it('conectar un servicio fusiona las variables, no pisa las puestas a mano y no devuelve ni audita secretos', async () => {
     setEnv(apiService.id, { EXISTENTE: 'se-conserva', SMTP_HOST: 'antiguo.example.com' });
     let r = await call('POST', `/api/projects/${projA.id}/mail/connect`, memberHeaders, {
       serviceId: apiService.id,
@@ -401,13 +401,15 @@ describe('correo de un proyecto', () => {
     });
     expect(r.status, r.raw).toBe(200);
     expect(r.json).toMatchObject({ ok: true, needsRedeploy: true });
-    expect(r.json.keys).toEqual(['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM']);
+    // SMTP_HOST tenía otro valor puesto a mano: se respeta y se informa.
+    expect(r.json.keys).toEqual(['SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM']);
+    expect(r.json.kept).toEqual(['SMTP_HOST']);
     expect(r.raw).not.toContain('ContraseñaDeAplicacion');
     const smtpPass = getEnv(apiService.id).SMTP_PASS;
     expect(smtpPass).toMatch(/^ContraseñaDeAplicacion-Secreta-/);
     expect(getEnv(apiService.id)).toEqual({
       EXISTENTE: 'se-conserva',
-      SMTP_HOST: 'mail.example.com',
+      SMTP_HOST: 'antiguo.example.com',
       SMTP_PORT: '587',
       SMTP_SECURE: 'false',
       SMTP_USER: 'hola@tienda.example',

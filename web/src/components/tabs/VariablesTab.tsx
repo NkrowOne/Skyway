@@ -9,6 +9,7 @@ import {
   FileDown,
   FileText,
   Layers,
+  Mail,
   Plus,
   Search,
   Table,
@@ -20,6 +21,7 @@ import { maskValue } from '../../helpText';
 import { EnvImportReport, EnvImportResponse, EnvSkipReason } from '../../types';
 import { EnvSuggestion } from '../../types';
 import { copyToClipboard, cx, EMPTY_LIST, EMPTY_RECORD } from '../../utils';
+import { IntegrationsPanel } from '../IntegrationPlan';
 import { Button, CopyButton, EditorBar, ErrorState, Modal, Segmented, Skeleton, useToast } from '../ui';
 
 /** Por qué se dejó fuera una clave del .env del repositorio, en palabras. */
@@ -254,6 +256,10 @@ interface EnvResponse {
   suggestions: EnvSuggestion[];
   /** Variables que el repositorio espera (de .env.example) sin sugerencia automática y que no están definidas. */
   missing: string[];
+  /** La web envía correo: modo y nombres de las variables de correo que espera. */
+  mail?: { mode: 'smtp' | 'api'; vars: { name: string; role: string }[]; evidence: string[] } | null;
+  /** skyway.json del repositorio (si lo hay): manda sobre la detección. */
+  manifest?: { file: string; error: string | null } | null;
 }
 
 interface Row {
@@ -978,6 +984,15 @@ export default function VariablesTab({
   }, [pendingSuggestions]);
 
   const hasPendingNeeds = pendingSuggestions.length > 0 || pendingMissing.length > 0;
+  // Variables de correo que la web espera y todavía no existen (las escribe «Correo → Conectar»).
+  // Con un skyway.json válido, el correo lo lleva su plan (panel de integraciones).
+  const pendingMailVars = useMemo(
+    () =>
+      env.data?.manifest && !env.data.manifest.error
+        ? (EMPTY_LIST as string[])
+        : (env.data?.mail?.vars ?? EMPTY_LIST).map((v) => v.name).filter((k) => !rows.some((r) => r.key.trim() === k)),
+    [env.data, rows],
+  );
 
   // Crea la base de datos del grupo y, con la respuesta, conecta de golpe
   // todas las variables que la referencian (una sola llamada aunque el
@@ -1102,6 +1117,24 @@ export default function VariablesTab({
             )}
           </div>
         </div>
+
+        {/* ── Plan del skyway.json: lo pendiente de aprobar y el botón para aplicarlo ── */}
+        {isGit && env.data.manifest && <IntegrationsPanel serviceId={serviceId} dirty={dirty} />}
+
+        {/* ── La web envía correo y aún le faltan sus variables ── */}
+        {isGit && pendingMailVars.length > 0 && (
+          <div className="rounded-xl border border-info/35 bg-info/[.07] p-3.5 text-xs">
+            <p className="flex items-center gap-1.5 font-semibold text-info">
+              <Mail size={14} aria-hidden /> Esta web envía correo
+            </p>
+            <p className="mt-1 text-sub">
+              {env.data?.mail?.evidence.join(' · ')}. Faltan{' '}
+              <span className="break-words font-mono text-txt">{pendingMailVars.join(', ')}</span>: en el botón «Correo» del
+              proyecto, «Conectar a un servicio» las escribe con esos nombres
+              {env.data?.mail?.mode === 'api' ? ' (la web usa la API de envío)' : ''}.
+            </p>
+          </div>
+        )}
 
         {/* ── Claves del .env del repositorio que siguen sin valor ── */}
         {pendingFromRepo.length > 0 && (

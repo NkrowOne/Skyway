@@ -1,4 +1,5 @@
 import type { EnvImportReport } from './deploy/envimport';
+import type { SkywayManifest } from './manifest';
 
 export type ServiceType = 'git' | 'database' | 'image';
 
@@ -21,6 +22,18 @@ export interface DetectedNeeds {
   envFile: string | null;
   /** Ficheros del repositorio que aportaron algo, relativos a su raíz. */
   sources: string[];
+  /**
+   * La web envía correo (por una librería o por sus variables): modo que se
+   * propone (API si pide `MAILWAY_API_*`; SMTP si no) y los nombres EXACTOS de
+   * las variables de correo que espera, con su papel (ver `mailenv.ts`).
+   */
+  mail?: { mode: 'smtp' | 'api'; vars: { name: string; role: string }[]; evidence: string[] } | null;
+  /** `skyway.json` validado (ver `manifest.ts`); null si no hay o no es válido. */
+  manifest?: SkywayManifest | null;
+  /** Fichero del manifiesto, relativo a la raíz del repositorio, si lo hay (válido o no). */
+  manifestFile?: string | null;
+  /** Por qué no se ha podido usar el manifiesto, si lo hay y no es válido. */
+  manifestError?: string | null;
   detectedAt: number;
 }
 
@@ -89,6 +102,14 @@ export interface GitConfig {
   envImport?: EnvImportReport;
   /** Dependencias detectadas en el repositorio en el último despliegue (ver `DetectedNeeds`). */
   needs?: DetectedNeeds;
+  /**
+   * Variables que el `skyway.json` del repositorio pide y que necesitan la
+   * aprobación de quien gestiona el proyecto (base de datos, correo): el panel
+   * las muestra como «Cambios pendientes de aprobar». Lo recalcula cada
+   * despliegue y cada aplicación del plan (`integrations.ts`); ausente o vacío
+   * = nada pendiente.
+   */
+  integrationsPending?: string[];
 }
 
 export interface DatabaseConfig {

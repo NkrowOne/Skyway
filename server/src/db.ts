@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import crypto from 'crypto';
 import path from 'path';
 import { config } from './config';
 import {
@@ -610,6 +611,19 @@ export function initDb(): void {
       created_at INTEGER NOT NULL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_mailway_links_client ON mailway_links(client_id);
+    -- Variables que escribió Skyway por su cuenta (correo, plan de
+    -- integraciones) con el hash del valor que escribió. Es lo que permite
+    -- distinguir una variable que Skyway puede actualizar de una que alguien ha
+    -- puesto o cambiado a mano, que no se pisa nunca: si el valor actual ya no
+    -- casa con el hash, es de quien lo cambió. Solo hashes: nada recuperable.
+    CREATE TABLE IF NOT EXISTS service_managed_env (
+      service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      value_hash TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (service_id, key)
+    );
   `);
 
   // Facturación de empresa: número, impuestos, método de pago y datos de Stripe.
@@ -1418,6 +1432,15 @@ export function serviceSlugExists(projectId: string, slug: string): boolean {
   return !!stmt('SELECT 1 FROM services WHERE project_id = ? AND slug = ?').get(projectId, slug);
 }
 
+/** Slug libre en el proyecto para un servicio con ese nombre (`web`, `web-2`…). */
+export function uniqueServiceSlug(projectId: string, name: string): string {
+  const base = slugify(name);
+  let slug = base;
+  let i = 2;
+  while (serviceSlugExists(projectId, slug)) slug = `${base}-${i++}`;
+  return slug;
+}
+
 /** Marca (o borra) que el servicio fue detenido adrede por una persona. */
 export function setServiceStopped(serviceId: string, stopped: boolean): void {
   stmt('UPDATE services SET stopped_at = ? WHERE id = ?').run(stopped ? now() : null, serviceId);
@@ -1447,6 +1470,54 @@ export function setEnv(serviceId: string, vars: Record<string, string>): void {
     for (const [k, v] of Object.entries(vars)) ins.run(serviceId, k, v);
   });
   tx();
+}
+
+// ---------- variables gestionadas por Skyway ----------
+
+export interface ManagedEnvEntry {
+  /** De dónde salió: `mail.password`, `postgres.url`, `generate`, `value`, `self.public_url`… */
+  origin: string;
+  valueHash: string;
+}
+
+export function hashEnvValue(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+export function getManagedEnv(serviceId: string): Record<string, ManagedEnvEntry> {
+  const rows = stmt('SELECT key, origin, value_hash FROM service_managed_env WHERE service_id = ?').all(serviceId) as {
+    key: string;
+    origin: string;
+    value_hash: string;
+  }[];
+  const out: Record<string, ManagedEnvEntry> = {};
+  for (const r of rows) out[r.key] = { origin: r.origin, valueHash: r.value_hash };
+  return out;
+}
+
+/**
+ * Escribe variables del servicio en nombre de Skyway: las fusiona con las que
+ * ya tiene (en una transacción) y recuerda el hash de cada valor escrito. Quien
+ * llama ya ha decidido que se pueden escribir (`canWriteEnv`).
+ */
+export function writeManagedEnv(serviceId: string, entries: Record<string, { value: string; origin: string }>): void {
+  const keys = Object.keys(entries);
+  if (keys.length === 0) return;
+  const upsertVar = stmt(
+    'INSERT INTO env_vars (service_id, key, value) VALUES (?, ?, ?) ON CONFLICT(service_id, key) DO UPDATE SET value = excluded.value',
+  );
+  const upsertManaged = stmt(
+    `INSERT INTO service_managed_env (service_id, key, origin, value_hash, updated_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(service_id, key) DO UPDATE SET origin = excluded.origin, value_hash = excluded.value_hash, updated_at = excluded.updated_at`,
+  );
+  const at = now();
+  db.transaction(() => {
+    for (const key of keys) {
+      const { value, origin } = entries[key];
+      upsertVar.run(serviceId, key, value);
+      upsertManaged.run(serviceId, key, origin, hashEnvValue(value), at);
+    }
+  })();
 }
 
 // ---------- deployments ----------

@@ -109,6 +109,57 @@ export interface EnvAdvice {
   suggestions: EnvSuggestion[];
   /** Variables que el repositorio espera, sin propuesta automática y sin definir. */
   missing: string[];
+  /** La web envía correo: modo propuesto y variables de correo que espera (las rellena «Correo → Conectar»). */
+  mail?: { mode: 'smtp' | 'api'; vars: { name: string; role: string }[]; evidence: string[] } | null;
+  /** skyway.json del repositorio y, si no es válido, el motivo. */
+  manifest?: { file: string; error: string | null } | null;
+}
+
+// ---------- plan de integraciones (skyway.json o detección) ----------
+
+export type PlanStatus = 'apply' | 'done' | 'manual' | 'blocked';
+
+export interface PlanVar {
+  name: string;
+  /** postgres.DATABASE_URL, mail.password, self.public_url, generate, value o empty. */
+  from: string;
+  resource: string | null;
+  /** Requiere la aprobación de quien gestiona el proyecto. */
+  privileged: boolean;
+  status: PlanStatus;
+  /** Lo que se escribirá (una referencia, «32 bytes aleatorios»…). Nunca un secreto. */
+  detail: string | null;
+  reason: string | null;
+}
+
+export interface PlanResource {
+  key: string;
+  label: string;
+  action: 'create' | 'reuse' | null;
+  target: string | null;
+  mode: 'smtp' | 'api' | null;
+  status: PlanStatus;
+  reason: string | null;
+  evidence: string | null;
+}
+
+export interface IntegrationPlan {
+  source: 'manifest' | 'detection' | null;
+  manifestFile: string | null;
+  manifestError: string | null;
+  resources: PlanResource[];
+  vars: PlanVar[];
+  pendingApproval: string[];
+  canApprove: boolean;
+}
+
+export interface PlanApplyResult {
+  applied: string[];
+  pending: string[];
+  kept: string[];
+  blocked: { name: string; reason: string }[];
+  created: string[];
+  errors: string[];
 }
 
 export interface GithubRepo {
@@ -687,6 +738,8 @@ export interface GitConfig {
   autoImportEnv?: boolean;
   /** Última importación del .env del repositorio (sin valores). */
   envImport?: EnvImportReport;
+  /** Variables que pide el skyway.json y esperan la aprobación de quien gestiona el proyecto. */
+  integrationsPending?: string[];
 }
 
 // ---------- importación del .env del repositorio ----------

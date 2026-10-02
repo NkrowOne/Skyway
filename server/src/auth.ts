@@ -286,13 +286,17 @@ export function assertProjectAccess(req: FastifyRequest, reply: FastifyReply, pr
  */
 export function assertProjectManage(req: FastifyRequest, reply: FastifyReply, projectId: string): boolean {
   const user = currentUser(req)!;
-  if (user.role === 'admin') return true;
-  if (user.role === 'owner' && user.workspace_id) {
-    const project = getProject(projectId);
-    if (project && project.workspace_id === user.workspace_id) return true;
-  }
+  const project = getProject(projectId);
+  if (project && canManageProject(user, project)) return true;
+  if (!project && user.role === 'admin') return true;
   reply.code(403).send({ error: 'Requiere ser administrador o propietario del workspace' });
   return false;
+}
+
+/** Mismo criterio que `assertProjectManage`, con la fila ya en la mano y sin responder. */
+export function canManageProject(user: UserRow, project: ProjectRow): boolean {
+  if (user.role === 'admin') return true;
+  return user.role === 'owner' && !!user.workspace_id && project.workspace_id === user.workspace_id;
 }
 
 /**

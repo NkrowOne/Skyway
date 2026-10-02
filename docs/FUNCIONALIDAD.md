@@ -33,7 +33,17 @@ server/src/
                         dirección interna del panel si lo despliega Skyway, token de gestión `mwt_…` (Bearer),
                         proyecto de Mailway en Skyway, hosts reservados de la instancia, marca blanca
                         (webmail con el dominio del cliente) y fichero de zona (`stripWebRecords` retira los
-                        registros web del dominio raíz y de www)
+                        registros web del dominio raíz y de www; `appendWebRecords` añade los de los servicios
+                        del proyecto y el del webmail)
+  mailconnect.ts        correo visto desde un servicio: cliente vinculado del proyecto (`ownedSummary`), nombres
+                        con los que el servicio recibe el correo (`mailConnectNames`) y alta de la credencial
+                        (`connectServiceMail`); lo comparten «Conectar a un servicio» y el plan de integraciones
+  mailenv.ts            tabla de alias de las variables de correo (`SMTP_PASSWORD`, `MAIL_PASSWORD`,
+                        `EMAIL_HOST_PASSWORD`… → papel) y su valor por papel
+  managedenv.ts         cuándo puede Skyway escribir una variable: nunca si alguien la ha puesto a mano
+  manifest.ts           esquema estricto (zod) del manifiesto `skyway.json` (docs/MANIFIESTO.md)
+  integrations.ts       plan de integraciones de una web (manifiesto o detección): construcción sin efectos,
+                        aplicación con aprobación y reconciliación en cada despliegue
   mailwaytraefik.ts     puente de Traefik para Mailway: lee sus rutas, las sanea (solo Host() hacia
                         contenedores de Mailway, sin dominios de Skyway) y guarda la última buena; con la
                         misma cadencia, la lista de nombres de marca blanca de toda la instancia en
@@ -52,7 +62,8 @@ server/src/
   billingsettings.ts    ajustes de automatización (auto-generar/auto-emitir el ciclo, umbrales de morosidad)
   security.ts           escáner de seguridad (hallazgos + nota)
   variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}; variables de sistema (INTERNAL_URL, PUBLIC_URL…)
-  needs.ts              detección de dependencias del repo (librerías, schema.prisma, .env.example) y propuestas de variables
+  needs.ts              detección de dependencias del repo (librerías, schema.prisma, .env.example), del correo
+                        (librerías y variables) y del manifiesto `skyway.json`, y propuestas de variables
   templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio) y qué variables de conexión exporta cada una
   stacks.ts             pilas de aplicaciones multi-servicio (Supabase, WordPress, Ghost, n8n, Metabase)
   dbconsole.ts          consola de consultas (psql/mysql/mongosh/redis-cli vía exec)
@@ -314,14 +325,16 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `host_metrics_hourly` | `hour` → carga, RAM y disco del host (sumas, máximos y última foto) — histórico de consumo del servidor (~90 d) |
 | `github_connectors` | `id`, `project_id`, `name`, `token` (en claro: se necesita para clonar; jamás sale por la API), `gh_login`, `token_type`, `created_by`, `last_used_at` — cae en cascada con el proyecto |
 | `mailway_links` | correo del proyecto: `project_id` (PK, cae en cascada con el proyecto), `client_id` (cliente de Mailway, **único**: un cliente pertenece a un solo proyecto), `client_name`, `created_by`, `created_at`. En Mailway el cliente lleva la referencia externa `skyway:project:<projectId>`, que es la fuente de verdad: si falta la fila, `GET /api/projects/:id/mail` la recupera. No guarda credenciales |
+| `service_managed_env` | variables que escribió Skyway por su cuenta (correo, plan de integraciones): `(service_id, key)` → `origin` (`mail.smtp.password`, `postgres.DATABASE_URL`, `generate`, `value`, `self.public_url`…), `value_hash` (SHA-256 del valor escrito, nunca el valor), `updated_at`. Si el valor actual ya no casa con el hash, la variable es de quien la cambió y no se vuelve a tocar. Cae en cascada con el servicio |
 | `github_installations` | instalaciones de la GitHub App: `id`, `installation_id`, `account_login`, `account_type`, `repo_selection`, `project_id` (null = global del administrador), `created_by`, `last_used_at`, `suspended`. **No guarda credenciales**: el token de clonado se emite bajo demanda y caduca en una hora |
 
 `config` de servicio (ver `types.ts`): `GitConfig`, `DatabaseConfig`, `ImageConfig`
 comparten `domains`, `hostPort`, `cpus`, `memoryMb`, `diskMb`, `healthcheckPath`,
 `volumes`, `replicas`; git añade `repoUrl`, `githubInstallationId`, `connectorId`,
 `branch`, `rootDir`, `dockerfilePath`, `builder`, `startCmd`, `buildCmd`, `port`,
-`portAuto`, `buildArgs`, `webhookSecret`, `autoDeploy`; database añade `template`, `version`,
-`backupSchedule`, `backupRetention`.
+`portAuto`, `buildArgs`, `webhookSecret`, `autoDeploy`, `needs` (detección del último
+despliegue) e `integrationsPending` (variables que el `skyway.json` pide y esperan
+aprobación); database añade `template`, `version`, `backupSchedule`, `backupRetention`.
 
 ---
 
@@ -425,7 +438,8 @@ aplican **en caliente**.
 | `volumes` | ✓ | ✓ | fijo (su volumen) | conserva nombre al editar |
 | `replicas` (1–10) | ✓ | ✓ | 1 | requiere sin volúmenes ni hostPort |
 | `autoDeploy` | ✓ | — | — | sondeo de la rama; despliega al haber commit nuevo (opt-out) |
-| `needs` | ✓ | — | — | interno: dependencias detectadas en el repo en el último despliegue (§5.5). Se reescribe en cada clonado |
+| `needs` | ✓ | — | — | interno: dependencias detectadas en el repo en el último despliegue (§5.5), con el correo y el `skyway.json`. Se reescribe en cada clonado |
+| `integrationsPending` | ✓ | — | — | interno: variables que el `skyway.json` pide y esperan la aprobación de quien gestiona el proyecto (§5.7). La tarjeta del servicio muestra «Pendiente de aprobar» |
 | `backupSchedule`, `backupRetention` | — | — | ✓ | diario/semanal ~04:00 |
 | `alertsMuted` | ✓ | ✓ | ✓ | silencia alertas del servicio |
 
@@ -695,6 +709,20 @@ para otra app. Se aplican, como todo, al guardar y redesplegar.
 - `.env.example` (o `.env.sample`, `.env.template`, `.env.dist`): los nombres de
   variable que la app espera. Un `REDIS_URL` delata Redis aunque la librería no
   esté en la lista; `DATABASE_URL` a secas asume PostgreSQL y lo dice.
+- **Correo**: la web envía correo si depende (en producción) de una librería de
+  envío —`nodemailer`, `resend`, `@sendgrid/mail`, `postmark`, `emailjs`,
+  `mailgun.js`; `Flask-Mail`, `fastapi-mail`, `django-anymail`, `sendgrid`;
+  `phpmailer/phpmailer`, `symfony/mailer`; `gomail`, `go-mail`; las gemas `mail`,
+  `pony`, `postmark`…— o si su `.env.example` nombra variables de correo: cualquier
+  `SMTP_*` y las de papel conocido de `MAIL_*`, `EMAIL_*`, `MAILER_*` y
+  `MAILWAY_API_*` (`mailenv.ts`; un `EMAIL_VERIFICATION` suelto o las variables
+  propias de Mailway, como `MAILWAY_SECRET`, no cuentan). Se guarda como `needs.mail`
+  con el **modo sugerido** (API si pide `MAILWAY_API_KEY` o `MAILWAY_API_URL`; SMTP
+  si no) y los **nombres exactos** que espera, con su papel. Esas variables no
+  salen como «missing»: las escribe «Correo → Conectar a un servicio» (§6), y la
+  pestaña Variables avisa de las que faltan.
+- `skyway.json`: el manifiesto opcional de la web (§5.7). Si existe, manda sobre
+  la detección.
 
 El resultado se guarda en `config.needs` del servicio y se cuenta en el log del
 despliegue («Dependencias detectadas…», «⚠ Faltan variables para esas
@@ -712,13 +740,15 @@ redesplegar.
 Lo mismo **antes de crear el servicio**: al elegir repositorio y rama en «Nuevo
 servicio → Repositorio de GitHub», `GET /projects/:id/github/needs` pide a GitHub
 (con la credencial que vaya a clonar) solo los ficheros candidatos que el árbol
-del repo dice que existen, los pasa por la misma detección y devuelve las
-propuestas contra lo que ya hay en el proyecto. El asistente enseña una casilla
-por motor («Crear PostgreSQL y conectar (DATABASE_URL)», o «Conectar a
-<base existente>») y otra para añadir vacías las demás variables esperadas; al
-confirmar, crea primero las bases marcadas y el servicio nace con las
-referencias puestas (`env` en `POST /projects/:projectId/services`), antes de su primer
-despliegue. Todo desmarcable, y si GitHub no responde el alta sigue igual.
+del repo dice que existen (incluido `skyway.json`), los pasa por la misma
+detección y devuelve las propuestas y el **plan de integraciones** (§5.7) contra
+lo que ya hay en el proyecto. El asistente enseña el plan —bases que se crean o
+se reutilizan, correo, secretos, URL propia y variables vacías— con una casilla
+por recurso, y un solo botón: «Crear, aplicar el plan y desplegar». El servidor
+vuelve a leer el repositorio, aplica el plan con los permisos de quien crea el
+servicio y lanza el primer despliegue con todo puesto. Si GitHub no responde, el
+alta sigue igual y el plan se puede aplicar después desde Variables. `env` en
+`POST /projects/:projectId/services` sigue disponible para quien llame a la API.
 
 **Compatibilidad con Railway.** En cada despliegue se rellenan las variables
 mágicas de Railway con el
@@ -750,6 +780,42 @@ antes obligaba a entrar por SSH al servidor.
 - El destino **se sobrescribe**: la interfaz lo advierte.
 
 ---
+
+### 5.7 Plan de integraciones y manifiesto `skyway.json`
+
+Formato completo, reglas y ejemplos en **[MANIFIESTO.md](MANIFIESTO.md)**.
+
+Una web puede declarar en `skyway.json` (raíz del repositorio o de su `rootDir`;
+versión 1, zod estricto, máximo 64 KB, sin comandos ni rutas) las bases que
+necesita (`postgres`, `redis`), el correo (`mode`, `mailbox`) y sus variables:
+`{from: 'postgres.url'|'redis.url'|'mail.<papel>'|'self.public_url'}`,
+`{generate: {bytes}}` o `{value}` (texto no secreto, sin `${{…}}`). Nunca `PORT`
+ni `SKYWAY_*`. Sin manifiesto, el plan sale de la detección (§5.5).
+
+`integrations.ts` construye el **plan sin efectos** (`buildPlan`): por cada
+variable, de dónde sale, si es privilegiada y su estado (`apply`, `done`,
+`manual` —puesta a mano, no se toca— o `blocked`, con el motivo); por cada
+recurso, si se crea o se reutiliza (bases del **mismo proyecto**; buzón en el
+dominio del cliente de correo del proyecto con la **propiedad comprobada**).
+Aplicarlo (`applyPlan`):
+
+- **Sin preguntar**: secretos generados (hex, nunca se regeneran), la URL propia
+  (`${{<slug>.PUBLIC_URL}}`, solo con dominio), valores literales y huecos vacíos.
+- **Con la aprobación de quien gestiona el proyecto** (administrador o
+  propietario): crear o conectar una base, crear el buzón y la credencial de
+  correo (los mismos nombres y la misma credencial que «Conectar a un
+  servicio»). Si aplica un miembro, quedan pendientes.
+- Se respetan los módulos («Bases de datos», «Correo»), la cuota de servicios y
+  la suspensión de la cuenta. **Nunca** se pisa una variable puesta a mano
+  (`managedenv.ts` + `service_managed_env`). Un manifiesto no válido no aplica nada.
+- Un bloqueo por servicio impide dos aplicaciones a la vez (409).
+
+En **cada despliegue** (`reconcileOnDeploy`, tras clonar) se vuelve a leer el
+manifiesto: lo inofensivo nuevo se aplica y entra en ese build; lo privilegiado
+nuevo se anota en `integrationsPending` («Cambios pendientes de aprobar» en la
+tarjeta del servicio y en Variables → Integraciones) y el registro avisa: «⚠
+skyway.json pide cambios que requieren aprobación (…). El despliegue continúa
+con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditoría.
 
 ## 6. Áreas funcionales (resumen)
 
@@ -877,13 +943,28 @@ antes obligaba a entrar por SSH al servidor.
   nombre de un servicio de Skyway ni el del panel), crear buzones (contraseña
   visible una sola vez, sugerencias info/contacto/no-reply y **enlace de
   configuración** de dispositivos) y **conectar un
-  servicio**: SMTP (contraseña de aplicación propia → `SMTP_HOST`, `SMTP_PORT`,
-  `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`) o API de envío (clave
-  `mw_…` → `MAILWAY_API_URL`, `MAILWAY_API_KEY`, `MAIL_FROM`); las variables se
-  **fusionan** con las existentes y la respuesta solo lista sus nombres. Volver
-  a conectar un servicio **revoca la credencial anterior** del mismo tipo que
-  Skyway creó para él (`skyway:<servicio>` o `Skyway · <servicio>`), y las
-  credenciales vigentes se listan y se revocan desde la misma pestaña.
+  servicio**: SMTP (contraseña de aplicación propia) o API de envío (clave
+  `mw_…`). Las variables se escriben **con los nombres que espera la web** —los
+  de su `skyway.json` o, por la tabla de alias de `mailenv.ts`, los de su
+  `.env.example`: `SMTP_PASSWORD`/`SMTP_PASS`/`MAIL_PASSWORD`/`EMAIL_HOST_PASSWORD`,
+  `SMTP_FROM`/`MAIL_FROM`/`EMAIL_FROM`/`DEFAULT_FROM_EMAIL`,
+  `SMTP_USER`/`MAIL_USERNAME`/`EMAIL_HOST_USER`, `EMAIL_USE_TLS=true`,
+  `MAIL_ENCRYPTION=tls`, `EMAIL_SERVER`/`MAILER_DSN` como URL `smtp://…`— y, para
+  lo que no nombra, con los de siempre (`SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`,
+  `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`; en API, `MAILWAY_API_URL`,
+  `MAILWAY_API_KEY`, `MAIL_FROM`). Se **fusionan** con las existentes, **nunca
+  se pisa una variable puesta a mano** con otro valor (ni se tapa una compartida
+  del proyecto: van en `kept`) y, si la credencial no cabe en ninguna, no se crea
+  (409). La pestaña lo enseña antes de conectar (`…/mail/connect/preview`) y la
+  respuesta solo lista nombres. Volver a conectar un servicio **revoca la
+  credencial anterior** del mismo tipo que Skyway creó para él (`skyway:<servicio>`
+  o `Skyway · <servicio>`) y actualiza lo que Skyway escribió (también lo de
+  antes de llevar la cuenta de lo escrito); las credenciales vigentes se listan
+  y se revocan desde la misma pestaña. El **fichero de zona** añade, en
+  secciones propias y comentadas, los registros A de los servicios del **mismo
+  proyecto** que cuelgan del dominio (hacia la IP pública de Ajustes; sin ella,
+  se omiten con un aviso) y el del webmail del cliente: basta con importar un
+  solo fichero en Cloudflare.
   Aislamiento: como el token es de administrador, **cada dominio y buzón se
   comprueba contra el resumen del cliente vinculado** antes de actuar (si no es
   suyo, 404 sin llegar a Mailway) y la referencia externa del cliente tiene que
@@ -1220,13 +1301,15 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[]}`; atómica (409 si choca un nombre); `domain` como en crear servicio (409 si ya lo usa otro servicio o está reservado); `services[].config` sin `webhookSecret` |
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada); 20 por minuto y usuario, después 429 |
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas |
-| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH, y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5) |
+| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH, y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada) y la respuesta añade `plan: {result, plan, error}` |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
 | PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
 | DELETE | `/services/:id?volumes=true` | +access | elimina servicio; igual que en proyectos, devuelve `{ok, warnings}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
-| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, §5.5) |
+| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, `mail`, `manifest`, §5.5) |
+| GET | `/services/:id/integrations` | +access | plan de integraciones del servicio sin efectos (§5.7) → `{plan, pending}`; `plan` null si no es de repositorio |
+| POST | `/services/:id/integrations/apply` | +access | `{skip?, redeploy?}` → `{result: {applied, pending, kept, blocked, created, errors}, plan, needsRedeploy, deploymentId}`. Lo inofensivo lo aplica cualquiera con acceso; bases y correo solo **manage** (si no, `pending`). Nunca pisa variables puestas a mano. 409 si ya se está aplicando. 10/min. Audita `service_integrations_applied` (nombres, nunca valores) |
 | PUT | `/services/:id/env` | +access | reemplaza variables del servicio |
 | POST | `/services/:id/env/import-repo` | +access | importa el `.env`/`.env.example` del repositorio de GitHub sin clonar: `{apply?: boolean}`; sin `apply` es vista previa (`report.imported[].value` relleno, nada se escribe); con `apply: true` crea las variables válidas, persiste el informe sin valores en `config.envImport` y devuelve `needsRedeploy`. Solo servicios git de GitHub (400 en el resto); 10 por minuto y usuario; auditado como `service_env_imported` |
 
@@ -1329,7 +1412,7 @@ distroless), el explorador lo indica y no está disponible.
 | --- | --- | --- | --- |
 | GET | `/domains/server-ip` | auth | IP del servidor (configurada o detectada) |
 | GET | `/domains/config` | auth | `{rootDomain, tls}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin) |
-| GET | `/projects/:id/github/needs` | +access | dependencias del repo antes de crearlo (`repo`, `branch`, `rootDir?`, `source?`): `needs`, `suggestions`, `missing`, `envFile` (§5.5) |
+| GET | `/projects/:id/github/needs` | +access | dependencias del repo antes de crearlo (`repo`, `branch`, `rootDir?`, `source?`, `name?`): `needs`, `suggestions`, `missing`, `mail`, `manifest`, `envFile` (§5.5) y `plan`, el plan de integraciones sin efectos (§5.7) |
 | POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`); 30 por minuto y usuario, después 429 |
 | GET | `/public/status/:token` | público | página de estado pública (cacheada) |
 | GET | `/projects/:id/status-page` | +access | config de la página de estado |
@@ -1376,7 +1459,7 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | GET | `/projects/:id/mail/domains/:domainId/dns` | auth + access | `{records:[{type,name,content}]}` |
 | GET | `/projects/:id/mail/domains/:domainId/cloudflare` | auth + access | plan de cambios `{available, reason, account, zone, changes[], summary}`. Si quien pide no es admin, se envía `?soloCliente=1`: Mailway solo usa las cuentas de Cloudflare del cliente, nunca las de la instancia |
 | POST | `/projects/:id/mail/domains/:domainId/cloudflare/apply` | manage | `{replaceConflicts?}` → `{applied, errors, domain}` (con `?soloCliente=1` para quien no es admin) |
-| GET | `/projects/:id/mail/domains/:domainId/zonefile` | auth + access | fichero de zona BIND de Mailway (`?nivel=obligatorios\|recomendados\|completo`, recomendados por defecto; otro valor → 400) como `text/plain` adjunto `<dominio>-mailway-<nivel>.txt`, para importarlo en Cloudflare (DNS → Registros → Importar y exportar). Skyway **retira los registros A, AAAA, CNAME, HTTPS y SVCB del dominio raíz y de `www`** (nombres absolutos, relativos, `@`, `$ORIGIN`, líneas sin propietario y paréntesis) y, si retira alguno, lo indica en un comentario al principio: el fichero no debe sustituir la web del dominio. Mailway no los genera hoy. 20/min |
+| GET | `/projects/:id/mail/domains/:domainId/zonefile` | auth + access | fichero de zona BIND de Mailway (`?nivel=obligatorios\|recomendados\|completo`, recomendados por defecto; otro valor → 400) como `text/plain` adjunto `<dominio>-mailway-<nivel>.txt`, para importarlo en Cloudflare (DNS → Registros → Importar y exportar). Skyway **retira los registros A, AAAA, CNAME, HTTPS y SVCB del dominio raíz y de `www`** que pudiera traer Mailway (nombres absolutos, relativos, `@`, `$ORIGIN`, líneas sin propietario y paréntesis) y, si retira alguno, lo indica en un comentario al principio. Después **añade, en secciones propias y comentadas**, los registros web de los servicios del **mismo proyecto** cuyos dominios cuelgan de la zona (A hacia la IP pública configurada en Ajustes; sin ella se omiten y un comentario lo dice) y el del **webmail del cliente** si está dado de alta (el registro recomendado que indica Mailway; si el nombre no se puede utilizar, un comentario explica por qué). Nunca menciona dominios de otros proyectos ni repite un nombre que el fichero ya trae. 20/min |
 | GET | `/projects/:id/mail/domains/:domainId/webmail` | auth + access | `{hostname, webmail, conflict}`: el webmail del dominio en `webmail.<dominio>` (marca blanca de Mailway). `webmail` = `null` o `{hostname, kind, status:'pending_dns'\|'issuing'\|'active'\|'error', detail, lastCheckedAt, activatedAt, createdAt, isPrimary, url, instructions[]}` (`url` solo en servicio, formada por Skyway; `instructions` = registro CNAME recomendado o A que indica Mailway). `conflict` = motivo por el que el nombre no se puede utilizar (`webmailHostError`) o `null`. El dominio propio se busca entre los del cliente vinculado (`GET /api/whitelabel/domains?clientId=`, filtrados también por cliente en Skyway) |
 | POST | `/projects/:id/mail/domains/:domainId/webmail` | manage | da de alta `webmail.<dominio>` (nombre fijado por Skyway, no por quien llama) para el cliente vinculado (`POST /api/whitelabel/domains {hostname, clientId, kind:'webmail'}`) → 201 `{webmail}`. 403 con la cuenta suspendida, 409 con el cliente suspendido, 409 si el nombre lo sirve **cualquier servicio de Skyway** (solo el admin ve cuál), es el del panel (`SKYWAY_DOMAIN`) o de la instancia de Mailway, 409 si ya existe. La propiedad del dominio la exige Mailway: 400 `domain_not_verified` con su mensaje (también `whitelabel_limit`, 5 por cliente). El nombre queda reservado al momento (sin esperar a la lectura del puente): ningún servicio de un cliente puede asignárselo. Audita `mailway_webmail_created`. 10/min |
 | POST | `/projects/:id/mail/domains/:domainId/webmail/verify` | auth + access | comprueba DNS y HTTPS en Mailway y avanza el estado (Esperando DNS → Emitiendo certificado → En servicio) → `{webmail, conflict}`. 404 si no está configurado. 30/min |
@@ -1388,7 +1471,8 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | DELETE | `/projects/:id/mail/mailboxes/:mailboxId` | manage | revoca antes las claves de API `Skyway · …` con ese buzón como remitente y elimina el buzón → `{ok, revokedApiKeys}`; si queda otra clave activa, 409 de Mailway |
 | DELETE | `/projects/:id/mail/app-passwords/:appId` | manage | revoca una contraseña de aplicación del cliente (404 si no es suya). Audita `mailway_app_password_revoked` |
 | DELETE | `/projects/:id/mail/api-keys/:keyId` | manage | revoca una clave de API del cliente (404 si no es suya). Audita `mailway_api_key_revoked` |
-| POST | `/projects/:id/mail/connect` | manage | `{serviceId, mailboxId, mode:'smtp'\|'api', redeploy?}` → `{ok, keys, needsRedeploy, deploymentId, revoked}`. El servicio debe ser del proyecto y no de base de datos. Revoca antes la credencial del mismo tipo que Skyway creó para el servicio (`skyway:<slug>` o `Skyway · <slug>`, ≤ 60 caracteres). Fusiona las variables; nunca devuelve ni audita los valores. Con `redeploy`, despliegue con disparador `mailway` |
+| GET | `/projects/:id/mail/connect/preview` | auth + access | `?serviceId&mode` → `{mode, suggestedMode, keys, kept, secretPlaced}`: con qué nombres recibiría el servicio el correo (los de su `skyway.json` o su `.env.example` por alias; los de siempre para lo que no nombra) y cuáles se conservarían por tener un valor puesto a mano. Sin crear nada; 404 si el servicio es de otro proyecto |
+| POST | `/projects/:id/mail/connect` | manage | `{serviceId, mailboxId, mode:'smtp'\|'api', redeploy?}` → `{ok, keys, kept, needsRedeploy, deploymentId, revoked}`. El servicio debe ser del proyecto y no de base de datos. Escribe con los nombres de la vista previa y **nunca pisa una variable puesta a mano** (van en `kept`); si la credencial no cabe en ninguna variable, 409 sin crearla. Revoca antes la credencial del mismo tipo que Skyway creó para el servicio (`skyway:<slug>` o `Skyway · <slug>`, ≤ 60 caracteres). Nunca devuelve ni audita los valores. Con `redeploy`, despliegue con disparador `mailway` |
 
 Todas las rutas con `:domainId`/`:mailboxId`/`:appId`/`:keyId` comprueban antes,
 con el resumen del cliente vinculado, que el recurso es de ese cliente: si no,

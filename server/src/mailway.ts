@@ -882,6 +882,120 @@ export function stripWebRecords(zone: string, domain: string): { zone: string; r
   return { zone: [aviso, ';', ...out].join('\n'), removed };
 }
 
+/**
+ * Nombres propietarios del fichero de zona con sus tipos (`www.empresa.com` →
+ * {A}). Mismo análisis que `stripWebRecords`: sirve para no añadir un registro
+ * que choque con uno que ya trae el fichero (un CNAME no convive con nada).
+ */
+export function zoneOwners(zone: string, domain: string): Map<string, Set<string>> {
+  const apex = domain.trim().toLowerCase().replace(/\.$/, '');
+  let origin = apex;
+  let owner: string | null = null;
+  let depth = 0;
+  const out = new Map<string, Set<string>>();
+  for (const line of zone.split(/\r?\n/)) {
+    const { code, parens } = analizarLinea(line);
+    if (depth > 0) {
+      depth += parens;
+      continue;
+    }
+    if (!code.trim()) continue;
+    const tokens = code.trim().split(/\s+/);
+    if (tokens[0].startsWith('$')) {
+      if (tokens[0].toUpperCase() === '$ORIGIN' && tokens[1]) origin = nombreAbsoluto(tokens[1], origin);
+      continue;
+    }
+    let i = 0;
+    if (!/^\s/.test(code)) owner = nombreAbsoluto(tokens[i++], origin);
+    while (i < tokens.length && (TTL_RE.test(tokens[i]) || CLASES_DNS.has(tokens[i].toUpperCase()))) i++;
+    const type = (tokens[i] ?? '').toUpperCase();
+    depth = Math.max(0, parens);
+    if (owner && type) {
+      const set = out.get(owner) ?? new Set<string>();
+      set.add(type);
+      out.set(owner, set);
+    }
+  }
+  return out;
+}
+
+const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
+const NOMBRE_DNS_RE = /^(?=.{1,253}\.?$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.?$/;
+
+/** Registro web que Skyway añade al fichero de zona. */
+export interface WebZoneRecord {
+  name: string;
+  type: 'A' | 'CNAME';
+  value: string;
+}
+
+/**
+ * Añade al fichero de zona, en secciones propias y comentadas, los registros
+ * web de los servicios del proyecto que cuelgan del dominio (A hacia la IP del
+ * servidor) y el del webmail del cliente, para que baste con importar un solo
+ * fichero. Solo nombres del dominio (o el propio dominio), sin duplicar ni
+ * chocar con lo que ya trae el fichero. Sin IP configurada, los registros de
+ * los servicios se omiten y se dice en un comentario.
+ */
+export function appendWebRecords(
+  zone: string,
+  domain: string,
+  input: { serverIp: string | null; hosts: string[]; webmail: WebZoneRecord | null; webmailNote?: string | null },
+): { zone: string; added: number } {
+  const apex = domain.trim().toLowerCase().replace(/\.$/, '');
+  const owners = zoneOwners(zone, apex);
+  const inZone = (h: string) => h === apex || h.endsWith(`.${apex}`);
+  const ip = input.serverIp && IPV4_RE.test(input.serverIp) ? input.serverIp : null;
+  const lines: string[] = [];
+  let added = 0;
+  const choca = (name: string, type: string) => {
+    const tipos = owners.get(name);
+    return !!tipos && (type === 'CNAME' || tipos.has('CNAME') || tipos.has(type));
+  };
+
+  const hosts = [...new Set(input.hosts.map((h) => h.trim().toLowerCase().replace(/\.$/, '')))]
+    .filter((h) => inZone(h) && NOMBRE_DNS_RE.test(h) && h !== input.webmail?.name.toLowerCase().replace(/\.$/, ''))
+    .sort();
+  if (hosts.length > 0) {
+    lines.push(';', ';  Registros web de los servicios de este proyecto en Skyway');
+    if (!ip) {
+      lines.push(
+        `;  No se incluyen (${hosts.join(', ')}): no hay IP pública del servidor configurada en`,
+        ';  Skyway (Ajustes → IP pública del servidor). Configúrala y vuelve a descargar el fichero.',
+      );
+    } else {
+      lines.push(`;  Apuntan a la IP pública del servidor (${ip}). Impórtalos sin proxy, como los de correo.`);
+      for (const h of hosts) {
+        if (choca(h, 'A')) {
+          lines.push(`;  ${h}: se omite, el fichero ya trae un registro con ese nombre.`);
+          continue;
+        }
+        lines.push(`${h}.\t3600\tIN\tA\t${ip}`);
+        added++;
+      }
+    }
+  }
+
+  const w = input.webmail;
+  if (w || input.webmailNote) {
+    lines.push(';', ';  Webmail del cliente');
+    if (input.webmailNote) lines.push(`;  ${input.webmailNote}`);
+    const name = w?.name.toLowerCase().replace(/\.$/, '') ?? '';
+    const valueOk = w && (w.type === 'A' ? IPV4_RE.test(w.value) : NOMBRE_DNS_RE.test(w.value.toLowerCase()));
+    if (w && inZone(name) && NOMBRE_DNS_RE.test(name) && valueOk && !input.webmailNote) {
+      if (choca(name, w.type)) {
+        lines.push(`;  ${name}: se omite, el fichero ya trae un registro con ese nombre.`);
+      } else {
+        const value = w.type === 'CNAME' ? `${w.value.toLowerCase().replace(/\.$/, '')}.` : w.value;
+        lines.push(`${name}.\t3600\tIN\t${w.type}\t${value}`);
+        added++;
+      }
+    }
+  }
+  if (lines.length === 0) return { zone, added };
+  return { zone: `${zone.replace(/\s+$/, '')}\n${lines.join('\n')}\n`, added };
+}
+
 // ---------- buzones ----------
 
 export function createMailbox(input: {
