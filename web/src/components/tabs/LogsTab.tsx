@@ -391,7 +391,7 @@ export default function LogsTab({
     return {
       displayLines: rLines,
       emptyNote:
-        depData && rLines.length === 0 ? 'Este despliegue no ha guardado salida de la aplicación. Consulte la pestaña «Compilación».' : null,
+        depData && rLines.length === 0 ? 'Este despliegue no ha guardado salida de la aplicación. Consulta la pestaña «Compilación».' : null,
     };
   }, [isLiveMode, liveRows, isBuildingSelected, buildStreamId, buildingLines, depData, stageTab, attached, liveNotice]);
 

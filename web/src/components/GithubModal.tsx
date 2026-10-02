@@ -138,7 +138,7 @@ export default function GithubModal({
                       <p className="mt-3 text-sm font-medium">Conectar una cuenta de GitHub</p>
                       <p className="mx-auto mt-1 max-w-md text-xs text-sub">
                         En GitHub se seleccionan los repositorios visibles para Skyway. Solo aparecen los de las cuentas donde se
-                        instale la App; para un repositorio ajeno en el que sea colaborador, utilice un token personal (más abajo).
+                        instale la App; para un repositorio ajeno en el que seas colaborador, utiliza un token personal (más abajo).
                       </p>
                       <Button className="mt-4" onClick={connectAccount}>
                         <ModuleLogo kind="github" size={14} /> Conectar con GitHub
@@ -261,7 +261,7 @@ export default function GithubModal({
                           </div>
                         ) : (
                           <>
-                            Se creará en su cuenta personal.{' '}
+                            Se creará en tu cuenta personal.{' '}
                             <button type="button" onClick={() => setOrgOpen(true)} className="font-medium text-acc-soft hover:underline">
                               Crear en una organización
                             </button>
@@ -273,8 +273,8 @@ export default function GithubModal({
                     <>
                       <p className="mt-3 text-sm font-medium">Este servidor todavía no tiene GitHub App</p>
                       <p className="mx-auto mt-1 max-w-md text-xs text-sub">
-                        Solicite al administrador que la cree para poder conectar repositorios sin tokens. Mientras tanto,
-                        puede utilizar un token personal.
+                        Solicita al administrador que la cree para poder conectar repositorios sin tokens. Mientras tanto,
+                        puedes utilizar un token personal.
                       </p>
                     </>
                   )}
@@ -291,8 +291,8 @@ export default function GithubModal({
               </summary>
 
               <p className="mt-2 text-xs text-subtle">
-                Para cuentas en las que no se puede instalar la App y para repositorios ajenos en los que solo sea colaborador:
-                un token clásico con permiso «repo» accede a todo lo que ve su usuario (los de tipo fine-grained, solo a lo
+                Para cuentas en las que no se puede instalar la App y para repositorios ajenos en los que solo seas colaborador:
+                un token clásico con permiso «repo» accede a todo lo que ve tu usuario (los de tipo fine-grained, solo a lo
                 que se les concede). Los tokens caducan, por lo que se recomienda la App en cuanto esté disponible.
               </p>
 
@@ -394,7 +394,7 @@ export default function GithubModal({
         title="Eliminar cuenta de GitHub"
         message={
           toDeleteShown?.kind === 'app'
-            ? `Los servicios que usen ${toDeleteShown.label} pasarán a clonar con el token global del servidor en el próximo despliegue; si el repositorio es privado y ese token no tiene acceso, el despliegue fallará. La App seguirá instalada en GitHub: elimínela allí si además desea revocar el acceso.`
+            ? `Los servicios que usen ${toDeleteShown.label} pasarán a clonar con el token global del servidor en el próximo despliegue; si el repositorio es privado y ese token no tiene acceso, el despliegue fallará. La App seguirá instalada en GitHub: elimínala allí si además quieres revocar el acceso.`
             : `Los servicios que usen «${toDeleteShown?.label ?? ''}» pasarán a clonar con el token global del servidor en el próximo despliegue; si el repositorio es privado y ese token no tiene acceso, el despliegue fallará.`
         }
         loading={removeConnection.isPending}

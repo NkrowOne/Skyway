@@ -87,7 +87,7 @@ const SiteCard = memo(function SiteCard({
 
       <div className="mt-3 flex min-h-[26px] flex-wrap items-center gap-1.5">
         {site.domains.length === 0 && site.hostPort === null && (
-          <span className="text-xs text-subtle">Sin dominio — puede añadirlo en los ajustes del servicio</span>
+          <span className="text-xs text-subtle">Sin dominio — puedes añadirlo en los ajustes del servicio</span>
         )}
         {site.domains.map((d) => (
           <a

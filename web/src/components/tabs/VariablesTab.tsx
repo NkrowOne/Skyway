@@ -648,7 +648,7 @@ export default function VariablesTab({
       setTimeout(() => valueInputRefs.current.get(newRows[0].id)?.focus(), 50);
     }
     setDirty(true);
-    toast(fresh.length === 1 ? 'Se ha añadido 1 fila. Introduzca su valor y guarde los cambios.' : `Se han añadido ${fresh.length} filas. Introduzca sus valores y guarde los cambios.`, 'ok');
+    toast(fresh.length === 1 ? 'Se ha añadido 1 fila. Introduce su valor y guarda los cambios.' : `Se han añadido ${fresh.length} filas. Introduce sus valores y guarda los cambios.`, 'ok');
   };
 
   // Alternar vista tabla / texto plano
@@ -995,7 +995,7 @@ export default function VariablesTab({
       setRows((prev) => [...prev, ...group.map((s) => makeRow(s.key, `\${{${data.service.name}.${s.refVar}}}`))]);
       setDirty(true);
       toast(
-        `Se ha creado «${data.service.name}» y se ha conectado en ${group.map((s) => s.key).join(', ')}. Guarde los cambios y vuelva a desplegar.`,
+        `Se ha creado «${data.service.name}» y se ha conectado en ${group.map((s) => s.key).join(', ')}. Guarda los cambios y vuelve a desplegar.`,
         'ok',
       );
     },
@@ -1090,7 +1090,7 @@ export default function VariablesTab({
                 className={cx(toolBtn, 'disabled:cursor-not-allowed disabled:opacity-45')}
                 title={
                   dirty
-                    ? 'Guarde o descarte los cambios antes de importar'
+                    ? 'Guarda o descarta los cambios antes de importar'
                     : 'Leer el .env o .env.example del repositorio y proponer las variables que faltan'
                 }
                 aria-label="Importar variables del repositorio"
@@ -1134,7 +1134,7 @@ export default function VariablesTab({
                 ? '1 variable sigue apuntando a la red externa de Railway'
                 : `${railwayPending.length} variables siguen apuntando a la red externa de Railway`}
             </p>
-            <p className="mt-1 text-sub">Seleccione una referencia para conectarlas a través de la red interna del proyecto:</p>
+            <p className="mt-1 text-sub">Selecciona una referencia para conectarlas a través de la red interna del proyecto:</p>
             <div className="mt-2.5 flex flex-col gap-1.5">
               {railwayPending.map((p) => (
                 <div key={p.id} className="flex flex-wrap items-center gap-2">
@@ -1318,7 +1318,7 @@ export default function VariablesTab({
                     <Layers size={24} className="mb-2 opacity-40" />
                     <p className="font-medium text-txt">No hay variables de entorno</p>
                     <p className="mt-1 text-subtle">
-                      Añada una variable o pegue el contenido de un archivo .env en cualquier campo; las variables se separarán automáticamente.
+                      Añade una variable o pega el contenido de un archivo .env en cualquier campo; las variables se separarán automáticamente.
                     </p>
                   </>
                 )}
@@ -1423,7 +1423,7 @@ export default function VariablesTab({
             <div className="rounded-xl border border-line bg-surface p-3.5 text-xs">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-1">
                 <span className="font-semibold text-sub">Referencias del proyecto</span>
-                <span className="text-xs text-subtle">Seleccione una para copiarla en formato {'${{...}}'}</span>
+                <span className="text-xs text-subtle">Selecciona una para copiarla en formato {'${{...}}'}</span>
               </div>
               <div className="flex flex-col gap-2.5">
                 {references.map((ref) => (

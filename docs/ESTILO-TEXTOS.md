@@ -1,9 +1,11 @@
-# Guía de estilo de textos de Skyway (registro profesional)
+# Guía de estilo de textos de Skyway (registro profesional, con tuteo)
 
-Objetivo: que todo texto visible por el usuario suene como el software profesional en español de toda la vida (Microsoft, SAP, Sage, Adobe): claro, neutro, sin gracietas ni metáforas. Se aplica a: textos de interfaz (etiquetas, botones, títulos, descripciones, placeholders, tooltips, estados vacíos, toasts), mensajes de error y de éxito del servidor, avisos y alertas, líneas de registro de despliegue, preguntas y respuestas de la FAQ, respuestas del asistente y textos de diagnóstico. NO se aplica a comentarios del código ni a identificadores.
+Objetivo: que todo texto visible por el usuario suene como el software profesional actual en español (Google, Microsoft, Apple, Adobe): claro, neutro, sin gracietas ni metáforas, y tratando al lector de tú. Se aplica a: textos de interfaz (etiquetas, botones, títulos, descripciones, placeholders, tooltips, estados vacíos, toasts), mensajes de error y de éxito del servidor, avisos y alertas, líneas de registro de despliegue, preguntas y respuestas de la FAQ, respuestas del asistente y textos de diagnóstico. NO se aplica a comentarios del código ni a identificadores.
 
 ## Registro
-- Tratamiento de **usted** en las instrucciones dirigidas al usuario: «Compruebe», «Seleccione», «Revise», «Introduzca», «Vuelva a intentarlo». Nunca «tú» («comprueba», «tu servicio», «pega», «mira»).
+- Tratamiento de **tú** en las instrucciones dirigidas al usuario, con tono profesional y neutro: «Comprueba», «Selecciona», «Revisa», «Introduce», «Vuelve a intentarlo». Nunca «usted» ni sus formas verbales o posesivas dirigidas al lector («compruebe», «pegue», «consulte», «su servicio» si el servicio es del lector).
+- Los posesivos y pronombres de segunda persona («tu», «tus», «te») se usan solo cuando se refieren al lector. Si se refieren a un tercero (el cliente, el buzón, el dominio, el servicio), se mantienen «su», «sus», «le», «les»: «El cliente no tiene acceso a su panel».
+- Los verbos como «puede», «debe» o «tiene» cambian a «puedes», «debes» o «tienes» solo cuando se dirigen al lector. En tercera persona, referidos a otra cosa, no cambian: «El dominio debe apuntar al servidor».
 - Preferir construcciones **impersonales** cuando no haga falta dirigirse al usuario: «No se ha podido cargar el registro», «Se han importado 3 variables», «Es necesario volver a desplegar el servicio», «El servicio no responde».
 - Acciones de botones y menús en **infinitivo**: «Importar», «Guardar cambios», «Volver a desplegar», «Ver registro», «Consultar». Diálogos con «Aceptar» / «Cancelar».
 - Frases completas, con punto final en descripciones y mensajes; sin punto en etiquetas y botones.
@@ -29,10 +31,12 @@ Objetivo: que todo texto visible por el usuario suene como el software profesion
 - ✗ «Línea que lo delata» → ✓ «Detalle del registro»
 - ✗ «He revisado laravel y he encontrado un problema.» → ✓ «Se ha revisado el servicio «laravel» y se ha detectado 1 problema.»
 - ✗ «Cómo arreglarlo» → ✓ «Solución recomendada»
-- ✗ «Mira las últimas líneas del log: ahí está el error de tu app.» → ✓ «Consulte las últimas líneas del registro: contienen el error de la aplicación.»
+- ✗ «Mira las últimas líneas del log: ahí está el error de tu app.» → ✓ «Consulta las últimas líneas del registro: contienen el error de la aplicación.»
 - ✗ «Sin logs todavía…» → ✓ «No hay registros disponibles.»
-- ✗ «Añade una, o pega un .env entero en cualquier campo: se reparte solo.» → ✓ «Añada una variable o pegue el contenido de un archivo .env en cualquier campo; las variables se separarán automáticamente.»
-- ✗ «Pregunta en tus palabras, deja que el asistente revise tus servicios cuando algo falla» → ✓ «Consulte la documentación o solicite una revisión del estado de sus servicios.»
-- ✗ «El asistente es determinista: se basa en la documentación y en lo que ve de tus servicios, sin enviar nada fuera.» → ✓ «Las respuestas se generan a partir de la documentación y del estado de sus servicios. No se envía información a terceros.»
-- ✗ «Variables: 2 pendientes de valor (A, B): rellénalas en la pestaña Variables.» → ✓ «Variables: 2 pendientes de valor (A, B). Complete su valor en la pestaña «Variables».»
+- ✗ «Añade una, o pega un .env entero en cualquier campo: se reparte solo.» → ✓ «Añade una variable o pega el contenido de un archivo .env en cualquier campo; las variables se separarán automáticamente.»
+- ✗ «Pregunta en tus palabras, deja que el asistente revise tus servicios cuando algo falla» → ✓ «Consulta la documentación o solicita una revisión del estado de tus servicios.»
+- ✗ «El asistente es determinista: se basa en la documentación y en lo que ve de tus servicios, sin enviar nada fuera.» → ✓ «Las respuestas se generan a partir de la documentación y del estado de tus servicios. No se envía información a terceros.»
+- ✗ «Variables: 2 pendientes de valor (A, B): rellénalas en la pestaña Variables.» → ✓ «Variables: 2 pendientes de valor (A, B). Completa su valor en la pestaña «Variables».»
 - ✗ «Te avisamos por la campana» → ✓ «Se ha creado un aviso en el panel de notificaciones.»
+- ✓ «Revisa el token en Ajustes → Correo (Mailway).» · «Espera 15 minutos antes de volver a intentarlo.» · «Tu sesión ha caducado. Inicia sesión de nuevo.»
+- ✓ «El buzón está suspendido. Reactívalo antes de crear contraseñas de aplicación.» · «El cliente no tiene acceso a su panel.» (el «su» es del cliente: no cambia)

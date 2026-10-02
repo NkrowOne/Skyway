@@ -140,7 +140,7 @@ export default function AccountPage() {
         icon={<Fingerprint size={15} />}
         iconClass="text-acc-soft"
         title="Passkeys"
-        description="Inicie sesión con la huella, el rostro o el PIN del dispositivo."
+        description="Inicia sesión con la huella, el rostro o el PIN del dispositivo."
         aside={
           passkeysSupported() ? (
             <Button size="sm" onClick={() => setPkModal(true)}>
@@ -164,7 +164,7 @@ export default function AccountPage() {
           />
         ) : (passkeys.data?.passkeys ?? []).length === 0 ? (
           <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
-            {passkeys.isLoading ? 'Cargando…' : 'Todavía no hay passkeys. Añada una para iniciar sesión sin contraseña.'}
+            {passkeys.isLoading ? 'Cargando…' : 'Todavía no hay passkeys. Añade una para iniciar sesión sin contraseña.'}
           </p>
         ) : (
           <div className="flex flex-col gap-2">
@@ -191,7 +191,7 @@ export default function AccountPage() {
         )}
         <p className="mt-3 text-xs text-subtle">
           Cada passkey queda vinculada al dominio en el que se creó (por ejemplo, <span className="font-mono">localhost</span> mediante túnel SSH,
-          o el dominio público). Si cambia de dominio, registre una nueva desde él.
+          o el dominio público). Si cambias de dominio, registra una nueva desde él.
         </p>
       </Section>
 
@@ -199,7 +199,7 @@ export default function AccountPage() {
         icon={<Bot size={15} />}
         iconClass="text-info"
         title="Tokens de API"
-        description="Para automatizaciones y agentes (Claude, CI/CD). Heredan los permisos de su usuario."
+        description="Para automatizaciones y agentes (Claude, CI/CD). Heredan los permisos de tu usuario."
         aside={
           <Button size="sm" onClick={() => { setNewToken(null); setTokModal(true); }}>
             <Plus size={13} /> Crear token
@@ -217,7 +217,7 @@ export default function AccountPage() {
           />
         ) : (tokens.data?.tokens ?? []).length === 0 ? (
           <p className="rounded-lg border border-dashed border-line bg-bg px-4 py-5 text-center text-xs text-subtle">
-            {tokens.isLoading ? 'Cargando…' : 'No hay tokens. Cree uno para controlar Skyway desde fuera del panel.'}
+            {tokens.isLoading ? 'Cargando…' : 'No hay tokens. Crea uno para controlar Skyway desde fuera del panel.'}
           </p>
         ) : (
           <div className="flex flex-col gap-2">
@@ -317,7 +317,7 @@ export default function AccountPage() {
         {newToken ? (
           <>
             <p className="text-sm text-sub">
-              Copie el token ahora: <strong>no volverá a mostrarse.</strong>
+              Copia el token ahora: <strong>no volverá a mostrarse.</strong>
             </p>
             <div className="mt-3 flex items-center gap-2 rounded-lg border border-line bg-bg px-3 py-2.5">
               <code className="min-w-0 flex-1 break-all font-mono text-xs">{newToken}</code>
@@ -367,7 +367,7 @@ export default function AccountPage() {
         onClose={() => setPkDelete(null)}
         onConfirm={() => pkDelete && removePasskey.mutate(pkDelete.id)}
         title="Eliminar passkey"
-        message={`«${pkDelete?.name}» dejará de ser válida para iniciar sesión. Asegúrese de conservar otra forma de acceso.`}
+        message={`«${pkDelete?.name}» dejará de ser válida para iniciar sesión. Asegúrate de conservar otra forma de acceso.`}
         loading={removePasskey.isPending}
       />
 

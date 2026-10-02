@@ -360,7 +360,7 @@ export default function SettingsPage() {
     setTesting(true);
     try {
       const res = await api.post<{ ok: boolean; channels: string[]; failures: string[] }>('/settings/alerts/test');
-      if (res.failures.length > 0) toast(`Error en: ${res.failures.join(', ')}. Revise la configuración.`, 'err');
+      if (res.failures.length > 0) toast(`Error en: ${res.failures.join(', ')}. Revisa la configuración.`, 'err');
       else toast(`Notificación enviada a: ${res.channels.join(', ')}`, 'ok');
     } catch (err) {
       toast((err as Error).message, 'err');
@@ -415,7 +415,7 @@ export default function SettingsPage() {
               label="Dominio raíz"
               hint={
                 <>
-                  Requiere un registro A comodín <span className="font-mono">*.sudominio</span> apuntando a la IP del servidor.
+                  Requiere un registro A comodín <span className="font-mono">*.tudominio</span> apuntando a la IP del servidor.
                 </>
               }
             >
@@ -439,8 +439,8 @@ export default function SettingsPage() {
                 }
                 hint={
                   serverIpInfo.data?.ip
-                    ? `Detectada: ${serverIpInfo.data.ip}. Indíquela solo si es incorrecta; se utiliza para verificar los DNS.`
-                    : 'No se ha podido detectar automáticamente. Indíquela para verificar los DNS de sus dominios.'
+                    ? `Detectada: ${serverIpInfo.data.ip}. Indícala solo si es incorrecta; se utiliza para verificar los DNS.`
+                    : 'No se ha podido detectar automáticamente. Indícala para verificar los DNS de tus dominios.'
                 }
               >
                 <input
@@ -496,7 +496,7 @@ export default function SettingsPage() {
               <input
                 className="input font-mono text-xs"
                 type="password"
-                placeholder={settings.data?.settings.hasGithubToken ? '••••••••••••  (escriba para reemplazar)' : 'ghp_… o github_pat_…'}
+                placeholder={settings.data?.settings.hasGithubToken ? '••••••••••••  (escribe para reemplazar)' : 'ghp_… o github_pat_…'}
                 value={githubToken}
                 onChange={(e) => {
                   setGithubToken(e.target.value);
@@ -651,17 +651,17 @@ export default function SettingsPage() {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <Field
                   label={<>Token del bot de Telegram {settings.data?.settings.hasTelegramToken && <OkPill label="configurado" />}</>}
-                  hint={settings.data?.settings.hasTelegramToken ? undefined : 'Cree un bot con @BotFather'}
+                  hint={settings.data?.settings.hasTelegramToken ? undefined : 'Crea un bot con @BotFather'}
                 >
                   <input
                     className="input font-mono text-xs"
                     type="password"
-                    placeholder={settings.data?.settings.hasTelegramToken ? '••••••••  (escriba para reemplazar)' : '123456:ABC…'}
+                    placeholder={settings.data?.settings.hasTelegramToken ? '••••••••  (escribe para reemplazar)' : '123456:ABC…'}
                     value={telegramToken}
                     onChange={(e) => setTelegramToken(e.target.value)}
                   />
                 </Field>
-                <Field label="Chat ID de Telegram" hint="Su ID o el de un grupo (@userinfobot)">
+                <Field label="Chat ID de Telegram" hint="Tu ID o el de un grupo (@userinfobot)">
                   <input
                     className="input font-mono text-xs"
                     placeholder="-100123456789"
@@ -795,7 +795,7 @@ export default function SettingsPage() {
           />
         ) : (sysBackups.data?.backups.length ?? 0) === 0 ? (
           <p className="rounded-lg border border-dashed border-line px-3.5 py-4 text-center text-xs text-subtle">
-            Todavía no hay copias. La primera se creará esta madrugada; también puede pulsar «Crear ahora».
+            Todavía no hay copias. La primera se creará esta madrugada; también puedes pulsar «Crear ahora».
           </p>
         ) : (
           <div className="overflow-hidden rounded-lg border border-line">
@@ -836,7 +836,7 @@ export default function SettingsPage() {
             Cómo restaurar
           </summary>
           <p className="details-body mt-1.5 text-xs leading-relaxed text-subtle">
-            Para restaurar el panel, sustituya <span className="font-mono">/data/skyway.db</span> por la copia y reinicie el servicio.
+            Para restaurar el panel, sustituye <span className="font-mono">/data/skyway.db</span> por la copia y reinicia el servicio.
           </p>
         </details>
       </SettingsSection>
@@ -846,7 +846,7 @@ export default function SettingsPage() {
         onClose={() => setBackupToDelete(null)}
         onConfirm={() => backupToDelete && deleteSysBackup.mutate(backupToDelete.file)}
         title="Eliminar copia"
-        message={`Se eliminará «${backupToDelete?.file ?? ''}». Si no la ha descargado, no quedará ninguna copia.`}
+        message={`Se eliminará «${backupToDelete?.file ?? ''}». Si no la has descargado, no quedará ninguna copia.`}
         loading={deleteSysBackup.isPending}
       />
 

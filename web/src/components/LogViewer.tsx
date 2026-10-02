@@ -1414,7 +1414,7 @@ function LogViewerImpl({
         copiedTimer.current = window.setTimeout(() => setCopied(false), 1400);
         toast(`Se han copiado ${NF.format(count)} líneas al portapapeles.`, 'ok');
       } else {
-        toast('No se ha podido copiar al portapapeles. Seleccione el texto y cópielo manualmente.', 'err');
+        toast('No se ha podido copiar al portapapeles. Selecciona el texto y cópialo manualmente.', 'err');
       }
     });
   };

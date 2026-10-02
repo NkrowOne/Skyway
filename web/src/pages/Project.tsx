@@ -652,7 +652,7 @@ export default function ProjectPage() {
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
             <span className="flex min-w-0 flex-1 items-center gap-2 text-acc-soft">
               <FileText size={15} className="shrink-0" />
-              Proyecto importado de Railway. Consulte el informe con los comandos de copia de datos y los pasos pendientes.
+              Proyecto importado de Railway. Consulta el informe con los comandos de copia de datos y los pasos pendientes.
             </span>
             <span className="flex shrink-0 items-center gap-1">
               <Button size="sm" variant="secondary" onClick={() => setReportOpen(true)}>
@@ -762,7 +762,7 @@ export default function ProjectPage() {
               <path d="M30 27h16M17 37h28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
             </svg>
             <p className="max-w-sm text-sm text-sub">
-              Este proyecto está vacío. Despliegue un repositorio de GitHub, una aplicación completa
+              Este proyecto está vacío. Despliega un repositorio de GitHub, una aplicación completa
               (Supabase, WordPress, etc.) o una base de datos.
             </p>
             <Button onClick={() => setNewOpen(true)}>
@@ -807,11 +807,11 @@ export default function ProjectPage() {
           <p className="mt-5 hidden text-xs text-subtle drawer:block">
             {selected ? (
               <>
-                Pulse <kbd className="kbd">esc</kbd> para cerrar el panel · <kbd className="kbd">{CMD_K_LABEL}</kbd> para buscar
+                Pulsa <kbd className="kbd">esc</kbd> para cerrar el panel · <kbd className="kbd">{CMD_K_LABEL}</kbd> para buscar
               </>
             ) : (
               <>
-                Abra un servicio para desplegar, ver el registro y editar variables · <kbd className="kbd">{CMD_K_LABEL}</kbd> para buscar
+                Abre un servicio para desplegar, ver el registro y editar variables · <kbd className="kbd">{CMD_K_LABEL}</kbd> para buscar
               </>
             )}
           </p>

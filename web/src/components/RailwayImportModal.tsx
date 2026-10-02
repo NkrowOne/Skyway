@@ -216,7 +216,7 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
       const res = await api.post<{ projects: RailwayProject[] }>('/import/railway/projects', { token });
       setProjects(res.projects);
       setStep('pick');
-      if (res.projects.length === 0) toast('El token es válido, pero no se ha encontrado ningún proyecto. Puede indicar el ID del proyecto manualmente.', 'info');
+      if (res.projects.length === 0) toast('El token es válido, pero no se ha encontrado ningún proyecto. Puedes indicar el ID del proyecto manualmente.', 'info');
     } catch (err) {
       toast((err as Error).message, 'err');
     } finally {
@@ -278,7 +278,7 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
           <div className="flex items-start gap-3 rounded-lg border border-line bg-surface2 p-3 text-xs text-sub">
             <TrainFront size={16} className="mt-0.5 shrink-0 text-acc" />
             <p>
-              Skyway leerá sus proyectos mediante la API oficial de Railway y recreará los servicios, las variables (las referencias{' '}
+              Skyway leerá tus proyectos mediante la API oficial de Railway y recreará los servicios, las variables (las referencias{' '}
               <span className="font-mono text-info">{'${{Servicio.VAR}}'}</span> funcionan igual), los dominios propios y los
               volúmenes. El token se utiliza solo durante la importación y <strong className="text-txt">no se guarda</strong>.
             </p>

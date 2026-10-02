@@ -198,7 +198,7 @@ export default function MailModal({
         compact
         icon={<Mail />}
         title="El correo no está incluido en el plan"
-        description="El plan de la cuenta de este proyecto no incluye el módulo «Correo». Póngase en contacto con el administrador de la plataforma para activarlo."
+        description="El plan de la cuenta de este proyecto no incluye el módulo «Correo». Ponte en contacto con el administrador de la plataforma para activarlo."
       />
     );
   } else if (!data.configured) {
@@ -209,7 +209,7 @@ export default function MailModal({
         title="El correo no está configurado"
         description={
           data.isAdmin
-            ? 'Conecte Skyway con su instancia de Mailway para crear dominios de correo y buzones desde los proyectos.'
+            ? 'Conecta Skyway con tu instancia de Mailway para crear dominios de correo y buzones desde los proyectos.'
             : 'Un administrador de la plataforma debe conectar el servicio de correo antes de utilizarlo.'
         }
         action={
@@ -234,7 +234,7 @@ export default function MailModal({
             compact
             icon={<Mail />}
             title="El correo no está activado en este proyecto"
-            description="Solicite su activación al propietario de la cuenta o a un administrador."
+            description="Solicita su activación al propietario de la cuenta o a un administrador."
           />
         )}
       </>
@@ -410,7 +410,7 @@ export default function MailModal({
         onConfirm={() => unlink.mutate()}
         loading={unlink.isPending}
         title="Desactivar el correo del proyecto"
-        message="El proyecto dejará de estar vinculado a su cliente de correo. Los dominios, buzones y mensajes se conservan en Mailway y el correo sigue funcionando; solo deja de gestionarse desde Skyway. Si vuelve a activar el correo más adelante, podrá recuperar este mismo cliente con sus dominios y buzones."
+        message="El proyecto dejará de estar vinculado a su cliente de correo. Los dominios, buzones y mensajes se conservan en Mailway y el correo sigue funcionando; solo deja de gestionarse desde Skyway. Si vuelves a activar el correo más adelante, podrás recuperar este mismo cliente con sus dominios y buzones."
         confirmLabel="Desactivar correo"
         confirmVariant="secondary"
       />
@@ -526,7 +526,7 @@ function ActivateForm({
       }}
     >
       <p className="text-sm leading-relaxed text-sub">
-        Al activar el correo se crea en Mailway un cliente para este proyecto. Después podrá añadir sus dominios, crear buzones y
+        Al activar el correo se crea en Mailway un cliente para este proyecto. Después podrás añadir tus dominios, crear buzones y
         conectarlos a los servicios.
       </p>
 
@@ -536,7 +536,7 @@ function ActivateForm({
 
       {previous && !previous.available && (
         <p className="rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
-          {previous.reason ?? `No es posible recuperar el cliente anterior «${previous.clientName}».`} Si crea un cliente nuevo,
+          {previous.reason ?? `No es posible recuperar el cliente anterior «${previous.clientName}».`} Si creas un cliente nuevo,
           los dominios del cliente anterior no se podrán añadir de nuevo mientras sigan dados de alta en Mailway.
         </p>
       )}
@@ -577,7 +577,7 @@ function ActivateForm({
             <input
               className="input"
               type="email"
-              placeholder="contacto@suempresa.com"
+              placeholder="contacto@tuempresa.com"
               value={contactEmail}
               onChange={(e) => setContactEmail(e.target.value)}
             />
@@ -586,7 +586,7 @@ function ActivateForm({
       ) : (
         <Field label="Cliente de Mailway" hint="Los clientes ya vinculados a otro proyecto o integración no se pueden seleccionar.">
           <select className="input" value={clientId} onChange={(e) => setClientId(e.target.value)}>
-            <option value="">Seleccione un cliente…</option>
+            <option value="">Selecciona un cliente…</option>
             {clients.map((c) => (
               <option key={c.id} value={c.id} disabled={!c.available}>
                 {c.name}
@@ -631,7 +631,7 @@ function DomainsTab({
     onSuccess: (res) => {
       setDomain('');
       onInvalidate();
-      toast(`Dominio ${res.domain.domain} añadido. Cree sus registros DNS para verificarlo.`, 'ok');
+      toast(`Dominio ${res.domain.domain} añadido. Crea sus registros DNS para verificarlo.`, 'ok');
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -647,7 +647,7 @@ function DomainsTab({
       >
         <input
           className="input min-w-0 font-mono text-xs max-sm:h-11 sm:flex-1"
-          placeholder="suempresa.com"
+          placeholder="tuempresa.com"
           value={domain}
           onChange={(e) => setDomain(e.target.value)}
           aria-label="Dominio de correo"
@@ -665,7 +665,7 @@ function DomainsTab({
           className="rounded-lg border border-dashed border-line"
           icon={<Globe />}
           title="Todavía no hay dominios"
-          description="Añada el dominio con el que se enviará y recibirá el correo, por ejemplo suempresa.com."
+          description="Añade el dominio con el que se enviará y recibirá el correo, por ejemplo tuempresa.com."
         />
       ) : (
         domains.map((d) => (
@@ -762,8 +762,8 @@ function DomainCard({
       {domain.ownershipPending && (
         <div className="border-t border-line/60 px-3.5 py-2.5 text-xs text-sub">
           <p>
-            Antes de crear buzones es necesario comprobar que el dominio es suyo: apunte el registro MX a este servidor de correo o
-            añada el siguiente registro en el proveedor de DNS del dominio y pulse «Verificar ahora».
+            Antes de crear buzones es necesario comprobar que el dominio es tuyo: apunta el registro MX a este servidor de correo o
+            añade el siguiente registro en el proveedor de DNS del dominio y pulsa «Verificar ahora».
           </p>
           {domain.ownershipRecord && (
             <div className="mt-2 flex flex-col gap-1 rounded-md border border-line bg-surface px-3 py-2 sm:flex-row sm:items-start sm:gap-3">
@@ -822,7 +822,7 @@ function DomainCard({
               <p className="text-xs text-subtle">Mailway no ha indicado ningún registro para este dominio.</p>
             ) : (
               <>
-                <p className="mb-2 text-xs text-subtle">Cree estos registros en el proveedor de DNS del dominio.</p>
+                <p className="mb-2 text-xs text-subtle">Crea estos registros en el proveedor de DNS del dominio.</p>
                 <div className="overflow-hidden rounded-md border border-line">
                   {dns.data.records.map((r, i) => (
                     <div
@@ -943,7 +943,7 @@ function CloudflareDialog({
           compact
           icon={<Cloud />}
           title="Cloudflare no está disponible para este dominio"
-          description={p.reason || 'Conecte en Mailway → Conexiones una cuenta de Cloudflare con acceso a la zona del dominio.'}
+          description={p.reason || 'Conecta en Mailway → Conexiones una cuenta de Cloudflare con acceso a la zona del dominio.'}
           action={
             <Button variant="secondary" size="sm" onClick={onClose}>
               Cerrar
@@ -954,7 +954,7 @@ function CloudflareDialog({
         <div className="flex flex-col gap-3">
           <p className="text-xs text-sub">
             Zona <span className="font-mono text-txt">{p.zone?.name ?? domain.domain}</span>
-            {p.account ? ` · cuenta «${p.account.label}»` : ''}. Revise los cambios antes de aplicarlos.
+            {p.account ? ` · cuenta «${p.account.label}»` : ''}. Revisa los cambios antes de aplicarlos.
           </p>
           <div className="flex flex-wrap gap-1.5">
             {(['create', 'update', 'keep', 'conflict'] as const).map((k) => (
@@ -1071,7 +1071,7 @@ function MailboxesTab({
         compact
         className="rounded-lg border border-dashed border-line"
         icon={<Inbox />}
-        title="Añada primero un dominio"
+        title="Añade primero un dominio"
         description="Los buzones se crean sobre un dominio del proyecto."
         action={
           <Button size="sm" variant="secondary" onClick={onGoDomains}>
@@ -1160,7 +1160,7 @@ function MailboxesTab({
         </form>
       ) : (
         <p className="rounded-lg border border-line bg-bg px-3 py-2.5 text-xs text-sub">
-          Solo el propietario de la cuenta o un administrador puede crear buzones. Desde aquí puede enviar a cada titular el enlace de
+          Solo el propietario de la cuenta o un administrador puede crear buzones. Desde aquí puedes enviar a cada titular el enlace de
           configuración de su buzón.
         </p>
       )}
@@ -1171,7 +1171,7 @@ function MailboxesTab({
           className="rounded-lg border border-dashed border-line"
           icon={<Inbox />}
           title="Todavía no hay buzones"
-          description="Cree el primer buzón del proyecto, por ejemplo info o contacto."
+          description="Crea el primer buzón del proyecto, por ejemplo info o contacto."
         />
       ) : (
         <div className="rounded-lg border border-line">
@@ -1296,7 +1296,7 @@ function MailboxRow({
       {linkUrl && (
         <div className="mt-2 rounded-md border border-line bg-surface px-3 py-2">
           <p className="text-xs text-subtle">
-            Envíe este enlace al titular del buzón para que configure el correo en sus dispositivos. No incluye la contraseña.
+            Envía este enlace al titular del buzón para que configure el correo en sus dispositivos. No incluye la contraseña.
           </p>
           <div className="mt-1 flex items-center gap-1">
             <span className="min-w-0 flex-1 truncate font-mono text-xs text-txt">{linkUrl}</span>
@@ -1334,7 +1334,7 @@ function SecretPanel({ projectId, secret, onDismiss }: { projectId: string; secr
       <p className="text-sm font-medium text-txt">
         {secret.reason === 'created' ? 'Buzón creado' : 'Contraseña restablecida'}: <span className="font-mono">{secret.email}</span>
       </p>
-      <p className="mt-0.5 text-xs text-sub">Copie la contraseña ahora: no se volverá a mostrar.</p>
+      <p className="mt-0.5 text-xs text-sub">Copia la contraseña ahora: no se volverá a mostrar.</p>
       <div className="mt-2 flex items-center gap-1 rounded-md border border-line bg-surface px-3 py-2">
         <span className="min-w-0 flex-1 break-all font-mono text-sm text-txt">{secret.password}</span>
         <CopyButton value={secret.password} title="Copiar contraseña" />
@@ -1342,7 +1342,7 @@ function SecretPanel({ projectId, secret, onDismiss }: { projectId: string; secr
       {url ? (
         <div className="mt-2">
           <p className="text-xs text-subtle">
-            Enlace de configuración (incluye la contraseña; envíelo solo al titular del buzón):
+            Enlace de configuración (incluye la contraseña; envíalo solo al titular del buzón):
           </p>
           <div className="mt-1 flex items-center gap-1 rounded-md border border-line bg-surface px-3 py-2">
             <span className="min-w-0 flex-1 truncate font-mono text-xs text-txt">{url}</span>
@@ -1445,7 +1445,7 @@ function ConnectTab({
         className="rounded-lg border border-dashed border-line"
         icon={<Plug />}
         title="No hay servicios a los que conectar el correo"
-        description="Cree en este proyecto un servicio de repositorio o de imagen Docker."
+        description="Crea en este proyecto un servicio de repositorio o de imagen Docker."
       />
     );
   }
@@ -1455,7 +1455,7 @@ function ConnectTab({
         compact
         className="rounded-lg border border-dashed border-line"
         icon={<Inbox />}
-        title="Cree primero un buzón remitente"
+        title="Crea primero un buzón remitente"
         description="El servicio enviará el correo desde uno de los buzones del proyecto."
         action={
           <Button size="sm" variant="secondary" onClick={onGoMailboxes}>
@@ -1545,7 +1545,7 @@ function ConnectTab({
                 {i < result.keys.length - 1 ? ', ' : '.'}
               </span>
             ))}{' '}
-            Los valores no se muestran aquí; puede consultarlos en la pestaña «Variables» del servicio.
+            Los valores no se muestran aquí; puedes consultarlos en la pestaña «Variables» del servicio.
           </p>
           {result.revoked > 0 && <p className="mt-1">Se ha revocado la credencial que el servicio tenía antes.</p>}
           <p className="mt-1">
@@ -1569,7 +1569,7 @@ function ConnectTab({
             <KeyRound size={13} /> Credenciales de envío vigentes
           </p>
           <p className="mt-0.5 text-xs text-subtle">
-            Contraseñas de aplicación y claves de API del cliente de correo. Revoque las que ya no se utilicen: dejan de funcionar al
+            Contraseñas de aplicación y claves de API del cliente de correo. Revoca las que ya no se utilicen: dejan de funcionar al
             instante.
           </p>
           <div className="mt-2 rounded-lg border border-line">

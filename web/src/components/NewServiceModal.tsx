@@ -679,7 +679,7 @@ export default function NewServiceModal({
           }}
           className="space-y-4"
         >
-          <Field label="Imagen" hint="De Docker Hub, ghcr.io, etc. Indique la etiqueta si no desea usar :latest">
+          <Field label="Imagen" hint="De Docker Hub, ghcr.io, etc. Indica la etiqueta si no quieres usar :latest">
             <div className="relative">
               <input
                 className="input pr-10 font-mono"
@@ -736,7 +736,7 @@ export default function NewServiceModal({
           {hasSources ? (
             <Field
               label="Cuenta de GitHub"
-              hint="Seleccione el repositorio de la cuenta conectada; «URL manual» clona con el token global del servidor"
+              hint="Selecciona el repositorio de la cuenta conectada; «URL manual» clona con el token global del servidor"
             >
               <GithubSourceSelect
                 sources={sources}
@@ -769,7 +769,7 @@ export default function NewServiceModal({
           )}
 
           {source.kind !== 'none' ? (
-            <Field label="Repositorio" hint={selectedRepo ? undefined : 'Seleccione un repositorio de la cuenta conectada'}>
+            <Field label="Repositorio" hint={selectedRepo ? undefined : 'Selecciona un repositorio de la cuenta conectada'}>
               <GithubRepoPicker
                 source={source}
                 selected={selectedRepo}
@@ -783,7 +783,7 @@ export default function NewServiceModal({
           ) : (
             <Field
               label="Repositorio"
-              hint="URL completa o formato abreviado owner/repo. Para repositorios privados, conecte una cuenta de GitHub o configure el token en Ajustes."
+              hint="URL completa o formato abreviado owner/repo. Para repositorios privados, conecta una cuenta de GitHub o configura el token en Ajustes."
             >
               {/* type="text" y no "url" a propósito: el atajo «owner/repo» es
                   válido aquí y el navegador lo rechazaría como URL. */}
@@ -841,7 +841,7 @@ export default function NewServiceModal({
               )}
               {needs.data && !needs.isFetching && depGroups.length === 0 && needs.data.missing.length === 0 && (
                 <p className="mt-1.5 text-subtle">
-                  No se han detectado bases de datos ni variables de ejemplo. Si las necesita, podrás conectarlas desde
+                  No se han detectado bases de datos ni variables de ejemplo. Si las necesitas, podrás conectarlas desde
                   Variables.
                 </p>
               )}

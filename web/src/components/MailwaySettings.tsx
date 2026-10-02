@@ -138,11 +138,11 @@ export default function MailwaySettings() {
       />
       <ol className="list-decimal space-y-1 rounded-lg border border-line bg-bg py-3 pl-8 pr-3.5 text-xs leading-5 text-sub">
         <li>
-          En Mailway → <span className="font-medium text-txt">Conexiones → Tokens de gestión</span>, cree un token de administrador
-          y péguelo aquí.
+          En Mailway → <span className="font-medium text-txt">Conexiones → Tokens de gestión</span>, crea un token de administrador
+          y pégalo aquí.
         </li>
-        <li>Indique la URL pública del panel de Mailway o, si lo despliega este servidor, seleccione su servicio.</li>
-        <li>Pulse «Probar conexión» y guarde. El botón «Correo» de cada proyecto quedará disponible.</li>
+        <li>Indica la URL pública del panel de Mailway o, si lo despliega este servidor, selecciona su servicio.</li>
+        <li>Pulsa «Probar conexión» y guarda. El botón «Correo» de cada proyecto quedará disponible.</li>
       </ol>
 
       <Field
@@ -182,7 +182,7 @@ export default function MailwaySettings() {
             className="input font-mono text-xs"
             type="url"
             inputMode="url"
-            placeholder="https://panel.suempresa.com"
+            placeholder="https://panel.tuempresa.com"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
           />
@@ -192,7 +192,7 @@ export default function MailwaySettings() {
             className="input font-mono text-xs"
             type="password"
             autoComplete="off"
-            placeholder={cfg.hasToken ? '•••• (escriba para reemplazar)' : 'mwt_…'}
+            placeholder={cfg.hasToken ? '•••• (escribe para reemplazar)' : 'mwt_…'}
             value={token}
             onChange={(e) => {
               setToken(e.target.value);

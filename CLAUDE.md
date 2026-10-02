@@ -54,7 +54,7 @@ Si arreglas un fallo con una prueba que lo reproduce, mejor.
 - **Idioma**: código, comentarios, mensajes de UI y de error en **español**.
   Los comentarios explican el *porqué*, no el *qué*.
 - **Registro de los textos de usuario**: profesional y neutro, como el software
-  de empresa en español (tratamiento de usted, construcciones impersonales,
+  actual en español (tuteo, construcciones impersonales cuando encajen,
   botones en infinitivo, sin coloquialismos ni metáforas ni humor). La guía
   completa, con terminología y ejemplos, está en
   **[docs/ESTILO-TEXTOS.md](docs/ESTILO-TEXTOS.md)**; se aplica a interfaz,

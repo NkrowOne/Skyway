@@ -109,7 +109,7 @@ export default function DataMigrationModal({
       if (streamRef.current === es) streamRef.current = null;
       es.close();
       if (final === 'success') toast('Se han copiado los datos', 'ok');
-      else if (final === 'failed') toast('La copia de datos ha fallado. Consulte el registro.', 'err');
+      else if (final === 'failed') toast('La copia de datos ha fallado. Consulta el registro.', 'err');
     });
     es.onerror = () => {
       // El servidor cierra el stream al terminar y eso también dispara onerror;
@@ -194,7 +194,7 @@ export default function DataMigrationModal({
     <Modal open={open} onClose={() => { if (!running) onClose(); }} title={`Copiar datos a «${serviceName}»`} wide>
       {!supported ? (
         <p className="rounded-lg border border-line bg-bg px-3.5 py-3 text-xs text-sub">
-          La copia de datos de este motor todavía no está disponible desde el panel. Utilice las herramientas del propio motor
+          La copia de datos de este motor todavía no está disponible desde el panel. Utiliza las herramientas del propio motor
           o el comando del informe de importación.
         </p>
       ) : (
@@ -285,7 +285,7 @@ export default function DataMigrationModal({
                 onRetry={streamLost ? attach : undefined}
                 statusNote={
                   streamLost
-                    ? 'Se ha perdido la conexión con el servidor; el registro puede estar incompleto. Vuelva a conectar para continuar.'
+                    ? 'Se ha perdido la conexión con el servidor; el registro puede estar incompleto. Vuelve a conectar para continuar.'
                     : lines.length >= MAX_LINES
                       ? `Se muestran las últimas ${MAX_LINES} líneas; el registro completo está disponible en la descarga.`
                       : null

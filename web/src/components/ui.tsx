@@ -858,7 +858,7 @@ export function Modal({
         {confirmandoCierre && (
           <div className="overlay-in absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-2xl bg-surface/95 p-6 text-center backdrop-blur-sm">
             <p className="text-base font-semibold">Hay cambios sin guardar</p>
-            <p className="max-w-xs text-xs leading-5 text-sub">Si cierra ahora, los cambios se perderán.</p>
+            <p className="max-w-xs text-xs leading-5 text-sub">Si cierras ahora, los cambios se perderán.</p>
             <div className="mt-1 flex gap-2">
               <Button variant="ghost" size="sm" onClick={() => setConfirmandoCierre(false)}>
                 Seguir editando

@@ -24,7 +24,7 @@ function RecoveryModal({ open, onClose, onPasskey }: { open: boolean; onClose: (
               <Fingerprint size={14} className="text-acc-soft" />
               Acceso con passkey
             </p>
-            <p className="mt-1">Si registró una passkey, inicie sesión con ella y establezca una contraseña nueva en «Seguridad».</p>
+            <p className="mt-1">Si registraste una passkey, inicia sesión con ella y establece una contraseña nueva en «Seguridad».</p>
             <Button
               size="sm"
               variant="secondary"
@@ -44,7 +44,7 @@ function RecoveryModal({ open, onClose, onPasskey }: { open: boolean; onClose: (
             Otro administrador
           </p>
           <p className="mt-1">
-            Otro administrador puede establecerle una contraseña nueva en <span className="text-txt">Usuarios → su cuenta → Nueva contraseña</span>.
+            Otro administrador puede establecerte una contraseña nueva en <span className="text-txt">Usuarios → tu cuenta → Nueva contraseña</span>.
             Las sesiones anteriores se invalidan de inmediato.
           </p>
         </div>
@@ -67,7 +67,7 @@ function RecoveryModal({ open, onClose, onPasskey }: { open: boolean; onClose: (
         </div>
         <p className="flex items-center gap-1.5 border-t border-line pt-3 text-xs text-subtle">
           <KeyRound size={12} className="shrink-0" />
-          Skyway no envía correos de restablecimiento: nadie puede solicitar un restablecimiento en su nombre desde el exterior.
+          Skyway no envía correos de restablecimiento: nadie puede solicitar un restablecimiento en tu nombre desde el exterior.
         </p>
       </div>
     </Modal>

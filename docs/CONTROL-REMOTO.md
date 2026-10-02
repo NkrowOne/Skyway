@@ -99,7 +99,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 
 # Añadir un dominio, ver sus registros DNS y verificarlo
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"domain":"suempresa.com"}' "$BASE/api/projects/PROJ_ID/mail/domains"
+  -d '{"domain":"tuempresa.com"}' "$BASE/api/projects/PROJ_ID/mail/domains"
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/dns"
 curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/verify"
 
