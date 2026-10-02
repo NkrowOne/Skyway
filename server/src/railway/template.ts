@@ -295,7 +295,7 @@ function minioForBucket(
     infra: true,
     notes: [
       `Sustituye al bucket «${bucketName}» de Railway: almacenamiento local en un volumen, con el bucket «${bucket}» ya creado.`,
-      'La consola web de MinIO escucha en el puerto 9001; para acceder a ella, publique ese puerto o añada un dominio en Ajustes.',
+      'La consola web de MinIO escucha en el puerto 9001; para acceder a ella, publica ese puerto o añade un dominio en Ajustes.',
     ],
   };
 }
@@ -368,7 +368,7 @@ export async function planRailwayTemplate(
       }
     }
     if (pendientes.length > 0) {
-      notes.push(`Variables que la plantilla deja sin valor: ${pendientes.join(', ')}. Complete su valor antes de desplegar.`);
+      notes.push(`Variables que la plantilla deja sin valor: ${pendientes.join(', ')}. Completa su valor antes de desplegar.`);
     }
     if (repo) {
       notes.push('Servicio de repositorio: Skyway lo construirá con su Dockerfile o con Nixpacks, no con el builder de Railway.');
@@ -428,7 +428,7 @@ export async function planRailwayTemplate(
   if (publicos.length > 1) {
     for (const s of publicos.slice(1)) s.public = false;
     warnings.push(
-      `La plantilla expone ${publicos.length} servicios a internet; en Skyway el dominio se asigna a «${publicos[0].templateName}». Añada un dominio a los demás en Ajustes.`,
+      `La plantilla expone ${publicos.length} servicios a internet; en Skyway el dominio se asigna a «${publicos[0].templateName}». Añade un dominio a los demás en Ajustes.`,
     );
   }
 

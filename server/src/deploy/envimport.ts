@@ -412,8 +412,8 @@ export function finalizeEnvImport(
       explanation:
         `${aplicacion} ` +
         (pendientes.length > 0
-          ? 'Las variables pendientes tienen un valor vacío o de ejemplo en el repositorio. Complete su valor en la pestaña «Variables» del servicio y vuelva a desplegar.'
-          : 'Puede revisarlas en la pestaña «Variables» del servicio.'),
+          ? 'Las variables pendientes tienen un valor vacío o de ejemplo en el repositorio. Completa su valor en la pestaña «Variables» del servicio y vuelve a desplegar.'
+          : 'Puedes revisarlas en la pestaña «Variables» del servicio.'),
       dedupeKey: `env_imported:${service.id}`,
     });
   }
@@ -439,7 +439,7 @@ function logEnvImport(report: EnvImportReport, log: (line: string) => void): voi
   if (pendientes.length > 0) {
     log(
       `Variables: ${pendientes.length} ${pendientes.length === 1 ? 'pendiente' : 'pendientes'} de valor (${listaClaves(pendientes)}). ` +
-        'Complete su valor en la pestaña «Variables».',
+        'Completa su valor en la pestaña «Variables».',
     );
   }
   if (ignoradas.length > 0) {

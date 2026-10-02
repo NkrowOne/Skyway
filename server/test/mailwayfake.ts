@@ -337,7 +337,7 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
   }
   if (path === '/api/apikeys' && method === 'POST') {
     const name = typeof b.name === 'string' ? b.name.trim() : '';
-    if (!name) return badRequest('Indique un nombre para la clave.');
+    if (!name) return badRequest('Indica un nombre para la clave.');
     if (name.length > 60) return badRequest('El nombre admite como máximo 60 caracteres.');
     const sender = mw.mailboxes.find((x) => x.id === b.senderMailboxId);
     if (!sender) return json(404, { error: 'Buzón no encontrado.' });

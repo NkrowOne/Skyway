@@ -502,7 +502,7 @@ async function requestMailway<T>(path: string, opts: RequestOpts = {}): Promise<
       throw new MailwayError(
         'network',
         `No se ha podido conectar con Mailway (${originOf(base)}${code ? `, ${code}` : ''}). ` +
-          'Compruebe la dirección configurada y que el panel esté en funcionamiento.',
+          'Comprueba la dirección configurada y que el panel esté en funcionamiento.',
       );
     }
     return parseResponse<T>(res, opts.headers ? 'el token de Traefik' : 'el token de gestión');
@@ -529,7 +529,7 @@ async function parseResponse<T>(res: Response, credencial: string): Promise<T> {
     const destino = res.headers.get('location');
     throw new MailwayError(
       'http',
-      `La dirección de Mailway redirige${destino ? ` a ${destino}` : ''}. Indique la dirección definitiva en Ajustes → Correo (Mailway).`,
+      `La dirección de Mailway redirige${destino ? ` a ${destino}` : ''}. Indica la dirección definitiva en Ajustes → Correo (Mailway).`,
       502,
     );
   }
@@ -539,7 +539,7 @@ async function parseResponse<T>(res: Response, credencial: string): Promise<T> {
     const motivo = mensaje && code && MOTIVOS_401.has(code) ? ` Motivo: ${/[.!?]$/.test(mensaje) ? mensaje : `${mensaje}.`}` : '';
     throw new MailwayError(
       'auth',
-      `Mailway ha rechazado ${credencial} (401).${motivo} Revise el token en Ajustes → Correo (Mailway).`,
+      `Mailway ha rechazado ${credencial} (401).${motivo} Revisa el token en Ajustes → Correo (Mailway).`,
       401,
       code,
     );
@@ -550,7 +550,7 @@ async function parseResponse<T>(res: Response, credencial: string): Promise<T> {
   if (body === undefined || typeof body !== 'object' || body === null) {
     throw new MailwayError(
       'http',
-      'La respuesta de Mailway no es válida. Compruebe que la dirección configurada corresponde al panel de Mailway.',
+      'La respuesta de Mailway no es válida. Comprueba que la dirección configurada corresponde al panel de Mailway.',
       res.status,
     );
   }
@@ -582,7 +582,7 @@ export async function getInfo(opts: { config?: MailwayConfig; fresh?: boolean } 
   if (!opts.config && !opts.fresh && infoCache && Date.now() - infoCache.at < INFO_TTL_MS) return infoCache.info;
   const info = await mailwayFetch<MailwayInfo>('/api/integrations/info', { config: opts.config });
   if (!info || typeof info !== 'object' || !info.user) {
-    throw new MailwayError('http', 'La respuesta de Mailway no es válida. Compruebe que la versión de Mailway admite integraciones.');
+    throw new MailwayError('http', 'La respuesta de Mailway no es válida. Comprueba que la versión de Mailway admite integraciones.');
   }
   if (!opts.config) {
     infoCache = { info, at: Date.now() };

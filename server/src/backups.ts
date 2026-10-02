@@ -167,7 +167,7 @@ export async function createBackup(project: ProjectRow, service: ServiceRow): Pr
   const st = fs.statSync(full);
   if (st.size < 30) {
     fs.rmSync(full, { force: true });
-    throw new Error('El volcado ha resultado vacío: compruebe el estado de la base de datos.');
+    throw new Error('El volcado ha resultado vacío: comprueba el estado de la base de datos.');
   }
   return { file, size: st.size, createdAt: st.mtimeMs };
 }

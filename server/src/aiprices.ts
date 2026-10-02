@@ -384,7 +384,7 @@ export async function syncAiModelPrices(trigger: 'manual' | 'auto' = 'manual'): 
   if (fxRate == null) {
     return remember({
       ...base,
-      error: `No se pudo obtener el cambio USD→${cfg.currency} y no hay ninguno guardado. Establézcalo manualmente para poder convertir la tarifa de Google.`,
+      error: `No se pudo obtener el cambio USD→${cfg.currency} y no hay ninguno guardado. Establécelo manualmente para poder convertir la tarifa de Google.`,
     });
   }
   base.fxRate = fxRate;

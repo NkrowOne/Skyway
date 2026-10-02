@@ -344,7 +344,7 @@ async function runDeployment(deploymentId: string): Promise<void> {
       throw new Error(`El workspace «${workspace.name}» está suspendido: los despliegues están detenidos hasta reactivarlo.`);
     }
     if (!(await dockerAvailable(true))) {
-      throw new Error('Docker no está disponible. Compruebe que el daemon está en ejecución y que Skyway tiene acceso a /var/run/docker.sock');
+      throw new Error('Docker no está disponible. Comprueba que el daemon está en ejecución y que Skyway tiene acceso a /var/run/docker.sock');
     }
 
     log(`Despliegue de "${service.name}" en el proyecto "${project.name}" (${deployment.trigger})`);
@@ -360,7 +360,7 @@ async function runDeployment(deploymentId: string): Promise<void> {
       image = deployment.image_tag;
       log(`Rollback a la imagen ${image}`);
       if (!(await imageExists(image))) {
-        throw new Error(`La imagen ${image} ya no existe en el servidor (se purgó). Realice un despliegue normal.`);
+        throw new Error(`La imagen ${image} ya no existe en el servidor (se purgó). Realiza un despliegue normal.`);
       }
       // Volver a una versión anterior debe volver también a SU config-as-code:
       // si aquel commit declaraba otro comando de arranque, es el que toca.
@@ -605,17 +605,17 @@ async function assertPostgresVolumeCompatible(
   if (rootMajor === null && nestedMajor === null && newLayoutMajors.length === 0) return;
 
   const migra =
-    'Para cambiar de versión mayor: cree una copia de seguridad con la versión actual de los datos, cambie la versión en Ajustes, elimine el servicio marcando «borrar también el volumen», vuelva a crearlo y restaure la copia. Para empezar de cero es suficiente con eliminar el servicio con su volumen.';
+    'Para cambiar de versión mayor: crea una copia de seguridad con la versión actual de los datos, cambia la versión en Ajustes, elimina el servicio marcando «borrar también el volumen», vuelve a crearlo y restaura la copia. Para empezar de cero es suficiente con eliminar el servicio con su volumen.';
 
   if (rootMajor !== null) {
     if (target >= 18) {
       throw new Error(
-        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} con el formato antiguo (anterior a 18) y la imagen solicitada es ${version}: Postgres 18+ no puede abrirlos directamente. Mantenga la versión «${rootMajor}-alpine» en Ajustes para seguir funcionando, o migre los datos. ${migra}`,
+        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} con el formato antiguo (anterior a 18) y la imagen solicitada es ${version}: Postgres 18+ no puede abrirlos directamente. Mantén la versión «${rootMajor}-alpine» en Ajustes para seguir funcionando, o migra los datos. ${migra}`,
       );
     }
     if (rootMajor !== target) {
       throw new Error(
-        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} y la imagen solicitada es ${version}: una versión mayor no puede abrir los datos de otra. Vuelva a la versión «${rootMajor}-alpine» o migre los datos. ${migra}`,
+        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} y la imagen solicitada es ${version}: una versión mayor no puede abrir los datos de otra. Vuelve a la versión «${rootMajor}-alpine» o migra los datos. ${migra}`,
       );
     }
     return; // datos y versión coinciden (layout <18): arranque normal
@@ -623,7 +623,7 @@ async function assertPostgresVolumeCompatible(
 
   if (nestedMajor !== null) {
     throw new Error(
-      `El volumen ${volume} contiene los datos de PostgreSQL ${nestedMajor} en el subdirectorio data/ (los escribió un Postgres <18 montado en la ruta de 18+, un estado que esta versión de Skyway ya no produce). Con el servicio detenido, muévalos a la raíz del volumen: docker run --rm -v ${volume}:/v busybox sh -c 'mv /v/data/* /v/ && rmdir /v/data' y utilice la versión «${nestedMajor}-alpine»; o elimine el servicio con su volumen para empezar de cero.`,
+      `El volumen ${volume} contiene los datos de PostgreSQL ${nestedMajor} en el subdirectorio data/ (los escribió un Postgres <18 montado en la ruta de 18+, un estado que esta versión de Skyway ya no produce). Con el servicio detenido, muévelos a la raíz del volumen: docker run --rm -v ${volume}:/v busybox sh -c 'mv /v/data/* /v/ && rmdir /v/data' y utiliza la versión «${nestedMajor}-alpine»; o elimina el servicio con su volumen para empezar de cero.`,
     );
   }
 
@@ -631,7 +631,7 @@ async function assertPostgresVolumeCompatible(
   if (target < 18 || !newLayoutMajors.includes(target)) {
     const found = [...new Set(newLayoutMajors)].join(', ');
     throw new Error(
-      `El volumen ${volume} ya está inicializado con el formato de Postgres 18+ (datos de la versión ${found}) y la imagen solicitada es ${version}. Utilice la versión «${found}-alpine» (o superior con pg_upgrade manual), o migre los datos. ${migra}`,
+      `El volumen ${volume} ya está inicializado con el formato de Postgres 18+ (datos de la versión ${found}) y la imagen solicitada es ${version}. Utiliza la versión «${found}-alpine» (o superior con pg_upgrade manual), o migra los datos. ${migra}`,
     );
   }
 }
@@ -886,7 +886,7 @@ async function reuseBuiltImage(
   }
   log(
     `El commit ${head.slice(0, 7)} ya está construido con esta configuración: se reutiliza la imagen ${previous.image_tag} ` +
-      '(sin clonar ni compilar). Utilice «Reconstruir» para forzar una compilación limpia.',
+      '(sin clonar ni compilar). Utiliza «Reconstruir» para forzar una compilación limpia.',
   );
   return previous;
 }
@@ -1088,7 +1088,7 @@ async function resolveGitPort(
     const detectado = expuestos[0];
     log(
       `Puerto interno detectado a partir del EXPOSE de la imagen: ${detectado} (el valor por defecto era ${configurado}, ` +
-        'sin selección explícita). Se guarda en Ajustes del servicio; modifíquelo si la aplicación escucha en otro puerto.',
+        'sin selección explícita). Se guarda en Ajustes del servicio; modifícalo si la aplicación escucha en otro puerto.',
     );
     // Se persiste para que el panel, las etiquetas de Traefik y los despliegues
     // siguientes cuenten todos lo mismo, y para que esto deje de decidirse solo.
@@ -1099,7 +1099,7 @@ async function resolveGitPort(
   log(
     `⚠ La imagen declara EXPOSE ${expuestos.join(', ')} y el puerto interno del servicio es ${configurado}. Si la ` +
       `aplicación escucha en el puerto que indica la imagen y no en ${configurado}, Traefik enrutará a un puerto sin proceso (502) ` +
-      'aunque el despliegue se considere correcto. Se respeta el puerto configurado: modifíquelo en Ajustes → Puerto interno si es necesario.',
+      'aunque el despliegue se considere correcto. Se respeta el puerto configurado: modifícalo en Ajustes → Puerto interno si es necesario.',
   );
   return configurado;
 }
@@ -1283,7 +1283,7 @@ async function deployContainer(
   const replicas = configuredReplicas(service);
   if (replicas > 1 && (volumes.length > 0 || hostPort)) {
     throw new Error(
-      'Las réplicas requieren un servicio sin volúmenes y sin puerto público: varias copias no pueden compartir el mismo volumen de escritura ni el mismo puerto del host. Elimine esas opciones o vuelva a 1 réplica.',
+      'Las réplicas requieren un servicio sin volúmenes y sin puerto público: varias copias no pueden compartir el mismo volumen de escritura ni el mismo puerto del host. Elimina esas opciones o vuelve a 1 réplica.',
     );
   }
 
@@ -1403,7 +1403,7 @@ async function deployContainer(
         );
       }
       throw new Error(
-        `El contenedor terminó inesperadamente (${err?.message || err}). Consulte el registro del servicio.`,
+        `El contenedor terminó inesperadamente (${err?.message || err}). Consulta el registro del servicio.`,
       );
     }
     if (oldExists) {
@@ -1425,8 +1425,8 @@ async function deployContainer(
           'lo que el dominio responderá 404 y con un certificado que no le corresponde.',
       );
       log(
-        'Si el servicio sirve HTTP, indique su puerto en Ajustes del servicio → Puerto interno y vuelva a desplegar. Si es ' +
-          'un worker sin HTTP, elimine el dominio: no es necesario.',
+        'Si el servicio sirve HTTP, indica su puerto en Ajustes del servicio → Puerto interno y vuelve a desplegar. Si es ' +
+          'un worker sin HTTP, elimina el dominio: no es necesario.',
       );
     } else {
       log(`Dominios activos: ${domains.join(', ')}`);

@@ -65,7 +65,7 @@ export function domainClaimError(domains: Iterable<string>, claim: DomainClaim):
     const otros = serviceIdsForDomain(domain).filter((id) => id !== claim.serviceId);
     if (otros.length > 0) {
       return claim.isAdmin
-        ? `El dominio ${domain} ya está asignado al servicio ${serviceLabel(otros[0])}. Retírelo de ese servicio antes de asignarlo a otro.`
+        ? `El dominio ${domain} ya está asignado al servicio ${serviceLabel(otros[0])}. Retíralo de ese servicio antes de asignarlo a otro.`
         : `El dominio ${domain} ya está asignado a otro servicio. Cada dominio solo puede servir a un servicio.`;
     }
     if (claim.isAdmin) continue;
