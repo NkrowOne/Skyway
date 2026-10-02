@@ -3,7 +3,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { currentUser, requireAdmin, requireAuth } from '../auth';
+import { currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
 import { audit } from '../audit';
 import { config } from '../config';
 import { getSetting, setSetting } from '../db';
@@ -200,8 +200,15 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       }
     });
 
-    /** Descarga un snapshot (para guardarlo fuera del servidor). */
-    secured.get('/api/system/backups/:file/download', { preHandler: requireAdmin }, async (req, reply) => {
+    /**
+     * Descarga un snapshot (para guardarlo fuera del servidor). Exige sesión de
+     * navegador: la copia lleva en claro los secretos que la API nunca
+     * devuelve (el token de Cloudflare del operador, el de Mailway, el de
+     * GitHub…), y un token de API de administrador —el de una automatización o
+     * uno robado— no debe poder llevárselos. Crearla, listarla y borrarla sí
+     * se puede con token: no sacan nada del servidor.
+     */
+    secured.get('/api/system/backups/:file/download', { preHandler: [requireAdmin, requireSession] }, async (req, reply) => {
       const { file } = req.params as { file: string };
       const full = resolveSystemBackupFile(file);
       if (!full) return reply.code(404).send({ error: 'Backup no encontrado' });

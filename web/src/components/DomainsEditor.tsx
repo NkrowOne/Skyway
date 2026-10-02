@@ -90,6 +90,8 @@ function DomainRow({
   tls,
   dns,
   onRemove,
+  onRetryDns,
+  retryingDns,
 }: {
   domain: string;
   serverIp: string | null;
@@ -97,6 +99,9 @@ function DomainRow({
   /** Resultado del DNS automático en Cloudflare del último guardado (solo administrador). */
   dns?: DnsAutoResult;
   onRemove: () => void;
+  /** Repite el DNS automático de este dominio (solo administrador, tras un resultado que no es correcto). */
+  onRetryDns?: () => void;
+  retryingDns?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const check = useQuery({
@@ -164,6 +169,11 @@ function DomainRow({
         <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-sub">
           <DnsAutoChip result={dns} />
           <span className="min-w-0 break-words">{dns.message}</span>
+          {onRetryDns && dns.action !== 'created' && dns.action !== 'kept' && (
+            <Button variant="ghost" size="sm" onClick={onRetryDns} loading={retryingDns} title="Volver a intentar el registro en Cloudflare">
+              <Cloud size={12} /> Reintentar en Cloudflare
+            </Button>
+          )}
         </p>
       )}
       {(expanded || status === 'no_record' || status === 'wrong_ip') && (
@@ -185,12 +195,18 @@ export default function DomainsEditor({
   onChange,
   slug,
   dnsResults,
+  onRetryDns,
+  retryingDns,
 }: {
   domains: string[];
   onChange: (domains: string[]) => void;
   slug: string;
   /** Resultado del DNS automático por dominio, tras guardar (solo lo recibe un administrador). */
   dnsResults?: Record<string, DnsAutoResult>;
+  /** Repite el DNS automático de un dominio ya guardado (solo administrador). */
+  onRetryDns?: (domain: string) => void;
+  /** Dominio cuyo reintento está en curso. */
+  retryingDns?: string | null;
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -268,6 +284,8 @@ export default function DomainsEditor({
               tls={tls}
               dns={dnsResults?.[d]}
               onRemove={() => onChange(domains.filter((x) => x !== d))}
+              onRetryDns={onRetryDns ? () => onRetryDns(d) : undefined}
+              retryingDns={retryingDns === d}
             />
           ))}
         </div>

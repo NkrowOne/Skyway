@@ -1,7 +1,8 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, currentUser, requireAuth } from '../auth';
+import { assertProjectAccess, currentUser, requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
+import { cloudflareConfigurado } from '../cloudflareconfig';
 import { dnsAutomaticoAdmin, dnsSinBase } from '../cloudflaredns';
 import { dbConsoleEngine } from '../dbconsole';
 import { domainClaimError } from '../domainguard';
@@ -717,6 +718,34 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         : dnsSinBase(req, nuevos, found.project.id);
     return { service: { ...updated, config: maskBuildArgs(updated.config) }, needsRedeploy, ...(dns ? { dns } : {}) };
   });
+
+  /**
+   * Repite el DNS automático en Cloudflare de UN dominio del servicio: tras un
+   * error (Cloudflare no respondió a tiempo), un conflicto que el
+   * administrador ha resuelto a mano o una zona que faltaba en su token. Solo
+   * el administrador y nombrando el dominio, que es la misma decisión que
+   * añadirlo: nunca se recorren los dominios del servicio, que pudo poner el
+   * cliente. Como siempre, solo crea lo que falta.
+   */
+  app.post(
+    '/api/services/:id/cloudflare-dns',
+    { preHandler: [requireAdmin, rateLimit({ max: 30, windowMs: 60_000 })] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const found = loadService(id);
+      if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+      const { domain } = z.object({ domain: z.string().trim().toLowerCase().min(1).max(253) }).parse(req.body ?? {});
+      const asignados = ((found.service.config as { domains?: string[] }).domains ?? []).map((d) => d.trim().toLowerCase());
+      if (!asignados.includes(domain)) {
+        return reply.code(404).send({ error: `El dominio ${domain} no está asignado a este servicio. Guarda antes los cambios.` });
+      }
+      if (!cloudflareConfigurado()) {
+        return reply.code(400).send({ error: 'Configura el token de Cloudflare en Ajustes → Cloudflare para crear el registro automáticamente.' });
+      }
+      const dns = await dnsAutomaticoAdmin(req, [domain], { type: 'service', id }, found.project.id);
+      return { dns: dns ?? [] };
+    },
+  );
 
   app.delete('/api/services/:id', async (req, reply) => {
     const { id } = req.params as { id: string };

@@ -43,8 +43,14 @@ export function avisoDnsCorreo(domain: string, cloudflare: MailAutoDnsResult | n
   if (cloudflare) {
     const { applied, errors, skipped } = cloudflare;
     if (errors.length > 0) return { message: `DNS de ${domain} en Cloudflare: ${errors.map((e) => e.error).join(' ')}`, kind: 'err' };
+    // El alta automática solo crea (Mailway 1.1 con `soloCrear`); se cuentan
+    // aparte por si alguna vez llega otra acción, sin darla por creada.
+    const creados = applied.filter((a) => a.action === 'create').length;
+    const otros = applied.length - creados;
     const partes = [
-      applied.length > 0 ? `${plural(applied.length, 'registro creado o ajustado', 'registros creados o ajustados')}` : 'no faltaba ningún registro',
+      creados > 0 ? plural(creados, 'registro creado', 'registros creados') : '',
+      otros > 0 ? plural(otros, 'registro modificado', 'registros modificados') : '',
+      applied.length === 0 ? 'no faltaba ningún registro' : '',
       skipped.length > 0 ? `${plural(skipped.length, 'conflicto', 'conflictos')} sin modificar (${skipped.map((s) => s.name).join(', ')})` : '',
     ].filter(Boolean);
     return { message: `DNS de ${domain} en Cloudflare: ${partes.join('; ')}.`, kind: skipped.length > 0 ? 'info' : 'ok' };

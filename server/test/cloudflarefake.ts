@@ -4,7 +4,11 @@
  * real en lo que usa Skyway: sobre `{success, errors, result, result_info}`,
  * verificación de tokens de usuario y de cuenta (`cfat_`), zonas visibles por
  * token, registros filtrados por nombre exacto y códigos de error (1000 token
- * no válido, 10000 sin permiso, 81053 CNAME que no convive, 81058 idéntico).
+ * no válido en las rutas de verificación, 9109 en las demás —«Invalid access
+ * token» para uno que no existe, «Cannot use the access token from location»
+ * para uno restringido por IP—, 10000 sin permiso, 81053 CNAME que no
+ * convive, 81058 idéntico). Así responde el Cloudflare real a un token
+ * revocado: 401/1000 en `/user/tokens/verify` y 403/9109 en `/zones`.
  *
  * Registra cada petición (método, ruta, consulta, Authorization y cuerpo) y
  * responde 405 a cualquier PUT o PATCH: Skyway nunca debe enviarlos. DELETE
@@ -36,6 +40,8 @@ export interface CfTokenFalso {
   accountId: string;
   zoneIds: string[];
   status: 'active' | 'disabled';
+  /** Restringido a otras IP: Cloudflare rechaza cualquier petición con 403/9109. */
+  ipRestringido?: boolean;
 }
 
 export interface CfLlamada {
@@ -130,7 +136,9 @@ export async function cloudflareFetch(url: URL, init: RequestInit = {}): Promise
 
   const bearer = (headers.get('authorization') ?? '').replace(/^Bearer /, '');
   const token = cf.tokens.get(bearer);
-  if (!token) return fallo(401, 1000, 'Invalid API Token');
+  const verificacion = path === '/user/tokens/verify' || /^\/accounts\/[^/]+\/tokens\/verify$/.test(path);
+  if (!token) return verificacion ? fallo(401, 1000, 'Invalid API Token') : fallo(403, 9109, 'Invalid access token');
+  if (token.ipRestringido) return fallo(403, 9109, 'Cannot use the access token from location: 198.51.100.7');
   const visibles = cf.zones.filter((z) => token.zoneIds.includes(z.id));
   let m: RegExpMatchArray | null;
 

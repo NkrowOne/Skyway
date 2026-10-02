@@ -174,13 +174,20 @@ emparejar los dos paneles (`docs/FUNCIONALIDAD.md` §9).
 Con el token de Cloudflare del operador guardado (Ajustes → Cloudflare), las
 peticiones de un **administrador** que dan de alta dominios nuevos —crear un
 servicio con `domains`, añadirlos con `PATCH /api/services/:id`, una pila o una
-plantilla con `domain`, la importación de Railway— crean el registro A de cada
-uno en su Cloudflare sin pisar nada, y la respuesta trae `dns` con el resultado
-(`created`, `kept`, `conflict`, `skipped` o `error`, con su motivo). Vale igual
-con un token `sky_` de un administrador. Con el token de un propietario o un
-miembro nunca se toca Cloudflare y la respuesta no lleva `dns`; en el correo,
-su alta va con `autoDns: false` y `?soloCliente=1` (`docs/FUNCIONALIDAD.md`
-§7.13).
+plantilla con `domain`, y en la importación de Railway solo los que se indiquen
+en `dnsDomains`— crean el registro A de cada uno en su Cloudflare sin pisar
+nada, y la respuesta trae `dns` con el resultado (`created`, `kept`,
+`conflict`, `skipped` o `error`, con su motivo). Vale igual con un token `sky_`
+de un administrador. Con el token de un propietario o un miembro nunca se toca
+Cloudflare y la respuesta no lleva `dns`; en el correo, su alta va con
+`autoDns: false` y `?soloCliente=1`. El alta de correo de un administrador solo
+pide `autoDns` si Mailway declara `features.cloudflareSoloCrear` (1.1 o
+posterior: solo crea lo que falta); con uno anterior no se pide y
+`cloudflareReason` lo explica (`docs/FUNCIONALIDAD.md` §7.13).
+
+Un dominio que dio `error`, `conflict` o `skipped` se reintenta, ya corregida
+la causa, con `POST /api/services/:id/cloudflare-dns {"domain":"…"}` (solo
+administrador; solo ese dominio y solo si sigue en el servicio).
 
 Al editar un servicio, el registro solo se crea si la petición indica en
 `domainsBase` los dominios de los que parte (los que leyó antes de editar). Así
@@ -203,7 +210,10 @@ cliente no puede asignárselos) hasta que el administrador borra su registro:
 
 Guardar o borrar el token exige sesión de navegador (con un token de API solo
 se consulta, `GET /api/cloudflare/config`, y se prueba,
-`POST /api/cloudflare/test`). Desde la terminal del servidor, el instalador de
+`POST /api/cloudflare/test`). Por lo mismo, descargar una copia de `skyway.db`
+(`GET /api/system/backups/:file/download`), que lleva el token en claro, exige
+sesión de navegador: con un token de API se crea, se lista y se borra, pero no
+se descarga. Desde la terminal del servidor, el instalador de
 Mailway lo deja puesto con el token SOLO por la entrada estándar (un token en
 los argumentos se rechaza sin leer nada); la salida nunca incluye el token:
 

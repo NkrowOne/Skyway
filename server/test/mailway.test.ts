@@ -166,7 +166,7 @@ describe('configuración de Mailway', () => {
   it('probar la conexión informa de la instancia y guarda el token de Traefik', async () => {
     const r = await call('POST', '/api/mailway/test', admin(), {});
     expect(r.status, r.raw).toBe(200);
-    expect(r.json.info).toMatchObject({ version: '1.0.0', brandName: 'Correo Demo', mailHostname: 'mail.example.com', role: 'admin' });
+    expect(r.json.info).toMatchObject({ version: '1.1.0', brandName: 'Correo Demo', mailHostname: 'mail.example.com', role: 'admin' });
     expect(r.json.warnings).toEqual([]);
     expect(r.raw).not.toContain(TRAEFIK_TOKEN);
     expect(getSetting('mailway.traefikToken')).toBe(TRAEFIK_TOKEN);

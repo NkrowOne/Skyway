@@ -88,7 +88,13 @@ export interface MailwayInfo {
   smtp?: MailwayEndpoint;
   submission?: MailwayEndpoint;
   user: MailwayUser;
-  features?: { cloudflare?: boolean; autoconfig?: boolean; portal?: boolean };
+  /**
+   * `cloudflareSoloCrear` (Mailway 1.1+): el alta con `autoDns` y el registro
+   * de marca blanca con `soloCrear` solo crean lo que falta, sin modificar
+   * nada, y la cuenta de Cloudflare de la instancia asociada a un dominio
+   * nunca se usa con `soloCliente`. Sin ella, Skyway no pide el DNS automático.
+   */
+  features?: { cloudflare?: boolean; autoconfig?: boolean; portal?: boolean; cloudflareSoloCrear?: boolean };
   traefik?: { configPath: string; token: string } | null;
 }
 

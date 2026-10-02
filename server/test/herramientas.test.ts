@@ -382,7 +382,7 @@ describe('herramienta mailway: conectar con el token de la entrada estándar', (
     expect(r.code, r.err.join('\n')).toBe(0);
     expect(r.err).toEqual([]);
     expect(r.out).toHaveLength(1);
-    expect(JSON.parse(r.out[0])).toEqual({ ok: true, version: '1.0.0', brandName: 'Correo Demo' });
+    expect(JSON.parse(r.out[0])).toEqual({ ok: true, version: '1.1.0', brandName: 'Correo Demo' });
     expect(r.out[0]).not.toContain(MW_TOKEN);
     expect(r.leerEntrada).toHaveBeenCalledTimes(1);
     // Interna primero (no resuelve fuera de Docker) y después la pública, con el token como Bearer.

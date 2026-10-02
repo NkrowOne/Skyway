@@ -179,19 +179,30 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   nombre de las zonas del operador lo devolvería como «nuevo» y se crearía su
   registro; con ella, un formulario desactualizado conserva los dominios
   actuales (o recibe 409 si también los cambia) y una petición sin base no usa
-  el token. Los nombres creados quedan reservados al proyecto para el que se
-  crearon (`cloudflare_dns_records`, comprobado en `domainClaimError`): el
+  el token. En la importación de Railway solo se procesan los dominios que el
+  administrador marca en la vista previa (`dnsDomains`): los demás los eligió
+  quien los puso en Railway, que no exige demostrar la propiedad. Un comodín
+  que resuelve el nombre hacia otro sitio cuenta como conflicto. Los nombres
+  creados quedan reservados al proyecto para el que se crearon
+  (`cloudflare_dns_records`, comprobado en `domainClaimError`): el
   registro sigue apuntando al servidor aunque el dominio se quite, y otro
   cliente no puede asignárselo hasta que el administrador lo borra en Ajustes →
   Cloudflare (solo si nadie lo usa y nadie lo ha cambiado en Cloudflare). En el
-  correo, Skyway solo pide `autoDns` a Mailway para un administrador; para los
-  demás viaja `autoDns: false` con `?soloCliente=1`, y el registro automático
-  del webmail también es solo del administrador. Como Mailway guarda en el
-  dominio la cuenta con la que aplicó su DNS (también la de la instancia), para
-  quien no es administrador Skyway comprueba antes de pedir el plan o aplicarlo
-  que esa cuenta sea del propio cliente; si no, responde sin llamar a Mailway
-  (defensa propia, independiente de la versión de Mailway). El cliente de Cloudflare no
-  tiene métodos para cambiar registros (solo borra, a petición del
+  correo, Skyway solo pide `autoDns` a Mailway para un administrador y solo si
+  Mailway declara `features.cloudflareSoloCrear` (1.1+: el alta solo crea lo
+  que falta y nunca usa con `soloCliente` la cuenta de la instancia guardada
+  en un dominio); con uno anterior no se pide y se informa. Para los demás
+  viaja `autoDns: false` con `?soloCliente=1`, y el registro automático del
+  webmail también es solo del administrador, con la misma condición. Como
+  Mailway guarda en el dominio la cuenta con la que aplicó su DNS (también la
+  de la instancia), para quien no es administrador Skyway comprueba antes de
+  pedir el plan o aplicarlo que esa cuenta sea del propio cliente; si no,
+  responde sin llamar a Mailway, salvo que el cliente tenga cuentas propias y
+  Mailway declare esa garantía (entonces Mailway ignora la de la instancia y
+  prueba las del cliente). Con un Mailway anterior no se le llama nunca en ese
+  caso. Un dominio que falló se reintenta solo a petición del administrador y
+  nombrando ese dominio (`POST /api/services/:id/cloudflare-dns`). El cliente
+  de Cloudflare no tiene métodos para cambiar registros (solo borra, a petición del
   administrador, uno que creó Skyway sin cambios): lo existente se respeta y un
   conflicto se informa. El token solo viaja en la cabecera `Authorization` a
   `api.cloudflare.com`; los mensajes de error no lo incluyen y la herramienta
@@ -229,10 +240,12 @@ Estos no son defectos, sino consecuencias del propósito de la herramienta
   son dominios públicos y nombres de contenedor, sin secretos.
 - **Token de Cloudflare del operador en claro**: se guarda en `settings`
   (`cloudflare.token`) como el token de Mailway, porque se envía tal cual a
-  Cloudflare; por tanto viaja también en las copias de `skyway.db`. Solo lo
-  escribe un admin con sesión de navegador (o la terminal del servidor), se
-  verifica antes de guardarlo y la API nunca lo devuelve (solo los últimos 4
-  caracteres y las zonas que ve); la auditoría no lo incluye. Recomendación:
+  Cloudflare; por tanto viaja también en las copias de `skyway.db`, cuya
+  descarga exige sesión de navegador de un admin (un token de API de admin
+  puede crear la copia, pero no llevársela). Solo lo escribe un admin con
+  sesión de navegador (o la terminal del servidor), se verifica antes de
+  guardarlo y la API nunca lo devuelve (solo los últimos 4 caracteres y las
+  zonas que ve); la auditoría no lo incluye. Recomendación:
   un token limitado a «Zone · Zone · Read» y «Zone · DNS · Edit» sobre las
   zonas necesarias, nunca la clave global (se rechaza).
 - **Rutas de Mailway sin token**: quitar el token o la dirección deja publicadas

@@ -115,8 +115,9 @@ export default function CloudflareSettings() {
         </li>
         <li>Pégalo aquí, pulsa «Probar» y guarda.</li>
         <li>
-          Cuando un administrador dé de alta un dominio en un servicio, se creará su registro A hacia este servidor (sin proxy).
-          Nunca se modifica un registro que ya exista: los conflictos se informan. Las acciones de los clientes no usan nunca este token.
+          Cuando un administrador dé de alta un dominio en un servicio, se creará su registro A hacia este servidor (sin proxy); en
+          la importación de Railway, solo el de los dominios que marques. Nunca se modifica un registro que ya exista: los
+          conflictos se informan. Las acciones de los clientes no usan nunca este token.
         </li>
       </ol>
 

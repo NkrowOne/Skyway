@@ -33,7 +33,7 @@
 import { FastifyRequest } from 'fastify';
 import { audit } from './audit';
 import { currentUser } from './auth';
-import { CloudflareClient, CloudflareError, CfRegistro, COMENTARIO_SKYWAY, ERRORES_GLOBALES } from './cloudflare';
+import { CloudflareClient, CloudflareError, CfRegistro, CfZona, COMENTARIO_SKYWAY, ERRORES_GLOBALES } from './cloudflare';
 import { anotarErrorCloudflare, tokenCloudflareGuardado } from './cloudflareconfig';
 import {
   deleteCloudflareDnsRecord,
@@ -78,11 +78,60 @@ function describir(registros: CfRegistro[]): string {
   return `${registros.length === 1 ? 'un registro' : 'registros'} ${partes.join(', ')}${resto}`;
 }
 
-/** Nombre del comodín que cubriría al dominio dentro de la zona, si lo hay. */
-function comodinDe(domain: string, zona: string): string | null {
-  if (domain === zona) return null;
-  const padre = domain.slice(domain.indexOf('.') + 1);
-  return padre === zona || padre.endsWith(`.${zona}`) ? `*.${padre}` : null;
+/**
+ * Comodines de la zona que podrían cubrir el dominio, del más cercano
+ * (`*.padre`) al de la propia zona. Por la regla del «encloser» más próximo
+ * (RFC 4592) solo se aplica el más cercano que exista, y solo si el nombre no
+ * tiene ningún registro propio.
+ */
+function comodinesDe(domain: string, zona: string): string[] {
+  if (domain === zona || !domain.endsWith(`.${zona}`)) return [];
+  const out: string[] = [];
+  let padre = domain.slice(domain.indexOf('.') + 1);
+  for (;;) {
+    out.push(`*.${padre}`);
+    if (padre === zona) return out;
+    padre = padre.slice(padre.indexOf('.') + 1);
+  }
+}
+
+/**
+ * Lo que dice el comodín más cercano de un nombre que no tiene ningún
+ * registro: `conflict` si apunta a otro sitio (crear el A cambiaría a dónde va
+ * hoy su tráfico), `kept` si es el del padre y ya apunta aquí, o null si no
+ * hay comodín que lo resuelva y hay que crear el A. Un comodín de un nivel
+ * superior quizá no se aplique (si existe algún nombre intermedio): ante la
+ * duda, si apunta a otro sitio se informa como conflicto, que nunca pisa
+ * nada; si apunta aquí, el A explícito no cambia nada y asegura el nombre.
+ */
+async function segunComodin(
+  cliente: CloudflareClient,
+  zona: CfZona,
+  domain: string,
+  ip: string,
+  apuntaAqui: (r: CfRegistro) => boolean,
+): Promise<ResultadoDns | null> {
+  const comodines = comodinesDe(domain, zona.name);
+  for (let i = 0; i < comodines.length; i++) {
+    const registros = await cliente.listRecords(zona.id, { name: comodines[i] });
+    if (registros.length === 0) continue;
+    const web = registros.filter((r) => DIRECCION.has(r.type));
+    const ajenos = web.filter((r) => !apuntaAqui(r));
+    if (ajenos.length > 0) {
+      return {
+        domain,
+        action: 'conflict',
+        message:
+          `Ese nombre lo resuelve hoy el comodín ${comodines[i]} (${describir(ajenos)}) y un registro A cambiaría a dónde va su tráfico: no se ha modificado nada. ` +
+          `Si el dominio debe servirlo este servidor, crea a mano un registro A hacia ${ip}.`,
+      };
+    }
+    if (web.length > 0 && i === 0) {
+      return { domain, action: 'kept', message: `Lo cubre el registro comodín ${comodines[i]}, que ya apunta a este servidor.` };
+    }
+    return null;
+  }
+  return null;
 }
 
 async function unDominio(cliente: CloudflareClient, domain: string, ip: string, projectId: string | null): Promise<ResultadoDns> {
@@ -95,7 +144,8 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string, 
     };
   }
   const apuntaAqui = (r: CfRegistro) => r.type === 'A' && r.content.trim() === ip;
-  const existentes = (await cliente.listRecords(zona.id, { name: domain })).filter((r) => DIRECCION.has(r.type));
+  const todos = await cliente.listRecords(zona.id, { name: domain });
+  const existentes = todos.filter((r) => DIRECCION.has(r.type));
   const ajenos = existentes.filter((r) => !apuntaAqui(r));
   if (ajenos.length > 0) {
     return {
@@ -114,14 +164,14 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string, 
       message: `El registro A hacia ${ip} ya existía${propio.proxied ? ' (con el proxy de Cloudflare activado)' : ''}.`,
     };
   }
-  // Un comodín que ya apunta aquí cubre el nombre: crear otro registro solo
-  // llenaría la zona de duplicados (p. ej., los subdominios del dominio raíz).
-  const comodin = comodinDe(domain, zona.name);
-  if (comodin) {
-    const delComodin = (await cliente.listRecords(zona.id, { name: comodin })).filter((r) => DIRECCION.has(r.type));
-    if (delComodin.length > 0 && delComodin.every(apuntaAqui)) {
-      return { domain, action: 'kept', message: `Lo cubre el registro comodín ${comodin}, que ya apunta a este servidor.` };
-    }
+  // Un comodín solo resuelve un nombre que no tiene ningún registro propio:
+  // con un TXT o un MX, el nombre no tiene dirección y hay que crear el A.
+  // Sin ninguno, el comodín decide: si ya apunta aquí, crear otro registro
+  // solo llenaría la zona de duplicados; si apunta a otro sitio, crearlo
+  // cambiaría el destino de un nombre que ya está en uso.
+  if (todos.length === 0) {
+    const porComodin = await segunComodin(cliente, zona, domain, ip, apuntaAqui);
+    if (porComodin) return porComodin;
   }
   try {
     const creado = await cliente.createRecord(zona.id, {

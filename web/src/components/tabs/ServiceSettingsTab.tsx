@@ -280,6 +280,19 @@ export default function ServiceSettingsTab({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Reintento del DNS automático de un dominio ya guardado (solo llega a
+  // mostrarse a un administrador, que es quien recibe resultados de DNS).
+  const retryDns = useMutation({
+    mutationFn: (domain: string) => api.post<{ dns: DnsAutoResult[] }>(`/services/${service.id}/cloudflare-dns`, { domain }),
+    onSuccess: (data) => {
+      const aviso = avisoDns(data.dns);
+      if (aviso) toast(aviso.message, aviso.kind);
+      setDnsResults((prev) => ({ ...prev, ...Object.fromEntries(data.dns.map((r) => [r.domain, r])) }));
+      for (const r of data.dns) if (r.action === 'created') queryClient.invalidateQueries({ queryKey: ['domainCheck', r.domain] });
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
   const remove = useMutation({
     mutationFn: () => api.del(`/services/${service.id}?volumes=${deleteVolumes}`),
     onSuccess: () => {
@@ -521,7 +534,14 @@ export default function ServiceSettingsTab({
                 el puerto de escucha en el campo anterior o retira el dominio si el servicio no atiende HTTP.
               </p>
             )}
-            <DomainsEditor domains={form.domains} onChange={(d) => set('domains', d)} slug={service.slug} dnsResults={dnsResults} />
+            <DomainsEditor
+              domains={form.domains}
+              onChange={(d) => set('domains', d)}
+              slug={service.slug}
+              dnsResults={dnsResults}
+              onRetryDns={(d) => retryDns.mutate(d)}
+              retryingDns={retryDns.isPending ? retryDns.variables : null}
+            />
           </SectionCard>
         )}
 

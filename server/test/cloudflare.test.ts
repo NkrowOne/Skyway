@@ -24,6 +24,7 @@ import {
   createProject,
   createUser,
   createWorkspaceRow,
+  deleteCloudflareDnsRecord,
   getMailwayLink,
   getSetting,
   getUserByEmail,
@@ -38,6 +39,26 @@ import type { ProjectRow, UserRow } from '../src/types';
 import { hashPassword, randomToken } from '../src/util';
 import { CF_HOST, cf, cloudflareFetch, registro, reiniciarCloudflare, zona } from './cloudflarefake';
 import { MW_BASE, MW_TOKEN, fakeFetch, mw } from './mailwayfake';
+
+/**
+ * La importación de Railway necesita su API: la prueba la sustituye por una
+ * que crea el proyecto con los dominios que «trae» de Railway.
+ */
+const importacion = vi.hoisted(() => ({ dominios: [] as string[] }));
+vi.mock('../src/railway/importer', async (original) => {
+  const real = await original<typeof import('../src/railway/importer')>();
+  const db = await import('../src/db');
+  return {
+    ...real,
+    runRailwayImport: async (_token: string, _id: string, _env: string, opts: { projectName?: string }) => {
+      const name = opts.projectName ?? 'importado';
+      const project = db.createProject(name, `${name}-${Date.now()}`, null, null);
+      db.createService(project.id, 'web', 'web', 'image', { image: 'nginx', port: 80, domains: importacion.dominios } as never);
+      const report = { railwayProject: 'De Railway', environment: 'production', created: [{ name: 'web', kind: 'image', notes: [] }] };
+      return { project, report };
+    },
+  };
+});
 
 // El cuerpo de una respuesta HTTP es frontera: se inspecciona sin tipar.
 type Json = any;
@@ -266,6 +287,20 @@ describe('Ajustes → Cloudflare: el token del administrador', () => {
   });
 });
 
+describe('la copia de skyway.db, que lleva el token, no sale con un token de API', () => {
+  it('un token de API de administrador crea la copia pero no la descarga; la sesión de navegador sí', async () => {
+    let r = await call('POST', '/api/system/backups', adminBearer, {});
+    expect(r.status, r.raw).toBe(201);
+    const fichero = r.json.backup.file as string;
+    r = await call('GET', `/api/system/backups/${fichero}/download`, adminBearer);
+    expect(r.status).toBe(403);
+    expect(r.json.error).toMatch(/sesión de navegador/);
+    expect(r.raw).not.toContain(TOKEN_OP);
+    r = await call('GET', `/api/system/backups/${fichero}/download`, admin());
+    expect(r.status).toBe(200);
+  });
+});
+
 // ======================= herramienta de terminal =======================
 
 describe('herramienta cloudflare.js conectar', () => {
@@ -429,6 +464,41 @@ describe('DNS automático de los dominios de servicios: administrador', () => {
     expect(cf.calls).toEqual([]);
   });
 
+  it('un comodín solo cuenta si resuelve el nombre: si apunta a otro sitio es un conflicto, y con otros registros en el nombre no se aplica', async () => {
+    const op = cf.zones.find((z) => z.name === 'operador.com')!;
+    const extra = [
+      registro(op, { type: 'CNAME', name: '*.ext.operador.com', content: 'proyecto.up.railway.app' }),
+      registro(op, { type: 'TXT', name: 'verif.apps.operador.com', content: 'google-site-verification=abc' }),
+      registro(op, { type: 'TXT', name: '*.solotxt.operador.com', content: 'v=spf1 -all' }),
+      registro(op, { type: 'A', name: '*.lejos.operador.com', content: '198.51.100.20' }),
+    ];
+    try {
+      const r = await aplicarDnsDominios(TOKEN_OP, [
+        'app.ext.operador.com',
+        'verif.apps.operador.com',
+        'x.solotxt.operador.com',
+        'a.b.lejos.operador.com',
+      ]);
+      expect(r.map((d) => [d.domain, d.action])).toEqual([
+        // El comodín lo manda a Railway: crear el A le cambiaría el destino.
+        ['app.ext.operador.com', 'conflict'],
+        // Con un TXT propio, el comodín (que apunta aquí) no se le aplica.
+        ['verif.apps.operador.com', 'created'],
+        // El comodín más cercano no tiene dirección: se crea el A.
+        ['x.solotxt.operador.com', 'created'],
+        // Un comodín de más arriba que apunta a otro sitio: ante la duda, conflicto.
+        ['a.b.lejos.operador.com', 'conflict'],
+      ]);
+      expect(r[0].message).toMatch(/comodín \*\.ext\.operador\.com \(un registro CNAME hacia proyecto\.up\.railway\.app\).*no se ha modificado nada/);
+      expect(r[3].message).toMatch(/\*\.lejos\.operador\.com/);
+      expect(escrituras().map((c) => (c.body as Json).name)).toEqual(['verif.apps.operador.com', 'x.solotxt.operador.com']);
+    } finally {
+      const quitar = new Set([...extra.map((x) => x.id)]);
+      cf.records = cf.records.filter((x) => !quitar.has(x.id) && !['verif.apps.operador.com', 'x.solotxt.operador.com'].includes(x.name));
+      for (const d of ['verif.apps.operador.com', 'x.solotxt.operador.com']) deleteCloudflareDnsRecord(d);
+    }
+  });
+
   it('con un token de API de administrador también (el que usan el instalador y las automatizaciones)', async () => {
     const actual = (await call('GET', `/api/services/${servicioId}`, admin())).json.service.config.domains as string[];
     const r = await call('PATCH', `/api/services/${servicioId}`, adminBearer, {
@@ -481,12 +551,79 @@ describe('DNS automático de los dominios de servicios: administrador', () => {
       expect(r.status, r.raw).toBe(201);
       expect(r.json.dns.map((d: Json) => d.action)).toEqual(['error', 'error']);
       expect(r.json.dns[1].message).toMatch(/no es válido/);
-      // Con el token rechazado no se insiste con el segundo dominio.
+      // Con el token rechazado (Cloudflare responde 403/9109 en /zones) no se
+      // insiste con el segundo dominio.
       expect(cf.calls).toHaveLength(1);
+      expect(cf.calls[0].path).toBe('/zones');
       const g = await call('GET', '/api/cloudflare/config', admin());
       expect(g.json.lastError.message).toMatch(/no es válido/);
     } finally {
       cf.tokens.set(TOKEN_OP, guardado);
+    }
+  });
+
+  it('un dominio que falló se puede reintentar: solo el administrador, solo ese dominio y solo si sigue en el servicio', async () => {
+    const guardado = cf.tokens.get(TOKEN_OP)!;
+    cf.tokens.delete(TOKEN_OP);
+    let id = '';
+    try {
+      const r = await call('POST', `/api/projects/${projAdmin.id}/services`, admin(), {
+        type: 'image',
+        name: 'reintento',
+        image: 'nginx',
+        port: 80,
+        domains: ['reintento.operador.com', 'reintento2.operador.com'],
+      });
+      expect(r.status, r.raw).toBe(201);
+      expect(r.json.dns.map((d: Json) => d.action)).toEqual(['error', 'error']);
+      id = r.json.service.id;
+    } finally {
+      cf.tokens.set(TOKEN_OP, guardado);
+    }
+    const url = `/api/services/${id}/cloudflare-dns`;
+    cf.calls = [];
+    for (const quien of [ownerA, memberA]) {
+      const r = await call('POST', url, quien, { domain: 'reintento.operador.com' });
+      expect(r.status).toBe(403);
+    }
+    let r = await call('POST', url, admin(), { domain: 'otro-que-no-esta.operador.com' });
+    expect(r.status).toBe(404);
+    expect(cf.calls).toEqual([]);
+
+    r = await call('POST', url, adminBearer, { domain: ' Reintento.operador.com ' });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.dns).toEqual([expect.objectContaining({ domain: 'reintento.operador.com', action: 'created' })]);
+    // Solo el dominio pedido: el otro del servicio no se toca.
+    expect(escrituras().map((c) => (c.body as Json).name)).toEqual(['reintento.operador.com']);
+    r = await call('POST', url, admin(), { domain: 'reintento.operador.com' });
+    expect(r.json.dns).toEqual([expect.objectContaining({ action: 'kept' })]);
+
+    setSetting('cloudflare.token', null);
+    try {
+      r = await call('POST', url, admin(), { domain: 'reintento2.operador.com' });
+      expect(r.status).toBe(400);
+      expect(r.json.error).toMatch(/Ajustes → Cloudflare/);
+    } finally {
+      setSetting('cloudflare.token', TOKEN_OP);
+    }
+  });
+
+  it('con el token restringido a otras IP: corta el resto, lo explica y Ajustes lo muestra', async () => {
+    cf.tokens.get(TOKEN_OP)!.ipRestringido = true;
+    try {
+      const r = await aplicarDnsDominios(TOKEN_OP, ['ip1.operador.com', 'ip2.operador.com']);
+      expect(r.map((d) => d.action)).toEqual(['error', 'error']);
+      expect(r[1].message).toMatch(/restringido a otras direcciones IP/);
+      expect(cf.calls).toHaveLength(1);
+      const g = await call('GET', '/api/cloudflare/config', admin());
+      expect(g.json.lastError.message).toMatch(/restringido a otras direcciones IP/);
+      // «Probar» da el mismo motivo, no el de un token sin permisos.
+      const p = await call('POST', '/api/cloudflare/test', admin(), {});
+      expect(p.status).toBe(400);
+      expect(p.json.error).toMatch(/restringido a otras direcciones IP/);
+    } finally {
+      cf.tokens.get(TOKEN_OP)!.ipRestringido = false;
+      await call('POST', '/api/cloudflare/test', admin(), {});
     }
   });
 
@@ -520,6 +657,36 @@ describe('DNS automático de los dominios de servicios: administrador', () => {
     } finally {
       setSetting('cloudflare.token', TOKEN_OP);
     }
+  });
+});
+
+// ======================= importación de Railway =======================
+
+describe('importación de Railway: solo los dominios que el administrador marca', () => {
+  it('sin marcar ninguno no se llama a Cloudflare; marcados, solo los del proyecto importado', async () => {
+    // Quien añadió dominios al proyecto en Railway pudo poner un nombre libre
+    // de las zonas del operador (Railway no exige demostrar la propiedad).
+    importacion.dominios = ['rw-login.operador.com', 'tienda-rw.operador.com', 'ocupado.operador.com'];
+    const cuerpo = { token: 'token-de-railway-0123', projectId: 'rw1', environmentId: 'env1' };
+    let r = await call('POST', '/api/import/railway/run', admin(), { ...cuerpo, projectName: 'rw-uno' });
+    expect(r.status, r.raw).toBe(201);
+    expect(r.json.dns).toBeUndefined();
+    expect(cf.calls).toEqual([]);
+
+    importacion.dominios = ['rw-login2.operador.com', 'tienda2-rw.operador.com', 'ocupado.operador.com'];
+    r = await call('POST', '/api/import/railway/run', admin(), {
+      ...cuerpo,
+      projectName: 'rw-dos',
+      // Uno que no está en el proyecto importado no se configura aunque se envíe.
+      dnsDomains: ['tienda2-rw.operador.com', 'OCUPADO.operador.com', 'inventado.operador.com'],
+    });
+    expect(r.status, r.raw).toBe(201);
+    expect(r.json.dns.map((d: Json) => [d.domain, d.action])).toEqual([
+      ['tienda2-rw.operador.com', 'created'],
+      ['ocupado.operador.com', 'conflict'],
+    ]);
+    expect(escrituras().map((c) => (c.body as Json).name)).toEqual(['tienda2-rw.operador.com']);
+    expect(cf.calls.some((c) => JSON.stringify(c).includes('rw-login2') || JSON.stringify(c).includes('inventado'))).toBe(false);
   });
 });
 
@@ -616,16 +783,13 @@ describe('correo: el DNS automático de Mailway solo lo pide el administrador', 
     );
   });
 
-  it('un dominio que el administrador asoció a una cuenta de la instancia: el cliente no pide ni el plan ni la aplicación', async () => {
+  it('un dominio que el administrador asoció a una cuenta de la instancia: sin cuenta propia, el cliente no pide ni el plan ni la aplicación', async () => {
     const clientId = getMailwayLink(projA.id)!.client_id;
     const dom = mw.domains.find((d) => d.domain === 'correo-admin.com')!;
     const url = `/api/projects/${projA.id}/mail/domains/${dom.id}/cloudflare`;
     const planes = () => mw.calls.filter((c) => c.path.startsWith(`/api/domains/${dom.id}/cloudflare`));
     // Como deja Mailway el dominio tras aplicar el DNS automático del administrador.
-    mw.cloudflareAccounts = [
-      { id: 'cfa_instancia', clientId: null, label: 'Operador' },
-      { id: 'cfa_cliente', clientId, label: 'Del cliente' },
-    ];
+    mw.cloudflareAccounts = [{ id: 'cfa_instancia', clientId: null, label: 'Operador' }];
     dom.cloudflareAccountId = 'cfa_instancia';
     try {
       for (const quien of [ownerA, memberA]) {
@@ -633,7 +797,7 @@ describe('correo: el DNS automático de Mailway solo lo pide el administrador', 
         const r = await call('GET', url, quien);
         expect(r.status, r.raw).toBe(200);
         expect(r.json).toMatchObject({ available: false, account: null, zone: null, changes: [] });
-        expect(r.json.reason).toMatch(/lo gestiona el administrador de la plataforma/);
+        expect(r.json.reason).toMatch(/lo gestiona el administrador de la plataforma.*Conecta en Mailway una cuenta de Cloudflare del cliente/);
         expect(planes()).toEqual([]);
         // Solo se han consultado las cuentas del propio cliente.
         expect(mw.calls.filter((c) => c.path.startsWith('/api/cloudflare/accounts')).map((c) => c.path)).toEqual([
@@ -653,6 +817,7 @@ describe('correo: el DNS automático de Mailway solo lo pide el administrador', 
       expect(planes().map((c) => c.path)).toEqual([`/api/domains/${dom.id}/cloudflare`]);
 
       // Asociado a una cuenta del propio cliente, el cliente la usa (con soloCliente).
+      mw.cloudflareAccounts.push({ id: 'cfa_cliente', clientId, label: 'Del cliente' });
       dom.cloudflareAccountId = 'cfa_cliente';
       mw.calls = [];
       r = await call('GET', url, ownerA);
@@ -663,6 +828,95 @@ describe('correo: el DNS automático de Mailway solo lo pide el administrador', 
       dom.cloudflareAccountId = null;
       mw.cloudflareAccounts = [];
     }
+  });
+
+  it('con una cuenta propia conectada, el cliente deja de estar bloqueado solo si Mailway garantiza no usar la de la instancia', async () => {
+    const clientId = getMailwayLink(projA.id)!.client_id;
+    const dom = mw.domains.find((d) => d.domain === 'correo-admin.com')!;
+    const url = `/api/projects/${projA.id}/mail/domains/${dom.id}/cloudflare`;
+    const planes = () => mw.calls.filter((c) => c.path.startsWith(`/api/domains/${dom.id}/cloudflare`));
+    mw.cloudflareAccounts = [
+      { id: 'cfa_instancia', clientId: null, label: 'Operador' },
+      { id: 'cfa_cliente', clientId, label: 'Del cliente' },
+    ];
+    dom.cloudflareAccountId = 'cfa_instancia';
+    try {
+      // Mailway 1.1 (`cloudflareSoloCrear`): con soloCliente ignora la cuenta
+      // de la instancia y prueba las del cliente, así que se le llama.
+      mw.calls = [];
+      let r = await call('GET', url, ownerA);
+      expect(r.status, r.raw).toBe(200);
+      expect(r.json.available).toBe(true);
+      r = await call('POST', `${url}/apply`, ownerA, {});
+      expect(r.status, r.raw).toBe(200);
+      expect(planes().map((c) => c.path)).toEqual([
+        `/api/domains/${dom.id}/cloudflare?soloCliente=1`,
+        `/api/domains/${dom.id}/cloudflare/apply?soloCliente=1`,
+      ]);
+
+      // Un Mailway anterior usaría la cuenta guardada del operador también con
+      // soloCliente: no se le llama, y el mensaje no promete que conectar una
+      // cuenta propia lo resuelva.
+      mw.infoOverride = { version: '1.0.0', features: { cloudflare: true, autoconfig: true, portal: true } };
+      await call('POST', '/api/mailway/test', admin(), {});
+      mw.calls = [];
+      r = await call('GET', url, ownerA);
+      expect(r.status, r.raw).toBe(200);
+      expect(r.json.available).toBe(false);
+      expect(r.json.reason).toMatch(/Solicita al administrador que aplique los cambios/);
+      expect(r.json.reason).not.toMatch(/Conecta/);
+      r = await call('POST', `${url}/apply`, ownerA, {});
+      expect(r.status).toBe(409);
+      expect(planes()).toEqual([]);
+    } finally {
+      mw.infoOverride = {};
+      await call('POST', '/api/mailway/test', admin(), {});
+      dom.cloudflareAccountId = null;
+      mw.cloudflareAccounts = [];
+    }
+  });
+
+  it('con un Mailway anterior a la 1.1 (sin cloudflareSoloCrear) no se pide el DNS automático y se explica; sin Cloudflare en Mailway, ni se pide ni se avisa', async () => {
+    const altas = () => mw.calls.filter((c) => c.method === 'POST' && c.path.startsWith('/api/domains'));
+    const registrosWebmail = () => mw.calls.filter((c) => c.method === 'POST' && /^\/api\/whitelabel\/domains\/[^/]+\/cloudflare/.test(c.path));
+    const idDe = async (d: string) =>
+      ((await call('GET', `/api/projects/${projA.id}/mail`, admin())).json.summary.domains as Json[]).find((x) => x.domain === d).id as string;
+    try {
+      mw.infoOverride = { version: '1.0.0', features: { cloudflare: true, autoconfig: true, portal: true } };
+      await call('POST', '/api/mailway/test', admin(), {});
+      mw.calls = [];
+      let r = await call('POST', `/api/projects/${projA.id}/mail/domains`, admin(), { domain: 'correo-antiguo.com' });
+      expect(r.status, r.raw).toBe(201);
+      expect(r.json.cloudflare).toBeNull();
+      expect(r.json.cloudflareReason).toMatch(/versión de Mailway conectada \(1\.0\.0\) no garantiza.*1\.1 o posterior.*Configurar en Cloudflare/);
+      expect(altas().map((c) => (c.body as Json).autoDns)).toEqual([false]);
+
+      // El registro del webmail tampoco se pide (Mailway le quitaría el proxy a uno existente).
+      mw.calls = [];
+      r = await call('POST', `/api/projects/${projA.id}/mail/domains/${await idDe('correo-antiguo.com')}/webmail`, admin());
+      expect(r.status, r.raw).toBe(201);
+      expect(r.json.cloudflare).toBeNull();
+      expect(r.json.cloudflareReason).toMatch(/no garantiza.*Crear registro en Cloudflare/);
+      expect(registrosWebmail()).toEqual([]);
+
+      // Sin ninguna cuenta de Cloudflare en Mailway: no se pide y no hay aviso que remita a otra pantalla.
+      mw.infoOverride = { features: { cloudflare: false, autoconfig: true, portal: true, cloudflareSoloCrear: true } };
+      await call('POST', '/api/mailway/test', admin(), {});
+      mw.calls = [];
+      r = await call('POST', `/api/projects/${projA.id}/mail/domains`, admin(), { domain: 'correo-sin-cf.com' });
+      expect(r.status, r.raw).toBe(201);
+      expect(r.json.cloudflare).toBeNull();
+      expect(r.json.cloudflareReason).toBeNull();
+      expect(altas().map((c) => (c.body as Json).autoDns)).toEqual([false]);
+    } finally {
+      mw.infoOverride = {};
+      await call('POST', '/api/mailway/test', admin(), {});
+    }
+    // De vuelta a Mailway 1.1: el administrador lo pide.
+    mw.calls = [];
+    const r = await call('POST', `/api/projects/${projA.id}/mail/domains`, admin(), { domain: 'correo-nuevo.com' });
+    expect(r.status, r.raw).toBe(201);
+    expect(altas().map((c) => (c.body as Json).autoDns)).toEqual([true]);
   });
 
   it('el webmail con dominio propio: el registro se crea solo cuando lo configura el administrador', async () => {

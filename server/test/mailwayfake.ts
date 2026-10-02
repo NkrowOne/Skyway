@@ -245,8 +245,11 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
   let m: RegExpMatchArray | null;
 
   if (path === '/api/integrations/info' && method === 'GET') {
+    // Como Mailway 1.1: declara `cloudflareSoloCrear` (el DNS automático solo
+    // crea lo que falta). Para simular uno anterior, `mw.infoOverride` con
+    // otra versión y sin esa bandera.
     return json(200, {
-      version: '1.0.0',
+      version: '1.1.0',
       brandName: 'Correo Demo',
       mailHostname: 'mail.example.com',
       webmailUrl: 'https://webmail.example.com',
@@ -255,7 +258,7 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
       smtp: { host: 'mail.example.com', port: 465, security: 'SSL/TLS' },
       submission: { host: 'mail.example.com', port: 587, security: 'STARTTLS' },
       user: { id: 'usr_1', email: 'admin@mail.example.com', name: 'Admin', role: mw.role, clientId: null },
-      features: { cloudflare: true, autoconfig: true, portal: true },
+      features: { cloudflare: true, autoconfig: true, portal: true, cloudflareSoloCrear: true },
       traefik: admin ? { configPath: '/api/traefik/config', token: mw.traefikToken } : null,
       ...mw.infoOverride,
     });
