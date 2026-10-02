@@ -877,7 +877,11 @@ antes obligaba a entrar por SSH al servidor.
   crean el propietario o el administrador (los nombres reservados —postmaster,
   abuse, admin, hostmaster, webmaster, root…— solo el administrador) y, con la
   cuenta suspendida, no se crea nada. Desactivar el correo recuerda el cliente
-  y reactivarlo permite **recuperar ese mismo cliente** con sus dominios.
+  y reactivarlo permite **recuperar ese mismo cliente** con sus dominios. La
+  desvinculación en Mailway es condicional (`DELETE
+  /api/integrations/clients/:id/link?externalRef=skyway:project:<id>`): si
+  entretanto el cliente se ha vinculado a otra referencia, Mailway responde
+  409 `external_ref_mismatch` y no lo toca.
   Módulo de plan `mail` («Correo»).
   **Puente de Traefik**: Traefik lee `GET /api/traefik/mailway` (proveedor HTTP,
   cada 15 s); Skyway obtiene la configuración de Mailway y la **sanea** (solo
