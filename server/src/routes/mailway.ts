@@ -492,8 +492,8 @@ interface WebmailDnsAutomatico {
  * va sin `soloCliente`, así que Mailway puede usar las cuentas de la
  * instancia, que nunca se usan en nombre de un cliente. Si Mailway no tiene
  * ninguna cuenta de Cloudflare no se intenta; un fallo no deshace el alta y
- * vuelve como motivo. Mailway nunca reemplaza un registro existente aquí
- * (lo devuelve en `skipped`).
+ * vuelve como motivo. Con `soloCrear`, Mailway no reemplaza ni modifica un
+ * registro existente (ni le quita el proxy): lo devuelve en `skipped`.
  */
 async function webmailDnsAutomatico(
   req: FastifyRequest,
@@ -504,7 +504,7 @@ async function webmailDnsAutomatico(
   try {
     const info = await getInfo();
     if (!info.features?.cloudflare) return null;
-    const result = await applyWhitelabelCloudflare(whitelabelId, { soloCliente: false });
+    const result = await applyWhitelabelCloudflare(whitelabelId, { soloCliente: false, soloCrear: true });
     const applied = Array.isArray(result.applied) ? result.applied : [];
     const errors = Array.isArray(result.errors) ? result.errors : [];
     const skipped = Array.isArray(result.skipped) ? result.skipped : [];

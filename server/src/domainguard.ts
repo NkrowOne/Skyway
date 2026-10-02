@@ -11,13 +11,18 @@
  * La comprobación solo mira los dominios NUEVOS de cada cambio: un servicio que
  * ya tuviera uno en conflicto antes de esta regla puede seguir editándose.
  *
+ * Los nombres cuyo registro creó el DNS automático del administrador en las
+ * zonas de Cloudflare del operador quedan reservados al proyecto para el que
+ * se crearon (`cloudflare_dns_records`): el registro sigue apuntando aquí
+ * aunque el dominio se quite del servicio.
+ *
  * Los de Mailway son su URL pública, su panel, su webmail y su servidor de
  * correo, los que publica el puente de Traefik y los nombres de marca blanca de
  * todos sus clientes en cualquier estado: uno que aún espera DNS no está
  * publicado, pero en cuanto apunte aquí el servicio que lo tuviera se quedaría
  * con el tráfico de ese webmail.
  */
-import { getProject, getService, serviceIdsForDomain } from './db';
+import { getCloudflareDnsRecord, getProject, getService, serviceIdsForDomain } from './db';
 import { mailwayProject, mailwayReservedHosts } from './mailway';
 import { mailwayPublishedHosts, mailwayWhitelabelHosts } from './mailwaytraefik';
 
@@ -75,6 +80,13 @@ export function domainClaimError(domains: Iterable<string>, claim: DomainClaim):
         : `El dominio ${domain} ya está asignado a otro servicio. Cada dominio solo puede servir a un servicio.`;
     }
     if (claim.isAdmin) continue;
+    // Un nombre cuyo registro A creó el DNS automático del administrador en
+    // las zonas del operador sigue apuntando aquí aunque nadie lo use: solo el
+    // proyecto para el que se creó (o el administrador) puede asignárselo.
+    const reservado = getCloudflareDnsRecord(domain);
+    if (reservado && reservado.project_id !== claim.projectId) {
+      return `El dominio ${domain} está reservado por el administrador de la plataforma y no se puede asignar a este servicio.`;
+    }
     if (!mailway) mailway = new Set([...mailwayReservedHosts(), ...mailwayPublishedHosts(), ...mailwayWhitelabelHosts()]);
     if (mailway.has(domain)) {
       if (mailwayProjectId === undefined) mailwayProjectId = mailwayProject()?.id ?? null;

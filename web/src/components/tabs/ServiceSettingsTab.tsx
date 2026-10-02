@@ -256,6 +256,11 @@ export default function ServiceSettingsTab({
       return api.patch<{ service: Service; needsRedeploy: boolean; dns?: DnsAutoResult[] }>(`/services/${service.id}`, {
         name: form.name,
         config,
+        // Los dominios de los que parte este formulario: si alguien los ha
+        // cambiado mientras tanto, el servidor conserva los actuales (o pide
+        // recargar si aquí también se han tocado) y el DNS automático solo
+        // se aplica a los que se añaden ahora.
+        ...(hasDomains ? { domainsBase: baseline.domains } : {}),
       });
     },
     onSuccess: (data) => {

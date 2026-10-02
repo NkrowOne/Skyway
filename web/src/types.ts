@@ -1318,6 +1318,19 @@ export interface CloudflareTestResult {
 }
 
 /**
+ * Registro A que creó el DNS automático del administrador: el nombre queda
+ * reservado al proyecto para el que se creó hasta que se borra aquí.
+ */
+export interface CloudflareDnsRecord {
+  domain: string;
+  zone: string;
+  content: string;
+  project: { id: string; name: string } | null;
+  usedBy: { id: string; name: string; project: string } | null;
+  createdAt: number;
+}
+
+/**
  * Resultado del DNS automático en Cloudflare de un dominio de servicio (solo
  * llega en las respuestas de un administrador con token configurado).
  */

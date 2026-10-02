@@ -409,14 +409,21 @@ describe('DNS automático de los dominios de servicios: administrador', () => {
 
   it('al editar, solo los dominios nuevos; guardar otra cosa no llama a Cloudflare', async () => {
     const antes = (await call('GET', `/api/services/${servicioId}`, admin())).json.service.config.domains as string[];
-    let r = await call('PATCH', `/api/services/${servicioId}`, admin(), { config: { domains: [...antes, 'otro.operador.com'] } });
+    let r = await call('PATCH', `/api/services/${servicioId}`, admin(), {
+      config: { domains: [...antes, 'otro.operador.com'] },
+      domainsBase: antes,
+    });
     expect(r.status, r.raw).toBe(200);
     expect(r.json.dns).toEqual([{ domain: 'otro.operador.com', action: 'created', message: expect.stringMatching(/creado en la zona operador\.com/) }]);
     expect(cf.calls.every((c) => c.path === '/zones' ? c.query.name !== 'nuevo.operador.com' : true)).toBe(true);
     expect(escrituras()).toHaveLength(1);
 
     cf.calls = [];
-    r = await call('PATCH', `/api/services/${servicioId}`, admin(), { name: 'web2', config: { domains: [...antes, 'otro.operador.com'] } });
+    r = await call('PATCH', `/api/services/${servicioId}`, admin(), {
+      name: 'web2',
+      config: { domains: [...antes, 'otro.operador.com'] },
+      domainsBase: [...antes, 'otro.operador.com'],
+    });
     expect(r.status, r.raw).toBe(200);
     expect(r.json.dns).toBeUndefined();
     expect(cf.calls).toEqual([]);
@@ -424,7 +431,10 @@ describe('DNS automático de los dominios de servicios: administrador', () => {
 
   it('con un token de API de administrador también (el que usan el instalador y las automatizaciones)', async () => {
     const actual = (await call('GET', `/api/services/${servicioId}`, admin())).json.service.config.domains as string[];
-    const r = await call('PATCH', `/api/services/${servicioId}`, adminBearer, { config: { domains: [...actual, 'api.plataforma.net'] } });
+    const r = await call('PATCH', `/api/services/${servicioId}`, adminBearer, {
+      config: { domains: [...actual, 'api.plataforma.net'] },
+      domainsBase: actual,
+    });
     expect(r.status, r.raw).toBe(200);
     expect(r.json.dns).toEqual([expect.objectContaining({ domain: 'api.plataforma.net', action: 'created' })]);
   });
@@ -484,7 +494,7 @@ describe('DNS automático de los dominios de servicios: administrador', () => {
     cf.hang = true;
     try {
       const inicio = Date.now();
-      const r = await aplicarDnsDominios(TOKEN_OP, ['lento.operador.com', 'lento2.operador.com'], 150);
+      const r = await aplicarDnsDominios(TOKEN_OP, ['lento.operador.com', 'lento2.operador.com'], { plazoMs: 150 });
       expect(Date.now() - inicio).toBeLessThan(3000);
       expect(r.map((d) => d.action)).toEqual(['error', 'error']);
       expect(r[0].message).toMatch(/no ha respondido a tiempo/);
@@ -561,6 +571,7 @@ describe('propietarios y miembros: nunca se usa el token del operador', () => {
       cf.calls = [];
       r = await call('PATCH', `/api/services/${id}`, admin(), {
         config: { domains: ['cliente1.operador.com', 'cliente2.operador.com', 'cliente3.plataforma.net', 'admin.operador.com'] },
+        domainsBase: ['cliente1.operador.com', 'cliente2.operador.com', 'cliente3.plataforma.net'],
       });
       expect(r.status, r.raw).toBe(200);
       expect(r.json.dns.map((d: Json) => d.domain)).toEqual(['admin.operador.com']);
@@ -669,6 +680,8 @@ describe('correo: el DNS automático de Mailway solo lo pide el administrador', 
     expect(r.json.cloudflare).toEqual({ applied: [{ action: 'create', type: 'CNAME', name: 'webmail.correo-admin.com' }], errors: [], skipped: [] });
     // Sin soloCliente: es el administrador quien lo pide.
     expect(cloudflareCalls().map((c) => c.path)).toEqual([expect.stringMatching(/^\/api\/whitelabel\/domains\/[^/?]+\/cloudflare$/)]);
+    // Automático: solo crear, sin modificar un registro que ya exista (ni su proxy).
+    expect(cloudflareCalls()[0].body).toEqual({ soloCrear: true });
     expect(listAudit({ action: 'mailway_webmail_dns_applied' })[0].detail).toMatch(/automático al configurarlo/);
 
     // Si Mailway no tiene ninguna cuenta de Cloudflare, ni se intenta.
@@ -683,5 +696,247 @@ describe('correo: el DNS automático de Mailway solo lo pide el administrador', 
     } finally {
       mw.infoOverride = {};
     }
+  });
+});
+
+// ======================= concurrencia: lo que el administrador no ha escrito =======================
+
+describe('el administrador solo crea registros de los dominios que añade él en esa petición', () => {
+  it('un formulario abierto antes de que el cliente quitara un dominio no lo vuelve a poner ni crea su registro', async () => {
+    let r = await call('POST', `/api/projects/${projA.id}/services`, ownerA, {
+      type: 'image',
+      name: 'formulario',
+      image: 'nginx',
+      port: 80,
+      domains: ['login.operador.com'],
+    });
+    expect(r.status, r.raw).toBe(201);
+    const id = r.json.service.id as string;
+    // El administrador abre Ajustes: el formulario carga la lista de ahora.
+    const formulario = (await call('GET', `/api/services/${id}`, admin())).json.service.config as Json;
+    expect(formulario.domains).toEqual(['login.operador.com']);
+    // Mientras edita otra cosa, el cliente quita el dominio.
+    r = await call('PATCH', `/api/services/${id}`, ownerA, { config: { domains: [] }, domainsBase: ['login.operador.com'] });
+    expect(r.status, r.raw).toBe(200);
+
+    // Guarda la memoria (la web reenvía la lista que cargó y su base): los
+    // dominios actuales se conservan y no sale ninguna petición a Cloudflare.
+    cf.calls = [];
+    r = await call('PATCH', `/api/services/${id}`, admin(), {
+      config: { port: 80, memoryMb: 512, domains: formulario.domains },
+      domainsBase: formulario.domains,
+    });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.service.config.domains).toEqual([]);
+    expect(r.json.service.config.memoryMb).toBe(512);
+    expect(r.json.dns).toBeUndefined();
+    expect(cf.calls).toEqual([]);
+
+    // Si además había tocado los dominios, se le pide recargar: nada cambia.
+    r = await call('PATCH', `/api/services/${id}`, admin(), {
+      config: { domains: ['login.operador.com', 'nuevo-admin.operador.com'] },
+      domainsBase: ['login.operador.com'],
+    });
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/han cambiado mientras los editabas/);
+    expect((await call('GET', `/api/services/${id}`, admin())).json.service.config.domains).toEqual([]);
+    expect(cf.calls).toEqual([]);
+    expect(cf.records.filter((x) => x.name === 'login.operador.com')).toEqual([]);
+  });
+
+  it('sin domainsBase (una automatización que lee y reenvía la lista) no se usa el token y se explica', async () => {
+    let r = await call('POST', `/api/projects/${projA.id}/services`, ownerA, {
+      type: 'image',
+      name: 'automatizacion',
+      image: 'nginx',
+      port: 80,
+    });
+    expect(r.status, r.raw).toBe(201);
+    const id = r.json.service.id as string;
+    cf.calls = [];
+    r = await call('PATCH', `/api/services/${id}`, adminBearer, { config: { domains: ['cuenta.operador.com'] } });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.service.config.domains).toEqual(['cuenta.operador.com']);
+    expect(r.json.dns).toEqual([{ domain: 'cuenta.operador.com', action: 'skipped', message: expect.stringMatching(/domainsBase/) }]);
+    expect(cf.calls).toEqual([]);
+    // Un propietario sin base: ni petición ni explicación (nunca hay DNS para él).
+    r = await call('PATCH', `/api/services/${id}`, ownerA, { config: { domains: ['cuenta.operador.com', 'otra-cuenta.operador.com'] } });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.dns).toBeUndefined();
+    expect(cf.calls).toEqual([]);
+  });
+
+  it('el alta con plan usa los dominios de la petición, no los que el cliente añade mientras se consulta GitHub', async () => {
+    let liberar: (() => void) | null = null;
+    let avisar: (() => void) | null = null;
+    const consultando = new Promise<void>((resolve) => (avisar = resolve));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+        const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+        if (url.host === 'api.github.com') {
+          avisar?.();
+          await new Promise<void>((resolve) => (liberar = resolve));
+          return new Response(JSON.stringify({ tree: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        return fetchDoble(input, init);
+      }),
+    );
+    try {
+      cf.calls = [];
+      const alta = call('POST', `/api/projects/${projA.id}/services`, admin(), {
+        type: 'git',
+        name: 'con-plan',
+        repoUrl: 'https://github.com/cliente/web',
+        domains: ['plan.ajena.org'],
+        plan: {},
+      });
+      await consultando;
+      const servicio = (await call('GET', `/api/projects/${projA.id}`, admin())).json.services.find((s: Json) => s.name === 'con-plan');
+      const r1 = await call('PATCH', `/api/services/${servicio.id}`, ownerA, {
+        config: { domains: ['plan.ajena.org', 'durante-el-plan.operador.com'] },
+        domainsBase: ['plan.ajena.org'],
+      });
+      expect(r1.status, r1.raw).toBe(200);
+      liberar!();
+      const r = await alta;
+      expect(r.status, r.raw).toBe(201);
+      expect(r.json.dns.map((d: Json) => d.domain)).toEqual(['plan.ajena.org']);
+      expect(cf.calls.some((c) => JSON.stringify(c).includes('durante-el-plan'))).toBe(false);
+      expect(cf.records.filter((x) => x.name === 'durante-el-plan.operador.com')).toEqual([]);
+    } finally {
+      vi.stubGlobal('fetch', vi.fn(fetchDoble));
+    }
+  });
+});
+
+// ======================= registros creados: reserva y limpieza =======================
+
+describe('los registros que crea el DNS automático quedan reservados hasta que el administrador los borra', () => {
+  let projB: ProjectRow;
+  let ownerB: Record<string, string> = {};
+
+  beforeAll(() => {
+    const wsB = createWorkspaceRow('Otro cliente', { modules_override: JSON.stringify(['domains', 'databases']), max_services: 50 });
+    projB = createProject('Otra tienda', 'otra-tienda', null, wsB.id);
+    ownerB = bearerFor(createUser('owner-b@example.com', hashPassword('contraseña1'), 'owner', wsB.id));
+  });
+
+  it('otro cliente no puede asignarse un nombre del operador que el administrador creó para un proyecto', async () => {
+    // El administrador da al servicio del cliente A un nombre de su zona.
+    let r = await call('POST', `/api/projects/${projA.id}/services`, admin(), {
+      type: 'image',
+      name: 'reservado',
+      image: 'nginx',
+      port: 80,
+      domains: ['clientea.operador.com'],
+    });
+    expect(r.status, r.raw).toBe(201);
+    expect(r.json.dns).toEqual([expect.objectContaining({ domain: 'clientea.operador.com', action: 'created' })]);
+    const idA = r.json.service.id as string;
+    // Se quita del servicio: el registro A sigue apuntando aquí.
+    r = await call('PATCH', `/api/services/${idA}`, ownerA, { config: { domains: [] }, domainsBase: ['clientea.operador.com'] });
+    expect(r.status, r.raw).toBe(200);
+    expect(cf.records.filter((x) => x.name === 'clientea.operador.com')).toHaveLength(1);
+
+    // El cliente B no puede quedárselo, ni al crear ni al editar.
+    r = await call('POST', `/api/projects/${projB.id}/services`, ownerB, {
+      type: 'image',
+      name: 'toma',
+      image: 'nginx',
+      port: 80,
+      domains: ['clientea.operador.com'],
+    });
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/reservado por el administrador/);
+    r = await call('POST', `/api/projects/${projB.id}/services`, ownerB, { type: 'image', name: 'toma', image: 'nginx', port: 80 });
+    expect(r.status, r.raw).toBe(201);
+    const idB = r.json.service.id as string;
+    r = await call('PATCH', `/api/services/${idB}`, ownerB, { config: { domains: ['clientea.operador.com'] } });
+    expect(r.status).toBe(409);
+    r = await call('POST', `/api/projects/${projB.id}/stacks`, ownerB, { stack: 'n8n', domain: 'clientea.operador.com' });
+    expect(r.status).toBe(409);
+
+    // El proyecto para el que se creó sí puede volver a usarlo.
+    r = await call('PATCH', `/api/services/${idA}`, ownerA, { config: { domains: ['clientea.operador.com'] }, domainsBase: [] });
+    expect(r.status, r.raw).toBe(200);
+  });
+
+  it('Ajustes → Cloudflare los lista y los borra solo si nadie los usa ni los ha cambiado', async () => {
+    // Solo el administrador.
+    expect((await call('GET', '/api/cloudflare/records', ownerA)).status).toBe(403);
+    expect((await call('DELETE', '/api/cloudflare/records/clientea.operador.com', ownerA)).status).toBe(403);
+
+    let r = await call('GET', '/api/cloudflare/records', admin());
+    expect(r.status, r.raw).toBe(200);
+    const fila = (r.json.records as Json[]).find((x) => x.domain === 'clientea.operador.com');
+    expect(fila).toMatchObject({ zone: 'operador.com', content: IP, project: { id: projA.id, name: 'Tienda' } });
+    expect(fila.usedBy).toMatchObject({ name: 'reservado', project: 'Tienda' });
+    expect(JSON.stringify(r.json)).not.toContain(TOKEN_OP);
+
+    // En uso: no se borra nada.
+    cf.calls = [];
+    r = await call('DELETE', '/api/cloudflare/records/clientea.operador.com', admin());
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/sigue asignado al servicio «Tienda \/ reservado»/);
+    expect(cf.calls).toEqual([]);
+
+    const svc = (await call('GET', `/api/projects/${projA.id}`, admin())).json.services.find((s: Json) => s.name === 'reservado');
+    r = await call('PATCH', `/api/services/${svc.id}`, ownerA, { config: { domains: [] }, domainsBase: ['clientea.operador.com'] });
+    expect(r.status, r.raw).toBe(200);
+
+    // Modificado en Cloudflare (otro comentario) y apuntando aquí: no se toca y sigue reservado.
+    const enCf = cf.records.find((x) => x.name === 'clientea.operador.com')!;
+    enCf.comment = 'Lo uso para otra cosa';
+    r = await call('DELETE', '/api/cloudflare/records/clientea.operador.com', admin());
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/se ha modificado en Cloudflare/);
+    expect(cf.records).toContain(enCf);
+    expect(cf.calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+
+    // Tal como lo creó Skyway: se borra y el nombre queda libre.
+    enCf.comment = 'Skyway';
+    r = await call('DELETE', '/api/cloudflare/records/clientea.operador.com', admin());
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.result).toBe('deleted');
+    expect(cf.records.filter((x) => x.name === 'clientea.operador.com')).toEqual([]);
+    expect(cf.calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([`/zones/zona_operador_com/dns_records/${enCf.id}`]);
+    expect(listAudit({ action: 'cloudflare_dns_record_deleted' })[0]).toMatchObject({ detail: 'clientea.operador.com: registro borrado' });
+    expect((r.json.records as Json[]).some((x) => x.domain === 'clientea.operador.com')).toBe(false);
+
+    r = await call('POST', `/api/projects/${projB.id}/services`, ownerB, {
+      type: 'image',
+      name: 'libre',
+      image: 'nginx',
+      port: 80,
+      domains: ['clientea.operador.com'],
+    });
+    expect(r.status, r.raw).toBe(201);
+  });
+
+  it('si el administrador asigna el nombre a otro proyecto, la reserva pasa a ese proyecto', async () => {
+    let r = await call('POST', `/api/projects/${projAdmin.id}/services`, admin(), {
+      type: 'image',
+      name: 'mover',
+      image: 'nginx',
+      port: 80,
+      domains: ['mover.operador.com'],
+    });
+    expect(r.status, r.raw).toBe(201);
+    const id = r.json.service.id as string;
+    r = await call('PATCH', `/api/services/${id}`, admin(), { config: { domains: [] }, domainsBase: ['mover.operador.com'] });
+    expect(r.status, r.raw).toBe(200);
+    // El administrador lo da al proyecto del cliente B: ahora es suyo, no del A.
+    r = await call('POST', `/api/projects/${projB.id}/services`, admin(), {
+      type: 'image',
+      name: 'movido',
+      image: 'nginx',
+      port: 80,
+      domains: ['mover.operador.com'],
+    });
+    expect(r.status, r.raw).toBe(201);
+    expect(r.json.dns).toEqual([expect.objectContaining({ domain: 'mover.operador.com', action: 'kept' })]);
+    const recs = (await call('GET', '/api/cloudflare/records', admin())).json.records as Json[];
+    expect(recs.find((x) => x.domain === 'mover.operador.com').project).toMatchObject({ id: projB.id });
   });
 });

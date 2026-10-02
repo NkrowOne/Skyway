@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, ExternalLink, Trash2 } from 'lucide-react';
 import { api } from '../api';
-import { CloudflareConfigView, CloudflareTestResult } from '../types';
+import { CloudflareConfigView, CloudflareDnsRecord, CloudflareTestResult } from '../types';
 import { cx, safeHref, timeAgo } from '../utils';
 import { Button, Chip, ConfirmModal, ErrorState, Field, Skeleton, useFlash, useToast } from './ui';
 
@@ -190,6 +190,8 @@ export default function CloudflareSettings() {
         )}
       </div>
 
+      {cfg.configured && <RegistrosCreados />}
+
       {cfg.configured && (
         <div className="border-t border-line pt-3 text-xs text-subtle">
           {zonas && zonas.total > 0 ? (
@@ -210,6 +212,113 @@ export default function CloudflareSettings() {
             <p>Pulsa «Probar» para consultar las zonas que ve el token.</p>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Registros A que ha creado el DNS automático. Siguen apuntando a este
+ * servidor aunque el dominio deje de usarse, así que cada nombre queda
+ * reservado al proyecto para el que se creó (ningún otro cliente puede
+ * asignárselo) hasta que se borra aquí. El servidor solo borra un registro
+ * que nadie usa y que nadie ha cambiado en Cloudflare.
+ */
+function RegistrosCreados() {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [borrar, setBorrar] = useState<CloudflareDnsRecord | null>(null);
+
+  const records = useQuery({
+    queryKey: ['cloudflareRecords'],
+    queryFn: () => api.get<{ records: CloudflareDnsRecord[] }>('/cloudflare/records'),
+  });
+
+  const remove = useMutation({
+    mutationFn: (domain: string) =>
+      api.del<{ ok: boolean; result: 'deleted' | 'gone' | 'released'; records: CloudflareDnsRecord[] }>(
+        `/cloudflare/records/${encodeURIComponent(domain)}`,
+      ),
+    onSuccess: (res, domain) => {
+      setBorrar(null);
+      queryClient.setQueryData(['cloudflareRecords'], { records: res.records });
+      const texto = {
+        deleted: `Registro de ${domain} borrado en Cloudflare.`,
+        gone: `El registro de ${domain} ya no existía en Cloudflare: el nombre queda libre.`,
+        released: `El registro de ${domain} ya apuntaba a otro sitio: no se ha tocado y el nombre queda libre.`,
+      }[res.result];
+      toast(texto, 'ok');
+    },
+    onError: (err: Error) => {
+      setBorrar(null);
+      toast(err.message, 'err');
+    },
+  });
+
+  if (records.isLoading) return <Skeleton className="h-16 w-full rounded-lg" />;
+  if (records.isError || !records.data) {
+    return (
+      <ErrorState
+        compact
+        className="rounded-lg border border-dashed border-line"
+        title="No se han podido cargar los registros creados"
+        error={records.error}
+        onRetry={() => records.refetch()}
+        retrying={records.isFetching}
+      />
+    );
+  }
+  const lista = records.data.records;
+
+  return (
+    <div className="border-t border-line pt-3 text-xs">
+      <ConfirmModal
+        open={!!borrar}
+        onClose={() => setBorrar(null)}
+        onConfirm={() => borrar && remove.mutate(borrar.domain)}
+        loading={remove.isPending}
+        title="Borrar el registro en Cloudflare"
+        message={
+          borrar
+            ? `Se borrará el registro A de ${borrar.domain} hacia ${borrar.content} en la zona ${borrar.zone}, y el nombre dejará de estar reservado. Si el registro ha cambiado en Cloudflare desde que lo creó Skyway, no se toca.`
+            : ''
+        }
+        confirmLabel="Borrar registro"
+      />
+      <p className="mb-1.5 text-subtle">
+        Registros creados automáticamente ({lista.length}). Cada nombre queda reservado al proyecto para el que se creó, aunque deje de
+        usarse, hasta que borres aquí su registro.
+      </p>
+      {lista.length === 0 ? (
+        <p className="text-subtle">Todavía no se ha creado ningún registro.</p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-line rounded-lg border border-line">
+          {lista.map((r) => (
+            <li key={r.domain} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
+              <span className="min-w-0 flex-1 truncate font-mono text-txt" title={r.domain}>
+                {r.domain}
+              </span>
+              <span className="min-w-0 truncate text-subtle">
+                {r.usedBy
+                  ? `En uso: ${r.usedBy.project} / ${r.usedBy.name}`
+                  : r.project
+                    ? `Sin uso · reservado a ${r.project.name}`
+                    : 'Sin uso · proyecto eliminado'}
+              </span>
+              <span className="text-subtle">{timeAgo(r.createdAt)}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setBorrar(r)}
+                disabled={!!r.usedBy}
+                title={r.usedBy ? 'Quita antes el dominio del servicio' : 'Borrar el registro en Cloudflare y liberar el nombre'}
+                className="text-err hover:bg-err/[.1]"
+              >
+                <Trash2 size={13} /> Borrar
+              </Button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

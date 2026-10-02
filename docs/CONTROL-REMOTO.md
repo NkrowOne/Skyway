@@ -182,11 +182,24 @@ miembro nunca se toca Cloudflare y la respuesta no lleva `dns`; en el correo,
 su alta va con `autoDns: false` y `?soloCliente=1` (`docs/FUNCIONALIDAD.md`
 §7.13).
 
+Al editar un servicio, el registro solo se crea si la petición indica en
+`domainsBase` los dominios de los que parte (los que leyó antes de editar). Así
+un dominio que otra persona haya quitado entretanto no vuelve a ponerse ni se
+crea su registro: si `config.domains` coincide con la base, se conservan los
+dominios actuales; si no, 409. Sin `domainsBase`, el cambio se guarda pero cada
+dominio nuevo vuelve en `dns` como `skipped`.
+
 ```bash
 # Añadir un dominio a un servicio como administrador: la respuesta trae "dns"
+ACTUALES=$(curl -s -H "Authorization: Bearer $TOKEN_ADMIN" "$BASE/api/services/SVC_ID" | jq -c '.service.config.domains // []')
 curl -s -X PATCH -H "Authorization: Bearer $TOKEN_ADMIN" -H "Content-Type: application/json" \
-  -d '{"config":{"domains":["app.midominio.com"]}}' "$BASE/api/services/SVC_ID" | jq .dns
+  -d "{\"config\":{\"domains\":$(jq -c '. + ["app.midominio.com"]' <<<"$ACTUALES")},\"domainsBase\":$ACTUALES}" \
+  "$BASE/api/services/SVC_ID" | jq .dns
 ```
+
+Los nombres creados quedan reservados al proyecto para el que se crearon (otro
+cliente no puede asignárselos) hasta que el administrador borra su registro:
+`GET /api/cloudflare/records` y `DELETE /api/cloudflare/records/:dominio`.
 
 Guardar o borrar el token exige sesión de navegador (con un token de API solo
 se consulta, `GET /api/cloudflare/config`, y se prueba,

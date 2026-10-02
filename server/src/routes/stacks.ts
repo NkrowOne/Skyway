@@ -273,7 +273,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
     });
 
     // Solo para un administrador con token de Cloudflare; nunca hace fallar el alta.
-    const dns = body.domain ? await dnsAutomaticoAdmin(req, [body.domain], { type: 'project', id: projectId }) : undefined;
+    const dns = body.domain ? await dnsAutomaticoAdmin(req, [body.domain], { type: 'project', id: projectId }, projectId) : undefined;
 
     reply.code(201);
     return { stack: stack.key, prefix, publicUrl, services: publicServices(created), ...(dns ? { dns } : {}) };
@@ -380,7 +380,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
       req.log.error({ err, template: plan.code }, 'fallo desplegando la plantilla de Railway');
     });
 
-    const dns = body.domain ? await dnsAutomaticoAdmin(req, [body.domain], { type: 'project', id: projectId }) : undefined;
+    const dns = body.domain ? await dnsAutomaticoAdmin(req, [body.domain], { type: 'project', id: projectId }, projectId) : undefined;
 
     reply.code(201);
     return {

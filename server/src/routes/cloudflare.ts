@@ -9,6 +9,7 @@ import {
   guardarTokenCloudflare,
   probarTokenCloudflare,
 } from '../cloudflareconfig';
+import { borrarRegistroCreado, registrosCreados } from '../cloudflaredns';
 import { rateLimit } from '../ratelimit';
 
 /**
@@ -35,6 +36,24 @@ export async function cloudflareRoutes(app: FastifyInstance): Promise<void> {
       borrarTokenCloudflare((action, target) => audit(req, action, target));
       return { ok: true, config: cloudflareConfigView() };
     });
+
+    /**
+     * Registros que creó el DNS automático en las zonas del operador. Cada
+     * nombre queda reservado al proyecto para el que se creó hasta que el
+     * administrador borra aquí su registro (solo si nadie lo usa ni lo ha
+     * cambiado en Cloudflare).
+     */
+    secured.get('/api/cloudflare/records', { preHandler: requireAdmin }, async () => ({ records: registrosCreados() }));
+
+    secured.delete(
+      '/api/cloudflare/records/:domain',
+      { preHandler: [requireAdmin, rateLimit({ max: 30, windowMs: 60_000 })] },
+      async (req) => {
+        const { domain } = z.object({ domain: z.string().trim().toLowerCase().min(1).max(253) }).parse(req.params);
+        const result = await borrarRegistroCreado(domain, (action, target) => audit(req, action, target));
+        return { ok: true, result, records: registrosCreados() };
+      },
+    );
 
     /**
      * Prueba el token indicado (sin guardarlo) o el guardado. Cada prueba son

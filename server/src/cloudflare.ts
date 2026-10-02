@@ -2,8 +2,10 @@
  * Cliente mínimo de la API v4 de Cloudflare, portado del de Mailway
  * (`server/src/core/cloudflare.ts`): solo lo que necesita el DNS automático
  * de los dominios de servicios (verificar el token, localizar la zona de un
- * nombre, leer sus registros y crear uno). No hay métodos para modificar ni
- * borrar registros a propósito: Skyway nunca pisa un registro existente.
+ * nombre, leer sus registros y crear uno). No hay métodos para modificar
+ * registros a propósito: Skyway nunca pisa un registro existente. Solo borra,
+ * a petición del administrador en Ajustes → Cloudflare, un registro que creó
+ * el propio DNS automático y que nadie ha cambiado desde entonces.
  *
  * Los errores de Cloudflare se traducen a mensajes en español listos para la
  * interfaz, con `statusCode` para el manejador global (nunca 401: la interfaz
@@ -397,6 +399,28 @@ export class CloudflareClient {
   async createRecord(zoneId: string, registro: CfRegistroNuevo): Promise<CfRegistro> {
     const sobre = await this.peticion<RegistroCrudo>('POST', `/zones/${encodeURIComponent(zoneId)}/dns_records`, { body: registro });
     return aRegistro(sobre.result);
+  }
+
+  /** Un registro por su identificador, o null si ya no existe (Cloudflare responde 404 / 81044). */
+  async getRecord(zoneId: string, recordId: string): Promise<CfRegistro | null> {
+    try {
+      const sobre = await this.peticion<RegistroCrudo>(
+        'GET',
+        `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
+      );
+      return aRegistro(sobre.result);
+    } catch (err) {
+      if (err instanceof CloudflareError && (err.httpStatus === 404 || err.cfCodes.includes(81044))) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * Borra un registro. Solo lo usa la limpieza de Ajustes → Cloudflare, y solo
+   * tras comprobar con `getRecord` que es el que creó Skyway sin cambios.
+   */
+  async deleteRecord(zoneId: string, recordId: string): Promise<void> {
+    await this.peticion<unknown>('DELETE', `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`);
   }
 }
 

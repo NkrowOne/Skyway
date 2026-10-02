@@ -77,12 +77,13 @@ server/src/
   disk.ts               uso de disco por servicio y del host
   domains.ts            IP del servidor + verificación DNS de dominios
   cloudflare.ts         cliente mínimo de la API de Cloudflare (verificar token, zona de un nombre, leer
-                        registros y crear uno; sin métodos para cambiar ni borrar), portado del de Mailway
+                        registros, crear uno y borrar uno concreto; sin métodos para cambiar), portado del de Mailway
   cloudflareconfig.ts   token de Cloudflare del administrador en `settings` (`cloudflare.token`, nunca se
                         devuelve): probar, guardar, borrar y vista; la comparten Ajustes → Cloudflare y
                         `tools/cloudflare.ts`
   cloudflaredns.ts      DNS automático de los dominios nuevos de servicios, SOLO en peticiones de un
-                        administrador: registro A hacia la IP del servidor sin pisar nada (§7.13)
+                        administrador: registro A hacia la IP del servidor sin pisar nada, reserva de
+                        los nombres creados y su limpieza (§7.13)
   notify.ts             envío a Discord/Telegram/webhook
   alerts.ts             creación/resolución de alertas (con dedupe) + notificación
   metrics.ts            deltas de red por réplica + agrupado del histórico de consumo
@@ -396,9 +397,13 @@ aprobación); database añade `template`, `version`, `backupSchedule`, `backupRe
   un propietario o un miembro no se lee el token, no se consulta la IP y no
   sale ninguna petición a Cloudflare, ni directa ni a través de Mailway (el alta
   de correo de quien no es admin va con `autoDns: false` y `?soloCliente=1`).
-  Al editar un servicio solo se procesan los dominios **nuevos**: un
-  administrador que guarda el servicio de un cliente no crea los registros de
-  los dominios que puso el cliente. Nunca se modifica ni se borra un registro
+  Al editar un servicio solo se procesan los dominios **nuevos** respecto a la
+  base de quien edita (`domainsBase`): un administrador que guarda el servicio
+  de un cliente, aunque sea con un formulario anterior a un cambio del cliente,
+  no crea los registros de los dominios que puso el cliente. Los nombres
+  creados quedan reservados al proyecto para el que se crearon hasta que el
+  administrador borra su registro. Nunca se modifica un registro y solo se
+  borra, a petición del administrador, uno que creó Skyway y nadie ha cambiado
   (§7.13).
 - **Anti fuerza bruta**: límite por IP (8 intentos / 15 min) en login por
   contraseña y por passkey. La IP real se obtiene respetando el proxy **solo**
@@ -1363,7 +1368,7 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas, también `dns?` |
 | POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH, y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
-| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; solo los nuevos pasan por el DNS automático (`dns`, §7.13, solo admin); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
+| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
 | DELETE | `/services/:id?volumes=true` | +access | elimina servicio; igual que en proyectos, devuelve `{ok, warnings}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
@@ -1521,7 +1526,7 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | POST | `/projects/:id/mail/domains/:domainId/cloudflare/apply` | manage | `{replaceConflicts?}` → `{applied, errors, domain}` (con `?soloCliente=1` para quien no es admin; 409 sin llamar a Mailway si el dominio está asociado a una cuenta que no es del cliente, como en el plan) |
 | GET | `/projects/:id/mail/domains/:domainId/zonefile` | auth + access | fichero de zona BIND de Mailway (`?nivel=obligatorios\|recomendados\|completo`, recomendados por defecto; otro valor → 400) como `text/plain` adjunto `<dominio>-mailway-<nivel>.txt`, para importarlo en Cloudflare (DNS → Registros → Importar y exportar). Skyway **retira los registros A, AAAA, CNAME, HTTPS y SVCB del dominio raíz y de `www`** que pudiera traer Mailway (nombres absolutos, relativos, `@`, `$ORIGIN`, líneas sin propietario y paréntesis) y, si retira alguno, lo indica en un comentario al principio. Después **añade, en secciones propias y comentadas**, los registros web de los servicios del **mismo proyecto** cuyos dominios cuelgan de la zona (A hacia la IP pública configurada en Ajustes; sin ella se omiten y un comentario lo dice) y el del **webmail del cliente** si está dado de alta (el registro recomendado que indica Mailway; si el nombre no se puede utilizar, un comentario explica por qué con el motivo genérico, también si lo descarga un administrador: el fichero se entrega al cliente). Nunca menciona dominios, servicios ni proyectos de otros, ni repite un nombre que el fichero ya trae; todo texto libre de un comentario va en una sola línea (sin saltos ni caracteres de control). 20/min |
 | GET | `/projects/:id/mail/domains/:domainId/webmail` | auth + access | `{hostname, webmail, conflict}`: el webmail del dominio en `webmail.<dominio>` (marca blanca de Mailway). `webmail` = `null` o `{hostname, kind, status:'pending_dns'\|'issuing'\|'active'\|'error', detail, lastCheckedAt, activatedAt, createdAt, isPrimary, url, instructions[]}` (`url` solo en servicio, formada por Skyway; `instructions` = registro CNAME recomendado o A que indica Mailway). `conflict` = motivo por el que el nombre no se puede utilizar (`webmailHostError`) o `null`. El dominio propio se busca entre los del cliente vinculado (`GET /api/whitelabel/domains?clientId=`, filtrados también por cliente en Skyway) |
-| POST | `/projects/:id/mail/domains/:domainId/webmail` | manage | da de alta `webmail.<dominio>` (nombre fijado por Skyway, no por quien llama) para el cliente vinculado (`POST /api/whitelabel/domains {hostname, clientId, kind:'webmail'}`) → 201 `{webmail}`. 403 con la cuenta suspendida, 409 con el cliente suspendido, 409 si el nombre lo sirve **cualquier servicio de Skyway** (solo el admin ve cuál), es el del panel (`SKYWAY_DOMAIN`) o de la instancia de Mailway, 409 si ya existe. La propiedad del dominio la exige Mailway: 400 `domain_not_verified` con su mensaje (también `whitelabel_limit`, 5 por cliente). El nombre queda reservado al momento (sin esperar a la lectura del puente): ningún servicio de un cliente puede asignárselo. Audita `mailway_webmail_created`. Si lo configura un **administrador** y Mailway tiene Cloudflare (`features.cloudflare`), crea además su registro como `/webmail/cloudflare` (sin `soloCliente`, sin reemplazar nada) y la respuesta añade `cloudflare`/`cloudflareReason`; para los demás, nunca. 10/min |
+| POST | `/projects/:id/mail/domains/:domainId/webmail` | manage | da de alta `webmail.<dominio>` (nombre fijado por Skyway, no por quien llama) para el cliente vinculado (`POST /api/whitelabel/domains {hostname, clientId, kind:'webmail'}`) → 201 `{webmail}`. 403 con la cuenta suspendida, 409 con el cliente suspendido, 409 si el nombre lo sirve **cualquier servicio de Skyway** (solo el admin ve cuál), es el del panel (`SKYWAY_DOMAIN`) o de la instancia de Mailway, 409 si ya existe. La propiedad del dominio la exige Mailway: 400 `domain_not_verified` con su mensaje (también `whitelabel_limit`, 5 por cliente). El nombre queda reservado al momento (sin esperar a la lectura del puente): ningún servicio de un cliente puede asignárselo. Audita `mailway_webmail_created`. Si lo configura un **administrador** y Mailway tiene Cloudflare (`features.cloudflare`), crea además su registro como `/webmail/cloudflare` (sin `soloCliente` y con `soloCrear`: no reemplaza ni modifica un registro existente, ni le quita el proxy) y la respuesta añade `cloudflare`/`cloudflareReason`; para los demás, nunca. 10/min |
 | POST | `/projects/:id/mail/domains/:domainId/webmail/verify` | auth + access | comprueba DNS y HTTPS en Mailway y avanza el estado (Esperando DNS → Emitiendo certificado → En servicio) → `{webmail, conflict}`. 404 si no está configurado. 30/min |
 | POST | `/projects/:id/mail/domains/:domainId/webmail/cloudflare` | manage | crea en Cloudflare el registro del webmail (`?soloCliente=1` para quien no es admin, como en los dominios) → `{applied, errors, skipped, webmail}`; nunca sustituye un registro existente con otro valor (`skipped`). 409 si el nombre lo sirve un servicio de Skyway. Audita `mailway_webmail_dns_applied`. 10/min |
 | POST | `/projects/:id/mail/domains/:domainId/webmail/primary` | manage | lo marca como webmail principal del cliente (el que usan sus enlaces y datos de conexión) → `{webmail}`; 400 `webmail_not_active` de Mailway si no está en servicio. Audita `mailway_webmail_primary` |
@@ -1561,12 +1566,24 @@ Zone · Read» y «Zone · DNS · Edit»; la clave global se rechaza). Se guarda
 | PUT | `/cloudflare/config` | admin + session | `{token}`: lo verifica en Cloudflare (usuario o cuenta `cfat_`; activo y con al menos una zona) **antes** de guardarlo; si falla, 400 con el motivo y no se guarda nada → `{ok, config}`. Audita `cloudflare_token_saved` o `cloudflare_token_replaced` (número de zonas, sin el token); guardar el mismo token no deja otra entrada |
 | DELETE | `/cloudflare/config` | admin + session | borra el token, las zonas y el último fallo → `{ok, config}`. Audita `cloudflare_token_removed`. Los registros ya creados se conservan |
 | POST | `/cloudflare/test` | admin | `{token?}`: prueba el indicado sin guardarlo o, sin él, el guardado (y refresca sus zonas y `lastError`) → `{ok, zones}`. 12/min |
+| GET | `/cloudflare/records` | admin | registros que ha creado el DNS automático → `{records: [{domain, zone, content, project: {id, name} \| null, usedBy: {id, name, project} \| null, createdAt}]}` |
+| DELETE | `/cloudflare/records/:domain` | admin | borra en Cloudflare el registro creado y libera el nombre → `{ok, result: 'deleted'\|'gone'\|'released', records}`. 409 si el dominio sigue asignado a un servicio o si el registro se ha modificado en Cloudflare y sigue apuntando a la IP (no se toca y sigue reservado); si ya no existe (`gone`) o apunta a otro sitio (`released`), solo se libera el nombre. Audita `cloudflare_dns_record_deleted`. 30/min |
 
 **DNS automático** (`cloudflaredns.ts`). Tras dar de alta dominios **nuevos**
 (crear un servicio con `domains`, añadirlos con el PATCH, una pila o una
 plantilla de Railway con `domain`, la importación de Railway), y **solo si
 quien hace la petición es administrador** (cookie o token `sky_` de un admin) y
-hay token, para cada dominio:
+hay token, para cada dominio que **escribe esa petición**:
+
+- Al crear un servicio, los de su cuerpo (no los que tenga el servicio al
+  releerlo tras aplicar el plan: mientras se consulta GitHub, el cliente del
+  proyecto podría añadirle un nombre de las zonas del operador).
+- En el PATCH, solo con `domainsBase` (los dominios de los que parte quien
+  edita; Ajustes los envía siempre): son nuevos los que no estaban ni en la
+  base de datos ni en esa base. Sin `domainsBase` no se usa el token y cada
+  dominio nuevo vuelve como `skipped` explicándolo: no se puede distinguir un
+  dominio que escribe el administrador de uno que el cliente quitó entre su
+  lectura y el guardado.
 
 1. `findZoneFor`: sin zona en ese Cloudflare → `skipped` («Sin zona en tu Cloudflare»).
 2. Registros A/AAAA/CNAME con ese nombre: alguno que no sea un A hacia la IP del
@@ -1585,6 +1602,16 @@ resultado», sin el token). Para propietarios y miembros **no se llama a
 Cloudflare** ni a la detección de IP, y la respuesta no lleva `dns`. Los
 dominios de correo los configura Mailway con sus propias cuentas (`autoDns`,
 §7.12).
+
+**Reserva de los nombres creados.** Cada registro creado se anota
+(`cloudflare_dns_records`: dominio, zona, id del registro, IP y proyecto). El
+registro sigue apuntando al servidor aunque el dominio se quite del servicio o
+se borre el proyecto, y Let's Encrypt valida por HTTP: sin reserva, otro
+cliente podría asignarse ese nombre del operador y obtener su certificado. Por
+eso `domainClaimError` rechaza (409) ese nombre para propietarios y miembros de
+cualquier otro proyecto; el administrador puede asignarlo a otro proyecto y la
+reserva pasa a ese proyecto. La reserva dura hasta que el administrador borra
+el registro en Ajustes → Cloudflare (`DELETE /cloudflare/records/:domain`).
 
 ---
 

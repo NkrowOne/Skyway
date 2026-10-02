@@ -1197,10 +1197,18 @@ export function verifyWhitelabelDomain(id: string): Promise<MailwayWhitelabelVie
  * exista con otro valor: Mailway lo devuelve en `skipped`. `soloCliente`, como
  * en los dominios de correo.
  */
-export function applyWhitelabelCloudflare(id: string, opts: { soloCliente?: boolean }): Promise<MailwayWhitelabelCloudflareResult> {
+/**
+ * Registro del webmail en Cloudflare. `soloCrear` (el que se crea solo al
+ * configurar el webmail) pide a Mailway que no modifique un registro que ya
+ * exista, ni para quitarle el proxy: eso queda para el botón, a la vista.
+ */
+export function applyWhitelabelCloudflare(
+  id: string,
+  opts: { soloCliente?: boolean; soloCrear?: boolean },
+): Promise<MailwayWhitelabelCloudflareResult> {
   return mailwayFetch<MailwayWhitelabelCloudflareResult>(
     `/api/whitelabel/domains/${enc(id)}/cloudflare${cloudflareQuery(opts.soloCliente)}`,
-    { method: 'POST', body: {} },
+    { method: 'POST', body: opts.soloCrear ? { soloCrear: true } : {} },
   );
 }
 

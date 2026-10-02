@@ -7,7 +7,8 @@
  * no válido, 10000 sin permiso, 81053 CNAME que no convive, 81058 idéntico).
  *
  * Registra cada petición (método, ruta, consulta, Authorization y cuerpo) y
- * responde 405 a cualquier PUT, PATCH o DELETE: Skyway nunca debe enviarlos.
+ * responde 405 a cualquier PUT o PATCH: Skyway nunca debe enviarlos. DELETE
+ * solo existe sobre un registro concreto (la limpieza de Ajustes → Cloudflare).
  */
 
 export const CF_HOST = 'api.cloudflare.com';
@@ -170,6 +171,17 @@ export async function cloudflareFetch(url: URL, init: RequestInit = {}): Promise
       const r = registro(z, nuevo);
       r.ttl = nuevo.ttl;
       return sobre(200, r);
+    }
+  }
+  if ((m = path.match(/^\/zones\/([^/]+)\/dns_records\/([^/]+)$/))) {
+    const z = visibles.find((x) => x.id === m![1]);
+    if (!z) return fallo(403, 10000, 'Authentication error');
+    const r = cf.records.find((x) => x.zoneId === z.id && x.id === m![2]);
+    if (!r) return fallo(404, 81044, 'Record does not exist.');
+    if (method === 'GET') return sobre(200, r);
+    if (method === 'DELETE') {
+      cf.records = cf.records.filter((x) => x !== r);
+      return sobre(200, { id: r.id });
     }
   }
   return fallo(405, 10405, `Método no admitido por el doble: ${method} ${path}`);

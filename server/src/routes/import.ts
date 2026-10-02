@@ -87,7 +87,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
       // registro, es un conflicto que se informa y no se toca (el cambio de
       // DNS lo decide el administrador cuando quiera migrar el tráfico).
       const dominios = listServices(project.id).flatMap((s) => ((s.config as { domains?: string[] }).domains ?? []));
-      const dns = await dnsAutomaticoAdmin(req, dominios, { type: 'project', id: project.id });
+      const dns = await dnsAutomaticoAdmin(req, dominios, { type: 'project', id: project.id }, project.id);
       reply.code(201);
       return { project, report, ...(dns ? { dns } : {}) };
     });

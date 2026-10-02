@@ -21,13 +21,32 @@
  * Nunca hace fallar ni bloquea indefinidamente la petición que lo dispara: el
  * servicio ya está creado, todo tiene un plazo total acotado y cualquier fallo
  * vuelve como resultado `error` del dominio afectado.
+ *
+ * Cada registro creado se anota (`cloudflare_dns_records`) con el proyecto
+ * para el que lo creó el administrador: sigue apuntando a este servidor
+ * aunque el dominio deje de usarse, así que el nombre queda reservado a ese
+ * proyecto (`domainClaimError`) hasta que el administrador borra el registro
+ * en Ajustes → Cloudflare (`borrarRegistroCreado`). Sin la reserva, otro
+ * cliente podría asignarse después ese nombre del operador y obtener su
+ * certificado.
  */
 import { FastifyRequest } from 'fastify';
 import { audit } from './audit';
 import { currentUser } from './auth';
 import { CloudflareClient, CloudflareError, CfRegistro, COMENTARIO_SKYWAY, ERRORES_GLOBALES } from './cloudflare';
 import { anotarErrorCloudflare, tokenCloudflareGuardado } from './cloudflareconfig';
+import {
+  deleteCloudflareDnsRecord,
+  getCloudflareDnsRecord,
+  getProject,
+  getService,
+  listCloudflareDnsRecords,
+  moveCloudflareDnsRecords,
+  serviceIdsForDomain,
+  upsertCloudflareDnsRecord,
+} from './db';
 import { getServerIp } from './domains';
+import { httpError } from './mailconnect';
 
 export type AccionDns = 'created' | 'kept' | 'conflict' | 'skipped' | 'error';
 
@@ -66,7 +85,7 @@ function comodinDe(domain: string, zona: string): string | null {
   return padre === zona || padre.endsWith(`.${zona}`) ? `*.${padre}` : null;
 }
 
-async function unDominio(cliente: CloudflareClient, domain: string, ip: string): Promise<ResultadoDns> {
+async function unDominio(cliente: CloudflareClient, domain: string, ip: string, projectId: string | null): Promise<ResultadoDns> {
   const zona = await cliente.findZoneFor(domain);
   if (!zona) {
     return {
@@ -105,7 +124,7 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string):
     }
   }
   try {
-    await cliente.createRecord(zona.id, {
+    const creado = await cliente.createRecord(zona.id, {
       type: 'A',
       name: domain,
       content: ip,
@@ -114,6 +133,14 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string):
       // operador decide después si lo activa.
       proxied: false,
       comment: COMENTARIO_SKYWAY,
+    });
+    upsertCloudflareDnsRecord({
+      domain,
+      zone_id: zona.id,
+      zone_name: zona.name,
+      record_id: creado.id,
+      content: ip,
+      project_id: projectId,
     });
   } catch (err) {
     if (err instanceof CloudflareError && err.code === 'cloudflare_identical') {
@@ -131,8 +158,14 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string):
 /**
  * Aplica el DNS de los dominios con el token indicado. Exportada para las
  * pruebas; las rutas usan `dnsAutomaticoAdmin`, que comprueba el rol.
+ * `projectId` es el proyecto al que queda reservado cada registro creado.
  */
-export async function aplicarDnsDominios(token: string, dominios: string[], plazoMs = PLAZO_TOTAL_MS): Promise<ResultadoDns[]> {
+export async function aplicarDnsDominios(
+  token: string,
+  dominios: string[],
+  opts: { plazoMs?: number; projectId?: string | null } = {},
+): Promise<ResultadoDns[]> {
+  const plazoMs = opts.plazoMs ?? PLAZO_TOTAL_MS;
   const { ip } = await getServerIp();
   if (!ip) {
     return dominios.map((domain) => ({
@@ -155,7 +188,7 @@ export async function aplicarDnsDominios(token: string, dominios: string[], plaz
         continue;
       }
       try {
-        out.push(await unDominio(cliente, domain, ip));
+        out.push(await unDominio(cliente, domain, ip, opts.projectId ?? null));
         alguno = true;
       } catch (err) {
         if (err instanceof CloudflareError) {
@@ -175,29 +208,48 @@ export async function aplicarDnsDominios(token: string, dominios: string[], plaz
   return out;
 }
 
+function normalizar(dominios: readonly string[]): string[] {
+  return [...new Set(dominios.map((d) => d.trim().toLowerCase().replace(/\.$/, '')).filter(Boolean))];
+}
+
+/**
+ * Dominios nuevos de una petición de un administrador, o [] si quien pide no
+ * lo es. Cuando un administrador asigna a un proyecto un nombre reservado
+ * (creado antes para otro), la reserva pasa a ese proyecto: es él quien
+ * decide a quién sirve el registro.
+ */
+function dominiosDelAdministrador(req: FastifyRequest, dominios: readonly string[], projectId: string): string[] {
+  const user = currentUser(req);
+  if (!user || user.role !== 'admin') return [];
+  const nuevos = normalizar(dominios);
+  if (nuevos.length > 0) moveCloudflareDnsRecords(nuevos, projectId);
+  return nuevos;
+}
+
 /**
  * DNS automático de los dominios NUEVOS de una petición. Devuelve undefined
  * (y no hace nada) si quien pide no es administrador, si no hay token o si no
  * hay dominios; si no, el resultado por dominio, que las rutas devuelven en
  * `dns`. Audita `cloudflare_dns_applied` con el resumen (nunca el token).
+ * `projectId` es el proyecto del servicio: los registros creados quedan
+ * reservados a él.
  */
 export async function dnsAutomaticoAdmin(
   req: FastifyRequest,
   dominios: readonly string[],
   objetivo: { type: string; id: string },
+  projectId: string,
 ): Promise<ResultadoDns[] | undefined> {
   // Lo primero, antes de leer el token o la IP: la regla que protege las
   // zonas del operador no depende de quien llama a esta función.
-  const user = currentUser(req);
-  if (!user || user.role !== 'admin') return undefined;
-  const nuevos = [...new Set(dominios.map((d) => d.trim().toLowerCase().replace(/\.$/, '')).filter(Boolean))];
+  const nuevos = dominiosDelAdministrador(req, dominios, projectId);
   if (nuevos.length === 0) return undefined;
   const token = tokenCloudflareGuardado();
   if (!token) return undefined;
 
   let resultados: ResultadoDns[];
   try {
-    resultados = await aplicarDnsDominios(token, nuevos);
+    resultados = await aplicarDnsDominios(token, nuevos, { projectId });
   } catch (err) {
     // Nada de aquí puede romper el alta, que ya está hecha.
     req.log.warn({ err: (err as Error)?.message }, 'DNS automático en Cloudflare');
@@ -215,4 +267,101 @@ export async function dnsAutomaticoAdmin(
       .slice(0, 500),
   });
   return resultados;
+}
+
+/**
+ * Edición de un servicio sin `domainsBase`: no se sabe si los dominios nuevos
+ * los escribe el administrador o son de una lectura anterior (un dominio que
+ * el cliente quitó entretanto y que podría volver a poner y quitar a
+ * voluntad), así que no se usa el token. Para un administrador con token, la
+ * respuesta lo explica por dominio; para cualquier otro, undefined. Nunca
+ * sale ninguna petición.
+ */
+export function dnsSinBase(req: FastifyRequest, dominios: readonly string[], projectId: string): ResultadoDns[] | undefined {
+  const nuevos = dominiosDelAdministrador(req, dominios, projectId);
+  if (nuevos.length === 0 || !tokenCloudflareGuardado()) return undefined;
+  return nuevos.map((domain) => ({
+    domain,
+    action: 'skipped' as const,
+    message:
+      'No se ha configurado el DNS automáticamente: al editar un servicio, la petición debe indicar en «domainsBase» los dominios de los que parte, ' +
+      'para no crear el registro de un dominio que otra persona haya quitado entretanto. Crea el registro A a mano o repite el cambio con «domainsBase».',
+  }));
+}
+
+/* ------------------ Registros creados: reserva y limpieza ------------------ */
+
+export interface RegistroCreadoVista {
+  domain: string;
+  zone: string;
+  content: string;
+  /** Proyecto al que queda reservado el nombre (null si ya no existe). */
+  project: { id: string; name: string } | null;
+  /** Servicio que usa hoy el dominio, si alguno. */
+  usedBy: { id: string; name: string; project: string } | null;
+  createdAt: number;
+}
+
+/** Lo que ve Ajustes → Cloudflare: los registros que creó el DNS automático. */
+export function registrosCreados(): RegistroCreadoVista[] {
+  return listCloudflareDnsRecords().map((r) => {
+    const proyecto = r.project_id ? getProject(r.project_id) : undefined;
+    const servicio = serviceIdsForDomain(r.domain).map((id) => getService(id)).find(Boolean);
+    return {
+      domain: r.domain,
+      zone: r.zone_name,
+      content: r.content,
+      project: proyecto ? { id: proyecto.id, name: proyecto.name } : null,
+      usedBy: servicio ? { id: servicio.id, name: servicio.name, project: getProject(servicio.project_id)?.name ?? '?' } : null,
+      createdAt: r.created_at,
+    };
+  });
+}
+
+export type ResultadoBorrado = 'deleted' | 'gone' | 'released';
+
+/**
+ * Borra en Cloudflare un registro que creó el DNS automático y libera el
+ * nombre. Solo el administrador (lo exige la ruta). No se toca nada si el
+ * dominio sigue asignado a un servicio, ni un registro que alguien ha
+ * cambiado desde entonces y que sigue apuntando aquí (quizá lo usa el
+ * operador para otra cosa): en ese caso se mantiene la reserva. Si ya no
+ * existe o ya apunta a otro sitio, solo se libera el nombre.
+ */
+export async function borrarRegistroCreado(
+  domain: string,
+  auditar: (action: string, target: { type: string; id: string; detail: string }) => void,
+): Promise<ResultadoBorrado> {
+  const fila = getCloudflareDnsRecord(domain);
+  if (!fila) throw httpError(404, 'Skyway no tiene anotado ningún registro creado para ese dominio.');
+  const servicio = serviceIdsForDomain(fila.domain).map((id) => getService(id)).find(Boolean);
+  if (servicio) {
+    throw httpError(
+      409,
+      `El dominio ${fila.domain} sigue asignado al servicio «${getProject(servicio.project_id)?.name ?? '?'} / ${servicio.name}». Quítalo del servicio antes de borrar su registro.`,
+    );
+  }
+  const token = tokenCloudflareGuardado();
+  if (!token) throw httpError(400, 'Configura el token de Cloudflare para borrar el registro.');
+  const cliente = new CloudflareClient(token, { timeoutMs: PLAZO_PETICION_MS });
+  const actual = await cliente.getRecord(fila.zone_id, fila.record_id);
+  let resultado: ResultadoBorrado;
+  if (!actual) {
+    resultado = 'gone';
+  } else if (actual.type !== 'A' || actual.content.trim() !== fila.content) {
+    // Ya no apunta a este servidor: no hay nada que reservar ni que borrar.
+    resultado = 'released';
+  } else if (actual.comment !== COMENTARIO_SKYWAY) {
+    throw httpError(
+      409,
+      `El registro de ${fila.domain} se ha modificado en Cloudflare desde que lo creó Skyway y sigue apuntando a este servidor: no se ha borrado. Si ya no se utiliza, bórralo en Cloudflare y vuelve a intentarlo.`,
+    );
+  } else {
+    await cliente.deleteRecord(fila.zone_id, fila.record_id);
+    resultado = 'deleted';
+  }
+  deleteCloudflareDnsRecord(fila.domain);
+  const detalle = { deleted: 'registro borrado', gone: 'ya no existía', released: 'ya apuntaba a otro sitio; nombre liberado' }[resultado];
+  auditar('cloudflare_dns_record_deleted', { type: 'system', id: 'cloudflare', detail: `${fila.domain}: ${detalle}` });
+  return resultado;
 }

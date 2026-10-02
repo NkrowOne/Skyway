@@ -616,6 +616,23 @@ export function initDb(): void {
     -- distinguir una variable que Skyway puede actualizar de una que alguien ha
     -- puesto o cambiado a mano, que no se pisa nunca: si el valor actual ya no
     -- casa con el hash, es de quien lo cambió. Solo hashes: nada recuperable.
+    -- Registros A que el DNS automático del administrador (cloudflaredns.ts)
+    -- creó en las zonas de Cloudflare del operador. Siguen apuntando a este
+    -- servidor aunque el dominio deje de usarse, y Let's Encrypt valida por
+    -- HTTP contra él: sin esta reserva, cualquier cliente podría asignarse
+    -- después ese nombre del operador. El nombre queda reservado al proyecto
+    -- para el que lo asignó el administrador (sin clave foránea a propósito: la
+    -- reserva sobrevive al proyecto), hasta que el administrador borra el
+    -- registro desde Ajustes → Cloudflare.
+    CREATE TABLE IF NOT EXISTS cloudflare_dns_records (
+      domain TEXT PRIMARY KEY,
+      zone_id TEXT NOT NULL,
+      zone_name TEXT NOT NULL,
+      record_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      project_id TEXT,
+      created_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS service_managed_env (
       service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
       key TEXT NOT NULL,
@@ -1850,6 +1867,46 @@ export function findServiceIdByDomain(domain: string): string | undefined {
  * ninguno; puede haber más en instalaciones anteriores a la comprobación de
  * dominios únicos (`domainguard.ts`), y quien pregunta tiene que verlos todos.
  */
+// ---------- registros del DNS automático en Cloudflare ----------
+export interface CloudflareDnsRecordRow {
+  domain: string;
+  zone_id: string;
+  zone_name: string;
+  record_id: string;
+  content: string;
+  project_id: string | null;
+  created_at: number;
+}
+
+export function getCloudflareDnsRecord(domain: string): CloudflareDnsRecordRow | undefined {
+  return stmt('SELECT * FROM cloudflare_dns_records WHERE domain = ?').get(domain.trim().toLowerCase()) as
+    | CloudflareDnsRecordRow
+    | undefined;
+}
+
+export function listCloudflareDnsRecords(): CloudflareDnsRecordRow[] {
+  return stmt('SELECT * FROM cloudflare_dns_records ORDER BY domain').all() as CloudflareDnsRecordRow[];
+}
+
+export function upsertCloudflareDnsRecord(row: Omit<CloudflareDnsRecordRow, 'created_at'>): void {
+  stmt(
+    `INSERT INTO cloudflare_dns_records (domain, zone_id, zone_name, record_id, content, project_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(domain) DO UPDATE SET zone_id = excluded.zone_id, zone_name = excluded.zone_name,
+       record_id = excluded.record_id, content = excluded.content, project_id = excluded.project_id`,
+  ).run(row.domain, row.zone_id, row.zone_name, row.record_id, row.content, row.project_id, now());
+}
+
+/** El administrador asigna un nombre reservado a otro proyecto: la reserva pasa a ese proyecto. */
+export function moveCloudflareDnsRecords(domains: readonly string[], projectId: string): void {
+  const mover = stmt('UPDATE cloudflare_dns_records SET project_id = ? WHERE domain = ?');
+  for (const d of domains) mover.run(projectId, d.trim().toLowerCase());
+}
+
+export function deleteCloudflareDnsRecord(domain: string): void {
+  stmt('DELETE FROM cloudflare_dns_records WHERE domain = ?').run(domain.trim().toLowerCase());
+}
+
 export function serviceIdsForDomain(domain: string): string[] {
   const wanted = domain.trim().toLowerCase();
   return serviceDomainRows()
