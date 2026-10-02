@@ -139,7 +139,7 @@ function statusFor(err: MailwayError): number {
 
 function messageFor(err: MailwayError): string {
   if (err.kind === 'http' && err.status === 403) {
-    return `Mailway ha denegado la operación: ${err.message} Compruebe que el token de gestión configurado en Skyway es de administrador.`;
+    return `Mailway ha denegado la operación: ${err.message} Comprueba que el token de gestión configurado en Skyway es de administrador.`;
   }
   return err.message;
 }
@@ -243,13 +243,13 @@ async function ownedSummary(project: ProjectRow, link: MailwayLinkRow): Promise<
   if (ref === null) {
     throw refError(
       `El cliente de Mailway «${summary.client.name}» ya no está vinculado a este proyecto: se ha retirado su referencia desde Mailway. ` +
-        'Desactive el correo en este proyecto; después podrá activarlo de nuevo recuperando ese mismo cliente.',
+        'Desactiva el correo en este proyecto; después podrás activarlo de nuevo recuperando ese mismo cliente.',
     );
   }
   if (ref !== expected) {
     throw refError(
       `El cliente de Mailway «${summary.client.name}» está vinculado a otra integración. ` +
-        'Desactive el correo en este proyecto; el cliente y sus buzones se conservan en Mailway.',
+        'Desactiva el correo en este proyecto; el cliente y sus buzones se conservan en Mailway.',
     );
   }
   return summary;
@@ -524,7 +524,7 @@ function baseConflictMessage(cfg: MailwayConfig): string | null {
   const project = getProject(service.project_id);
   return (
     `El dominio de la URL pública lo sirve el servicio «${project?.name ?? '?'} / ${service.name}» de Skyway, que no es el panel de Mailway. ` +
-    'Si ese servicio ejecuta el panel, selecciónelo en «Servicio del panel de Mailway»; si no, corrija la URL. El token de gestión no se envía por un dominio de otro servicio.'
+    'Si ese servicio ejecuta el panel, selecciónalo en «Servicio del panel de Mailway»; si no, corrige la URL. El token de gestión no se envía por un dominio de otro servicio.'
   );
 }
 
@@ -705,10 +705,10 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           serviceId: body.serviceId || saved.serviceId,
         };
         if (!cfg.token) {
-          return reply.code(400).send({ error: 'Introduzca el token de gestión de Mailway o guárdelo antes de probar la conexión.' });
+          return reply.code(400).send({ error: 'Introduce el token de gestión de Mailway o guárdalo antes de probar la conexión.' });
         }
         if (!cfg.baseUrl && !internalPanelUrl(cfg.serviceId)) {
-          return reply.code(400).send({ error: 'Indique la URL pública del panel de Mailway o el servicio de Skyway que lo ejecuta.' });
+          return reply.code(400).send({ error: 'Indica la URL pública del panel de Mailway o el servicio de Skyway que lo ejecuta.' });
         }
         const conflicto = baseConflictMessage(cfg);
         if (conflicto && !internalPanelUrl(cfg.serviceId)) return reply.code(400).send({ error: conflicto });
@@ -799,7 +799,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           // Lo mismo si el cliente ya no lleva la referencia del proyecto.
           const notice =
             err instanceof MailwayError && err.status === 404
-              ? `No se encuentra en Mailway el cliente «${link.client_name}» vinculado a este proyecto. Si se ha eliminado, desactive el correo y vuelva a activarlo.`
+              ? `No se encuentra en Mailway el cliente «${link.client_name}» vinculado a este proyecto. Si se ha eliminado, desactiva el correo y vuelve a activarlo.`
               : isRefError(err)
                 ? err.message
                 : null;
@@ -979,7 +979,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         if (!ctx) return reply;
         const link = requireLink(ctx.project);
         const body = z.object({ domain: domainSchema }).parse(req.body);
-        if (!body.domain.includes('.')) throw httpError(400, 'Indique un dominio completo, por ejemplo: suempresa.com');
+        if (!body.domain.includes('.')) throw httpError(400, 'Indica un dominio completo, por ejemplo: tuempresa.com');
         assertAccountActive(ctx.project);
         // Como en el resto de rutas: el cliente tiene que seguir siendo el del proyecto.
         const summary = await ownedSummary(ctx.project, link);
@@ -1096,7 +1096,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
               .toLowerCase()
               .regex(
                 LOCAL_PART_RE,
-                'Nombre de buzón no válido: use letras minúsculas, números, puntos, guiones o guiones bajos, y empiece y termine por una letra o un número',
+                'Nombre de buzón no válido: usa letras minúsculas, números, puntos, guiones o guiones bajos, y empieza y termina por una letra o un número',
               ),
             displayName: z.string().trim().max(80, 'El nombre visible admite como máximo 80 caracteres').optional(),
           })
@@ -1309,7 +1309,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           };
         } else {
           const apiUrl = publicPanelUrl();
-          if (!apiUrl) throw new MailwayError('config', 'No se conoce la URL pública de Mailway: configúrela en Ajustes → Correo (Mailway).');
+          if (!apiUrl) throw new MailwayError('config', 'No se conoce la URL pública de Mailway: configúrala en Ajustes → Correo (Mailway).');
           const name = apiKeyName(service);
           for (const old of summary.apiKeys.filter((k) => !k.revokedAt && k.name === name)) {
             await revokeIgnoringGone(() => revokeApiKey(old.id));

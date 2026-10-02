@@ -967,7 +967,7 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
       type: 'billing_plan_currency_mixed',
       title: `Cambio de divisa en el plan — ${ws.name}`,
       message: `El ciclo tiene tramos de plan en varias divisas (${divisas}); se ha facturado el mes completo al plan vigente (${currency}).`,
-      explanation: 'Revise la factura: si el tramo anterior debía cobrarse en su divisa, emítalo como factura aparte y rectifique esta.',
+      explanation: 'Revisa la factura: si el tramo anterior debía cobrarse en su divisa, emítelo como factura aparte y rectifica esta.',
       dedupeKey: `ws:${ws.id}:divisa_plan:${cycle.start}`,
     });
   }
@@ -1264,7 +1264,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       body.operationDate !== undefined ||
       body.currency !== undefined;
     if (inv.status !== 'draft' && editsContent) {
-      return reply.code(409).send({ error: 'Una factura emitida es inmutable; corríjala emitiendo una factura rectificativa.' });
+      return reply.code(409).send({ error: 'Una factura emitida es inmutable; corrígela emitiendo una factura rectificativa.' });
     }
     const target = body.status ?? inv.status;
     if (target !== inv.status && !ALLOWED_TRANSITIONS[inv.status].includes(target)) {
@@ -1276,7 +1276,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     if (target === 'void' && inv.status !== 'void') {
       const rect = listRectificationsOf(inv.id);
       if (rect.length > 0) {
-        return reply.code(409).send({ error: `La factura ya está rectificada por ${rect[0].number ?? rect[0].id}; para anular esta, anule antes esa rectificativa.` });
+        return reply.code(409).send({ error: `La factura ya está rectificada por ${rect[0].number ?? rect[0].id}; para anular esta, anula antes esa rectificativa.` });
       }
     }
 
@@ -1407,7 +1407,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(409).send({ error: 'Solo se rectifican facturas emitidas; un borrador se edita directamente.' });
     }
     if (original.invoice_type === 'rectificativa') {
-      return reply.code(409).send({ error: 'Una rectificativa no se rectifica; corrija la factura original.' });
+      return reply.code(409).send({ error: 'Una rectificativa no se rectifica; corrige la factura original.' });
     }
     // Esta rectificativa revierte ÍNTEGRAMENTE la original. Emitir una segunda
     // sobre la misma factura abonaría dos veces la misma operación (base e IVA en
@@ -1485,7 +1485,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     // secundario de un enlace que nunca llegó a crearse.
     if (inv.total_cents <= 0) return reply.code(400).send({ error: 'La factura no tiene importe a cobrar: un enlace de pago exige un total positivo.' });
     const secret = getStripeSecretKey();
-    if (!secret) return reply.code(400).send({ error: 'Configure primero la clave de Stripe en Contabilidad.' });
+    if (!secret) return reply.code(400).send({ error: 'Configura primero la clave de Stripe en Contabilidad.' });
     // Dos clics seguidos entraban a la vez: mientras el primero esperaba a Stripe,
     // el segundo creaba otra sesión y la última escritura pisaba a la primera.
     if (stripeLinkEnCurso.has(id)) return reply.code(409).send({ error: 'Ya se está generando el enlace de pago de esta factura.' });

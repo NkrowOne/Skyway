@@ -168,7 +168,7 @@ function installationUseAccess(
     return assertProjectAccess(req, reply, projectId);
   }
   if (user.role !== 'member' || listUserProjectIds(user.id).length > 0) return true;
-  reply.code(403).send({ error: 'No dispone de ningún proyecto desde el que utilizar esta conexión de GitHub' });
+  reply.code(403).send({ error: 'No dispones de ningún proyecto desde el que utilizar esta conexión de GitHub' });
   return false;
 }
 
@@ -195,13 +195,13 @@ function notVisibleMessage(kind: 'app' | 'pat', account: string, owner: string, 
   if (kind === 'app') {
     return (
       `La cuenta @${account} no tiene acceso a ${quien}. La App solo ve los repositorios de las cuentas donde está instalada: ` +
-      `si ${owner} es su cuenta, añada el repositorio desde «Elegir repositorios en GitHub»; si solo es colaborador, conecte ` +
-      'un token clásico de su usuario con permiso «repo» (Tokens personales), que sí ve los repositorios en los que colabora.'
+      `si ${owner} es tu cuenta, añade el repositorio desde «Elegir repositorios en GitHub»; si solo eres colaborador, conecta ` +
+      'un token clásico de tu usuario con permiso «repo» (Tokens personales), que sí ve los repositorios en los que colaboras.'
     );
   }
   return (
     `El token de @${account} no tiene acceso a ${quien}. Un token de alcance restringido solo ve los repositorios que se le concedieron, nunca los ` +
-    'de otra cuenta en la que es colaborador: cree uno clásico con permiso «repo», o solicite acceso al propietario del repositorio.'
+    'de otra cuenta en la que eres colaborador: crea uno clásico con permiso «repo», o solicita acceso al propietario del repositorio.'
   );
 }
 
@@ -475,7 +475,7 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
     if (!row) return reply.code(404).send({ error: 'Instalación no encontrada' });
     if (!installationUseAccess(req, reply, row, query.projectId)) return reply;
     const slug = parseGithubSlug(query.repo);
-    if (!slug) return reply.code(400).send({ error: 'Introduzca el repositorio como owner/repo o pegue su URL de GitHub' });
+    if (!slug) return reply.code(400).send({ error: 'Introduce el repositorio como owner/repo o pega su URL de GitHub' });
     try {
       const token = await installationTokenFor(row);
       const repo = await lookupRepo(token, slug.owner, slug.repo);
@@ -508,7 +508,7 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
     if (!getProject(id)) return reply.code(404).send({ error: 'Proyecto no encontrado' });
     if (!assertProjectAccess(req, reply, id)) return reply;
     const slug = parseGithubSlug(query.repo);
-    if (!slug) return reply.code(400).send({ error: 'Indique el repositorio como owner/repo o pegue su URL de GitHub' });
+    if (!slug) return reply.code(400).send({ error: 'Indica el repositorio como owner/repo o pega su URL de GitHub' });
 
     let token: string | null = getSetting('githubToken') || null;
     if (query.source?.startsWith('app:')) {
@@ -550,15 +550,15 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
     if (!getProject(id)) return reply.code(404).send({ error: 'Proyecto no encontrado' });
     if (!assertProjectAccess(req, reply, id)) return reply;
     const slug = parseGithubSlug(query.repo);
-    if (!slug) return reply.code(400).send({ error: 'Introduzca el repositorio como owner/repo o pegue su URL de GitHub' });
+    if (!slug) return reply.code(400).send({ error: 'Introduce el repositorio como owner/repo o pega su URL de GitHub' });
     const globalToken = getSetting('githubToken') || null;
     try {
       const repo = await lookupRepo(globalToken, slug.owner, slug.repo);
       if (repo) return { repo, credential: globalToken ? 'global' : 'public' };
       return reply.code(404).send({
         error: globalToken
-          ? `El token global del servidor tampoco tiene acceso a ${slug.owner}/${slug.repo}: conecte en este proyecto una cuenta de GitHub con acceso al repositorio.`
-          : `${slug.owner}/${slug.repo} no es público (o no existe): para clonarlo, conecte en este proyecto una cuenta de GitHub con acceso al repositorio.`,
+          ? `El token global del servidor tampoco tiene acceso a ${slug.owner}/${slug.repo}: conecta en este proyecto una cuenta de GitHub con acceso al repositorio.`
+          : `${slug.owner}/${slug.repo} no es público (o no existe): para clonarlo, conecta en este proyecto una cuenta de GitHub con acceso al repositorio.`,
         reason: 'not_visible',
       });
     } catch (err: any) {

@@ -260,7 +260,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       if (body.domains.length > 0 && !body.port) {
         return reply.code(400).send({
           error:
-            'Un servicio con dominio requiere puerto interno: Traefik necesita saber a qué puerto del contenedor entregar la petición. Indique el puerto en el que escucha la imagen, o cree el servicio sin dominio si es un worker sin HTTP.',
+            'Un servicio con dominio requiere puerto interno: Traefik necesita saber a qué puerto del contenedor entregar la petición. Indica el puerto en el que escucha la imagen, o crea el servicio sin dominio si es un worker sin HTTP.',
         });
       }
       const slug = uniqueSlug(projectId, body.name);

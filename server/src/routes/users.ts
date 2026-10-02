@@ -75,7 +75,7 @@ function workspaceBlocker(
     if (countWorkspaceMembers(workspaceId) >= summary.quota.maxMembers) {
       return {
         code: 409,
-        error: `La cuenta «${ws.name}» ha alcanzado su límite de ${summary.quota.maxMembers} usuarios. Amplíe la cuota antes de añadir más.`,
+        error: `La cuenta «${ws.name}» ha alcanzado su límite de ${summary.quota.maxMembers} usuarios. Amplía la cuota antes de añadir más.`,
       };
     }
   }
@@ -143,7 +143,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     // --- Validación COMPLETA antes de tocar nada (evita mutaciones parciales en un 400) ---
     const roleChange = body.role && body.role !== target.role ? body.role : null;
     if (roleChange) {
-      if (target.id === me.id) return reply.code(400).send({ error: 'No es posible cambiar su propio rol' });
+      if (target.id === me.id) return reply.code(400).send({ error: 'No es posible cambiar tu propio rol' });
       if (target.role === 'admin' && countAdmins() <= 1) {
         return reply.code(400).send({ error: 'Debe quedar al menos un administrador' });
       }
@@ -165,7 +165,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
       body.workspaceId !== undefined ? body.workspaceId : effectiveRole === 'admin' ? null : currentWorkspace;
     const workspaceChange = nextWorkspace !== currentWorkspace;
     if (workspaceChange && target.id === me.id) {
-      return reply.code(400).send({ error: 'No es posible cambiar su propia cuenta' });
+      return reply.code(400).send({ error: 'No es posible cambiar tu propia cuenta' });
     }
     // Al cambiar de cuenta, las asignaciones antiguas dejan de tener sentido: o
     // llegan proyectos de la cuenta nueva en la misma petición, o se vacían.
@@ -226,7 +226,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     const target = getUser(id);
     if (!target) return reply.code(404).send({ error: 'Usuario no encontrado' });
     const me = currentUser(req)!;
-    if (target.id === me.id) return reply.code(400).send({ error: 'No es posible eliminar su propia cuenta' });
+    if (target.id === me.id) return reply.code(400).send({ error: 'No es posible eliminar tu propia cuenta' });
     if (target.role === 'admin' && countAdmins() <= 1) {
       return reply.code(400).send({ error: 'Debe quedar al menos un administrador' });
     }

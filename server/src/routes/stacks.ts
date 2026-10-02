@@ -58,7 +58,7 @@ function crearAtomico(fn: () => void): string | null {
   } catch (err) {
     const code = String((err as { code?: unknown } | null)?.code ?? '');
     if (code.startsWith('SQLITE_CONSTRAINT')) {
-      return 'Ya existe un servicio con uno de esos nombres en el proyecto: utilice otro prefijo.';
+      return 'Ya existe un servicio con uno de esos nombres en el proyecto: utiliza otro prefijo.';
     }
     throw err;
   }
@@ -105,7 +105,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/railway-templates/preview', { preHandler: rateLimit({ max: PREVIEWS_POR_MINUTO, windowMs: 60_000 }) }, async (req, reply) => {
     const body = z.object({ template: z.string().trim().min(1), prefix: z.string().trim().max(40).optional() }).parse(req.body);
     const code = parseTemplateCode(body.template);
-    if (!code) return reply.code(400).send({ error: 'No se reconoce la plantilla: introduzca su URL de Railway o su código.' });
+    if (!code) return reply.code(400).send({ error: 'No se reconoce la plantilla: introduce su URL de Railway o su código.' });
     const plan = await planRailwayTemplate(code, { prefix: body.prefix, projectName: '' });
     return {
       plan: {
@@ -287,7 +287,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
 
     const body = templateSchema.parse(req.body);
     const code = parseTemplateCode(body.template);
-    if (!code) return reply.code(400).send({ error: 'No se reconoce la plantilla: introduzca su URL de Railway o su código.' });
+    if (!code) return reply.code(400).send({ error: 'No se reconoce la plantilla: introduce su URL de Railway o su código.' });
 
     const isAdmin = currentUser(req)!.role === 'admin';
     if (body.domain && !moduleAllowedForProject(projectId, 'domains', isAdmin)) {
