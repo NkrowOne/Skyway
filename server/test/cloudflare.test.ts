@@ -25,6 +25,8 @@ import {
   createUser,
   createWorkspaceRow,
   deleteCloudflareDnsRecord,
+  getCloudflareDnsRecord,
+  getMailwayDnsReserva,
   getMailwayLink,
   getSetting,
   getUserByEmail,
@@ -34,6 +36,7 @@ import {
   setSetting,
   setUserProjects,
 } from '../src/db';
+import { getInfo } from '../src/mailway';
 import { ejecutarCloudflare } from '../src/tools/cloudflare';
 import type { ProjectRow, UserRow } from '../src/types';
 import { hashPassword, randomToken } from '../src/util';
@@ -1114,6 +1117,110 @@ describe('los registros que crea el DNS automático quedan reservados hasta que 
     // El proyecto para el que se creó sí puede volver a usarlo.
     r = await call('PATCH', `/api/services/${idA}`, ownerA, { config: { domains: ['clientea.operador.com'] }, domainsBase: [] });
     expect(r.status, r.raw).toBe(200);
+  });
+
+  it('si Cloudflare crea el registro pero la respuesta se pierde, al reintentarlo queda reservado igual', async () => {
+    cf.cortarTrasCrear = true;
+    let r = await call('POST', `/api/projects/${projA.id}/services`, admin(), {
+      type: 'image',
+      name: 'perdida',
+      image: 'nginx',
+      port: 80,
+      domains: ['perdida.operador.com'],
+    });
+    expect(r.status, r.raw).toBe(201);
+    expect(r.json.dns).toEqual([expect.objectContaining({ domain: 'perdida.operador.com', action: 'error' })]);
+    // El registro existe en la zona del operador, pero Skyway no llegó a anotarlo.
+    expect(cf.records.filter((x) => x.name === 'perdida.operador.com')).toHaveLength(1);
+    expect(getCloudflareDnsRecord('perdida.operador.com')).toBeUndefined();
+    const id = r.json.service.id as string;
+
+    // El reintento lo encuentra (es suyo, lleva el comentario de Skyway) y lo reserva.
+    r = await call('POST', `/api/services/${id}/cloudflare-dns`, admin(), { domain: 'perdida.operador.com' });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.dns).toEqual([expect.objectContaining({ domain: 'perdida.operador.com', action: 'kept' })]);
+    expect(getCloudflareDnsRecord('perdida.operador.com')?.project_id).toBe(projA.id);
+
+    // Se quita del servicio y otro cliente no puede quedárselo.
+    r = await call('PATCH', `/api/services/${id}`, ownerA, { config: { domains: [] }, domainsBase: ['perdida.operador.com'] });
+    expect(r.status, r.raw).toBe(200);
+    r = await call('POST', `/api/projects/${projB.id}/services`, ownerB, {
+      type: 'image',
+      name: 'toma-perdida',
+      image: 'nginx',
+      port: 80,
+      domains: ['perdida.operador.com'],
+    });
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/reservado por el administrador/);
+  });
+
+  it('un A ajeno hacia este servidor (sin el comentario de Skyway) no se reserva al reintentarlo', async () => {
+    const z = cf.zones.find((x) => x.name === 'operador.com')!;
+    registro(z, { type: 'A', name: 'a-mano.operador.com', content: '203.0.113.10', comment: 'puesto a mano' });
+    const r = await call('POST', `/api/projects/${projA.id}/services`, admin(), {
+      type: 'image',
+      name: 'a-mano',
+      image: 'nginx',
+      port: 80,
+      domains: ['a-mano.operador.com'],
+    });
+    expect(r.status, r.raw).toBe(201);
+    expect(r.json.dns).toEqual([expect.objectContaining({ action: 'kept' })]);
+    expect(getCloudflareDnsRecord('a-mano.operador.com')).toBeUndefined();
+  });
+
+  it('los nombres que Mailway crea para el administrador (autoconfig, autodiscover, webmail) tampoco se los queda otro cliente', async () => {
+    let r: Awaited<ReturnType<typeof call>>;
+    // El correo del proyecto puede estar ya activado por una prueba anterior.
+    if (!getMailwayLink(projA.id)) {
+      r = await call('POST', `/api/projects/${projA.id}/mail/link`, ownerA, { mode: 'create' });
+      expect(r.status, r.raw).toBe(201);
+    }
+    // Mailway 1.1 con Cloudflare (otra prueba pudo dejar en la caché una información anterior).
+    mw.infoOverride = {};
+    await getInfo({ fresh: true });
+    mw.autoDnsConAutoconfig = true;
+    try {
+      r = await call('POST', `/api/projects/${projA.id}/mail/domains`, admin(), { domain: 'reservas.operador.com' });
+      expect(r.json.cloudflare?.applied).toHaveLength(3);
+      expect(r.status, r.raw).toBe(201);
+    } finally {
+      mw.autoDnsConAutoconfig = false;
+    }
+    expect(getMailwayDnsReserva('autoconfig.reservas.operador.com')?.project_id).toBe(projA.id);
+    expect(getMailwayDnsReserva('autodiscover.reservas.operador.com')?.project_id).toBe(projA.id);
+    // El MX no es un nombre que un servicio pueda usar: no se reserva.
+    expect(getMailwayDnsReserva('reservas.operador.com')).toBeUndefined();
+
+    // Aunque el dominio de correo se borre y el puente deje de publicarlos, otro cliente no puede asignárselos.
+    mw.domains = mw.domains.filter((d) => d.domain !== 'reservas.operador.com');
+    for (const nombre of ['autoconfig.reservas.operador.com', 'autodiscover.reservas.operador.com']) {
+      r = await call('POST', `/api/projects/${projB.id}/services`, ownerB, {
+        type: 'image',
+        name: `toma-${nombre.split('.')[0]}`,
+        image: 'nginx',
+        port: 80,
+        domains: [nombre],
+      });
+      expect(r.status, nombre).toBe(409);
+      expect(r.json.error).toMatch(/reservado por el administrador/);
+    }
+    // El proyecto para el que se crearon sí puede usarlos.
+    r = await call('POST', `/api/projects/${projA.id}/services`, ownerA, {
+      type: 'image',
+      name: 'autoconfig-propio',
+      image: 'nginx',
+      port: 80,
+      domains: ['autoconfig.reservas.operador.com'],
+    });
+    expect(r.status, r.raw).toBe(201);
+  });
+
+  it('lo que crea un cliente con su propia cuenta no se reserva (es su zona)', async () => {
+    const r = await call('POST', `/api/projects/${projA.id}/mail/domains`, ownerA, { domain: 'propio-cliente.com' });
+    expect(r.status, r.raw).toBe(201);
+    expect(getMailwayDnsReserva('autoconfig.propio-cliente.com')).toBeUndefined();
   });
 
   it('Ajustes → Cloudflare los lista y los borra solo si nadie los usa ni los ha cambiado', async () => {

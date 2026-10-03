@@ -24,6 +24,7 @@ import {
   setUserProjects,
   updateService,
   updateWorkspace,
+  getMailwayDnsReserva,
 } from '../src/db';
 import { domainClaimError } from '../src/domainguard';
 import { stripWebRecords } from '../src/mailway';
@@ -560,12 +561,18 @@ describe('nombres de marca blanca reservados (también los que esperan DNS)', ()
     expect(claim('webmail.tienda.es', projB.id)).toMatch(MAILWAY_USA);
   });
 
-  it('«Desconectar Mailway» libera los nombres reservados', async () => {
+  it('«Desconectar Mailway» libera los nombres reservados, salvo los que su DNS creó el administrador', async () => {
+    // webmail.empresa.com lo creó el administrador con el registro automático
+    // en Cloudflare: el CNAME sigue en la zona aunque se desconecte Mailway.
+    // webmail.tienda.es lo creó el propietario sin Cloudflare.
+    expect(getMailwayDnsReserva('webmail.empresa.com')).toBeTruthy();
+    expect(getMailwayDnsReserva('webmail.tienda.es')).toBeUndefined();
     const r = await call('POST', '/api/mailway/disconnect', admin());
     expect(r.status, r.raw).toBe(200);
     expect(getSetting('mailway.whitelabelHosts')).toBeNull();
-    expect(claim('webmail.empresa.com', projB.id)).toBeNull();
-    const p = await addDomain(ownerB, svcB, 'webmail.empresa.com');
+    expect(claim('webmail.tienda.es', projB.id)).toBeNull();
+    expect(claim('webmail.empresa.com', projB.id)).toMatch(/reservado por el administrador/);
+    const p = await addDomain(ownerB, svcB, 'webmail.tienda.es');
     expect(p.status, p.raw).toBe(200);
   });
 });

@@ -116,6 +116,8 @@ export const mw = {
   infoOverride: {} as Record<string, unknown>,
   /** Si es true, los dominios nuevos nacen con la propiedad pendiente (como Mailway). */
   requireOwnership: false,
+  /** Con `autoDns`, Mailway crea también los CNAME de autoconfiguración (como el real con los recomendados). */
+  autoDnsConAutoconfig: false,
   /** Si se indica, toda petición con Bearer recibe este 401 (token revocado, caducado…). */
   reject401: null as { error: string; code: string } | null,
   /** Cuentas de Cloudflare conectadas en Mailway (clientId null = de la instancia). */
@@ -350,7 +352,12 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
     mw.domains.push(d);
     // Como Mailway: con `autoDns` aplica los registros que faltan sin reemplazar
     // nada (aquí, siempre el MX); sin él, `cloudflare: null`.
-    const cloudflare = b.autoDns === true ? { applied: [{ action: 'create', type: 'MX', name: d.domain }], errors: [], skipped: [] } : null;
+    const aplicados = [{ action: 'create', type: 'MX', name: d.domain }];
+    if (mw.autoDnsConAutoconfig) {
+      aplicados.push({ action: 'create', type: 'CNAME', name: `autoconfig.${d.domain}` });
+      aplicados.push({ action: 'create', type: 'CNAME', name: `autodiscover.${d.domain}` });
+    }
+    const cloudflare = b.autoDns === true ? { applied: aplicados, errors: [], skipped: [] } : null;
     return json(200, { domain: domainRecord(d), cloudflare });
   }
   if ((m = path.match(/^\/api\/domains\/([^/]+)\/(verify|dns|cloudflare|cloudflare\/apply)$/))) {

@@ -22,7 +22,7 @@
  * publicado, pero en cuanto apunte aquí el servicio que lo tuviera se quedaría
  * con el tráfico de ese webmail.
  */
-import { getCloudflareDnsRecord, getProject, getService, serviceIdsForDomain } from './db';
+import { getCloudflareDnsRecord, getMailwayDnsReserva, getProject, getService, serviceIdsForDomain } from './db';
 import { mailwayProject, mailwayReservedHosts } from './mailway';
 import { mailwayPublishedHosts, mailwayWhitelabelHosts } from './mailwaytraefik';
 
@@ -93,6 +93,14 @@ export function domainClaimError(domains: Iterable<string>, claim: DomainClaim):
       if (mailwayProjectId !== claim.projectId) {
         return `El dominio ${domain} lo utiliza el servicio de correo (Mailway) y no se puede asignar a este servicio.`;
       }
+    }
+    // Los nombres que Mailway creó en Cloudflare para el administrador
+    // (autoconfiguración y webmail del correo) siguen apuntando aquí aunque el
+    // dominio de correo o el webmail se borren, o se desconecte Mailway: solo
+    // su proyecto (o el administrador) puede asignárselos.
+    const deCorreo = getMailwayDnsReserva(domain);
+    if (deCorreo && deCorreo.project_id !== claim.projectId) {
+      return `El dominio ${domain} está reservado por el administrador de la plataforma y no se puede asignar a este servicio.`;
     }
   }
   return null;

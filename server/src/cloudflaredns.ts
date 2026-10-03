@@ -42,6 +42,7 @@ import {
   getService,
   listCloudflareDnsRecords,
   moveCloudflareDnsRecords,
+  moveMailwayDnsReservas,
   serviceIdsForDomain,
   upsertCloudflareDnsRecord,
 } from './db';
@@ -134,6 +135,18 @@ async function segunComodin(
   return null;
 }
 
+/**
+ * Un A hacia este servidor con el comentario de Skyway lo creó este mismo
+ * token, quizá en un intento cuya respuesta se perdió (conexión cortada o
+ * plazo vencido tras enviar la petición). Si aún no está anotado, se reserva
+ * igual que al crearlo: si no, otro cliente podría asignarse un nombre que
+ * apunta aquí y que nadie más ve en Ajustes → Cloudflare.
+ */
+function reservarSiEsDeSkyway(registro: CfRegistro, zona: CfZona, domain: string, ip: string, projectId: string | null): void {
+  if (registro.comment !== COMENTARIO_SKYWAY || getCloudflareDnsRecord(domain)) return;
+  upsertCloudflareDnsRecord({ domain, zone_id: zona.id, zone_name: zona.name, record_id: registro.id, content: ip, project_id: projectId });
+}
+
 async function unDominio(cliente: CloudflareClient, domain: string, ip: string, projectId: string | null): Promise<ResultadoDns> {
   const zona = await cliente.findZoneFor(domain);
   if (!zona) {
@@ -158,6 +171,7 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string, 
   }
   const propio = existentes.find(apuntaAqui);
   if (propio) {
+    reservarSiEsDeSkyway(propio, zona, domain, ip, projectId);
     return {
       domain,
       action: 'kept',
@@ -194,6 +208,9 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string, 
     });
   } catch (err) {
     if (err instanceof CloudflareError && err.code === 'cloudflare_identical') {
+      // Cloudflare dice que ya existe uno idéntico: si es de Skyway, se anota.
+      const identico = (await cliente.listRecords(zona.id, { name: domain })).find(apuntaAqui);
+      if (identico) reservarSiEsDeSkyway(identico, zona, domain, ip, projectId);
       return { domain, action: 'kept', message: `El registro A hacia ${ip} ya existía.` };
     }
     if (err instanceof CloudflareError && err.code === 'cloudflare_exists') {
@@ -272,7 +289,10 @@ function dominiosDelAdministrador(req: FastifyRequest, dominios: readonly string
   const user = currentUser(req);
   if (!user || user.role !== 'admin') return [];
   const nuevos = normalizar(dominios);
-  if (nuevos.length > 0) moveCloudflareDnsRecords(nuevos, projectId);
+  if (nuevos.length > 0) {
+    moveCloudflareDnsRecords(nuevos, projectId);
+    moveMailwayDnsReservas(nuevos, projectId);
+  }
   return nuevos;
 }
 

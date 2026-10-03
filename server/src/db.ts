@@ -633,6 +633,15 @@ export function initDb(): void {
       project_id TEXT,
       created_at INTEGER NOT NULL
     );
+    -- Nombres que Mailway creó en Cloudflare a petición de un administrador
+    -- (autoconfig., autodiscover., webmail.…): apuntan a este servidor aunque
+    -- el dominio de correo o el webmail se borren, así que solo el proyecto
+    -- para el que se crearon (o el administrador) puede asignárselos.
+    CREATE TABLE IF NOT EXISTS mailway_dns_reservas (
+      name TEXT PRIMARY KEY,
+      project_id TEXT,
+      created_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS service_managed_env (
       service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
       key TEXT NOT NULL,
@@ -1901,6 +1910,27 @@ export function upsertCloudflareDnsRecord(row: Omit<CloudflareDnsRecordRow, 'cre
 export function moveCloudflareDnsRecords(domains: readonly string[], projectId: string): void {
   const mover = stmt('UPDATE cloudflare_dns_records SET project_id = ? WHERE domain = ?');
   for (const d of domains) mover.run(projectId, d.trim().toLowerCase());
+}
+
+/** Reserva para el proyecto los nombres que Mailway creó en Cloudflare para un administrador. */
+export function reservarNombresMailway(names: readonly string[], projectId: string): void {
+  const guardar = stmt(
+    `INSERT INTO mailway_dns_reservas (name, project_id, created_at) VALUES (?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET project_id = excluded.project_id`,
+  );
+  for (const n of names) guardar.run(n.trim().toLowerCase().replace(/\.$/, ''), projectId, now());
+}
+
+export function getMailwayDnsReserva(name: string): { name: string; project_id: string | null } | undefined {
+  return stmt('SELECT name, project_id FROM mailway_dns_reservas WHERE name = ?').get(
+    name.trim().toLowerCase().replace(/\.$/, ''),
+  ) as { name: string; project_id: string | null } | undefined;
+}
+
+/** El administrador asigna un nombre reservado a otro proyecto: la reserva pasa a ese proyecto. */
+export function moveMailwayDnsReservas(names: readonly string[], projectId: string): void {
+  const mover = stmt('UPDATE mailway_dns_reservas SET project_id = ? WHERE name = ?');
+  for (const n of names) mover.run(projectId, n.trim().toLowerCase().replace(/\.$/, ''));
 }
 
 export function deleteCloudflareDnsRecord(domain: string): void {

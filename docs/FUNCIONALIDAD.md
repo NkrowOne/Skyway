@@ -404,7 +404,13 @@ aprobación); database añade `template`, `version`, `backupSchedule`, `backupRe
   de un cliente, aunque sea con un formulario anterior a un cambio del cliente,
   no crea los registros de los dominios que puso el cliente. Los nombres
   creados quedan reservados al proyecto para el que se crearon hasta que el
-  administrador borra su registro. Nunca se modifica un registro y solo se
+  administrador borra su registro (también si Cloudflare lo creó pero su
+  respuesta se perdió: al reintentarlo, un A hacia este servidor con el
+  comentario «Skyway» se anota). Lo mismo con los nombres A, AAAA o CNAME que
+  Mailway crea para el administrador (autoconfiguración y webmail del correo,
+  tabla `mailway_dns_reservas`): siguen apuntando aquí aunque se borre el
+  dominio de correo o se desconecte Mailway, y solo su proyecto (o el
+  administrador, que puede reasignarlos) puede asignárselos. Nunca se modifica un registro y solo se
   borra, a petición del administrador, uno que creó Skyway y nadie ha cambiado
   (§7.13).
 - **Anti fuerza bruta**: límite por IP (8 intentos / 15 min) en login por

@@ -59,6 +59,8 @@ export const cf = {
   calls: [] as CfLlamada[],
   /** Si es true, no responde nunca (hasta que se corta la petición). */
   hang: false,
+  /** Si es true, el siguiente POST crea el registro y la conexión se corta antes de la respuesta. */
+  cortarTrasCrear: false,
   seq: 0,
 };
 
@@ -69,6 +71,7 @@ export function reiniciarCloudflare(): void {
   cf.records = [];
   cf.calls = [];
   cf.hang = false;
+  cf.cortarTrasCrear = false;
   cf.seq = 0;
 }
 
@@ -178,6 +181,10 @@ export async function cloudflareFetch(url: URL, init: RequestInit = {}): Promise
       }
       const r = registro(z, nuevo);
       r.ttl = nuevo.ttl;
+      if (cf.cortarTrasCrear) {
+        cf.cortarTrasCrear = false;
+        throw new TypeError('fetch failed');
+      }
       return sobre(200, r);
     }
   }

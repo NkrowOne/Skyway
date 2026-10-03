@@ -187,7 +187,11 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   (`cloudflare_dns_records`, comprobado en `domainClaimError`): el
   registro sigue apuntando al servidor aunque el dominio se quite, y otro
   cliente no puede asignárselo hasta que el administrador lo borra en Ajustes →
-  Cloudflare (solo si nadie lo usa y nadie lo ha cambiado en Cloudflare). En el
+  Cloudflare (solo si nadie lo usa y nadie lo ha cambiado en Cloudflare). Un
+  A con el comentario «Skyway» cuya creación no llegó a confirmarse se anota al
+  reintentarlo, y los A, AAAA y CNAME que Mailway crea para el administrador
+  (autoconfiguración y webmail) quedan reservados igual en
+  `mailway_dns_reservas`. En el
   correo, Skyway solo pide `autoDns` a Mailway para un administrador y solo si
   Mailway declara `features.cloudflareSoloCrear` (1.1+: el alta solo crea lo
   que falta y nunca usa con `soloCliente` la cuenta de la instancia guardada
