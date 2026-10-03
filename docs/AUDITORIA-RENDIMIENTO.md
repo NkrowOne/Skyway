@@ -368,10 +368,12 @@ Cada punto lleva por qué no se ha hecho aquí y una estimación de esfuerzo.
 
 ### 5.5 Autorización y auditoría (informativo)
 
-- `DELETE /api/services/:id?volumes=true`, crear pilas y `deploy-all` pasan
-  con `assertProjectAccess` (cualquier miembro), mientras renombrar o borrar el
-  proyecto exigen `assertProjectManage`. Si borrar un servicio con sus
-  volúmenes se considera «estructura», debería alinearse.
+- `DELETE /api/services/:id`, crear pilas y `deploy-all` pasan con
+  `assertProjectAccess` (cualquier miembro), mientras renombrar o borrar el
+  proyecto exigen `assertProjectManage`. Desde la 0.36 borrar un servicio borra
+  siempre sus datos (tras confirmar con su nombre, `docs/FUNCIONALIDAD.md`
+  §3.1); antes un miembro ya podía hacerlo marcando la casilla de volúmenes. Si
+  se considera «estructura», debería alinearse.
 - `PATCH /api/services/:id` audita solo el nombre aunque cambie dominios,
   puertos o réplicas; `PUT /api/settings` audita sin detalle; marcar leídas o
   resolver alertas no se audita.

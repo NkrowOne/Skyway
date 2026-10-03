@@ -12,6 +12,7 @@ import {
   ChevronRight,
   CreditCard,
   Globe,
+  HardDrive,
   Landmark,
   Keyboard,
   LifeBuoy,
@@ -229,6 +230,14 @@ function CommandPalette({ open, onClose, unread, isAdmin, isManager }: { open: b
               label: 'Ajustes del servidor',
               keywords: 'ajustes configuracion dominios github telegram',
               to: '/settings',
+            },
+            {
+              key: 'a-orphans',
+              group: 'Acciones rápidas' as const,
+              icon: <HardDrive size={15} className="text-subtle" />,
+              label: 'Datos sin proyecto',
+              keywords: 'datos sin proyecto volumenes volúmenes huerfanos huérfanos espacio disco borrar eliminar copias',
+              to: '/settings#datos-sin-proyecto',
             },
           ]
         : []),

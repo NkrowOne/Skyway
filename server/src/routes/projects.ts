@@ -7,7 +7,6 @@ import {
   clearProjectMemberships,
   createProject,
   countWorkspaceProjects,
-  deleteProject,
   getMailwayLink,
   getOrCreateWorkspaceByName,
   getProject,
@@ -21,18 +20,16 @@ import {
   projectSlugExists,
   setProjectVars,
   setProjectWorkspace,
-  setSetting,
   updateProjectMeta,
 } from '../db';
 import { publicServiceConfig } from './services';
 import { toDeployFeedItem } from '../events';
 import { dockerAvailable } from '../docker/client';
-import { containerName, listServiceContainers, removeContainer, removeVolume, stopContainer, volumeName } from '../docker/containers';
-import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
-import { projectNetworkName, removeNetwork } from '../docker/networks';
+import { dockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
 import { triggerDeploy } from '../deploy/deployer';
 import { markManualAction } from '../monitor';
-import { mailwayConfigured, previousClientKey, releaseProjectClient } from '../mailway';
+import { mailwayConfigured, releaseProjectClient } from '../mailway';
+import { confirmsDeletion, purgeProject, PurgeBlockedError, purgeSummary, warningsForAudit } from '../purge';
 import { effectiveQuota, isWorkspaceActive, workspacePlan } from '../quota';
 import { ServiceRow, ServiceRuntime, WorkspaceRow } from '../types';
 import { slugify, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
@@ -51,6 +48,9 @@ const projectSchema = z.object({
  * lanzaba un `inspect` por servicio contra el socket.
  */
 const PANEL_MAX_AGE_MS = 4000;
+
+/** Proyectos que se están eliminando: un segundo DELETE a la vez no repite el trabajo. */
+const deletingProjects = new Set<string>();
 
 function serviceWithRuntime(service: ServiceRow, snap: Snapshot) {
   const runtime: ServiceRuntime = runtimeIn(snap, service.id);
@@ -203,74 +203,72 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     return { project: getProject(id) };
   });
 
+  /**
+   * Elimina el proyecto con TODOS sus datos: contenedores, volúmenes de todos
+   * sus servicios, imágenes construidas, copias de seguridad en disco y red
+   * (ver `purge.ts`). No hay opción para conservar los datos: un volumen que
+   * sobrevive a su proyecto lo heredaba el siguiente proyecto con el mismo
+   * nombre. Por eso se exige `?confirm=` con el nombre del proyecto (o su
+   * slug), y sin Docker no se borra nada: borrar solo las filas dejaría los
+   * datos sin dueño.
+   */
   app.delete('/api/projects/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const { volumes } = req.query as { volumes?: string };
+    const { confirm } = (req.query ?? {}) as { confirm?: unknown };
     const project = getProject(id);
     if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
     if (!assertProjectManage(req, reply, id)) return reply;
-
-    const services = listServices(id);
-    // Cada paso contra Docker es best-effort y por separado: la fila se borra
-    // SIEMPRE al final. Antes, un fallo a mitad dejaba contenedores ya borrados
-    // y el proyecto vivo en el panel; ahora lo que no se pudo limpiar se
-    // devuelve como aviso para que alguien lo retire a mano.
-    const warnings: string[] = [];
-    if (await dockerAvailable()) {
-      for (const service of services) {
-        let contenedores: { name: string }[] = [];
-        try {
-          contenedores = await listServiceContainers(service.id);
-        } catch (err: any) {
-          warnings.push(`${service.name}: no se pudieron enumerar sus contenedores: ${err?.message || err}`);
-        }
-        for (const c of contenedores) {
-          try {
-            await stopContainer(c.name);
-            await removeContainer(c.name);
-          } catch (err: any) {
-            warnings.push(`${service.name}: no se pudo retirar el contenedor ${c.name}: ${err?.message || err}`);
-          }
-        }
-        if (volumes === 'true') {
-          const aBorrar = [volumeName(project, service)];
-          for (const vol of ((service.config as any).volumes ?? []) as { name: string }[]) aBorrar.push(vol.name);
-          for (const nombre of aBorrar) {
-            try {
-              await removeVolume(nombre);
-            } catch (err: any) {
-              warnings.push(`${service.name}: no se pudo borrar el volumen ${nombre}: ${err?.message || err}`);
-            }
-          }
-        }
-      }
-      try {
-        await removeNetwork(projectNetworkName(project));
-      } catch (err: any) {
-        warnings.push(`No se pudo borrar la red ${projectNetworkName(project)}: ${err?.message || err}`);
-      }
-    } else {
-      warnings.push('Docker no está disponible: los contenedores, volúmenes y la red del proyecto no se han retirado.');
-    }
-    // El vínculo de correo se borra con el proyecto (ON DELETE CASCADE); en
-    // Mailway se suelta la referencia en segundo plano para que el cliente no
-    // quede apuntando a un proyecto que ya no existe (solo si todavía la
-    // lleva: si es de otra integración no se toca). Sus buzones siguen allí.
-    const mailLink = getMailwayLink(id);
-    deleteProject(id);
-    setSetting(previousClientKey(id), null);
-    invalidateDockerSnapshot();
-    if (mailLink && mailwayConfigured()) {
-      void releaseProjectClient(id, mailLink.client_id).catch((err: unknown) => {
-        req.log.warn({ clientId: mailLink.client_id }, `No se pudo soltar el cliente de Mailway: ${(err as Error)?.message ?? err}`);
+    if (!confirmsDeletion(confirm, project)) {
+      return reply.code(400).send({
+        error:
+          typeof confirm === 'string' && confirm.trim()
+            ? `El texto de confirmación no coincide con el nombre del proyecto («${project.name}»). No se ha eliminado nada.`
+            : `Para eliminar el proyecto, confirma con su nombre («${project.name}») en el parámetro confirm. Se eliminarán sus servicios y todos sus datos (volúmenes, bases de datos y copias de seguridad) sin posibilidad de recuperarlos.`,
       });
     }
-    audit(req, 'project_deleted', {
-      type: 'project',
-      id,
-      detail: `${project.name}${volumes === 'true' ? ' (con volúmenes)' : ''}${warnings.length ? ` · ${warnings.length} aviso(s)` : ''}`,
-    });
-    return { ok: true, warnings };
+    if (deletingProjects.has(id)) return reply.code(409).send({ error: 'El proyecto ya se está eliminando.' });
+    if (!(await dockerAvailable(true))) {
+      return reply.code(503).send({
+        error: 'Docker no está disponible: no es posible eliminar el proyecto sin eliminar sus datos. Vuelve a intentarlo cuando Docker responda. No se ha eliminado nada.',
+      });
+    }
+
+    deletingProjects.add(id);
+    try {
+      // El vínculo de correo se borra con el proyecto (ON DELETE CASCADE); en
+      // Mailway se suelta la referencia en segundo plano para que el cliente no
+      // quede apuntando a un proyecto que ya no existe (solo si todavía la
+      // lleva: si es de otra integración no se toca). Sus buzones siguen allí.
+      const mailLink = getMailwayLink(id);
+      const report = await purgeProject(project);
+      if (mailLink && mailwayConfigured()) {
+        void releaseProjectClient(id, mailLink.client_id).catch((err: unknown) => {
+          req.log.warn({ clientId: mailLink.client_id }, `No se pudo soltar el cliente de Mailway: ${(err as Error)?.message ?? err}`);
+        });
+      }
+      // El slug va en el registro: es lo que permite saber, después, qué nombres
+      // de volumen tenía el proyecto.
+      audit(req, 'project_deleted', {
+        type: 'project',
+        id,
+        detail:
+          `${project.name} (${project.slug}) · ${purgeSummary(report)}` +
+          warningsForAudit(report.warnings),
+      });
+      return {
+        ok: true,
+        warnings: report.warnings,
+        removed: { services: report.services, volumes: report.volumes, images: report.images, backups: report.backups },
+      };
+    } catch (err) {
+      if (!(err instanceof PurgeBlockedError)) throw err;
+      return reply.code(409).send({
+        error: `No se ha podido retirar todo lo que está en marcha, así que no se han eliminado los datos ni el proyecto. Vuelve a intentarlo. ${err.message}`,
+        warnings: err.warnings,
+      });
+    } finally {
+      deletingProjects.delete(id);
+    }
   });
 
   /** Despliega de una vez todos los servicios de repo e imagen del proyecto. */

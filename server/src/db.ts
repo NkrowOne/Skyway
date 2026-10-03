@@ -763,6 +763,35 @@ export function initDb(): void {
   // Después de la migración de clientes: los workspaces que crea también necesitan
   // su primer tramo de historial de plan.
   backfillPlanPeriods();
+  releaseDeletedProjectRefs();
+}
+
+/**
+ * Lo que dejaron los borrados de proyectos y servicios anteriores a la 0.36,
+ * que solo borraban las filas: reservas de nombres que siguen apuntando a un
+ * proyecto inexistente y alertas abiertas que nadie resolverá (el monitor solo
+ * recorre servicios vivos). Mismo trato que el borrado actual
+ * (`releaseProjectDnsReservations` y `closeAlertsFor`): las reservas pasan al
+ * administrador y las alertas se cierran. Idempotente.
+ */
+function releaseDeletedProjectRefs(): void {
+  if (getSetting('migrations:deleted_project_refs_v1') === 'done') return;
+  const ts = now();
+  db.transaction(() => {
+    db.exec(`
+      UPDATE cloudflare_dns_records SET project_id = NULL
+       WHERE project_id IS NOT NULL AND project_id NOT IN (SELECT id FROM projects);
+      UPDATE mailway_dns_reservas SET project_id = NULL
+       WHERE project_id IS NOT NULL AND project_id NOT IN (SELECT id FROM projects);
+    `);
+    stmt(
+      `UPDATE alerts SET resolved_at = COALESCE(resolved_at, ?), read_at = COALESCE(read_at, ?)
+        WHERE (resolved_at IS NULL OR read_at IS NULL)
+          AND ((project_id IS NOT NULL AND project_id NOT IN (SELECT id FROM projects))
+            OR (service_id IS NOT NULL AND service_id NOT IN (SELECT id FROM services)))`,
+    ).run(ts, ts);
+    setSetting('migrations:deleted_project_refs_v1', 'done');
+  })();
 }
 
 /**
@@ -1749,6 +1778,46 @@ export function latestDeploymentsByService(serviceIds: string[]): Map<string, De
 /** Estados no terminales: el despliegue sigue vivo y hay versión nueva en camino. */
 export const ACTIVE_DEPLOY_STATES = ['queued', 'building', 'deploying'] as const;
 
+/** Ids de los despliegues en cola o en marcha de estos servicios (todos, no solo el último). */
+export function activeDeploymentIdsForServices(serviceIds: string[]): string[] {
+  const out: string[] = [];
+  for (const lote of lotes(serviceIds)) {
+    const rows = stmt(
+      `SELECT id FROM deployments
+        WHERE service_id IN (${lote.map(() => '?').join(',')}) AND status IN ('queued', 'building', 'deploying')`,
+    ).all(...lote) as { id: string }[];
+    for (const r of rows) out.push(r.id);
+  }
+  return out;
+}
+
+/**
+ * Imágenes que Skyway construyó para estos servicios (`skyway/<proyecto>-<servicio>:…`)
+ * y que ningún despliegue de OTRO servicio referencia. Las de los servicios de
+ * imagen (`nginx:…`, `postgres:…`) no se incluyen nunca: son compartidas.
+ */
+export function builtImageTagsOnlyFor(serviceIds: string[]): string[] {
+  if (serviceIds.length === 0) return [];
+  const propias = new Set<string>();
+  for (const lote of lotes(serviceIds)) {
+    const rows = stmt(
+      `SELECT DISTINCT image_tag FROM deployments
+        WHERE service_id IN (${lote.map(() => '?').join(',')}) AND image_tag LIKE 'skyway/%'`,
+    ).all(...lote) as { image_tag: string }[];
+    for (const r of rows) propias.add(r.image_tag);
+  }
+  if (propias.size === 0) return [];
+  const excluidos = new Set(serviceIds);
+  const ajenas = new Set<string>();
+  for (const lote of lotes([...propias])) {
+    const rows = stmt(
+      `SELECT DISTINCT image_tag, service_id FROM deployments WHERE image_tag IN (${lote.map(() => '?').join(',')})`,
+    ).all(...lote) as { image_tag: string; service_id: string }[];
+    for (const r of rows) if (!excluidos.has(r.service_id)) ajenas.add(r.image_tag);
+  }
+  return [...propias].filter((t) => !ajenas.has(t));
+}
+
 /**
  * Despliegues en marcha del proyecto, indexados por servicio. La rejilla y la
  * cabecera del proyecto lo usan para anunciar la versión que está saliendo sin
@@ -1931,6 +2000,21 @@ export function getMailwayDnsReserva(name: string): { name: string; project_id: 
 export function moveMailwayDnsReservas(names: readonly string[], projectId: string): void {
   const mover = stmt('UPDATE mailway_dns_reservas SET project_id = ? WHERE name = ?');
   for (const n of names) mover.run(projectId, n.trim().toLowerCase().replace(/\.$/, ''));
+}
+
+/**
+ * Un proyecto se borra: sus reservas de nombres (DNS automático del
+ * administrador y nombres que Mailway creó en Cloudflare) dejan de apuntar a
+ * él y pasan a ser del administrador (`project_id` NULL). No se borran: el
+ * registro sigue existiendo en Cloudflare y apuntando a este servidor, y sin
+ * la reserva cualquier cliente podría asignarse el nombre. Con NULL ningún
+ * proyecto coincide, así que solo el administrador puede volver a asignarlo
+ * (`domainguard.ts`), igual que hasta ahora; Ajustes → Cloudflare lo muestra
+ * como «Sin uso · proyecto eliminado».
+ */
+export function releaseProjectDnsReservations(projectId: string): void {
+  stmt('UPDATE cloudflare_dns_records SET project_id = NULL WHERE project_id = ?').run(projectId);
+  stmt('UPDATE mailway_dns_reservas SET project_id = NULL WHERE project_id = ?').run(projectId);
 }
 
 export function deleteCloudflareDnsRecord(domain: string): void {
@@ -2261,6 +2345,21 @@ export function resolveOpenServiceAlerts(serviceId: string, type: string): Alert
     );
   }
   return open;
+}
+
+/**
+ * Cierra (resuelve y marca como leídas) las alertas de un proyecto o servicio
+ * que se va a borrar. Sin esto, las abiertas no se resolvían nunca —el monitor
+ * solo recorre servicios vivos— y seguían contando en la campana; resueltas,
+ * caducan a los 90 días con la poda de las resueltas, como cualquier otra.
+ */
+export function closeAlertsFor(target: { projectId: string } | { serviceId: string }): void {
+  const [col, value] = 'projectId' in target ? ['project_id', target.projectId] : ['service_id', target.serviceId];
+  const ts = now();
+  stmt(
+    `UPDATE alerts SET resolved_at = COALESCE(resolved_at, ?), read_at = COALESCE(read_at, ?)
+      WHERE ${col} = ? AND (resolved_at IS NULL OR read_at IS NULL)`,
+  ).run(ts, ts, value);
 }
 
 /** Resuelve TODAS las alertas abiertas de un servicio sin importar el tipo. */

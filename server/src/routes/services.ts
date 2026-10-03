@@ -10,14 +10,12 @@ import { markManualAction } from '../monitor';
 import {
   countWorkspaceServices,
   createService,
-  deleteService,
   getEnv,
   getGithubConnector,
   getGithubInstallation,
   getProject,
   getService,
   latestDeployment,
-  listServices,
   setEnv,
   setServiceStopped,
   uniqueServiceSlug,
@@ -43,15 +41,11 @@ import {
   configuredReplicas,
   containerName,
   getRuntime,
-  listServiceContainers,
-  removeContainer,
-  removeVolume,
   replicaName,
   restartContainer,
   startContainer,
   stopContainer,
   updateResources,
-  volumeName,
 } from '../docker/containers';
 import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
 import { triggerDeploy } from '../deploy/deployer';
@@ -61,9 +55,13 @@ import { adviseEnv } from '../needs';
 import { availableReferences, resolveServiceEnv } from '../variables';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceConfig, ServiceRow } from '../types';
 import { randomToken, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
+import { confirmsDeletion, purgeService, PurgeBlockedError, purgeSummary, warningsForAudit } from '../purge';
 
 /** Antigüedad tolerada de la foto de Docker en las lecturas del panel. */
 const PANEL_MAX_AGE_MS = 4000;
+
+/** Servicios que se están eliminando: un segundo DELETE a la vez no repite el trabajo. */
+const deletingServices = new Set<string>();
 
 /** Con qué se tapan los valores de los build args en las respuestas de lectura. */
 const VALOR_TAPADO = '•••';
@@ -747,69 +745,58 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  /**
+   * Elimina el servicio con TODOS sus datos (contenedores, volúmenes que no
+   * comparta con otro servicio, imágenes construidas y copias de seguridad;
+   * ver `purge.ts`), con la misma regla que el borrado de proyectos: sin
+   * opción para conservarlos, con `?confirm=` (nombre o slug del servicio) y
+   * sin borrar nada si Docker no responde.
+   */
   app.delete('/api/services/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const { volumes } = req.query as { volumes?: string };
+    const { confirm } = (req.query ?? {}) as { confirm?: unknown };
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
-
-    markManualAction(id);
-    // Cada paso contra Docker es best-effort y por separado: la fila se borra
-    // SIEMPRE al final. Antes, un fallo a mitad dejaba los contenedores ya
-    // borrados y el servicio vivo en el panel; ahora lo que no se pudo limpiar
-    // se devuelve como aviso para que alguien lo retire a mano.
-    const warnings: string[] = [];
-    if (await dockerAvailable()) {
-      let contenedores: { name: string }[] = [];
-      try {
-        // Por label: incluye réplicas y restos de intercambios.
-        contenedores = await listServiceContainers(id);
-      } catch (err: any) {
-        warnings.push(`No se pudieron enumerar los contenedores del servicio: ${err?.message || err}`);
-      }
-      for (const c of contenedores) {
-        try {
-          await stopContainer(c.name);
-          await removeContainer(c.name);
-        } catch (err: any) {
-          warnings.push(`No se pudo retirar el contenedor ${c.name}: ${err?.message || err}`);
-        }
-      }
-      if (volumes === 'true') {
-        // Un volumen puede estar compartido con otro servicio del proyecto (las
-        // pilas lo hacen: storage e imgproxy leen y escriben el mismo). Borrar
-        // uno vivo se llevaría por delante los datos del que se queda.
-        const enUso = new Set<string>();
-        for (const sibling of listServices(found.project.id)) {
-          if (sibling.id === id) continue;
-          for (const vol of ((sibling.config as any).volumes ?? []) as { name: string }[]) {
-            enUso.add(vol.name);
-          }
-        }
-        const aBorrar = [volumeName(found.project, found.service)];
-        for (const vol of ((found.service.config as any).volumes ?? []) as { name: string }[]) {
-          if (!enUso.has(vol.name)) aBorrar.push(vol.name);
-        }
-        for (const nombre of aBorrar) {
-          try {
-            await removeVolume(nombre);
-          } catch (err: any) {
-            warnings.push(`No se pudo borrar el volumen ${nombre}: ${err?.message || err}`);
-          }
-        }
-      }
-    } else {
-      warnings.push('Docker no está disponible: los contenedores y volúmenes del servicio no se han retirado.');
+    if (!confirmsDeletion(confirm, found.service)) {
+      return reply.code(400).send({
+        error:
+          typeof confirm === 'string' && confirm.trim()
+            ? `El texto de confirmación no coincide con el nombre del servicio («${found.service.name}»). No se ha eliminado nada.`
+            : `Para eliminar el servicio, confirma con su nombre («${found.service.name}») en el parámetro confirm. Se eliminarán sus datos (volúmenes y copias de seguridad) sin posibilidad de recuperarlos.`,
+      });
     }
-    deleteService(id);
-    invalidateDockerSnapshot();
-    audit(req, 'service_deleted', {
-      type: 'service',
-      id,
-      detail: `${found.service.name}${volumes === 'true' ? ' (con volumen)' : ''}${warnings.length ? ` · ${warnings.length} aviso(s)` : ''}`,
-    });
-    return { ok: true, warnings };
+    if (deletingServices.has(id)) return reply.code(409).send({ error: 'El servicio ya se está eliminando.' });
+    if (!(await dockerAvailable(true))) {
+      return reply.code(503).send({
+        error: 'Docker no está disponible: no es posible eliminar el servicio sin eliminar sus datos. Vuelve a intentarlo cuando Docker responda. No se ha eliminado nada.',
+      });
+    }
+
+    deletingServices.add(id);
+    try {
+      const report = await purgeService(found.project, found.service);
+      audit(req, 'service_deleted', {
+        type: 'service',
+        id,
+        detail:
+          `${found.service.name} (${found.project.slug}/${found.service.slug}) · ${purgeSummary(report)}` +
+          warningsForAudit(report.warnings),
+      });
+      return {
+        ok: true,
+        warnings: report.warnings,
+        removed: { volumes: report.volumes, images: report.images, backups: report.backups },
+      };
+    } catch (err) {
+      if (!(err instanceof PurgeBlockedError)) throw err;
+      return reply.code(409).send({
+        error: `No se ha podido retirar todo lo que está en marcha, así que no se han eliminado los datos ni el servicio. Vuelve a intentarlo. ${err.message}`,
+        warnings: err.warnings,
+      });
+    } finally {
+      deletingServices.delete(id);
+    }
   });
 
   /**

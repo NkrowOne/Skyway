@@ -69,6 +69,15 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   -d '{"stack":"supabase","domain":"supabase.midominio.com"}' \
   "$BASE/api/projects/PROJ_ID/stacks"
 
+# Eliminar un servicio o un proyecto: borra SIEMPRE sus datos (volúmenes,
+# bases de datos, copias de seguridad, imágenes) y exige confirmar con su nombre
+# exacto o su slug en ?confirm= (sin él o si no coincide, 400 y nada borrado).
+# La respuesta trae en "warnings" lo que no se pudo retirar. Un 409 con
+# "warnings" significa que un contenedor no se pudo retirar o que un despliegue
+# no terminó de cancelarse: no se ha borrado ningún dato y se puede reintentar.
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/api/services/SVC_ID?confirm=api"
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID?confirm=mi-proyecto"
+
 # Salud y versión (sin auth)
 curl -s "$BASE/api/health"
 ```
@@ -76,6 +85,11 @@ curl -s "$BASE/api/health"
 Notas:
 - Los intentos y acciones quedan en el **registro de auditoría** con el formato
   `usuario · token:nombre`, así siempre se sabe qué automatización hizo qué.
+- Borrar no tiene vuelta atrás: un agente debe pedir la confirmación a una
+  persona antes de enviar `?confirm=`. Desde la 0.36 ya no existe `?volumes=`:
+  los datos se borran siempre. La limpieza de datos sin proyecto
+  (`/api/system/orphans`) no se puede hacer con un token, ni siquiera de
+  administrador: solo desde el panel.
 - Revocar un token (Mi perfil → papelera) corta el acceso al instante.
 - Ponles caducidad si son para tareas puntuales.
 - Un script que corre **en el propio servidor** (como el instalador de Mailway)

@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.35.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.36.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -75,6 +75,8 @@ server/src/
   backups.ts            volcado/restauración de BBDD (dump dentro del contenedor)
   sysbackup.ts          snapshots del propio skyway.db (VACUUM INTO + retención)
   disk.ts               uso de disco por servicio y del host
+  purge.ts              borrado completo de proyectos y servicios (siempre con sus datos) y «Datos sin
+                        proyecto»: regla de volúmenes huérfanos, listado y limpieza (§3.1)
   domains.ts            IP del servidor + verificación DNS de dominios
   cloudflare.ts         cliente mínimo de la API de Cloudflare (verificar token, zona de un nombre, leer
                         registros, crear uno y borrar uno concreto; sin métodos para cambiar), portado del de Mailway
@@ -97,6 +99,8 @@ server/src/
     client.ts           instancia dockerode + ping cacheado
     networks.ts         red edge (Traefik) y red privada por proyecto
     containers.ts       crear/arrancar/parar, stats, logs, exec, réplicas, labels
+    resources.ts        listar volúmenes y quién los monta; borrar volumen, red e imagen informando
+                        del error (409 si están en uso) en vez de callarlo
     sampler.ts          muestreador único de Docker: una foto compartida (bajo demanda, con
                         coalescencia) que consumen panel, streams, monitor y vistas de estado
   deploy/
@@ -354,6 +358,108 @@ comparten `domains`, `hostPort`, `cpus`, `memoryMb`, `diskMb`, `healthcheckPath`
 `portAuto`, `buildArgs`, `webhookSecret`, `autoDeploy`, `needs` (detección del último
 despliegue) e `integrationsPending` (variables que el `skyway.json` pide y esperan
 aprobación); database añade `template`, `version`, `backupSchedule`, `backupRetention`.
+
+### 3.1 Borrado de proyectos y servicios, y datos sin proyecto (`purge.ts`)
+
+Borrar un proyecto o un servicio borra **siempre** sus datos; no hay opción para
+conservarlos (hasta la 0.35 los volúmenes solo se borraban con `?volumes=true`,
+una casilla que venía desmarcada). Un volumen que sobrevive a su proyecto es
+peligroso: los volúmenes se nombran por slug (`skyway-<proyecto>-<servicio>-data`,
+`skyway-<proyecto>__<prefijo>__<clave>` en las pilas) y se crean con
+`Binds "nombre:ruta"`, sin etiquetas, así que un proyecto nuevo con el mismo
+nombre y un servicio con el mismo nombre montaba los datos viejos.
+
+Orden del borrado (la API exige la confirmación con el nombre, §7.3 y §7.4, y
+Docker disponible: sin él responde 503 sin tocar nada):
+
+1. Marca sus servicios como «eliminándose» (`markServicesDeleting`): mientras
+   dura el borrado, un despliegue nuevo (webhook de GitHub, autodeploy,
+   `deploy-all`, botón) nace cancelado y uno que estaba construyendo se cancela
+   antes de crear el contenedor. Cancela los despliegues en cola o en marcha y
+   espera hasta 15 s a que terminen (uno a medias volvería a crear contenedor,
+   red y volumen).
+2. Retira sus contenedores por etiqueta (réplicas y restos de intercambios) con
+   sus volúmenes **anónimos** (`v: true`; nunca afecta a los que tienen nombre).
+   Si falla la parada, se intenta igualmente la retirada forzada. **Si un
+   despliegue no termina de cancelarse, o algún contenedor no se puede enumerar
+   o retirar, el borrado se interrumpe aquí con 409** y la lista de motivos en
+   `warnings`, sin tocar volúmenes ni filas: seguir dejaba un contenedor sin
+   proyecto, sirviendo su dominio y montando su volumen (que por estar en uso no
+   aparece en «Datos sin proyecto»). Reintentar es seguro.
+3. Borra los volúmenes que declaran (`serviceVolumeNames`: el de datos de una
+   base de datos y los de `config.volumes`), salvo los que declare un servicio
+   que se queda —las pilas comparten volumen entre servicios; con otro proyecto
+   es una coincidencia de nombres y se avisa—, los que empiecen por el prefijo
+   de un servicio (`skyway-<p>-<s>-`) o de un proyecto (`skyway-<p>__`) de
+   **otro proyecto** (por la ambigüedad de los guiones, `a` + `b-c` y `a-b` + `c`
+   generan los mismos nombres: sin esto, borrar el primero se llevaba una ruta
+   quitada del segundo, aunque fuera de otra cuenta; se conserva con aviso) y
+   los que monte otro contenedor.
+4. Borra las imágenes que Skyway construyó para ellos (`skyway/<p>-<s>:…` de sus
+   despliegues) que ningún otro servicio referencia; nunca las de los servicios
+   de imagen. Sin `force`: una imagen en uso no se borra (aviso).
+5. Borra sus copias de seguridad en disco (`DATA_DIR/backups/<serviceId>`).
+6. Proyecto: borra su red (nunca `skyway-edge`, la de Traefik, aunque el
+   proyecto se llame «edge»).
+7. En la base del panel: cierra (resuelve y marca como leídas) sus alertas,
+   borra el informe de importación (`importReport:<id>`, lleva comandos con
+   contraseñas) y el cliente de correo anterior, olvida `mailway.serviceId` si
+   era uno de sus servicios, **libera sus reservas de dominio** y borra la fila
+   (el resto cae en cascada).
+8. Barre los restos de lo que se acaba de borrar que no figuraban en su
+   configuración (una ruta quitada en Ajustes, volúmenes de un proyecto anterior
+   con el mismo nombre borrado sin sus datos), con la regla de los huérfanos.
+
+Lo que no se puede retirar a partir del paso 3 vuelve en `warnings` para
+hacerlo a mano, y su texto queda también en el detalle de la auditoría
+(`project_deleted`, `service_deleted`, recortado). Se conservan
+a propósito el registro de auditoría (el detalle de `project_deleted` lleva el
+slug), las métricas y el uso para facturación (caducan a los ~90 días), el
+cliente de correo y sus buzones en Mailway (se suelta la referencia) y los
+registros DNS de Cloudflare.
+
+**Reservas de dominio** (`cloudflare_dns_records`, `mailway_dns_reservas`): no se
+borran, porque el registro A sigue existiendo en Cloudflare y apuntando a este
+servidor; pasan a `project_id = NULL`. Con NULL ningún proyecto coincide, así que
+solo el administrador puede volver a asignarse el nombre (`domainguard.ts`), igual
+que antes, y Ajustes → Cloudflare lo muestra como «Sin uso · proyecto eliminado».
+Al arrancar la 0.36, una migración única (`migrations:deleted_project_refs_v1`)
+hace lo mismo con las reservas que dejaron los borrados anteriores (las que
+apuntan a un proyecto que ya no existe) y cierra las alertas abiertas de
+proyectos o servicios que ya no existen.
+
+**Datos sin proyecto** (Ajustes, solo administrador con sesión): volúmenes y
+copias de seguridad que dejaron los borrados anteriores. Un volumen es huérfano
+solo si se cumplen todas:
+
+- nombre exacto de Skyway: `^skyway-[a-z0-9]+(-[a-z0-9]+)+-data([2-9]|[1-9][0-9]+)?$`
+  o `^skyway-<slug>__<slug>__<slug>$` (los de Compose llevan `_`: `skyway_skyway-data`
+  no encaja, y `skyway-data` tampoco);
+- controlador `local` y **sin etiquetas** (las llevan los de Compose —Skyway,
+  Traefik, Mailway— y los anónimos);
+- no lo declara ningún servicio vivo (de ningún tipo; también `volumeName`);
+- no lo monta **ningún contenedor**, aunque esté parado;
+- no empieza por `skyway-<proyecto>-<servicio>-` de un servicio vivo ni por
+  `skyway-<proyecto>__` de un proyecto vivo (rutas quitadas, ambigüedad de los
+  guiones: `acme` + `prod-web` y `acme-prod` + `web` dan el mismo nombre).
+
+Las copias huérfanas son las carpetas `backups/svc_<16 hex>` cuyo servicio ya no
+existe (nunca `backups/skyway`, las del panel). Nunca es automático: el listado
+solo propone y el borrado exige escribir «eliminar»; el servidor **recalcula** la
+lista en ese momento y cada nombre pedido debe seguir siendo huérfano (el resto
+vuelve en `skipped` con el motivo). Cada borrado se audita
+(`orphan_volume_deleted`, `orphan_backup_deleted`). Cada carpeta de copias
+muestra el nombre de su copia más reciente (`latestFile`, que lleva el proyecto
+y el servicio). Nunca se usa `docker volume
+prune`. Si se va a restaurar una copia del panel que incluya esos proyectos, no
+deben eliminarse antes. Quedan fuera los volúmenes anónimos que dejaron
+contenedores ya retirados (no se pueden atribuir; los redespliegues siguen
+retirando el contenedor anterior sin ellos, porque son la única copia que
+quedaría de los datos de una imagen cuyo `VOLUME` no se configuró como ruta
+persistente), las imágenes `skyway/…` de proyectos borrados antes de la 0.36
+(no son datos: se pueden reconstruir y ningún proyecto nuevo las hereda) y dos
+instancias de Skyway contra el mismo Docker (los de la otra parecerían
+huérfanos).
 
 ---
 
@@ -958,6 +1064,11 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   propio `skyway.db`** (usuarios, proyectos, variables) con retención de 7,
   creación manual y descarga desde Ajustes, y **verificación de integridad** de
   la BD del panel al arrancar (alerta crítica si falla).
+- **Borrado con datos**: eliminar un proyecto o un servicio borra siempre sus
+  volúmenes, imágenes compiladas y copias de seguridad, tras escribir su nombre
+  para confirmar. Ajustes → **Datos sin proyecto** lista los volúmenes y copias
+  que dejaron los borrados anteriores y los elimina tras escribir «eliminar»
+  (§3.1).
 - **Dominios y TLS**: verificación DNS en vivo, subdominios con comodín, TLS
   automático con Let's Encrypt vía Traefik y redirección de HTTP a HTTPS en todo
   servicio con dominio.
@@ -1325,7 +1436,7 @@ como línea negativa; una factura emitida es inmutable y conserva su descuento.
 | POST | `/projects` | admin/owner | crea proyecto (`{name, client?, workspaceId?}`); el propietario en su workspace, dentro de la cuota (409 si su cuenta ya no existe) |
 | GET | `/projects/:id` | +access | proyecto + servicios con runtime + `activeDeploys` (despliegues vivos por servicio); `config` sin `webhookSecret` y con `buildArgs` tapados |
 | PATCH | `/projects/:id` | manage | renombra; el admin además reasigna de workspace |
-| DELETE | `/projects/:id?volumes=true` | manage | elimina proyecto (y volúmenes opcional); el registro se borra aunque Docker falle a medias y los restos se listan en `warnings` |
+| DELETE | `/projects/:id?confirm=<nombre>` | manage | elimina el proyecto con **todos sus datos** (§3.1): contenedores, volúmenes de todos sus servicios, imágenes construidas, copias de seguridad, red y alertas abiertas; libera sus reservas de dominio. `confirm` es el nombre visible exacto o el slug; sin él o si no coincide, 400 sin borrar nada. Sin Docker, 503 sin borrar nada; 409 si ya se está borrando, y 409 con `{error, warnings}` sin borrar volúmenes ni filas si un contenedor no se pudo retirar o un despliegue no terminó de cancelarse (reintentar es seguro). Lo que no se pudo retirar después va en `warnings` → `{ok, warnings, removed: {services, volumes[], images, backups}}`. Ya no existe la opción `volumes` |
 | POST | `/projects/:id/deploy-all` | +access | despliega repos e imágenes del proyecto |
 | GET | `/projects/:id/vars` | +access | variables compartidas |
 | PUT | `/projects/:id/vars` | +access | reemplaza variables compartidas |
@@ -1377,7 +1488,7 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH, y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
 | PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
-| DELETE | `/services/:id?volumes=true` | +access | elimina servicio; igual que en proyectos, devuelve `{ok, warnings}` |
+| DELETE | `/services/:id?confirm=<nombre>` | +access | elimina el servicio con **todos sus datos** (§3.1), salvo los volúmenes que comparta con otro servicio del proyecto; `confirm` (nombre o slug), 503 y los dos 409 como en proyectos → `{ok, warnings, removed: {volumes[], images, backups}}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
 | GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, `mail`, `manifest`, §5.5) |
@@ -1455,6 +1566,8 @@ distroless), el explorador lo indica y no está disponible.
 | GET | `/system` | auth | versión, docker, nixpacks, host, disco (`dataDir` solo para admin) |
 | GET | `/system/docker-usage` | admin | uso de Docker (imágenes/volúmenes/caché), del mismo `df` cacheado 60 s que Monitor |
 | POST | `/system/prune` | admin | libera imágenes colgantes y caché de build |
+| GET | `/system/orphans` | admin + session | datos sin proyecto (§3.1) → `{docker, volumes: [{name, sizeBytes, createdAt}], volumesError, backups: [{serviceId, files, sizeBytes, updatedAt}], confirmWord}`. Un token de API, aunque sea de administrador, recibe 403 |
+| POST | `/system/orphans/purge` | admin + session | `{confirm: "eliminar", volumes?: string[], backups?: string[]}`: recalcula y borra solo lo que sigue siendo huérfano → `{deleted: {volumes, backups}, skipped: [{kind, name, reason}], failed: [{kind, name, error}]}`. 400 sin la palabra o sin nada que borrar; 503 si hay volúmenes y Docker no responde. Audita cada borrado |
 | GET | `/system/backups` | admin | snapshots del propio skyway.db (+ retención) |
 | POST | `/system/backups` | admin | crea un snapshot ahora (VACUUM INTO) |
 | GET | `/system/backups/:file/download` | admin + session | descarga un snapshot (.db restaurable). Exige sesión de navegador: lleva en claro los secretos que la API nunca devuelve (token de Cloudflare, de Mailway, de GitHub…) |

@@ -48,6 +48,83 @@ function backupDir(serviceId: string): string {
   return path.join(config.dataDir, 'backups', serviceId);
 }
 
+/**
+ * Carpetas de copias por servicio: `backups/svc_<16 hex>`. El patrón deja
+ * fuera `backups/skyway`, donde viven las copias del propio panel, y cualquier
+ * otra cosa que alguien haya dejado en la carpeta.
+ */
+const SERVICE_BACKUP_DIR = /^svc_[0-9a-f]{16}$/;
+
+export function isServiceBackupDirName(name: string): boolean {
+  return SERVICE_BACKUP_DIR.test(name);
+}
+
+export interface ServiceBackupDir {
+  serviceId: string;
+  files: number;
+  size: number;
+  /** Última modificación (la copia más reciente, o la carpeta si está vacía). */
+  updatedAt: number;
+  /**
+   * Nombre de la copia más reciente. Lleva el proyecto y el servicio
+   * (`<motor>-<proyecto>-<servicio>-<fecha>`): es lo que permite saber de
+   * quién era una carpeta cuyo servicio ya no existe.
+   */
+  latestFile: string | null;
+}
+
+/** Carpetas de copias de servicio que hay en el disco, existan o no sus servicios. */
+export function listServiceBackupDirs(): ServiceBackupDir[] {
+  const root = path.join(config.dataDir, 'backups');
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: ServiceBackupDir[] = [];
+  for (const e of entries) {
+    if (!e.isDirectory() || !SERVICE_BACKUP_DIR.test(e.name)) continue;
+    const dir = path.join(root, e.name);
+    let files = 0;
+    let size = 0;
+    let updatedAt = 0;
+    let latestFile: string | null = null;
+    let latestAt = -1;
+    try {
+      updatedAt = fs.statSync(dir).mtimeMs;
+      for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!f.isFile()) continue;
+        const st = fs.statSync(path.join(dir, f.name));
+        files += 1;
+        size += st.size;
+        updatedAt = Math.max(updatedAt, st.mtimeMs);
+        if (st.mtimeMs > latestAt) {
+          latestAt = st.mtimeMs;
+          latestFile = f.name;
+        }
+      }
+    } catch {
+      continue; // borrada a la vez: no hay nada que listar
+    }
+    out.push({ serviceId: e.name, files, size, updatedAt, latestFile });
+  }
+  return out.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/**
+ * Borra la carpeta de copias de un servicio. Devuelve false si no existía. El
+ * id se valida con el mismo patrón que el listado: nunca toca `backups/skyway`
+ * ni una ruta fabricada con `..`.
+ */
+export function deleteServiceBackupDir(serviceId: string): boolean {
+  if (!SERVICE_BACKUP_DIR.test(serviceId)) return false;
+  const dir = backupDir(serviceId);
+  if (!fs.existsSync(dir)) return false;
+  fs.rmSync(dir, { recursive: true, force: true });
+  return true;
+}
+
 const SAFE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function resolveBackupFile(serviceId: string, file: string): string | null {
