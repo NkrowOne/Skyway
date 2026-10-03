@@ -308,6 +308,8 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   system_backup_deleted: 'Copia de seguridad del panel eliminada',
   db_integrity_failed: 'Comprobación de integridad de la base de datos del panel fallida',
   system_prune: 'Espacio liberado (prune)',
+  orphan_volume_deleted: 'Volumen sin proyecto eliminado',
+  orphan_backup_deleted: 'Copias de seguridad sin proyecto eliminadas',
   db_query: 'Consulta en base de datos',
   file_downloaded: 'Archivo descargado del contenedor',
   file_uploaded: 'Archivo subido al contenedor',

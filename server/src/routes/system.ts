@@ -9,6 +9,8 @@ import { config } from '../config';
 import { getSetting, setSetting } from '../db';
 import { dockerDiskTotals, hostDisk } from '../disk';
 import { dockerAvailable } from '../docker/client';
+import { dockerErrorText } from '../docker/resources';
+import { findOrphanBackups, findOrphanVolumes, OrphanVolume, purgeOrphans } from '../purge';
 import { nixpacksAvailable } from '../deploy/builder';
 import { channelsConfigured, dispatchToChannels } from '../notify';
 import { verifyGithubToken } from '../github/client';
@@ -21,6 +23,9 @@ import {
   pruneSystemBackups,
   resolveSystemBackupFile,
 } from '../sysbackup';
+
+/** Palabra que hay que escribir para eliminar datos sin proyecto. */
+const ORPHAN_CONFIRM_WORD = 'eliminar';
 
 /** Tope de cada `docker … prune`: liberar espacio no debería llevar más. */
 const PRUNE_TIMEOUT_MS = 5 * 60_000;
@@ -112,6 +117,60 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
         .join(' + ') || '0B';
       audit(req, 'system_prune', { type: 'system', id: 'docker', detail: `liberado: ${reclaimed}` });
       return { ok: true, reclaimed };
+    });
+
+    // ---------- datos sin proyecto ----------
+    /**
+     * Volúmenes y copias de seguridad que dejaron proyectos o servicios ya
+     * borrados (ver la regla en `purge.ts`). Solo el administrador y con
+     * sesión de navegador: borrar datos no es algo que deba poder hacer un
+     * token de API, ni siquiera el de un administrador; listarlos tampoco hace
+     * falta fuera del panel.
+     */
+    secured.get('/api/system/orphans', { preHandler: [requireAdmin, requireSession] }, async () => {
+      const docker = await dockerAvailable();
+      let volumes: OrphanVolume[] = [];
+      let volumesError: string | null = null;
+      if (docker) {
+        try {
+          volumes = await findOrphanVolumes();
+        } catch (err) {
+          volumesError = `No se ha podido consultar Docker: ${dockerErrorText(err)}`;
+        }
+      }
+      return { docker, volumes, volumesError, backups: findOrphanBackups(), confirmWord: ORPHAN_CONFIRM_WORD };
+    });
+
+    /**
+     * Elimina los datos sin proyecto indicados. El servidor vuelve a calcular
+     * la lista y solo borra lo que sigue siendo huérfano; el resto vuelve en
+     * `skipped` con el motivo. Cada borrado queda en la auditoría.
+     */
+    secured.post('/api/system/orphans/purge', { preHandler: [requireAdmin, requireSession] }, async (req, reply) => {
+      const body = z
+        .object({
+          confirm: z.string().max(100).default(''),
+          volumes: z.array(z.string().trim().min(1).max(255)).max(1000).default([]),
+          backups: z.array(z.string().trim().min(1).max(64)).max(1000).default([]),
+        })
+        .parse(req.body ?? {});
+      if (body.confirm.trim().toLowerCase() !== ORPHAN_CONFIRM_WORD) {
+        return reply.code(400).send({ error: `Escribe «${ORPHAN_CONFIRM_WORD}» para confirmar. No se ha eliminado nada.` });
+      }
+      if (body.volumes.length === 0 && body.backups.length === 0) {
+        return reply.code(400).send({ error: 'Indica qué volúmenes o copias de seguridad quieres eliminar.' });
+      }
+      if (body.volumes.length > 0 && !(await dockerAvailable(true))) {
+        return reply.code(503).send({ error: 'Docker no está disponible: no se ha eliminado nada.' });
+      }
+      const result = await purgeOrphans({ volumes: body.volumes, backups: body.backups }, (kind, _name, detail) => {
+        audit(req, kind === 'volume' ? 'orphan_volume_deleted' : 'orphan_backup_deleted', {
+          type: 'system',
+          id: kind === 'volume' ? 'docker' : 'backups',
+          detail,
+        });
+      });
+      return result;
     });
 
     secured.get('/api/settings', { preHandler: requireAdmin }, async () => {

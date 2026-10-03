@@ -55,6 +55,21 @@ export function volumeName(project: ProjectRow, service: ServiceRow, suffix = 'd
   return `skyway-${project.slug}-${service.slug}-${suffix}`;
 }
 
+/**
+ * Volúmenes con nombre que monta un servicio: el de datos si es una base de
+ * datos y los de `config.volumes` (rutas persistentes de repos e imágenes,
+ * pilas, importaciones). Es la lista que mide el uso de disco y la que borra
+ * el borrado del servicio.
+ */
+export function serviceVolumeNames(project: ProjectRow, service: ServiceRow): string[] {
+  const names = new Set<string>();
+  if (service.type === 'database') names.add(volumeName(project, service));
+  for (const v of ((service.config as { volumes?: { name: string }[] }).volumes ?? [])) {
+    if (v?.name) names.add(v.name);
+  }
+  return [...names];
+}
+
 /** `signal` aborta la petición al daemon (el muestreador la corta al vencer su plazo). */
 export async function findContainer(name: string, signal?: AbortSignal): Promise<Docker.ContainerInspectInfo | null> {
   try {
@@ -100,9 +115,17 @@ export async function restartContainer(name: string): Promise<void> {
   await docker.getContainer(name).restart({ t: 10 });
 }
 
-export async function removeContainer(name: string): Promise<void> {
+/**
+ * Retira un contenedor (aunque esté en marcha). Con `anonymousVolumes` se
+ * llevan también sus volúmenes ANÓNIMOS —los que crea un `VOLUME` de la imagen
+ * en una ruta que Skyway no monta, como el `/data/configdb` de Mongo—, que sin
+ * su contenedor ya no se pueden atribuir a nadie. Docker nunca borra con esto
+ * un volumen con nombre: los datos de los servicios no corren peligro. Solo lo
+ * piden los borrados de proyecto y de servicio.
+ */
+export async function removeContainer(name: string, opts: { anonymousVolumes?: boolean } = {}): Promise<void> {
   try {
-    await docker.getContainer(name).remove({ force: true, v: false });
+    await docker.getContainer(name).remove({ force: true, v: opts.anonymousVolumes === true });
   } catch (err: any) {
     if (err?.statusCode !== 404) throw err;
   }

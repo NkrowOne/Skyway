@@ -2,8 +2,7 @@ import fs from 'fs';
 import { config } from './config';
 import { listProjects, listServicesForProjects } from './db';
 import { docker, dockerQuery } from './docker/client';
-import { volumeName } from './docker/containers';
-import { ProjectRow, ServiceRow } from './types';
+import { serviceVolumeNames } from './docker/containers';
 
 /** Espacio total/libre del sistema de archivos donde vive DATA_DIR. */
 export async function hostDisk(): Promise<{ total: number; free: number } | null> {
@@ -37,6 +36,8 @@ interface DiskSnapshot {
   ts: number;
   services: Map<string, ServiceDiskUsage>;
   totals: DockerDiskTotals;
+  /** Tamaño de cada volumen de Docker por nombre (también los que no son de ningún servicio). */
+  volumes: Map<string, number>;
 }
 
 /**
@@ -71,14 +72,6 @@ let inFlight: Promise<DiskSnapshot> | null = null;
 /** Refresco encadenado detrás del que está en vuelo (ver `refresh(force)`). */
 let queued: Promise<DiskSnapshot> | null = null;
 const CACHE_MS = 60_000;
-
-/** Nombres de todos los volúmenes que pertenecen a un servicio. */
-function serviceVolumeNames(project: ProjectRow, service: ServiceRow): string[] {
-  const names = new Set<string>();
-  if (service.type === 'database') names.add(volumeName(project, service));
-  for (const v of ((service.config as any).volumes ?? []) as { name: string }[]) names.add(v.name);
-  return [...names];
-}
 
 /**
  * Si la ruta del log json-file es legible desde aquí. Solo lo es con Skyway
@@ -168,7 +161,7 @@ async function collect(): Promise<DiskSnapshot> {
     }
   }
 
-  return { ts: Date.now(), services, totals: totalsFrom(df) };
+  return { ts: Date.now(), services, totals: totalsFrom(df), volumes: volumeSizes };
 }
 
 function start(): Promise<DiskSnapshot> {
@@ -223,4 +216,17 @@ export async function dockerDiskTotals(): Promise<DockerDiskTotals> {
     return cached.totals;
   }
   return (await refresh()).totals;
+}
+
+/**
+ * Tamaño de cada volumen de Docker, del mismo `df` cacheado. Lo usa el listado
+ * de datos sin proyecto, que no pertenecen a ningún servicio y por eso no
+ * aparecen en el desglose por servicio.
+ */
+export async function dockerVolumeSizes(force = false): Promise<Map<string, number>> {
+  if (cached && !force) {
+    if (Date.now() - cached.ts >= CACHE_MS) void refresh().catch(() => {});
+    return cached.volumes;
+  }
+  return (await refresh(force)).volumes;
 }

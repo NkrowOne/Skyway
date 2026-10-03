@@ -212,6 +212,30 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   `api.cloudflare.com`; los mensajes de error no lo incluyen y la herramienta
   de terminal lo lee solo de la entrada estándar (un token en los argumentos se
   rechaza antes de leer nada).
+- **Borrado de proyectos y servicios con sus datos, y datos sin proyecto**
+  (0.36, `purge.ts`, `docs/FUNCIONALIDAD.md` §3.1). Borrar un proyecto o un
+  servicio borra siempre sus volúmenes: uno que sobrevivía lo heredaba el
+  siguiente proyecto con el mismo nombre (los volúmenes se nombran por slug y
+  nacen sin etiquetas). La API exige `?confirm=` con el nombre o el slug (400 y
+  nada borrado si falta o no coincide) y Docker disponible (503 y nada
+  borrado). Nunca se borra un volumen que declare un servicio que se queda, que
+  monte cualquier contenedor, que lleve etiquetas (Compose: Skyway, Traefik,
+  Mailway) o que empiece por el prefijo de un servicio o proyecto de OTRO
+  proyecto (`a` + `b-c` y `a-b` + `c` generan los mismos nombres: sin esto, una
+  cuenta podía borrar una ruta quitada de otra), ni la red `skyway-edge`. Si un
+  contenedor no se puede retirar, el borrado se interrumpe (409) sin tocar
+  volúmenes ni filas, y mientras dura ningún despliegue puede volver a crear el
+  contenedor. Queda pendiente, anterior a este cambio: al añadir una ruta, Docker
+  adjunta un volumen existente con ese nombre sin mirar de quién es, así que el
+  servicio `a` / `b-c` puede montar la ruta quitada de `a-b` / `c`; conviene
+  impedir prefijos ambiguos al crear proyectos y servicios. Las reservas de dominio no se borran (el
+  registro sigue en Cloudflare apuntando aquí): pasan al administrador
+  (`project_id` NULL) y siguen bloqueadas para los clientes. La limpieza de
+  datos sin proyecto exige administrador **con sesión** (un token de API,
+  aunque sea de administrador, recibe 403 al listar y al borrar), escribir
+  «eliminar», recalcula la lista en el servidor (no se fía de la que manda el
+  cliente) y audita cada borrado; nunca usa `docker volume prune`. Lo prueba
+  `server/test/borrado.test.ts`.
 
 ---
 

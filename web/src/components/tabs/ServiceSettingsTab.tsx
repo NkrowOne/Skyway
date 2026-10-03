@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
 import { api } from '../../api';
-import { DbTemplate, DnsAutoResult, Service } from '../../types';
+import { DbTemplate, DnsAutoResult, Me, Service } from '../../types';
 import { cx } from '../../utils';
 import { avisoDns } from '../DnsAutoResult';
 import DomainsEditor from '../DomainsEditor';
@@ -146,6 +146,8 @@ export default function ServiceSettingsTab({
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const toast = useToast();
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
+  const isAdmin = me.data?.user?.role === 'admin';
   const isGit = service.type === 'git';
   const isImage = service.type === 'image';
   const isDb = service.type === 'database';
@@ -156,7 +158,6 @@ export default function ServiceSettingsTab({
   const [form, setForm] = useState<FormState>(baseline);
   const [newVolumePath, setNewVolumePath] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deleteVolumes, setDeleteVolumes] = useState(false);
   /** DNS automático en Cloudflare de los dominios guardados (solo llega para un administrador con token). */
   const [dnsResults, setDnsResults] = useState<Record<string, DnsAutoResult>>({});
   const queryClient = useQueryClient();
@@ -293,10 +294,26 @@ export default function ServiceSettingsTab({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Borra el servicio con todos sus datos: la API exige su nombre como confirmación.
   const remove = useMutation({
-    mutationFn: () => api.del(`/services/${service.id}?volumes=${deleteVolumes}`),
-    onSuccess: () => {
-      toast('Servicio eliminado.', 'ok');
+    mutationFn: () =>
+      api.del<{ ok: boolean; warnings: string[] }>(`/services/${service.id}?confirm=${encodeURIComponent(service.name)}`),
+    onSuccess: (res) => {
+      const avisos = res?.warnings ?? [];
+      if (avisos.length > 0) {
+        // Sin cierre automático; el texto queda además en la auditoría.
+        toast(
+          `Servicio eliminado, pero no se ha podido retirar todo: ${avisos.join(' · ')} ${
+            isAdmin
+              ? 'Los avisos quedan en Seguridad → Auditoría; los volúmenes que no use ningún contenedor se eliminan en Ajustes → Datos sin proyecto.'
+              : 'Avisa a la administración del servidor para que lo retire.'
+          }`,
+          'info',
+          { persist: true },
+        );
+      } else {
+        toast('Servicio y datos eliminados.', 'ok');
+      }
       onDeleted();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -704,13 +721,14 @@ export default function ServiceSettingsTab({
         onConfirm={() => remove.mutate()}
         loading={remove.isPending}
         title={`Eliminar «${service.name}»`}
-        message="Se detendrá y se eliminará el contenedor de este servicio."
-      >
-        <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-sub max-sm:min-h-10">
-          <input type="checkbox" checked={deleteVolumes} onChange={(e) => setDeleteVolumes(e.target.checked)} className="accent-acc max-sm:h-4 max-sm:w-4" />
-          Eliminar también el volumen de datos
-        </label>
-      </ConfirmModal>
+        message={
+          isDb
+            ? 'Se eliminarán el servicio, su volumen con los datos de la base de datos y sus copias de seguridad guardadas en el servidor. Esta acción no se puede deshacer.'
+            : 'Se eliminarán el servicio, sus contenedores, sus volúmenes de datos (salvo los que comparta con otro servicio) y sus imágenes compiladas. Esta acción no se puede deshacer.'
+        }
+        typeToConfirm={service.name}
+        typeToConfirmAlso={[service.slug]}
+      />
     </>
   );
 }

@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
 import {
+  activeDeploymentIdsForServices,
   createDeployment,
   deploymentForImage,
   deploymentSummary,
@@ -202,6 +203,41 @@ export function cancelDeployment(deploymentId: string): boolean {
   return false;
 }
 
+/**
+ * Servicios que se están eliminando. Mientras dura el borrado (paradas de
+ * contenedores, espera a los despliegues cancelados…) las filas siguen vivas,
+ * y un webhook de GitHub, el autodeploy o el botón de desplegar podían colar
+ * un despliegue nuevo que volvía a crear el contenedor y, con el montaje, el
+ * volumen recién borrado. Los que llegan en esa ventana nacen cancelados.
+ */
+const deletingServices = new Set<string>();
+
+export function markServicesDeleting(serviceIds: string[]): void {
+  for (const id of serviceIds) deletingServices.add(id);
+}
+
+export function unmarkServicesDeleting(serviceIds: string[]): void {
+  for (const id of serviceIds) deletingServices.delete(id);
+}
+
+const DELETING_REASON = 'Cancelado: el servicio se está eliminando';
+
+/**
+ * Cancela los despliegues en cola o en marcha de unos servicios que se van a
+ * borrar y espera (hasta `graceMs`) a que los que corrían terminen. Sin esto,
+ * un despliegue a medias seguía adelante sin fila en la base: volvía a crear
+ * la red, el contenedor y, con el montaje, el volumen que se acababa de
+ * borrar. Devuelve cuántos seguían vivos al vencer el plazo.
+ */
+export async function cancelServiceDeployments(serviceIds: string[], graceMs = 15_000): Promise<number> {
+  const ids = activeDeploymentIdsForServices(serviceIds);
+  for (const depId of ids) cancelDeployment(depId);
+  const deadline = Date.now() + graceMs;
+  const vivos = () => ids.filter((depId) => activeJobs.has(depId)).length;
+  while (vivos() > 0 && Date.now() < deadline) await sleep(100);
+  return vivos();
+}
+
 interface DeployContext {
   deployment: DeploymentRow;
   log: (line: string) => void;
@@ -293,6 +329,12 @@ export function triggerDeploy(
   const deployment = createDeployment(serviceId, trigger, opts.imageTag ?? null, { forceBuild: opts.forceBuild });
   // Se anuncia YA, en cola: el aviso de «versión nueva en camino» no puede
   // esperar a que haya un hueco de build libre.
+  if (deletingServices.has(serviceId)) {
+    updateDeployment(deployment.id, { status: 'canceled', error: DELETING_REASON, finished_at: now() });
+    emitDeploy(deployment.id, { type: 'done', status: 'canceled', error: null });
+    publishFeed(deployment.id);
+    return getDeployment(deployment.id) ?? deployment;
+  }
   publishFeed(deployment.id);
   void enqueue(`deploy:${serviceId}`, () => runDeployment(deployment.id));
   return deployment;
@@ -321,6 +363,12 @@ async function runDeployment(deploymentId: string): Promise<void> {
   if (shuttingDown) return;
   const deployment = getDeployment(deploymentId);
   if (!deployment || deployment.status !== 'queued') return;
+  if (deletingServices.has(deployment.service_id)) {
+    updateDeployment(deploymentId, { status: 'canceled', error: DELETING_REASON, finished_at: now() });
+    emitDeploy(deploymentId, { type: 'done', status: 'canceled', error: null });
+    publishFeed(deploymentId);
+    return;
+  }
   const service = getService(deployment.service_id);
   const project = service ? getProject(service.project_id) : undefined;
   const log = makeLogger(deploymentId);
@@ -334,6 +382,12 @@ async function runDeployment(deploymentId: string): Promise<void> {
   };
 
   const checkCanceled = () => {
+    // También si el servicio ha empezado a eliminarse mientras construía:
+    // crear ahora el contenedor dejaría uno (y su volumen) sin servicio.
+    if (!job.canceled && deletingServices.has(deployment.service_id)) {
+      job.canceled = true;
+      job.cancelReason = DELETING_REASON;
+    }
     if (job.canceled) throw new CanceledError();
   };
 

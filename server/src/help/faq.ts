@@ -174,6 +174,18 @@ export const FAQ: FaqEntry[] = [
       'Si el servicio está caído sin que nadie lo haya detenido, consulta primero **Logs**: casi siempre hay una excepción justo antes del cierre.',
     keywords: ['parar', 'detener', 'stop', 'iniciar', 'start', 'reiniciar', 'restart', 'apagar', 'encender', 'detenido', 'gris'],
   },
+  {
+    id: 'eliminar-servicio-o-proyecto',
+    category: 'despliegues',
+    question: '¿Qué se elimina al borrar un servicio o un proyecto?',
+    answer:
+      'Al eliminar un servicio (**Ajustes → Zona de peligro → Eliminar servicio**) o un proyecto (menú del proyecto → **Eliminar proyecto**) se eliminan **siempre todos sus datos**: contenedores, volúmenes con los datos de las bases de datos y de las rutas persistentes, copias de seguridad guardadas en el servidor, imágenes compiladas, variables e historial de despliegues. No es posible recuperarlos.\n\n' +
+      'Para confirmar, escribe el nombre exacto del servicio o del proyecto. Si necesitas conservar algún dato, descarga antes una copia desde la pestaña **Backups** de cada base de datos.\n\n' +
+      'Los volúmenes que un servicio comparte con otro del mismo proyecto (por ejemplo, en una aplicación completa) se conservan hasta que se elimina el último servicio que los utiliza. Eliminar un proyecto solo está disponible para el propietario de la cuenta y para la administración de la plataforma.\n\n' +
+      'Los buzones y dominios de correo de Mailway no se eliminan con el proyecto: el cliente de correo queda desvinculado.\n\n' +
+      'Los datos que dejaron los proyectos y servicios eliminados antes de la versión 0.36 (cuando conservar los volúmenes era la opción por defecto) se eliminan en **Ajustes → Datos sin proyecto**, solo disponible para la administración.',
+    keywords: ['eliminar', 'borrar', 'quitar', 'proyecto', 'servicio', 'datos', 'volumen', 'base de datos', 'recuperar', 'delete', 'perder datos', 'sin proyecto', 'huérfanos', 'espacio', 'disco'],
+  },
 
   // ---------- variables ----------
   {

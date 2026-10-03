@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
-import { AlertTriangle, BellRing, CheckCircle2, ChevronDown, Cloud, Cpu, DatabaseBackup, Download, Globe, KeyRound, Mail, Trash2 } from 'lucide-react';
+import { AlertTriangle, BellRing, CheckCircle2, ChevronDown, Cloud, Cpu, DatabaseBackup, Download, Globe, HardDrive, KeyRound, Mail, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import CloudflareSettings from '../components/CloudflareSettings';
 import GithubAppPanel from '../components/GithubAppPanel';
 import MailwaySettings from '../components/MailwaySettings';
+import OrphanData from '../components/OrphanData';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { ModuleLogo } from '../components/ModuleIcon';
 import { Button, Chip, ConfirmModal, ErrorState, Field, Skeleton, useFlash, useToast } from '../components/ui';
@@ -769,7 +770,7 @@ export default function SettingsPage() {
                 variant="secondary"
                 onClick={() => prune.mutate()}
                 loading={prune.isPending}
-                title="Elimina imágenes sin referencia y la caché de compilación. No afecta a los volúmenes."
+                title="Elimina imágenes sin referencia y la caché de compilación. No afecta a los volúmenes: los que dejaron proyectos eliminados se eliminan en «Datos sin proyecto»."
               >
                 <Trash2 size={13} /> Liberar espacio
               </Button>
@@ -777,6 +778,24 @@ export default function SettingsPage() {
           )}
         </SettingsSection>
       )}
+
+      {/* Fuera del bloque de ajustes cargados: tiene su propia consulta y acción inmediata. */}
+      <SettingsSection
+        id="datos-sin-proyecto"
+        icon={<HardDrive size={15} />}
+        iconClass="text-err"
+        title="Datos sin proyecto"
+        description={
+          <>
+            Volúmenes de Docker y copias de seguridad que dejaron proyectos o servicios ya eliminados. Solo se listan los
+            volúmenes con el formato de nombres de Skyway, sin etiquetas, que no declara ningún servicio y que no utiliza
+            ningún contenedor, aunque esté detenido; nunca los del propio Skyway, Traefik, Mailway u otros programas. Si
+            vas a restaurar una copia del panel que incluya esos proyectos, no los elimines.
+          </>
+        }
+      >
+        <OrphanData />
+      </SettingsSection>
 
       <SettingsSection
         icon={<DatabaseBackup size={15} />}

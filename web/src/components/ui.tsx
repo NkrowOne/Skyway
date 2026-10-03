@@ -886,6 +886,9 @@ export function ConfirmModal({
   // Por defecto rojo (borrados). Acciones reversibles como reiniciar pasan un tono más sereno.
   confirmVariant = 'danger',
   loading,
+  typeToConfirm,
+  typeToConfirmAlso,
+  typeToConfirmIgnoreCase,
   children,
 }: {
   open: boolean;
@@ -896,17 +899,83 @@ export function ConfirmModal({
   confirmLabel?: string;
   confirmVariant?: ButtonProps['variant'];
   loading?: boolean;
+  /**
+   * Texto que hay que escribir para habilitar el botón (el nombre del
+   * proyecto, «eliminar»…). Para los borrados que no tienen vuelta atrás: un
+   * clic de más en el diálogo no basta para perder datos.
+   */
+  typeToConfirm?: string;
+  /**
+   * Otros textos que también valen (el slug del proyecto o del servicio, que
+   * la API acepta igual): escribir «tienda-cafe» para «Tienda Café» no debe
+   * dejar el botón apagado sin explicación.
+   */
+  typeToConfirmAlso?: string[];
+  /** Sin distinguir mayúsculas: para palabras fijas, que el móvil escribe con mayúscula inicial. */
+  typeToConfirmIgnoreCase?: boolean;
   children?: React.ReactNode;
 }) {
+  const [typed, setTyped] = useState('');
+  // Al abrir, al cerrar y al cambiar de objetivo, en blanco: lo escrito para otro borrado no cuenta.
+  useEffect(() => {
+    setTyped('');
+  }, [open, typeToConfirm]);
+  // NFC: un nombre pegado desde macOS (NFD) y el que teclea el móvil (NFC) se ven iguales.
+  const norm = (text: string) => {
+    const t = text.normalize('NFC').trim();
+    return typeToConfirmIgnoreCase ? t.toLowerCase() : t;
+  };
+  const accepted = typeToConfirm ? [typeToConfirm, ...(typeToConfirmAlso ?? [])].map(norm).filter(Boolean) : [];
+  const typedNorm = norm(typed);
+  const matches = !typeToConfirm || accepted.includes(typedNorm);
+  // En rojo solo cuando lo escrito ya no puede acabar coincidiendo, no desde la primera letra.
+  const wrong = typedNorm !== '' && !matches && !accepted.some((a) => a.startsWith(typedNorm));
+  const alternativas = (typeToConfirmAlso ?? []).filter((a) => a && a !== typeToConfirm);
   return (
     <Modal open={open} onClose={onClose} title={title}>
       <p className="text-sm text-sub">{message}</p>
       {children}
+      {typeToConfirm && (
+        <div className="mt-4">
+          <Field
+            label={
+              <span className="min-w-0">
+                Escribe <span className="select-all break-all font-mono text-txt">{typeToConfirm}</span> para confirmar
+              </span>
+            }
+            hint={
+              wrong
+                ? `No coincide. ${typeToConfirmIgnoreCase ? '' : 'Distingue mayúsculas y tildes. '}${
+                    alternativas.length > 0 ? `También se acepta «${alternativas.join('», «')}».` : ''
+                  }`.trim()
+                : undefined
+            }
+          >
+            <input
+              className="input"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && matches && !loading) {
+                  e.preventDefault();
+                  onConfirm();
+                }
+              }}
+              autoFocus
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              aria-invalid={wrong}
+            />
+          </Field>
+        </div>
+      )}
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="ghost" onClick={onClose}>
           Cancelar
         </Button>
-        <Button variant={confirmVariant} onClick={onConfirm} loading={loading}>
+        <Button variant={confirmVariant} onClick={onConfirm} loading={loading} disabled={!matches}>
           {confirmLabel}
         </Button>
       </div>
@@ -1026,7 +1095,12 @@ interface Toast {
   closing?: boolean;
 }
 
-type PushToast = (message: string, kind?: Toast['kind'], opts?: { action?: ToastAction }) => void;
+type PushToast = (
+  message: string,
+  kind?: Toast['kind'],
+  /** `persist`: no se cierra solo (avisos que hay que leer con calma, como lo que quedó sin borrar). */
+  opts?: { action?: ToastAction; persist?: boolean },
+) => void;
 
 const ToastContext = createContext<PushToast>(() => {});
 
@@ -1062,7 +1136,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     // Pila de máximo 3: la más antigua sale.
     setToasts((t) => [...t.filter((x) => !x.closing).slice(-2), { id, message, kind, action: opts?.action }]);
     // Con un botón dentro dura más: cinco segundos no dan para leerlo y acertarle con el pulgar.
-    setTimeout(() => dismiss(id), opts?.action ? 8000 : 5000);
+    if (!opts?.persist) setTimeout(() => dismiss(id), opts?.action ? 8000 : 5000);
   }, [dismiss]);
 
   return (

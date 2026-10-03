@@ -10,7 +10,7 @@ import ServiceCard from '../components/ServiceCard';
 import type { ImportReport } from '../components/RailwayImportModal';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { clearLiveSnapshot, publishLiveSnapshot, useLiveSnapshot } from '../livemetrics';
-import { ActiveDeploy, MailwayStatus, Me, MetricsSnapshot, Project, Service } from '../types';
+import { ActiveDeploy, MailwayStatus, Me, MetricsSnapshot, Project, ProjectMailView, Service } from '../types';
 import { CMD_K_LABEL, cx, EMPTY_LIST, EMPTY_RECORD, isActiveDeploy, serviceStatus } from '../utils';
 
 // Carga diferida: el drawer del servicio (con sus 8 pestañas y modales) y los
@@ -263,7 +263,6 @@ export default function ProjectPage() {
   // Redesplegar el proyecto entero toca todos los servicios a la vez: se
   // pregunta, como en cualquier otra acción de ese alcance.
   const [deployAllOpen, setDeployAllOpen] = useState(false);
-  const [deleteVolumes, setDeleteVolumes] = useState(false);
   const [sharedOpen, setSharedOpen] = useState(false);
   const [githubOpen, setGithubOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
@@ -327,6 +326,16 @@ export default function ProjectPage() {
     staleTime: 300_000,
   });
   const showMail = isAdmin || !!mailStatus.data?.configured;
+  // Al pedir el borrado: si el proyecto tiene correo vinculado, el modal dice
+  // que los buzones NO se eliminan (viven en Mailway). Misma clave que la
+  // ventana de Correo, así que si ya se abrió no hay otra petición.
+  const mailView = useQuery({
+    queryKey: ['mail', projectId],
+    queryFn: () => api.get<ProjectMailView>(`/projects/${projectId}/mail`),
+    enabled: deleteOpen && !!projectId && !!mailStatus.data?.configured,
+    staleTime: 15_000,
+    retry: false,
+  });
 
   const importReport = useQuery({
     queryKey: ['importReport', projectId],
@@ -343,11 +352,29 @@ export default function ProjectPage() {
     },
   });
 
+  // Borra el proyecto con todos sus datos: la API exige el nombre como
+  // confirmación, el mismo que el modal pide escribir.
   const removeProject = useMutation({
-    mutationFn: () => api.del(`/projects/${projectId}?volumes=${deleteVolumes}`),
-    onSuccess: () => {
+    mutationFn: (name: string) =>
+      api.del<{ ok: boolean; warnings: string[] }>(`/projects/${projectId}?confirm=${encodeURIComponent(name)}`),
+    onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
-      toast('Proyecto eliminado', 'ok');
+      const avisos = res?.warnings ?? [];
+      if (avisos.length > 0) {
+        // Sin cierre automático: es lo que hay que retirar a mano y no se puede
+        // leer en cinco segundos. El texto queda además en la auditoría.
+        toast(
+          `Proyecto eliminado, pero no se ha podido retirar todo: ${avisos.join(' · ')} ${
+            isAdmin
+              ? 'Los avisos quedan en Seguridad → Auditoría; los volúmenes que no use ningún contenedor se eliminan en Ajustes → Datos sin proyecto.'
+              : 'Avisa a la administración del servidor para que lo retire.'
+          }`,
+          'info',
+          { persist: true },
+        );
+      } else {
+        toast('Proyecto y datos eliminados', 'ok');
+      }
       navigate('/');
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -458,14 +485,11 @@ export default function ProjectPage() {
     setEditOpen(true);
   };
 
-  const abrirBorrado = () => {
-    // El borrado de volúmenes vuelve a «no» en cada apertura.
-    setDeleteVolumes(false);
-    setDeleteOpen(true);
-  };
+  const abrirBorrado = () => setDeleteOpen(true);
 
 
   const hasDeployables = services.some((s) => s.type !== 'database');
+  const databases = services.filter((s) => s.type === 'database');
 
   // Conteo de métricas agregadas del proyecto (el estado en vivo lo pinta HealthChips).
   const totalServices = services.length;
@@ -941,20 +965,38 @@ export default function ProjectPage() {
       <ConfirmModal
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
-        onConfirm={() => removeProject.mutate()}
+        onConfirm={() => removeProject.mutate(proj.name)}
         loading={removeProject.isPending}
         title={`Eliminar «${proj.name}»`}
-        message="Se detendrán y eliminarán todos los contenedores del proyecto. Esta acción no se puede deshacer."
+        message={
+          services.length === 0
+            ? 'Se eliminará el proyecto con todos sus datos. Esta acción no se puede deshacer.'
+            : `Se eliminarán el proyecto, ${services.length === 1 ? 'su servicio' : `sus ${services.length} servicios`} y todos sus datos. Esta acción no se puede deshacer.`
+        }
+        typeToConfirm={proj.name}
+        typeToConfirmAlso={[proj.slug]}
       >
-        <label className="mt-3 flex items-center gap-2 text-sm text-sub">
-          <input
-            type="checkbox"
-            checked={deleteVolumes}
-            onChange={(e) => setDeleteVolumes(e.target.checked)}
-            className="h-4 w-4 shrink-0 accent-acc"
-          />
-          Eliminar también los volúmenes (datos de las bases de datos)
-        </label>
+        <ul className="mt-3 flex list-disc flex-col gap-1 pl-5 text-xs text-sub">
+          <li>Contenedores, red y dominios asignados de todos sus servicios (los registros DNS no se modifican).</li>
+          <li>Volúmenes con los datos de las bases de datos y de las rutas persistentes.</li>
+          {databases.length > 0 && (
+            <li className="break-words">
+              {databases.length === 1 ? 'Base de datos' : 'Bases de datos'}: {databases.map((d) => d.name).join(', ')}.
+            </li>
+          )}
+          <li>Copias de seguridad de sus bases de datos guardadas en el servidor.</li>
+          <li>Imágenes compiladas, variables e historial de despliegues.</li>
+        </ul>
+        {mailView.data?.linked && (
+          <p className="mt-3 text-xs text-sub">
+            El correo no se elimina: los buzones y dominios de Mailway
+            {mailView.data.link?.clientName ? ` del cliente «${mailView.data.link.clientName}»` : ''} se conservan y el
+            cliente de correo queda desvinculado del proyecto.
+          </p>
+        )}
+        <p className="mt-3 text-xs text-subtle">
+          Si necesitas conservar algún dato, descarga antes una copia de seguridad desde la pestaña «Backups» de cada base de datos.
+        </p>
       </ConfirmModal>
     </div>
   );
