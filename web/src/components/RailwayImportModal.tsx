@@ -1,7 +1,10 @@
 import { lazy, Suspense, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, ArrowRight, CheckCircle2, Database, GitBranch, Package, TrainFront } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CheckCircle2, Cloud, Database, GitBranch, Package, TrainFront } from 'lucide-react';
 import { api } from '../api';
+import { CloudflareConfigView, DnsAutoResult } from '../types';
+import { avisoDns } from './DnsAutoResult';
 import { Button, CopyButton, Field, Modal, useToast } from './ui';
 import { cx } from '../utils';
 
@@ -174,6 +177,11 @@ export function ImportReportView({ report }: { report: ImportReport }) {
   );
 }
 
+/** Dominios que crearía la importación (sin repetir), en el orden de sus servicios. */
+function dominiosDelPlan(plan: Plan): string[] {
+  return [...new Set(plan.services.filter((s) => s.kind !== 'skipped').flatMap((s) => s.domains.map((d) => d.toLowerCase())))];
+}
+
 export default function RailwayImportModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const toast = useToast();
   const navigate = useNavigate();
@@ -190,6 +198,20 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
   const nameTouchedRef = useRef(false);
   const [client, setClient] = useState('');
   const [report, setReport] = useState<ImportReport | null>(null);
+  /**
+   * Dominios marcados para crear su registro en Cloudflare. Vienen del
+   * proyecto de Railway (quien los puso no tuvo que demostrar que eran
+   * suyos): ninguno se configura sin que el administrador lo marque aquí.
+   */
+  const [dnsDomains, setDnsDomains] = useState<string[]>([]);
+  // Importar es solo del administrador, igual que esta consulta.
+  const cloudflare = useQuery({
+    queryKey: ['cloudflareConfig'],
+    queryFn: () => api.get<CloudflareConfigView>('/cloudflare/config'),
+    enabled: open,
+    staleTime: 60_000,
+    retry: false,
+  });
 
   const reset = () => {
     setStep('token');
@@ -202,6 +224,7 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
     setProjectName('');
     setClient('');
     setReport(null);
+    setDnsDomains([]);
   };
 
   const close = () => {
@@ -233,6 +256,8 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
         ...(environmentId ? { environmentId } : {}),
       });
       setPlan(res.plan);
+      // Otro proyecto u otro entorno: lo marcado antes ya no vale.
+      setDnsDomains([]);
       setSelectedId(projectId);
       setEnvId(res.plan.environment.id);
       if (!nameTouchedRef.current) setProjectName(res.plan.projectName);
@@ -248,16 +273,20 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
     if (!selectedId || !envId) return;
     setBusy(true);
     try {
-      const res = await api.post<{ project: { id: string }; report: ImportReport }>('/import/railway/run', {
+      const res = await api.post<{ project: { id: string }; report: ImportReport; dns?: DnsAutoResult[] }>('/import/railway/run', {
         token,
         projectId: selectedId,
         environmentId: envId,
         projectName,
         ...(client.trim() ? { client } : {}),
+        ...(dnsDomains.length > 0 ? { dnsDomains } : {}),
       });
       setReport(res.report);
       setStep('done');
       toast('Proyecto importado', 'ok');
+      // Solo los dominios marcados: los que aún apuntan a Railway son conflictos y no se tocan.
+      const aviso = avisoDns(res.dns);
+      if (aviso) toast(aviso.message, aviso.kind);
     } catch (err) {
       toast((err as Error).message, 'err');
     } finally {
@@ -414,6 +443,9 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
                   {(s.kind === 'git' ? [`${s.repoUrl} (${s.branch})`] : s.kind === 'image' ? [s.image] : []).map((l) => (
                     <p key={l} className="mt-1 truncate font-mono text-xs text-sub">{l}</p>
                   ))}
+                  {s.kind !== 'skipped' && s.domains.length > 0 && (
+                    <p className="mt-1 break-all font-mono text-xs text-sub">{s.domains.join(' · ')}</p>
+                  )}
                   {s.notes.map((n, i) => (
                     <p key={i} className="mt-1 text-xs text-sub">· {n}</p>
                   ))}
@@ -421,6 +453,32 @@ export default function RailwayImportModal({ open, onClose }: { open: boolean; o
               );
             })}
           </div>
+
+          {cloudflare.data?.configured && dominiosDelPlan(plan).length > 0 && (
+            <fieldset className="space-y-2 rounded-lg border border-line p-3">
+              <legend className="flex items-center gap-1.5 px-1 text-xs font-medium text-txt">
+                <Cloud size={13} className="text-warn" /> DNS en Cloudflare
+              </legend>
+              <p className="text-xs leading-5 text-sub">
+                Estos dominios vienen del proyecto de Railway. Marca solo los que quieras que Skyway configure en tu Cloudflare: se crea su
+                registro A hacia este servidor si el nombre no tiene ninguno; si ya lo tiene (por ejemplo, el que apunta a Railway), se
+                informa como conflicto y no se modifica.
+              </p>
+              <div className="flex flex-col gap-1.5">
+                {dominiosDelPlan(plan).map((d) => (
+                  <label key={d} className="flex min-w-0 cursor-pointer items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={dnsDomains.includes(d)}
+                      onChange={(e) => setDnsDomains((prev) => (e.target.checked ? [...prev, d] : prev.filter((x) => x !== d)))}
+                      className="h-[15px] w-[15px] shrink-0 accent-acc max-sm:h-4 max-sm:w-4"
+                    />
+                    <span className="min-w-0 break-all font-mono">{d}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
 
           {plan.sharedVarCount > 0 && (
             <p className="text-xs text-sub">

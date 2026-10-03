@@ -25,6 +25,7 @@ import { api } from '../api';
 import {
   MailApiKey,
   MailAppPassword,
+  MailAutoDnsResult,
   MailCloudflarePlan,
   MailCloudflareResult,
   MailDomain,
@@ -38,6 +39,7 @@ import {
   Service,
 } from '../types';
 import { cx, fmtBytes, fmtDateTime, safeHref, Tone } from '../utils';
+import { avisoDnsCorreo } from './DnsAutoResult';
 import {
   Button,
   Chip,
@@ -87,6 +89,13 @@ const DOMAIN_STATUS: Record<MailDomain['status'], { tone: Tone; label: string }>
   pending_dns: { tone: 'warn', label: 'Pendiente' },
   error: { tone: 'err', label: 'Error' },
 };
+
+/** Respuesta del alta de un dominio de correo: `cloudflare` solo si lo pidió un administrador. */
+interface AltaDominioCorreo {
+  domain: MailDomain;
+  cloudflare: MailAutoDnsResult | null;
+  cloudflareReason: string | null;
+}
 
 /** Estados del webmail con el dominio del cliente, en el orden en que los recorre. */
 const WEBMAIL_STATUS: Record<MailWebmailStatus, { tone: Tone; label: string }> = {
@@ -544,19 +553,23 @@ function ActivateForm({
       // igualmente y se indica cuál.
       const added: string[] = [];
       const failed: string[] = [];
+      // DNS automático en Cloudflare de cada alta (solo lo aplica Mailway si quien activa es administrador).
+      const dns: { message: string; kind: 'ok' | 'err' | 'info' }[] = [];
       if (mode === 'create') {
         for (const domain of extraDomains.filter((d) => suggestedDomains.includes(d))) {
           try {
-            await api.post(`/projects/${projectId}/mail/domains`, { domain });
+            const res = await api.post<AltaDominioCorreo>(`/projects/${projectId}/mail/domains`, { domain });
             added.push(domain);
+            const aviso = avisoDnsCorreo(domain, res.cloudflare, res.cloudflareReason);
+            if (aviso) dns.push(aviso);
           } catch (err) {
             failed.push(`${domain}: ${(err as Error).message}`);
           }
         }
       }
-      return { added, failed };
+      return { added, failed, dns };
     },
-    onSuccess: ({ added, failed }) => {
+    onSuccess: ({ added, failed, dns }) => {
       toast(
         mode === 'previous'
           ? 'Correo activado con el cliente anterior'
@@ -566,6 +579,11 @@ function ActivateForm({
         'ok',
       );
       for (const f of failed) toast(`No se ha podido añadir el dominio ${f}`, 'err');
+      // Un solo aviso para todos los dominios: la pila de avisos es corta.
+      if (dns.length > 0) {
+        const kind = dns.some((d) => d.kind === 'err') ? 'err' : dns.some((d) => d.kind === 'info') ? 'info' : 'ok';
+        toast(dns.map((d) => d.message).join(' '), kind);
+      }
       onDone();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -734,11 +752,19 @@ function DomainsTab({
   const [domain, setDomain] = useState('');
 
   const add = useMutation({
-    mutationFn: (value: string) => api.post<{ domain: MailDomain }>(`/projects/${projectId}/mail/domains`, { domain: value }),
+    mutationFn: (value: string) => api.post<AltaDominioCorreo>(`/projects/${projectId}/mail/domains`, { domain: value }),
     onSuccess: (res) => {
       setDomain('');
       onInvalidate();
-      toast(`Dominio ${res.domain.domain} añadido. Crea sus registros DNS para verificarlo.`, 'ok');
+      // Con el DNS automático (administrador con Cloudflare en Mailway), el segundo aviso dice qué se ha hecho.
+      const aviso = avisoDnsCorreo(res.domain.domain, res.cloudflare, res.cloudflareReason);
+      toast(
+        aviso && res.cloudflare
+          ? `Dominio ${res.domain.domain} añadido.`
+          : `Dominio ${res.domain.domain} añadido. Crea sus registros DNS para verificarlo.`,
+        'ok',
+      );
+      if (aviso) toast(aviso.message, aviso.kind);
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -1054,10 +1080,19 @@ function WebmailSection({
   const onError = (err: Error) => toast(err.message, 'err');
 
   const create = useMutation({
-    mutationFn: () => api.post<{ webmail: MailWebmail }>(base),
+    mutationFn: () =>
+      api.post<{ webmail: MailWebmail; cloudflare?: MailAutoDnsResult | null; cloudflareReason?: string | null }>(base),
     onSuccess: (res) => {
       refresh();
-      toast(`Webmail ${res.webmail.hostname} configurado. Crea su registro DNS para ponerlo en servicio.`, 'ok');
+      // Para un administrador, Skyway pide a la vez el registro en Cloudflare.
+      const aviso = avisoDnsCorreo(res.webmail.hostname, res.cloudflare, res.cloudflareReason);
+      toast(
+        aviso && res.cloudflare
+          ? `Webmail ${res.webmail.hostname} configurado.`
+          : `Webmail ${res.webmail.hostname} configurado. Crea su registro DNS para ponerlo en servicio.`,
+        'ok',
+      );
+      if (aviso) toast(aviso.message, aviso.kind);
     },
     onError,
   });

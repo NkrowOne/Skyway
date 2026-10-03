@@ -26,6 +26,8 @@ export interface FakeDomain {
   status: 'pending_dns' | 'active' | 'error';
   /** null = propiedad sin probar: Mailway no deja crear buzones. */
   ownershipVerifiedAt: number | null;
+  /** Cuenta de Cloudflare asociada al dominio (Mailway la guarda al aplicar su DNS). */
+  cloudflareAccountId?: string | null;
 }
 export interface FakeMailbox {
   id: string;
@@ -114,8 +116,12 @@ export const mw = {
   infoOverride: {} as Record<string, unknown>,
   /** Si es true, los dominios nuevos nacen con la propiedad pendiente (como Mailway). */
   requireOwnership: false,
+  /** Con `autoDns`, Mailway crea también los CNAME de autoconfiguración (como el real con los recomendados). */
+  autoDnsConAutoconfig: false,
   /** Si se indica, toda petición con Bearer recibe este 401 (token revocado, caducado…). */
   reject401: null as { error: string; code: string } | null,
+  /** Cuentas de Cloudflare conectadas en Mailway (clientId null = de la instancia). */
+  cloudflareAccounts: [] as { id: string; clientId: string | null; label: string }[],
   /** Peticiones recibidas: método, ruta (con consulta), cabeceras de autenticación y cuerpo. */
   calls: [] as FakeCall[],
   seq: 0,
@@ -131,7 +137,8 @@ function json(status: number, body: unknown): Response {
 
 const badRequest = (error: string, code = 'bad_request') => json(400, { error, code });
 
-function domainRecord(d: FakeDomain) {
+function domainRecord(fake: FakeDomain) {
+  const { cloudflareAccountId, ...d } = fake;
   return {
     ...d,
     dkimSelector: 'mw1',
@@ -139,7 +146,7 @@ function domainRecord(d: FakeDomain) {
     lastCheckedAt: null,
     verifiedAt: null,
     createdAt: 1,
-    cloudflare: null,
+    cloudflare: cloudflareAccountId ? { accountId: cloudflareAccountId, zoneId: 'z1' } : null,
     ownershipVerifiedAt: d.ownershipVerifiedAt,
     ownershipRecord: { type: 'TXT', name: `_mailway.${d.domain}`, content: `mailway-verificacion=${d.id}` },
   };
@@ -240,8 +247,11 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
   let m: RegExpMatchArray | null;
 
   if (path === '/api/integrations/info' && method === 'GET') {
+    // Como Mailway 1.1: declara `cloudflareSoloCrear` (el DNS automático solo
+    // crea lo que falta). Para simular uno anterior, `mw.infoOverride` con
+    // otra versión y sin esa bandera.
     return json(200, {
-      version: '1.0.0',
+      version: '1.1.0',
       brandName: 'Correo Demo',
       mailHostname: 'mail.example.com',
       webmailUrl: 'https://webmail.example.com',
@@ -250,7 +260,7 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
       smtp: { host: 'mail.example.com', port: 465, security: 'SSL/TLS' },
       submission: { host: 'mail.example.com', port: 587, security: 'STARTTLS' },
       user: { id: 'usr_1', email: 'admin@mail.example.com', name: 'Admin', role: mw.role, clientId: null },
-      features: { cloudflare: true, autoconfig: true, portal: true },
+      features: { cloudflare: true, autoconfig: true, portal: true, cloudflareSoloCrear: true },
       traefik: admin ? { configPath: '/api/traefik/config', token: mw.traefikToken } : null,
       ...mw.infoOverride,
     });
@@ -325,6 +335,12 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
       connection: { imap: null, submission: null, webmailUrl: mw.infoOverride.webmailUrl ?? 'https://webmail.example.com' },
     });
   }
+  if (path === '/api/cloudflare/accounts' && method === 'GET') {
+    // Como Mailway: el administrador filtra por cliente con ?clientId.
+    const clientId = url.searchParams.get('clientId');
+    const accounts = mw.cloudflareAccounts.filter((a) => (admin ? !clientId || a.clientId === clientId : false));
+    return json(200, { accounts: accounts.map((a) => ({ ...a, tokenHint: 'abcd', createdAt: 1, lastVerifiedAt: null, lastError: null })) });
+  }
   if (path === '/api/domains' && method === 'POST') {
     const d: FakeDomain = {
       id: nextId('dom'),
@@ -334,7 +350,15 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
       ownershipVerifiedAt: mw.requireOwnership ? null : 1,
     };
     mw.domains.push(d);
-    return json(200, { domain: domainRecord(d) });
+    // Como Mailway: con `autoDns` aplica los registros que faltan sin reemplazar
+    // nada (aquí, siempre el MX); sin él, `cloudflare: null`.
+    const aplicados = [{ action: 'create', type: 'MX', name: d.domain }];
+    if (mw.autoDnsConAutoconfig) {
+      aplicados.push({ action: 'create', type: 'CNAME', name: `autoconfig.${d.domain}` });
+      aplicados.push({ action: 'create', type: 'CNAME', name: `autodiscover.${d.domain}` });
+    }
+    const cloudflare = b.autoDns === true ? { applied: aplicados, errors: [], skipped: [] } : null;
+    return json(200, { domain: domainRecord(d), cloudflare });
   }
   if ((m = path.match(/^\/api\/domains\/([^/]+)\/(verify|dns|cloudflare|cloudflare\/apply)$/))) {
     const d = mw.domains.find((x) => x.id === m![1]);

@@ -169,6 +169,59 @@ conexión igual que Ajustes → Correo, con el token `mwt_…` por la entrada
 estándar (nunca como argumento); es lo que usa el instalador de Mailway para
 emparejar los dos paneles (`docs/FUNCIONALIDAD.md` §9).
 
+### DNS automático en Cloudflare (administrador)
+
+Con el token de Cloudflare del operador guardado (Ajustes → Cloudflare), las
+peticiones de un **administrador** que dan de alta dominios nuevos —crear un
+servicio con `domains`, añadirlos con `PATCH /api/services/:id`, una pila o una
+plantilla con `domain`, y en la importación de Railway solo los que se indiquen
+en `dnsDomains`— crean el registro A de cada uno en su Cloudflare sin pisar
+nada, y la respuesta trae `dns` con el resultado (`created`, `kept`,
+`conflict`, `skipped` o `error`, con su motivo). Vale igual con un token `sky_`
+de un administrador. Con el token de un propietario o un miembro nunca se toca
+Cloudflare y la respuesta no lleva `dns`; en el correo, su alta va con
+`autoDns: false` y `?soloCliente=1`. El alta de correo de un administrador solo
+pide `autoDns` si Mailway declara `features.cloudflareSoloCrear` (1.1 o
+posterior: solo crea lo que falta); con uno anterior no se pide y
+`cloudflareReason` lo explica (`docs/FUNCIONALIDAD.md` §7.13).
+
+Un dominio que dio `error`, `conflict` o `skipped` se reintenta, ya corregida
+la causa, con `POST /api/services/:id/cloudflare-dns {"domain":"…"}` (solo
+administrador; solo ese dominio y solo si sigue en el servicio).
+
+Al editar un servicio, el registro solo se crea si la petición indica en
+`domainsBase` los dominios de los que parte (los que leyó antes de editar). Así
+un dominio que otra persona haya quitado entretanto no vuelve a ponerse ni se
+crea su registro: si `config.domains` coincide con la base, se conservan los
+dominios actuales; si no, 409. Sin `domainsBase`, el cambio se guarda pero cada
+dominio nuevo vuelve en `dns` como `skipped`.
+
+```bash
+# Añadir un dominio a un servicio como administrador: la respuesta trae "dns"
+ACTUALES=$(curl -s -H "Authorization: Bearer $TOKEN_ADMIN" "$BASE/api/services/SVC_ID" | jq -c '.service.config.domains // []')
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN_ADMIN" -H "Content-Type: application/json" \
+  -d "{\"config\":{\"domains\":$(jq -c '. + ["app.midominio.com"]' <<<"$ACTUALES")},\"domainsBase\":$ACTUALES}" \
+  "$BASE/api/services/SVC_ID" | jq .dns
+```
+
+Los nombres creados quedan reservados al proyecto para el que se crearon (otro
+cliente no puede asignárselos) hasta que el administrador borra su registro:
+`GET /api/cloudflare/records` y `DELETE /api/cloudflare/records/:dominio`.
+
+Guardar o borrar el token exige sesión de navegador (con un token de API solo
+se consulta, `GET /api/cloudflare/config`, y se prueba,
+`POST /api/cloudflare/test`). Por lo mismo, descargar una copia de `skyway.db`
+(`GET /api/system/backups/:file/download`), que lleva el token en claro, exige
+sesión de navegador: con un token de API se crea, se lista y se borra, pero no
+se descarga. Desde la terminal del servidor, el instalador de
+Mailway lo deja puesto con el token SOLO por la entrada estándar (un token en
+los argumentos se rechaza sin leer nada); la salida nunca incluye el token:
+
+```bash
+printf '%s' "$CF_TOKEN" | docker exec -i skyway node server/dist/tools/cloudflare.js conectar
+# → {"ok":true,"zones":3}
+```
+
 ### CLI rápida: el comando `skyway`
 
 Para el día a día hay un script en `scripts/skyway` que envuelve la API: elige el

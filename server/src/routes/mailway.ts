@@ -14,16 +14,19 @@ import {
   listMailwayLinks,
   listServices,
   setSetting,
+  reservarNombresMailway,
 } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
 import { panelDomains, webmailHostError } from '../domainguard';
 import {
   MAILWAY_SETTING,
   MailwayApiKeyInfo,
+  MailwayAutoDnsResult,
   MailwayAppPasswordInfo,
   MailwayDnsInstruction,
   MailwayDomain,
   MailwayError,
+  MailwayInfo,
   MailwayMailbox,
   MailwayPlan,
   MailwaySummary,
@@ -49,6 +52,7 @@ import {
   getZoneFile,
   internalPanelUrl,
   linkClient,
+  listClientCloudflareAccounts,
   listClients,
   listPlans,
   listWhitelabelDomains,
@@ -241,6 +245,89 @@ function ownDomain(summary: MailwaySummary, domainId: string): MailwayDomain {
   const domain = summary.domains.find((d) => d.id === domainId);
   if (!domain) throw httpError(404, 'Dominio no encontrado en este proyecto');
   return domain;
+}
+
+/**
+ * ¿Garantiza el Mailway conectado que el DNS automático solo crea lo que falta
+ * y que nunca usa en nombre de un cliente la cuenta de Cloudflare de la
+ * instancia asociada a un dominio? Lo declara Mailway 1.1+ en
+ * `features.cloudflareSoloCrear`; uno anterior modificaría registros que ya
+ * existen (SPF, proxy…) y aceptaría esa cuenta con `soloCliente`.
+ */
+async function mailwayDnsSeguro(): Promise<{ info: MailwayInfo | null; seguro: boolean }> {
+  try {
+    const info = await getInfo();
+    return { info, seguro: info.features?.cloudflareSoloCrear === true };
+  } catch {
+    return { info: null, seguro: false };
+  }
+}
+
+/** Versión de Mailway para un mensaje, solo si tiene forma de versión (viene de fuera). */
+function versionMailway(info: MailwayInfo | null): string {
+  const v = info?.version;
+  return typeof v === 'string' && /^[0-9A-Za-z.+-]{1,32}$/.test(v) ? ` (${v})` : '';
+}
+
+/**
+ * ¿Se pide a Mailway el DNS automático (alta de un dominio de correo, registro
+ * del webmail) para un administrador? Solo si Mailway tiene alguna cuenta de
+ * Cloudflare (`features.cloudflare`; si no, ni se intenta ni se avisa) y
+ * garantiza que solo crea lo que falta. Con un Mailway anterior no se pide, y
+ * `motivo` lo explica junto al botón con el que aplicarlo tras revisarlo.
+ */
+async function dnsAutomaticoCorreo(boton: string): Promise<{ pedir: boolean; motivo: string | null }> {
+  const { info, seguro } = await mailwayDnsSeguro();
+  if (!info) {
+    return {
+      pedir: false,
+      motivo: `No se ha podido consultar a Mailway si admite el DNS automático, así que no se ha pedido. Aplícalo con «${boton}» tras revisar los cambios.`,
+    };
+  }
+  if (!info.features?.cloudflare) return { pedir: false, motivo: null };
+  if (!seguro) {
+    return {
+      pedir: false,
+      motivo:
+        `La versión de Mailway conectada${versionMailway(info)} no garantiza que el DNS automático solo cree los registros que faltan, ` +
+        `así que no se ha pedido. Actualiza Mailway a la 1.1 o posterior; mientras tanto, aplícalo con «${boton}» tras revisar los cambios.`,
+    };
+  }
+  return { pedir: true, motivo: null };
+}
+
+const CUENTA_DE_LA_PLATAFORMA_CONECTA =
+  'El DNS de este dominio en Cloudflare lo gestiona el administrador de la plataforma con su propia cuenta. ' +
+  'Conecta en Mailway una cuenta de Cloudflare del cliente que contenga la zona o solicita al administrador que aplique los cambios.';
+
+const CUENTA_DE_LA_PLATAFORMA_SOLICITA =
+  'El DNS de este dominio en Cloudflare lo gestiona el administrador de la plataforma con su propia cuenta. ' +
+  'Solicita al administrador que aplique los cambios.';
+
+/**
+ * ¿El dominio quedó asociado en Mailway a una cuenta de Cloudflare que no es
+ * del cliente? Pasa cuando un administrador aplica su DNS con las cuentas de
+ * la instancia: Mailway guarda esa cuenta en el dominio y, en versiones
+ * anteriores a la 1.1, la usaría también con `soloCliente`. Para quien no es
+ * administrador, Skyway lo comprueba ANTES de pedir el plan o aplicarlo: ni
+ * siquiera para leer debe usarse el token del operador en nombre de un
+ * cliente. Solo consulta las cuentas del propio cliente.
+ *
+ * Devuelve el motivo para responder sin llamar a Mailway, o null si se le
+ * puede llamar. Con un Mailway que lo garantiza (`cloudflareSoloCrear`) y
+ * alguna cuenta propia del cliente, sí se le llama: ignora la cuenta de la
+ * instancia, prueba las del cliente y, si una contiene la zona, el dominio
+ * pasa a ella. Sin esa garantía, conectar una cuenta propia no lo resolvería,
+ * así que el mensaje solo remite al administrador.
+ */
+async function bloqueoCuentaAjena(clientId: string, domain: MailwayDomain): Promise<string | null> {
+  const asociada = domain.cloudflare?.accountId;
+  if (!asociada) return null;
+  const propias = await listClientCloudflareAccounts(clientId);
+  if (propias.some((a) => a.id === asociada)) return null;
+  const { seguro } = await mailwayDnsSeguro();
+  if (!seguro) return CUENTA_DE_LA_PLATAFORMA_SOLICITA;
+  return propias.length > 0 ? null : CUENTA_DE_LA_PLATAFORMA_CONECTA;
 }
 
 function ownMailbox(summary: MailwaySummary, mailboxId: string): MailwayMailbox {
@@ -446,6 +533,80 @@ function ownedWebmail(d: MailwayWhitelabelDomain | undefined, clientId: string, 
     throw new MailwayError('http', 'La respuesta de Mailway no corresponde al webmail de este dominio.', 502);
   }
   return d;
+}
+
+/** Resultado de Cloudflare tal como sale hacia la web: solo los campos conocidos. */
+function publicAutoDns(r: MailwayAutoDnsResult): MailwayAutoDnsResult {
+  return {
+    applied: r.applied.map((a) => ({ action: a.action, type: a.type, name: a.name })),
+    errors: r.errors.map((e) => ({ type: e.type, name: e.name, error: e.error })),
+    skipped: r.skipped.map((x) => ({ type: x.type, name: x.name, reason: x.reason })),
+  };
+}
+
+/**
+ * Reserva para el proyecto los nombres con dirección (A, AAAA o CNAME) que
+ * Mailway acaba de crear en Cloudflare a petición de un administrador: con
+ * las cuentas de la instancia, en las zonas del operador. Apuntan a este
+ * servidor aunque después se borre el dominio de correo o el webmail, y otro
+ * cliente podría asignárselos a un servicio. Solo se llama para el
+ * administrador: lo que crea un cliente con su cuenta va a su propia zona.
+ */
+function reservarCreadosPorMailway(applied: readonly { action: string; type: string; name: string }[], projectId: string): void {
+  const nombres = applied
+    .filter((a) => a && a.action === 'create' && ['A', 'AAAA', 'CNAME'].includes(String(a.type).toUpperCase()))
+    .map((a) => String(a.name))
+    .filter((n) => n.includes('.'));
+  if (nombres.length > 0) reservarNombresMailway(nombres, projectId);
+}
+
+interface WebmailDnsAutomatico {
+  cloudflare: MailwayAutoDnsResult | null;
+  cloudflareReason: string | null;
+  domain: MailwayWhitelabelDomain | undefined;
+}
+
+/**
+ * Registro del webmail en Cloudflare justo después de darlo de alta, como el
+ * botón «Crear registro en Cloudflare». Solo lo llama la ruta para un administrador:
+ * va sin `soloCliente`, así que Mailway puede usar las cuentas de la
+ * instancia, que nunca se usan en nombre de un cliente. Si Mailway no tiene
+ * ninguna cuenta de Cloudflare no se intenta; un fallo no deshace el alta y
+ * vuelve como motivo. Con `soloCrear`, Mailway no reemplaza ni modifica un
+ * registro existente (ni le quita el proxy): lo devuelve en `skipped`.
+ */
+async function webmailDnsAutomatico(
+  req: FastifyRequest,
+  project: ProjectRow,
+  whitelabelId: string,
+  hostname: string,
+): Promise<WebmailDnsAutomatico | null> {
+  try {
+    const { pedir, motivo } = await dnsAutomaticoCorreo('Crear registro en Cloudflare');
+    if (!pedir) return motivo ? { cloudflare: null, cloudflareReason: motivo, domain: undefined } : null;
+    const result = await applyWhitelabelCloudflare(whitelabelId, { soloCliente: false, soloCrear: true });
+    const applied = Array.isArray(result.applied) ? result.applied : [];
+    reservarCreadosPorMailway(applied, project.id);
+    const errors = Array.isArray(result.errors) ? result.errors : [];
+    const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+    audit(req, 'mailway_webmail_dns_applied', {
+      type: 'project',
+      id: project.id,
+      detail:
+        `${hostname}: ${applied.length} cambio(s)` +
+        `${errors.length ? `, ${errors.length} error(es)` : ''}${skipped.length ? `, ${skipped.length} sin aplicar` : ''} (automático al configurarlo)`,
+    });
+    return { cloudflare: publicAutoDns({ applied, errors, skipped }), cloudflareReason: null, domain: result.domain };
+  } catch (err) {
+    // El webmail ya está creado: ningún fallo de aquí hace fallar el alta.
+    if (err instanceof MailwayError) return { cloudflare: null, cloudflareReason: messageFor(err), domain: undefined };
+    req.log.warn({ err: (err as Error)?.message }, 'Registro automático del webmail en Cloudflare');
+    return {
+      cloudflare: null,
+      cloudflareReason: 'No se ha podido crear el registro en Cloudflare. Utiliza «Crear registro en Cloudflare» en el webmail del dominio.',
+      domain: undefined,
+    };
+  }
 }
 
 function publicInstructions(list: MailwayDnsInstruction[] | undefined) {
@@ -896,10 +1057,28 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         // Como en el resto de rutas: el cliente tiene que seguir siendo el del proyecto.
         const summary = await ownedSummary(ctx.project, link);
         assertClientActive(summary);
-        const domain = await createDomain(link.client_id, body.domain, { soloCliente: !ctx.isAdmin });
-        audit(req, 'mailway_domain_added', { type: 'project', id: ctx.project.id, detail: `${ctx.project.name}: ${body.domain}` });
+        // DNS automático en Cloudflare solo para el administrador (con las
+        // cuentas de Mailway, también las de la instancia) y solo si Mailway
+        // garantiza que se limita a crear lo que falta. Para cualquier otro,
+        // `autoDns: false` y `soloCliente`: el alta de un cliente nunca escribe
+        // en las zonas del operador.
+        const dnsCorreo = ctx.isAdmin ? await dnsAutomaticoCorreo('Configurar en Cloudflare') : { pedir: false, motivo: null };
+        const created = await createDomain(link.client_id, body.domain, { soloCliente: !ctx.isAdmin, autoDns: dnsCorreo.pedir });
+        const cf = created.cloudflare;
+        if (ctx.isAdmin && cf) reservarCreadosPorMailway(cf.applied, ctx.project.id);
+        audit(req, 'mailway_domain_added', {
+          type: 'project',
+          id: ctx.project.id,
+          detail:
+            `${ctx.project.name}: ${body.domain}` +
+            (cf ? ` (DNS en Cloudflare: ${cf.applied.length} cambio(s)${cf.errors.length ? `, ${cf.errors.length} error(es)` : ''}${cf.skipped.length ? `, ${cf.skipped.length} sin aplicar` : ''})` : ''),
+        });
         reply.code(201);
-        return { domain: publicDomain(domain) };
+        return {
+          domain: publicDomain(created.domain),
+          cloudflare: cf ? publicAutoDns(cf) : null,
+          cloudflareReason: created.cloudflareReason ?? dnsCorreo.motivo,
+        };
       }),
     );
 
@@ -935,10 +1114,22 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         const ctx = projectCtx(req, reply);
         if (!ctx) return reply;
         const { domainId } = req.params as { domainId: string };
-        const summary = await ownedSummary(ctx.project, requireLink(ctx.project));
-        ownDomain(summary, domainId);
+        const link = requireLink(ctx.project);
+        const summary = await ownedSummary(ctx.project, link);
+        const domain = ownDomain(summary, domainId);
         // Quien no es administrador de Skyway solo puede usar las cuentas de
         // Cloudflare del propio cliente, nunca las del operador.
+        const bloqueo = ctx.isAdmin ? null : await bloqueoCuentaAjena(link.client_id, domain);
+        if (bloqueo) {
+          return {
+            available: false,
+            reason: bloqueo,
+            account: null,
+            zone: null,
+            changes: [],
+            summary: { create: 0, update: 0, keep: 0, conflict: 0 },
+          };
+        }
         const plan = await getCloudflarePlan(domainId, { soloCliente: !ctx.isAdmin });
         return {
           available: !!plan.available,
@@ -968,10 +1159,14 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         if (!ctx) return reply;
         const { domainId } = req.params as { domainId: string };
         const body = z.object({ replaceConflicts: z.boolean().optional() }).parse(req.body ?? {});
-        const summary = await ownedSummary(ctx.project, requireLink(ctx.project));
+        const link = requireLink(ctx.project);
+        const summary = await ownedSummary(ctx.project, link);
         const domain = ownDomain(summary, domainId);
+        const bloqueo = ctx.isAdmin ? null : await bloqueoCuentaAjena(link.client_id, domain);
+        if (bloqueo) throw httpError(409, bloqueo);
         const result = await applyCloudflare(domainId, { replaceConflicts: body.replaceConflicts, soloCliente: !ctx.isAdmin });
         const applied = Array.isArray(result.applied) ? result.applied : [];
+        if (ctx.isAdmin) reservarCreadosPorMailway(applied, ctx.project.id);
         const errors = Array.isArray(result.errors) ? result.errors : [];
         audit(req, 'mailway_dns_applied', {
           type: 'project',
@@ -1085,13 +1280,23 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           throw httpError(409, `El webmail ${hostname} ya está configurado en este proyecto.`);
         }
         const res = await createWhitelabelDomain({ hostname, clientId: link.client_id });
-        const created = ownedWebmail(res.domain, link.client_id, hostname);
+        let created = ownedWebmail(res.domain, link.client_id, hostname);
         // Reservado ya, sin esperar a la siguiente lectura del puente: mientras
         // espera DNS, ningún servicio de otro cliente puede asignárselo.
         reserveWhitelabelHost(hostname);
         audit(req, 'mailway_webmail_created', { type: 'project', id: ctx.project.id, detail: `${ctx.project.name}: ${hostname}` });
+        const auto = ctx.isAdmin ? await webmailDnsAutomatico(req, ctx.project, created.id, hostname) : null;
+        // El estado tras crear el registro, solo si es ese mismo nombre y cliente
+        // (si no, se queda el del alta: el webmail ya está creado).
+        const tras = auto?.domain;
+        if (tras && tras.clientId === link.client_id && typeof tras.hostname === 'string' && tras.hostname.toLowerCase() === hostname) {
+          created = tras;
+        }
         reply.code(201);
-        return { webmail: publicWebmail(created, res.instructions) };
+        return {
+          webmail: publicWebmail(created, res.instructions),
+          ...(auto ? { cloudflare: auto.cloudflare, cloudflareReason: auto.cloudflareReason } : {}),
+        };
       }),
     );
 
@@ -1134,6 +1339,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         // Quien no es administrador de Skyway solo usa las cuentas de Cloudflare del propio cliente.
         const result = await applyWhitelabelCloudflare(found.id, { soloCliente: !ctx.isAdmin });
         const applied = Array.isArray(result.applied) ? result.applied : [];
+        if (ctx.isAdmin) reservarCreadosPorMailway(applied, ctx.project.id);
         const errors = Array.isArray(result.errors) ? result.errors : [];
         const skipped = Array.isArray(result.skipped) ? result.skipped : [];
         audit(req, 'mailway_webmail_dns_applied', {

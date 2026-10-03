@@ -6,6 +6,7 @@ import { useDebounced } from '../hooks';
 import {
   DbTemplate,
   Deployment,
+  DnsAutoResult,
   EnvAdvice,
   GithubRepo,
   IntegrationPlan,
@@ -25,6 +26,7 @@ import {
   useGithubBranches,
   useGithubSources,
 } from './GithubSource';
+import { avisoDns } from './DnsAutoResult';
 import { IntegrationPlanView, mailConfirmation, planHasContent } from './IntegrationPlan';
 import { ModuleKind, ModuleLogo, isModuleKind, moduleFg, moduleKind } from './ModuleIcon';
 import { Button, Field, Modal, Spinner, useToast } from './ui';
@@ -240,9 +242,12 @@ export default function NewServiceModal({
 
   const createStack = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      api.post<{ services: Service[] }>(`/projects/${projectId}/stacks`, body),
+      api.post<{ services: Service[]; dns?: DnsAutoResult[] }>(`/projects/${projectId}/stacks`, body),
     onSuccess: (data) => {
       toast(`Pila creada. Desplegando ${data.services.length} servicios…`, 'ok');
+      // Solo llega para un administrador con el token de Cloudflare configurado.
+      const aviso = avisoDns(data.dns);
+      if (aviso) toast(aviso.message, aviso.kind);
       reset();
       onStackCreated ? onStackCreated() : onClose();
     },
@@ -271,9 +276,11 @@ export default function NewServiceModal({
 
   const createTemplate = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      api.post<{ services: Service[]; notes: string[] }>(`/projects/${projectId}/railway-templates`, body),
+      api.post<{ services: Service[]; notes: string[]; dns?: DnsAutoResult[] }>(`/projects/${projectId}/railway-templates`, body),
     onSuccess: (data) => {
       toast(`Plantilla instalada. Desplegando ${data.services.length} servicios…`, 'ok');
+      const aviso = avisoDns(data.dns);
+      if (aviso) toast(aviso.message, aviso.kind);
       reset();
       onStackCreated ? onStackCreated() : onClose();
     },

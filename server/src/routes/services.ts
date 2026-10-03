@@ -1,7 +1,9 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, currentUser, requireAuth } from '../auth';
+import { assertProjectAccess, currentUser, requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
+import { cloudflareConfigurado } from '../cloudflareconfig';
+import { dnsAutomaticoAdmin, dnsSinBase } from '../cloudflaredns';
 import { dbConsoleEngine } from '../dbconsole';
 import { domainClaimError } from '../domainguard';
 import { markManualAction } from '../monitor';
@@ -198,7 +200,21 @@ const patchSchema = z.object({
       backupRetention: z.coerce.number().int().min(1).max(60).optional(),
     })
     .optional(),
+  /**
+   * Dominios que tenía el servicio cuando se cargó el formulario (o la lectura
+   * de la que parte quien edita). Con `config.domains`, sirve para saber qué
+   * dominios añade de verdad esta petición (§ concurrencia en el PATCH).
+   * Laxo a propósito: es una lista de comparación, nunca se guarda.
+   */
+  domainsBase: z.array(z.string().trim().toLowerCase().max(253)).max(200).optional(),
 });
+
+/** Mismo conjunto de dominios, sin importar el orden ni las repeticiones. */
+function mismosDominios(a: readonly string[], b: readonly string[]): boolean {
+  const sa = new Set(a);
+  const sb = new Set(b);
+  return sa.size === sb.size && [...sa].every((d) => sb.has(d));
+}
 
 /**
  * ¿Se puede usar esa conexión de GitHub desde este proyecto? Vale la del propio
@@ -259,11 +275,14 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (Array.isArray(reqDomains) && reqDomains.length > 0 && !moduleAllowedForProject(projectId, 'domains', isAdmin)) {
       return reply.code(403).send({ error: 'El módulo «Dominios y TLS» no está activo en este workspace.' });
     }
+    // Los dominios que pide ESTA alta: los únicos que pasan por el DNS automático.
+    let dominiosPedidos: string[] = [];
     if (base.type !== 'database') {
       // Antes de crear nada: un dominio de otro (o del panel) no se reparte.
       const { domains } = z.object({ domains: z.array(domainSchema).default([]) }).parse(req.body);
       const conflicto = domainClaimError(domains, { projectId, serviceId: null, isAdmin });
       if (conflicto) return reply.code(409).send({ error: conflicto });
+      dominiosPedidos = domains;
     }
 
     let service: ServiceRow;
@@ -347,11 +366,26 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     audit(req, 'service_created', { type: 'service', id: service.id, detail: `${service.name} (${service.type})` });
     markManualAction(service.id);
     const deployment = triggerDeploy(service.id, 'initial');
+    // Solo para un administrador con token de Cloudflare (lo comprueba
+    // `dnsAutomaticoAdmin`); nunca hace fallar el alta, que ya está hecha.
+    // Los dominios son los de la petición, no los que tenga el servicio al
+    // releerlo tras el plan: mientras se consulta GitHub, el cliente del
+    // proyecto puede añadir al servicio un nombre de las zonas del operador,
+    // que no debe crearse con su token. Y solo si siguen en el servicio: uno
+    // que el cliente ya quitó dejaría un registro huérfano.
+    const dominiosAhora = new Set((service.config as { domains?: string[] }).domains ?? []);
+    const dns = await dnsAutomaticoAdmin(
+      req,
+      dominiosPedidos.filter((d) => dominiosAhora.has(d)),
+      { type: 'service', id: service.id },
+      projectId,
+    );
     reply.code(201);
     return {
       service,
       deployment,
       ...(planOutcome ? { plan: { result: planOutcome.result, plan: planOutcome.plan, error: planOutcome.error } } : {}),
+      ...(dns ? { dns } : {}),
     };
   });
 
@@ -472,6 +506,25 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const newCfg = { ...oldCfg };
     let needsRedeploy = false;
     let resourcesChanged = false;
+
+    // Concurrencia de los dominios. Ajustes reenvía siempre la lista entera, y
+    // un formulario abierto antes de que otra persona (el cliente, otro
+    // administrador) cambiara los dominios devolvería la lista vieja: el
+    // dominio que alguien acaba de quitar volvería en silencio y, guardado por
+    // un administrador, contaría como «nuevo» para el DNS automático, que lo
+    // crearía con el token del operador en su zona. Con `domainsBase` se
+    // compara con lo que hay ahora: si quien guarda no ha tocado los dominios,
+    // se conservan los actuales; si los ha tocado, se rechaza para que recargue.
+    const dominiosAntes = (oldCfg.domains ?? []) as string[];
+    if (body.config?.domains !== undefined && body.domainsBase !== undefined && !mismosDominios(body.domainsBase, dominiosAntes)) {
+      if (!mismosDominios(body.config.domains, body.domainsBase)) {
+        return reply.code(409).send({
+          error:
+            'Los dominios de este servicio han cambiado mientras los editabas. Recarga la página para ver los actuales y vuelve a hacer tus cambios.',
+        });
+      }
+      body.config.domains = undefined;
+    }
 
     if (body.config) {
       for (const [key, value] of Object.entries(body.config)) {
@@ -651,8 +704,48 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
 
     const updated = getService(id)!;
     audit(req, 'service_updated', { type: 'service', id, detail: updated.name });
-    return { service: { ...updated, config: maskBuildArgs(updated.config) }, needsRedeploy };
+    // DNS automático solo de los dominios que añade ESTA petición: los que ya
+    // tenía el servicio (quizá añadidos por el cliente) nunca se tocan al
+    // guardar otra cosa. «Nuevo» respecto a la base de quien edita, no solo a
+    // la base de datos: sin `domainsBase` no se puede distinguir un dominio que
+    // escribe el administrador de uno que el cliente quitó entre su lectura y
+    // este guardado (y que el cliente puede poner y quitar a voluntad), así que
+    // no se aplica y la respuesta lo explica.
+    const nuevos = body.config?.domains !== undefined ? ((newCfg.domains ?? []) as string[]).filter((d) => !oldDomainList.includes(d)) : [];
+    const dns =
+      body.domainsBase !== undefined
+        ? await dnsAutomaticoAdmin(req, nuevos.filter((d) => !body.domainsBase!.includes(d)), { type: 'service', id }, found.project.id)
+        : dnsSinBase(req, nuevos, found.project.id);
+    return { service: { ...updated, config: maskBuildArgs(updated.config) }, needsRedeploy, ...(dns ? { dns } : {}) };
   });
+
+  /**
+   * Repite el DNS automático en Cloudflare de UN dominio del servicio: tras un
+   * error (Cloudflare no respondió a tiempo), un conflicto que el
+   * administrador ha resuelto a mano o una zona que faltaba en su token. Solo
+   * el administrador y nombrando el dominio, que es la misma decisión que
+   * añadirlo: nunca se recorren los dominios del servicio, que pudo poner el
+   * cliente. Como siempre, solo crea lo que falta.
+   */
+  app.post(
+    '/api/services/:id/cloudflare-dns',
+    { preHandler: [requireAdmin, rateLimit({ max: 30, windowMs: 60_000 })] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const found = loadService(id);
+      if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+      const { domain } = z.object({ domain: z.string().trim().toLowerCase().min(1).max(253) }).parse(req.body ?? {});
+      const asignados = ((found.service.config as { domains?: string[] }).domains ?? []).map((d) => d.trim().toLowerCase());
+      if (!asignados.includes(domain)) {
+        return reply.code(404).send({ error: `El dominio ${domain} no está asignado a este servicio. Guarda antes los cambios.` });
+      }
+      if (!cloudflareConfigurado()) {
+        return reply.code(400).send({ error: 'Configura el token de Cloudflare en Ajustes → Cloudflare para crear el registro automáticamente.' });
+      }
+      const dns = await dnsAutomaticoAdmin(req, [domain], { type: 'service', id }, found.project.id);
+      return { dns: dns ?? [] };
+    },
+  );
 
   app.delete('/api/services/:id', async (req, reply) => {
     const { id } = req.params as { id: string };

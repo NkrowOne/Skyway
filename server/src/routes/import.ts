@@ -2,7 +2,8 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
-import { getProject, getSetting, setSetting } from '../db';
+import { dnsAutomaticoAdmin } from '../cloudflaredns';
+import { getProject, getSetting, listServices, setSetting } from '../db';
 import { listRailwayProjects } from '../railway/client';
 import { analyzeRailwayProject, runRailwayImport } from '../railway/importer';
 import { safeParse, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
@@ -71,6 +72,13 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
           environmentId: z.string().trim().min(1, 'Selecciona un entorno'),
           projectName: z.string().trim().max(60).regex(VISIBLE_NAME_RE, VISIBLE_NAME_ERROR).optional(),
           client: z.string().trim().max(60).optional(),
+          /**
+           * Dominios que el administrador ha marcado en la vista previa para
+           * crear su registro en Cloudflare. Vienen del proyecto de Railway,
+           * que puede ser de un tercero (o del propio cliente): ninguno se
+           * configura sin que el administrador lo haya visto y elegido.
+           */
+          dnsDomains: z.array(z.string().trim().toLowerCase().max(253)).max(200).default([]),
         })
         .parse(req.body);
       const { project, report } = await runRailwayImport(body.token, body.projectId, body.environmentId, {
@@ -82,8 +90,19 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
         id: project.id,
         detail: `${report.railwayProject} (${report.environment}) → ${report.created.length} servicios`,
       });
+      // DNS automático solo de los dominios que el administrador ha marcado en
+      // la vista previa y que el proyecto importado sirve de verdad. Los demás
+      // los eligió quien añadió dominios al proyecto en Railway (Railway no
+      // exige demostrar la propiedad), así que nunca se crean por su cuenta.
+      // Los que apuntan todavía a Railway son un conflicto que se informa y
+      // no se toca: el cambio de DNS lo decide el administrador.
+      const marcados = new Set(body.dnsDomains);
+      const dominios = listServices(project.id)
+        .flatMap((s) => (s.config as { domains?: string[] }).domains ?? [])
+        .filter((d) => marcados.has(d.trim().toLowerCase()));
+      const dns = dominios.length > 0 ? await dnsAutomaticoAdmin(req, dominios, { type: 'project', id: project.id }, project.id) : undefined;
       reply.code(201);
-      return { project, report };
+      return { project, report, ...(dns ? { dns } : {}) };
     });
   });
 }
