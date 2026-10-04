@@ -9,6 +9,7 @@ import {
   closeDb,
   createProject,
   createService,
+  deleteDomainMigration,
   deletePrepublished,
   deleteDomainRedirects,
   deleteProject,
@@ -219,12 +220,18 @@ describe('redirecciones y prepublicación', () => {
       permanent_from: 5000,
     });
     // Reintento: se sustituye.
-    insertDomainRedirects([{ host: 'www.dominio.es', project_id: proj.id, to_host: 'www.dominio2.es', migration_id: m.id, permanent_from: 9000 }]);
+    expect(
+      insertDomainRedirects([{ host: 'www.dominio.es', project_id: proj.id, to_host: 'www.dominio2.es', migration_id: m.id, permanent_from: 9000 }]),
+    ).toEqual([]);
     expect(getDomainRedirect('www.dominio.es')?.permanent_from).toBe(9000);
-    // Otro proyecto no se lo queda.
-    insertDomainRedirects([{ host: 'www.dominio.es', project_id: otro.id, to_host: 'robado.es', migration_id: 'x', permanent_from: 1 }]);
+    // Otro proyecto no se lo queda, y quien llama sabe qué nombres no ha escrito.
+    expect(
+      insertDomainRedirects([
+        { host: 'WWW.dominio.es', project_id: otro.id, to_host: 'robado.es', migration_id: 'x', permanent_from: 1 },
+        { host: 'blog.viejo.es', project_id: otro.id, to_host: 'blog.nuevo.es', permanent_from: 1 },
+      ]),
+    ).toEqual(['www.dominio.es']);
     expect(getDomainRedirect('www.dominio.es')).toMatchObject({ project_id: proj.id, to_host: 'www.dominio2.es' });
-    insertDomainRedirects([{ host: 'blog.viejo.es', project_id: otro.id, to_host: 'blog.nuevo.es', permanent_from: 1 }]);
     expect(getDomainRedirect('blog.viejo.es')?.migration_id).toBeNull();
 
     expect(listDomainRedirects().map((r) => r.host)).toEqual(['blog.viejo.es', 'dominio.es', 'www.dominio.es']);
@@ -242,8 +249,11 @@ describe('redirecciones y prepublicación', () => {
     // Repetir el alta conserva el DNS comprobado.
     upsertPrepublished([{ host: 'www.dominio2.es', project_id: proj.id, service_id: web.id, migration_id: m.id }]);
     expect(getPrepublished('www.dominio2.es')?.dns_ok_at).toBe(7000);
-    // Otro proyecto no se lo queda.
-    upsertPrepublished([{ host: 'www.dominio2.es', project_id: otro.id, service_id: web.id, migration_id: 'x' }]);
+    // Otro proyecto no se lo queda, y quien llama lo sabe.
+    expect(upsertPrepublished([{ host: 'www.dominio2.es', project_id: otro.id, service_id: web.id, migration_id: 'x' }])).toEqual([
+      'www.dominio2.es',
+    ]);
+    expect(upsertPrepublished([{ host: 'www.dominio2.es', project_id: proj.id, service_id: web.id, migration_id: m.id }])).toEqual([]);
     expect(getPrepublished('www.dominio2.es')?.project_id).toBe(proj.id);
     markPrepublishedDns('api.dominio2.es', 8000);
     markPrepublishedDns('api.dominio2.es', null);
@@ -271,6 +281,37 @@ describe('redirecciones y prepublicación', () => {
     expect(deleteDomainRedirects(m.id)).toBe(2);
     expect(listDomainRedirects().map((r) => r.host)).toEqual(['blog.viejo.es']);
     expect(listAssignedDomains()).not.toContain('dominio2.es');
+  });
+});
+
+describe('deshacer «Preparar» cuando Mailway rechaza el cambio', () => {
+  it('borra el cambio con sus instantáneas, su prepublicación y sus redirecciones; lo demás sigue', () => {
+    const tercero = createProject('Tercero', 'tercero', null, null);
+    const svc = createService(tercero.id, 'Web', 'web', 'git', gitCfg(['www.tercero.es']));
+    const m = insertDomainMigration({
+      project_id: tercero.id,
+      from_domain: 'tercero.es',
+      to_domain: 'tercero2.es',
+      hosts: [{ serviceId: svc.id, from: 'www.tercero.es', to: 'www.tercero2.es', modo: 'redirigir' }],
+      env: { excluidas: [], huella: 'h' },
+    });
+    upsertPrepublished([{ host: 'www.tercero2.es', project_id: tercero.id, service_id: svc.id, migration_id: m.id }]);
+    insertDomainRedirects([{ host: 'tercero.es', project_id: tercero.id, to_host: 'tercero2.es', migration_id: m.id, permanent_from: 1 }]);
+    putSnapshot({ migration_id: m.id, ambito: 'service', service_id: svc.id, key: 'APP_URL', valor_original: 'https://www.tercero.es' });
+    const antes = listPrepublished().length;
+
+    expect(deleteDomainMigration(m.id)).toBe(true);
+    expect(getDomainMigration(m.id)).toBeUndefined();
+    expect(getOpenDomainMigration(tercero.id)).toBeUndefined();
+    expect(listSnapshots(m.id)).toEqual([]);
+    expect(getPrepublished('www.tercero2.es')).toBeUndefined();
+    expect(getDomainRedirect('tercero.es')).toBeUndefined();
+    // Los nombres dejan de estar reservados al proyecto.
+    expect(listAssignedDomains()).not.toContain('www.tercero2.es');
+    expect(listPrepublished()).toHaveLength(antes - 1);
+    // El proyecto puede volver a preparar el cambio.
+    expect(nuevo(tercero.id, { hosts: [] }).project_id).toBe(tercero.id);
+    expect(deleteDomainMigration(m.id)).toBe(false);
   });
 });
 

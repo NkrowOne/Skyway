@@ -16,10 +16,14 @@
  * - sin distinguir mayúsculas y sin tocar nunca lo que va dentro de `${{…}}`
  *   (las referencias se resuelven solas al desplegar);
  * - el cálculo parte siempre del valor ORIGINAL (la instantánea): repetirlo da
- *   el mismo resultado aunque un dominio sea subdominio del otro.
+ *   el mismo resultado aunque un dominio sea subdominio del otro;
+ * - un usuario para entrar no cambia (`SMTP_USER`, `MAIL_USERNAME`… o el
+ *   usuario de una URL): tras pasar, el buzón sigue entrando con su dirección
+ *   anterior hasta que se actualiza, y la aplicación dejaría de enviar.
  */
 import crypto from 'crypto';
 import { getDomain } from 'tldts';
+import { mailRoleOf } from './mailenv';
 
 export type AmbitoVariable = 'service' | 'project' | 'build';
 
@@ -78,27 +82,48 @@ export interface PlanVariables {
   cambios: CambioPropuesto[];
   /** Todas las variables que mencionan nombres de dominio.es que no se cambian. */
   avisosSinMapa: AvisoSinMapa[];
+  /**
+   * Direcciones que se mudan, pero que la variable usa como usuario para
+   * entrar (`SMTP_USER`, el usuario de una URL): no se cambian al pasar
+   * (`mensajeUsuario`). Las que escribió Skyway (`mail.smtp.user`) las
+   * actualiza la baja con `refrescarVariablesCorreo`.
+   */
+  usuarios: AvisoSinMapa[];
   /** sha256 de `(ámbito, servicio, clave, sha256(antes), excluida)` de cada cambio, en orden. */
   huella: string;
 }
 
 // ---------- búsqueda ----------
 
-/** Tras un nombre: ni otra letra del nombre ni un punto seguido de más nombre (`dominio.es.mx`). */
-const FIN = '(?![A-Za-z0-9-]|\\.[A-Za-z0-9])';
 /**
- * Antes de un host: ni una letra del nombre ni «@» (sería una dirección:
- * `contacto@dominio.es` no cambia por servir `dominio.es`), ni un punto pegado
- * a otro nombre (`www.dominio.es` no es `dominio.es`). Un punto suelto sí:
- * `.dominio.es` es el dominio de una cookie que cubre al host servido.
+ * Cada `${{…}}` se tapa con este carácter (la misma longitud, para conservar
+ * las posiciones) y la búsqueda se hace sobre el valor entero. Así una
+ * referencia pegada a la IZQUIERDA de un nombre cuenta como parte de él:
+ * `${{api.SUB}}.dominio.es` es un subdominio que se decide al desplegar, no
+ * el dominio de una cookie, y no se cambia. A la DERECHA es un límite:
+ * `https://www.dominio.es${{web.RUTA}}` sigue siendo el host servido.
  */
-const ANTES_HOST = '(?<![A-Za-z0-9@-])(?<![A-Za-z0-9@.-]\\.)';
+const TAPA = '\u0001';
+/** Tras un nombre: ni otra letra del nombre ni un punto seguido de más nombre (`dominio.es.mx`, `dominio.es.${{X}}`). */
+const FIN = '(?![A-Za-z0-9-]|\\.[A-Za-z0-9\\u0001])';
+/**
+ * Antes de un host: ni una letra del nombre ni un punto pegado a otro nombre
+ * (`www.dominio.es` no es `dominio.es`). Un punto suelto sí: `.dominio.es` es
+ * el dominio de una cookie que cubre al host servido. Tras «@» puede ser el
+ * host de una URL con usuario o el dominio de una dirección: lo decide
+ * `arrobaDeUrl` (`contacto@dominio.es` no cambia por servir `dominio.es`).
+ */
+const ANTES_HOST = '(?<![A-Za-z0-9\\u0001-])(?<![A-Za-z0-9@.\\u0001-]\\.)';
 /** Antes de una dirección: nada que pueda ser parte de su parte local. */
-const ANTES_DIRECCION = '(?<![A-Za-z0-9._%+-])';
+const ANTES_DIRECCION = '(?<![A-Za-z0-9._%+\\u0001-])';
 /** Para encontrar el principio de cualquier nombre (las menciones sin mapa). */
-const ANTES_NOMBRE = '(?<![A-Za-z0-9-])(?<![A-Za-z0-9-]\\.)';
+const ANTES_NOMBRE = '(?<![A-Za-z0-9\\u0001-])(?<![A-Za-z0-9\\u0001-]\\.)';
+/** Una etiqueta de nombre; una referencia tapada cuenta como etiqueta (`${{api.SUB}}.dominio.es`). */
+const ETIQUETA = '[A-Za-z0-9\\u0001-]+';
 /** Referencias a otras variables: `${{servicio.VARIABLE}}`. */
 const REFERENCIA = /\$\{\{[\s\S]*?\}\}/g;
+/** Lo que termina la autoridad de una URL (`usuario:clave@host:puerto`). */
+const FUERA_DE_AUTORIDAD = /[/?#\s"'<>,;\\`]/;
 
 function escapar(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -108,15 +133,50 @@ function normalizar(s: string): string {
   return s.trim().toLowerCase().replace(/\.$/, '');
 }
 
+function tapar(valor: string): string {
+  return valor.replace(REFERENCIA, (r) => TAPA.repeat(r.length));
+}
+
+/** El texto original entre `a` y `b`, en minúsculas salvo las referencias (sus nombres distinguen mayúsculas). */
+function textoOriginal(valor: string, tapado: string, a: number, b: number): string {
+  let out = '';
+  for (let i = a; i < b; i++) out += tapado[i] === TAPA ? valor[i] : valor[i].toLowerCase();
+  return out;
+}
+
+/** Autoridad de la URL que contiene la posición `i` (lo que va entre `esquema://` y la ruta), o null. */
+function autoridad(texto: string, i: number): { inicio: number; fin: number } | null {
+  let inicio = i;
+  while (inicio > 0 && !FUERA_DE_AUTORIDAD.test(texto[inicio - 1])) inicio--;
+  if (!/[A-Za-z][A-Za-z0-9+.-]*:\/\/$/.test(texto.slice(Math.max(0, inicio - 64), inicio))) return null;
+  let fin = i;
+  while (fin < texto.length && !FUERA_DE_AUTORIDAD.test(texto[fin])) fin++;
+  return { inicio, fin };
+}
+
+/**
+ * Papel del «@» de la posición `i`: el último de la autoridad de una URL
+ * separa el usuario del host (`separador`: `https://u:clave@www.dominio.es`);
+ * uno anterior es parte del usuario (`usuario`: `smtp://ana@dominio.es:clave@mail.x`);
+ * fuera de una URL, null (una dirección, también en `mailto:`).
+ */
+function arrobaDeUrl(texto: string, i: number): 'separador' | 'usuario' | null {
+  const a = autoridad(texto, i);
+  if (!a) return null;
+  return texto.lastIndexOf('@', a.fin - 1) === i ? 'separador' : 'usuario';
+}
+
 interface MapaCompilado {
   regex: RegExp | null;
-  destino: Map<string, string>;
+  hosts: Map<string, string>;
+  direcciones: Map<string, string>;
 }
 
 function compilar(mapa: MapaCambio): MapaCompilado {
-  const destino = new Map<string, string>();
+  const hosts = new Map<string, string>();
+  const direcciones = new Map<string, string>();
   const alternativas: { texto: string; patron: string }[] = [];
-  const anadir = (from: string, to: string, antes: string) => {
+  const anadir = (destino: Map<string, string>, from: string, to: string, antes: string) => {
     const f = normalizar(from);
     const t = normalizar(to);
     // Un mismo origen con dos destinos: manda el primero (el plan no los genera).
@@ -124,112 +184,136 @@ function compilar(mapa: MapaCambio): MapaCompilado {
     destino.set(f, t);
     alternativas.push({ texto: f, patron: `${antes}${escapar(f)}${FIN}` });
   };
-  for (const h of mapa.hosts) anadir(h.from, h.to, ANTES_HOST);
-  for (const d of mapa.direcciones) anadir(d.from, d.to, ANTES_DIRECCION);
-  if (alternativas.length === 0) return { regex: null, destino };
+  for (const h of mapa.hosts) if (!h.from.includes('@')) anadir(hosts, h.from, h.to, ANTES_HOST);
+  for (const d of mapa.direcciones) if (d.from.includes('@')) anadir(direcciones, d.from, d.to, ANTES_DIRECCION);
+  if (alternativas.length === 0) return { regex: null, hosts, direcciones };
   // De la más larga a la más corta: en la misma posición gana el nombre completo.
   alternativas.sort((a, b) => b.texto.length - a.texto.length || a.texto.localeCompare(b.texto));
-  return { regex: new RegExp(alternativas.map((a) => `(?:${a.patron})`).join('|'), 'gi'), destino };
-}
-
-/** Trozos del valor fuera de `${{…}}` (con su posición) y dentro (intocables). */
-function trozos(valor: string): { texto: string; inicio: number; referencia: boolean }[] {
-  const out: { texto: string; inicio: number; referencia: boolean }[] = [];
-  let ultimo = 0;
-  for (const m of valor.matchAll(REFERENCIA)) {
-    const i = m.index ?? 0;
-    if (i > ultimo) out.push({ texto: valor.slice(ultimo, i), inicio: ultimo, referencia: false });
-    out.push({ texto: m[0], inicio: i, referencia: true });
-    ultimo = i + m[0].length;
-  }
-  if (ultimo < valor.length) out.push({ texto: valor.slice(ultimo), inicio: ultimo, referencia: false });
-  return out;
+  return { regex: new RegExp(alternativas.map((a) => `(?:${a.patron})`).join('|'), 'gi'), hosts, direcciones };
 }
 
 interface Analisis {
   valor: string;
   ocurrencias: number;
   sinMapa: string[];
+  /** Direcciones del mapa que están como usuario para entrar: no se cambian. */
+  usuarios: string[];
 }
 
-function analizar(valor: string, mapa: MapaCompilado, fromDomain: string | null): Analisis {
+/**
+ * Aplica el mapa en una sola pasada sobre el valor con las referencias
+ * tapadas. `usuario`: el valor entero es un usuario SMTP (`SMTP_USER`,
+ * `MAIL_USERNAME`…), así que sus direcciones no cambian.
+ */
+function analizar(valor: string, mapa: MapaCompilado, opciones: { fromDomain?: string | null; usuario?: boolean } = {}): Analisis {
+  const texto = tapar(valor);
   let salida = '';
+  let ultimo = 0;
   let ocurrencias = 0;
-  const sustituidos: [number, number][] = [];
-  const partes = trozos(valor);
-  for (const p of partes) {
-    if (p.referencia || !mapa.regex) {
-      salida += p.texto;
-      continue;
+  // Tramos sustituidos o dejados a propósito: no son menciones «sin mapa».
+  const tratados: [number, number][] = [];
+  const usuarios: string[] = [];
+  for (const m of mapa.regex ? texto.matchAll(mapa.regex) : []) {
+    const inicio = m.index ?? 0;
+    const fin = inicio + m[0].length;
+    const nombre = m[0].toLowerCase();
+    const arroba = nombre.indexOf('@');
+    let desde = inicio;
+    let nuevo: string | undefined;
+    if (arroba < 0) {
+      // Tras «@» solo es un host si es el de una URL con usuario; si no, es el dominio de una dirección.
+      if (texto[inicio - 1] === '@' && arrobaDeUrl(texto, inicio - 1) !== 'separador') continue;
+      nuevo = mapa.hosts.get(nombre);
+    } else {
+      const papel = arrobaDeUrl(texto, inicio + arroba);
+      if (papel === 'separador') {
+        // `https://ana@dominio.es/`: «ana» es el usuario de la URL y dominio.es, su host.
+        desde = inicio + arroba + 1;
+        nuevo = mapa.hosts.get(nombre.slice(arroba + 1));
+      } else if (papel === 'usuario' || opciones.usuario) {
+        // Usuario con el que se entra en el correo: hasta que se actualice (o
+        // se dé de baja el dominio anterior) el buzón sigue entrando con su
+        // dirección anterior, y cambiarlo dejaría a la aplicación sin enviar.
+        usuarios.push(nombre);
+        tratados.push([inicio, fin]);
+        continue;
+      } else {
+        nuevo = mapa.direcciones.get(nombre);
+      }
     }
-    salida += p.texto.replace(mapa.regex, (encontrado: string, offset: number) => {
-      const to = mapa.destino.get(encontrado.toLowerCase());
-      if (to === undefined) return encontrado;
-      ocurrencias++;
-      sustituidos.push([p.inicio + offset, p.inicio + offset + encontrado.length]);
-      return to;
-    });
+    if (nuevo === undefined) continue;
+    salida += valor.slice(ultimo, desde) + nuevo;
+    ultimo = fin;
+    ocurrencias++;
+    tratados.push([desde, fin]);
   }
-  return { valor: salida, ocurrencias, sinMapa: fromDomain ? menciones(valor, partes, fromDomain, sustituidos) : [] };
+  salida += valor.slice(ultimo);
+  return {
+    valor: salida,
+    ocurrencias,
+    sinMapa: opciones.fromDomain ? menciones(valor, texto, opciones.fromDomain, tratados) : [],
+    usuarios: [...new Set(usuarios)],
+  };
 }
 
 /**
  * Nombres de `fromDomain` (o de sus subdominios) y direcciones suyas que
- * aparecen en el valor original y NO se sustituyen. En una URL con usuario
- * (`postgres://u:clave@db.dominio.es`) se enseña el host, no `clave@…`.
+ * aparecen en el valor y NO se sustituyen. En una URL con usuario
+ * (`postgres://u:clave@db.dominio.es`) se enseña el host, no `clave@…`; un
+ * nombre que depende de una referencia se enseña con ella.
  */
-function menciones(
-  valor: string,
-  partes: { texto: string; inicio: number; referencia: boolean }[],
-  fromDomain: string,
-  sustituidos: [number, number][],
-): string[] {
-  const regex = new RegExp(`${ANTES_NOMBRE}(?:[A-Za-z0-9-]+\\.)*${escapar(fromDomain)}${FIN}`, 'gi');
-  const cubierto = (a: number, b: number) => sustituidos.some(([s, e]) => s < b && a < e);
+function menciones(valor: string, texto: string, fromDomain: string, tratados: [number, number][]): string[] {
+  const regex = new RegExp(`${ANTES_NOMBRE}(?:${ETIQUETA}\\.)*${escapar(fromDomain)}${FIN}`, 'gi');
+  const cubierto = (a: number, b: number) => tratados.some(([s, e]) => s < b && a < e);
   const out: string[] = [];
-  for (const p of partes) {
-    if (p.referencia) continue;
-    for (const m of p.texto.matchAll(regex)) {
-      const inicio = p.inicio + (m.index ?? 0);
-      const fin = inicio + m[0].length;
-      const nombre = m[0].toLowerCase();
-      if (valor[inicio - 1] !== '@') {
-        if (!cubierto(inicio, fin)) out.push(nombre);
-        continue;
-      }
-      // Precedido de «@»: o una dirección o el usuario de una URL.
-      let local = inicio - 1;
-      while (local > 0 && /[A-Za-z0-9._%+-]/.test(valor[local - 1])) local--;
-      const parteLocal = valor.slice(local, inicio - 1);
-      const previo = valor[local - 1];
-      const esDireccion =
-        parteLocal !== '' && (previo === undefined || (previo !== ':' && previo !== '/') || /mailto:$/i.test(valor.slice(0, local)));
-      if (esDireccion) {
-        if (!cubierto(local, fin)) out.push(`${parteLocal.toLowerCase()}@${nombre}`);
-      } else if (!cubierto(inicio, fin)) {
-        out.push(nombre);
-      }
+  for (const m of texto.matchAll(regex)) {
+    const inicio = m.index ?? 0;
+    const fin = inicio + m[0].length;
+    if (texto[inicio - 1] !== '@' || arrobaDeUrl(texto, inicio - 1) === 'separador') {
+      if (!cubierto(inicio, fin)) out.push(textoOriginal(valor, texto, inicio, fin));
+      continue;
     }
+    // Tras «@»: el dominio de una dirección (con su parte local, si la tiene).
+    let local = inicio - 1;
+    while (local > 0 && /[A-Za-z0-9._%+\u0001-]/.test(texto[local - 1])) local--;
+    if (!cubierto(local, fin)) out.push(textoOriginal(valor, texto, local, fin));
   }
   return [...new Set(out)];
 }
 
-/** Aplica el mapa a un valor (siempre al original). */
-export function aplicarMapa(valor: string, mapa: MapaCambio): { valor: string; ocurrencias: number } {
-  const r = analizar(valor, compilar(mapa), null);
+/**
+ * Aplica el mapa a un valor (siempre al original). Con `key`, si es la de un
+ * usuario SMTP (`SMTP_USER`, `MAIL_USERNAME`…), sus direcciones no cambian:
+ * el mismo criterio que `planificar`.
+ */
+export function aplicarMapa(valor: string, mapa: MapaCambio, opciones: { key?: string } = {}): { valor: string; ocurrencias: number } {
+  const r = analizar(valor, compilar(mapa), { usuario: esUsuarioCorreo(opciones.key) });
   return { valor: r.valor, ocurrencias: r.ocurrencias };
+}
+
+/** ¿Es el nombre de un usuario SMTP (`SMTP_USER`, `EMAIL_HOST_USER`…)? */
+function esUsuarioCorreo(key: string | undefined): boolean {
+  return !!key && mailRoleOf(key.toUpperCase()) === 'user';
 }
 
 /** Texto de una mención sin mapa para la interfaz. */
 export function mensajeSinMapa(nombre: string, key?: string): string {
-  if (nombre.includes('@')) {
-    return key
-      ? `${nombre} aparece en ${key}, pero no es un buzón ni un alias que se mude: no se cambia.`
-      : `${nombre} no es un buzón ni un alias que se mude: no se cambia.`;
+  const donde = key ? ` aparece en ${key}, pero` : '';
+  if (nombre.includes('${{')) {
+    return key ? `${nombre} aparece en ${key} y depende de otra variable: no se cambia.` : `${nombre} depende de otra variable: no se cambia.`;
   }
-  return key
-    ? `${nombre} aparece en ${key}, pero no lo sirve este proyecto: no se cambia.`
-    : `${nombre} no lo sirve este proyecto: no se cambia.`;
+  if (nombre.startsWith('@')) return key ? `${nombre} aparece en ${key}: no se cambia.` : `${nombre} no se cambia.`;
+  if (nombre.includes('@')) return `${nombre}${donde} no es un buzón ni un alias que se mude: no se cambia.`;
+  return `${nombre}${donde} no lo sirve este proyecto: no se cambia.`;
+}
+
+/** Texto de un usuario para entrar que no se cambia (`PlanVariables.usuarios`). */
+export function mensajeUsuario(nombre: string, key?: string): string {
+  const dominio = nombre.slice(nombre.lastIndexOf('@') + 1);
+  return (
+    `${nombre}${key ? ` aparece en ${key}` : ''} como usuario para entrar en el correo: no se cambia al pasar. ` +
+    `El buzón sigue entrando con ese usuario hasta que se actualice o se dé de baja ${dominio}.`
+  );
 }
 
 const ORDEN_AMBITO: Record<AmbitoVariable, number> = { project: 0, service: 1, build: 2 };
@@ -260,10 +344,12 @@ export function planificar(
   const excluidas = new Set((opciones.excluidas ?? []).map(claveDe));
   const cambios: CambioPropuesto[] = [];
   const avisosSinMapa: AvisoSinMapa[] = [];
+  const usuarios: AvisoSinMapa[] = [];
   for (const v of valores) {
     if (v.origen?.startsWith('mail.')) continue;
-    const r = analizar(v.valor, compilado, from);
+    const r = analizar(v.valor, compilado, { fromDomain: from, usuario: esUsuarioCorreo(v.key) });
     if (r.sinMapa.length > 0) avisosSinMapa.push({ ambito: v.ambito, key: v.key, serviceId: v.serviceId, nombres: r.sinMapa });
+    if (r.usuarios.length > 0) usuarios.push({ ambito: v.ambito, key: v.key, serviceId: v.serviceId, nombres: r.usuarios });
     if (r.ocurrencias === 0) continue;
     cambios.push({
       ambito: v.ambito,
@@ -283,8 +369,9 @@ export function planificar(
     a.key.localeCompare(b.key);
   cambios.sort(orden);
   avisosSinMapa.sort(orden);
+  usuarios.sort(orden);
   const huella = sha256(JSON.stringify(cambios.map((c) => [c.ambito, c.serviceId ?? '', c.key, sha256(c.antes), c.excluida])));
-  return { cambios, avisosSinMapa, huella };
+  return { cambios, avisosSinMapa, usuarios, huella };
 }
 
 // ---------- WordPress ----------
@@ -319,6 +406,19 @@ export function quitarBloqueWordpress(extra: string): string {
 // ---------- avisos ----------
 
 /**
+ * Prefijos con los que los frameworks exponen una variable al navegador
+ * (`NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`, `VITE_TURNSTILE_SITE_KEY`): el
+ * nombre que importa es lo que va detrás.
+ */
+const PREFIJO_PUBLICO = /^(?:NEXT_PUBLIC_|NUXT_PUBLIC_|EXPO_PUBLIC_|REACT_APP_|VITE_|PUBLIC_|GATSBY_|NUXT_)/;
+const INICIO_SESION = new Set(['NEXTAUTH_URL', 'AUTH_URL']);
+const GOOGLE = new Set(['GOOGLE_CLIENT_ID', 'GOOGLE_ID', 'AUTH_GOOGLE_ID', 'GOOGLE_OAUTH_CLIENT_ID']);
+const GITHUB = new Set(['GITHUB_CLIENT_ID', 'GITHUB_ID', 'AUTH_GITHUB_ID', 'GITHUB_OAUTH_CLIENT_ID']);
+/** El tema va en cualquier tramo del nombre: `STRIPE_SECRET_KEY`, `NEXT_PUBLIC_STRIPE_…`, `APP_RECAPTCHA_SECRET`. */
+const STRIPE = /(?:^|_)STRIPE_/;
+const WIDGET = /(?:^|_)(?:TURNSTILE|RECAPTCHA|HCAPTCHA)_/;
+
+/**
  * Avisos informativos según las variables y las pilas del proyecto: lo que el
  * cambio no puede hacer por sí solo (dar de alta la URL nueva en un proveedor
  * externo, corregir las URL guardadas en la base de datos). No bloquean nada.
@@ -326,24 +426,25 @@ export function quitarBloqueWordpress(extra: string): string {
  */
 export function avisosDeVariables(claves: string[], pilas: string[], hostNuevo: string, hostViejo?: string): string[] {
   const k = claves.map((c) => c.toUpperCase());
+  const base = k.map((c) => c.replace(PREFIJO_PUBLICO, ''));
   const nuevo = normalizar(hostNuevo);
   const registrable = getDomain(nuevo) ?? nuevo;
   const out: string[] = [];
-  if (k.some((c) => c === 'NEXTAUTH_URL' || c === 'AUTH_URL')) {
+  if (base.some((c) => INICIO_SESION.has(c))) {
     out.push(`Añade https://${nuevo}/api/auth/callback/<proveedor> en cada proveedor de inicio de sesión.`);
   }
-  if (k.includes('GOOGLE_CLIENT_ID')) {
+  if (base.some((c) => GOOGLE.has(c))) {
     out.push(`Google Cloud → Credenciales: añade https://${nuevo} como origen autorizado y su URL de vuelta.`);
   }
-  if (k.includes('GITHUB_CLIENT_ID')) {
+  if (base.some((c) => GITHUB.has(c))) {
     out.push('GitHub → Developer settings → OAuth Apps: cambia la Authorization callback URL.');
   }
-  if (k.some((c) => c.startsWith('STRIPE_'))) {
+  if (k.some((c) => STRIPE.test(c))) {
     out.push(
       `Stripe → Webhooks: crea el endpoint en https://${nuevo}/… (Stripe no sigue redirecciones) y actualiza STRIPE_WEBHOOK_SECRET.`,
     );
   }
-  if (k.some((c) => c.startsWith('TURNSTILE_') || c.startsWith('RECAPTCHA_'))) {
+  if (k.some((c) => WIDGET.test(c))) {
     out.push(`Añade ${registrable} a los nombres permitidos del widget.`);
   }
   if (k.some((c) => c.includes('COOKIE_DOMAIN'))) {

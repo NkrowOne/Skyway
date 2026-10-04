@@ -12,6 +12,7 @@ import {
   aplicarMapa,
   avisosDeVariables,
   mensajeSinMapa,
+  mensajeUsuario,
   planificar,
   quitarBloqueWordpress,
 } from '../src/envreplace';
@@ -71,7 +72,35 @@ describe('aplicarMapa: límites de nombre', () => {
   it('nunca toca lo que va dentro de ${{…}}', () => {
     expect(aplicarMapa('${{web.PUBLIC_URL}}', MAPA)).toEqual({ valor: '${{web.PUBLIC_URL}}', ocurrencias: 0 });
     expect(aplicarMapa('${{ www.dominio.es }}/https://www.dominio.es', MAPA).valor).toBe('${{ www.dominio.es }}/https://www.dominio2.es');
-    expect(aplicarMapa('${{a.b}}www.dominio.es', MAPA).valor).toBe('${{a.b}}www.dominio2.es');
+  });
+
+  it('una referencia pegada a la izquierda es parte del nombre; a la derecha, un límite', () => {
+    // `${{api.SUB}}.dominio.es` es un subdominio que se decide al desplegar, no el dominio de una cookie.
+    expect(aplicarMapa('https://${{api.SUB}}.dominio.es/x', MAPA)).toEqual({ valor: 'https://${{api.SUB}}.dominio.es/x', ocurrencias: 0 });
+    expect(aplicarMapa('${{a.b}}www.dominio.es', MAPA).ocurrencias).toBe(0);
+    expect(aplicarMapa('${{a.LOCAL}}ana@dominio.es', MAPA).ocurrencias).toBe(0);
+    expect(aplicarMapa('dominio.es.${{a.TLD}}', MAPA).ocurrencias).toBe(0);
+    // Lo que sigue al host (una ruta, un puerto) no cambia el host.
+    expect(aplicarMapa('https://www.dominio.es${{web.RUTA}}', MAPA).valor).toBe('https://www.dominio2.es${{web.RUTA}}');
+    expect(aplicarMapa('postgres://${{db.U}}:${{db.P}}@www.dominio.es:5432', MAPA).valor).toBe('postgres://${{db.U}}:${{db.P}}@www.dominio2.es:5432');
+  });
+
+  it('el host de una URL con usuario es un host; un usuario con «@» no cambia', () => {
+    expect(aplicarMapa('https://admin:secreto@www.dominio.es/hook', MAPA)).toEqual({
+      valor: 'https://admin:secreto@www.dominio2.es/hook',
+      ocurrencias: 1,
+    });
+    expect(aplicarMapa('https://ana@dominio.es/x', MAPA).valor).toBe('https://ana@dominio2.es/x');
+    // El último «@» de la autoridad separa el usuario: lo de antes es el usuario, aunque sea una dirección del mapa.
+    expect(aplicarMapa('smtp://ana@dominio.es:clave@mail.example.com:587', MAPA).ocurrencias).toBe(0);
+    // Fuera de una URL, el dominio de una dirección nunca es el host servido.
+    expect(aplicarMapa('x@www.dominio.es', MAPA).ocurrencias).toBe(0);
+    expect(aplicarMapa('git@dominio.es:tienda.git', MAPA).ocurrencias).toBe(0);
+  });
+
+  it('con la clave de un usuario SMTP, sus direcciones no cambian', () => {
+    expect(aplicarMapa('ana@dominio.es', MAPA, { key: 'SMTP_USER' })).toEqual({ valor: 'ana@dominio.es', ocurrencias: 0 });
+    expect(aplicarMapa('ana@dominio.es', MAPA, { key: 'smtp_from' }).valor).toBe('ana@dominio2.es');
   });
 
   it('el dominio de una cookie (`.dominio.es`) sigue al host servido', () => {
@@ -135,6 +164,56 @@ describe('planificar', () => {
     ]);
     expect(mensajeSinMapa('db.dominio.es', 'DATABASE_URL')).toBe('db.dominio.es aparece en DATABASE_URL, pero no lo sirve este proyecto: no se cambia.');
     expect(mensajeSinMapa('db.dominio.es')).toBe('db.dominio.es no lo sirve este proyecto: no se cambia.');
+  });
+
+  it('el usuario SMTP no cambia al pasar: el buzón sigue entrando con su dirección anterior', () => {
+    const plan = planificar(
+      [
+        valor('ana@dominio.es', { key: 'SMTP_USER' }),
+        valor('ana@dominio.es', { key: 'MAIL_USERNAME' }),
+        valor('ana@dominio.es', { key: 'EMAIL_HOST_USER', ambito: 'project', serviceId: null }),
+        valor('smtp://ana@dominio.es:clave@mail.example.com:587', { key: 'MAILER_DSN' }),
+        // El remitente sí: Mailway acepta enviar como cualquier dirección del buzón.
+        valor('ana@dominio.es', { key: 'SMTP_FROM' }),
+        // Un usuario que no se muda es una mención sin mapa, como siempre.
+        valor('contacto@dominio.es', { key: 'SMTP_USERNAME' }),
+      ],
+      MAPA,
+      'dominio.es',
+    );
+    expect(plan.cambios.map((c) => c.key)).toEqual(['SMTP_FROM']);
+    expect(plan.usuarios).toEqual([
+      { ambito: 'project', key: 'EMAIL_HOST_USER', serviceId: null, nombres: ['ana@dominio.es'] },
+      { ambito: 'service', key: 'MAIL_USERNAME', serviceId: 'svc_1', nombres: ['ana@dominio.es'] },
+      { ambito: 'service', key: 'MAILER_DSN', serviceId: 'svc_1', nombres: ['ana@dominio.es'] },
+      { ambito: 'service', key: 'SMTP_USER', serviceId: 'svc_1', nombres: ['ana@dominio.es'] },
+    ]);
+    expect(plan.avisosSinMapa).toEqual([{ ambito: 'service', key: 'SMTP_USERNAME', serviceId: 'svc_1', nombres: ['contacto@dominio.es'] }]);
+    expect(mensajeUsuario('ana@dominio.es', 'SMTP_USER')).toBe(
+      'ana@dominio.es aparece en SMTP_USER como usuario para entrar en el correo: no se cambia al pasar. ' +
+        'El buzón sigue entrando con ese usuario hasta que se actualice o se dé de baja dominio.es.',
+    );
+  });
+
+  it('menciones: el host de una URL con usuario, las que dependen de una referencia y los sufijos «@dominio»', () => {
+    const plan = planificar(
+      [
+        valor('https://admin:secreto@www.dominio.es/hook', { key: 'WEBHOOK' }),
+        valor('https://${{api.SUB}}.dominio.es/x', { key: 'API' }),
+        valor('@dominio.es', { key: 'DOMINIO_PERMITIDO' }),
+      ],
+      MAPA,
+      'dominio.es',
+    );
+    // El host servido tras «usuario:clave@» se cambia: no es una mención sin mapa.
+    expect(plan.cambios.map((c) => c.key)).toEqual(['WEBHOOK']);
+    expect(plan.avisosSinMapa).toEqual([
+      { ambito: 'service', key: 'API', serviceId: 'svc_1', nombres: ['${{api.SUB}}.dominio.es'] },
+      { ambito: 'service', key: 'DOMINIO_PERMITIDO', serviceId: 'svc_1', nombres: ['@dominio.es'] },
+    ]);
+    expect(mensajeSinMapa('${{api.SUB}}.dominio.es', 'API')).toBe('${{api.SUB}}.dominio.es aparece en API y depende de otra variable: no se cambia.');
+    expect(mensajeSinMapa('@dominio.es', 'DOMINIO_PERMITIDO')).toBe('@dominio.es aparece en DOMINIO_PERMITIDO: no se cambia.');
+    expect(mensajeSinMapa('pepe@dominio.es', 'K')).toBe('pepe@dominio.es aparece en K, pero no es un buzón ni un alias que se mude: no se cambia.');
   });
 
   it('las direcciones de mailto: son direcciones; las menciones dentro de ${{…}} no cuentan', () => {
@@ -247,5 +326,19 @@ describe('avisosDeVariables', () => {
   it('sin nada que avisar, ninguna línea; RECAPTCHA_ cuenta como widget', () => {
     expect(avisosDeVariables(['DATABASE_URL', 'PORT'], ['node'], 'www.dominio2.es')).toEqual([]);
     expect(avisosDeVariables(['RECAPTCHA_SECRET'], [], 'app.dominio2.es')).toEqual(['Añade dominio2.es a los nombres permitidos del widget.']);
+  });
+
+  it('reconoce los nombres públicos de los frameworks y las variantes habituales', () => {
+    const avisos = avisosDeVariables(
+      ['NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY', 'VITE_TURNSTILE_SITE_KEY', 'PUBLIC_NEXTAUTH_URL', 'AUTH_GOOGLE_ID', 'AUTH_GITHUB_ID'],
+      [],
+      'www.dominio2.es',
+    );
+    expect(avisos.map((a) => a.split(/[:→ ]/)[0])).toEqual(['Añade', 'Google', 'GitHub', 'Stripe', 'Añade']);
+    expect(avisosDeVariables(['NEXT_PUBLIC_RECAPTCHA_SITE_KEY'], [], 'www.dominio2.es')).toEqual([
+      'Añade dominio2.es a los nombres permitidos del widget.',
+    ]);
+    // Sin el tema como tramo propio del nombre, no hay aviso.
+    expect(avisosDeVariables(['KEYCLOAK_AUTH_URL', 'OAUTH_URL', 'MYSTRIPE_KEY', 'GOOGLE_ANALYTICS_ID'], [], 'www.dominio2.es')).toEqual([]);
   });
 });

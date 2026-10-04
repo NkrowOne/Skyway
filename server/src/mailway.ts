@@ -1429,7 +1429,7 @@ export interface CambioDominioVista {
  * Pasar, volver, cancelar y dar de baja trabajan dentro de la petición (todos
  * los buzones y alias, con el motor de correo y una recarga del directorio):
  * con el plazo normal, Skyway daría por fallida una operación que Mailway
- * termina bien. Las cuatro son idempotentes, así que un reintento es seguro.
+ * termina bien. Aun así, la respuesta se puede perder (ver `accionCambio`).
  */
 const PLAZO_CAMBIO_MS = 120_000;
 /**
@@ -1506,10 +1506,58 @@ export async function checkDomainMigration(id: string): Promise<CambioDominioVis
   );
 }
 
-async function accionCambio(id: string, accion: 'switch' | 'rollback' | 'cancel' | 'retire', body: object = {}): Promise<CambioDominioVista> {
-  return vistaCambio(
-    await mailwayFetch<unknown>(`/api/domain-migrations/${enc(id)}/${accion}`, { method: 'POST', body, timeoutMs: PLAZO_CAMBIO_MS }),
-  );
+type AccionCambio = 'switch' | 'rollback' | 'cancel' | 'retire';
+
+/**
+ * Estado en el que queda el cambio cuando la acción ha terminado bien. Volver
+ * deja el cambio «listo», y Mailway puede devolverlo a «preparando» si una
+ * medición posterior del DNS falla: las dos valen.
+ */
+const ESTADO_TRAS: Record<AccionCambio, readonly EstadoCambio[]> = {
+  switch: ['pasado'],
+  rollback: ['listo', 'preparando'],
+  cancel: ['cancelada'],
+  retire: ['dado_de_baja'],
+};
+
+/**
+ * ¿Puede haber hecho Mailway la acción aunque Skyway no lo sepa? Si vence el
+ * plazo o se corta la conexión, Mailway puede terminarla igualmente; y al
+ * reintentarla, solo pasar es idempotente: volver, cancelar y dar de baja
+ * responden 409 `migration_state` porque el cambio ya no está en el estado de
+ * partida. Un 5xx puede venir de un proxy que cortó la espera (si es de
+ * Mailway, el cambio no habrá llegado al estado final y el error se devuelve
+ * tal cual). Los errores propios de la acción (confirmación, MX, apps) no.
+ */
+function puedeEstarHecha(err: MailwayError): boolean {
+  if (err.kind === 'timeout' || err.kind === 'network') return true;
+  if (err.kind !== 'http' || err.status === null) return false;
+  return err.status >= 500 || (err.status === 409 && err.code === 'migration_state');
+}
+
+/**
+ * Lanza la acción y, si falla de una forma que no descarta que Mailway la haya
+ * hecho, consulta el cambio: si ya está en el estado en el que la acción lo
+ * deja, la da por buena. Sin esto, un «Volver» o una baja cuya respuesta se
+ * pierde dejarían a Skyway y a Mailway en estados distintos para siempre (el
+ * reintento recibe 409 y la web se queda sin volver, o la baja sin cerrarse).
+ */
+async function accionCambio(id: string, accion: AccionCambio, body: object = {}): Promise<CambioDominioVista> {
+  try {
+    return vistaCambio(
+      await mailwayFetch<unknown>(`/api/domain-migrations/${enc(id)}/${accion}`, { method: 'POST', body, timeoutMs: PLAZO_CAMBIO_MS }),
+    );
+  } catch (err) {
+    if (!(err instanceof MailwayError) || !puedeEstarHecha(err)) throw err;
+    let vista: CambioDominioVista;
+    try {
+      vista = await getDomainMigration(id);
+    } catch {
+      throw err;
+    }
+    if (ESTADO_TRAS[accion].includes(vista.estado)) return vista;
+    throw err;
+  }
 }
 
 /** Pasa el correo al dominio nuevo: sale como @dominio2.es y lo que llega a @dominio.es sigue entrando. */

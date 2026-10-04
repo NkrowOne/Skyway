@@ -87,6 +87,18 @@ export interface FakeMigracion {
 }
 /** Acciones del cambio de dominio en las que se puede inyectar un fallo (`mw.fallosCambio`). */
 export type AccionCambio = 'plan' | 'create' | 'get' | 'check' | 'switch' | 'rollback' | 'cancel' | 'retire' | 'login-update';
+/** Fallo inyectado en la próxima petición de una acción (`mw.fallosCambio`). */
+export interface FalloCambio {
+  /** Código HTTP y cuerpo `{error, code}`. Sin `status`, la petición no responde: vence el plazo. */
+  status?: number;
+  error?: string;
+  code?: string;
+  /**
+   * Mailway HACE la acción y la respuesta se pierde (plazo vencido, conexión
+   * cortada, un proxy que responde 504): el reintento la encuentra hecha.
+   */
+  trasHacerla?: boolean;
+}
 export interface FakeApiKey {
   id: string;
   clientId: string;
@@ -194,7 +206,7 @@ export const mw = {
   aliases: [] as FakeAlias[],
   migraciones: [] as FakeMigracion[],
   /** Fallo que devuelve la PRÓXIMA petición de esa acción (se consume al usarlo). */
-  fallosCambio: new Map<AccionCambio, { status: number; error: string; code: string }>(),
+  fallosCambio: new Map<AccionCambio, FalloCambio>(),
   /** El MX del dominio anterior aún apunta al servidor: la baja responde 409 `migration_old_mx_here`. */
   mxViejoAqui: false,
   /** El DNS no se puede consultar: la baja responde 503 `dns_unknown`. */
@@ -873,18 +885,36 @@ function moverItems(c: FakeMigracion, domainId: string, dominio: string, usuario
   }
 }
 
+/** Acción del cambio de dominio que pide la petición, o null si no es una de ellas. */
+function accionDe(path: string, method: string): AccionCambio | null {
+  if (/^\/api\/mailboxes\/[^/]+\/login-update$/.test(path)) return method === 'POST' ? 'login-update' : null;
+  if (path === '/api/domain-migrations/plan') return method === 'POST' ? 'plan' : null;
+  if (path === '/api/domain-migrations') return method === 'POST' ? 'create' : null;
+  const m = path.match(/^\/api\/domain-migrations\/[^/]+(?:\/(check|switch|rollback|cancel|retire))?$/);
+  if (!m) return null;
+  if (!m[1]) return method === 'GET' ? 'get' : null;
+  return method === 'POST' ? (m[1] as AccionCambio) : null;
+}
+
+/** Respuesta del fallo inyectado; sin `status`, lo que ve `fetch` cuando vence el plazo. */
+function responderFallo(f: FalloCambio): Response {
+  if (f.status === undefined) throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  return json(f.status, { error: f.error ?? '', code: f.code ?? '' });
+}
+
 function rutaCambioDeDominio(path: string, method: string, b: Record<string, unknown>, url: URL): Response | null {
+  const accion = accionDe(path, method);
+  const f = accion ? mw.fallosCambio.get(accion) : undefined;
+  if (accion && f) mw.fallosCambio.delete(accion);
+  if (f && !f.trasHacerla) return responderFallo(f);
+  const r = atenderCambio(path, method, b, url);
+  return f && r ? responderFallo(f) : r;
+}
+
+function atenderCambio(path: string, method: string, b: Record<string, unknown>, url: URL): Response | null {
   let m: RegExpMatchArray | null;
-  const fallo = (accion: AccionCambio): Response | null => {
-    const f = mw.fallosCambio.get(accion);
-    if (!f) return null;
-    mw.fallosCambio.delete(accion);
-    return json(f.status, { error: f.error, code: f.code });
-  };
 
   if ((m = path.match(/^\/api\/mailboxes\/([^/]+)\/login-update$/)) && method === 'POST') {
-    const f = fallo('login-update');
-    if (f) return f;
     const box = mw.mailboxes.find((x) => x.id === m![1]);
     if (!box) return json(404, { error: 'Buzón no encontrado.', code: 'not_found' });
     box.usuarioMotor = null;
@@ -893,8 +923,6 @@ function rutaCambioDeDominio(path: string, method: string, b: Record<string, unk
 
   if ((path === '/api/domain-migrations/plan' || path === '/api/domain-migrations') && method === 'POST') {
     const accion: AccionCambio = path.endsWith('/plan') ? 'plan' : 'create';
-    const f = fallo(accion);
-    if (f) return f;
     const from = mw.domains.find((d) => d.id === b.fromDomainId);
     if (!from) return json(404, { error: 'Dominio no encontrado.', code: 'not_found' });
     const to = normalizarDominio(b.toDomain);
@@ -946,8 +974,6 @@ function rutaCambioDeDominio(path: string, method: string, b: Record<string, unk
   const accion = (m[2] ?? 'get') as AccionCambio;
   if (accion === 'get' && method !== 'GET') return null;
   if (accion !== 'get' && method !== 'POST') return null;
-  const f = fallo(accion);
-  if (f) return f;
   if (!c) return json(404, { error: 'Cambio de dominio no encontrado.', code: 'not_found' });
   const destino = mw.domains.find((d) => d.id === c.toDomainId);
 

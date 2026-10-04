@@ -2577,6 +2577,23 @@ export function updateDomainMigration(
 }
 
 /**
+ * Borra un cambio de dominio con todo lo que cuelga de él: sus instantáneas
+ * (en cascada), su prepublicación y sus redirecciones, en una transacción. Es
+ * la marcha atrás de «Preparar» cuando Mailway rechaza el cambio: sin borrar
+ * también la prepublicación, sus nombres seguirían reservados al proyecto
+ * (`listAssignedDomains`, `domainguard.ts`) sin ningún cambio que los use.
+ * Devuelve si existía.
+ */
+export function deleteDomainMigration(migrationId: string): boolean {
+  return db.transaction(() => {
+    stmt('DELETE FROM domain_prepublished WHERE migration_id = ?').run(migrationId);
+    stmt('DELETE FROM domain_redirects WHERE migration_id = ?').run(migrationId);
+    stmt('DELETE FROM domain_migration_snapshots WHERE migration_id = ?').run(migrationId);
+    return stmt('DELETE FROM domain_migrations WHERE id = ?').run(migrationId).changes > 0;
+  })();
+}
+
+/**
  * Anota el despliegue de un servicio afectado sin pisar los de los demás: los
  * despliegues terminan cada uno a su tiempo y cada uno escribe solo su entrada
  * (leer y escribir en la misma transacción).
@@ -2658,11 +2675,13 @@ export function listDomainRedirects(migrationId?: string): DomainRedirectRow[] {
 /**
  * Crea las redirecciones (en una transacción). Repetirla con el mismo nombre
  * («Reintentar») la sustituye, pero nunca se apropia de la redirección de OTRO
- * proyecto: esa fila se deja como está (`domainguard.ts` ya impide llegar aquí).
+ * proyecto: esa fila se deja como está (`domainguard.ts` ya impide llegar
+ * aquí). Devuelve los nombres que NO ha escrito por ser de otro proyecto,
+ * para que quien llama no dé por hecha una redirección que no existe.
  */
 export function insertDomainRedirects(
   rows: readonly { host: string; project_id: string; to_host: string; migration_id?: string | null; permanent_from: number }[],
-): void {
+): string[] {
   const guardar = stmt(
     `INSERT INTO domain_redirects (host, project_id, to_host, migration_id, permanent_from, created_at) VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(host) DO UPDATE SET to_host = excluded.to_host, migration_id = excluded.migration_id,
@@ -2670,11 +2689,15 @@ export function insertDomainRedirects(
      WHERE domain_redirects.project_id = excluded.project_id`,
   );
   const at = now();
+  const ajenos: string[] = [];
   db.transaction(() => {
     for (const r of rows) {
-      guardar.run(nombreHost(r.host), r.project_id, nombreHost(r.to_host), r.migration_id ?? null, r.permanent_from, at);
+      const host = nombreHost(r.host);
+      const res = guardar.run(host, r.project_id, nombreHost(r.to_host), r.migration_id ?? null, r.permanent_from, at);
+      if (res.changes === 0) ajenos.push(host);
     }
   })();
+  return ajenos;
 }
 
 export function deleteDomainRedirects(migrationId: string): number {
@@ -2707,20 +2730,26 @@ export function listPrepublished(migrationId?: string): DomainPrepublishedRow[] 
 /**
  * Anota los nombres que se prepublican (en una transacción). Repetirla
  * conserva `dns_ok_at` (el DNS es del nombre, no del servicio) y, como las
- * redirecciones, nunca se apropia de la fila de otro proyecto.
+ * redirecciones, nunca se apropia de la fila de otro proyecto. Devuelve los
+ * nombres que NO ha escrito por ser de otro proyecto.
  */
 export function upsertPrepublished(
   rows: readonly { host: string; project_id: string; service_id: string; migration_id: string }[],
-): void {
+): string[] {
   const guardar = stmt(
     `INSERT INTO domain_prepublished (host, project_id, service_id, migration_id, dns_ok_at, created_at) VALUES (?, ?, ?, ?, NULL, ?)
      ON CONFLICT(host) DO UPDATE SET service_id = excluded.service_id, migration_id = excluded.migration_id
      WHERE domain_prepublished.project_id = excluded.project_id`,
   );
   const at = now();
+  const ajenos: string[] = [];
   db.transaction(() => {
-    for (const r of rows) guardar.run(nombreHost(r.host), r.project_id, r.service_id, r.migration_id, at);
+    for (const r of rows) {
+      const host = nombreHost(r.host);
+      if (guardar.run(host, r.project_id, r.service_id, r.migration_id, at).changes === 0) ajenos.push(host);
+    }
   })();
+  return ajenos;
 }
 
 /** El DNS del nombre ya apunta aquí (`at`) o ha dejado de hacerlo (null). */

@@ -22,7 +22,7 @@ import {
   writeManagedEnv,
 } from '../src/db';
 import { mailContext, planWithMail } from '../src/integrations';
-import { conexionPrevista, connectServiceMail, refrescarVariablesCorreo } from '../src/mailconnect';
+import { conexionPrevista, connectServiceMail, mailConnectNames, refrescarVariablesCorreo } from '../src/mailconnect';
 import {
   MAILWAY_SETTING,
   MailwayError,
@@ -248,9 +248,9 @@ describe('cliente de la API de cambio de dominio', () => {
     expect(cancelada.estado).toBe('cancelada');
     expect(plazos.slice(-1)).toEqual([120_000]);
     expect(mw.domains.some((d) => d.domain === 'blog2.es')).toBe(false);
-    // En un estado que no lo admite: el error de Mailway, tal cual.
-    const err = await cancelDomainMigration(v.id).catch((e) => e);
-    expect(err).toMatchObject({ status: 409, code: 'migration_state' });
+    // Repetirla (la respuesta anterior se perdió): Mailway responde 409, pero
+    // el cambio ya está cancelado, así que se da por buena.
+    expect((await cancelDomainMigration(v.id)).estado).toBe('cancelada');
   });
 
   it('un Mailway anterior a la 1.3 no tiene las rutas', async () => {
@@ -272,6 +272,69 @@ describe('cliente de la API de cambio de dominio', () => {
     const err = await getDomainMigration('lo-que-sea').catch((e) => e);
     expect(err).toBeInstanceOf(MailwayError);
     expect(err.message).toContain('falta el cambio de dominio');
+  });
+});
+
+describe('acciones cuya respuesta se pierde', () => {
+  let mid = '';
+  const get = () => llamadas(/^\/api\/domain-migrations\/[^/]+$/).filter((c) => c.method === 'GET');
+
+  beforeAll(async () => {
+    mw.domains.push({ id: 'dom_tres', clientId, domain: 'tres.es', status: 'active', ownershipVerifiedAt: 1 });
+    buzon('pedidos', 'dom_tres', 'tres.es');
+    const v = await createDomainMigration({ fromDomainId: 'dom_tres', toDomain: 'tres2.es', referenciaExterna: 'r' });
+    mid = v.id;
+    marcarListo(mid);
+    await checkDomainMigration(mid);
+  });
+
+  it('pasar: un 504 de un proxy tras hacerlo se da por bueno', async () => {
+    mw.fallosCambio.set('switch', { status: 504, error: 'Gateway Timeout', code: '', trasHacerla: true });
+    expect((await switchDomainMigration(mid)).estado).toBe('pasado');
+    expect(get()).toHaveLength(1);
+  });
+
+  it('volver: vence el plazo, Mailway ya ha vuelto y el reintento no hace falta', async () => {
+    mw.fallosCambio.set('rollback', { trasHacerla: true });
+    const vista = await rollbackDomainMigration(mid);
+    expect(vista).toMatchObject({ estado: 'listo', buzones: { pendientes: 0 } });
+    expect(mw.migraciones.find((c) => c.id === mid)?.estado).toBe('listo');
+    // Y volver otra vez (un «Reintentar» de Skyway) tampoco falla.
+    expect((await rollbackDomainMigration(mid)).estado).toBe('listo');
+  });
+
+  it('vence el plazo sin que Mailway lo haya hecho: el error del plazo, tal cual', async () => {
+    mw.fallosCambio.set('switch', {});
+    const err = await switchDomainMigration(mid).catch((e) => e);
+    expect(err).toBeInstanceOf(MailwayError);
+    expect(err.kind).toBe('timeout');
+    expect(mw.migraciones.find((c) => c.id === mid)?.estado).toBe('listo');
+    expect((await switchDomainMigration(mid)).estado).toBe('pasado');
+  });
+
+  it('los errores propios de la acción no se consultan ni se disfrazan', async () => {
+    const err = await retireDomainMigration(mid, 'otro.es').catch((e) => e);
+    expect(err).toMatchObject({ status: 400, code: 'confirm_mismatch' });
+    mw.mxViejoAqui = true;
+    try {
+      expect(await retireDomainMigration(mid, 'tres.es').catch((e) => e)).toMatchObject({ status: 409, code: 'migration_old_mx_here' });
+    } finally {
+      mw.mxViejoAqui = false;
+    }
+    expect(get()).toEqual([]);
+  });
+
+  it('dar de baja: un 502 tras hacerla y el reintento se dan por buenos', async () => {
+    mw.fallosCambio.set('retire', { status: 502, error: 'Bad Gateway', code: '', trasHacerla: true });
+    expect((await retireDomainMigration(mid, 'tres.es')).estado).toBe('dado_de_baja');
+    expect((await retireDomainMigration(mid, 'tres.es')).estado).toBe('dado_de_baja');
+  });
+
+  it('un 409 de estado en un cambio que no ha llegado a donde se pedía es un error', async () => {
+    const err = await cancelDomainMigration(mid).catch((e) => e);
+    expect(err).toBeInstanceOf(MailwayError);
+    expect(err).toMatchObject({ status: 409, code: 'migration_state' });
+    expect(get()).toHaveLength(1);
   });
 });
 
@@ -320,6 +383,8 @@ describe('conectar un servicio con el usuario del motor', () => {
   it('si Mailway no deja actualizar el usuario, no se revoca ni se crea nada', async () => {
     const lola = buzon('lola', mw.domains.find((d) => d.domain === 'dominio2.es')!.id, 'dominio2.es', { usuarioMotor: 'lola@dominio.es' });
     const service = createService(proj.id, 'Otra', 'otra', 'git', gitCfg(['otra.dominio2.es']));
+    // El servicio ya estaba conectado: su credencial anterior no se revoca.
+    appSkyway(lola.id, 'skyway:otra');
     const summary = await getSummary(clientId);
     const mailbox = summary.mailboxes.find((b) => b.id === lola.id)!;
     mw.fallosCambio.set('login-update', {
@@ -330,6 +395,7 @@ describe('conectar un servicio con el usuario del motor', () => {
     const err = await connectServiceMail({ project: proj, link, summary, service, mailbox, mode: 'smtp', info: await info() }).catch((e) => e);
     expect(err).toMatchObject({ status: 409, code: 'mailbox_login_updating' });
     expect(llamadas(/app-passwords/).filter((c) => c.path.includes(lola.id))).toEqual([]);
+    expect(mw.appPasswords.find((a) => a.mailboxId === lola.id && a.name === 'skyway:otra')?.revokedAt).toBeNull();
     expect(getEnv(service.id)).toEqual({});
   });
 
@@ -411,6 +477,45 @@ describe('refrescarVariablesCorreo', () => {
     expect(refrescarVariablesCorreo(service.id, {})).toEqual([]);
   });
 
+  it('una conexión anterior al registro de lo escrito (0.34) se refresca si el servicio tiene su credencial', () => {
+    const service = createService(proj.id, 'Antigua', 'antigua', 'git', gitCfg(['antigua.dominio2.es']));
+    patchEnv(
+      service.id,
+      {
+        SMTP_HOST: 'mail.example.com',
+        SMTP_PORT: '587',
+        SMTP_USER: 'tienda@dominio.es',
+        SMTP_PASS: 'ContraseñaDeAplicacion',
+        SMTP_FROM: 'tienda@dominio.es',
+        // Nombres que no son los de siempre: de quien los puso.
+        MAIL_USERNAME: 'tienda@dominio.es',
+      },
+      [],
+    );
+    const usuarios = new Map([['tienda@dominio.es', 'tienda@dominio2.es']]);
+    const remitentes = usuarios;
+    // Sin saber que el servicio tiene la credencial de Skyway, no se toca nada.
+    expect(refrescarVariablesCorreo(service.id, { usuarios, remitentes })).toEqual([]);
+    expect(refrescarVariablesCorreo(service.id, { usuarios }, { credencialSmtp: true })).toEqual(['SMTP_USER']);
+    expect(refrescarVariablesCorreo(service.id, { remitentes }, { credencialSmtp: true })).toEqual(['SMTP_FROM']);
+    expect(getEnv(service.id)).toMatchObject({ SMTP_USER: 'tienda@dominio2.es', SMTP_FROM: 'tienda@dominio2.es', MAIL_USERNAME: 'tienda@dominio.es' });
+    // Siguen sin registrar: volver a conectar trata los nombres de siempre como de Skyway (también SMTP_PASS).
+    expect(getManagedEnv(service.id)).toEqual({});
+    const names = mailConnectNames(getService(service.id)!, 'smtp', { host: 'mail.example.com', port: 587, from: 'tienda@dominio2.es' }, true);
+    expect(names.kept).toEqual([]);
+    expect(names.targets.map((t) => t.name)).toEqual(expect.arrayContaining(['SMTP_USER', 'SMTP_PASS', 'SMTP_FROM']));
+  });
+
+  it('con alguna variable de correo registrada, lo no registrado es de quien lo puso', () => {
+    const service = createService(proj.id, 'Mixta', 'mixta', 'git', gitCfg(['mixta.dominio2.es']));
+    writeManagedEnv(service.id, { SMTP_PASS: { value: 'x', origin: 'mail.smtp.password' } });
+    patchEnv(service.id, { SMTP_USER: 'tienda@dominio.es' }, []);
+    expect(refrescarVariablesCorreo(service.id, { usuarios: new Map([['tienda@dominio.es', 'tienda@dominio2.es']]) }, { credencialSmtp: true })).toEqual(
+      [],
+    );
+    expect(getEnv(service.id).SMTP_USER).toBe('tienda@dominio.es');
+  });
+
   it('una URL sin usuario reconocible se deja como está', () => {
     const service = createService(proj.id, 'URL rara', 'url-rara', 'git', gitCfg([]));
     writeManagedEnv(service.id, { SMTP_URL: { value: 'smtps://mail.example.com:465', origin: 'mail.smtp.url' } });
@@ -451,21 +556,47 @@ describe('dominio de correo del plan de integraciones', () => {
     expect(plan.vars.find((v) => v.name === 'SMTP_USER')?.status).toBe('done');
   });
 
-  it('antes de pasar, el dominio nuevo todavía no admite buzones: lo dice el plan', async () => {
+  it('antes de pasar, los buzones siguen en el dominio anterior: se conectan, pero no se crean', async () => {
     const p2 = createProject('Blog', 'blog', null, null);
     mw.clients.push({ id: 'cli_blog', name: 'Blog', slug: 'blog', externalRef: projectExternalRef(p2.id), suspended: false, planId: 'pln_2' });
     insertMailwayLink({ project_id: p2.id, client_id: 'cli_blog', client_name: 'Blog', created_by: null });
     mw.domains.push({ id: 'dom_b1', clientId: 'cli_blog', domain: 'viejo.es', status: 'active', ownershipVerifiedAt: 1 });
     buzon('hola', 'dom_b1', 'viejo.es');
     const v = await createDomainMigration({ fromDomainId: 'dom_b1', toDomain: 'nuevo.es', referenciaExterna: projectExternalRef(p2.id) });
+
+    // Preparando, con el dominio nuevo sin comprobar: el buzón que ya existe se conecta.
+    const existente = await mailContext(p2, admin, ['www.viejo.es'], 'hola', false);
+    expect(existente).toMatchObject({ available: true, mailbox: { email: 'hola@viejo.es', domainId: 'dom_b1' } });
+    expect(existente.mailbox?.existing?.id).toBe('mbx_hola_viejo.es');
+    // Uno nuevo no se puede crear en ninguno de los dos hasta pasar.
+    const nuevo = await mailContext(p2, admin, ['www.viejo.es'], 'avisos', false);
+    expect(nuevo.available).toBe(false);
+    expect(nuevo.reason).toBe('viejo.es está en un cambio de dominio: el buzón se podrá crear en nuevo.es en cuanto pases a él.');
+
     marcarListo(v.id);
     await checkDomainMigration(v.id);
+    expect((await mailContext(p2, admin, ['www.viejo.es'], 'hola', false)).mailbox?.existing?.id).toBe('mbx_hola_viejo.es');
 
-    const ctx = await mailContext(p2, admin, ['www.viejo.es'], 'avisos', false);
-    expect(ctx.available).toBe(false);
-    expect(ctx.reason).toBe('nuevo.es se está preparando para sustituir a viejo.es: el buzón se podrá crear en cuanto pases a él.');
+    // Pasado: los buzones están en el nuevo, aunque la web siga sirviendo el anterior.
+    await switchDomainMigration(v.id);
+    const pasado = await mailContext(p2, admin, ['www.viejo.es'], 'hola', false);
+    expect(pasado.mailbox).toMatchObject({ email: 'hola@nuevo.es', existing: { id: 'mbx_hola_viejo.es', loginPending: true } });
+    expect((await mailContext(p2, admin, ['www.viejo.es'], 'avisos', false)).mailbox).toMatchObject({ email: 'avisos@nuevo.es', existing: null });
+
+    // Volviendo (a medias): el buzón está en el nuevo, pero no se crea ninguno hasta que termine.
+    const cambio = mw.migraciones.find((c) => c.id === v.id)!;
+    cambio.estado = 'volviendo';
+    try {
+      expect((await mailContext(p2, admin, ['www.viejo.es'], 'hola', false)).available).toBe(true);
+      expect((await mailContext(p2, admin, ['www.viejo.es'], 'avisos', false)).reason).toBe(
+        'nuevo.es está volviendo a viejo.es: el buzón se podrá crear cuando termine.',
+      );
+    } finally {
+      cambio.estado = 'pasado';
+    }
 
     // Sin cambio de dominio, el dominio que casa con la web sigue siendo el elegido.
+    await rollbackDomainMigration(v.id);
     await cancelDomainMigration(v.id);
     const sin = await mailContext(p2, admin, ['www.viejo.es'], 'hola', false);
     expect(sin.mailbox).toMatchObject({ email: 'hola@viejo.es', domainId: 'dom_b1' });

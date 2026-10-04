@@ -64,7 +64,7 @@ import {
   partialConnectionMessage,
 } from './mailconnect';
 import { MailMode, MailRole, mailValue } from './mailenv';
-import { MailwayError, MailwayInfo, MailwayMailbox, MailwaySummary, createMailbox, getInfo, mailwayConfigured } from './mailway';
+import { MailwayDomain, MailwayError, MailwayInfo, MailwayMailbox, MailwaySummary, createMailbox, getInfo, mailwayConfigured } from './mailway';
 import { manifestEngines, manifestMailMode, manifestWantsMail, reservedManifestVar } from './manifest';
 import { managedUnchanged, envStateOf, EnvState, writeDecision } from './managedenv';
 import { markManualAction } from './monitor';
@@ -183,21 +183,52 @@ export interface MailContext {
 }
 
 /**
+ * Estados de un cambio de dominio (Mailway 1.3+) en los que los buzones siguen
+ * en el dominio anterior: hasta que se pasa, el nuevo está vacío. Al pasar
+ * (y al volver, mientras dura) están en el nuevo.
+ */
+const BUZONES_EN_EL_ANTERIOR = new Set(['preparando', 'listo', 'pasando']);
+
+/** ¿Están los buzones del cliente en este dominio, o en el otro de su cambio de dominio? */
+function tieneLosBuzones(d: MailwayDomain): boolean {
+  const m = d.migracion;
+  if (!m) return true;
+  return BUZONES_EN_EL_ANTERIOR.has(m.estado) === (m.rol === 'origen');
+}
+
+/**
  * El dominio del cliente con la propiedad comprobada que mejor casa con los
- * dominios del servicio. El dominio anterior de un cambio de dominio no cuenta
- * (Mailway 1.3+): ya no admite buzones nuevos y, mientras conviven los dos, la
- * web puede seguir sirviendo nombres del anterior.
+ * dominios del servicio. De un cambio de dominio (Mailway 1.3+) cuenta el que
+ * tiene los buzones: el anterior hasta que se pasa (la web aún sirve sus
+ * nombres y sus buzones se pueden conectar) y el nuevo después, aunque la
+ * web siga sirviendo nombres del anterior.
  */
 function pickMailDomain(summary: MailwaySummary, serviceDomains: string[]) {
-  const domains = summary.domains.filter((d) => d.migracion?.rol !== 'origen');
+  const domains = summary.domains.filter(tieneLosBuzones);
   const verified = domains.filter((d) => !('ownershipVerifiedAt' in d) || d.ownershipVerifiedAt !== null);
   const matches = (d: { domain: string }) =>
     serviceDomains.some((h) => h.toLowerCase() === d.domain.toLowerCase() || h.toLowerCase().endsWith(`.${d.domain.toLowerCase()}`));
   return { domain: verified.find(matches) ?? verified[0] ?? null, pending: domains.filter((d) => !verified.includes(d)) };
 }
 
-/** Estados de un cambio de dominio en los que el dominio nuevo aún no admite buzones (Mailway 1.3+). */
-const DESTINO_SIN_ALTAS = new Set(['preparando', 'listo', 'pasando', 'volviendo']);
+/**
+ * Por qué no se puede crear un buzón en ese dominio mientras dura su cambio de
+ * dominio, o null si se puede: Mailway no admite altas en el anterior hasta
+ * que el cambio se cierra, ni en el nuevo hasta pasar (`domain_migrating`).
+ * Los buzones que ya existen se pueden conectar igualmente.
+ */
+function altaBloqueada(d: MailwayDomain): string | null {
+  const m = d.migracion;
+  if (!m) return null;
+  if (m.rol === 'origen') {
+    return `${d.domain} está en un cambio de dominio: el buzón se podrá crear en ${m.pareja} en cuanto pases a él.`;
+  }
+  if (m.estado === 'volviendo') return `${d.domain} está volviendo a ${m.pareja}: el buzón se podrá crear cuando termine.`;
+  if (BUZONES_EN_EL_ANTERIOR.has(m.estado)) {
+    return `${d.domain} se está preparando para sustituir a ${m.pareja}: el buzón se podrá crear en cuanto pases a él.`;
+  }
+  return null;
+}
 
 /**
  * Lo que hace falta saber del correo del proyecto para planificar: si está
@@ -240,13 +271,10 @@ export async function mailContext(
   }
   const email = `${localPart}@${domain.domain.toLowerCase()}`;
   const existing = summary.mailboxes.find((m) => typeof m.email === 'string' && m.email.toLowerCase() === email) ?? null;
-  // El dominio nuevo de un cambio sin pasar todavía no admite buzones: mejor
+  // Durante un cambio de dominio el buzón que falta no se puede crear: mejor
   // decirlo en el plan que fallar al aplicarlo.
-  if (!existing && domain.migracion?.rol === 'destino' && DESTINO_SIN_ALTAS.has(domain.migracion.estado)) {
-    return no(
-      `${domain.domain} se está preparando para sustituir a ${domain.migracion.pareja}: el buzón se podrá crear en cuanto pases a él.`,
-    );
-  }
+  const bloqueo = existing ? null : altaBloqueada(domain);
+  if (bloqueo) return no(bloqueo);
   if (!existing && BUZONES_RESERVADOS.has(localPart) && !isAdmin) {
     return no(`El buzón «${localPart}» está reservado para la administración del dominio: solo un administrador de la plataforma puede crearlo.`);
   }

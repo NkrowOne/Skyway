@@ -6,7 +6,7 @@
  * integraciones (`integrations.ts`), para que «Conectar a un servicio» y el
  * plan de una web nueva escriban exactamente lo mismo.
  */
-import { bumpConfigRev, getMailwayLink, getProject, getService, writeManagedEnv } from './db';
+import { bumpConfigRev, getMailwayLink, getProject, getService, patchEnv, writeManagedEnv } from './db';
 import {
   MailwayError,
   MailwayInfo,
@@ -496,10 +496,21 @@ function urlConOtroUsuario(url: string, usuarios: Map<string, string>): string |
  * credenciales (la contraseña de aplicación sigue valiendo: va con el buzón,
  * no con su dirección) y no sube la revisión: quien llama decide cuándo
  * desplegar (`bumpConfigRev`). Devuelve los nombres que ha cambiado.
+ *
+ * `credencialSmtp`: el servicio tiene una contraseña de aplicación de Skyway
+ * (`skyway:<slug>`). Una conexión anterior a llevar la cuenta de lo escrito
+ * (Skyway 0.34) no tiene ninguna fila `mail.smtp.*`: entonces `SMTP_USER` y
+ * `SMTP_FROM`, los nombres de siempre, cuentan como de Skyway si su valor es
+ * exactamente una dirección del mapa, el mismo criterio que
+ * `mailConnectNames`. Sin esto, tras la baja esa aplicación seguiría entrando
+ * con un usuario que ya no existe. Se escriben sin registrarlas, como
+ * estaban: si no, la próxima conexión tomaría por puestos a mano el resto de
+ * los nombres de siempre (`SMTP_PASS`, `SMTP_HOST`) y no podría escribirlos.
  */
 export function refrescarVariablesCorreo(
   serviceId: string,
   cambios: { remitentes?: ReadonlyMap<string, string>; usuarios?: ReadonlyMap<string, string> },
+  opts: { credencialSmtp?: boolean } = {},
 ): string[] {
   const service = getService(serviceId);
   if (!service) return [];
@@ -527,7 +538,20 @@ export function refrescarVariablesCorreo(
     if (nuevo !== null && nuevo !== actual) entries[key] = { value: nuevo, origin: managed.origin };
   }
   writeManagedEnv(serviceId, entries);
-  return Object.keys(entries).sort();
+
+  const legado: Record<string, string> = {};
+  const registrada = Object.values(state.managed).some((m) => m.origin.startsWith('mail.smtp.'));
+  if (opts.credencialSmtp && !registrada) {
+    for (const def of mailTargets('smtp', [])) {
+      const actual = state.env[def.name];
+      if (actual === undefined || state.managed[def.name]) continue;
+      const mapa = def.role === 'user' ? usuarios : def.role === 'from' ? remitentes : null;
+      const nuevo = mapa?.get(actual.trim().toLowerCase());
+      if (nuevo && nuevo !== actual) legado[def.name] = nuevo;
+    }
+    patchEnv(serviceId, legado, []);
+  }
+  return [...Object.keys(entries), ...Object.keys(legado)].sort();
 }
 
 /** El servicio, si es del proyecto y se le puede conectar el correo; si no, el error de la ruta. */
