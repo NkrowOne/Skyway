@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { cambioDominioApi, contar, fechaLarga, MigracionSkyway } from '../../cambioDominio';
-import { DEPLOY_STATUS_LABEL } from '../../utils';
-import type { DeploymentStatus } from '../../types';
-import { Button, Chip, ConfirmModal, useToast } from '../ui';
+import { Button, ConfirmModal, useToast } from '../ui';
 import { Aviso, Avisos, Bloque } from './comunes';
+import ServiciosCambio from './ServiciosCambio';
 
 type Persona = NonNullable<MigracionSkyway['correo']>['buzones']['lista'][number];
 
@@ -56,11 +55,6 @@ export default function FaseTransicion({
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
-  const reintentar = useMutation({
-    mutationFn: (serviceId: string) => cambioDominioApi.reintentarServicio(projectId, m.id, serviceId),
-    onSuccess: (v) => onCambio(v),
-    onError: (err: Error) => toast(err.message, 'err'),
-  });
   const actualizar = useMutation({
     mutationFn: (mailboxId: string) => cambioDominioApi.actualizarPersona(projectId, m.id, mailboxId),
     onSuccess: (v) => {
@@ -78,60 +72,37 @@ export default function FaseTransicion({
   const permanente = m.redirecciones.length > 0 ? Math.min(...m.redirecciones.map((r) => r.permanenteDesde)) : null;
   const yaPermanente = permanente !== null && permanente <= Date.now();
   const ocupado = m.servicios.some((s) => s.estado === 'desplegando');
+  const conWeb = m.hosts.some((h) => h.modo !== 'no_cambiar');
   const viejoWebmail = correo?.webmail.viejo?.hostname ?? null;
   const mensajeMx = `${m.fromDomain} dejará de recibir correo en esta plataforma. Antes, su MX tiene que apuntar a otro sitio o ser un MX nulo («0 .»).`;
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-1.5 text-sm leading-6 text-sub">
-        <p>
-          La web nueva está activa.{' '}
-          {permanente !== null &&
-            (yaPermanente
-              ? `${m.fromDomain} redirige de forma permanente.`
-              : `${m.fromDomain} redirige de forma temporal hasta el ${fechaLarga(permanente)} y después de forma permanente.`)}
-        </p>
+        {conWeb && (
+          <p>
+            La web nueva está activa.{' '}
+            {permanente !== null &&
+              (yaPermanente
+                ? `${m.fromDomain} redirige de forma permanente.`
+                : `${m.fromDomain} redirige de forma temporal hasta el ${fechaLarga(permanente)} y después de forma permanente.`)}
+          </p>
+        )}
         {correo && (
           <p>
             Desde ahora el correo sale como @{m.toDomain}. Lo que llegue a @{m.fromDomain} sigue entrando en los mismos buzones.
           </p>
         )}
       </div>
-      {m.error && <Aviso tono="err">{m.error}</Aviso>}
+      {/* En «dando_de_baja» el error ya lo enseña el aviso de la acción en curso, con «Reintentar». */}
+      {m.error && m.estado === 'pasada' && <Aviso tono="err">{m.error}</Aviso>}
 
-      {m.servicios.length > 0 && (
-        <Bloque titulo="Servicios">
-          <ul className="divide-y divide-line rounded-lg border border-line bg-bg">
-            {m.servicios.map((s) => (
-              <li key={s.serviceId} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3.5 py-2.5">
-                <span className="min-w-0 flex-1 basis-40">
-                  <span className="block text-sm font-medium text-txt">{s.nombre}</span>
-                  {s.error && <span className="mt-0.5 block break-words text-xs leading-5 text-err">{s.error}</span>}
-                </span>
-                <Chip tone={s.estado === 'ok' ? 'ok' : s.estado === 'error' ? 'err' : 'info'} size="sm" dot pulse={s.estado === 'desplegando'}>
-                  {s.estado === 'ok'
-                    ? 'Desplegado'
-                    : s.estado === 'error'
-                      ? 'Error'
-                      : s.despliegue
-                        ? (DEPLOY_STATUS_LABEL[s.despliegue.estado as DeploymentStatus] ?? 'Desplegando')
-                        : 'Desplegando'}
-                </Chip>
-                {s.estado === 'error' && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => reintentar.mutate(s.serviceId)}
-                    loading={reintentar.isPending && reintentar.variables === s.serviceId}
-                  >
-                    Reintentar este servicio
-                  </Button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </Bloque>
-      )}
+      <ServiciosCambio
+        projectId={projectId}
+        m={m}
+        onCambio={onCambio}
+        accion={m.estado !== 'pasada' ? null : m.soloWeb ? 'terminar' : `dar de baja ${m.fromDomain}`}
+      />
 
       {correo && (
         <Bloque titulo="Personas pendientes de actualizar dispositivos">
@@ -195,7 +166,11 @@ export default function FaseTransicion({
         onConfirm={() => volver.mutate()}
         loading={volver.isPending}
         title={`Volver a ${m.fromDomain}`}
-        message={`La web vuelve a servirse en ${m.fromDomain} sin redirecciones. Los nombres de ${m.toDomain} se siguen sirviendo, para que los enlaces que ya los usan no fallen.`}
+        message={
+          conWeb
+            ? `La web vuelve a servirse en ${m.fromDomain} sin redirecciones. Los nombres de ${m.toDomain} se siguen sirviendo, para que los enlaces que ya los usan no fallen.`
+            : `Se deshace el paso a ${m.toDomain}.`
+        }
         confirmLabel={`Volver a ${m.fromDomain}`}
         confirmVariant="secondary"
       >

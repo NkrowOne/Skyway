@@ -138,11 +138,14 @@ export default function PasoQueCambia({
             />
           </Field>
         </div>
-        {(soloWeb || plan?.correoDisponible === 'si' || plan?.correoDisponible === 'mailway_antiguo') && (
+        {/* También si el plan falla: sin poder consultar el correo (Mailway no
+            responde, el cliente está vinculado a otra integración), la web se
+            puede cambiar igualmente. */}
+        {(soloWeb || plan?.correoDisponible === 'si' || plan?.correoDisponible === 'mailway_antiguo' || calcular.isError) && (
           <label className="flex items-start gap-2 text-xs text-sub">
             <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-acc" checked={soloWeb} onChange={(e) => setSoloWeb(e.target.checked)} />
             <span>
-              <span className="font-medium text-txt">Solo la web.</span> El correo de {from.trim() || 'este dominio'} se queda en Mailway sin cambios.
+              <span className="font-medium text-txt">Solo la web.</span> El correo de {from.trim() || 'este dominio'} no se cambia.
             </span>
           </label>
         )}
@@ -210,7 +213,7 @@ export default function PasoQueCambia({
                 ? 'Se conservan el correo, las contraseñas, las contraseñas de aplicación y las claves de API. Hasta dar de baja el dominio actual, lo que llegue a él sigue entrando en los mismos buzones.'
                 : plan.correoDisponible === 'mailway_antiguo' && !plan.soloWeb
                   ? 'Actualiza Mailway a la 1.3 para cambiar el dominio del correo, o marca «Solo la web».'
-                  : `Solo la web: el correo de ${plan.fromDomain} ${plan.correoDisponible === 'si' || plan.correoDisponible === 'mailway_antiguo' ? 'se queda en Mailway sin cambios' : 'no está en Mailway'}.`
+                  : `El correo de ${plan.fromDomain} no cambia.`
             }
           >
             {plan.correo && (plan.correo.buzones.length > 0 || plan.correo.alias.length > 0) && (

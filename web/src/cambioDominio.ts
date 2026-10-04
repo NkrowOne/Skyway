@@ -180,6 +180,8 @@ export const cambioDominioApi = {
   preparar: (projectId: string, body: PeticionPlan & { hosts: HostPlan[]; excluidas: Clave[]; expect: string }) =>
     api.post<MigracionSkyway>(base(projectId), body),
   comprobar: (projectId: string, mid: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/check`),
+  /** Cambia el MX del dominio nuevo a este servidor en su zona de Cloudflare (recibía en otro proveedor). */
+  cambiarMx: (projectId: string, mid: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/mx`),
   pasar: (projectId: string, mid: string, expect: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/switch`, { expect }),
   volver: (projectId: string, mid: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/rollback`),
   cancelar: (projectId: string, mid: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/cancel`),

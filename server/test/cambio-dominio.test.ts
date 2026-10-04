@@ -39,14 +39,22 @@ import {
   setSetting,
   setUserProjects,
   updateDeployment,
+  updateDomainMigration,
   writeManagedEnv,
 } from '../src/db';
-import { esperarTareasCambioDominio, INTERRUMPIDO, marcarCambiosInterrumpidos, resetCambioDominioCaches } from '../src/domainmigration';
+import {
+  comentarMx,
+  esperarTareasCambioDominio,
+  INTERRUMPIDO,
+  marcarCambiosInterrumpidos,
+  resetCambioDominioCaches,
+} from '../src/domainmigration';
 import { MAILWAY_SETTING, projectExternalRef, resetMailwayCaches } from '../src/mailway';
+import { configuracionTraefikSkyway } from '../src/redirecciones';
 import type { GitConfig, ProjectRow, ServiceRow, UserRow } from '../src/types';
 import { hashPassword, randomToken } from '../src/util';
 import { dnsFalso } from './dnsfake';
-import { MW_BASE, MW_TOKEN, fakeFetch, marcarListo, mw } from './mailwayfake';
+import { MW_BASE, MW_TOKEN, fakeFetch, marcarListo, mw, vistaCambio } from './mailwayfake';
 
 // El cuerpo de una respuesta HTTP es frontera: se inspecciona sin tipar.
 type Json = any;
@@ -123,6 +131,39 @@ function dnsAqui(...hosts: string[]) {
 
 const dominios = (s: ServiceRow) => (getService(s.id)!.config as GitConfig).domains;
 const llamadas = (re: RegExp) => mw.calls.filter((c) => re.test(c.path));
+
+function respuesta(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
+/**
+ * Durante una prueba, Mailway responde con `fn` a las peticiones que esta
+ * reconoce (lo que el doble no simula: un fallo a mitad que cambia su estado,
+ * el listado de cambios, el MX) y con el doble a todas las demás. Devuelve
+ * con qué restaurar el doble de siempre.
+ */
+function interceptarMailway(fn: (path: string, method: string) => Response | null): () => void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      return fn(url.pathname + url.search, (init.method ?? 'GET').toUpperCase()) ?? fakeFetch(input, init);
+    }),
+  );
+  return () => vi.stubGlobal('fetch', vi.fn(fakeFetch));
+}
+
+/** El listado de cambios de Mailway (`GET /api/domain-migrations?clientId=&domainId=`), que el doble no simula. */
+function listadoDeCambios(path: string, method: string): Response | null {
+  if (method !== 'GET' || !path.startsWith('/api/domain-migrations?')) return null;
+  const q = new URLSearchParams(path.slice(path.indexOf('?') + 1));
+  const migraciones = mw.migraciones
+    .filter((c) => c.clientId === q.get('clientId') && [c.fromDomainId, c.toDomainId].includes(q.get('domainId')))
+    .map(vistaCambio);
+  return respuesta(200, { migraciones });
+}
+
+const hostsDe = (plan: Json) => plan.hosts.map((h: Json) => ({ serviceId: h.serviceId, from: h.from, to: h.to, modo: h.modo }));
 
 beforeAll(async () => {
   initDb();
@@ -359,12 +400,18 @@ describe('solo la web', () => {
     expect(listAudit({ action: 'domain_redirects_removed' }).length).toBe(1);
   });
 
-  it('sin permisos de gestión (miembro del proyecto): 403', async () => {
+  it('sin permisos de gestión (miembro del proyecto): 403, con su código como el resto de errores', async () => {
     setUserProjects(member.id, [proj.id]);
     const r = await call('GET', base, memberHeaders);
     expect(r.status).toBe(403);
+    expect(r.json.code).toBe('forbidden');
     const p = await call('POST', `${base}/plan`, memberHeaders, { fromDomain: 'dominio2.es', toDomain: 'dominio3.es' });
     expect(p.status).toBe(403);
+    // Un cuerpo inválido (zod, manejador global) también lleva código.
+    const malo = await call('POST', `${base}/plan`, admin(), { fromDomain: 'dominio.es' });
+    expect(malo.status).toBe(400);
+    expect(malo.json).toMatchObject({ code: 'invalid_request' });
+    expect(typeof malo.json.error).toBe('string');
   });
 });
 
@@ -559,10 +606,25 @@ describe('baja con el despliegue de la aplicación fallido', () => {
     expect(row.servicios[p.web.id]).toMatchObject({ estado: 'error', error: 'El contenedor no ha arrancado.' });
     expect(mw.migraciones.find((x) => x.id === mailwayId)?.estado).toBe('pasado');
 
-    // Reintentar el servicio y volver a dar de baja: ya no hay buzones pendientes con aplicaciones.
+    // Con el servicio sin desplegar no se puede dar de baja: la aplicación
+    // tiene el usuario nuevo, pero su contenedor en marcha, el anterior.
+    const vista = (await call('GET', `${p.base}/${mid}`, ownerHeaders)).json;
+    expect(vista.puedeDarDeBaja).toBe(false);
+    expect(vista.servicios).toEqual([expect.objectContaining({ serviceId: p.web.id, estado: 'error' })]);
+    mw.calls = [];
+    m.triggers = [];
+    const otraVez = await call('POST', `${p.base}/${mid}/retire`, ownerHeaders, { confirm: 'fallida.es' });
+    expect(otraVez.status).toBe(409);
+    expect(otraVez.json.code).toBe('migration_services_pending');
+    expect(otraVez.json.error).toMatch(/Reintentar este servicio/);
+    expect(llamadas(/\/retire$/)).toEqual([]);
+    expect(m.triggers).toEqual([]);
+
+    // Reintentar el servicio (con la misma imagen en marcha) y volver a dar de baja.
     m.resultado = 'success';
     const re = await call('POST', `${p.base}/${mid}/services/${p.web.id}/retry`, ownerHeaders);
     expect(re.status, re.raw).toBe(202);
+    expect(m.triggers).toEqual([{ serviceId: p.web.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/fallida-web:v1' }]);
     await esperarTareasCambioDominio();
     expect(getDomainMigration(mid)!.servicios[p.web.id]?.estado).toBe('ok');
     const otra = await call('POST', `${p.base}/${mid}/retire`, ownerHeaders, { confirm: 'fallida.es' });
@@ -768,5 +830,421 @@ describe('arranque: seguir los despliegues que estaban en curso', () => {
     expect(marcarCambiosInterrumpidos().seguidos).toBeGreaterThanOrEqual(1);
     await esperarTareasCambioDominio();
     expect(getDomainMigration(row.id)!.servicios[s.id]).toMatchObject({ estado: 'ok', deploymentId: dep.id });
+  });
+});
+
+// ---------- revisión: estados de Mailway tras un fallo y servicios sin desplegar ----------
+
+// Preparar tiene un límite de 10 por minuto y usuario: cada prueba de estos
+// bloques opera como otro propietario del mismo workspace.
+let propietarios = 0;
+function nuevoPropietario(): void {
+  propietarios += 1;
+  ownerHeaders = bearerFor(createUser(`owner-${propietarios}@example.com`, hashPassword('contraseña1'), 'owner', workspaceId));
+}
+
+describe('el estado en que queda Mailway tras un fallo decide el de Skyway', () => {
+  beforeEach(nuevoPropietario);
+
+  it('pasar: si Mailway se queda «pasando» con su error, aquí también, con «Reintentar» y «Volver»', async () => {
+    const p = proyectoConCorreo('pasamitad', 'pasamitad.es');
+    const { mid, mailwayId } = await preparar(p, 'pasamitad.es', 'pasamitad2.es');
+    dnsAqui('www.pasamitad2.es');
+    marcarListo(mailwayId);
+    const vista = (await call('POST', `${p.base}/${mid}/check`, ownerHeaders)).json;
+    expect(vista.estado).toBe('lista');
+    // Como el Mailway real si el motor falla a mitad: el cambio queda «pasando» con su error.
+    const restaurar = interceptarMailway((path, method) => {
+      if (method !== 'POST' || path !== `/api/domain-migrations/${mailwayId}/switch`) return null;
+      Object.assign(mw.migraciones.find((x) => x.id === mailwayId)!, { estado: 'pasando', error: 'El servidor de correo ha fallado.' });
+      return respuesta(502, { error: 'El servidor de correo ha fallado.', code: 'engine_error' });
+    });
+    try {
+      const r = await call('POST', `${p.base}/${mid}/switch`, ownerHeaders, { expect: vista.variables.huella });
+      expect(r.status).toBe(502);
+      expect(r.json.code).toBe('engine_error');
+    } finally {
+      restaurar();
+    }
+    expect(getDomainMigration(mid)).toMatchObject({ estado: 'pasando', error: 'El servidor de correo ha fallado.' });
+    expect(dominios(p.web)).toEqual(['www.pasamitad.es']);
+    expect(m.triggers).toEqual([]);
+    // La vista no se fía de la caché de antes del fallo.
+    const v = (await call('GET', `${p.base}/${mid}`, ownerHeaders)).json;
+    expect(v).toMatchObject({ estado: 'pasando', puedePasar: true, puedeVolver: true, puedeCancelar: false });
+    expect(v.correo.estado).toBe('pasando');
+
+    // Volver: Mailway admite volver desde «pasando» con error; la web no se había tocado.
+    const vuelta = await call('POST', `${p.base}/${mid}/rollback`, ownerHeaders);
+    expect(vuelta.status, vuelta.raw).toBe(202);
+    expect(vuelta.json.estado).toBe('lista');
+    expect(mw.migraciones.find((x) => x.id === mailwayId)?.estado).toBe('listo');
+    expect(dominios(p.web)).toEqual(['www.pasamitad.es']);
+    await esperarTareasCambioDominio();
+
+    // Y se puede pasar de nuevo.
+    const otra = (await call('POST', `${p.base}/${mid}/check`, ownerHeaders)).json;
+    expect(otra.puedePasar).toBe(true);
+    const pasa = await call('POST', `${p.base}/${mid}/switch`, ownerHeaders, { expect: otra.variables.huella });
+    expect(pasa.status, pasa.raw).toBe(202);
+    expect(dominios(p.web)).toEqual(['www.pasamitad2.es']);
+    await esperarTareasCambioDominio();
+  });
+
+  it('pasar: si el correo no ha cambiado de estado (Mailway sigue «listo»), vuelve a «lista»', async () => {
+    const p = proyectoConCorreo('nolisto', 'nolisto.es');
+    const { mid, mailwayId } = await preparar(p, 'nolisto.es', 'nolisto2.es');
+    dnsAqui('www.nolisto2.es');
+    marcarListo(mailwayId);
+    const vista = (await call('POST', `${p.base}/${mid}/check`, ownerHeaders)).json;
+    mw.fallosCambio.set('switch', { status: 503, code: 'dns_unknown', error: 'No se ha podido consultar el DNS de nolisto2.es.' });
+    const r = await call('POST', `${p.base}/${mid}/switch`, ownerHeaders, { expect: vista.variables.huella });
+    expect(r.status).toBe(503);
+    expect(getDomainMigration(mid)).toMatchObject({ estado: 'lista', error: 'No se ha podido consultar el DNS de nolisto2.es.' });
+  });
+
+  it('baja: si Mailway se queda «dando_de_baja» con su error, aquí también, y «Reintentar» la termina', async () => {
+    const p = proyectoConCorreo('bajamitad', 'bajamitad.es');
+    const { mid, mailwayId } = await hastaPasada(p, 'bajamitad.es', 'bajamitad2.es');
+    let primera = true;
+    const restaurar = interceptarMailway((path, method) => {
+      if (method !== 'POST' || path !== `/api/domain-migrations/${mailwayId}/retire`) return null;
+      const c = mw.migraciones.find((x) => x.id === mailwayId)!;
+      if (primera) {
+        primera = false;
+        Object.assign(c, { estado: 'dando_de_baja', error: 'El servidor de correo ha fallado.' });
+        return respuesta(502, { error: 'El servidor de correo ha fallado.', code: 'engine_error' });
+      }
+      // Como el Mailway real, que admite reintentar la baja desde «dando_de_baja».
+      if (c.estado === 'dando_de_baja') c.estado = 'pasado';
+      return null;
+    });
+    try {
+      const r = await call('POST', `${p.base}/${mid}/retire`, ownerHeaders, { confirm: 'bajamitad.es' });
+      expect(r.status, r.raw).toBe(202);
+      await esperarTareasCambioDominio();
+      expect(getDomainMigration(mid)).toMatchObject({ estado: 'dando_de_baja', error: 'El servidor de correo ha fallado.' });
+      const v = (await call('GET', `${p.base}/${mid}`, ownerHeaders)).json;
+      expect(v.puedeDarDeBaja).toBe(true);
+      expect(v.correo.estado).toBe('dando_de_baja');
+      const re = await call('POST', `${p.base}/${mid}/retire`, ownerHeaders, { confirm: 'bajamitad.es' });
+      expect(re.status, re.raw).toBe(202);
+      await esperarTareasCambioDominio();
+    } finally {
+      restaurar();
+    }
+    expect(getDomainMigration(mid)).toMatchObject({ estado: 'terminada', error: null });
+    expect(mw.migraciones.find((x) => x.id === mailwayId)?.estado).toBe('dado_de_baja');
+  });
+
+  it('baja: si Mailway la rechaza sin empezar (MX), vuelve a «pasada» con su mensaje', async () => {
+    const p = proyectoConCorreo('mxviejo', 'mxviejo.es');
+    const { mid } = await hastaPasada(p, 'mxviejo.es', 'mxviejo2.es');
+    mw.mxViejoAqui = true;
+    try {
+      await call('POST', `${p.base}/${mid}/retire`, ownerHeaders, { confirm: 'mxviejo.es' });
+      await esperarTareasCambioDominio();
+    } finally {
+      mw.mxViejoAqui = false;
+    }
+    expect(getDomainMigration(mid)).toMatchObject({ estado: 'pasada', error: 'El MX de mxviejo.es todavía apunta a este servidor.' });
+  });
+
+  it('baja: si se pierde la respuesta del cambio de usuario, el reintento pone al día la aplicación igualmente', async () => {
+    const p = proyectoConCorreo('perdida', 'perdida.es');
+    const { mid } = await hastaPasada(p, 'perdida.es', 'perdida2.es');
+    m.triggers = [];
+    mw.fallosCambio.set('login-update', { trasHacerla: true });
+    await call('POST', `${p.base}/${mid}/retire`, ownerHeaders, { confirm: 'perdida.es' });
+    await esperarTareasCambioDominio();
+    expect(getDomainMigration(mid)!.estado).toBe('pasada');
+    expect(getDomainMigration(mid)!.error).toMatch(/Mailway no ha respondido/);
+    // El usuario ya cambió en Mailway, pero la aplicación sigue con el anterior.
+    expect(mw.mailboxes.find((x) => x.id === p.buzonId)?.usuarioMotor).toBeNull();
+    expect(getEnv(p.web.id).SMTP_USER).toBe('tienda@perdida.es');
+    expect(m.triggers).toEqual([]);
+
+    const r = await call('POST', `${p.base}/${mid}/retire`, ownerHeaders, { confirm: 'perdida.es' });
+    expect(r.status, r.raw).toBe(202);
+    await esperarTareasCambioDominio();
+    expect(getEnv(p.web.id).SMTP_USER).toBe('tienda@perdida2.es');
+    expect(m.triggers).toEqual([{ serviceId: p.web.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/perdida-web:v1' }]);
+    expect(getDomainMigration(mid)!.estado).toBe('terminada');
+  });
+
+  it('un despliegue posterior correcto (manual) resuelve el error del servicio y deja dar de baja', async () => {
+    const p = proyectoConCorreo('manual', 'manual.es');
+    const { mid } = await hastaPasada(p, 'manual.es', 'manual2.es');
+    m.resultado = 'failed';
+    await call('POST', `${p.base}/${mid}/retire`, ownerHeaders, { confirm: 'manual.es' });
+    await esperarTareasCambioDominio();
+    expect((await call('GET', `${p.base}/${mid}`, ownerHeaders)).json.puedeDarDeBaja).toBe(false);
+
+    const dep = createDeployment(p.web.id, 'manual');
+    updateDeployment(dep.id, { status: 'success', finished_at: Date.now() });
+    const v = (await call('GET', `${p.base}/${mid}`, ownerHeaders)).json;
+    expect(v.servicios).toEqual([expect.objectContaining({ estado: 'ok', error: null, despliegue: { id: dep.id, estado: 'success' } })]);
+    expect(v.puedeDarDeBaja).toBe(true);
+    m.resultado = 'success';
+    const r = await call('POST', `${p.base}/${mid}/retire`, ownerHeaders, { confirm: 'manual.es' });
+    expect(r.status, r.raw).toBe(202);
+    await esperarTareasCambioDominio();
+    expect(getDomainMigration(mid)!.estado).toBe('terminada');
+    expect(getDomainMigration(mid)!.servicios[p.web.id]).toMatchObject({ estado: 'ok', deploymentId: dep.id });
+  });
+
+  it('reintentar «Pasar» con el correo ya pasado en Mailway: los alias también cambian en las variables', async () => {
+    const p = proyectoConCorreo('alias', 'alias.es');
+    mw.aliases.push({ id: 'als_alias_hola', domainId: 'dom_alias', localPart: 'hola', email: 'hola@alias.es' });
+    const { mid, mailwayId } = await preparar(p, 'alias.es', 'alias2.es');
+    dnsAqui('www.alias2.es');
+    marcarListo(mailwayId);
+    const antes = (await call('POST', `${p.base}/${mid}/check`, ownerHeaders)).json;
+    expect(antes.variables.cambios.map((c: Json) => [c.key, c.despues])).toContainEqual(['CONTACTO', 'hola@alias2.es']);
+
+    // Mailway pasó, pero Skyway se reinició antes de cambiar la web.
+    const sw = await fakeFetch(`${MW_BASE}/api/domain-migrations/${mailwayId}/switch`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${MW_TOKEN}`, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(sw.status).toBe(200);
+    updateDomainMigration(mid, { estado: 'pasando', error: INTERRUMPIDO });
+    resetCambioDominioCaches();
+
+    const vista = (await call('GET', `${p.base}/${mid}`, ownerHeaders)).json;
+    expect(vista).toMatchObject({ estado: 'pasando', puedePasar: true });
+    expect(vista.correo.estado).toBe('pasado');
+    expect(vista.variables.cambios.map((c: Json) => [c.key, c.despues])).toContainEqual(['CONTACTO', 'hola@alias2.es']);
+    const r = await call('POST', `${p.base}/${mid}/switch`, ownerHeaders, { expect: vista.variables.huella });
+    expect(r.status, r.raw).toBe(202);
+    expect(r.json.estado).toBe('pasada');
+    expect(getEnv(p.web.id)).toMatchObject({ CONTACTO: 'hola@alias2.es', ADMIN_EMAIL: 'tienda@alias2.es', SMTP_FROM: 'tienda@alias2.es' });
+    await esperarTareasCambioDominio();
+  });
+});
+
+describe('volver con el despliegue fallido', () => {
+  it('el nombre anterior se sigue sirviendo (prepublicado) y no se puede cancelar hasta reintentar el servicio', async () => {
+    const proj = createProject('Vuelta', 'vuelta', null, workspaceId);
+    const web = createService(proj.id, 'Web', 'web', 'git', gitCfg(['www.vuelta.es']));
+    const base = `/api/projects/${proj.id}/domain-migrations`;
+    const plan = (await call('POST', `${base}/plan`, admin(), { fromDomain: 'vuelta.es', toDomain: 'vuelta2.es' })).json;
+    const creada = await call('POST', base, admin(), { fromDomain: 'vuelta.es', toDomain: 'vuelta2.es', hosts: hostsDe(plan), excluidas: [], expect: plan.expect });
+    expect(creada.status, creada.raw).toBe(201);
+    const mid = creada.json.id;
+    dnsAqui('www.vuelta2.es');
+    const v = (await call('POST', `${base}/${mid}/check`, admin())).json;
+    expect((await call('POST', `${base}/${mid}/switch`, admin(), { expect: v.variables.huella })).status).toBe(202);
+    await esperarTareasCambioDominio();
+    expect(getPrepublished('www.vuelta2.es')).toBeUndefined();
+
+    m.resultado = 'failed';
+    const r = await call('POST', `${base}/${mid}/rollback`, admin());
+    expect(r.status, r.raw).toBe(202);
+    await esperarTareasCambioDominio();
+    expect(dominios(web)).toEqual(['www.vuelta.es', 'www.vuelta2.es']);
+    // El contenedor en marcha solo tiene el nombre nuevo y la redirección ya no
+    // está: sin la prepublicación, www.vuelta.es no lo serviría nadie.
+    expect(getDomainRedirect('www.vuelta.es')).toBeUndefined();
+    expect(getPrepublished('www.vuelta.es')).toMatchObject({ service_id: web.id, migration_id: mid });
+    expect(getPrepublished('www.vuelta.es')?.dns_ok_at).toBeGreaterThan(0);
+    const routers = Object.values(configuracionTraefikSkyway().http.routers).filter((x) => x.rule === 'Host(`www.vuelta.es`)');
+    expect(routers.map((x) => x.service)).toEqual(['skyway-vuelta-web@docker']);
+
+    const vista = (await call('GET', `${base}/${mid}`, admin())).json;
+    expect(vista).toMatchObject({ estado: 'lista', puedeCancelar: false });
+    const c = await call('POST', `${base}/${mid}/cancel`, admin());
+    expect(c.status).toBe(409);
+    expect(c.json.code).toBe('migration_services_pending');
+
+    m.resultado = 'success';
+    const re = await call('POST', `${base}/${mid}/services/${web.id}/retry`, admin());
+    expect(re.status, re.raw).toBe(202);
+    await esperarTareasCambioDominio();
+    // El servicio ya sirve el nombre: la prepublicación sobra.
+    expect(getPrepublished('www.vuelta.es')).toBeUndefined();
+    const ok = await call('POST', `${base}/${mid}/cancel`, admin());
+    expect(ok.status, ok.raw).toBe(200);
+    expect(ok.json.estado).toBe('cancelada');
+  });
+});
+
+describe('MX del dominio nuevo y fichero de zona cuando recibe en otro proveedor', () => {
+  beforeEach(nuevoPropietario);
+
+  it('comentarMx: solo los MX, con $ORIGIN, nombres relativos y TXT con «;» entre comillas', () => {
+    const zona = [
+      '$ORIGIN nuevo.es.',
+      '@\t3600\tIN\tMX\t10 mail.example.com.',
+      'nuevo.es.\t3600\tIN\tTXT\t"v=spf1 mx; -all"',
+      'mail._domainkey 3600 IN TXT ( "v=DKIM1; k=rsa; "',
+      '  "p=ABC" )',
+      '\t3600\tIN\tMX\t20 mail2.example.com.',
+    ].join('\n');
+    const r = comentarMx(zona, 'nuevo.es');
+    expect(r.comentados).toBe(2);
+    expect(r.zona).toContain('; @\t3600\tIN\tMX\t10 mail.example.com.');
+    expect(r.zona).toContain('; \t3600\tIN\tMX\t20 mail2.example.com.');
+    expect(r.zona).toContain('\nnuevo.es.\t3600\tIN\tTXT\t"v=spf1 mx; -all"');
+    expect(r.zona).toContain('\n  "p=ABC" )');
+    expect(r.zona).toMatch(/El MX va comentado a propósito: nuevo\.es recibe hoy el correo en otro proveedor/);
+  });
+
+  it('fichero de zona: con el dominio nuevo en otro proveedor, el MX va comentado', async () => {
+    const p = proyectoConCorreo('otroprov', 'otroprov.es');
+    const { mid, mailwayId } = await preparar(p, 'otroprov.es', 'otroprov2.es');
+    const restaurar = interceptarMailway((path, method) => {
+      if (method !== 'GET' || path !== `/api/domain-migrations/${mailwayId}`) return null;
+      const v = vistaCambio(mw.migraciones.find((x) => x.id === mailwayId)!);
+      return respuesta(200, { ...v, hacia: { ...v.hacia, recibeEnOtroProveedor: true } });
+    });
+    try {
+      const zona = await app.inject({ method: 'GET', url: `${p.base}/${mid}/zonefile`, headers: ownerHeaders });
+      expect(zona.statusCode, zona.body).toBe(200);
+      expect(zona.body).toContain('; otroprov2.es.\t3600\tIN\tMX\t10 mail.example.com.');
+      expect(zona.body).not.toMatch(/^otroprov2\.es\.\t3600\tIN\tMX/m);
+      expect(zona.body).toMatch(/El MX va comentado a propósito/);
+    } finally {
+      restaurar();
+    }
+  });
+
+  it('cambiar el MX: solo con Cloudflare y tras la pre-recepción; lo pide a Mailway (soloCliente para quien no administra)', async () => {
+    const p = proyectoConCorreo('mxcf', 'mxcf.es');
+    const { mid, mailwayId } = await preparar(p, 'mxcf.es', 'mxcf2.es');
+    let cloudflare = false;
+    const pedidas: string[] = [];
+    const restaurar = interceptarMailway((path, method) => {
+      const c = mw.migraciones.find((x) => x.id === mailwayId)!;
+      if (method === 'GET' && path === `/api/domain-migrations/${mailwayId}`) {
+        const v = vistaCambio(c);
+        return respuesta(200, { ...v, hacia: { ...v.hacia, cloudflare, recibeEnOtroProveedor: true } });
+      }
+      if (method === 'POST' && path.startsWith(`/api/domain-migrations/${mailwayId}/mx`)) {
+        pedidas.push(path);
+        const v = vistaCambio(c);
+        return respuesta(200, { ...v, hacia: { ...v.hacia, cloudflare: true, recibeEnOtroProveedor: false } });
+      }
+      return null;
+    });
+    try {
+      const sinCloudflare = await call('POST', `${p.base}/${mid}/mx`, ownerHeaders);
+      expect(sinCloudflare.status).toBe(400);
+      expect(sinCloudflare.json.code).toBe('cloudflare_unavailable');
+      cloudflare = true;
+      const sinRecepcion = await call('POST', `${p.base}/${mid}/mx`, ownerHeaders);
+      expect(sinRecepcion.status).toBe(409);
+      expect(sinRecepcion.json.code).toBe('migration_state');
+      expect(pedidas).toEqual([]);
+      mw.migraciones.find((x) => x.id === mailwayId)!.recepcionPreparada = true;
+      const ok = await call('POST', `${p.base}/${mid}/mx`, ownerHeaders);
+      expect(ok.status, ok.raw).toBe(200);
+      expect(pedidas).toEqual([`/api/domain-migrations/${mailwayId}/mx?soloCliente=1`]);
+    } finally {
+      restaurar();
+    }
+    expect(listAudit({ action: 'domain_migration_mx_changed' }).some((a) => a.target_id === p.proj.id)).toBe(true);
+  });
+});
+
+describe('alta en Mailway sin respuesta al preparar', () => {
+  beforeEach(nuevoPropietario);
+
+  it('si Mailway lo rechaza, no queda nada; si no responde, el cambio se conserva y la comprobación lo vincula', async () => {
+    const p = proyectoConCorreo('sinresp', 'sinresp.es');
+    const plan = (await call('POST', `${p.base}/plan`, ownerHeaders, { fromDomain: 'sinresp.es', toDomain: 'sinresp2.es' })).json;
+    const cuerpo = { fromDomain: 'sinresp.es', toDomain: 'sinresp2.es', hosts: hostsDe(plan), excluidas: [], expect: plan.expect };
+
+    mw.fallosCambio.set('create', { status: 409, code: 'domain_reserved', error: 'Este dominio está reservado.' });
+    const rechazo = await call('POST', p.base, ownerHeaders, cuerpo);
+    expect(rechazo.status).toBe(409);
+    expect(rechazo.json.code).toBe('domain_reserved');
+    expect((await call('GET', p.base, ownerHeaders)).json.abierta).toBeNull();
+
+    // Mailway lo crea, pero la respuesta no llega (y su listado tampoco: el doble no lo simula).
+    mw.fallosCambio.set('create', { trasHacerla: true });
+    const r = await call('POST', p.base, ownerHeaders, cuerpo);
+    expect(r.status, r.raw).toBe(201);
+    expect(r.json).toMatchObject({ soloWeb: false, estado: 'preparando' });
+    expect(r.json.error).toMatch(/No se ha podido confirmar el cambio del correo en Mailway/);
+    expect(r.json.compuertas.find((c: Json) => c.id === 'correo')).toMatchObject({ ok: false, bloquea: true });
+    const mid = r.json.id;
+    expect(getDomainMigration(mid)!.mailway_migration_id).toBeNull();
+    const enMailway = mw.migraciones.filter((c) => c.referenciaExterna === projectExternalRef(p.proj.id));
+    expect(enMailway.map((c) => c.estado)).toEqual(['preparando']);
+
+    const restaurar = interceptarMailway(listadoDeCambios);
+    try {
+      const v = (await call('POST', `${p.base}/${mid}/check`, ownerHeaders)).json;
+      expect(v.error).toBeNull();
+      expect(v.correo.id).toBe(enMailway[0].id);
+      expect(getDomainMigration(mid)!.mailway_migration_id).toBe(enMailway[0].id);
+    } finally {
+      restaurar();
+    }
+    // Sin crear otro en Mailway.
+    expect(mw.migraciones.filter((c) => c.referenciaExterna === projectExternalRef(p.proj.id)).length).toBe(1);
+  });
+
+  it('cancelar un cambio cuyo alta no se confirmó lo cancela también en Mailway', async () => {
+    const p = proyectoConCorreo('sinresp2', 'sinrespb.es');
+    const plan = (await call('POST', `${p.base}/plan`, ownerHeaders, { fromDomain: 'sinrespb.es', toDomain: 'sinrespb2.es' })).json;
+    mw.fallosCambio.set('create', { trasHacerla: true });
+    const r = await call('POST', p.base, ownerHeaders, {
+      fromDomain: 'sinrespb.es',
+      toDomain: 'sinrespb2.es',
+      hosts: hostsDe(plan),
+      excluidas: [],
+      expect: plan.expect,
+    });
+    expect(r.status, r.raw).toBe(201);
+    expect(getDomainMigration(r.json.id)!.mailway_migration_id).toBeNull();
+    const restaurar = interceptarMailway(listadoDeCambios);
+    try {
+      const c = await call('POST', `${p.base}/${r.json.id}/cancel`, ownerHeaders);
+      expect(c.status, c.raw).toBe(200);
+      expect(c.json.estado).toBe('cancelada');
+    } finally {
+      restaurar();
+    }
+    const enMailway = mw.migraciones.filter((x) => x.referenciaExterna === projectExternalRef(p.proj.id));
+    expect(enMailway.map((x) => x.estado)).toEqual(['cancelada']);
+  });
+});
+
+describe('arranque y módulo del correo', () => {
+  it('sigue el reintento automático del arranque, no el despliegue que cortó el reinicio', async () => {
+    const proj = createProject('Reanudar', 'reanudar', null, workspaceId);
+    const s = createService(proj.id, 'Web', 'web', 'git', gitCfg([]));
+    const cortado = createDeployment(s.id, 'cambio-de-dominio');
+    updateDeployment(cortado.id, { status: 'failed', error: 'Interrumpido por reinicio del servidor', finished_at: Date.now() });
+    const reintento = createDeployment(s.id, 'reintento');
+    const row = insertDomainMigration({
+      project_id: proj.id,
+      from_domain: 'g.es',
+      to_domain: 'h.es',
+      estado: 'pasada',
+      hosts: [],
+      env: { excluidas: [], huella: '' },
+      servicios: { [s.id]: { deploymentId: cortado.id, estado: 'desplegando', error: null } },
+    });
+    marcarCambiosInterrumpidos();
+    expect(getDomainMigration(row.id)!.servicios[s.id]).toMatchObject({ deploymentId: reintento.id, estado: 'desplegando' });
+    await esperarTareasCambioDominio();
+    expect(getDomainMigration(row.id)!.servicios[s.id]).toMatchObject({ deploymentId: reintento.id, estado: 'ok' });
+  });
+
+  it('con el módulo «Correo» desactivado, el plan lo dice en vez de «no está en Mailway»', async () => {
+    const ws = createWorkspaceRow('Sin correo', { modules_override: JSON.stringify(['domains']) });
+    const owner = bearerFor(createUser('owner-sin-correo@example.com', hashPassword('contraseña1'), 'owner', ws.id));
+    const proj = createProject('Sin correo', 'sin-correo', null, ws.id);
+    createService(proj.id, 'Web', 'web', 'git', gitCfg(['www.sincorreo.es']));
+    const r = await call('POST', `/api/projects/${proj.id}/domain-migrations/plan`, owner, { fromDomain: 'sincorreo.es', toDomain: 'sincorreo2.es' });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.correoDisponible).toBe('no_vinculado');
+    expect(r.json.avisos).toContain(
+      'Solo la web: el módulo «Correo» no está activo en este workspace, así que el correo de sincorreo.es no se cambia.',
+    );
   });
 });

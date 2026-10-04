@@ -4,6 +4,7 @@ import { ArrowRight } from 'lucide-react';
 import { cambioDominioApi, fechaLarga, MigracionSkyway } from '../../cambioDominio';
 import { Button, ConfirmModal, useToast } from '../ui';
 import { Avisos, Bloque } from './comunes';
+import ServiciosCambio from './ServiciosCambio';
 
 /**
  * Paso 4, «Terminado»: el dominio anterior ya no se usa (o, solo web, el cambio
@@ -74,6 +75,9 @@ export default function FaseTerminada({
           </ul>
         )}
       </Bloque>
+
+      {/* Solo si el dominio anterior ya estaba dado de baja en Mailway cuando falló un despliegue. */}
+      {m.servicios.some((s) => s.estado !== 'ok') && <ServiciosCambio projectId={projectId} m={m} onCambio={onCambio} accion={null} />}
 
       <Avisos tono="info" avisos={m.avisos} />
 

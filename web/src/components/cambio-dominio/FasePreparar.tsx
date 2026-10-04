@@ -5,6 +5,7 @@ import { cambioDominioApi, contar, MigracionSkyway } from '../../cambioDominio';
 import { copyToClipboard } from '../../utils';
 import { Button, Chip, ConfirmModal, Modal, useToast } from '../ui';
 import { Aviso, Avisos, Bloque, Condicion } from './comunes';
+import ServiciosCambio from './ServiciosCambio';
 
 const DNS_CHIP = {
   ok: { tone: 'ok', label: 'Apunta a este servidor' },
@@ -33,14 +34,21 @@ export default function FasePreparar({
   const toast = useToast();
   const [pasarAbierto, setPasarAbierto] = useState(false);
   const [cancelarAbierto, setCancelarAbierto] = useState(false);
+  const [mxAbierto, setMxAbierto] = useState(false);
   const [copiando, setCopiando] = useState(false);
+
+  const nuevos = [...new Map(m.hosts.filter((h) => h.modo !== 'no_cambiar').map((h) => [h.to, h])).values()];
+  const correo = m.correo;
+  const conCorreo = !m.soloWeb;
+  // Lo que pasa, para no hablar de la web en un cambio solo del correo (ni al revés).
+  const queCambia = nuevos.length > 0 && conCorreo ? 'La web y el correo han' : nuevos.length > 0 ? 'La web ha' : 'El correo ha';
 
   const pasar = useMutation({
     mutationFn: () => cambioDominioApi.pasar(projectId, m.id, m.variables?.huella ?? ''),
     onSuccess: (v) => {
       setPasarAbierto(false);
       onCambio(v);
-      toast(`La web y el correo han pasado a ${m.toDomain}.`, 'ok');
+      toast(`${queCambia} pasado a ${m.toDomain}.`, 'ok');
     },
     onError: (err: Error) => {
       setPasarAbierto(false);
@@ -59,6 +67,16 @@ export default function FasePreparar({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  const mx = useMutation({
+    mutationFn: () => cambioDominioApi.cambiarMx(projectId, m.id),
+    onSuccess: (v) => {
+      setMxAbierto(false);
+      onCambio(v);
+      toast(`MX de ${m.toDomain} cambiado a este servidor`, 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
   const copiarTodo = async () => {
     setCopiando(true);
     try {
@@ -72,9 +90,9 @@ export default function FasePreparar({
     }
   };
 
-  const nuevos = [...new Map(m.hosts.filter((h) => h.modo !== 'no_cambiar').map((h) => [h.to, h])).values()];
   const sinTls = nuevos.length > 0 && nuevos.every((h) => h.certificado === 'sin_tls');
-  const correo = m.correo;
+  const otroProveedor = !!correo?.hacia.recibeEnOtroProveedor;
+  const sinDesplegar = m.servicios.some((s) => s.estado !== 'ok');
   const redirige = m.hosts.some((h) => h.modo === 'redirigir');
   const reinicios = (m.alPasar ?? []).filter((s) => s.reinicio);
   const variables = (m.variables?.cambios ?? []).filter((c) => !c.excluida);
@@ -134,12 +152,24 @@ export default function FasePreparar({
           {correo?.hacia.cloudflare
             ? 'Registros del correo creados en Cloudflare. '
             : 'Añade estos registros en tu proveedor de DNS: el fichero de zona los incluye todos. '}
-          Los registros de la web van comentados: quita antes el registro anterior de cada nombre, si lo hay.
+          {nuevos.length > 0 && 'Los registros de la web van comentados: quita antes el registro anterior de cada nombre, si lo hay.'}
         </p>
-        {correo?.hacia.recibeEnOtroProveedor && (
+        {otroProveedor && correo && (
           <Aviso tono="warn" className="mt-2">
-            {m.toDomain} recibe ahora el correo en otro proveedor. Cuando veas «{m.toDomain} ya recibe en los buzones», cambia el MX a este
-            servidor.
+            <p>
+              {m.toDomain} recibe ahora el correo en otro proveedor. Cuando veas «{m.toDomain} ya recibe en los buzones», cambia el MX a este
+              servidor
+              {correo.hacia.cloudflare
+                ? '.'
+                : ': en el fichero de zona va comentado, porque importarlo lo añadiría al actual en vez de sustituirlo.'}
+            </p>
+            {correo.hacia.cloudflare && (
+              <div className="mt-2">
+                <Button variant="secondary" size="sm" onClick={() => setMxAbierto(true)} disabled={!correo.recepcionPreparada}>
+                  Cambiar el MX a este servidor
+                </Button>
+              </div>
+            )}
           </Aviso>
         )}
       </Bloque>
@@ -171,6 +201,18 @@ export default function FasePreparar({
         </Bloque>
       )}
 
+      {conCorreo && !correo && (
+        <Bloque titulo="Correo">
+          <ul>
+            {m.compuertas
+              .filter((c) => c.id === 'correo')
+              .map((c) => (
+                <Condicion key={c.id} estado={c.ok ? 'ok' : 'pendiente'} titulo={c.titulo} detalle={c.detalle || undefined} />
+              ))}
+          </ul>
+        </Bloque>
+      )}
+
       {correo && (
         <Bloque titulo="Correo">
           <ul>
@@ -182,6 +224,8 @@ export default function FasePreparar({
         </Bloque>
       )}
 
+      {sinDesplegar && <ServiciosCambio projectId={projectId} m={m} onCambio={onCambio} accion="cancelar el cambio" />}
+
       <Avisos tono="info" avisos={m.avisos} />
 
       <div className="flex flex-col gap-3 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-between">
@@ -192,11 +236,9 @@ export default function FasePreparar({
           </Button>
         </p>
         <div className="flex flex-col-reverse gap-2 sm:flex-row">
-          {m.puedeCancelar && (
-            <Button variant="ghost" onClick={() => setCancelarAbierto(true)} className="max-sm:h-11">
-              Cancelar el cambio
-            </Button>
-          )}
+          <Button variant="ghost" onClick={() => setCancelarAbierto(true)} disabled={!m.puedeCancelar} className="max-sm:h-11">
+            Cancelar el cambio
+          </Button>
           <Button onClick={() => setPasarAbierto(true)} disabled={!m.puedePasar || !m.variables} className="max-sm:h-11">
             Pasar a {m.toDomain}
           </Button>
@@ -206,9 +248,9 @@ export default function FasePreparar({
       <Modal open={pasarAbierto} onClose={() => setPasarAbierto(false)} title={`Pasar a ${m.toDomain}`}>
         <div className="flex flex-col gap-2.5 text-sm leading-6 text-sub">
           <p>
-            Al pasar, la web se sirve en {m.toDomain}
-            {redirige ? ` y ${m.fromDomain} redirige a ella conservando la ruta` : ''}
-            {correo ? `; el correo sale como @${m.toDomain}` : ''}.
+            {nuevos.length > 0
+              ? `Al pasar, la web se sirve en ${m.toDomain}${redirige ? ` y ${m.fromDomain} redirige a ella conservando la ruta` : ''}${conCorreo ? `; el correo sale como @${m.toDomain}` : ''}.`
+              : `Al pasar, el correo sale como @${m.toDomain}. Lo que llegue a @${m.fromDomain} sigue entrando en los mismos buzones.`}
           </p>
           {(m.alPasar?.length ?? 0) > 0 && (
             <p>
@@ -249,12 +291,27 @@ export default function FasePreparar({
       </Modal>
 
       <ConfirmModal
+        open={mxAbierto}
+        onClose={() => setMxAbierto(false)}
+        onConfirm={() => mx.mutate()}
+        loading={mx.isPending}
+        title="Cambiar el MX a este servidor"
+        message={`El correo de ${m.toDomain} dejará de llegar a su proveedor actual y entrará en estos buzones.`}
+        confirmLabel="Cambiar el MX"
+        confirmVariant="primary"
+      />
+
+      <ConfirmModal
         open={cancelarAbierto}
         onClose={() => setCancelarAbierto(false)}
         onConfirm={() => cancelar.mutate()}
         loading={cancelar.isPending}
         title="Cancelar el cambio de dominio"
-        message={`Se dejarán de preparar los nombres de ${m.toDomain}. La web sigue en ${m.fromDomain} sin cambios.`}
+        message={
+          nuevos.length > 0
+            ? `Se dejarán de preparar los nombres de ${m.toDomain}. La web sigue en ${m.fromDomain} sin cambios.`
+            : `Se deja de preparar ${m.toDomain}.`
+        }
         confirmLabel="Cancelar el cambio"
       >
         {correo && (

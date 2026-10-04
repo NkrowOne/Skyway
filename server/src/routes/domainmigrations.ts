@@ -11,6 +11,7 @@ import { assertProjectAccess, assertProjectManage, currentUser, requireAuth } fr
 import {
   actualizarPersona,
   calcularPlan,
+  cambiarMx,
   cambioDelProyecto,
   cancelarCambio,
   comprobarCambio,
@@ -104,6 +105,39 @@ function guardado(fn: Handler): Handler {
   };
 }
 
+/** Código estable de los errores que no lo traen (los de las guardas, zod, el límite de peticiones). */
+function codigoPorEstado(status: number): string {
+  if (status === 400) return 'invalid_request';
+  if (status === 401) return 'unauthorized';
+  if (status === 403) return 'forbidden';
+  if (status === 404) return 'not_found';
+  if (status === 409) return 'conflict';
+  if (status === 429) return 'rate_limited';
+  if (status === 502) return 'mailway_error';
+  if (status === 503) return 'unavailable';
+  return status >= 500 ? 'internal_error' : 'request_error';
+}
+
+/**
+ * Las respuestas de error de estas rutas son siempre `{error, code}`. Las de
+ * las guardas comunes (`requireAuth`, `assertProjectAccess`,
+ * `assertProjectManage`), las de zod (manejador global) y las del límite de
+ * peticiones solo traen `error`: se completan aquí con un código por estado,
+ * sin cambiarlas en el resto de la API.
+ */
+function conCodigo(statusCode: number, payload: unknown): unknown {
+  if (statusCode < 400 || typeof payload !== 'string') return payload;
+  try {
+    const body = JSON.parse(payload) as unknown;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return payload;
+    const obj = body as Record<string, unknown>;
+    if (typeof obj.error !== 'string' || typeof obj.code === 'string') return payload;
+    return JSON.stringify({ ...obj, code: codigoPorEstado(statusCode) });
+  } catch {
+    return payload;
+  }
+}
+
 /** El proyecto de la ruta, si quien pide puede gestionarlo; si no, ya ha respondido y devuelve null. */
 function proyecto(req: FastifyRequest, reply: FastifyReply): ProjectRow | null {
   const { id } = req.params as { id: string };
@@ -121,6 +155,7 @@ const esAdmin = (req: FastifyRequest) => currentUser(req)?.role === 'admin';
 
 export async function domainMigrationRoutes(app: FastifyInstance): Promise<void> {
   app.register(async (r) => {
+    r.addHook('onSend', async (_req, reply, payload) => conCodigo(reply.statusCode, payload));
     r.addHook('preHandler', requireAuth);
 
     /** Vista previa: mapa de nombres, correo de Mailway y variables, con su huella. Sin efectos. */
@@ -179,6 +214,18 @@ export async function domainMigrationRoutes(app: FastifyInstance): Promise<void>
         if (!project) return reply;
         const { mid } = req.params as { mid: string };
         return comprobarCambio(project, mid, esAdmin(req));
+      }),
+    );
+
+    /** Cambiar el MX del dominio nuevo a este servidor en su zona de Cloudflare (recibía en otro proveedor). */
+    r.post(
+      '/api/projects/:id/domain-migrations/:mid/mx',
+      { preHandler: rateLimit({ max: 10, windowMs: 60_000 }) },
+      guardado(async (req, reply) => {
+        const project = proyecto(req, reply);
+        if (!project) return reply;
+        const { mid } = req.params as { mid: string };
+        return cambiarMx(req, project, mid);
       }),
     );
 
