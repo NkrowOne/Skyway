@@ -81,16 +81,6 @@ export function panelExtraTraefikConfig(): TraefikDynamicConfig {
   return { http: { routers } };
 }
 
-/** Añade los routers del panel a una configuración dinámica (sin pisar nada de ella). */
-export function withPanelExtraRouters(config: TraefikDynamicConfig): TraefikDynamicConfig {
-  const extra = panelExtraTraefikConfig().http?.routers;
-  if (!extra) return config;
-  return {
-    ...config,
-    http: { ...(config.http ?? {}), routers: { ...(config.http?.routers ?? {}), ...extra } },
-  };
-}
-
 /**
  * URL pública del panel: `https://SKYWAY_DOMAIN` si está definido y, si no, la
  * de la petición. Es la que se ofrece para los webhooks de GitHub: la de la

@@ -12,6 +12,7 @@ import {
   deleteDomainMigration,
   deletePrepublished,
   deleteDomainRedirects,
+  deleteDomainRedirectHosts,
   deleteProject,
   deleteService,
   findServiceIdByDomain,
@@ -281,6 +282,24 @@ describe('redirecciones y prepublicación', () => {
     expect(deleteDomainRedirects(m.id)).toBe(2);
     expect(listDomainRedirects().map((r) => r.host)).toEqual(['blog.viejo.es']);
     expect(listAssignedDomains()).not.toContain('dominio2.es');
+  });
+
+  it('borrar por nombres solo quita las redirecciones de ese proyecto', () => {
+    // Ida y vuelta: www.dominio2.es redirigía a www.dominio.es por un cambio
+    // anterior y ahora vuelve a ser el nombre servido.
+    insertDomainRedirects([
+      { host: 'www.dominio2.es', project_id: proj.id, to_host: 'www.dominio.es', migration_id: 'anterior', permanent_from: 1 },
+      { host: 'dominio2.es', project_id: proj.id, to_host: 'dominio.es', migration_id: 'anterior', permanent_from: 1 },
+    ]);
+    // Otro proyecto no las borra, ni el proyecto las de otro (blog.viejo.es).
+    expect(deleteDomainRedirectHosts(otro.id, ['WWW.dominio2.es'])).toBe(0);
+    expect(deleteDomainRedirectHosts(proj.id, ['blog.viejo.es'])).toBe(0);
+    expect(getDomainRedirect('www.dominio2.es')?.project_id).toBe(proj.id);
+    expect(deleteDomainRedirectHosts(proj.id, ['WWW.Dominio2.es.', 'api.dominio2.es'])).toBe(1);
+    expect(listDomainRedirects().map((r) => r.host)).toEqual(['blog.viejo.es', 'dominio2.es']);
+    expect(deleteDomainRedirectHosts(proj.id, [])).toBe(0);
+    expect(deleteDomainRedirectHosts(proj.id, ['dominio2.es'])).toBe(1);
+    expect(listDomainRedirects().map((r) => r.host)).toEqual(['blog.viejo.es']);
   });
 });
 

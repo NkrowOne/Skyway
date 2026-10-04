@@ -11,6 +11,7 @@ import {
   getService,
   getSetting,
   insertMailwayLink,
+  listDomainMigrations,
   listMailwayLinks,
   listServices,
   setSetting,
@@ -606,6 +607,14 @@ function suggestedDomains(projectId: string, existing: string[], salientes: read
   for (const host of [...panelDomains(), getSetting('rootDomain') ?? '', ...mailwayReservedHosts()]) {
     const reg = host ? registrableDomain(host) : null;
     if (reg) fuera.add(reg);
+  }
+  // Tras la baja, el dominio anterior ya no está en el resumen de Mailway, pero
+  // la web puede seguir sirviéndolo (modos «servir» y «no cambiar»): sin esto
+  // se volvería a proponer el dominio que este proyecto acaba de retirar. Se
+  // compara el nombre exacto, como los del resumen: el registrable de un
+  // subdominio de correo excluiría un dominio que nadie ha retirado.
+  for (const m of listDomainMigrations(projectId)) {
+    if (m.mailway_migration_id && m.estado !== 'cancelada') fuera.add(m.from_domain.toLowerCase());
   }
   const out: string[] = [];
   for (const service of listServices(projectId)) {

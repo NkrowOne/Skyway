@@ -2704,6 +2704,23 @@ export function deleteDomainRedirects(migrationId: string): number {
   return stmt('DELETE FROM domain_redirects WHERE migration_id = ?').run(migrationId).changes;
 }
 
+/**
+ * Quita las redirecciones del proyecto que salen de esos nombres. Al pasar, los
+ * nombres nuevos pueden ser el origen de una redirección de un cambio anterior
+ * (ida y vuelta entre dos dominios): el orden de `redirecciones.ts` ya no la
+ * publica mientras el servicio los sirve, pero la fila sobraría y volvería a
+ * salir en cuanto el servicio dejara de reclamarlos. Nunca toca las de otro
+ * proyecto. Devuelve cuántas ha borrado.
+ */
+export function deleteDomainRedirectHosts(projectId: string, hosts: readonly string[]): number {
+  const borrar = stmt('DELETE FROM domain_redirects WHERE project_id = ? AND host = ?');
+  let borradas = 0;
+  db.transaction(() => {
+    for (const host of hosts) borradas += borrar.run(projectId, nombreHost(host)).changes;
+  })();
+  return borradas;
+}
+
 /** Nombre nuevo servido antes de pasar (`domain_prepublished`). */
 export interface DomainPrepublishedRow {
   host: string;
