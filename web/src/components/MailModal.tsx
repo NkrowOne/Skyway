@@ -23,6 +23,7 @@ import {
   Unlink,
 } from 'lucide-react';
 import { api } from '../api';
+import { entregaMientrasMxFuera, nombreDns, spfSugeridosPorNombre } from '../correo';
 import {
   MailApiKey,
   MailAppPassword,
@@ -366,6 +367,7 @@ export default function MailModal({
             projectId={projectId}
             blocked={blocked}
             canManage={canManage}
+            isAdmin={data.isAdmin}
             domains={summary.domains}
             suggestedDomains={data.suggestedDomains ?? []}
             cloudflare={data.features?.cloudflare !== false}
@@ -736,6 +738,7 @@ function DomainsTab({
   projectId,
   blocked,
   canManage,
+  isAdmin,
   domains,
   suggestedDomains,
   cloudflare,
@@ -745,6 +748,7 @@ function DomainsTab({
   projectId: string;
   blocked: boolean;
   canManage: boolean;
+  isAdmin: boolean;
   domains: MailDomain[];
   suggestedDomains: string[];
   cloudflare: boolean;
@@ -799,6 +803,10 @@ function DomainsTab({
     if (value.trim() && !blocked) comprobar.mutate(value.trim());
   };
   const ocupado = comprobar.isPending || add.isPending;
+  // Solo un Mailway posterior a la 1.2 dice `recepcionExterna` (y entrega en
+  // el proveedor actual lo que se envía desde aquí a un dominio que recibe
+  // fuera). Sin ningún dominio todavía no se sabe qué Mailway es.
+  const mailwayEncamina = domains.some((d) => typeof d.recepcionExterna === 'boolean');
 
   return (
     <div className="flex flex-col gap-3">
@@ -814,14 +822,25 @@ function DomainsTab({
                 Para trasladar el correo, crea primero aquí los buzones y cambia el MX cuando estén listos. No importes el fichero de
                 zona ni reemplaces el MX en Cloudflare antes de ese momento: el correo se repartiría entre los dos proveedores.
               </li>
-              <li>
-                Para usar este servidor solo para enviar (por ejemplo, desde la web), no cambies el MX. Si el dominio ya tiene un SPF,
-                complétalo con el valor que se indique en la tarjeta del dominio en lugar de sustituirlo.
-              </li>
-              <li>
-                Mientras el MX siga allí, la tarjeta del dominio indicará cómo se entrega el correo que se envíe a este dominio desde
-                este servidor (la web, otros buzones).
-              </li>
+              {mailwayEncamina ? (
+                <>
+                  <li>
+                    Para usar este servidor solo para enviar (por ejemplo, desde la web), no cambies el MX. Si el dominio ya tiene un
+                    SPF, complétalo con el valor que se indique en la tarjeta del dominio en lugar de sustituirlo.
+                  </li>
+                  <li>
+                    Mientras el MX siga allí, la tarjeta del dominio indicará cómo se entrega el correo que se envíe a este dominio
+                    desde este servidor (la web, otros buzones).
+                  </li>
+                </>
+              ) : (
+                <li>
+                  Según la versión del servidor de correo, lo que se envíe desde aquí a direcciones de este dominio (por ejemplo, el
+                  formulario de contacto de la web) puede quedarse en este servidor aunque el MX siga allí: la tarjeta del dominio
+                  indicará cómo se entrega. Si el dominio ya tiene un SPF, complétalo con el valor que se indique en ella en lugar de
+                  sustituirlo.
+                </li>
+              )}
             </ul>
             {confirmar.dnsAutomatico && (
               <label className="flex items-start gap-2 rounded-lg border border-line bg-bg px-3 py-2 text-xs">
@@ -904,6 +923,7 @@ function DomainsTab({
             domain={d}
             blocked={blocked}
             canManage={canManage}
+            isAdmin={isAdmin}
             cloudflare={cloudflare}
             onInvalidate={onInvalidate}
             onCloudflare={() => onCloudflare(d)}
@@ -919,6 +939,7 @@ function DomainCard({
   domain,
   blocked,
   canManage,
+  isAdmin,
   cloudflare,
   onInvalidate,
   onCloudflare,
@@ -927,6 +948,7 @@ function DomainCard({
   domain: MailDomain;
   blocked: boolean;
   canManage: boolean;
+  isAdmin: boolean;
   cloudflare: boolean;
   onInvalidate: () => void;
   onCloudflare: () => void;
@@ -947,8 +969,9 @@ function DomainCard({
     retry: false,
   });
   const otroProveedor = conflicto.data?.hayOtroProveedor ? conflicto.data : null;
-  // SPF con el que sustituir el actual (el actual más lo que le falta), si lo hay.
-  const spfSugerido = domain.dns.checks.find((c) => c.id.startsWith('spf:') && c.suggested)?.suggested ?? null;
+  // SPF con el que sustituir el actual (el actual más lo que le falta), por nombre de registro.
+  const spfPorNombre = spfSugeridosPorNombre(domain.dns.checks);
+  const spfSugerido = spfPorNombre.get(nombreDns(domain.domain)) ?? null;
 
   const downloadZone = async () => {
     setConfirmarZona(false);
@@ -1039,9 +1062,7 @@ function DomainCard({
             <p>
               <span className="font-medium text-txt">Este dominio recibe el correo en otro proveedor</span> (MX:{' '}
               <span className="break-all font-mono">{otroProveedor.mxActuales.join(', ')}</span>).{' '}
-              {domain.recepcionExterna === true || domain.recepcionExterna === false
-                ? `Hasta que cambies el MX, lo que se envíe a @${domain.domain} desde este servidor (la web, otros buzones, la API de envío) se entrega allí y los buzones de aquí no reciben nada todavía.`
-                : `El servidor de correo lo trata ya como propio: lo que se envíe a @${domain.domain} desde este servidor (la web, otros buzones, la API de envío) se queda en los buzones de aquí o se rechaza si la dirección solo existe en el proveedor actual. Cambia el MX cuando los buzones estén listos o actualiza Mailway.`}
+              {entregaMientrasMxFuera(domain.domain, domain.recepcionExterna, isAdmin)}
             </p>
             {otroProveedor.avisoMtaSts && <p>{otroProveedor.avisoMtaSts}</p>}
           </div>
@@ -1121,13 +1142,14 @@ function DomainCard({
               <>
                 <p className="mb-2 text-xs text-subtle">
                   Crea estos registros en el proveedor de DNS del dominio
-                  {spfSugerido ? '; el SPF no se crea: el que ya tiene se sustituye por el valor combinado que se indica' : ''}.
+                  {spfPorNombre.size > 0 ? '; el SPF que ya existe no se crea: se sustituye por el valor combinado que se indica' : ''}.
                 </p>
                 <div className="overflow-hidden rounded-md border border-line">
                   {dns.data.records.map((r, i) => {
                     // Un SPF que ya existe se combina, nunca se duplica: con dos, ninguno vale.
                     const esSpf = r.type === 'TXT' && /^"?v=spf1(\s|"|$)/i.test(r.content.trim());
-                    const valor = esSpf && spfSugerido ? spfSugerido : r.content;
+                    const spfDeLaFila = esSpf ? (spfPorNombre.get(nombreDns(r.name)) ?? null) : null;
+                    const valor = spfDeLaFila ?? r.content;
                     return (
                       <div
                         key={`${r.type}-${r.name}-${i}`}
@@ -1143,7 +1165,7 @@ function DomainCard({
                             <span className="min-w-0 flex-1 break-all font-mono text-txt">{valor}</span>
                             <CopyButton value={valor} title="Copiar valor" className="-my-0.5 shrink-0" />
                           </span>
-                          {esSpf && spfSugerido && (
+                          {spfDeLaFila && (
                             <span className="text-subtle">Sustituye el SPF actual por este valor: combina el que ya tiene con este servidor.</span>
                           )}
                         </span>

@@ -322,7 +322,12 @@ function RegistrosCreados() {
           restaurar
             ? `Se volverán a crear en la zona ${restaurar.zone} los registros que había antes del reemplazo (${(restaurar.replaced ?? [])
                 .map((p) => `${p.type} ${p.content}${p.proxied ? ' con proxy' : ''}`)
-                .join(', ')}) y se retirará el A hacia ${restaurar.content}, en una sola operación. ${
+                .join(', ')})${
+                // Si el A hacia este servidor ya estaba antes del reemplazo, se conserva: la zona vuelve a como estaba.
+                restaurar.replacedCreated === false
+                  ? ` y se conservará el A hacia ${restaurar.content}, que ya estaba antes del reemplazo`
+                  : ` y se retirará el A hacia ${restaurar.content}`
+              }, en una sola operación. ${
                 restaurar.usedBy
                   ? `El dominio sigue asignado a ${restaurar.usedBy.project} / ${restaurar.usedBy.name}, pero su tráfico volverá a ir al hosting anterior.`
                   : ''

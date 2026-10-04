@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Cloud, ExternalLink, Globe, Plus, RefreshCw, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
-import { dominioUnicode, normalizarDominio } from '../dominios';
+import { dominioUnicode, nombreEnZona, normalizarDominio } from '../dominios';
 import { CloudflareConfigView, DnsAutoResult, DomainCheck, Me, PlanReemplazoDns } from '../types';
 import { cx, Tone } from '../utils';
 import { DnsAutoChip } from './DnsAutoResult';
@@ -48,15 +48,19 @@ function DnsInstructions({ domain, serverIp, check }: { domain: string; serverIp
   const zone = check?.zone ?? aprox.zone;
   const name = check?.zone ? (check.name ?? '@') : aprox.name;
   const ip = serverIp ?? 'IP-DEL-SERVIDOR';
-  // Con un CAA que no autoriza a Let's Encrypt, lo que falta es otro registro.
+  // Con un CAA que no autoriza a Let's Encrypt, lo que falta es otro registro,
+  // con el nombre relativo a la zona como el A. Si el CAA está fuera de ella
+  // (lo publica un nivel superior), el panel es el de ese nombre.
   const caa = check?.status === 'caa' ? check.caa : null;
+  const caaEnZona = caa ? nombreEnZona(caa.name, zone) : null;
+  const zonaPanel = caa && caaEnZona === null ? caa.name : zone;
   const filas = caa
-    ? [{ type: 'CAA', name: caa.name, value: '0 issue "letsencrypt.org"', copy: '0 issue "letsencrypt.org"' }]
+    ? [{ type: 'CAA', name: caaEnZona ?? '@', value: '0 issue "letsencrypt.org"', copy: '0 issue "letsencrypt.org"' }]
     : [{ type: 'A', name, value: ip, copy: serverIp }];
   return (
     <div className="mt-2 rounded-lg border border-line bg-surface2 p-3 text-xs">
       <p className="mb-2 text-sub">
-        En el panel DNS de <span className="font-mono text-txt">{dominioUnicode(zone)}</span> (Cloudflare, IONOS, OVH, GoDaddy, etc.){' '}
+        En el panel DNS de <span className="font-mono text-txt">{dominioUnicode(zonaPanel)}</span> (Cloudflare, IONOS, OVH, GoDaddy, etc.){' '}
         {caa ? 'añade el siguiente registro y conserva los que ya hay:' : 'crea el siguiente registro:'}
       </p>
       <div className="overflow-x-auto">
@@ -227,6 +231,14 @@ function ReemplazoDialog({
   );
 }
 
+function BotonReemplazo({ onClick }: { onClick: () => void }) {
+  return (
+    <Button variant="ghost" size="sm" onClick={onClick} title="Revisar los registros actuales y sustituirlos por el de este servidor">
+      <Cloud size={12} /> Reemplazar en Cloudflare
+    </Button>
+  );
+}
+
 function DomainRow({
   domain,
   serverIp,
@@ -235,6 +247,7 @@ function DomainRow({
   onRemove,
   onRetryDns,
   retryingDns,
+  onCreateDns,
   onReplaceDns,
 }: {
   domain: string;
@@ -246,7 +259,17 @@ function DomainRow({
   /** Repite el DNS automático de este dominio (solo administrador, tras un resultado que no es correcto). */
   onRetryDns?: () => void;
   retryingDns?: boolean;
-  /** Abre la revisión del reemplazo en Cloudflare (solo administrador, tras un conflicto). */
+  /**
+   * Crea el registro en Cloudflare de un dominio guardado que aún no tiene
+   * ninguno (solo administrador con Cloudflare configurado): por ejemplo, uno
+   * añadido antes de guardar el token.
+   */
+  onCreateDns?: () => void;
+  /**
+   * Abre la revisión del reemplazo en Cloudflare (solo administrador con
+   * Cloudflare configurado y el dominio ya guardado): tras un conflicto o,
+   * sin resultado del último guardado, si el dominio apunta a otra IP.
+   */
   onReplaceDns?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -260,6 +283,12 @@ function DomainRow({
 
   const status = check.data?.check.status ?? 'unknown';
   const meta = STATUS_META[status];
+  // El resultado del DNS automático solo existe tras guardar en esta misma
+  // sesión. Un dominio añadido otro día o con el asistente de alta, que
+  // apunta todavía al hosting anterior, también tiene que poder trasladarse:
+  // lo dice la comprobación del DNS. La revisión explica si no hay nada que
+  // reemplazar (un proxy delante, una zona que el token no ve).
+  const reemplazo = (dns ? dns.action === 'conflict' : status === 'wrong_ip' && !check.isFetching) ? onReplaceDns : undefined;
 
   return (
     <div className="rounded-lg border border-line bg-surface px-3 py-2">
@@ -324,16 +353,21 @@ function DomainRow({
               <Cloud size={12} /> Reintentar en Cloudflare
             </Button>
           )}
-          {onReplaceDns && dns.action === 'conflict' && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onReplaceDns}
-              title="Revisar los registros actuales y sustituirlos por el de este servidor"
-            >
-              <Cloud size={12} /> Reemplazar en Cloudflare
-            </Button>
-          )}
+          {reemplazo && <BotonReemplazo onClick={reemplazo} />}
+        </p>
+      )}
+      {!dns && reemplazo && (
+        <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-sub">
+          <span className="min-w-0 break-words">Si el registro actual está en tu Cloudflare, puedes revisarlo y sustituirlo desde aquí.</span>
+          <BotonReemplazo onClick={reemplazo} />
+        </p>
+      )}
+      {!dns && onCreateDns && status === 'no_record' && !check.isFetching && (
+        <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-sub">
+          <span className="min-w-0 break-words">Si el dominio está en tu Cloudflare, Skyway puede crear el registro.</span>
+          <Button variant="ghost" size="sm" onClick={onCreateDns} loading={retryingDns} title="Crear el registro A en Cloudflare">
+            <Cloud size={12} /> Crear en Cloudflare
+          </Button>
         </p>
       )}
       {(expanded || status === 'no_record' || status === 'wrong_ip' || status === 'caa') && (
@@ -422,6 +456,9 @@ export default function DomainsEditor({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Reemplazar en Cloudflare: solo el administrador y con el token guardado
+  // (sin él, la revisión respondería que falta configurarlo).
+  const cloudflareListo = isAdmin && !!cloudflare.data?.configured;
   const rootDomain = config.data?.rootDomain || null;
   const tls = !!config.data?.tls;
   const ip = serverIp.data?.ip ?? null;
@@ -458,7 +495,10 @@ export default function DomainsEditor({
               onRemove={() => onChange(domains.filter((x) => x !== d))}
               onRetryDns={onRetryDns ? () => onRetryDns(d) : undefined}
               retryingDns={retryingDns === d}
-              onReplaceDns={isAdmin && serviceId && onDnsResult && savedDomains?.includes(d) ? () => setReemplazar(d) : undefined}
+              onCreateDns={cloudflareListo && onRetryDns && savedDomains?.includes(d) ? () => onRetryDns(d) : undefined}
+              onReplaceDns={
+                cloudflareListo && serviceId && onDnsResult && savedDomains?.includes(d) ? () => setReemplazar(d) : undefined
+              }
             />
           ))}
         </div>

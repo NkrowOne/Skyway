@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dominioUnicode, normalizarDominio } from '../src/dominios';
+import { dominioUnicode, nombreEnZona, normalizarDominio } from '../src/dominios';
 
 describe('normalizarDominio', () => {
   it('admite acentos y «ñ» y los guarda en punycode, como el servidor y Mailway', () => {
@@ -20,6 +20,9 @@ describe('normalizarDominio', () => {
     expect(normalizarDominio('localhost')).toBe('');
     expect(normalizarDominio('a b.es')).toBe('');
     expect(normalizarDominio('dominio_con_guion_bajo.es')).toBe('');
+    // Como el servidor: un correo pegado no se queda en silencio con su dominio.
+    expect(normalizarDominio('info@cliente.es')).toBe('');
+    expect(normalizarDominio('cliente.es\\tienda')).toBe('');
   });
 });
 
@@ -38,5 +41,16 @@ describe('dominioUnicode', () => {
     for (const d of ['panadería.es', 'añadir.ejemplo.es', 'müller.de', 'example.中国']) {
       expect(dominioUnicode(normalizarDominio(d))).toBe(d);
     }
+  });
+});
+
+describe('nombreEnZona', () => {
+  it('da el nombre que se escribe en el panel DNS de la zona', () => {
+    expect(nombreEnZona('caa.es', 'caa.es')).toBe('@');
+    expect(nombreEnZona('www.caa.es.', 'caa.es')).toBe('www');
+    expect(nombreEnZona('a.b.panaderia.com.es', 'panaderia.com.es')).toBe('a.b');
+    // Fuera de la zona (un CAA en el sufijo, por ejemplo) no hay nombre relativo.
+    expect(nombreEnZona('com.es', 'panaderia.com.es')).toBeNull();
+    expect(nombreEnZona('otrocaa.es', 'caa.es')).toBeNull();
   });
 });

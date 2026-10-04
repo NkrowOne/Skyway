@@ -356,6 +356,10 @@ function publicOwnershipRecord(r: MailwayDomain['ownershipRecord']) {
 
 function publicDomain(d: MailwayDomain) {
   const s = d.dnsStatus ?? {};
+  const checks = Array.isArray(s.checks) ? s.checks : [];
+  // Solo un Mailway posterior a la 1.2 informa `recepcionExterna`; ese ya
+  // calcula él mismo el SPF combinado.
+  const mailwayCalculaSpf = typeof d.recepcionExterna === 'boolean';
   return {
     id: d.id,
     domain: d.domain,
@@ -374,7 +378,7 @@ function publicDomain(d: MailwayDomain) {
       requiredOk: typeof s.requiredOk === 'number' ? s.requiredOk : 0,
       allRequiredOk: !!s.allRequiredOk,
       checkedAt: s.checkedAt ?? null,
-      checks: (Array.isArray(s.checks) ? s.checks : []).map((c) => ({
+      checks: checks.map((c) => ({
         id: c.id,
         label: c.label,
         type: c.type,
@@ -384,7 +388,7 @@ function publicDomain(d: MailwayDomain) {
         status: c.status,
         required: !!c.required,
         help: c.help ?? null,
-        suggested: sugerencia(c),
+        suggested: sugerencia(c, checks, mailwayCalculaSpf),
       })),
     },
     // null: el Mailway conectado no lo informa (y entrega en local lo que se
@@ -397,13 +401,36 @@ function publicDomain(d: MailwayDomain) {
  * Valor con el que sustituir el registro existente: el que calcula Mailway
  * (`suggested`) o, con un Mailway que aún no lo hace, el SPF actual con lo que
  * le falta del propuesto. Pegar `expected` en su lugar dejaría sin autorizar
- * a Google, al hosting o a Mailchimp.
+ * a Google, al hosting o a Mailchimp. Si un Mailway que ya lo calcula no lo
+ * manda, es a propósito (el SPF gastaría demasiadas consultas DNS, o lo que
+ * falta está detrás de «all») y aquí no se inventa otro.
  */
-function sugerencia(c: MailwayDnsCheck): string | null {
+function sugerencia(c: MailwayDnsCheck, checks: readonly MailwayDnsCheck[], mailwayCalculaSpf: boolean): string | null {
   if (typeof c.suggested === 'string' && c.suggested) return c.suggested;
+  if (mailwayCalculaSpf) return null;
   if (typeof c.id !== 'string' || !c.id.startsWith('spf:') || c.status !== 'mismatch') return null;
   if (typeof c.found !== 'string' || !c.found || typeof c.expected !== 'string') return null;
-  return fusionarSpf(c.found, c.expected);
+  const propuesto = spfSegunMx(c.id.slice('spf:'.length), c.expected, checks);
+  return propuesto ? fusionarSpf(c.found, propuesto) : null;
+}
+
+/**
+ * El SPF que propone un Mailway hasta la 1.2 autoriza con «mx», que solo vale
+ * si el MX del dominio es este servidor. Con el MX en Google (un dominio que
+ * aquí solo envía, o antes del traslado), «mx» autorizaría a los servidores
+ * de entrada de Google y no a este: se cambia por «a:<servidor de correo>»,
+ * como hacen los Mailway posteriores. null si no se conoce el servidor: no
+ * hay valor correcto que proponer.
+ */
+function spfSegunMx(nombre: string, propuesto: string, checks: readonly MailwayDnsCheck[]): string | null {
+  const tokens = propuesto.trim().split(/\s+/);
+  if (!tokens.some((t) => /^\+?mx$/i.test(t))) return propuesto;
+  const n = nombre.trim().toLowerCase();
+  const mxPropio = checks.some((x) => typeof x.id === 'string' && x.id.toLowerCase() === `mx:${n}` && x.status === 'ok');
+  if (mxPropio) return propuesto;
+  const servidor = cachedInfo()?.mailHostname?.trim().toLowerCase().replace(/\.$/, '');
+  if (!servidor || !MX_RE.test(servidor)) return null;
+  return tokens.map((t) => (/^\+?mx$/i.test(t) ? `a:${servidor}` : t)).join(' ');
 }
 
 function publicMailbox(m: MailwayMailbox) {
@@ -1207,6 +1234,16 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
                 motivo:
                   `${body.domain} recibe hoy el correo en ${mx.join(', ')}, así que no se ha configurado el DNS en Cloudflare para no cambiar nada del proveedor actual. ` +
                   'Revisa los cambios con «Configurar en Cloudflare» cuando vayas a trasladar el correo.',
+              };
+            } else if (recepcion === 'desconocido') {
+              // Sin saber dónde recibe (el DNS no respondió o no se conoce el
+              // servidor de correo), lo prudente es lo mismo que con otro
+              // proveedor: el DNS automático puede romper uno que no se ve.
+              dnsCorreo = {
+                pedir: false,
+                motivo:
+                  `No se ha podido comprobar dónde recibe hoy el correo ${body.domain}, así que no se ha configurado el DNS en Cloudflare para no cambiar nada de un proveedor que pudiera tener. ` +
+                  'Revisa los cambios con «Configurar en Cloudflare».',
               };
             }
           }

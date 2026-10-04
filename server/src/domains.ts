@@ -64,15 +64,30 @@ export async function getServerIp(): Promise<{ ip: string | null; source: 'confi
  */
 export function getServerIpv6(): string | null {
   const v = getSetting('serverIpv6')?.trim().toLowerCase();
-  return v && net.isIPv6(v) ? v : null;
+  return v && esIpv6Publicable(v) ? v : null;
+}
+
+/**
+ * IPv6 que puede ir en un registro AAAA. `net.isIPv6` admite también el
+ * identificador de zona («fe80::1%eth0»), que solo tiene sentido dentro de la
+ * máquina: ningún DNS lo publica y la URL que la canoniza no lo acepta.
+ */
+export function esIpv6Publicable(v: string): boolean {
+  return net.isIPv6(v) && !v.includes('%');
 }
 
 /** Misma dirección IPv6 escrita de dos formas («2001:db8::1» y «2001:0db8:0:0::1»). */
 export function mismaIpv6(a: string, b: string): boolean {
-  if (!net.isIPv6(a) || !net.isIPv6(b)) return false;
+  if (!esIpv6Publicable(a) || !esIpv6Publicable(b)) return false;
   // La URL deja la dirección en su forma canónica (minúsculas, ceros comprimidos).
   const canonica = (ip: string) => new URL(`http://[${ip}]`).hostname;
-  return canonica(a) === canonica(b);
+  try {
+    return canonica(a) === canonica(b);
+  } catch {
+    // Una forma que la URL no entiende no es la dirección del servidor; sin
+    // esto, la comprobación del dominio respondía 500.
+    return false;
+  }
 }
 
 /**

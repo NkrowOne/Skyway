@@ -1335,6 +1335,8 @@ export interface CloudflareDnsRecord {
   createdAt: number;
   /** Registros del hosting anterior que sustituyó (se pueden restaurar), o null. */
   replaced?: { type: string; content: string; proxied: boolean }[] | null;
+  /** Con `replaced`: true si el reemplazo creó el A (restaurar lo retira); false si ya estaba y se conserva. */
+  replacedCreated?: boolean | null;
 }
 
 /**
@@ -1447,8 +1449,9 @@ export interface MailDomain {
   };
   /**
    * true: el correo del dominio se recibe en otro servidor y Mailway encamina
-   * allí lo que se le envía desde aquí. null: el Mailway conectado no lo
-   * informa (hasta la 1.2) y lo entrega en local.
+   * allí lo que se le envía desde aquí. false: Mailway lo entrega en local (el
+   * MX apunta aquí, hay MX de los dos o aún no se ha medido). null: el Mailway
+   * conectado no lo informa (hasta la 1.2) y lo entrega en local.
    */
   recepcionExterna?: boolean | null;
 }

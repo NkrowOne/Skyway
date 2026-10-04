@@ -397,6 +397,11 @@ export interface RegistroCreadoVista {
   createdAt: number;
   /** Registros del hosting anterior que sustituyó (se pueden restaurar), o null. */
   replaced: { type: string; content: string; proxied: boolean }[] | null;
+  /**
+   * Con `replaced`: true si el A hacia este servidor lo creó el reemplazo (y
+   * restaurar lo retira); false si ya estaba y restaurar lo conserva.
+   */
+  replacedCreated: boolean | null;
 }
 
 /** Lo que ve Ajustes → Cloudflare: los registros que creó el DNS automático. */
@@ -404,6 +409,7 @@ export function registrosCreados(): RegistroCreadoVista[] {
   return listCloudflareDnsRecords().map((r) => {
     const proyecto = r.project_id ? getProject(r.project_id) : undefined;
     const servicio = serviceIdsForDomain(r.domain).map((id) => getService(id)).find(Boolean);
+    const copia = leerReemplazo(r.replaced);
     return {
       domain: r.domain,
       zone: r.zone_name,
@@ -411,7 +417,8 @@ export function registrosCreados(): RegistroCreadoVista[] {
       project: proyecto ? { id: proyecto.id, name: proyecto.name } : null,
       usedBy: servicio ? { id: servicio.id, name: servicio.name, project: getProject(servicio.project_id)?.name ?? '?' } : null,
       createdAt: r.created_at,
-      replaced: leerReemplazo(r.replaced)?.previos.map((p) => ({ type: p.type, content: p.content, proxied: p.proxied })) ?? null,
+      replaced: copia?.previos.map((p) => ({ type: p.type, content: p.content, proxied: p.proxied })) ?? null,
+      replacedCreated: copia ? copia.creado : null,
     };
   });
 }
@@ -638,12 +645,25 @@ export async function reemplazarRegistros(
     throw err;
   }
   const a = conservaA ? existentes.find((r) => r.type === 'A' && r.content.trim() === ip) : resultado.posts[0];
-  const guardado: ReemplazoGuardado = {
-    previos: ajenos.map((r) => ({ type: r.type, content: r.content, proxied: r.proxied, ttl: r.ttl, comment: r.comment })),
-    creado: !conservaA,
-    reservaPrevia: !!getCloudflareDnsRecord(d),
-    at: Date.now(),
-  };
+  const borrados = ajenos.map((r) => ({ type: r.type, content: r.content, proxied: r.proxied, ttl: r.ttl, comment: r.comment }));
+  // Un segundo reemplazo del mismo nombre (alguien añadió después otro AAAA
+  // o CNAME) se suma al primero: si sustituyera la copia, el registro del
+  // hosting original se perdería y restaurar ya no devolvería la zona a como
+  // estaba. Qué hizo el primero con el A y con la reserva sigue valiendo.
+  const filaPrevia = getCloudflareDnsRecord(d);
+  const copiaPrevia = leerReemplazo(filaPrevia?.replaced);
+  const clavePrevio = (p: { type: string; content: string }) => `${p.type.toUpperCase()}|${p.content.trim().toLowerCase()}`;
+  const guardado: ReemplazoGuardado = copiaPrevia
+    ? {
+        previos: [
+          ...copiaPrevia.previos,
+          ...borrados.filter((b) => !copiaPrevia.previos.some((p) => clavePrevio(p) === clavePrevio(b))),
+        ],
+        creado: copiaPrevia.creado,
+        reservaPrevia: copiaPrevia.reservaPrevia,
+        at: copiaPrevia.at,
+      }
+    : { previos: borrados, creado: !conservaA, reservaPrevia: !!filaPrevia, at: Date.now() };
   if (a) {
     upsertCloudflareDnsRecord({
       domain: d,
@@ -685,7 +705,11 @@ export async function restaurarReemplazo(
   const cliente = clienteAdministrador();
   const actuales = (await cliente.listRecords(fila.zone_id, { name: fila.domain })).filter((r) => DIRECCION.has(r.type));
   const nuestro = actuales.find((r) => r.id === fila.record_id);
-  const otros = actuales.filter((r) => r.id !== fila.record_id);
+  // Un AAAA hacia la IPv6 de este servidor ya estaba antes del reemplazo (no
+  // es ajeno, así que el reemplazo lo conservó): no impide restaurar y se
+  // queda, como estaba.
+  const apuntaAqui = apuntaAEsteServidor(fila.content);
+  const otros = actuales.filter((r) => r.id !== fila.record_id && !(r.type === 'AAAA' && apuntaAqui(r)));
   if (otros.length > 0) {
     throw httpError(
       409,

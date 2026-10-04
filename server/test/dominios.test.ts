@@ -27,6 +27,7 @@ import {
   createUser,
   createWorkspaceRow,
   getCloudflareDnsRecord,
+  getMailwayDnsReserva,
   getService,
   getSetting,
   getUserByEmail,
@@ -36,7 +37,7 @@ import {
   setSetting,
 } from '../src/db';
 import { domainClaimError } from '../src/domainguard';
-import { zonaDns } from '../src/domains';
+import { mismaIpv6, zonaDns } from '../src/domains';
 import { fusionarSpf, getInfo, MAILWAY_SETTING, mailwayReservedHosts, rememberContainerHosts } from '../src/mailway';
 import type { ProjectRow, UserRow } from '../src/types';
 import { hashPassword, randomToken } from '../src/util';
@@ -171,6 +172,29 @@ describe('comprobación del DNS de un dominio de servicio', () => {
     dnsFalso.aaaa.delete('web.cliente.es');
     dnsFalso.fallan.add('AAAA:web.cliente.es');
     expect((await comprobar('web.cliente.es')).status).toBe('ok');
+  });
+
+  it('T11: una IPv6 con identificador de zona no se acepta y, si ya estaba guardada, no rompe la comprobación', async () => {
+    const r = await call('PUT', '/api/settings', admin(), { serverIpv6: 'fe80::1%eth0' });
+    expect(r.status).toBe(400);
+    expect(r.raw).toMatch(/sin identificador de zona/);
+    expect(getSetting('serverIpv6')).toBeNull();
+    expect(mismaIpv6('fe80::1%eth0', 'fe80::1')).toBe(false);
+
+    // Guardada por una versión anterior: se ignora (cualquier AAAA cuenta como ajeno) en lugar de responder 500.
+    setSetting('serverIpv6', 'fe80::1%eth0');
+    try {
+      dnsFalso.a.set('v6.cliente.es', [IP]);
+      dnsFalso.aaaa.set('v6.cliente.es', ['2001:db8::99']);
+      const check = await call('POST', '/api/domains/check', admin(), { domain: 'v6.cliente.es' });
+      expect(check.status, check.raw).toBe(200);
+      expect(check.json.check.status).toBe('wrong_ip');
+    } finally {
+      setSetting('serverIpv6', null);
+    }
+    expect((await call('PUT', '/api/settings', admin(), { serverIpv6: '2001:DB8::10' })).status).toBe(200);
+    expect(getSetting('serverIpv6')).toBe('2001:db8::10');
+    setSetting('serverIpv6', null);
   });
 
   it('T11/T13: un A de más (el del hosting anterior que el importador no sustituye) se señala', async () => {
@@ -335,6 +359,61 @@ describe('T12/CD-12: reemplazar en Cloudflare el registro del hosting anterior',
     expect(listAudit({ action: 'cloudflare_dns_restored' })).toHaveLength(1);
   });
 
+  /** Revisa y confirma el reemplazo de un nombre de un servicio, como la interfaz. */
+  async function reemplazar(serviceId: string, domain: string) {
+    const plan = (await call('GET', `/api/services/${serviceId}/cloudflare-dns/replace?domain=${domain}`, admin())).json.plan;
+    const records = plan.actuales.map((x: Json) => ({ id: x.id, type: x.type, content: x.content }));
+    return call('POST', `/api/services/${serviceId}/cloudflare-dns/replace`, admin(), { domain, records });
+  }
+
+  it('un segundo reemplazo del mismo nombre se suma a la copia: restaurar devuelve el registro original', async () => {
+    const op = cf.zones.find((z) => z.name === 'operador.com')!;
+    registro(op, { type: 'A', name: 'dos.operador.com', content: '198.51.100.40', proxied: true });
+    const svc = createService(projAdmin.id, 'Dos', 'dos', 'image', { image: 'nginx', port: 80, domains: ['dos.operador.com'] } as never);
+    expect((await reemplazar(svc.id, 'dos.operador.com')).status).toBe(200);
+
+    // Alguien añade después un AAAA y se vuelve a reemplazar (el A de Skyway se conserva).
+    registro(op, { type: 'AAAA', name: 'dos.operador.com', content: '2001:db8::40' });
+    const r = await reemplazar(svc.id, 'dos.operador.com');
+    expect(r.status, r.raw).toBe(200);
+    const copia = JSON.parse(getCloudflareDnsRecord('dos.operador.com')!.replaced!);
+    expect(copia.creado).toBe(true);
+    expect(copia.previos.map((p: Json) => `${p.type} ${p.content} ${p.proxied}`)).toEqual([
+      'A 198.51.100.40 true',
+      'AAAA 2001:db8::40 false',
+    ]);
+    const vista = (await call('GET', '/api/cloudflare/records', admin())).json.records.find((x: Json) => x.domain === 'dos.operador.com');
+    expect(vista.replacedCreated).toBe(true);
+
+    const res = await call('POST', '/api/cloudflare/records/dos.operador.com/restore', admin());
+    expect(res.status, res.raw).toBe(200);
+    expect(cf.records.filter((x) => x.name === 'dos.operador.com').map((x) => `${x.type} ${x.content} ${x.proxied}`).sort()).toEqual([
+      'A 198.51.100.40 true',
+      'AAAA 2001:db8::40 false',
+    ]);
+    expect(getCloudflareDnsRecord('dos.operador.com')).toBeUndefined();
+  });
+
+  it('con un AAAA hacia la IPv6 de este servidor, el reemplazo lo conserva y restaurar también', async () => {
+    const op = cf.zones.find((z) => z.name === 'operador.com')!;
+    setSetting('serverIpv6', '2001:db8::10');
+    try {
+      registro(op, { type: 'A', name: 'seis.operador.com', content: '198.51.100.50' });
+      registro(op, { type: 'AAAA', name: 'seis.operador.com', content: '2001:db8:0:0::10' });
+      const svc = createService(projAdmin.id, 'Seis', 'seis', 'image', { image: 'nginx', port: 80, domains: ['seis.operador.com'] } as never);
+      let r = await reemplazar(svc.id, 'seis.operador.com');
+      expect(r.status, r.raw).toBe(200);
+      const nombre = () => cf.records.filter((x) => x.name === 'seis.operador.com').map((x) => `${x.type} ${x.content}`).sort();
+      expect(nombre()).toEqual([`A ${IP}`, 'AAAA 2001:db8:0:0::10']);
+
+      r = await call('POST', '/api/cloudflare/records/seis.operador.com/restore', admin());
+      expect(r.status, r.raw).toBe(200);
+      expect(nombre()).toEqual(['A 198.51.100.50', 'AAAA 2001:db8:0:0::10']);
+    } finally {
+      setSetting('serverIpv6', null);
+    }
+  });
+
   it('nunca se reemplazan los nombres de la plataforma (panel, dominio raíz, Mailway)', async () => {
     const op = cf.zones.find((z) => z.name === 'operador.com')!;
     registro(op, { type: 'A', name: 'apps.operador.com', content: '198.51.100.30' });
@@ -474,6 +553,13 @@ describe('pestaña Correo con el dominio recibiendo en otro proveedor', () => {
     r = await call('POST', `/api/projects/${projA.id}/mail/domains`, admin(), { domain: 'nuevo-sin-mx.es' });
     expect(altas().at(-1)?.body).toMatchObject({ domain: 'nuevo-sin-mx.es', autoDns: true });
 
+    // Si no se sabe dónde recibe (el DNS no responde), tampoco: puede haber un proveedor que no se ve.
+    dnsFalso.fallan.add('MX:mudo.es');
+    r = await call('POST', `/api/projects/${projA.id}/mail/domains`, admin(), { domain: 'mudo.es' });
+    expect(r.status, r.raw).toBe(201);
+    expect(altas().at(-1)?.body).toMatchObject({ domain: 'mudo.es', autoDns: false });
+    expect(r.json.cloudflareReason).toMatch(/No se ha podido comprobar dónde recibe hoy el correo mudo\.es/);
+
     // Un propietario no lo pide nunca, aunque lo mande.
     r = await call('POST', `/api/projects/${projA.id}/mail/domains`, ownerA, { domain: 'del-cliente.es', autoDns: true });
     expect(r.status, r.raw).toBe(201);
@@ -509,10 +595,14 @@ describe('pestaña Correo con el dominio recibiendo en otro proveedor', () => {
     mail = (await call('GET', `/api/projects/${projA.id}/mail`, ownerA)).json;
     expect(mail.summary.domains.find((x: Json) => x.id === d.id).recepcionExterna).toBe(true);
 
-    // Otro proyecto no puede preguntar por un dominio ajeno.
+    // Otro proyecto, con el correo vinculado a otro cliente, no puede preguntar por un dominio ajeno.
     const otro = createProject('Otro', 'otro', null, null);
+    const link = await call('POST', `/api/projects/${otro.id}/mail/link`, admin(), { mode: 'create' });
+    expect(link.status, link.raw).toBe(201);
+    mw.calls = [];
     r = await call('GET', `/api/projects/${otro.id}/mail/domains/${d.id}/conflicto`, admin());
-    expect([404, 409]).toContain(r.status);
+    expect(r.status, r.raw).toBe(404);
+    expect(mw.calls.some((c) => c.path.includes('/conflicto'))).toBe(false);
   });
 
   it('T6: el SPF existente se combina en vez de sustituirse por el del servidor', async () => {
@@ -524,28 +614,39 @@ describe('pestaña Correo con el dominio recibiendo en otro proveedor', () => {
     expect(fusionarSpf('v=spf1 include:x.com', 'v=spf1 a:mail.example.com ~all')).toBe('v=spf1 include:x.com a:mail.example.com');
 
     const d = mw.domains.find((x) => x.domain === 'cliente.es')!;
-    d.checks = [
-      {
-        id: 'spf:cliente.es',
-        label: 'SPF',
-        type: 'TXT',
-        name: 'cliente.es',
-        expected: 'v=spf1 mx ra=postmaster -all',
-        found: 'v=spf1 include:_spf.google.com ~all',
-        status: 'mismatch',
-        required: true,
-        help: 'Añade «mx» delante de «all».',
-      },
-    ];
-    let mail = (await call('GET', `/api/projects/${projA.id}/mail`, ownerA)).json;
-    let check = mail.summary.domains.find((x: Json) => x.id === d.id).dns.checks[0];
-    expect(check.suggested).toBe('v=spf1 include:_spf.google.com mx ~all');
+    // Mailway hasta la 1.2: no informa `recepcionExterna` ni calcula el SPF combinado.
+    delete d.recepcionExterna;
+    const spf = {
+      id: 'spf:cliente.es',
+      label: 'SPF',
+      type: 'TXT',
+      name: 'cliente.es',
+      expected: 'v=spf1 mx ra=postmaster -all',
+      found: 'v=spf1 include:_spf.google.com ~all',
+      status: 'mismatch',
+      required: true,
+      help: 'Añade «mx» delante de «all».',
+    } as Record<string, unknown>;
+    const mxCheck = (status: string) => ({ id: 'mx:cliente.es', label: 'MX', type: 'MX', name: 'cliente.es', expected: '10 mail.example.com', status, required: true });
+    const sugerido = async () => {
+      const mail = (await call('GET', `/api/projects/${projA.id}/mail`, ownerA)).json;
+      return mail.summary.domains.find((x: Json) => x.id === d.id).dns.checks.find((c: Json) => c.id === 'spf:cliente.es').suggested;
+    };
 
-    // El que calcula Mailway (posterior a la 1.2) tiene preferencia.
-    d.checks[0].suggested = 'v=spf1 include:_spf.google.com a:mail.example.com ~all';
-    mail = (await call('GET', `/api/projects/${projA.id}/mail`, ownerA)).json;
-    check = mail.summary.domains.find((x: Json) => x.id === d.id).dns.checks[0];
-    expect(check.suggested).toBe('v=spf1 include:_spf.google.com a:mail.example.com ~all');
+    // Con el MX en Google, «mx» autorizaría a los servidores de entrada de Google: se autoriza el servidor de correo por su nombre.
+    d.checks = [mxCheck('mismatch'), spf];
+    expect(await sugerido()).toBe('v=spf1 include:_spf.google.com a:mail.example.com ~all');
+    // Con el MX ya aquí, «mx» vale.
+    d.checks = [mxCheck('ok'), spf];
+    expect(await sugerido()).toBe('v=spf1 include:_spf.google.com mx ~all');
+
+    // Un Mailway posterior a la 1.2 lo calcula él: el suyo tiene preferencia y, si no manda ninguno, no se inventa otro.
+    d.recepcionExterna = true;
+    d.checks = [mxCheck('mismatch'), spf];
+    expect(await sugerido()).toBeNull();
+    d.checks = [mxCheck('mismatch'), { ...spf, suggested: 'v=spf1 include:_spf.google.com ip4:203.0.113.10 ~all' }];
+    expect(await sugerido()).toBe('v=spf1 include:_spf.google.com ip4:203.0.113.10 ~all');
+    delete d.recepcionExterna;
   });
 
   it('T5: con un Mailway que lo admite, los conflictos se eligen uno a uno y el cambio se puede deshacer', async () => {
@@ -590,6 +691,16 @@ describe('pestaña Correo con el dominio recibiendo en otro proveedor', () => {
       expect(listAudit({ action: 'mailway_dns_undone' })).toHaveLength(1);
       r = await call('POST', `/api/projects/${projA.id}/mail/domains/${d.id}/cloudflare/undo`, ownerA);
       expect(r.status).toBe(409);
+
+      // Lo que sustituye un reemplazo apunta aquí igual que lo creado: queda reservado al proyecto.
+      expect(getMailwayDnsReserva('autodiscover.cliente.es')).toBeUndefined();
+      r = await call('POST', `/api/projects/${projA.id}/mail/domains/${d.id}/cloudflare/apply`, admin(), {
+        replace: ['CNAME:autodiscover.cliente.es'],
+      });
+      expect(r.status, r.raw).toBe(200);
+      expect(r.json.applied).toEqual([{ action: 'replace', type: 'CNAME', name: 'autodiscover.cliente.es' }]);
+      expect(getMailwayDnsReserva('autodiscover.cliente.es')?.project_id).toBe(projA.id);
+      expect(domainClaimError(['autodiscover.cliente.es'], { projectId: projAdmin.id, serviceId: null, isAdmin: false })).toBeTruthy();
     } finally {
       mw.cloudflarePorRegistro = false;
       mw.copia = null;

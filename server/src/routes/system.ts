@@ -1,6 +1,5 @@
 import fs from 'fs';
 import os from 'os';
-import net from 'net';
 import { spawn } from 'child_process';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -15,6 +14,7 @@ import { findOrphanBackups, findOrphanVolumes, OrphanVolume, purgeOrphans } from
 import { nixpacksAvailable } from '../deploy/builder';
 import { channelsConfigured, dispatchToChannels } from '../notify';
 import { verifyGithubToken } from '../github/client';
+import { esIpv6Publicable } from '../domains';
 import { domainSchema } from './services';
 import {
   SYSTEM_BACKUP_RETENTION,
@@ -194,7 +194,14 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
           // Solo para dar por buenos los AAAA que apuntan a este servidor: si
           // no se indica, cualquier AAAA de un dominio se trata como ajeno.
           serverIpv6: z
-            .union([z.string().trim().toLowerCase().refine((v) => net.isIPv6(v), 'IPv6 no válida'), z.literal('')])
+            .union([
+              z
+                .string()
+                .trim()
+                .toLowerCase()
+                .refine(esIpv6Publicable, 'IPv6 no válida: indica la dirección pública, sin identificador de zona («%eth0»).'),
+              z.literal(''),
+            ])
             .optional(),
           githubToken: z.string().trim().optional(),
           alertCpuPercent: z.union([z.coerce.number().min(10).max(100), z.literal('')]).optional(),

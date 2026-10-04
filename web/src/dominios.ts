@@ -18,7 +18,14 @@ const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9
 export function normalizarDominio(raw: string): string {
   let host = raw.trim();
   if (!host) return '';
-  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) host = `http://${host.split(/[/?#]/)[0]}`;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) {
+    const nombre = host.split(/[/?#]/)[0];
+    // Sin esquema, «info@cliente.es» es un correo y «cliente.es\x» no es un
+    // dominio: la URL los convertiría en cliente.es en silencio, y el
+    // servidor los rechaza.
+    if (/[@\\]/.test(nombre)) return '';
+    host = `http://${nombre}`;
+  }
   let ascii: string;
   try {
     // La URL convierte a punycode y a minúsculas, y quita el puerto.
@@ -28,6 +35,21 @@ export function normalizarDominio(raw: string): string {
   }
   ascii = ascii.replace(/\.$/, '');
   return HOSTNAME.test(ascii) && ascii.includes('.') ? ascii : '';
+}
+
+/**
+ * Nombre de un registro tal como se escribe en el panel DNS de su zona: «@»
+ * para la propia zona y la parte relativa para un subdominio («www» en
+ * caa.es). Los paneles como IONOS u OVH añaden la zona a lo que se escribe:
+ * «caa.es» en la zona caa.es crearía caa.es.caa.es. null si el nombre no está
+ * dentro de la zona.
+ */
+export function nombreEnZona(nombre: string, zona: string): string | null {
+  const n = nombre.trim().toLowerCase().replace(/\.$/, '');
+  const z = zona.trim().toLowerCase().replace(/\.$/, '');
+  if (!n || !z) return null;
+  if (n === z) return '@';
+  return n.endsWith(`.${z}`) ? n.slice(0, -(z.length + 1)) : null;
 }
 
 /* Punycode (RFC 3492): solo la decodificación, para enseñar el dominio. */
