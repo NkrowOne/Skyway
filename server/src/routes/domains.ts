@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAuth } from '../auth';
 import { getSetting } from '../db';
-import { checkDomain, getServerIp } from '../domains';
+import { checkDomain, getServerIp, getServerIpv6 } from '../domains';
 import { rateLimit } from '../ratelimit';
 
 const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
@@ -17,7 +17,7 @@ const CHECKS_POR_MINUTO = 30;
 export async function domainRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
-  app.get('/api/domains/server-ip', async () => getServerIp());
+  app.get('/api/domains/server-ip', async () => ({ ...(await getServerIp()), ipv6: getServerIpv6() }));
 
   /**
    * Lo que el editor de dominios necesita de los ajustes del servidor, para

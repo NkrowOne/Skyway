@@ -558,6 +558,9 @@ export default function ServiceSettingsTab({
               dnsResults={dnsResults}
               onRetryDns={(d) => retryDns.mutate(d)}
               retryingDns={retryDns.isPending ? retryDns.variables : null}
+              serviceId={service.id}
+              savedDomains={baseline.domains}
+              onDnsResult={(r) => setDnsResults((prev) => ({ ...prev, [r.domain]: r }))}
             />
           </SectionCard>
         )}

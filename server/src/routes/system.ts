@@ -1,5 +1,6 @@
 import fs from 'fs';
 import os from 'os';
+import net from 'net';
 import { spawn } from 'child_process';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -34,6 +35,7 @@ const SETTINGS_KEYS = [
   'rootDomain',
   'letsencryptEmail',
   'serverIp',
+  'serverIpv6',
   'alertCpuPercent',
   'alertMemPercent',
   'alertSustainMinutes',
@@ -189,6 +191,11 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
           rootDomain: z.union([domainSchema, z.literal('')]).optional(),
           letsencryptEmail: z.union([z.string().trim().email(), z.literal('')]).optional(),
           serverIp: z.union([z.string().trim().regex(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, 'IP inválida'), z.literal('')]).optional(),
+          // Solo para dar por buenos los AAAA que apuntan a este servidor: si
+          // no se indica, cualquier AAAA de un dominio se trata como ajeno.
+          serverIpv6: z
+            .union([z.string().trim().toLowerCase().refine((v) => net.isIPv6(v), 'IPv6 no válida'), z.literal('')])
+            .optional(),
           githubToken: z.string().trim().optional(),
           alertCpuPercent: z.union([z.coerce.number().min(10).max(100), z.literal('')]).optional(),
           alertMemPercent: z.union([z.coerce.number().min(10).max(100), z.literal('')]).optional(),
@@ -206,6 +213,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       setIf('rootDomain', body.rootDomain);
       setIf('letsencryptEmail', body.letsencryptEmail);
       setIf('serverIp', body.serverIp);
+      setIf('serverIpv6', body.serverIpv6);
       setIf('githubToken', body.githubToken);
       setIf('alertCpuPercent', body.alertCpuPercent);
       setIf('alertMemPercent', body.alertMemPercent);

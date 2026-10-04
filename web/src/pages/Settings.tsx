@@ -23,6 +23,7 @@ interface Settings {
   rootDomain: string | null;
   letsencryptEmail: string | null;
   serverIp: string | null;
+  serverIpv6: string | null;
   hasGithubToken: boolean;
   hasTelegramToken: boolean;
   alertCpuPercent: string | null;
@@ -148,6 +149,7 @@ export default function SettingsPage() {
   const [rootDomain, setRootDomain] = useState('');
   const [letsencryptEmail, setLetsencryptEmail] = useState('');
   const [serverIp, setServerIp] = useState('');
+  const [serverIpv6, setServerIpv6] = useState('');
   const [githubToken, setGithubToken] = useState('');
   const [cpuPct, setCpuPct] = useState('');
   const [memPct, setMemPct] = useState('');
@@ -240,6 +242,7 @@ export default function SettingsPage() {
     sync('rootDomain', setRootDomain);
     sync('letsencryptEmail', setLetsencryptEmail);
     sync('serverIp', setServerIp);
+    sync('serverIpv6', setServerIpv6);
     sync('alertCpuPercent', setCpuPct);
     sync('alertMemPercent', setMemPct);
     sync('alertSustainMinutes', setSustainMin);
@@ -256,6 +259,7 @@ export default function SettingsPage() {
         rootDomain,
         letsencryptEmail,
         serverIp,
+        serverIpv6,
         alertCpuPercent: cpuPct,
         alertMemPercent: memPct,
         alertSustainMinutes: sustainMin,
@@ -285,7 +289,8 @@ export default function SettingsPage() {
       domains:
         rootDomain !== (s.rootDomain || '') ||
         letsencryptEmail !== (s.letsencryptEmail || '') ||
-        serverIp !== (s.serverIp || ''),
+        serverIp !== (s.serverIp || '') ||
+        serverIpv6 !== (s.serverIpv6 || ''),
       github: !!githubToken,
       alerts:
         !!telegramToken ||
@@ -296,7 +301,7 @@ export default function SettingsPage() {
         discordUrl !== (s.alertDiscordUrl || '') ||
         telegramChat !== (s.alertTelegramChat || ''),
     };
-  }, [settings.data, githubToken, telegramToken, rootDomain, letsencryptEmail, serverIp, cpuPct, memPct, sustainMin, webhookUrl, discordUrl, telegramChat]);
+  }, [settings.data, githubToken, telegramToken, rootDomain, letsencryptEmail, serverIp, serverIpv6, cpuPct, memPct, sustainMin, webhookUrl, discordUrl, telegramChat]);
   const dirty = pending.domains || pending.github || pending.alerts;
 
   const discardSettings = () => {
@@ -305,6 +310,7 @@ export default function SettingsPage() {
     setRootDomain(s.rootDomain || '');
     setLetsencryptEmail(s.letsencryptEmail || '');
     setServerIp(s.serverIp || '');
+    setServerIpv6(s.serverIpv6 || '');
     setCpuPct(s.alertCpuPercent || '');
     setMemPct(s.alertMemPercent || '');
     setSustainMin(s.alertSustainMinutes || '');
@@ -450,6 +456,17 @@ export default function SettingsPage() {
                   placeholder={serverIpInfo.data?.ip ?? '203.0.113.10'}
                   value={serverIp}
                   onChange={(e) => setServerIp(e.target.value)}
+                />
+              </Field>
+              <Field
+                label="IPv6 pública del servidor (opcional)"
+                hint="Solo si Traefik la atiende. Sin ella, un registro AAAA en un dominio se trata como del hosting anterior: los visitantes con IPv6 y Let's Encrypt llegarían allí."
+              >
+                <input
+                  className="input font-mono text-xs"
+                  placeholder="2001:db8::10"
+                  value={serverIpv6}
+                  onChange={(e) => setServerIpv6(e.target.value)}
                 />
               </Field>
             </div>

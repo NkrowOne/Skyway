@@ -20,6 +20,7 @@ export default function MailwaySettings() {
   const [token, setToken] = useState('');
   const [defaultPlanId, setDefaultPlanId] = useState('');
   const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [liberar, setLiberar] = useState<string | null>(null);
   const [test, setTest] = useState<{ ok: true; result: MailwayTestResult } | { ok: false; message: string } | null>(null);
   const [saved, flashSaved] = useFlash();
 
@@ -91,6 +92,20 @@ export default function MailwaySettings() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Libera un nombre que fue de la instancia: a partir de ahí, cualquier servicio puede asignárselo.
+  const release = useMutation({
+    mutationFn: (host: string) => api.del<{ ok: boolean; config: MailwayConfigView }>(`/mailway/previous-hosts/${encodeURIComponent(host)}`),
+    onSuccess: (res, host) => {
+      setLiberar(null);
+      queryClient.setQueryData(['mailwayConfig'], res.config);
+      toast(`${host} ya no está reservado.`, 'ok');
+    },
+    onError: (err: Error) => {
+      setLiberar(null);
+      toast(err.message, 'err');
+    },
+  });
+
   const runTest = useMutation({
     mutationFn: () =>
       api.post<MailwayTestResult>(
@@ -135,6 +150,19 @@ export default function MailwaySettings() {
         title="Desconectar Mailway"
         message="Se eliminarán la dirección, el token de gestión, el servicio del panel y el plan predeterminado, y se retirarán de Traefik las rutas de los dominios propios de los clientes de Mailway (webmail de marca blanca y autoconfiguración), que dejarán de responder a través de este servidor. Los proyectos conservan su vínculo con el cliente de correo, y los clientes, buzones y mensajes se conservan en Mailway."
         confirmLabel="Desconectar Mailway"
+      />
+      <ConfirmModal
+        open={!!liberar}
+        onClose={() => setLiberar(null)}
+        onConfirm={() => liberar && release.mutate(liberar)}
+        loading={release.isPending}
+        title="Liberar el nombre"
+        message={
+          liberar
+            ? `${liberar} dejará de estar reservado y cualquier servicio podrá asignárselo. Hazlo solo si ya no apunta a este servidor o si nadie lo tiene configurado como servidor de correo o webmail: quien se lo asigne recibirá su tráfico.`
+            : ''
+        }
+        confirmLabel="Liberar"
       />
       <ol className="list-decimal space-y-1 rounded-lg border border-line bg-bg py-3 pl-8 pr-3.5 text-xs leading-5 text-sub">
         <li>
@@ -336,6 +364,28 @@ export default function MailwaySettings() {
             )}
           </div>
         </details>
+      )}
+      {(cfg.previousHosts?.length ?? 0) > 0 && (
+        <div className="border-t border-line pt-3 text-xs">
+          <p className="mb-1.5 text-subtle">
+            Nombres que fueron de Mailway y siguen reservados ({cfg.previousHosts!.length}). Su DNS puede seguir apuntando a este servidor
+            y los titulares pueden tenerlos configurados como servidor de correo o webmail, así que ningún servicio de un cliente puede
+            asignárselos hasta que los liberes.
+          </p>
+          <ul className="flex flex-col divide-y divide-line rounded-lg border border-line">
+            {cfg.previousHosts!.map((h) => (
+              <li key={h.host} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
+                <span className="min-w-0 flex-1 truncate font-mono text-txt" title={h.host}>
+                  {h.host}
+                </span>
+                <span className="text-subtle">visto {timeAgo(h.lastSeen)}</span>
+                <Button variant="ghost" size="sm" onClick={() => setLiberar(h.host)} title="Dejar de reservar este nombre">
+                  Liberar
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );

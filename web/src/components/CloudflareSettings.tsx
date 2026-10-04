@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ExternalLink, Trash2 } from 'lucide-react';
+import { AlertTriangle, ExternalLink, RotateCcw, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { CloudflareConfigView, CloudflareDnsRecord, CloudflareTestResult } from '../types';
 import { cx, safeHref, timeAgo } from '../utils';
@@ -229,6 +229,7 @@ function RegistrosCreados() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [borrar, setBorrar] = useState<CloudflareDnsRecord | null>(null);
+  const [restaurar, setRestaurar] = useState<CloudflareDnsRecord | null>(null);
 
   const records = useQuery({
     queryKey: ['cloudflareRecords'],
@@ -252,6 +253,24 @@ function RegistrosCreados() {
     },
     onError: (err: Error) => {
       setBorrar(null);
+      toast(err.message, 'err');
+    },
+  });
+
+  // Deshace un reemplazo: vuelven los registros del hosting anterior y se retira el A de Skyway.
+  const restore = useMutation({
+    mutationFn: (domain: string) =>
+      api.post<{ ok: boolean; result: { restaurados: string[]; retirado: boolean }; records: CloudflareDnsRecord[] }>(
+        `/cloudflare/records/${encodeURIComponent(domain)}/restore`,
+      ),
+    onSuccess: (res, domain) => {
+      setRestaurar(null);
+      queryClient.setQueryData(['cloudflareRecords'], { records: res.records });
+      queryClient.invalidateQueries({ queryKey: ['domainCheck', domain] });
+      toast(`Registros anteriores de ${domain} restaurados en Cloudflare: ${res.result.restaurados.join(', ')}.`, 'ok');
+    },
+    onError: (err: Error) => {
+      setRestaurar(null);
       toast(err.message, 'err');
     },
   });
@@ -285,6 +304,32 @@ function RegistrosCreados() {
             : ''
         }
         confirmLabel="Borrar registro"
+      >
+        {borrar?.replaced && borrar.replaced.length > 0 && (
+          <p className="mt-2 text-sm text-warn">
+            Este registro sustituyó a los del hosting anterior. Al borrarlo se pierde la copia y el nombre se queda sin dirección; para
+            volver a como estaba, utiliza «Restaurar».
+          </p>
+        )}
+      </ConfirmModal>
+      <ConfirmModal
+        open={!!restaurar}
+        onClose={() => setRestaurar(null)}
+        onConfirm={() => restaurar && restore.mutate(restaurar.domain)}
+        loading={restore.isPending}
+        title="Restaurar los registros anteriores"
+        message={
+          restaurar
+            ? `Se volverán a crear en la zona ${restaurar.zone} los registros que había antes del reemplazo (${(restaurar.replaced ?? [])
+                .map((p) => `${p.type} ${p.content}${p.proxied ? ' con proxy' : ''}`)
+                .join(', ')}) y se retirará el A hacia ${restaurar.content}, en una sola operación. ${
+                restaurar.usedBy
+                  ? `El dominio sigue asignado a ${restaurar.usedBy.project} / ${restaurar.usedBy.name}, pero su tráfico volverá a ir al hosting anterior.`
+                  : ''
+              }`
+            : ''
+        }
+        confirmLabel="Restaurar"
       />
       <p className="mb-1.5 text-subtle">
         Registros creados automáticamente ({lista.length}). Cada nombre queda reservado al proyecto para el que se creó, aunque deje de
@@ -307,6 +352,21 @@ function RegistrosCreados() {
                     : 'Sin uso · proyecto eliminado'}
               </span>
               <span className="text-subtle">{timeAgo(r.createdAt)}</span>
+              {r.replaced && r.replaced.length > 0 && (
+                <span className="basis-full text-subtle">
+                  Sustituyó a {r.replaced.map((p) => `${p.type} ${p.content}${p.proxied ? ' (proxy)' : ''}`).join(', ')}
+                </span>
+              )}
+              {r.replaced && r.replaced.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setRestaurar(r)}
+                  title="Volver a crear los registros del hosting anterior y retirar el de Skyway"
+                >
+                  <RotateCcw size={13} /> Restaurar
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="sm"

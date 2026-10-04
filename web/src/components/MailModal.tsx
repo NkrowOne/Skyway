@@ -17,6 +17,7 @@ import {
   Plug,
   Plus,
   RefreshCw,
+  RotateCcw,
   Star,
   Trash2,
   Unlink,
@@ -29,6 +30,8 @@ import {
   MailCloudflarePlan,
   MailCloudflareResult,
   MailDomain,
+  MailDomainConflict,
+  MailDomainPrecheck,
   MailMailbox,
   MailOptions,
   MailWebmail,
@@ -750,11 +753,15 @@ function DomainsTab({
 }) {
   const toast = useToast();
   const [domain, setDomain] = useState('');
+  // Dominio que recibe hoy el correo en otro proveedor: se pide confirmación antes de añadirlo.
+  const [confirmar, setConfirmar] = useState<MailDomainPrecheck | null>(null);
+  const [dnsAhora, setDnsAhora] = useState(false);
 
   const add = useMutation({
-    mutationFn: (value: string) => api.post<AltaDominioCorreo>(`/projects/${projectId}/mail/domains`, { domain: value }),
+    mutationFn: (v: { domain: string; autoDns?: boolean }) => api.post<AltaDominioCorreo>(`/projects/${projectId}/mail/domains`, v),
     onSuccess: (res) => {
       setDomain('');
+      setConfirmar(null);
       onInvalidate();
       // Con el DNS automático (administrador con Cloudflare en Mailway), el segundo aviso dice qué se ha hecho.
       const aviso = avisoDnsCorreo(res.domain.domain, res.cloudflare, res.cloudflareReason);
@@ -769,13 +776,83 @@ function DomainsTab({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  /*
+   * Antes de añadirlo se mira dónde recibe hoy el correo. Añadirlo no mueve el
+   * MX, pero si recibe en otro proveedor hay que saber qué pasa mientras tanto
+   * (lo que se envía a ese dominio desde aquí, el DNS automático), y un clic
+   * en una sugerencia no debe bastar para eso.
+   */
+  const comprobar = useMutation({
+    mutationFn: (value: string) =>
+      api.get<MailDomainPrecheck>(`/projects/${projectId}/mail/domain-check?domain=${encodeURIComponent(value)}`),
+    onSuccess: (res) => {
+      if (res.recepcion === 'otro') {
+        setDnsAhora(false);
+        setConfirmar(res);
+      } else {
+        add.mutate({ domain: res.domain });
+      }
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const pedirAlta = (value: string) => {
+    if (value.trim() && !blocked) comprobar.mutate(value.trim());
+  };
+  const ocupado = comprobar.isPending || add.isPending;
+
   return (
     <div className="flex flex-col gap-3">
+      {confirmar && (
+        <Modal open onClose={() => setConfirmar(null)} title={`${confirmar.domain} recibe el correo en otro proveedor`}>
+          <div className="flex flex-col gap-3 text-sm text-sub">
+            <p>
+              Su registro MX apunta hoy a <span className="break-all font-mono text-txt">{confirmar.mx.join(', ')}</span>. Añadir el
+              dominio aquí no cambia el MX: el correo sigue llegando allí hasta que hagas el cambio.
+            </p>
+            <ul className="list-disc space-y-1 pl-5 text-xs leading-5">
+              <li>
+                Para trasladar el correo, crea primero aquí los buzones y cambia el MX cuando estén listos. No importes el fichero de
+                zona ni reemplaces el MX en Cloudflare antes de ese momento: el correo se repartiría entre los dos proveedores.
+              </li>
+              <li>
+                Para usar este servidor solo para enviar (por ejemplo, desde la web), no cambies el MX. Si el dominio ya tiene un SPF,
+                complétalo con el valor que se indique en la tarjeta del dominio en lugar de sustituirlo.
+              </li>
+              <li>
+                Mientras el MX siga allí, la tarjeta del dominio indicará cómo se entrega el correo que se envíe a este dominio desde
+                este servidor (la web, otros buzones).
+              </li>
+            </ul>
+            {confirmar.dnsAutomatico && (
+              <label className="flex items-start gap-2 rounded-lg border border-line bg-bg px-3 py-2 text-xs">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-acc"
+                  checked={dnsAhora}
+                  onChange={(e) => setDnsAhora(e.target.checked)}
+                />
+                <span>
+                  <span className="font-medium text-txt">Configurar ahora el DNS en Cloudflare.</span> Crea los registros que faltan sin
+                  sustituir ninguno. Es preferible dejarlo para el traslado y revisar antes los cambios con «Configurar en Cloudflare».
+                </span>
+              </label>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setConfirmar(null)}>
+                Cancelar
+              </Button>
+              <Button onClick={() => add.mutate({ domain: confirmar.domain, autoDns: dnsAhora })} loading={add.isPending}>
+                Añadir el dominio
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
       <form
         className="flex flex-col gap-2 sm:flex-row"
         onSubmit={(e) => {
           e.preventDefault();
-          if (domain.trim() && !blocked) add.mutate(domain.trim());
+          pedirAlta(domain);
         }}
       >
         <input
@@ -787,7 +864,7 @@ function DomainsTab({
           autoCapitalize="none"
           spellCheck={false}
         />
-        <Button type="submit" variant="secondary" loading={add.isPending} disabled={!domain.trim() || blocked} className="max-sm:h-11">
+        <Button type="submit" variant="secondary" loading={ocupado} disabled={!domain.trim() || blocked} className="max-sm:h-11">
           <Globe size={13} /> Añadir dominio
         </Button>
       </form>
@@ -799,8 +876,8 @@ function DomainsTab({
             <button
               key={d}
               type="button"
-              disabled={add.isPending}
-              onClick={() => add.mutate(d)}
+              disabled={ocupado}
+              onClick={() => pedirAlta(d)}
               title={`Añadir ${d} como dominio de correo`}
               aria-label={`Añadir ${d} como dominio de correo`}
               className="press flex items-center gap-1 rounded-md border border-acc/40 bg-acc/[.06] px-2 py-0.5 font-mono text-xs font-medium text-acc-soft transition-colors hover:border-acc hover:bg-acc/10 disabled:cursor-not-allowed disabled:opacity-45 max-sm:py-1.5"
@@ -858,9 +935,23 @@ function DomainCard({
   const [showDns, setShowDns] = useState(false);
   const [showWebmail, setShowWebmail] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [confirmarZona, setConfirmarZona] = useState(false);
   const status = DOMAIN_STATUS[domain.status] ?? DOMAIN_STATUS.pending_dns;
 
+  // ¿Recibe hoy el correo en otro proveedor? Un dominio verificado tiene el MX aquí: no hace falta preguntar.
+  const conflicto = useQuery({
+    queryKey: ['mailConflicto', projectId, domain.id],
+    queryFn: () => api.get<MailDomainConflict>(`/projects/${projectId}/mail/domains/${domain.id}/conflicto`),
+    enabled: domain.status !== 'active',
+    staleTime: 300_000,
+    retry: false,
+  });
+  const otroProveedor = conflicto.data?.hayOtroProveedor ? conflicto.data : null;
+  // SPF con el que sustituir el actual (el actual más lo que le falta), si lo hay.
+  const spfSugerido = domain.dns.checks.find((c) => c.id.startsWith('spf:') && c.suggested)?.suggested ?? null;
+
   const downloadZone = async () => {
+    setConfirmarZona(false);
     setDownloading(true);
     try {
       await downloadFromApi(`/projects/${projectId}/mail/domains/${domain.id}/zonefile`, `${domain.domain}-mailway-recomendados.txt`);
@@ -898,6 +989,17 @@ function DomainCard({
 
   return (
     <div className="rounded-lg border border-line bg-bg">
+      <ConfirmModal
+        open={confirmarZona}
+        onClose={() => setConfirmarZona(false)}
+        onConfirm={() => void downloadZone()}
+        title="El dominio recibe el correo en otro proveedor"
+        message={`El fichero de zona trae un MX hacia este servidor. Importarlo ahora añadiría ese MX junto a ${
+          otroProveedor?.mxActuales.join(', ') ?? 'los actuales'
+        }: el correo se repartiría entre los dos proveedores y parte se perdería. Impórtalo solo al hacer el cambio, después de borrar los MX del proveedor anterior.`}
+        confirmLabel="Descargar igualmente"
+        confirmVariant="secondary"
+      />
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-3">
         <div className="min-w-0 flex-1 basis-48">
           <p className="flex flex-wrap items-center gap-2">
@@ -930,11 +1032,28 @@ function DomainCard({
         </div>
       </div>
 
+      {otroProveedor && (
+        <div role="note" className="flex items-start gap-1.5 border-t border-line/60 bg-warn/[.06] px-3.5 py-2.5 text-xs text-sub">
+          <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warn" />
+          <div className="min-w-0 space-y-1">
+            <p>
+              <span className="font-medium text-txt">Este dominio recibe el correo en otro proveedor</span> (MX:{' '}
+              <span className="break-all font-mono">{otroProveedor.mxActuales.join(', ')}</span>).{' '}
+              {domain.recepcionExterna === true || domain.recepcionExterna === false
+                ? `Hasta que cambies el MX, lo que se envíe a @${domain.domain} desde este servidor (la web, otros buzones, la API de envío) se entrega allí y los buzones de aquí no reciben nada todavía.`
+                : `El servidor de correo lo trata ya como propio: lo que se envíe a @${domain.domain} desde este servidor (la web, otros buzones, la API de envío) se queda en los buzones de aquí o se rechaza si la dirección solo existe en el proveedor actual. Cambia el MX cuando los buzones estén listos o actualiza Mailway.`}
+            </p>
+            {otroProveedor.avisoMtaSts && <p>{otroProveedor.avisoMtaSts}</p>}
+          </div>
+        </div>
+      )}
+
       {domain.ownershipPending && (
         <div className="border-t border-line/60 px-3.5 py-2.5 text-xs text-sub">
           <p>
-            Antes de crear buzones es necesario comprobar que el dominio es tuyo: apunta el registro MX a este servidor de correo o
-            añade el siguiente registro en el proveedor de DNS del dominio y pulsa «Verificar ahora».
+            Antes de crear buzones es necesario comprobar que el dominio es tuyo: añade el siguiente registro en el proveedor de DNS
+            del dominio y pulsa «Verificar ahora». Este registro no cambia dónde se recibe el correo; apuntar el MX a este servidor
+            también lo comprueba, pero traslada aquí todo el correo del dominio.
           </p>
           {domain.ownershipRecord && (
             <div className="mt-2 flex flex-col gap-1 rounded-md border border-line bg-surface px-3 py-2 sm:flex-row sm:items-start sm:gap-3">
@@ -961,6 +1080,13 @@ function DomainCard({
                 <span className="font-medium text-txt">{c.label}</span>
                 {c.status === 'mismatch' ? ': el valor publicado no coincide con el esperado.' : c.status === 'missing' ? ': no se ha encontrado el registro.' : ': no se ha podido comprobar.'}
                 {c.help ? ` ${c.help}` : ''}
+                {c.suggested && (
+                  <span className="mt-1 flex items-start gap-1">
+                    <span className="shrink-0">Sustituye el actual por:</span>
+                    <span className="min-w-0 break-all font-mono text-txt">{c.suggested}</span>
+                    <CopyButton value={c.suggested} title="Copiar el valor combinado" className="-my-0.5 shrink-0" />
+                  </span>
+                )}
               </span>
             </li>
           ))}
@@ -993,33 +1119,53 @@ function DomainCard({
               <p className="text-xs text-subtle">Mailway no ha indicado ningún registro para este dominio.</p>
             ) : (
               <>
-                <p className="mb-2 text-xs text-subtle">Crea estos registros en el proveedor de DNS del dominio.</p>
+                <p className="mb-2 text-xs text-subtle">
+                  Crea estos registros en el proveedor de DNS del dominio
+                  {spfSugerido ? '; el SPF no se crea: el que ya tiene se sustituye por el valor combinado que se indica' : ''}.
+                </p>
                 <div className="overflow-hidden rounded-md border border-line">
-                  {dns.data.records.map((r, i) => (
-                    <div
-                      key={`${r.type}-${r.name}-${i}`}
-                      className="flex flex-col gap-1 border-b border-line/60 bg-surface px-3 py-2 text-xs last:border-b-0 sm:flex-row sm:items-start sm:gap-3"
-                    >
-                      <span className="w-14 shrink-0 font-mono font-semibold text-txt">{r.type}</span>
-                      <span className="flex min-w-0 items-start gap-1 sm:w-48 sm:shrink-0">
-                        <span className="min-w-0 break-all font-mono text-sub">{r.name}</span>
-                        <CopyButton value={r.name} title="Copiar nombre" className="-my-0.5 shrink-0" />
-                      </span>
-                      <span className="flex min-w-0 flex-1 items-start gap-1">
-                        <span className="min-w-0 flex-1 break-all font-mono text-txt">{r.content}</span>
-                        <CopyButton value={r.content} title="Copiar valor" className="-my-0.5 shrink-0" />
-                      </span>
-                    </div>
-                  ))}
+                  {dns.data.records.map((r, i) => {
+                    // Un SPF que ya existe se combina, nunca se duplica: con dos, ninguno vale.
+                    const esSpf = r.type === 'TXT' && /^"?v=spf1(\s|"|$)/i.test(r.content.trim());
+                    const valor = esSpf && spfSugerido ? spfSugerido : r.content;
+                    return (
+                      <div
+                        key={`${r.type}-${r.name}-${i}`}
+                        className="flex flex-col gap-1 border-b border-line/60 bg-surface px-3 py-2 text-xs last:border-b-0 sm:flex-row sm:items-start sm:gap-3"
+                      >
+                        <span className="w-14 shrink-0 font-mono font-semibold text-txt">{r.type}</span>
+                        <span className="flex min-w-0 items-start gap-1 sm:w-48 sm:shrink-0">
+                          <span className="min-w-0 break-all font-mono text-sub">{r.name}</span>
+                          <CopyButton value={r.name} title="Copiar nombre" className="-my-0.5 shrink-0" />
+                        </span>
+                        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                          <span className="flex min-w-0 items-start gap-1">
+                            <span className="min-w-0 flex-1 break-all font-mono text-txt">{valor}</span>
+                            <CopyButton value={valor} title="Copiar valor" className="-my-0.5 shrink-0" />
+                          </span>
+                          {esSpf && spfSugerido && (
+                            <span className="text-subtle">Sustituye el SPF actual por este valor: combina el que ya tiene con este servidor.</span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
                 <div className="mt-2.5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-xs leading-5 text-subtle">
                     Para crear todos los registros de una vez, descarga el fichero de zona e impórtalo en Cloudflare, en DNS →
-                    Registros → Importar y exportar, sin activar el proxy. Incluye también, en su propia sección, los registros
-                    de los servicios de este proyecto que usan el dominio y el del webmail; si el dominio ya tiene un registro
-                    SPF, conserva solo uno.
+                    Registros → Importar y exportar, sin activar el proxy. Importar añade y no sustituye: los registros de los
+                    servicios de este proyecto que usan el dominio van comentados (borra antes el registro actual de ese nombre) y,
+                    si el dominio ya tiene un SPF, no importes el del fichero: combínalos en uno
+                    {spfSugerido ? <> (<span className="break-all font-mono">{spfSugerido}</span>)</> : ''}.
                   </p>
-                  <Button size="sm" variant="secondary" onClick={() => void downloadZone()} loading={downloading} className="shrink-0">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => (otroProveedor ? setConfirmarZona(true) : void downloadZone())}
+                    loading={downloading}
+                    className="shrink-0"
+                  >
                     <Download size={12} /> Descargar fichero de zona
                   </Button>
                 </div>
@@ -1289,6 +1435,9 @@ function CloudflareDialog({
 }) {
   const toast = useToast();
   const [replaceConflicts, setReplaceConflicts] = useState(false);
+  // Conflictos elegidos uno a uno («TIPO:nombre»), con un Mailway que lo admite.
+  const [seleccion, setSeleccion] = useState<string[]>([]);
+  const [confirmarDeshacer, setConfirmarDeshacer] = useState(false);
   const [result, setResult] = useState<MailCloudflareResult | null>(null);
 
   const plan = useQuery({
@@ -1299,9 +1448,13 @@ function CloudflareDialog({
     gcTime: 0,
   });
 
+  const porRegistro = !!plan.data?.porRegistro;
   const apply = useMutation({
     mutationFn: () =>
-      api.post<MailCloudflareResult>(`/projects/${projectId}/mail/domains/${domain.id}/cloudflare/apply`, { replaceConflicts }),
+      api.post<MailCloudflareResult>(
+        `/projects/${projectId}/mail/domains/${domain.id}/cloudflare/apply`,
+        porRegistro ? { replace: seleccion } : { replaceConflicts },
+      ),
     onSuccess: (res) => {
       setResult(res);
       onApplied();
@@ -1310,8 +1463,33 @@ function CloudflareDialog({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Deshace el último cambio: vuelve lo que reemplazó y se retira lo que se creó en su lugar.
+  const deshacer = useMutation({
+    mutationFn: () =>
+      api.post<{ restaurados: { type: string; name: string }[]; retirados: { type: string; name: string }[] }>(
+        `/projects/${projectId}/mail/domains/${domain.id}/cloudflare/undo`,
+      ),
+    onSuccess: (res) => {
+      setConfirmarDeshacer(false);
+      onApplied();
+      void plan.refetch();
+      toast(`Cambio deshecho: ${res.restaurados.length} registro(s) restaurado(s) y ${res.retirados.length} retirado(s).`, 'ok');
+    },
+    onError: (err: Error) => {
+      setConfirmarDeshacer(false);
+      toast(err.message, 'err');
+    },
+  });
+
   const p = plan.data;
-  const pendientes = p ? p.summary.create + p.summary.update + (replaceConflicts ? p.summary.conflict : 0) : 0;
+  const clave = (c: { type: string; name: string }) => `${c.type.toUpperCase()}:${c.name}`;
+  const alternar = (k: string) => setSeleccion((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]));
+  // «Hacer el cambio de proveedor»: el MX y lo que se crea con él (SPF y DMARC); el resto se conserva.
+  const delCambio = p ? p.changes.filter((c) => c.action === 'conflict' && c.alCambiar && c.reemplazable !== false) : [];
+  const cambioProveedor = delCambio.some((c) => c.type === 'MX') ? delCambio.map(clave) : [];
+  const pendientes = p
+    ? p.summary.create + p.summary.update + (porRegistro ? seleccion.length : replaceConflicts ? p.summary.conflict : 0)
+    : 0;
 
   return (
     <Modal open onClose={onClose} title={`Cloudflare · ${domain.domain}`} wide>
@@ -1331,7 +1509,7 @@ function CloudflareDialog({
             <ul className="space-y-1 rounded-lg border border-line bg-bg px-3 py-2 text-xs">
               {result.applied.map((a, i) => (
                 <li key={`${a.type}-${a.name}-${i}`} className="break-all font-mono text-sub">
-                  {a.action === 'create' ? 'Creado' : 'Actualizado'} · {a.type} {a.name}
+                  {a.action === 'create' ? 'Creado' : a.action === 'replace' ? 'Reemplazado' : 'Actualizado'} · {a.type} {a.name}
                 </li>
               ))}
             </ul>
@@ -1380,16 +1558,61 @@ function CloudflareDialog({
               </Chip>
             ))}
           </div>
+          {p.copia && p.copia.borrados.length > 0 && (
+            <div className="rounded-lg border border-line bg-bg px-3 py-2 text-xs text-sub">
+              <p>
+                El último cambio reemplazó{' '}
+                <span className="break-all font-mono text-txt">
+                  {p.copia.borrados.map((b) => `${b.type} ${b.priority != null ? `${b.priority} ` : ''}${b.content}`).join(', ')}
+                </span>
+                . Mailway guarda una copia por si hay que volver atrás.
+              </p>
+              {confirmarDeshacer ? (
+                <div className="mt-2 flex flex-col gap-2">
+                  <p className="text-warn">
+                    Se volverán a crear los registros reemplazados y se retirarán los que se crearon en su lugar. Si el MX vuelve al
+                    proveedor anterior, el correo dejará de llegar a este servidor en cuanto se propague el DNS.
+                  </p>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button variant="ghost" size="sm" onClick={() => setConfirmarDeshacer(false)}>
+                      Cancelar
+                    </Button>
+                    <Button variant="danger" size="sm" onClick={() => deshacer.mutate()} loading={deshacer.isPending}>
+                      Deshacer el cambio
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button variant="secondary" size="sm" className="mt-2" onClick={() => setConfirmarDeshacer(true)} disabled={!canManage}>
+                  <RotateCcw size={12} /> Deshacer el cambio
+                </Button>
+              )}
+            </div>
+          )}
           <div className="max-h-[45dvh] overflow-y-auto rounded-lg border border-line">
             {p.changes.map((c, i) => (
               <div key={`${c.type}-${c.name}-${i}`} className="border-b border-line/60 bg-bg px-3 py-2 text-xs last:border-b-0">
                 <p className="flex flex-wrap items-center gap-2">
+                  {porRegistro && c.action === 'conflict' && c.reemplazable !== false && (
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 shrink-0 accent-acc"
+                      checked={seleccion.includes(clave(c))}
+                      onChange={() => alternar(clave(c))}
+                      disabled={!canManage}
+                      aria-label={`Reemplazar ${c.type} ${c.name}`}
+                    />
+                  )}
                   <Chip size="sm" tone={CHANGE_LABEL[c.action].tone} dot>
                     {CHANGE_LABEL[c.action].label}
                   </Chip>
                   <span className="font-mono font-semibold">{c.type}</span>
                   <span className="min-w-0 break-all font-mono text-sub">{c.name}</span>
                   {!c.required && <span className="text-subtle">(recomendado)</span>}
+                  {c.alCambiar && <span className="text-subtle">(con el cambio de proveedor)</span>}
+                  {porRegistro && c.action === 'conflict' && c.reemplazable === false && (
+                    <span className="text-subtle">(no se puede reemplazar desde aquí)</span>
+                  )}
                 </p>
                 <p className="mt-1 break-all font-mono text-txt">
                   {c.priority != null ? `${c.priority} ` : ''}
@@ -1402,7 +1625,25 @@ function CloudflareDialog({
               </div>
             ))}
           </div>
-          {p.summary.conflict > 0 && (
+          {porRegistro && p.summary.conflict > 0 && (
+            <div className="rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
+              <p>
+                Marca en cada conflicto si se reemplaza. Mailway guarda una copia de lo que reemplaza para poder deshacerlo. Si el
+                dominio recibe hoy correo en otro proveedor, dejará de recibirlo allí en cuanto se cambie el MX: hazlo solo al
+                trasladar el correo a este servidor, y conserva el resto (autodiscover, el <span className="font-mono">mail.</span> del
+                hosting) hasta terminar la importación y la reconfiguración de los dispositivos.
+              </p>
+              {cambioProveedor.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => setSeleccion(cambioProveedor)} disabled={!canManage}>
+                    Hacer el cambio de proveedor
+                  </Button>
+                  <span>Marca solo el MX y lo que debe crearse con él; el resto se conserva.</span>
+                </div>
+              )}
+            </div>
+          )}
+          {!porRegistro && p.summary.conflict > 0 && (
             <label className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
               <input
                 type="checkbox"
