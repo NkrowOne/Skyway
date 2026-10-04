@@ -194,8 +194,19 @@ export async function remoteHeadSha(
   });
 }
 
+/** SHA completo de un commit: lo único que `git fetch` admite pedir por su id. */
+export const FULL_SHA_RE = /^[0-9a-f]{40}$/;
+
 export async function cloneRepo(
-  opts: { repoUrl: string; branch: string; token: string | null; dest: string; onSpawn?: (p: any) => void },
+  opts: {
+    repoUrl: string;
+    branch: string;
+    token: string | null;
+    dest: string;
+    onSpawn?: (p: any) => void;
+    /** Commit concreto (SHA completo) en vez de la cabeza de la rama. */
+    commit?: string | null;
+  },
   log: LogFn,
 ): Promise<CloneResult> {
   const normalized = normalizeRepoUrl(opts.repoUrl);
@@ -221,6 +232,25 @@ export async function cloneRepo(
     { env: { GIT_TERMINAL_PROMPT: '0' }, mask, onSpawn: opts.onSpawn, timeoutMs: CLONE_TIMEOUT_MS },
     log,
   );
+  if (opts.commit) {
+    if (!FULL_SHA_RE.test(opts.commit)) throw new Error(`Commit no válido: «${opts.commit.slice(0, 60)}»`);
+    // El clon es superficial: el commit pedido se trae aparte por su id (GitHub
+    // sirve cualquier commit alcanzable) y se deja el árbol en él. La URL del
+    // remoto ya lleva la credencial, así que no se repite aquí.
+    log(`Obteniendo el commit ${opts.commit.slice(0, 7)}...`);
+    await spawnLogged(
+      'git',
+      ['-C', opts.dest, '-c', 'protocol.version=2', 'fetch', '--depth', '1', '--no-tags', 'origin', opts.commit],
+      { env: { GIT_TERMINAL_PROMPT: '0' }, mask, onSpawn: opts.onSpawn, timeoutMs: CLONE_TIMEOUT_MS },
+      log,
+    );
+    await spawnLogged(
+      'git',
+      ['-C', opts.dest, '-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', 'FETCH_HEAD'],
+      { env: { GIT_TERMINAL_PROMPT: '0' }, mask, onSpawn: opts.onSpawn, timeoutMs: CLONE_TIMEOUT_MS },
+      log,
+    );
+  }
   const info = await new Promise<CloneResult>((resolve) => {
     const p = spawn('git', ['-C', opts.dest, 'log', '-1', '--format=%H%n%s'], { stdio: ['ignore', 'pipe', 'ignore'] });
     let buf = '';

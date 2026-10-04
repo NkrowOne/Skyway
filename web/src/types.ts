@@ -81,7 +81,13 @@ export interface GithubAppStatus {
   configured: boolean;
   canConfigure: boolean;
   app: { slug: string; name: string; htmlUrl: string } | null;
+  /** URL del webhook que corresponde al panel (con su dominio). */
   webhookUrl: string;
+  /** La que tiene la App en GitHub (solo para el administrador; null si no se pudo leer). */
+  webhookUrlActual?: string | null;
+  webhookUrlError?: string | null;
+  /** false si el panel no tiene dominio público: GitHub no podría entregar los push. */
+  panelReachable?: boolean;
 }
 
 /** Una propuesta de variable a partir de lo detectado en el repo (.env.example, package.json, schema.prisma…). */
@@ -746,6 +752,8 @@ export interface GitConfig {
   envImport?: EnvImportReport;
   /** Variables que pide el skyway.json y esperan aprobación (bases: cualquiera con acceso; correo: quien gestiona el proyecto). */
   integrationsPending?: string[];
+  /** Rutas que la imagen del último despliegue declara con VOLUME. */
+  imageVolumes?: string[];
 }
 
 // ---------- importación del .env del repositorio ----------
@@ -857,6 +865,24 @@ export interface Service {
   /** Instante en que alguien lo detuvo desde el panel; null si no. */
   stopped_at?: number | null;
   runtime?: Runtime;
+  /** Cambios guardados que su último despliegue correcto no lleva (vista de proyecto). */
+  pendingChanges?: boolean;
+}
+
+/** Estado del sondeo del despliegue automático (Ajustes del servicio). */
+export interface AutoDeployStatus {
+  pollSeconds: number;
+  checkedAt: number | null;
+  okAt: number | null;
+  error: string | null;
+  failingSince: number | null;
+  lastSeenSha: string | null;
+}
+
+/** Webhook manual del servicio: con el dominio del panel, y si ya lo cubre la GitHub App. */
+export interface ServiceWebhookInfo {
+  url: string;
+  coveredByApp: boolean;
 }
 
 export type DeploymentStatus = 'queued' | 'building' | 'deploying' | 'success' | 'failed' | 'canceled';
@@ -880,6 +906,10 @@ export interface Deployment {
   runtime_logs?: string | null;
   error: string | null;
   diagnosis: string | null;
+  /** Commit concreto que se pidió reconstruir. */
+  target_commit?: string | null;
+  /** En los correctos de un repositorio: si su imagen sigue en el servidor (ausente = no se sabe). */
+  imageAvailable?: boolean;
   created_at: number;
   finished_at: number | null;
 }
@@ -916,6 +946,8 @@ export interface Alert {
   explanation: string | null;
   resolved_at: number | null;
   read_at: number | null;
+  /** Despliegue fallido o interrumpido que volvía a una versión: el despliegue correcto al que volver. */
+  rollback_to?: string | null;
 }
 
 export interface AuditEntry {
@@ -1300,6 +1332,11 @@ export interface MailwayConfigView {
   /** Plan con el que se crea el cliente cuando no lo elige un administrador. */
   defaultPlanId: string | null;
   traefik: MailwayBridgeStatus | null;
+  /**
+   * Nombres que fueron de la instancia (un servidor de correo o un webmail
+   * anteriores): siguen reservados hasta que el administrador los libera.
+   */
+  previousHosts?: { host: string; lastSeen: number }[];
 }
 
 /** Ajustes → Cloudflare: el token del administrador nunca vuelve, solo su pista. */
@@ -1328,6 +1365,10 @@ export interface CloudflareDnsRecord {
   project: { id: string; name: string } | null;
   usedBy: { id: string; name: string; project: string } | null;
   createdAt: number;
+  /** Registros del hosting anterior que sustituyó (se pueden restaurar), o null. */
+  replaced?: { type: string; content: string; proxied: boolean }[] | null;
+  /** Con `replaced`: true si el reemplazo creó el A (restaurar lo retira); false si ya estaba y se conserva. */
+  replacedCreated?: boolean | null;
 }
 
 /**
@@ -1337,6 +1378,35 @@ export interface CloudflareDnsRecord {
 export interface DnsAutoResult {
   domain: string;
   action: 'created' | 'kept' | 'conflict' | 'skipped' | 'error';
+  message: string;
+}
+
+/** Revisión del reemplazo en Cloudflare del registro de la web del hosting anterior (solo administrador). */
+export interface PlanReemplazoDns {
+  domain: string;
+  zone: string | null;
+  ip: string | null;
+  /** A/AAAA/CNAME del nombre que no apuntan a este servidor: lo que se sustituiría. */
+  actuales: { id: string; type: string; content: string; proxied: boolean; ttl: number }[];
+  /** Ya hay un A hacia este servidor: solo se retiran los demás. */
+  conservaA: boolean;
+  avisos: string[];
+  /** Por qué no se puede reemplazar desde aquí; null si se puede. */
+  motivo: string | null;
+}
+
+/** Comprobación del DNS de un dominio de servicio (`POST /domains/check`). */
+export interface DomainCheck {
+  domain: string;
+  status: 'ok' | 'wrong_ip' | 'no_record' | 'caa' | 'unknown';
+  resolvedIps: string[];
+  resolvedIpv6?: string[];
+  expectedIp: string | null;
+  /** Zona del dominio y nombre del registro dentro de ella («@» para el propio dominio). */
+  zone?: string | null;
+  name?: string | null;
+  /** Con `caa`: el nombre que publica el CAA que impide el certificado y a quién autoriza. */
+  caa?: { name: string; issuers: string[] } | null;
   message: string;
 }
 
@@ -1401,8 +1471,40 @@ export interface MailDomain {
       status: MailDnsCheckStatus;
       required: boolean;
       help: string | null;
+      /**
+       * Valor con el que sustituir el registro que ya existe (el SPF actual
+       * con lo que le falta): pegar `expected` en su lugar dejaría sin
+       * autorizar al resto de remitentes del dominio.
+       */
+      suggested?: string | null;
     }[];
   };
+  /**
+   * true: el correo del dominio se recibe en otro servidor y Mailway encamina
+   * allí lo que se le envía desde aquí. false: Mailway lo entrega en local (el
+   * MX apunta aquí, hay MX de los dos o aún no se ha medido). null: el Mailway
+   * conectado no lo informa (hasta la 1.2) y lo entrega en local.
+   */
+  recepcionExterna?: boolean | null;
+}
+
+/** ¿El dominio recibe ya el correo en otro proveedor? (lo mide Mailway). */
+export interface MailDomainConflict {
+  hayOtroProveedor: boolean;
+  mxActuales: string[];
+  spfActual: string | null;
+  dmarcPolitica: 'none' | 'quarantine' | 'reject' | null;
+  /** Qué hacer con la política MTA-STS del proveedor actual antes del cambio. */
+  avisoMtaSts: string | null;
+}
+
+/** Comprobación previa al alta de un dominio de correo. */
+export interface MailDomainPrecheck {
+  domain: string;
+  recepcion: 'otro' | 'aqui' | 'sin_mx' | 'desconocido';
+  mx: string[];
+  /** Al administrador se le ofrece configurar el DNS en Cloudflare. */
+  dnsAutomatico: boolean;
 }
 
 export interface MailMailbox {
@@ -1531,8 +1633,19 @@ export interface MailCloudflarePlan {
     current: string | null;
     reason: string;
     required: boolean;
+    /** Se puede reemplazar desde aquí (null: el Mailway conectado no lo dice). */
+    reemplazable?: boolean | null;
+    /** Parte del cambio de proveedor: el MX y el SPF y el DMARC que se crean con él. */
+    alCambiar?: boolean;
   }[];
   summary: { create: number; update: number; keep: number; conflict: number };
+  /** El Mailway conectado elige los conflictos uno a uno y guarda copia para deshacer. */
+  porRegistro?: boolean;
+  /** Lo que borró el último cambio (para «Deshacer el cambio»). */
+  copia?: {
+    createdAt: number | null;
+    borrados: { type: string; name: string; content: string; priority: number | null }[];
+  } | null;
 }
 
 export interface MailCloudflareResult {

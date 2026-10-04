@@ -25,6 +25,9 @@
 import { getCloudflareDnsRecord, getMailwayDnsReserva, getProject, getService, serviceIdsForDomain } from './db';
 import { mailwayProject, mailwayReservedHosts } from './mailway';
 import { mailwayPublishedHosts, mailwayWhitelabelHosts } from './mailwaytraefik';
+import { panelDomains } from './paneldomain';
+
+export { panelDomains };
 
 export interface DomainClaim {
   /** Proyecto del servicio que reclama los dominios. */
@@ -35,16 +38,6 @@ export interface DomainClaim {
   isAdmin: boolean;
   /** Dominios que el servicio ya tenía: no se vuelven a comprobar. */
   current?: Iterable<string>;
-}
-
-/** Dominios del panel de Skyway (`SKYWAY_DOMAIN`, admite una lista separada por comas). */
-export function panelDomains(): Set<string> {
-  return new Set(
-    (process.env.SKYWAY_DOMAIN ?? '')
-      .split(',')
-      .map((d) => d.trim().toLowerCase())
-      .filter(Boolean),
-  );
 }
 
 function serviceLabel(serviceId: string): string {

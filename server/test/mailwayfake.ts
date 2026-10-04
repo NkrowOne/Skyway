@@ -28,6 +28,10 @@ export interface FakeDomain {
   ownershipVerifiedAt: number | null;
   /** Cuenta de Cloudflare asociada al dominio (Mailway la guarda al aplicar su DNS). */
   cloudflareAccountId?: string | null;
+  /** Comprobaciones DNS que devuelve Mailway (vacías si no se indican). */
+  checks?: Record<string, unknown>[];
+  /** Mailway posterior a la 1.2: el correo se recibe en otro servidor. Ausente = Mailway anterior. */
+  recepcionExterna?: boolean;
 }
 export interface FakeMailbox {
   id: string;
@@ -120,6 +124,16 @@ export const mw = {
   autoDnsConAutoconfig: false,
   /** Si se indica, toda petición con Bearer recibe este 401 (token revocado, caducado…). */
   reject401: null as { error: string; code: string } | null,
+  /** Respuesta de `/api/domains/:id/conflicto` por nombre de dominio (sin entrada: no hay otro proveedor). */
+  conflictos: new Map<string, Record<string, unknown>>(),
+  /**
+   * Como un Mailway posterior a la 1.2: el plan de Cloudflare trae el MX ajeno como conflicto
+   * reemplazable del cambio de proveedor y la copia del último cambio
+   * (`copia`); aplicar admite `replace` y existe `cloudflare/undo`.
+   */
+  cloudflarePorRegistro: false,
+  /** Copia del último cambio que devuelve el plan (con `cloudflarePorRegistro`). */
+  copia: null as null | { createdAt: number; borrados: { type: string; name: string; content: string; priority?: number }[] },
   /** Cuentas de Cloudflare conectadas en Mailway (clientId null = de la instancia). */
   cloudflareAccounts: [] as { id: string; clientId: string | null; label: string }[],
   /** Peticiones recibidas: método, ruta (con consulta), cabeceras de autenticación y cuerpo. */
@@ -138,11 +152,11 @@ function json(status: number, body: unknown): Response {
 const badRequest = (error: string, code = 'bad_request') => json(400, { error, code });
 
 function domainRecord(fake: FakeDomain) {
-  const { cloudflareAccountId, ...d } = fake;
+  const { cloudflareAccountId, checks, ...d } = fake;
   return {
     ...d,
     dkimSelector: 'mw1',
-    dnsStatus: { checks: [], requiredTotal: 4, requiredOk: d.status === 'active' ? 4 : 1, allRequiredOk: d.status === 'active', checkedAt: 1 },
+    dnsStatus: { checks: checks ?? [], requiredTotal: 4, requiredOk: d.status === 'active' ? 4 : 1, allRequiredOk: d.status === 'active', checkedAt: 1 },
     lastCheckedAt: null,
     verifiedAt: null,
     createdAt: 1,
@@ -360,9 +374,44 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
     const cloudflare = b.autoDns === true ? { applied: aplicados, errors: [], skipped: [] } : null;
     return json(200, { domain: domainRecord(d), cloudflare });
   }
-  if ((m = path.match(/^\/api\/domains\/([^/]+)\/(verify|dns|cloudflare|cloudflare\/apply)$/))) {
+  if ((m = path.match(/^\/api\/domains\/([^/]+)\/(verify|dns|cloudflare|cloudflare\/apply|cloudflare\/undo|conflicto)$/))) {
     const d = mw.domains.find((x) => x.id === m![1]);
     if (!d) return json(404, { error: 'Dominio no encontrado.' });
+    if (m[2] === 'conflicto') {
+      return json(
+        200,
+        mw.conflictos.get(d.domain) ?? {
+          hayOtroProveedor: false,
+          mxActuales: [],
+          spfActual: null,
+          dmarcPolitica: null,
+          aviso: null,
+          mxInternos: [],
+          avisoServidor: null,
+        },
+      );
+    }
+    if (m[2] === 'cloudflare/undo') {
+      if (!mw.cloudflarePorRegistro) return json(404, { error: `Ruta no simulada: ${method} ${path}` });
+      if (!mw.copia) return json(409, { error: 'No hay ningún cambio guardado que deshacer.', code: 'cloudflare_nothing_to_undo' });
+      const restaurados = mw.copia.borrados.map((x) => ({ type: x.type, name: x.name }));
+      mw.copia = null;
+      return json(200, { restaurados, retirados: [{ type: 'MX', name: d.domain }], domain: domainRecord(d) });
+    }
+    if (m[2] === 'cloudflare' && mw.cloudflarePorRegistro) {
+      return json(200, {
+        available: true,
+        account: { id: 'cfa_1', label: 'Cuenta' },
+        zone: { id: 'z1', name: d.domain, status: 'active' },
+        changes: [
+          { action: 'conflict', type: 'MX', name: d.domain, content: 'mail.example.com', priority: 10, current: '1 aspmx.l.google.com', reason: 'Otro proveedor', required: true, reemplazable: true, alCambiar: true },
+          { action: 'conflict', type: 'TXT', name: d.domain, content: 'v=spf1 a:mail.example.com ~all', reason: 'Dos SPF', required: true, reemplazable: false, alCambiar: false },
+          { action: 'conflict', type: 'CNAME', name: `autodiscover.${d.domain}`, content: 'mail.example.com', current: 'autodiscover.outlook.com', reason: 'Otro destino', required: false, reemplazable: true, alCambiar: false },
+        ],
+        summary: { create: 0, update: 0, keep: 0, conflict: 3 },
+        copia: mw.copia,
+      });
+    }
     if (m[2] === 'verify') {
       d.status = 'active';
       d.ownershipVerifiedAt ??= Date.now();
@@ -376,6 +425,19 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
         zone: { id: 'z1', name: d.domain, status: 'active' },
         changes: [{ action: 'create', type: 'MX', name: d.domain, content: 'mail.example.com', priority: 10, reason: 'Falta', required: true }],
         summary: { create: 1, update: 0, keep: 0, conflict: 0 },
+      });
+    }
+    if (mw.cloudflarePorRegistro && Array.isArray(b.replace)) {
+      // Como un Mailway posterior a la 1.2: solo se reemplaza lo elegido, con copia para deshacer.
+      const elegidos = (b.replace as string[]).filter((k) => k === `MX:${d.domain}` || k === `CNAME:autodiscover.${d.domain}`);
+      mw.copia = {
+        createdAt: Date.now(),
+        borrados: elegidos.map((k) => ({ type: k.split(':')[0], name: k.split(':').slice(1).join(':'), content: 'anterior' })),
+      };
+      return json(200, {
+        applied: elegidos.map((k) => ({ action: 'replace', type: k.split(':')[0], name: k.split(':').slice(1).join(':') })),
+        errors: [],
+        domain: domainRecord(d),
       });
     }
     return json(200, { applied: [{ action: 'create', type: 'MX', name: d.domain }], errors: [], domain: domainRecord(d) });

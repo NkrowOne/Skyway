@@ -44,9 +44,14 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/services/SVC_ID/dep
 # Reiniciar / parar / arrancar
 curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/services/SVC_ID/restart"
 
-# Variables de entorno de un servicio
-curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"vars":{"NODE_ENV":"production"}}' "$BASE/api/services/SVC_ID/env"
+# Variables de entorno de un servicio: solo los cambios (lo demás se conserva)
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"set":{"NODE_ENV":"production"},"unset":["DEBUG"]}' "$BASE/api/services/SVC_ID/env"
+# (PUT con {"vars":{…}} reemplaza la lista ENTERA: borra lo que no vaya en ella)
+
+# Reconstruir un commit concreto (p. ej. una versión cuya imagen ya se purgó)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"commit":"<SHA de 40 caracteres>"}' "$BASE/api/services/SVC_ID/deploy"
 
 # Último despliegue con logs
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/deployments/DEP_ID"
@@ -256,7 +261,8 @@ skyway deploy api -f      # despliega el servicio «api» y sigue el estado hast
 skyway restart api        # reinicia
 skyway stop api           # detiene (pide confirmación; -y la salta)
 skyway rewind api         # rollback: muestra los despliegues correctos y vuelves al que elijas
-skyway status api         # estado y último despliegue
+                          # (si su imagen ya se purgó, ofrece reconstruir su commit)
+skyway status api         # estado, último despliegue, cambios sin desplegar y despliegue automático
 skyway update             # actualiza el PROPIO Skyway: git pull + rebuild + reinicio (en el servidor)
 ```
 
@@ -266,11 +272,19 @@ token define qué servicios ves y qué puedes hacer (hereda los permisos del
 usuario). `skyway --help` lista todo.
 
 `skyway update` es distinto: no usa la API ni el token, opera **en local sobre
-el servidor** donde corre Skyway. Hace `git pull` del repo, reconstruye la imagen
-(`docker compose up -d --build`) y comprueba el health. La base de datos vive en
-el volumen `skyway-data`, así que no se toca, y las apps desplegadas siguen
-corriendo (solo parpadea el panel unos segundos). Requiere `git`, `docker` y
-Docker Compose en el servidor.
+el servidor** donde corre Skyway. Hace `git pull` del repo (si no puede, dice por
+qué: cambios locales, otra rama o historial separado, con la salida de git),
+construye la imagen nueva con el panel aún en marcha (`docker compose build`) y,
+antes de recrear el contenedor, mira si hay despliegues en curso (leyendo la base
+del panel desde el propio contenedor, en solo lectura): si los hay, los enumera y
+ofrece esperar a que terminen (con `-y`, espera; como mucho 30 minutos). Un
+despliegue cortado por el reinicio se reintenta una vez al arrancar, con su
+alerta. Después comprueba el health, avisa si la imagen se quedó sin Nixpacks
+(con la orden para reconstruirla sin caché) y ofrece borrar las imágenes sin
+etiqueta que deja cada actualización (`docker image prune -f`). La base de datos
+vive en el volumen `skyway-data`, así que no se toca, y las apps desplegadas
+siguen corriendo (solo parpadea el panel unos segundos). Requiere `git`, `docker`
+y Docker Compose en el servidor.
 
 ### Darle el control a Claude
 

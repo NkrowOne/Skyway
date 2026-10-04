@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.36.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.37.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -32,7 +32,7 @@ server/src/
   stripe.ts             cliente mínimo de Stripe (Checkout Session + verificación de firma de webhook)
   mailway.ts            cliente de la API de integraciones de Mailway (correo): configuración en settings,
                         dirección interna del panel si lo despliega Skyway, token de gestión `mwt_…` (Bearer),
-                        proyecto de Mailway en Skyway, hosts reservados de la instancia, marca blanca
+                        proyecto de Mailway en Skyway, hosts reservados de la instancia (actuales y anteriores), marca blanca
                         (webmail con el dominio del cliente) y fichero de zona (`stripWebRecords` retira los
                         registros web del dominio raíz y de www; `appendWebRecords` añade los de los servicios
                         del proyecto y el del webmail)
@@ -91,7 +91,10 @@ server/src/
   metrics.ts            deltas de red por réplica + agrupado del histórico de consumo
   monitor.ts            bucle 30 s: caídas, bucles de reinicio, CPU/RAM, uptime, disco, histórico
   scheduler.ts          bucle 10 min: backups programados de BBDD + snapshot diario del panel
-  autodeploy.ts         bucle ~1 min: sondea la cabeza de la rama (API con ETag, o git ls-remote) y despliega si cambió
+  autodeploy.ts         bucle ~1 min: sondea la cabeza de la rama (API con ETag, o git ls-remote) y despliega si cambió;
+                        línea base y última comprobación persistidas (`autodeploy_state`)
+  tls.ts                TLS efectivo: ajuste del panel + correo de Let's Encrypt REAL de Traefik (docker inspect)
+  paneldomain.ts        dominios del panel (`SKYWAY_DOMAIN`, `SKYWAY_DOMAIN_EXTRA`) y routers de los adicionales
   datamigrate.ts        copia de datos desde una base externa (Railway) a una gestionada, con log en vivo
   events.ts             bus en memoria: logs de despliegue y feed de despliegues del proyecto (SSE)
   sse.ts                utilidad Server-Sent Events
@@ -276,7 +279,11 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      manda sobre los ajustes del panel, igual que en Railway. El token para
      clonar se resuelve en `github/resolve.ts` (ver §5.4).
    - rollback → reutiliza una imagen ya construida (`image_tag`), si sigue viva,
-     junto con la config-as-code del despliegue que la construyó.
+     junto con la config-as-code del despliegue que la construyó. Si la imagen
+     ya se purgó, `POST /deployments/:id/rollback` responde 409 `image_purged`
+     sin crear despliegue ni alerta, y se puede **reconstruir ese commit**
+     (`POST /services/:id/deploy {commit}`: clon superficial de la rama y
+     `git fetch --depth 1 origin <sha>`, sin reutilizar imagen).
 3. **Comando previo** (`deploy.preDeployCommand` de la config-as-code): se
    ejecuta con la imagen y las variables nuevas contra la red del proyecto,
    **antes** de tocar la versión en marcha. Es donde suelen ir las migraciones;
@@ -289,18 +296,59 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
    con ellas en el entorno, quien edita variables elegía qué binario ejecuta
    Skyway con el socket de Docker en la mano.
 4. **Despliegue del contenedor** (swap con validación):
+   - **Validación**: healthcheck HTTP 2xx si hay ruta de healthcheck; si no, y
+     el servicio recibe tráfico (dominio o puerto público), una **sonda TCP** a
+     su puerto interno (`nc -z` desde el contenedor auxiliar `busybox`, mismo
+     plazo) más el periodo de gracia; sin tráfico (un worker), solo el periodo
+     de gracia de 5 s. Antes bastaba con que el proceso siguiera vivo, y una app
+     que escuchaba en otro puerto se daba por buena con el dominio en 502. Si el
+     repositorio declara una política de reinicio que reintenta
+     (`restartPolicyType`), una caída al arrancar no es un fallo en ninguno de
+     los tres casos: se espera a que Docker la reinicie (hasta 90 s), salvo que
+     sea definitiva (`on-failure` con código 0 o con los reintentos agotados).
    - **Corte cero** (servicios sin volúmenes ni puerto de host): se arranca la
-     versión nueva en paralelo, se **valida** (healthcheck HTTP 2xx o periodo de
-     gracia) y solo entonces se intercambia, réplica a réplica (rolling update).
+     versión nueva en paralelo (`--next`, sin tráfico), se **valida** y luego se
+     intercambia réplica a réplica (rolling update). La versión anterior de cada
+     réplica **no se retira hasta que la copia nueva atiende**: la misma sonda
+     contra su nombre de contenedor en la red del proyecto o, si la imagen
+     declara `HEALTHCHECK`, hasta que Docker la marca `healthy` (Traefik no le
+     envía tráfico antes). Esa espera dura lo que Docker puede tardar en decidir
+     con el `HEALTHCHECK` de la imagen (`start_period + (interval + timeout) ×
+     retries`) si es mayor que el plazo del healthcheck del servicio: el primer
+     chequeo no llega hasta pasado el `interval`. Las etiquetas de Traefik llevan un middleware
+     `retry` (3 intentos): mientras la copia nueva arranca, una conexión
+     rechazada se reintenta y el balanceo la lleva a la anterior. Si no se pudo
+     comprobar nada (sin dominio ni healthcheck), el registro lo dice en vez de
+     anunciar «sin interrupción».
    - **Con estado** (volúmenes/puerto fijo/BBDD): intercambio con **restauración
      automática** — si la versión nueva falla la validación, vuelve la anterior.
    - `recoverStaleSwap` repara restos (`--next`/`--prev`) de un swap interrumpido
      por una caída del servidor.
    - Antes de arrancar se inyectan las **variables de compatibilidad Railway**
      (§5.5) sin pisar ninguna definida por el usuario.
-5. **Post**: un deploy correcto resuelve las alertas de caída del servicio y
-   purga imágenes antiguas (se conservan las **5 últimas** por servicio para
-   rollback). Un fallo genera una alerta con diagnóstico (`diagnose.ts`).
+   - Rutas que la imagen declara con `VOLUME` y que el servicio no monta: aviso
+     en el registro (su contenido se reinicia en cada despliegue y el anterior
+     queda en un volumen anónimo huérfano) y se anotan en `config.imageVolumes`
+     para que Ajustes ofrezca «Añadir volumen». Nunca se crea el volumen solo:
+     con volúmenes el intercambio deja de ser sin corte.
+5. **Post**: un deploy correcto resuelve las alertas del servicio (salvo la del
+   sondeo del auto-deploy, `autodeploy_failing`) y purga imágenes antiguas (se
+   conservan las de las **5 últimas** versiones correctas por servicio para
+   rollback; ajuste `keepImages`, de 1 a 50). Un
+   fallo genera una alerta con diagnóstico (`diagnose.ts`). Cada despliegue
+   anota la **revisión de configuración** del servicio que aplica
+   (`deployments.config_rev`, ver «Cambios sin desplegar» en §6).
+6. **Reinicios**: un apagado de Skyway corta los despliegues en marcha (y un
+   arranque marca como fallidos los que quedaron en cola o a medias); todos
+   quedan con `interrupted = 1`. Al arrancar, cada servicio cuyo **último**
+   despliegue quedó cortado recibe la alerta `deploy_interrupted` y **un**
+   reintento automático (origen `reintento`; una vuelta atrás se reintenta como
+   vuelta atrás). Si el reintento también se corta, solo la alerta: un build que
+   tumba Skyway reintentado siempre sería un bucle de reinicios. Las alertas
+   `deploy_failed` y `deploy_interrupted` de una vuelta atrás guardan en
+   `alerts.rollback_to` el despliegue correcto al que se volvía, y Alertas
+   ofrece «Volver a esta versión» en lugar de «Desplegar» (que desplegaría la
+   cabeza de la rama).
 
 **Feed de despliegues.** Cada cambio de fase (encolado, construyendo,
 desplegando, terminado) se publica en un bus en memoria (`events.ts`) que
@@ -335,14 +383,15 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `ai_model_prices` | coste del operador por modelo y margen objetivo: `model` (PK), `cost_micros_in`/`cost_micros_cache`/`cost_micros_out` (micro-céntimos por millón de tokens), `margin_pct` (margen objetivo s/ venta, guía el PVP sugerido), `currency`, `source` (`auto` = lo mantiene la sincronización con la tarifa de Google, `manual` = fijado por el operador y respetado), `synced_at`, `updated_at`. Informativo; no interviene en la factura |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
-| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada; `mailway.defaultPlanId`, plan con el que se crea el cliente si no lo elige un administrador; `mailway.hosts`, hosts públicos que anuncia la instancia; `mailway.whitelabelHosts`, última lista buena de nombres de marca blanca de todos los clientes en cualquier estado, reservados para los servicios; `mailway.previousClient:<projectId>`, cliente que tenía el proyecto antes de desactivar el correo)… |
+| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, `serverIpv6` (opcional: sin ella, cualquier AAAA de un dominio cuenta como ajeno), canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada; `mailway.defaultPlanId`, plan con el que se crea el cliente si no lo elige un administrador; `mailway.hosts`, hosts públicos que anuncia la instancia; `mailway.containerHosts`, hosts de las reglas `Host(…)` de las etiquetas de Traefik de los contenedores `mailway-mail`, `mailway-webmail` y `mailway-panel`; `mailway.previousHosts`, nombres que fueron de la instancia (`[{host, lastSeen}]`) y siguen reservados hasta que el administrador los libera; `mailway.whitelabelHosts`, última lista buena de nombres de marca blanca de todos los clientes en cualquier estado, reservados para los servicios; `mailway.previousClient:<projectId>`, cliente que tenía el proyecto antes de desactivar el correo)… |
 | `projects` | `id`, `name`, `slug` (único), `workspace_id` (cuenta de cliente), `client` (reflejo denormalizado del nombre del workspace para la UI), página de estado (`status_token`, `status_enabled`, `status_notice`) |
-| `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON) |
+| `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON), `config_rev` (revisión de la configuración: sube con cada cambio guardado que exige redesplegar) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
 | `project_vars` | `(project_id, key)` → `value` — variables compartidas |
-| `deployments` | `status`, `trigger`, `commit_sha/msg`, `image_tag`, `logs`, `error`, `diagnosis`, `build_key` (huella de las entradas de compilación, para reutilizar imagen), `repo_config` (config-as-code del repo en ese commit, JSON), `build_vars` (digest `{NOMBRE: hash}` de las variables que entraron en ese build; nunca el valor), `force_build` |
+| `deployments` | `status`, `trigger`, `commit_sha/msg`, `image_tag`, `logs`, `error`, `diagnosis`, `build_key` (huella de las entradas de compilación, para reutilizar imagen), `repo_config` (config-as-code del repo en ese commit, JSON), `build_vars` (digest `{NOMBRE: hash}` de las variables que entraron en ese build; nunca el valor), `force_build`, `target_commit` (commit concreto pedido al reconstruir), `config_rev` (revisión de configuración que aplicó), `interrupted` (1 = cortado por un reinicio de Skyway, pendiente de tratar al arrancar; 2 = tratado) |
+| `autodeploy_state` | por servicio git con auto-deploy: `last_seen_sha` (última cabeza de la rama ya tratada, la línea base del sondeo), `checked_at`/`ok_at` (última comprobación y última correcta), `error` y `failing_since` (racha de fallos al leer la rama). Se borra al desactivar el auto-deploy y cae en cascada con el servicio |
 | `audit_log` | `ts`, `actor`, `action`, `target_*`, `detail`, `ip` |
-| `alerts` | `severity`, `type`, `title`, `message`, `explanation`, `dedupe_key`, `resolved_at`, `read_at` |
+| `alerts` | `severity`, `type`, `title`, `message`, `explanation`, `dedupe_key`, `resolved_at`, `read_at`, `rollback_to` (despliegue correcto al que volvía una vuelta atrás fallida o interrumpida) |
 | `uptime_hourly` | `(service_id, hour)` → `up`, `total` — histórico de disponibilidad |
 | `service_metrics_hourly` | `(service_id, hour)` → sumas y máximos de CPU/RAM, bytes de red del periodo (delta) y foto de disco — histórico de consumo (~90 d) |
 | `host_metrics_hourly` | `hour` → carga, RAM y disco del host (sumas, máximos y última foto) — histórico de consumo del servidor (~90 d) |
@@ -988,7 +1037,8 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
 ## 6. Áreas funcionales (resumen)
 
 - **Despliegues**: build en vivo (SSE), historial, cancelación, rollback a
-  cualquiera de las 5 imágenes conservadas, diagnóstico de fallos en español.
+  cualquiera de las imágenes conservadas (el historial marca `imageAvailable` y,
+  sin imagen, ofrece reconstruir el commit), diagnóstico de fallos en español.
 - **Auto-deploy** (servicios git). Tres vías, todas gobernadas por el mismo
   interruptor `autoDeploy` (opt-out, en Ajustes del servicio):
   1. **Webhook de la GitHub App** (`/api/webhooks/github/app`): el camino rápido.
@@ -997,15 +1047,39 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
      los servicios que apuntan a ese repo y esa rama **y cuyo proyecto tenga
      conectada esa instalación**.
   2. **Webhook por servicio** (`/api/webhooks/github/:serviceId`, HMAC con el
-     `webhookSecret` del servicio): lo de siempre, para quien use tokens.
-  3. **Sondeo** cada ~1 min: pregunta la cabeza de la rama por la API de GitHub
-     con ETag (un 304 no consume cuota ni arranca un proceso) y cae a
-     `git ls-remote` si no hay credencial o el repo no es de GitHub. Es la red de
-     seguridad: funciona sin dominio público y sin tocar GitHub. La primera
-     comprobación fija la línea base y solo disparan los commits posteriores.
+     `webhookSecret` del servicio): para quien use tokens. Ajustes del servicio
+     da su URL con el dominio del panel (no el del túnel SSH) y no lo ofrece si
+     el servicio clona con una instalación de la App, que ya recibe los push.
+  3. **Sondeo** cada ~1 min (el primero, a los 10 s de arrancar): pregunta la
+     cabeza de la rama por la API de GitHub con ETag (un 304 no consume cuota ni
+     arranca un proceso) y cae a `git ls-remote` si no hay credencial o el repo
+     no es de GitHub. Es la red de seguridad: funciona sin dominio público y sin
+     tocar GitHub. La línea base («última cabeza tratada») se guarda en
+     `autodeploy_state`: un push hecho con Skyway parado (un `skyway update`) se
+     despliega al arrancar, y un reinicio tras una vuelta atrás no vuelve a
+     desplegar la cabeza. Solo la primera comprobación de un servicio (auto-deploy
+     recién activado) fija la línea base sin desplegar. Si no puede leer la rama,
+     guarda el error (Ajustes → Despliegue automático lo muestra con la última
+     comprobación) y, tras 15 minutos seguidos, lanza la alerta
+     `autodeploy_failing` con el remedio; se cierra sola al recuperarse o al
+     desactivar el auto-deploy. Un despliegue correcto no la cierra (no dice
+     que la rama vuelva a poder leerse).
 
-  Las tres vías comparten estado: un commit ya construido no se vuelve a
-  desplegar, y con un despliegue vivo no se encola otro encima.
+  Las tres vías comparten estado: un commit ya desplegado (o desplegándose) no
+  se repite, y con un despliegue vivo que aún no ha clonado no se encola otro:
+  clonará la cabeza actual. Si el vivo ya clonó otro commit, el push nuevo se
+  encola detrás. En los webhooks, un commit que falló o se canceló sí se
+  repite, para que «Redeliver» en GitHub lo relance; el sondeo, en cambio, no
+  relanza un commit ya intentado aunque fallara (un despliegue manual roto de
+  una cabeza nueva se reconstruiría solo al minuto, y fallaría igual).
+- **Cambios sin desplegar**: cada servicio tiene una revisión de configuración
+  (`services.config_rev`) que sube al guardar sus variables, las compartidas del
+  proyecto, un campo que exige redesplegar, el `.env` importado, el plan de
+  integraciones o Correo → Conectar. Si es mayor que la del último despliegue
+  correcto, `pendingChanges` es `true` en `GET /services/:id` y en cada servicio
+  de `GET /projects/:id`: la tarjeta, el panel del servicio y `skyway status` lo
+  muestran, también tras cerrar el panel o recargar. Las escrituras del propio
+  despliegue (importación del `.env`, manifiesto) no cuentan: van en él.
 - **Variables**: por servicio y compartidas por proyecto; referencias
   `${{Servicio.VAR}}` y `${{shared.VAR}}` resueltas al desplegar. Cada servicio
   tiene además variables de sistema (`INTERNAL_URL`, `PUBLIC_URL`…) que Skyway
@@ -1142,10 +1216,18 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   o `Skyway · <servicio>`) y actualiza lo que Skyway escribió (también lo de
   antes de llevar la cuenta de lo escrito); las credenciales vigentes se listan
   y se revocan desde la misma pestaña. El **fichero de zona** añade, en
-  secciones propias y comentadas, los registros A de los servicios del **mismo
-  proyecto** que cuelgan del dominio (hacia la IP pública de Ajustes; sin ella,
-  se omiten con un aviso) y el del webmail del cliente: basta con importar un
-  solo fichero en Cloudflare.
+  secciones propias, los registros A de los servicios del **mismo proyecto**
+  que cuelgan del dominio (hacia la IP pública de Ajustes; sin ella, se omiten
+  con un aviso), comentados con la instrucción de borrar antes el registro del
+  hosting anterior (importar añade y no sustituye), y el del webmail del
+  cliente. **Traslados**: antes de añadir un dominio se mira dónde recibe hoy
+  el correo; si es en otro proveedor, se pide confirmación y el DNS automático
+  del administrador queda desmarcado. La tarjeta avisa mientras el MX siga
+  fuera (y de qué pasa con lo que se envía al dominio desde aquí), pide
+  confirmación antes de descargar el fichero de zona, copia el SPF combinado
+  en lugar del del motor y, con Mailway posterior a la 1.2, Cloudflare permite elegir los
+  conflictos uno a uno («Hacer el cambio de proveedor») y deshacer el último
+  cambio.
   Aislamiento: como el token es de administrador, **cada dominio y buzón se
   comprueba contra el resumen del cliente vinculado** antes de actuar (si no es
   suyo, 404 sin llegar a Mailway) y la referencia externa del cliente tiene que
@@ -1434,12 +1516,13 @@ como línea negativa; una factura emitida es inmutable y conserva su descuento.
 | --- | --- | --- | --- |
 | GET | `/projects` | auth | proyectos accesibles (con meta); la `config` de cada servicio sale sin `webhookSecret` y con los valores de `buildArgs` tapados |
 | POST | `/projects` | admin/owner | crea proyecto (`{name, client?, workspaceId?}`); el propietario en su workspace, dentro de la cuota (409 si su cuenta ya no existe) |
-| GET | `/projects/:id` | +access | proyecto + servicios con runtime + `activeDeploys` (despliegues vivos por servicio); `config` sin `webhookSecret` y con `buildArgs` tapados |
+| GET | `/projects/:id` | +access | proyecto + servicios con runtime y `pendingChanges` (cambios sin desplegar) + `activeDeploys` (despliegues vivos por servicio); `config` sin `webhookSecret` y con `buildArgs` tapados |
 | PATCH | `/projects/:id` | manage | renombra; el admin además reasigna de workspace |
 | DELETE | `/projects/:id?confirm=<nombre>` | manage | elimina el proyecto con **todos sus datos** (§3.1): contenedores, volúmenes de todos sus servicios, imágenes construidas, copias de seguridad, red y alertas abiertas; libera sus reservas de dominio. `confirm` es el nombre visible exacto o el slug; sin él o si no coincide, 400 sin borrar nada. Sin Docker, 503 sin borrar nada; 409 si ya se está borrando, y 409 con `{error, warnings}` sin borrar volúmenes ni filas si un contenedor no se pudo retirar o un despliegue no terminó de cancelarse (reintentar es seguro). Lo que no se pudo retirar después va en `warnings` → `{ok, warnings, removed: {services, volumes[], images, backups}}`. Ya no existe la opción `volumes` |
 | POST | `/projects/:id/deploy-all` | +access | despliega repos e imágenes del proyecto |
 | GET | `/projects/:id/vars` | +access | variables compartidas |
-| PUT | `/projects/:id/vars` | +access | reemplaza variables compartidas |
+| PUT | `/projects/:id/vars` | +access | reemplaza variables compartidas; responde `affected` |
+| PATCH | `/projects/:id/vars` | +access | aplica solo los cambios `{set, unset}` sobre las actuales (lo que usa el panel); responde `{vars, needsRedeploy, affected}` con los servicios que hay que volver a desplegar (cada uno con su `type`: el panel ofrece desplegar las apps y deja las bases de datos aparte, sin marcar, porque reiniciarlas corta el servicio y las variables compartidas rara vez les afectan) |
 | GET | `/projects/:id/connectors` | +access | conectores del proyecto (sin tokens) + `hasGlobalToken` |
 | POST | `/projects/:id/connectors` | +access | conecta un token (`{name, token}`; se verifica contra GitHub) |
 | DELETE | `/connectors/:id` | +access | elimina un conector (sus servicios vuelven al token global) |
@@ -1453,7 +1536,8 @@ como línea negativa; una factura emitida es inmutable y conserva su descuento.
 
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/github/app` | auth | estado de la App (`configured`, slug, URL del webhook); nombre y slug refrescados desde GitHub (≤ 1 vez/5 min) |
+| GET | `/github/app` | auth | estado de la App (`configured`, slug, `webhookUrl` con el dominio del panel, `panelReachable`); nombre y slug refrescados desde GitHub (≤ 1 vez/5 min). Para el admin, `webhookUrlActual`: la URL que tiene la App en GitHub (`GET /app/hook/config`, ≤ 1 vez/min) o `webhookUrlError` |
+| POST | `/github/app/webhook-url` | admin+sesión | apunta el webhook de la App en GitHub al dominio del panel (`PATCH /app/hook/config`); la URL la decide el servidor. 400 `panel_not_public` si el panel no tiene dominio público. Audita `github_app_webhook_updated` |
 | POST | `/github/app/manifest` | admin+sesión | manifiesto y URL de acción para crear la App desde el navegador (`{org?}`) |
 | GET | `/github/app/setup?code&state` | admin+sesión | retorno de GitHub: canjea el código y guarda las credenciales |
 | POST | `/github/app/disconnect` | admin+sesión | olvida las credenciales (la App sigue existiendo en GitHub) |
@@ -1485,25 +1569,26 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[], dns?}`; atómica (409 si choca un nombre); `domain` como en crear servicio (409 si ya lo usa otro servicio o está reservado); `services[].config` sin `webhookSecret`. `dns`: DNS automático del dominio (§7.13, solo admin con token) |
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada); 20 por minuto y usuario, después 429 |
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas, también `dns?` |
-| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH, y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
-| GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
+| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH; se admiten acentos y «ñ» (se guardan en ASCII, *punycode*: `panadería.es` → `xn--panadera-i2a.es`, como en Mailway) y la URL pegada (se quitan esquema, ruta, puerto y punto final), y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, los de las rutas de Traefik de sus contenedores, los que fueron suyos y el administrador no ha liberado, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
+| GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`). Añade `pendingChanges`, `autoDeploy` (servicios git con auto-deploy: `{pollSeconds, checkedAt, okAt, error, failingSince, lastSeenSha}`) y `webhook` (`{url, coveredByApp}`: URL del webhook manual con el dominio del panel y si ya lo cubre la GitHub App) |
 | PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
 | DELETE | `/services/:id?confirm=<nombre>` | +access | elimina el servicio con **todos sus datos** (§3.1), salvo los volúmenes que comparta con otro servicio del proyecto; `confirm` (nombre o slug), 503 y los dos 409 como en proyectos → `{ok, warnings, removed: {volumes[], images, backups}}` |
-| POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
+| POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen; `{commit: <SHA de 40>}` reconstruye ese commit, solo git) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
 | GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, `mail`, `manifest`, §5.5) |
 | GET | `/services/:id/integrations` | +access | plan de integraciones del servicio sin efectos (§5.7) → `{plan, pending}`; `plan` null si no es de repositorio. `plan.fingerprint` es la huella que exige aprobar; cada recurso trae `canApprove` y `confirmation` |
 | POST | `/services/:id/integrations/apply` | +access | `{skip?, expect?, confirmMailboxAccess?, redeploy?}` → `{result: {applied, pending, kept, blocked, created, errors}, plan, needsRedeploy, deploymentId}`. Lo inofensivo lo aplica cualquiera con acceso; las bases también; el correo solo **manage** (si no, `pending`). Lo privilegiado exige `expect` = `plan.fingerprint` del plan revisado (sin él, `pending`; si no coincide, **409** `{error, plan}` sin aplicar nada); reutilizar en SMTP un buzón existente exige además `confirmMailboxAccess`. Nunca pisa variables puestas a mano. 409 si ya se está aplicando. 10/min. Audita `service_integrations_applied` (nombres, nunca valores) |
-| PUT | `/services/:id/env` | +access | reemplaza variables del servicio |
+| PUT | `/services/:id/env` | +access | reemplaza variables del servicio (la lista entera) |
+| PATCH | `/services/:id/env` | +access | aplica solo los cambios `{set, unset}` sobre las variables actuales: lo que otro haya escrito entretanto (importación del `.env`, secretos del manifiesto, credenciales de Correo) se conserva. 400 `invalid_key` con un nombre no válido; responde `{vars, needsRedeploy}` |
 | POST | `/services/:id/env/import-repo` | +access | importa el `.env`/`.env.example` del repositorio de GitHub sin clonar: `{apply?: boolean}`; sin `apply` es vista previa (`report.imported[].value` relleno, nada se escribe); con `apply: true` crea las variables válidas, persiste el informe sin valores en `config.envImport` y devuelve `needsRedeploy`. Solo servicios git de GitHub (400 en el resto); 10 por minuto y usuario; auditado como `service_env_imported` |
 
 ### 7.5 Despliegues (logs por SSE)
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/services/:id/deployments` | +access | historial (25) |
+| GET | `/services/:id/deployments` | +access | historial (25); en los servicios git, cada despliegue correcto lleva `imageAvailable` (si su imagen sigue en el servidor; ausente si Docker no responde) |
 | GET | `/deployments/:id` | +access | detalle (incluye logs) |
 | POST | `/deployments/:id/cancel` | +access | cancela uno en curso |
-| POST | `/deployments/:id/rollback` | +access | redespliega una imagen anterior (solo git) |
+| POST | `/deployments/:id/rollback` | +access | redespliega una imagen anterior (solo git); 409 `image_purged` (con `commit`) si la imagen ya no está en el servidor, sin crear despliegue ni alerta |
 | GET | `/deployments/:id/logs/stream` | +access | **SSE** de build/deploy |
 | GET | `/projects/:id/deploys/stream` | +access | **SSE** del feed de despliegues del proyecto (evento `snapshot` + un `deploy` por cambio de fase). Independiente: pensado para agentes y automatizaciones que solo quieren los despliegues |
 | GET | `/services/:id/logs/stream` | +access | **SSE** de logs de ejecución de todas las réplicas (cada línea con su cursor de tiempo, que viaja también como `id` del evento; las réplicas 2..n llevan prefijo `[rN]`). Si el contenedor se sustituye o se para, avisa (`notice`) y se vuelve a enganchar solo. Al reconectar, `Last-Event-ID` reanuda desde ese cursor |
@@ -1572,8 +1657,8 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/system/backups` | admin | crea un snapshot ahora (VACUUM INTO) |
 | GET | `/system/backups/:file/download` | admin + session | descarga un snapshot (.db restaurable). Exige sesión de navegador: lleva en claro los secretos que la API nunca devuelve (token de Cloudflare, de Mailway, de GitHub…) |
 | DELETE | `/system/backups/:file` | admin | borra un snapshot |
-| GET | `/settings` | admin | ajustes (secretos como booleanos) |
-| PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas); `rootDomain` debe ser un nombre de host válido o vacío |
+| GET | `/settings` | admin | ajustes (secretos como booleanos) + `traefikAcme: {status: ok/missing/invalid/unknown, email}` (correo real de Traefik) + `defaults.keepImages` |
+| PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas, `keepImages` 1–50 o vacío → 400 `invalid_keep_images`); `rootDomain` debe ser un nombre de host válido o vacío; `serverIpv6`, una IPv6 sin identificador de zona (`fe80::1%eth0` da 400: ningún DNS la publica) o vacía |
 | POST | `/settings/github/test` | admin | valida el token de GitHub |
 | DELETE | `/settings/github` | admin | borra el token de GitHub |
 | POST | `/settings/alerts/test` | admin | envía notificación de prueba |
@@ -1596,10 +1681,10 @@ distroless), el explorador lo indica y no está disponible.
 ### 7.10 Dominios, estado público, importación y webhooks
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/domains/server-ip` | auth | IP del servidor (configurada o detectada) |
-| GET | `/domains/config` | auth | `{rootDomain, tls}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin) |
+| GET | `/domains/server-ip` | auth | `{ip, source, ipv6}`: IP del servidor (configurada o detectada) y la IPv6 de Ajustes (`null` si no se ha indicado) |
+| GET | `/domains/config` | auth | `{rootDomain, tls, tlsBlocked}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin). `tls` es el TLS efectivo; `tlsBlocked`, que está activado en el panel pero Traefik tiene un correo que Let's Encrypt rechaza (vacío no cuenta) |
 | GET | `/projects/:id/github/needs` | +access | dependencias del repo antes de crearlo (`repo`, `branch`, `rootDir?`, `source?`, `name?`): `needs`, `suggestions`, `missing`, `mail`, `manifest`, `envFile` (§5.5) y `plan`, el plan de integraciones sin efectos (§5.7) |
-| POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`); 30 por minuto y usuario, después 429 |
+| POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`) → `{check: {domain, status, resolvedIps, resolvedIpv6, expectedIp, zone, name, caa, message}}`. `status`: `ok`, `no_record`, `wrong_ip` (el A no es el del servidor, hay **otro A además del suyo** —el del hosting anterior, que un importador de zona no sustituye— o un **AAAA que no es la IPv6 del servidor**: los visitantes con IPv6 y Let's Encrypt irían allí), `caa` (apunta aquí, pero el CAA más cercano —el del nombre o el de su padre más próximo que tenga— no autoriza a `letsencrypt.org`; solo con Let's Encrypt configurado; `caa = {name, issuers}` y el mensaje da el registro exacto, `0 issue "letsencrypt.org"`; un CAA que no se pudo consultar no lo impide) o `unknown`. `zone`/`name`: la zona del dominio y el nombre del registro según la lista de sufijos públicos (`www.panaderia.com.es` → zona `panaderia.com.es`, nombre `www`; `@` para el propio dominio; `null` si no se sabe); el editor los usa en las instrucciones. 30 por minuto y usuario, después 429 |
 | GET | `/public/status/:token` | público | página de estado pública (cacheada) |
 | GET | `/projects/:id/status-page` | +access | config de la página de estado |
 | POST | `/projects/:id/status-page` | admin | activa/desactiva y aviso |
@@ -1610,7 +1695,7 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/import/railway/analyze` | admin | plan de importación (sin valores de variables) |
 | POST | `/import/railway/run` | admin | ejecuta la importación; los dominios propios que ya usa otro servicio (o el panel) se omiten con una nota en el informe. `dnsDomains` (opcional): los dominios que el admin marca en la vista previa para el DNS automático (§7.13); solo esos, y solo si el proyecto importado los sirve, reciben su registro (los demás los eligió quien los puso en Railway, que no exige demostrar la propiedad) y la respuesta añade `dns`. Los que aún apuntan a Railway son conflictos y no se tocan |
 | POST | `/webhooks/github/app` | público (HMAC de la App) | webhook **único** de la GitHub App: reparte cada push entre los servicios que apuntan a ese repo y esa rama y cuyo proyecto tenga conectada esa instalación; también sincroniza altas, bajas y suspensiones de instalaciones |
-| POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy por servicio en push (firma verificada); respeta `autoDeploy` y deduplica contra el último commit construido; complementa al sondeo interno de `autodeploy.ts` |
+| POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy por servicio en push (firma verificada); respeta `autoDeploy` y deduplica como el de la App: commit ya desplegado o en curso, o un despliegue vivo que aún no ha clonado → `ignored`; complementa al sondeo interno de `autodeploy.ts` |
 | POST | `/webhooks/stripe` | público (firma Stripe) | marca la factura como pagada al confirmarse el cobro; firma `Stripe-Signature` verificada (HMAC-SHA256 con tolerancia temporal anti-replay); exige `payment_status == paid`; idempotente |
 
 ### 7.11 Ayuda y asistente
@@ -1631,21 +1716,25 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | --- | --- | --- | --- |
 | GET | `/traefik/mailway` | público¹ | configuración dinámica **saneada** para el proveedor HTTP de Traefik (`{}` sin Mailway). ¹Responde 404 si la petición trae `X-Forwarded-*`/`X-Real-IP`/`Forwarded` (llegó desde internet a través de Traefik). Siempre 200: si Mailway falla, la última buena (memoria → `settings`), vuelta a sanear. En cada lectura obtiene también, en paralelo y con plazo de 5 s, todos los nombres de marca blanca de la instancia (`GET /api/whitelabel/domains`), que ningún servicio de un cliente puede asignarse; si falla, se conserva la lista anterior |
 | GET | `/mailway/status` | auth | `{configured, panelUrl}` (la interfaz decide si muestra «Correo») |
-| GET | `/mailway/config` | admin | `{configured, baseUrl, serviceId, serviceName, internalUrl, hasToken, panelUrl, defaultPlanId, traefik:{routers, dropped, syncedAt, error}}`. Nunca devuelve el token |
+| GET | `/mailway/config` | admin | `{configured, baseUrl, serviceId, serviceName, internalUrl, hasToken, panelUrl, defaultPlanId, traefik:{routers, dropped, syncedAt, error}, previousHosts:[{host, lastSeen}]}`. Nunca devuelve el token. `previousHosts`: nombres que fueron de la instancia y siguen reservados |
+| DELETE | `/mailway/previous-hosts/:host` | admin + session | libera un nombre anterior de Mailway (un servidor de correo o un webmail que ya no se usan): desde entonces, cualquier servicio puede asignárselo → `{ok, config}`; 404 si no estaba. Audita `mailway_host_released` |
 | PUT | `/mailway/config` | admin + session | `{baseUrl?, token?, serviceId?, defaultPlanId?}` (`''` borra). `token` debe empezar por `mwt_`. Si cambian la URL o el servicio, 400 cuando el dominio de la URL lo sirve un servicio de Skyway que no es del proyecto de Mailway (el token viajaría hasta él). Quitar el token **no** retira las rutas de Traefik. Audita `mailway_config_updated` (campos, sin valores). Desde la terminal del servidor hace lo mismo `tools/mailway.js conectar` (§9), con el actor `sistema` |
-| POST | `/mailway/disconnect` | admin + session | borra dirección, token, servicio, plan predeterminado y hosts, **retira las rutas de Mailway de Traefik** (y su copia guardada) y libera los nombres de marca blanca reservados. Los vínculos de los proyectos se conservan. Audita `mailway_disconnected` |
+| POST | `/mailway/disconnect` | admin + session | borra dirección, token, servicio, plan predeterminado y hosts, **retira las rutas de Mailway de Traefik** (y su copia guardada) y libera los nombres de marca blanca reservados. Los hosts de la instancia (y el de la URL) pasan a `previousHosts`: su DNS sigue apuntando aquí. Los vínculos de los proyectos se conservan. Audita `mailway_disconnected` |
 | GET | `/mailway/plans` | admin | `{plans, defaultPlanId}` para elegir el plan predeterminado |
 | POST | `/mailway/test` | admin | `{baseUrl?, token?, serviceId?}` opcionales (probar sin guardar) → `{ok, info:{version, brandName, mailHostname, webmailUrl, panelUrl, role, email, features}, warnings}`; avisa si el token no es de administrador. Las URLs que no son http(s) llegan como `null`. 12/min |
 | GET | `/projects/:id/mail` | auth + access | `{moduleEnabled, configured, canManage, isAdmin, accountSuspended, linked, notice?, panelUrl, features, link?, summary?, suggestedDomains}`. Recupera el vínculo si Mailway tiene un cliente con la referencia del proyecto; si el cliente ya no existe o ya no lleva exactamente esa referencia, `notice` lo explica (sin `summary`) y se puede desactivar. `summary.apiKeys[]` incluye `senderMailboxId` y `createdBySkyway`. `suggestedDomains` (máx. 8): dominios registrables de los dominios de los servicios del proyecto según la lista de sufijos públicos (`api.empresa.com` → `empresa.com`; nada bajo sufijos privados como `github.io`), sin los que ya tiene el cliente ni los de la plataforma (registrables de `SKYWAY_DOMAIN`, del `rootDomain` y de los hosts de Mailway); `[]` sin módulo, sin Mailway o con `notice` |
 | GET | `/projects/:id/mail/options` | manage | `{plans, clients, defaultPlanId, canChoosePlan, defaultName, previous}`: el administrador ve todos los planes y los clientes (con `available`/`linkedTo`); el propietario, solo el plan que se le asignará. `previous` = `{clientName, available, reason}` del cliente anterior del proyecto |
 | POST | `/projects/:id/mail/link` | manage | `{mode:'create', name?(2-80), planId?, contactEmail?}` (ensure por referencia externa; `planId` distinto del predeterminado → 403 salvo admin; sin nombre, el del proyecto o «Proyecto X» si tiene 1 carácter), `{mode:'previous'}` (recupera el cliente anterior si su referencia está libre; 409 si otra integración lo tiene) o `{mode:'existing', clientId}` (solo admin; 409 si ya está vinculado). 403 con la cuenta suspendida |
 | DELETE | `/projects/:id/mail/link` | manage | suelta la referencia en Mailway **solo si el cliente todavía la lleva** (si es de otra integración no se toca), borra el vínculo local y recuerda el cliente → `{ok, released}` |
-| POST | `/projects/:id/mail/domains` | auth + access | `{domain}` → `{domain, cloudflare, cloudflareReason}` (201). Comprueba la referencia del cliente; 403 con la cuenta suspendida, 409 con el cliente suspendido en Mailway. Para un administrador se envía `autoDns: true` solo si Mailway tiene Cloudflare (`features.cloudflare`) y declara `features.cloudflareSoloCrear` (1.1 o posterior): Mailway crea en Cloudflare los registros que faltan (también con las cuentas de la instancia) sin modificar ninguno existente (ni el SPF, ni un proxy), y `cloudflare` = `{applied, errors, skipped}` o `cloudflareReason` explica por qué no. Con un Mailway anterior no se pide y `cloudflareReason` dice que hay que actualizarlo; sin Cloudflare en Mailway no se pide ni se avisa. Para quien no es admin va con `autoDns: false` y `?soloCliente=1` (`cloudflare: null`): el alta de un cliente nunca escribe en las zonas del operador. Cada dominio incluye `ownershipVerifiedAt`, `ownershipPending` y `ownershipRecord` (`{type, name, content}`, el TXT que prueba la propiedad): mientras la propiedad esté pendiente, Mailway responde 409 `domain_ownership_pending` al crear buzones y la interfaz muestra «Propiedad pendiente» con el TXT |
+| GET | `/projects/:id/mail/domain-check` | auth + access | `?domain=`: dónde recibe hoy el correo un dominio, **antes** de darlo de alta (no da de alta nada) → `{domain, recepcion: 'otro'\|'aqui'\|'sin_mx'\|'desconocido', mx[], dnsAutomatico}`. Lo mide Skyway (MX públicos frente al servidor de correo de Mailway). `dnsAutomatico`: al administrador se le ofrece el DNS automático. La interfaz pide confirmación con `otro` (añadirlo no mueve el correo, pero el DNS automático, el fichero de zona y lo que se envía al dominio desde aquí sí le afectan). 30/min |
+| POST | `/projects/:id/mail/domains` | auth + access | `{domain, autoDns?}` → `{domain, cloudflare, cloudflareReason}` (201). `autoDns` solo cuenta para el administrador: `true` lo pide, `false` no; **sin él, si el MX del dominio apunta a otro proveedor —o no se puede saber, porque el DNS no responde o no se conoce el servidor de correo— no se pide** y `cloudflareReason` lo explica (un Mailway hasta la 1.2 crearía su SPF y un DMARC `p=reject` que rompen el correo saliente del proveedor actual, de la web en otro hosting y de herramientas como Mailchimp). Comprueba la referencia del cliente; 403 con la cuenta suspendida, 409 con el cliente suspendido en Mailway. Para un administrador se envía `autoDns: true` solo si Mailway tiene Cloudflare (`features.cloudflare`) y declara `features.cloudflareSoloCrear` (1.1 o posterior): Mailway crea en Cloudflare los registros que faltan (también con las cuentas de la instancia) sin modificar ninguno existente (ni el SPF, ni un proxy), y `cloudflare` = `{applied, errors, skipped}` o `cloudflareReason` explica por qué no. Con un Mailway anterior no se pide y `cloudflareReason` dice que hay que actualizarlo; sin Cloudflare en Mailway no se pide ni se avisa. Para quien no es admin va con `autoDns: false` y `?soloCliente=1` (`cloudflare: null`): el alta de un cliente nunca escribe en las zonas del operador. Cada dominio incluye `recepcionExterna` (`true`/`false` con Mailway posterior a la 1.2; `null` con uno anterior) y, en cada comprobación DNS, `suggested`: el valor con el que **sustituir** el registro existente (el SPF actual con lo que le falta, el que calcula Mailway o, con uno anterior, Skyway: los mecanismos del propuesto que faltan, delante de su `all`, con `a:<servidor de correo>` en lugar de `mx` mientras la comprobación del MX de ese nombre no sea correcta, porque con el MX en otro proveedor `mx` autorizaría a ese proveedor y no a este servidor). Con un Mailway que ya lo calcula (el que informa `recepcionExterna`), Skyway no inventa ninguno si no lo manda. La tarjeta copia en cada fila SPF el valor de su nombre en lugar del SPF del motor. Cada dominio incluye también `ownershipVerifiedAt`, `ownershipPending` y `ownershipRecord` (`{type, name, content}`, el TXT que prueba la propiedad): mientras la propiedad esté pendiente, Mailway responde 409 `domain_ownership_pending` al crear buzones y la interfaz muestra «Propiedad pendiente» con el TXT |
 | POST | `/projects/:id/mail/domains/:domainId/verify` | auth + access | vuelve a comprobar el DNS |
 | GET | `/projects/:id/mail/domains/:domainId/dns` | auth + access | `{records:[{type,name,content}]}` |
-| GET | `/projects/:id/mail/domains/:domainId/cloudflare` | auth + access | plan de cambios `{available, reason, account, zone, changes[], summary}`. Si quien pide no es admin, se envía `?soloCliente=1`: Mailway solo usa las cuentas de Cloudflare del cliente, nunca las de la instancia. Además, si el dominio quedó asociado en Mailway a una cuenta que no es del cliente (la de la instancia, tras el DNS automático del admin), Skyway responde `available: false` con el motivo **sin pedir el plan** (solo consulta `GET /api/cloudflare/accounts?clientId=` del propio cliente), salvo que el cliente tenga alguna cuenta propia y Mailway declare `cloudflareSoloCrear`: entonces Mailway ignora la de la instancia y prueba las del cliente. Con un Mailway anterior, el motivo remite al administrador (conectar una cuenta propia no lo resolvería) |
-| POST | `/projects/:id/mail/domains/:domainId/cloudflare/apply` | manage | `{replaceConflicts?}` → `{applied, errors, domain}` (con `?soloCliente=1` para quien no es admin; 409 sin llamar a Mailway si el dominio está asociado a una cuenta que no es del cliente, con la misma excepción que el plan) |
-| GET | `/projects/:id/mail/domains/:domainId/zonefile` | auth + access | fichero de zona BIND de Mailway (`?nivel=obligatorios\|recomendados\|completo`, recomendados por defecto; otro valor → 400) como `text/plain` adjunto `<dominio>-mailway-<nivel>.txt`, para importarlo en Cloudflare (DNS → Registros → Importar y exportar). Skyway **retira los registros A, AAAA, CNAME, HTTPS y SVCB del dominio raíz y de `www`** que pudiera traer Mailway (nombres absolutos, relativos, `@`, `$ORIGIN`, líneas sin propietario y paréntesis) y, si retira alguno, lo indica en un comentario al principio. Después **añade, en secciones propias y comentadas**, los registros web de los servicios del **mismo proyecto** cuyos dominios cuelgan de la zona (A hacia la IP pública configurada en Ajustes; sin ella se omiten y un comentario lo dice) y el del **webmail del cliente** si está dado de alta (el registro recomendado que indica Mailway; si el nombre no se puede utilizar, un comentario explica por qué con el motivo genérico, también si lo descarga un administrador: el fichero se entrega al cliente). Nunca menciona dominios, servicios ni proyectos de otros, ni repite un nombre que el fichero ya trae; todo texto libre de un comentario va en una sola línea (sin saltos ni caracteres de control). 20/min |
+| GET | `/projects/:id/mail/domains/:domainId/conflicto` | auth + access | ¿recibe ya el correo en otro proveedor? (lo mide Mailway, `GET /api/domains/:id/conflicto`) → `{hayOtroProveedor, mxActuales[], spfActual, dmarcPolitica, avisoMtaSts}`, solo campos conocidos y acotados. La tarjeta del dominio lo consulta mientras no está verificado y avisa de qué pasa con lo que se envía a ese dominio desde este servidor: con `recepcionExterna: true` (Mailway posterior a la 1.2), se entrega en el proveedor actual; con `false` (MX de los dos proveedores, o aún sin medir) o con un Mailway anterior (`null`), se queda en los buzones de aquí o se rechaza. Actualizar Mailway solo se le propone al administrador. También pide confirmación antes de descargar el fichero de zona. 60/min |
+| GET | `/projects/:id/mail/domains/:domainId/cloudflare` | auth + access | plan de cambios `{available, reason, account, zone, changes[], summary, porRegistro, copia}`. Con Mailway posterior a la 1.2 cada conflicto trae `reemplazable` y `alCambiar` (el MX ajeno y el SPF y el DMARC que se crean con él), `porRegistro: true` y `copia` (`{createdAt, borrados[]}` o `null`: lo que borró el último cambio); con uno anterior, `porRegistro: false`, `reemplazable: null` y `copia: null`. Si quien pide no es admin, se envía `?soloCliente=1`: Mailway solo usa las cuentas de Cloudflare del cliente, nunca las de la instancia. Además, si el dominio quedó asociado en Mailway a una cuenta que no es del cliente (la de la instancia, tras el DNS automático del admin), Skyway responde `available: false` con el motivo **sin pedir el plan** (solo consulta `GET /api/cloudflare/accounts?clientId=` del propio cliente), salvo que el cliente tenga alguna cuenta propia y Mailway declare `cloudflareSoloCrear`: entonces Mailway ignora la de la instancia y prueba las del cliente. Con un Mailway anterior, el motivo remite al administrador (conectar una cuenta propia no lo resolvería) |
+| POST | `/projects/:id/mail/domains/:domainId/cloudflare/apply` | manage | `{replaceConflicts?, replace?}` → `{applied, errors, domain}`. `replace` (`["MX:empresa.com", …]`, Mailway posterior a la 1.2) elige uno a uno los conflictos que se reemplazan; la interfaz lo usa con `porRegistro` y ofrece «Hacer el cambio de proveedor» (solo el MX y lo que va con él; autodiscover o el `mail.` del hosting se conservan). Un Mailway anterior lo ignora y no reemplaza nada (con `?soloCliente=1` para quien no es admin; 409 sin llamar a Mailway si el dominio está asociado a una cuenta que no es del cliente, con la misma excepción que el plan) |
+| POST | `/projects/:id/mail/domains/:domainId/cloudflare/undo` | manage | deshace el último cambio en Cloudflare (Mailway posterior a la 1.2, `POST /api/domains/:id/cloudflare/undo`): recrea lo reemplazado y retira lo creado en su lugar → `{restaurados, retirados, domain}`. Mismas reglas que aplicar (`?soloCliente=1` y bloqueo por cuenta ajena para quien no es admin). Audita `mailway_dns_undone`. 10/min |
+| GET | `/projects/:id/mail/domains/:domainId/zonefile` | auth + access | fichero de zona BIND de Mailway (`?nivel=obligatorios\|recomendados\|completo`, recomendados por defecto; otro valor → 400) como `text/plain` adjunto `<dominio>-mailway-<nivel>.txt`, para importarlo en Cloudflare (DNS → Registros → Importar y exportar). Skyway **retira los registros A, AAAA, CNAME, HTTPS y SVCB del dominio raíz y de `www`** que pudiera traer Mailway (nombres absolutos, relativos, `@`, `$ORIGIN`, líneas sin propietario y paréntesis) y, si retira alguno, lo indica en un comentario al principio. Después **añade, en secciones propias**, los registros web de los servicios del **mismo proyecto** cuyos dominios cuelgan de la zona (A hacia la IP pública configurada en Ajustes; sin ella se omiten y un comentario lo dice), **comentados** (`; nombre. 3600 IN A ip`) con la instrucción de borrar antes el A/AAAA/CNAME actual de ese nombre y quitar el `; `: el importador de Cloudflare añade y no sustituye, y sobre el A del hosting anterior dejaría dos y el tráfico se repartiría, y el del **webmail del cliente** si está dado de alta (el registro recomendado que indica Mailway; si el nombre no se puede utilizar, un comentario explica por qué con el motivo genérico, también si lo descarga un administrador: el fichero se entrega al cliente). Nunca menciona dominios, servicios ni proyectos de otros, ni repite un nombre que el fichero ya trae; todo texto libre de un comentario va en una sola línea (sin saltos ni caracteres de control). 20/min |
 | GET | `/projects/:id/mail/domains/:domainId/webmail` | auth + access | `{hostname, webmail, conflict}`: el webmail del dominio en `webmail.<dominio>` (marca blanca de Mailway). `webmail` = `null` o `{hostname, kind, status:'pending_dns'\|'issuing'\|'active'\|'error', detail, lastCheckedAt, activatedAt, createdAt, isPrimary, url, instructions[]}` (`url` solo en servicio, formada por Skyway; `instructions` = registro CNAME recomendado o A que indica Mailway). `conflict` = motivo por el que el nombre no se puede utilizar (`webmailHostError`) o `null`. El dominio propio se busca entre los del cliente vinculado (`GET /api/whitelabel/domains?clientId=`, filtrados también por cliente en Skyway) |
 | POST | `/projects/:id/mail/domains/:domainId/webmail` | manage | da de alta `webmail.<dominio>` (nombre fijado por Skyway, no por quien llama) para el cliente vinculado (`POST /api/whitelabel/domains {hostname, clientId, kind:'webmail'}`) → 201 `{webmail}`. 403 con la cuenta suspendida, 409 con el cliente suspendido, 409 si el nombre lo sirve **cualquier servicio de Skyway** (solo el admin ve cuál), es el del panel (`SKYWAY_DOMAIN`) o de la instancia de Mailway, 409 si ya existe. La propiedad del dominio la exige Mailway: 400 `domain_not_verified` con su mensaje (también `whitelabel_limit`, 5 por cliente). El nombre queda reservado al momento (sin esperar a la lectura del puente): ningún servicio de un cliente puede asignárselo. Audita `mailway_webmail_created`. Si lo configura un **administrador** y Mailway tiene Cloudflare (`features.cloudflare`) y declara `features.cloudflareSoloCrear`, crea además su registro como `/webmail/cloudflare` (sin `soloCliente` y con `soloCrear`: no reemplaza ni modifica un registro existente, ni le quita el proxy) y la respuesta añade `cloudflare`/`cloudflareReason`; con un Mailway anterior no se pide y `cloudflareReason` lo explica; para los demás, nunca. 10/min |
 | POST | `/projects/:id/mail/domains/:domainId/webmail/verify` | auth + access | comprueba DNS y HTTPS en Mailway y avanza el estado (Esperando DNS → Emitiendo certificado → En servicio) → `{webmail, conflict}`. 404 si no está configurado. 30/min |
@@ -1687,7 +1776,10 @@ Zone · Read» y «Zone · DNS · Edit»; la clave global se rechaza). Se guarda
 | PUT | `/cloudflare/config` | admin + session | `{token}`: lo verifica en Cloudflare (usuario o cuenta `cfat_`; activo y con al menos una zona) **antes** de guardarlo; si falla, 400 con el motivo y no se guarda nada → `{ok, config}`. Audita `cloudflare_token_saved` o `cloudflare_token_replaced` (número de zonas, sin el token); guardar el mismo token no deja otra entrada |
 | DELETE | `/cloudflare/config` | admin + session | borra el token, las zonas y el último fallo → `{ok, config}`. Audita `cloudflare_token_removed`. Los registros ya creados se conservan |
 | POST | `/cloudflare/test` | admin | `{token?}`: prueba el indicado sin guardarlo o, sin él, el guardado (y refresca sus zonas y `lastError`) → `{ok, zones}`. 12/min |
-| GET | `/cloudflare/records` | admin | registros que ha creado el DNS automático → `{records: [{domain, zone, content, project: {id, name} \| null, usedBy: {id, name, project} \| null, createdAt}]}` |
+| GET | `/cloudflare/records` | admin | registros que ha creado el DNS automático → `{records: [{domain, zone, content, project: {id, name} \| null, usedBy: {id, name, project} \| null, createdAt, replaced: [{type, content, proxied}] \| null, replacedCreated: boolean \| null}]}` (`replaced`: lo que sustituyó un reemplazo y se puede restaurar; `replacedCreated`: si el A lo creó el reemplazo y restaurar lo retira, o ya estaba y se conserva) |
+| GET | `/services/:id/cloudflare-dns/replace` | admin | `?domain=`: revisión del reemplazo del registro de la web del hosting anterior (no toca nada) → `{plan: {domain, zone, ip, actuales: [{id, type, content, proxied, ttl}], conservaA, avisos[], motivo}}`; `motivo` dice por qué no se puede (nombre de la plataforma, reservado a otro proyecto, nada que reemplazar). 404 si el dominio no está guardado en el servicio. 30/min |
+| POST | `/services/:id/cloudflare-dns/replace` | admin + session | `{domain, records: [{id, type: A\|AAAA\|CNAME, content}]}` (los de la revisión) → `{dns: [{domain, action: 'created', message}]}`. 409 si los registros del nombre ya no son exactamente esos o si el nombre no se puede reemplazar. Un lote atómico; guarda copia. Audita `cloudflare_dns_replaced`. 10/min |
+| POST | `/cloudflare/records/:domain/restore` | admin + session | deshace un reemplazo: recrea los registros anteriores (proxy, TTL y comentario) y retira el A de Skyway si lo creó el reemplazo, en un lote → `{ok, result: {restaurados, retirado}, records}`. 404 sin copia, 409 si el nombre tiene otros registros de dirección (no cuenta un AAAA hacia `serverIpv6`, que ya estaba y se conserva) o el A se ha modificado. Libera la reserva si el A era de Skyway. Audita `cloudflare_dns_restored`. 10/min |
 | POST | `/services/:id/cloudflare-dns` | admin | `{domain}`: repite el DNS automático de **ese** dominio del servicio (tras un `error`, un `conflict` resuelto a mano o un `skipped` por zona o IP) → `{dns}`. 404 si el dominio no está en el servicio, 400 sin token. Nunca recorre los demás dominios del servicio. 30/min |
 | DELETE | `/cloudflare/records/:domain` | admin | borra en Cloudflare el registro creado y libera el nombre → `{ok, result: 'deleted'\|'gone'\|'released', records}`. 409 si el dominio sigue asignado a un servicio o si el registro se ha modificado en Cloudflare y sigue apuntando a la IP (no se toca y sigue reservado); si ya no existe (`gone`) o apunta a otro sitio (`released`), solo se libera el nombre. Audita `cloudflare_dns_record_deleted`. 30/min |
 
@@ -1710,7 +1802,9 @@ hay token, para cada dominio que **escribe esa petición**:
 
 1. `findZoneFor`: sin zona en ese Cloudflare → `skipped` («Sin zona en tu Cloudflare»).
 2. Registros A/AAAA/CNAME con ese nombre: alguno que no sea un A hacia la IP del
-   servidor → `conflict`, no se toca nada; solo A hacia la IP → `kept`.
+   servidor (o un AAAA hacia `serverIpv6`, si está indicada) → `conflict`, no
+   se toca nada (el mensaje remite a «Reemplazar en Cloudflare»); solo A hacia
+   la IP → `kept`.
 3. Si el nombre no tiene **ningún** registro (de cualquier tipo: con un TXT o
    un MX, un comodín ya no se le aplica), manda el comodín más cercano de la
    zona (`*.padre`, luego `*.abuelo`…): si alguno de sus A/AAAA/CNAME apunta a
@@ -1733,7 +1827,7 @@ dominios de correo los configura Mailway con sus propias cuentas (`autoDns`,
 §7.12).
 
 **Reserva de los nombres creados.** Cada registro creado se anota
-(`cloudflare_dns_records`: dominio, zona, id del registro, IP y proyecto). El
+(`cloudflare_dns_records`: dominio, zona, id del registro, IP, proyecto y, tras un reemplazo, la copia de lo sustituido en `replaced`). El
 registro sigue apuntando al servidor aunque el dominio se quite del servicio o
 se borre el proyecto, y Let's Encrypt valida por HTTP: sin reserva, otro
 cliente podría asignarse ese nombre del operador y obtener su certificado. Por
@@ -1741,6 +1835,36 @@ eso `domainClaimError` rechaza (409) ese nombre para propietarios y miembros de
 cualquier otro proyecto; el administrador puede asignarlo a otro proyecto y la
 reserva pasa a ese proyecto. La reserva dura hasta que el administrador borra
 el registro en Ajustes → Cloudflare (`DELETE /cloudflare/records/:domain`).
+
+**Reemplazo del registro del hosting anterior** (traer una web a Skyway). El
+alta automática nunca toca un registro existente, pero el administrador puede
+sustituir, tras revisarlos, los A/AAAA/CNAME **de ese nombre exacto** que no
+apuntan aquí por el A hacia la IP del servidor (botón «Reemplazar en
+Cloudflare» junto al dominio: tras un conflicto del DNS automático o, para un
+dominio ya guardado sin ese resultado —añadido otro día o con el asistente—,
+cuando la comprobación del DNS dice que apunta a otra IP; un dominio guardado
+sin registro ofrece «Crear en Cloudflare»). En dos pasos: la revisión
+(`GET /services/:id/cloudflare-dns/replace?domain=`) no toca nada y enseña los
+registros, el proxy y los avisos; la confirmación
+(`POST …/replace`, con sesión de navegador) repite los registros revisados
+(`{domain, records: [{id, type, content}]}`) y, si la zona ya no coincide,
+responde 409 sin tocar nada. El cambio va en **un solo lote atómico** de
+Cloudflare (`/dns_records/batch`: borrados y alta, o nada). También se retiran
+los AAAA del hosting anterior (con ellos, los visitantes con IPv6 y Let's
+Encrypt seguirían llegando allí); el A nuevo va sin proxy (Let's Encrypt valida
+por HTTP) y la revisión avisa si el anterior lo tenía. Nunca se reemplazan el
+dominio del panel (`SKYWAY_DOMAIN`), el `rootDomain`, los nombres de Mailway
+(actuales, anteriores, publicados o de marca blanca) ni un nombre reservado a
+otro proyecto; nunca MX, TXT ni otros nombres. Lo borrado se guarda en
+`cloudflare_dns_records.replaced` (tipo, contenido, proxy, TTL y comentario);
+un segundo reemplazo del mismo nombre (otro AAAA o CNAME añadido después) se
+suma a esa copia en lugar de sustituirla, para no perder el registro del
+hosting original. **Restaurar** en Ajustes → Cloudflare
+(`POST /cloudflare/records/:domain/restore`) lo vuelve a crear y retira el A de
+Skyway (si lo creó el reemplazo) en otro lote, solo si el nombre sigue como lo
+dejó el reemplazo; un AAAA hacia `serverIpv6`, que el reemplazo conservó, se
+queda. Audita `cloudflare_dns_replaced` y
+`cloudflare_dns_restored` (con los valores, que son direcciones públicas).
 
 ---
 
@@ -1758,10 +1882,24 @@ el registro en Ajustes → Cloudflare (`DELETE /cloudflare/records/:domain`).
 | `CSRF_ORIGIN_CHECK` | `true` | guarda CSRF de las peticiones mutantes con cookie (`Sec-Fetch-Site`/`Origin` frente al host); `false` la desactiva si un proxy raro estorba |
 | `DOCKER_SOCK` | socket estándar | ruta alternativa al socket de Docker |
 | `LOG_LEVEL` | `info` | nivel de log de Fastify |
-| `SKYWAY_DOMAIN` | — | dominio del panel (docker-compose lo pasa; admite varios separados por comas): ningún servicio puede asignárselo y el puente de Traefik de Mailway nunca acepta una ruta para él |
+| `SKYWAY_DOMAIN` | — | dominio del panel, **un solo nombre** (docker-compose lo pone tal cual en la regla `Host()` del panel: una lista con comas no coincidiría nunca y Skyway lo avisa al arrancar). Ningún servicio puede asignárselo y el puente de Traefik de Mailway nunca acepta una ruta para él; es también el dominio de las URL de webhook que se dan a GitHub |
+| `SKYWAY_DOMAIN_EXTRA` | — | nombres adicionales del panel, separados por comas (p. ej. el anterior mientras se cambia de dominio). Mismas reservas que `SKYWAY_DOMAIN`; sus routers (HTTP con redirección y HTTPS con certificado propio, hacia `skyway@docker`) los publica Skyway en el proveedor dinámico que Traefik ya lee (`/api/traefik/mailway`) |
+| `SKYWAY_TRAEFIK_CONTAINER` | `skyway-traefik` | contenedor de Traefik del que se lee el correo de Let's Encrypt (`tls.ts`) |
 
 Ajustes en la UI (tabla `settings`, solo admin): `rootDomain`, `letsencryptEmail`,
-`serverIp`, `githubToken`, umbrales de alerta y canales (Discord/Telegram/webhook).
+`serverIp`, `githubToken`, umbrales de alerta y canales (Discord/Telegram/webhook)
+y `keepImages` (versiones por servicio cuya imagen se conserva, 1–50; por
+defecto 5). `letsencryptEmail` solo activa las etiquetas HTTPS: los certificados
+los pide Traefik con `LETSENCRYPT_EMAIL` del `.env` (docker-compose ya no pone un
+correo de `example.com` por defecto). Skyway lee el correo real de Traefik
+(`docker inspect`, `tls.ts`) y, si es de un dominio que Let's Encrypt rechaza
+(`example.com`, `.test`, `.local`…), no pone el router HTTPS ni la redirección
+(los dominios siguen por HTTP), `GET /domains/config` devuelve
+`tlsBlocked: true` y el informe de seguridad añade el hallazgo `tls-blocked`.
+Vacío no bloquea: Traefik registra la cuenta sin contacto, que Let's Encrypt
+acepta, y Ajustes solo lo informa. `GET /settings` devuelve
+`traefikAcme: {status, email}` en todos los casos. Si no se puede leer, se
+confía en el ajuste.
 Ajustes → Cloudflare guarda `cloudflare.token` (secreto, nunca se devuelve),
 `cloudflare.zones` y `cloudflare.lastError` con su propio botón (§7.13).
 La GitHub App guarda ahí sus credenciales (`githubAppId`, `githubAppSlug`,

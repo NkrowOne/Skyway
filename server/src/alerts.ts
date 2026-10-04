@@ -32,6 +32,13 @@ function enviarACanales(alerta: OutgoingAlert): void {
     .catch((err: unknown) => registrarFalloEnvio('canales', contexto, err instanceof Error ? err.message : String(err)));
 }
 
+/**
+ * Tipo de la alerta del sondeo del auto-deploy que no consigue leer la rama.
+ * Vive aquí, y no en autodeploy.ts, para que el desplegador pueda excluirla al
+ * resolver sin importar el sondeo (que ya importa al desplegador).
+ */
+export const AUTODEPLOY_ALERT_TYPE = 'autodeploy_failing';
+
 export interface FireAlertInput {
   severity: AlertSeverity;
   type: string;
@@ -46,6 +53,11 @@ export interface FireAlertInput {
   dedupeKey?: string;
   /** No enviar a canales externos (solo campana in-app). */
   quiet?: boolean;
+  /**
+   * Despliegue correcto al que volvía el despliegue fallido o interrumpido: la
+   * alerta ofrece «Volver a esta versión» en vez de «Desplegar» (la cabeza).
+   */
+  rollbackTo?: string | null;
 }
 
 /** Crea una alerta (con dedupe) y la envía a los canales configurados. */
@@ -67,6 +79,7 @@ export function fireAlert(input: FireAlertInput): void {
     message: input.message,
     explanation: input.explanation ?? null,
     dedupe_key: dedupeKey,
+    rollback_to: input.rollbackTo ?? null,
   });
   if (!row) return; // ya había una alerta abierta idéntica
 
@@ -132,9 +145,13 @@ export function resolveServiceAlerts(serviceId: string, type: string, notifyReco
   }
 }
 
-/** Resuelve TODAS las alertas abiertas de un servicio (p. ej. al redesplegar con éxito). */
-export function resolveAllServiceAlerts(serviceId: string, notifyRecovery = false): void {
-  const resolved = resolveAllOpenServiceAlerts(serviceId);
+/**
+ * Resuelve las alertas abiertas de un servicio (p. ej. al redesplegar con
+ * éxito), salvo las de `exceptTypes`: las que un despliegue correcto no
+ * desmiente, como la del sondeo del auto-deploy.
+ */
+export function resolveAllServiceAlerts(serviceId: string, notifyRecovery = false, exceptTypes: readonly string[] = []): void {
+  const resolved = resolveAllOpenServiceAlerts(serviceId, exceptTypes);
   if (resolved.length > 0 && notifyRecovery) {
     const service = getService(serviceId);
     const project = service ? getProject(service.project_id) : undefined;

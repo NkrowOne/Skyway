@@ -5,7 +5,7 @@ import { api } from '../api';
 import { useLatch, useLocalStorage, useMediaQuery } from '../hooks';
 import { MetricPoint } from '../pages/Project';
 import { useServiceLiveReplicas, useServiceLiveState } from '../livemetrics';
-import { Deployment, DbOverview, Project, Runtime, Service } from '../types';
+import { AutoDeployStatus, Deployment, DbOverview, Project, Runtime, Service, ServiceWebhookInfo } from '../types';
 import { cx, DEPLOY_STATUS_LABEL, isActiveDeploy, serviceStatus, timeAgo } from '../utils';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import DeploymentsTab from './tabs/DeploymentsTab';
@@ -62,7 +62,8 @@ export default function ServiceDrawer({
   // Detener/reiniciar cortan el servicio: confirmamos para evitar clics accidentales.
   const [confirmVerb, setConfirmVerb] = useState<'stop' | 'restart' | null>(null);
   // Cambios guardados (ajustes o variables) que solo surten efecto al redesplegar.
-  // Un aviso persistente vale más que un toast fugaz. Se limpia al desplegar o cambiar de servicio.
+  // Lo sabe el servidor (`pendingChanges`, sobrevive a cerrar y recargar); esto
+  // solo adelanta el aviso entre el guardado y la siguiente lectura.
   const [pendingRedeploy, setPendingRedeploy] = useState(false);
   const [targetDeploymentId, setTargetDeploymentId] = useState<string | null>(null);
   const [isTabDirty, setIsTabDirty] = useState(false);
@@ -140,12 +141,23 @@ export default function ServiceDrawer({
         latestDeployment: Deployment | null;
         /** Motor de la consola de consultas, o null si este servicio no tiene. */
         dbConsole: DbOverview['engine'] | null;
+        /** Cambios guardados que su último despliegue correcto no lleva. */
+        pendingChanges?: boolean;
+        autoDeploy?: AutoDeployStatus | null;
+        webhook?: ServiceWebhookInfo | null;
       }>(`/services/${serviceId}`),
     // El estado vivo del contenedor ya llega por el stream de métricas del
     // proyecto (livemetrics); esto solo refresca el último despliegue y la
     // configuración, y a 4 s sumaba tres sondeos con el panel abierto.
     refetchInterval: 8000,
   });
+
+  // Un despliegue nuevo (lanzado desde aquí o desde fuera: auto-deploy, «Desplegar
+  // todos») lleva ya los cambios guardados: a partir de ahí manda el servidor.
+  const ultimoDespliegue = detail.data?.latestDeployment?.id ?? null;
+  useEffect(() => {
+    setPendingRedeploy(false);
+  }, [ultimoDespliegue]);
 
   useEffect(() => {
     if (!detail.data || pestanaFijada.current === serviceId) return;
@@ -292,6 +304,10 @@ export default function ServiceDrawer({
   }
 
   const { service, runtime } = detail.data;
+  // Con un despliegue en marcha el aviso sobra: esos cambios ya van en él.
+  const hayCambiosSinDesplegar = (pendingRedeploy || !!detail.data.pendingChanges) && !(
+    detail.data.latestDeployment && isActiveDeploy(detail.data.latestDeployment.status)
+  );
   // Con un despliegue vivo, el estado del contenedor sigue siendo el de la
   // versión ANTERIOR (sigue sirviendo): la fase del despliegue va aparte, en su
   // propia chapa, para no confundir «Activo» con «ya está la versión nueva».
@@ -509,14 +525,15 @@ export default function ServiceDrawer({
           </div>
         )}
 
-        {pendingRedeploy && (
+        {hayCambiosSinDesplegar && (
           <div className="tab-in mt-3.5 flex flex-col gap-2.5 rounded-xl border border-acc/35 bg-acc/[.09] p-3 text-xs sm:flex-row sm:items-center sm:gap-3 shadow-sm">
             <span className="flex min-w-0 flex-1 items-center gap-2.5">
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-acc/20 text-acc">
                 <Rocket size={14} />
               </span>
               <span className="text-sub leading-snug">
-                <span className="font-semibold text-txt">Cambios guardados sin aplicar.</span> Se aplicarán en el próximo despliegue.
+                <span className="font-semibold text-txt">Cambios sin desplegar.</span> Hay cambios guardados (variables o ajustes) que se
+                aplicarán en el próximo despliegue.
               </span>
             </span>
             <Button
@@ -602,6 +619,8 @@ export default function ServiceDrawer({
               <ServiceSettingsTab
                 service={service}
                 projectId={projectId}
+                autoDeploy={detail.data.autoDeploy ?? null}
+                webhook={detail.data.webhook ?? null}
                 onChanged={invalidate}
                 onNeedsRedeploy={() => setPendingRedeploy(true)}
                 onDirtyChange={setIsTabDirty}

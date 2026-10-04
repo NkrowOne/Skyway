@@ -229,6 +229,7 @@ export const DEPLOY_TRIGGER_LABEL: Record<string, string> = {
   rollback: 'reversión',
   import: 'importación',
   mailway: 'correo',
+  reintento: 'reintento tras reinicio',
 };
 
 export function isActiveDeploy(status: DeploymentStatus): boolean {
@@ -260,6 +261,8 @@ export const ALERT_TYPE_LABEL: Record<string, string> = {
   db_integrity: 'Base de datos del panel dañada',
   disk_quota: 'Espacio asignado superado',
   disk_quota_soon: 'Espacio asignado al 90 %',
+  deploy_interrupted: 'Despliegue interrumpido',
+  autodeploy_failing: 'Despliegue automático sin funcionar',
 };
 
 export const AUDIT_ACTION_LABEL: Record<string, string> = {
@@ -292,6 +295,7 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   data_migration_canceled: 'Copia de datos cancelada',
   github_app_created: 'GitHub App conectada',
   github_app_disconnected: 'GitHub App desenlazada',
+  github_app_webhook_updated: 'URL del webhook de la GitHub App actualizada',
   github_installation_connected: 'Cuenta de GitHub conectada',
   github_installation_removed: 'Cuenta de GitHub desconectada',
   github_installation_deleted: 'Instalación de GitHub eliminada en GitHub',
@@ -323,6 +327,10 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   mailway_unlinked: 'Correo desactivado en el proyecto',
   mailway_domain_added: 'Dominio de correo añadido',
   mailway_dns_applied: 'Registros DNS de correo aplicados en Cloudflare',
+  mailway_dns_undone: 'Último cambio DNS de correo deshecho en Cloudflare',
+  mailway_host_released: 'Nombre anterior de Mailway liberado',
+  cloudflare_dns_replaced: 'Registro de la web reemplazado en Cloudflare',
+  cloudflare_dns_restored: 'Registros anteriores de la web restaurados en Cloudflare',
   mailway_webmail_created: 'Webmail con el dominio del cliente configurado',
   mailway_webmail_dns_applied: 'Registro DNS del webmail creado en Cloudflare',
   mailway_webmail_primary: 'Webmail principal del cliente de correo modificado',
@@ -380,6 +388,15 @@ export const CMD_ENTER_LABEL = isMac ? '⌘↵' : 'Ctrl+↵';
  */
 export const EMPTY_LIST: never[] = [];
 export const EMPTY_RECORD: Record<string, never> = {};
+
+/**
+ * ¿Tiene el objeto esta clave PROPIA? `clave in obj` consulta también la cadena
+ * de prototipos: una variable llamada `constructor` o `toString` contaba como
+ * presente aunque se hubiera borrado, y no llegaba a eliminarse.
+ */
+export function tieneClave(obj: object, clave: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, clave);
+}
 
 /**
  * `owner/repo` a partir de lo que alguien escribe o pega: el atajo, la URL de

@@ -29,6 +29,14 @@
  * en Ajustes → Cloudflare (`borrarRegistroCreado`). Sin la reserva, otro
  * cliente podría asignarse después ese nombre del operador y obtener su
  * certificado.
+ *
+ * Reemplazo (traer una web desde otro hosting): el alta automática nunca
+ * toca un registro existente, pero el administrador puede pedir, con su
+ * confirmación expresa de los registros exactos que va a sustituir, que el
+ * A/AAAA/CNAME de ese nombre se cambie por el A hacia este servidor
+ * (`planReemplazo` y `reemplazarRegistros`). Solo ese nombre, solo esos
+ * tipos y nunca un nombre de la plataforma; lo borrado se guarda para
+ * restaurarlo (`restaurarReemplazo`).
  */
 import { FastifyRequest } from 'fastify';
 import { audit } from './audit';
@@ -38,16 +46,21 @@ import { anotarErrorCloudflare, tokenCloudflareGuardado } from './cloudflareconf
 import {
   deleteCloudflareDnsRecord,
   getCloudflareDnsRecord,
+  getMailwayDnsReserva,
   getProject,
   getService,
+  getSetting,
   listCloudflareDnsRecords,
   moveCloudflareDnsRecords,
   moveMailwayDnsReservas,
   serviceIdsForDomain,
   upsertCloudflareDnsRecord,
 } from './db';
-import { getServerIp } from './domains';
+import { panelDomains } from './domainguard';
+import { getServerIp, getServerIpv6, mismaIpv6 } from './domains';
 import { httpError } from './mailconnect';
+import { mailwayReservedHosts } from './mailway';
+import { mailwayPublishedHosts, mailwayWhitelabelHosts } from './mailwaytraefik';
 
 export type AccionDns = 'created' | 'kept' | 'conflict' | 'skipped' | 'error';
 
@@ -142,6 +155,17 @@ async function segunComodin(
  * igual que al crearlo: si no, otro cliente podría asignarse un nombre que
  * apunta aquí y que nadie más ve en Ajustes → Cloudflare.
  */
+/**
+ * ¿Lleva este registro el tráfico de la web a este servidor? Un A hacia su IP
+ * o, si el administrador la ha indicado, un AAAA hacia su IPv6. Un AAAA
+ * cualquiera es del hosting anterior: con él, los visitantes con IPv6 y Let's
+ * Encrypt siguen llegando allí.
+ */
+function apuntaAEsteServidor(ip: string): (r: CfRegistro) => boolean {
+  const ipv6 = getServerIpv6();
+  return (r) => (r.type === 'A' && r.content.trim() === ip) || (r.type === 'AAAA' && !!ipv6 && mismaIpv6(r.content.trim(), ipv6));
+}
+
 function reservarSiEsDeSkyway(registro: CfRegistro, zona: CfZona, domain: string, ip: string, projectId: string | null): void {
   if (registro.comment !== COMENTARIO_SKYWAY || getCloudflareDnsRecord(domain)) return;
   upsertCloudflareDnsRecord({ domain, zone_id: zona.id, zone_name: zona.name, record_id: registro.id, content: ip, project_id: projectId });
@@ -156,7 +180,7 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string, 
       message: `Sin zona en tu Cloudflare: el token no ve ninguna zona que contenga ${domain}. Crea el registro A hacia ${ip} en tu proveedor de DNS.`,
     };
   }
-  const apuntaAqui = (r: CfRegistro) => r.type === 'A' && r.content.trim() === ip;
+  const apuntaAqui = apuntaAEsteServidor(ip);
   const todos = await cliente.listRecords(zona.id, { name: domain });
   const existentes = todos.filter((r) => DIRECCION.has(r.type));
   const ajenos = existentes.filter((r) => !apuntaAqui(r));
@@ -166,10 +190,11 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string, 
       action: 'conflict',
       message:
         `Ya hay ${describir(ajenos)} con ese nombre en Cloudflare y no se ha modificado. ` +
-        `Si el dominio debe servirlo este servidor, cámbialo a mano por un registro A hacia ${ip}.`,
+        `Si el dominio debe servirlo este servidor, utiliza «Reemplazar en Cloudflare» para revisar y sustituir esos registros por un A hacia ${ip}, o cámbialos a mano.`,
     };
   }
-  const propio = existentes.find(apuntaAqui);
+  // El A propio; un AAAA hacia la IPv6 del servidor no basta (Skyway crea el A).
+  const propio = existentes.find((r) => r.type === 'A' && apuntaAqui(r));
   if (propio) {
     reservarSiEsDeSkyway(propio, zona, domain, ip, projectId);
     return {
@@ -209,7 +234,7 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string, 
   } catch (err) {
     if (err instanceof CloudflareError && err.code === 'cloudflare_identical') {
       // Cloudflare dice que ya existe uno idéntico: si es de Skyway, se anota.
-      const identico = (await cliente.listRecords(zona.id, { name: domain })).find(apuntaAqui);
+      const identico = (await cliente.listRecords(zona.id, { name: domain })).find((r) => r.type === 'A' && apuntaAqui(r));
       if (identico) reservarSiEsDeSkyway(identico, zona, domain, ip, projectId);
       return { domain, action: 'kept', message: `El registro A hacia ${ip} ya existía.` };
     }
@@ -370,6 +395,13 @@ export interface RegistroCreadoVista {
   /** Servicio que usa hoy el dominio, si alguno. */
   usedBy: { id: string; name: string; project: string } | null;
   createdAt: number;
+  /** Registros del hosting anterior que sustituyó (se pueden restaurar), o null. */
+  replaced: { type: string; content: string; proxied: boolean }[] | null;
+  /**
+   * Con `replaced`: true si el A hacia este servidor lo creó el reemplazo (y
+   * restaurar lo retira); false si ya estaba y restaurar lo conserva.
+   */
+  replacedCreated: boolean | null;
 }
 
 /** Lo que ve Ajustes → Cloudflare: los registros que creó el DNS automático. */
@@ -377,6 +409,7 @@ export function registrosCreados(): RegistroCreadoVista[] {
   return listCloudflareDnsRecords().map((r) => {
     const proyecto = r.project_id ? getProject(r.project_id) : undefined;
     const servicio = serviceIdsForDomain(r.domain).map((id) => getService(id)).find(Boolean);
+    const copia = leerReemplazo(r.replaced);
     return {
       domain: r.domain,
       zone: r.zone_name,
@@ -384,6 +417,8 @@ export function registrosCreados(): RegistroCreadoVista[] {
       project: proyecto ? { id: proyecto.id, name: proyecto.name } : null,
       usedBy: servicio ? { id: servicio.id, name: servicio.name, project: getProject(servicio.project_id)?.name ?? '?' } : null,
       createdAt: r.created_at,
+      replaced: copia?.previos.map((p) => ({ type: p.type, content: p.content, proxied: p.proxied })) ?? null,
+      replacedCreated: copia ? copia.creado : null,
     };
   });
 }
@@ -434,4 +469,283 @@ export async function borrarRegistroCreado(
   const detalle = { deleted: 'registro borrado', gone: 'ya no existía', released: 'ya apuntaba a otro sitio; nombre liberado' }[resultado];
   auditar('cloudflare_dns_record_deleted', { type: 'system', id: 'cloudflare', detail: `${fila.domain}: ${detalle}` });
   return resultado;
+}
+
+/* ------------- Reemplazo del registro de la web del hosting anterior ------------- */
+
+/** Registro de dirección tal como lo ve el administrador antes de sustituirlo. */
+export interface RegistroWeb {
+  id: string;
+  type: string;
+  content: string;
+  proxied: boolean;
+  ttl: number;
+}
+
+/** Lo que se guarda para poder restaurar la zona (columna `replaced`). */
+export interface ReemplazoGuardado {
+  /** Los registros borrados, con todo lo necesario para volver a crearlos. */
+  previos: { type: string; content: string; proxied: boolean; ttl: number; comment: string | null }[];
+  /** true si el A hacia este servidor lo creó el reemplazo (y restaurar lo retira). */
+  creado: boolean;
+  /** El nombre ya estaba reservado antes del reemplazo (restaurar conserva la reserva). */
+  reservaPrevia?: boolean;
+  at: number;
+}
+
+export interface PlanReemplazo {
+  domain: string;
+  zone: string | null;
+  ip: string | null;
+  /** A/AAAA/CNAME del nombre exacto que no apuntan aquí: lo que se sustituiría. */
+  actuales: RegistroWeb[];
+  /** Ya hay un A hacia este servidor: solo se retiran los demás. */
+  conservaA: boolean;
+  /** Avisos que hay que leer antes de confirmar (proxy, zona pendiente…). */
+  avisos: string[];
+  /** Por qué no se puede reemplazar desde aquí; null si se puede. */
+  motivo: string | null;
+}
+
+export function leerReemplazo(json: string | null | undefined): ReemplazoGuardado | null {
+  if (!json) return null;
+  try {
+    const v = JSON.parse(json) as ReemplazoGuardado;
+    return v && Array.isArray(v.previos) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Motivo por el que el nombre no se puede reemplazar aunque lo pida el
+ * administrador, o null. Nunca los de la plataforma (el panel, el dominio
+ * raíz de los subdominios, los de Mailway en cualquier estado) ni uno
+ * reservado a otro proyecto: el reemplazo reapunta un nombre que hoy funciona
+ * y, con ellos, se llevaría el tráfico del panel, del correo o de otro cliente.
+ */
+function motivoNoReemplazable(domain: string, projectId: string): string | null {
+  if (panelDomains().has(domain)) return `${domain} es el dominio del panel de Skyway: no se reemplaza desde aquí.`;
+  const raiz = (getSetting('rootDomain') ?? '').trim().toLowerCase();
+  if (raiz && domain === raiz) return `${domain} es el dominio raíz de los subdominios de los servicios: no se reemplaza desde aquí.`;
+  const correo = new Set([...mailwayReservedHosts(), ...mailwayPublishedHosts(), ...mailwayWhitelabelHosts()]);
+  if (correo.has(domain)) return `${domain} lo utiliza el servicio de correo (Mailway): no se reemplaza desde aquí.`;
+  const reservaCorreo = getMailwayDnsReserva(domain);
+  if (reservaCorreo && reservaCorreo.project_id !== projectId) {
+    return `${domain} es un nombre que Mailway creó para el correo de otro proyecto: no se reemplaza desde aquí.`;
+  }
+  const reserva = getCloudflareDnsRecord(domain);
+  if (reserva && reserva.project_id !== projectId) {
+    return `${domain} está reservado a otro proyecto (su registro lo creó el DNS automático para él): no se reemplaza desde aquí.`;
+  }
+  return null;
+}
+
+function clienteAdministrador(): CloudflareClient {
+  const token = tokenCloudflareGuardado();
+  if (!token) throw httpError(400, 'Configura el token de Cloudflare en Ajustes → Cloudflare para reemplazar el registro.');
+  return new CloudflareClient(token, { timeoutMs: PLAZO_PETICION_MS });
+}
+
+/** Zona, IP y registros de dirección actuales de un nombre, o el motivo por el que no se puede seguir. */
+async function estadoDelNombre(
+  cliente: CloudflareClient,
+  domain: string,
+): Promise<{ zona: CfZona; ip: string; existentes: CfRegistro[]; ajenos: CfRegistro[]; conservaA: boolean } | { motivo: string }> {
+  const { ip } = await getServerIp();
+  if (!ip) return { motivo: 'No se conoce la IP pública del servidor: indícala en Ajustes → Dominios y TLS.' };
+  const zona = await cliente.findZoneFor(domain);
+  if (!zona) return { motivo: `El token de Cloudflare no ve ninguna zona que contenga ${domain}.` };
+  const apuntaAqui = apuntaAEsteServidor(ip);
+  const existentes = (await cliente.listRecords(zona.id, { name: domain })).filter((r) => DIRECCION.has(r.type));
+  const ajenos = existentes.filter((r) => !apuntaAqui(r));
+  const conservaA = existentes.some((r) => r.type === 'A' && apuntaAqui(r));
+  return { zona, ip, existentes, ajenos, conservaA };
+}
+
+const aVista = (r: CfRegistro): RegistroWeb => ({ id: r.id, type: r.type, content: r.content, proxied: r.proxied, ttl: r.ttl });
+
+function describirRegistro(r: { type: string; content: string; proxied: boolean }): string {
+  return `${r.type} ${r.content || '(vacío)'}${r.proxied ? ' (proxy)' : ''}`;
+}
+
+/**
+ * Lo que haría el reemplazo de un nombre, sin tocar nada: la revisión que el
+ * administrador confirma. Solo el administrador (lo exige la ruta).
+ */
+export async function planReemplazo(domain: string, projectId: string): Promise<PlanReemplazo> {
+  const d = domain.trim().toLowerCase();
+  const vacio: PlanReemplazo = { domain: d, zone: null, ip: null, actuales: [], conservaA: false, avisos: [], motivo: null };
+  const motivo = motivoNoReemplazable(d, projectId);
+  if (motivo) return { ...vacio, motivo };
+  const estado = await estadoDelNombre(clienteAdministrador(), d);
+  if ('motivo' in estado) return { ...vacio, motivo: estado.motivo };
+  const { zona, ip, ajenos, conservaA } = estado;
+  const avisos: string[] = [];
+  if (ajenos.some((r) => r.proxied)) {
+    avisos.push(
+      'El registro actual tiene activado el proxy de Cloudflare. El nuevo se crea sin proxy para que Let\'s Encrypt pueda validar el dominio; ' +
+        'si lo necesitas, actívalo después en Cloudflare.',
+    );
+  }
+  if (ajenos.some((r) => r.type === 'AAAA') && !getServerIpv6()) {
+    avisos.push(
+      'Se retira también el registro AAAA (IPv6): si se quedara, los visitantes con IPv6 y Let\'s Encrypt seguirían llegando al hosting anterior.',
+    );
+  }
+  if (zona.status !== 'active') avisos.push('La zona todavía no está activa en Cloudflare: el cambio funcionará cuando lo esté.');
+  return {
+    domain: d,
+    zone: zona.name,
+    ip,
+    actuales: ajenos.map(aVista),
+    conservaA,
+    avisos,
+    motivo: ajenos.length === 0 ? `No hay nada que reemplazar: ${d} no tiene registros A, AAAA ni CNAME que apunten a otro sitio.` : null,
+  };
+}
+
+/**
+ * Sustituye en un solo lote los A/AAAA/CNAME del nombre que confirmó el
+ * administrador por el A hacia este servidor, y guarda lo borrado. Si los
+ * registros del nombre ya no son exactamente los confirmados (alguien los ha
+ * cambiado entre la revisión y la confirmación), no toca nada: el
+ * administrador tiene que volver a revisarlos.
+ */
+export async function reemplazarRegistros(
+  domain: string,
+  projectId: string,
+  confirmados: readonly { id: string; type: string; content: string }[],
+  auditar: (action: string, target: { type: string; id: string; detail: string }) => void,
+  objetivo: { type: string; id: string },
+): Promise<ResultadoDns> {
+  const d = domain.trim().toLowerCase();
+  const motivo = motivoNoReemplazable(d, projectId);
+  if (motivo) throw httpError(409, motivo);
+  const cliente = clienteAdministrador();
+  const estado = await estadoDelNombre(cliente, d);
+  if ('motivo' in estado) throw httpError(409, estado.motivo);
+  const { zona, ip, ajenos, conservaA, existentes } = estado;
+  const clave = (r: { id: string; type: string; content: string }) => `${r.id}|${r.type.toUpperCase()}|${r.content.trim()}`;
+  const esperado = new Set(confirmados.map(clave));
+  if (ajenos.length === 0 || ajenos.length !== esperado.size || !ajenos.every((r) => esperado.has(clave(r)))) {
+    throw httpError(
+      409,
+      `Los registros de ${d} en Cloudflare han cambiado desde la revisión (o no hay nada que reemplazar). Vuelve a revisarlos antes de confirmar.`,
+    );
+  }
+  let resultado: { deletes: CfRegistro[]; posts: CfRegistro[] };
+  try {
+    resultado = await cliente.batch(zona.id, {
+      deletes: ajenos.map((r) => ({ id: r.id })),
+      posts: conservaA ? [] : [{ type: 'A', name: d, content: ip, ttl: 1, proxied: false, comment: COMENTARIO_SKYWAY }],
+    });
+  } catch (err) {
+    if (err instanceof CloudflareError) throw httpError(err.statusCode, `No se ha modificado nada en Cloudflare: ${err.message}`);
+    throw err;
+  }
+  const a = conservaA ? existentes.find((r) => r.type === 'A' && r.content.trim() === ip) : resultado.posts[0];
+  const borrados = ajenos.map((r) => ({ type: r.type, content: r.content, proxied: r.proxied, ttl: r.ttl, comment: r.comment }));
+  // Un segundo reemplazo del mismo nombre (alguien añadió después otro AAAA
+  // o CNAME) se suma al primero: si sustituyera la copia, el registro del
+  // hosting original se perdería y restaurar ya no devolvería la zona a como
+  // estaba. Qué hizo el primero con el A y con la reserva sigue valiendo.
+  const filaPrevia = getCloudflareDnsRecord(d);
+  const copiaPrevia = leerReemplazo(filaPrevia?.replaced);
+  const clavePrevio = (p: { type: string; content: string }) => `${p.type.toUpperCase()}|${p.content.trim().toLowerCase()}`;
+  const guardado: ReemplazoGuardado = copiaPrevia
+    ? {
+        previos: [
+          ...copiaPrevia.previos,
+          ...borrados.filter((b) => !copiaPrevia.previos.some((p) => clavePrevio(p) === clavePrevio(b))),
+        ],
+        creado: copiaPrevia.creado,
+        reservaPrevia: copiaPrevia.reservaPrevia,
+        at: copiaPrevia.at,
+      }
+    : { previos: borrados, creado: !conservaA, reservaPrevia: !!filaPrevia, at: Date.now() };
+  if (a) {
+    upsertCloudflareDnsRecord({
+      domain: d,
+      zone_id: zona.id,
+      zone_name: zona.name,
+      record_id: a.id,
+      content: ip,
+      project_id: projectId,
+      replaced: JSON.stringify(guardado),
+    });
+  }
+  const sustituidos = ajenos.map(describirRegistro).join(', ');
+  auditar('cloudflare_dns_replaced', { ...objetivo, detail: `${d}: ${sustituidos} → A ${ip}`.slice(0, 500) });
+  return {
+    domain: d,
+    action: 'created',
+    message:
+      `Se ha sustituido ${sustituidos} por un registro A hacia ${ip} en la zona ${zona.name}. ` +
+      'Puedes restaurar los registros anteriores en Ajustes → Cloudflare.',
+  };
+}
+
+export type ResultadoRestauracion = { restaurados: string[]; retirado: boolean };
+
+/**
+ * Deshace un reemplazo: vuelve a crear los registros del hosting anterior (con
+ * su proxy, su TTL y su comentario) y retira el A que creó Skyway, en un solo
+ * lote. Solo si el nombre está como lo dejó el reemplazo: si alguien ha
+ * añadido o cambiado registros de dirección desde entonces, no se toca nada.
+ * El nombre deja de estar reservado si ya no apunta aquí.
+ */
+export async function restaurarReemplazo(
+  domain: string,
+  auditar: (action: string, target: { type: string; id: string; detail: string }) => void,
+): Promise<ResultadoRestauracion> {
+  const fila = getCloudflareDnsRecord(domain);
+  const copia = leerReemplazo(fila?.replaced);
+  if (!fila || !copia) throw httpError(404, 'Skyway no tiene guardado ningún reemplazo de ese dominio.');
+  const cliente = clienteAdministrador();
+  const actuales = (await cliente.listRecords(fila.zone_id, { name: fila.domain })).filter((r) => DIRECCION.has(r.type));
+  const nuestro = actuales.find((r) => r.id === fila.record_id);
+  // Un AAAA hacia la IPv6 de este servidor ya estaba antes del reemplazo (no
+  // es ajeno, así que el reemplazo lo conservó): no impide restaurar y se
+  // queda, como estaba.
+  const apuntaAqui = apuntaAEsteServidor(fila.content);
+  const otros = actuales.filter((r) => r.id !== fila.record_id && !(r.type === 'AAAA' && apuntaAqui(r)));
+  if (otros.length > 0) {
+    throw httpError(
+      409,
+      `${fila.domain} tiene ahora en Cloudflare otros registros de dirección (${otros.map(describirRegistro).join(', ')}): no se ha restaurado nada. Revísalos en Cloudflare.`,
+    );
+  }
+  if (nuestro && (nuestro.type !== 'A' || nuestro.content.trim() !== fila.content)) {
+    throw httpError(409, `El registro A de ${fila.domain} se ha modificado en Cloudflare desde el reemplazo: no se ha restaurado nada.`);
+  }
+  const retirar = copia.creado && nuestro ? [{ id: nuestro.id }] : [];
+  try {
+    await cliente.batch(fila.zone_id, {
+      deletes: retirar,
+      posts: copia.previos.map((p) => ({
+        type: p.type,
+        name: fila.domain,
+        content: p.content,
+        ttl: p.ttl,
+        proxied: p.proxied,
+        ...(p.comment ? { comment: p.comment } : {}),
+      })),
+    });
+  } catch (err) {
+    if (err instanceof CloudflareError) throw httpError(err.statusCode, `No se ha modificado nada en Cloudflare: ${err.message}`);
+    throw err;
+  }
+  // Con el A retirado el nombre ya no apunta aquí: no hay nada que reservar.
+  // Si el A ya estaba antes del reemplazo, la zona vuelve a como estaba, y la
+  // reserva también: la de siempre si la había; si no, ninguna.
+  if (copia.creado || !copia.reservaPrevia) deleteCloudflareDnsRecord(fila.domain);
+  else upsertCloudflareDnsRecord({ ...fila, replaced: null });
+  const restaurados = copia.previos.map(describirRegistro);
+  auditar('cloudflare_dns_restored', {
+    type: 'system',
+    id: 'cloudflare',
+    detail: `${fila.domain}: ${restaurados.join(', ')}${retirar.length ? ` (retirado A ${fila.content})` : ''}`.slice(0, 500),
+  });
+  return { restaurados, retirado: retirar.length > 0 };
 }

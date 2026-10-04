@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
 import { api } from '../../api';
-import { DbTemplate, DnsAutoResult, Me, Service } from '../../types';
-import { cx } from '../../utils';
+import { AutoDeployStatus, DbTemplate, DnsAutoResult, Me, Service, ServiceWebhookInfo } from '../../types';
+import { cx, timeAgo } from '../../utils';
 import { avisoDns } from '../DnsAutoResult';
 import DomainsEditor from '../DomainsEditor';
 import {
@@ -128,9 +128,34 @@ function formFromService(service: Service): FormState {
   };
 }
 
+/** Línea de estado del sondeo: cuándo se comprobó la rama y si falló. */
+function EstadoAutoDeploy({ status }: { status: AutoDeployStatus }) {
+  if (status.error) {
+    return (
+      <p className="mt-2 flex items-start gap-1.5 rounded-lg border border-err/30 bg-err/[.06] px-3 py-2 text-xs text-sub">
+        <AlertTriangle size={12} className="mt-0.5 shrink-0 text-err" aria-hidden />
+        <span className="leading-relaxed">
+          <span className="font-semibold text-err">No se puede consultar la rama</span>
+          {status.failingSince ? ` desde ${timeAgo(status.failingSince)}` : ''}: {status.error}. Los push no se despliegan hasta
+          que se corrija (token caducado, GitHub App sin acceso al repositorio o rama renombrada).
+        </span>
+      </p>
+    );
+  }
+  return (
+    <p className="mt-2 text-xs text-subtle">
+      {status.okAt
+        ? `Última comprobación ${timeAgo(status.okAt)}${status.lastSeenSha ? ` · último commit ${status.lastSeenSha.slice(0, 7)}` : ''}.`
+        : 'Pendiente de la primera comprobación.'}
+    </p>
+  );
+}
+
 export default function ServiceSettingsTab({
   service,
   projectId,
+  autoDeploy = null,
+  webhook = null,
   onChanged,
   onDeleted,
   onNeedsRedeploy,
@@ -138,6 +163,10 @@ export default function ServiceSettingsTab({
 }: {
   service: Service;
   projectId: string;
+  /** Estado del sondeo del auto-deploy (solo en servicios de repositorio con él activo). */
+  autoDeploy?: AutoDeployStatus | null;
+  /** Webhook manual: URL con el dominio del panel y si ya lo cubre la GitHub App. */
+  webhook?: ServiceWebhookInfo | null;
   onChanged: () => void;
   onDeleted: () => void;
   /** Aviso al panel de que hay cambios guardados que solo surten efecto al redesplegar. */
@@ -327,7 +356,11 @@ export default function ServiceSettingsTab({
     }
   };
 
-  const webhookUrl = `${window.location.origin}/api/webhooks/github/${service.id}`;
+  // La del servidor lleva el dominio del panel: la del navegador puede ser el
+  // túnel SSH (localhost), que GitHub no alcanza.
+  const webhookUrl = webhook?.url ?? `${window.location.origin}/api/webhooks/github/${service.id}`;
+  // Rutas que la imagen guarda con VOLUME y no tienen volumen: se pierden en cada despliegue.
+  const volumenesSinMontar = (cfg.imageVolumes ?? []).filter((p) => !form.volumePaths.includes(p));
   const replicasN = Number(form.replicas) || 1;
 
   return (
@@ -476,44 +509,54 @@ export default function ServiceSettingsTab({
               <span className="text-sm">
                 <span className="font-medium">Desplegar automáticamente al hacer push a <span className="font-mono">{form.branch}</span></span>
                 <span className="mt-1 block text-xs leading-relaxed text-subtle">
-                  La rama se comprueba cada pocos minutos. Si está desactivado, ningún push inicia un despliegue.
+                  Al instante con la GitHub App; si no, la rama se comprueba cada{' '}
+                  {autoDeploy && autoDeploy.pollSeconds !== 60 ? `${autoDeploy.pollSeconds} segundos` : 'minuto'}. Si está desactivado,
+                  ningún push inicia un despliegue.
                 </span>
               </span>
             </label>
+            {autoDeploy && form.autoDeploy && cfg.autoDeploy !== false && <EstadoAutoDeploy status={autoDeploy} />}
 
-            <details className="group mt-2.5">
-              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-subtle transition-colors hover:text-sub">
-                <ChevronRight size={12} className="shrink-0 text-subtle transition-transform group-open:rotate-90" />
-                Despliegue inmediato: configurar el webhook de GitHub
-              </summary>
-              <div className="details-body mt-2 flex flex-col gap-2 text-xs">
-                <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
-                  <span className="shrink-0 text-subtle">URL</span>
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <span className="truncate font-mono text-xs">{webhookUrl}</span>
-                    <CopyButton value={webhookUrl} />
-                  </span>
+            {webhook?.coveredByApp ? (
+              <p className="mt-2.5 text-xs leading-relaxed text-subtle">
+                Este repositorio ya recibe los push al instante por la GitHub App: no hace falta configurar un webhook en el
+                repositorio (con los dos, cada push llegaría dos veces).
+              </p>
+            ) : (
+              <details className="group mt-2.5">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-subtle transition-colors hover:text-sub">
+                  <ChevronRight size={12} className="shrink-0 text-subtle transition-transform group-open:rotate-90" />
+                  Despliegue inmediato: configurar el webhook de GitHub
+                </summary>
+                <div className="details-body mt-2 flex flex-col gap-2 text-xs">
+                  <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+                    <span className="shrink-0 text-subtle">URL</span>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate font-mono text-xs">{webhookUrl}</span>
+                      <CopyButton value={webhookUrl} />
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+                    <span className="text-subtle">Secreto</span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="font-mono text-xs">••••••••••••</span>
+                      <CopyButton value={cfg.webhookSecret ?? ''} />
+                    </span>
+                  </div>
+                  <ol className="list-decimal space-y-1 pl-5 text-xs text-subtle">
+                    <li>
+                      En el repositorio: <span className="font-mono">Settings → Webhooks → Add webhook</span>.
+                    </li>
+                    <li>
+                      Introduce la URL y el secreto; tipo de contenido <span className="font-mono">application/json</span>.
+                    </li>
+                    <li>
+                      Evento: solo <span className="font-mono">push</span>.
+                    </li>
+                  </ol>
                 </div>
-                <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
-                  <span className="text-subtle">Secreto</span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="font-mono text-xs">••••••••••••</span>
-                    <CopyButton value={cfg.webhookSecret ?? ''} />
-                  </span>
-                </div>
-                <ol className="list-decimal space-y-1 pl-5 text-xs text-subtle">
-                  <li>
-                    En el repositorio: <span className="font-mono">Settings → Webhooks → Add webhook</span>.
-                  </li>
-                  <li>
-                    Introduce la URL y el secreto; tipo de contenido <span className="font-mono">application/json</span>.
-                  </li>
-                  <li>
-                    Evento: solo <span className="font-mono">push</span>.
-                  </li>
-                </ol>
-              </div>
-            </details>
+              </details>
+            )}
           </SectionCard>
         )}
 
@@ -558,6 +601,9 @@ export default function ServiceSettingsTab({
               dnsResults={dnsResults}
               onRetryDns={(d) => retryDns.mutate(d)}
               retryingDns={retryDns.isPending ? retryDns.variables : null}
+              serviceId={service.id}
+              savedDomains={baseline.domains}
+              onDnsResult={(r) => setDnsResults((prev) => ({ ...prev, [r.domain]: r }))}
             />
           </SectionCard>
         )}
@@ -652,6 +698,20 @@ export default function ServiceSettingsTab({
             description="Rutas cuyo contenido se conserva entre despliegues"
           >
             <div className="flex flex-col gap-2">
+              {volumenesSinMontar.map((p) => (
+                <div key={`imagen:${p}`} className="flex flex-col gap-2 rounded-lg border border-warn/35 bg-warn/[.06] px-3 py-2 text-xs sm:flex-row sm:items-center">
+                  <span className="flex min-w-0 flex-1 items-start gap-1.5 text-sub">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warn" aria-hidden />
+                    <span className="leading-relaxed">
+                      La imagen guarda datos en <span className="font-mono text-txt">{p}</span> sin volumen: se reinician en cada
+                      despliegue. Al añadirlo, los datos actuales del contenedor no se copian.
+                    </span>
+                  </span>
+                  <Button size="sm" variant="secondary" className="shrink-0" onClick={() => set('volumePaths', [...form.volumePaths, p])}>
+                    <Plus size={12} /> Añadir volumen
+                  </Button>
+                </div>
+              ))}
               {form.volumePaths.map((p) => (
                 <div key={p} className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2 max-sm:py-1">
                   <span className="min-w-0 truncate font-mono text-xs">{p}</span>
