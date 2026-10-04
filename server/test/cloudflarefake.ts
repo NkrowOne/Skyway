@@ -13,6 +13,9 @@
  * Registra cada petición (método, ruta, consulta, Authorization y cuerpo) y
  * responde 405 a cualquier PUT o PATCH: Skyway nunca debe enviarlos. DELETE
  * solo existe sobre un registro concreto (la limpieza de Ajustes → Cloudflare).
+ * El lote (`/dns_records/batch`, reemplazo y restauración del registro de una
+ * web) es atómico como el real: borrados y después altas, y si una operación
+ * falla no se aplica ninguna. Sin `patches` ni `puts`.
  */
 
 export const CF_HOST = 'api.cloudflare.com';
@@ -187,6 +190,43 @@ export async function cloudflareFetch(url: URL, init: RequestInit = {}): Promise
       }
       return sobre(200, r);
     }
+  }
+  if ((m = path.match(/^\/zones\/([^/]+)\/dns_records\/batch$/)) && method === 'POST') {
+    const z = visibles.find((x) => x.id === m![1]);
+    if (!z) return fallo(403, 10000, 'Authentication error');
+    const lote = (body ?? {}) as { deletes?: { id: string }[]; posts?: CfRegistroFalso[]; patches?: unknown[]; puts?: unknown[] };
+    if (lote.patches?.length || lote.puts?.length) return fallo(405, 10405, 'El doble no admite patches ni puts');
+    // Sobre una copia: si algo falla, la zona queda como estaba.
+    let copia = cf.records.slice();
+    const borrados: CfRegistroFalso[] = [];
+    for (const d of lote.deletes ?? []) {
+      const r = copia.find((x) => x.zoneId === z.id && x.id === d.id);
+      if (!r) return fallo(404, 81044, 'Record does not exist.');
+      borrados.push(r);
+      copia = copia.filter((x) => x !== r);
+    }
+    const creados: CfRegistroFalso[] = [];
+    for (const nuevo of lote.posts ?? []) {
+      const mismos = copia.filter((r) => r.zoneId === z.id && r.name === nuevo.name);
+      if (mismos.some((r) => r.type === nuevo.type && r.content === nuevo.content)) return fallo(400, 81058, 'An identical record already exists.');
+      if (mismos.some((r) => r.type === 'CNAME') || (nuevo.type === 'CNAME' && mismos.some((r) => ['A', 'AAAA', 'CNAME'].includes(r.type)))) {
+        return fallo(400, 81053, 'An A, AAAA, or CNAME record with that host already exists.');
+      }
+      const r: CfRegistroFalso = {
+        id: `reg_${++cf.seq}`,
+        zoneId: z.id,
+        type: nuevo.type,
+        name: nuevo.name,
+        content: nuevo.content,
+        proxied: !!nuevo.proxied,
+        ttl: nuevo.ttl ?? 1,
+        comment: nuevo.comment ?? null,
+      };
+      creados.push(r);
+      copia.push(r);
+    }
+    cf.records = copia;
+    return sobre(200, { deletes: borrados, posts: creados });
   }
   if ((m = path.match(/^\/zones\/([^/]+)\/dns_records\/([^/]+)$/))) {
     const z = visibles.find((x) => x.id === m![1]);

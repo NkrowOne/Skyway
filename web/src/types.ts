@@ -1332,6 +1332,11 @@ export interface MailwayConfigView {
   /** Plan con el que se crea el cliente cuando no lo elige un administrador. */
   defaultPlanId: string | null;
   traefik: MailwayBridgeStatus | null;
+  /**
+   * Nombres que fueron de la instancia (un servidor de correo o un webmail
+   * anteriores): siguen reservados hasta que el administrador los libera.
+   */
+  previousHosts?: { host: string; lastSeen: number }[];
 }
 
 /** Ajustes → Cloudflare: el token del administrador nunca vuelve, solo su pista. */
@@ -1360,6 +1365,10 @@ export interface CloudflareDnsRecord {
   project: { id: string; name: string } | null;
   usedBy: { id: string; name: string; project: string } | null;
   createdAt: number;
+  /** Registros del hosting anterior que sustituyó (se pueden restaurar), o null. */
+  replaced?: { type: string; content: string; proxied: boolean }[] | null;
+  /** Con `replaced`: true si el reemplazo creó el A (restaurar lo retira); false si ya estaba y se conserva. */
+  replacedCreated?: boolean | null;
 }
 
 /**
@@ -1369,6 +1378,35 @@ export interface CloudflareDnsRecord {
 export interface DnsAutoResult {
   domain: string;
   action: 'created' | 'kept' | 'conflict' | 'skipped' | 'error';
+  message: string;
+}
+
+/** Revisión del reemplazo en Cloudflare del registro de la web del hosting anterior (solo administrador). */
+export interface PlanReemplazoDns {
+  domain: string;
+  zone: string | null;
+  ip: string | null;
+  /** A/AAAA/CNAME del nombre que no apuntan a este servidor: lo que se sustituiría. */
+  actuales: { id: string; type: string; content: string; proxied: boolean; ttl: number }[];
+  /** Ya hay un A hacia este servidor: solo se retiran los demás. */
+  conservaA: boolean;
+  avisos: string[];
+  /** Por qué no se puede reemplazar desde aquí; null si se puede. */
+  motivo: string | null;
+}
+
+/** Comprobación del DNS de un dominio de servicio (`POST /domains/check`). */
+export interface DomainCheck {
+  domain: string;
+  status: 'ok' | 'wrong_ip' | 'no_record' | 'caa' | 'unknown';
+  resolvedIps: string[];
+  resolvedIpv6?: string[];
+  expectedIp: string | null;
+  /** Zona del dominio y nombre del registro dentro de ella («@» para el propio dominio). */
+  zone?: string | null;
+  name?: string | null;
+  /** Con `caa`: el nombre que publica el CAA que impide el certificado y a quién autoriza. */
+  caa?: { name: string; issuers: string[] } | null;
   message: string;
 }
 
@@ -1433,8 +1471,40 @@ export interface MailDomain {
       status: MailDnsCheckStatus;
       required: boolean;
       help: string | null;
+      /**
+       * Valor con el que sustituir el registro que ya existe (el SPF actual
+       * con lo que le falta): pegar `expected` en su lugar dejaría sin
+       * autorizar al resto de remitentes del dominio.
+       */
+      suggested?: string | null;
     }[];
   };
+  /**
+   * true: el correo del dominio se recibe en otro servidor y Mailway encamina
+   * allí lo que se le envía desde aquí. false: Mailway lo entrega en local (el
+   * MX apunta aquí, hay MX de los dos o aún no se ha medido). null: el Mailway
+   * conectado no lo informa (hasta la 1.2) y lo entrega en local.
+   */
+  recepcionExterna?: boolean | null;
+}
+
+/** ¿El dominio recibe ya el correo en otro proveedor? (lo mide Mailway). */
+export interface MailDomainConflict {
+  hayOtroProveedor: boolean;
+  mxActuales: string[];
+  spfActual: string | null;
+  dmarcPolitica: 'none' | 'quarantine' | 'reject' | null;
+  /** Qué hacer con la política MTA-STS del proveedor actual antes del cambio. */
+  avisoMtaSts: string | null;
+}
+
+/** Comprobación previa al alta de un dominio de correo. */
+export interface MailDomainPrecheck {
+  domain: string;
+  recepcion: 'otro' | 'aqui' | 'sin_mx' | 'desconocido';
+  mx: string[];
+  /** Al administrador se le ofrece configurar el DNS en Cloudflare. */
+  dnsAutomatico: boolean;
 }
 
 export interface MailMailbox {
@@ -1563,8 +1633,19 @@ export interface MailCloudflarePlan {
     current: string | null;
     reason: string;
     required: boolean;
+    /** Se puede reemplazar desde aquí (null: el Mailway conectado no lo dice). */
+    reemplazable?: boolean | null;
+    /** Parte del cambio de proveedor: el MX y el SPF y el DMARC que se crean con él. */
+    alCambiar?: boolean;
   }[];
   summary: { create: number; update: number; keep: number; conflict: number };
+  /** El Mailway conectado elige los conflictos uno a uno y guarda copia para deshacer. */
+  porRegistro?: boolean;
+  /** Lo que borró el último cambio (para «Deshacer el cambio»). */
+  copia?: {
+    createdAt: number | null;
+    borrados: { type: string; name: string; content: string; priority: number | null }[];
+  } | null;
 }
 
 export interface MailCloudflareResult {

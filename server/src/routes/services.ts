@@ -1,9 +1,10 @@
+import { domainToASCII } from 'url';
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, currentUser, requireAdmin, requireAuth } from '../auth';
+import { assertProjectAccess, currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
 import { audit } from '../audit';
 import { cloudflareConfigurado } from '../cloudflareconfig';
-import { dnsAutomaticoAdmin, dnsSinBase } from '../cloudflaredns';
+import { dnsAutomaticoAdmin, dnsSinBase, planReemplazo, reemplazarRegistros } from '../cloudflaredns';
 import { dbConsoleEngine } from '../dbconsole';
 import { domainClaimError } from '../domainguard';
 import { markManualAction } from '../monitor';
@@ -110,11 +111,39 @@ export function publicServiceConfig<T extends ServiceConfig>(cfg: T): T {
  * regla que capturara el tráfico de los dominios de otros clientes.
  */
 const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/**
+ * Lo que escribe una persona como dominio, en la forma que va a Traefik y al
+ * DNS: sin esquema, ruta ni puerto (se pega a menudo la URL de la web), sin el
+ * punto final y en ASCII («panadería.es» → «xn--panadera-i2a.es», como hace
+ * Mailway). Devuelve '' si no es un nombre de host; la validación de
+ * `HOSTNAME` viene después, sobre el resultado.
+ */
+export function normalizarDominio(raw: string): string {
+  let host = raw.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) {
+    try {
+      host = new URL(host).hostname;
+    } catch {
+      return '';
+    }
+  } else {
+    host = host.split(/[/?#]/)[0].replace(/:\d+$/, '');
+  }
+  host = host.replace(/\.$/, '');
+  // domainToASCII devuelve '' para lo que no puede ser un dominio.
+  return host ? domainToASCII(host) : '';
+}
+
 export const domainSchema = z
   .string()
   .trim()
-  .transform((d) => d.toLowerCase())
-  .refine((d) => HOSTNAME.test(d), 'Dominio no válido: solo letras, números, guiones y puntos');
+  .max(2000)
+  .transform(normalizarDominio)
+  .refine(
+    (d) => HOSTNAME.test(d),
+    'Dominio no válido: escribe solo el nombre, por ejemplo app.midominio.com (se admiten acentos y «ñ»).',
+  );
 
 /** Recursos del plan de integraciones que se pueden omitir al aplicarlo. */
 const planSkipSchema = z.array(z.enum(['postgres', 'redis', 'mysql', 'mongo', 'minio', 'mail', 'empty'])).max(10);
@@ -795,6 +824,65 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
       const dns = await dnsAutomaticoAdmin(req, [domain], { type: 'service', id }, found.project.id);
       return { dns: dns ?? [] };
+    },
+  );
+
+  /**
+   * Reemplazo en Cloudflare del registro de la web del hosting anterior
+   * (traer una web a Skyway). Solo el administrador y en dos pasos: la
+   * revisión (GET, no toca nada) enseña los A/AAAA/CNAME exactos de ese
+   * nombre que se sustituirían, y la confirmación (POST, con sesión de
+   * navegador) los repite: si la zona ha cambiado entre medias, no se toca
+   * nada. Nunca se reemplazan los nombres de la plataforma ni los reservados
+   * a otro proyecto (`planReemplazo`). Lo borrado se guarda para restaurarlo
+   * en Ajustes → Cloudflare.
+   */
+  const dominioDelServicio = (service: ServiceRow, domain: string): boolean =>
+    ((service.config as { domains?: string[] }).domains ?? []).map((d) => d.trim().toLowerCase()).includes(domain);
+
+  app.get(
+    '/api/services/:id/cloudflare-dns/replace',
+    { preHandler: [requireAdmin, rateLimit({ max: 30, windowMs: 60_000 })] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const found = loadService(id);
+      if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+      const { domain } = z.object({ domain: z.string().trim().toLowerCase().min(1).max(253) }).parse(req.query ?? {});
+      if (!dominioDelServicio(found.service, domain)) {
+        return reply.code(404).send({ error: `El dominio ${domain} no está asignado a este servicio. Guarda antes los cambios.` });
+      }
+      return { plan: await planReemplazo(domain, found.project.id) };
+    },
+  );
+
+  app.post(
+    '/api/services/:id/cloudflare-dns/replace',
+    { preHandler: [requireAdmin, requireSession, rateLimit({ max: 10, windowMs: 60_000 })] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const found = loadService(id);
+      if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+      const body = z
+        .object({
+          domain: z.string().trim().toLowerCase().min(1).max(253),
+          // Los registros que el administrador ha revisado y confirma sustituir.
+          records: z
+            .array(z.object({ id: z.string().min(1).max(100), type: z.enum(['A', 'AAAA', 'CNAME']), content: z.string().max(500) }))
+            .min(1, 'Indica los registros que confirmas sustituir.')
+            .max(20),
+        })
+        .parse(req.body ?? {});
+      if (!dominioDelServicio(found.service, body.domain)) {
+        return reply.code(404).send({ error: `El dominio ${body.domain} no está asignado a este servicio. Guarda antes los cambios.` });
+      }
+      const dns = await reemplazarRegistros(
+        body.domain,
+        found.project.id,
+        body.records,
+        (action, target) => audit(req, action, target),
+        { type: 'service', id },
+      );
+      return { dns: [dns] };
     },
   );
 

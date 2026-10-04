@@ -18,11 +18,15 @@ import {
 } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
 import { panelDomains, webmailHostError } from '../domainguard';
+import { consultarMx } from '../domains';
 import {
   MAILWAY_SETTING,
   MailwayApiKeyInfo,
   MailwayAutoDnsResult,
   MailwayAppPasswordInfo,
+  MailwayConflicto,
+  MailwayCopiaCambio,
+  MailwayDnsCheck,
   MailwayDnsInstruction,
   MailwayDomain,
   MailwayError,
@@ -43,8 +47,10 @@ import {
   createWhitelabelDomain,
   deleteMailbox,
   ensureClient,
+  fusionarSpf,
   getClientByRef,
   getCloudflarePlan,
+  getDomainConflict,
   getDomainDns,
   getInfo,
   getSummary,
@@ -57,8 +63,12 @@ import {
   listPlans,
   listWhitelabelDomains,
   mailwayConfigured,
+  mailwayCurrentHosts,
+  mailwayPreviousHosts,
   mailwayReservedHosts,
   previousClientKey,
+  releaseMailwayPreviousHost,
+  rememberPreviousHosts,
   projectExternalRef,
   publicPanelUrl,
   readMailwayConfig,
@@ -70,6 +80,7 @@ import {
   safeHttpUrl,
   setPrimaryWebmail,
   stripWebRecords,
+  undoCloudflare,
   verifyDomain,
   verifyWhitelabelDomain,
 } from '../mailway';
@@ -346,6 +357,10 @@ function publicOwnershipRecord(r: MailwayDomain['ownershipRecord']) {
 
 function publicDomain(d: MailwayDomain) {
   const s = d.dnsStatus ?? {};
+  const checks = Array.isArray(s.checks) ? s.checks : [];
+  // Solo un Mailway posterior a la 1.2 informa `recepcionExterna`; ese ya
+  // calcula él mismo el SPF combinado.
+  const mailwayCalculaSpf = typeof d.recepcionExterna === 'boolean';
   return {
     id: d.id,
     domain: d.domain,
@@ -364,7 +379,7 @@ function publicDomain(d: MailwayDomain) {
       requiredOk: typeof s.requiredOk === 'number' ? s.requiredOk : 0,
       allRequiredOk: !!s.allRequiredOk,
       checkedAt: s.checkedAt ?? null,
-      checks: (Array.isArray(s.checks) ? s.checks : []).map((c) => ({
+      checks: checks.map((c) => ({
         id: c.id,
         label: c.label,
         type: c.type,
@@ -374,9 +389,49 @@ function publicDomain(d: MailwayDomain) {
         status: c.status,
         required: !!c.required,
         help: c.help ?? null,
+        suggested: sugerencia(c, checks, mailwayCalculaSpf),
       })),
     },
+    // null: el Mailway conectado no lo informa (y entrega en local lo que se
+    // envía desde aquí a un dominio cuyo MX está en otro proveedor).
+    recepcionExterna: typeof d.recepcionExterna === 'boolean' ? d.recepcionExterna : null,
   };
+}
+
+/**
+ * Valor con el que sustituir el registro existente: el que calcula Mailway
+ * (`suggested`) o, con un Mailway que aún no lo hace, el SPF actual con lo que
+ * le falta del propuesto. Pegar `expected` en su lugar dejaría sin autorizar
+ * a Google, al hosting o a Mailchimp. Si un Mailway que ya lo calcula no lo
+ * manda, es a propósito (el SPF gastaría demasiadas consultas DNS, o lo que
+ * falta está detrás de «all») y aquí no se inventa otro.
+ */
+function sugerencia(c: MailwayDnsCheck, checks: readonly MailwayDnsCheck[], mailwayCalculaSpf: boolean): string | null {
+  if (typeof c.suggested === 'string' && c.suggested) return c.suggested;
+  if (mailwayCalculaSpf) return null;
+  if (typeof c.id !== 'string' || !c.id.startsWith('spf:') || c.status !== 'mismatch') return null;
+  if (typeof c.found !== 'string' || !c.found || typeof c.expected !== 'string') return null;
+  const propuesto = spfSegunMx(c.id.slice('spf:'.length), c.expected, checks);
+  return propuesto ? fusionarSpf(c.found, propuesto) : null;
+}
+
+/**
+ * El SPF que propone un Mailway hasta la 1.2 autoriza con «mx», que solo vale
+ * si el MX del dominio es este servidor. Con el MX en Google (un dominio que
+ * aquí solo envía, o antes del traslado), «mx» autorizaría a los servidores
+ * de entrada de Google y no a este: se cambia por «a:<servidor de correo>»,
+ * como hacen los Mailway posteriores. null si no se conoce el servidor: no
+ * hay valor correcto que proponer.
+ */
+function spfSegunMx(nombre: string, propuesto: string, checks: readonly MailwayDnsCheck[]): string | null {
+  const tokens = propuesto.trim().split(/\s+/);
+  if (!tokens.some((t) => /^\+?mx$/i.test(t))) return propuesto;
+  const n = nombre.trim().toLowerCase();
+  const mxPropio = checks.some((x) => typeof x.id === 'string' && x.id.toLowerCase() === `mx:${n}` && x.status === 'ok');
+  if (mxPropio) return propuesto;
+  const servidor = cachedInfo()?.mailHostname?.trim().toLowerCase().replace(/\.$/, '');
+  if (!servidor || !MX_RE.test(servidor)) return null;
+  return tokens.map((t) => (/^\+?mx$/i.test(t) ? `a:${servidor}` : t)).join(' ');
 }
 
 function publicMailbox(m: MailwayMailbox) {
@@ -452,6 +507,59 @@ async function tryInfo(): Promise<void> {
   } catch {
     /* la URL pública y las funciones quedan con lo que haya en caché */
   }
+}
+
+// ---------- recepción del correo de un dominio ----------
+
+/** Nombre de host plausible de un MX (viene del DNS o de Mailway: se filtra antes de enseñarlo). */
+const MX_RE = /^(?=.{1,253}$)[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?)*$/;
+
+type Recepcion = 'otro' | 'aqui' | 'sin_mx' | 'desconocido';
+
+/**
+ * ¿Dónde recibe hoy el correo un dominio? Lo mide Skyway en el DNS público
+ * antes de darlo de alta (Mailway solo lo mide de un dominio que ya tiene):
+ * `otro` si algún MX apunta a un servidor que no es el de Mailway.
+ */
+async function recepcionDe(domain: string): Promise<{ recepcion: Recepcion; mx: string[] }> {
+  const [mx] = await Promise.all([consultarMx(domain), tryInfo()]);
+  const propio = cachedInfo()?.mailHostname?.trim().toLowerCase().replace(/\.$/, '') || null;
+  const hosts = mx.hosts.filter((h) => MX_RE.test(h)).slice(0, 10);
+  if (!mx.ok) return { recepcion: 'desconocido', mx: [] };
+  if (hosts.length === 0) return { recepcion: 'sin_mx', mx: [] };
+  if (!propio) return { recepcion: 'desconocido', mx: hosts };
+  return { recepcion: hosts.some((h) => h !== propio) ? 'otro' : 'aqui', mx: hosts };
+}
+
+const POLITICAS_DMARC = new Set(['none', 'quarantine', 'reject']);
+
+/** Lo que dice Mailway de un dominio que quizá recibe en otro proveedor, solo con campos conocidos y acotados. */
+function publicConflicto(c: MailwayConflicto) {
+  const texto = (v: unknown, max: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
+  const mx = (Array.isArray(c.mxActuales) ? c.mxActuales : [])
+    .filter((h): h is string => typeof h === 'string')
+    .map((h) => h.trim().toLowerCase().replace(/\.$/, ''))
+    .filter((h) => MX_RE.test(h))
+    .slice(0, 10);
+  return {
+    hayOtroProveedor: c.hayOtroProveedor === true,
+    mxActuales: mx,
+    spfActual: texto(c.spfActual, 1000),
+    dmarcPolitica: typeof c.dmarcPolitica === 'string' && POLITICAS_DMARC.has(c.dmarcPolitica) ? c.dmarcPolitica : null,
+    avisoMtaSts: texto(c.avisoMtaSts, 2000),
+  };
+}
+
+/** Copia del último cambio en Cloudflare (Mailway posterior a la 1.2), solo con campos conocidos. */
+function publicCopia(c: MailwayCopiaCambio | null | undefined) {
+  if (!c || typeof c !== 'object' || !Array.isArray(c.borrados)) return null;
+  return {
+    createdAt: typeof c.createdAt === 'number' ? c.createdAt : null,
+    borrados: c.borrados
+      .filter((b) => b && typeof b.type === 'string' && typeof b.name === 'string' && typeof b.content === 'string')
+      .slice(0, 50)
+      .map((b) => ({ type: b.type, name: b.name, content: b.content, priority: typeof b.priority === 'number' ? b.priority : null })),
+  };
 }
 
 // ---------- dominios sugeridos ----------
@@ -555,7 +663,8 @@ function publicAutoDns(r: MailwayAutoDnsResult): MailwayAutoDnsResult {
  */
 function reservarCreadosPorMailway(applied: readonly { action: string; type: string; name: string }[], projectId: string): void {
   const nombres = applied
-    .filter((a) => a && a.action === 'create' && ['A', 'AAAA', 'CNAME'].includes(String(a.type).toUpperCase()))
+    // También lo que sustituye un reemplazo («replace», Mailway posterior a la 1.2): apunta aquí igual.
+    .filter((a) => a && (a.action === 'create' || a.action === 'replace') && ['A', 'AAAA', 'CNAME'].includes(String(a.type).toUpperCase()))
     .map((a) => String(a.name))
     .filter((n) => n.includes('.'));
   if (nombres.length > 0) reservarNombresMailway(nombres, projectId);
@@ -705,6 +814,8 @@ function configView() {
     panelUrl: publicPanelUrl(cfg),
     defaultPlanId: getSetting(MAILWAY_SETTING.defaultPlanId) || null,
     traefik: mailwayTraefikStatus(),
+    // Nombres que fueron de la instancia: siguen reservados hasta liberarlos aquí.
+    previousHosts: mailwayPreviousHosts(),
   };
 }
 
@@ -767,6 +878,9 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
      * proyectos se conservan en Skyway, y los clientes y buzones en Mailway.
      */
     secured.post('/api/mailway/disconnect', { preHandler: [requireAdmin, requireSession] }, async (req) => {
+      // Desconectar no cambia el DNS: los nombres de la instancia siguen
+      // apuntando aquí y quedan reservados como anteriores.
+      const nombres = mailwayCurrentHosts();
       for (const key of [
         MAILWAY_SETTING.baseUrl,
         MAILWAY_SETTING.token,
@@ -777,9 +891,27 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
       ]) {
         setSetting(key, null);
       }
+      rememberPreviousHosts(nombres);
       resetMailwayCaches();
       forgetMailwayTraefik();
       audit(req, 'mailway_disconnected', { type: 'system', id: 'mailway' });
+      return { ok: true, config: configView() };
+    });
+
+    /**
+     * Libera un nombre que fue de la instancia de Mailway (un servidor de
+     * correo o un webmail anteriores): a partir de ahí, un servicio de
+     * cualquier proyecto puede asignárselo. Solo cuando ya no se usa: si su
+     * DNS sigue apuntando aquí y los titulares lo tienen configurado, quien se
+     * lo asigne recibe su tráfico. Con sesión de navegador, como el resto de
+     * la configuración del correo.
+     */
+    secured.delete('/api/mailway/previous-hosts/:host', { preHandler: [requireAdmin, requireSession] }, async (req, reply) => {
+      const { host } = z.object({ host: z.string().trim().toLowerCase().min(1).max(253) }).parse(req.params);
+      if (!releaseMailwayPreviousHost(host)) {
+        return reply.code(404).send({ error: `${host} no está entre los nombres anteriores de Mailway.` });
+      }
+      audit(req, 'mailway_host_released', { type: 'system', id: 'mailway', detail: host });
       return { ok: true, config: configView() };
     });
 
@@ -1048,6 +1180,29 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
 
     // ---------- dominios ----------
 
+    /**
+     * Antes de dar de alta un dominio de correo: dónde recibe hoy el correo
+     * (sus MX) y si al administrador se le ofrece el DNS automático. No da de
+     * alta nada ni llama a Mailway más que para saber su servidor de correo:
+     * la interfaz lo usa para pedir confirmación cuando el dominio recibe en
+     * otro proveedor (añadirlo aquí no mueve el correo, pero el DNS automático
+     * y lo que se envía desde este servidor sí le afectan).
+     */
+    secured.get(
+      '/api/projects/:id/mail/domain-check',
+      { preHandler: rateLimit({ max: 30, windowMs: 60_000 }) },
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply);
+        if (!ctx) return reply;
+        requireLink(ctx.project);
+        const { domain } = z.object({ domain: domainSchema }).parse(req.query ?? {});
+        if (!domain.includes('.')) throw httpError(400, 'Indica un dominio completo, por ejemplo: tuempresa.com');
+        const { recepcion, mx } = await recepcionDe(domain);
+        const dnsAutomatico = ctx.isAdmin ? (await dnsAutomaticoCorreo('Configurar en Cloudflare')).pedir : false;
+        return { domain, recepcion, mx, dnsAutomatico };
+      }),
+    );
+
     secured.post(
       '/api/projects/:id/mail/domains',
       { preHandler: rateLimit({ max: 20, windowMs: 60_000 }) },
@@ -1055,7 +1210,9 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         const ctx = projectCtx(req, reply);
         if (!ctx) return reply;
         const link = requireLink(ctx.project);
-        const body = z.object({ domain: domainSchema }).parse(req.body);
+        // `autoDns` solo cuenta para el administrador: true lo pide, false no;
+        // sin él, Skyway lo decide (véase abajo).
+        const body = z.object({ domain: domainSchema, autoDns: z.boolean().optional() }).parse(req.body);
         if (!body.domain.includes('.')) throw httpError(400, 'Indica un dominio completo, por ejemplo: tuempresa.com');
         assertAccountActive(ctx.project);
         // Como en el resto de rutas: el cliente tiene que seguir siendo el del proyecto.
@@ -1066,7 +1223,35 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         // garantiza que se limita a crear lo que falta. Para cualquier otro,
         // `autoDns: false` y `soloCliente`: el alta de un cliente nunca escribe
         // en las zonas del operador.
-        const dnsCorreo = ctx.isAdmin ? await dnsAutomaticoCorreo('Configurar en Cloudflare') : { pedir: false, motivo: null };
+        let dnsCorreo: { pedir: boolean; motivo: string | null } = { pedir: false, motivo: null };
+        if (ctx.isAdmin && body.autoDns !== false) {
+          dnsCorreo = await dnsAutomaticoCorreo('Configurar en Cloudflare');
+          // Sin decisión expresa, un dominio que recibe hoy en otro proveedor no
+          // se toca: un Mailway hasta la 1.2 crearía su SPF y un DMARC
+          // p=reject que rompen el correo saliente del proveedor actual, de la
+          // web en otro hosting y de herramientas como Mailchimp.
+          if (dnsCorreo.pedir && body.autoDns === undefined) {
+            const { recepcion, mx } = await recepcionDe(body.domain);
+            if (recepcion === 'otro') {
+              dnsCorreo = {
+                pedir: false,
+                motivo:
+                  `${body.domain} recibe hoy el correo en ${mx.join(', ')}, así que no se ha configurado el DNS en Cloudflare para no cambiar nada del proveedor actual. ` +
+                  'Revisa los cambios con «Configurar en Cloudflare» cuando vayas a trasladar el correo.',
+              };
+            } else if (recepcion === 'desconocido') {
+              // Sin saber dónde recibe (el DNS no respondió o no se conoce el
+              // servidor de correo), lo prudente es lo mismo que con otro
+              // proveedor: el DNS automático puede romper uno que no se ve.
+              dnsCorreo = {
+                pedir: false,
+                motivo:
+                  `No se ha podido comprobar dónde recibe hoy el correo ${body.domain}, así que no se ha configurado el DNS en Cloudflare para no cambiar nada de un proveedor que pudiera tener. ` +
+                  'Revisa los cambios con «Configurar en Cloudflare».',
+              };
+            }
+          }
+        }
         const created = await createDomain(link.client_id, body.domain, { soloCliente: !ctx.isAdmin, autoDns: dnsCorreo.pedir });
         const cf = created.cloudflare;
         if (ctx.isAdmin && cf) reservarCreadosPorMailway(cf.applied, ctx.project.id);
@@ -1096,6 +1281,25 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         const summary = await ownedSummary(ctx.project, requireLink(ctx.project));
         ownDomain(summary, domainId);
         return { domain: publicDomain(await verifyDomain(domainId)) };
+      }),
+    );
+
+    /**
+     * ¿El dominio recibe ya el correo en otro proveedor? Lo mide Mailway en el
+     * DNS público. La pestaña Correo lo consulta para avisar de lo que pasa
+     * mientras el MX siga fuera (lo que se envía a ese dominio desde aquí, el
+     * fichero de zona, el DNS automático).
+     */
+    secured.get(
+      '/api/projects/:id/mail/domains/:domainId/conflicto',
+      { preHandler: rateLimit({ max: 60, windowMs: 60_000 }) },
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply);
+        if (!ctx) return reply;
+        const { domainId } = req.params as { domainId: string };
+        const summary = await ownedSummary(ctx.project, requireLink(ctx.project));
+        ownDomain(summary, domainId);
+        return publicConflicto(await getDomainConflict(domainId));
       }),
     );
 
@@ -1132,6 +1336,8 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
             zone: null,
             changes: [],
             summary: { create: 0, update: 0, keep: 0, conflict: 0 },
+            porRegistro: false,
+            copia: null,
           };
         }
         const plan = await getCloudflarePlan(domainId, { soloCliente: !ctx.isAdmin });
@@ -1149,8 +1355,15 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
             current: c.current ?? null,
             reason: c.reason,
             required: !!c.required,
+            // null: el Mailway conectado no lo dice (hasta la 1.2).
+            reemplazable: typeof c.reemplazable === 'boolean' ? c.reemplazable : null,
+            alCambiar: c.alCambiar === true,
           })),
           summary: plan.summary ?? { create: 0, update: 0, keep: 0, conflict: 0 },
+          // Un Mailway que elige los conflictos uno a uno y guarda copia manda
+          // `copia` (aunque sea null); con uno anterior, solo «reemplazar todos».
+          porRegistro: 'copia' in plan,
+          copia: publicCopia(plan.copia),
         };
       }),
     );
@@ -1162,26 +1375,78 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         const ctx = projectCtx(req, reply, { manage: true });
         if (!ctx) return reply;
         const { domainId } = req.params as { domainId: string };
-        const body = z.object({ replaceConflicts: z.boolean().optional() }).parse(req.body ?? {});
+        const body = z
+          .object({
+            replaceConflicts: z.boolean().optional(),
+            // Conflictos que se reemplazan, uno a uno («TIPO:nombre», p. ej.
+            // «MX:empresa.com»). Un Mailway hasta la 1.2 lo ignora y no
+            // reemplaza ninguno, que es lo seguro.
+            replace: z
+              .array(z.string().trim().regex(/^[A-Za-z]{1,10}:[^\s:]{1,253}$/, 'Cada elemento de «replace» debe ser «TIPO:nombre».'))
+              .max(100)
+              .optional(),
+          })
+          .parse(req.body ?? {});
         const link = requireLink(ctx.project);
         const summary = await ownedSummary(ctx.project, link);
         const domain = ownDomain(summary, domainId);
         const bloqueo = ctx.isAdmin ? null : await bloqueoCuentaAjena(link.client_id, domain);
         if (bloqueo) throw httpError(409, bloqueo);
-        const result = await applyCloudflare(domainId, { replaceConflicts: body.replaceConflicts, soloCliente: !ctx.isAdmin });
+        const result = await applyCloudflare(domainId, {
+          replaceConflicts: body.replaceConflicts,
+          replace: body.replace,
+          soloCliente: !ctx.isAdmin,
+        });
         const applied = Array.isArray(result.applied) ? result.applied : [];
         if (ctx.isAdmin) reservarCreadosPorMailway(applied, ctx.project.id);
         const errors = Array.isArray(result.errors) ? result.errors : [];
         audit(req, 'mailway_dns_applied', {
           type: 'project',
           id: ctx.project.id,
-          detail: `${domain.domain}: ${applied.length} cambio(s)${errors.length ? `, ${errors.length} error(es)` : ''}${body.replaceConflicts ? ' (reemplazando conflictos)' : ''}`,
+          detail: (
+            `${domain.domain}: ${applied.length} cambio(s)${errors.length ? `, ${errors.length} error(es)` : ''}` +
+            (body.replaceConflicts ? ' (reemplazando conflictos)' : body.replace?.length ? ` (reemplazando ${body.replace.join(', ')})` : '')
+          ).slice(0, 500),
         });
         return {
           applied: applied.map((a) => ({ action: a.action, type: a.type, name: a.name })),
           errors: errors.map((e) => ({ type: e.type, name: e.name, error: e.error })),
           domain: result.domain ? publicDomain(result.domain) : null,
         };
+      }),
+    );
+
+    /**
+     * Deshace el último cambio en Cloudflare (Mailway posterior a la 1.2): vuelve a crear lo
+     * que borraron los reemplazos y retira lo que Mailway creó en su lugar.
+     * Con las mismas reglas que aplicar: quien gestiona el proyecto y, si no
+     * es administrador, solo con las cuentas de Cloudflare del cliente.
+     */
+    secured.post(
+      '/api/projects/:id/mail/domains/:domainId/cloudflare/undo',
+      { preHandler: rateLimit({ max: 10, windowMs: 60_000 }) },
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply, { manage: true });
+        if (!ctx) return reply;
+        const { domainId } = req.params as { domainId: string };
+        const link = requireLink(ctx.project);
+        const summary = await ownedSummary(ctx.project, link);
+        const domain = ownDomain(summary, domainId);
+        const bloqueo = ctx.isAdmin ? null : await bloqueoCuentaAjena(link.client_id, domain);
+        if (bloqueo) throw httpError(409, bloqueo);
+        const r = await undoCloudflare(domainId, { soloCliente: !ctx.isAdmin });
+        const lista = (v: unknown) =>
+          (Array.isArray(v) ? v : [])
+            .filter((x): x is { type: string; name: string } => !!x && typeof x.type === 'string' && typeof x.name === 'string')
+            .map((x) => ({ type: x.type, name: x.name }));
+        const restaurados = lista(r.restaurados);
+        const retirados = lista(r.retirados);
+        audit(req, 'mailway_dns_undone', {
+          type: 'project',
+          id: ctx.project.id,
+          detail: `${domain.domain}: ${restaurados.length} restaurado(s), ${retirados.length} retirado(s)`,
+        });
+        return { restaurados, retirados, domain: r.domain ? publicDomain(r.domain) : null };
       }),
     );
 
