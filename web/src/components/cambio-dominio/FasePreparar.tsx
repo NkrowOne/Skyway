@@ -96,6 +96,10 @@ export default function FasePreparar({
   const redirige = m.hosts.some((h) => h.modo === 'redirigir');
   const reinicios = (m.alPasar ?? []).filter((s) => s.reinicio);
   const variables = (m.variables?.cambios ?? []).filter((c) => !c.excluida);
+  // Tras un «Volver», quien ya había actualizado sus dispositivos entra con su
+  // usuario del dominio nuevo; al cancelar, Mailway le devuelve el anterior.
+  const conUsuarioNuevo = (correo?.buzones.lista ?? []).filter((b) => b.pendiente && b.login.toLowerCase().endsWith(`@${m.toDomain}`));
+  const appsAlCancelar = conUsuarioNuevo.filter((b) => b.usadoPorApps.some((n) => n.startsWith('skyway:')));
 
   return (
     <div className="flex flex-col gap-5">
@@ -317,6 +321,16 @@ export default function FasePreparar({
         {correo && (
           <p className="mt-2 text-sm text-sub">
             Se quitarán las direcciones de {m.toDomain} de los buzones y alias. {m.fromDomain} sigue igual.
+          </p>
+        )}
+        {conUsuarioNuevo.length > 0 && (
+          <p className="mt-2 text-sm text-sub">
+            {conUsuarioNuevo.length === 1
+              ? `${conUsuarioNuevo[0].email} entra ahora con ${conUsuarioNuevo[0].login}: volverá a entrar con su dirección, y sus dispositivos configurados con ${conUsuarioNuevo[0].login} dejarán de conectar hasta que se actualicen.`
+              : `${conUsuarioNuevo.length} personas entran ahora con su usuario de ${m.toDomain}: volverán a entrar con su dirección de ${m.fromDomain}, y sus dispositivos configurados con el de ${m.toDomain} dejarán de conectar hasta que se actualicen.`}{' '}
+            La contraseña no cambia.
+            {appsAlCancelar.length > 0 &&
+              ` Las aplicaciones que envían con ${appsAlCancelar.length === 1 ? appsAlCancelar[0].email : 'esos buzones'} pasarán a usar su usuario de ${m.fromDomain}: se desplegará la versión que ya está en marcha y no podrán enviar durante unos segundos.`}
           </p>
         )}
       </ConfirmModal>

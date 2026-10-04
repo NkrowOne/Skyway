@@ -556,6 +556,29 @@ describe('dominio de correo del plan de integraciones', () => {
     expect(plan.vars.find((v) => v.name === 'SMTP_USER')?.status).toBe('done');
   });
 
+  it('conectar por SMTP un buzón pendiente que no usa otra aplicación cambia su usuario: la confirmación lo avisa', async () => {
+    const noReply = mw.mailboxes.find((b) => b.email === 'no-reply@dominio2.es')!;
+    expect(noReply.usuarioMotor).toBe('no-reply@dominio.es');
+    // Ninguna aplicación de Skyway lo usa ya: conectar actualiza su usuario.
+    for (const a of mw.appPasswords) if (a.mailboxId === noReply.id) a.revokedAt ??= Date.now();
+    const needs = {
+      engines: [],
+      expectedVars: [],
+      envFile: null,
+      sources: [],
+      mail: { mode: 'smtp' as const, vars: [], evidence: ['package.json: nodemailer'] },
+      detectedAt: 1,
+    };
+    const service = createService(proj.id, 'Carta', 'carta', 'git', { ...gitCfg(['carta.dominio2.es']), needs });
+    const { plan } = await planWithMail({ project: proj, user: admin, target: { service, domains: ['carta.dominio2.es'] }, needs });
+    const correo = plan.resources.find((r) => r.key === 'mail');
+    expect(correo?.status).toBe('apply');
+    expect(correo?.confirmation).toContain(
+      'no-reply@dominio2.es todavía entra con no-reply@dominio.es: al conectar pasará a entrar con no-reply@dominio2.es, y los dispositivos ' +
+        'que sigan configurados con no-reply@dominio.es dejarán de conectar hasta que se actualicen. La contraseña no cambia.',
+    );
+  });
+
   it('antes de pasar, los buzones siguen en el dominio anterior: se conectan, pero no se crean', async () => {
     const p2 = createProject('Blog', 'blog', null, null);
     mw.clients.push({ id: 'cli_blog', name: 'Blog', slug: 'blog', externalRef: projectExternalRef(p2.id), suspended: false, planId: 'pln_2' });

@@ -221,6 +221,8 @@ function altaBloqueada(d: MailwayDomain): string | null {
   const m = d.migracion;
   if (!m) return null;
   if (m.rol === 'origen') {
+    // Ya pasado (o dándose de baja), el nuevo es el que tiene los buzones y ya no se puede cancelar.
+    if (m.estado === 'pasado' || m.estado === 'dando_de_baja') return `${d.domain} está en un cambio de dominio: crea el buzón en ${m.pareja}.`;
     return `${d.domain} está en un cambio de dominio: el buzón se podrá crear en ${m.pareja} en cuanto pases a él.`;
   }
   if (m.estado === 'volviendo') return `${d.domain} está volviendo a ${m.pareja}: el buzón se podrá crear cuando termine.`;
@@ -507,7 +509,7 @@ export function buildPlan(opts: {
         : mail.summary.apiKeys.some((k) => !k.revokedAt && k.name === credName));
     const known = knownMailValues(mail?.info ?? null, mode, mail?.mailbox?.email ?? null);
     // Mismos nombres y mismo usuario que escribirá `connectServiceMail`.
-    const { names, user: mailUser } = conexionPrevista({
+    const { names, user: mailUser, actualizarUsuario } = conexionPrevista({
       service,
       mode,
       known,
@@ -592,11 +594,10 @@ export function buildPlan(opts: {
             : null,
       evidence: wantsMail.evidence,
       canApprove: !!user && canManageProject(user, project),
-      confirmation:
-        status === 'apply' && mode === 'smtp' && existing && names.secretRequested && !holdsCredential
-          ? `El buzón ${existing.email} ya existe: su contraseña de aplicación da acceso IMAP y SMTP a todo su correo, y la leerá ` +
-            'cualquiera que vea las variables del servicio. Apruébalo solo si ese buzón es para los envíos de la web.'
-          : null,
+      confirmation: confirmacionCorreo(status === 'apply' && mode === 'smtp' ? existing : null, {
+        compartida: names.secretRequested && !holdsCredential,
+        actualizaUsuario: actualizarUsuario,
+      }),
     });
     // Sin sitio para la credencial, o con la conexión a medias, no hay nada que aprobar: se dice en el recurso.
     if (noSecret || partial) {
@@ -614,6 +615,34 @@ export function buildPlan(opts: {
   plan.canApprove = !!user && pendingResources.every((r) => r.canApprove);
   plan.fingerprint = planFingerprint(plan);
   return plan;
+}
+
+/**
+ * Lo que hay que confirmar antes de conectar por SMTP un buzón que ya existe:
+ * que su contraseña de aplicación abre todo su correo y, tras un cambio de
+ * dominio, que conectar cambia el usuario con el que entra la persona
+ * (`conexionPrevista`): sus dispositivos configurados con el anterior dejan
+ * de conectar hasta que los actualice. null si no hay nada que confirmar.
+ */
+function confirmacionCorreo(
+  existing: MailwayMailbox | null,
+  opts: { compartida: boolean; actualizaUsuario: boolean },
+): string | null {
+  if (!existing) return null;
+  const partes: string[] = [];
+  if (opts.compartida) {
+    partes.push(
+      `El buzón ${existing.email} ya existe: su contraseña de aplicación da acceso IMAP y SMTP a todo su correo, y la leerá ` +
+        'cualquiera que vea las variables del servicio. Apruébalo solo si ese buzón es para los envíos de la web.',
+    );
+  }
+  if (opts.actualizaUsuario && existing.login && existing.login !== existing.email) {
+    partes.push(
+      `${existing.email} todavía entra con ${existing.login}: al conectar pasará a entrar con ${existing.email}, y los dispositivos ` +
+        `que sigan configurados con ${existing.login} dejarán de conectar hasta que se actualicen. La contraseña no cambia.`,
+    );
+  }
+  return partes.length > 0 ? partes.join(' ') : null;
 }
 
 /**

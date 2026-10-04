@@ -2195,6 +2195,15 @@ function ConnectTab({
   const suggested = preview.data?.suggestedMode ?? null;
   // Servidor, puerto o URL de otro proveedor puestos a mano: la conexión quedaría a medias.
   const conflicts = preview.data?.secretPlaced ? (preview.data.conflicts ?? []) : [];
+  // Como `actualizaUsuarioAlConectar` del servidor: tras un cambio de dominio,
+  // conectar por SMTP un buzón que aún entra con su usuario anterior lo
+  // actualiza (salvo que lo usen otras aplicaciones de Skyway, que lo
+  // actualizan en la baja), y los dispositivos de la persona dejan de conectar.
+  const credencial = service ? `skyway:${service.slug}`.slice(0, 60) : '';
+  const actualizaUsuario =
+    mode === 'smtp' &&
+    !!mailbox?.loginPending &&
+    !appPasswords.some((a) => a.mailboxId === mailbox.id && a.name.startsWith('skyway:') && a.name !== credencial);
 
   return (
     <div className="flex flex-col gap-3.5">
@@ -2265,6 +2274,14 @@ function ConnectTab({
           Si el servicio ya estaba conectado en este modo, la credencial anterior se revoca: hasta que se vuelva a desplegar, el
           servicio no podrá enviar correo.
         </p>
+        {actualizaUsuario && mailbox && (
+          <p className="mt-1.5 text-warn">
+            <span className="break-all font-mono">{mailbox.email}</span> todavía entra con{' '}
+            <span className="break-all font-mono">{mailbox.login}</span>: al conectar pasará a entrar con su dirección, y los dispositivos que
+            sigan configurados con <span className="break-all font-mono">{mailbox.login}</span> dejarán de conectar hasta que se actualicen.
+            La contraseña no cambia.
+          </p>
+        )}
       </div>
 
       <label className="flex items-center gap-2 text-sm text-sub">

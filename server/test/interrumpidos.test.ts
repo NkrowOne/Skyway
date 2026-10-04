@@ -126,6 +126,23 @@ describe('despliegues interrumpidos por un reinicio', () => {
     await esperarReintentos(s.id);
   });
 
+  it('el despliegue de la baja de un cambio de dominio (con la imagen en marcha) se reintenta con esa imagen, sin compilar', async () => {
+    const s = servicio('Siete');
+    const baja = createDeployment(s.id, 'cambio-de-dominio', 'skyway/siete-web:abcdef12');
+    updateDeployment(baja.id, { status: 'deploying' });
+    // El de «Pasar» sin imagen todavía (cortado mientras compilaba) vuelve a construir.
+    const s2 = servicio('Ocho');
+    const pasar = createDeployment(s2.id, 'cambio-de-dominio');
+    updateDeployment(pasar.id, { status: 'building' });
+
+    markStaleDeploymentsFailed();
+    resumeInterruptedDeployments();
+    expect(listDeployments(s.id, 10).find((d) => d.trigger === RETRY_TRIGGER)?.image_tag).toBe('skyway/siete-web:abcdef12');
+    expect(listDeployments(s2.id, 10).find((d) => d.trigger === RETRY_TRIGGER)?.image_tag ?? null).toBeNull();
+    await esperarReintentos(s.id);
+    await esperarReintentos(s2.id);
+  });
+
   it('solo cuenta el ÚLTIMO despliegue de cada servicio: si después hubo otro, no hay nada que reanudar', async () => {
     const s = servicio('Cuatro');
     const viejo = createDeployment(s.id, 'manual');

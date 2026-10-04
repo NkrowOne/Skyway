@@ -434,10 +434,18 @@ describe('reservas de los nombres en uso', () => {
     prepublicado('www.nuevo.es', projA.id, webA.id, null);
     const mensaje = (d: string) =>
       `El dominio ${d} lo utiliza otro proyecto (redirección o cambio de dominio en curso) y no se puede asignar a este servicio.`;
-    for (const isAdmin of [false, true]) {
-      expect(domainClaimError(['ANTES.viejo.es'], { projectId: projB.id, serviceId: null, isAdmin })).toBe(mensaje('antes.viejo.es'));
-      expect(domainClaimError(['www.nuevo.es'], { projectId: projB.id, serviceId: null, isAdmin })).toBe(mensaje('www.nuevo.es'));
-    }
+    expect(domainClaimError(['ANTES.viejo.es'], { projectId: projB.id, serviceId: null, isAdmin: false })).toBe(mensaje('antes.viejo.es'));
+    expect(domainClaimError(['www.nuevo.es'], { projectId: projB.id, serviceId: null, isAdmin: false })).toBe(mensaje('www.nuevo.es'));
+    // A la administración se le dice de qué proyecto es: una redirección
+    // sobrevive al borrado del servicio y solo se quita desde ese proyecto.
+    expect(domainClaimError(['ANTES.viejo.es'], { projectId: projB.id, serviceId: null, isAdmin: true })).toBe(
+      'El dominio antes.viejo.es redirige a www.nuevo.es por un cambio de dominio del proyecto «Tienda» y no se puede asignar a este servicio. ' +
+        'Para liberarlo, quita las redirecciones desde «Cambiar de dominio» de ese proyecto cuando el cambio haya terminado.',
+    );
+    expect(domainClaimError(['www.nuevo.es'], { projectId: projB.id, serviceId: null, isAdmin: true })).toBe(
+      'El dominio www.nuevo.es lo utiliza un cambio de dominio del proyecto «Tienda» (nombre en preparación) y no se puede asignar a este servicio ' +
+        'hasta que ese cambio termine o se cancele.',
+    );
     // Lo que ya tenía el servicio no se vuelve a comprobar.
     expect(domainClaimError(['www.nuevo.es'], { projectId: projB.id, serviceId: null, isAdmin: false, current: ['www.nuevo.es'] })).toBeNull();
     // El propio proyecto sí (el asistente los pone en sus servicios al pasar y al volver).

@@ -434,8 +434,11 @@ export function resumeInterruptedDeployments(): { retried: number; alerted: numb
     markManualAction(service.id); // el intercambio no es una caída
     triggerDeploy(service.id, RETRY_TRIGGER, {
       // Una vuelta atrás se reintenta como vuelta atrás: desplegar la cabeza
-      // desharía lo que se pidió. El resto vuelve a construir (o reutilizar).
-      imageTag: dep.trigger === 'rollback' && dep.image_tag ? dep.image_tag : undefined,
+      // desharía lo que se pidió. Lo mismo un despliegue del cambio de dominio
+      // con imagen: el de la baja vuelve a desplegar la versión en marcha con
+      // otro usuario SMTP, no código nuevo (el de «Pasar» solo la tiene si ya
+      // había construido, y es esa misma). El resto vuelve a construir (o reutilizar).
+      imageTag: (dep.trigger === 'rollback' || dep.trigger === 'cambio-de-dominio') && dep.image_tag ? dep.image_tag : undefined,
       forceBuild: dep.force_build === 1,
       targetCommit: dep.target_commit ?? undefined,
     });

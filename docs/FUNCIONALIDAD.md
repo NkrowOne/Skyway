@@ -1328,7 +1328,13 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   nuevos (§2, proveedor HTTP; se publican en cuanto `checkDomain` da `ok`), abre
   el cambio en Mailway con `origen: 'skyway'` (desde ese momento solo Skyway lo
   pasa, vuelve, cancela o da de baja) y reserva al proyecto los nombres que
-  Mailway creó en Cloudflare. Si Mailway lo rechaza (4xx), el cambio se borra
+  Mailway crea en Cloudflare (en cada respuesta, no solo al crear: el webmail
+  se crea al probarse la propiedad y el MX con «Cambiar el MX»; un nombre ya
+  reservado no se mueve). Un cambio que Mailway ya tenía abierto con el mismo
+  origen y destino pero que no abrió este proyecto (desde el panel de Mailway
+  o desde otro proyecto: crear lo devolvería) no se adopta: el plan lo
+  bloquea y preparar, o vincular un alta sin confirmar, responde 409
+  `migration_exists`. Si Mailway lo rechaza (4xx), el cambio se borra
   entero; si no responde (plazo, red o 5xx), pudo crearlo igualmente y nadie
   podría cerrarlo desde su panel, así que el cambio se conserva con el error y
   la compuerta del correo pendiente: la comprobación lo busca en Mailway
@@ -1368,11 +1374,25 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   vuelta y sin redirecciones; después se despliegan los servicios afectados.
   Los nombres viejos que el contenedor en marcha ya no tiene se **prepublican**
   (con el DNS dado por bueno) hasta que el despliegue termine bien: sin ello
-  nadie los serviría mientras tanto, ni nunca si el despliegue falla.
+  nadie los serviría mientras tanto, ni nunca si el despliegue falla. Un nombre
+  nuevo que el servicio ya no tiene solo se vuelve a añadir si sigue libre
+  (`domainClaimError`): si otro proyecto se lo ha asignado, se avisa y no se
+  añade (dos servicios con el mismo host se repartirían su tráfico).
 - **Cancelar** (antes de pasar): Mailway primero (puede negarse con
-  `migration_new_mx_here`, que se enseña tal cual); después se retira la
-  prepublicación. Los registros DNS creados se conservan, reservados al proyecto.
-- **Dar de baja** (con correo, `confirm` = dominio anterior): en segundo plano,
+  `migration_new_mx_here`, que se enseña tal cual, y entonces nada cambia);
+  después se retira la prepublicación. Tras un «Volver», quien había
+  actualizado su usuario entra con el de `dominio2.es`, y al cancelar Mailway
+  le devuelve el de `dominio.es`: las aplicaciones que envían con esos buzones
+  reciben el usuario y el remitente de `dominio.es` y se despliegan con la
+  imagen en marcha, como en la baja (si su despliegue falla, «Reintentar este
+  servicio» sigue disponible en el cambio cancelado). Los registros DNS creados
+  se conservan, reservados al proyecto.
+- **Dar de baja** (con correo, `confirm` = dominio anterior): si hay buzones
+  que usan aplicaciones de Skyway, antes de tocarlas se mide el MX del dominio
+  anterior: si apunta al servidor de correo de Mailway (por nombre o por IP),
+  409 `migration_old_mx_here` sin cambiar nada (Mailway lo mide de todos modos
+  al dar de baja, pero cuando las aplicaciones ya tienen el usuario nuevo). En
+  segundo plano,
   buzón a buzón, los que usan aplicaciones de Skyway (`skyway:<slug>`) pasan al
   usuario nuevo si siguen pendientes (`login-update`) y, justo después, sus
   servicios reciben el usuario y el remitente nuevos y se despliegan **con la
@@ -1391,7 +1411,13 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   el reintento automático del arranque) resuelve uno fallido. Cancelar,
   terminar y dar de baja exigen todos desplegados (409
   `migration_services_pending`): antes, «Reintentar este servicio», que
-  reutiliza la imagen en marcha si el despliegue fallido también lo hacía.
+  reutiliza la imagen en marcha si el despliegue fallido también lo hacía (el
+  reintento automático tras un reinicio, también). Un servicio eliminado no
+  bloquea: sus despliegues se borran con él y ninguno resolvería su error.
+- **El proyecto y su correo**: con un cambio abierto que incluye el correo, ni
+  se elimina el proyecto ni se desactiva su correo (409 `migration_open`): el
+  cambio de Mailway (origen `skyway`) quedaría abierto sin que nadie pudiera
+  cerrarlo desde su panel.
 - Las acciones guardan el estado intermedio antes de empezar y son
   idempotentes («Reintentar»); un mutex en memoria por proyecto las serializa.
   Al arrancar, `marcarCambiosInterrumpidos` deja con error los que cortó el
@@ -1664,7 +1690,7 @@ como línea negativa; una factura emitida es inmutable y conserva su descuento.
 | POST | `/projects` | admin/owner | crea proyecto (`{name, client?, workspaceId?}`); el propietario en su workspace, dentro de la cuota (409 si su cuenta ya no existe) |
 | GET | `/projects/:id` | +access | proyecto + servicios con runtime y `pendingChanges` (cambios sin desplegar) + `activeDeploys` (despliegues vivos por servicio); `config` sin `webhookSecret` y con `buildArgs` tapados |
 | PATCH | `/projects/:id` | manage | renombra; el admin además reasigna de workspace |
-| DELETE | `/projects/:id?confirm=<nombre>` | manage | elimina el proyecto con **todos sus datos** (§3.1): contenedores, volúmenes de todos sus servicios, imágenes construidas, copias de seguridad, red y alertas abiertas; libera sus reservas de dominio. `confirm` es el nombre visible exacto o el slug; sin él o si no coincide, 400 sin borrar nada. Sin Docker, 503 sin borrar nada; 409 si ya se está borrando, y 409 con `{error, warnings}` sin borrar volúmenes ni filas si un contenedor no se pudo retirar o un despliegue no terminó de cancelarse (reintentar es seguro). Lo que no se pudo retirar después va en `warnings` → `{ok, warnings, removed: {services, volumes[], images, backups}}`. Ya no existe la opción `volumes` |
+| DELETE | `/projects/:id?confirm=<nombre>` | manage | elimina el proyecto con **todos sus datos** (§3.1): contenedores, volúmenes de todos sus servicios, imágenes construidas, copias de seguridad, red y alertas abiertas; libera sus reservas de dominio. `confirm` es el nombre visible exacto o el slug; sin él o si no coincide, 400 sin borrar nada. Sin Docker, 503 sin borrar nada; 409 si ya se está borrando; 409 `migration_open` con un cambio de dominio abierto que incluye el correo (§6.1); y 409 con `{error, warnings}` sin borrar volúmenes ni filas si un contenedor no se pudo retirar o un despliegue no terminó de cancelarse (reintentar es seguro). Lo que no se pudo retirar después va en `warnings` → `{ok, warnings, removed: {services, volumes[], images, backups}}`. Ya no existe la opción `volumes` |
 | POST | `/projects/:id/deploy-all` | +access | despliega repos e imágenes del proyecto |
 | GET | `/projects/:id/vars` | +access | variables compartidas |
 | PUT | `/projects/:id/vars` | +access | reemplaza variables compartidas; responde `affected` |
@@ -1871,7 +1897,7 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | GET | `/projects/:id/mail` | auth + access | `{moduleEnabled, configured, canManage, isAdmin, accountSuspended, linked, notice?, panelUrl, features, link?, summary?, suggestedDomains}`. Recupera el vínculo si Mailway tiene un cliente con la referencia del proyecto; si el cliente ya no existe o ya no lleva exactamente esa referencia, `notice` lo explica (sin `summary`) y se puede desactivar. `summary.apiKeys[]` incluye `senderMailboxId` y `createdBySkyway`. `suggestedDomains` (máx. 8): dominios registrables de los dominios de los servicios del proyecto según la lista de sufijos públicos (`api.empresa.com` → `empresa.com`; nada bajo sufijos privados como `github.io`), sin los que ya tiene el cliente ni los de la plataforma (registrables de `SKYWAY_DOMAIN`, del `rootDomain` y de los hosts de Mailway); `[]` sin módulo, sin Mailway o con `notice` |
 | GET | `/projects/:id/mail/options` | manage | `{plans, clients, defaultPlanId, canChoosePlan, defaultName, previous}`: el administrador ve todos los planes y los clientes (con `available`/`linkedTo`); el propietario, solo el plan que se le asignará. `previous` = `{clientName, available, reason}` del cliente anterior del proyecto |
 | POST | `/projects/:id/mail/link` | manage | `{mode:'create', name?(2-80), planId?, contactEmail?}` (ensure por referencia externa; `planId` distinto del predeterminado → 403 salvo admin; sin nombre, el del proyecto o «Proyecto X» si tiene 1 carácter), `{mode:'previous'}` (recupera el cliente anterior si su referencia está libre; 409 si otra integración lo tiene) o `{mode:'existing', clientId}` (solo admin; 409 si ya está vinculado). 403 con la cuenta suspendida |
-| DELETE | `/projects/:id/mail/link` | manage | suelta la referencia en Mailway **solo si el cliente todavía la lleva** (si es de otra integración no se toca), borra el vínculo local y recuerda el cliente → `{ok, released}` |
+| DELETE | `/projects/:id/mail/link` | manage | suelta la referencia en Mailway **solo si el cliente todavía la lleva** (si es de otra integración no se toca), borra el vínculo local y recuerda el cliente → `{ok, released}`. 409 `migration_open` con un cambio de dominio abierto que incluye el correo (§6.1) |
 | GET | `/projects/:id/mail/domain-check` | auth + access | `?domain=`: dónde recibe hoy el correo un dominio, **antes** de darlo de alta (no da de alta nada) → `{domain, recepcion: 'otro'\|'aqui'\|'sin_mx'\|'desconocido', mx[], dnsAutomatico}`. Lo mide Skyway (MX públicos frente al servidor de correo de Mailway). `dnsAutomatico`: al administrador se le ofrece el DNS automático. La interfaz pide confirmación con `otro` (añadirlo no mueve el correo, pero el DNS automático, el fichero de zona y lo que se envía al dominio desde aquí sí le afectan). 30/min |
 | POST | `/projects/:id/mail/domains` | auth + access | `{domain, autoDns?}` → `{domain, cloudflare, cloudflareReason}` (201). `autoDns` solo cuenta para el administrador: `true` lo pide, `false` no; **sin él, si el MX del dominio apunta a otro proveedor —o no se puede saber, porque el DNS no responde o no se conoce el servidor de correo— no se pide** y `cloudflareReason` lo explica (un Mailway hasta la 1.2 crearía su SPF y un DMARC `p=reject` que rompen el correo saliente del proveedor actual, de la web en otro hosting y de herramientas como Mailchimp). Comprueba la referencia del cliente; 403 con la cuenta suspendida, 409 con el cliente suspendido en Mailway. Para un administrador se envía `autoDns: true` solo si Mailway tiene Cloudflare (`features.cloudflare`) y declara `features.cloudflareSoloCrear` (1.1 o posterior): Mailway crea en Cloudflare los registros que faltan (también con las cuentas de la instancia) sin modificar ninguno existente (ni el SPF, ni un proxy), y `cloudflare` = `{applied, errors, skipped}` o `cloudflareReason` explica por qué no. Con un Mailway anterior no se pide y `cloudflareReason` dice que hay que actualizarlo; sin Cloudflare en Mailway no se pide ni se avisa. Para quien no es admin va con `autoDns: false` y `?soloCliente=1` (`cloudflare: null`): el alta de un cliente nunca escribe en las zonas del operador. Cada dominio incluye `recepcionExterna` (`true`/`false` con Mailway posterior a la 1.2; `null` con uno anterior) y, en cada comprobación DNS, `suggested`: el valor con el que **sustituir** el registro existente (el SPF actual con lo que le falta, el que calcula Mailway o, con uno anterior, Skyway: los mecanismos del propuesto que faltan, delante de su `all`, con `a:<servidor de correo>` en lugar de `mx` mientras la comprobación del MX de ese nombre no sea correcta, porque con el MX en otro proveedor `mx` autorizaría a ese proveedor y no a este servidor). Con un Mailway que ya lo calcula (el que informa `recepcionExterna`), Skyway no inventa ninguno si no lo manda. La tarjeta copia en cada fila SPF el valor de su nombre en lugar del SPF del motor. Cada dominio incluye también `ownershipVerifiedAt`, `ownershipPending` y `ownershipRecord` (`{type, name, content}`, el TXT que prueba la propiedad): mientras la propiedad esté pendiente, Mailway responde 409 `domain_ownership_pending` al crear buzones y la interfaz muestra «Propiedad pendiente» con el TXT |
 | POST | `/projects/:id/mail/domains/:domainId/verify` | auth + access | vuelve a comprobar el DNS |
@@ -2024,18 +2050,18 @@ desplegar: 409 `migration_services_pending`.
 | Método | Ruta | Descripción |
 | --- | --- | --- |
 | POST | `/plan` | `{fromDomain, toDomain, soloWeb?, hosts?, excluidas?}` → `PlanSkyway {hosts[{serviceId, from, to, modo, serviceName, error}], dnsWeb, correoDisponible: si/no_vinculado/sin_dominio/mailway_antiguo, correo, variables{cambios, notas, wordpress, huella}, servicios, avisos, bloqueos, expect}`. Sin efectos. 30/min |
-| POST | `/projects/:id/domain-migrations` | `{fromDomain, toDomain, soloWeb?, hosts, excluidas, expect}` → 201 `MigracionSkyway` (+ `dns` del DNS automático), o 200 si ya estaba abierto con el mismo origen y destino. 409 `plan_changed` si `expect` no es la huella del plan, `migration_blocked` con el primer bloqueo, `migration_exists` con otro cambio abierto |
+| POST | `/projects/:id/domain-migrations` | `{fromDomain, toDomain, soloWeb?, hosts, excluidas, expect}` → 201 `MigracionSkyway` (+ `dns` del DNS automático), o 200 si ya estaba abierto con el mismo origen y destino. 409 `plan_changed` si `expect` no es la huella del plan, `migration_blocked` con el primer bloqueo, `migration_exists` con otro cambio abierto (también si Mailway devuelve uno que no abrió este proyecto) |
 | GET | `/projects/:id/domain-migrations` | `{abierta, anteriores (últimas 5), dominios}`; `?ligera=1` sin consultar a Mailway (el aviso de la página del proyecto) |
 | GET | `/:mid` | `MigracionSkyway {estado, paso, error, hosts[{…, dns, certificado}], compuertas[dns_web, certificados, correo], servicios[{despliegue, estado, error}], redirecciones, correo (vista de Mailway en vivo, caché de 10 s), variables (antes de pasar), alPasar, ipServidor, avisos, puede*, fechas}` |
 | POST | `/:mid/check` | vuelve a medir (DNS, certificados y correo) y deja `lista` o `preparando`; con un alta en Mailway sin confirmar, la busca y la vincula. 60/min |
 | POST | `/:mid/mx` | cambia el MX del dominio nuevo a este servidor en su zona de Cloudflare (Mailway `POST /:id/mx`, con `soloCliente` fuera de la administración). Solo en `preparando`/`lista`, con la pre-recepción hecha (409 `migration_state`) y la zona en Cloudflare (400 `cloudflare_unavailable`). 10/min |
 | POST | `/:mid/switch` | `{expect}` (huella de `variables`) → 202. 409 `migration_not_ready`, `plan_changed` |
 | POST | `/:mid/rollback` | → 202 |
-| POST | `/:mid/cancel` | → 200 |
-| POST | `/:mid/retire` | `{confirm}` → 202 (la baja sigue en segundo plano). 400 `confirm_mismatch` |
+| POST | `/:mid/cancel` | → 200 (tras un «Volver», pone al día las aplicaciones que envían con los buzones que recuperan su usuario de `dominio.es`) |
+| POST | `/:mid/retire` | `{confirm}` → 202 (la baja sigue en segundo plano). 400 `confirm_mismatch`; 409 `migration_old_mx_here` antes de tocar las aplicaciones si el MX anterior apunta al servidor de correo |
 | POST | `/:mid/finish` | `{confirm}` → 200 (solo la web) |
 | POST | `/:mid/redirects/remove` | `{confirm}` → 200 (en `terminada`) |
-| POST | `/:mid/services/:sid/retry` | → 202 (servicio con el despliegue fallido; con la imagen en marcha si el fallido la reutilizaba) |
+| POST | `/:mid/services/:sid/retry` | → 202 (servicio con el despliegue fallido; con la imagen en marcha si el fallido la reutilizaba; también en un cambio cancelado si no hay otro abierto) |
 | POST | `/:mid/mailboxes/:mbid/login-update` | → 200 («Actualizar ahora»; con aplicaciones del proyecto, también sus variables y un despliegue con la imagen en marcha) |
 | GET | `/:mid/zonefile` | `text/plain`: fichero de zona de Mailway del dominio nuevo (nivel `recomendados`: incluye el TXT de propiedad) más los registros A de la web, comentados; si el dominio nuevo recibe en otro proveedor, su MX también va comentado; solo la web, solo los A |
 

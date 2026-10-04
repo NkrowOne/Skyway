@@ -8,6 +8,7 @@ import FasePreparar from './FasePreparar';
 import FaseTerminada from './FaseTerminada';
 import FaseTransicion from './FaseTransicion';
 import PasoQueCambia from './PasoQueCambia';
+import ServiciosCambio from './ServiciosCambio';
 
 const abierto = (m: MigracionSkyway) => m.estado !== 'terminada' && m.estado !== 'cancelada';
 
@@ -35,7 +36,11 @@ export default function CambioDominioModal({ open, onClose, projectId }: { open:
     enabled: open,
     refetchInterval: (q) => {
       const a = q.state.data?.abierta;
-      if (!a) return false;
+      if (!a) {
+        // Cancelar tras un «Volver» despliega las aplicaciones que envían con buzones del cambio.
+        const ultima = q.state.data?.anteriores[0];
+        return ultima?.estado === 'cancelada' && ultima.servicios.some((s) => s.estado === 'desplegando') ? 3000 : false;
+      }
       if (ESTADOS_EN_CURSO.includes(a.estado) || a.servicios.some((s) => s.estado === 'desplegando')) return 3000;
       return a.estado === 'pasada' ? 15_000 : false;
     },
@@ -124,6 +129,9 @@ export default function CambioDominioModal({ open, onClose, projectId }: { open:
       <div className="flex flex-col gap-4">
         {ultima?.estado === 'cancelada' && !nuevo && (
           <Avisos tono="info" avisos={[`El último cambio (${ultima.fromDomain} → ${ultima.toDomain}) se canceló.`, ...ultima.avisos]} />
+        )}
+        {ultima?.estado === 'cancelada' && !nuevo && ultima.servicios.some((s) => s.estado !== 'ok') && (
+          <ServiciosCambio projectId={projectId} m={ultima} onCambio={actualizar} accion={null} />
         )}
         <PasoQueCambia
           projectId={projectId}

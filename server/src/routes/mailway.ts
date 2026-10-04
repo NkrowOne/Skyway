@@ -19,6 +19,7 @@ import {
 } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
 import { panelDomains, webmailHostError } from '../domainguard';
+import { bloqueoPorCambioConCorreo } from '../domainmigration';
 import { consultarMx } from '../domains';
 import {
   MAILWAY_SETTING,
@@ -448,6 +449,11 @@ function publicMailbox(m: MailwayMailbox) {
     usedBytes: typeof m.usedBytes === 'number' ? m.usedBytes : null,
     status: m.status,
     createdAt: m.createdAt ?? null,
+    // Tras pasar a otro dominio, el usuario con el que entra sigue siendo el
+    // anterior hasta «Actualizar mis dispositivos» (Mailway 1.3+): «Conectar a
+    // un servicio» avisa de que conectar por SMTP lo actualiza.
+    login: typeof m.login === 'string' && m.login ? m.login : m.email,
+    loginPending: m.loginPending === true,
   };
 }
 
@@ -1196,6 +1202,8 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         const ctx = projectCtx(req, reply, { manage: true });
         if (!ctx) return reply;
         const link = requireLink(ctx.project);
+        const cambioAbierto = bloqueoPorCambioConCorreo(ctx.project.id, 'desactivar el correo');
+        if (cambioAbierto) return reply.code(409).send({ error: cambioAbierto, code: 'migration_open' });
         const released = await releaseProjectClient(ctx.project.id, link.client_id);
         deleteMailwayLink(ctx.project.id);
         writePreviousClient(ctx.project.id, { clientId: link.client_id, clientName: link.client_name });

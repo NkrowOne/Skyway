@@ -31,6 +31,7 @@
  * El estado del correo vive SOLO en Mailway: aquí se consulta en vivo.
  */
 import crypto from 'crypto';
+import dns from 'dns';
 import { FastifyRequest } from 'fastify';
 import { getDomain } from 'tldts';
 import { audit, auditSystem } from './audit';
@@ -50,6 +51,7 @@ import {
   getDeployment,
   getDomainMigration as getCambioSkyway,
   getEnv,
+  getMailwayDnsReserva,
   getMailwayLink,
   getManagedEnv,
   getOpenDomainMigration,
@@ -85,7 +87,7 @@ import {
 import { awaitDeployment, triggerDeploy } from './deploy/deployer';
 import { imageExists } from './docker/containers';
 import { domainClaimError } from './domainguard';
-import { checkDomain, getServerIp } from './domains';
+import { checkDomain, consultarMx, getServerIp } from './domains';
 import {
   anadirBloqueWordpress,
   AvisoSinMapa,
@@ -423,14 +425,18 @@ interface EstadoHostWeb {
 }
 /** Última comprobación de los nombres nuevos de cada cambio (`check`). */
 const cacheWeb = new Map<string, Map<string, EstadoHostWeb>>();
-/** Avisos del último «Volver» (variables que no se han restaurado por haber cambiado a mano). */
-const avisosVolver = new Map<string, string[]>();
+/**
+ * Avisos de la última acción: las variables que «Volver» no ha restaurado por
+ * haber cambiado a mano, o las aplicaciones que «Cancelar» no ha podido poner
+ * al día.
+ */
+const avisosAccion = new Map<string, string[]>();
 
 /** Solo para las pruebas: olvida lo que se guarda en memoria. */
 export function resetCambioDominioCaches(): void {
   cacheCorreo.clear();
   cacheWeb.clear();
-  avisosVolver.clear();
+  avisosAccion.clear();
 }
 
 function guardarCorreo(vista: CambioDominioVista): CambioDominioVista {
@@ -522,6 +528,12 @@ async function correoTrasFallo(row: DomainMigrationRow): Promise<CambioDominioVi
 function parteLocal(email: string): string {
   const i = email.lastIndexOf('@');
   return i > 0 ? email.slice(0, i).toLowerCase() : email.toLowerCase();
+}
+
+/** Dominio de una dirección (vacío si no tiene «@»). */
+function dominioDe(email: string): string {
+  const i = email.lastIndexOf('@');
+  return i >= 0 ? normalizarNombre(email.slice(i + 1)) : '';
 }
 
 /**
@@ -839,6 +851,16 @@ export async function calcularPlan(req: FastifyRequest, project: ProjectRow, bod
     planCorreo = await planDomainMigration(correo.dominio.id, toDomain, { soloCliente: !isAdmin });
     for (const b of planCorreo.bloqueos) bloqueos.push(b.mensaje);
     for (const a of planCorreo.avisos) avisos.push(a.mensaje);
+    // Mailway no bloquea un cambio idéntico al que ya está abierto (crear lo
+    // devuelve, es idempotente), pero si no lo abrió este proyecto no se
+    // puede gestionar desde aquí (`exigirCambioPropio`): se dice ya en el plan.
+    const enCambio = correo.dominio.migracion;
+    const propio = !!abierta && abierta.from_domain === fromDomain && abierta.to_domain === toDomain;
+    if (enCambio && !propio && !planCorreo.bloqueos.some((b) => b.code === 'migration_exists')) {
+      bloqueos.push(
+        `${fromDomain} ya está en un cambio de dominio abierto en Mailway que no se ha abierto desde este proyecto (por ejemplo, desde el panel de Mailway). Continúalo allí, o cancélalo antes de cambiar el dominio desde Skyway.`,
+      );
+    }
   } else if (!soloWeb && correo.disponible === 'mailway_antiguo') {
     bloqueos.push('Actualiza Mailway a la 1.3 para cambiar el dominio del correo.');
   } else if (correoError) {
@@ -958,11 +980,10 @@ export async function prepararCambio(
         if (vista.clientId !== correo.link!.client_id) {
           throw new MailwayError('http', 'La respuesta de Mailway no corresponde al cliente vinculado.', 502);
         }
+        exigirCambioPropio(vista, project.id);
         updateDomainMigration(row.id, { mailway_migration_id: vista.id });
         guardarCorreo(vista);
-        // Los nombres que Mailway creó en Cloudflare (autoconfiguración, webmail)
-        // apuntan aquí: solo este proyecto puede asignárselos a un servicio.
-        if (vista.nombresCloudflare.length > 0) reservarNombresMailway(vista.nombresCloudflare, project.id);
+        reservarNombresDelCorreo(vista, project.id);
       } catch (err) {
         if (!puedeHaberseHecho(err)) {
           // Mailway lo ha rechazado: sin el correo el cambio no está completo y
@@ -1073,6 +1094,42 @@ function esVistaCambio(v: unknown): v is CambioDominioVista {
 }
 
 /**
+ * 409 si el cambio que devuelve Mailway no lo abrió este proyecto: uno creado
+ * desde el panel de Mailway (origen «panel») o desde otro proyecto. Crear es
+ * idempotente con el mismo origen y destino, así que Mailway devuelve el que
+ * ya existe; adoptarlo dejaría el asistente sin salida en cuanto su dueño lo
+ * pasara o lo cancelara por su cuenta (la compuerta del correo no vería nunca
+ * «listo» y pasar o cancelar responderían 409).
+ */
+function exigirCambioPropio(vista: CambioDominioVista, projectId: string): void {
+  if (vista.origen === 'skyway' && vista.referenciaExterna === projectExternalRef(projectId)) return;
+  const dominio = vista.desde?.domain ?? 'El dominio';
+  throw new ErrorCambio(
+    409,
+    'migration_exists',
+    vista.origen === 'skyway'
+      ? `${dominio} ya está en un cambio de dominio abierto en Mailway que se gestiona desde otro proyecto de Skyway. Termínalo o cancélalo allí antes de empezar otro.`
+      : `${dominio} ya está en un cambio de dominio abierto en Mailway, creado desde su panel. Continúalo allí, o cancélalo antes de cambiar el dominio desde Skyway.`,
+  );
+}
+
+/**
+ * Los nombres que Mailway ha creado en Cloudflare para el cambio
+ * (autoconfiguración, el webmail de marca blanca, los que crea al cambiar el
+ * MX) apuntan aquí: solo este proyecto puede asignárselos a un servicio.
+ * Mailway los crea a lo largo de la preparación (el webmail, cuando se prueba
+ * la propiedad), así que se reservan en cada respuesta, no solo al crear. Un
+ * nombre que ya tiene reserva se deja como está: la administración pudo
+ * pasarlo a otro proyecto.
+ */
+function reservarNombresDelCorreo(vista: CambioDominioVista, projectId: string): void {
+  const nombres = (Array.isArray(vista.nombresCloudflare) ? vista.nombresCloudflare : []).filter(
+    (n): n is string => typeof n === 'string' && !!n.trim() && !getMailwayDnsReserva(n),
+  );
+  if (nombres.length > 0) reservarNombresMailway(nombres, projectId);
+}
+
+/**
  * Cambio con el correo cuyo alta en Mailway no se pudo confirmar (respuesta
  * perdida al preparar, o un reinicio entre crearlo y anotarlo): se busca en
  * Mailway por la referencia del proyecto y, si no está y `crear`, se vuelve a
@@ -1115,6 +1172,7 @@ async function vincularCorreo(project: ProjectRow, row: DomainMigrationRow, isAd
       { fromDomainId: ctx.dominio.id, toDomain: row.to_domain, referenciaExterna: ref, autoDns: true, origen: 'skyway' },
       { soloCliente: !isAdmin },
     );
+    if (vista.clientId === ctx.link.client_id) exigirCambioPropio(vista, project.id);
   }
   if (!vista) return row;
   if (vista.clientId !== ctx.link.client_id) {
@@ -1122,7 +1180,7 @@ async function vincularCorreo(project: ProjectRow, row: DomainMigrationRow, isAd
   }
   updateDomainMigration(row.id, { mailway_migration_id: vista.id, mailway_client_id: ctx.link.client_id, error: null });
   guardarCorreo(vista);
-  if (Array.isArray(vista.nombresCloudflare) && vista.nombresCloudflare.length > 0) reservarNombresMailway(vista.nombresCloudflare, project.id);
+  reservarNombresDelCorreo(vista, project.id);
   return getCambioSkyway(row.id) ?? row;
 }
 
@@ -1142,6 +1200,9 @@ async function comprobarSinCerrojo(project: ProjectRow, inicial: DomainMigration
       row = await vincularCorreo(project, row, isAdmin, true);
     } catch (err) {
       correoError = mensajeDe(err);
+      // El motivo queda en la fila: la vista lo enseña (un cambio ajeno en
+      // Mailway no se resuelve solo y la interfaz tiene que decir por qué).
+      updateDomainMigration(row.id, { error: `No se ha podido confirmar el cambio del correo en Mailway: ${correoError}` }, { siEstado: ['preparando', 'lista'] });
     }
   }
   if (row.mailway_migration_id) {
@@ -1151,6 +1212,7 @@ async function comprobarSinCerrojo(project: ProjectRow, inicial: DomainMigration
         throw new MailwayError('http', 'La respuesta de Mailway no corresponde al cliente de este cambio de dominio.', 502);
       }
       correo = guardarCorreo(vista);
+      reservarNombresDelCorreo(vista, project.id);
     } catch (err) {
       correoError = mensajeDe(err);
     }
@@ -1199,7 +1261,7 @@ async function planVariablesDe(
  * calcular las variables (los cambios cerrados del listado, que no lo usan).
  */
 export async function vistaMigracion(row: DomainMigrationRow, isAdmin: boolean, opts: { ligera?: boolean } = {}): Promise<MigracionSkyway> {
-  const avisos: string[] = [...(avisosVolver.get(row.id) ?? [])];
+  const avisos: string[] = [...(avisosAccion.get(row.id) ?? [])];
   let correo: CambioDominioVista | null = null;
   let correoError: string | null = null;
   if (row.mailway_migration_id && !opts.ligera) {
@@ -1247,8 +1309,9 @@ export async function vistaMigracion(row: DomainMigrationRow, isAdmin: boolean, 
     };
   });
 
-  // El estado real de cada despliegue (uno posterior puede haber resuelto un error).
-  const serviciosVista = Object.entries(row.servicios).map(([serviceId, s]) => {
+  // El estado real de cada despliegue (uno posterior puede haber resuelto un
+  // error). Los servicios eliminados no se enseñan: no queda nada que hacer con ellos.
+  const serviciosVista = Object.entries(row.servicios).filter(([serviceId]) => servicios.has(serviceId)).map(([serviceId, s]) => {
     const e = estadoServicio(serviceId, s);
     const dep = e.deploymentId ? getDeployment(e.deploymentId) : undefined;
     return {
@@ -1381,6 +1444,10 @@ interface EstadoServicio {
  */
 function estadoServicio(serviceId: string, s: ServicioMigracion): EstadoServicio {
   if (s.estado === 'ok') return { estado: 'ok', deploymentId: s.deploymentId, error: null };
+  // Un servicio eliminado no sirve ningún nombre ni envía correo: no hay nada
+  // que esperar de él. Sus despliegues se borraron con él, así que ninguno
+  // posterior resolvería su error y bloquearía para siempre cerrar el cambio.
+  if (!getService(serviceId)) return { estado: 'ok', deploymentId: null, error: null };
   // Sin despliegue que fechar (no se pudo lanzar), solo lo resuelve «Reintentar este servicio».
   if (!s.deploymentId) return { estado: 'error', deploymentId: null, error: s.error ?? 'El despliegue no se ha podido lanzar.' };
   const propio = getDeployment(s.deploymentId);
@@ -1717,7 +1784,7 @@ export async function pasarCambio(req: FastifyRequest, project: ProjectRow, mid:
       updateDomainMigration(mid, { error: mensajeDe(err), paso: '' });
       throw err;
     }
-    avisosVolver.delete(mid);
+    avisosAccion.delete(mid);
     desplegarYSeguir(mid, resultado.afectados);
     auditarVariables(req, project.id, resultado.claves);
     audit(req, 'domain_migration_switched', { type: 'project', id: project.id, detail: `${row.from_domain} → ${row.to_domain}` });
@@ -1737,6 +1804,7 @@ function restaurarWeb(
   row: DomainMigrationRow,
   remitentes: ReadonlyMap<string, string>,
   ahora: number,
+  isAdmin: boolean,
 ): { afectados: ServiceRow[]; avisos: string[]; claves: Map<string, string[]> } {
   const projectId = row.project_id;
   const avisos: string[] = [];
@@ -1759,8 +1827,20 @@ function restaurarWeb(
       } catch {
         /* instantánea ilegible: no se añade ningún nombre nuevo */
       }
-      const hosts = row.hosts.filter((h) => h.serviceId === service.id && escritos.includes(h.to));
       const actuales = dominiosDe(service);
+      const presentes = new Set(actuales.map(normalizarNombre));
+      // Un nombre nuevo que el servicio ya no tiene (alguien lo quitó después
+      // de pasar) se vuelve a añadir como secundario, pero solo si sigue
+      // libre: otro proyecto pudo asignárselo entretanto, y dos servicios con
+      // el mismo host se repartirían su tráfico (gana la regla más larga).
+      const hosts = row.hosts.filter((h) => {
+        if (h.serviceId !== service.id || !escritos.includes(h.to)) return false;
+        if (h.modo === 'no_cambiar' || presentes.has(h.to)) return true;
+        // Con el rol de quien vuelve: el mensaje solo nombra el proyecto ajeno a la administración.
+        const conflicto = domainClaimError([h.to], { projectId, serviceId: service.id, isAdmin, current: actuales });
+        if (conflicto) avisos.push(`No se ha vuelto a añadir ${h.to} a «${service.name}»: ${conflicto}`);
+        return !conflicto;
+      });
       const restaurados = dominiosTrasVolver(actuales, hosts);
       updateService(service.id, service.name, { ...(service.config as object), domains: restaurados } as ServiceRow['config']);
       // Los nombres que vuelven no los tiene el contenedor en marcha (solo los
@@ -1768,8 +1848,7 @@ function restaurarWeb(
       // siguiente (o para siempre, si su despliegue falla) no los serviría
       // nadie. Se prepublican con su DNS dado por bueno (ya apuntaba aquí); el
       // despliegue que termina bien retira la prepublicación (`seguirDespliegue`).
-      const enMarcha = new Set(actuales.map(normalizarNombre));
-      const faltan = [...new Set(restaurados.map(normalizarNombre))].filter((d) => !enMarcha.has(d));
+      const faltan = [...new Set(restaurados.map(normalizarNombre))].filter((d) => !presentes.has(d));
       if (faltan.length > 0) {
         const ajenos = upsertPrepublished(faltan.map((host) => ({ host, project_id: projectId, service_id: service.id, migration_id: row.id })));
         for (const host of faltan) if (!ajenos.includes(host)) markPrepublishedDns(host, ahora);
@@ -1870,13 +1949,13 @@ export async function volverCambio(req: FastifyRequest, project: ProjectRow, mid
     }
     let resultado: ReturnType<typeof restaurarWeb>;
     try {
-      resultado = transaction(() => restaurarWeb(row, remitentes, Date.now()));
+      resultado = transaction(() => restaurarWeb(row, remitentes, Date.now(), isAdmin));
     } catch (err) {
       updateDomainMigration(mid, { error: mensajeDe(err), paso: '' });
       throw err;
     }
-    if (resultado.avisos.length > 0) avisosVolver.set(mid, resultado.avisos);
-    else avisosVolver.delete(mid);
+    if (resultado.avisos.length > 0) avisosAccion.set(mid, resultado.avisos);
+    else avisosAccion.delete(mid);
     desplegarYSeguir(mid, resultado.afectados);
     auditarVariables(req, project.id, resultado.claves, 'Restauradas: ');
     audit(req, 'domain_migration_rolled_back', { type: 'project', id: project.id, detail: `${row.from_domain} → ${row.to_domain}` });
@@ -1890,6 +1969,14 @@ export async function volverCambio(req: FastifyRequest, project: ProjectRow, mid
  * Cancela antes de pasar. El correo se cancela primero: si Mailway se niega
  * (el MX nuevo ya apunta aquí), el cambio sigue como estaba, con sus nombres
  * prepublicados.
+ *
+ * Tras un «Volver», un buzón que se había actualizado sigue entrando con su
+ * usuario de dominio2.es; al cancelar, Mailway le devuelve el de dominio.es
+ * (la dirección de dominio2.es desaparece). Las aplicaciones que envían con
+ * él se ponen al día justo después (usuario y remitente, y un despliegue con
+ * la imagen en marcha), como en la baja: si no, se quedarían con un usuario
+ * que ya no existe. Después de Mailway y no antes: si se niega a cancelar, ni
+ * el buzón ni las aplicaciones han cambiado.
  */
 export async function cancelarCambio(req: FastifyRequest, project: ProjectRow, mid: string): Promise<MigracionSkyway> {
   const isAdmin = currentUser(req)?.role === 'admin';
@@ -1901,17 +1988,44 @@ export async function cancelarCambio(req: FastifyRequest, project: ProjectRow, m
     exigirServiciosDesplegados(row, 'cancelar el cambio');
     // Un alta en Mailway sin confirmar: si existe allí, se cancela también.
     row = await vincularCorreo(project, row, isAdmin, false);
+    let conApps: BuzonVista[] = [];
     if (row.mailway_migration_id) {
       await correoDelCambio(project, row, isAdmin);
-      guardarCorreo(await cancelDomainMigration(row.mailway_migration_id));
+      const antes = await vistaCorreo(row, true);
+      // Ya cancelado en Mailway (la respuesta se perdió y el cambio quedó aquí
+      // abierto): no se vuelve a pedir, pero sus aplicaciones se repasan.
+      const tras = guardarCorreo(antes.estado === 'cancelada' ? antes : await cancelDomainMigration(row.mailway_migration_id));
+      const porId = new Map(tras.buzones.lista.map((b) => [b.id, b]));
+      conApps = antes.buzones.lista.map((b) => porId.get(b.id) ?? b).filter(usaAppsSkyway);
+    }
+    let lanzados: { serviceId: string; deploymentId: string }[] = [];
+    let errorApps: string | null = null;
+    if (conApps.length > 0) {
+      try {
+        ({ lanzados } = await ponerAlDiaApps(mid, row, conApps));
+      } catch (err) {
+        // El correo ya está cancelado en Mailway: el cambio se cierra igual y
+        // el aviso dice qué falta (un servicio sin desplegar se ve en la lista).
+        errorApps = mensajeDe(err);
+      }
     }
     transaction(() => {
       deletePrepublished(mid);
       purgeSnapshots(mid);
       updateDomainMigration(mid, { estado: 'cancelada', terminada_at: Date.now(), error: null, paso: '' });
     });
+    for (const l of lanzados) {
+      enSegundoPlano(async () => {
+        await seguirDespliegue(mid, l.serviceId, l.deploymentId, PLAZO_DESPLIEGUE_BAJA_MS);
+      });
+    }
     cacheWeb.delete(mid);
-    avisosVolver.delete(mid);
+    avisosAccion.delete(mid);
+    if (errorApps) {
+      avisosAccion.set(mid, [
+        `No se han podido poner al día las aplicaciones que envían con los buzones del cambio: ${errorApps.replace(/\.$/, '')}. Revisa su usuario de correo en «Variables».`,
+      ]);
+    }
     audit(req, 'domain_migration_cancelled', { type: 'project', id: project.id, detail: `${row.from_domain} → ${row.to_domain}` });
     return vistaMigracion(cambioDelProyecto(project, mid), isAdmin);
   });
@@ -1934,6 +2048,10 @@ const usaAppsSkyway = (b: BuzonVista) => b.usadoPorApps.some((n) => n.startsWith
  * día son SUS variables: si el usuario ya cambió en Mailway (una respuesta
  * perdida, una baja que falló a medias), el buzón ya no está pendiente pero
  * la aplicación puede seguir con el usuario anterior, que la baja elimina.
+ * El usuario anterior es el de la misma parte local en el OTRO dominio del
+ * cambio: el viejo en la baja (el buzón ya está en el nuevo) y el nuevo al
+ * cancelar tras un «Volver» (el buzón ha vuelto al viejo y Mailway devuelve
+ * a su dirección el usuario de quien lo había actualizado).
  * Devuelve los despliegues lanzados y los buzones cuyo usuario ha cambiado.
  */
 async function ponerAlDiaApps(
@@ -1956,7 +2074,8 @@ async function ponerAlDiaApps(
       actualizados.push(b);
     }
     const usuarios = new Map<string, string>();
-    for (const viejo of [b.login, `${parteLocal(b.email)}@${row.from_domain}`]) {
+    const otro = dominioDe(b.email) === row.to_domain ? row.from_domain : row.to_domain;
+    for (const viejo of [b.login, `${parteLocal(b.email)}@${otro}`]) {
       if (viejo.toLowerCase() !== nuevo) usuarios.set(viejo.toLowerCase(), nuevo);
     }
     if (usuarios.size === 0) continue;
@@ -1976,6 +2095,40 @@ async function ponerAlDiaApps(
 }
 
 // ---------- dar de baja ----------
+
+const resolutorDns = new dns.promises.Resolver({ timeout: 4000, tries: 2 });
+
+/** IPv4 e IPv6 de un nombre; vacío si no resuelve. */
+async function ipsDe(host: string): Promise<string[]> {
+  const [v4, v6] = await Promise.all([resolutorDns.resolve4(host).catch(() => []), resolutorDns.resolve6(host).catch(() => [])]);
+  return [...v4, ...v6].map((ip) => ip.toLowerCase());
+}
+
+/**
+ * ¿Apunta todavía el MX del dominio anterior al servidor de correo de Mailway,
+ * por nombre o por IP? Es un adelanto de lo que Mailway mide al dar de baja
+ * (`migration_old_mx_here`): true solo cuando es seguro. Con cualquier duda
+ * (sin MX, el DNS no responde, no se conoce el servidor) devuelve null y
+ * decide Mailway, como siempre.
+ */
+async function mxAnteriorAqui(dominio: string): Promise<boolean | null> {
+  let servidor = '';
+  try {
+    servidor = normalizarNombre((await getInfo()).mailHostname ?? '');
+  } catch {
+    return null;
+  }
+  if (!servidor) return null;
+  const mx = await consultarMx(dominio);
+  if (!mx.ok || mx.hosts.length === 0) return null;
+  if (mx.hosts.includes(servidor)) return true;
+  const propias = new Set(await ipsDe(servidor));
+  if (propias.size === 0) return null;
+  for (const host of mx.hosts.slice(0, 10)) {
+    if ((await ipsDe(host)).some((ip) => propias.has(ip))) return true;
+  }
+  return false;
+}
 
 /**
  * Da de baja el dominio anterior (con correo). Responde en cuanto el cambio
@@ -1999,6 +2152,18 @@ export async function darDeBajaCambio(req: FastifyRequest, project: ProjectRow, 
     exigirEstado(puede(row));
     exigirServiciosDesplegados(row, `dar de baja ${row.from_domain}`);
     await correoDelCambio(project, row, isAdmin);
+    // La baja cambia el usuario de las aplicaciones y las despliega ANTES de
+    // pedírsela a Mailway, que solo entonces mide el MX: con el MX anterior
+    // aún aquí (el fallo más probable), ese cambio irreversible ya estaría
+    // hecho. Lo que se puede medir sin Mailway se mide antes.
+    const correo = await vistaCorreo(row, true);
+    if (correo.estado === 'pasado' && correo.buzones.lista.some(usaAppsSkyway) && (await mxAnteriorAqui(row.from_domain)) === true) {
+      throw new ErrorCambio(
+        409,
+        'migration_old_mx_here',
+        `El MX de ${row.from_domain} todavía apunta al servidor de correo. Cámbialo o publica un MX nulo («0 .») antes de darlo de baja: si no, el correo que siga llegando a @${row.from_domain} se rechazaría y el servidor podría bloquear a quien lo envía. No se ha cambiado nada: las aplicaciones siguen como estaban.`,
+      );
+    }
     updateDomainMigration(mid, { estado: 'dando_de_baja', error: null, paso: '' }, { siEstado: [row.estado] });
   });
   enSegundoPlano(() => withLockProyecto(project.id, () => ejecutarBaja(req, project, mid)));
@@ -2126,11 +2291,14 @@ export async function quitarRedirecciones(req: FastifyRequest, project: ProjectR
  * falló reutilizaba la imagen en marcha (el de la baja, que solo cambia el
  * usuario SMTP), el reintento también: compilar la cabeza de la rama no es
  * lo que se pidió. También con el cambio cortado («dando_de_baja» con error):
- * un servicio sin desplegar es justo lo que impide reintentar la baja.
+ * un servicio sin desplegar es justo lo que impide reintentar la baja. Y en
+ * uno cancelado, mientras no haya otro abierto: cancelar tras un «Volver»
+ * despliega las aplicaciones que envían con buzones del cambio.
  */
 export async function reintentarServicio(req: FastifyRequest, project: ProjectRow, mid: string, serviceId: string): Promise<MigracionSkyway> {
   const isAdmin = currentUser(req)?.role === 'admin';
-  const puede = (r: DomainMigrationRow) => (!ESTADOS_EN_CURSO.includes(r.estado) || !!r.error) && r.estado !== 'cancelada';
+  const puede = (r: DomainMigrationRow) =>
+    r.estado === 'cancelada' ? (getOpenDomainMigration(project.id)?.id ?? r.id) === r.id : !ESTADOS_EN_CURSO.includes(r.estado) || !!r.error;
   exigirEstado(puede(cambioDelProyecto(project, mid)));
   return withLockProyecto(project.id, async () => {
     const row = conciliarServicios(cambioDelProyecto(project, mid));
@@ -2228,6 +2396,7 @@ export async function cambiarMx(req: FastifyRequest, project: ProjectRow, mid: s
       throw new MailwayError('http', 'La respuesta de Mailway no corresponde a este cambio de dominio.', 502);
     }
     guardarCorreo(res);
+    reservarNombresDelCorreo(res, project.id);
     audit(req, 'domain_migration_mx_changed', { type: 'project', id: project.id, detail: `${row.from_domain} → ${row.to_domain}` });
     await comprobarSinCerrojo(project, row, isAdmin).catch(() => {
       /* el MX ya ha cambiado: la siguiente comprobación lo vuelve a medir */
@@ -2301,6 +2470,26 @@ export async function ficheroDeZona(project: ProjectRow, mid: string, isAdmin: b
   return { nombre: `${row.to_domain.replace(/[^A-Za-z0-9.-]+/g, '_')}-cambio-de-dominio.txt`, texto: zone };
 }
 
+// ---------- proyecto y vínculo del correo ----------
+
+/**
+ * Motivo por el que no se puede eliminar el proyecto ni desactivar su correo
+ * mientras tenga abierto un cambio de dominio con el correo, o null si se
+ * puede. El cambio de Mailway (origen «skyway») solo se gestiona con el token
+ * de Skyway y desde este proyecto: sin él (o sin su vínculo), quedaría
+ * abierto sin que nadie pudiera cerrarlo desde el panel de Mailway, con los
+ * dos dominios sin altas y sin poder eliminarse. Solo la web no toca Mailway.
+ */
+export function bloqueoPorCambioConCorreo(projectId: string, accion: string): string | null {
+  const abierta = getOpenDomainMigration(projectId);
+  if (!abierta || abierta.solo_web) return null;
+  return (
+    `Este proyecto tiene un cambio de dominio abierto con el correo en Mailway (${abierta.from_domain} → ${abierta.to_domain}). ` +
+    `Cancélalo, o da de baja ${abierta.from_domain}, desde «Cambiar de dominio» antes de ${accion}: si no, el cambio del correo ` +
+    'quedaría abierto en Mailway sin que nadie pudiera cerrarlo.'
+  );
+}
+
 // ---------- arranque ----------
 
 /**
@@ -2321,7 +2510,8 @@ export function marcarCambiosInterrumpidos(): { interrumpidos: number; seguidos:
       auditSystem('domain_migration_interrupted', `${row.from_domain} → ${row.to_domain} (${row.estado})`, { type: 'project', id: row.project_id });
     }
   }
-  for (const row of listDomainMigrationsByEstado(['preparando', 'lista', 'pasada', 'pasando', 'volviendo', 'dando_de_baja', 'terminada'])) {
+  // También los cancelados: cancelar tras un «Volver» despliega las aplicaciones que envían con buzones del cambio.
+  for (const row of listDomainMigrationsByEstado(['preparando', 'lista', 'pasada', 'pasando', 'volviendo', 'dando_de_baja', 'terminada', 'cancelada'])) {
     for (const [sid, s] of Object.entries(row.servicios)) {
       if (s.estado !== 'desplegando' || !s.deploymentId) continue;
       const e = estadoServicio(sid, s);

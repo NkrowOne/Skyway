@@ -91,7 +91,19 @@ export function domainClaimError(domains: Iterable<string>, claim: DomainClaim):
     // también para la administración, como un dominio de otro servicio.
     const redireccion = getDomainRedirect(domain);
     const prepublicado = getPrepublished(domain);
-    if ((redireccion && redireccion.project_id !== claim.projectId) || (prepublicado && prepublicado.project_id !== claim.projectId)) {
+    const ajena = redireccion && redireccion.project_id !== claim.projectId ? redireccion : undefined;
+    const enCambio = ajena ?? (prepublicado && prepublicado.project_id !== claim.projectId ? prepublicado : undefined);
+    if (enCambio) {
+      // A la administración se le dice de qué proyecto es (como en
+      // `webmailHostError`): una redirección sobrevive al borrado del
+      // servicio y solo se quita desde el asistente de ese proyecto.
+      const proyecto = claim.isAdmin ? getProject(enCambio.project_id) : undefined;
+      if (proyecto && ajena) {
+        return `El dominio ${domain} redirige a ${ajena.to_host} por un cambio de dominio del proyecto «${proyecto.name}» y no se puede asignar a este servicio. Para liberarlo, quita las redirecciones desde «Cambiar de dominio» de ese proyecto cuando el cambio haya terminado.`;
+      }
+      if (proyecto) {
+        return `El dominio ${domain} lo utiliza un cambio de dominio del proyecto «${proyecto.name}» (nombre en preparación) y no se puede asignar a este servicio hasta que ese cambio termine o se cancele.`;
+      }
       return `El dominio ${domain} lo utiliza otro proyecto (redirección o cambio de dominio en curso) y no se puede asignar a este servicio.`;
     }
     if (claim.isAdmin) continue;

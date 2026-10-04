@@ -830,8 +830,12 @@ function bloqueosPlan(from: FakeDomain, to: string) {
       status: 409,
     });
   }
+  // Como Mailway: el cambio idéntico ya abierto no bloquea (crearlo lo devuelve).
   const abierto = mw.migraciones.find(
-    (c) => ABIERTO(c) && [c.fromDomain, c.toDomain].some((d) => d === from.domain || d === to),
+    (c) =>
+      ABIERTO(c) &&
+      !(c.fromDomainId === from.id && c.toDomain === to) &&
+      [c.fromDomain, c.toDomain].some((d) => d === from.domain || d === to),
   );
   if (abierto) {
     const afectado = [abierto.fromDomain, abierto.toDomain].includes(from.domain) ? from.domain : to;
@@ -1031,6 +1035,18 @@ function atenderCambio(path: string, method: string, b: Record<string, unknown>,
         code: 'migration_new_mx_here',
       });
     }
+    // Quien actualizó su usuario antes de un «Volver» entra con el de dominio2.es,
+    // que desaparece: vuelve al de dominio.es, su dirección (como Mailway). Si lo
+    // usa una aplicación de Skyway, solo con el token de administración: quien
+    // la gestiona tiene que cambiar después su usuario SMTP.
+    const conUsuarioNuevo = itemsDe(c)
+      .filter((i) => i.tipo === 'buzon')
+      .map((i) => ({ i, box: mw.mailboxes.find((x) => x.id === i.id) }))
+      .filter(({ i, box }) => box?.usuarioMotor === i.a);
+    if (mw.role !== 'admin' && conUsuarioNuevo.some(({ box }) => appsSkyway(box!.id).length > 0)) {
+      return json(409, { error: 'Este buzón lo usa una aplicación para enviar. Actualízalo desde Skyway.', code: 'mailbox_used_by_app' });
+    }
+    for (const { box } of conUsuarioNuevo) box!.usuarioMotor = null;
     const propios = destino && (mw.mailboxes.some((x) => x.domainId === destino.id) || mw.aliases.some((x) => x.domainId === destino.id));
     if (c.creoDestino && destino && !propios) mw.domains = mw.domains.filter((d) => d.id !== destino.id);
     c.estado = 'cancelada';

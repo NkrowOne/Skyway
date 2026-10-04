@@ -230,6 +230,7 @@ export const DEPLOY_TRIGGER_LABEL: Record<string, string> = {
   import: 'importación',
   mailway: 'correo',
   reintento: 'reintento tras reinicio',
+  'cambio-de-dominio': 'cambio de dominio',
 };
 
 export function isActiveDeploy(status: DeploymentStatus): boolean {
@@ -342,6 +343,18 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   mailway_disconnected: 'Mailway desconectado',
   mailway_app_password_revoked: 'Contraseña de aplicación revocada',
   mailway_api_key_revoked: 'Clave de API de correo revocada',
+  mailway_mailbox_login_updated: 'Usuario de un buzón actualizado (cambio de dominio)',
+  domain_migration_created: 'Cambio de dominio preparado',
+  domain_migration_switched: 'Cambio de dominio: paso al dominio nuevo',
+  domain_migration_rolled_back: 'Cambio de dominio: vuelta al dominio anterior',
+  domain_migration_cancelled: 'Cambio de dominio cancelado',
+  domain_migration_retired: 'Cambio de dominio: dominio anterior dado de baja',
+  domain_migration_finished: 'Cambio de dominio terminado (solo la web)',
+  domain_migration_interrupted: 'Cambio de dominio interrumpido por un reinicio',
+  domain_migration_mx_changed: 'Cambio de dominio: MX del dominio nuevo cambiado en Cloudflare',
+  domain_migration_service_retried: 'Cambio de dominio: despliegue de un servicio reintentado',
+  domain_redirects_removed: 'Redirecciones del dominio anterior quitadas',
+  service_env_replaced: 'Variables cambiadas por un cambio de dominio',
 };
 
 /**

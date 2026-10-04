@@ -1518,6 +1518,9 @@ export interface MailMailbox {
   usedBytes: number | null;
   status: 'active' | 'suspended';
   createdAt: number | null;
+  /** Usuario con el que entra: tras un cambio de dominio, el anterior hasta actualizar sus dispositivos (`loginPending`). */
+  login: string;
+  loginPending: boolean;
 }
 
 export interface MailApiKey {

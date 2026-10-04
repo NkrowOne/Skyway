@@ -30,6 +30,7 @@ import { toDeployFeedItem } from '../events';
 import { dockerAvailable } from '../docker/client';
 import { dockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
 import { triggerDeploy } from '../deploy/deployer';
+import { bloqueoPorCambioConCorreo } from '../domainmigration';
 import { markManualAction } from '../monitor';
 import { mailwayConfigured, releaseProjectClient } from '../mailway';
 import { confirmsDeletion, purgeProject, PurgeBlockedError, purgeSummary, warningsForAudit } from '../purge';
@@ -233,6 +234,8 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
       });
     }
     if (deletingProjects.has(id)) return reply.code(409).send({ error: 'El proyecto ya se está eliminando.' });
+    const cambioAbierto = bloqueoPorCambioConCorreo(id, 'eliminar el proyecto');
+    if (cambioAbierto) return reply.code(409).send({ error: cambioAbierto, code: 'migration_open' });
     if (!(await dockerAvailable(true))) {
       return reply.code(503).send({
         error: 'Docker no está disponible: no es posible eliminar el proyecto sin eliminar sus datos. Vuelve a intentarlo cuando Docker responda. No se ha eliminado nada.',
