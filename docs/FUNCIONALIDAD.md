@@ -54,8 +54,15 @@ server/src/
                         cualquier estado (`mailwayWhitelabelHosts`, última buena si Mailway no responde)
   domainguard.ts        qué dominios puede asignarse un servicio: únicos en el servidor, nunca el del
                         panel (`SKYWAY_DOMAIN`) ni, fuera del proyecto de Mailway, los de Mailway (también
-                        los nombres de marca blanca que esperan DNS); y qué nombre puede ser el webmail
+                        los nombres de marca blanca que esperan DNS) ni los que redirigen o se prepublican
+                        en un cambio de dominio de otro proyecto; y qué nombre puede ser el webmail
                         de un cliente (`webmailHostError`: ni de un servicio ni del panel)
+  domainmigration.ts    asistente «Cambiar de dominio» de un proyecto (§6.1): plan, preparar, comprobar,
+                        pasar, volver, cancelar, dar de baja y terminar, con el correo en Mailway
+  envreplace.ts         sustitución de variables del cambio de dominio (módulo puro): mapa exacto de
+                        hosts y direcciones, huella del plan y bloque de URL de WordPress
+  redirecciones.ts      prepublicación y redirecciones del cambio de dominio en el proveedor HTTP de
+                        Traefik (prioridad 1) y comprobación local del certificado (`comprobarTlsLocal`)
   pricing.ts            cálculo de precios por tramos (graduated/volume) del catálogo
   aigateway.ts          gateway de IA: config (clave de Gemini del operador, modelos), medición de tokens,
                         streaming SSE, API compatible con OpenAI y coste/margen por modelo
@@ -146,6 +153,8 @@ web/src/
   components/MailwaySettings.tsx conexión con Mailway (Ajustes → Correo)
   components/CloudflareSettings.tsx  token de Cloudflare del administrador (Ajustes → Cloudflare)
   components/DnsAutoResult.tsx   avisos y chips del DNS automático en Cloudflare (servicios, pilas, correo)
+  cambioDominio.ts               tipos y llamadas del asistente «Cambiar de dominio»
+  components/cambio-dominio/     asistente «Cambiar de dominio» (Qué cambia, Preparar, En transición, Terminado)
   components/tabs/      Despliegues, Consultas, Variables, Backups, Archivos,
                         Métricas, Logs, Ajustes del servicio
 ```
@@ -170,6 +179,32 @@ web/src/
 - **Traefik** (en el `docker-compose`): enruta por dominio y emite TLS con
   Let's Encrypt. Se activa por *labels* que Skyway pone en cada contenedor. Con
   TLS configurado, el puerto 80 no sirve contenido: redirige a HTTPS con un 301.
+  - **Router con huella** (`traefikRouter` en `docker/containers.ts`): el router
+    de un servicio se llama `skyway-<proyecto>-<servicio>-<huella>`, donde la
+    huella son 8 caracteres del sha256 de sus hosts (en minúsculas, sin
+    repetidos y ordenados); la regla se escribe con ese mismo orden. El
+    servicio de Traefik (`skyway-<proyecto>-<servicio>`, explícito en la
+    etiqueta `service` del router) y los middlewares (`…-https`, `…-retry`)
+    conservan el nombre base. Así, durante un relevo, dos versiones con los
+    mismos hosts generan el mismo router (Traefik los fusiona) y dos con hosts
+    distintos, routers distintos que conviven: con un nombre fijo, Traefik
+    borraba el router definido dos veces de forma distinta y todos los nombres
+    del servicio daban 404 mientras convivían las dos versiones.
+  - **Proveedor HTTP** (`GET /api/traefik/mailway`, que Traefik lee cada 15 s):
+    además de las rutas saneadas de Mailway y los routers de
+    `SKYWAY_DOMAIN_EXTRA`, sirve lo propio del cambio de dominio
+    (`redirecciones.ts`), sin desplegar nada: la **prepublicación** (el nombre
+    nuevo hacia el servicio `@docker` del contenedor en marcha, solo cuando su
+    DNS ya apunta aquí, para que el certificado exista antes de pasar) y las
+    **redirecciones** del nombre viejo al nuevo (`redirectRegex` que conserva la
+    ruta y la consulta; temporal, 302/307, hasta `permanent_from` = pasar + 7
+    días, y permanente, 301/308, después, calculado en cada lectura). Todo con
+    prioridad 1 y nombres `skyway-…` que Mailway no puede usar. Un nombre lo
+    publica, por este orden, **el servicio que lo tenga en sus dominios** (sus
+    etiquetas tienen la prioridad por defecto, siempre mayor), **la
+    prepublicación** y, solo si no lo reclama ninguno de los dos, **la
+    redirección**; un ciclo de redirecciones sin servir se rompe quitando la
+    más antigua.
 
 ### Muestreo de Docker (docker/sampler.ts)
 
@@ -398,6 +433,10 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `github_connectors` | `id`, `project_id`, `name`, `token` (en claro: se necesita para clonar; jamás sale por la API), `gh_login`, `token_type`, `created_by`, `last_used_at` — cae en cascada con el proyecto |
 | `mailway_links` | correo del proyecto: `project_id` (PK, cae en cascada con el proyecto), `client_id` (cliente de Mailway, **único**: un cliente pertenece a un solo proyecto), `client_name`, `created_by`, `created_at`. En Mailway el cliente lleva la referencia externa `skyway:project:<projectId>`, que es la fuente de verdad: si falta la fila, `GET /api/projects/:id/mail` la recupera. No guarda credenciales |
 | `service_managed_env` | variables que escribió Skyway por su cuenta (correo, plan de integraciones, importación del `.env` del repositorio): `(service_id, key)` → `origin` (`mail.smtp.password`, `postgres.DATABASE_URL`, `generate`, `value`, `self.public_url`, `import`…), `value_hash` (SHA-256 del valor escrito, nunca el valor), `updated_at`. Si el valor actual ya no casa con el hash, la variable es de quien la cambió y no se vuelve a tocar. Cae en cascada con el servicio |
+| `domain_migrations` | cambio de dominio de un proyecto (§6.1): `id`, `project_id` (cascada), `from_domain`, `to_domain`, `estado` (`preparando`/`lista`/`pasando`/`pasada`/`volviendo`/`dando_de_baja`/`terminada`/`cancelada`; **un solo cambio abierto por proyecto**, índice parcial), `paso`, `error`, `solo_web`, `hosts_json` (`[{serviceId, from, to, modo: redirigir/servir/no_cambiar}]`), `env_json` (`{excluidas, huella}`), `mailway_client_id`, `mailway_migration_id` (el estado del correo vive en Mailway), `servicios_json` (`{serviceId: {deploymentId, estado, error}}`), `pasada_at`, `terminada_at` |
+| `domain_migration_snapshots` | valores anteriores al pasar, **en claro** como `env_vars`, para deshacer clave a clave: `(migration_id, ambito, service_id, key)` → `valor_original`, `valor_escrito` (`ambito`: `service`/`project`/`build`, o `domains` con la lista de dominios del servicio). Se purgan al volver, al terminar, al dar de baja y al cancelar |
+| `domain_redirects` | redirecciones del nombre viejo al nuevo: `host` (PK), `project_id` (cascada; sobreviven al borrado del servicio), `to_host`, `migration_id`, `permanent_from`, `created_at` |
+| `domain_prepublished` | nombres nuevos servidos antes de pasar: `host` (PK), `project_id`, `service_id` (cascada), `migration_id`, `dns_ok_at` (solo se publican con él), `created_at` |
 | `github_installations` | instalaciones de la GitHub App: `id`, `installation_id`, `account_login`, `account_type`, `repo_selection`, `project_id` (null = global del administrador), `created_by`, `last_used_at`, `suspended`. **No guarda credenciales**: el token de clonado se emite bajo demanda y caduca en una hora |
 
 `config` de servicio (ver `types.ts`): `GitConfig`, `DatabaseConfig`, `ImageConfig`
@@ -1257,6 +1296,83 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   un proyecto se reserva al darlo de alta.
 - **Passkeys (WebAuthn)** y **tokens de API** para automatización/agentes.
 
+### 6.1 Cambiar de dominio (`domainmigration.ts`)
+
+Asistente del proyecto (botón «Cambiar de dominio», solo la administración o el
+propietario del workspace) para pasar la web y, si el proyecto tiene el correo
+en Mailway 1.3+, el correo de `dominio.es` a `dominio2.es` sin perder nada.
+Fases: **Qué cambia → Preparar → En transición → Terminado**
+(`preparando ⇄ lista → pasando → pasada → dando_de_baja → terminada`; desde
+`pasada`, «Volver» lleva a `volviendo → lista`; antes de pasar, «Cancelar» a
+`cancelada`). Un proyecto tiene un solo cambio abierto.
+
+- **Plan** (sin efectos): mapa de nombres por defecto (cada dominio de un
+  servicio que no es base de datos igual a `dominio.es` o que cuelga de él,
+  salvo `webmail.`, `autoconfig.`, `autodiscover.`, `mta-sts.` y `mail.`, pasa
+  al mismo nombre bajo `dominio2.es`) con tres modos por nombre: **redirigir**
+  (el nuevo sustituye al viejo en su sitio y el viejo redirige), **servir** (el
+  viejo se sigue sirviendo al final de la lista, sin redirigir: APIs y
+  webhooks) y **no cambiar**. Cada nombre nuevo pasa `domainClaimError`. El
+  correo: plan de Mailway (`POST /api/domain-migrations/plan`, con
+  `soloCliente` para quien no es administrador, tras comprobar con
+  `ownedSummary` que el cliente y el dominio son del proyecto). Las variables:
+  `envreplace.ts` con un **mapa exacto** (hosts servidos y direcciones que se
+  mudan; `db.dominio.es` o una dirección que no está en Mailway no se cambian y
+  se enseñan como nota), sin tocar referencias `${{…}}` ni los usuarios para
+  entrar en el correo; los argumentos de compilación se planifican sin enseñar
+  su valor. WordPress recibe en `WORDPRESS_CONFIG_EXTRA` un bloque que fija
+  `WP_HOME`/`WP_SITEURL` (sin él, un bucle de redirecciones). La huella
+  combinada (`expect`) cubre nombres, variables y los buzones y alias de
+  Mailway: si algo cambia, 409 `plan_changed`.
+- **Preparar** no despliega nada: guarda el cambio, **prepublica** los nombres
+  nuevos (§2, proveedor HTTP; se publican en cuanto `checkDomain` da `ok`), abre
+  el cambio en Mailway con `origen: 'skyway'` (desde ese momento solo Skyway lo
+  pasa, vuelve, cancela o da de baja) y reserva al proyecto los nombres que
+  Mailway creó en Cloudflare; si Mailway falla, el cambio se borra entero. Para
+  la administración, DNS automático de los nombres nuevos (§7.13). El asistente
+  comprueba cada 30 s: DNS de los nombres nuevos (bloquea), certificado servido
+  por Traefik con SNI (`comprobarTlsLocal`; bloquea si no es válido, no si no se
+  puede comprobar o no hay TLS) y correo de Mailway en `listo` (bloquea).
+- **Pasar** (`expect` = huella de las variables de la confirmación): primero el
+  correo en Mailway (si falla, la web no se toca y el cambio vuelve a `lista`
+  con el error); después, en **una transacción**: instantánea y dominios en su
+  sitio (el primero es el principal: `PUBLIC_URL` pasa al nuevo), variables
+  (`writeManagedEnv` si las escribió Skyway y nadie las cambió, conservando su
+  origen; el resto con `patchEnv`/`patchProjectVars`; `buildArgs` en la
+  configuración), remitentes de correo gestionados (`refrescarVariablesCorreo`;
+  el **usuario SMTP no cambia**: el buzón entra con el anterior hasta la baja),
+  redirecciones (`permanent_from` = ahora + 7 días; antes se borran las que
+  salían de los nombres nuevos) y `bumpConfigRev`. Fuera de ella, un
+  despliegue normal de cada servicio afectado (`cambio-de-dominio`); al
+  terminar bien se retira su prepublicación y, si falla, el contenedor anterior
+  sigue sirviendo y la interfaz ofrece «Reintentar este servicio».
+- **Volver**: Mailway `rollback` y, en una transacción, los dominios viejos en
+  su sitio **y los nuevos como secundarios** (una redirección permanente ya
+  guardada en un navegador no puede acabar en error), las variables clave a
+  clave solo si su valor actual es el que escribió el cambio (si no, el aviso
+  «No se ha restaurado X: cambió después del cambio de dominio.»), remitentes de
+  vuelta y sin redirecciones; después se despliegan los servicios afectados.
+- **Cancelar** (antes de pasar): Mailway primero (puede negarse con
+  `migration_new_mx_here`, que se enseña tal cual); después se retira la
+  prepublicación. Los registros DNS creados se conservan, reservados al proyecto.
+- **Dar de baja** (con correo, `confirm` = dominio anterior): en segundo plano,
+  los buzones pendientes que usan aplicaciones de Skyway (`skyway:<slug>`) pasan
+  al usuario nuevo (`login-update`), sus servicios reciben el usuario y el
+  remitente nuevos y se despliegan **con la imagen en marcha** (15 min como
+  máximo); solo si eso termina bien, Mailway da de baja el dominio anterior. Si
+  algo falla, vuelve a `pasada` con el error. Las redirecciones se quedan.
+  **Terminar** hace lo mismo en el caso «solo la web». **Quitar las
+  redirecciones** las borra (recomendado: no antes de 12 meses).
+- Las acciones guardan el estado intermedio antes de empezar y son
+  idempotentes («Reintentar»); un mutex en memoria por proyecto las serializa.
+  Al arrancar, `marcarCambiosInterrumpidos` deja con error los que cortó el
+  reinicio y vuelve a seguir los despliegues en curso.
+- Auditoría: `domain_migration_created`, `…_switched`, `…_rolled_back`,
+  `…_cancelled`, `…_retired`, `…_finished`, `…_service_retried` y
+  `domain_redirects_removed` (proyecto, `dominio.es → dominio2.es`);
+  `service_env_replaced` con los nombres de las claves, nunca los valores;
+  `mailway_mailbox_login_updated`.
+
 ---
 
 ## 7. Referencia de la API REST
@@ -1714,7 +1830,7 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/traefik/mailway` | público¹ | configuración dinámica **saneada** para el proveedor HTTP de Traefik (`{}` sin Mailway). ¹Responde 404 si la petición trae `X-Forwarded-*`/`X-Real-IP`/`Forwarded` (llegó desde internet a través de Traefik). Siempre 200: si Mailway falla, la última buena (memoria → `settings`), vuelta a sanear. En cada lectura obtiene también, en paralelo y con plazo de 5 s, todos los nombres de marca blanca de la instancia (`GET /api/whitelabel/domains`), que ningún servicio de un cliente puede asignarse; si falla, se conserva la lista anterior |
+| GET | `/traefik/mailway` | público¹ | configuración dinámica **saneada** para el proveedor HTTP de Traefik, más la prepublicación y las redirecciones del cambio de dominio y los routers de `SKYWAY_DOMAIN_EXTRA` (§2; `{}` si no hay nada, también sin Mailway). ¹Responde 404 si la petición trae `X-Forwarded-*`/`X-Real-IP`/`Forwarded` (llegó desde internet a través de Traefik). Siempre 200: si Mailway falla, la última buena (memoria → `settings`), vuelta a sanear. En cada lectura obtiene también, en paralelo y con plazo de 5 s, todos los nombres de marca blanca de la instancia (`GET /api/whitelabel/domains`), que ningún servicio de un cliente puede asignarse; si falla, se conserva la lista anterior |
 | GET | `/mailway/status` | auth | `{configured, panelUrl}` (la interfaz decide si muestra «Correo») |
 | GET | `/mailway/config` | admin | `{configured, baseUrl, serviceId, serviceName, internalUrl, hasToken, panelUrl, defaultPlanId, traefik:{routers, dropped, syncedAt, error}, previousHosts:[{host, lastSeen}]}`. Nunca devuelve el token. `previousHosts`: nombres que fueron de la instancia y siguen reservados |
 | DELETE | `/mailway/previous-hosts/:host` | admin + session | libera un nombre anterior de Mailway (un servidor de correo o un webmail que ya no se usan): desde entonces, cualquier servicio puede asignárselo → `{ok, config}`; 404 si no estaba. Audita `mailway_host_released` |
@@ -1865,6 +1981,30 @@ Skyway (si lo creó el reemplazo) en otro lote, solo si el nombre sigue como lo
 dejó el reemplazo; un AAAA hacia `serverIpv6`, que el reemplazo conservó, se
 queda. Audita `cloudflare_dns_replaced` y
 `cloudflare_dns_restored` (con los valores, que son direcciones públicas).
+
+### 7.14 Cambio de dominio (§6.1)
+Todas bajo `/projects/:id/domain-migrations`, con acceso y **gestión** del
+proyecto (administración o propietario del workspace; un miembro → 403).
+Errores `{error, code}`; los de Mailway (400, 404, 409, 429 y 503) se trasladan
+con su código (`migration_new_mx_here`, `migration_old_mx_here`,
+`dns_unknown`…).
+
+| Método | Ruta | Descripción |
+| --- | --- | --- |
+| POST | `/plan` | `{fromDomain, toDomain, soloWeb?, hosts?, excluidas?}` → `PlanSkyway {hosts[{serviceId, from, to, modo, serviceName, error}], dnsWeb, correoDisponible: si/no_vinculado/sin_dominio/mailway_antiguo, correo, variables{cambios, notas, wordpress, huella}, servicios, avisos, bloqueos, expect}`. Sin efectos. 30/min |
+| POST | `/projects/:id/domain-migrations` | `{fromDomain, toDomain, soloWeb?, hosts, excluidas, expect}` → 201 `MigracionSkyway` (+ `dns` del DNS automático), o 200 si ya estaba abierto con el mismo origen y destino. 409 `plan_changed` si `expect` no es la huella del plan, `migration_blocked` con el primer bloqueo, `migration_exists` con otro cambio abierto |
+| GET | `/projects/:id/domain-migrations` | `{abierta, anteriores (últimas 5), dominios}`; `?ligera=1` sin consultar a Mailway (el aviso de la página del proyecto) |
+| GET | `/:mid` | `MigracionSkyway {estado, paso, error, hosts[{…, dns, certificado}], compuertas[dns_web, certificados, correo], servicios[{despliegue, estado, error}], redirecciones, correo (vista de Mailway en vivo, caché de 10 s), variables (antes de pasar), alPasar, ipServidor, avisos, puede*, fechas}` |
+| POST | `/:mid/check` | vuelve a medir (DNS, certificados y correo) y deja `lista` o `preparando`. 60/min |
+| POST | `/:mid/switch` | `{expect}` (huella de `variables`) → 202. 409 `migration_not_ready`, `plan_changed` |
+| POST | `/:mid/rollback` | → 202 |
+| POST | `/:mid/cancel` | → 200 |
+| POST | `/:mid/retire` | `{confirm}` → 202 (la baja sigue en segundo plano). 400 `confirm_mismatch` |
+| POST | `/:mid/finish` | `{confirm}` → 200 (solo la web) |
+| POST | `/:mid/redirects/remove` | `{confirm}` → 200 (en `terminada`) |
+| POST | `/:mid/services/:sid/retry` | → 202 (servicio con el despliegue fallido) |
+| POST | `/:mid/mailboxes/:mbid/login-update` | → 200 («Actualizar ahora»; con aplicaciones del proyecto, también sus variables y un despliegue con la imagen en marcha) |
+| GET | `/:mid/zonefile` | `text/plain`: fichero de zona de Mailway del dominio nuevo (nivel `recomendados`: incluye el TXT de propiedad) más los registros A de la web, comentados; solo la web, solo los A |
 
 ---
 

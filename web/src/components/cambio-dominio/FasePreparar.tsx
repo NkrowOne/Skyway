@@ -1,0 +1,268 @@
+import { useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
+import { Download, RefreshCw } from 'lucide-react';
+import { cambioDominioApi, contar, MigracionSkyway } from '../../cambioDominio';
+import { copyToClipboard } from '../../utils';
+import { Button, Chip, ConfirmModal, Modal, useToast } from '../ui';
+import { Aviso, Avisos, Bloque, Condicion } from './comunes';
+
+const DNS_CHIP = {
+  ok: { tone: 'ok', label: 'Apunta a este servidor' },
+  pendiente: { tone: 'warn', label: 'Pendiente' },
+  desconocido: { tone: 'neutral', label: 'Sin comprobar' },
+} as const;
+
+/**
+ * Paso 2, «Preparar»: el DNS, los certificados y el correo del dominio nuevo,
+ * medidos cada 30 s, hasta que todo está listo para pasar. Nada de lo que se
+ * hace aquí se nota en la web ni en el correo actuales.
+ */
+export default function FasePreparar({
+  projectId,
+  m,
+  onCambio,
+  onComprobar,
+  comprobando,
+}: {
+  projectId: string;
+  m: MigracionSkyway;
+  onCambio: (m: MigracionSkyway) => void;
+  onComprobar: () => void;
+  comprobando: boolean;
+}) {
+  const toast = useToast();
+  const [pasarAbierto, setPasarAbierto] = useState(false);
+  const [cancelarAbierto, setCancelarAbierto] = useState(false);
+  const [copiando, setCopiando] = useState(false);
+
+  const pasar = useMutation({
+    mutationFn: () => cambioDominioApi.pasar(projectId, m.id, m.variables?.huella ?? ''),
+    onSuccess: (v) => {
+      setPasarAbierto(false);
+      onCambio(v);
+      toast(`La web y el correo han pasado a ${m.toDomain}.`, 'ok');
+    },
+    onError: (err: Error) => {
+      setPasarAbierto(false);
+      toast(err.message, 'err');
+      onComprobar();
+    },
+  });
+
+  const cancelar = useMutation({
+    mutationFn: () => cambioDominioApi.cancelar(projectId, m.id),
+    onSuccess: (v) => {
+      setCancelarAbierto(false);
+      onCambio(v);
+      toast('Cambio de dominio cancelado', 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const copiarTodo = async () => {
+    setCopiando(true);
+    try {
+      const texto = await cambioDominioApi.ficheroDeZona(projectId, m.id);
+      if (!(await copyToClipboard(texto))) throw new Error('No se han podido copiar los registros: descarga el fichero de zona.');
+      toast('Registros copiados', 'ok');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'No se han podido copiar los registros.', 'err');
+    } finally {
+      setCopiando(false);
+    }
+  };
+
+  const nuevos = [...new Map(m.hosts.filter((h) => h.modo !== 'no_cambiar').map((h) => [h.to, h])).values()];
+  const sinTls = nuevos.length > 0 && nuevos.every((h) => h.certificado === 'sin_tls');
+  const correo = m.correo;
+  const redirige = m.hosts.some((h) => h.modo === 'redirigir');
+  const reinicios = (m.alPasar ?? []).filter((s) => s.reinicio);
+  const variables = (m.variables?.cambios ?? []).filter((c) => !c.excluida);
+
+  return (
+    <div className="flex flex-col gap-5">
+      <p className="text-sm leading-6 text-sub">
+        Mientras preparas <span className="font-medium text-txt">{m.toDomain}</span>, la web y el correo siguen funcionando en{' '}
+        {m.fromDomain}. No se despliega nada hasta pasar.
+      </p>
+      {m.error && <Aviso tono="err">{m.error}</Aviso>}
+
+      <Bloque
+        titulo="Registros DNS"
+        acciones={
+          <>
+            <Button variant="secondary" size="sm" onClick={copiarTodo} loading={copiando}>
+              Copiar todo
+            </Button>
+            <a
+              href={cambioDominioApi.ficheroDeZonaUrl(projectId, m.id)}
+              download
+              className="press inline-flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface2 px-2.5 text-xs font-medium text-txt hover:border-line2 hover:bg-surface3"
+            >
+              <Download size={13} aria-hidden /> Descargar fichero de zona
+            </a>
+          </>
+        }
+      >
+        <ul className="rounded-lg border border-line bg-bg px-3.5 py-1.5">
+          {nuevos.map((h) => (
+            <li key={h.to} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-1.5">
+              <span className="min-w-0">
+                <span className="block break-all font-mono text-sm text-txt">{h.to}</span>
+                <span className="block text-xs text-subtle">
+                  {m.ipServidor ? `Registro A → ${m.ipServidor}, sin proxy` : 'Registro A hacia la IP de este servidor, sin proxy'}
+                </span>
+              </span>
+              <Chip tone={DNS_CHIP[h.dns].tone} size="sm" dot>
+                {DNS_CHIP[h.dns].label}
+              </Chip>
+            </li>
+          ))}
+          {correo && (
+            <li className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-1.5">
+              <span className="min-w-0 text-sm text-sub">
+                Correo de <span className="font-mono text-txt">{m.toDomain}</span> (MX, SPF, DKIM y verificación)
+              </span>
+              <Chip tone={correo.compuertas.find((c) => c.id === 'dns')?.ok ? 'ok' : 'warn'} size="sm" dot>
+                {correo.compuertas.find((c) => c.id === 'dns')?.ok ? 'Completo' : 'Pendiente'}
+              </Chip>
+            </li>
+          )}
+          {nuevos.length === 0 && !correo && <li className="py-1.5 text-sm text-subtle">No hay registros que crear.</li>}
+        </ul>
+        <p className="mt-1.5 text-xs leading-5 text-subtle">
+          {correo?.hacia.cloudflare
+            ? 'Registros del correo creados en Cloudflare. '
+            : 'Añade estos registros en tu proveedor de DNS: el fichero de zona los incluye todos. '}
+          Los registros de la web van comentados: quita antes el registro anterior de cada nombre, si lo hay.
+        </p>
+        {correo?.hacia.recibeEnOtroProveedor && (
+          <Aviso tono="warn" className="mt-2">
+            {m.toDomain} recibe ahora el correo en otro proveedor. Cuando veas «{m.toDomain} ya recibe en los buzones», cambia el MX a este
+            servidor.
+          </Aviso>
+        )}
+      </Bloque>
+
+      {nuevos.length > 0 && (
+        <Bloque titulo="Certificados">
+          <ul>
+            {sinTls ? (
+              <Condicion estado="ok" titulo="TLS no está activo en este servidor: no hay certificados que esperar." />
+            ) : (
+              nuevos.map((h) => (
+                <Condicion
+                  key={h.to}
+                  estado={h.certificado === 'ok' ? 'ok' : h.certificado === 'desconocido' ? 'aviso' : 'pendiente'}
+                  titulo={
+                    h.certificado === 'ok'
+                      ? `Certificado listo para ${h.to}`
+                      : h.dns !== 'ok'
+                        ? `Esperando al DNS de ${h.to}`
+                        : h.certificado === 'desconocido'
+                          ? `No se ha podido comprobar el certificado de ${h.to}`
+                          : `Esperando el certificado de ${h.to}`
+                  }
+                  detalle={h.certificado === 'desconocido' ? 'No impide pasar.' : undefined}
+                />
+              ))
+            )}
+          </ul>
+        </Bloque>
+      )}
+
+      {correo && (
+        <Bloque titulo="Correo">
+          <ul>
+            {correo.compuertas.map((c) => (
+              <Condicion key={c.id} estado={c.ok ? 'ok' : c.bloquea ? 'pendiente' : 'aviso'} titulo={c.titulo} detalle={c.ok ? undefined : c.detalle || undefined} />
+            ))}
+          </ul>
+          {correo.error && <Aviso tono="err" className="mt-2">{correo.error}</Aviso>}
+        </Bloque>
+      )}
+
+      <Avisos tono="info" avisos={m.avisos} />
+
+      <div className="flex flex-col gap-3 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-between">
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-subtle">
+          <span className="whitespace-nowrap">Se comprueba cada 30 segundos.</span>
+          <Button variant="ghost" size="sm" onClick={onComprobar} loading={comprobando}>
+            {!comprobando && <RefreshCw size={12} aria-hidden />} Comprobar ahora
+          </Button>
+        </p>
+        <div className="flex flex-col-reverse gap-2 sm:flex-row">
+          {m.puedeCancelar && (
+            <Button variant="ghost" onClick={() => setCancelarAbierto(true)} className="max-sm:h-11">
+              Cancelar el cambio
+            </Button>
+          )}
+          <Button onClick={() => setPasarAbierto(true)} disabled={!m.puedePasar || !m.variables} className="max-sm:h-11">
+            Pasar a {m.toDomain}
+          </Button>
+        </div>
+      </div>
+
+      <Modal open={pasarAbierto} onClose={() => setPasarAbierto(false)} title={`Pasar a ${m.toDomain}`}>
+        <div className="flex flex-col gap-2.5 text-sm leading-6 text-sub">
+          <p>
+            Al pasar, la web se sirve en {m.toDomain}
+            {redirige ? ` y ${m.fromDomain} redirige a ella conservando la ruta` : ''}
+            {correo ? `; el correo sale como @${m.toDomain}` : ''}.
+          </p>
+          {(m.alPasar?.length ?? 0) > 0 && (
+            <p>
+              Se {m.alPasar!.length === 1 ? 'volverá' : 'volverán'} a desplegar {contar(m.alPasar!.length, 'servicio', 'servicios')}:{' '}
+              {m.alPasar!.map((s) => s.nombre).join(', ')}.
+            </p>
+          )}
+          {reinicios.length > 0 && (
+            <p>
+              Los servicios con volúmenes ({reinicios.map((s) => s.nombre).join(', ')}) se reinician: unos segundos sin servicio.
+            </p>
+          )}
+          {redirige && <p>Durante 7 días la redirección es temporal; después pasa a ser permanente.</p>}
+          {variables.length > 0 && (
+            <p className="text-xs leading-5 text-subtle">
+              Cambian {contar(variables.length, 'variable', 'variables')}: {[...new Set(variables.map((c) => c.key))].join(', ')}.
+            </p>
+          )}
+          {(m.variables?.wordpress ?? []).map((w) => (
+            <p key={w.serviceId} className="text-xs leading-5 text-subtle">
+              WordPress ({w.serviceName}) pasa a usar la URL {w.url}.
+            </p>
+          ))}
+          {correo && correo.buzones.lista.length > 0 && (
+            <p className="text-xs leading-5 text-subtle">
+              Las personas siguen entrando con su usuario de {m.fromDomain} hasta que actualicen sus dispositivos. La contraseña no cambia.
+            </p>
+          )}
+        </div>
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button variant="ghost" onClick={() => setPasarAbierto(false)}>
+            Cancelar
+          </Button>
+          <Button onClick={() => pasar.mutate()} loading={pasar.isPending}>
+            Pasar ahora
+          </Button>
+        </div>
+      </Modal>
+
+      <ConfirmModal
+        open={cancelarAbierto}
+        onClose={() => setCancelarAbierto(false)}
+        onConfirm={() => cancelar.mutate()}
+        loading={cancelar.isPending}
+        title="Cancelar el cambio de dominio"
+        message={`Se dejarán de preparar los nombres de ${m.toDomain}. La web sigue en ${m.fromDomain} sin cambios.`}
+        confirmLabel="Cancelar el cambio"
+      >
+        {correo && (
+          <p className="mt-2 text-sm text-sub">
+            Se quitarán las direcciones de {m.toDomain} de los buzones y alias. {m.fromDomain} sigue igual.
+          </p>
+        )}
+      </ConfirmModal>
+    </div>
+  );
+}
