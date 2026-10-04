@@ -54,17 +54,17 @@ import {
   NO_CONFIGURADO,
   apiKeyName,
   appPasswordName,
+  conexionPrevista,
   connectServiceMail,
   httpError,
   isRefError,
   knownMailValues,
-  mailConnectNames,
   mailOrigin,
   ownedSummary,
   partialConnectionMessage,
 } from './mailconnect';
 import { MailMode, MailRole, mailValue } from './mailenv';
-import { MailwayError, MailwayInfo, MailwayMailbox, MailwaySummary, createMailbox, getInfo, mailwayConfigured } from './mailway';
+import { MailwayDomain, MailwayError, MailwayInfo, MailwayMailbox, MailwaySummary, createMailbox, getInfo, mailwayConfigured } from './mailway';
 import { manifestEngines, manifestMailMode, manifestWantsMail, reservedManifestVar } from './manifest';
 import { managedUnchanged, envStateOf, EnvState, writeDecision } from './managedenv';
 import { markManualAction } from './monitor';
@@ -182,12 +182,52 @@ export interface MailContext {
   mailbox: { email: string; domainId: string; existing: MailwayMailbox | null } | null;
 }
 
-/** El dominio del cliente con la propiedad comprobada que mejor casa con los dominios del servicio. */
+/**
+ * Estados de un cambio de dominio (Mailway 1.3+) en los que los buzones siguen
+ * en el dominio anterior: hasta que se pasa, el nuevo está vacío. Al pasar
+ * (y al volver, mientras dura) están en el nuevo.
+ */
+const BUZONES_EN_EL_ANTERIOR = new Set(['preparando', 'listo', 'pasando']);
+
+/** ¿Están los buzones del cliente en este dominio, o en el otro de su cambio de dominio? */
+function tieneLosBuzones(d: MailwayDomain): boolean {
+  const m = d.migracion;
+  if (!m) return true;
+  return BUZONES_EN_EL_ANTERIOR.has(m.estado) === (m.rol === 'origen');
+}
+
+/**
+ * El dominio del cliente con la propiedad comprobada que mejor casa con los
+ * dominios del servicio. De un cambio de dominio (Mailway 1.3+) cuenta el que
+ * tiene los buzones: el anterior hasta que se pasa (la web aún sirve sus
+ * nombres y sus buzones se pueden conectar) y el nuevo después, aunque la
+ * web siga sirviendo nombres del anterior.
+ */
 function pickMailDomain(summary: MailwaySummary, serviceDomains: string[]) {
-  const verified = summary.domains.filter((d) => !('ownershipVerifiedAt' in d) || d.ownershipVerifiedAt !== null);
+  const domains = summary.domains.filter(tieneLosBuzones);
+  const verified = domains.filter((d) => !('ownershipVerifiedAt' in d) || d.ownershipVerifiedAt !== null);
   const matches = (d: { domain: string }) =>
     serviceDomains.some((h) => h.toLowerCase() === d.domain.toLowerCase() || h.toLowerCase().endsWith(`.${d.domain.toLowerCase()}`));
-  return { domain: verified.find(matches) ?? verified[0] ?? null, pending: summary.domains.filter((d) => !verified.includes(d)) };
+  return { domain: verified.find(matches) ?? verified[0] ?? null, pending: domains.filter((d) => !verified.includes(d)) };
+}
+
+/**
+ * Por qué no se puede crear un buzón en ese dominio mientras dura su cambio de
+ * dominio, o null si se puede: Mailway no admite altas en el anterior hasta
+ * que el cambio se cierra, ni en el nuevo hasta pasar (`domain_migrating`).
+ * Los buzones que ya existen se pueden conectar igualmente.
+ */
+function altaBloqueada(d: MailwayDomain): string | null {
+  const m = d.migracion;
+  if (!m) return null;
+  if (m.rol === 'origen') {
+    return `${d.domain} está en un cambio de dominio: el buzón se podrá crear en ${m.pareja} en cuanto pases a él.`;
+  }
+  if (m.estado === 'volviendo') return `${d.domain} está volviendo a ${m.pareja}: el buzón se podrá crear cuando termine.`;
+  if (BUZONES_EN_EL_ANTERIOR.has(m.estado)) {
+    return `${d.domain} se está preparando para sustituir a ${m.pareja}: el buzón se podrá crear en cuanto pases a él.`;
+  }
+  return null;
 }
 
 /**
@@ -231,6 +271,10 @@ export async function mailContext(
   }
   const email = `${localPart}@${domain.domain.toLowerCase()}`;
   const existing = summary.mailboxes.find((m) => typeof m.email === 'string' && m.email.toLowerCase() === email) ?? null;
+  // Durante un cambio de dominio el buzón que falta no se puede crear: mejor
+  // decirlo en el plan que fallar al aplicarlo.
+  const bloqueo = existing ? null : altaBloqueada(domain);
+  if (bloqueo) return no(bloqueo);
   if (!existing && BUZONES_RESERVADOS.has(localPart) && !isAdmin) {
     return no(`El buzón «${localPart}» está reservado para la administración del dominio: solo un administrador de la plataforma puede crearlo.`);
   }
@@ -462,12 +506,30 @@ export function buildPlan(opts: {
         ? mail.summary.appPasswords.some((a) => !a.revokedAt && a.name === credName)
         : mail.summary.apiKeys.some((k) => !k.revokedAt && k.name === credName));
     const known = knownMailValues(mail?.info ?? null, mode, mail?.mailbox?.email ?? null);
-    const names = mailConnectNames(service, mode, known, hadCredential);
+    // Mismos nombres y mismo usuario que escribirá `connectServiceMail`.
+    const { names, user: mailUser } = conexionPrevista({
+      service,
+      mode,
+      known,
+      mailbox: mail?.mailbox?.existing ?? null,
+      email: mail?.mailbox?.email ?? null,
+      summary: mail?.summary ?? null,
+      hadCredential,
+    });
     const blocked = mail && !mail.available ? mail.reason : null;
     // Lo que se sabe sin crear nada: si el remitente o el servidor han
     // cambiado (otro buzón en el manifiesto), lo escrito ya no vale.
     const expectedValue = (role: MailRole): string | null =>
-      mailValue(role, { host: known.host, port: known.port, user: known.from, password: null, from: known.from, apiUrl: known.apiUrl, apiKey: null });
+      mailValue(role, { host: known.host, port: known.port, user: mailUser, password: null, from: known.from, apiUrl: known.apiUrl, apiKey: null });
+    const valueStillGood = (role: MailRole, current: string | undefined): boolean => {
+      const expected = expectedValue(role);
+      if (expected === null || expected === current) return true;
+      // Tras un cambio de dominio, el usuario del motor con el que ya está
+      // conectado el servicio sigue valiendo: lo actualiza la baja del dominio
+      // anterior, con sus variables y un despliegue.
+      const login = mail?.mailbox?.existing?.login;
+      return role === 'user' && !!login && login === current;
+    };
     let anyApply = false;
     const all = [...names.targets.map((t) => ({ ...t, kept: false })), ...names.kept.map((n) => ({ name: n, role: null, kept: true }))];
     for (const t of all) {
@@ -482,7 +544,7 @@ export function buildPlan(opts: {
         role &&
         managed?.origin === mailOrigin(mode, role) &&
         managedUnchanged(state, t.name) &&
-        (expectedValue(role) === null || expectedValue(role) === state.env[t.name])
+        valueStillGood(role, state.env[t.name])
       ) {
         status = 'done';
       } else if (blocked) {

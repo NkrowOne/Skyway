@@ -43,6 +43,61 @@ export interface FakeMailbox {
   quotaMb: number;
   status: 'active';
   usedBytes: number | null;
+  /**
+   * Usuario del motor cuando NO coincide con la dirección (`usuario_motor` de
+   * Mailway 1.3): tras pasar a un dominio nuevo, la dirección anterior hasta
+   * «Actualizar mis dispositivos». Ausente o null = entra con su dirección.
+   */
+  usuarioMotor?: string | null;
+}
+/** Alias del cliente (solo lo que usa el cambio de dominio). */
+export interface FakeAlias {
+  id: string;
+  domainId: string;
+  localPart: string;
+  email: string;
+}
+/** Cambio de dominio de Mailway 1.3 (`domain_migrations`), simplificado. */
+export interface FakeMigracion {
+  id: string;
+  clientId: string;
+  fromDomainId: string | null;
+  toDomainId: string | null;
+  fromDomain: string;
+  toDomain: string;
+  estado: 'preparando' | 'listo' | 'pasando' | 'pasado' | 'volviendo' | 'dando_de_baja' | 'dado_de_baja' | 'cancelada';
+  error: string | null;
+  origen: 'panel' | 'skyway';
+  referenciaExterna: string | null;
+  /** El destino lo dio de alta este cambio (cancelar lo elimina). */
+  creoDestino: boolean;
+  /** Pre-recepción hecha: las direcciones nuevas ya reciben. */
+  recepcionPreparada: boolean;
+  /** `marcarListo(id)`: las compuertas están bien y la próxima comprobación pasa a «listo». */
+  compuertasOk: boolean;
+  /** Buzones y alias que se mudan (los del origen al crear el cambio). */
+  items: { tipo: 'buzon' | 'alias'; id: string; localPart: string }[];
+  autoDns: boolean;
+  soloCliente: boolean;
+  nombresCloudflare: string[];
+  creado: number;
+  listoAt: number | null;
+  pasadoAt: number | null;
+  terminadoAt: number | null;
+}
+/** Acciones del cambio de dominio en las que se puede inyectar un fallo (`mw.fallosCambio`). */
+export type AccionCambio = 'plan' | 'create' | 'get' | 'check' | 'switch' | 'rollback' | 'cancel' | 'retire' | 'login-update';
+/** Fallo inyectado en la próxima petición de una acción (`mw.fallosCambio`). */
+export interface FalloCambio {
+  /** Código HTTP y cuerpo `{error, code}`. Sin `status`, la petición no responde: vence el plazo. */
+  status?: number;
+  error?: string;
+  code?: string;
+  /**
+   * Mailway HACE la acción y la respuesta se pierde (plazo vencido, conexión
+   * cortada, un proxy que responde 504): el reintento la encuentra hecha.
+   */
+  trasHacerla?: boolean;
 }
 export interface FakeApiKey {
   id: string;
@@ -141,7 +196,31 @@ export const mw = {
   seq: 0,
   /** Hosts a los que «no se llega» (contenedores fuera de Docker). */
   unreachable: new Set<string>(),
+  /**
+   * Como Mailway 1.3: declara `features.domainMigrations`, atiende
+   * `/api/domain-migrations` y `/login-update`, y el resumen trae `login` y
+   * `loginPending` en los buzones y `migracion` en los dominios. En false, como
+   * un Mailway anterior (rutas 404 y sin esos campos).
+   */
+  cambiosDeDominio: true,
+  aliases: [] as FakeAlias[],
+  migraciones: [] as FakeMigracion[],
+  /** Fallo que devuelve la PRÓXIMA petición de esa acción (se consume al usarlo). */
+  fallosCambio: new Map<AccionCambio, FalloCambio>(),
+  /** El MX del dominio anterior aún apunta al servidor: la baja responde 409 `migration_old_mx_here`. */
+  mxViejoAqui: false,
+  /** El DNS no se puede consultar: la baja responde 503 `dns_unknown`. */
+  dnsDesconocido: false,
+  /** El MX del dominio nuevo ya apunta al servidor: cancelar (con la pre-recepción hecha) responde 409. */
+  mxNuevoAqui: false,
 };
+
+/** Las compuertas del cambio pasan a estar bien: la próxima comprobación lo deja «listo». */
+export function marcarListo(id: string): void {
+  const c = mw.migraciones.find((x) => x.id === id);
+  if (!c) throw new Error(`Cambio de dominio desconocido: ${id}`);
+  c.compuertasOk = true;
+}
 
 const nextId = (p: string) => `${p}_${++mw.seq}`;
 
@@ -151,9 +230,31 @@ function json(status: number, body: unknown): Response {
 
 const badRequest = (error: string, code = 'bad_request') => json(400, { error, code });
 
+const ABIERTO = (c: FakeMigracion) => c.estado !== 'dado_de_baja' && c.estado !== 'cancelada';
+
+/** `migracion` del dominio, como Mailway 1.3 (sin la bandera, el campo no existe). */
+function migracionDe(domainId: string) {
+  const c = mw.migraciones.find((x) => ABIERTO(x) && (x.fromDomainId === domainId || x.toDomainId === domainId));
+  if (!c) return null;
+  const origen = c.fromDomainId === domainId;
+  return { id: c.id, rol: origen ? 'origen' : 'destino', estado: c.estado, pareja: origen ? c.toDomain : c.fromDomain, cuentaEnPlan: !origen };
+}
+
+/** Buzón como lo devuelve Mailway: con `login` y `loginPending` desde la 1.3. */
+function mailboxRecord(box: FakeMailbox) {
+  const { usuarioMotor, ...rest } = box;
+  if (!mw.cambiosDeDominio) return rest;
+  return { ...rest, login: usuarioMotor ?? box.email, loginPending: !!usuarioMotor };
+}
+
+/** Contraseñas de aplicación activas que creó Skyway en el buzón («skyway:…»). */
+const appsSkyway = (mailboxId: string) =>
+  mw.appPasswords.filter((a) => a.mailboxId === mailboxId && !a.revokedAt && a.name.startsWith('skyway:')).map((a) => a.name);
+
 function domainRecord(fake: FakeDomain) {
   const { cloudflareAccountId, checks, ...d } = fake;
   return {
+    ...(mw.cambiosDeDominio ? { migracion: migracionDe(fake.id) } : {}),
     ...d,
     dkimSelector: 'mw1',
     dnsStatus: { checks: checks ?? [], requiredTotal: 4, requiredOk: d.status === 'active' ? 4 : 1, allRequiredOk: d.status === 'active', checkedAt: 1 },
@@ -274,7 +375,13 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
       smtp: { host: 'mail.example.com', port: 465, security: 'SSL/TLS' },
       submission: { host: 'mail.example.com', port: 587, security: 'STARTTLS' },
       user: { id: 'usr_1', email: 'admin@mail.example.com', name: 'Admin', role: mw.role, clientId: null },
-      features: { cloudflare: true, autoconfig: true, portal: true, cloudflareSoloCrear: true },
+      features: {
+        cloudflare: true,
+        autoconfig: true,
+        portal: true,
+        cloudflareSoloCrear: true,
+        ...(mw.cambiosDeDominio ? { domainMigrations: true } : {}),
+      },
       traefik: admin ? { configPath: '/api/traefik/config', token: mw.traefikToken } : null,
       ...mw.infoOverride,
     });
@@ -343,7 +450,7 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
       plan,
       usage: { domains: domains.length, mailboxes: mailboxes.length },
       domains: domains.map(domainRecord),
-      mailboxes,
+      mailboxes: mailboxes.map(mailboxRecord),
       apiKeys: mw.apiKeys.filter((k) => k.clientId === client.id),
       appPasswords: mw.appPasswords.filter((a) => boxIds.has(a.mailboxId)),
       connection: { imap: null, submission: null, webmailUrl: mw.infoOverride.webmailUrl ?? 'https://webmail.example.com' },
@@ -555,7 +662,7 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
       usedBytes: 2048,
     };
     mw.mailboxes.push(box);
-    return json(200, { mailbox: box, password: 'Contraseña-Del-Buzon-1' });
+    return json(200, { mailbox: mailboxRecord(box), password: 'Contraseña-Del-Buzon-1' });
   }
   if ((m = path.match(/^\/api\/mailboxes\/([^/]+)\/app-passwords\/([^/]+)$/)) && method === 'DELETE') {
     const app = mw.appPasswords.find((a) => a.id === m![2] && a.mailboxId === m![1]);
@@ -592,6 +699,10 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
       return json(200, { appPassword: app, password: `ContraseñaDeAplicacion-Secreta-${app.id}` });
     }
   }
+  if (mw.cambiosDeDominio && (path.startsWith('/api/domain-migrations') || /^\/api\/mailboxes\/[^/]+\/login-update$/.test(path))) {
+    const r = rutaCambioDeDominio(path, method, b, url);
+    if (r) return r;
+  }
   if (path === '/api/apikeys' && method === 'POST') {
     const name = typeof b.name === 'string' ? b.name.trim() : '';
     if (!name) return badRequest('Indica un nombre para la clave.');
@@ -619,4 +730,339 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
     return json(200, { ok: true });
   }
   return json(404, { error: `Ruta no simulada: ${method} ${path}` });
+}
+
+// ---------- cambio de dominio (Mailway 1.3) ----------
+
+const TITULOS_COMPUERTA = {
+  motor: 'Servidor de correo disponible',
+  cliente: 'Cliente activo',
+  propiedad: 'Propiedad del dominio nuevo comprobada',
+  recepcion: 'El dominio nuevo ya recibe en los buzones',
+  dns: 'DNS del dominio nuevo completo (MX, SPF y DKIM)',
+} as const;
+
+function normalizarDominio(d: unknown): string {
+  return String(d ?? '').trim().toLowerCase().replace(/\.$/, '');
+}
+
+/** Buzones y alias que se mudan, con sus direcciones de ahora en el dominio de origen y en el de destino. */
+function itemsDe(c: FakeMigracion) {
+  return c.items.map((i) => ({ ...i, de: `${i.localPart}@${c.fromDomain}`, a: `${i.localPart}@${c.toDomain}` }));
+}
+
+function bloqueosBaja(c: FakeMigracion) {
+  const out: { code: string; mensaje: string }[] = [];
+  for (const i of c.items) {
+    const box = i.tipo === 'buzon' ? mw.mailboxes.find((x) => x.id === i.id) : undefined;
+    if (box?.usuarioMotor && appsSkyway(box.id).length > 0) {
+      out.push({ code: 'mailbox_used_by_app', mensaje: `${box.email} lo usa una aplicación para enviar. Actualízalo desde Skyway.` });
+    }
+  }
+  return out;
+}
+
+/** `CambioDominioVista` de Mailway 1.3 (lo que Skyway enseña tal cual). */
+export function vistaCambio(c: FakeMigracion) {
+  const buzones = c.items
+    .filter((i) => i.tipo === 'buzon')
+    .map((i) => mw.mailboxes.find((x) => x.id === i.id))
+    .filter((x): x is FakeMailbox => !!x);
+  const lista = buzones.map((b) => ({
+    id: b.id,
+    email: b.email,
+    login: b.usuarioMotor ?? b.email,
+    pendiente: !!b.usuarioMotor,
+    usadoPorApps: appsSkyway(b.id),
+  }));
+  const ok = c.compuertasOk;
+  const compuertas = (Object.keys(TITULOS_COMPUERTA) as (keyof typeof TITULOS_COMPUERTA)[]).map((id) => ({
+    id,
+    ok: id === 'motor' || id === 'cliente' ? true : ok,
+    bloquea: true,
+    titulo: TITULOS_COMPUERTA[id],
+    detalle: '',
+  }));
+  const bloqueos = bloqueosBaja(c);
+  return {
+    id: c.id,
+    clientId: c.clientId,
+    origen: c.origen,
+    referenciaExterna: c.referenciaExterna,
+    desde: { domainId: c.fromDomainId, domain: c.fromDomain },
+    hacia: { domainId: c.toDomainId, domain: c.toDomain, cloudflare: false, recibeEnOtroProveedor: false },
+    estado: c.estado,
+    paso: '',
+    error: c.error,
+    recepcionPreparada: c.recepcionPreparada,
+    compuertas,
+    puedePasar: c.estado === 'listo' && ok,
+    puedeVolver: c.estado === 'pasado' || (c.estado === 'pasando' && !!c.error),
+    puedeCancelar: c.estado === 'preparando' || c.estado === 'listo',
+    puedeDarDeBaja: c.estado === 'pasado' && bloqueos.length === 0,
+    bloqueosBaja: bloqueos,
+    buzones: { total: lista.length, pendientes: lista.filter((b) => b.pendiente).length, lista },
+    alias: { total: c.items.filter((i) => i.tipo === 'alias').length },
+    webmail: { viejo: null, nuevo: null },
+    nombresCloudflare: c.nombresCloudflare,
+    avisos: [],
+    fechas: { creado: c.creado, listo: c.listoAt, pasado: c.pasadoAt, terminado: c.terminadoAt },
+  };
+}
+
+/** Bloqueos del plan, en el orden de Mailway (el primero es el error de la creación). */
+function bloqueosPlan(from: FakeDomain, to: string) {
+  const out: { code: string; mensaje: string; status: number }[] = [];
+  const client = mw.clients.find((x) => x.id === from.clientId);
+  if (to.startsWith('www.')) out.push({ code: 'domain_www', mensaje: `Escribe el dominio sin «www.»: ${to.slice(4)}.`, status: 400 });
+  if (to === from.domain) {
+    out.push({ code: 'migration_same_domain', mensaje: 'El dominio nuevo tiene que ser distinto del actual.', status: 400 });
+  } else if (to.endsWith(`.${from.domain}`) || from.domain.endsWith(`.${to}`)) {
+    out.push({ code: 'migration_related_domains', mensaje: 'El dominio nuevo no puede ser un subdominio del actual, ni al revés.', status: 400 });
+  }
+  const destino = to === from.domain ? undefined : mw.domains.find((d) => d.domain === to);
+  if (destino && destino.clientId !== from.clientId) {
+    out.push({ code: 'domain_exists', mensaje: 'Ese dominio ya está dado de alta en la plataforma.', status: 409 });
+  } else if (destino && (mw.mailboxes.some((x) => x.domainId === destino.id) || mw.aliases.some((x) => x.domainId === destino.id))) {
+    out.push({
+      code: 'migration_destination_in_use',
+      mensaje: `${to} ya tiene buzones o alias. Elige un dominio sin buzones ni alias, o elimínalos antes.`,
+      status: 409,
+    });
+  }
+  const abierto = mw.migraciones.find(
+    (c) => ABIERTO(c) && [c.fromDomain, c.toDomain].some((d) => d === from.domain || d === to),
+  );
+  if (abierto) {
+    const afectado = [abierto.fromDomain, abierto.toDomain].includes(from.domain) ? from.domain : to;
+    out.push({ code: 'migration_exists', mensaje: `${afectado} ya está en un cambio de dominio abierto.`, status: 409 });
+  }
+  if (from.ownershipVerifiedAt === null) {
+    out.push({ code: 'ownership_required', mensaje: `Comprueba primero la propiedad de ${from.domain}.`, status: 409 });
+  }
+  if (client?.suspended) out.push({ code: 'client_suspended', mensaje: 'El cliente está suspendido.', status: 409 });
+  return out;
+}
+
+function planCambio(from: FakeDomain, to: string) {
+  const destino = mw.domains.find((d) => d.domain === to) ?? null;
+  const buzones = mw.mailboxes.filter((x) => x.domainId === from.id);
+  const aliases = mw.aliases.filter((x) => x.domainId === from.id);
+  const conApps = buzones.filter((x) => appsSkyway(x.id).length > 0);
+  return {
+    desde: { domainId: from.id, domain: from.domain },
+    hacia: { domain: to, existe: !!destino, domainId: destino?.id ?? null },
+    buzones: buzones.map((x) => ({ id: x.id, de: x.email, a: `${x.localPart}@${to}`, usadoPorApps: appsSkyway(x.id) })),
+    alias: aliases.map((x) => ({ id: x.id, de: x.email, a: `${x.localPart}@${to}` })),
+    formularios: [],
+    webmail: { viejo: null, nuevo: null },
+    avisos: conApps.length > 0 ? [{ code: 'apps_smtp', mensaje: `${conApps.length} buzones los usan aplicaciones para enviar.` }] : [],
+    bloqueos: bloqueosPlan(from, to).map(({ code, mensaje }) => ({ code, mensaje })),
+  };
+}
+
+const errorEstado = () =>
+  json(409, { error: 'Esta acción no está disponible en el estado actual del cambio de dominio.', code: 'migration_state' });
+
+/** Mueve los buzones y alias del cambio a `domainId`/`dominio` (la transacción de pasar y la de volver). */
+function moverItems(c: FakeMigracion, domainId: string, dominio: string, usuario: (box: FakeMailbox, de: string, a: string) => string | null) {
+  for (const i of itemsDe(c)) {
+    if (i.tipo === 'buzon') {
+      const box = mw.mailboxes.find((x) => x.id === i.id);
+      if (!box || box.domainId === domainId) continue;
+      box.usuarioMotor = usuario(box, i.de, i.a);
+      box.domainId = domainId;
+      box.domain = dominio;
+      box.email = `${i.localPart}@${dominio}`;
+      for (const app of mw.appPasswords) if (app.mailboxId === box.id) app.email = box.email;
+      for (const k of mw.apiKeys) if (k.senderMailboxId === box.id) k.senderEmail = box.email;
+    } else {
+      const alias = mw.aliases.find((x) => x.id === i.id);
+      if (!alias || alias.domainId === domainId) continue;
+      alias.domainId = domainId;
+      alias.email = `${i.localPart}@${dominio}`;
+    }
+  }
+}
+
+/** Acción del cambio de dominio que pide la petición, o null si no es una de ellas. */
+function accionDe(path: string, method: string): AccionCambio | null {
+  if (/^\/api\/mailboxes\/[^/]+\/login-update$/.test(path)) return method === 'POST' ? 'login-update' : null;
+  if (path === '/api/domain-migrations/plan') return method === 'POST' ? 'plan' : null;
+  if (path === '/api/domain-migrations') return method === 'POST' ? 'create' : null;
+  const m = path.match(/^\/api\/domain-migrations\/[^/]+(?:\/(check|switch|rollback|cancel|retire))?$/);
+  if (!m) return null;
+  if (!m[1]) return method === 'GET' ? 'get' : null;
+  return method === 'POST' ? (m[1] as AccionCambio) : null;
+}
+
+/** Respuesta del fallo inyectado; sin `status`, lo que ve `fetch` cuando vence el plazo. */
+function responderFallo(f: FalloCambio): Response {
+  if (f.status === undefined) throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  return json(f.status, { error: f.error ?? '', code: f.code ?? '' });
+}
+
+function rutaCambioDeDominio(path: string, method: string, b: Record<string, unknown>, url: URL): Response | null {
+  const accion = accionDe(path, method);
+  const f = accion ? mw.fallosCambio.get(accion) : undefined;
+  if (accion && f) mw.fallosCambio.delete(accion);
+  if (f && !f.trasHacerla) return responderFallo(f);
+  const r = atenderCambio(path, method, b, url);
+  return f && r ? responderFallo(f) : r;
+}
+
+function atenderCambio(path: string, method: string, b: Record<string, unknown>, url: URL): Response | null {
+  let m: RegExpMatchArray | null;
+
+  if ((m = path.match(/^\/api\/mailboxes\/([^/]+)\/login-update$/)) && method === 'POST') {
+    const box = mw.mailboxes.find((x) => x.id === m![1]);
+    if (!box) return json(404, { error: 'Buzón no encontrado.', code: 'not_found' });
+    box.usuarioMotor = null;
+    return json(200, { mailbox: mailboxRecord(box) });
+  }
+
+  if ((path === '/api/domain-migrations/plan' || path === '/api/domain-migrations') && method === 'POST') {
+    const accion: AccionCambio = path.endsWith('/plan') ? 'plan' : 'create';
+    const from = mw.domains.find((d) => d.id === b.fromDomainId);
+    if (!from) return json(404, { error: 'Dominio no encontrado.', code: 'not_found' });
+    const to = normalizarDominio(b.toDomain);
+    if (accion === 'plan') return json(200, planCambio(from, to));
+    const repetido = mw.migraciones.find((c) => ABIERTO(c) && c.fromDomainId === from.id && c.toDomain === to);
+    if (repetido) return json(200, vistaCambio(repetido));
+    const [bloqueo] = bloqueosPlan(from, to);
+    if (bloqueo) return json(bloqueo.status, { error: bloqueo.mensaje, code: bloqueo.code });
+    let destino = mw.domains.find((d) => d.domain === to);
+    const creoDestino = !destino;
+    if (!destino) {
+      destino = { id: nextId('dom'), clientId: from.clientId, domain: to, status: 'pending_dns', ownershipVerifiedAt: null };
+      mw.domains.push(destino);
+    }
+    const autoDns = b.autoDns !== false;
+    const c: FakeMigracion = {
+      id: nextId('dmg'),
+      clientId: from.clientId,
+      fromDomainId: from.id,
+      toDomainId: destino.id,
+      fromDomain: from.domain,
+      toDomain: to,
+      estado: 'preparando',
+      error: null,
+      origen: b.origen === 'skyway' ? 'skyway' : 'panel',
+      referenciaExterna: typeof b.referenciaExterna === 'string' ? b.referenciaExterna : null,
+      creoDestino,
+      recepcionPreparada: false,
+      compuertasOk: false,
+      items: [
+        ...mw.mailboxes.filter((x) => x.domainId === from.id).map((x) => ({ tipo: 'buzon' as const, id: x.id, localPart: x.localPart })),
+        ...mw.aliases.filter((x) => x.domainId === from.id).map((x) => ({ tipo: 'alias' as const, id: x.id, localPart: x.localPart })),
+      ],
+      autoDns,
+      soloCliente: url.searchParams.get('soloCliente') === '1',
+      // Como Mailway con `autoDns` y una zona en Cloudflare: los nombres de autoconfiguración que creó.
+      nombresCloudflare: autoDns && mw.autoDnsConAutoconfig ? [`autoconfig.${to}`, `autodiscover.${to}`] : [],
+      creado: Date.now(),
+      listoAt: null,
+      pasadoAt: null,
+      terminadoAt: null,
+    };
+    mw.migraciones.push(c);
+    return json(201, vistaCambio(c));
+  }
+
+  if (!(m = path.match(/^\/api\/domain-migrations\/([^/]+)(?:\/(check|switch|rollback|cancel|retire))?$/))) return null;
+  const c = mw.migraciones.find((x) => x.id === m![1]);
+  const accion = (m[2] ?? 'get') as AccionCambio;
+  if (accion === 'get' && method !== 'GET') return null;
+  if (accion !== 'get' && method !== 'POST') return null;
+  if (!c) return json(404, { error: 'Cambio de dominio no encontrado.', code: 'not_found' });
+  const destino = mw.domains.find((d) => d.id === c.toDomainId);
+
+  if (accion === 'get') return json(200, vistaCambio(c));
+
+  if (accion === 'check') {
+    if ((c.estado === 'preparando' || c.estado === 'listo') && c.compuertasOk) {
+      c.recepcionPreparada = true;
+      if (destino) {
+        destino.status = 'active';
+        destino.ownershipVerifiedAt ??= Date.now();
+      }
+      if (c.estado === 'preparando') {
+        c.estado = 'listo';
+        c.listoAt = Date.now();
+      }
+    }
+    return json(200, vistaCambio(c));
+  }
+
+  if (accion === 'switch') {
+    if (c.estado === 'pasado') return json(200, vistaCambio(c));
+    if (c.estado !== 'listo' && c.estado !== 'pasando') return errorEstado();
+    if (!c.compuertasOk) {
+      return json(409, { error: `Todavía no se puede pasar a ${c.toDomain}: el DNS no está completo.`, code: 'migration_not_ready' });
+    }
+    moverItems(c, c.toDomainId!, c.toDomain, (box, de, a) => {
+      const login = box.usuarioMotor ?? de;
+      return login === a ? null : login;
+    });
+    c.estado = 'pasado';
+    c.error = null;
+    c.pasadoAt = Date.now();
+    return json(200, vistaCambio(c));
+  }
+
+  if (accion === 'rollback') {
+    if (c.estado !== 'pasado' && !(c.estado === 'pasando' && c.error)) return errorEstado();
+    moverItems(c, c.fromDomainId!, c.fromDomain, (box, de, a) => {
+      if (box.usuarioMotor === de) return null;
+      if (!box.usuarioMotor) return a;
+      return box.usuarioMotor;
+    });
+    c.estado = 'listo';
+    c.error = null;
+    c.pasadoAt = null;
+    return json(200, vistaCambio(c));
+  }
+
+  if (accion === 'cancel') {
+    if (c.estado !== 'preparando' && c.estado !== 'listo') return errorEstado();
+    if (c.creoDestino && c.recepcionPreparada && mw.mxNuevoAqui) {
+      return json(409, {
+        error: `El MX de ${c.toDomain} ya apunta a este servidor. Cámbialo o quítalo antes de cancelar: si no, el correo que llegue a @${c.toDomain} se rechazaría.`,
+        code: 'migration_new_mx_here',
+      });
+    }
+    const propios = destino && (mw.mailboxes.some((x) => x.domainId === destino.id) || mw.aliases.some((x) => x.domainId === destino.id));
+    if (c.creoDestino && destino && !propios) mw.domains = mw.domains.filter((d) => d.id !== destino.id);
+    c.estado = 'cancelada';
+    c.terminadoAt = Date.now();
+    return json(200, vistaCambio(c));
+  }
+
+  // retire
+  if (c.estado !== 'pasado') return errorEstado();
+  if (b.confirm !== c.fromDomain) {
+    return badRequest(`Escribe ${c.fromDomain} exactamente para confirmar.`, 'confirm_mismatch');
+  }
+  const [conApp] = bloqueosBaja(c);
+  if (conApp) {
+    return json(409, {
+      error: 'Este buzón lo usa una aplicación para enviar (tienda). Actualízalo desde Skyway para que la aplicación no deje de enviar, o revoca antes sus contraseñas de aplicación «skyway:…».',
+      code: 'mailbox_used_by_app',
+    });
+  }
+  if (mw.dnsDesconocido) {
+    return json(503, { error: `No se ha podido consultar el DNS de ${c.fromDomain}. Vuelve a intentarlo en unos minutos.`, code: 'dns_unknown' });
+  }
+  if (mw.mxViejoAqui) {
+    return json(409, { error: `El MX de ${c.fromDomain} todavía apunta a este servidor.`, code: 'migration_old_mx_here' });
+  }
+  for (const i of c.items) {
+    const box = i.tipo === 'buzon' ? mw.mailboxes.find((x) => x.id === i.id) : undefined;
+    if (box) box.usuarioMotor = null;
+  }
+  mw.domains = mw.domains.filter((d) => d.id !== c.fromDomainId);
+  c.fromDomainId = null;
+  c.estado = 'dado_de_baja';
+  c.terminadoAt = Date.now();
+  return json(200, vistaCambio(c));
 }
