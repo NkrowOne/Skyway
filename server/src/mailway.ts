@@ -101,7 +101,14 @@ export interface MailwayInfo {
    * nada, y la cuenta de Cloudflare de la instancia asociada a un dominio
    * nunca se usa con `soloCliente`. Sin ella, Skyway no pide el DNS automático.
    */
-  features?: { cloudflare?: boolean; autoconfig?: boolean; portal?: boolean; cloudflareSoloCrear?: boolean };
+  features?: {
+    cloudflare?: boolean;
+    autoconfig?: boolean;
+    portal?: boolean;
+    cloudflareSoloCrear?: boolean;
+    /** Mailway 1.3+: cambio de dominio de un cliente (`/api/domain-migrations`) y usuario del motor en los buzones. */
+    domainMigrations?: boolean;
+  };
   traefik?: { configPath: string; token: string } | null;
 }
 
@@ -176,6 +183,21 @@ export interface MailwayDomain {
    * (Mailway posterior a la 1.2). Ausente en versiones anteriores, que lo entregan en local.
    */
   recepcionExterna?: boolean;
+  /**
+   * Cambio de dominio abierto en el que participa (Mailway 1.3+; null si
+   * ninguno, ausente en versiones anteriores). `cuentaEnPlan` es false para el
+   * dominio anterior: ya no admite buzones ni alias nuevos.
+   */
+  migracion?: MailwayDomainMigracion | null;
+}
+
+export interface MailwayDomainMigracion {
+  id: string;
+  rol: 'origen' | 'destino';
+  estado: string;
+  /** El otro dominio del cambio. */
+  pareja: string;
+  cuentaEnPlan: boolean;
 }
 
 export interface MailwayMailbox {
@@ -189,6 +211,13 @@ export interface MailwayMailbox {
   status: 'active' | 'suspended';
   createdAt?: number;
   usedBytes?: number | null;
+  /**
+   * Usuario con el que se entra (Mailway 1.3+). Tras pasar a un dominio nuevo
+   * sigue siendo la dirección anterior hasta «Actualizar mis dispositivos»
+   * (`loginPending`): las aplicaciones se autentican con él y envían con `email`.
+   */
+  login?: string;
+  loginPending?: boolean;
 }
 
 export interface MailwayApiKeyInfo {
@@ -738,7 +767,7 @@ async function parseResponse<T>(res: Response, credencial: string, texto = false
 /** Petición autenticada con el token de gestión. */
 export function mailwayFetch<T>(
   path: string,
-  opts: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown; config?: MailwayConfig } = {},
+  opts: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown; config?: MailwayConfig; timeoutMs?: number } = {},
 ): Promise<T> {
   return requestMailway<T>(path, opts);
 }
@@ -1323,6 +1352,200 @@ export function createApiKey(input: {
 /** Revoca una clave de la API de envío (Mailway retira también su contraseña SMTP interna). */
 export async function revokeApiKey(keyId: string): Promise<void> {
   await mailwayFetch(`/api/apikeys/${enc(keyId)}`, { method: 'DELETE' });
+}
+
+// ---------- cambio de dominio (Mailway 1.3+) ----------
+
+export type EstadoCambio =
+  | 'preparando'
+  | 'listo'
+  | 'pasando'
+  | 'pasado'
+  | 'volviendo'
+  | 'dando_de_baja'
+  | 'dado_de_baja'
+  | 'cancelada';
+
+/** Vista previa del cambio (`POST /api/domain-migrations/plan`), sin efectos. */
+export interface PlanCambioDominio {
+  desde: { domainId: string; domain: string };
+  hacia: { domain: string; existe: boolean; domainId: string | null };
+  buzones: { id: string; de: string; a: string; usadoPorApps: string[] }[];
+  alias: { id: string; de: string; a: string }[];
+  formularios: { id: string; name: string; origenesNuevos: string[] }[];
+  webmail: { viejo: string | null; nuevo: string | null };
+  avisos: { code: string; mensaje: string }[];
+  /** No vacío: la creación respondería 409 o 400 con el primero. */
+  bloqueos: { code: string; mensaje: string }[];
+}
+
+export interface CambioDominioWebmail {
+  id: string;
+  hostname: string;
+  status: string;
+  principal: boolean;
+}
+
+/** Estado de un cambio de dominio en Mailway: el del correo vive SOLO allí. */
+export interface CambioDominioVista {
+  id: string;
+  clientId: string;
+  origen: 'panel' | 'skyway';
+  referenciaExterna: string | null;
+  desde: { domainId: string | null; domain: string };
+  hacia: { domainId: string | null; domain: string; cloudflare: boolean; recibeEnOtroProveedor: boolean };
+  estado: EstadoCambio;
+  paso: string;
+  error: string | null;
+  /** Las direcciones nuevas ya reciben en los buzones (pre-recepción hecha). */
+  recepcionPreparada: boolean;
+  compuertas: {
+    id: 'motor' | 'cliente' | 'propiedad' | 'recepcion' | 'dns' | 'webmail';
+    ok: boolean;
+    bloquea: boolean;
+    titulo: string;
+    detalle: string;
+  }[];
+  puedePasar: boolean;
+  puedeVolver: boolean;
+  puedeCancelar: boolean;
+  puedeDarDeBaja: boolean;
+  /** Sin red: apps SMTP pendientes y nombres de la instancia (el MX se mide al pulsar). */
+  bloqueosBaja: { code: string; mensaje: string }[];
+  buzones: {
+    total: number;
+    pendientes: number;
+    lista: { id: string; email: string; login: string; pendiente: boolean; usadoPorApps: string[] }[];
+  };
+  alias: { total: number };
+  webmail: { viejo: CambioDominioWebmail | null; nuevo: CambioDominioWebmail | null };
+  /** A/AAAA/CNAME que Mailway creó en Cloudflare (Skyway los reserva al proyecto). */
+  nombresCloudflare: string[];
+  avisos: { code: string; mensaje: string }[];
+  fechas: { creado: number; listo: number | null; pasado: number | null; terminado: number | null };
+}
+
+/**
+ * Pasar, volver, cancelar y dar de baja trabajan dentro de la petición (todos
+ * los buzones y alias, con el motor de correo y una recarga del directorio):
+ * con el plazo normal, Skyway daría por fallida una operación que Mailway
+ * termina bien. Las cuatro son idempotentes, así que un reintento es seguro.
+ */
+const PLAZO_CAMBIO_MS = 120_000;
+/**
+ * Crear y comprobar miden el DNS del dominio nuevo y pueden hacer la
+ * pre-recepción (crear el dominio en el motor y añadir una dirección a cada
+ * buzón): Mailway espera hasta 20 s y después sigue en segundo plano.
+ */
+const PLAZO_PREPARAR_MS = 60_000;
+
+/** Una vista válida tiene al menos el id y el estado: lo demás se lee con tolerancia. */
+function vistaCambio(res: unknown): CambioDominioVista {
+  const v = res as Partial<CambioDominioVista> | null;
+  if (!v || typeof v.id !== 'string' || typeof v.estado !== 'string') {
+    throw new MailwayError('http', 'La respuesta de Mailway no es válida: falta el cambio de dominio.', 502);
+  }
+  return v as CambioDominioVista;
+}
+
+/** Vista previa del cambio de `fromDomainId` a `toDomain`. `soloCliente`, como en `createDomain`. */
+export async function planDomainMigration(
+  fromDomainId: string,
+  toDomain: string,
+  opts: { soloCliente?: boolean } = {},
+): Promise<PlanCambioDominio> {
+  const res = await mailwayFetch<PlanCambioDominio>(`/api/domain-migrations/plan${cloudflareQuery(opts.soloCliente)}`, {
+    method: 'POST',
+    body: { fromDomainId, toDomain },
+  });
+  if (!res || typeof res !== 'object' || !res.desde || !res.hacia) {
+    throw new MailwayError('http', 'La respuesta de Mailway no es válida: falta el plan del cambio de dominio.', 502);
+  }
+  return {
+    ...res,
+    buzones: Array.isArray(res.buzones) ? res.buzones : [],
+    alias: Array.isArray(res.alias) ? res.alias : [],
+    formularios: Array.isArray(res.formularios) ? res.formularios : [],
+    avisos: Array.isArray(res.avisos) ? res.avisos : [],
+    bloqueos: Array.isArray(res.bloqueos) ? res.bloqueos : [],
+  };
+}
+
+/**
+ * Abre el cambio en Mailway con `origen: 'skyway'`: desde ese momento solo se
+ * pasa, se vuelve, se cancela o se da de baja con un token de gestión (el de
+ * Skyway), no desde el panel de Mailway. Idempotente: si ya estaba abierto con
+ * el mismo origen y destino, Mailway devuelve el mismo cambio (200).
+ */
+export async function createDomainMigration(
+  input: { fromDomainId: string; toDomain: string; referenciaExterna: string; autoDns?: boolean; origen?: 'skyway' },
+  opts: { soloCliente?: boolean } = {},
+): Promise<CambioDominioVista> {
+  const res = await mailwayFetch<unknown>(`/api/domain-migrations${cloudflareQuery(opts.soloCliente)}`, {
+    method: 'POST',
+    body: {
+      fromDomainId: input.fromDomainId,
+      toDomain: input.toDomain,
+      autoDns: input.autoDns ?? true,
+      origen: input.origen ?? 'skyway',
+      referenciaExterna: input.referenciaExterna,
+    },
+    timeoutMs: PLAZO_PREPARAR_MS,
+  });
+  return vistaCambio(res);
+}
+
+export async function getDomainMigration(id: string): Promise<CambioDominioVista> {
+  return vistaCambio(await mailwayFetch<unknown>(`/api/domain-migrations/${enc(id)}`));
+}
+
+/** Avanza la preparación (mide el DNS y, con la propiedad probada, hace la pre-recepción). */
+export async function checkDomainMigration(id: string): Promise<CambioDominioVista> {
+  return vistaCambio(
+    await mailwayFetch<unknown>(`/api/domain-migrations/${enc(id)}/check`, { method: 'POST', body: {}, timeoutMs: PLAZO_PREPARAR_MS }),
+  );
+}
+
+async function accionCambio(id: string, accion: 'switch' | 'rollback' | 'cancel' | 'retire', body: object = {}): Promise<CambioDominioVista> {
+  return vistaCambio(
+    await mailwayFetch<unknown>(`/api/domain-migrations/${enc(id)}/${accion}`, { method: 'POST', body, timeoutMs: PLAZO_CAMBIO_MS }),
+  );
+}
+
+/** Pasa el correo al dominio nuevo: sale como @dominio2.es y lo que llega a @dominio.es sigue entrando. */
+export function switchDomainMigration(id: string): Promise<CambioDominioVista> {
+  return accionCambio(id, 'switch');
+}
+
+/** Vuelve al dominio anterior; quien ya actualizó sus dispositivos sigue entrando con su usuario nuevo. */
+export function rollbackDomainMigration(id: string): Promise<CambioDominioVista> {
+  return accionCambio(id, 'rollback');
+}
+
+/** Cancela antes de pasar (409 `migration_new_mx_here` si el MX nuevo ya apunta al servidor). */
+export function cancelDomainMigration(id: string): Promise<CambioDominioVista> {
+  return accionCambio(id, 'cancel');
+}
+
+/** Da de baja el dominio anterior. `confirm` es el dominio anterior escrito por el usuario. */
+export function retireDomainMigration(id: string, confirm: string): Promise<CambioDominioVista> {
+  return accionCambio(id, 'retire', { confirm });
+}
+
+/**
+ * Cambia el usuario del buzón a su dirección vigente («Actualizar mis
+ * dispositivos»). Idempotente. Con el token de gestión Mailway lo permite
+ * aunque lo usen aplicaciones: Skyway actualiza después sus variables.
+ */
+export async function updateMailboxLogin(mailboxId: string): Promise<{ mailbox: MailwayMailbox }> {
+  const res = await mailwayFetch<{ mailbox?: MailwayMailbox }>(`/api/mailboxes/${enc(mailboxId)}/login-update`, {
+    method: 'POST',
+    body: {},
+  });
+  if (!res.mailbox || typeof res.mailbox.id !== 'string') {
+    throw new MailwayError('http', 'La respuesta de Mailway no es válida: falta el buzón.', 502);
+  }
+  return { mailbox: res.mailbox };
 }
 
 // ---------- marca blanca (webmail con el dominio del cliente) ----------
