@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import Docker from 'dockerode';
 import { PassThrough } from 'stream';
 import { StringDecoder } from 'string_decoder';
@@ -343,6 +344,38 @@ export async function imageExists(tag: string): Promise<boolean> {
   }
 }
 
+/**
+ * Nombre BASE de lo que el servicio declara en Traefik: el servicio
+ * (`skyway-<proyecto>-<servicio>`, `…@docker` desde el proveedor HTTP) y sus
+ * middlewares. Es idéntico en todas las versiones del contenedor, así que
+ * Traefik los fusiona: las réplicas y los relevos suman servidores al mismo
+ * balanceo.
+ */
+export function traefikServiceName(project: ProjectRow, service: ServiceRow): string {
+  return `skyway-${project.slug}-${service.slug}`;
+}
+
+/**
+ * Hosts normalizados del router (minúsculas, sin repetidos y ordenados) y su
+ * nombre: el base más una huella de los hosts.
+ *
+ * Traefik borra un router que dos contenedores definen con el mismo nombre y
+ * reglas distintas («Router defined multiple times with different
+ * configurations»). Con un nombre fijo, al cambiar los dominios de un servicio
+ * la versión vieja y la nueva convivían durante el relevo (hasta que la nueva
+ * responde, ver `waitReplicaReady`) y TODOS los nombres del servicio daban 404,
+ * también los que no cambiaban. Con la huella en el nombre, dos versiones con
+ * los mismos hosts generan exactamente el mismo router (se fusionan) y dos con
+ * hosts distintos, routers distintos que conviven. Por eso la regla se escribe
+ * también con los hosts ordenados: el mismo conjunto en otro orden no puede
+ * dar dos definiciones distintas del mismo router.
+ */
+export function traefikRouter(project: ProjectRow, service: ServiceRow, domains: string[]): { router: string; hosts: string[] } {
+  const hosts = [...new Set(domains.map((d) => d.trim().toLowerCase()).filter(Boolean))].sort();
+  const huella = crypto.createHash('sha256').update(hosts.join(',')).digest('hex').slice(0, 8);
+  return { router: `${traefikServiceName(project, service)}-${huella}`, hosts };
+}
+
 export function traefikLabels(
   project: ProjectRow,
   service: ServiceRow,
@@ -350,9 +383,12 @@ export function traefikLabels(
   port: number,
 ): Record<string, string> {
   const labels: Record<string, string> = {};
-  if (domains.length === 0) return labels;
-  const router = `skyway-${project.slug}-${service.slug}`;
-  const rule = domains.map((d) => `Host(\`${d}\`)`).join(' || ');
+  const { router, hosts } = traefikRouter(project, service, domains);
+  if (hosts.length === 0) return labels;
+  // Servicio y middlewares conservan el nombre base (ver `traefikServiceName`);
+  // solo los routers llevan la huella de sus hosts.
+  const base = traefikServiceName(project, service);
+  const rule = hosts.map((d) => `Host(\`${d}\`)`).join(' || ');
   // TLS efectivo: el ajuste del panel y un correo válido en Traefik. Sin lo
   // segundo no se emite ningún certificado, y redirigir a https dejaba el
   // dominio sirviendo el certificado por defecto de Traefik (ver tls.ts).
@@ -361,20 +397,24 @@ export function traefikLabels(
   labels['traefik.docker.network'] = EDGE_NETWORK;
   // Router HTTP (puerto 80). Con TLS activo se añade un segundo router HTTPS:
   // un único router con tls=true rechazaría las conexiones en claro del puerto 80.
+  // El servicio va explícito: con el nombre del router distinto del del
+  // servicio, Traefik ya no los empareja por nombre.
   labels[`traefik.http.routers.${router}.rule`] = rule;
   labels[`traefik.http.routers.${router}.entrypoints`] = 'web';
+  labels[`traefik.http.routers.${router}.service`] = base;
   if (tls) {
     labels[`traefik.http.routers.${router}-secure.rule`] = rule;
     labels[`traefik.http.routers.${router}-secure.entrypoints`] = 'websecure';
     labels[`traefik.http.routers.${router}-secure.tls.certresolver`] = 'le';
+    labels[`traefik.http.routers.${router}-secure.service`] = base;
     // Con HTTPS disponible, el router de texto en claro deja de servir contenido
     // y solo redirige: si no, el puerto 80 seguiría entregando la web —y con
     // ella cookies de sesión o claves de API— sin cifrar, para siempre. El reto
     // HTTP-01 de Let's Encrypt no se ve afectado: Traefik lo atiende en un
     // router interno propio, con prioridad por encima de este.
-    labels[`traefik.http.middlewares.${router}-https.redirectscheme.scheme`] = 'https';
-    labels[`traefik.http.middlewares.${router}-https.redirectscheme.permanent`] = 'true';
-    labels[`traefik.http.routers.${router}.middlewares`] = `${router}-https`;
+    labels[`traefik.http.middlewares.${base}-https.redirectscheme.scheme`] = 'https';
+    labels[`traefik.http.middlewares.${base}-https.redirectscheme.permanent`] = 'true';
+    labels[`traefik.http.routers.${router}.middlewares`] = `${base}-https`;
   }
   // Durante un intercambio la versión nueva entra en el balanceo en cuanto
   // nace, aunque aún no escuche: sin esto, mientras arranca, una de cada dos
@@ -382,10 +422,10 @@ export function traefikLabels(
   // y el balanceo la lleva a la versión anterior, que sigue en pie hasta que la
   // nueva responde (ver `waitReplicaReady` en el deployer). Traefik solo
   // reintenta si el servidor no llegó a contestar.
-  labels[`traefik.http.middlewares.${router}-retry.retry.attempts`] = '3';
-  labels[`traefik.http.middlewares.${router}-retry.retry.initialinterval`] = '100ms';
-  labels[`traefik.http.routers.${router}${tls ? '-secure' : ''}.middlewares`] = `${router}-retry`;
-  labels[`traefik.http.services.${router}.loadbalancer.server.port`] = String(port);
+  labels[`traefik.http.middlewares.${base}-retry.retry.attempts`] = '3';
+  labels[`traefik.http.middlewares.${base}-retry.retry.initialinterval`] = '100ms';
+  labels[`traefik.http.routers.${router}${tls ? '-secure' : ''}.middlewares`] = `${base}-retry`;
+  labels[`traefik.http.services.${base}.loadbalancer.server.port`] = String(port);
   return labels;
 }
 

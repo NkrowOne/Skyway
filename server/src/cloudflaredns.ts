@@ -46,6 +46,7 @@ import { anotarErrorCloudflare, tokenCloudflareGuardado } from './cloudflareconf
 import {
   deleteCloudflareDnsRecord,
   getCloudflareDnsRecord,
+  getDomainRedirect,
   getMailwayDnsReserva,
   getProject,
   getService,
@@ -428,7 +429,8 @@ export type ResultadoBorrado = 'deleted' | 'gone' | 'released';
 /**
  * Borra en Cloudflare un registro que creó el DNS automático y libera el
  * nombre. Solo el administrador (lo exige la ruta). No se toca nada si el
- * dominio sigue asignado a un servicio, ni un registro que alguien ha
+ * dominio sigue asignado a un servicio o redirige a otro nombre tras un cambio
+ * de dominio (`redirecciones.ts`), ni un registro que alguien ha
  * cambiado desde entonces y que sigue apuntando aquí (quizá lo usa el
  * operador para otra cosa): en ese caso se mantiene la reserva. Si ya no
  * existe o ya apunta a otro sitio, solo se libera el nombre.
@@ -445,6 +447,12 @@ export async function borrarRegistroCreado(
       409,
       `El dominio ${fila.domain} sigue asignado al servicio «${getProject(servicio.project_id)?.name ?? '?'} / ${servicio.name}». Quítalo del servicio antes de borrar su registro.`,
     );
+  }
+  // Tras un cambio de dominio el nombre viejo ya no lo tiene ningún servicio,
+  // pero sigue en uso: responde con la redirección al nuevo, que sin su
+  // registro A dejaría de llegar.
+  if (getDomainRedirect(fila.domain)) {
+    throw httpError(409, `El dominio ${fila.domain} redirige a otro nombre; quita antes la redirección.`);
   }
   const token = tokenCloudflareGuardado();
   if (!token) throw httpError(400, 'Configura el token de Cloudflare para borrar el registro.');

@@ -91,7 +91,8 @@ import {
   reserveWhitelabelHost,
   stableStringify,
 } from '../mailwaytraefik';
-import { withPanelExtraRouters } from '../paneldomain';
+import { panelExtraTraefikConfig } from '../paneldomain';
+import { configuracionTraefikSkyway, mezclarConfiguracion } from '../redirecciones';
 import {
   BUZONES_RESERVADOS,
   NO_CONFIGURADO,
@@ -580,14 +581,28 @@ function registrableDomain(host: string): string | null {
 const MAX_SUGERENCIAS = 8;
 
 /**
+ * Dominios del cliente que son el origen de un cambio de dominio abierto en
+ * Mailway (`migracion.rol === 'origen'` en el resumen). Se lee sin depender
+ * del tipo: un Mailway anterior al cambio de dominio no manda el campo.
+ */
+function dominiosQueSeVan(summary: MailwaySummary): string[] {
+  return summary.domains
+    .filter((d) => (d as { migracion?: { rol?: unknown } | null }).migracion?.rol === 'origen')
+    .map((d) => d.domain);
+}
+
+/**
  * Dominios de correo que se proponen al proyecto: los registrables de los
  * dominios de sus servicios (api.empresa.com → empresa.com), sin los que ya
  * tiene su cliente de correo ni los de la plataforma: el del panel, el raíz
  * con el que se generan los subdominios de los servicios y los de la instancia
  * de Mailway. Que un servicio cuelgue de esos dominios no los hace del cliente.
+ * Tampoco el dominio que se va en un cambio de dominio (`dominiosQueSeVan`),
+ * aunque dejara de figurar entre los del cliente: proponerlo invitaría a darlo
+ * de alta otra vez justo cuando se retira.
  */
-function suggestedDomains(projectId: string, existing: string[]): string[] {
-  const fuera = new Set(existing.filter((d) => typeof d === 'string').map((d) => d.toLowerCase()));
+function suggestedDomains(projectId: string, existing: string[], salientes: readonly string[] = []): string[] {
+  const fuera = new Set([...existing, ...salientes].filter((d) => typeof d === 'string').map((d) => d.toLowerCase()));
   for (const host of [...panelDomains(), getSetting('rootDomain') ?? '', ...mailwayReservedHosts()]) {
     const reg = host ? registrableDomain(host) : null;
     if (reg) fuera.add(reg);
@@ -847,10 +862,16 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
       (h) => req.headers[h] !== undefined,
     );
     if (reenviada) return reply.code(404).send({ error: 'No encontrado' });
-    // Más los routers de los dominios adicionales del panel (SKYWAY_DOMAIN_EXTRA,
-    // ver paneldomain.ts): van aquí porque es el único proveedor dinámico que
-    // Traefik ya lee, y sin Mailway la respuesta sigue siendo válida.
-    const config = withPanelExtraRouters(await mailwayTraefikConfig(req.log));
+    // Más lo propio de Skyway: las redirecciones y la prepublicación del cambio
+    // de dominio (redirecciones.ts) y los routers de los dominios adicionales
+    // del panel (SKYWAY_DOMAIN_EXTRA, ver paneldomain.ts). Van aquí porque es el
+    // único proveedor dinámico que Traefik ya lee, y salen aunque Mailway no
+    // esté configurado: `mailwayTraefikConfig` nunca lanza.
+    const config = mezclarConfiguracion(
+      await mailwayTraefikConfig(req.log),
+      configuracionTraefikSkyway(),
+      panelExtraTraefikConfig(),
+    );
     return reply.type('application/json; charset=utf-8').send(stableStringify(config));
   });
 
@@ -1023,7 +1044,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           summary: publicSummary(summary),
           panelUrl: publicPanelUrl(),
           features: featuresOf(),
-          suggestedDomains: suggestedDomains(id, summary.domains.map((d) => d.domain)),
+          suggestedDomains: suggestedDomains(id, summary.domains.map((d) => d.domain), dominiosQueSeVan(summary)),
         };
       }),
     );

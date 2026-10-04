@@ -16,13 +16,25 @@
  * se crearon (`cloudflare_dns_records`): el registro sigue apuntando aquí
  * aunque el dominio se quite del servicio.
  *
+ * Los nombres que redirigen tras un cambio de dominio y los que se están
+ * prepublicando (`redirecciones.ts`) son del proyecto del cambio, también
+ * frente a la administración.
+ *
  * Los de Mailway son su URL pública, su panel, su webmail y su servidor de
  * correo, los que publica el puente de Traefik y los nombres de marca blanca de
  * todos sus clientes en cualquier estado: uno que aún espera DNS no está
  * publicado, pero en cuanto apunte aquí el servicio que lo tuviera se quedaría
  * con el tráfico de ese webmail.
  */
-import { getCloudflareDnsRecord, getMailwayDnsReserva, getProject, getService, serviceIdsForDomain } from './db';
+import {
+  getCloudflareDnsRecord,
+  getDomainRedirect,
+  getMailwayDnsReserva,
+  getPrepublished,
+  getProject,
+  getService,
+  serviceIdsForDomain,
+} from './db';
 import { mailwayProject, mailwayReservedHosts } from './mailway';
 import { mailwayPublishedHosts, mailwayWhitelabelHosts } from './mailwaytraefik';
 import { panelDomains } from './paneldomain';
@@ -71,6 +83,16 @@ export function domainClaimError(domains: Iterable<string>, claim: DomainClaim):
       return claim.isAdmin
         ? `El dominio ${domain} ya está asignado al servicio ${serviceLabel(otros[0])}. Retíralo de ese servicio antes de asignarlo a otro.`
         : `El dominio ${domain} ya está asignado a otro servicio. Cada dominio solo puede servir a un servicio.`;
+    }
+    // Un nombre que redirige al nuevo tras un cambio de dominio, o el nombre
+    // nuevo que se está prepublicando, lo publica Skyway por su cuenta para
+    // otro proyecto: asignarlo a un servicio le quitaría el tráfico (el router
+    // de un servicio gana a los de prioridad 1) en mitad del cambio. Vale
+    // también para la administración, como un dominio de otro servicio.
+    const redireccion = getDomainRedirect(domain);
+    const prepublicado = getPrepublished(domain);
+    if ((redireccion && redireccion.project_id !== claim.projectId) || (prepublicado && prepublicado.project_id !== claim.projectId)) {
+      return `El dominio ${domain} lo utiliza otro proyecto (redirección o cambio de dominio en curso) y no se puede asignar a este servicio.`;
     }
     if (claim.isAdmin) continue;
     // Un nombre cuyo registro A creó el DNS automático del administrador en

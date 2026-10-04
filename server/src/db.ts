@@ -650,6 +650,18 @@ export function initDb(): void {
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (service_id, key)
     );
+    -- [contrato del modelo del cambio de dominio: mínimo para compilar; lo sustituye el modelo completo]
+    -- Sobreviven al borrado del servicio, no al del proyecto.
+    CREATE TABLE IF NOT EXISTS domain_redirects (
+      host TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      to_host TEXT NOT NULL, migration_id TEXT, permanent_from INTEGER NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS domain_prepublished (
+      host TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+      migration_id TEXT NOT NULL, dns_ok_at INTEGER, created_at INTEGER NOT NULL
+    );
+    -- [fin del contrato]
   `);
 
   // Facturación de empresa: número, impuestos, método de pago y datos de Stripe.
@@ -2212,6 +2224,42 @@ export function getMailwayDnsReserva(name: string): { name: string; project_id: 
     name.trim().toLowerCase().replace(/\.$/, ''),
   ) as { name: string; project_id: string | null } | undefined;
 }
+
+// ---------- [contrato del modelo del cambio de dominio: mínimo para compilar; lo sustituye el modelo completo] ----------
+export interface DomainRedirectRow {
+  host: string;
+  project_id: string;
+  to_host: string;
+  migration_id: string | null;
+  permanent_from: number;
+  created_at: number;
+}
+
+export interface DomainPrepublishedRow {
+  host: string;
+  project_id: string;
+  service_id: string;
+  migration_id: string;
+  dns_ok_at: number | null;
+  created_at: number;
+}
+
+export function getDomainRedirect(host: string): DomainRedirectRow | undefined {
+  return stmt('SELECT * FROM domain_redirects WHERE host = ?').get(host.trim().toLowerCase()) as DomainRedirectRow | undefined;
+}
+
+export function listDomainRedirects(): DomainRedirectRow[] {
+  return stmt('SELECT * FROM domain_redirects ORDER BY host').all() as DomainRedirectRow[];
+}
+
+export function getPrepublished(host: string): DomainPrepublishedRow | undefined {
+  return stmt('SELECT * FROM domain_prepublished WHERE host = ?').get(host.trim().toLowerCase()) as DomainPrepublishedRow | undefined;
+}
+
+export function listPrepublished(): DomainPrepublishedRow[] {
+  return stmt('SELECT * FROM domain_prepublished ORDER BY host').all() as DomainPrepublishedRow[];
+}
+// ---------- [fin del contrato] ----------
 
 /** El administrador asigna un nombre reservado a otro proyecto: la reserva pasa a ese proyecto. */
 export function moveMailwayDnsReservas(names: readonly string[], projectId: string): void {
