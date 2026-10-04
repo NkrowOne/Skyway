@@ -14,7 +14,7 @@ import { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app';
 import { closeDb, createProject, createService, initDb, setSetting } from '../src/db';
-import { traefikLabels } from '../src/docker/containers';
+import { traefikLabels, traefikRouter } from '../src/docker/containers';
 import { acmeEmailFromTraefik, classifyAcmeEmail, setTraefikAcmeStateForTests, tlsBlocked, tlsEnabled } from '../src/tls';
 import { systemVars } from '../src/variables';
 
@@ -107,9 +107,11 @@ describe('TLS efectivo', () => {
       expect(tlsEnabled()).toBe(true);
       const { p, s } = servicioConDominio();
       const labels = traefikLabels(p, s, ['app.acme.es'], 3000);
-      const router = `skyway-${p.slug}-${s.slug}`;
+      // Routers con la huella de sus hosts; middlewares con el nombre base (traefik-huella.test.ts).
+      const { router } = traefikRouter(p, s, ['app.acme.es']);
+      const base = `skyway-${p.slug}-${s.slug}`;
       expect(labels[`traefik.http.routers.${router}-secure.tls.certresolver`]).toBe('le');
-      expect(labels[`traefik.http.routers.${router}.middlewares`]).toBe(`${router}-https`);
+      expect(labels[`traefik.http.routers.${router}.middlewares`]).toBe(`${base}-https`);
       expect(systemVars(s).PUBLIC_URL).toBe('https://app.acme.es');
     }
   });
@@ -155,13 +157,14 @@ describe('reintento en Traefik durante el intercambio', () => {
   it('cada servicio con dominio lleva un middleware «retry» en el router que sirve', () => {
     traefik('ok', 'ops@acme.es');
     const { p, s } = servicioConDominio();
-    const router = `skyway-${p.slug}-${s.slug}`;
+    const { router } = traefikRouter(p, s, ['app.acme.es']);
+    const base = `skyway-${p.slug}-${s.slug}`;
     const conTls = traefikLabels(p, s, ['app.acme.es'], 3000);
-    expect(conTls[`traefik.http.middlewares.${router}-retry.retry.attempts`]).toBe('3');
-    expect(conTls[`traefik.http.routers.${router}-secure.middlewares`]).toBe(`${router}-retry`);
+    expect(conTls[`traefik.http.middlewares.${base}-retry.retry.attempts`]).toBe('3');
+    expect(conTls[`traefik.http.routers.${router}-secure.middlewares`]).toBe(`${base}-retry`);
 
     setSetting('letsencryptEmail', null);
     const sinTls = traefikLabels(p, s, ['app.acme.es'], 3000);
-    expect(sinTls[`traefik.http.routers.${router}.middlewares`]).toBe(`${router}-retry`);
+    expect(sinTls[`traefik.http.routers.${router}.middlewares`]).toBe(`${base}-retry`);
   });
 });
