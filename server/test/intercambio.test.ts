@@ -16,8 +16,9 @@
  * y las sondas (`execInContainer`) responden según lo que pida cada prueba.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { closeDb, createProject, createService, getDeployment, getService, initDb, setEnv } from '../src/db';
+import { closeDb, createDeployment, createProject, createService, getDeployment, getService, initDb, listAlerts, setEnv, updateDeployment } from '../src/db';
 import { awaitDeployment, triggerDeploy } from '../src/deploy/deployer';
+import { AUTODEPLOY_ALERT_TYPE, fireAlert } from '../src/alerts';
 
 const m = vi.hoisted(() => ({
   eventos: [] as string[],
@@ -27,8 +28,12 @@ const m = vi.hoisted(() => ({
   fallosAntes: new Map<string, number>(),
   puertoAbierto: true,
   healthcheck: false,
+  /** Lo que Docker puede tardar en decidir con el HEALTHCHECK de la imagen. */
+  ventanaSalud: 180_000,
   salud: [] as string[],
   volumenes: [] as string[],
+  /** Estados que irá devolviendo `getRuntime` para un contenedor antes de «running». */
+  estados: new Map<string, { state: string; exitCode: number | null; restartCount?: number }[]>(),
 }));
 
 vi.mock('../src/docker/client', async (importOriginal) => {
@@ -69,11 +74,17 @@ vi.mock('../src/docker/containers', async (importOriginal) => {
     stopContainer: vi.fn(async (name: string) => {
       m.eventos.push(`parar:${name}`);
     }),
-    getRuntime: vi.fn(async (name: string) =>
-      m.vivos.has(name)
+    getRuntime: vi.fn(async (name: string) => {
+      const siguiente = m.vivos.has(name) ? m.estados.get(name)?.shift() : undefined;
+      if (siguiente) return { startedAt: null, restartCount: 0, image: 'nginx:alpine', ...siguiente };
+      return m.vivos.has(name)
         ? { state: 'running', startedAt: new Date().toISOString(), exitCode: null, restartCount: 0, image: 'nginx:alpine' }
-        : { state: 'not_created', startedAt: null, exitCode: null, restartCount: 0, image: null },
-    ),
+        : { state: 'not_created', startedAt: null, exitCode: null, restartCount: 0, image: null };
+    }),
+    startContainer: vi.fn(async (name: string) => {
+      m.eventos.push(`arrancar:${name}`);
+    }),
+    imageExposedPorts: vi.fn(async () => []),
     execInContainer: vi.fn(async (_id: string, command: string, opts: { env?: string[] } = {}) => {
       const env = Object.fromEntries((opts.env ?? []).map((e) => [e.slice(0, e.indexOf('=')), e.slice(e.indexOf('=') + 1)]));
       const tcp = command.includes('nc -z');
@@ -86,7 +97,7 @@ vi.mock('../src/docker/containers', async (importOriginal) => {
     }),
     imageExists: vi.fn(async () => true),
     imageDeclaredVolumes: vi.fn(async () => m.volumenes),
-    imageHasHealthcheck: vi.fn(async () => m.healthcheck),
+    imageHealthcheckWindowMs: vi.fn(async () => (m.healthcheck ? m.ventanaSalud : null)),
     containerHealth: vi.fn(async (name: string) => {
       m.eventos.push(`salud:${name}`);
       return { state: 'running', exitCode: null, health: (m.salud.shift() ?? 'healthy') as 'starting' | 'healthy' | 'unhealthy' };
@@ -111,8 +122,10 @@ beforeEach(() => {
   m.fallosAntes.clear();
   m.puertoAbierto = true;
   m.healthcheck = false;
+  m.ventanaSalud = 180_000;
   m.salud = [];
   m.volumenes = [];
+  m.estados.clear();
 });
 
 /** Servicio de imagen con dominio; `enMarcha` = ya tiene una versión sirviendo. */
@@ -175,6 +188,35 @@ describe('intercambio sin corte', () => {
     expect(m.eventos.indexOf(`parar:${nombre}--prev`)).toBeGreaterThan(sano);
   });
 
+  it('con HEALTHCHECK, espera lo que Docker tarda en decidir aunque el plazo del servicio sea menor', async () => {
+    // HEALTHCHECK con interval de 30 s y RAILWAY_HEALTHCHECK_TIMEOUT_SEC=5: la
+    // copia nueva validaba, pero la espera al «healthy» cortaba a los 5 s,
+    // antes del primer chequeo de Docker, y se restauraba la versión anterior.
+    const { s, nombre } = servicio({ healthcheckPath: '/health' });
+    setEnv(s.id, { RAILWAY_HEALTHCHECK_TIMEOUT_SEC: '5' });
+    m.healthcheck = true;
+    m.ventanaSalud = 20_000;
+    m.salud = Array.from({ length: 6 }, () => 'starting').concat('healthy');
+
+    const dep = await desplegar(s.id);
+    expect(dep.status, dep.error ?? '').toBe('success');
+    expect(dep.logs).toMatch(/como «healthy» \(hasta 20s\)/);
+    expect(m.eventos).toContain(`parar:${nombre}--prev`);
+  });
+
+  it('un despliegue correcto cierra las alertas del servicio, pero no la del sondeo del auto-deploy', async () => {
+    // Cerrarla aquí no arreglaba el sondeo: el siguiente ciclo abría otra
+    // alerta (con su racha de fallos antigua) y volvía a notificar.
+    const { s } = servicio({ healthcheckPath: '/health' });
+    for (const type of ['service_down', AUTODEPLOY_ALERT_TYPE]) {
+      fireAlert({ severity: 'warning', type, serviceId: s.id, title: type, message: type, dedupe: true, quiet: true });
+    }
+    const dep = await desplegar(s.id);
+    expect(dep.status, dep.error ?? '').toBe('success');
+    const abiertas = listAlerts({ openOnly: true }).filter((a) => a.service_id === s.id).map((a) => a.type);
+    expect(abiertas).toEqual([AUTODEPLOY_ALERT_TYPE]);
+  });
+
   it('anota y avisa las rutas VOLUME de la imagen que no tienen volumen', async () => {
     const { s } = servicio({ healthcheckPath: '/health' });
     m.volumenes = ['/data'];
@@ -202,5 +244,96 @@ describe('sin ruta de healthcheck', () => {
     const dep = await desplegar(s.id);
     expect(dep.status, dep.error ?? '').toBe('success');
     expect(dep.logs).toMatch(/El puerto 80 acepta conexiones/);
+  });
+});
+
+describe('política de reinicio del repositorio con la sonda TCP', () => {
+  // Servicio de repositorio con dominio, sin healthcheck y con volumen (sin
+  // solape): se valida con la sonda TCP. Se despliega volviendo a una imagen
+  // ya construida, que es lo que permite probar la config-as-code sin build.
+  function servicioGit(railway: { restartPolicyType: string; restartPolicyMaxRetries?: number }, enMarcha: boolean) {
+    const p = createProject('Api', `api-${Math.random().toString(36).slice(2, 8)}`);
+    const s = createService(p.id, 'api', 'api', 'git', {
+      repoUrl: 'https://github.com/acme/api',
+      branch: 'main',
+      port: 3000,
+      domains: ['api.acme.es'],
+      volumes: [{ name: `vol-${p.slug}`, containerPath: '/data' }],
+      webhookSecret: 'x',
+    } as any);
+    const imagen = `skyway/${p.slug}-api:abc1234`;
+    const previo = createDeployment(s.id, 'manual');
+    updateDeployment(previo.id, {
+      status: 'success',
+      image_tag: imagen,
+      commit_sha: 'abc1234',
+      repo_config: JSON.stringify({
+        builder: null,
+        buildCommand: null,
+        dockerfilePath: null,
+        watchPatterns: [],
+        startCommand: null,
+        preDeployCommand: null,
+        healthcheckPath: null,
+        healthcheckTimeout: null,
+        numReplicas: null,
+        restartPolicyType: railway.restartPolicyType,
+        restartPolicyMaxRetries: railway.restartPolicyMaxRetries ?? null,
+        cronSchedule: null,
+        source: 'railway.json',
+      }),
+    });
+    const nombre = `skyway-${p.slug}-api`;
+    if (enMarcha) m.vivos.add(nombre);
+    return { s, nombre, imagen };
+  }
+
+  async function volverA(serviceId: string, imagen: string) {
+    const dep = triggerDeploy(serviceId, 'rollback', { imageTag: imagen });
+    const fin = await awaitDeployment(dep.id, 30_000);
+    return getDeployment(fin!.id)!;
+  }
+
+  it('una caída al arrancar que Docker reintenta (ON_FAILURE) no tumba el despliegue', async () => {
+    // La app sale con código 1 porque la base aún no está lista y arranca bien
+    // al reintentar. Antes, con la sonda TCP, el primer «restarting» ya era un
+    // fallo, aunque el periodo de gracia (el camino de antes) lo toleraba.
+    const { s, nombre, imagen } = servicioGit({ restartPolicyType: 'ON_FAILURE' }, true);
+    m.estados.set(nombre, [
+      { state: 'restarting', exitCode: 1, restartCount: 1 },
+      { state: 'exited', exitCode: 1, restartCount: 1 },
+    ]);
+
+    const dep = await volverA(s.id, imagen);
+    expect(dep.status, dep.error ?? '').toBe('success');
+    expect(dep.logs).toMatch(/Docker lo reintenta según la política del repositorio/);
+    expect(dep.logs).toMatch(/El puerto 3000 acepta conexiones/);
+    expect(m.eventos).not.toContain(`renombrar:${nombre}--prev>${nombre}`);
+  });
+
+  it('sin política que reintente, la caída al arrancar sigue siendo un fallo inmediato', async () => {
+    const { s, nombre, imagen } = servicioGit({ restartPolicyType: 'NEVER' }, true);
+    m.estados.set(nombre, [{ state: 'exited', exitCode: 1 }]);
+
+    const dep = await volverA(s.id, imagen);
+    expect(dep.status).toBe('failed');
+    expect(dep.error).toMatch(/el proceso finalizó durante el arranque \(código 1\)/);
+    expect(m.eventos).toContain(`renombrar:${nombre}--prev>${nombre}`);
+  });
+
+  it('con los reintentos de ON_FAILURE agotados, no se espera más', async () => {
+    const { s, nombre, imagen } = servicioGit({ restartPolicyType: 'ON_FAILURE', restartPolicyMaxRetries: 2 }, false);
+    setEnv(s.id, { RAILWAY_HEALTHCHECK_TIMEOUT_SEC: '20' });
+    m.estados.set(nombre, [
+      { state: 'restarting', exitCode: 1, restartCount: 1 },
+      { state: 'exited', exitCode: 1, restartCount: 2 },
+      { state: 'exited', exitCode: 1, restartCount: 2 },
+    ]);
+
+    const inicio = Date.now();
+    const dep = await volverA(s.id, imagen);
+    expect(dep.status).toBe('failed');
+    expect(dep.error).toMatch(/continúa finalizando y reiniciándose \(código 1\)/);
+    expect(Date.now() - inicio).toBeLessThan(10_000);
   });
 });

@@ -90,17 +90,22 @@ function baseUrlOf(req: FastifyRequest): string {
 
 /**
  * URL del webhook que tiene la App en GitHub, memorizada un minuto: Ajustes la
- * pide en cada visita y no hace falta preguntar a GitHub cada vez.
+ * pide en cada visita y no hace falta preguntar a GitHub cada vez. Va ligada a
+ * la App: tras sustituirla, la memoria de la anterior enseñaba su URL y el
+ * aviso de «no es la del panel», falso, durante ese minuto.
  */
-let webhookCache: { at: number; url: string | null; error: string | null } | null = null;
+let webhookCache: { at: number; appId: string | null; url: string | null; error: string | null } | null = null;
 const WEBHOOK_CACHE_MS = 60_000;
 
 async function actualWebhookUrl(force = false): Promise<{ url: string | null; error: string | null }> {
-  if (!force && webhookCache && Date.now() - webhookCache.at < WEBHOOK_CACHE_MS) return webhookCache;
+  const appId = githubAppConfig()?.appId ?? null;
+  if (!force && webhookCache && webhookCache.appId === appId && Date.now() - webhookCache.at < WEBHOOK_CACHE_MS) {
+    return webhookCache;
+  }
   try {
-    webhookCache = { at: Date.now(), url: await getAppWebhookUrl(), error: null };
+    webhookCache = { at: Date.now(), appId, url: await getAppWebhookUrl(), error: null };
   } catch (err: any) {
-    webhookCache = { at: Date.now(), url: null, error: err?.message || 'No se pudo consultar a GitHub' };
+    webhookCache = { at: Date.now(), appId, url: null, error: err?.message || 'No se pudo consultar a GitHub' };
   }
   return webhookCache;
 }
@@ -283,7 +288,7 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
     }
     try {
       const saved = await setAppWebhookUrl(url);
-      webhookCache = { at: Date.now(), url: saved ?? url, error: null };
+      webhookCache = { at: Date.now(), appId: githubAppConfig()?.appId ?? null, url: saved ?? url, error: null };
       audit(req, 'github_app_webhook_updated', { type: 'settings', id: githubAppConfig()?.appId ?? 'github-app', detail: url });
       return { ok: true, webhookUrlActual: saved ?? url };
     } catch (err: any) {
@@ -327,6 +332,7 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
     }
     try {
       const cfg = await convertManifestCode(query.code);
+      webhookCache = null; // la de la App anterior ya no dice nada
       audit(req, 'github_app_created', { type: 'settings', id: cfg.appId, detail: cfg.name });
       return redirectToPanel(reply, '/settings?github=creada#github');
     } catch (err: any) {
@@ -339,6 +345,7 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/github/app/disconnect', { preHandler: [requireAdmin, requireSession] }, async (req) => {
     const cfg = githubAppConfig();
     clearGithubApp();
+    webhookCache = null;
     audit(req, 'github_app_disconnected', { type: 'settings', id: cfg?.appId ?? 'github-app', detail: cfg?.name ?? '' });
     return { ok: true };
   });

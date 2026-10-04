@@ -101,6 +101,22 @@ describe('guardar Variables no borra lo que otro escribió entretanto', () => {
     expect(r.statusCode, r.body).toBe(200);
     expect(getProjectVars(projectId)).toEqual({ TZ: 'Europe/Madrid', SMTP_HOST: 'smtp.acme.test' });
   });
+
+  it('borra variables con nombre de propiedad de objeto (constructor, toString)', async () => {
+    // `clave in set` miraba también el prototipo: estas no se borraban nunca y
+    // la respuesta decía que no hacía falta redesplegar.
+    setEnv(serviceId, { constructor: 'a', toString: 'b', QUEDA: 'c' });
+    const r = await send('PATCH', `/api/services/${serviceId}/env`, { set: {}, unset: ['constructor', 'toString'] });
+    expect(r.statusCode, r.body).toBe(200);
+    expect(JSON.parse(r.body).needsRedeploy).toBe(true);
+    expect(getEnv(serviceId)).toEqual({ QUEDA: 'c' });
+
+    setProjectVars(projectId, { valueOf: 'x', TZ: 'UTC' });
+    const p = await send('PATCH', `/api/projects/${projectId}/vars`, { set: {}, unset: ['valueOf'] });
+    expect(p.statusCode, p.body).toBe(200);
+    expect(JSON.parse(p.body).needsRedeploy).toBe(true);
+    expect(getProjectVars(projectId)).toEqual({ TZ: 'UTC' });
+  });
 });
 
 describe('cambios sin desplegar', () => {

@@ -118,6 +118,17 @@ const ServiceCard = memo(function ServiceCard({
            * de decir si el servicio seguía en pie.
            */}
           {deploy && <Chip size="sm" tone="warn" dot pulse>{DEPLOY_STATUS_LABEL[deploy.status]}</Chip>}
+          {/*
+           * Cambios guardados (variables propias o compartidas, ajustes) que el
+           * último despliegue no lleva. Tiene que verse en la rejilla: tras
+           * cambiar una variable compartida, cerrar el panel no aplica nada.
+           * Con un despliegue en marcha sobra: esos cambios ya van en él.
+           */}
+          {service.pendingChanges && !deploy && (
+            <Chip size="sm" tone="info" dot title="Hay cambios guardados que se aplicarán en el próximo despliegue">
+              Sin desplegar
+            </Chip>
+          )}
           {/* El skyway.json pide algo que tiene que aprobar alguien (Variables → Integraciones). */}
           {(service.config.integrationsPending?.length ?? 0) > 0 && (
             <Chip size="sm" tone="warn" title={`Cambios pendientes de aprobar: ${service.config.integrationsPending!.join(', ')}`}>

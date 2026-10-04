@@ -148,25 +148,35 @@ function useHashScroll(): void {
 
 /**
  * El correo del panel solo activa las etiquetas HTTPS: los certificados los pide
- * Traefik con el de su .env. Si ese falta o es de ejemplo, Let's Encrypt no
- * emite nada, y Skyway deja de redirigir a HTTPS mientras tanto: hay que decirlo
- * aquí, que es donde se cree haber activado TLS.
+ * Traefik con el de su .env. Si ese es de ejemplo, Let's Encrypt no emite nada y
+ * Skyway deja de redirigir a HTTPS mientras tanto: hay que decirlo aquí, que es
+ * donde se cree haber activado TLS. Vacío no impide nada (la cuenta se registra
+ * sin contacto), así que solo se informa.
  */
 function AvisoAcme({ acme, activado }: { acme?: TraefikAcme; activado: boolean }) {
   if (!acme) return null;
-  if (acme.status === 'missing' || acme.status === 'invalid') {
+  if (acme.status === 'invalid') {
     return (
       <div className={cx('rounded-lg border px-3 py-2.5 text-xs text-sub', activado ? 'border-err/35 bg-err/[.06]' : 'border-warn/35 bg-warn/[.06]')}>
         <p className={cx('font-semibold', activado ? 'text-err' : 'text-warn')}>
           {activado ? 'TLS bloqueado: Traefik no puede obtener certificados' : 'Traefik no tiene un correo válido para Let\'s Encrypt'}
         </p>
         <p className="mt-1 leading-relaxed">
-          Traefik arrancó {acme.status === 'missing' ? 'sin correo' : <>con <span className="font-mono">{acme.email}</span></>}, que Let's
-          Encrypt rechaza. {activado ? 'Mientras tanto, los dominios se sirven por HTTP, sin redirección a HTTPS. ' : ''}Define un correo real en{' '}
-          <span className="font-mono">LETSENCRYPT_EMAIL</span> en el <span className="font-mono">.env</span> del servidor, ejecuta{' '}
-          <span className="font-mono">docker compose up -d traefik</span> y vuelve a desplegar los servicios con dominio.
+          Traefik arrancó con <span className="font-mono">{acme.email}</span>, que Let's Encrypt rechaza.{' '}
+          {activado ? 'Mientras tanto, los dominios se sirven por HTTP, sin redirección a HTTPS. ' : ''}Define un correo real en{' '}
+          <span className="font-mono">LETSENCRYPT_EMAIL</span> en el <span className="font-mono">.env</span> del servidor (o déjalo
+          vacío), ejecuta <span className="font-mono">docker compose up -d traefik</span> y vuelve a desplegar los servicios con dominio.
         </p>
       </div>
+    );
+  }
+  if (acme.status === 'missing') {
+    return (
+      <p className="text-xs text-subtle">
+        Traefik se registra en Let's Encrypt sin correo de contacto: los certificados se emiten igual. Para indicar uno, define{' '}
+        <span className="font-mono">LETSENCRYPT_EMAIL</span> en el <span className="font-mono">.env</span> del servidor y ejecuta{' '}
+        <span className="font-mono">docker compose up -d traefik</span>.
+      </p>
     );
   }
   if (acme.status === 'ok' && acme.email) {

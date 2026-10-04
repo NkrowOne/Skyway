@@ -14,7 +14,7 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
   const findings: SecurityFinding[] = [];
   const projects = listProjects();
   const tlsConfigured = !!getSetting('letsencryptEmail');
-  // Con el ajuste puesto pero sin un correo válido en Traefik no se emite
+  // Con el ajuste puesto pero un correo de ejemplo en Traefik no se emite
   // ningún certificado: contarlo como TLS activo era dar por bueno lo roto.
   await refreshTraefikAcme();
   const tlsRoto = tlsBlocked();
@@ -92,8 +92,8 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
       id: 'tls-blocked',
       severity: 'critical',
       title: 'TLS sin certificados: Traefik no tiene un correo válido para Let\'s Encrypt',
-      detail: `Hay servicios con dominio (${servicesWithDomains.slice(0, 5).join(', ')}) y el correo de Let's Encrypt está configurado en el panel, pero Traefik arrancó sin correo o con uno de ejemplo, que Let's Encrypt rechaza: no se emite ningún certificado. Mientras tanto, Skyway no redirige los dominios a HTTPS.`,
-      fix: 'Define LETSENCRYPT_EMAIL en el .env del servidor (junto a docker-compose.yml) con un correo real y recrea Traefik: docker compose up -d traefik. Después vuelve a desplegar los servicios con dominio.',
+      detail: `Hay servicios con dominio (${servicesWithDomains.slice(0, 5).join(', ')}) y el correo de Let's Encrypt está configurado en el panel, pero Traefik arrancó con un correo de ejemplo, que Let's Encrypt rechaza: no se emite ningún certificado. Mientras tanto, Skyway no redirige los dominios a HTTPS.`,
+      fix: 'Define LETSENCRYPT_EMAIL en el .env del servidor (junto a docker-compose.yml) con un correo real, o déjalo vacío, y recrea Traefik: docker compose up -d traefik. Después vuelve a desplegar los servicios con dominio.',
     });
   }
 

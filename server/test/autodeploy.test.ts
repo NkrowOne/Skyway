@@ -128,6 +128,31 @@ describe('auto-deploy tras un reinicio', () => {
   });
 });
 
+describe('auto-deploy frente a un despliegue manual fallido', () => {
+  it('no vuelve a lanzar una cabeza nueva que alguien desplegó a mano y falló', async () => {
+    // Push de un commit roto y «Desplegar» al momento, antes de que el sondeo
+    // lo vea: el despliegue manual falla. Al cotejar solo con los correctos, el
+    // siguiente sondeo lanzaba otro build del mismo commit, que fallaba igual.
+    const url = 'https://example.com/acme/manual.git';
+    const proceso = await arrancar();
+    const s = crearServicio(proceso.db, url);
+    desplegadoCon(proceso.db, s.id, 'a'.repeat(40));
+    m.heads[url] = 'a'.repeat(40);
+    await sondear(proceso.autodeploy, 11_000);
+
+    m.heads[url] = 'e'.repeat(40);
+    const d = proceso.db.createDeployment(s.id, 'manual');
+    proceso.db.updateDeployment(d.id, { status: 'failed', commit_sha: 'e'.repeat(40), finished_at: Date.now() });
+    await sondear(proceso.autodeploy, 61_000);
+    expect(m.calls).toEqual([]);
+
+    // El siguiente push sí se despliega.
+    m.heads[url] = 'f'.repeat(40);
+    await sondear(proceso.autodeploy, 61_000);
+    expect(m.calls).toEqual([s.id]);
+  });
+});
+
 describe('auto-deploy que no puede leer la rama', () => {
   it('guarda el error y avisa con una alerta pasados 15 minutos; al recuperarse la cierra', async () => {
     const url = 'https://example.com/acme/cuatro.git';
@@ -150,5 +175,21 @@ describe('auto-deploy que no puede leer la rama', () => {
     await sondear(proceso.autodeploy, 11_000);
     expect(abiertas()).toHaveLength(0);
     expect(proceso.db.getAutoDeployState(s.id)?.error).toBeNull();
+  });
+
+  it('al desactivar el auto-deploy se cierra su alerta, que ya no aplica', async () => {
+    const url = 'https://example.com/acme/cinco.git';
+    const proceso = await arrancar();
+    const s = crearServicio(proceso.db, url);
+    m.heads[url] = null;
+    await sondear(proceso.autodeploy, 11_000 + 16 * 60_000);
+    const abiertas = () => proceso.db.listAlerts({ openOnly: true }).filter((a) => a.service_id === s.id && a.type === 'autodeploy_failing');
+    expect(abiertas()).toHaveLength(1);
+
+    // Antes se borraba el estado pero la alerta seguía abierta hasta un despliegue correcto.
+    proceso.db.updateService(s.id, s.name, { ...(s.config as object), autoDeploy: false } as any);
+    await sondear(proceso.autodeploy, 61_000);
+    expect(proceso.db.getAutoDeployState(s.id)).toBeUndefined();
+    expect(abiertas()).toHaveLength(0);
   });
 });

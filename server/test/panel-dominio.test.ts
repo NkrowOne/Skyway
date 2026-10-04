@@ -122,6 +122,31 @@ describe('webhook de la GitHub App', () => {
     expect(m.guardada).toBe('https://panel.acme.es/api/webhooks/github/app');
   });
 
+  it('tras sustituir la App no se enseña la URL memorizada de la anterior', async () => {
+    process.env.SKYWAY_DOMAIN = 'panel.acme.es';
+    // Lo memorizado de la App 123 (la prueba anterior la apuntó al panel): con
+    // la misma App, se sirve de memoria aunque GitHub dijera otra cosa.
+    m.actual = 'https://viejo.acme.es/api/webhooks/github/app';
+    const antes = await app.inject({ method: 'GET', url: '/api/github/app', headers: { cookie } });
+    expect(JSON.parse(antes.body).webhookUrlActual).toBe('https://panel.acme.es/api/webhooks/github/app');
+
+    // Se desenlaza y se crea otra, cuyo webhook está en otra dirección.
+    const fuera = await app.inject({ method: 'POST', url: '/api/github/app/disconnect', headers: { cookie, ...SAME_ORIGIN } });
+    expect(fuera.statusCode, fuera.body).toBe(200);
+    setSetting('githubAppId', '456');
+    setSetting('githubAppSlug', 'skyway-acme-2');
+    setSetting('githubAppPrivateKey', 'clave');
+    m.actual = 'https://nueva.acme.es/api/webhooks/github/app';
+    const despues = await app.inject({ method: 'GET', url: '/api/github/app', headers: { cookie } });
+    expect(JSON.parse(despues.body).webhookUrlActual).toBe('https://nueva.acme.es/api/webhooks/github/app');
+
+    // También si la App cambia sin pasar por aquí (otra instancia, la base restaurada).
+    setSetting('githubAppId', '789');
+    m.actual = 'https://otro.acme.es/api/webhooks/github/app';
+    const otra = await app.inject({ method: 'GET', url: '/api/github/app', headers: { cookie } });
+    expect(JSON.parse(otra.body).webhookUrlActual).toBe('https://otro.acme.es/api/webhooks/github/app');
+  });
+
   it('sin dominio público (túnel SSH) no se ofrece apuntar el webhook a localhost', async () => {
     m.guardada = null;
     const estado = await app.inject({ method: 'GET', url: '/api/github/app', headers: { cookie } });

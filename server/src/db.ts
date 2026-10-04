@@ -777,6 +777,10 @@ export function initDb(): void {
       failing_since INTEGER
     );
   `);
+  // Alerta de un despliegue que volvía a una versión anterior: el despliegue
+  // correcto cuya imagen se quería recuperar. Sin esto, la alerta ofrecía
+  // «Desplegar», que despliega la cabeza de la rama: justo lo contrario.
+  ensureColumn('alerts', 'rollback_to', 'TEXT');
 
   seedDefaultPlans();
   // El orden importa: `migrateClientsToWorkspaces` es quien rellena
@@ -1576,7 +1580,7 @@ export function patchEnv(serviceId: string, set: Record<string, string>, unset: 
   );
   const del = stmt('DELETE FROM env_vars WHERE service_id = ? AND key = ?');
   db.transaction(() => {
-    for (const key of unset) if (!(key in set)) del.run(serviceId, key);
+    for (const key of unset) if (!Object.hasOwn(set, key)) del.run(serviceId, key);
     for (const [key, value] of Object.entries(set)) upsert.run(serviceId, key, value);
   })();
 }
@@ -1679,16 +1683,20 @@ export function recordAutoDeployFailure(serviceId: string, error: string): AutoD
   return getAutoDeployState(serviceId)!;
 }
 
-/** Olvida el estado de los servicios que ya no se sondean (auto-deploy apagado o borrados). */
-export function forgetAutoDeployStates(keep: ReadonlySet<string>): void {
+/**
+ * Olvida el estado de los servicios que ya no se sondean (auto-deploy apagado o
+ * borrados). Devuelve los que olvida, para cerrar su alerta de sondeo.
+ */
+export function forgetAutoDeployStates(keep: ReadonlySet<string>): string[] {
   const ids = (stmt('SELECT service_id FROM autodeploy_state').all() as { service_id: string }[])
     .map((r) => r.service_id)
     .filter((id) => !keep.has(id));
-  if (ids.length === 0) return;
+  if (ids.length === 0) return ids;
   const del = stmt('DELETE FROM autodeploy_state WHERE service_id = ?');
   db.transaction(() => {
     for (const id of ids) del.run(id);
   })();
+  return ids;
 }
 
 // ---------- variables gestionadas por Skyway ----------
@@ -2005,13 +2013,29 @@ export function activeDeploymentsByProject(projectId: string): Record<string, De
  *
  * Los fallidos y cancelados NO cuentan: antes sí, y un despliegue cortado por un
  * reinicio (o que falló por algo ajeno al código) dejaba ese commit por
- * «ya desplegado», así que ni «Redeliver» en GitHub lo volvía a lanzar. El bucle
- * que eso evitaba en el sondeo lo evita ya su línea base (`autodeploy_state`).
+ * «ya desplegado», así que ni «Redeliver» en GitHub lo volvía a lanzar. Esto es
+ * lo que usan los webhooks; el sondeo usa `lastAttemptedCommitSha`.
  */
 export function lastBuiltCommitSha(serviceId: string): string | null {
   const row = stmt(
     `SELECT commit_sha FROM deployments
       WHERE service_id = ? AND commit_sha IS NOT NULL AND status IN ('success', 'queued', 'building', 'deploying')
+      ORDER BY created_at DESC LIMIT 1`,
+  ).get(serviceId) as { commit_sha: string } | undefined;
+  return row?.commit_sha ?? null;
+}
+
+/**
+ * SHA del último commit que Skyway intentó desplegar, saliera como saliera. Lo
+ * usa el sondeo del auto-deploy: un despliegue manual de una cabeza que el
+ * sondeo aún no había visto y que falla no debe relanzarse solo al minuto
+ * siguiente (sería el mismo build roto otra vez). Un commit fallido se vuelve a
+ * lanzar a mano, con «Redeliver» en GitHub o con el siguiente push.
+ */
+export function lastAttemptedCommitSha(serviceId: string): string | null {
+  const row = stmt(
+    `SELECT commit_sha FROM deployments
+      WHERE service_id = ? AND commit_sha IS NOT NULL
       ORDER BY created_at DESC LIMIT 1`,
   ).get(serviceId) as { commit_sha: string } | undefined;
   return row?.commit_sha ?? null;
@@ -2065,7 +2089,7 @@ export function patchProjectVars(projectId: string, set: Record<string, string>,
   );
   const del = stmt('DELETE FROM project_vars WHERE project_id = ? AND key = ?');
   db.transaction(() => {
-    for (const key of unset) if (!(key in set)) del.run(projectId, key);
+    for (const key of unset) if (!Object.hasOwn(set, key)) del.run(projectId, key);
     for (const [key, value] of Object.entries(set)) upsert.run(projectId, key, value);
   })();
 }
@@ -2413,6 +2437,7 @@ export function insertAlert(alert: {
   message: string;
   explanation?: string | null;
   dedupe_key?: string | null;
+  rollback_to?: string | null;
 }): AlertRow | null {
   // Comprobación e inserción en la misma transacción: la deduplicación es una
   // lectura seguida de una escritura y no hay UNIQUE que la respalde.
@@ -2438,11 +2463,12 @@ function insertAlertTx(alert: Parameters<typeof insertAlert>[0]): AlertRow | nul
     dedupe_key: alert.dedupe_key ?? null,
     resolved_at: null,
     read_at: null,
+    rollback_to: alert.rollback_to ?? null,
   };
   stmt(
-    `INSERT INTO alerts (id, ts, severity, type, project_id, service_id, workspace_id, title, message, explanation, dedupe_key, resolved_at, read_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(row.id, row.ts, row.severity, row.type, row.project_id, row.service_id, alert.workspace_id ?? null, row.title, row.message, row.explanation, row.dedupe_key, row.resolved_at, row.read_at);
+    `INSERT INTO alerts (id, ts, severity, type, project_id, service_id, workspace_id, title, message, explanation, dedupe_key, resolved_at, read_at, rollback_to)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.id, row.ts, row.severity, row.type, row.project_id, row.service_id, alert.workspace_id ?? null, row.title, row.message, row.explanation, row.dedupe_key, row.resolved_at, row.read_at, row.rollback_to);
   return row;
 }
 
@@ -2540,15 +2566,16 @@ export function closeAlertsFor(target: { projectId: string } | { serviceId: stri
   ).run(ts, ts, value);
 }
 
-/** Resuelve TODAS las alertas abiertas de un servicio sin importar el tipo. */
-export function resolveAllOpenServiceAlerts(serviceId: string): AlertRow[] {
-  const open = stmt('SELECT * FROM alerts WHERE service_id = ? AND resolved_at IS NULL')
-    .all(serviceId) as AlertRow[];
+/** Resuelve las alertas abiertas de un servicio, de cualquier tipo salvo los de `exceptTypes`. */
+export function resolveAllOpenServiceAlerts(serviceId: string, exceptTypes: readonly string[] = []): AlertRow[] {
+  const open = (stmt('SELECT * FROM alerts WHERE service_id = ? AND resolved_at IS NULL').all(serviceId) as AlertRow[])
+    .filter((a) => !exceptTypes.includes(a.type));
   if (open.length > 0) {
-    stmt('UPDATE alerts SET resolved_at = ? WHERE service_id = ? AND resolved_at IS NULL').run(
-      now(),
-      serviceId,
-    );
+    const upd = stmt('UPDATE alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL');
+    const ts = now();
+    db.transaction(() => {
+      for (const a of open) upd.run(ts, a.id);
+    })();
   }
   return open;
 }

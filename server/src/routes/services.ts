@@ -980,7 +980,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const mala = invalidEnvKey([...Object.keys(body.set), ...body.unset]);
     if (mala !== null) return reply.code(400).send({ error: `Nombre de variable inválido: ${mala}`, code: 'invalid_key' });
     const cambiadas = Object.keys(body.set).length;
-    const quitadas = body.unset.filter((k) => !(k in body.set)).length;
+    const quitadas = body.unset.filter((k) => !Object.hasOwn(body.set, k)).length;
     if (cambiadas + quitadas > 0) {
       patchEnv(id, body.set, body.unset);
       bumpConfigRev([id]);

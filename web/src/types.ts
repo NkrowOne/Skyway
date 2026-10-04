@@ -946,6 +946,8 @@ export interface Alert {
   explanation: string | null;
   resolved_at: number | null;
   read_at: number | null;
+  /** Despliegue fallido o interrumpido que volvía a una versión: el despliegue correcto al que volver. */
+  rollback_to?: string | null;
 }
 
 export interface AuditEntry {

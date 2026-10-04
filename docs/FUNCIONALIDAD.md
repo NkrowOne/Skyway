@@ -301,14 +301,21 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      su puerto interno (`nc -z` desde el contenedor auxiliar `busybox`, mismo
      plazo) más el periodo de gracia; sin tráfico (un worker), solo el periodo
      de gracia de 5 s. Antes bastaba con que el proceso siguiera vivo, y una app
-     que escuchaba en otro puerto se daba por buena con el dominio en 502.
+     que escuchaba en otro puerto se daba por buena con el dominio en 502. Si el
+     repositorio declara una política de reinicio que reintenta
+     (`restartPolicyType`), una caída al arrancar no es un fallo en ninguno de
+     los tres casos: se espera a que Docker la reinicie (hasta 90 s), salvo que
+     sea definitiva (`on-failure` con código 0 o con los reintentos agotados).
    - **Corte cero** (servicios sin volúmenes ni puerto de host): se arranca la
      versión nueva en paralelo (`--next`, sin tráfico), se **valida** y luego se
      intercambia réplica a réplica (rolling update). La versión anterior de cada
      réplica **no se retira hasta que la copia nueva atiende**: la misma sonda
      contra su nombre de contenedor en la red del proyecto o, si la imagen
      declara `HEALTHCHECK`, hasta que Docker la marca `healthy` (Traefik no le
-     envía tráfico antes). Las etiquetas de Traefik llevan un middleware
+     envía tráfico antes). Esa espera dura lo que Docker puede tardar en decidir
+     con el `HEALTHCHECK` de la imagen (`start_period + (interval + timeout) ×
+     retries`) si es mayor que el plazo del healthcheck del servicio: el primer
+     chequeo no llega hasta pasado el `interval`. Las etiquetas de Traefik llevan un middleware
      `retry` (3 intentos): mientras la copia nueva arranca, una conexión
      rechazada se reintenta y el balanceo la lleva a la anterior. Si no se pudo
      comprobar nada (sin dominio ni healthcheck), el registro lo dice en vez de
@@ -324,9 +331,10 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      queda en un volumen anónimo huérfano) y se anotan en `config.imageVolumes`
      para que Ajustes ofrezca «Añadir volumen». Nunca se crea el volumen solo:
      con volúmenes el intercambio deja de ser sin corte.
-5. **Post**: un deploy correcto resuelve las alertas de caída del servicio y
-   purga imágenes antiguas (se conservan las de las **5 últimas** versiones
-   correctas por servicio para rollback; ajuste `keepImages`, de 1 a 50). Un
+5. **Post**: un deploy correcto resuelve las alertas del servicio (salvo la del
+   sondeo del auto-deploy, `autodeploy_failing`) y purga imágenes antiguas (se
+   conservan las de las **5 últimas** versiones correctas por servicio para
+   rollback; ajuste `keepImages`, de 1 a 50). Un
    fallo genera una alerta con diagnóstico (`diagnose.ts`). Cada despliegue
    anota la **revisión de configuración** del servicio que aplica
    (`deployments.config_rev`, ver «Cambios sin desplegar» en §6).
@@ -336,7 +344,11 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
    despliegue quedó cortado recibe la alerta `deploy_interrupted` y **un**
    reintento automático (origen `reintento`; una vuelta atrás se reintenta como
    vuelta atrás). Si el reintento también se corta, solo la alerta: un build que
-   tumba Skyway reintentado siempre sería un bucle de reinicios.
+   tumba Skyway reintentado siempre sería un bucle de reinicios. Las alertas
+   `deploy_failed` y `deploy_interrupted` de una vuelta atrás guardan en
+   `alerts.rollback_to` el despliegue correcto al que se volvía, y Alertas
+   ofrece «Volver a esta versión» en lugar de «Desplegar» (que desplegaría la
+   cabeza de la rama).
 
 **Feed de despliegues.** Cada cambio de fase (encolado, construyendo,
 desplegando, terminado) se publica en un bus en memoria (`events.ts`) que
@@ -379,7 +391,7 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `deployments` | `status`, `trigger`, `commit_sha/msg`, `image_tag`, `logs`, `error`, `diagnosis`, `build_key` (huella de las entradas de compilación, para reutilizar imagen), `repo_config` (config-as-code del repo en ese commit, JSON), `build_vars` (digest `{NOMBRE: hash}` de las variables que entraron en ese build; nunca el valor), `force_build`, `target_commit` (commit concreto pedido al reconstruir), `config_rev` (revisión de configuración que aplicó), `interrupted` (1 = cortado por un reinicio de Skyway, pendiente de tratar al arrancar; 2 = tratado) |
 | `autodeploy_state` | por servicio git con auto-deploy: `last_seen_sha` (última cabeza de la rama ya tratada, la línea base del sondeo), `checked_at`/`ok_at` (última comprobación y última correcta), `error` y `failing_since` (racha de fallos al leer la rama). Se borra al desactivar el auto-deploy y cae en cascada con el servicio |
 | `audit_log` | `ts`, `actor`, `action`, `target_*`, `detail`, `ip` |
-| `alerts` | `severity`, `type`, `title`, `message`, `explanation`, `dedupe_key`, `resolved_at`, `read_at` |
+| `alerts` | `severity`, `type`, `title`, `message`, `explanation`, `dedupe_key`, `resolved_at`, `read_at`, `rollback_to` (despliegue correcto al que volvía una vuelta atrás fallida o interrumpida) |
 | `uptime_hourly` | `(service_id, hour)` → `up`, `total` — histórico de disponibilidad |
 | `service_metrics_hourly` | `(service_id, hour)` → sumas y máximos de CPU/RAM, bytes de red del periodo (delta) y foto de disco — histórico de consumo (~90 d) |
 | `host_metrics_hourly` | `hour` → carga, RAM y disco del host (sumas, máximos y última foto) — histórico de consumo del servidor (~90 d) |
@@ -1049,13 +1061,17 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
      recién activado) fija la línea base sin desplegar. Si no puede leer la rama,
      guarda el error (Ajustes → Despliegue automático lo muestra con la última
      comprobación) y, tras 15 minutos seguidos, lanza la alerta
-     `autodeploy_failing` con el remedio; se cierra sola al recuperarse.
+     `autodeploy_failing` con el remedio; se cierra sola al recuperarse o al
+     desactivar el auto-deploy. Un despliegue correcto no la cierra (no dice
+     que la rama vuelva a poder leerse).
 
   Las tres vías comparten estado: un commit ya desplegado (o desplegándose) no
-  se repite —uno que falló o se canceló sí, para que «Redeliver» en GitHub lo
-  relance—, y con un despliegue vivo que aún no ha clonado no se encola otro:
+  se repite, y con un despliegue vivo que aún no ha clonado no se encola otro:
   clonará la cabeza actual. Si el vivo ya clonó otro commit, el push nuevo se
-  encola detrás.
+  encola detrás. En los webhooks, un commit que falló o se canceló sí se
+  repite, para que «Redeliver» en GitHub lo relance; el sondeo, en cambio, no
+  relanza un commit ya intentado aunque fallara (un despliegue manual roto de
+  una cabeza nueva se reconstruiría solo al minuto, y fallaría igual).
 - **Cambios sin desplegar**: cada servicio tiene una revisión de configuración
   (`services.config_rev`) que sube al guardar sus variables, las compartidas del
   proyecto, un campo que exige redesplegar, el `.env` importado, el plan de
@@ -1498,7 +1514,7 @@ como línea negativa; una factura emitida es inmutable y conserva su descuento.
 | POST | `/projects/:id/deploy-all` | +access | despliega repos e imágenes del proyecto |
 | GET | `/projects/:id/vars` | +access | variables compartidas |
 | PUT | `/projects/:id/vars` | +access | reemplaza variables compartidas; responde `affected` |
-| PATCH | `/projects/:id/vars` | +access | aplica solo los cambios `{set, unset}` sobre las actuales (lo que usa el panel); responde `{vars, needsRedeploy, affected}` con los servicios que hay que volver a desplegar |
+| PATCH | `/projects/:id/vars` | +access | aplica solo los cambios `{set, unset}` sobre las actuales (lo que usa el panel); responde `{vars, needsRedeploy, affected}` con los servicios que hay que volver a desplegar (cada uno con su `type`: el panel ofrece desplegar las apps y deja las bases de datos aparte, sin marcar, porque reiniciarlas corta el servicio y las variables compartidas rara vez les afectan) |
 | GET | `/projects/:id/connectors` | +access | conectores del proyecto (sin tokens) + `hasGlobalToken` |
 | POST | `/projects/:id/connectors` | +access | conecta un token (`{name, token}`; se verifica contra GitHub) |
 | DELETE | `/connectors/:id` | +access | elimina un conector (sus servicios vuelven al token global) |
@@ -1658,7 +1674,7 @@ distroless), el explorador lo indica y no está disponible.
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/domains/server-ip` | auth | IP del servidor (configurada o detectada) |
-| GET | `/domains/config` | auth | `{rootDomain, tls, tlsBlocked}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin). `tls` es el TLS efectivo; `tlsBlocked`, que está activado en el panel pero Traefik no tiene un correo válido |
+| GET | `/domains/config` | auth | `{rootDomain, tls, tlsBlocked}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin). `tls` es el TLS efectivo; `tlsBlocked`, que está activado en el panel pero Traefik tiene un correo que Let's Encrypt rechaza (vacío no cuenta) |
 | GET | `/projects/:id/github/needs` | +access | dependencias del repo antes de crearlo (`repo`, `branch`, `rootDir?`, `source?`, `name?`): `needs`, `suggestions`, `missing`, `mail`, `manifest`, `envFile` (§5.5) y `plan`, el plan de integraciones sin efectos (§5.7) |
 | POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`); 30 por minuto y usuario, después 429 |
 | GET | `/public/status/:token` | público | página de estado pública (cacheada) |
@@ -1829,11 +1845,14 @@ y `keepImages` (versiones por servicio cuya imagen se conserva, 1–50; por
 defecto 5). `letsencryptEmail` solo activa las etiquetas HTTPS: los certificados
 los pide Traefik con `LETSENCRYPT_EMAIL` del `.env` (docker-compose ya no pone un
 correo de `example.com` por defecto). Skyway lee el correo real de Traefik
-(`docker inspect`, `tls.ts`) y, si falta o es de un dominio que Let's Encrypt
-rechaza, no pone el router HTTPS ni la redirección (los dominios siguen por
-HTTP), `GET /settings` devuelve `traefikAcme: {status, email}`,
-`GET /domains/config` devuelve `tlsBlocked: true` y el informe de seguridad
-añade el hallazgo `tls-blocked`. Si no se puede leer, se confía en el ajuste.
+(`docker inspect`, `tls.ts`) y, si es de un dominio que Let's Encrypt rechaza
+(`example.com`, `.test`, `.local`…), no pone el router HTTPS ni la redirección
+(los dominios siguen por HTTP), `GET /domains/config` devuelve
+`tlsBlocked: true` y el informe de seguridad añade el hallazgo `tls-blocked`.
+Vacío no bloquea: Traefik registra la cuenta sin contacto, que Let's Encrypt
+acepta, y Ajustes solo lo informa. `GET /settings` devuelve
+`traefikAcme: {status, email}` en todos los casos. Si no se puede leer, se
+confía en el ajuste.
 Ajustes → Cloudflare guarda `cloudflare.token` (secreto, nunca se devuelve),
 `cloudflare.zones` y `cloudflare.lastError` con su propio botón (§7.13).
 La GitHub App guarda ahí sus credenciales (`githubAppId`, `githubAppSlug`,

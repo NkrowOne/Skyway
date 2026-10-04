@@ -20,7 +20,7 @@ import { api } from '../../api';
 import { maskValue } from '../../helpText';
 import { EnvImportReport, EnvImportResponse, EnvSkipReason } from '../../types';
 import { EnvSuggestion } from '../../types';
-import { copyToClipboard, cx, EMPTY_LIST, EMPTY_RECORD } from '../../utils';
+import { copyToClipboard, cx, EMPTY_LIST, EMPTY_RECORD, tieneClave } from '../../utils';
 import { IntegrationsPanel } from '../IntegrationPlan';
 import { Button, CopyButton, EditorBar, ErrorState, Modal, Segmented, Skeleton, useToast } from '../ui';
 
@@ -603,7 +603,7 @@ export default function VariablesTab({
       const base = syncedRef.current?.vars ?? {};
       const set: Record<string, string> = {};
       for (const [k, v] of Object.entries(vars)) if (base[k] !== v) set[k] = v;
-      const unset = Object.keys(base).filter((k) => !(k in vars));
+      const unset = Object.keys(base).filter((k) => !tieneClave(vars, k));
       return api.patch(`/services/${serviceId}/env`, { set, unset });
     },
     onSuccess: () => {

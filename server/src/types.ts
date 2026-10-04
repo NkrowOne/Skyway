@@ -267,6 +267,8 @@ export interface AlertRow {
   dedupe_key: string | null;
   resolved_at: number | null;
   read_at: number | null;
+  /** Despliegue correcto al que volvía el despliegue de la alerta (vuelta atrás), si lo era. */
+  rollback_to?: string | null;
 }
 
 export interface AuditRow {

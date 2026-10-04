@@ -268,7 +268,7 @@ export const FAQ: FaqEntry[] = [
     question: 'El navegador indica que el certificado no es válido o que la conexión no es segura',
     answer:
       'El certificado lo emite Let\'s Encrypt cuando el dominio ya resuelve a la IP del servidor. Si lo acabas de añadir, espera un par de minutos y recarga la página.\n\n' +
-      'Si no se emite ningún certificado en ningún dominio, revisa **Ajustes → Dominios y TLS**: Traefik necesita un correo real en `LETSENCRYPT_EMAIL` (en el `.env` del servidor). Mientras falte, Skyway lo indica ahí y sirve los dominios por HTTP.\n\n' +
+      'Si no se emite ningún certificado en ningún dominio, revisa **Ajustes → Dominios y TLS**: si Traefik arrancó con un correo de ejemplo en `LETSENCRYPT_EMAIL` (en el `.env` del servidor), Let\'s Encrypt lo rechaza y no emite nada. Skyway lo indica ahí y, mientras tanto, sirve los dominios por HTTP. Pon un correo real o deja la variable vacía y recrea Traefik.\n\n' +
       'Si el problema persiste, comprueba el **DNS** (el registro A debe apuntar a la IP del servidor y no estar detrás de un proxy como Cloudflare en modo «nube naranja» mientras se emite el certificado), que el puerto 80 llega al servidor (Let\'s Encrypt valida por HTTP) y que no se ha superado el límite de emisiones de Let\'s Encrypt por intentos repetidos (5 por semana y dominio).\n\n' +
       'Con Cloudflare, puedes activar el proxy **después** de que el certificado se haya emitido, en modo SSL «Full».',
     keywords: ['certificado', 'ssl', 'tls', 'https', 'no es segura', 'inseguro', 'invalido', 'lets encrypt', 'cloudflare', 'expirado', 'NET::ERR_CERT'],

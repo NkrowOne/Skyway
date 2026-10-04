@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Rocket, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { Button, ErrorState, Modal, Skeleton, useToast } from './ui';
+import { tieneClave } from '../utils';
 
 interface Row {
   /** Clave estable para React: por posición, borrar una fila del medio barajaba los campos. */
@@ -39,6 +40,13 @@ export default function SharedVarsModal({
   const [dirty, setDirty] = useState(false);
   // Tras guardar: servicios que tienen que volver a desplegarse para recibirlas.
   const [afectados, setAfectados] = useState<Afectado[] | null>(null);
+  /*
+   * Las bases de datos también reciben las variables compartidas, pero casi
+   * nunca las usan (SMTP, TZ…) y desplegarlas las reinicia: junto con las apps,
+   * estas podían fallar su validación mientras la base volvía. Van aparte y
+   * solo si se marcan.
+   */
+  const [incluirBases, setIncluirBases] = useState(false);
   // Lo que se cargó: el guardado envía solo los cambios respecto a esto.
   const cargadas = useRef<Record<string, string> | null>(null);
 
@@ -54,6 +62,7 @@ export default function SharedVarsModal({
     if (!open) {
       setDirty(false);
       setAfectados(null);
+      setIncluirBases(false);
     }
   }, [open]);
 
@@ -84,7 +93,7 @@ export default function SharedVarsModal({
       const base = cargadas.current ?? {};
       const set: Record<string, string> = {};
       for (const [k, v] of Object.entries(out)) if (base[k] !== v) set[k] = v;
-      const unset = Object.keys(base).filter((k) => !(k in out));
+      const unset = Object.keys(base).filter((k) => !tieneClave(out, k));
       return api.patch<{ affected: Afectado[] }>(`/projects/${projectId}/vars`, { set, unset });
     },
     onSuccess: (res) => {
@@ -123,26 +132,53 @@ export default function SharedVarsModal({
   const ready = !!vars.data;
 
   if (afectados) {
+    const apps = afectados.filter((svc) => svc.type !== 'database');
+    const bases = afectados.filter((svc) => svc.type === 'database');
+    // Las bases primero: así entran antes en cola que las apps que dependen de ellas.
+    const lista = incluirBases ? [...bases, ...apps] : apps;
     return (
       <Modal open={open} onClose={onClose} title="Variables compartidas guardadas" wide>
         <p className="text-sm text-sub">
           Las variables compartidas llegan a todos los servicios del proyecto, pero cada contenedor las recibe al volver a
-          desplegarse. Hasta entonces, estos servicios muestran «Cambios sin desplegar»:
+          desplegarse. Hasta entonces, estos servicios muestran «Sin desplegar»:
         </p>
-        <ul className="mt-3 flex flex-col divide-y divide-line rounded-lg border border-line">
-          {afectados.map((svc) => (
-            <li key={svc.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
-              <span className="min-w-0 truncate font-medium">{svc.name}</span>
-              {svc.type === 'database' && <span className="shrink-0 text-xs text-subtle">base de datos: breve interrupción al desplegar</span>}
-            </li>
-          ))}
-        </ul>
+        {apps.length > 0 && (
+          <ul className="mt-3 flex flex-col divide-y divide-line rounded-lg border border-line">
+            {apps.map((svc) => (
+              <li key={svc.id} className="px-3 py-2 text-sm">
+                <span className="block min-w-0 truncate font-medium">{svc.name}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {bases.length > 0 && (
+          <div className="mt-3 rounded-lg border border-line px-3 py-2.5 text-sm">
+            <label className="flex cursor-pointer items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-acc"
+                checked={incluirBases}
+                onChange={(e) => setIncluirBases(e.target.checked)}
+              />
+              <span className="min-w-0">
+                <span className="font-medium text-txt">
+                  Desplegar también {bases.length === 1 ? 'la base de datos' : `las ${bases.length} bases de datos`}
+                </span>
+                <span className="block break-words text-xs text-subtle">
+                  {bases.map((b) => b.name).join(', ')}. Se reinician, con una breve interrupción, y las variables
+                  compartidas rara vez les afectan.
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
         <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button variant="ghost" onClick={onClose}>
             Desplegar más tarde
           </Button>
-          <Button onClick={() => desplegarTodos.mutate(afectados)} loading={desplegarTodos.isPending}>
-            <Rocket size={13} /> {afectados.length === 1 ? 'Desplegar el servicio' : `Desplegar los ${afectados.length} servicios`}
+          <Button onClick={() => desplegarTodos.mutate(lista)} loading={desplegarTodos.isPending} disabled={lista.length === 0}>
+            <Rocket size={13} />{' '}
+            {lista.length === 0 ? 'Desplegar' : lista.length === 1 ? 'Desplegar el servicio' : `Desplegar los ${lista.length} servicios`}
           </Button>
         </div>
       </Modal>

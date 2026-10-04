@@ -24,7 +24,7 @@ import {
   getSetting,
   takeInterruptedDeployments,
 } from '../db';
-import { fireAlert, resolveAllServiceAlerts, resolveServiceAlerts } from '../alerts';
+import { AUTODEPLOY_ALERT_TYPE, fireAlert, resolveAllServiceAlerts, resolveServiceAlerts } from '../alerts';
 import { diagnose } from './diagnose';
 import { emitDeploy, emitDeployFeed, toDeployFeedItem } from '../events';
 import { docker, dockerAvailable } from '../docker/client';
@@ -40,7 +40,7 @@ import {
   imageDeclaredVolumes,
   imageExists,
   imageExposedPorts,
-  imageHasHealthcheck,
+  imageHealthcheckWindowMs,
   listServiceContainers,
   normalizeContainerPath,
   removeContainer,
@@ -379,6 +379,22 @@ export async function awaitDeployment(
 }
 
 /**
+ * Si el despliegue volvía a una versión anterior (una vuelta atrás, o el
+ * reintento de una), el despliegue correcto cuya imagen se quería recuperar.
+ * La alerta lo usa para ofrecer «Volver a esta versión»: «Desplegar» despliega
+ * la cabeza de la rama, justo lo contrario de lo que se pidió.
+ *
+ * `imageTag` es la imagen con la que se CREÓ el despliegue (solo la llevan las
+ * vueltas atrás); en un reintento que ya construyó, la suya no es de ninguna
+ * versión correcta anterior y no cuenta.
+ */
+function rollbackTargetOf(service: ServiceRow, trigger: string, imageTag: string | null): string | null {
+  if (service.type !== 'git' || !imageTag) return null;
+  if (trigger !== 'rollback' && trigger !== RETRY_TRIGGER) return null;
+  return deploymentForImage(service.id, imageTag)?.id ?? null;
+}
+
+/**
  * Al arrancar: los despliegues que cortó el reinicio o el apagado anterior
  * (un `skyway update` a mitad de un build, sin ir más lejos) quedaban como
  * fallidos o cancelados sin alerta ni reintento, y el servicio seguía en la
@@ -393,6 +409,7 @@ export function resumeInterruptedDeployments(): { retried: number; alerted: numb
     if (!service) continue;
     const project = getProject(service.project_id);
     const reintentoCortado = dep.trigger === RETRY_TRIGGER;
+    const rollbackTo = rollbackTargetOf(service, dep.trigger, dep.image_tag);
     fireAlert({
       severity: 'warning',
       type: 'deploy_interrupted',
@@ -402,9 +419,13 @@ export function resumeInterruptedDeployments(): { retried: number; alerted: numb
         ? `El reintento automático del despliegue de "${service.name}" en ${project?.name ?? '?'} también se interrumpió por un reinicio de Skyway. No se vuelve a intentar de forma automática: el servicio sigue con la versión anterior.`
         : `El despliegue (${dep.trigger}) de "${service.name}" en ${project?.name ?? '?'} se interrumpió por un reinicio de Skyway. Se ha vuelto a lanzar una vez de forma automática.`,
       explanation: reintentoCortado
-        ? 'Si el reinicio lo provocó el propio despliegue (por ejemplo, por falta de memoria durante la compilación), revisa los recursos del servidor antes de volver a desplegar. Para intentarlo de nuevo, pulsa «Desplegar».'
+        ? 'Si el reinicio lo provocó el propio despliegue (por ejemplo, por falta de memoria durante la compilación), revisa los recursos del servidor antes de volver a desplegar. ' +
+          (rollbackTo
+            ? 'Para intentarlo de nuevo, pulsa «Volver a esta versión» (no «Desplegar», que desplegaría la última versión de la rama).'
+            : 'Para intentarlo de nuevo, pulsa «Desplegar».')
         : 'Si el reintento termina correctamente, esta alerta se cierra sola.',
       dedupe: true,
+      rollbackTo,
       // El reintento suele resolverlo: fuera del panel solo se avisa cuando hay que actuar.
       quiet: !reintentoCortado,
     });
@@ -528,7 +549,11 @@ async function runDeployment(deploymentId: string): Promise<void> {
     publishFeed(deploymentId);
 
     // Un despliegue correcto resuelve todas las alertas abiertas previas del servicio (caídas, fallos de deploy, memoria, etc.).
-    resolveAllServiceAlerts(service.id, false);
+    // Menos la del sondeo del auto-deploy: un despliegue correcto (una vuelta
+    // atrás, uno manual) no dice que la rama vuelva a poder leerse, y cerrarla
+    // aquí hacía que el siguiente ciclo abriera otra y volviera a notificar. La
+    // cierra el propio sondeo cuando se recupera.
+    resolveAllServiceAlerts(service.id, false, [AUTODEPLOY_ALERT_TYPE]);
   } catch (err: any) {
     if (err instanceof CanceledError || job.canceled) {
       const reason = job.cancelReason ?? 'Cancelado por el usuario';
@@ -572,6 +597,9 @@ async function runDeployment(deploymentId: string): Promise<void> {
         explanation: diag ? `${diag.title}. ${diag.fix}` : null,
         // Con dedupe no se apilan reintentos fallidos y un despliegue correcto la cierra.
         dedupe: true,
+        // `deployment` es la fila leída al empezar: su imagen es la de la vuelta
+        // atrás, no la que haya construido después.
+        rollbackTo: rollbackTargetOf(service, deployment.trigger, deployment.image_tag),
       });
     }
   } finally {
@@ -1494,7 +1522,8 @@ async function deployContainer(
 
     // Rolling update: réplica a réplica; todas comparten alias y labels de
     // Traefik, así que el balanceo entre copias es automático.
-    const dockerHealthcheck = await imageHasHealthcheck(image);
+    // Con HEALTHCHECK en la imagen: cuánto puede tardar Docker en decidir.
+    const dockerHealthcheckMs = await imageHealthcheckWindowMs(image);
     // Si alguna réplica se dio por buena sin poder comprobar que atendía.
     let sinComprobar = false;
     for (let i = 1; i <= replicas; i++) {
@@ -1508,7 +1537,9 @@ async function deployContainer(
           // Primer despliegue: no hay versión anterior que proteger, y esta es
           // la validación completa (con la política de reinicio del repo).
           const runtime = await settleContainer(rn, SETTLE_MS, job);
-          if (runtime.state !== 'running') {
+          // Una caída que la política del repositorio reintenta la juzga la
+          // validación, con su margen; aquí solo cortan las definitivas.
+          if (runtime.state !== 'running' && salidaDefinitiva(restartPolicy, runtime)) {
             throw new Error(`estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'}`);
           }
           const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, rn, log, probeTimeoutMs, restartPolicy, job, tcpProbe);
@@ -1520,7 +1551,7 @@ async function deployContainer(
           // tardaba más en escuchar dejaba el dominio en 502 (o sin servidor,
           // si la imagen trae HEALTHCHECK) justo al retirar la anterior.
           const ready = await waitReplicaReady(
-            { netName, containerRef: rn, port: internalPort, healthcheckPath, tcpProbe, dockerHealthcheck, timeoutMs: probeTimeoutMs },
+            { netName, containerRef: rn, port: internalPort, healthcheckPath, tcpProbe, dockerHealthcheckMs, timeoutMs: probeTimeoutMs },
             log,
             job,
           );
@@ -1619,10 +1650,10 @@ async function deployContainer(
       log(`Dominios activos: ${domains.join(', ')}`);
       if (tlsBlocked()) {
         log(
-          '⚠ El correo de Let\'s Encrypt está configurado en el panel, pero Traefik no tiene uno válido (LETSENCRYPT_EMAIL ' +
-            'del .env del servidor vacío o de ejemplo) y no puede obtener certificados: los dominios se sirven por HTTP, sin ' +
-            'redirección a HTTPS. Define un correo real en LETSENCRYPT_EMAIL, recrea Traefik (docker compose up -d traefik) ' +
-            'y vuelve a desplegar.',
+          '⚠ El correo de Let\'s Encrypt está configurado en el panel, pero Traefik tiene uno de ejemplo (LETSENCRYPT_EMAIL ' +
+            'del .env del servidor), que Let\'s Encrypt rechaza: no puede obtener certificados y los dominios se sirven por ' +
+            'HTTP, sin redirección a HTTPS. Define un correo real en LETSENCRYPT_EMAIL (o déjalo vacío), recrea Traefik ' +
+            '(docker compose up -d traefik) y vuelve a desplegar.',
         );
       }
     }
@@ -1850,6 +1881,8 @@ const TAIL_LINES = 80;
 const GRACE_CHECK_MS = 500;
 /** Ventana de asentamiento de cada réplica en la actualización rodante. */
 const SETTLE_MS = 1500;
+/** Tope de la espera al «healthy» de Docker (el mismo que el del healthcheck del servicio). */
+const DOCKER_HEALTH_MAX_MS = 900_000;
 
 /**
  * Observa el contenedor durante `ms` y devuelve su estado. Corta en cuanto deja
@@ -1867,10 +1900,31 @@ async function settleContainer(name: string, ms: number, job?: ActiveJob): Promi
   return runtime;
 }
 
+type RestartPolicySpec = { Name: string; MaximumRetryCount?: number };
+
+/**
+ * ¿Es definitiva esta parada al arrancar? Si el repositorio declaró una
+ * política que reintenta, una salida temprana es Docker haciendo lo que se le
+ * pidió (una base que aún no acepta conexiones, por ejemplo), y no un veredicto.
+ * Solo es definitiva sin esa política, si el contenedor ya no existe, o con
+ * `on-failure` cuando salió con 0 (Docker no lo reinicia) o agotó sus reintentos.
+ */
+function salidaDefinitiva(restartPolicy: RestartPolicySpec | null, runtime: Awaited<ReturnType<typeof getRuntime>>): boolean {
+  if (!restartPolicy || restartPolicy.Name === 'no') return true;
+  if (runtime.state === 'not_created') return true;
+  if (restartPolicy.Name === 'on-failure' && runtime.state === 'exited') {
+    if (runtime.exitCode === 0) return true;
+    const max = restartPolicy.MaximumRetryCount ?? 0;
+    if (max > 0 && runtime.restartCount >= max) return true;
+  }
+  return false;
+}
+
 /**
  * Valida un contenedor recién arrancado: sonda HTTP al healthcheck si está
  * configurado; si no, y el servicio recibe tráfico (`tcpProbe`), una sonda TCP
  * a su puerto interno; y si no, un periodo de gracia comprobando que sigue vivo.
+ * En los tres casos se respeta la política de reinicio del repositorio.
  */
 async function validateContainer(
   netName: string,
@@ -1880,7 +1934,7 @@ async function validateContainer(
   containerRef: string,
   log: (l: string) => void,
   timeoutMs: number = PROBE_TIMEOUT_MS,
-  restartPolicy: { Name: string; MaximumRetryCount?: number } | null = null,
+  restartPolicy: RestartPolicySpec | null = null,
   job?: ActiveJob,
   tcpProbe = false,
 ): Promise<{ ok: boolean; reason: string }> {
@@ -1907,6 +1961,28 @@ async function validateContainer(
       const inicio = Date.now();
       const deadline = inicio + timeoutMs;
       let attempts = 0;
+      // Caídas al arrancar que la política del repositorio reintenta: se espera
+      // como en el periodo de gracia. Un servicio con dominio y sin healthcheck
+      // iba antes por ese camino; cortar aquí al primer tropiezo tumbaba
+      // despliegues que se habrían recuperado solos.
+      let caido = false;
+      let avisado = false;
+      // Desde cuándo sigue en pie sin caerse: tras un reinicio, el margen de
+      // «escuchar no basta» vuelve a contar desde cero.
+      let enPieDesde: number | null = inicio;
+      const reintentoEnCurso = (rt: Awaited<ReturnType<typeof getRuntime>>): boolean => {
+        if (salidaDefinitiva(restartPolicy, rt)) return false;
+        // Acotado como el periodo de gracia: un bucle de reinicios no puede
+        // agotar un plazo de sonda de varios minutos.
+        if (Date.now() - inicio >= RESTART_WINDOW_MS) return false;
+        caido = true;
+        enPieDesde = null;
+        if (!avisado) {
+          log('El proceso finalizó al arrancar; Docker lo reintenta según la política del repositorio. Esperando a que se estabilice...');
+          avisado = true;
+        }
+        return true;
+      };
       // Sin espera previa: hay procesos que ya responden al instante y esperar
       // un segundo «por si acaso» se lo cobraba a TODOS los despliegues.
       while (Date.now() < deadline) {
@@ -1914,8 +1990,19 @@ async function validateContainer(
         attempts += 1;
         const state = await getRuntime(containerRef);
         if (state.state !== 'running') {
-          return { ok: false, reason: `el proceso finalizó durante el arranque (código ${state.exitCode ?? 'n/a'})` };
+          if (reintentoEnCurso(state)) {
+            await sleep(probeDelay(attempts));
+            continue;
+          }
+          return {
+            ok: false,
+            reason: caido
+              ? `no llegó a atender en ${Math.round((Date.now() - inicio) / 1000)}s: continúa finalizando y reiniciándose (código ${state.exitCode ?? 'n/a'})`
+              : `el proceso finalizó durante el arranque (código ${state.exitCode ?? 'n/a'})`,
+          };
         }
+        caido = false;
+        if (enPieDesde === null) enPieDesde = Date.now();
         if (url ? await probe.probe(url) : await probe.probeTcp(aliasHost, port)) {
           if (url) {
             log(`Healthcheck superado en el intento ${attempts}.`);
@@ -1923,10 +2010,11 @@ async function validateContainer(
           }
           log(`El puerto ${port} acepta conexiones (intento ${attempts}).`);
           // Escuchar no basta si se cae enseguida: el mismo margen que sin sonda.
-          const resto = GRACE_MS - (Date.now() - inicio);
+          const resto = GRACE_MS - (Date.now() - enPieDesde);
           if (resto > 0) {
             const rt = await settleContainer(containerRef, resto, job);
             if (rt.state !== 'running') {
+              if (reintentoEnCurso(rt)) continue;
               return { ok: false, reason: `el proceso terminó enseguida (estado ${rt.state}, código ${rt.exitCode ?? 'n/a'})` };
             }
           }
@@ -1936,10 +2024,12 @@ async function validateContainer(
       }
       return {
         ok: false,
-        reason: path
-          ? `el healthcheck ${path} no respondió 2xx en ${plazo}s`
-          : `el puerto interno ${port} no aceptó conexiones en ${plazo}s: la aplicación no escucha en ese puerto ` +
-            '(comprueba que use la variable PORT o corrige el puerto interno en Ajustes del servicio)',
+        reason: caido
+          ? `no llegó a atender en ${plazo}s: continúa finalizando y reiniciándose`
+          : path
+            ? `el healthcheck ${path} no respondió 2xx en ${plazo}s`
+            : `el puerto interno ${port} no aceptó conexiones en ${plazo}s: la aplicación no escucha en ese puerto ` +
+              '(comprueba que use la variable PORT o corrige el puerto interno en Ajustes del servicio)',
       };
     } finally {
       await probe.stop();
@@ -1979,10 +2069,7 @@ async function validateContainer(
       if (Date.now() - enPieDesde >= GRACE_MS) return { ok: true, reason: 'ok' };
     } else {
       enPieDesde = null;
-      // Salir con 0 bajo `on-failure` es terminal: Docker no lo reinicia.
-      const terminal =
-        !reintenta || (restartPolicy!.Name === 'on-failure' && runtime.state === 'exited' && runtime.exitCode === 0);
-      if (terminal) {
+      if (salidaDefinitiva(restartPolicy, runtime)) {
         return { ok: false, reason: `el proceso terminó enseguida (estado ${runtime.state}, código ${runtime.exitCode ?? 'n/a'})` };
       }
       if (!avisado) {
@@ -2007,7 +2094,8 @@ async function validateContainer(
  *
  *  - Si la imagen declara HEALTHCHECK, hasta que Docker la marque «healthy»:
  *    Traefik no le envía tráfico antes, y retirar la anterior deja el dominio
- *    sin servidor.
+ *    sin servidor. El plazo es el mayor entre el del servicio y lo que Docker
+ *    puede tardar en decidir con ese HEALTHCHECK (`dockerHealthcheckMs`).
  *  - Si no, la misma sonda que validó la versión (HTTP o TCP), contra ESTA
  *    copia por su nombre de contenedor en la red del proyecto.
  */
@@ -2018,16 +2106,21 @@ async function waitReplicaReady(
     port: number | null;
     healthcheckPath: string | null;
     tcpProbe: boolean;
-    dockerHealthcheck: boolean;
+    /** Lo que puede tardar Docker en dar veredicto con el HEALTHCHECK de la imagen; null sin él. */
+    dockerHealthcheckMs: number | null;
     timeoutMs: number;
   },
   log: (l: string) => void,
   job?: ActiveJob,
 ): Promise<{ ok: boolean; reason: string; verified: boolean }> {
   const { containerRef, timeoutMs } = opts;
-  if (opts.dockerHealthcheck) {
-    log(`La imagen declara HEALTHCHECK: se espera a que Docker marque ${containerRef} como «healthy» (hasta ${Math.round(timeoutMs / 1000)}s) antes de retirar la versión anterior...`);
-    const deadline = Date.now() + timeoutMs;
+  if (opts.dockerHealthcheckMs !== null) {
+    // El primer chequeo de Docker no llega hasta pasado su `interval`: con solo
+    // el plazo del servicio (que puede ser de 5 s), una versión buena acababa
+    // siempre en «no la marcó como healthy» y se restauraba la anterior.
+    const esperaMs = Math.min(Math.max(timeoutMs, opts.dockerHealthcheckMs), DOCKER_HEALTH_MAX_MS);
+    log(`La imagen declara HEALTHCHECK: se espera a que Docker marque ${containerRef} como «healthy» (hasta ${Math.round(esperaMs / 1000)}s) antes de retirar la versión anterior...`);
+    const deadline = Date.now() + esperaMs;
     while (Date.now() < deadline) {
       if (job?.canceled) throw new CanceledError();
       const h = await containerHealth(containerRef);
@@ -2046,7 +2139,7 @@ async function waitReplicaReady(
       await sleep(GRACE_CHECK_MS * 2);
     }
     if (Date.now() >= deadline) {
-      return { ok: false, reason: `Docker no la marcó como «healthy» en ${Math.round(timeoutMs / 1000)}s`, verified: false };
+      return { ok: false, reason: `Docker no la marcó como «healthy» en ${Math.round(esperaMs / 1000)}s`, verified: false };
     }
   }
   if ((opts.healthcheckPath || opts.tcpProbe) && opts.port) {

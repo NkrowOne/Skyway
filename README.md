@@ -43,7 +43,7 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 
 - Un servidor Linux con **Docker** (y `docker compose`).
 - Puertos 80/443 libres (Traefik). El 4000 **no** hay que abrirlo: la UI solo escucha en `127.0.0.1:4000` del servidor.
-- Un dominio para el panel apuntando a la IP del servidor (recomendado) y un correo real para Let's Encrypt.
+- Un dominio para el panel apuntando a la IP del servidor (recomendado) y, si quieres, un correo de contacto para Let's Encrypt.
 
 ## Instalación rápida (producción)
 
@@ -54,7 +54,7 @@ cp .env.example .env      # SKYWAY_DOMAIN (dominio del panel) y LETSENCRYPT_EMAI
 docker compose up -d --build
 ```
 
-`LETSENCRYPT_EMAIL` es **necesario para TLS**: sin un correo real (ni vacío ni de `example.com`, que Let's Encrypt rechaza) no se emite ningún certificado. Skyway lo comprueba: mientras falte, Ajustes → Dominios y TLS lo avisa y los dominios se sirven por HTTP en vez de redirigir a un HTTPS sin certificado válido. Si lo cambias después, `docker compose up -d traefik`.
+`LETSENCRYPT_EMAIL` es el correo de contacto con el que Traefik se registra en Let's Encrypt. Puede quedar vacío (la cuenta se registra sin contacto y los certificados se emiten igual), pero **no puede ser de ejemplo** (`example.com`, `.test`, `.local`…): Let's Encrypt rechaza la cuenta y no se emite ningún certificado. Skyway lo comprueba: en ese caso, Ajustes → Dominios y TLS lo avisa y los dominios se sirven por HTTP en vez de redirigir a un HTTPS sin certificado válido. Si lo cambias después, `docker compose up -d traefik`.
 
 Después, crea la cuenta de administrador:
 

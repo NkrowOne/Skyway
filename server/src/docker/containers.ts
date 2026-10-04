@@ -275,18 +275,37 @@ export function normalizeContainerPath(p: string): string {
   return trimmed.length > 1 ? trimmed.replace(/\/+$/, '') : trimmed;
 }
 
+/** Valores de Docker para lo que un HEALTHCHECK no indica (en ms). */
+const HEALTHCHECK_DEFAULTS = { interval: 30_000, timeout: 30_000, startPeriod: 0, retries: 3 };
+
 /**
  * ¿La imagen declara un HEALTHCHECK de Docker? Con él, Traefik no envía tráfico
  * al contenedor hasta que Docker lo marca «healthy»: retirar la versión anterior
  * antes de eso deja el dominio sin servidor.
+ *
+ * Devuelve cuánto puede tardar Docker, como mucho, en dar un veredicto
+ * («healthy» o «unhealthy»), o null si la imagen no declara ninguno. El primer
+ * chequeo no llega hasta pasado el `interval` (30 s por defecto), así que
+ * esperar solo el plazo del healthcheck del servicio (que puede ser de 5 s)
+ * daba por fallida una versión que Docker aún no había llegado a mirar.
  */
-export async function imageHasHealthcheck(image: string): Promise<boolean> {
+export async function imageHealthcheckWindowMs(image: string): Promise<number | null> {
   try {
     const info = await dockerQuery.getImage(image).inspect();
-    const test = (info.Config as { Healthcheck?: { Test?: string[] } } | undefined)?.Healthcheck?.Test;
-    return Array.isArray(test) && test.length > 0 && test[0] !== 'NONE';
+    const hc = (info.Config as
+      | { Healthcheck?: { Test?: string[]; Interval?: number; Timeout?: number; StartPeriod?: number; Retries?: number } }
+      | undefined)?.Healthcheck;
+    const test = hc?.Test;
+    if (!Array.isArray(test) || test.length === 0 || test[0] === 'NONE') return null;
+    // Docker los guarda en nanosegundos; 0 o ausente es «el valor por defecto».
+    const ms = (ns: number | undefined, fallback: number) => (ns && ns > 0 ? Math.round(ns / 1e6) : fallback);
+    const interval = ms(hc!.Interval, HEALTHCHECK_DEFAULTS.interval);
+    const timeout = ms(hc!.Timeout, HEALTHCHECK_DEFAULTS.timeout);
+    const startPeriod = ms(hc!.StartPeriod, HEALTHCHECK_DEFAULTS.startPeriod);
+    const retries = hc!.Retries && hc!.Retries > 0 ? hc!.Retries : HEALTHCHECK_DEFAULTS.retries;
+    return startPeriod + (interval + timeout) * retries;
   } catch {
-    return false;
+    return null;
   }
 }
 

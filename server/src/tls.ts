@@ -6,16 +6,18 @@
  * 301 a https). El correo con el que Traefik se registra en Let's Encrypt es
  * OTRO: lo recibe Traefik al arrancar (`LETSENCRYPT_EMAIL` del `.env`, ver
  * docker-compose.yml). Con el `.env` vacío Traefik se quedaba con un correo de
- * `example.com`, que Let's Encrypt rechaza: no se emitía ningún certificado y
- * aun así cada dominio redirigía a HTTPS con el certificado por defecto de
- * Traefik, mientras el panel y el informe de seguridad decían que TLS estaba
- * activo.
+ * `example.com`, que Let's Encrypt rechaza al registrar la cuenta: no se emitía
+ * ningún certificado y aun así cada dominio redirigía a HTTPS con el
+ * certificado por defecto de Traefik, mientras el panel y el informe de
+ * seguridad decían que TLS estaba activo.
  *
  * Aquí se lee el correo REAL de Traefik (`docker inspect` de su contenedor, el
- * mismo método que usa el instalador de Mailway) y TLS solo cuenta como activo
- * si, además del ajuste, Traefik tiene un correo válido. Si no se puede saber
- * (Traefik con otro nombre, configurado por fichero, Docker sin responder), se
- * confía en el ajuste, como antes.
+ * mismo método que usa el instalador de Mailway) y TLS deja de contar como
+ * activo solo si ese correo es de un dominio que Let's Encrypt rechaza. Un
+ * correo VACÍO no bloquea: Traefik (lego) registra entonces la cuenta sin
+ * contacto, que Let's Encrypt acepta, y los certificados se emiten igual. Si no
+ * se puede saber (Traefik con otro nombre, configurado por fichero, Docker sin
+ * responder), se confía en el ajuste, como antes.
  */
 import { getSetting } from './db';
 import { dockerQuery } from './docker/client';
@@ -30,7 +32,11 @@ const TTL_MS = 60_000;
 export type TraefikAcmeStatus = 'ok' | 'missing' | 'invalid' | 'unknown';
 
 export interface TraefikAcmeState {
-  /** ok: correo válido · missing: vacío · invalid: de un dominio que Let's Encrypt rechaza · unknown: no se ha podido leer. */
+  /**
+   * ok: correo válido · missing: vacío (la cuenta se registra sin contacto y los
+   * certificados se emiten igual) · invalid: de un dominio que Let's Encrypt
+   * rechaza (no hay certificados) · unknown: no se ha podido leer.
+   */
   status: TraefikAcmeStatus;
   /** Correo que tiene Traefik (null si no se ha podido leer o está vacío). */
   email: string | null;
@@ -109,13 +115,14 @@ export function traefikAcmeState(): TraefikAcmeState {
 }
 
 /**
- * Traefik tiene un correo que Let's Encrypt rechaza (o ninguno): aunque el
- * ajuste esté puesto, no se emitirán certificados.
+ * Traefik tiene un correo que Let's Encrypt rechaza: aunque el ajuste esté
+ * puesto, no se emitirán certificados. Sin correo NO cuenta: Let's Encrypt
+ * acepta cuentas sin contacto, y quitar el HTTPS de todas las webs por eso
+ * dejaba en HTTP plano lo que sí tenía certificado.
  */
 export function tlsBlocked(): boolean {
   if (!getSetting('letsencryptEmail')) return false;
-  const status = traefikAcmeState().status;
-  return status === 'missing' || status === 'invalid';
+  return traefikAcmeState().status === 'invalid';
 }
 
 /**

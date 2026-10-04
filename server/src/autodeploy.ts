@@ -1,11 +1,11 @@
-import { fireAlert, resolveServiceAlerts } from './alerts';
+import { AUTODEPLOY_ALERT_TYPE, fireAlert, resolveServiceAlerts } from './alerts';
 import { auditSystem } from './audit';
 import {
   AutoDeployStateRow,
   forgetAutoDeployStates,
   getAutoDeployState,
   getSetting,
-  lastBuiltCommitSha,
+  lastAttemptedCommitSha,
   latestDeployment,
   listAutoDeployStates,
   listProjects,
@@ -39,8 +39,7 @@ const FIRST_POLL_MS = 10_000;
  * sí: sin ella el operador creía que cada push desplegaba y no era así.
  */
 export const AUTODEPLOY_FAIL_ALERT_MS = 15 * 60_000;
-/** Tipo de la alerta del sondeo que no consigue leer la rama. */
-export const AUTODEPLOY_ALERT_TYPE = 'autodeploy_failing';
+export { AUTODEPLOY_ALERT_TYPE };
 /** Despliegues aún en marcha: no se encola otro encima. */
 const IN_PROGRESS = new Set(['queued', 'building', 'deploying']);
 /**
@@ -59,9 +58,9 @@ const POLL_CONCURRENCY = 4;
  * (que sigue disponible para despliegues instantáneos).
  *
  * Doble salvaguarda contra despliegues indeseados:
- *  - Frente al ÚLTIMO COMMIT DESPLEGADO (en la BD): si la cabeza ya se desplegó
- *    —por el webhook, un deploy manual o el propio sondeo— no se repite. Evita
- *    duplicados cuando también hay webhook configurado.
+ *  - Frente al ÚLTIMO COMMIT INTENTADO (en la BD): si la cabeza ya se desplegó
+ *    o se intentó —por el webhook, un deploy manual o el propio sondeo— no se
+ *    repite. Evita duplicados con el webhook y relanzar un build que falló.
  *  - Frente a la ÚLTIMA CABEZA TRATADA (en la BD, `autodeploy_state`, con copia
  *    en memoria): la PRIMERA vez que se sondea un servicio —auto-deploy recién
  *    activado— solo se fija la línea base y NO se despliega, así que activar la
@@ -77,8 +76,8 @@ const lastSeen = new Map<string, string>();
 /**
  * El webhook (u otro disparo externo) avisa del commit que va a construir para
  * que el sondeo no lo vuelva a desplegar: fija la línea base. Complementa al
- * cotejo contra `lastBuiltCommitSha` cerrando la ventana entre el push y que el
- * clon registre el `commit_sha`.
+ * cotejo contra `lastAttemptedCommitSha` cerrando la ventana entre el push y que
+ * el clon registre el `commit_sha`.
  */
 export function noteAutoDeployBaseline(serviceId: string, sha: string): void {
   lastSeen.set(serviceId, sha);
@@ -210,7 +209,9 @@ async function tick(log: { warn: (msg: string) => void }): Promise<void> {
   // Olvida los servicios que ya no aplican (borrados o con auto-deploy apagado):
   // al reactivarlo, el primer sondeo vuelve a fijar la línea base sin desplegar.
   for (const id of lastSeen.keys()) if (!active.has(id)) lastSeen.delete(id);
-  forgetAutoDeployStates(active);
+  // Y su alerta de sondeo: sin auto-deploy ya no aplica, y abierta seguía hasta
+  // el siguiente despliegue correcto (que, además, ya no la cierra).
+  for (const id of forgetAutoDeployStates(active)) resolveServiceAlerts(id, AUTODEPLOY_ALERT_TYPE);
 }
 
 interface PollTarget {
@@ -266,9 +267,11 @@ async function pollOne(
   if (seen === undefined) return;
   if (head === seen) return; // ya tratado (evita el bucle si el clon falla)
 
-  // Ya desplegado por otra vía (webhook, deploy manual o un sondeo anterior):
-  // no se repite. Evita duplicar con el webhook.
-  if (head === lastBuiltCommitSha(t.id)) return;
+  // Ya desplegado o intentado por otra vía (webhook, deploy manual o un sondeo
+  // anterior): no se repite. Evita duplicar con el webhook y relanzar un build
+  // manual que acaba de fallar. Aquí cuentan también los fallidos, a diferencia
+  // de los webhooks (`lastBuiltCommitSha`), donde «Redeliver» debe relanzarlo.
+  if (head === lastAttemptedCommitSha(t.id)) return;
 
   // Commit nuevo (también el que llegó mientras Skyway estaba parado) → desplegar.
   try {

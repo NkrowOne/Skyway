@@ -386,6 +386,15 @@ export const EMPTY_LIST: never[] = [];
 export const EMPTY_RECORD: Record<string, never> = {};
 
 /**
+ * ¿Tiene el objeto esta clave PROPIA? `clave in obj` consulta también la cadena
+ * de prototipos: una variable llamada `constructor` o `toString` contaba como
+ * presente aunque se hubiera borrado, y no llegaba a eliminarse.
+ */
+export function tieneClave(obj: object, clave: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, clave);
+}
+
+/**
  * `owner/repo` a partir de lo que alguien escribe o pega: el atajo, la URL de
  * GitHub (con o sin `.git`, con o sin barra final) o null si no se reconoce.
  */

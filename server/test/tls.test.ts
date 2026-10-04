@@ -3,8 +3,10 @@
  * etiquetas; los certificados los pide Traefik con el correo de su `.env`. Con
  * el `.env` vacío, Traefik arrancaba con `noreply@example.com` (Let's Encrypt lo
  * rechaza): ningún certificado, y aun así cada dominio redirigía a HTTPS y el
- * panel decía que TLS estaba activo. Ahora TLS solo cuenta si Traefik tiene un
- * correo válido; si no se puede saber, se confía en el ajuste como antes.
+ * panel decía que TLS estaba activo. Ahora TLS deja de contar si Traefik tiene
+ * un correo que Let's Encrypt rechaza; vacío no (la cuenta se registra sin
+ * contacto y se emiten certificados), y si no se puede saber, se confía en el
+ * ajuste como antes.
  */
 import fs from 'fs';
 import path from 'path';
@@ -95,9 +97,14 @@ describe('TLS efectivo', () => {
     expect(systemVars(s).PUBLIC_URL).toBe('http://app.acme.es');
   });
 
-  it('con un correo válido (o sin poder comprobarlo), HTTPS y redirección como siempre', () => {
-    for (const estado of ['ok', 'unknown'] as const) {
+  it('con un correo válido, vacío o sin poder comprobarlo, HTTPS y redirección como siempre', () => {
+    // Vacío NO bloquea: Traefik (lego) registra la cuenta sin contacto, que
+    // Let's Encrypt acepta, y el propio panel tiene certificado. Quitar el
+    // HTTPS de todas las webs por eso las dejaba en HTTP plano.
+    for (const estado of ['ok', 'missing', 'unknown'] as const) {
       traefik(estado, estado === 'ok' ? 'ops@acme.es' : null);
+      expect(tlsBlocked()).toBe(false);
+      expect(tlsEnabled()).toBe(true);
       const { p, s } = servicioConDominio();
       const labels = traefikLabels(p, s, ['app.acme.es'], 3000);
       const router = `skyway-${p.slug}-${s.slug}`;
@@ -115,20 +122,32 @@ describe('TLS efectivo', () => {
   });
 
   it('el editor de dominios y Ajustes lo dicen', async () => {
-    traefik('missing');
+    traefik('invalid', 'noreply@example.com');
     const config = await app.inject({ method: 'GET', url: '/api/domains/config', headers: { cookie } });
     expect(JSON.parse(config.body)).toMatchObject({ tls: false, tlsBlocked: true });
     const ajustes = await app.inject({ method: 'GET', url: '/api/settings', headers: { cookie } });
-    expect(JSON.parse(ajustes.body).traefikAcme).toEqual({ status: 'missing', email: null });
+    expect(JSON.parse(ajustes.body).traefikAcme).toEqual({ status: 'invalid', email: 'noreply@example.com' });
+
+    // Sin correo: Ajustes lo informa, pero el editor no lo da por bloqueado.
+    traefik('missing');
+    const config2 = await app.inject({ method: 'GET', url: '/api/domains/config', headers: { cookie } });
+    expect(JSON.parse(config2.body)).toMatchObject({ tls: true, tlsBlocked: false });
+    const ajustes2 = await app.inject({ method: 'GET', url: '/api/settings', headers: { cookie } });
+    expect(JSON.parse(ajustes2.body).traefikAcme).toEqual({ status: 'missing', email: null });
   });
 
-  it('el informe de seguridad no da TLS por activo', async () => {
+  it('el informe de seguridad no da TLS por activo con un correo de ejemplo, y no avisa sin correo', async () => {
     traefik('invalid', 'noreply@example.com');
     servicioConDominio();
     const r = await app.inject({ method: 'GET', url: '/api/security', headers: { cookie } });
     expect(r.statusCode, r.body).toBe(200);
     const ids = (JSON.parse(r.body).findings as { id: string }[]).map((f) => f.id);
     expect(ids).toContain('tls-blocked');
+
+    traefik('missing');
+    const r2 = await app.inject({ method: 'GET', url: '/api/security', headers: { cookie } });
+    const ids2 = (JSON.parse(r2.body).findings as { id: string }[]).map((f) => f.id);
+    expect(ids2).not.toContain('tls-blocked');
   });
 });
 

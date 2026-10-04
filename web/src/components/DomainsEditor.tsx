@@ -399,13 +399,14 @@ export default function DomainsEditor({
             TLS automático
           </Chip>
         ) : config.data?.tlsBlocked ? (
-          // Activado en el panel, pero Traefik no puede pedir certificados: se
-          // sirve por HTTP en vez de redirigir a un HTTPS sin certificado válido.
+          // Activado en el panel, pero Traefik tiene un correo que Let's Encrypt
+          // rechaza: se sirve por HTTP en vez de redirigir a un HTTPS sin
+          // certificado válido.
           <Chip size="sm" tone="err" dot>
             TLS bloqueado —{' '}
             {isAdmin ? (
               <Link to="/settings" className="text-acc-soft hover:underline">
-                falta LETSENCRYPT_EMAIL en el servidor
+                el correo de Let's Encrypt del servidor no es válido
               </Link>
             ) : (
               'el administrador debe corregir el correo de Let\'s Encrypt del servidor'

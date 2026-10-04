@@ -21,7 +21,7 @@ import {
   markStaleDeploymentsFailed,
   updateDeployment,
 } from '../src/db';
-import { awaitDeployment, resumeInterruptedDeployments, RETRY_TRIGGER } from '../src/deploy/deployer';
+import { awaitDeployment, resumeInterruptedDeployments, RETRY_TRIGGER, triggerDeploy } from '../src/deploy/deployer';
 
 beforeAll(() => {
   initDb();
@@ -82,6 +82,36 @@ describe('despliegues interrumpidos por un reinicio', () => {
     expect(listDeployments(s.id, 10)).toHaveLength(1);
     const alerta = listAlerts({ openOnly: true }).find((a) => a.service_id === s.id && a.type === 'deploy_interrupted');
     expect(alerta?.message).toMatch(/no se vuelve a intentar/i);
+    // No volvía a ninguna versión: se ofrece «Desplegar».
+    expect(alerta?.rollback_to ?? null).toBeNull();
+    expect(alerta?.explanation).toMatch(/pulsa «Desplegar»/);
+  });
+
+  it('si se corta el reintento de una vuelta atrás, la alerta ofrece volver a esa versión, no desplegar la cabeza', async () => {
+    const s = servicio('Cinco');
+    const buena = createDeployment(s.id, 'manual');
+    updateDeployment(buena.id, { status: 'success', image_tag: 'skyway/cinco-web:aaaa1111', commit_sha: 'a'.repeat(40), finished_at: Date.now() });
+    await new Promise((r) => setTimeout(r, 5));
+    const reintento = createDeployment(s.id, RETRY_TRIGGER, 'skyway/cinco-web:aaaa1111');
+    updateDeployment(reintento.id, { status: 'deploying' });
+
+    markStaleDeploymentsFailed();
+    expect(resumeInterruptedDeployments().retried).toBe(0);
+    const alerta = listAlerts({ openOnly: true }).find((a) => a.service_id === s.id && a.type === 'deploy_interrupted');
+    expect(alerta?.rollback_to).toBe(buena.id);
+    expect(alerta?.explanation).toMatch(/«Volver a esta versión»/);
+  });
+
+  it('la alerta de una vuelta atrás fallida apunta a la versión a la que se volvía', async () => {
+    const s = servicio('Seis');
+    const buena = createDeployment(s.id, 'manual');
+    updateDeployment(buena.id, { status: 'success', image_tag: 'skyway/seis-web:bbbb2222', commit_sha: 'b'.repeat(40), finished_at: Date.now() });
+
+    // Sin Docker falla al momento; lo que importa es la alerta.
+    const vuelta = triggerDeploy(s.id, 'rollback', { imageTag: 'skyway/seis-web:bbbb2222' });
+    await awaitDeployment(vuelta.id, 10_000);
+    const alerta = listAlerts({ openOnly: true }).find((a) => a.service_id === s.id && a.type === 'deploy_failed');
+    expect(alerta?.rollback_to).toBe(buena.id);
   });
 
   it('una vuelta atrás cortada se reintenta como vuelta atrás, con la misma imagen', async () => {

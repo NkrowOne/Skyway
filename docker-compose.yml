@@ -1,5 +1,5 @@
 # Skyway + Traefik para tu servidor dedicado.
-#   1. cp .env.example .env   (SKYWAY_DOMAIN y LETSENCRYPT_EMAIL: sin un correo real no hay certificados TLS)
+#   1. cp .env.example .env   (SKYWAY_DOMAIN y LETSENCRYPT_EMAIL: vacío o real, nunca de ejemplo)
 #   2. docker compose up -d --build
 #   3. Accede por https://SKYWAY_DOMAIN (recomendado), o por tunel SSH si aun no tienes dominio:
 #        ssh -L 4000:127.0.0.1:4000 TU_USUARIO@IP-DEL-SERVIDOR   -> luego abre http://localhost:4000
@@ -54,9 +54,9 @@ services:
       - --providers.docker.network=skyway-edge
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
-      # Correo con el que Traefik se registra en Let's Encrypt. Sin uno real no
-      # se emite ningún certificado (Let's Encrypt rechaza los de example.com):
-      # Skyway lo comprueba y, mientras falte, no redirige los dominios a HTTPS.
+      # Correo con el que Traefik se registra en Let's Encrypt. Vacío vale (cuenta
+      # sin contacto); uno de ejemplo no (Let's Encrypt rechaza los de
+      # example.com): Skyway lo comprueba y, en ese caso, no redirige a HTTPS.
       - --certificatesresolvers.le.acme.email=${LETSENCRYPT_EMAIL:-}
       - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
       - --certificatesresolvers.le.acme.httpchallenge=true
