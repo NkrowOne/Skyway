@@ -5,7 +5,7 @@ import { docker, dockerQuery } from './client';
 import { baselineFrom, CpuBaseline, cpuPercentFromBaseline, cpuPercentFromDocker, DockerStatsSample } from './cpu';
 import { countStrictlyBefore } from './logcursor';
 import { EDGE_NETWORK, projectNetworkName } from './networks';
-import { getSetting } from '../db';
+import { tlsEnabled } from '../tls';
 import { ContainerState, ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
 import { lineSplitter } from '../util';
 
@@ -249,6 +249,91 @@ export async function imageExposedPorts(image: string): Promise<number[]> {
   }
 }
 
+/**
+ * Rutas que la imagen declara con VOLUME (las suyas y las heredadas). En una
+ * ruta así que no tenga volumen configurado, Docker crea un volumen ANÓNIMO
+ * por contenedor: cada despliegue arranca con uno vacío y el anterior queda
+ * huérfano (con los datos dentro). Es una pista para avisar, nunca para crear
+ * el volumen a escondidas: con volúmenes el intercambio deja de ser sin corte.
+ */
+export async function imageDeclaredVolumes(image: string): Promise<string[]> {
+  try {
+    const info = await dockerQuery.getImage(image).inspect();
+    const vols = (info.Config?.Volumes || {}) as Record<string, unknown>;
+    return Object.keys(vols)
+      .map((p) => normalizeContainerPath(p))
+      .filter((p) => p.startsWith('/'))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** `/data/` y `/data` son la misma ruta de montaje. */
+export function normalizeContainerPath(p: string): string {
+  const trimmed = p.trim();
+  return trimmed.length > 1 ? trimmed.replace(/\/+$/, '') : trimmed;
+}
+
+/** Valores de Docker para lo que un HEALTHCHECK no indica (en ms). */
+const HEALTHCHECK_DEFAULTS = { interval: 30_000, timeout: 30_000, startPeriod: 0, retries: 3 };
+
+/**
+ * ¿La imagen declara un HEALTHCHECK de Docker? Con él, Traefik no envía tráfico
+ * al contenedor hasta que Docker lo marca «healthy»: retirar la versión anterior
+ * antes de eso deja el dominio sin servidor.
+ *
+ * Devuelve cuánto puede tardar Docker, como mucho, en dar un veredicto
+ * («healthy» o «unhealthy»), o null si la imagen no declara ninguno. El primer
+ * chequeo no llega hasta pasado el `interval` (30 s por defecto), así que
+ * esperar solo el plazo del healthcheck del servicio (que puede ser de 5 s)
+ * daba por fallida una versión que Docker aún no había llegado a mirar.
+ */
+export async function imageHealthcheckWindowMs(image: string): Promise<number | null> {
+  try {
+    const info = await dockerQuery.getImage(image).inspect();
+    const hc = (info.Config as
+      | { Healthcheck?: { Test?: string[]; Interval?: number; Timeout?: number; StartPeriod?: number; Retries?: number } }
+      | undefined)?.Healthcheck;
+    const test = hc?.Test;
+    if (!Array.isArray(test) || test.length === 0 || test[0] === 'NONE') return null;
+    // Docker los guarda en nanosegundos; 0 o ausente es «el valor por defecto».
+    const ms = (ns: number | undefined, fallback: number) => (ns && ns > 0 ? Math.round(ns / 1e6) : fallback);
+    const interval = ms(hc!.Interval, HEALTHCHECK_DEFAULTS.interval);
+    const timeout = ms(hc!.Timeout, HEALTHCHECK_DEFAULTS.timeout);
+    const startPeriod = ms(hc!.StartPeriod, HEALTHCHECK_DEFAULTS.startPeriod);
+    const retries = hc!.Retries && hc!.Retries > 0 ? hc!.Retries : HEALTHCHECK_DEFAULTS.retries;
+    return startPeriod + (interval + timeout) * retries;
+  } catch {
+    return null;
+  }
+}
+
+/** Estado del contenedor y de su HEALTHCHECK (null si no tiene). */
+export async function containerHealth(
+  name: string,
+): Promise<{ state: string; exitCode: number | null; health: 'starting' | 'healthy' | 'unhealthy' | null }> {
+  const info = await findContainer(name);
+  if (!info) return { state: 'not_created', exitCode: null, health: null };
+  const health = (info.State as { Health?: { Status?: string } }).Health?.Status;
+  return {
+    state: info.State.Status,
+    exitCode: info.State.Running ? null : info.State.ExitCode,
+    health: health === 'starting' || health === 'healthy' || health === 'unhealthy' ? health : null,
+  };
+}
+
+/**
+ * Etiquetas de imagen presentes en el servidor para un repositorio
+ * (`skyway/<proyecto>-<servicio>`), en una sola consulta al daemon.
+ */
+export async function imageTagsOf(repository: string): Promise<Set<string>> {
+  const list = await dockerQuery.listImages({ filters: { reference: [repository] } as any });
+  const tags = new Set<string>();
+  for (const img of list) for (const tag of img.RepoTags ?? []) tags.add(tag);
+  return tags;
+}
+
 export async function imageExists(tag: string): Promise<boolean> {
   try {
     await dockerQuery.getImage(tag).inspect();
@@ -268,7 +353,10 @@ export function traefikLabels(
   if (domains.length === 0) return labels;
   const router = `skyway-${project.slug}-${service.slug}`;
   const rule = domains.map((d) => `Host(\`${d}\`)`).join(' || ');
-  const tls = !!getSetting('letsencryptEmail');
+  // TLS efectivo: el ajuste del panel y un correo válido en Traefik. Sin lo
+  // segundo no se emite ningún certificado, y redirigir a https dejaba el
+  // dominio sirviendo el certificado por defecto de Traefik (ver tls.ts).
+  const tls = tlsEnabled();
   labels['traefik.enable'] = 'true';
   labels['traefik.docker.network'] = EDGE_NETWORK;
   // Router HTTP (puerto 80). Con TLS activo se añade un segundo router HTTPS:
@@ -288,6 +376,15 @@ export function traefikLabels(
     labels[`traefik.http.middlewares.${router}-https.redirectscheme.permanent`] = 'true';
     labels[`traefik.http.routers.${router}.middlewares`] = `${router}-https`;
   }
+  // Durante un intercambio la versión nueva entra en el balanceo en cuanto
+  // nace, aunque aún no escuche: sin esto, mientras arranca, una de cada dos
+  // peticiones acababa en 502. Con «retry», una conexión rechazada se reintenta
+  // y el balanceo la lleva a la versión anterior, que sigue en pie hasta que la
+  // nueva responde (ver `waitReplicaReady` en el deployer). Traefik solo
+  // reintenta si el servidor no llegó a contestar.
+  labels[`traefik.http.middlewares.${router}-retry.retry.attempts`] = '3';
+  labels[`traefik.http.middlewares.${router}-retry.retry.initialinterval`] = '100ms';
+  labels[`traefik.http.routers.${router}${tls ? '-secure' : ''}.middlewares`] = `${router}-retry`;
   labels[`traefik.http.services.${router}.loadbalancer.server.port`] = String(port);
   return labels;
 }

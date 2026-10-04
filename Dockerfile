@@ -30,10 +30,13 @@ RUN apk add --no-cache docker-cli docker-cli-buildx git curl bash ca-certificate
 # binario musl directamente de las releases: el install.sh oficial invoca
 # `tar "" -xzf` (argumento vacío) y el tar de busybox lo rechaza, así que en
 # Alpine ese script no funciona nunca. La versión sale del Cargo.toml del
-# repo (mismo mecanismo que usa el instalador oficial).
+# repo (mismo mecanismo que usa el instalador oficial), salvo que se fije con
+# `--build-arg NIXPACKS_VERSION=1.x.y` para builds reproducibles. Si falla,
+# `skyway update` lo avisa al terminar.
+ARG NIXPACKS_VERSION=
 RUN set -x; \
     case "$(uname -m)" in x86_64) t=x86_64-unknown-linux-musl ;; aarch64) t=aarch64-unknown-linux-musl ;; *) t= ;; esac; \
-    ver="$(curl -fsSL --retry 3 https://raw.githubusercontent.com/railwayapp/nixpacks/master/Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)"; \
+    ver="${NIXPACKS_VERSION:-$(curl -fsSL --retry 3 https://raw.githubusercontent.com/railwayapp/nixpacks/master/Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)}"; \
     if [ -n "$t" ] && [ -n "$ver" ]; then \
       for i in 1 2 3; do \
         curl -fL --retry 3 --retry-delay 2 -o /tmp/nixpacks.tgz "https://github.com/railwayapp/nixpacks/releases/download/v${ver}/nixpacks-v${ver}-${t}.tar.gz" \

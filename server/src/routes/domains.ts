@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAuth } from '../auth';
 import { getSetting } from '../db';
+import { refreshTraefikAcme, tlsBlocked, tlsEnabled } from '../tls';
 import { checkDomain, getServerIp } from '../domains';
 import { rateLimit } from '../ratelimit';
 
@@ -26,10 +27,16 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
    * formulario que le contestaba 403, en vez del subdominio de su servicio.
    * Ni el email de Let's Encrypt ni el resto de ajustes salen de aquí.
    */
-  app.get('/api/domains/config', async () => ({
-    rootDomain: getSetting('rootDomain'),
-    tls: !!getSetting('letsencryptEmail'),
-  }));
+  app.get('/api/domains/config', async () => {
+    await refreshTraefikAcme();
+    return {
+      rootDomain: getSetting('rootDomain'),
+      tls: tlsEnabled(),
+      // El ajuste está puesto, pero Traefik no tiene un correo válido para
+      // Let's Encrypt: el editor lo dice en vez de prometer TLS (ver tls.ts).
+      tlsBlocked: tlsBlocked(),
+    };
+  });
 
   app.post('/api/domains/check', { preHandler: rateLimit({ max: CHECKS_POR_MINUTO, windowMs: 60_000 }) }, async (req, reply) => {
     const body = z.object({ domain: z.string().trim().toLowerCase().max(253) }).parse(req.body);

@@ -91,7 +91,10 @@ server/src/
   metrics.ts            deltas de red por réplica + agrupado del histórico de consumo
   monitor.ts            bucle 30 s: caídas, bucles de reinicio, CPU/RAM, uptime, disco, histórico
   scheduler.ts          bucle 10 min: backups programados de BBDD + snapshot diario del panel
-  autodeploy.ts         bucle ~1 min: sondea la cabeza de la rama (API con ETag, o git ls-remote) y despliega si cambió
+  autodeploy.ts         bucle ~1 min: sondea la cabeza de la rama (API con ETag, o git ls-remote) y despliega si cambió;
+                        línea base y última comprobación persistidas (`autodeploy_state`)
+  tls.ts                TLS efectivo: ajuste del panel + correo de Let's Encrypt REAL de Traefik (docker inspect)
+  paneldomain.ts        dominios del panel (`SKYWAY_DOMAIN`, `SKYWAY_DOMAIN_EXTRA`) y routers de los adicionales
   datamigrate.ts        copia de datos desde una base externa (Railway) a una gestionada, con log en vivo
   events.ts             bus en memoria: logs de despliegue y feed de despliegues del proyecto (SSE)
   sse.ts                utilidad Server-Sent Events
@@ -276,7 +279,11 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      manda sobre los ajustes del panel, igual que en Railway. El token para
      clonar se resuelve en `github/resolve.ts` (ver §5.4).
    - rollback → reutiliza una imagen ya construida (`image_tag`), si sigue viva,
-     junto con la config-as-code del despliegue que la construyó.
+     junto con la config-as-code del despliegue que la construyó. Si la imagen
+     ya se purgó, `POST /deployments/:id/rollback` responde 409 `image_purged`
+     sin crear despliegue ni alerta, y se puede **reconstruir ese commit**
+     (`POST /services/:id/deploy {commit}`: clon superficial de la rama y
+     `git fetch --depth 1 origin <sha>`, sin reutilizar imagen).
 3. **Comando previo** (`deploy.preDeployCommand` de la config-as-code): se
    ejecuta con la imagen y las variables nuevas contra la red del proyecto,
    **antes** de tocar la versión en marcha. Es donde suelen ir las migraciones;
@@ -289,18 +296,59 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
    con ellas en el entorno, quien edita variables elegía qué binario ejecuta
    Skyway con el socket de Docker en la mano.
 4. **Despliegue del contenedor** (swap con validación):
+   - **Validación**: healthcheck HTTP 2xx si hay ruta de healthcheck; si no, y
+     el servicio recibe tráfico (dominio o puerto público), una **sonda TCP** a
+     su puerto interno (`nc -z` desde el contenedor auxiliar `busybox`, mismo
+     plazo) más el periodo de gracia; sin tráfico (un worker), solo el periodo
+     de gracia de 5 s. Antes bastaba con que el proceso siguiera vivo, y una app
+     que escuchaba en otro puerto se daba por buena con el dominio en 502. Si el
+     repositorio declara una política de reinicio que reintenta
+     (`restartPolicyType`), una caída al arrancar no es un fallo en ninguno de
+     los tres casos: se espera a que Docker la reinicie (hasta 90 s), salvo que
+     sea definitiva (`on-failure` con código 0 o con los reintentos agotados).
    - **Corte cero** (servicios sin volúmenes ni puerto de host): se arranca la
-     versión nueva en paralelo, se **valida** (healthcheck HTTP 2xx o periodo de
-     gracia) y solo entonces se intercambia, réplica a réplica (rolling update).
+     versión nueva en paralelo (`--next`, sin tráfico), se **valida** y luego se
+     intercambia réplica a réplica (rolling update). La versión anterior de cada
+     réplica **no se retira hasta que la copia nueva atiende**: la misma sonda
+     contra su nombre de contenedor en la red del proyecto o, si la imagen
+     declara `HEALTHCHECK`, hasta que Docker la marca `healthy` (Traefik no le
+     envía tráfico antes). Esa espera dura lo que Docker puede tardar en decidir
+     con el `HEALTHCHECK` de la imagen (`start_period + (interval + timeout) ×
+     retries`) si es mayor que el plazo del healthcheck del servicio: el primer
+     chequeo no llega hasta pasado el `interval`. Las etiquetas de Traefik llevan un middleware
+     `retry` (3 intentos): mientras la copia nueva arranca, una conexión
+     rechazada se reintenta y el balanceo la lleva a la anterior. Si no se pudo
+     comprobar nada (sin dominio ni healthcheck), el registro lo dice en vez de
+     anunciar «sin interrupción».
    - **Con estado** (volúmenes/puerto fijo/BBDD): intercambio con **restauración
      automática** — si la versión nueva falla la validación, vuelve la anterior.
    - `recoverStaleSwap` repara restos (`--next`/`--prev`) de un swap interrumpido
      por una caída del servidor.
    - Antes de arrancar se inyectan las **variables de compatibilidad Railway**
      (§5.5) sin pisar ninguna definida por el usuario.
-5. **Post**: un deploy correcto resuelve las alertas de caída del servicio y
-   purga imágenes antiguas (se conservan las **5 últimas** por servicio para
-   rollback). Un fallo genera una alerta con diagnóstico (`diagnose.ts`).
+   - Rutas que la imagen declara con `VOLUME` y que el servicio no monta: aviso
+     en el registro (su contenido se reinicia en cada despliegue y el anterior
+     queda en un volumen anónimo huérfano) y se anotan en `config.imageVolumes`
+     para que Ajustes ofrezca «Añadir volumen». Nunca se crea el volumen solo:
+     con volúmenes el intercambio deja de ser sin corte.
+5. **Post**: un deploy correcto resuelve las alertas del servicio (salvo la del
+   sondeo del auto-deploy, `autodeploy_failing`) y purga imágenes antiguas (se
+   conservan las de las **5 últimas** versiones correctas por servicio para
+   rollback; ajuste `keepImages`, de 1 a 50). Un
+   fallo genera una alerta con diagnóstico (`diagnose.ts`). Cada despliegue
+   anota la **revisión de configuración** del servicio que aplica
+   (`deployments.config_rev`, ver «Cambios sin desplegar» en §6).
+6. **Reinicios**: un apagado de Skyway corta los despliegues en marcha (y un
+   arranque marca como fallidos los que quedaron en cola o a medias); todos
+   quedan con `interrupted = 1`. Al arrancar, cada servicio cuyo **último**
+   despliegue quedó cortado recibe la alerta `deploy_interrupted` y **un**
+   reintento automático (origen `reintento`; una vuelta atrás se reintenta como
+   vuelta atrás). Si el reintento también se corta, solo la alerta: un build que
+   tumba Skyway reintentado siempre sería un bucle de reinicios. Las alertas
+   `deploy_failed` y `deploy_interrupted` de una vuelta atrás guardan en
+   `alerts.rollback_to` el despliegue correcto al que se volvía, y Alertas
+   ofrece «Volver a esta versión» en lugar de «Desplegar» (que desplegaría la
+   cabeza de la rama).
 
 **Feed de despliegues.** Cada cambio de fase (encolado, construyendo,
 desplegando, terminado) se publica en un bus en memoria (`events.ts`) que
@@ -337,12 +385,13 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
 | `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada; `mailway.defaultPlanId`, plan con el que se crea el cliente si no lo elige un administrador; `mailway.hosts`, hosts públicos que anuncia la instancia; `mailway.whitelabelHosts`, última lista buena de nombres de marca blanca de todos los clientes en cualquier estado, reservados para los servicios; `mailway.previousClient:<projectId>`, cliente que tenía el proyecto antes de desactivar el correo)… |
 | `projects` | `id`, `name`, `slug` (único), `workspace_id` (cuenta de cliente), `client` (reflejo denormalizado del nombre del workspace para la UI), página de estado (`status_token`, `status_enabled`, `status_notice`) |
-| `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON) |
+| `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON), `config_rev` (revisión de la configuración: sube con cada cambio guardado que exige redesplegar) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
 | `project_vars` | `(project_id, key)` → `value` — variables compartidas |
-| `deployments` | `status`, `trigger`, `commit_sha/msg`, `image_tag`, `logs`, `error`, `diagnosis`, `build_key` (huella de las entradas de compilación, para reutilizar imagen), `repo_config` (config-as-code del repo en ese commit, JSON), `build_vars` (digest `{NOMBRE: hash}` de las variables que entraron en ese build; nunca el valor), `force_build` |
+| `deployments` | `status`, `trigger`, `commit_sha/msg`, `image_tag`, `logs`, `error`, `diagnosis`, `build_key` (huella de las entradas de compilación, para reutilizar imagen), `repo_config` (config-as-code del repo en ese commit, JSON), `build_vars` (digest `{NOMBRE: hash}` de las variables que entraron en ese build; nunca el valor), `force_build`, `target_commit` (commit concreto pedido al reconstruir), `config_rev` (revisión de configuración que aplicó), `interrupted` (1 = cortado por un reinicio de Skyway, pendiente de tratar al arrancar; 2 = tratado) |
+| `autodeploy_state` | por servicio git con auto-deploy: `last_seen_sha` (última cabeza de la rama ya tratada, la línea base del sondeo), `checked_at`/`ok_at` (última comprobación y última correcta), `error` y `failing_since` (racha de fallos al leer la rama). Se borra al desactivar el auto-deploy y cae en cascada con el servicio |
 | `audit_log` | `ts`, `actor`, `action`, `target_*`, `detail`, `ip` |
-| `alerts` | `severity`, `type`, `title`, `message`, `explanation`, `dedupe_key`, `resolved_at`, `read_at` |
+| `alerts` | `severity`, `type`, `title`, `message`, `explanation`, `dedupe_key`, `resolved_at`, `read_at`, `rollback_to` (despliegue correcto al que volvía una vuelta atrás fallida o interrumpida) |
 | `uptime_hourly` | `(service_id, hour)` → `up`, `total` — histórico de disponibilidad |
 | `service_metrics_hourly` | `(service_id, hour)` → sumas y máximos de CPU/RAM, bytes de red del periodo (delta) y foto de disco — histórico de consumo (~90 d) |
 | `host_metrics_hourly` | `hour` → carga, RAM y disco del host (sumas, máximos y última foto) — histórico de consumo del servidor (~90 d) |
@@ -988,7 +1037,8 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
 ## 6. Áreas funcionales (resumen)
 
 - **Despliegues**: build en vivo (SSE), historial, cancelación, rollback a
-  cualquiera de las 5 imágenes conservadas, diagnóstico de fallos en español.
+  cualquiera de las imágenes conservadas (el historial marca `imageAvailable` y,
+  sin imagen, ofrece reconstruir el commit), diagnóstico de fallos en español.
 - **Auto-deploy** (servicios git). Tres vías, todas gobernadas por el mismo
   interruptor `autoDeploy` (opt-out, en Ajustes del servicio):
   1. **Webhook de la GitHub App** (`/api/webhooks/github/app`): el camino rápido.
@@ -997,15 +1047,39 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
      los servicios que apuntan a ese repo y esa rama **y cuyo proyecto tenga
      conectada esa instalación**.
   2. **Webhook por servicio** (`/api/webhooks/github/:serviceId`, HMAC con el
-     `webhookSecret` del servicio): lo de siempre, para quien use tokens.
-  3. **Sondeo** cada ~1 min: pregunta la cabeza de la rama por la API de GitHub
-     con ETag (un 304 no consume cuota ni arranca un proceso) y cae a
-     `git ls-remote` si no hay credencial o el repo no es de GitHub. Es la red de
-     seguridad: funciona sin dominio público y sin tocar GitHub. La primera
-     comprobación fija la línea base y solo disparan los commits posteriores.
+     `webhookSecret` del servicio): para quien use tokens. Ajustes del servicio
+     da su URL con el dominio del panel (no el del túnel SSH) y no lo ofrece si
+     el servicio clona con una instalación de la App, que ya recibe los push.
+  3. **Sondeo** cada ~1 min (el primero, a los 10 s de arrancar): pregunta la
+     cabeza de la rama por la API de GitHub con ETag (un 304 no consume cuota ni
+     arranca un proceso) y cae a `git ls-remote` si no hay credencial o el repo
+     no es de GitHub. Es la red de seguridad: funciona sin dominio público y sin
+     tocar GitHub. La línea base («última cabeza tratada») se guarda en
+     `autodeploy_state`: un push hecho con Skyway parado (un `skyway update`) se
+     despliega al arrancar, y un reinicio tras una vuelta atrás no vuelve a
+     desplegar la cabeza. Solo la primera comprobación de un servicio (auto-deploy
+     recién activado) fija la línea base sin desplegar. Si no puede leer la rama,
+     guarda el error (Ajustes → Despliegue automático lo muestra con la última
+     comprobación) y, tras 15 minutos seguidos, lanza la alerta
+     `autodeploy_failing` con el remedio; se cierra sola al recuperarse o al
+     desactivar el auto-deploy. Un despliegue correcto no la cierra (no dice
+     que la rama vuelva a poder leerse).
 
-  Las tres vías comparten estado: un commit ya construido no se vuelve a
-  desplegar, y con un despliegue vivo no se encola otro encima.
+  Las tres vías comparten estado: un commit ya desplegado (o desplegándose) no
+  se repite, y con un despliegue vivo que aún no ha clonado no se encola otro:
+  clonará la cabeza actual. Si el vivo ya clonó otro commit, el push nuevo se
+  encola detrás. En los webhooks, un commit que falló o se canceló sí se
+  repite, para que «Redeliver» en GitHub lo relance; el sondeo, en cambio, no
+  relanza un commit ya intentado aunque fallara (un despliegue manual roto de
+  una cabeza nueva se reconstruiría solo al minuto, y fallaría igual).
+- **Cambios sin desplegar**: cada servicio tiene una revisión de configuración
+  (`services.config_rev`) que sube al guardar sus variables, las compartidas del
+  proyecto, un campo que exige redesplegar, el `.env` importado, el plan de
+  integraciones o Correo → Conectar. Si es mayor que la del último despliegue
+  correcto, `pendingChanges` es `true` en `GET /services/:id` y en cada servicio
+  de `GET /projects/:id`: la tarjeta, el panel del servicio y `skyway status` lo
+  muestran, también tras cerrar el panel o recargar. Las escrituras del propio
+  despliegue (importación del `.env`, manifiesto) no cuentan: van en él.
 - **Variables**: por servicio y compartidas por proyecto; referencias
   `${{Servicio.VAR}}` y `${{shared.VAR}}` resueltas al desplegar. Cada servicio
   tiene además variables de sistema (`INTERNAL_URL`, `PUBLIC_URL`…) que Skyway
@@ -1434,12 +1508,13 @@ como línea negativa; una factura emitida es inmutable y conserva su descuento.
 | --- | --- | --- | --- |
 | GET | `/projects` | auth | proyectos accesibles (con meta); la `config` de cada servicio sale sin `webhookSecret` y con los valores de `buildArgs` tapados |
 | POST | `/projects` | admin/owner | crea proyecto (`{name, client?, workspaceId?}`); el propietario en su workspace, dentro de la cuota (409 si su cuenta ya no existe) |
-| GET | `/projects/:id` | +access | proyecto + servicios con runtime + `activeDeploys` (despliegues vivos por servicio); `config` sin `webhookSecret` y con `buildArgs` tapados |
+| GET | `/projects/:id` | +access | proyecto + servicios con runtime y `pendingChanges` (cambios sin desplegar) + `activeDeploys` (despliegues vivos por servicio); `config` sin `webhookSecret` y con `buildArgs` tapados |
 | PATCH | `/projects/:id` | manage | renombra; el admin además reasigna de workspace |
 | DELETE | `/projects/:id?confirm=<nombre>` | manage | elimina el proyecto con **todos sus datos** (§3.1): contenedores, volúmenes de todos sus servicios, imágenes construidas, copias de seguridad, red y alertas abiertas; libera sus reservas de dominio. `confirm` es el nombre visible exacto o el slug; sin él o si no coincide, 400 sin borrar nada. Sin Docker, 503 sin borrar nada; 409 si ya se está borrando, y 409 con `{error, warnings}` sin borrar volúmenes ni filas si un contenedor no se pudo retirar o un despliegue no terminó de cancelarse (reintentar es seguro). Lo que no se pudo retirar después va en `warnings` → `{ok, warnings, removed: {services, volumes[], images, backups}}`. Ya no existe la opción `volumes` |
 | POST | `/projects/:id/deploy-all` | +access | despliega repos e imágenes del proyecto |
 | GET | `/projects/:id/vars` | +access | variables compartidas |
-| PUT | `/projects/:id/vars` | +access | reemplaza variables compartidas |
+| PUT | `/projects/:id/vars` | +access | reemplaza variables compartidas; responde `affected` |
+| PATCH | `/projects/:id/vars` | +access | aplica solo los cambios `{set, unset}` sobre las actuales (lo que usa el panel); responde `{vars, needsRedeploy, affected}` con los servicios que hay que volver a desplegar (cada uno con su `type`: el panel ofrece desplegar las apps y deja las bases de datos aparte, sin marcar, porque reiniciarlas corta el servicio y las variables compartidas rara vez les afectan) |
 | GET | `/projects/:id/connectors` | +access | conectores del proyecto (sin tokens) + `hasGlobalToken` |
 | POST | `/projects/:id/connectors` | +access | conecta un token (`{name, token}`; se verifica contra GitHub) |
 | DELETE | `/connectors/:id` | +access | elimina un conector (sus servicios vuelven al token global) |
@@ -1453,7 +1528,8 @@ como línea negativa; una factura emitida es inmutable y conserva su descuento.
 
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/github/app` | auth | estado de la App (`configured`, slug, URL del webhook); nombre y slug refrescados desde GitHub (≤ 1 vez/5 min) |
+| GET | `/github/app` | auth | estado de la App (`configured`, slug, `webhookUrl` con el dominio del panel, `panelReachable`); nombre y slug refrescados desde GitHub (≤ 1 vez/5 min). Para el admin, `webhookUrlActual`: la URL que tiene la App en GitHub (`GET /app/hook/config`, ≤ 1 vez/min) o `webhookUrlError` |
+| POST | `/github/app/webhook-url` | admin+sesión | apunta el webhook de la App en GitHub al dominio del panel (`PATCH /app/hook/config`); la URL la decide el servidor. 400 `panel_not_public` si el panel no tiene dominio público. Audita `github_app_webhook_updated` |
 | POST | `/github/app/manifest` | admin+sesión | manifiesto y URL de acción para crear la App desde el navegador (`{org?}`) |
 | GET | `/github/app/setup?code&state` | admin+sesión | retorno de GitHub: canjea el código y guarda las credenciales |
 | POST | `/github/app/disconnect` | admin+sesión | olvida las credenciales (la App sigue existiendo en GitHub) |
@@ -1486,24 +1562,25 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada); 20 por minuto y usuario, después 429 |
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas, también `dns?` |
 | POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH, y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
-| GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
+| GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`). Añade `pendingChanges`, `autoDeploy` (servicios git con auto-deploy: `{pollSeconds, checkedAt, okAt, error, failingSince, lastSeenSha}`) y `webhook` (`{url, coveredByApp}`: URL del webhook manual con el dominio del panel y si ya lo cubre la GitHub App) |
 | PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
 | DELETE | `/services/:id?confirm=<nombre>` | +access | elimina el servicio con **todos sus datos** (§3.1), salvo los volúmenes que comparta con otro servicio del proyecto; `confirm` (nombre o slug), 503 y los dos 409 como en proyectos → `{ok, warnings, removed: {volumes[], images, backups}}` |
-| POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
+| POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen; `{commit: <SHA de 40>}` reconstruye ese commit, solo git) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
 | GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, `mail`, `manifest`, §5.5) |
 | GET | `/services/:id/integrations` | +access | plan de integraciones del servicio sin efectos (§5.7) → `{plan, pending}`; `plan` null si no es de repositorio. `plan.fingerprint` es la huella que exige aprobar; cada recurso trae `canApprove` y `confirmation` |
 | POST | `/services/:id/integrations/apply` | +access | `{skip?, expect?, confirmMailboxAccess?, redeploy?}` → `{result: {applied, pending, kept, blocked, created, errors}, plan, needsRedeploy, deploymentId}`. Lo inofensivo lo aplica cualquiera con acceso; las bases también; el correo solo **manage** (si no, `pending`). Lo privilegiado exige `expect` = `plan.fingerprint` del plan revisado (sin él, `pending`; si no coincide, **409** `{error, plan}` sin aplicar nada); reutilizar en SMTP un buzón existente exige además `confirmMailboxAccess`. Nunca pisa variables puestas a mano. 409 si ya se está aplicando. 10/min. Audita `service_integrations_applied` (nombres, nunca valores) |
-| PUT | `/services/:id/env` | +access | reemplaza variables del servicio |
+| PUT | `/services/:id/env` | +access | reemplaza variables del servicio (la lista entera) |
+| PATCH | `/services/:id/env` | +access | aplica solo los cambios `{set, unset}` sobre las variables actuales: lo que otro haya escrito entretanto (importación del `.env`, secretos del manifiesto, credenciales de Correo) se conserva. 400 `invalid_key` con un nombre no válido; responde `{vars, needsRedeploy}` |
 | POST | `/services/:id/env/import-repo` | +access | importa el `.env`/`.env.example` del repositorio de GitHub sin clonar: `{apply?: boolean}`; sin `apply` es vista previa (`report.imported[].value` relleno, nada se escribe); con `apply: true` crea las variables válidas, persiste el informe sin valores en `config.envImport` y devuelve `needsRedeploy`. Solo servicios git de GitHub (400 en el resto); 10 por minuto y usuario; auditado como `service_env_imported` |
 
 ### 7.5 Despliegues (logs por SSE)
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/services/:id/deployments` | +access | historial (25) |
+| GET | `/services/:id/deployments` | +access | historial (25); en los servicios git, cada despliegue correcto lleva `imageAvailable` (si su imagen sigue en el servidor; ausente si Docker no responde) |
 | GET | `/deployments/:id` | +access | detalle (incluye logs) |
 | POST | `/deployments/:id/cancel` | +access | cancela uno en curso |
-| POST | `/deployments/:id/rollback` | +access | redespliega una imagen anterior (solo git) |
+| POST | `/deployments/:id/rollback` | +access | redespliega una imagen anterior (solo git); 409 `image_purged` (con `commit`) si la imagen ya no está en el servidor, sin crear despliegue ni alerta |
 | GET | `/deployments/:id/logs/stream` | +access | **SSE** de build/deploy |
 | GET | `/projects/:id/deploys/stream` | +access | **SSE** del feed de despliegues del proyecto (evento `snapshot` + un `deploy` por cambio de fase). Independiente: pensado para agentes y automatizaciones que solo quieren los despliegues |
 | GET | `/services/:id/logs/stream` | +access | **SSE** de logs de ejecución de todas las réplicas (cada línea con su cursor de tiempo, que viaja también como `id` del evento; las réplicas 2..n llevan prefijo `[rN]`). Si el contenedor se sustituye o se para, avisa (`notice`) y se vuelve a enganchar solo. Al reconectar, `Last-Event-ID` reanuda desde ese cursor |
@@ -1572,8 +1649,8 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/system/backups` | admin | crea un snapshot ahora (VACUUM INTO) |
 | GET | `/system/backups/:file/download` | admin + session | descarga un snapshot (.db restaurable). Exige sesión de navegador: lleva en claro los secretos que la API nunca devuelve (token de Cloudflare, de Mailway, de GitHub…) |
 | DELETE | `/system/backups/:file` | admin | borra un snapshot |
-| GET | `/settings` | admin | ajustes (secretos como booleanos) |
-| PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas); `rootDomain` debe ser un nombre de host válido o vacío |
+| GET | `/settings` | admin | ajustes (secretos como booleanos) + `traefikAcme: {status: ok/missing/invalid/unknown, email}` (correo real de Traefik) + `defaults.keepImages` |
+| PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas, `keepImages` 1–50 o vacío → 400 `invalid_keep_images`); `rootDomain` debe ser un nombre de host válido o vacío |
 | POST | `/settings/github/test` | admin | valida el token de GitHub |
 | DELETE | `/settings/github` | admin | borra el token de GitHub |
 | POST | `/settings/alerts/test` | admin | envía notificación de prueba |
@@ -1597,7 +1674,7 @@ distroless), el explorador lo indica y no está disponible.
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/domains/server-ip` | auth | IP del servidor (configurada o detectada) |
-| GET | `/domains/config` | auth | `{rootDomain, tls}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin) |
+| GET | `/domains/config` | auth | `{rootDomain, tls, tlsBlocked}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin). `tls` es el TLS efectivo; `tlsBlocked`, que está activado en el panel pero Traefik tiene un correo que Let's Encrypt rechaza (vacío no cuenta) |
 | GET | `/projects/:id/github/needs` | +access | dependencias del repo antes de crearlo (`repo`, `branch`, `rootDir?`, `source?`, `name?`): `needs`, `suggestions`, `missing`, `mail`, `manifest`, `envFile` (§5.5) y `plan`, el plan de integraciones sin efectos (§5.7) |
 | POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`); 30 por minuto y usuario, después 429 |
 | GET | `/public/status/:token` | público | página de estado pública (cacheada) |
@@ -1610,7 +1687,7 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/import/railway/analyze` | admin | plan de importación (sin valores de variables) |
 | POST | `/import/railway/run` | admin | ejecuta la importación; los dominios propios que ya usa otro servicio (o el panel) se omiten con una nota en el informe. `dnsDomains` (opcional): los dominios que el admin marca en la vista previa para el DNS automático (§7.13); solo esos, y solo si el proyecto importado los sirve, reciben su registro (los demás los eligió quien los puso en Railway, que no exige demostrar la propiedad) y la respuesta añade `dns`. Los que aún apuntan a Railway son conflictos y no se tocan |
 | POST | `/webhooks/github/app` | público (HMAC de la App) | webhook **único** de la GitHub App: reparte cada push entre los servicios que apuntan a ese repo y esa rama y cuyo proyecto tenga conectada esa instalación; también sincroniza altas, bajas y suspensiones de instalaciones |
-| POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy por servicio en push (firma verificada); respeta `autoDeploy` y deduplica contra el último commit construido; complementa al sondeo interno de `autodeploy.ts` |
+| POST | `/webhooks/github/:serviceId` | público (HMAC) | auto-deploy por servicio en push (firma verificada); respeta `autoDeploy` y deduplica como el de la App: commit ya desplegado o en curso, o un despliegue vivo que aún no ha clonado → `ignored`; complementa al sondeo interno de `autodeploy.ts` |
 | POST | `/webhooks/stripe` | público (firma Stripe) | marca la factura como pagada al confirmarse el cobro; firma `Stripe-Signature` verificada (HMAC-SHA256 con tolerancia temporal anti-replay); exige `payment_status == paid`; idempotente |
 
 ### 7.11 Ayuda y asistente
@@ -1758,10 +1835,24 @@ el registro en Ajustes → Cloudflare (`DELETE /cloudflare/records/:domain`).
 | `CSRF_ORIGIN_CHECK` | `true` | guarda CSRF de las peticiones mutantes con cookie (`Sec-Fetch-Site`/`Origin` frente al host); `false` la desactiva si un proxy raro estorba |
 | `DOCKER_SOCK` | socket estándar | ruta alternativa al socket de Docker |
 | `LOG_LEVEL` | `info` | nivel de log de Fastify |
-| `SKYWAY_DOMAIN` | — | dominio del panel (docker-compose lo pasa; admite varios separados por comas): ningún servicio puede asignárselo y el puente de Traefik de Mailway nunca acepta una ruta para él |
+| `SKYWAY_DOMAIN` | — | dominio del panel, **un solo nombre** (docker-compose lo pone tal cual en la regla `Host()` del panel: una lista con comas no coincidiría nunca y Skyway lo avisa al arrancar). Ningún servicio puede asignárselo y el puente de Traefik de Mailway nunca acepta una ruta para él; es también el dominio de las URL de webhook que se dan a GitHub |
+| `SKYWAY_DOMAIN_EXTRA` | — | nombres adicionales del panel, separados por comas (p. ej. el anterior mientras se cambia de dominio). Mismas reservas que `SKYWAY_DOMAIN`; sus routers (HTTP con redirección y HTTPS con certificado propio, hacia `skyway@docker`) los publica Skyway en el proveedor dinámico que Traefik ya lee (`/api/traefik/mailway`) |
+| `SKYWAY_TRAEFIK_CONTAINER` | `skyway-traefik` | contenedor de Traefik del que se lee el correo de Let's Encrypt (`tls.ts`) |
 
 Ajustes en la UI (tabla `settings`, solo admin): `rootDomain`, `letsencryptEmail`,
-`serverIp`, `githubToken`, umbrales de alerta y canales (Discord/Telegram/webhook).
+`serverIp`, `githubToken`, umbrales de alerta y canales (Discord/Telegram/webhook)
+y `keepImages` (versiones por servicio cuya imagen se conserva, 1–50; por
+defecto 5). `letsencryptEmail` solo activa las etiquetas HTTPS: los certificados
+los pide Traefik con `LETSENCRYPT_EMAIL` del `.env` (docker-compose ya no pone un
+correo de `example.com` por defecto). Skyway lee el correo real de Traefik
+(`docker inspect`, `tls.ts`) y, si es de un dominio que Let's Encrypt rechaza
+(`example.com`, `.test`, `.local`…), no pone el router HTTPS ni la redirección
+(los dominios siguen por HTTP), `GET /domains/config` devuelve
+`tlsBlocked: true` y el informe de seguridad añade el hallazgo `tls-blocked`.
+Vacío no bloquea: Traefik registra la cuenta sin contacto, que Let's Encrypt
+acepta, y Ajustes solo lo informa. `GET /settings` devuelve
+`traefikAcme: {status, email}` en todos los casos. Si no se puede leer, se
+confía en el ajuste.
 Ajustes → Cloudflare guarda `cloudflare.token` (secreto, nunca se devuelve),
 `cloudflare.zones` y `cloudflare.lastError` con su propio botón (§7.13).
 La GitHub App guarda ahí sus credenciales (`githubAppId`, `githubAppSlug`,

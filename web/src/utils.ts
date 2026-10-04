@@ -229,6 +229,7 @@ export const DEPLOY_TRIGGER_LABEL: Record<string, string> = {
   rollback: 'reversión',
   import: 'importación',
   mailway: 'correo',
+  reintento: 'reintento tras reinicio',
 };
 
 export function isActiveDeploy(status: DeploymentStatus): boolean {
@@ -260,6 +261,8 @@ export const ALERT_TYPE_LABEL: Record<string, string> = {
   db_integrity: 'Base de datos del panel dañada',
   disk_quota: 'Espacio asignado superado',
   disk_quota_soon: 'Espacio asignado al 90 %',
+  deploy_interrupted: 'Despliegue interrumpido',
+  autodeploy_failing: 'Despliegue automático sin funcionar',
 };
 
 export const AUDIT_ACTION_LABEL: Record<string, string> = {
@@ -292,6 +295,7 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   data_migration_canceled: 'Copia de datos cancelada',
   github_app_created: 'GitHub App conectada',
   github_app_disconnected: 'GitHub App desenlazada',
+  github_app_webhook_updated: 'URL del webhook de la GitHub App actualizada',
   github_installation_connected: 'Cuenta de GitHub conectada',
   github_installation_removed: 'Cuenta de GitHub desconectada',
   github_installation_deleted: 'Instalación de GitHub eliminada en GitHub',
@@ -380,6 +384,15 @@ export const CMD_ENTER_LABEL = isMac ? '⌘↵' : 'Ctrl+↵';
  */
 export const EMPTY_LIST: never[] = [];
 export const EMPTY_RECORD: Record<string, never> = {};
+
+/**
+ * ¿Tiene el objeto esta clave PROPIA? `clave in obj` consulta también la cadena
+ * de prototipos: una variable llamada `constructor` o `toString` contaba como
+ * presente aunque se hubiera borrado, y no llegaba a eliminarse.
+ */
+export function tieneClave(obj: object, clave: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, clave);
+}
 
 /**
  * `owner/repo` a partir de lo que alguien escribe o pega: el atajo, la URL de

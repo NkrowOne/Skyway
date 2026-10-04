@@ -1,6 +1,6 @@
 import { lazy, memo, Suspense, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { BellRing, Boxes, Building2, ChevronRight, FolderKanban, MoreHorizontal, Plus, Search, TrainFront, X } from 'lucide-react';
 import { api } from '../api';
 import { useLatch } from '../hooks';
@@ -157,6 +157,7 @@ export default function Dashboard() {
   const [filter, setFilter] = useState<string | null>(null);
   const [projectQuery, setProjectQuery] = useState('');
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const toast = useToast();
 
   const projects = useQuery({
@@ -174,12 +175,15 @@ export default function Dashboard() {
 
   const create = useMutation({
     mutationFn: () => api.post<{ project: Project }>('/projects', { name, ...(client.trim() ? { client } : {}) }),
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       setCreateOpen(false);
       setName('');
       setClient('');
       toast('Proyecto creado', 'ok');
+      // El siguiente paso es siempre añadir un servicio: se entra en el
+      // proyecto con «Nuevo servicio» ya abierto en vez de volver a la lista.
+      navigate(`/projects/${data.project.id}?nuevo=1`);
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });

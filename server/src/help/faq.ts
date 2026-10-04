@@ -129,9 +129,9 @@ export const FAQ: FaqEntry[] = [
     answer:
       'Sí, si **Auto-deploy** está activado en Ajustes del servicio (lo está por defecto). Skyway detecta los cambios de tres formas, y todas respetan el mismo interruptor:\n\n' +
       '- Con la **GitHub App** conectada, el push se recibe al instante por webhook, sin configuración adicional.\n' +
-      '- Sin App, el **sondeo** comprueba la rama cada minuto y despliega si hay un commit nuevo.\n' +
-      '- Además, es posible crear un **webhook por servicio** en GitHub con la URL y el secreto que se muestran en Ajustes.\n\n' +
-      'Solo se despliega la rama configurada; un commit ya construido no se vuelve a desplegar, y si hay un despliegue en curso no se encola otro.',
+      '- Sin App, el **sondeo** comprueba la rama cada minuto y despliega si hay un commit nuevo (también el que llegó mientras Skyway se reiniciaba).\n' +
+      '- Además, es posible crear un **webhook por servicio** en GitHub con la URL y el secreto que se muestran en Ajustes (no hace falta si el repositorio ya está conectado con la GitHub App).\n\n' +
+      'Solo se despliega la rama configurada; un commit ya desplegado no se repite, y si hay un despliegue en curso no se encola otro. Ajustes del servicio → Despliegue automático muestra la última comprobación de la rama y, si no se puede leer (token caducado, App sin acceso al repositorio, rama renombrada), el error; si dura más de 15 minutos, también llega una alerta.',
     keywords: ['auto deploy', 'autodeploy', 'automatico', 'push', 'webhook', 'commit', 'no se despliega', 'no despliega solo', 'sondeo', 'polling', 'github app'],
   },
   {
@@ -139,7 +139,7 @@ export const FAQ: FaqEntry[] = [
     category: 'despliegues',
     question: 'He desplegado una versión incorrecta. ¿Cómo vuelvo a la versión anterior?',
     answer:
-      'En **Despliegues**, localiza un despliegue anterior correcto y pulsa **Volver a esta versión**. Skyway conserva las imágenes de los últimos despliegues correctos, por lo que no es necesario reconstruir nada: se inicia esa imagen con la configuración que tenía ese commit.\n\n' +
+      'En **Despliegues**, localiza un despliegue anterior correcto y pulsa **Volver a esta versión**. Skyway conserva las imágenes de las últimas versiones correctas (5 por defecto, configurable en Ajustes → Sistema), por lo que no es necesario reconstruir nada: se inicia esa imagen con la configuración que tenía ese commit. En una versión más antigua, cuya imagen ya no está, el botón es **Reconstruir esta versión**: se compila de nuevo ese commit.\n\n' +
       'Si el despliegue incorrecto no superó la validación de salud, la versión anterior **no ha dejado de servir en ningún momento**: Skyway solo retira la versión anterior cuando la nueva responde.\n\n' +
       'Un despliegue en curso se puede **Cancelar** desde la misma lista.',
     keywords: ['rollback', 'volver', 'version anterior', 'revertir', 'deshacer', 'restaurar version', 'cancelar despliegue', 'roto'],
@@ -268,6 +268,7 @@ export const FAQ: FaqEntry[] = [
     question: 'El navegador indica que el certificado no es válido o que la conexión no es segura',
     answer:
       'El certificado lo emite Let\'s Encrypt cuando el dominio ya resuelve a la IP del servidor. Si lo acabas de añadir, espera un par de minutos y recarga la página.\n\n' +
+      'Si no se emite ningún certificado en ningún dominio, revisa **Ajustes → Dominios y TLS**: si Traefik arrancó con un correo de ejemplo en `LETSENCRYPT_EMAIL` (en el `.env` del servidor), Let\'s Encrypt lo rechaza y no emite nada. Skyway lo indica ahí y, mientras tanto, sirve los dominios por HTTP. Pon un correo real o deja la variable vacía y recrea Traefik.\n\n' +
       'Si el problema persiste, comprueba el **DNS** (el registro A debe apuntar a la IP del servidor y no estar detrás de un proxy como Cloudflare en modo «nube naranja» mientras se emite el certificado), que el puerto 80 llega al servidor (Let\'s Encrypt valida por HTTP) y que no se ha superado el límite de emisiones de Let\'s Encrypt por intentos repetidos (5 por semana y dominio).\n\n' +
       'Con Cloudflare, puedes activar el proxy **después** de que el certificado se haya emitido, en modo SSL «Full».',
     keywords: ['certificado', 'ssl', 'tls', 'https', 'no es segura', 'inseguro', 'invalido', 'lets encrypt', 'cloudflare', 'expirado', 'NET::ERR_CERT'],

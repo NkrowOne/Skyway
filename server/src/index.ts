@@ -4,7 +4,9 @@ import { fireAlert } from './alerts';
 import { auditSystem } from './audit';
 import { config, ensureDataDirs } from './config';
 import { checkIntegrity, closeDb, initDb, markStaleDeploymentsFailed } from './db';
-import { abortActiveDeployments } from './deploy/deployer';
+import { abortActiveDeployments, resumeInterruptedDeployments } from './deploy/deployer';
+import { panelDomainWarning } from './paneldomain';
+import { refreshTraefikAcme } from './tls';
 import { dockerAvailable } from './docker/client';
 import { ensureNetwork, EDGE_NETWORK } from './docker/networks';
 import { startMonitor, stopMonitor } from './monitor';
@@ -20,6 +22,8 @@ async function main(): Promise<void> {
   const app = buildApp();
 
   if (stale > 0) app.log.warn(`${stale} despliegues interrumpidos marcados como fallidos`);
+  const avisoDominio = panelDomainWarning();
+  if (avisoDominio) app.log.warn(avisoDominio);
 
   // Integridad de la BD del panel: detectar corrupción (disco, apagón) al
   // arrancar, cuando aún hay backups recientes, y no semanas después.
@@ -55,6 +59,16 @@ async function main(): Promise<void> {
   startMonitor({ warn: (msg) => app.log.warn(msg) });
   startScheduler({ warn: (msg) => app.log.warn(msg) });
   startAutoDeploy({ warn: (msg) => app.log.warn(msg) });
+  // El correo real de Traefik decide si hay TLS (tls.ts): se lee ya, antes de
+  // que el panel o un despliegue lo pregunten.
+  void refreshTraefikAcme();
+  // Lo que cortó el reinicio anterior: alerta y, una sola vez, reintento.
+  try {
+    const { retried, alerted } = resumeInterruptedDeployments();
+    if (alerted > 0) app.log.warn(`${alerted} despliegues interrumpidos por el reinicio: ${retried} reintentados automáticamente`);
+  } catch (err) {
+    app.log.warn({ err }, 'No se pudieron reanudar los despliegues interrumpidos');
+  }
   auditSystem('server_started', `v${config.version}`);
 
   installProcessHandlers(app);

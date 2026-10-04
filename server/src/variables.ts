@@ -1,4 +1,5 @@
-import { getEnv, getProjectVars, getSetting, listServices } from './db';
+import { getEnv, getProjectVars, listServices } from './db';
+import { tlsEnabled } from './tls';
 import { getTemplate } from './templates';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from './types';
 
@@ -49,7 +50,7 @@ export function systemVars(
     out.PUBLIC_DOMAIN = domains[0];
     // El esquema lo decide quien enruta: sin correo de Let's Encrypt, Traefik
     // no monta el router seguro y prometer https lleva a un certificado ajeno.
-    out.PUBLIC_URL = `${getSetting('letsencryptEmail') ? 'https' : 'http'}://${domains[0]}`;
+    out.PUBLIC_URL = `${tlsEnabled() ? 'https' : 'http'}://${domains[0]}`;
   }
   return out;
 }
