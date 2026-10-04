@@ -128,11 +128,13 @@ export function domainClaimError(domains: Iterable<string>, claim: DomainClaim):
  * Es la regla inversa a la de los servicios: el puente de Traefik descarta
  * las rutas de Mailway para los dominios que ya sirve Skyway, así que con el
  * nombre de un servicio (de cualquier proyecto, también del mismo) el webmail
- * no llegaría a funcionar, y el del panel nunca se reparte. Los nombres de la
- * propia instancia de Mailway también los rechaza Mailway; aquí se comprueban
- * antes de llamarle. Como en `domainClaimError`, solo el administrador ve qué
- * servicio tiene el nombre. No mira los nombres de marca blanca reservados: el
- * propio webmail está entre ellos, y los de otros clientes ya los rechaza Mailway.
+ * no llegaría a funcionar, y el del panel nunca se reparte. Lo mismo con un
+ * nombre que redirige o se prepublica en un cambio de dominio. Los nombres de
+ * la propia instancia de Mailway también los rechaza Mailway; aquí se
+ * comprueban antes de llamarle. Como en `domainClaimError`, solo el
+ * administrador ve qué servicio (o qué proyecto, en un cambio de dominio)
+ * tiene el nombre. No mira los nombres de marca blanca reservados: el propio
+ * webmail está entre ellos, y los de otros clientes ya los rechaza Mailway.
  */
 export function webmailHostError(hostname: string, opts: { isAdmin: boolean }): string | null {
   const host = hostname.trim().toLowerCase();
@@ -144,6 +146,16 @@ export function webmailHostError(hostname: string, opts: { isAdmin: boolean }): 
     return opts.isAdmin
       ? `El dominio ${host} está asignado al servicio ${serviceLabel(servicios[0])}. Retíralo de ese servicio antes de utilizarlo para el webmail.`
       : `El dominio ${host} está asignado a un servicio de Skyway y no se puede utilizar para el webmail.`;
+  }
+  // Skyway publica por su cuenta los nombres que redirigen tras un cambio de
+  // dominio y los que se prepublican, y el puente descarta las rutas de
+  // Mailway sobre ellos: el webmail no llegaría a funcionar.
+  const enCambio = getDomainRedirect(host) ?? getPrepublished(host);
+  if (enCambio) {
+    const proyecto = opts.isAdmin ? getProject(enCambio.project_id) : undefined;
+    return proyecto
+      ? `El dominio ${host} lo utiliza un cambio de dominio del proyecto «${proyecto.name}» (redirección o nombre en preparación) y no se puede utilizar para el webmail.`
+      : `El dominio ${host} lo utiliza un cambio de dominio de Skyway (redirección o nombre en preparación) y no se puede utilizar para el webmail.`;
   }
   if (mailwayReservedHosts().includes(host)) {
     return `El dominio ${host} lo utiliza el servicio de correo (Mailway) y no se puede utilizar para el webmail de un cliente.`;

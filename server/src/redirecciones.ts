@@ -19,10 +19,21 @@
  * al dejar de reclamarlo, la redirección o la prepublicación toman el control
  * sin hueco. El reto HTTP-01 no se ve afectado: Traefik lo atiende en un router
  * interno con prioridad máxima.
+ *
+ * Cada nombre lo publica un solo router de los de aquí (ver
+ * `redireccionesVigentes`): entre dos reglas iguales con la misma prioridad,
+ * Traefik elige sin un orden fijo.
  */
 import crypto from 'crypto';
 import tls from 'tls';
-import { getProject, getService, listDomainRedirects, listPrepublished } from './db';
+import {
+  DomainRedirectRow,
+  getProject,
+  getService,
+  listDomainRedirects,
+  listPrepublished,
+  listServicesForProjects,
+} from './db';
 import { traefikServiceName } from './docker/containers';
 import { parseHostRule, TraefikDynamicConfig } from './mailwaytraefik';
 import { tlsEnabled } from './tls';
@@ -86,39 +97,93 @@ function huella(host: string): string {
   return crypto.createHash('sha256').update(host).digest('hex').slice(0, 8);
 }
 
+/** Nombres que tienen en `domains` los servicios de esos proyectos, en minúsculas. */
+function hostsDeServicios(projectIds: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  if (projectIds.length === 0) return out;
+  for (const servicios of listServicesForProjects([...new Set(projectIds)]).values()) {
+    for (const servicio of servicios) {
+      const dominios = (servicio.config as { domains?: unknown }).domains;
+      if (!Array.isArray(dominios)) continue;
+      for (const d of dominios) if (typeof d === 'string') out.add(d.trim().toLowerCase());
+    }
+  }
+  return out;
+}
+
+interface Redireccion {
+  host: string;
+  destino: string;
+  fila: DomainRedirectRow;
+}
+
+/**
+ * Orden de antigüedad de dos redirecciones. `permanent_from` es el momento de
+ * pasar más siete días y se vuelve a escribir cada vez que un cambio pasa,
+ * también al reutilizar la fila de un nombre (`created_at` no cambia
+ * entonces), así que dice cuál es la decisión más reciente.
+ */
+function compararAntiguedad(a: DomainRedirectRow, b: DomainRedirectRow): number {
+  return a.permanent_from - b.permanent_from || a.created_at - b.created_at || (a.host < b.host ? -1 : a.host > b.host ? 1 : 0);
+}
+
+/**
+ * Las redirecciones que se publican. Un nombre lo publica, por este orden, el
+ * servicio que lo tenga en sus dominios, la prepublicación y, solo si no hay
+ * ninguno de los dos, la redirección (`ocupado`).
+ *
+ * Una redirección cuyo nombre vuelve a servirse viene de un cambio anterior
+ * (de dominio.es a dominio2.es y, después, otro cambio de vuelta): las
+ * redirecciones se guardan al menos 12 meses y el proyecto puede volver a
+ * usar sus nombres. Se conserva en la base, pero no se publica: dos reglas
+ * iguales con prioridad 1 dejarían a Traefik elegir sin orden fijo, y al
+ * dejar de servirse el nombre (servicio borrado o parado, o el hueco entre
+ * dos contenedores con volúmenes) mandaría al otro nombre, que redirige de
+ * vuelta: un bucle que el navegador guarda si ya es permanente.
+ *
+ * Por lo mismo, un ciclo entre redirecciones que no se sirven (borrado el
+ * servicio de los dos nombres) se rompe quitando la más antigua, que es la
+ * decisión que el cambio más reciente deshizo. Las cadenas (a → b → c) se
+ * publican tal cual: cada salto es una redirección válida.
+ */
+function redireccionesVigentes(filas: readonly DomainRedirectRow[], ocupado: (host: string) => boolean): Redireccion[] {
+  const vigentes = new Map<string, Redireccion>();
+  for (const fila of filas) {
+    const host = hostValido(fila.host);
+    const destino = hostValido(fila.to_host);
+    if (!host || !destino || host === destino || ocupado(host)) continue;
+    vigentes.set(host, { host, destino, fila });
+  }
+  // Cada nombre redirige a un solo destino (`host` es la clave primaria), así
+  // que cada recorrido acaba fuera, en un nombre ya visto o en un ciclo nuevo.
+  const recorridoDe = new Map<string, number>();
+  let recorrido = 0;
+  for (const inicio of [...vigentes.keys()]) {
+    if (recorridoDe.has(inicio)) continue;
+    recorrido += 1;
+    const camino: string[] = [];
+    let actual: string | undefined = inicio;
+    while (actual !== undefined && vigentes.has(actual) && !recorridoDe.has(actual)) {
+      recorridoDe.set(actual, recorrido);
+      camino.push(actual);
+      actual = vigentes.get(actual)?.destino;
+    }
+    if (actual === undefined || recorridoDe.get(actual) !== recorrido) continue;
+    const ciclo = camino.slice(camino.indexOf(actual)).map((h) => vigentes.get(h) as Redireccion);
+    const antigua = ciclo.reduce((a, b) => (compararAntiguedad(a.fila, b.fila) <= 0 ? a : b));
+    vigentes.delete(antigua.host);
+  }
+  return [...vigentes.values()];
+}
+
 /** Configuración propia de Skyway para el proveedor HTTP. Pura salvo las lecturas de la base. */
 export function configuracionTraefikSkyway(ahora = Date.now()): ConfigSkyway {
   const conTls = tlsEnabled();
   const routers: ConfigSkyway['http']['routers'] = {};
   const middlewares: ConfigSkyway['http']['middlewares'] = {};
 
-  for (const fila of listDomainRedirects()) {
-    const host = hostValido(fila.host);
-    const destino = hostValido(fila.to_host);
-    if (!host || !destino || host === destino) continue;
-    const nombre = `skyway-redir-${huella(host)}`;
-    const rule = `Host(\`${host}\`)`;
-    middlewares[nombre] = {
-      redirectRegex: {
-        regex: REGEX_REDIRECCION,
-        // Desde el puerto 80 se salta directamente a https://nuevo, en un solo salto.
-        replacement: `${conTls ? 'https' : 'http'}://${destino}\${1}`,
-        permanent: ahora >= fila.permanent_from,
-      },
-    };
-    routers[nombre] = { rule, entryPoints: ['web'], priority: PRIORIDAD, service: 'noop@internal', middlewares: [nombre] };
-    if (conTls) {
-      routers[`${nombre}-secure`] = {
-        rule,
-        entryPoints: ['websecure'],
-        priority: PRIORIDAD,
-        service: 'noop@internal',
-        middlewares: [nombre],
-        tls: { certResolver: CERT_RESOLVER },
-      };
-    }
-  }
-
+  // La prepublicación va primero: el nombre que publica ya no redirige (abajo).
+  const prepublicados = new Set<string>();
   for (const fila of listPrepublished()) {
     if (fila.dns_ok_at === null || fila.dns_ok_at === undefined) continue;
     const host = hostValido(fila.host);
@@ -150,6 +215,35 @@ export function configuracionTraefikSkyway(ahora = Date.now()): ConfigSkyway {
         entryPoints: ['websecure'],
         priority: PRIORIDAD,
         service,
+        tls: { certResolver: CERT_RESOLVER },
+      };
+    }
+    prepublicados.add(host);
+  }
+
+  const filas = listDomainRedirects();
+  // Los proyectos de las redirecciones bastan: otro proyecto no puede
+  // asignarse un nombre que redirige (`domainClaimError`).
+  const servidos = hostsDeServicios(filas.map((f) => f.project_id));
+  for (const { host, destino, fila } of redireccionesVigentes(filas, (h) => servidos.has(h) || prepublicados.has(h))) {
+    const nombre = `skyway-redir-${huella(host)}`;
+    const rule = `Host(\`${host}\`)`;
+    middlewares[nombre] = {
+      redirectRegex: {
+        regex: REGEX_REDIRECCION,
+        // Desde el puerto 80 se salta directamente a https://nuevo, en un solo salto.
+        replacement: `${conTls ? 'https' : 'http'}://${destino}\${1}`,
+        permanent: ahora >= fila.permanent_from,
+      },
+    };
+    routers[nombre] = { rule, entryPoints: ['web'], priority: PRIORIDAD, service: 'noop@internal', middlewares: [nombre] };
+    if (conTls) {
+      routers[`${nombre}-secure`] = {
+        rule,
+        entryPoints: ['websecure'],
+        priority: PRIORIDAD,
+        service: 'noop@internal',
+        middlewares: [nombre],
         tls: { certResolver: CERT_RESOLVER },
       };
     }

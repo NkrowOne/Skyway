@@ -2,8 +2,9 @@
  * Prepublicación y redirecciones del cambio de dominio por el proveedor HTTP
  * de Traefik (`redirecciones.ts`), su mezcla con las rutas de Mailway en
  * `GET /api/traefik/mailway` y las reservas que imponen: `domainClaimError`
- * no deja asignar esos nombres a otro proyecto y Ajustes → Cloudflare no borra
- * el registro de un nombre que redirige. Las filas de `domain_redirects` y
+ * no deja asignar esos nombres a otro proyecto, `webmailHostError` no deja
+ * usarlos para el webmail y Ajustes → Cloudflare no borra su registro. Las
+ * filas de `domain_redirects` y
  * `domain_prepublished` se escriben aquí con SQL directo: solo se prueba quién
  * las lee.
  */
@@ -19,11 +20,21 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app';
 import { borrarRegistroCreado } from '../src/cloudflaredns';
-import { closeDb, createProject, createService, initDb, setSetting, upsertCloudflareDnsRecord } from '../src/db';
+import {
+  closeDb,
+  createProject,
+  createService,
+  deleteService,
+  initDb,
+  setServiceStopped,
+  setSetting,
+  updateService,
+  upsertCloudflareDnsRecord,
+} from '../src/db';
 import { traefikLabels, traefikServiceName } from '../src/docker/containers';
-import { domainClaimError } from '../src/domainguard';
+import { domainClaimError, webmailHostError } from '../src/domainguard';
 import { resetMailwayTraefikState, TraefikDynamicConfig } from '../src/mailwaytraefik';
-import { comprobarTlsLocal, configuracionTraefikSkyway, mezclarConfiguracion } from '../src/redirecciones';
+import { ConfigSkyway, comprobarTlsLocal, configuracionTraefikSkyway, mezclarConfiguracion } from '../src/redirecciones';
 import { setTraefikAcmeStateForTests } from '../src/tls';
 import type { ProjectRow, ServiceRow } from '../src/types';
 import { MW_BASE, MW_TOKEN, fakeFetch, mw } from './mailwayfake';
@@ -44,12 +55,18 @@ let sinDominiosA: ServiceRow;
 
 const h8 = (host: string) => crypto.createHash('sha256').update(host).digest('hex').slice(0, 8);
 
-function redireccion(host: string, projectId: string, toHost: string, permanentFrom: number): void {
+function redireccion(
+  host: string,
+  projectId: string,
+  toHost: string,
+  permanentFrom: number,
+  opts: { migracion?: string; creada?: number } = {},
+): void {
   raw
     .prepare(
       'INSERT OR REPLACE INTO domain_redirects (host, project_id, to_host, migration_id, permanent_from, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     )
-    .run(host, projectId, toHost, 'mig_1', permanentFrom, Date.now());
+    .run(host, projectId, toHost, opts.migracion ?? 'mig_1', permanentFrom, opts.creada ?? Date.now());
 }
 
 function prepublicado(host: string, projectId: string, serviceId: string, dnsOkAt: number | null): void {
@@ -73,6 +90,31 @@ const sinTls = () => setSetting('letsencryptEmail', null);
 
 const sondeo = () => app.inject({ method: 'GET', url: '/api/traefik/mailway' });
 
+/** Hosts de las reglas por punto de entrada: Traefik no debe tener que elegir entre dos reglas iguales. */
+function hostsPorEntrada(cfg: ConfigSkyway): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const r of Object.values(cfg.http.routers)) {
+    const hosts = [...r.rule.matchAll(/Host\(`([^`]+)`\)/g)].map((m) => m[1]);
+    for (const e of r.entryPoints) (out[e] ??= []).push(...hosts);
+  }
+  return out;
+}
+
+function sinReglasRepetidas(cfg: ConfigSkyway): void {
+  for (const hosts of Object.values(hostsPorEntrada(cfg))) expect(hosts.length).toBe(new Set(hosts).size);
+}
+
+/** Destino de cada redirección publicada, por host. */
+function destinos(cfg: ConfigSkyway): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [nombre, r] of Object.entries(cfg.http.routers)) {
+    if (!nombre.startsWith('skyway-redir-') || nombre.endsWith('-secure')) continue;
+    const host = /Host\(`([^`]+)`\)/.exec(r.rule)![1];
+    out[host] = cfg.http.middlewares[nombre].redirectRegex!.replacement.replace(/^https?:\/\//, '').replace('${1}', '');
+  }
+  return out;
+}
+
 beforeAll(async () => {
   initDb();
   raw = new Database(path.join(process.env.DATA_DIR!, 'skyway.db'));
@@ -94,7 +136,8 @@ beforeAll(async () => {
     repoUrl: 'https://github.com/acme/web',
     branch: 'main',
     port: 3000,
-    domains: ['www.viejo.es'],
+    // El estado tras pasar: el nombre viejo ya no lo sirve el servicio y redirige.
+    domains: ['www.actual.es'],
     webhookSecret: 'x',
   } as never);
   sinDominiosA = createService(projA.id, 'Worker', 'worker', 'git', {
@@ -167,6 +210,85 @@ describe('redirecciones', () => {
     redireccion('igual.viejo.es', projA.id, 'igual.viejo.es', Date.now());
     expect(configuracionTraefikSkyway()).toEqual({ http: { routers: {}, middlewares: {} } });
   });
+
+  it('cambio de vuelta: el nombre que se prepublica o se vuelve a servir no redirige, y nunca hay un bucle', () => {
+    const ahora = Date.now();
+    const redirUno = `skyway-redir-${h8('www.uno.es')}`;
+    const redirDos = `skyway-redir-${h8('www.dos.es')}`;
+    const preUno = `skyway-pre-${h8('www.uno.es')}`;
+    // Un primer cambio de www.uno.es a www.dos.es, ya terminado: su redirección
+    // se queda (al menos 12 meses) y ya es permanente.
+    const cfgBlog = {
+      repoUrl: 'https://github.com/acme/blog',
+      branch: 'main',
+      port: 3000,
+      domains: ['www.dos.es'],
+      webhookSecret: 'x',
+    };
+    const blog = createService(projA.id, 'Blog', 'blog', 'git', cfgBlog as never);
+    redireccion('www.uno.es', projA.id, 'www.dos.es', ahora - 30 * DIA, { migracion: 'mig_ida', creada: ahora - 40 * DIA });
+    let cfg = configuracionTraefikSkyway(ahora);
+    expect(destinos(cfg)).toEqual({ 'www.uno.es': 'www.dos.es' });
+
+    try {
+      // Un segundo cambio de vuelta prepublica www.uno.es: lo publica la
+      // prepublicación y la redirección vieja deja de publicarse.
+      prepublicado('www.uno.es', projA.id, blog.id, ahora);
+      cfg = configuracionTraefikSkyway(ahora);
+      expect(cfg.http.routers[preUno]).toBeDefined();
+      expect(cfg.http.routers[redirUno]).toBeUndefined();
+      expect(cfg.http.middlewares[redirUno]).toBeUndefined();
+      sinReglasRepetidas(cfg);
+
+      // Al pasar, el servicio vuelve a tener www.uno.es y www.dos.es redirige a él.
+      updateService(blog.id, 'Blog', { ...cfgBlog, domains: ['www.uno.es'] } as never);
+      redireccion('www.dos.es', projA.id, 'www.uno.es', ahora + 7 * DIA, { migracion: 'mig_vuelta' });
+      cfg = configuracionTraefikSkyway(ahora);
+      expect(destinos(cfg)).toEqual({ 'www.dos.es': 'www.uno.es' });
+      sinReglasRepetidas(cfg);
+      // Desplegado el servicio, se retira la prepublicación: la redirección vieja sigue sin publicarse.
+      raw.prepare('DELETE FROM domain_prepublished WHERE host = ?').run('www.uno.es');
+      cfg = configuracionTraefikSkyway(ahora + 8 * DIA);
+      expect(Object.keys(cfg.http.routers).sort()).toEqual([redirDos, `${redirDos}-secure`]);
+      expect(cfg.http.middlewares[redirDos].redirectRegex!.permanent).toBe(true);
+
+      // Parado (o entre dos contenedores), el servicio sigue teniendo el nombre
+      // en sus dominios: no aparece la redirección vieja.
+      setServiceStopped(blog.id, true);
+      expect(destinos(configuracionTraefikSkyway(ahora + 8 * DIA))).toEqual({ 'www.dos.es': 'www.uno.es' });
+    } finally {
+      // Borrado el servicio, ninguno de los dos nombres se sirve: el ciclo se
+      // rompe quitando la redirección más antigua, la que el cambio de vuelta deshizo.
+      deleteService(blog.id);
+    }
+    cfg = configuracionTraefikSkyway(ahora + 8 * DIA);
+    expect(destinos(cfg)).toEqual({ 'www.dos.es': 'www.uno.es' });
+    sinReglasRepetidas(cfg);
+  });
+
+  it('un ciclo se rompe por la más antigua según permanent_from; las cadenas se publican tal cual', () => {
+    const ahora = Date.now();
+    // created_at no cambia al reutilizar la fila de un nombre: decide permanent_from.
+    redireccion('a.ciclo.es', projA.id, 'b.ciclo.es', ahora + 1 * DIA, { creada: ahora - 90 * DIA });
+    redireccion('b.ciclo.es', projA.id, 'c.ciclo.es', ahora - 20 * DIA, { creada: ahora - 30 * DIA });
+    redireccion('c.ciclo.es', projA.id, 'a.ciclo.es', ahora - 10 * DIA, { creada: ahora - 20 * DIA });
+    redireccion('x.cadena.es', projA.id, 'y.cadena.es', ahora);
+    redireccion('y.cadena.es', projA.id, 'z.cadena.es', ahora);
+    const cfg = configuracionTraefikSkyway(ahora);
+    expect(destinos(cfg)).toEqual({
+      'a.ciclo.es': 'b.ciclo.es',
+      'c.ciclo.es': 'a.ciclo.es',
+      'x.cadena.es': 'y.cadena.es',
+      'y.cadena.es': 'z.cadena.es',
+    });
+    sinReglasRepetidas(cfg);
+
+    // Dos nombres que se redirigen el uno al otro, sin servicio: queda la más reciente.
+    vaciar();
+    redireccion('ida.es', projA.id, 'vuelta.es', ahora - 1);
+    redireccion('vuelta.es', projA.id, 'ida.es', ahora);
+    expect(destinos(configuracionTraefikSkyway(ahora))).toEqual({ 'vuelta.es': 'ida.es' });
+  });
 });
 
 describe('prepublicación', () => {
@@ -178,7 +300,7 @@ describe('prepublicación', () => {
     const nombre = `skyway-pre-${h8('www.nuevo.es')}`;
     const base = traefikServiceName(projA, webA);
     // Es el servicio que declaran las etiquetas del contenedor.
-    expect(traefikLabels(projA, webA, ['www.viejo.es'], 3000)).toHaveProperty(`traefik.http.services.${base}.loadbalancer.server.port`);
+    expect(traefikLabels(projA, webA, ['www.actual.es'], 3000)).toHaveProperty(`traefik.http.services.${base}.loadbalancer.server.port`);
 
     let cfg = configuracionTraefikSkyway();
     expect(cfg.http.routers[nombre]).toEqual({
@@ -340,6 +462,41 @@ describe('reservas de los nombres en uso', () => {
       message: 'El dominio antes.viejo.es redirige a otro nombre; quita antes la redirección.',
     });
     expect(auditar).not.toHaveBeenCalled();
+  });
+
+  it('borrarRegistroCreado se niega con un host que se prepublica, aunque su DNS aún no dé ok', async () => {
+    // El registro lo crea el asistente al preparar; ningún servicio tiene el nombre hasta pasar.
+    upsertCloudflareDnsRecord({
+      domain: 'www.prep.es',
+      zone_id: 'zona_prep',
+      zone_name: 'prep.es',
+      record_id: 'rec_2',
+      content: '203.0.113.10',
+      project_id: projA.id,
+    });
+    prepublicado('www.prep.es', projA.id, webA.id, null);
+    const auditar = vi.fn();
+    await expect(borrarRegistroCreado('www.prep.es', auditar)).rejects.toMatchObject({
+      statusCode: 409,
+      message: 'El dominio www.prep.es se está preparando en un cambio de dominio; cancela antes el cambio.',
+    });
+    expect(auditar).not.toHaveBeenCalled();
+  });
+
+  it('webmailHostError rechaza los hosts de redirección y de prepublicación, también del mismo proyecto', () => {
+    redireccion('webmail.viejo.es', projA.id, 'webmail.nuevo.es', Date.now());
+    prepublicado('webmail.prep.es', projA.id, webA.id, null);
+    for (const host of ['webmail.viejo.es', 'WEBMAIL.prep.es']) {
+      const h = host.toLowerCase();
+      expect(webmailHostError(host, { isAdmin: false })).toBe(
+        `El dominio ${h} lo utiliza un cambio de dominio de Skyway (redirección o nombre en preparación) y no se puede utilizar para el webmail.`,
+      );
+      // Solo la administración ve de qué proyecto es.
+      expect(webmailHostError(host, { isAdmin: true })).toBe(
+        `El dominio ${h} lo utiliza un cambio de dominio del proyecto «Tienda» (redirección o nombre en preparación) y no se puede utilizar para el webmail.`,
+      );
+    }
+    expect(webmailHostError('webmail.libre.es', { isAdmin: false })).toBeNull();
   });
 });
 

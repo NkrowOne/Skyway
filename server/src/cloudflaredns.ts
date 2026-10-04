@@ -48,6 +48,7 @@ import {
   getCloudflareDnsRecord,
   getDomainRedirect,
   getMailwayDnsReserva,
+  getPrepublished,
   getProject,
   getService,
   getSetting,
@@ -450,9 +451,14 @@ export async function borrarRegistroCreado(
   }
   // Tras un cambio de dominio el nombre viejo ya no lo tiene ningún servicio,
   // pero sigue en uso: responde con la redirección al nuevo, que sin su
-  // registro A dejaría de llegar.
+  // registro A dejaría de llegar. Lo mismo el nombre nuevo mientras se
+  // prepara: su registro lo crea el asistente y ningún servicio lo tiene
+  // hasta pasar; sin él no se obtendría su certificado ni se podría pasar.
   if (getDomainRedirect(fila.domain)) {
     throw httpError(409, `El dominio ${fila.domain} redirige a otro nombre; quita antes la redirección.`);
+  }
+  if (getPrepublished(fila.domain)) {
+    throw httpError(409, `El dominio ${fila.domain} se está preparando en un cambio de dominio; cancela antes el cambio.`);
   }
   const token = tokenCloudflareGuardado();
   if (!token) throw httpError(400, 'Configura el token de Cloudflare para borrar el registro.');
