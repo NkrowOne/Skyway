@@ -31,6 +31,13 @@ interface Settings {
   alertWebhookUrl: string | null;
   alertDiscordUrl: string | null;
   alertTelegramChat: string | null;
+  keepImages: string | null;
+}
+
+/** Correo con el que Traefik se registra en Let's Encrypt (del .env del servidor). */
+interface TraefikAcme {
+  status: 'ok' | 'missing' | 'invalid' | 'unknown';
+  email: string | null;
 }
 
 function OkPill({ label, dot }: { label: string; dot?: boolean }) {
@@ -139,6 +146,39 @@ function useHashScroll(): void {
   }, [hash]);
 }
 
+/**
+ * El correo del panel solo activa las etiquetas HTTPS: los certificados los pide
+ * Traefik con el de su .env. Si ese falta o es de ejemplo, Let's Encrypt no
+ * emite nada, y Skyway deja de redirigir a HTTPS mientras tanto: hay que decirlo
+ * aquí, que es donde se cree haber activado TLS.
+ */
+function AvisoAcme({ acme, activado }: { acme?: TraefikAcme; activado: boolean }) {
+  if (!acme) return null;
+  if (acme.status === 'missing' || acme.status === 'invalid') {
+    return (
+      <div className={cx('rounded-lg border px-3 py-2.5 text-xs text-sub', activado ? 'border-err/35 bg-err/[.06]' : 'border-warn/35 bg-warn/[.06]')}>
+        <p className={cx('font-semibold', activado ? 'text-err' : 'text-warn')}>
+          {activado ? 'TLS bloqueado: Traefik no puede obtener certificados' : 'Traefik no tiene un correo válido para Let\'s Encrypt'}
+        </p>
+        <p className="mt-1 leading-relaxed">
+          Traefik arrancó {acme.status === 'missing' ? 'sin correo' : <>con <span className="font-mono">{acme.email}</span></>}, que Let's
+          Encrypt rechaza. {activado ? 'Mientras tanto, los dominios se sirven por HTTP, sin redirección a HTTPS. ' : ''}Define un correo real en{' '}
+          <span className="font-mono">LETSENCRYPT_EMAIL</span> en el <span className="font-mono">.env</span> del servidor, ejecuta{' '}
+          <span className="font-mono">docker compose up -d traefik</span> y vuelve a desplegar los servicios con dominio.
+        </p>
+      </div>
+    );
+  }
+  if (acme.status === 'ok' && acme.email) {
+    return (
+      <p className="text-xs text-subtle">
+        Traefik se registra en Let's Encrypt como <span className="font-mono">{acme.email}</span>.
+      </p>
+    );
+  }
+  return null;
+}
+
 export default function SettingsPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -166,7 +206,18 @@ export default function SettingsPage() {
 
   const settings = useQuery({
     queryKey: ['settings'],
-    queryFn: () => api.get<{ settings: Settings }>('/settings'),
+    queryFn: () =>
+      api.get<{ settings: Settings; traefikAcme?: TraefikAcme; defaults?: { keepImages: number } }>('/settings'),
+  });
+  // Versiones por servicio cuya imagen se conserva: se guarda aparte, con su botón.
+  const [keepImages, setKeepImages] = useState('');
+  const saveKeepImages = useMutation({
+    mutationFn: () => api.put('/settings', { keepImages: keepImages.trim() }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      toast('Ajuste guardado', 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
   });
   const system = useQuery({
     queryKey: ['system'],
@@ -246,6 +297,7 @@ export default function SettingsPage() {
     sync('alertWebhookUrl', setWebhookUrl);
     sync('alertDiscordUrl', setDiscordUrl);
     sync('alertTelegramChat', setTelegramChat);
+    sync('keepImages', setKeepImages);
     prevServerRef.current = s;
   }, [settings.data]);
 
@@ -424,7 +476,10 @@ export default function SettingsPage() {
               <input className="input" placeholder="apps.midominio.com" value={rootDomain} onChange={(e) => setRootDomain(e.target.value)} />
             </Field>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Correo electrónico para Let's Encrypt" hint="Con un correo definido, se emite un certificado TLS automático para cada dominio">
+              <Field
+                label="Correo electrónico para Let's Encrypt"
+                hint="Activa HTTPS y la redirección a HTTPS en cada dominio. Los certificados los pide Traefik con el correo LETSENCRYPT_EMAIL del .env del servidor."
+              >
                 <input
                   className="input"
                   type="email"
@@ -453,6 +508,7 @@ export default function SettingsPage() {
                 />
               </Field>
             </div>
+            <AvisoAcme acme={settings.data?.traefikAcme} activado={!!settings.data?.settings.letsencryptEmail} />
           </div>
         </SettingsSection>
       )}
@@ -733,9 +789,12 @@ export default function SettingsPage() {
                 {sys.nixpacks ? <OkPill dot label="Nixpacks instalado" /> : <ErrPill label="Nixpacks no instalado" />}
               </div>
               {/* La orden va pegada al aviso: sin Nixpacks, los repos sin Dockerfile no se construyen. */}
+              {/* Nixpacks va dentro de la imagen de Skyway: instalarlo en el host no
+                  sirve, y su script oficial no funciona en Alpine. */}
               {!sys.nixpacks && (
-                <p className="text-xs text-subtle">
-                  Instalación: <span className="font-mono">curl -sSL https://nixpacks.com/install.sh | bash</span>
+                <p className="max-w-xs text-right text-xs text-subtle">
+                  Reconstruye la imagen con <span className="font-mono">skyway update</span> (o, si persiste,{' '}
+                  <span className="font-mono">docker compose build --no-cache skyway</span>).
                 </p>
               )}
             </div>
@@ -750,6 +809,35 @@ export default function SettingsPage() {
               sub={sys.disk ? `de ${fmtBytes(sys.disk.total)}` : ''}
             />
             <StatTile label="Skyway" value={`v${sys.version}`} sub={`${sys.host.platform}/${sys.host.arch}`} />
+          </div>
+
+          {/* Cuántas versiones se pueden recuperar sin compilar (botón «Volver a esta versión»). */}
+          <div className="mt-3 flex flex-wrap items-end gap-2.5 rounded-lg border border-line bg-bg px-3.5 py-3">
+            <Field
+              label="Versiones conservadas por servicio"
+              hint={`Imágenes de las últimas versiones correctas que se guardan para volver a ellas sin compilar (de 1 a 50; por defecto, ${settings.data?.defaults?.keepImages ?? 5}). Cada una ocupa disco.`}
+            >
+              <input
+                className="input tnum w-28"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={50}
+                placeholder={String(settings.data?.defaults?.keepImages ?? 5)}
+                value={keepImages}
+                onChange={(e) => setKeepImages(e.target.value)}
+              />
+            </Field>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="mb-px"
+              onClick={() => saveKeepImages.mutate()}
+              loading={saveKeepImages.isPending}
+              disabled={keepImages.trim() === (settings.data?.settings.keepImages ?? '')}
+            >
+              Guardar
+            </Button>
           </div>
 
           {dockerUsage.data && (

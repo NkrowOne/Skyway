@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Rocket, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { Button, ErrorState, Modal, Skeleton, useToast } from './ui';
 
@@ -12,6 +12,13 @@ interface Row {
 }
 
 let rowSeq = 0;
+
+/** Servicio al que llegan las variables y que hay que volver a desplegar para aplicarlas. */
+interface Afectado {
+  id: string;
+  name: string;
+  type: string;
+}
 
 /**
  * Variables compartidas del proyecto: se inyectan en todos los servicios
@@ -30,6 +37,10 @@ export default function SharedVarsModal({
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<Row[]>([]);
   const [dirty, setDirty] = useState(false);
+  // Tras guardar: servicios que tienen que volver a desplegarse para recibirlas.
+  const [afectados, setAfectados] = useState<Afectado[] | null>(null);
+  // Lo que se cargó: el guardado envía solo los cambios respecto a esto.
+  const cargadas = useRef<Record<string, string> | null>(null);
 
   const vars = useQuery({
     queryKey: ['projectVars', projectId],
@@ -40,13 +51,17 @@ export default function SharedVarsModal({
   // Al cerrar se olvida lo no guardado: si no, al volver a abrir seguía el
   // borrador descartado (y con `dirty` en pie nunca se recargaba del servidor).
   useEffect(() => {
-    if (!open) setDirty(false);
+    if (!open) {
+      setDirty(false);
+      setAfectados(null);
+    }
   }, [open]);
 
   // Alfabético al cargar: el orden de inserción del servidor no ayuda a
   // encontrar nada. Mientras se edita no se reordena (las nuevas van al final).
   useEffect(() => {
     if (vars.data && !dirty) {
+      cargadas.current = vars.data.vars;
       setRows(
         Object.entries(vars.data.vars)
           .sort(([a], [b]) => a.localeCompare(b, 'es'))
@@ -55,18 +70,46 @@ export default function SharedVarsModal({
     }
   }, [vars.data, dirty]);
 
+  /*
+   * Solo los cambios respecto a lo cargado, como en Variables: otra pestaña u
+   * otra persona puede haber añadido una variable mientras se editaba aquí, y
+   * reemplazar la lista entera la borraba.
+   */
   const save = useMutation({
     mutationFn: () => {
       const out: Record<string, string> = {};
       for (const row of rows) {
         if (row.key.trim()) out[row.key.trim()] = row.value;
       }
-      return api.put(`/projects/${projectId}/vars`, { vars: out });
+      const base = cargadas.current ?? {};
+      const set: Record<string, string> = {};
+      for (const [k, v] of Object.entries(out)) if (base[k] !== v) set[k] = v;
+      const unset = Object.keys(base).filter((k) => !(k in out));
+      return api.patch<{ affected: Afectado[] }>(`/projects/${projectId}/vars`, { set, unset });
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
       setDirty(false);
       queryClient.invalidateQueries({ queryKey: ['projectVars', projectId] });
-      toast('Variables compartidas guardadas. Es necesario volver a desplegar los servicios para aplicarlas.', 'ok');
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+      if (res.affected.length === 0) {
+        toast('Variables compartidas guardadas. Se aplicarán a cada servicio en su próximo despliegue.', 'ok');
+        onClose();
+        return;
+      }
+      // Quedan a la vista los servicios que hay que desplegar, con un botón para todos.
+      setAfectados(res.affected);
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const desplegarTodos = useMutation({
+    mutationFn: async (lista: Afectado[]) => {
+      for (const svc of lista) await api.post(`/services/${svc.id}/deploy`, {});
+      return lista.length;
+    },
+    onSuccess: (n) => {
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+      toast(n === 1 ? 'Despliegue iniciado.' : `${n} despliegues iniciados.`, 'ok');
       onClose();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -78,6 +121,33 @@ export default function SharedVarsModal({
    * borraría las variables reales del proyecto.
    */
   const ready = !!vars.data;
+
+  if (afectados) {
+    return (
+      <Modal open={open} onClose={onClose} title="Variables compartidas guardadas" wide>
+        <p className="text-sm text-sub">
+          Las variables compartidas llegan a todos los servicios del proyecto, pero cada contenedor las recibe al volver a
+          desplegarse. Hasta entonces, estos servicios muestran «Cambios sin desplegar»:
+        </p>
+        <ul className="mt-3 flex flex-col divide-y divide-line rounded-lg border border-line">
+          {afectados.map((svc) => (
+            <li key={svc.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
+              <span className="min-w-0 truncate font-medium">{svc.name}</span>
+              {svc.type === 'database' && <span className="shrink-0 text-xs text-subtle">base de datos: breve interrupción al desplegar</span>}
+            </li>
+          ))}
+        </ul>
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button variant="ghost" onClick={onClose}>
+            Desplegar más tarde
+          </Button>
+          <Button onClick={() => desplegarTodos.mutate(afectados)} loading={desplegarTodos.isPending}>
+            <Rocket size={13} /> {afectados.length === 1 ? 'Desplegar el servicio' : `Desplegar los ${afectados.length} servicios`}
+          </Button>
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal open={open} onClose={onClose} title="Variables compartidas del proyecto" wide dirty={dirty}>

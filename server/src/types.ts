@@ -83,6 +83,12 @@ export interface GitConfig {
   diskMb?: number | null;
   webhookSecret: string;
   volumes?: VolumeMount[];
+  /**
+   * Rutas que la imagen del último despliegue declara con VOLUME (las anota el
+   * despliegue). Las que no tengan volumen configurado se pierden en cada
+   * despliegue: Ajustes lo avisa y ofrece añadirlo.
+   */
+  imageVolumes?: string[];
   healthcheckPath?: string | null;
   replicas?: number;
   /**
@@ -145,6 +151,12 @@ export interface ImageConfig {
   memoryMb?: number | null;
   diskMb?: number | null;
   volumes?: VolumeMount[];
+  /**
+   * Rutas que la imagen del último despliegue declara con VOLUME (las anota el
+   * despliegue). Las que no tengan volumen configurado se pierden en cada
+   * despliegue: Ajustes lo avisa y ofrece añadirlo.
+   */
+  imageVolumes?: string[];
   healthcheckPath?: string | null;
   replicas?: number;
 }
@@ -182,6 +194,8 @@ export interface ServiceRow {
   created_at: number;
   /** Instante en que alguien lo detuvo adrede; null si está en marcha o se cayó. */
   stopped_at?: number | null;
+  /** Revisión de su configuración (sube con cada cambio que exige redesplegar). */
+  config_rev?: number;
 }
 
 export type DeploymentStatus =
@@ -228,6 +242,12 @@ export interface DeploymentRow {
   build_vars?: string | null;
   /** 1 = reconstruir sin reutilizar imagen, aunque el commit ya esté construido. */
   force_build: number;
+  /** 1 = cortado por un reinicio de Skyway y pendiente de tratar; 2 = ya tratado. */
+  interrupted?: number;
+  /** Revisión de la configuración del servicio que aplicó este despliegue. */
+  config_rev?: number | null;
+  /** Commit concreto pedido (reconstruir una versión cuya imagen se purgó). */
+  target_commit?: string | null;
   created_at: number;
   finished_at: number | null;
 }

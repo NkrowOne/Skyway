@@ -28,6 +28,7 @@
  * `domainguard.ts` reserva también los que aún esperan DNS.
  */
 import { getSetting, listAssignedDomains, listServices, setSetting } from './db';
+import { panelDomains } from './paneldomain';
 import { configuredReplicas, replicaName } from './docker/containers';
 import {
   MAILWAY_SETTING,
@@ -319,7 +320,8 @@ function mailwayContainerNames(): Set<string> {
  */
 export function bridgeOptions(): SanitizeOptions {
   const reserved = listAssignedDomains();
-  for (const d of (process.env.SKYWAY_DOMAIN ?? '').split(',')) if (d.trim()) reserved.push(d.trim().toLowerCase());
+  // Los del panel: SKYWAY_DOMAIN y los adicionales de SKYWAY_DOMAIN_EXTRA.
+  for (const d of panelDomains()) reserved.push(d);
   const names = mailwayContainerNames();
   return {
     reservedHosts: reserved,

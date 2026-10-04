@@ -80,6 +80,7 @@ import {
   reserveWhitelabelHost,
   stableStringify,
 } from '../mailwaytraefik';
+import { withPanelExtraRouters } from '../paneldomain';
 import {
   BUZONES_RESERVADOS,
   NO_CONFIGURADO,
@@ -735,7 +736,10 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
       (h) => req.headers[h] !== undefined,
     );
     if (reenviada) return reply.code(404).send({ error: 'No encontrado' });
-    const config = await mailwayTraefikConfig(req.log);
+    // Más los routers de los dominios adicionales del panel (SKYWAY_DOMAIN_EXTRA,
+    // ver paneldomain.ts): van aquí porque es el único proveedor dinámico que
+    // Traefik ya lee, y sin Mailway la respuesta sigue siendo válida.
+    const config = withPanelExtraRouters(await mailwayTraefikConfig(req.log));
     return reply.type('application/json; charset=utf-8').send(stableStringify(config));
   });
 

@@ -311,6 +311,26 @@ export default function ProjectPage() {
     enabled: !!projectId,
   });
 
+  /*
+   * `?nuevo=1` (al venir de crear el proyecto): se abre «Nuevo servicio» en
+   * cuanto se sabe que el proyecto está vacío, y se quita el parámetro para
+   * que volver atrás o recargar no lo abra otra vez.
+   */
+  const pideNuevo = searchParams.get('nuevo') === '1';
+  const serviciosCargados = project.data?.services.length;
+  useEffect(() => {
+    if (!pideNuevo || serviciosCargados === undefined) return;
+    if (serviciosCargados === 0) setNewOpen(true);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('nuevo');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [pideNuevo, serviciosCargados, setSearchParams]);
+
   const { historyRef, deploys, live } = useProjectStream(projectId, () => {
     queryClient.invalidateQueries({ queryKey: ['project', projectId] });
   });

@@ -1,5 +1,5 @@
 # Skyway + Traefik para tu servidor dedicado.
-#   1. cp .env.example .env   (ajusta SKYWAY_DOMAIN y LETSENCRYPT_EMAIL si quieres TLS)
+#   1. cp .env.example .env   (SKYWAY_DOMAIN y LETSENCRYPT_EMAIL: sin un correo real no hay certificados TLS)
 #   2. docker compose up -d --build
 #   3. Accede por https://SKYWAY_DOMAIN (recomendado), o por tunel SSH si aun no tienes dominio:
 #        ssh -L 4000:127.0.0.1:4000 TU_USUARIO@IP-DEL-SERVIDOR   -> luego abre http://localhost:4000
@@ -12,9 +12,14 @@ services:
     restart: unless-stopped
     environment:
       DATA_DIR: /data
-      # Dominio del panel: el puente de Traefik de Mailway nunca acepta una ruta
-      # para este dominio (ver /api/traefik/mailway).
+      # Dominio del panel (UN nombre: va tal cual en la regla Host() de abajo).
+      # Ningún servicio puede asignárselo y el puente de Traefik de Mailway nunca
+      # acepta una ruta para él (ver /api/traefik/mailway).
       SKYWAY_DOMAIN: ${SKYWAY_DOMAIN:-}
+      # Nombres adicionales del panel, separados por comas (p. ej. el dominio
+      # anterior mientras se cambia de dominio). Sus routers los publica Skyway
+      # en el proveedor dinámico de Traefik, cada uno con su certificado.
+      SKYWAY_DOMAIN_EXTRA: ${SKYWAY_DOMAIN_EXTRA:-}
       # JWT_SECRET: define uno propio si quieres sesiones estables entre reinstalaciones
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -49,7 +54,10 @@ services:
       - --providers.docker.network=skyway-edge
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
-      - --certificatesresolvers.le.acme.email=${LETSENCRYPT_EMAIL:-noreply@example.com}
+      # Correo con el que Traefik se registra en Let's Encrypt. Sin uno real no
+      # se emite ningún certificado (Let's Encrypt rechaza los de example.com):
+      # Skyway lo comprueba y, mientras falte, no redirige los dominios a HTTPS.
+      - --certificatesresolvers.le.acme.email=${LETSENCRYPT_EMAIL:-}
       - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
       - --certificatesresolvers.le.acme.httpchallenge=true
       - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web

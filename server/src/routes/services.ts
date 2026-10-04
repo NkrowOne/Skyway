@@ -8,6 +8,7 @@ import { dbConsoleEngine } from '../dbconsole';
 import { domainClaimError } from '../domainguard';
 import { markManualAction } from '../monitor';
 import {
+  bumpConfigRev,
   countWorkspaceServices,
   createService,
   getEnv,
@@ -16,11 +17,17 @@ import {
   getProject,
   getService,
   latestDeployment,
+  patchEnv,
+  servicesWithPendingChanges,
   setEnv,
   setServiceStopped,
   uniqueServiceSlug,
   updateService,
 } from '../db';
+import { autoDeployStatus } from '../autodeploy';
+import { FULL_SHA_RE } from '../deploy/builder';
+import { githubAppConfigured } from '../github/app';
+import { panelBaseUrl } from '../paneldomain';
 import {
   effectiveQuota,
   isWorkspaceActive,
@@ -229,6 +236,38 @@ const REDEPLOY_FIELDS = [
   'repoUrl', 'connectorId', 'githubInstallationId', 'branch', 'rootDir', 'dockerfilePath', 'builder', 'startCmd', 'buildCmd', 'port',
   'domains', 'hostPort', 'version', 'image', 'buildArgs', 'healthcheckPath', 'volumes', 'replicas',
 ] as const;
+
+/** Nombre de variable de entorno admitido. */
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Cambios de variables de quien edita (`set` y `unset`), calculados contra lo
+ * que cargó. Sustituye al reemplazo de la lista entera (PUT), que borraba lo que
+ * otros habían escrito entretanto (ver `patchEnv`).
+ */
+export const envPatchSchema = z.object({
+  set: z.record(z.string()).default({}),
+  unset: z.array(z.string().max(200)).max(1000).default([]),
+});
+
+/** Primera clave que no es un nombre de variable válido, o null. */
+export function invalidEnvKey(keys: Iterable<string>): string | null {
+  for (const key of keys) if (!ENV_KEY_RE.test(key)) return key;
+  return null;
+}
+
+/**
+ * ¿Recibe este servicio los push por el webhook de la GitHub App? Lo hace si
+ * clona con una instalación de la App que sigue conectada y activa: la App
+ * recibe los eventos de los repos a los que tiene acceso. Entonces el webhook
+ * manual sobra (y con los dos cada push desplegaba dos veces).
+ */
+function coveredByGithubApp(service: ServiceRow): boolean {
+  if (service.type !== 'git' || !githubAppConfigured()) return false;
+  const rowId = (service.config as GitConfig).githubInstallationId;
+  const row = rowId ? getGithubInstallation(rowId) : undefined;
+  return !!row && row.suspended !== 1;
+}
 
 function loadService(id: string): { service: ServiceRow; project: NonNullable<ReturnType<typeof getProject>> } | null {
   const service = getService(id);
@@ -454,6 +493,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
       const { result, plan } = applied;
       auditPlan(req, found.service, result);
+      if (result.applied.length > 0) bumpConfigRev([id]);
       let deploymentId: string | null = null;
       if (body.redeploy && result.applied.length > 0) {
         markManualAction(id);
@@ -474,12 +514,23 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const snap = await dockerSnapshot(PANEL_MAX_AGE_MS);
     const docker = snap.docker;
     const runtime = runtimeIn(snap, id);
+    const isGit = found.service.type === 'git';
     return {
       // El secreto del webhook sí va (Ajustes lo copia); los build args, tapados.
       service: { ...found.service, config: maskBuildArgs(found.service.config) },
       project: found.project,
       runtime,
       latestDeployment: latestDeployment(id) ?? null,
+      // Cambios guardados que su último despliegue correcto no lleva: lo guarda
+      // el servidor, así que el aviso sobrevive a cerrar el panel o recargar.
+      pendingChanges: servicesWithPendingChanges([found.service]).has(id),
+      // Sondeo del auto-deploy: última comprobación y su error, si lo hubo.
+      autoDeploy: isGit && (found.service.config as GitConfig).autoDeploy !== false ? autoDeployStatus(id) : null,
+      // Webhook manual: con el dominio del panel (no el del túnel SSH) y si ya
+      // lo cubre la GitHub App, para no configurar los dos.
+      webhook: isGit
+        ? { url: `${panelBaseUrl(req)}/api/webhooks/github/${id}`, coveredByApp: coveredByGithubApp(found.service) }
+        : null,
       // Quién tiene consola lo decide el servidor: el panel no puede saber si
       // una imagen cualquiera es una base de datos sin repetir aquí la tabla de
       // imágenes conocidas, y dos copias de esa tabla se separan a la primera.
@@ -700,6 +751,8 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // Un cambio que solo surte efecto al redesplegar queda como «sin desplegar».
+    if (needsRedeploy) bumpConfigRev([id]);
     const updated = getService(id)!;
     audit(req, 'service_updated', { type: 'service', id, detail: updated.name });
     // DNS automático solo de los dominios que añade ESTA petición: los que ya
@@ -811,14 +864,23 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
-    const body = z.object({ force: z.boolean().optional() }).parse(req.body ?? {});
+    const body = z
+      .object({
+        force: z.boolean().optional(),
+        // Reconstruir un commit concreto (una versión cuya imagen ya se purgó).
+        commit: z.string().trim().toLowerCase().regex(FULL_SHA_RE, 'El commit debe ser un SHA completo de 40 caracteres').optional(),
+      })
+      .parse(req.body ?? {});
+    if (body.commit && found.service.type !== 'git') {
+      return reply.code(400).send({ error: 'Solo los servicios de repositorio pueden reconstruir un commit concreto.', code: 'not_git' });
+    }
     markManualAction(id);
     audit(req, 'service_deploy', {
       type: 'service',
       id,
-      detail: `${found.service.name}${body.force ? ' (reconstrucción forzada)' : ''}`,
+      detail: `${found.service.name}${body.commit ? ` (reconstrucción del commit ${body.commit.slice(0, 7)})` : body.force ? ' (reconstrucción forzada)' : ''}`,
     });
-    const deployment = triggerDeploy(id, 'manual', { forceBuild: body.force });
+    const deployment = triggerDeploy(id, 'manual', { forceBuild: body.force, targetCommit: body.commit });
     reply.code(202);
     return { deployment };
   });
@@ -890,18 +952,45 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     const body = z.object({ vars: z.record(z.string()) }).parse(req.body);
-    for (const key of Object.keys(body.vars)) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-        return reply.code(400).send({ error: `Nombre de variable inválido: ${key}` });
-      }
-    }
+    const mala = invalidEnvKey(Object.keys(body.vars));
+    if (mala !== null) return reply.code(400).send({ error: `Nombre de variable inválido: ${mala}`, code: 'invalid_key' });
     setEnv(id, body.vars);
+    bumpConfigRev([id]);
     audit(req, 'service_env_updated', {
       type: 'service',
       id,
       detail: `${found.service.name}: ${Object.keys(body.vars).length} variables`,
     });
     return { ok: true, needsRedeploy: true };
+  });
+
+  /**
+   * Guardado de la pestaña Variables: solo los cambios de quien edita, sobre
+   * las variables ACTUALES. El PUT reemplazaba la lista entera y borraba en
+   * silencio lo que otro había escrito mientras se editaba: lo que importa el
+   * primer despliegue, los secretos que genera el manifiesto (que el siguiente
+   * despliegue regeneraría con otro valor) o las credenciales SMTP de Correo.
+   */
+  app.patch('/api/services/:id/env', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const found = loadService(id);
+    if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
+    const body = envPatchSchema.parse(req.body ?? {});
+    const mala = invalidEnvKey([...Object.keys(body.set), ...body.unset]);
+    if (mala !== null) return reply.code(400).send({ error: `Nombre de variable inválido: ${mala}`, code: 'invalid_key' });
+    const cambiadas = Object.keys(body.set).length;
+    const quitadas = body.unset.filter((k) => !(k in body.set)).length;
+    if (cambiadas + quitadas > 0) {
+      patchEnv(id, body.set, body.unset);
+      bumpConfigRev([id]);
+      audit(req, 'service_env_updated', {
+        type: 'service',
+        id,
+        detail: `${found.service.name}: ${cambiadas} definidas, ${quitadas} eliminadas`,
+      });
+    }
+    return { ok: true, needsRedeploy: cambiadas + quitadas > 0, vars: getEnv(id) };
   });
 
   /**
@@ -960,6 +1049,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
               : `Se ${n === 1 ? 'importaría 1 variable' : `importarían ${n} variables`}${pendientes}.`,
         };
       }
+      if (n > 0) bumpConfigRev([id]);
       audit(req, 'service_env_imported', {
         type: 'service',
         id,

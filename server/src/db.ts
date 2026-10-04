@@ -750,6 +750,33 @@ export function initDb(): void {
   // el pago no debe revivir lo que se cortó a mano.
   ensureColumn('workspace_api_keys', 'suspended_by', 'TEXT');
   ensureColumn('workspace_subscriptions', 'paused_by', 'TEXT');
+  // Despliegue cortado por un reinicio o un apagado de Skyway: 1 = pendiente de
+  // tratar al arrancar (alerta y, una sola vez, reintento), 2 = ya tratado.
+  // Sin la marca no había forma de distinguirlo de un fallo normal.
+  ensureColumn('deployments', 'interrupted', 'INTEGER NOT NULL DEFAULT 0');
+  // Revisión de la configuración del servicio (variables propias, compartidas
+  // del proyecto y campos que exigen redesplegar). Sube con cada cambio guardado
+  // y cada despliegue anota la que aplicó: «Cambios sin desplegar» sale de
+  // comparar las dos, y no de un estado de la interfaz que se perdía al cerrarla.
+  ensureColumn('services', 'config_rev', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('deployments', 'config_rev', 'INTEGER');
+  // Commit concreto que se pidió reconstruir (versiones cuya imagen ya se purgó).
+  ensureColumn('deployments', 'target_commit', 'TEXT');
+  // Estado del auto-deploy por sondeo, por servicio. La línea base («última
+  // cabeza tratada») vivía solo en memoria: tras un reinicio el primer sondeo la
+  // fijaba en la cabeza ACTUAL y un push hecho mientras Skyway estaba parado no
+  // se desplegaba nunca. También guarda la última comprobación y su error, que
+  // antes se perdían sin rastro (`if (!head) return`).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS autodeploy_state (
+      service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
+      last_seen_sha TEXT,
+      checked_at INTEGER,
+      ok_at INTEGER,
+      error TEXT,
+      failing_since INTEGER
+    );
+  `);
 
   seedDefaultPlans();
   // El orden importa: `migrateClientsToWorkspaces` es quien rellena
@@ -1536,6 +1563,134 @@ export function setEnv(serviceId: string, vars: Record<string, string>): void {
   tx();
 }
 
+/**
+ * Aplica solo los cambios de quien edita (`set` y `unset`) sobre las variables
+ * ACTUALES. Reemplazar la lista entera borraba lo que otro había escrito entre
+ * la carga del formulario y el guardado: las variables que importa el primer
+ * despliegue, los secretos que genera el manifiesto o las credenciales SMTP de
+ * Correo → Conectar.
+ */
+export function patchEnv(serviceId: string, set: Record<string, string>, unset: readonly string[]): void {
+  const upsert = stmt(
+    'INSERT INTO env_vars (service_id, key, value) VALUES (?, ?, ?) ON CONFLICT(service_id, key) DO UPDATE SET value = excluded.value',
+  );
+  const del = stmt('DELETE FROM env_vars WHERE service_id = ? AND key = ?');
+  db.transaction(() => {
+    for (const key of unset) if (!(key in set)) del.run(serviceId, key);
+    for (const [key, value] of Object.entries(set)) upsert.run(serviceId, key, value);
+  })();
+}
+
+// ---------- revisión de la configuración (cambios sin desplegar) ----------
+
+/**
+ * Sube la revisión de configuración de unos servicios: hay cambios guardados que
+ * solo surten efecto al redesplegar. Solo la llaman las escrituras de quien
+ * edita (rutas), nunca las del propio despliegue, que se aplican en él mismo.
+ */
+export function bumpConfigRev(serviceIds: readonly string[]): void {
+  if (serviceIds.length === 0) return;
+  const upd = stmt('UPDATE services SET config_rev = config_rev + 1 WHERE id = ?');
+  db.transaction(() => {
+    for (const id of new Set(serviceIds)) upd.run(id);
+  })();
+}
+
+/** Las variables compartidas llegan a todos los servicios del proyecto. */
+export function bumpProjectConfigRev(projectId: string): void {
+  stmt('UPDATE services SET config_rev = config_rev + 1 WHERE project_id = ?').run(projectId);
+}
+
+/**
+ * Revisión aplicada por el último despliegue CORRECTO de cada servicio. Solo
+ * tienen entrada los servicios con algún despliegue correcto; un despliegue
+ * anterior a la columna cuenta como revisión 0.
+ */
+export function appliedConfigRevs(serviceIds: string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const lote of lotes([...new Set(serviceIds)])) {
+    const rows = stmt(
+      `SELECT d.service_id AS service_id, d.config_rev AS config_rev
+         FROM deployments d
+         JOIN (SELECT service_id, MAX(created_at) AS created_at FROM deployments
+                WHERE status = 'success' AND service_id IN (${lote.map(() => '?').join(',')}) GROUP BY service_id) ult
+           ON ult.service_id = d.service_id AND ult.created_at = d.created_at
+        WHERE d.status = 'success'
+        ORDER BY d.rowid ASC`,
+    ).all(...lote) as { service_id: string; config_rev: number | null }[];
+    for (const r of rows) out.set(r.service_id, r.config_rev ?? 0);
+  }
+  return out;
+}
+
+/** Servicios con cambios guardados que su último despliegue correcto no lleva. */
+export function servicesWithPendingChanges(services: readonly ServiceRow[]): Set<string> {
+  const applied = appliedConfigRevs(services.map((s) => s.id));
+  const out = new Set<string>();
+  for (const s of services) {
+    const rev = applied.get(s.id);
+    // Sin ningún despliegue correcto no hay «cambios sin aplicar»: falta el primero.
+    if (rev !== undefined && (s.config_rev ?? 0) > rev) out.add(s.id);
+  }
+  return out;
+}
+
+// ---------- estado del auto-deploy por sondeo ----------
+
+export interface AutoDeployStateRow {
+  service_id: string;
+  /** Última cabeza de la rama ya tratada (línea base del sondeo). */
+  last_seen_sha: string | null;
+  checked_at: number | null;
+  ok_at: number | null;
+  error: string | null;
+  failing_since: number | null;
+}
+
+export function listAutoDeployStates(): Map<string, AutoDeployStateRow> {
+  const rows = stmt('SELECT * FROM autodeploy_state').all() as AutoDeployStateRow[];
+  return new Map(rows.map((r) => [r.service_id, r]));
+}
+
+export function getAutoDeployState(serviceId: string): AutoDeployStateRow | undefined {
+  return stmt('SELECT * FROM autodeploy_state WHERE service_id = ?').get(serviceId) as AutoDeployStateRow | undefined;
+}
+
+/** Comprobación correcta: la cabeza `sha` queda como línea base y se cierra la racha de fallos. */
+export function recordAutoDeployOk(serviceId: string, sha: string): void {
+  const at = now();
+  stmt(
+    `INSERT INTO autodeploy_state (service_id, last_seen_sha, checked_at, ok_at, error, failing_since)
+     VALUES (?, ?, ?, ?, NULL, NULL)
+     ON CONFLICT(service_id) DO UPDATE SET last_seen_sha = excluded.last_seen_sha, checked_at = excluded.checked_at,
+       ok_at = excluded.ok_at, error = NULL, failing_since = NULL`,
+  ).run(serviceId, sha, at, at);
+}
+
+/** Comprobación fallida: conserva la línea base y abre (o alarga) la racha de fallos. */
+export function recordAutoDeployFailure(serviceId: string, error: string): AutoDeployStateRow {
+  const at = now();
+  stmt(
+    `INSERT INTO autodeploy_state (service_id, last_seen_sha, checked_at, ok_at, error, failing_since)
+     VALUES (?, NULL, ?, NULL, ?, ?)
+     ON CONFLICT(service_id) DO UPDATE SET checked_at = excluded.checked_at, error = excluded.error,
+       failing_since = COALESCE(autodeploy_state.failing_since, excluded.failing_since)`,
+  ).run(serviceId, at, error.slice(0, 500), at);
+  return getAutoDeployState(serviceId)!;
+}
+
+/** Olvida el estado de los servicios que ya no se sondean (auto-deploy apagado o borrados). */
+export function forgetAutoDeployStates(keep: ReadonlySet<string>): void {
+  const ids = (stmt('SELECT service_id FROM autodeploy_state').all() as { service_id: string }[])
+    .map((r) => r.service_id)
+    .filter((id) => !keep.has(id));
+  if (ids.length === 0) return;
+  const del = stmt('DELETE FROM autodeploy_state WHERE service_id = ?');
+  db.transaction(() => {
+    for (const id of ids) del.run(id);
+  })();
+}
+
 // ---------- variables gestionadas por Skyway ----------
 
 export interface ManagedEnvEntry {
@@ -1589,7 +1744,7 @@ export function createDeployment(
   serviceId: string,
   trigger: string,
   imageTag?: string | null,
-  opts: { forceBuild?: boolean } = {},
+  opts: { forceBuild?: boolean; targetCommit?: string | null } = {},
 ): DeploymentRow {
   const row: DeploymentRow = {
     id: id('dep'),
@@ -1605,6 +1760,7 @@ export function createDeployment(
     build_key: null,
     repo_config: null,
     force_build: opts.forceBuild ? 1 : 0,
+    target_commit: opts.targetCommit ?? null,
     created_at: now(),
     finished_at: null,
   };
@@ -1612,9 +1768,9 @@ export function createDeployment(
   // marcado como «parado adrede» lo pintaría en gris mientras se construye.
   db.transaction(() => {
     stmt(
-      `INSERT INTO deployments (id, service_id, status, trigger, commit_sha, commit_msg, image_tag, logs, error, force_build, created_at, finished_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(row.id, row.service_id, row.status, row.trigger, row.commit_sha, row.commit_msg, row.image_tag, row.logs, row.error, row.force_build, row.created_at, row.finished_at);
+      `INSERT INTO deployments (id, service_id, status, trigger, commit_sha, commit_msg, image_tag, logs, error, force_build, target_commit, created_at, finished_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(row.id, row.service_id, row.status, row.trigger, row.commit_sha, row.commit_msg, row.image_tag, row.logs, row.error, row.force_build, row.target_commit, row.created_at, row.finished_at);
     // Desplegar arranca el contenedor: la parada manual anterior deja de contar.
     setServiceStopped(serviceId, false);
   })();
@@ -1624,7 +1780,7 @@ export function createDeployment(
 /** Columnas que `updateDeployment` admite: el SQL se compone con los nombres de las claves. */
 const DEPLOYMENT_COLUMNS = new Set([
   'status', 'commit_sha', 'commit_msg', 'image_tag', 'logs', 'runtime_logs', 'error', 'finished_at',
-  'build_key', 'repo_config', 'build_vars',
+  'build_key', 'repo_config', 'build_vars', 'interrupted', 'config_rev',
 ]);
 
 export function updateDeployment(
@@ -1643,6 +1799,8 @@ export function updateDeployment(
       | 'build_key'
       | 'repo_config'
       | 'build_vars'
+      | 'interrupted'
+      | 'config_rev'
     >
   >,
 ): void {
@@ -1670,7 +1828,7 @@ export function getDeployment(deploymentId: string): DeploymentRow | undefined {
 export function deploymentSummary(deploymentId: string): DeploymentRow | undefined {
   const row = stmt(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
-              build_key, repo_config, force_build, created_at, finished_at
+              build_key, repo_config, force_build, target_commit, created_at, finished_at
          FROM deployments WHERE id = ?`,
     )
     .get(deploymentId) as Omit<DeploymentRow, 'logs'> | undefined;
@@ -1680,7 +1838,7 @@ export function deploymentSummary(deploymentId: string): DeploymentRow | undefin
 export function listDeployments(serviceId: string, limit = 20): DeploymentRow[] {
   return stmt(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
-              build_key, repo_config, force_build, created_at, finished_at
+              build_key, repo_config, force_build, target_commit, created_at, finished_at
          FROM deployments WHERE service_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
     )
     .all(serviceId, limit)
@@ -1741,7 +1899,7 @@ export function lastSuccessfulImage(serviceId: string): string | null {
 export function latestDeployment(serviceId: string): DeploymentRow | undefined {
   const row = stmt(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
-              build_key, repo_config, force_build, created_at, finished_at
+              build_key, repo_config, force_build, target_commit, created_at, finished_at
          FROM deployments WHERE service_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     )
     .get(serviceId) as Omit<DeploymentRow, 'logs'> | undefined;
@@ -1840,14 +1998,22 @@ export function activeDeploymentsByProject(projectId: string): Record<string, De
 }
 
 /**
- * SHA del último commit que Skyway llegó a construir para el servicio (clon
- * realizado, con éxito o no). Sirve al auto-deploy para no re-desplegar un
- * commit ya tratado —lo desplegara el webhook, un deploy manual o el propio
- * sondeo— y evitar duplicados y bucles.
+ * SHA del último commit que Skyway desplegó con éxito, o que está desplegando
+ * ahora mismo, para el servicio. Sirve al webhook y al auto-deploy para no
+ * repetir un commit ya tratado —lo desplegara el webhook, un deploy manual o el
+ * propio sondeo— y evitar duplicados y bucles.
+ *
+ * Los fallidos y cancelados NO cuentan: antes sí, y un despliegue cortado por un
+ * reinicio (o que falló por algo ajeno al código) dejaba ese commit por
+ * «ya desplegado», así que ni «Redeliver» en GitHub lo volvía a lanzar. El bucle
+ * que eso evitaba en el sondeo lo evita ya su línea base (`autodeploy_state`).
  */
 export function lastBuiltCommitSha(serviceId: string): string | null {
-  const row = stmt('SELECT commit_sha FROM deployments WHERE service_id = ? AND commit_sha IS NOT NULL ORDER BY created_at DESC LIMIT 1')
-    .get(serviceId) as { commit_sha: string } | undefined;
+  const row = stmt(
+    `SELECT commit_sha FROM deployments
+      WHERE service_id = ? AND commit_sha IS NOT NULL AND status IN ('success', 'queued', 'building', 'deploying')
+      ORDER BY created_at DESC LIMIT 1`,
+  ).get(serviceId) as { commit_sha: string } | undefined;
   return row?.commit_sha ?? null;
 }
 
@@ -1890,6 +2056,18 @@ export function setProjectVars(projectId: string, vars: Record<string, string>):
     for (const [k, v] of Object.entries(vars)) ins.run(projectId, k, v);
   });
   tx();
+}
+
+/** Como `patchEnv`, para las variables compartidas: solo lo que cambió quien edita. */
+export function patchProjectVars(projectId: string, set: Record<string, string>, unset: readonly string[]): void {
+  const upsert = stmt(
+    'INSERT INTO project_vars (project_id, key, value) VALUES (?, ?, ?) ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value',
+  );
+  const del = stmt('DELETE FROM project_vars WHERE project_id = ? AND key = ?');
+  db.transaction(() => {
+    for (const key of unset) if (!(key in set)) del.run(projectId, key);
+    for (const [key, value] of Object.entries(set)) upsert.run(projectId, key, value);
+  })();
 }
 
 // ---------- correo: vínculo proyecto ↔ cliente de Mailway ----------
@@ -2452,11 +2630,32 @@ export function openAlertCountsByServiceForProjects(projectIds: string[]): Recor
 
 export function markStaleDeploymentsFailed(): number {
   const res = stmt(
-      `UPDATE deployments SET status = 'failed', error = 'Interrumpido por reinicio del servidor', finished_at = ?
+      `UPDATE deployments SET status = 'failed', error = 'Interrumpido por reinicio del servidor', finished_at = ?, interrupted = 1
        WHERE status IN ('queued', 'building', 'deploying')`,
     )
     .run(now());
   return res.changes;
+}
+
+/**
+ * Despliegues cortados por un reinicio o un apagado que aún no se han tratado:
+ * el último de cada servicio, si es uno de ellos (si después hubo otro, ya no
+ * hay nada que reanudar). Los marca todos como tratados en la misma
+ * transacción, para que el siguiente arranque no los vuelva a reintentar.
+ */
+export function takeInterruptedDeployments(): DeploymentRow[] {
+  return db.transaction(() => {
+    const rows = stmt(
+      `SELECT d.id, d.service_id, d.status, d.trigger, d.commit_sha, d.commit_msg, d.image_tag, d.error, d.diagnosis,
+              d.build_key, d.repo_config, d.force_build, d.target_commit, d.interrupted, d.created_at, d.finished_at
+         FROM deployments d
+        WHERE d.interrupted = 1
+          AND d.id = (SELECT d2.id FROM deployments d2 WHERE d2.service_id = d.service_id
+                       ORDER BY d2.created_at DESC, d2.rowid DESC LIMIT 1)`,
+    ).all() as Omit<DeploymentRow, 'logs'>[];
+    stmt('UPDATE deployments SET interrupted = 2 WHERE interrupted = 1').run();
+    return rows.map((r) => ({ ...r, logs: '' }));
+  })();
 }
 
 // ---------- planes de facturación ----------

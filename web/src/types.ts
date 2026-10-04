@@ -81,7 +81,13 @@ export interface GithubAppStatus {
   configured: boolean;
   canConfigure: boolean;
   app: { slug: string; name: string; htmlUrl: string } | null;
+  /** URL del webhook que corresponde al panel (con su dominio). */
   webhookUrl: string;
+  /** La que tiene la App en GitHub (solo para el administrador; null si no se pudo leer). */
+  webhookUrlActual?: string | null;
+  webhookUrlError?: string | null;
+  /** false si el panel no tiene dominio público: GitHub no podría entregar los push. */
+  panelReachable?: boolean;
 }
 
 /** Una propuesta de variable a partir de lo detectado en el repo (.env.example, package.json, schema.prisma…). */
@@ -746,6 +752,8 @@ export interface GitConfig {
   envImport?: EnvImportReport;
   /** Variables que pide el skyway.json y esperan aprobación (bases: cualquiera con acceso; correo: quien gestiona el proyecto). */
   integrationsPending?: string[];
+  /** Rutas que la imagen del último despliegue declara con VOLUME. */
+  imageVolumes?: string[];
 }
 
 // ---------- importación del .env del repositorio ----------
@@ -857,6 +865,24 @@ export interface Service {
   /** Instante en que alguien lo detuvo desde el panel; null si no. */
   stopped_at?: number | null;
   runtime?: Runtime;
+  /** Cambios guardados que su último despliegue correcto no lleva (vista de proyecto). */
+  pendingChanges?: boolean;
+}
+
+/** Estado del sondeo del despliegue automático (Ajustes del servicio). */
+export interface AutoDeployStatus {
+  pollSeconds: number;
+  checkedAt: number | null;
+  okAt: number | null;
+  error: string | null;
+  failingSince: number | null;
+  lastSeenSha: string | null;
+}
+
+/** Webhook manual del servicio: con el dominio del panel, y si ya lo cubre la GitHub App. */
+export interface ServiceWebhookInfo {
+  url: string;
+  coveredByApp: boolean;
 }
 
 export type DeploymentStatus = 'queued' | 'building' | 'deploying' | 'success' | 'failed' | 'canceled';
@@ -880,6 +906,10 @@ export interface Deployment {
   runtime_logs?: string | null;
   error: string | null;
   diagnosis: string | null;
+  /** Commit concreto que se pidió reconstruir. */
+  target_commit?: string | null;
+  /** En los correctos de un repositorio: si su imagen sigue en el servidor (ausente = no se sabe). */
+  imageAvailable?: boolean;
   created_at: number;
   finished_at: number | null;
 }

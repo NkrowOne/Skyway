@@ -6,7 +6,7 @@
  * integraciones (`integrations.ts`), para que «Conectar a un servicio» y el
  * plan de una web nueva escriban exactamente lo mismo.
  */
-import { getMailwayLink, getProject, getService, writeManagedEnv } from './db';
+import { bumpConfigRev, getMailwayLink, getProject, getService, writeManagedEnv } from './db';
 import {
   MailwayError,
   MailwayInfo,
@@ -374,6 +374,8 @@ export async function connectServiceMail(opts: {
     if (value !== null) entries[t.name] = { value, origin: mailOrigin(mode, t.role) };
   }
   writeManagedEnv(service.id, entries);
+  // Las credenciales nuevas solo llegan al contenedor al redesplegar.
+  if (Object.keys(entries).length > 0) bumpConfigRev([service.id]);
   return { keys: Object.keys(entries), kept: names.kept, revoked };
 }
 

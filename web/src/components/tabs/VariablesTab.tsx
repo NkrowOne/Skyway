@@ -591,8 +591,21 @@ export default function VariablesTab({
     setRawText(entries.map((r) => `${r.key}=${r.value}`).join('\n'));
   }, [env.data, dirty]);
 
+  /*
+   * Solo se envían los cambios respecto a lo que se cargó (`syncedRef`), no la
+   * tabla entera: mientras se edita, el primer despliegue importa el .env del
+   * repositorio, el manifiesto genera secretos y Correo → Conectar escribe las
+   * credenciales SMTP. Reemplazar la lista entera los borraba en silencio (y un
+   * secreto generado que desaparece se regenera con otro valor al desplegar).
+   */
   const save = useMutation({
-    mutationFn: (vars: Record<string, string>) => api.put(`/services/${serviceId}/env`, { vars }),
+    mutationFn: (vars: Record<string, string>) => {
+      const base = syncedRef.current?.vars ?? {};
+      const set: Record<string, string> = {};
+      for (const [k, v] of Object.entries(vars)) if (base[k] !== v) set[k] = v;
+      const unset = Object.keys(base).filter((k) => !(k in vars));
+      return api.patch(`/services/${serviceId}/env`, { set, unset });
+    },
     onSuccess: () => {
       setDirty(false);
       queryClient.invalidateQueries({ queryKey: ['env', serviceId] });

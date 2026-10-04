@@ -20,6 +20,8 @@ interface DomainCheck {
 interface DomainsConfig {
   rootDomain: string | null;
   tls: boolean;
+  /** Let's Encrypt activado en el panel, pero Traefik sin un correo válido: no hay certificados. */
+  tlsBlocked?: boolean;
 }
 
 const STATUS_META: Record<DomainCheck['status'], { label: string; tone: Tone }> = {
@@ -395,6 +397,19 @@ export default function DomainsEditor({
         {tls ? (
           <Chip size="sm" tone="ok" dot>
             TLS automático
+          </Chip>
+        ) : config.data?.tlsBlocked ? (
+          // Activado en el panel, pero Traefik no puede pedir certificados: se
+          // sirve por HTTP en vez de redirigir a un HTTPS sin certificado válido.
+          <Chip size="sm" tone="err" dot>
+            TLS bloqueado —{' '}
+            {isAdmin ? (
+              <Link to="/settings" className="text-acc-soft hover:underline">
+                falta LETSENCRYPT_EMAIL en el servidor
+              </Link>
+            ) : (
+              'el administrador debe corregir el correo de Let\'s Encrypt del servidor'
+            )}
           </Chip>
         ) : (
           <Chip size="sm" tone="warn" dot>

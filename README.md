@@ -42,21 +42,30 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 ## Requisitos
 
 - Un servidor Linux con **Docker** (y `docker compose`).
-- Puertos 80/443 libres si quieres usar dominios (Traefik), y el 4000 para la UI.
-- Opcional: un dominio apuntando a la IP del servidor.
+- Puertos 80/443 libres (Traefik). El 4000 **no** hay que abrirlo: la UI solo escucha en `127.0.0.1:4000` del servidor.
+- Un dominio para el panel apuntando a la IP del servidor (recomendado) y un correo real para Let's Encrypt.
 
 ## Instalación rápida (producción)
 
 ```bash
 git clone https://github.com/NkrowOne/Skyway.git
 cd Skyway
-cp .env.example .env      # opcional: configura SKYWAY_DOMAIN y LETSENCRYPT_EMAIL
+cp .env.example .env      # SKYWAY_DOMAIN (dominio del panel) y LETSENCRYPT_EMAIL
 docker compose up -d --build
 ```
 
-Abre `http://IP-DEL-SERVIDOR:4000` (o `http://tu-dominio`) y crea la cuenta de administrador.
+`LETSENCRYPT_EMAIL` es **necesario para TLS**: sin un correo real (ni vacío ni de `example.com`, que Let's Encrypt rechaza) no se emite ningún certificado. Skyway lo comprueba: mientras falte, Ajustes → Dominios y TLS lo avisa y los dominios se sirven por HTTP en vez de redirigir a un HTTPS sin certificado válido. Si lo cambias después, `docker compose up -d traefik`.
 
-> El contenedor de Skyway monta `/var/run/docker.sock` para orquestar los contenedores de tus aplicaciones directamente sobre el Docker del host. Eso implica que quien tenga acceso a Skyway controla el Docker del servidor: usa una contraseña fuerte y, a ser posible, no expongas el puerto 4000 públicamente (usa el dominio con TLS o una VPN).
+Después, crea la cuenta de administrador:
+
+- **Con dominio**: abre `https://SKYWAY_DOMAIN`.
+- **Sin dominio todavía**: la UI solo escucha en el propio servidor; ábrela por un túnel SSH desde tu equipo con `ssh -L 4000:127.0.0.1:4000 usuario@IP-DEL-SERVIDOR` y entra en `http://localhost:4000`.
+
+Crea la GitHub App (Ajustes → GitHub) cuando el panel ya tenga su dominio definitivo: es la dirección a la que GitHub enviará los push. Si la creas por el túnel o cambias de dominio después, Ajustes → GitHub muestra la dirección que tiene GitHub y permite actualizarla con un botón.
+
+`SKYWAY_DOMAIN` es **un solo nombre**. Para servir el panel también por otros (el anterior, mientras cambias de dominio), añádelos separados por comas en `SKYWAY_DOMAIN_EXTRA`.
+
+> El contenedor de Skyway monta `/var/run/docker.sock` para orquestar los contenedores de tus aplicaciones directamente sobre el Docker del host. Eso implica que quien tenga acceso a Skyway controla el Docker del servidor: usa una contraseña fuerte y entra por el dominio con TLS, un túnel SSH o una VPN; no publiques el puerto 4000.
 
 ## Primeros pasos
 
@@ -71,8 +80,8 @@ Abre `http://IP-DEL-SERVIDOR:4000` (o `http://tu-dominio`) y crea la cuenta de a
    y redespliega. La app llega a la base de datos por la red privada del proyecto.
 
    Para lo común de una empresa (SMTP, claves de API, `TZ`...), usa **Variables compartidas** del proyecto: se heredan en todos sus servicios (las del servicio ganan si repiten clave) y se referencian con `${{shared.VAR}}`.
-6. **Ponle dominio** — en **Ajustes** del servicio añade `app.midominio.com` (con el DNS apuntando a tu servidor). Con email de Let's Encrypt configurado, TLS automático.
-7. **Auto-deploy** — con la GitHub App conectada no hay nada que hacer: cada push despliega. (Sin App: copia la URL y el secreto del webhook de Ajustes del servicio en GitHub → Settings → Webhooks.)
+6. **Ponle dominio** — en **Ajustes** del servicio añade `app.midominio.com` (con el DNS apuntando a tu servidor). Con el correo de Let's Encrypt configurado en Ajustes y en el `.env` del servidor, TLS automático.
+7. **Auto-deploy** — activado por defecto: con la GitHub App cada push despliega al instante; sin ella, Skyway comprueba la rama cada minuto. Ajustes del servicio → Despliegue automático muestra la última comprobación y, si no puede leer la rama (token caducado, App sin acceso), lo dice y lanza una alerta.
 8. **Activa las notificaciones** — en Ajustes → Alertas configura Discord, Telegram o un webhook y pulsa "Enviar notificación de prueba". Si un servicio de un cliente se cae, te llega al momento con la explicación del código de salida.
 9. **Revisa el panel de seguridad** (icono del escudo) — corrige los hallazgos hasta subir la nota: límites de recursos en todos los servicios, TLS activado, sin puertos de bases de datos expuestos.
 10. **Vigila y depura desde el Monitor** (icono de actividad, o `g m`) — todos los servicios con su consumo y espacio; si algo falla, busca el texto del error en los logs de todos los contenedores a la vez.
@@ -130,7 +139,7 @@ La UI de desarrollo (`http://localhost:5173`) proxya `/api` al servidor. Para pr
 ```
 
 - **Servidor**: Node 20+ / TypeScript / Fastify. Estado en SQLite (`/data/skyway.db`). Habla con Docker vía `dockerode` + CLI (builds).
-- **Pipeline de despliegue**: clone superficial → build (Dockerfile o Nixpacks) → recrear contenedor con env resuelto, límites de recursos, red y labels de Traefik → verificación → purga de imágenes antiguas (se conservan las 5 últimas por servicio para rollback).
+- **Pipeline de despliegue**: clone superficial → build (Dockerfile o Nixpacks) → recrear contenedor con env resuelto, límites de recursos, red y labels de Traefik → verificación (healthcheck HTTP o, con dominio, que el puerto acepte conexiones; la versión anterior no se retira hasta que la nueva atiende) → purga de imágenes antiguas (se conservan las de las últimas 5 versiones correctas por servicio para volver a ellas; configurable en Ajustes → Sistema).
 - **Web**: React + Vite + Tailwind. Logs y métricas por SSE.
 - **Un build concurrente por servicio**; en paralelo, tantos como núcleos − 1 (entre 2 y 4, configurable con `BUILD_CONCURRENCY`).
 
