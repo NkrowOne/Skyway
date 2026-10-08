@@ -2,6 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { getEnv, getProjectVars } from './db';
+import { dominioPrincipal } from './dominioprincipal';
 import { ghFetch } from './github/client';
 import { MailMode, mailRoleOf, mailVarsOf, suggestedMailMode } from './mailenv';
 import { MANIFEST_FILE, MANIFEST_MAX_BYTES, parseManifest } from './manifest';
@@ -650,7 +651,9 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
       continue;
     }
     if (PUBLIC_URL_RE.test(v)) {
-      if (target.domains[0]) {
+      // Se propone la referencia a `PUBLIC_URL`, que lleva el dominio
+      // principal (`dominioPrincipal`), nunca el primero guardado escrito tal cual.
+      if (dominioPrincipal(target.domains)) {
         suggestions.push({
           key: v,
           value: `\${{${target.serviceName}.PUBLIC_URL}}`,

@@ -1,4 +1,5 @@
 import { getEnv, getProjectVars, getSetting, listServices } from './db';
+import { dominioPrincipal } from './dominioprincipal';
 import { getTemplate } from './templates';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from './types';
 
@@ -45,11 +46,15 @@ export function systemVars(
     if (service.type !== 'database') out.INTERNAL_URL = `http://${service.slug}:${port}`;
   }
   const domains = overrides.domains ?? (((service.config as GitConfig | ImageConfig).domains ?? []) as string[]);
-  if (domains[0]) {
-    out.PUBLIC_DOMAIN = domains[0];
+  // El principal según la regla (www primero, el subdominio generado al final)
+  // y no el primero guardado: un servicio guardado con el orden antiguo
+  // publica la dirección correcta en cuanto se vuelve a desplegar.
+  const principal = dominioPrincipal(domains, getSetting('rootDomain'));
+  if (principal) {
+    out.PUBLIC_DOMAIN = principal;
     // El esquema lo decide quien enruta: sin correo de Let's Encrypt, Traefik
     // no monta el router seguro y prometer https lleva a un certificado ajeno.
-    out.PUBLIC_URL = `${getSetting('letsencryptEmail') ? 'https' : 'http'}://${domains[0]}`;
+    out.PUBLIC_URL = `${getSetting('letsencryptEmail') ? 'https' : 'http'}://${principal}`;
   }
   return out;
 }

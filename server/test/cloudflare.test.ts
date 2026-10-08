@@ -63,6 +63,24 @@ vi.mock('../src/railway/importer', async (original) => {
   };
 });
 
+/**
+ * «Desactivar proxy en Cloudflare» vuelve a comprobar el DNS del dominio: la
+ * prueba no consulta el DNS real, solo comprueba que la respuesta lo incluye.
+ */
+vi.mock('../src/domains', async (original) => {
+  const real = await original<typeof import('../src/domains')>();
+  return {
+    ...real,
+    checkDomain: vi.fn(async (domain: string) => ({
+      domain,
+      status: 'ok' as const,
+      resolvedIps: ['203.0.113.10'],
+      expectedIp: '203.0.113.10',
+      message: 'Comprobación simulada.',
+    })),
+  };
+});
+
 // El cuerpo de una respuesta HTTP es frontera: se inspecciona sin tipar.
 type Json = any;
 
@@ -411,7 +429,10 @@ describe('DNS automático de los dominios de servicios: administrador', () => {
     });
     expect(r.status, r.raw).toBe(201);
     servicioId = r.json.service.id;
+    // `operador.com` llega con su www (la lista va en el orden del dominio
+    // principal) y la pareja sigue el mismo camino que el resto.
     expect(r.json.dns.map((d: Json) => [d.domain, d.action])).toEqual([
+      ['www.operador.com', 'created'],
       ['nuevo.operador.com', 'created'],
       ['existente.operador.com', 'kept'],
       ['ocupado.operador.com', 'conflict'],
@@ -427,13 +448,14 @@ describe('DNS automático de los dominios de servicios: administrador', () => {
     expect(porDominio['web.apps.operador.com']).toMatch(/comodín \*\.apps\.operador\.com/);
     expect(porDominio['tienda.ajena.org']).toMatch(/Sin zona en tu Cloudflare/);
 
-    // Solo altas, nunca cambios ni borrados: exactamente los tres registros que faltaban.
+    // Solo altas, nunca cambios ni borrados: exactamente los registros que faltaban.
     expect(escrituras().map((c) => [c.method, (c.body as Json).name])).toEqual([
+      ['POST', 'www.operador.com'],
       ['POST', 'nuevo.operador.com'],
       ['POST', 'txt.operador.com'],
       ['POST', 'operador.com'],
     ]);
-    expect(escrituras()[0].body).toEqual({ type: 'A', name: 'nuevo.operador.com', content: IP, ttl: 1, proxied: false, comment: 'Skyway' });
+    expect(escrituras()[1].body).toEqual({ type: 'A', name: 'nuevo.operador.com', content: IP, ttl: 1, proxied: false, comment: 'Skyway' });
     expect(cf.records.filter((x) => x.name === 'ocupado.operador.com')).toEqual([
       expect.objectContaining({ type: 'CNAME', content: 'proyecto.up.railway.app' }),
     ]);
@@ -441,7 +463,7 @@ describe('DNS automático de los dominios de servicios: administrador', () => {
 
     const auditados = listAudit({ action: 'cloudflare_dns_applied' });
     expect(auditados[0]).toMatchObject({ target_type: 'service', target_id: servicioId, actor: 'admin@example.com' });
-    expect(auditados[0].detail).toMatch(/^nuevo\.operador\.com: creado; existente\.operador\.com: ya estaba; ocupado\.operador\.com: conflicto/);
+    expect(auditados[0].detail).toMatch(/^www\.operador\.com: creado; nuevo\.operador\.com: creado; existente\.operador\.com: ya estaba; ocupado\.operador\.com: conflicto/);
     expect(JSON.stringify(listAudit({}))).not.toContain(TOKEN_OP);
   });
 
@@ -465,6 +487,21 @@ describe('DNS automático de los dominios de servicios: administrador', () => {
     expect(r.status, r.raw).toBe(200);
     expect(r.json.dns).toBeUndefined();
     expect(cf.calls).toEqual([]);
+  });
+
+  it('reordenar los dominios no cuenta como añadir ni quitar: ni conflicto ni llamadas a Cloudflare', async () => {
+    const antes = (await call('GET', `/api/services/${servicioId}`, admin())).json.service.config.domains as string[];
+    expect(antes.length).toBeGreaterThan(1);
+    cf.calls = [];
+    const r = await call('PATCH', `/api/services/${servicioId}`, admin(), {
+      config: { domains: [...antes].reverse() },
+      // La base, en otro orden más: lo que cuenta es el conjunto.
+      domainsBase: [...antes.slice(1), antes[0]],
+    });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.dns).toBeUndefined();
+    expect(cf.calls).toEqual([]);
+    expect(new Set(r.json.service.config.domains)).toEqual(new Set(antes));
   });
 
   it('un comodín solo cuenta si resuelve el nombre: si apunta a otro sitio es un conflicto, y con otros registros en el nombre no se aplica', async () => {
@@ -1299,5 +1336,179 @@ describe('los registros que crea el DNS automático quedan reservados hasta que 
     expect(r.json.dns).toEqual([expect.objectContaining({ domain: 'mover.operador.com', action: 'kept' })]);
     const recs = (await call('GET', '/api/cloudflare/records', admin())).json.records as Json[];
     expect(recs.find((x) => x.domain === 'mover.operador.com').project).toMatchObject({ id: projB.id });
+  });
+});
+
+// ======================= pareja con o sin www =======================
+
+describe('la pareja con o sin www pasa por el mismo DNS automático', () => {
+  /** Zonas nuevas visibles para el token del operador. */
+  function zonaDelOperador(nombre: string) {
+    const z = zona(nombre);
+    cf.tokens.get(TOKEN_OP)!.zoneIds.push(z.id);
+    return z;
+  }
+  const crear = (name: string, body: Record<string, unknown>) =>
+    call('POST', `/api/projects/${projAdmin.id}/services`, admin(), { type: 'image', name, image: 'nginx', port: 80, ...body });
+
+  it('guardar solo example.com da [www.example.com, example.com] y crea los dos registros A sin proxy', async () => {
+    zonaDelOperador('example.com');
+    const r = await crear('pareja', { domains: ['example.com'] });
+    expect(r.status, r.raw).toBe(201);
+    expect(r.json.service.config.domains).toEqual(['www.example.com', 'example.com']);
+    expect(r.json.service.config.dominiosSinPareja).toBeUndefined();
+    expect(r.json.dns.map((d: Json) => [d.domain, d.action])).toEqual([
+      ['www.example.com', 'created'],
+      ['example.com', 'created'],
+    ]);
+    expect(escrituras().map((c) => [c.method, c.body])).toEqual([
+      ['POST', { type: 'A', name: 'www.example.com', content: IP, ttl: 1, proxied: false, comment: 'Skyway' }],
+      ['POST', { type: 'A', name: 'example.com', content: IP, ttl: 1, proxied: false, comment: 'Skyway' }],
+    ]);
+  });
+
+  it('un registro idéntico que ya existe queda como «ya estaba» y no se modifica, aunque tenga el proxy', async () => {
+    const z = zonaDelOperador('ejemplo.es');
+    const previo = registro(z, { type: 'A', name: 'www.ejemplo.es', content: IP, proxied: true });
+    const r = await crear('pareja-existente', { domains: ['ejemplo.es'] });
+    expect(r.status, r.raw).toBe(201);
+    expect(r.json.dns.map((d: Json) => [d.domain, d.action])).toEqual([
+      ['www.ejemplo.es', 'kept'],
+      ['ejemplo.es', 'created'],
+    ]);
+    expect(escrituras().map((c) => [c.method, (c.body as Json).name])).toEqual([['POST', 'ejemplo.es']]);
+    expect(cf.records.find((x) => x.id === previo.id)).toMatchObject({ proxied: true, content: IP });
+  });
+
+  it('una pareja descartada no se añade ni se crea su registro', async () => {
+    zonaDelOperador('renuncia.es');
+    const r = await crear('sin-pareja', { domains: ['renuncia.es'], dominiosSinPareja: ['renuncia.es', 'otro.es'] });
+    expect(r.status, r.raw).toBe(201);
+    expect(r.json.service.config.domains).toEqual(['renuncia.es']);
+    // Solo lo que está en la lista y le falta la pareja.
+    expect(r.json.service.config.dominiosSinPareja).toEqual(['renuncia.es']);
+    expect(r.json.dns.map((d: Json) => d.domain)).toEqual(['renuncia.es']);
+    expect(escrituras().map((c) => (c.body as Json).name)).toEqual(['renuncia.es']);
+  });
+
+  it('al editar, el dominio nuevo y su pareja se crean en un solo guardado; reordenar después no llama a Cloudflare', async () => {
+    zonaDelOperador('edicion.es');
+    let r = await crear('edicion', {});
+    expect(r.status, r.raw).toBe(201);
+    const id = r.json.service.id as string;
+    cf.calls = [];
+    r = await call('PATCH', `/api/services/${id}`, admin(), { config: { domains: ['edicion.es'] }, domainsBase: [] });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.needsRedeploy).toBe(true);
+    expect(r.json.service.config.domains).toEqual(['www.edicion.es', 'edicion.es']);
+    expect(escrituras().map((c) => (c.body as Json).name)).toEqual(['www.edicion.es', 'edicion.es']);
+
+    cf.calls = [];
+    r = await call('PATCH', `/api/services/${id}`, admin(), {
+      config: { domains: ['edicion.es', 'www.edicion.es'] },
+      domainsBase: ['www.edicion.es', 'edicion.es'],
+    });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.needsRedeploy).toBe(false);
+    expect(r.json.dns).toBeUndefined();
+    expect(cf.calls).toEqual([]);
+  });
+});
+
+// ======================= desactivar el proxy =======================
+
+describe('«Desactivar proxy en Cloudflare»', () => {
+  let servicioId = '';
+  let zonaProxy = '';
+  const desactivar = (headers: Record<string, string>, domain: string) =>
+    call('POST', `/api/services/${servicioId}/cloudflare-proxy`, headers, { domain });
+  const parches = () => cf.calls.filter((c) => c.method === 'PATCH');
+  const reg = (name: string, type = 'A') => cf.records.find((x) => x.name === name && x.type === type)!;
+
+  beforeAll(async () => {
+    const z = zona('proxy.es');
+    zonaProxy = z.id;
+    cf.tokens.get(TOKEN_OP)!.zoneIds.push(z.id);
+    registro(z, { type: 'A', name: 'proxy.es', content: IP, proxied: true });
+    registro(z, { type: 'A', name: 'www.proxy.es', content: IP, proxied: true });
+    registro(z, { type: 'A', name: 'vecino.proxy.es', content: IP, proxied: true });
+    const r = await call('POST', `/api/projects/${projAdmin.id}/services`, admin(), {
+      type: 'image',
+      name: 'con-proxy',
+      image: 'nginx',
+      port: 80,
+      domains: ['proxy.es'],
+    });
+    expect(r.status, r.raw).toBe(201);
+    servicioId = r.json.service.id;
+    // El guardado automático no toca los registros que ya existían.
+    expect(r.json.dns.map((d: Json) => [d.domain, d.action])).toEqual([
+      ['www.proxy.es', 'kept'],
+      ['proxy.es', 'kept'],
+    ]);
+    expect(r.json.dns[1].message).toMatch(/proxy de Cloudflare activado/);
+    expect(cf.calls.filter((c) => c.method !== 'GET')).toEqual([]);
+    expect(reg('proxy.es').proxied).toBe(true);
+  });
+
+  it('solo el administrador, con sesión de navegador y con un dominio del servicio', async () => {
+    let r = await desactivar(ownerA, 'proxy.es');
+    expect(r.status).toBe(403);
+    r = await desactivar(memberA, 'proxy.es');
+    expect(r.status).toBe(403);
+    r = await desactivar(adminBearer, 'proxy.es');
+    expect(r.status).toBe(403);
+    expect(r.json.error).toMatch(/sesión de navegador/);
+    // Un nombre de la zona que el servicio no tiene no se toca.
+    r = await desactivar(admin(), 'vecino.proxy.es');
+    expect(r.status).toBe(404);
+    r = await desactivar(admin(), 'x`) || Host(`a');
+    expect(r.status).toBe(400);
+    expect(cf.calls).toEqual([]);
+    expect(listAudit({ action: 'cloudflare_proxy_disabled' })).toEqual([]);
+  });
+
+  it('quita el proxy solo de los A de ese nombre que apuntan aquí, lo audita y vuelve a comprobar el DNS', async () => {
+    const r = await desactivar(admin(), 'proxy.es');
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.result).toMatchObject({ domain: 'proxy.es', changed: 1 });
+    expect(r.json.result.message).toMatch(/Proxy desactivado/);
+    expect(r.json.check).toMatchObject({ domain: 'proxy.es', status: 'ok' });
+    expect(parches()).toEqual([
+      expect.objectContaining({ path: `/zones/${zonaProxy}/dns_records/${reg('proxy.es').id}`, body: { proxied: false } }),
+    ]);
+    expect(reg('proxy.es')).toMatchObject({ proxied: false, content: IP, type: 'A' });
+    // Ni su www ni otro nombre de la zona cambian.
+    expect(reg('www.proxy.es').proxied).toBe(true);
+    expect(reg('vecino.proxy.es').proxied).toBe(true);
+    expect(listAudit({ action: 'cloudflare_proxy_disabled' })[0]).toMatchObject({
+      actor: 'admin@example.com',
+      target_type: 'service',
+      target_id: servicioId,
+      detail: 'proxy.es: 1 registro(s)',
+    });
+
+    cf.calls = [];
+    const otra = await desactivar(admin(), 'proxy.es');
+    expect(otra.status, otra.raw).toBe(200);
+    expect(otra.json.result.changed).toBe(0);
+    expect(parches()).toEqual([]);
+  });
+
+  it('si un registro con proxy apunta a otro sitio, no se modifica ninguno y se explica', async () => {
+    const z = cf.zones.find((x) => x.id === zonaProxy)!;
+    const aaaa = registro(z, { type: 'AAAA', name: 'www.proxy.es', content: '2001:db8::5', proxied: true });
+    let r = await desactivar(admin(), 'www.proxy.es');
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/AAAA hacia 2001:db8::5 con el proxy activado.*no se ha modificado nada/);
+    cf.records = cf.records.filter((x) => x !== aaaa);
+
+    const ajeno = registro(z, { type: 'A', name: 'www.proxy.es', content: '198.51.100.9', proxied: true });
+    r = await desactivar(admin(), 'www.proxy.es');
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/A hacia 198\.51\.100\.9/);
+    expect(parches()).toEqual([]);
+    expect(reg('www.proxy.es').proxied).toBe(true);
+    cf.records = cf.records.filter((x) => x !== ajeno);
   });
 });

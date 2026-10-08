@@ -2,10 +2,12 @@
  * Cliente mínimo de la API v4 de Cloudflare, portado del de Mailway
  * (`server/src/core/cloudflare.ts`): solo lo que necesita el DNS automático
  * de los dominios de servicios (verificar el token, localizar la zona de un
- * nombre, leer sus registros y crear uno). No hay métodos para modificar
- * registros a propósito: Skyway nunca pisa un registro existente. Solo borra,
- * a petición del administrador en Ajustes → Cloudflare, un registro que creó
- * el propio DNS automático y que nadie ha cambiado desde entonces.
+ * nombre, leer sus registros y crear uno). No hay un método general para
+ * modificar registros a propósito: el DNS automático nunca pisa un registro
+ * existente. Las dos excepciones son acciones expresas del administrador:
+ * borrar en Ajustes → Cloudflare un registro que creó el propio DNS
+ * automático y que nadie ha cambiado, y desactivar el proxy («Desactivar proxy
+ * en Cloudflare»), que solo envía `proxied: false` y nada más.
  *
  * Los errores de Cloudflare se traducen a mensajes en español listos para la
  * interfaz, con `statusCode` para el manejador global (nunca 401: la interfaz
@@ -451,6 +453,21 @@ export class CloudflareClient {
    */
   async deleteRecord(zoneId: string, recordId: string): Promise<void> {
     await this.peticion<unknown>('DELETE', `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`);
+  }
+
+  /**
+   * Desactiva el proxy de un registro (nube gris). El cuerpo es solo
+   * `proxied: false`: ni el nombre, ni el tipo, ni el destino cambian. Solo lo
+   * usa «Desactivar proxy en Cloudflare», tras comprobar que el registro
+   * apunta a este servidor.
+   */
+  async desactivarProxy(zoneId: string, recordId: string): Promise<CfRegistro> {
+    const sobre = await this.peticion<RegistroCrudo>(
+      'PATCH',
+      `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
+      { body: { proxied: false } },
+    );
+    return aRegistro(sobre.result);
   }
 }
 

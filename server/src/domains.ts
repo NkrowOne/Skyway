@@ -64,10 +64,111 @@ const resolver = new dns.promises.Resolver({ timeout: 4000, tries: 2 });
 
 export interface DomainCheck {
   domain: string;
-  status: 'ok' | 'wrong_ip' | 'no_record' | 'unknown';
+  /**
+   * `cloudflare_proxy`: resuelve a direcciones del proxy de Cloudflare (nube
+   * naranja). No es un error: el proxy puede estar entregando el tráfico a
+   * este servidor, pero desde fuera no se puede comprobar.
+   */
+  status: 'ok' | 'wrong_ip' | 'cloudflare_proxy' | 'no_record' | 'unknown';
   resolvedIps: string[];
   expectedIp: string | null;
   message: string;
+}
+
+/**
+ * Rangos IPv4 publicados por Cloudflare para su proxy
+ * (https://www.cloudflare.com/ips-v4). Lista fija a propósito: consultarla en
+ * cada comprobación añadiría una salida a internet y un punto de fallo, y
+ * cambia muy de tarde en tarde.
+ */
+export const CLOUDFLARE_IPV4 = [
+  '173.245.48.0/20',
+  '103.21.244.0/22',
+  '103.22.200.0/22',
+  '103.31.4.0/22',
+  '141.101.64.0/18',
+  '108.162.192.0/18',
+  '190.93.240.0/20',
+  '188.114.96.0/20',
+  '197.234.240.0/22',
+  '198.41.128.0/17',
+  '162.158.0.0/15',
+  '104.16.0.0/13',
+  '104.24.0.0/14',
+  '172.64.0.0/13',
+  '131.0.72.0/22',
+] as const;
+
+/** Una IPv4 como entero sin signo, o null si no es una IPv4 válida. */
+function ipv4ANumero(ip: string): number | null {
+  if (!IPV4_RE.test(ip)) return null;
+  const partes = ip.split('.').map(Number);
+  if (partes.some((p) => p > 255)) return null;
+  return ((partes[0] << 24) | (partes[1] << 16) | (partes[2] << 8) | partes[3]) >>> 0;
+}
+
+/** ¿Está la IPv4 dentro del bloque CIDR (`a.b.c.d/n`)? */
+export function ipEnCidr(ip: string, cidr: string): boolean {
+  const [red, bitsTexto] = cidr.split('/');
+  const bits = Number(bitsTexto);
+  const n = ipv4ANumero(ip.trim());
+  const base = ipv4ANumero(red);
+  if (n === null || base === null || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+  // `<< 32` no desplaza nada en JavaScript: el /0 se trata aparte.
+  const mascara = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+  return ((n & mascara) >>> 0) === ((base & mascara) >>> 0);
+}
+
+/** ¿Es una dirección del proxy de Cloudflare? */
+export function esIpDeCloudflare(ip: string): boolean {
+  return CLOUDFLARE_IPV4.some((cidr) => ipEnCidr(ip, cidr));
+}
+
+/*
+ * Una frase por estado: el panel ya muestra la etiqueta y el registro que hay
+ * que crear, y los detalles del modo SSL/TLS los explica aparte (y la FAQ).
+ */
+const MENSAJE_PROXY_CLOUDFLARE = 'El registro tiene el proxy de Cloudflare activado: cámbialo a «Solo DNS» (nube gris) en Cloudflare.';
+
+/**
+ * Diagnóstico de un dominio a partir de lo que resuelve, sin red: separado de
+ * `checkDomain` para poder probar cada caso sin un resolutor de verdad.
+ */
+export function clasificarDns(domain: string, resolvedIps: string[], expectedIp: string | null): DomainCheck {
+  if (expectedIp && resolvedIps.includes(expectedIp)) {
+    return {
+      domain,
+      status: 'ok',
+      resolvedIps,
+      expectedIp,
+      message: 'El dominio apunta a este servidor.',
+    };
+  }
+
+  // Antes que la IP esperada: que el registro pasa por Cloudflare se sabe
+  // aunque no se conozca la IP de este servidor, y el mensaje genérico de
+  // «apunta a otra IP» llevaba a corregir un registro que quizá está bien.
+  if (resolvedIps.length > 0 && resolvedIps.every(esIpDeCloudflare)) {
+    return { domain, status: 'cloudflare_proxy', resolvedIps, expectedIp, message: MENSAJE_PROXY_CLOUDFLARE };
+  }
+
+  if (!expectedIp) {
+    return {
+      domain,
+      status: 'unknown',
+      resolvedIps,
+      expectedIp,
+      message: `No se conoce la IP de este servidor para compararla con ${resolvedIps.join(', ')}: configúrala en Ajustes → Dominios.`,
+    };
+  }
+
+  return {
+    domain,
+    status: 'wrong_ip',
+    resolvedIps,
+    expectedIp,
+    message: `El dominio apunta a ${resolvedIps.join(', ')} en lugar de ${expectedIp}.`,
+  };
 }
 
 /** Comprueba si un dominio ya apunta a este servidor, con diagnóstico legible. */
@@ -84,8 +185,7 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
         status: 'no_record',
         resolvedIps: [],
         expectedIp,
-        message:
-          'Aún no existe registro DNS para este dominio (o no se ha propagado). Crea el registro en tu proveedor de DNS y vuelve a comprobarlo: la propagación tarda de minutos a unas horas.',
+        message: 'El dominio aún no tiene un registro DNS.',
       };
     }
     return {
@@ -93,35 +193,9 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
       status: 'unknown',
       resolvedIps: [],
       expectedIp,
-      message: `No se pudo consultar el DNS (${err?.code || err?.message}). Vuelve a intentarlo en unos instantes.`,
+      message: `No se ha podido consultar el DNS (${err?.code || err?.message}).`,
     };
   }
 
-  if (!expectedIp) {
-    return {
-      domain,
-      status: 'unknown',
-      resolvedIps,
-      expectedIp,
-      message: `El dominio resuelve a ${resolvedIps.join(', ')}. No se pudo determinar la IP de este servidor: configúrala en Ajustes → Dominios para verificarla automáticamente.`,
-    };
-  }
-
-  if (resolvedIps.includes(expectedIp)) {
-    return {
-      domain,
-      status: 'ok',
-      resolvedIps,
-      expectedIp,
-      message: 'El dominio apunta a este servidor. El tráfico entrará por Traefik y, con Let\'s Encrypt configurado, el certificado se emite automáticamente en la primera visita.',
-    };
-  }
-
-  return {
-    domain,
-    status: 'wrong_ip',
-    resolvedIps,
-    expectedIp,
-    message: `El dominio apunta a ${resolvedIps.join(', ')} y este servidor es ${expectedIp}. Si utilizas Cloudflare u otro proxy intermedio, puede ser normal (comprueba que el proxy apunta a este servidor). En caso contrario, corrige el registro A.`,
-  };
+  return clasificarDns(domain, resolvedIps, expectedIp);
 }

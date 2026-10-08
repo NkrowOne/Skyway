@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { api } from './api';
+import { DomainsConfig } from './types';
 
 /**
  * Presencia con salida animada: mantiene el nodo montado `exitMs` tras cerrarse
@@ -109,4 +112,21 @@ export function isEditableTarget(e: KeyboardEvent): boolean {
   if (!el) return false;
   const tag = el.tagName;
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+}
+
+/**
+ * Dominio raíz de la plataforma (`GET /domains/config`), para aplicar la regla
+ * del dominio principal (`dominioPrincipal` en dominios.ts), que deja el
+ * subdominio generado al final. Es la misma consulta que la del editor de
+ * dominios: todas las tarjetas comparten una sola petición. `enabled` evita
+ * pedirla cuando no hay nada que ordenar (menos de dos dominios).
+ */
+export function useRootDomain(enabled = true): string | null {
+  const config = useQuery({
+    queryKey: ['domainsConfig'],
+    queryFn: () => api.get<DomainsConfig>('/domains/config'),
+    staleTime: 60_000,
+    enabled,
+  });
+  return config.data?.rootDomain ?? null;
 }

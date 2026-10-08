@@ -25,6 +25,7 @@ import {
 } from '../db';
 import { fireAlert, resolveAllServiceAlerts, resolveServiceAlerts } from '../alerts';
 import { diagnose } from './diagnose';
+import { dominioPrincipal } from '../dominioprincipal';
 import { emitDeploy, emitDeployFeed, toDeployFeedItem } from '../events';
 import { docker, dockerAvailable } from '../docker/client';
 import {
@@ -1037,7 +1038,7 @@ function nixpacksEnvFor(cfg: GitConfig, repoConfig: RailwayRepoConfig): Record<s
  * Se rellenan con el equivalente de Skyway y NUNCA se pisa un valor que el
  * usuario haya definido a mano.
  */
-function applyRailwayCompatEnv(
+export function applyRailwayCompatEnv(
   env: Record<string, string>,
   project: ProjectRow,
   service: ServiceRow,
@@ -1062,12 +1063,15 @@ function applyRailwayCompatEnv(
   // otro dentro del proyecto: aquí, su alias en la red del proyecto.
   put('RAILWAY_PRIVATE_DOMAIN', service.slug);
   if (internalPort) put('RAILWAY_TCP_PROXY_PORT', String(internalPort));
-  if (domains[0]) {
-    put('RAILWAY_PUBLIC_DOMAIN', domains[0]);
+  // El mismo dominio principal que `PUBLIC_DOMAIN` (`systemVars`): dos
+  // variables que dicen la dirección de la web no pueden discrepar.
+  const principal = dominioPrincipal(domains, getSetting('rootDomain'));
+  if (principal) {
+    put('RAILWAY_PUBLIC_DOMAIN', principal);
     // El esquema lo decide quien enruta: sin correo de Let's Encrypt, Traefik
     // no monta el router seguro y prometer https lleva a un 404 con un
     // certificado que no es el del dominio.
-    put('RAILWAY_STATIC_URL', `${getSetting('letsencryptEmail') ? 'https' : 'http'}://${domains[0]}`);
+    put('RAILWAY_STATIC_URL', `${getSetting('letsencryptEmail') ? 'https' : 'http'}://${principal}`);
   }
   // La forma que documenta Railway para encontrar el disco persistente; sus
   // plantillas oficiales la usan tal cual.
@@ -1506,7 +1510,7 @@ async function deployContainer(
           'un worker sin HTTP, elimina el dominio: no es necesario.',
       );
     } else {
-      log(`Dominios activos: ${domains.join(', ')}`);
+      log(`Dominios activos: ${domains.join(', ')} (dirección principal: ${dominioPrincipal(domains, getSetting('rootDomain'))})`);
     }
   }
   if (hostPort && internalPort) {

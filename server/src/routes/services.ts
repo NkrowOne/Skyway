@@ -1,11 +1,12 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, currentUser, requireAdmin, requireAuth } from '../auth';
+import { assertProjectAccess, currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
 import { audit } from '../audit';
 import { cloudflareConfigurado } from '../cloudflareconfig';
-import { dnsAutomaticoAdmin, dnsSinBase } from '../cloudflaredns';
+import { desactivarProxyCloudflare, dnsAutomaticoAdmin, dnsSinBase } from '../cloudflaredns';
 import { dbConsoleEngine } from '../dbconsole';
-import { domainClaimError } from '../domainguard';
+import { domainClaimError, dominiosConPareja } from '../domainguard';
+import { limpiarSinPareja, ordenarDominios } from '../dominioprincipal';
 import { markManualAction } from '../monitor';
 import {
   countWorkspaceServices,
@@ -15,6 +16,7 @@ import {
   getGithubInstallation,
   getProject,
   getService,
+  getSetting,
   latestDeployment,
   setEnv,
   setServiceStopped,
@@ -37,6 +39,7 @@ import { GithubError, parseGithubSlug } from '../github/client';
 import { resolveGitToken } from '../github/resolve';
 import { rateLimit } from '../ratelimit';
 import { dockerAvailable } from '../docker/client';
+import { checkDomain } from '../domains';
 import {
   configuredReplicas,
   containerName,
@@ -109,6 +112,14 @@ export const domainSchema = z
   .transform((d) => d.toLowerCase())
   .refine((d) => HOSTNAME.test(d), 'Dominio no válido: solo letras, números, guiones y puntos');
 
+/**
+ * Dominios cuya pareja con o sin www se descarta (`dominiosSinPareja`). Se
+ * guarda solo la parte que está en `domains` y a la que le falta la pareja
+ * (`limpiarSinPareja`), así que nunca crece más que la lista de dominios; el
+ * tope es para la petición.
+ */
+const sinParejaSchema = z.array(domainSchema).max(200);
+
 /** Recursos del plan de integraciones que se pueden omitir al aplicarlo. */
 const planSkipSchema = z.array(z.enum(['postgres', 'redis', 'mysql', 'mongo', 'minio', 'mail', 'empty'])).max(10);
 /** Huella del plan revisado (`IntegrationPlan.fingerprint`): sin ella no se aprueba nada privilegiado. */
@@ -131,6 +142,7 @@ const createGitSchema = z.object({
   // además es de dónde salió.
   port: z.coerce.number().int().min(1).max(65535).optional(),
   domains: z.array(domainSchema).default([]),
+  dominiosSinPareja: sinParejaSchema.optional(),
   autoDeploy: z.boolean().default(true),
   // Variables con las que nace el servicio (el asistente de alta las rellena
   // con las referencias a las bases que acaba de crear). Van ANTES del primer
@@ -162,6 +174,7 @@ const createImageSchema = z.object({
   port: z.coerce.number().int().min(1).max(65535).optional(),
   startCmd: z.string().trim().optional(),
   domains: z.array(domainSchema).default([]),
+  dominiosSinPareja: sinParejaSchema.optional(),
 });
 
 const patchSchema = z.object({
@@ -181,6 +194,7 @@ const patchSchema = z.object({
       // null; sin esto, NINGÚN ajuste suyo se podía guardar (Number(null)=0).
       port: z.coerce.number().int().min(1).max(65535).nullable().optional(),
       domains: z.array(domainSchema).optional(),
+      dominiosSinPareja: sinParejaSchema.optional(),
       hostPort: z.coerce.number().int().min(1).max(65535).nullable().optional(),
       cpus: z.coerce.number().min(0.1).max(64).nullable().optional(),
       memoryMb: z.coerce.number().int().min(32).max(1024 * 512).nullable().optional(),
@@ -273,14 +287,23 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (Array.isArray(reqDomains) && reqDomains.length > 0 && !moduleAllowedForProject(projectId, 'domains', isAdmin)) {
       return reply.code(403).send({ error: 'El módulo «Dominios y TLS» no está activo en este workspace.' });
     }
-    // Los dominios que pide ESTA alta: los únicos que pasan por el DNS automático.
+    // Los dominios que pide ESTA alta, con la pareja con o sin www de cada
+    // uno: los únicos que pasan por el DNS automático.
     let dominiosPedidos: string[] = [];
+    let sinPareja: string[] = [];
     if (base.type !== 'database') {
       // Antes de crear nada: un dominio de otro (o del panel) no se reparte.
-      const { domains } = z.object({ domains: z.array(domainSchema).default([]) }).parse(req.body);
-      const conflicto = domainClaimError(domains, { projectId, serviceId: null, isAdmin });
+      const pedidos = z
+        .object({ domains: z.array(domainSchema).default([]), dominiosSinPareja: sinParejaSchema.optional() })
+        .parse(req.body);
+      const claim = { projectId, serviceId: null, isAdmin };
+      const conflicto = domainClaimError(pedidos.domains, claim);
       if (conflicto) return reply.code(409).send({ error: conflicto });
-      dominiosPedidos = domains;
+      // La pareja que no se puede asignar (la usa otro servicio) se omite sin
+      // error: el alta del dominio pedido no depende de ella.
+      const conPareja = dominiosConPareja(pedidos.domains, { claim, sinPareja: pedidos.dominiosSinPareja });
+      dominiosPedidos = conPareja.domains;
+      sinPareja = conPareja.sinPareja;
     }
 
     let service: ServiceRow;
@@ -302,7 +325,11 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         image: body.image,
         port: body.port ?? null,
         startCmd: body.startCmd || undefined,
-        domains: body.domains,
+        // Con la pareja con o sin www y en el orden del dominio principal (www
+        // primero), el mismo con el que se calcula PUBLIC_URL: así la lista
+        // guardada, el panel y la variable dicen lo mismo.
+        domains: dominiosPedidos,
+        dominiosSinPareja: sinPareja.length > 0 ? sinPareja : undefined,
       };
       service = createService(projectId, body.name, slug, 'image', cfg);
     } else if (base.type === 'git') {
@@ -328,7 +355,8 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         // Nadie eligió el puerto: el primer despliegue puede corregirlo con el
         // EXPOSE de la imagen. En cuanto se elija uno a mano, esto desaparece.
         portAuto: body.port === undefined ? true : undefined,
-        domains: body.domains,
+        domains: dominiosPedidos,
+        dominiosSinPareja: sinPareja.length > 0 ? sinPareja : undefined,
         autoDeploy: body.autoDeploy,
         webhookSecret: randomToken(16),
       };
@@ -524,9 +552,16 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       body.config.domains = undefined;
     }
 
+    const isAdmin = currentUser(req)!.role === 'admin';
+    // Renuncias a la pareja con o sin www: las que manda la petición o, si no
+    // manda ninguna, las guardadas. Se aplican al completar los dominios y se
+    // guardan limpias tras el bucle.
+    const sinParejaPedida = (body.config?.dominiosSinPareja ?? oldCfg.dominiosSinPareja ?? []) as string[];
+
     if (body.config) {
       for (const [key, value] of Object.entries(body.config)) {
         if (value === undefined) continue;
+        if (key === 'dominiosSinPareja') continue;
         // El conector y el auto-deploy solo tienen sentido en servicios de repositorio.
         if (key === 'connectorId' && found.service.type !== 'git') continue;
         if (key === 'githubInstallationId' && found.service.type !== 'git') continue;
@@ -578,8 +613,32 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
           if ((normalized as any[]).length === 0) normalized = undefined;
         }
 
+        // Los dominios se guardan en el orden de la regla del dominio principal
+        // (www primero, el subdominio generado al final), venga como venga la
+        // lista. Se compara con la lista vieja ordenada igual: un servicio
+        // guardado con el orden antiguo ya despliega con el principal correcto
+        // (el despliegue aplica la misma regla), y ordenar no es un cambio que
+        // obligue a volver a desplegar.
+        //
+        // Cada dominio NUEVO llega con su pareja con o sin www (salvo renuncia
+        // expresa o que la pareja sea de otro servicio). Solo los nuevos: un
+        // servicio antiguo al que le falta la pareja no la recibe al guardar
+        // otra cosa o al reordenar, que seguiría sin desplegar ni llamar a
+        // Cloudflare; el panel indica que falta y la añade con un clic.
+        let anterior: unknown = oldCfg[key];
+        if (key === 'domains' && Array.isArray(value)) {
+          const raiz = getSetting('rootDomain');
+          const actuales = (oldCfg.domains ?? []) as string[];
+          normalized = dominiosConPareja(value as string[], {
+            claim: { projectId: found.project.id, serviceId: found.service.id, isAdmin, current: actuales },
+            sinPareja: sinParejaPedida,
+            nuevos: (value as string[]).filter((d) => !actuales.includes(d)),
+          }).domains;
+          anterior = ordenarDominios(actuales, raiz);
+        }
+
         if ((REDEPLOY_FIELDS as readonly string[]).includes(key)) {
-          if (JSON.stringify(oldCfg[key] ?? null) !== JSON.stringify(normalized ?? null)) needsRedeploy = true;
+          if (JSON.stringify(anterior ?? null) !== JSON.stringify(normalized ?? null)) needsRedeploy = true;
         }
         if (key === 'cpus' || key === 'memoryMb') {
           if ((oldCfg[key] ?? null) !== (value ?? null)) resourcesChanged = true;
@@ -588,6 +647,11 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         }
         newCfg[key] = normalized;
       }
+    }
+
+    if (body.config?.domains !== undefined || body.config?.dominiosSinPareja !== undefined) {
+      const sinPareja = limpiarSinPareja(sinParejaPedida, (newCfg.domains ?? []) as string[], getSetting('rootDomain'));
+      newCfg.dominiosSinPareja = sinPareja.length > 0 ? sinPareja : undefined;
     }
 
     // Cambiar el puerto a mano cierra la auto-detección: a partir de ahí manda
@@ -625,7 +689,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       const conflicto = domainClaimError(newCfg.domains as string[], {
         projectId: found.project.id,
         serviceId: found.service.id,
-        isAdmin: currentUser(req)!.role === 'admin',
+        isAdmin,
         current: oldDomainList,
       });
       if (conflicto) return reply.code(409).send({ error: conflicto });
@@ -634,7 +698,6 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     // Cuota agregada y módulos del workspace (recursos acotados a todos los proyectos en total).
     const workspace = workspaceOfProject(found.project.id);
     if (workspace) {
-      const isAdmin = currentUser(req)!.role === 'admin';
       if ((newCfg.replicas ?? 1) > 1 && !moduleAllowedForProject(found.project.id, 'replicas', isAdmin)) {
         return reply.code(403).send({ error: 'El módulo «Escalado horizontal» no está activo en este workspace.' });
       }
@@ -742,6 +805,35 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
       const dns = await dnsAutomaticoAdmin(req, [domain], { type: 'service', id }, found.project.id);
       return { dns: dns ?? [] };
+    },
+  );
+
+  /**
+   * «Desactivar proxy en Cloudflare» de UN dominio del servicio: quita el
+   * proxy de sus registros A que apuntan a este servidor y vuelve a comprobar
+   * el DNS. Solo el administrador, con sesión de navegador y nombrando un
+   * dominio que el servicio ya tiene guardado: es la única modificación de un
+   * registro existente y siempre es un clic expreso (`desactivarProxyCloudflare`).
+   */
+  app.post(
+    '/api/services/:id/cloudflare-proxy',
+    { preHandler: [requireAdmin, requireSession, rateLimit({ max: 10, windowMs: 60_000 })] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const found = loadService(id);
+      if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+      const { domain } = z.object({ domain: domainSchema }).parse(req.body ?? {});
+      const asignados = ((found.service.config as { domains?: string[] }).domains ?? []).map((d) => d.trim().toLowerCase());
+      if (!asignados.includes(domain)) {
+        return reply.code(404).send({ error: `El dominio ${domain} no está asignado a este servicio. Guarda antes los cambios.` });
+      }
+      const result = await desactivarProxyCloudflare(domain);
+      audit(req, 'cloudflare_proxy_disabled', {
+        type: 'service',
+        id,
+        detail: `${domain}: ${result.changed === 0 ? 'ya estaba desactivado' : `${result.changed} registro(s)`}`,
+      });
+      return { result, check: await checkDomain(domain) };
     },
   );
 
