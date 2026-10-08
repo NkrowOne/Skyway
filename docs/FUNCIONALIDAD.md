@@ -1092,16 +1092,21 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
 - **Dominios y TLS**: verificación DNS en vivo, subdominios con comodín, TLS
   automático con Let's Encrypt vía Traefik y redirección de HTTP a HTTPS en todo
   servicio con dominio. Dominio principal automático (www primero, §5.5). El
-  editor avisa de cada dominio propio al que le falta su pareja con o sin www
+  editor muestra los dominios en una lista con el estado del DNS (punto de color
+  y etiqueta: «Configurado», «Esperando DNS», «Apunta a otra IP», «Proxy de
+  Cloudflare») y, si falta algo, el registro A que hay que crear (tipo, nombre y
+  valor, con botón de copiar). Al final de la lista ofrece como filas sugeridas,
+  con su botón «Añadir», la pareja con o sin www de cada dominio propio
   (`ejemplo.com` ↔ `www.ejemplo.com`; solo el dominio registrable y su www, con
-  una lista corta de sufijos de dos niveles como `.com.es` o `.co.uk`) y la añade
-  con un clic. La comprobación del DNS de cada dominio que aún no es correcto se
+  una lista corta de sufijos de dos niveles como `.com.es` o `.co.uk`) y el
+  subdominio generado. La comprobación del DNS de cada dominio que aún no es correcto se
   repite sola: cada 15 s los dos primeros minutos, después cada minuto y hasta
   30 minutos, solo con la pestaña visible y con el intervalo alargado según el
   número de dominios para no pasar de 20 comprobaciones por minuto (el tope del
   servidor es 30). Un dominio que resuelve a las IP del proxy de Cloudflare (nube
-  naranja) se indica como «Proxy de Cloudflare» (aviso, no error) con lo que
-  necesita Let's Encrypt a través del proxy.
+  naranja) se indica como «Proxy de Cloudflare» (aviso, no error): el arreglo
+  recomendado («Solo DNS») a la vista y, en «Más información», lo que necesita
+  Let's Encrypt para mantener el proxy.
 - **Página de estado pública**: dashboard compartible por token (sin login), con
   disponibilidad 90 días, incidencias y aviso de mantenimiento; token rotable.
 - **Importador de Railway**: analiza un proyecto por la API oficial y recrea
@@ -1629,7 +1634,7 @@ distroless), el explorador lo indica y no está disponible.
 | GET | `/domains/server-ip` | auth | IP del servidor (configurada o detectada) |
 | GET | `/domains/config` | auth | `{rootDomain, tls}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin) |
 | GET | `/projects/:id/github/needs` | +access | dependencias del repo antes de crearlo (`repo`, `branch`, `rootDir?`, `source?`, `name?`): `needs`, `suggestions`, `missing`, `mail`, `manifest`, `envFile` (§5.5) y `plan`, el plan de integraciones sin efectos (§5.7) |
-| POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`) → `{check: {domain, status, resolvedIps, expectedIp, message}}`; `status`: `ok`, `wrong_ip`, `cloudflare_proxy` (resuelve solo a IP del proxy de Cloudflare: no se puede verificar desde fuera; el mensaje explica el modo SSL/TLS «Full (strict)»/«Full», «Always Use HTTPS» y la opción «Solo DNS»), `no_record` o `unknown`; 30 por minuto y usuario, después 429 (el editor repite sola la comprobación de los dominios pendientes por debajo de ese tope) |
+| POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`) → `{check: {domain, status, resolvedIps, expectedIp, message}}`; `status`: `ok`, `wrong_ip`, `cloudflare_proxy` (resuelve solo a IP del proxy de Cloudflare: no se puede verificar desde fuera; el mensaje indica la opción «Solo DNS»; el panel explica aparte el modo SSL/TLS «Full»/«Full (strict)» y «Always Use HTTPS»); `message` es siempre una sola frase, `no_record` o `unknown`; 30 por minuto y usuario, después 429 (el editor repite sola la comprobación de los dominios pendientes por debajo de ese tope) |
 | GET | `/public/status/:token` | público | página de estado pública (cacheada) |
 | GET | `/projects/:id/status-page` | +access | config de la página de estado |
 | POST | `/projects/:id/status-page` | admin | activa/desactiva y aviso |

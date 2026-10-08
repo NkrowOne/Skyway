@@ -124,10 +124,11 @@ export function esIpDeCloudflare(ip: string): boolean {
   return CLOUDFLARE_IPV4.some((cidr) => ipEnCidr(ip, cidr));
 }
 
-const MENSAJE_PROXY_CLOUDFLARE =
-  'El dominio resuelve a direcciones del proxy de Cloudflare (nube naranja): el registro pasa por el proxy y no es posible comprobar directamente si apunta a este servidor. ' +
-  'Let\'s Encrypt solo puede validar el certificado a través del proxy (HTTP-01) si el modo SSL/TLS de Cloudflare es «Full (strict)» o «Full» y la opción «Always Use HTTPS» no bloquea la ruta /.well-known/acme-challenge. ' +
-  'La opción más sencilla es cambiar el registro a «Solo DNS» (nube gris) en Cloudflare.';
+/*
+ * Una frase por estado: el panel ya muestra la etiqueta y el registro que hay
+ * que crear, y los detalles del modo SSL/TLS los explica aparte (y la FAQ).
+ */
+const MENSAJE_PROXY_CLOUDFLARE = 'El registro tiene el proxy de Cloudflare activado: cámbialo a «Solo DNS» (nube gris) en Cloudflare.';
 
 /**
  * Diagnóstico de un dominio a partir de lo que resuelve, sin red: separado de
@@ -140,7 +141,7 @@ export function clasificarDns(domain: string, resolvedIps: string[], expectedIp:
       status: 'ok',
       resolvedIps,
       expectedIp,
-      message: 'El dominio apunta a este servidor. El tráfico entrará por Traefik y, con Let\'s Encrypt configurado, el certificado se emite automáticamente en la primera visita.',
+      message: 'El dominio apunta a este servidor.',
     };
   }
 
@@ -157,7 +158,7 @@ export function clasificarDns(domain: string, resolvedIps: string[], expectedIp:
       status: 'unknown',
       resolvedIps,
       expectedIp,
-      message: `El dominio resuelve a ${resolvedIps.join(', ')}. No se pudo determinar la IP de este servidor: configúrala en Ajustes → Dominios para verificarla automáticamente.`,
+      message: `No se conoce la IP de este servidor para compararla con ${resolvedIps.join(', ')}: configúrala en Ajustes → Dominios.`,
     };
   }
 
@@ -166,7 +167,7 @@ export function clasificarDns(domain: string, resolvedIps: string[], expectedIp:
     status: 'wrong_ip',
     resolvedIps,
     expectedIp,
-    message: `El dominio apunta a ${resolvedIps.join(', ')} y este servidor es ${expectedIp}. Si utilizas un proxy intermedio, puede ser normal (comprueba que el proxy apunta a este servidor). En caso contrario, corrige el registro A.`,
+    message: `El dominio apunta a ${resolvedIps.join(', ')} en lugar de ${expectedIp}.`,
   };
 }
 
@@ -184,8 +185,7 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
         status: 'no_record',
         resolvedIps: [],
         expectedIp,
-        message:
-          'Aún no existe registro DNS para este dominio (o no se ha propagado). Crea el registro en tu proveedor de DNS: la comprobación se repite automáticamente y la propagación tarda de minutos a unas horas.',
+        message: 'El dominio aún no tiene un registro DNS.',
       };
     }
     return {
@@ -193,7 +193,7 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
       status: 'unknown',
       resolvedIps: [],
       expectedIp,
-      message: `No se pudo consultar el DNS (${err?.code || err?.message}). Vuelve a intentarlo en unos instantes.`,
+      message: `No se ha podido consultar el DNS (${err?.code || err?.message}).`,
     };
   }
 
