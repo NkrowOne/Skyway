@@ -52,7 +52,7 @@ repositorio, igual que el `.env.example`.
 | Origen | Valor |
 | --- | --- |
 | `postgres.url`, `redis.url` | Referencia a la base del proyecto: `${{PostgreSQL.DATABASE_URL}}`. Si el proyecto no la tiene, se crea. |
-| `self.public_url` | Referencia a la URL pública del propio servicio (`${{<servicio>.PUBLIC_URL}}`). Hasta que el servicio tenga dominio, queda pendiente. |
+| `self.public_url` | Referencia a la URL pública del propio servicio (`${{<servicio>.PUBLIC_URL}}`), que lleva su dominio principal: el que empieza por `www.` si lo tiene; si no, el primer dominio propio, y el subdominio generado solo si es el único. Hasta que el servicio tenga dominio, queda pendiente. |
 | `mail.host`, `mail.port` | Servidor de envío autenticado de Mailway y su puerto (587, STARTTLS). |
 | `mail.secure`, `mail.starttls`, `mail.encryption` | El cifrado con la convención de cada librería: `false` (nodemailer), `true` (Django) o `tls` (Laravel). |
 | `mail.user`, `mail.from` | Dirección del buzón remitente. |

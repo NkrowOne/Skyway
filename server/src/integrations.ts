@@ -65,6 +65,7 @@ import {
 } from './mailconnect';
 import { MailMode, MailRole, mailValue } from './mailenv';
 import { MailwayError, MailwayInfo, MailwayMailbox, MailwaySummary, createMailbox, getInfo, mailwayConfigured } from './mailway';
+import { dominioPrincipal } from './dominioprincipal';
 import { manifestEngines, manifestMailMode, manifestWantsMail, reservedManifestVar } from './manifest';
 import { managedUnchanged, envStateOf, EnvState, writeDecision } from './managedenv';
 import { markManualAction } from './monitor';
@@ -337,7 +338,9 @@ export function buildPlan(opts: {
     for (const [name, entry] of Object.entries(manifest.env ?? {})) {
       if ('from' in entry) {
         if (entry.from === 'self.public_url') {
-          harmless(name, 'self.public_url', target.domains[0] ? selfRef : null, selfRef, SIN_DOMINIO);
+          // La referencia apunta a `PUBLIC_URL`, que lleva el dominio principal
+          // (`dominioPrincipal`); aquí solo importa que haya alguno.
+          harmless(name, 'self.public_url', dominioPrincipal(target.domains) ? selfRef : null, selfRef, SIN_DOMINIO);
         } else if (entry.from === 'postgres.url' || entry.from === 'redis.url') {
           const engine = entry.from.split('.')[0];
           dbWants.push({ name, engine, refVar: getTemplate(engine)!.conn.main, evidence: `${needs.manifestFile}: ${name}` });

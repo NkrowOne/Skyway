@@ -1340,6 +1340,22 @@ export interface DnsAutoResult {
   message: string;
 }
 
+/** Lo que el servidor cuenta del dominio raíz y el TLS a cualquier usuario (`GET /domains/config`). */
+export interface DomainsConfig {
+  rootDomain: string | null;
+  tls: boolean;
+}
+
+/** Comprobación del DNS de un dominio (`POST /domains/check`, `DomainCheck` de server/src/domains.ts). */
+export interface DomainCheck {
+  domain: string;
+  /** `cloudflare_proxy`: resuelve al proxy de Cloudflare (nube naranja); no se puede verificar desde fuera. */
+  status: 'ok' | 'wrong_ip' | 'cloudflare_proxy' | 'no_record' | 'unknown';
+  resolvedIps: string[];
+  expectedIp: string | null;
+  message: string;
+}
+
 /** DNS automático del alta de un dominio de correo (Mailway, solo administrador). */
 export interface MailAutoDnsResult {
   applied: { action: string; type: string; name: string }[];

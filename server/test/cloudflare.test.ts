@@ -467,6 +467,21 @@ describe('DNS automático de los dominios de servicios: administrador', () => {
     expect(cf.calls).toEqual([]);
   });
 
+  it('reordenar los dominios no cuenta como añadir ni quitar: ni conflicto ni llamadas a Cloudflare', async () => {
+    const antes = (await call('GET', `/api/services/${servicioId}`, admin())).json.service.config.domains as string[];
+    expect(antes.length).toBeGreaterThan(1);
+    cf.calls = [];
+    const r = await call('PATCH', `/api/services/${servicioId}`, admin(), {
+      config: { domains: [...antes].reverse() },
+      // La base, en otro orden más: lo que cuenta es el conjunto.
+      domainsBase: [...antes.slice(1), antes[0]],
+    });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.dns).toBeUndefined();
+    expect(cf.calls).toEqual([]);
+    expect(new Set(r.json.service.config.domains)).toEqual(new Set(antes));
+  });
+
   it('un comodín solo cuenta si resuelve el nombre: si apunta a otro sitio es un conflicto, y con otros registros en el nombre no se aplica', async () => {
     const op = cf.zones.find((z) => z.name === 'operador.com')!;
     const extra = [

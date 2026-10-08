@@ -6,6 +6,7 @@ import { cloudflareConfigurado } from '../cloudflareconfig';
 import { dnsAutomaticoAdmin, dnsSinBase } from '../cloudflaredns';
 import { dbConsoleEngine } from '../dbconsole';
 import { domainClaimError } from '../domainguard';
+import { ordenarDominios } from '../dominioprincipal';
 import { markManualAction } from '../monitor';
 import {
   countWorkspaceServices,
@@ -15,6 +16,7 @@ import {
   getGithubInstallation,
   getProject,
   getService,
+  getSetting,
   latestDeployment,
   setEnv,
   setServiceStopped,
@@ -302,7 +304,10 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         image: body.image,
         port: body.port ?? null,
         startCmd: body.startCmd || undefined,
-        domains: body.domains,
+        // En el orden del dominio principal (www primero), el mismo con el que
+        // se calcula PUBLIC_URL: así la lista guardada, el panel y la variable
+        // dicen lo mismo.
+        domains: ordenarDominios(body.domains, getSetting('rootDomain')),
       };
       service = createService(projectId, body.name, slug, 'image', cfg);
     } else if (base.type === 'git') {
@@ -328,7 +333,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         // Nadie eligió el puerto: el primer despliegue puede corregirlo con el
         // EXPOSE de la imagen. En cuanto se elija uno a mano, esto desaparece.
         portAuto: body.port === undefined ? true : undefined,
-        domains: body.domains,
+        domains: ordenarDominios(body.domains, getSetting('rootDomain')),
         autoDeploy: body.autoDeploy,
         webhookSecret: randomToken(16),
       };
@@ -578,8 +583,21 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
           if ((normalized as any[]).length === 0) normalized = undefined;
         }
 
+        // Los dominios se guardan en el orden de la regla del dominio principal
+        // (www primero, el subdominio generado al final), venga como venga la
+        // lista. Se compara con la lista vieja ordenada igual: un servicio
+        // guardado con el orden antiguo ya despliega con el principal correcto
+        // (el despliegue aplica la misma regla), y ordenar no es un cambio que
+        // obligue a volver a desplegar.
+        let anterior: unknown = oldCfg[key];
+        if (key === 'domains' && Array.isArray(value)) {
+          const raiz = getSetting('rootDomain');
+          normalized = ordenarDominios(value as string[], raiz);
+          anterior = ordenarDominios((oldCfg.domains ?? []) as string[], raiz);
+        }
+
         if ((REDEPLOY_FIELDS as readonly string[]).includes(key)) {
-          if (JSON.stringify(oldCfg[key] ?? null) !== JSON.stringify(normalized ?? null)) needsRedeploy = true;
+          if (JSON.stringify(anterior ?? null) !== JSON.stringify(normalized ?? null)) needsRedeploy = true;
         }
         if (key === 'cpus' || key === 'memoryMb') {
           if ((oldCfg[key] ?? null) !== (value ?? null)) resourcesChanged = true;

@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.36.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.37.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -77,7 +77,10 @@ server/src/
   disk.ts               uso de disco por servicio y del host
   purge.ts              borrado completo de proyectos y servicios (siempre con sus datos) y «Datos sin
                         proyecto»: regla de volúmenes huérfanos, listado y limpieza (§3.1)
-  domains.ts            IP del servidor + verificación DNS de dominios
+  domains.ts            IP del servidor + verificación DNS de dominios (`clasificarDns`; distingue el proxy
+                        de Cloudflare por sus rangos IPv4 publicados)
+  dominioprincipal.ts   regla del dominio principal (`ordenarDominios`/`dominioPrincipal`): www primero,
+                        el resto en su orden y el subdominio generado al final; sin dependencias (§5.5)
   cloudflare.ts         cliente mínimo de la API de Cloudflare (verificar token, zona de un nombre, leer
                         registros, crear uno y borrar uno concreto; sin métodos para cambiar), portado del de Mailway
   cloudflareconfig.ts   token de Cloudflare del administrador en `settings` (`cloudflare.token`, nunca se
@@ -820,8 +823,25 @@ desde fuera (`systemVars` en `variables.ts`):
 | `INTERNAL_HOST` | slug del servicio (su nombre DNS en la red del proyecto) | siempre |
 | `INTERNAL_PORT` | puerto interno (plantilla en BBDD; elegido en imagen; elegido o 3000 en repo) | si tiene puerto |
 | `INTERNAL_URL` | `http://<slug>:<puerto>` | repo/imagen con puerto (una BBDD ya exporta su `DATABASE_URL`, `REDIS_URL`…) |
-| `PUBLIC_DOMAIN` | primer dominio del servicio | si tiene dominio |
-| `PUBLIC_URL` | `https://<dominio>` (o `http://` sin Let's Encrypt) | si tiene dominio |
+| `PUBLIC_DOMAIN` | dominio principal del servicio (ver abajo) | si tiene dominio |
+| `PUBLIC_URL` | `https://<dominio principal>` (o `http://` sin Let's Encrypt) | si tiene dominio |
+
+**Dominio principal.** Con varios dominios, el que se publica como dirección de
+la web (`PUBLIC_DOMAIN`, `PUBLIC_URL`, `RAILWAY_PUBLIC_DOMAIN`,
+`RAILWAY_STATIC_URL`, `self.public_url` del manifiesto) lo decide una regla
+fija, sin selector manual (`dominioprincipal.ts`): primero un dominio propio con
+`www.`; después el resto de dominios propios en el orden guardado; el subdominio
+generado (`<slug>.<dominio raíz>`) al final, salvo que sea el único. Antes era
+el primero de la lista, que se guardaba en el orden en que se añadían: quien
+daba de alta `ejemplo.com` y después `www.ejemplo.com` dejaba la URL pública
+sin www (y con ella la URL canónica, las redirecciones y la indexación). La
+lista se guarda ya en ese orden al crear o editar el servicio y al importarlo de
+Railway, y el despliegue y el resolutor aplican la regla al leer: un servicio
+guardado con el orden antiguo publica el principal correcto en el siguiente
+despliegue. Reordenar no es añadir ni quitar: ni el DNS automático (§7.13) ni la
+comprobación de `domainsBase` lo cuentan como cambio, y el enrutado de Traefik
+sigue atendiendo todos los dominios. Ajustes → Dominios enseña la lista en ese
+orden con el chip «Principal» en el primero (con dos dominios o más).
 
 Se usan de dos formas: **otro servicio las referencia** (`${{api.INTERNAL_URL}}`,
 `${{web.PUBLIC_URL}}`) y el resolutor las aplica cuando el servicio apuntado no
@@ -908,7 +928,7 @@ que una aplicación migrada que las lea siga funcionando:
 `RAILWAY_SERVICE_ID`, `RAILWAY_ENVIRONMENT`, `RAILWAY_ENVIRONMENT_NAME`,
 `RAILWAY_DEPLOYMENT_ID`, `RAILWAY_REPLICA_ID`, `RAILWAY_PRIVATE_DOMAIN` (el alias
 del servicio en la red del proyecto), `RAILWAY_TCP_PROXY_PORT`,
-`RAILWAY_PUBLIC_DOMAIN` y `RAILWAY_STATIC_URL` (si el servicio tiene dominio),
+`RAILWAY_PUBLIC_DOMAIN` y `RAILWAY_STATIC_URL` (si el servicio tiene dominio: el principal),
 `RAILWAY_GIT_COMMIT_SHA`, `RAILWAY_GIT_COMMIT_MESSAGE` y `RAILWAY_GIT_BRANCH`.
 
 ### 5.6 Copia de datos desde una base externa
@@ -1071,7 +1091,17 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   (§3.1).
 - **Dominios y TLS**: verificación DNS en vivo, subdominios con comodín, TLS
   automático con Let's Encrypt vía Traefik y redirección de HTTP a HTTPS en todo
-  servicio con dominio.
+  servicio con dominio. Dominio principal automático (www primero, §5.5). El
+  editor avisa de cada dominio propio al que le falta su pareja con o sin www
+  (`ejemplo.com` ↔ `www.ejemplo.com`; solo el dominio registrable y su www, con
+  una lista corta de sufijos de dos niveles como `.com.es` o `.co.uk`) y la añade
+  con un clic. La comprobación del DNS de cada dominio que aún no es correcto se
+  repite sola: cada 15 s los dos primeros minutos, después cada minuto y hasta
+  30 minutos, solo con la pestaña visible y con el intervalo alargado según el
+  número de dominios para no pasar de 20 comprobaciones por minuto (el tope del
+  servidor es 30). Un dominio que resuelve a las IP del proxy de Cloudflare (nube
+  naranja) se indica como «Proxy de Cloudflare» (aviso, no error) con lo que
+  necesita Let's Encrypt a través del proxy.
 - **Página de estado pública**: dashboard compartible por token (sin login), con
   disponibilidad 90 días, incidencias y aviso de mantenimiento; token rotable.
 - **Importador de Railway**: analiza un proyecto por la API oficial y recrea
@@ -1085,7 +1115,7 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   servicios entre sí se traducen a lo que existe aquí: `RAILWAY_PRIVATE_DOMAIN`
   y `RAILWAY_TCP_PROXY_DOMAIN` → el slug del servicio destino (su nombre DNS en
   la red del proyecto), `RAILWAY_TCP_PROXY_PORT` y `PORT` → su puerto interno,
-  `RAILWAY_PUBLIC_DOMAIN`/`RAILWAY_STATIC_URL` → su dominio, `RAILWAY_PROJECT_NAME`
+  `RAILWAY_PUBLIC_DOMAIN`/`RAILWAY_STATIC_URL` → su dominio principal (§5.5), `RAILWAY_PROJECT_NAME`
   y `RAILWAY_ENVIRONMENT` → los de aquí, y `${{secret(n)}}` → un secreto generado.
   Las referencias que **no** van a resolver —un servicio que no se importó, una
   variable que la plantilla de base de datos de Skyway no exporta, un destino sin
@@ -1485,9 +1515,9 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[], dns?}`; atómica (409 si choca un nombre); `domain` como en crear servicio (409 si ya lo usa otro servicio o está reservado); `services[].config` sin `webhookSecret`. `dns`: DNS automático del dominio (§7.13, solo admin con token) |
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada); 20 por minuto y usuario, después 429 |
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas, también `dns?` |
-| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas), aquí y en el PATCH, y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
+| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas y en el orden del dominio principal, §5.5), aquí y en el PATCH, y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
-| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
+| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); la lista se guarda en el orden del dominio principal (§5.5), y un cambio solo de orden no cuenta como dominio nuevo (ni pide volver a desplegar si, ordenada, la lista queda igual); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
 | DELETE | `/services/:id?confirm=<nombre>` | +access | elimina el servicio con **todos sus datos** (§3.1), salvo los volúmenes que comparta con otro servicio del proyecto; `confirm` (nombre o slug), 503 y los dos 409 como en proyectos → `{ok, warnings, removed: {volumes[], images, backups}}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
@@ -1599,7 +1629,7 @@ distroless), el explorador lo indica y no está disponible.
 | GET | `/domains/server-ip` | auth | IP del servidor (configurada o detectada) |
 | GET | `/domains/config` | auth | `{rootDomain, tls}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin) |
 | GET | `/projects/:id/github/needs` | +access | dependencias del repo antes de crearlo (`repo`, `branch`, `rootDir?`, `source?`, `name?`): `needs`, `suggestions`, `missing`, `mail`, `manifest`, `envFile` (§5.5) y `plan`, el plan de integraciones sin efectos (§5.7) |
-| POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`); 30 por minuto y usuario, después 429 |
+| POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`) → `{check: {domain, status, resolvedIps, expectedIp, message}}`; `status`: `ok`, `wrong_ip`, `cloudflare_proxy` (resuelve solo a IP del proxy de Cloudflare: no se puede verificar desde fuera; el mensaje explica el modo SSL/TLS «Full (strict)»/«Full», «Always Use HTTPS» y la opción «Solo DNS»), `no_record` o `unknown`; 30 por minuto y usuario, después 429 (el editor repite sola la comprobación de los dominios pendientes por debajo de ese tope) |
 | GET | `/public/status/:token` | público | página de estado pública (cacheada) |
 | GET | `/projects/:id/status-page` | +access | config de la página de estado |
 | POST | `/projects/:id/status-page` | admin | activa/desactiva y aviso |

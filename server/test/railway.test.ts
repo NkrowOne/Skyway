@@ -69,6 +69,16 @@ describe('rewriteRailwayRefs', () => {
     expect([...changed].sort()).toEqual(['B', 'C', 'D', 'H', 'I']);
     expect(unresolved, unresolved.join('\n')).toHaveLength(3);
   });
+
+  it('RAILWAY_PUBLIC_DOMAIN se sustituye por el dominio principal (www primero), no por el primero de la lista', () => {
+    const conWww: RailwayRefCtx = {
+      ...ctx,
+      byName: new Map<string, Entry>([['web', { slug: 'web', port: 3000, domains: ['bufete.es', 'www.bufete.es'], vars: new Set() }]]),
+    };
+    const vars: Record<string, string> = { URL: 'https://${{web.RAILWAY_PUBLIC_DOMAIN}}' };
+    rewriteRailwayRefs('web', vars, conWww);
+    expect(vars.URL).toBe('https://www.bufete.es');
+  });
 });
 
 describe('parseGithubSlug', () => {

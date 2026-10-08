@@ -238,8 +238,10 @@ export const FAQ: FaqEntry[] = [
     answer:
       'En **Ajustes del servicio → Dominios**, escribe el nombre (`app.midominio.com`) y guarda. Skyway configura Traefik, solicita el certificado TLS a Let\'s Encrypt y redirige HTTP a HTTPS: normalmente el dominio está en servicio en uno o dos minutos.\n\n' +
       'Previamente, en el proveedor de DNS, crea un registro **A** del dominio que apunte a la **IP del servidor** (el panel la muestra junto al campo y permite **comprobar el DNS** al momento). Para `www` y otros subdominios puedes utilizar un **CNAME** al dominio principal.\n\n' +
+      'Para que la web funcione con y sin www, añade los dos dominios (`midominio.com` y `www.midominio.com`); el panel indica el que falta y permite añadirlo con un clic. El dominio con www es la **dirección principal** (chip «Principal»): la que reciben `PUBLIC_URL` y `PUBLIC_DOMAIN`. Sin www, lo es el primer dominio propio, y el subdominio generado solo si es el único.\n\n' +
+      'La comprobación del DNS se repite automáticamente mientras no sea correcta. Si indica «Proxy de Cloudflare», el registro tiene el proxy activado (nube naranja): cámbialo a «Solo DNS» (nube gris), o configura el modo SSL/TLS «Full (strict)» o «Full» sin que «Always Use HTTPS» bloquee `/.well-known/acme-challenge`.\n\n' +
       'El dominio requiere que el servicio tenga **Puerto interno**: un worker sin puerto no puede tener dominio.',
-    keywords: ['dominio', 'domain', 'dns', 'registro a', 'cname', 'https', 'ssl', 'tls', 'certificado', 'subdominio', 'traefik', 'lets encrypt', 'apuntar', 'ip'],
+    keywords: ['dominio', 'domain', 'dns', 'registro a', 'cname', 'https', 'ssl', 'tls', 'certificado', 'subdominio', 'traefik', 'lets encrypt', 'apuntar', 'ip', 'www', 'principal', 'public_url', 'proxy'],
   },
   {
     id: 'dns-automatico-cloudflare',

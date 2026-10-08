@@ -1,5 +1,7 @@
 import { memo } from 'react';
 import { BellRing, Globe } from 'lucide-react';
+import { dominioPrincipal } from '../dominios';
+import { useRootDomain } from '../hooks';
 import { useServiceLive } from '../livemetrics';
 import { ActiveDeploy, Service } from '../types';
 import { cx, DEPLOY_STATUS_LABEL, fmtBytes, fmtCores, fmtMb, serviceStatus } from '../utils';
@@ -57,7 +59,11 @@ const ServiceCard = memo(function ServiceCard({
   const limiteMem = service.config.memoryMb ?? null;
   const cpuEnAviso = !!(stats && limiteCpu && stats.cpuPercent / 100 >= limiteCpu * CPU_ALERT);
   const isDb = service.type === 'database';
-  const domain = !isDb ? service.config.domains?.[0] : undefined;
+  // El principal (el de PUBLIC_URL), no el primero guardado: un servicio con
+  // el orden antiguo enseñaba el dominio sin www o el subdominio generado.
+  const domains = !isDb ? service.config.domains ?? [] : [];
+  const rootDomain = useRootDomain(domains.length > 1);
+  const domain = dominioPrincipal(domains, rootDomain) ?? undefined;
   const subtitle = isDb
     ? `${(TEMPLATE_LABEL[service.config.template] ?? service.config.template).toLowerCase()}:${service.config.version}`
     : service.type === 'image'

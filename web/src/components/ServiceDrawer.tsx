@@ -2,7 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, ChevronLeft, ExternalLink, Hammer, MoveHorizontal, Play, RefreshCw, Rocket, ScrollText, Square, Terminal, X } from 'lucide-react';
 import { api } from '../api';
-import { useLatch, useLocalStorage, useMediaQuery } from '../hooks';
+import { dominioPrincipal } from '../dominios';
+import { useLatch, useLocalStorage, useMediaQuery, useRootDomain } from '../hooks';
 import { MetricPoint } from '../pages/Project';
 import { useServiceLiveReplicas, useServiceLiveState } from '../livemetrics';
 import { Deployment, DbOverview, Project, Runtime, Service } from '../types';
@@ -146,6 +147,9 @@ export default function ServiceDrawer({
     // configuración, y a 4 s sumaba tres sondeos con el panel abierto.
     refetchInterval: 8000,
   });
+  // Para el dominio principal de la cabecera (ver más abajo). Antes de los
+  // `return` tempranos: es un hook.
+  const rootDomain = useRootDomain((detail.data?.service.config.domains?.length ?? 0) > 1);
 
   useEffect(() => {
     if (!detail.data || pestanaFijada.current === serviceId) return;
@@ -319,7 +323,8 @@ export default function ServiceDrawer({
     { key: 'files', label: 'Archivos' },
     { key: 'settings', label: 'Ajustes' },
   ];
-  const domain = service.type !== 'database' ? service.config.domains?.[0] : undefined;
+  // El principal (el de PUBLIC_URL), no el primero guardado.
+  const domain = service.type !== 'database' ? dominioPrincipal(service.config.domains, rootDomain) ?? undefined : undefined;
   const subtitle =
     service.type === 'git'
       ? `${service.config.repoUrl.replace(/^https?:\/\/(www\.)?/, '')} · ${service.config.branch}`

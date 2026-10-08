@@ -12,6 +12,7 @@ import {
   setSetting,
 } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
+import { dominioPrincipal, ordenarDominios } from '../dominioprincipal';
 import { getTemplate } from '../templates';
 import { DatabaseConfig, GitConfig, ImageConfig, ProjectRow, VolumeMount } from '../types';
 import { slugify, randomToken } from '../util';
@@ -193,7 +194,11 @@ async function planService(
   const base: PlannedService = {
     railwayName: raw.name,
     kind: 'skipped',
-    domains: domains.valid,
+    // En el orden de la regla del dominio principal (www primero): es el que
+    // se guarda, y con él `PUBLIC_URL` y la sustitución de RAILWAY_PUBLIC_DOMAIN.
+    // Sin dominio raíz: son los dominios propios que tenía en Railway, nunca
+    // el subdominio que genera esta plataforma.
+    domains: ordenarDominios(domains.valid),
     volumeMounts: raw.volumeMounts,
     varCount: Object.keys(vars).length,
     notes,
@@ -498,10 +503,14 @@ export function rewriteRailwayRefs(
           if (target?.port) return String(target.port);
           break;
         case 'RAILWAY_PUBLIC_DOMAIN':
-        case 'RAILWAY_STATIC_URL':
-          if (target?.domains[0]) return target.domains[0];
+        case 'RAILWAY_STATIC_URL': {
+          // Los dominios del plan ya van ordenados, pero la regla vive en un
+          // solo sitio: el valor escrito debe ser el mismo que `PUBLIC_DOMAIN`.
+          const principal = target ? dominioPrincipal(target.domains) : null;
+          if (principal) return principal;
           unresolved.push(`${varName} → ${match} (ese servicio no tiene dominio propio: añádele uno y sustituye el valor manualmente)`);
           return match;
+        }
         case 'RAILWAY_SERVICE_NAME':
           if (target) return target.slug;
           break;

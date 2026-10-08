@@ -1,31 +1,21 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, Cloud, ExternalLink, Globe, Plus, RefreshCw, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Cloud, ExternalLink, Globe, Plus, RefreshCw, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
-import { CloudflareConfigView, DnsAutoResult, Me } from '../types';
+import { intervaloComprobacion, ordenarDominios, parejasWwwPendientes } from '../dominios';
+import { CloudflareConfigView, DnsAutoResult, DomainCheck, DomainsConfig, Me } from '../types';
 import { cx, Tone } from '../utils';
 import { DnsAutoChip } from './DnsAutoResult';
 import { Button, Chip, CopyButton, useToast } from './ui';
-
-interface DomainCheck {
-  domain: string;
-  status: 'ok' | 'wrong_ip' | 'no_record' | 'unknown';
-  resolvedIps: string[];
-  expectedIp: string | null;
-  message: string;
-}
-
-/** Lo que el servidor cuenta del dominio raíz y el TLS a cualquier usuario. */
-interface DomainsConfig {
-  rootDomain: string | null;
-  tls: boolean;
-}
 
 const STATUS_META: Record<DomainCheck['status'], { label: string; tone: Tone }> = {
   ok: { label: 'DNS correcto', tone: 'ok' },
   no_record: { label: 'Esperando DNS', tone: 'warn' },
   wrong_ip: { label: 'Apunta a otra IP', tone: 'err' },
+  // Aviso y no error: el proxy puede estar entregando el tráfico aquí, pero
+  // no se puede comprobar desde fuera.
+  cloudflare_proxy: { label: 'Proxy de Cloudflare', tone: 'warn' },
   unknown: { label: 'Sin verificar', tone: 'neutral' },
 };
 
@@ -77,15 +67,20 @@ function DnsInstructions({ domain, serverIp }: { domain: string; serverIp: strin
         </table>
       </div>
       <p className="mt-2 text-subtle">
-        La propagación suele tardar entre 5 minutos y varias horas. Pulsa <RefreshCw size={10} className="inline" /> para
-        volver a comprobar.
+        La propagación suele tardar entre 5 minutos y varias horas. La comprobación se repite automáticamente; pulsa{' '}
+        <RefreshCw size={10} className="inline" /> para comprobarlo ahora.
       </p>
     </div>
   );
 }
 
+/** Explicación del chip «Principal» (al pasar el ratón). */
+const AYUDA_PRINCIPAL = 'Dirección principal: se usa como dirección pública de la web';
+
 function DomainRow({
   domain,
+  principal,
+  enComprobacion,
   serverIp,
   tls,
   dns,
@@ -94,6 +89,10 @@ function DomainRow({
   retryingDns,
 }: {
   domain: string;
+  /** Es el dominio principal: el de PUBLIC_URL. */
+  principal: boolean;
+  /** Cuántos dominios se comprueban a la vez en el editor, para repartir el cupo de comprobaciones. */
+  enComprobacion: number;
   serverIp: string | null;
   tls: boolean;
   /** Resultado del DNS automático en Cloudflare del último guardado (solo administrador). */
@@ -104,11 +103,18 @@ function DomainRow({
   retryingDns?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // Desde cuándo se comprueba este dominio: la repetición automática se
+  // espacia a los 2 minutos y se detiene a los 30.
+  const [inicio] = useState(() => Date.now());
   const check = useQuery({
     queryKey: ['domainCheck', domain],
     queryFn: () => api.post<{ check: DomainCheck }>('/domains/check', { domain }),
     staleTime: 30_000,
     retry: false,
+    // Tras crear el registro en el proveedor de DNS, el estado se actualiza
+    // sin pulsar nada mientras no sea correcto. Con la pestaña oculta no se
+    // repite (`refetchIntervalInBackground` es false por defecto).
+    refetchInterval: (query) => intervaloComprobacion(query.state.data?.check.status, Date.now() - inicio, enComprobacion),
   });
 
   const status = check.data?.check.status ?? 'unknown';
@@ -117,24 +123,35 @@ function DomainRow({
   return (
     <div className="rounded-lg border border-line bg-surface px-3 py-2">
       {/*
-        En móvil (~360 px) dominio, chip y tres botones no caben en una línea:
-        el dominio se truncaba a nada. Se deja envolver: el dominio con su chip
-        en la primera línea y las acciones pasan a la suya, a tamaño de dedo.
+        En móvil (~360 px) dominio, chips y tres botones no caben en una línea:
+        el dominio se truncaba a nada. Se deja envolver: el dominio en la
+        primera línea y el estado con las acciones, a tamaño de dedo, debajo.
       */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="flex min-w-0 flex-1 items-center gap-2">
+        {/* En móvil, el dominio (con «Principal») ocupa su línea y el estado
+            del DNS baja a la de las acciones. Antes, con `flex-1 min-w-0`, el
+            bloque se encogía hasta dejar el dominio en «c…» en vez de pasar
+            las acciones abajo. */}
+        <span className="flex min-w-0 items-center gap-2 max-sm:basis-full">
           <Globe size={13} className="shrink-0 text-info" />
           <span className="min-w-0 truncate font-mono text-xs">{domain}</span>
-          <Chip
-            size="sm"
-            tone={meta.tone}
-            onClick={() => setExpanded(!expanded)}
-            title={expanded ? 'Ocultar detalle del DNS' : 'Ver detalle del DNS'}
-            icon={status === 'ok' ? <CheckCircle2 size={10} aria-hidden /> : undefined}
-          >
-            {check.isFetching ? 'Comprobando…' : meta.label}
-          </Chip>
+          {principal && (
+            <Chip size="sm" tone="info" title={AYUDA_PRINCIPAL}>
+              Principal
+            </Chip>
+          )}
         </span>
+        <Chip
+          size="sm"
+          tone={meta.tone}
+          onClick={() => setExpanded(!expanded)}
+          title={expanded ? 'Ocultar detalle del DNS' : 'Ver detalle del DNS'}
+          icon={status === 'ok' ? <CheckCircle2 size={10} aria-hidden /> : undefined}
+        >
+          {/* Solo la primera vez: con la repetición automática, el chip
+              parpadearía cada 15 s; el botón de comprobar ya gira. */}
+          {check.isPending ? 'Comprobando…' : meta.label}
+        </Chip>
         <span className="ml-auto flex shrink-0 items-center gap-0.5 max-sm:gap-1">
           <button
             onClick={() => check.refetch()}
@@ -176,7 +193,7 @@ function DomainRow({
           )}
         </p>
       )}
-      {(expanded || status === 'no_record' || status === 'wrong_ip') && (
+      {(expanded || status === 'no_record' || status === 'wrong_ip' || status === 'cloudflare_proxy') && (
         <div className="mt-1.5">
           {check.data && <p className="text-xs text-sub">{check.data.check.message}</p>}
           {status !== 'ok' && <DnsInstructions domain={domain} serverIp={serverIp} />}
@@ -257,6 +274,14 @@ export default function DomainsEditor({
   const ip = serverIp.data?.ip ?? null;
   const generated = rootDomain ? `${slug}.${rootDomain}` : null;
 
+  /*
+   * Mismo orden que guarda el servidor y con el que calcula PUBLIC_URL: un
+   * dominio con www primero, el subdominio generado al final. Un servicio
+   * guardado con el orden antiguo se ve ya como quedará al guardar.
+   */
+  const ordenados = ordenarDominios(domains, rootDomain);
+  const parejas = parejasWwwPendientes(ordenados, rootDomain);
+
   const add = (raw: string) => {
     const domain = raw.trim().toLowerCase();
     if (!domain) return;
@@ -268,28 +293,66 @@ export default function DomainsEditor({
       toast('Este dominio ya está añadido', 'err');
       return;
     }
-    onChange([...domains, domain]);
+    onChange(ordenarDominios([...domains, domain], rootDomain));
     setCustom('');
   };
 
   return (
     <div className="flex flex-col gap-2.5">
-      {domains.length > 0 && (
+      {ordenados.length > 0 && (
         <div className="flex flex-col gap-2">
-          {domains.map((d) => (
+          {ordenados.map((d, i) => (
             <DomainRow
               key={d}
               domain={d}
+              // Con un solo dominio no hay nada que distinguir.
+              principal={i === 0 && ordenados.length > 1}
+              enComprobacion={ordenados.length}
               serverIp={ip}
               tls={tls}
               dns={dnsResults?.[d]}
-              onRemove={() => onChange(domains.filter((x) => x !== d))}
+              onRemove={() => onChange(ordenarDominios(domains.filter((x) => x !== d), rootDomain))}
               onRetryDns={onRetryDns ? () => onRetryDns(d) : undefined}
               retryingDns={retryingDns === d}
             />
           ))}
         </div>
       )}
+
+      {/* La web debe responder con y sin www: cada dominio propio al que le
+          falta su pareja lo indica y la añade con un clic. */}
+      {parejas.map((p) => (
+        <div
+          key={p.falta}
+          role="status"
+          className="flex flex-col items-start gap-2 rounded-lg border border-warn/30 bg-warn/[.06] px-3 py-2.5 text-xs text-warn"
+        >
+          <span className="flex min-w-0 items-start gap-1.5">
+            <AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden />
+            <span className="min-w-0 break-words">
+              {p.tipo === 'www' ? (
+                <>
+                  Añade también <span className="font-mono">{p.falta}</span> para que la web funcione con y sin www. La
+                  dirección con www será la principal.
+                </>
+              ) : (
+                <>
+                  Añade también <span className="font-mono">{p.falta}</span> para que la web funcione también sin www.
+                </>
+              )}
+            </span>
+          </span>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="ml-[18px] max-w-full max-sm:ml-0 max-sm:w-full"
+            title={`Añadir ${p.falta}`}
+            onClick={() => add(p.falta)}
+          >
+            <Plus size={12} className="shrink-0" /> <span className="min-w-0 truncate">Añadir {p.falta}</span>
+          </Button>
+        </div>
+      ))}
 
       {/* Subdominio automático. Hasta que llega la config no se pinta: si no,
           durante la carga asomaba el formulario de «configura tu dominio raíz»
