@@ -87,8 +87,9 @@ describe('dominios', () => {
     const r = await patchService(gitId, { config: { domains: ['App.Example.COM', 'WWW.example.com'] } });
     expect(r.statusCode, r.body).toBe(200);
     const service = await readService(gitId);
-    // Y en el orden del dominio principal: el de www primero.
-    expect(service.config.domains).toEqual(['www.example.com', 'app.example.com']);
+    // Y en el orden del dominio principal: el de www primero. El www nuevo
+    // llega con su pareja sin www.
+    expect(service.config.domains).toEqual(['www.example.com', 'app.example.com', 'example.com']);
   });
 
   // Traefik es único para todo el servidor: dos servicios con el mismo host

@@ -76,6 +76,13 @@ export interface GitConfig {
   portAuto?: boolean;
   buildArgs?: Record<string, string>;
   domains: string[];
+  /**
+   * Dominios propios cuya pareja con o sin www se ha descartado expresamente
+   * (al añadirlos, o al quitar la otra mitad con confirmación): al guardar no
+   * se vuelve a añadir. Solo dominios de `domains` a los que les falta la
+   * pareja (`limpiarSinPareja`); ausente = ninguno.
+   */
+  dominiosSinPareja?: string[];
   hostPort?: number | null;
   cpus?: number | null;
   memoryMb?: number | null;
@@ -140,6 +147,13 @@ export interface ImageConfig {
   /** Pila de aplicaciones de la que salió este servicio (clave de STACKS). */
   stack?: string;
   domains: string[];
+  /**
+   * Dominios propios cuya pareja con o sin www se ha descartado expresamente
+   * (al añadirlos, o al quitar la otra mitad con confirmación): al guardar no
+   * se vuelve a añadir. Solo dominios de `domains` a los que les falta la
+   * pareja (`limpiarSinPareja`); ausente = ninguno.
+   */
+  dominiosSinPareja?: string[];
   hostPort?: number | null;
   cpus?: number | null;
   memoryMb?: number | null;

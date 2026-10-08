@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
 import { api } from '../../api';
-import { DbTemplate, DnsAutoResult, Me, Service } from '../../types';
+import { CloudflareProxyResult, DbTemplate, DnsAutoResult, Me, Service } from '../../types';
 import { cx } from '../../utils';
 import { avisoDns } from '../DnsAutoResult';
 import DomainsEditor from '../DomainsEditor';
@@ -85,6 +85,8 @@ interface FormState {
   version: string;
   image: string;
   domains: string[];
+  /** Dominios cuya pareja con o sin www se ha descartado (`dominiosSinPareja`). */
+  sinPareja: string[];
   hostPort: string;
   cpus: string;
   memoryMb: string;
@@ -114,6 +116,7 @@ function formFromService(service: Service): FormState {
     version: cfg.version ?? '',
     image: cfg.image ?? '',
     domains: cfg.domains ?? [],
+    sinPareja: cfg.dominiosSinPareja ?? [],
     hostPort: cfg.hostPort ? String(cfg.hostPort) : '',
     cpus: cfg.cpus ? String(cfg.cpus) : '',
     memoryMb: cfg.memoryMb ? String(cfg.memoryMb) : '',
@@ -241,6 +244,7 @@ export default function ServiceSettingsTab({
           buildCmd: form.buildCmd.trim() || null,
           port: Number(form.port) || 3000,
           domains: form.domains,
+          dominiosSinPareja: form.sinPareja,
           autoDeploy: form.autoDeploy,
           autoImportEnv: form.autoImportEnv,
         });
@@ -250,6 +254,7 @@ export default function ServiceSettingsTab({
           startCmd: form.startCmd.trim() || null,
           port: form.port ? Number(form.port) : null,
           domains: form.domains,
+          dominiosSinPareja: form.sinPareja,
         });
       } else {
         Object.assign(config, { version: form.version.trim() || cfg.version });
@@ -290,6 +295,17 @@ export default function ServiceSettingsTab({
       if (aviso) toast(aviso.message, aviso.kind);
       setDnsResults((prev) => ({ ...prev, ...Object.fromEntries(data.dns.map((r) => [r.domain, r])) }));
       for (const r of data.dns) if (r.action === 'created') queryClient.invalidateQueries({ queryKey: ['domainCheck', r.domain] });
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  // «Desactivar proxy en Cloudflare» de un dominio guardado (solo administrador).
+  // La respuesta trae el DNS comprobado de nuevo: la fila se actualiza con él.
+  const disableProxy = useMutation({
+    mutationFn: (domain: string) => api.post<CloudflareProxyResult>(`/services/${service.id}/cloudflare-proxy`, { domain }),
+    onSuccess: (data) => {
+      toast(data.result.message, 'ok');
+      queryClient.setQueryData(['domainCheck', data.result.domain], { check: data.check });
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -553,11 +569,15 @@ export default function ServiceSettingsTab({
             )}
             <DomainsEditor
               domains={form.domains}
-              onChange={(d) => set('domains', d)}
+              sinPareja={form.sinPareja}
+              onChange={(domains, sinPareja) => setForm((f) => ({ ...f, domains, sinPareja }))}
               slug={service.slug}
               dnsResults={dnsResults}
               onRetryDns={(d) => retryDns.mutate(d)}
               retryingDns={retryDns.isPending ? retryDns.variables : null}
+              guardados={baseline.domains}
+              onDisableProxy={isAdmin ? (d) => disableProxy.mutate(d) : undefined}
+              disablingProxy={disableProxy.isPending ? disableProxy.variables : null}
             />
           </SectionCard>
         )}

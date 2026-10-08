@@ -80,9 +80,11 @@ server/src/
   domains.ts            IP del servidor + verificación DNS de dominios (`clasificarDns`; distingue el proxy
                         de Cloudflare por sus rangos IPv4 publicados)
   dominioprincipal.ts   regla del dominio principal (`ordenarDominios`/`dominioPrincipal`): www primero,
-                        el resto en su orden y el subdominio generado al final; sin dependencias (§5.5)
+                        el resto en su orden y el subdominio generado al final; y la pareja con o sin www
+                        (`parejaWww`, `completarParejasWww`, `limpiarSinPareja`); sin dependencias (§5.5)
   cloudflare.ts         cliente mínimo de la API de Cloudflare (verificar token, zona de un nombre, leer
-                        registros, crear uno y borrar uno concreto; sin métodos para cambiar), portado del de Mailway
+                        registros, crear uno, borrar uno concreto y quitar el proxy de uno; sin un método
+                        general para cambiar), portado del de Mailway
   cloudflareconfig.ts   token de Cloudflare del administrador en `settings` (`cloudflare.token`, nunca se
                         devuelve): probar, guardar, borrar y vista; la comparten Ajustes → Cloudflare y
                         `tools/cloudflare.ts`
@@ -582,7 +584,8 @@ aplican **en caliente**.
 | `image` | — | ✓ | — | imagen pública |
 | `template`, `version` | — | — | ✓ | postgres/redis/mysql/mongo/minio |
 | `port` (interno) | ✓ (def. 3000) | opcional (null = **worker**) | fijo por plantilla | Traefik enruta a este puerto |
-| `domains` | ✓ | ✓ | — | Traefik + TLS |
+| `domains` | ✓ | ✓ | — | Traefik + TLS; cada dominio registrable o con www nuevo llega con su pareja con o sin www (§5.5) |
+| `dominiosSinPareja` | ✓ | ✓ | — | dominios cuya pareja con o sin www se ha descartado; solo los de `domains` a los que les falta (§5.5). No pide volver a desplegar |
 | `hostPort` (público) | ✓ | ✓ | ✓ (⚠ expone BBDD) | salta Traefik |
 | `cpus`, `memoryMb` | ✓ | ✓ | ✓ | en caliente |
 | `diskMb` | ✓ | ✓ | ✓ | cuota orientativa, vigilada por el monitor |
@@ -843,6 +846,28 @@ comprobación de `domainsBase` lo cuentan como cambio, y el enrutado de Traefik
 sigue atendiendo todos los dominios. Ajustes → Dominios enseña la lista en ese
 orden con el chip «Principal» en el primero (con dos dominios o más).
 
+**Pareja con o sin www.** Una web pública responde con y sin www, así que la
+pareja no es una sugerencia: cada dominio propio **nuevo** que sea un dominio
+registrable (`ejemplo.com`) o su www (`www.ejemplo.com`) se guarda con la otra
+mitad (`completarParejasWww`; un subdominio más profundo como
+`app.ejemplo.com` y lo que cuelga del dominio raíz de la plataforma no tienen
+pareja; los sufijos de dos niveles más habituales, como `.com.es` o `.co.uk`,
+están en una lista corta). Lo hace el servidor al crear el servicio, en el
+PATCH, en las pilas y plantillas de Railway con `domain` y en la importación de
+Railway (la vista previa ya la enseña, con una nota), así que la API, la línea
+de comandos y las importaciones se comportan igual que el panel. Solo se
+completan los dominios nuevos de cada cambio: guardar otra cosa o reordenar un
+servicio antiguo al que le falta la pareja no la añade (ni pide volver a
+desplegar ni llama a Cloudflare). La pareja que no se puede asignar (la usa
+otro servicio, es del panel, de Mailway o está reservada) se omite sin error.
+La renuncia expresa se guarda en `config.dominiosSinPareja` (los dominios cuya
+pareja no se quiere): solo dominios de `domains` a los que les falta la pareja
+(`limpiarSinPareja`; lo demás se descarta al guardar), así que nunca es mayor
+que la lista de dominios (y la petición admite 200 como mucho). La pareja
+añadida es un dominio nuevo más: pasa la misma comprobación de dominios y el
+mismo DNS automático (§7.13), así que con Cloudflare configurado los dos
+registros se crean en el mismo guardado.
+
 Se usan de dos formas: **otro servicio las referencia** (`${{api.INTERNAL_URL}}`,
 `${{web.PUBLIC_URL}}`) y el resolutor las aplica cuando el servicio apuntado no
 tiene esa variable guardada; y **el propio servicio las recibe** en su entorno
@@ -1095,11 +1120,19 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   editor muestra los dominios en una lista con el estado del DNS (punto de color
   y etiqueta: «Configurado», «Esperando DNS», «Apunta a otra IP», «Proxy de
   Cloudflare») y, si falta algo, el registro A que hay que crear (tipo, nombre y
-  valor, con botón de copiar). Al final de la lista ofrece como filas sugeridas,
-  con su botón «Añadir», la pareja con o sin www de cada dominio propio
-  (`ejemplo.com` ↔ `www.ejemplo.com`; solo el dominio registrable y su www, con
-  una lista corta de sufijos de dos niveles como `.com.es` o `.co.uk`) y el
-  subdominio generado. La comprobación del DNS de cada dominio que aún no es correcto se
+  valor, con botón de copiar). La pareja con o sin www se añade con el dominio
+  (§5.5): al escribir un dominio registrable o su www aparece debajo del campo la
+  casilla «Añadir también www.ejemplo.com» (o «ejemplo.com»), marcada por
+  defecto; desmarcarla es la renuncia expresa. Quitar una mitad de la pareja pide
+  confirmación («Si quitas www.ejemplo.com, la web no responderá en esa
+  dirección») y guarda la renuncia en el dominio que se conserva. Un dominio al
+  que le falta la pareja (por renuncia o por ser de antes) lo indica en su fila
+  con una línea ámbar («Sin www.ejemplo.com: la web no responde con www.») y un
+  botón «Añadir», que también retira la renuncia. El subdominio generado se
+  ofrece como fila sugerida al final de la lista. Para el administrador con
+  Cloudflare configurado, un dominio guardado en estado «Proxy de Cloudflare»
+  cuya zona está en su cuenta muestra «Desactivar proxy en Cloudflare»
+  (§7.13). La comprobación del DNS de cada dominio que aún no es correcto se
   repite sola: cada 15 s los dos primeros minutos, después cada minuto y hasta
   30 minutos, solo con la pestaña visible y con el intervalo alargado según el
   número de dominios para no pasar de 20 comprobaciones por minuto (el tope del
@@ -1517,12 +1550,12 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | --- | --- | --- | --- |
 | GET | `/templates` | auth | plantillas de BBDD disponibles, con sus variables de conexión (`conn`) |
 | GET | `/stacks` | auth | catálogo de pilas de aplicaciones (§5.1) |
-| POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[], dns?}`; atómica (409 si choca un nombre); `domain` como en crear servicio (409 si ya lo usa otro servicio o está reservado); `services[].config` sin `webhookSecret`. `dns`: DNS automático del dominio (§7.13, solo admin con token) |
+| POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[], dns?}`; atómica (409 si choca un nombre); `domain` como en crear servicio (409 si ya lo usa otro servicio o está reservado), con su pareja con o sin www (§5.5) y la pila configurada con el principal (`publicUrl`); `services[].config` sin `webhookSecret`. `dns`: DNS automático del dominio (§7.13, solo admin con token) |
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada); 20 por minuto y usuario, después 429 |
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas, también `dns?` |
-| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas y en el orden del dominio principal, §5.5), aquí y en el PATCH, y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
+| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas y en el orden del dominio principal, §5.5), aquí y en el PATCH; cada dominio registrable o con www se guarda con su pareja con o sin www salvo los de `dominiosSinPareja` (opcional, máx. 200; la pareja que no se puede asignar se omite sin error, §5.5), y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`) |
-| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); la lista se guarda en el orden del dominio principal (§5.5), y un cambio solo de orden no cuenta como dominio nuevo (ni pide volver a desplegar si, ordenada, la lista queda igual); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
+| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); cada dominio **nuevo** registrable o con www llega con su pareja con o sin www salvo que esté en `config.dominiosSinPareja` (§5.5; la lista de renuncias se guarda limpia y, enviada sin `domains`, solo se filtra contra los actuales); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); la lista se guarda en el orden del dominio principal (§5.5), y un cambio solo de orden no cuenta como dominio nuevo (ni pide volver a desplegar si, ordenada, la lista queda igual); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
 | DELETE | `/services/:id?confirm=<nombre>` | +access | elimina el servicio con **todos sus datos** (§3.1), salvo los volúmenes que comparta con otro servicio del proyecto; `confirm` (nombre o slug), 503 y los dos 409 como en proyectos → `{ok, warnings, removed: {volumes[], images, backups}}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
@@ -1724,12 +1757,14 @@ Zone · Read» y «Zone · DNS · Edit»; la clave global se rechaza). Se guarda
 | POST | `/cloudflare/test` | admin | `{token?}`: prueba el indicado sin guardarlo o, sin él, el guardado (y refresca sus zonas y `lastError`) → `{ok, zones}`. 12/min |
 | GET | `/cloudflare/records` | admin | registros que ha creado el DNS automático → `{records: [{domain, zone, content, project: {id, name} \| null, usedBy: {id, name, project} \| null, createdAt}]}` |
 | POST | `/services/:id/cloudflare-dns` | admin | `{domain}`: repite el DNS automático de **ese** dominio del servicio (tras un `error`, un `conflict` resuelto a mano o un `skipped` por zona o IP) → `{dns}`. 404 si el dominio no está en el servicio, 400 sin token. Nunca recorre los demás dominios del servicio. 30/min |
+| POST | `/services/:id/cloudflare-proxy` | admin + session | `{domain}` («Desactivar proxy en Cloudflare»): quita el proxy de los registros **A** de **ese** nombre exacto que apuntan a la IP del servidor, enviando solo `proxied: false` (ni el destino ni el tipo cambian), y vuelve a comprobar el DNS → `{result: {domain, changed, message}, check}`. Si algún A/AAAA con proxy de ese nombre apunta a otro sitio (otra IP, o un AAAA), 409 sin modificar ninguno; un CNAME, 409; sin zona en el Cloudflare del token o sin registro A, 404; sin token o sin IP del servidor, 400; 404 si el dominio no está guardado en el servicio. `changed: 0` si ya no tenían proxy. Audita `cloudflare_proxy_disabled` («dominio: N registro(s)»). Es la única modificación de un registro existente y siempre es un clic expreso: el DNS automático al guardar sigue sin tocar lo que existe. 10/min |
 | DELETE | `/cloudflare/records/:domain` | admin | borra en Cloudflare el registro creado y libera el nombre → `{ok, result: 'deleted'\|'gone'\|'released', records}`. 409 si el dominio sigue asignado a un servicio o si el registro se ha modificado en Cloudflare y sigue apuntando a la IP (no se toca y sigue reservado); si ya no existe (`gone`) o apunta a otro sitio (`released`), solo se libera el nombre. Audita `cloudflare_dns_record_deleted`. 30/min |
 
 **DNS automático** (`cloudflaredns.ts`). Tras dar de alta dominios **nuevos**
 (crear un servicio con `domains`, añadirlos con el PATCH, una pila o una
 plantilla de Railway con `domain`, los que marca el administrador en la
-importación de Railway), y **solo si
+importación de Railway; la pareja con o sin www que añade el servidor, §5.5,
+cuenta como un dominio nuevo más de esa petición), y **solo si
 quien hace la petición es administrador** (cookie o token `sky_` de un admin) y
 hay token, para cada dominio que **escribe esa petición**:
 

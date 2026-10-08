@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { assertProjectAccess, currentUser, requireAuth } from '../auth';
 import { audit } from '../audit';
 import { dnsAutomaticoAdmin } from '../cloudflaredns';
-import { domainClaimError } from '../domainguard';
+import { domainClaimError, dominiosConPareja } from '../domainguard';
 import { markManualAction } from '../monitor';
 import {
   countWorkspaceServices,
@@ -166,6 +166,11 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
       const conflicto = domainClaimError([body.domain], { projectId, serviceId: null, isAdmin });
       if (conflicto) return reply.code(409).send({ error: conflicto });
     }
+    // El dominio de la pila con su pareja con o sin www, como cualquier alta.
+    // La lista ya va en el orden del dominio principal (www primero): la pila se
+    // configura con el primero, que es el de PUBLIC_URL.
+    const dominiosPila = body.domain ? dominiosConPareja([body.domain], { claim: { projectId, serviceId: null, isAdmin } }).domains : [];
+    const dominioPila = dominiosPila[0] ?? null;
 
     const prefix = uniquePrefix(
       projectId,
@@ -178,15 +183,15 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
     // Sin dominio la pila sigue siendo utilizable desde el propio proyecto: las
     // URLs públicas apuntan al alias interno del servicio de entrada.
     const scheme = getSetting('letsencryptEmail') ? 'https' : 'http';
-    const publicUrl = body.domain
-      ? `${scheme}://${body.domain}`
+    const publicUrl = dominioPila
+      ? `${scheme}://${dominioPila}`
       : `http://${slugs[entry.key]}:${entry.port ?? 80}`;
 
     const ctx: StackRenderCtx = {
       slugs,
       secretsSlug: slugs[stack.secretsService],
       publicUrl,
-      domain: body.domain ?? null,
+      domain: dominioPila,
     };
 
     // Los secretos se guardan en las variables del servicio ancla de la pila (no
@@ -207,7 +212,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
     const creacion = crearAtomico(() => {
       for (const def of stack.services) {
         const slug = slugs[def.key];
-        const domains = def.public && body.domain ? [body.domain] : [];
+        const domains = def.public ? dominiosPila : [];
         // Los secretos ganan sobre el entorno renderizado: en el propio servicio
         // ancla, un `{{secret:X}}` se habría convertido en una referencia a su
         // propia variable X, que sin el valor literal detrás no resolvería nada.
@@ -273,7 +278,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
     });
 
     // Solo para un administrador con token de Cloudflare; nunca hace fallar el alta.
-    const dns = body.domain ? await dnsAutomaticoAdmin(req, [body.domain], { type: 'project', id: projectId }, projectId) : undefined;
+    const dns = dominiosPila.length > 0 ? await dnsAutomaticoAdmin(req, dominiosPila, { type: 'project', id: projectId }, projectId) : undefined;
 
     reply.code(201);
     return { stack: stack.key, prefix, publicUrl, services: publicServices(created), ...(dns ? { dns } : {}) };
@@ -301,6 +306,8 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
       const conflicto = domainClaimError([body.domain], { projectId, serviceId: null, isAdmin });
       if (conflicto) return reply.code(409).send({ error: conflicto });
     }
+    const dominiosPlantilla = body.domain ? dominiosConPareja([body.domain], { claim: { projectId, serviceId: null, isAdmin } }).domains : [];
+    const dominioPlantilla = dominiosPlantilla[0] ?? null;
 
     const plan = await planRailwayTemplate(code, { prefix: body.prefix, projectName: project.name });
 
@@ -330,14 +337,14 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
         s.name = s.slug;
       }
     }
-    rewriteTemplateRefs(plan, { projectName: project.name, domain: body.domain ?? null });
+    rewriteTemplateRefs(plan, { projectName: project.name, domain: dominioPlantilla });
 
     const created: ServiceRow[] = [];
     const steps: StackStep[] = [];
     // Atómico por lo mismo que en las pilas del catálogo: sin servicios a medias.
     const creacion = crearAtomico(() => {
       for (const svc of plan.services) {
-        const domains = svc.public && body.domain ? [body.domain] : [];
+        const domains = svc.public ? dominiosPlantilla : [];
         const volumes = svc.volumes.map((path, idx) => ({
           name: `skyway-${project.slug}__${finalPrefix}__${slugify(svc.templateName)}${idx === 0 ? '' : idx + 1}`,
           containerPath: path,
@@ -380,7 +387,8 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
       req.log.error({ err, template: plan.code }, 'fallo desplegando la plantilla de Railway');
     });
 
-    const dns = body.domain ? await dnsAutomaticoAdmin(req, [body.domain], { type: 'project', id: projectId }, projectId) : undefined;
+    const dns =
+      dominiosPlantilla.length > 0 ? await dnsAutomaticoAdmin(req, dominiosPlantilla, { type: 'project', id: projectId }, projectId) : undefined;
 
     reply.code(201);
     return {

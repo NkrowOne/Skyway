@@ -359,6 +359,67 @@ export function dnsSinBase(req: FastifyRequest, dominios: readonly string[], pro
   }));
 }
 
+/* ------------------------ Desactivar el proxy ------------------------ */
+
+export interface ResultadoProxy {
+  domain: string;
+  /** Registros a los que se ha quitado el proxy (0 si ya no lo tenían). */
+  changed: number;
+  message: string;
+}
+
+/**
+ * «Desactivar proxy en Cloudflare»: quita el proxy (nube naranja) de los
+ * registros A de un dominio que apuntan a este servidor, para que Let's
+ * Encrypt valide contra él y la comprobación del DNS vea la IP real.
+ *
+ * Es la única modificación de un registro existente que hace Skyway, y solo
+ * por un clic expreso del administrador (lo exige la ruta): el DNS automático
+ * al guardar sigue sin tocar nada de lo que ya existe. Se limita a lo mínimo:
+ * - solo registros A/AAAA con ese nombre exacto (nunca otros nombres);
+ * - solo envía `proxied: false` (ni el destino ni el tipo cambian);
+ * - si algún registro con proxy apunta a otro sitio (otra IP o un AAAA, que
+ *   no puede ser este servidor), no se modifica ninguno y se explica: quitar
+ *   el proxy solo a una parte dejaría el nombre a medias.
+ */
+export async function desactivarProxyCloudflare(domain: string): Promise<ResultadoProxy> {
+  const token = tokenCloudflareGuardado();
+  if (!token) throw httpError(400, 'Configura el token de Cloudflare en Ajustes → Cloudflare para desactivar el proxy.');
+  const { ip } = await getServerIp();
+  if (!ip) throw httpError(400, 'No se conoce la IP pública del servidor: indícala en Ajustes → Dominios y TLS.');
+  const cliente = new CloudflareClient(token, { timeoutMs: PLAZO_PETICION_MS });
+  const zona = await cliente.findZoneFor(domain);
+  if (!zona) throw httpError(404, `El token de Cloudflare no ve ninguna zona que contenga ${domain}. Desactiva el proxy en el panel de Cloudflare.`);
+  const delNombre = (await cliente.listRecords(zona.id, { name: domain })).filter((r) => r.name === domain);
+  const direcciones = delNombre.filter((r) => r.type === 'A' || r.type === 'AAAA');
+  if (direcciones.length === 0) {
+    const cname = delNombre.find((r) => r.type === 'CNAME');
+    throw httpError(
+      cname ? 409 : 404,
+      cname
+        ? `${domain} es un CNAME hacia ${cname.content || '(vacío)'} y no se ha modificado. Cámbialo en Cloudflare por un registro A hacia ${ip} sin proxy.`
+        : `No hay ningún registro A de ${domain} en la zona ${zona.name}.`,
+    );
+  }
+  const conProxy = direcciones.filter((r) => r.proxied);
+  const ajenos = conProxy.filter((r) => !(r.type === 'A' && r.content.trim() === ip));
+  if (ajenos.length > 0) {
+    throw httpError(
+      409,
+      `Hay ${describir(ajenos)} con el proxy activado que no apunta a este servidor (${ip}): no se ha modificado nada. Revisa los registros de ${domain} en Cloudflare.`,
+    );
+  }
+  for (const r of conProxy) await cliente.desactivarProxy(zona.id, r.id);
+  return {
+    domain,
+    changed: conProxy.length,
+    message:
+      conProxy.length > 0
+        ? `Proxy desactivado en ${conProxy.length === 1 ? 'el registro A' : `${conProxy.length} registros A`} de ${domain}. El cambio puede tardar unos minutos en propagarse.`
+        : `El registro A de ${domain} ya no tiene el proxy activado. El cambio puede tardar unos minutos en propagarse.`,
+  };
+}
+
 /* ------------------ Registros creados: reserva y limpieza ------------------ */
 
 export interface RegistroCreadoVista {

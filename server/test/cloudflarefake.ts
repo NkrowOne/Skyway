@@ -11,8 +11,10 @@
  * revocado: 401/1000 en `/user/tokens/verify` y 403/9109 en `/zones`.
  *
  * Registra cada petición (método, ruta, consulta, Authorization y cuerpo) y
- * responde 405 a cualquier PUT o PATCH: Skyway nunca debe enviarlos. DELETE
- * solo existe sobre un registro concreto (la limpieza de Ajustes → Cloudflare).
+ * responde 405 a cualquier PUT, y a un PATCH que no sea exactamente
+ * `{ proxied: false }` sobre un registro concreto (el único cambio que hace
+ * Skyway, con «Desactivar proxy en Cloudflare»). DELETE solo existe sobre un
+ * registro concreto (la limpieza de Ajustes → Cloudflare).
  */
 
 export const CF_HOST = 'api.cloudflare.com';
@@ -197,6 +199,10 @@ export async function cloudflareFetch(url: URL, init: RequestInit = {}): Promise
     if (method === 'DELETE') {
       cf.records = cf.records.filter((x) => x !== r);
       return sobre(200, { id: r.id });
+    }
+    if (method === 'PATCH' && JSON.stringify(body) === JSON.stringify({ proxied: false })) {
+      r.proxied = false;
+      return sobre(200, r);
     }
   }
   return fallo(405, 10405, `Método no admitido por el doble: ${method} ${path}`);

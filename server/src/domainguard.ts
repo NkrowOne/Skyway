@@ -22,7 +22,8 @@
  * publicado, pero en cuanto apunte aquí el servicio que lo tuviera se quedaría
  * con el tráfico de ese webmail.
  */
-import { getCloudflareDnsRecord, getMailwayDnsReserva, getProject, getService, serviceIdsForDomain } from './db';
+import { getCloudflareDnsRecord, getMailwayDnsReserva, getProject, getService, getSetting, serviceIdsForDomain } from './db';
+import { completarParejasWww, limpiarSinPareja } from './dominioprincipal';
 import { mailwayProject, mailwayReservedHosts } from './mailway';
 import { mailwayPublishedHosts, mailwayWhitelabelHosts } from './mailwaytraefik';
 
@@ -104,6 +105,30 @@ export function domainClaimError(domains: Iterable<string>, claim: DomainClaim):
     }
   }
   return null;
+}
+
+/**
+ * Los dominios de un alta o una edición con la pareja con o sin www de cada
+ * dominio nuevo ya añadida (`completarParejasWww`), salvo las parejas
+ * descartadas en `sinPareja` y las que el servicio no puede asignarse (las usa
+ * otro servicio, el panel, Mailway o una reserva del operador): esas se omiten
+ * sin error y el panel indica que falta la pareja. Devuelve también la lista
+ * de renuncias que se guarda, ya limpia. Es la red de seguridad del servidor:
+ * la API, la línea de comandos y las importaciones se comportan igual que el
+ * panel, que ya añade la pareja al escribir el dominio.
+ */
+export function dominiosConPareja(
+  domains: readonly string[],
+  opts: { claim: DomainClaim; sinPareja?: readonly string[]; nuevos?: Iterable<string> },
+): { domains: string[]; anadidos: string[]; sinPareja: string[] } {
+  const rootDomain = getSetting('rootDomain');
+  const { domains: completos, anadidos } = completarParejasWww(domains, {
+    rootDomain,
+    nuevos: opts.nuevos,
+    sinPareja: opts.sinPareja,
+    disponible: (d) => domainClaimError([d], opts.claim) === null,
+  });
+  return { domains: completos, anadidos, sinPareja: limpiarSinPareja(opts.sinPareja ?? [], completos, rootDomain) };
 }
 
 /**

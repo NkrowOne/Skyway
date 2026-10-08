@@ -5,6 +5,7 @@ import {
   createService,
   getEnv,
   getOrCreateWorkspaceByName,
+  getSetting,
   listServices,
   projectSlugExists,
   setEnv,
@@ -12,7 +13,7 @@ import {
   setSetting,
 } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
-import { dominioPrincipal, ordenarDominios } from '../dominioprincipal';
+import { completarParejasWww, dominioPrincipal } from '../dominioprincipal';
 import { getTemplate } from '../templates';
 import { DatabaseConfig, GitConfig, ImageConfig, ProjectRow, VolumeMount } from '../types';
 import { slugify, randomToken } from '../util';
@@ -191,14 +192,18 @@ async function planService(
     const lista = domains.invalid.map((d) => `«${d.slice(0, 60)}»`).join(', ');
     notes.push(`Se descartan ${domains.invalid.length} dominio(s) con formato no válido: ${lista}. Añádelos manualmente en Ajustes si procede.`);
   }
+  // Cada dominio propio con su pareja con o sin www, como en cualquier alta:
+  // la vista previa ya la enseña (y el administrador puede marcarla para el
+  // DNS automático). Al importar, una pareja que use otro servicio se omite
+  // con su nota, igual que los dominios de Railway.
+  const conPareja = completarParejasWww(domains.valid, { rootDomain: getSetting('rootDomain') });
+  for (const d of conPareja.anadidos) notes.push(`Se añade también ${d} para que la web responda con y sin www.`);
   const base: PlannedService = {
     railwayName: raw.name,
     kind: 'skipped',
     // En el orden de la regla del dominio principal (www primero): es el que
     // se guarda, y con él `PUBLIC_URL` y la sustitución de RAILWAY_PUBLIC_DOMAIN.
-    // Sin dominio raíz: son los dominios propios que tenía en Railway, nunca
-    // el subdominio que genera esta plataforma.
-    domains: ordenarDominios(domains.valid),
+    domains: conPareja.domains,
     volumeMounts: raw.volumeMounts,
     varCount: Object.keys(vars).length,
     notes,

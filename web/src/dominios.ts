@@ -1,11 +1,12 @@
 /**
  * Reglas puras de los dominios de un servicio, para el editor de dominios y
- * las tarjetas: qué dominio es el principal, qué pareja con o sin www falta y
- * cada cuánto se vuelve a comprobar el DNS.
+ * las tarjetas: qué dominio es el principal, la pareja con o sin www que se
+ * añade con cada dominio propio y cada cuánto se vuelve a comprobar el DNS.
  *
- * El orden es copia de `server/src/dominioprincipal.ts` (el servidor guarda la
- * lista así y calcula PUBLIC_URL con la misma regla): si cambia allí, cambia
- * aquí.
+ * El orden y la pareja son copia de `server/src/dominioprincipal.ts` (el
+ * servidor guarda la lista así, completa las parejas y calcula PUBLIC_URL con
+ * la misma regla): si cambia allí, cambia aquí. `test/dominios.test.ts`
+ * compara las dos copias.
  */
 
 /** Forma canónica de un dominio para compararlo. */
@@ -52,8 +53,8 @@ export function dominioPrincipal(domains: readonly string[] | null | undefined, 
 /**
  * Sufijos públicos de dos niveles más habituales: en ellos el dominio que se
  * registra tiene tres etiquetas (`tienda.com.es`, `shop.co.uk`). Lista corta a
- * propósito: un sufijo que falte solo hace que no se sugiera la pareja con www,
- * nunca que se sugiera una incorrecta en un dominio de dos etiquetas.
+ * propósito: un sufijo que falte solo hace que no se añada la pareja con www,
+ * nunca que se añada una incorrecta en un dominio de dos etiquetas.
  */
 const SUFIJOS_DOS_NIVELES = new Set([
   // España
@@ -105,6 +106,47 @@ export function parejaWww(domain: string, rootDomain?: string | null): { falta: 
   if (d === registrable) return { falta: `www.${d}`, tipo: 'www' };
   if (d === `www.${registrable}`) return { falta: registrable, tipo: 'raiz' };
   return null;
+}
+
+/**
+ * La lista con la pareja con o sin www de cada dominio (o solo de `nuevos`),
+ * salvo los de `sinPareja`, en el orden del dominio principal. Cada pareja va
+ * detrás de su dominio antes de ordenar. Misma regla que el servidor.
+ */
+export function completarParejasWww(
+  domains: readonly string[],
+  opts: { rootDomain?: string | null; nuevos?: Iterable<string>; sinPareja?: Iterable<string> } = {},
+): { domains: string[]; anadidos: string[] } {
+  const lista = [...new Set(domains.map((d) => normalizarDominio(d ?? '')).filter(Boolean))];
+  const presentes = new Set(lista);
+  const nuevos = opts.nuevos ? new Set([...opts.nuevos].map(normalizarDominio)) : null;
+  const sinPareja = new Set([...(opts.sinPareja ?? [])].map(normalizarDominio));
+  const anadidos: string[] = [];
+  const conParejas: string[] = [];
+  for (const d of lista) {
+    conParejas.push(d);
+    if (nuevos && !nuevos.has(d)) continue;
+    if (sinPareja.has(d)) continue;
+    const pareja = parejaWww(d, opts.rootDomain);
+    if (!pareja || presentes.has(pareja.falta)) continue;
+    presentes.add(pareja.falta);
+    anadidos.push(pareja.falta);
+    conParejas.push(pareja.falta);
+  }
+  return { domains: ordenarDominios(conParejas, opts.rootDomain), anadidos };
+}
+
+/** Renuncias a la pareja que se guardan: solo dominios de la lista a los que les falta. Misma regla que el servidor. */
+export function limpiarSinPareja(sinPareja: Iterable<string>, domains: readonly string[], rootDomain?: string | null): string[] {
+  const presentes = new Set(domains.map((d) => normalizarDominio(d ?? '')));
+  const out: string[] = [];
+  for (const raw of sinPareja) {
+    const d = normalizarDominio(raw ?? '');
+    if (!presentes.has(d) || out.includes(d)) continue;
+    const pareja = parejaWww(d, rootDomain);
+    if (pareja && !presentes.has(pareja.falta)) out.push(d);
+  }
+  return out;
 }
 
 /** Dominios de la lista a los que les falta su pareja con o sin www, en el orden de la lista. */

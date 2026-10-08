@@ -732,6 +732,8 @@ export interface GitConfig {
   port: number;
   buildArgs?: Record<string, string>;
   domains: string[];
+  /** Dominios cuya pareja con o sin www se ha descartado expresamente (`dominiosSinPareja` del servidor). */
+  dominiosSinPareja?: string[];
   hostPort?: number | null;
   cpus?: number | null;
   memoryMb?: number | null;
@@ -1338,6 +1340,13 @@ export interface DnsAutoResult {
   domain: string;
   action: 'created' | 'kept' | 'conflict' | 'skipped' | 'error';
   message: string;
+}
+
+/** Resultado de «Desactivar proxy en Cloudflare» (`POST /services/:id/cloudflare-proxy`). */
+export interface CloudflareProxyResult {
+  result: { domain: string; changed: number; message: string };
+  /** El DNS comprobado de nuevo tras el cambio. */
+  check: DomainCheck;
 }
 
 /** Lo que el servidor cuenta del dominio raíz y el TLS a cualquier usuario (`GET /domains/config`). */

@@ -203,6 +203,14 @@ Un dominio que dio `error`, `conflict` o `skipped` se reintenta, ya corregida
 la causa, con `POST /api/services/:id/cloudflare-dns {"domain":"…"}` (solo
 administrador; solo ese dominio y solo si sigue en el servicio).
 
+Cada dominio nuevo registrable o con www (`ejemplo.com`, `www.ejemplo.com`) se
+guarda con su pareja con o sin www, también por la API, y la pareja pasa por el
+mismo DNS automático. Para no añadirla, indica el dominio en
+`config.dominiosSinPareja` (en el alta, `dominiosSinPareja` junto a `domains`).
+Quitar el proxy de Cloudflare de un dominio (`POST
+/api/services/:id/cloudflare-proxy`) exige sesión de navegador: no está
+disponible con un token `sky_`.
+
 Al editar un servicio, el registro solo se crea si la petición indica en
 `domainsBase` los dominios de los que parte (los que leyó antes de editar). Así
 un dominio que otra persona haya quitado entretanto no vuelve a ponerse ni se
