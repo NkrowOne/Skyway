@@ -32,10 +32,14 @@ server/src/
   stripe.ts             cliente mínimo de Stripe (Checkout Session + verificación de firma de webhook)
   mailway.ts            cliente de la API de integraciones de Mailway (correo): configuración en settings,
                         dirección interna del panel si lo despliega Skyway, token de gestión `mwt_…` (Bearer),
-                        proyecto de Mailway en Skyway, hosts reservados de la instancia, marca blanca
-                        (webmail con el dominio del cliente) y fichero de zona (`stripWebRecords` retira los
-                        registros web del dominio raíz y de www; `appendWebRecords` añade los de los servicios
-                        del proyecto y el del webmail)
+                        proyecto de Mailway en Skyway, hosts reservados de la instancia, referencias externas
+                        (`clientRefFor`: la de la cuenta o la del proyecto; `acceptedClientRefs`), marca blanca
+                        (webmail con el dominio del cliente), webmail automático del cliente, enlaces de
+                        bienvenida y fichero de zona (`stripWebRecords` retira los registros web del dominio
+                        raíz y de www; `appendWebRecords` añade los de los servicios del proyecto y el del webmail)
+  mailwaycuentas.ts     un cliente de Mailway por cuenta: migración de los vínculos de antes (perezosa al abrir
+                        el correo y al arrancar, `migrarVinculosACuentas`) y nombre del cliente igual al de la
+                        cuenta (`alinearNombreCliente`, `sincronizarNombreCuenta`)
   mailwayconfig.ts      probar y guardar la conexión con Mailway (`probarConexionMailway`, `guardarConfigMailway`):
                         validación de la URL, del token y del servicio del panel, y auditoría; la comparten
                         Ajustes → Correo (Mailway) y la herramienta de terminal `tools/mailway.ts`
@@ -352,7 +356,7 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `service_metrics_hourly` | `(service_id, hour)` → sumas y máximos de CPU/RAM, bytes de red del periodo (delta) y foto de disco — histórico de consumo (~90 d) |
 | `host_metrics_hourly` | `hour` → carga, RAM y disco del host (sumas, máximos y última foto) — histórico de consumo del servidor (~90 d) |
 | `github_connectors` | `id`, `project_id`, `name`, `token` (en claro: se necesita para clonar; jamás sale por la API), `gh_login`, `token_type`, `created_by`, `last_used_at` — cae en cascada con el proyecto |
-| `mailway_links` | correo del proyecto: `project_id` (PK, cae en cascada con el proyecto), `client_id` (cliente de Mailway, **único**: un cliente pertenece a un solo proyecto), `client_name`, `created_by`, `created_at`. En Mailway el cliente lleva la referencia externa `skyway:project:<projectId>`, que es la fuente de verdad: si falta la fila, `GET /api/projects/:id/mail` la recupera. No guarda credenciales |
+| `mailway_links` | correo del proyecto: `project_id` (PK, cae en cascada con el proyecto), `client_id` (cliente de Mailway; índice normal, no único: lo **comparten los proyectos de una misma cuenta**, nunca proyectos de cuentas distintas), `client_name` (copia del nombre en Mailway), `created_by`, `created_at`, `legacy_credentials` (1 = vínculo anterior a compartir clientes: las credenciales de envío con el nombre de antes que haya en su cliente son de este proyecto). En Mailway el cliente lleva la referencia externa de la cuenta, `skyway:workspace:<workspaceId>`, o, en un proyecto sin cuenta (y en el cliente propio que conserve un proyecto de una cuenta), `skyway:project:<projectId>`; es la fuente de verdad. Si falta la fila de un proyecto con cliente propio, `GET /api/projects/:id/mail` la recupera; con la referencia de la cuenta no (la comparten todos sus proyectos): al activar el correo se vincula de nuevo al mismo cliente. No guarda credenciales. La migración `mailway_links_shared_v1` retiró el índice único anterior |
 | `service_managed_env` | variables que escribió Skyway por su cuenta (correo, plan de integraciones, importación del `.env` del repositorio): `(service_id, key)` → `origin` (`mail.smtp.password`, `postgres.DATABASE_URL`, `generate`, `value`, `self.public_url`, `import`…), `value_hash` (SHA-256 del valor escrito, nunca el valor), `updated_at`. Si el valor actual ya no casa con el hash, la variable es de quien la cambió y no se vuelve a tocar. Cae en cascada con el servicio |
 | `github_installations` | instalaciones de la GitHub App: `id`, `installation_id`, `account_login`, `account_type`, `repo_selection`, `project_id` (null = global del administrador), `created_by`, `last_used_at`, `suspended`. **No guarda credenciales**: el token de clonado se emite bajo demanda y caduca en una hora |
 
@@ -1174,8 +1178,25 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   revoca todos los conectores desde Ajustes. Sin conector se usa el token global.
 - **Correo (Mailway)**: Skyway se conecta con la instancia de Mailway del
   operador (Ajustes → Correo) mediante un **token de gestión de administrador**
-  y, desde el botón «Correo» de cada proyecto, permite activar un **cliente de
-  correo por proyecto** (referencia externa `skyway:project:<id>`), añadir
+  y, desde el botón «Correo» de cada proyecto, permite activar el correo con
+  **un cliente de Mailway por cuenta**: los proyectos de una cuenta (workspace)
+  que activan el correo comparten el cliente de la cuenta (referencia externa
+  `skyway:workspace:<id>`, con el nombre de la cuenta), con sus dominios,
+  buzones y plan; los que nunca lo activan no crean nada, y un proyecto sin
+  cuenta tiene el suyo (`skyway:project:<id>`, con el nombre del proyecto). El
+  nombre del cliente sigue al de la cuenta: al renombrarla (en segundo plano,
+  sin bloquear el cambio; un fallo queda en la auditoría) y, si difieren, al
+  abrir el correo de uno de sus proyectos. Los vínculos de antes (un cliente
+  propio por proyecto) pasan al cliente de la cuenta sin perder nada al abrir
+  el correo del proyecto y, en segundo plano, al arrancar: si la cuenta aún no
+  tiene cliente, ese mismo cliente pasa a serlo (referencia y nombre de la
+  cuenta); si ya tenía otro, no se fusiona ni se mueve nada: el proyecto
+  conserva el suyo, sigue funcionando y el panel lo indica («Este proyecto
+  tiene su propio cliente en Mailway»), y queda registrado una vez en la
+  auditoría (`mailway_client_kept`). Las credenciales de envío de los
+  servicios de un proyecto de una cuenta llevan también el slug del proyecto
+  (`skyway:tienda/web`, `Skyway · tienda/web`): dos proyectos de la cuenta con
+  un servicio «web» no se revocan la credencial al volver a conectarse. Añadir
   dominios con sus registros DNS (verificación, aplicación en **Cloudflare**
   con vista previa de cambios y conflictos, o **fichero de zona** para
   importarlo, sin registros A/AAAA/CNAME/HTTPS/SVCB del dominio raíz ni de
@@ -1207,26 +1228,57 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   La pestaña lo enseña antes de conectar (`…/mail/connect/preview`) y la
   respuesta solo lista nombres. Volver a conectar un servicio **revoca la
   credencial anterior** del mismo tipo que Skyway creó para él (`skyway:<servicio>`
-  o `Skyway · <servicio>`) y actualiza lo que Skyway escribió (también lo de
+  o `Skyway · <servicio>`; en un proyecto de una cuenta, `skyway:<proyecto>/<servicio>`)
+  y actualiza lo que Skyway escribió (también lo de
   antes de llevar la cuenta de lo escrito); las credenciales vigentes se listan
   y se revocan desde la misma pestaña. El **fichero de zona** añade, en
   secciones propias y comentadas, los registros A de los servicios del **mismo
   proyecto** que cuelgan del dominio (hacia la IP pública de Ajustes; sin ella,
   se omiten con un aviso) y el del webmail del cliente: basta con importar un
   solo fichero en Cloudflare.
+  **Webmail propio**: Mailway da a cada dominio del cliente su webmail en
+  `webmail.<dominio>` automáticamente (registro DNS en Cloudflare con proxy,
+  certificado…). La pestaña «Dominios» enseña los webmail de marca del cliente
+  (estado «Esperando DNS», «Emitiendo certificado», «En servicio» o «Con
+  error», el principal y el enlace en servicio) y el interruptor «Crear el
+  webmail automáticamente» del cliente: apagarlo pide confirmación (los que
+  Mailway creó solo dejan de funcionar, con su registro DNS, y los titulares
+  vuelven al webmail general); encenderlo los crea de nuevo. Si el interruptor
+  global de Mailway está apagado, se avisa de que no tiene efecto. Con un
+  Mailway sin la función (`features.webmailAutomatico` ausente) la sección no
+  aparece. **Configuración inicial**: «Enviar configuración inicial» crea el
+  enlace de bienvenida de Mailway para la persona de contacto del cliente (con
+  él crea su propio acceso al panel de Mailway y entra en un asistente para
+  añadir el dominio y los buzones): correo propuesto (el de contacto del
+  cliente o el del propietario de la cuenta), nombre opcional y validez (1, 3,
+  7 o 30 días); el enlace se muestra al crearlo con su caducidad y un «Enviar
+  por correo» (`mailto:` con asunto y texto), y la lista de enlaces recientes
+  permite volver a ver uno pendiente y revocarlo. Ambos son ajustes del
+  cliente de correo: en una cuenta, valen para todos sus proyectos.
   Aislamiento: como el token es de administrador, **cada dominio y buzón se
   comprueba contra el resumen del cliente vinculado** antes de actuar (si no es
   suyo, 404 sin llegar a Mailway) y la referencia externa del cliente tiene que
-  ser exactamente la del proyecto. El plan lo elige el administrador (el
+  ser exactamente una de las del proyecto: la de su cuenta o la suya propia.
+  Solo comparten cliente proyectos de la **misma cuenta**: vincular a un
+  proyecto el cliente de otra cuenta, de otro proyecto o de otra integración
+  responde 409 (también en Mailway: `409 external_ref_in_use` si la referencia
+  de la cuenta ya es de otro cliente). Un miembro con acceso a un proyecto ve
+  el correo de la cuenta (es el mismo cliente), pero solo los nombres de los
+  proyectos a los que tiene acceso. El plan lo elige el administrador (el
   propietario recibe el predeterminado de Ajustes → Correo), los buzones los
   crean el propietario o el administrador (los nombres reservados —postmaster,
   abuse, admin, hostmaster, webmaster, root…— solo el administrador) y, con la
-  cuenta suspendida, no se crea nada. Desactivar el correo recuerda el cliente
-  y reactivarlo permite **recuperar ese mismo cliente** con sus dominios. La
-  desvinculación en Mailway es condicional (`DELETE
+  cuenta suspendida, no se crea nada. Desactivar el correo solo retira el
+  vínculo de ese proyecto: el cliente de una cuenta conserva la referencia de
+  la cuenta (también al desactivarlo el último proyecto, o al borrarlo), y
+  volver a activarlo vincula el proyecto al mismo cliente con sus dominios. Un
+  cliente propio se recuerda y, al reactivar, se puede **recuperar ese mismo
+  cliente**. La desvinculación en Mailway es condicional (`DELETE
   /api/integrations/clients/:id/link?externalRef=skyway:project:<id>`): si
   entretanto el cliente se ha vinculado a otra referencia, Mailway responde
-  409 `external_ref_mismatch` y no lo toca.
+  409 `external_ref_mismatch` y no lo toca. Borrar una cuenta suelta en
+  segundo plano, igual de condicional, la referencia `skyway:workspace:<id>`
+  de su cliente (que sigue en Mailway con sus buzones).
   Módulo de plan `mail` («Correo»).
   **Puente de Traefik**: Traefik lee `GET /api/traefik/mailway` (proveedor HTTP,
   cada 15 s); Skyway obtiene la configuración de Mailway y la **sanea** (solo
@@ -1290,8 +1342,8 @@ Niveles: **manage** = admin o propietario del workspace del recurso; **admin** =
 | GET | `/workspaces` | auth | admin: todas; propietario: la suya; miembro: ninguna. Incluye cuota, asignación y módulos |
 | POST | `/workspaces` | admin | crea una cuenta (`{name, planId?, billingEmail?, billingDay?}`); un plan archivado no se contrata (400), aquí ni en el PATCH |
 | GET | `/workspaces/:id` | manage | cuenta + proyectos + sub-usuarios + `planHistory` (tramos de plan con su tarifa y sus fechas) |
-| PATCH | `/workspaces/:id` | admin | **live resize**: cuota, plan, concesión de módulos, estado (suspender), facturación. Cambiar de plan cierra el tramo vigente del historial y abre otro en la misma transacción |
-| DELETE | `/workspaces/:id` | admin | elimina la cuenta y sus sub-usuarios; sus proyectos quedan sin asignar |
+| PATCH | `/workspaces/:id` | admin | **live resize**: cuota, plan, concesión de módulos, estado (suspender), facturación. Cambiar de plan cierra el tramo vigente del historial y abre otro en la misma transacción. Cambiar el nombre renombra también, en segundo plano, el cliente de correo de la cuenta en Mailway (`PATCH /api/clients/:id`), si lo tiene; un fallo no deshace nada y se audita (`mailway_client_rename_failed`) |
+| DELETE | `/workspaces/:id` | admin | elimina la cuenta y sus sub-usuarios; sus proyectos quedan sin asignar. En segundo plano suelta en Mailway la referencia `skyway:workspace:<id>` de su cliente de correo, solo si todavía la lleva (el cliente y sus buzones siguen en Mailway) |
 | PATCH | `/workspaces/:id/modules` | manage | el propietario **acota** (desactiva) módulos concedidos (`{disabled}`) |
 | GET | `/workspaces/:id/usage?days=` | manage | uso agregado (núcleo·h, GB·h, picos) del periodo |
 | GET | `/workspaces/:id/usage/series?days=` | manage | serie temporal de uso por cubos (para gráficas) + top de proyectos por consumo |
@@ -1704,10 +1756,10 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | POST | `/mailway/disconnect` | admin + session | borra dirección, token, servicio, plan predeterminado y hosts, **retira las rutas de Mailway de Traefik** (y su copia guardada) y libera los nombres de marca blanca reservados. Los vínculos de los proyectos se conservan. Audita `mailway_disconnected` |
 | GET | `/mailway/plans` | admin | `{plans, defaultPlanId}` para elegir el plan predeterminado |
 | POST | `/mailway/test` | admin | `{baseUrl?, token?, serviceId?}` opcionales (probar sin guardar) → `{ok, info:{version, brandName, mailHostname, webmailUrl, panelUrl, role, email, features}, warnings}`; avisa si el token no es de administrador. Las URLs que no son http(s) llegan como `null`. 12/min |
-| GET | `/projects/:id/mail` | auth + access | `{moduleEnabled, configured, canManage, isAdmin, accountSuspended, linked, notice?, panelUrl, features, link?, summary?, suggestedDomains}`. Recupera el vínculo si Mailway tiene un cliente con la referencia del proyecto; si el cliente ya no existe o ya no lleva exactamente esa referencia, `notice` lo explica (sin `summary`) y se puede desactivar. `summary.apiKeys[]` incluye `senderMailboxId` y `createdBySkyway`. `suggestedDomains` (máx. 8): dominios registrables de los dominios de los servicios del proyecto según la lista de sufijos públicos (`api.empresa.com` → `empresa.com`; nada bajo sufijos privados como `github.io`), sin los que ya tiene el cliente ni los de la plataforma (registrables de `SKYWAY_DOMAIN`, del `rootDomain` y de los hosts de Mailway); `[]` sin módulo, sin Mailway o con `notice` |
-| GET | `/projects/:id/mail/options` | manage | `{plans, clients, defaultPlanId, canChoosePlan, defaultName, previous}`: el administrador ve todos los planes y los clientes (con `available`/`linkedTo`); el propietario, solo el plan que se le asignará. `previous` = `{clientName, available, reason}` del cliente anterior del proyecto |
-| POST | `/projects/:id/mail/link` | manage | `{mode:'create', name?(2-80), planId?, contactEmail?}` (ensure por referencia externa; `planId` distinto del predeterminado → 403 salvo admin; sin nombre, el del proyecto o «Proyecto X» si tiene 1 carácter), `{mode:'previous'}` (recupera el cliente anterior si su referencia está libre; 409 si otra integración lo tiene) o `{mode:'existing', clientId}` (solo admin; 409 si ya está vinculado). 403 con la cuenta suspendida |
-| DELETE | `/projects/:id/mail/link` | manage | suelta la referencia en Mailway **solo si el cliente todavía la lleva** (si es de otra integración no se toca), borra el vínculo local y recuerda el cliente → `{ok, released}` |
+| GET | `/projects/:id/mail` | auth + access | `{moduleEnabled, configured, canManage, isAdmin, accountSuspended, linked, notice?, panelUrl, features, link?, summary?, account?, suggestedDomains}`. Recupera el vínculo si Mailway tiene un cliente con la referencia propia del proyecto (con la de su cuenta no: la comparten todos sus proyectos); si el cliente ya no existe o ya no lleva exactamente esa referencia, `notice` lo explica (sin `summary`) y se puede desactivar. `summary.apiKeys[]` incluye `senderMailboxId` y `createdBySkyway`. `features.webmailAutomatico` = interruptor global del webmail automático de Mailway (`null` si no lo tiene) y `summary.webmail` = `{automatico, domains:[{hostname, status, detail, automatico, isPrimary, url, conflict}]}` (`null` con un Mailway sin la función; solo nombres que cuelgan de un dominio del cliente, sin identificadores de Mailway; `url` solo en servicio y sin conflicto). En un proyecto de una cuenta, `account` = `{workspaceName, shared, projects, ownClient}`: si el cliente es el de la cuenta, los otros proyectos de la cuenta que lo usan (solo los que el usuario puede ver) y, si el proyecto conserva su propio cliente porque la cuenta ya tenía otro, `ownClient.workspaceClientName`; al leerlo, el vínculo de antes pasa al cliente de la cuenta y el nombre del cliente se alinea con el de la cuenta (ver «Correo (Mailway)»). `suggestedDomains` (máx. 8): dominios registrables de los dominios de los servicios del proyecto según la lista de sufijos públicos (`api.empresa.com` → `empresa.com`; nada bajo sufijos privados como `github.io`), sin los que ya tiene el cliente ni los de la plataforma (registrables de `SKYWAY_DOMAIN`, del `rootDomain` y de los hosts de Mailway); `[]` sin módulo, sin Mailway o con `notice` |
+| GET | `/projects/:id/mail/options` | manage | `{plans, clients, defaultPlanId, canChoosePlan, defaultName, previous, workspace}`: el administrador ve todos los planes y los clientes (con `available`/`linkedTo`: no se puede elegir uno vinculado a un proyecto de otra cuenta ni con la referencia de otro proyecto, otra cuenta u otra integración); el propietario, solo el plan que se le asignará. `previous` = `{clientName, available, reason}` del cliente anterior del proyecto. En un proyecto de una cuenta, `workspace` = `{name, client}`: `defaultName` es el nombre de la cuenta y, si la cuenta ya tiene cliente (`client` = `{name, planName}`), no hay clientes que elegir, ni plan, ni cliente anterior |
+| POST | `/projects/:id/mail/link` | manage | `{mode:'create', name?(2-80), planId?, contactEmail?}` (ensure por referencia externa; `planId` distinto del predeterminado → 403 salvo admin; sin nombre, el del proyecto o «Proyecto X» si tiene 1 carácter), `{mode:'previous'}` (recupera el cliente anterior si su referencia está libre; 409 si otra integración lo tiene) o `{mode:'existing', clientId}` (solo admin; 409 si está vinculado a un proyecto de otra cuenta o lleva la referencia de otro proyecto, otra cuenta u otra integración). En un proyecto de una cuenta: si la cuenta ya tiene cliente (`skyway:workspace:<id>`), el proyecto se vincula a él (`created: false`, sin crear nada; otro `clientId` o cliente anterior → 409); si no, el cliente creado, recuperado o vinculado pasa a ser el de la cuenta (referencia de la cuenta con `PUT …/link` y nombre de la cuenta; el `name` del cuerpo no cuenta). Si otro cliente ya tiene la referencia de la cuenta, el `409 external_ref_in_use` de Mailway se traslada con su mensaje. 403 con la cuenta suspendida |
+| DELETE | `/projects/:id/mail/link` | manage | retira solo el vínculo de este proyecto → `{ok, released, workspaceClient}`. El cliente de una cuenta conserva la referencia de la cuenta (`workspaceClient: true`), aunque fuera el último proyecto: al volver a activar el correo, el proyecto se vincula al mismo cliente. Un cliente propio, como siempre: suelta su referencia en Mailway **solo si todavía la lleva** (si es de otra integración no se toca) y se recuerda para recuperarlo |
 | POST | `/projects/:id/mail/domains` | auth + access | `{domain}` → `{domain, cloudflare, cloudflareReason}` (201). Comprueba la referencia del cliente; 403 con la cuenta suspendida, 409 con el cliente suspendido en Mailway. Para un administrador se envía `autoDns: true` solo si Mailway tiene Cloudflare (`features.cloudflare`) y declara `features.cloudflareSoloCrear` (1.1 o posterior): Mailway crea en Cloudflare los registros que faltan (también con las cuentas de la instancia) sin modificar ninguno existente (ni el SPF, ni un proxy), y `cloudflare` = `{applied, errors, skipped}` o `cloudflareReason` explica por qué no. Con un Mailway anterior no se pide y `cloudflareReason` dice que hay que actualizarlo; sin Cloudflare en Mailway no se pide ni se avisa. Para quien no es admin va con `autoDns: false` y `?soloCliente=1` (`cloudflare: null`): el alta de un cliente nunca escribe en las zonas del operador. Cada dominio incluye `ownershipVerifiedAt`, `ownershipPending` y `ownershipRecord` (`{type, name, content}`, el TXT que prueba la propiedad): mientras la propiedad esté pendiente, Mailway responde 409 `domain_ownership_pending` al crear buzones y la interfaz muestra «Propiedad pendiente» con el TXT |
 | POST | `/projects/:id/mail/domains/:domainId/verify` | auth + access | vuelve a comprobar el DNS |
 | GET | `/projects/:id/mail/domains/:domainId/dns` | auth + access | `{records:[{type,name,content}]}` |
@@ -1719,6 +1771,11 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | POST | `/projects/:id/mail/domains/:domainId/webmail/verify` | auth + access | comprueba DNS y HTTPS en Mailway y avanza el estado (Esperando DNS → Emitiendo certificado → En servicio) → `{webmail, conflict}`. 404 si no está configurado. 30/min |
 | POST | `/projects/:id/mail/domains/:domainId/webmail/cloudflare` | manage | crea en Cloudflare el registro del webmail (`?soloCliente=1` para quien no es admin, como en los dominios) → `{applied, errors, skipped, webmail}`; nunca sustituye un registro existente con otro valor (`skipped`). 409 si el nombre lo sirve un servicio de Skyway. Audita `mailway_webmail_dns_applied`. 10/min |
 | POST | `/projects/:id/mail/domains/:domainId/webmail/primary` | manage | lo marca como webmail principal del cliente (el que usan sus enlaces y datos de conexión) → `{webmail}`; 400 `webmail_not_active` de Mailway si no está en servicio. Audita `mailway_webmail_primary` |
+| PUT | `/projects/:id/mail/webmail-automatico` | manage | `{activo: boolean}` → `{automatico, global, domains}` (`domains` con la forma de `summary.webmail.domains`). Interruptor del webmail automático del cliente vinculado (`PUT /api/clients/:id/webmail-automatico`): encendido, Mailway prepara al momento `webmail.<dominio>` de cada dominio con la propiedad comprobada (y Skyway reserva esos nombres sin esperar al puente); apagado, retira los que creó solo, con su registro DNS. Con el interruptor global apagado se guarda sin efecto (`global: false`). Encenderlo exige la cuenta y el cliente activos (403/409); apagarlo, no. 409 sin llamar a Mailway si no declara `features.webmailAutomatico`. Audita `mailway_webmail_automatico`. 10/min |
+| GET | `/projects/:id/mail/invites` | manage | `{invites:[{id, email, name, createdAt, expiresAt, openedAt, acceptedAt, revokedAt, status:'pending'\|'accepted'\|'expired'\|'revoked', recoverable}], suggestedEmail, clientName}`: enlaces de bienvenida del cliente (los 50 más recientes, sin URL) y el correo que se propone para uno nuevo (el de contacto del cliente en Mailway o, si no tiene, el del propietario de la cuenta) |
+| POST | `/projects/:id/mail/invites` | manage | `{email, name?(≤80), ttlHours?(1-720, 168 por defecto)}` → 201 `{invite:{id, url, email, name, expiresAt, existingUser}}`: enlace de bienvenida de la persona de contacto (crea su acceso al panel de Mailway y entra en la puesta en marcha); sirve una vez y sustituye al pendiente de ese correo. La URL se devuelve aquí y nunca se audita. 403 con la cuenta suspendida; 409 con el cliente suspendido o si el correo ya es de otra cuenta de Mailway (`user_exists`, sin decir de cuál). Audita `mailway_invite_created`. 10/min |
+| GET | `/projects/:id/mail/invites/:inviteId/url` | manage | `{invite:{id, url, email, name, expiresAt, existingUser:null}}` de un enlace pendiente; 404 si ya no es válido (`invite_invalid`), 409 si Mailway ya no conserva la URL (`invite_not_recoverable`). Audita `mailway_invite_viewed`. 20/min |
+| DELETE | `/projects/:id/mail/invites/:inviteId` | manage | revoca un enlace pendiente → `{ok, revoked:true}`; uno caducado o ya revocado → `{ok, revoked:false}` sin llamar a Mailway; uno aceptado → 409. Audita `mailway_invite_revoked` |
 | POST | `/projects/:id/mail/mailboxes` | manage | `{domainId, localPart, displayName?(≤80)}` → `{mailbox, password}` (la contraseña, **una sola vez**). `localPart` como en Mailway: `a-z0-9._-`, sin `+`. Los nombres reservados (abuse, admin, administrator, hostmaster, postmaster, root, security, ssladmin, webmaster) solo los crea un admin (403) |
 | POST | `/projects/:id/mail/mailboxes/:mailboxId/password` | manage | nueva contraseña (una vez); los dispositivos deben reconfigurarse |
 | POST | `/projects/:id/mail/mailboxes/:mailboxId/setup-link` | auth + access | `{includePassword?, password?}` → `{url, expiresAt, hasPassword}`; la contraseña solo se incluye si se aporta, y entonces exige **manage** y un tope de 5 cada 10 min por usuario (Mailway la comprueba). La URL no se audita |
@@ -1726,17 +1783,22 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | DELETE | `/projects/:id/mail/app-passwords/:appId` | manage | revoca una contraseña de aplicación del cliente (404 si no es suya). Audita `mailway_app_password_revoked` |
 | DELETE | `/projects/:id/mail/api-keys/:keyId` | manage | revoca una clave de API del cliente (404 si no es suya). Audita `mailway_api_key_revoked` |
 | GET | `/projects/:id/mail/connect/preview` | auth + access | `?serviceId&mode` → `{mode, suggestedMode, keys, kept, secretPlaced, conflicts}`: con qué nombres recibiría el servicio el correo (los de su `skyway.json` o su `.env.example` por alias; los de siempre para lo que no nombra), cuáles se conservarían por tener un valor puesto a mano y, en `conflicts`, las de conexión (servidor, puerto, URL de la API) puestas a mano con otro valor, que harían responder 409 a la conexión. Sin crear nada; 404 si el servicio es de otro proyecto |
-| POST | `/projects/:id/mail/connect` | manage | `{serviceId, mailboxId, mode:'smtp'\|'api', redeploy?}` → `{ok, keys, kept, needsRedeploy, deploymentId, revoked}`. El servicio debe ser del proyecto y no de base de datos. Escribe con los nombres de la vista previa y **nunca pisa una variable puesta a mano** (van en `kept`); si la credencial no cabe en ninguna variable, o si el servidor, el puerto, el usuario o la URL de la API están puestos a mano con otro valor (conexión a medias), 409 sin crearla. Revoca antes la credencial del mismo tipo que Skyway creó para el servicio (`skyway:<slug>` o `Skyway · <slug>`, ≤ 60 caracteres). Nunca devuelve ni audita los valores. Con `redeploy`, despliegue con disparador `mailway` |
+| POST | `/projects/:id/mail/connect` | manage | `{serviceId, mailboxId, mode:'smtp'\|'api', redeploy?}` → `{ok, keys, kept, needsRedeploy, deploymentId, revoked}`. El servicio debe ser del proyecto y no de base de datos. Escribe con los nombres de la vista previa y **nunca pisa una variable puesta a mano** (van en `kept`); si la credencial no cabe en ninguna variable, o si el servidor, el puerto, el usuario o la URL de la API están puestos a mano con otro valor (conexión a medias), 409 sin crearla. Revoca antes la credencial del mismo tipo que Skyway creó para el servicio (`skyway:<slug>` o `Skyway · <slug>`; en un proyecto de una cuenta, cuyo cliente comparten sus proyectos, `skyway:<proyecto>/<slug>` o `Skyway · <proyecto>/<slug>`, y también la del nombre de antes si el vínculo es anterior a compartirlo; ≤ 60 caracteres, con un sufijo de los identificadores si hay que recortar). Nunca devuelve ni audita los valores. Con `redeploy`, despliegue con disparador `mailway` |
 
 Todas las rutas con `:domainId`/`:mailboxId`/`:appId`/`:keyId` comprueban antes,
 con el resumen del cliente vinculado, que el recurso es de ese cliente: si no,
 **404** sin llamar a Mailway (tampoco a la marca blanca ni al fichero de zona).
+Las de `:inviteId`, con la lista de enlaces del cliente vinculado: un enlace de
+otro cliente responde 404 sin llegar a su ruta. El cliente sale siempre del
+vínculo del proyecto (el interruptor del webmail y los enlaces de bienvenida
+son del cliente: en una cuenta, de todos sus proyectos).
 Las rutas del webmail no reciben identificadores de marca blanca: el nombre se
 deriva del dominio y el dominio propio se busca entre los del cliente
 vinculado, y lo que devuelve Mailway tiene que ser de ese cliente y ese nombre
 (502 si no). Si la referencia externa del cliente no es
-exactamente `skyway:project:<id>` (vacía incluida), **409** en todas las rutas
-de proyecto. El 401 de Mailway se traslada como 502 con su motivo (token
+exactamente una de las del proyecto —la de su cuenta, `skyway:workspace:<id>`,
+o la suya, `skyway:project:<id>`— (vacía incluida), **409** en todas las rutas
+de proyecto (también si el proyecto ha pasado a otra cuenta). El 401 de Mailway se traslada como 502 con su motivo (token
 revocado, caducado o de un usuario desactivado). Las URLs que llegan de Mailway
 (panel, webmail, enlaces) solo se devuelven si son http(s). Borrar un proyecto
 suelta en segundo plano la referencia de su cliente en Mailway (solo si todavía

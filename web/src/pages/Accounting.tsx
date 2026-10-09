@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, Receipt, RefreshCw, Send, Trash2, Zap } from 'lucide-react';
 import { api } from '../api';
-import { Button, Chip, EmptyState, ErrorState, Field, NumberInput, Skeleton, StatusBadge, useToast } from '../components/ui';
+import { Button, Chip, EmptyState, ErrorState, Field, NumberInput, Skeleton, StatusBadge, Toggle, useToast } from '../components/ui';
 import { RevenueBars } from '../components/BillingCharts';
 import { AccountingInvoice, AccountingSummary, AiGatewayConfig, AiModelPrices, AiPriceSync, AiPriceSyncState, BillingAutomation, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
 import { cx, fmtDate, fmtMoney, timeAgo } from '../utils';
@@ -189,31 +189,6 @@ export default function AccountingPage() {
         <AiGatewaySettings />
       </div>
     </div>
-  );
-}
-
-/**
- * Interruptor accesible y compacto, en el estilo del panel. El dibujo mide 22px,
- * pero la zona que responde al toque la amplía un pseudoelemento hasta ~42px:
- * así se mantiene discreto sin ser imposible de acertar con el pulgar.
- */
-function Toggle({ checked, onChange, disabled, label }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; label?: string }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={cx(
-        'relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors duration-200 before:absolute before:-inset-2.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acc',
-        checked ? 'bg-acc' : 'bg-surface2',
-        disabled && 'cursor-not-allowed opacity-50',
-      )}
-    >
-      <span className={cx('inline-block h-[16px] w-[16px] rounded-full bg-white shadow transition-transform duration-200', checked ? 'translate-x-[19px]' : 'translate-x-[3px]')} />
-    </button>
   );
 }
 

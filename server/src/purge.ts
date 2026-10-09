@@ -44,7 +44,7 @@ import {
   volumesInUse,
 } from './docker/resources';
 import { invalidateDockerSnapshot } from './docker/sampler';
-import { MAILWAY_SETTING, previousClientKey } from './mailway';
+import { MAILWAY_SETTING, ownClientKey, previousClientKey } from './mailway';
 import { markManualAction } from './monitor';
 import { ProjectRow, ServiceRow } from './types';
 
@@ -576,6 +576,7 @@ async function purgeProjectMarked(project: ProjectRow, services: ServiceRow[]): 
   // El informe de importación lleva comandos con contraseñas.
   setSetting(`importReport:${project.id}`, null);
   setSetting(previousClientKey(project.id), null);
+  setSetting(ownClientKey(project.id), null);
   releaseProjectDnsReservations(project.id);
   // El resto de filas (servicios, variables, despliegues, vínculo de correo,
   // conectores) caen en cascada.

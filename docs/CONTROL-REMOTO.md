@@ -108,7 +108,9 @@ Si el administrador ha conectado Mailway (Ajustes → Correo), el correo de cada
 proyecto se gestiona con el mismo token de Skyway: no hace falta un token de
 Mailway en el script, y el token solo alcanza el cliente de correo de los
 proyectos a los que da acceso (cada dominio y buzón se comprueba contra el
-proyecto). Referencia completa en `docs/FUNCIONALIDAD.md` §7.12.
+proyecto). Los proyectos de una cuenta comparten el cliente de correo de la
+cuenta (dominios, buzones y plan): activarlo en un segundo proyecto lo vincula
+a ese mismo cliente. Referencia completa en `docs/FUNCIONALIDAD.md` §7.12.
 
 ```bash
 # Estado del correo del proyecto (dominios con su estado DNS, buzones, uso y, en
@@ -137,6 +139,20 @@ curl -s -H "Authorization: Bearer $TOKEN" -o zona.txt "$BASE/api/projects/PROJ_I
 curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/webmail"
 curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/webmail/verify"
 curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/domains/DOM_ID/webmail/cloudflare"
+
+# Webmail propio: interruptor del webmail automático del cliente (propietario o
+# admin). Apagado, Mailway retira los webmail que creó solo, con su registro DNS.
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"activo":false}' "$BASE/api/projects/PROJ_ID/mail/webmail-automatico"
+
+# Configuración inicial (propietario o admin): enlace de bienvenida para la
+# persona de contacto del cliente (la URL llega UNA vez en invite.url), lista
+# de enlaces, volver a ver uno pendiente y revocarlo
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"email":"contacto@tuempresa.com","name":"Ana","ttlHours":168}' "$BASE/api/projects/PROJ_ID/mail/invites"
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/invites"
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/invites/INV_ID/url"
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/api/projects/PROJ_ID/mail/invites/INV_ID"
 
 # Crear un buzón (propietario o admin; la respuesta trae la contraseña UNA sola vez)
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \

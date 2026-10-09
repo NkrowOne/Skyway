@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assertWorkspaceAccess, currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
-import { audit } from '../audit';
+import { audit, auditSystem } from '../audit';
 import {
   countWorkspaceMembers,
   createUser,
@@ -33,6 +33,8 @@ import {
   workspaceUsageRange,
   workspaceUsageSeries,
 } from '../db';
+import { mailwayConfigured, releaseWorkspaceClient } from '../mailway';
+import { sincronizarNombreCuenta } from '../mailwaycuentas';
 import { grantedModules, workspaceQuotaSummary, workspacePlan } from '../quota';
 import { DEFAULT_COUNTRY, normalizeCountry } from '../countries';
 import { MODULES, sanitizeModules } from '../modules';
@@ -262,6 +264,16 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
     } else {
       audit(req, 'workspace_updated', { type: 'workspace', id, detail: ws.name });
     }
+    // El cliente de correo de la cuenta en Mailway lleva su nombre. En segundo
+    // plano y sin deshacer nada: si Mailway falla, se registra y el nombre se
+    // alinea la próxima vez que se abra el correo de uno de sus proyectos.
+    if (body.name !== undefined && body.name !== ws.name && mailwayConfigured()) {
+      void sincronizarNombreCuenta(id).catch((err: unknown) => {
+        const message = (err as Error)?.message ?? String(err);
+        req.log.warn({ workspaceId: id }, `No se ha podido renombrar en Mailway el cliente de correo de la cuenta: ${message}`);
+        auditSystem('mailway_client_rename_failed', `${body.name}: ${message}`.slice(0, 300), { type: 'workspace', id });
+      });
+    }
     return { workspace: publicWorkspace(getWorkspace(id)!) };
   });
 
@@ -297,6 +309,20 @@ export async function workspaceRoutes(app: FastifyInstance): Promise<void> {
       deleteWorkspace(id); // desasigna proyectos y borra el workspace
     });
     audit(req, 'workspace_deleted', { type: 'workspace', id, detail: `${ws.name} (${members.length} usuarios)` });
+    // Su cliente de correo en Mailway deja de ser el de una cuenta que ya no
+    // existe (solo si todavía lleva su referencia). En segundo plano: el
+    // cliente y sus buzones siguen en Mailway, y un fallo solo se registra.
+    if (mailwayConfigured()) {
+      void releaseWorkspaceClient(id)
+        .then((client) => {
+          if (client) auditSystem('mailway_client_released', `${ws.name}: ${client.name}`, { type: 'workspace', id });
+        })
+        .catch((err: unknown) => {
+          const message = (err as Error)?.message ?? String(err);
+          req.log.warn({ workspaceId: id }, `No se ha podido soltar en Mailway el cliente de correo de la cuenta: ${message}`);
+          auditSystem('mailway_client_release_failed', `${ws.name}: ${message}`.slice(0, 300), { type: 'workspace', id });
+        });
+    }
     return { ok: true };
   });
 

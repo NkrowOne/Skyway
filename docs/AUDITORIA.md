@@ -89,13 +89,22 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   dos de ellos críticos— y deja 13 puntos pendientes.
 
 - **Integración con Mailway (correo)** (`mailway.ts`, `mailwaytraefik.ts`,
-  `routes/mailway.ts`): el token de gestión `mwt_…` es de **administrador** de
-  Mailway, así que el aislamiento entre proyectos lo impone Skyway: cada ruta con
-  `:domainId`/`:mailboxId`/`:appId`/`:keyId` lo busca primero en el resumen del
-  cliente vinculado al proyecto y, si no es suyo, responde **404 sin llamar a
-  Mailway**; si la referencia externa del cliente no es exactamente
-  `skyway:project:<id>` (también vacía), 409 en **todas** las rutas de proyecto,
-  incluida el alta de dominios. Activar, desactivar, crear buzones, conectar
+  `mailwaycuentas.ts`, `routes/mailway.ts`): el token de gestión `mwt_…` es de
+  **administrador** de Mailway, así que el aislamiento lo impone Skyway: cada
+  ruta con `:domainId`/`:mailboxId`/`:appId`/`:keyId` lo busca primero en el
+  resumen del cliente vinculado al proyecto, y cada `:inviteId` en la lista de
+  enlaces de bienvenida de ese cliente, y si no es suyo responde **404 sin
+  llamar a Mailway**; si la referencia externa del cliente no es exactamente
+  una de las del proyecto —la de su cuenta (`skyway:workspace:<id>`) o la suya
+  (`skyway:project:<id>`)— (también vacía), 409 en **todas** las rutas de
+  proyecto, incluida el alta de dominios. Un cliente lo comparten como mucho
+  los proyectos de **una misma cuenta**: vincular el de otra cuenta, otro
+  proyecto u otra integración responde 409 sin tocar Mailway, y los nombres de
+  las credenciales de envío llevan el slug del proyecto para que volver a
+  conectar un servicio nunca revoque la credencial del servicio homónimo de
+  otro proyecto de la cuenta. El interruptor del webmail automático y los
+  enlaces de bienvenida (que dan un acceso al panel de Mailway con todo el
+  cliente) exigen gestionar el proyecto; la URL de un enlace nunca se audita. Activar, desactivar, crear buzones, conectar
   servicios, revocar credenciales, aplicar DNS en Cloudflare, restablecer
   contraseñas, crear enlaces **con contraseña** (además con tope de 5 cada 10 min:
   Mailway la comprueba y sería un oráculo) y borrar buzones exigen gestionar el

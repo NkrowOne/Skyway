@@ -886,6 +886,12 @@ export interface MailwayLinkRow {
   client_name: string;
   created_by: string | null; // email de quien lo activó
   created_at: number;
+  /**
+   * 1 = vínculo anterior a compartir el cliente entre los proyectos de una
+   * cuenta: las credenciales de envío con el nombre de antes (solo el slug del
+   * servicio) que haya en el cliente son de este proyecto.
+   */
+  legacy_credentials: number;
 }
 
 /**

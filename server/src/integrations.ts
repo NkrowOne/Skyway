@@ -52,9 +52,8 @@ import {
   CLIENTE_SUSPENDIDO,
   CUENTA_SUSPENDIDA,
   NO_CONFIGURADO,
-  apiKeyName,
-  appPasswordName,
   connectServiceMail,
+  credentialNames,
   httpError,
   isRefError,
   knownMailValues,
@@ -459,11 +458,12 @@ export function buildPlan(opts: {
   // Correo: los nombres los decide lo mismo que «Conectar a un servicio».
   if (wantsMail) {
     const mode = wantsMail.mode;
-    const credName = mode === 'smtp' ? appPasswordName(service) : apiKeyName(service);
+    // Los mismos nombres con los que «Conectar a un servicio» reconoce la credencial del servicio.
+    const credNames = credentialNames(service, mode, mail?.link ?? null);
     const hadCredential = !!mail?.summary &&
       (mode === 'smtp'
-        ? mail.summary.appPasswords.some((a) => !a.revokedAt && a.name === credName)
-        : mail.summary.apiKeys.some((k) => !k.revokedAt && k.name === credName));
+        ? mail.summary.appPasswords.some((a) => !a.revokedAt && credNames.includes(a.name))
+        : mail.summary.apiKeys.some((k) => !k.revokedAt && credNames.includes(k.name)));
     const known = knownMailValues(mail?.info ?? null, mode, mail?.mailbox?.email ?? null);
     const names = mailConnectNames(service, mode, known, hadCredential);
     const blocked = mail && !mail.available ? mail.reason : null;
@@ -515,7 +515,7 @@ export function buildPlan(opts: {
     // aplicación abre todo su correo por IMAP. Si el servicio ya tiene una de
     // Skyway en ESE buzón, volver a conectarlo no da nada nuevo.
     const holdsCredential =
-      !!existing && !!mail?.summary && mail.summary.appPasswords.some((a) => !a.revokedAt && a.name === credName && a.mailboxId === existing.id);
+      !!existing && !!mail?.summary && mail.summary.appPasswords.some((a) => !a.revokedAt && credNames.includes(a.name) && a.mailboxId === existing.id);
     const status: PlanStatus = anyBlocked || noSecret || partial ? 'blocked' : anyApply ? 'apply' : 'done';
     plan.resources.push({
       key: 'mail',
