@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { assertProjectAccess, currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
 import { audit } from '../audit';
 import { cloudflareConfigurado } from '../cloudflareconfig';
-import { desactivarProxyCloudflare, dnsAutomaticoAdmin, dnsSinBase } from '../cloudflaredns';
+import { cambiarProxyCloudflare, dnsAutomaticoAdmin, dnsSinBase, verificarEnCloudflare } from '../cloudflaredns';
 import { dbConsoleEngine } from '../dbconsole';
 import { domainClaimError, dominiosConPareja } from '../domainguard';
 import { limpiarSinPareja, ordenarDominios } from '../dominioprincipal';
@@ -809,11 +809,13 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
   );
 
   /**
-   * «Desactivar proxy en Cloudflare» de UN dominio del servicio: quita el
-   * proxy de sus registros A que apuntan a este servidor y vuelve a comprobar
-   * el DNS. Solo el administrador, con sesión de navegador y nombrando un
-   * dominio que el servicio ya tiene guardado: es la única modificación de un
-   * registro existente y siempre es un clic expreso (`desactivarProxyCloudflare`).
+   * «Activar proxy en Cloudflare» (`proxied: true`) o «Desactivar proxy en
+   * Cloudflare» (sin `proxied` o `false`, como antes) de UN dominio del
+   * servicio: cambia el proxy de sus registros A que apuntan a este servidor y
+   * vuelve a comprobar el DNS (con la API de Cloudflare). Solo el
+   * administrador, con sesión de navegador y nombrando un dominio que el
+   * servicio ya tiene guardado: son las únicas modificaciones de un registro
+   * existente y siempre son un clic expreso (`cambiarProxyCloudflare`).
    */
   app.post(
     '/api/services/:id/cloudflare-proxy',
@@ -822,18 +824,19 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       const { id } = req.params as { id: string };
       const found = loadService(id);
       if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
-      const { domain } = z.object({ domain: domainSchema }).parse(req.body ?? {});
+      const { domain, proxied } = z.object({ domain: domainSchema, proxied: z.boolean().optional() }).parse(req.body ?? {});
       const asignados = ((found.service.config as { domains?: string[] }).domains ?? []).map((d) => d.trim().toLowerCase());
       if (!asignados.includes(domain)) {
         return reply.code(404).send({ error: `El dominio ${domain} no está asignado a este servicio. Guarda antes los cambios.` });
       }
-      const result = await desactivarProxyCloudflare(domain);
-      audit(req, 'cloudflare_proxy_disabled', {
+      const activar = proxied === true;
+      const result = await cambiarProxyCloudflare(domain, activar);
+      audit(req, activar ? 'cloudflare_proxy_enabled' : 'cloudflare_proxy_disabled', {
         type: 'service',
         id,
-        detail: `${domain}: ${result.changed === 0 ? 'ya estaba desactivado' : `${result.changed} registro(s)`}`,
+        detail: `${domain}: ${result.changed === 0 ? `ya estaba ${activar ? 'activado' : 'desactivado'}` : `${result.changed} registro(s)`}`,
       });
-      return { result, check: await checkDomain(domain) };
+      return { result, check: await checkDomain(domain, { verificar: verificarEnCloudflare }) };
     },
   );
 

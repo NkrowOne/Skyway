@@ -5,8 +5,9 @@
  * Cuando un administrador da de alta dominios nuevos en un servicio (crearlo,
  * añadirlos en Ajustes, una pila o una plantilla con dominio, la importación
  * de Railway) y hay un token de Cloudflare configurado, se crea en su
- * Cloudflare el registro A de cada uno hacia la IP del servidor, sin pisar
- * nada: lo que ya existe se respeta y un conflicto se informa, nunca se toca.
+ * Cloudflare el registro A de cada uno hacia la IP del servidor, con el proxy
+ * de Cloudflare si la web va por HTTPS, sin pisar nada: lo que ya existe se
+ * respeta y un conflicto se informa, nunca se toca.
  *
  * Seguridad: el token es del operador y da acceso a SUS zonas. Si lo usara
  * una acción de un cliente (propietario o miembro de un workspace), cualquier
@@ -39,6 +40,7 @@ import {
   deleteCloudflareDnsRecord,
   getCloudflareDnsRecord,
   getProject,
+  getSetting,
   getService,
   listCloudflareDnsRecords,
   moveCloudflareDnsRecords,
@@ -46,7 +48,7 @@ import {
   serviceIdsForDomain,
   upsertCloudflareDnsRecord,
 } from './db';
-import { getServerIp } from './domains';
+import { getServerIp, VerificacionCloudflare } from './domains';
 import { httpError } from './mailconnect';
 
 export type AccionDns = 'created' | 'kept' | 'conflict' | 'skipped' | 'error';
@@ -147,6 +149,33 @@ function reservarSiEsDeSkyway(registro: CfRegistro, zona: CfZona, domain: string
   upsertCloudflareDnsRecord({ domain, zone_id: zona.id, zone_name: zona.name, record_id: registro.id, content: ip, project_id: projectId });
 }
 
+/**
+ * ¿Lleva el proxy de Cloudflare (nube naranja) el registro que crea Skyway?
+ * Sí si la web va por HTTPS: caché, protección y la red de Cloudflare delante,
+ * y Let's Encrypt valida igual porque Cloudflare deja pasar
+ * `/.well-known/acme-challenge/` hasta este servidor. Sin HTTPS, no: este
+ * servidor solo serviría la web por HTTP y Cloudflare solo podría entregarla
+ * en el modo «Flexible».
+ */
+function registrosConProxy(): boolean {
+  return !!getSetting('letsencryptEmail');
+}
+
+/**
+ * ¿Cubre el certificado gratuito de Cloudflare (Universal SSL) este nombre?
+ * Solo la zona y un nivel de subdominio (`ejemplo.com` y `*.ejemplo.com`):
+ * con el proxy, uno más profundo (`api.tienda.ejemplo.com`) daría un error de
+ * certificado a los visitantes, salvo con un certificado avanzado de pago.
+ * Ese va sin proxy.
+ */
+export function cubiertoPorCertificadoCloudflare(domain: string, zona: string): boolean {
+  const nombre = domain.trim().toLowerCase().replace(/\.$/, '');
+  const raiz = zona.trim().toLowerCase().replace(/\.$/, '');
+  if (nombre === raiz) return true;
+  if (!nombre.endsWith(`.${raiz}`)) return false;
+  return !nombre.slice(0, -(raiz.length + 1)).includes('.');
+}
+
 async function unDominio(cliente: CloudflareClient, domain: string, ip: string, projectId: string | null): Promise<ResultadoDns> {
   const zona = await cliente.findZoneFor(domain);
   if (!zona) {
@@ -175,7 +204,7 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string, 
     return {
       domain,
       action: 'kept',
-      message: `El registro A hacia ${ip} ya existía${propio.proxied ? ' (con el proxy de Cloudflare activado)' : ''}.`,
+      message: `El registro A hacia ${ip} ya existía${propio.proxied ? ' (con el proxy de Cloudflare activado)' : ' (sin el proxy de Cloudflare)'}.`,
     };
   }
   // Un comodín solo resuelve un nombre que no tiene ningún registro propio:
@@ -187,15 +216,16 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string, 
     const porComodin = await segunComodin(cliente, zona, domain, ip, apuntaAqui);
     if (porComodin) return porComodin;
   }
+  const conHttps = registrosConProxy();
+  const cubierto = cubiertoPorCertificadoCloudflare(domain, zona.name);
+  const proxied = conHttps && cubierto;
   try {
     const creado = await cliente.createRecord(zona.id, {
       type: 'A',
       name: domain,
       content: ip,
       ttl: 1,
-      // Sin proxy: Let's Encrypt valida por HTTP contra este servidor y el
-      // operador decide después si lo activa.
-      proxied: false,
+      proxied,
       comment: COMENTARIO_SKYWAY,
     });
     upsertCloudflareDnsRecord({
@@ -219,7 +249,12 @@ async function unDominio(cliente: CloudflareClient, domain: string, ip: string, 
     throw err;
   }
   const pendiente = zona.status !== 'active' ? ' La zona todavía no está activa en Cloudflare: el registro funcionará cuando lo esté.' : '';
-  return { domain, action: 'created', message: `Registro A hacia ${ip} creado en la zona ${zona.name}.${pendiente}` };
+  const conProxy = proxied
+    ? ', con el proxy de Cloudflare'
+    : conHttps
+      ? `, sin el proxy de Cloudflare: su certificado gratuito solo cubre ${zona.name} y un nivel de subdominio`
+      : '';
+  return { domain, action: 'created', message: `Registro A hacia ${ip} creado en la zona ${zona.name}${conProxy}.${pendiente}` };
 }
 
 /**
@@ -359,37 +394,60 @@ export function dnsSinBase(req: FastifyRequest, dominios: readonly string[], pro
   }));
 }
 
-/* ------------------------ Desactivar el proxy ------------------------ */
+/* ------------------- Activar o desactivar el proxy ------------------- */
 
 export interface ResultadoProxy {
   domain: string;
-  /** Registros a los que se ha quitado el proxy (0 si ya no lo tenían). */
+  /** Registros a los que se ha cambiado el proxy (0 si ya estaban así). */
   changed: number;
   message: string;
 }
 
 /**
- * «Desactivar proxy en Cloudflare»: quita el proxy (nube naranja) de los
- * registros A de un dominio que apuntan a este servidor, para que Let's
- * Encrypt valide contra él y la comprobación del DNS vea la IP real.
+ * «Activar proxy en Cloudflare» y «Desactivar proxy en Cloudflare»: pone o
+ * quita el proxy (nube naranja) en los registros A de un dominio que apuntan
+ * a este servidor. Activarlo pone la web detrás de Cloudflare (caché,
+ * protección); desactivarlo es la salida para un servicio que no funciona
+ * detrás del proxy (subidas de más de 100 MB o peticiones de más de 100 s en
+ * el plan gratuito de Cloudflare).
  *
- * Es la única modificación de un registro existente que hace Skyway, y solo
- * por un clic expreso del administrador (lo exige la ruta): el DNS automático
- * al guardar sigue sin tocar nada de lo que ya existe. Se limita a lo mínimo:
+ * Son las únicas modificaciones de un registro existente que hace Skyway, y
+ * solo por un clic expreso del administrador (lo exige la ruta): el DNS
+ * automático al guardar sigue sin tocar nada de lo que ya existe. Se limitan
+ * a lo mínimo:
  * - solo registros A/AAAA con ese nombre exacto (nunca otros nombres);
- * - solo envía `proxied: false` (ni el destino ni el tipo cambian);
- * - si algún registro con proxy apunta a otro sitio (otra IP o un AAAA, que
- *   no puede ser este servidor), no se modifica ninguno y se explica: quitar
- *   el proxy solo a una parte dejaría el nombre a medias.
+ * - solo envían `proxied` (ni el destino ni el tipo cambian);
+ * - si algún registro afectado apunta a otro sitio (otra IP o un AAAA, que no
+ *   puede ser este servidor), no se modifica ninguno y se explica: cambiar el
+ *   proxy solo a una parte dejaría el nombre a medias. Al activarlo cuentan
+ *   todos los registros del nombre (con el proxy, Cloudflare repartiría el
+ *   tráfico entre ellos); al desactivarlo, los que lo tienen.
+ * - activarlo exige HTTPS en Skyway: sin él, Cloudflare solo podría entregar
+ *   la web en el modo «Flexible».
  */
-export async function desactivarProxyCloudflare(domain: string): Promise<ResultadoProxy> {
+export async function cambiarProxyCloudflare(domain: string, proxied: boolean): Promise<ResultadoProxy> {
+  const accion = proxied ? 'activar' : 'desactivar';
   const token = tokenCloudflareGuardado();
-  if (!token) throw httpError(400, 'Configura el token de Cloudflare en Ajustes → Cloudflare para desactivar el proxy.');
+  if (!token) throw httpError(400, `Configura el token de Cloudflare en Ajustes → Cloudflare para ${accion} el proxy.`);
+  if (proxied && !registrosConProxy()) {
+    throw httpError(
+      409,
+      'Para activar el proxy de Cloudflare, configura antes HTTPS (correo de Let\'s Encrypt en Ajustes → Dominios y TLS): sin él, Cloudflare solo podría entregar la web en el modo «Flexible».',
+    );
+  }
   const { ip } = await getServerIp();
   if (!ip) throw httpError(400, 'No se conoce la IP pública del servidor: indícala en Ajustes → Dominios y TLS.');
   const cliente = new CloudflareClient(token, { timeoutMs: PLAZO_PETICION_MS });
   const zona = await cliente.findZoneFor(domain);
-  if (!zona) throw httpError(404, `El token de Cloudflare no ve ninguna zona que contenga ${domain}. Desactiva el proxy en el panel de Cloudflare.`);
+  if (!zona) {
+    throw httpError(404, `El token de Cloudflare no ve ninguna zona que contenga ${domain}. ${proxied ? 'Activa' : 'Desactiva'} el proxy en el panel de Cloudflare.`);
+  }
+  if (proxied && !cubiertoPorCertificadoCloudflare(domain, zona.name)) {
+    throw httpError(
+      409,
+      `El certificado gratuito de Cloudflare solo cubre ${zona.name} y un nivel de subdominio: con el proxy, ${domain} daría un error de certificado a los visitantes. Si tienes un certificado avanzado de Cloudflare que lo cubra, activa el proxy en el panel de Cloudflare.`,
+    );
+  }
   const delNombre = (await cliente.listRecords(zona.id, { name: domain })).filter((r) => r.name === domain);
   const direcciones = delNombre.filter((r) => r.type === 'A' || r.type === 'AAAA');
   if (direcciones.length === 0) {
@@ -397,27 +455,91 @@ export async function desactivarProxyCloudflare(domain: string): Promise<Resulta
     throw httpError(
       cname ? 409 : 404,
       cname
-        ? `${domain} es un CNAME hacia ${cname.content || '(vacío)'} y no se ha modificado. Cámbialo en Cloudflare por un registro A hacia ${ip} sin proxy.`
+        ? `${domain} es un CNAME hacia ${cname.content || '(vacío)'} y no se ha modificado. ${proxied ? 'Activa' : 'Desactiva'} el proxy en el panel de Cloudflare.`
         : `No hay ningún registro A de ${domain} en la zona ${zona.name}.`,
     );
   }
-  const conProxy = direcciones.filter((r) => r.proxied);
-  const ajenos = conProxy.filter((r) => !(r.type === 'A' && r.content.trim() === ip));
+  const apuntaAqui = (r: CfRegistro) => r.type === 'A' && r.content.trim() === ip;
+  const afectados = proxied ? direcciones : direcciones.filter((r) => r.proxied);
+  const ajenos = afectados.filter((r) => !apuntaAqui(r));
   if (ajenos.length > 0) {
     throw httpError(
       409,
-      `Hay ${describir(ajenos)} con el proxy activado que no apunta a este servidor (${ip}): no se ha modificado nada. Revisa los registros de ${domain} en Cloudflare.`,
+      proxied
+        ? `Hay ${describir(ajenos)} con ese nombre que no apunta a este servidor (${ip}): no se ha modificado nada. Revisa los registros de ${domain} en Cloudflare.`
+        : `Hay ${describir(ajenos)} con el proxy activado que no apunta a este servidor (${ip}): no se ha modificado nada. Revisa los registros de ${domain} en Cloudflare.`,
     );
   }
-  for (const r of conProxy) await cliente.desactivarProxy(zona.id, r.id);
+  const cambiar = afectados.filter((r) => r.proxied !== proxied);
+  for (const r of cambiar) await cliente.cambiarProxy(zona.id, r.id, proxied);
+  const hecho = proxied ? 'activado' : 'desactivado';
   return {
     domain,
-    changed: conProxy.length,
+    changed: cambiar.length,
     message:
-      conProxy.length > 0
-        ? `Proxy desactivado en ${conProxy.length === 1 ? 'el registro A' : `${conProxy.length} registros A`} de ${domain}. El cambio puede tardar unos minutos en propagarse.`
-        : `El registro A de ${domain} ya no tiene el proxy activado. El cambio puede tardar unos minutos en propagarse.`,
+      cambiar.length > 0
+        ? `Proxy ${hecho} en ${cambiar.length === 1 ? 'el registro A' : `${cambiar.length} registros A`} de ${domain}. El cambio puede tardar unos minutos en propagarse.`
+        : `El registro A de ${domain} ya ${proxied ? 'tiene' : 'no tiene'} el proxy activado.`,
   };
+}
+
+/* --------------- Comprobar a dónde lleva un nombre con proxy --------------- */
+
+/** Plazo total de la comprobación (todas las consultas a la API). */
+const PLAZO_VERIFICACION_MS = 10_000;
+
+/**
+ * Comprobación de un nombre con el proxy de Cloudflare para la vista del
+ * administrador: desde fuera solo se ven las IP de Cloudflare, así que se
+ * pregunta a su API (solo lectura) a dónde lleva el registro. Sigue un CNAME
+ * (hasta tres saltos, en zonas que vea el token) y, si el nombre no tiene
+ * ningún registro propio, el comodín más cercano (la misma regla que el DNS
+ * automático). null si no se puede saber: sin token, sin IP, una zona que el
+ * token no ve o que aún no está activa en Cloudflare (sus registros todavía no
+ * deciden nada), sin registros de dirección o un fallo de la API. `proxied` es
+ * el del nombre (o de su comodín): el que decide si el tráfico pasa por
+ * Cloudflare. Nunca crea, cambia ni reserva nada.
+ */
+export async function verificarEnCloudflare(domain: string): Promise<VerificacionCloudflare> {
+  const token = tokenCloudflareGuardado();
+  if (!token) return null;
+  const { ip } = await getServerIp();
+  if (!ip) return null;
+  const plazo = new AbortController();
+  const temporizador = setTimeout(() => plazo.abort(), PLAZO_VERIFICACION_MS);
+  const cliente = new CloudflareClient(token, { signal: plazo.signal, timeoutMs: PLAZO_PETICION_MS });
+  try {
+    let nombre = domain.trim().toLowerCase().replace(/\.$/, '');
+    let proxied: boolean | null = null;
+    for (let salto = 0; salto < 4; salto++) {
+      const zona = await cliente.findZoneFor(nombre);
+      if (!zona || zona.status !== 'active') return null;
+      const todos = await cliente.listRecords(zona.id, { name: nombre });
+      let direcciones = todos.filter((r) => DIRECCION.has(r.type));
+      if (todos.length === 0) {
+        for (const comodin of comodinesDe(nombre, zona.name)) {
+          const delComodin = await cliente.listRecords(zona.id, { name: comodin });
+          if (delComodin.length === 0) continue;
+          direcciones = delComodin.filter((r) => DIRECCION.has(r.type));
+          break;
+        }
+      }
+      if (direcciones.length === 0) return null;
+      if (proxied === null) proxied = direcciones.some((r) => r.proxied);
+      const cname = direcciones.find((r) => r.type === 'CNAME');
+      if (cname) {
+        nombre = cname.content.trim().toLowerCase().replace(/\.$/, '');
+        continue;
+      }
+      const ajenos = direcciones.filter((r) => !(r.type === 'A' && r.content.trim() === ip));
+      return ajenos.length > 0 ? { estado: 'otro', detalle: describir(ajenos) } : { estado: 'aqui', proxied };
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(temporizador);
+  }
 }
 
 /* ------------------ Registros creados: reserva y limpieza ------------------ */

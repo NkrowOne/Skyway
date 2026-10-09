@@ -456,16 +456,16 @@ export class CloudflareClient {
   }
 
   /**
-   * Desactiva el proxy de un registro (nube gris). El cuerpo es solo
-   * `proxied: false`: ni el nombre, ni el tipo, ni el destino cambian. Solo lo
-   * usa «Desactivar proxy en Cloudflare», tras comprobar que el registro
-   * apunta a este servidor.
+   * Activa o desactiva el proxy de un registro (nube naranja o gris). El
+   * cuerpo es solo `proxied`: ni el nombre, ni el tipo, ni el destino cambian.
+   * Solo lo usan «Activar proxy en Cloudflare» y «Desactivar proxy en
+   * Cloudflare», tras comprobar que el registro apunta a este servidor.
    */
-  async desactivarProxy(zoneId: string, recordId: string): Promise<CfRegistro> {
+  async cambiarProxy(zoneId: string, recordId: string, proxied: boolean): Promise<CfRegistro> {
     const sobre = await this.peticion<RegistroCrudo>(
       'PATCH',
       `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
-      { body: { proxied: false } },
+      { body: { proxied } },
     );
     return aRegistro(sobre.result);
   }

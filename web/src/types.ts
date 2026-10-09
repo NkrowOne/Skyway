@@ -1342,7 +1342,10 @@ export interface DnsAutoResult {
   message: string;
 }
 
-/** Resultado de «Desactivar proxy en Cloudflare» (`POST /services/:id/cloudflare-proxy`). */
+/**
+ * Resultado de «Activar proxy en Cloudflare» (`proxied: true`) o «Desactivar
+ * proxy en Cloudflare» (`POST /services/:id/cloudflare-proxy`).
+ */
 export interface CloudflareProxyResult {
   result: { domain: string; changed: number; message: string };
   /** El DNS comprobado de nuevo tras el cambio. */
@@ -1358,11 +1361,19 @@ export interface DomainsConfig {
 /** Comprobación del DNS de un dominio (`POST /domains/check`, `DomainCheck` de server/src/domains.ts). */
 export interface DomainCheck {
   domain: string;
-  /** `cloudflare_proxy`: resuelve al proxy de Cloudflare (nube naranja); no se puede verificar desde fuera. */
-  status: 'ok' | 'wrong_ip' | 'cloudflare_proxy' | 'no_record' | 'unknown';
+  /**
+   * `cloudflare_proxy`: resuelve al proxy de Cloudflare (nube naranja) y no se
+   * ha podido comprobar a dónde lleva el tráfico; no es un error.
+   * `cloudflare_flexible`: pasa por el proxy y apunta a este servidor, pero
+   * Cloudflare entra en un bucle de redirecciones porque el modo SSL/TLS de la
+   * zona es «Flexible».
+   */
+  status: 'ok' | 'wrong_ip' | 'cloudflare_proxy' | 'cloudflare_flexible' | 'no_record' | 'unknown';
   resolvedIps: string[];
   expectedIp: string | null;
   message: string;
+  /** Comprobado con la API de Cloudflare: apunta a este servidor con el proxy activo. Solo en respuestas a un administrador. */
+  viaCloudflare?: boolean;
 }
 
 /** DNS automático del alta de un dominio de correo (Mailway, solo administrador). */

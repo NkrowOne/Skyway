@@ -12,9 +12,10 @@
  *
  * Registra cada petición (método, ruta, consulta, Authorization y cuerpo) y
  * responde 405 a cualquier PUT, y a un PATCH que no sea exactamente
- * `{ proxied: false }` sobre un registro concreto (el único cambio que hace
- * Skyway, con «Desactivar proxy en Cloudflare»). DELETE solo existe sobre un
- * registro concreto (la limpieza de Ajustes → Cloudflare).
+ * `{ proxied: false }` o `{ proxied: true }` sobre un registro concreto (los
+ * únicos cambios que hace Skyway, con «Desactivar proxy en Cloudflare» y
+ * «Activar proxy en Cloudflare»). DELETE solo existe sobre un registro
+ * concreto (la limpieza de Ajustes → Cloudflare).
  */
 
 export const CF_HOST = 'api.cloudflare.com';
@@ -200,8 +201,9 @@ export async function cloudflareFetch(url: URL, init: RequestInit = {}): Promise
       cf.records = cf.records.filter((x) => x !== r);
       return sobre(200, { id: r.id });
     }
-    if (method === 'PATCH' && JSON.stringify(body) === JSON.stringify({ proxied: false })) {
-      r.proxied = false;
+    const cuerpo = JSON.stringify(body);
+    if (method === 'PATCH' && (cuerpo === JSON.stringify({ proxied: false }) || cuerpo === JSON.stringify({ proxied: true }))) {
+      r.proxied = (body as { proxied: boolean }).proxied;
       return sobre(200, r);
     }
   }
