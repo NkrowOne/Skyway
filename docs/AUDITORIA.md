@@ -73,6 +73,20 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   (nombre, `@login`, quién lo conectó), nunca el token.
 - **Superficie de red**: el `docker-compose` publica la UI solo en
   `127.0.0.1:4000`; el acceso público va por dominio+TLS a través de Traefik.
+- **IP real detrás de Cloudflare**: Traefik confía en el `X-Forwarded-For` de
+  Cloudflare solo en el 443 y solo desde sus rangos publicados
+  (`--entrypoints.websecure.forwardedHeaders.trustedIPs`), nunca con
+  `insecure` ni en el 80. Desde cualquier otra IP sigue borrando las
+  cabeceras `X-Forwarded-*`, así que nadie puede falsear la IP conectando
+  directamente al servidor (comprobado con Traefik 3.7). En el 80 no se confía
+  para que el modo SSL/TLS «Flexible» siga dando el bucle que Skyway detecta,
+  en lugar de servir la web sin cifrar entre Cloudflare y el servidor. El
+  `trustProxy` del panel no cambia (solo rangos privados): su límite de
+  intentos no se puede falsear. Las apps deben leer `X-Forwarded-For` de
+  derecha a izquierda, porque su parte izquierda la escribe el visitante.
+  `CF-Connecting-IP` solo vale si la conexión llega de Cloudflare.
+  `server/test/traefik-cloudflare.test.ts` comprueba que la lista del compose
+  coincide con la de `domains.ts` y que el 80 no confía en nadie.
 - **Facturación y automatización** (control de acceso): las rutas de catálogo,
   suscripciones, cargos y automatización (`/billing/automation`, `/products`,
   `/workspaces/:id/subscriptions` y `/charges`) exigen sesión y rol **admin**

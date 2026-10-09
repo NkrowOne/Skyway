@@ -123,6 +123,22 @@ export const CLOUDFLARE_IPV4 = [
   '131.0.72.0/22',
 ] as const;
 
+/**
+ * Rangos IPv6 publicados por Cloudflare (https://www.cloudflare.com/ips-v6).
+ * La comprobación del DNS solo mira IPv4; estos, junto a los IPv4, son los
+ * que Traefik considera de Cloudflare en el 443 para respetar su
+ * X-Forwarded-For (docker-compose.yml; una prueba comprueba que coinciden).
+ */
+export const CLOUDFLARE_IPV6 = [
+  '2400:cb00::/32',
+  '2606:4700::/32',
+  '2803:f800::/32',
+  '2405:b500::/32',
+  '2405:8100::/32',
+  '2a06:98c0::/29',
+  '2c0f:f248::/32',
+] as const;
+
 /** Una IPv4 como entero sin signo, o null si no es una IPv4 válida. */
 function ipv4ANumero(ip: string): number | null {
   if (!IPV4_RE.test(ip)) return null;
