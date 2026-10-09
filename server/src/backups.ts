@@ -94,7 +94,8 @@ export function listServiceBackupDirs(): ServiceBackupDir[] {
     try {
       updatedAt = fs.statSync(dir).mtimeMs;
       for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (!f.isFile()) continue;
+        // Los temporales de una copia en curso o cortada no son copias.
+        if (!f.isFile() || PARTIAL_FILE.test(f.name)) continue;
         const st = fs.statSync(path.join(dir, f.name));
         files += 1;
         size += st.size;
@@ -126,6 +127,43 @@ export function deleteServiceBackupDir(serviceId: string): boolean {
 }
 
 const SAFE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * La copia se escribe primero en un fichero oculto (empieza por «.», así que
+ * SAFE_FILE lo deja fuera de los listados, las descargas y las
+ * restauraciones) y solo se renombra al nombre definitivo cuando el volcado
+ * ha terminado bien. Si el proceso se corta a mitad (un reinicio del panel
+ * por una actualización, un apagado), no queda una copia truncada que
+ * parezca buena: queda un temporal que la siguiente copia retira.
+ */
+function partialName(file: string): string {
+  return `.${file}.parcial`;
+}
+
+const PARTIAL_FILE = /^\..+\.parcial$/;
+
+/**
+ * Retira los temporales de copias que se cortaron. Solo los antiguos: uno
+ * reciente puede ser de otra copia en curso (una manual a la vez que la
+ * programada), y ninguna dura más de BACKUP_TIMEOUT_MS.
+ */
+function removeStalePartials(dir: string, nowMs = Date.now()): void {
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!PARTIAL_FILE.test(name)) continue;
+    const full = path.join(dir, name);
+    try {
+      if (nowMs - fs.statSync(full).mtimeMs > 2 * BACKUP_TIMEOUT_MS) fs.rmSync(full, { force: true });
+    } catch {
+      // Borrado a la vez por otra copia: nada que hacer.
+    }
+  }
+}
 
 export function resolveBackupFile(serviceId: string, file: string): string | null {
   if (!SAFE_FILE.test(file)) return null;
@@ -179,7 +217,9 @@ export async function createBackup(project: ProjectRow, service: ServiceRow): Pr
   const file = `${cfg.template}-${project.slug}-${service.slug}-${stamp}.${tpl.ext}`;
   const dir = backupDir(service.id);
   fs.mkdirSync(dir, { recursive: true });
+  removeStalePartials(dir);
   const full = path.join(dir, file);
+  const partial = path.join(dir, partialName(file));
 
   const container = docker.getContainer(name);
   const exec = await container.exec({ Cmd: ['sh', '-c', tpl.dump], AttachStdout: true, AttachStderr: true });
@@ -207,7 +247,7 @@ export async function createBackup(project: ProjectRow, service: ServiceRow): Pr
   stream.on('close', closeOutputs);
 
   const gzip = zlib.createGzip({ level: 6 });
-  const sink = fs.createWriteStream(full);
+  const sink = fs.createWriteStream(partial);
 
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -229,23 +269,25 @@ export async function createBackup(project: ProjectRow, service: ServiceRow): Pr
       reject(err);
     });
   }).catch((err) => {
-    fs.rmSync(full, { force: true });
+    fs.rmSync(partial, { force: true });
     throw err;
   });
 
   const exitCode = await waitExecExit(exec, EXIT_CODE_RETRY);
   if (exitCode !== 0) {
-    fs.rmSync(full, { force: true });
+    fs.rmSync(partial, { force: true });
     throw new Error(
       `El volcado terminó con error (código ${exitCode ?? 'desconocido'}): ${errText.slice(0, 500) || 'sin detalle'}`,
     );
   }
 
-  const st = fs.statSync(full);
-  if (st.size < 30) {
-    fs.rmSync(full, { force: true });
+  if (fs.statSync(partial).size < 30) {
+    fs.rmSync(partial, { force: true });
     throw new Error('El volcado ha resultado vacío: comprueba el estado de la base de datos.');
   }
+  // Solo ahora la copia aparece con su nombre: completa o nada.
+  fs.renameSync(partial, full);
+  const st = fs.statSync(full);
   return { file, size: st.size, createdAt: st.mtimeMs };
 }
 
