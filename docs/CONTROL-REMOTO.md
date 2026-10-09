@@ -265,7 +265,9 @@ skyway restart api        # reinicia
 skyway stop api           # detiene (pide confirmación; -y la salta)
 skyway rewind api         # rollback: muestra los despliegues correctos y vuelves al que elijas
 skyway status api         # estado y último despliegue
-skyway update             # actualiza el PROPIO Skyway: git pull + rebuild + reinicio (en el servidor)
+skyway update             # actualiza el PROPIO Skyway en el servidor; si algo falla, vuelve a la versión anterior
+sudo skyway auto-update on --sistema   # lo mismo cada noche, y parches de seguridad del sistema
+sudo skyway auto-update status         # próxima ejecución, último resultado y registro
 ```
 
 `deploy` siempre redespliega la rama configurada del servicio (habitualmente
@@ -274,11 +276,21 @@ token define qué servicios ves y qué puedes hacer (hereda los permisos del
 usuario). `skyway --help` lista todo.
 
 `skyway update` es distinto: no usa la API ni el token, opera **en local sobre
-el servidor** donde corre Skyway. Hace `git pull` del repo, reconstruye la imagen
-(`docker compose up -d --build`) y comprueba el health. La base de datos vive en
-el volumen `skyway-data`, así que no se toca, y las apps desplegadas siguen
-corriendo (solo parpadea el panel unos segundos). Requiere `git`, `docker` y
-Docker Compose en el servidor.
+el servidor** donde corre Skyway. Si hay algo nuevo en la rama remota, avanza el
+código solo en limpio, reconstruye la imagen (`docker compose up -d --build`) y
+comprueba que el panel, Traefik y, con dominio, el HTTPS del panel responden;
+si algo falla, vuelve automáticamente a la versión anterior. Sin nada nuevo no reinicia
+nada (`--forzar` reconstruye igualmente). La base de datos vive en el volumen
+`skyway-data`, así que no se toca, y las apps desplegadas siguen corriendo (solo
+parpadea el panel unos segundos). Termina con 0 (actualizado o sin nada nuevo),
+1 (no se ha actualizado: sigue la versión anterior) o 2 (también ha fallado la
+vuelta atrás). Requiere `git`, `docker` y Docker Compose en el servidor.
+
+`sudo skyway auto-update on` lo programa cada noche con systemd (`skyway update
+--auto` a las 04:30, o a la hora de `--hora HH:MM`), con aviso por los canales
+de Ajustes → Alertas; `--sistema` añade los parches de seguridad del sistema con
+unattended-upgrades en Debian y Ubuntu. `off` lo retira y `status` muestra el
+último resultado. Detalle en [FUNCIONALIDAD.md](FUNCIONALIDAD.md) §9.1.
 
 ### Darle el control a Claude
 

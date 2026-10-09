@@ -10,6 +10,11 @@
 #   skyway status   [servicio]        Estado y último despliegue
 #   skyway ls                         Lista servicios accesibles
 #
+# En el propio servidor (sin API ni token):
+#   skyway update   [-y] [--forzar]   Actualiza Skyway y, si algo falla, vuelve a la versión anterior
+#   skyway update   --auto            Lo mismo sin preguntas: lo que ejecuta el temporizador nocturno
+#   skyway auto-update on [--hora HH:MM] [--sistema] | off [--sistema] | status
+#
 # «servicio» puede ser un id (svc_…), un slug, o parte del nombre. Sin él, se
 # elige de una lista. Todo pasa por la API REST con un token `sky_…`.
 #
@@ -43,7 +48,9 @@ die()  { printf '%s\n' "${C_ERR}✗ $*${C_RESET}" >&2; exit 1; }
 # ---------- configuración ----------
 load_config() {
   local f
-  for f in "${SKYWAY_CONFIG:-$HOME/.config/skyway/config}" "./.skywayrc"; do
+  # Sin HOME (un servicio de systemd no siempre lo tiene) no hay configuración
+  # personal que leer; con `set -u`, $HOME a secas abortaría el script.
+  for f in "${SKYWAY_CONFIG:-${HOME:-}/.config/skyway/config}" "./.skywayrc"; do
     # shellcheck disable=SC1090
     if [[ -f "$f" ]]; then source "$f"; fi
   done
@@ -268,56 +275,633 @@ pkg_version() {
   sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -1
 }
 
-# Actualiza el PROPIO Skyway en el servidor: git pull + reconstruir la imagen +
-# recrear el contenedor. La base de datos vive en el volumen `skyway-data`, así
-# que no se toca. Se ejecuta desde una copia para que `git pull` no reescriba
-# este mismo fichero a mitad de ejecución.
+# ---------- actualización del propio Skyway ----------
+#
+# `skyway update` trae lo nuevo de la rama remota (solo si avanza en limpio),
+# reconstruye la imagen, recrea los contenedores y comprueba que todo
+# responde; si algo falla, vuelve por sí mismo a la versión anterior. Sin
+# nada nuevo no reconstruye ni reinicia nada: el temporizador nocturno
+# (`skyway auto-update on`) no puede reiniciar el panel ni Traefik cada
+# noche. Los datos viven en volúmenes que esto nunca toca, y las migraciones
+# de la base de datos del panel solo añaden tablas y columnas, así que la
+# versión anterior sigue funcionando con una base ya migrada.
+#
+# Códigos de salida: 0 = actualizado y comprobado, o nada que actualizar;
+# 1 = no se ha actualizado y el servidor sigue con la versión que tenía (ha
+# fallado y se ha vuelto atrás, o no se podía aplicar sin riesgo); 2 = ha
+# fallado y la vuelta atrás también: hay que revisar el servidor.
+
+# Rutas del sistema que toca `auto-update`. Las variables SKYWAY_* existen solo
+# para las pruebas (server/test/actualizacion-automatica.test.ts), que las
+# apuntan a una carpeta temporal; en un servidor no se definen.
+SYSTEMD_DIR="${SKYWAY_SYSTEMD_DIR:-/etc/systemd/system}"
+APT_CONF_DIR="${SKYWAY_APT_CONF_DIR:-/etc/apt/apt.conf.d}"
+OS_RELEASE="${SKYWAY_OS_RELEASE:-/etc/os-release}"
+UNIDAD='skyway-auto-update'
+APT_SKYWAY='52skyway-actualizaciones'
+
+# Comprobaciones tras actualizar: 36 intentos cada 5 s, unos 3 minutos. Las
+# pruebas los reducen para no esperar.
+INTENTOS="${SKYWAY_UPDATE_INTENTOS:-36}"
+PAUSA="${SKYWAY_UPDATE_PAUSA:-5}"
+
+NOTA_DATOS='Los datos no se han tocado: viven en volúmenes de Docker, y las migraciones de la base de datos del panel solo añaden tablas y columnas, así que la versión anterior funciona con ella. Si alguna vez hiciera falta restaurarla, hay una copia diaria (hacia las 04:00) en Ajustes → Copias de seguridad del panel; la restauración es manual (docs/FUNCIONALIDAD.md, §9).'
+
+fallo() { printf '%s\n' "${C_ERR}✗ $*${C_RESET}" >&2; }
+corto() { printf '%s' "${1:0:7}"; }
+
+URL_SALUD=''; DOMINIO=''
+BASE_PANEL=0; BASE_TRAEFIK=''; BASE_TLS=0
+FALLO=''
+
+# Primer dominio de SKYWAY_DOMAIN en el .env del repositorio (el del panel en
+# Traefik), en minúsculas; nada si no hay, no es un nombre válido o es un
+# *.localhost, que nunca tendrá un certificado público. El .env se lee sin
+# ejecutarlo: no es un script.
+dominio_panel() {
+  local f="$1/.env" v
+  [[ -f "$f" ]] || return 0
+  v="$(grep -E '^[[:space:]]*(export[[:space:]]+)?SKYWAY_DOMAIN[[:space:]]*=' "$f" | tail -n 1)" || return 0
+  v="${v#*=}"
+  v="${v#"${v%%[![:space:]]*}"}"
+  case "$v" in
+    \"*) v="${v#\"}"; v="${v%%\"*}";;
+    \'*) v="${v#\'}"; v="${v%%\'*}";;
+    *) v="${v%%[[:space:]]#*}";;
+  esac
+  v="${v%%,*}"
+  v="$(printf '%s' "$v" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  [[ "$v" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] || return 0
+  [[ "$v" != *.localhost ]] || return 0
+  printf '%s' "$v"
+}
+
+# Versión que anuncia el panel en /api/health; nada si no responde.
+version_panel() {
+  local r
+  r="$(curl -fsS --max-time 4 "$URL_SALUD/api/health" 2>/dev/null)" || return 0
+  printf '%s' "$r" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p'
+}
+
+# «true false <hora de inicio>» con Traefik en marcha; nada si el contenedor no existe.
+estado_traefik() {
+  docker inspect -f '{{.State.Running}} {{.State.Restarting}} {{.State.StartedAt}}' skyway-traefik 2>/dev/null || true
+}
+
+# El panel responde a través de Traefik por HTTPS con un certificado válido
+# (curl lo verifica), entrando por el 443 de esta misma máquina.
+https_responde() {
+  local r
+  r="$(curl -fsS --max-time 8 --resolve "$DOMINIO:443:127.0.0.1" "https://$DOMINIO/api/health" 2>/dev/null)" || return 1
+  [[ "$r" == *'"ok":true'* ]]
+}
+
+# Estado antes de actualizar. Después solo se exige lo que ya funcionaba: un
+# certificado que aún no se ha emitido (el DNS todavía no apunta aquí) o un
+# Traefik retirado del compose en favor de un proxy propio no son culpa de la
+# actualización, y exigirlos la desharía cada vez.
+comprobar_antes() {
+  local v='' e i max=$(( INTENTOS < 12 ? INTENTOS : 12 ))
+  # Justo después de encender el servidor (el temporizador recupera entonces la
+  # ejecución perdida), el panel tarda unos segundos en responder.
+  for ((i = 1; i <= max; i++)); do
+    v="$(version_panel)"
+    if [[ -n "$v" ]]; then break; fi
+    if (( i < max )); then sleep "$PAUSA"; fi
+  done
+  if [[ -n "$v" ]]; then
+    BASE_PANEL=1; info "  Panel: responde (versión $v)."
+  else
+    BASE_PANEL=0; warn "  Panel: no responde en $URL_SALUD/api/health."
+  fi
+
+  # Como después de actualizar, Traefik cuenta como en marcha si se le ve así
+  # dos veces seguidas con la misma hora de inicio: si ya se reiniciaba sin
+  # parar, no se le atribuye a la actualización.
+  e="$(estado_traefik)"
+  if [[ "$e" == "true false "* ]]; then
+    sleep "$PAUSA"
+    if [[ "$(estado_traefik)" != "$e" ]]; then e='reiniciando'; fi
+  fi
+  if [[ -z "$e" ]]; then
+    BASE_TRAEFIK=ausente; info "  Traefik: no hay ningún contenedor «skyway-traefik»; no se comprobará."
+  elif [[ "$e" == "true false "* ]]; then
+    BASE_TRAEFIK=en_marcha; info "  Traefik: en marcha."
+  else
+    BASE_TRAEFIK=parado; warn "  Traefik: el contenedor «skyway-traefik» no está en marcha o se reinicia una y otra vez."
+  fi
+
+  BASE_TLS=0
+  if [[ -z "$DOMINIO" ]]; then
+    info "  HTTPS: no hay un SKYWAY_DOMAIN público en el .env; no se comprobará."
+  elif https_responde; then
+    BASE_TLS=1; info "  HTTPS: https://$DOMINIO responde con un certificado válido."
+  else
+    warn "  HTTPS: https://$DOMINIO no responde con un certificado válido; no se exigirá después de actualizar."
+  fi
+}
+
+# Tras reconstruir, reintenta durante unos 3 minutos hasta que el panel
+# responde con la versión del repositorio y, si funcionaban antes, Traefik
+# sigue en marcha sin reiniciarse y el panel responde por HTTPS. Deja en FALLO
+# el motivo del último intento.
+esperar_salud() {
+  local esperada="$1" i v e traefik_visto=''
+  FALLO=''
+  for ((i = 1; i <= INTENTOS; i++)); do
+    if (( i > 1 )); then sleep "$PAUSA"; fi
+    v="$(version_panel)"
+    if [[ -z "$v" ]]; then
+      FALLO="el panel no responde en $URL_SALUD/api/health"; continue
+    fi
+    if [[ -n "$esperada" && "$v" != "$esperada" ]]; then
+      FALLO="el panel responde con la versión $v en lugar de la $esperada"; continue
+    fi
+    if [[ "$BASE_TRAEFIK" == en_marcha ]]; then
+      e="$(estado_traefik)"
+      if [[ "$e" != "true false "* ]]; then
+        traefik_visto=''; FALLO="Traefik (contenedor «skyway-traefik») no está en marcha"; continue
+      fi
+      # Un contenedor que se cae al arrancar vuelve a figurar «en marcha» unos
+      # segundos después, con otra hora de inicio: se exige verlo en marcha dos
+      # veces seguidas con la misma.
+      if [[ "$e" != "$traefik_visto" ]]; then
+        if [[ -n "$traefik_visto" ]]; then
+          FALLO="Traefik (contenedor «skyway-traefik») se reinicia una y otra vez"
+        else
+          FALLO="no se ha podido confirmar que Traefik (contenedor «skyway-traefik») siga en marcha"
+        fi
+        traefik_visto="$e"; continue
+      fi
+    fi
+    if [[ "$BASE_TLS" == 1 ]] && ! https_responde; then
+      FALLO="el panel no responde por HTTPS en https://$DOMINIO con un certificado válido"; continue
+    fi
+    return 0
+  done
+  return 1
+}
+
+# Aviso al operador por los canales de alertas del panel (Ajustes → Alertas),
+# solo en modo --auto: a mano, quien actualiza ya ve el resultado. Es un
+# extra: si no se puede enviar (el contenedor no está en marcha, no hay
+# canales…), el resultado de la actualización no cambia. El texto va como
+# argumento de `docker exec`, sin pasar por un shell.
+avisar() {
+  [[ "$AUTO" == 1 ]] || return 0
+  local -a orden=(docker exec skyway node server/dist/tools/aviso.js --nivel "$1" --titulo 'Actualización automática' --mensaje "$2")
+  if command -v timeout >/dev/null 2>&1; then orden=(timeout 60 "${orden[@]}"); fi
+  local salida codigo=0
+  salida="$("${orden[@]}" 2>&1)" || codigo=$?
+  if (( codigo != 0 )); then
+    warn "No se ha podido enviar la notificación (código $codigo)."
+    if [[ -n "$salida" ]]; then printf '%s\n' "$salida" | sed 's/^/    /' >&2; fi
+  elif [[ "$salida" == *'"channels":[]'* ]]; then
+    info "No se ha enviado ninguna notificación: no hay canales configurados en Ajustes → Alertas."
+  else
+    info "Notificación enviada."
+  fi
+  return 0
+}
+
+# Termina sin haber aplicado nada: el servidor sigue con la versión que tenía (código 1).
+no_aplicada() {
+  fallo "$1"
+  avisar error "No se ha aplicado la actualización automática de Skyway. $1 El servidor sigue con la versión que tenía."
+  exit 1
+}
+
+# Vuelve al commit anterior, lo reconstruye y lo comprueba. `reset --keep` y no
+# `--hard`: deshace lo que trajo la actualización (que solo avanzó en limpio) y
+# conserva los cambios locales que el operador tenga en otros ficheros (un
+# docker-compose.yml retocado, por ejemplo); si alguno estuviera entre los que
+# cambian, se detiene sin tocar nada. La imagen base y la caché de compilación
+# de la versión anterior siguen en Docker, así que normalmente no hace falta red.
+volver_atras() {
+  local repo="$1" previo="$2" dc="$3" salida
+  if ! salida="$(git -C "$repo" reset --keep "$previo" 2>&1)"; then
+    FALLO="git no ha podido volver al commit $(corto "$previo") (${salida%%$'\n'*})"
+    return 1
+  fi
+  if ! ( cd "$repo" && $dc up -d --build ); then
+    FALLO="la reconstrucción de la versión anterior ha fallado"
+    return 1
+  fi
+  info "Comprobando que la versión anterior responde…"
+  esperar_salud "$(pkg_version "$repo/package.json")"
+}
+
+# Actualiza el PROPIO Skyway en el servidor. Se ejecuta desde una copia para
+# que actualizar el código no reescriba este mismo fichero a mitad de ejecución.
 cmd_update() {
   if [[ -z "${SKYWAY_UPDATE_REEXEC:-}" ]]; then
-    local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/skyway-update.XXXXXX") || die "No se pudo crear un fichero temporal."
-    cat "$SELF" > "$tmp" && chmod +x "$tmp" || die "No se pudo preparar el actualizador."
+    local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/skyway-update.XXXXXX") || die "No se ha podido crear un fichero temporal."
+    cat "$SELF" > "$tmp" && chmod +x "$tmp" || die "No se ha podido preparar el actualizador."
+    local -a opciones=()
+    if [[ "$AUTO" == 1 ]]; then opciones+=(--auto); fi
+    if [[ "$FORZAR" == 1 ]]; then opciones+=(--forzar); fi
     # SKYWAY_ORIG_SELF conserva la ubicación real (la copia vive en /tmp, no en el repo).
     SKYWAY_UPDATE_REEXEC=1 SKYWAY_ASSUME_YES="${ASSUME_YES:-0}" SKYWAY_UPDATE_TMP="$tmp" SKYWAY_ORIG_SELF="$SELF" \
-      exec bash "$tmp" update || die "No se pudo re-ejecutar el actualizador."
+      exec bash "$tmp" update ${opciones[@]+"${opciones[@]}"} || die "No se ha podido volver a ejecutar el actualizador."
   fi
   trap 'rm -f "${SKYWAY_UPDATE_TMP:-}"' EXIT
   SELF="${SKYWAY_ORIG_SELF:-$SELF}" # el repo está donde el script original, no en la copia temporal
 
-  need git; need docker; need curl
-  local repo; repo="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd)" || die "No encuentro la raíz del repositorio."
-  [[ -f "$repo/docker-compose.yml" ]] || die "«skyway update» se ejecuta en el servidor donde corre Skyway (no encuentro $repo/docker-compose.yml)."
-  local dc; dc="$(compose_cmd)" || die "Falta Docker Compose (ni «docker compose» ni «docker-compose»)."
+  local h faltan=''
+  for h in git docker curl; do
+    command -v "$h" >/dev/null 2>&1 || faltan+=" «$h»"
+  done
+  [[ -z "$faltan" ]] || no_aplicada "Faltan programas necesarios en el servidor:$faltan."
+  local repo; repo="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd)" || no_aplicada "No se ha encontrado la raíz del repositorio de Skyway."
+  [[ -f "$repo/docker-compose.yml" ]] || no_aplicada "«skyway update» se ejecuta en el servidor donde corre Skyway, y no existe $repo/docker-compose.yml."
+  local dc; dc="$(compose_cmd)" || no_aplicada "Falta Docker Compose (ni «docker compose» ni «docker-compose»)."
+  local gitdir; gitdir="$(git -C "$repo" rev-parse --absolute-git-dir 2>&1)" \
+    || no_aplicada "git no puede leer el repositorio $repo (${gitdir%%$'\n'*})."
 
+  # Una sola actualización a la vez: el temporizador y una ejecución a mano no
+  # deben coincidir (una podría deshacer lo que la otra está comprobando).
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>>"$gitdir/skyway-update.lock" \
+      || no_aplicada "No se ha podido crear el cerrojo $gitdir/skyway-update.lock. Comprueba los permisos o ejecuta «sudo skyway update»."
+    if ! flock -n 9; then
+      if [[ "$AUTO" == 1 ]]; then
+        info "Ya hay otra actualización de Skyway en curso: esta ejecución no hace nada."
+        exit 0
+      fi
+      die "Ya hay otra actualización de Skyway en curso (puede ser la automática). Espera a que termine y vuelve a intentarlo."
+    fi
+  fi
+
+  URL_SALUD="${SKYWAY_HEALTH_URL:-http://localhost:4000}"
+  DOMINIO="$(dominio_panel "$repo")"
+  local en_curso="$gitdir/skyway-update-en-curso" fallida="$gitdir/skyway-update-fallida"
   info "Repositorio: ${C_RESET}$repo"
-  confirm "Se actualizará Skyway: git pull + reconstruir imagen + reiniciar el panel (tus datos y apps no se tocan). ¿Seguir?" \
+
+  local rama
+  rama="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" \
+    || no_aplicada "La copia de $repo no sigue ninguna rama remota. Vuelve a la rama principal con «git -C $repo checkout main»."
+  info "Consultando si hay cambios en $rama…"
+  local i salida='' traido=0
+  for i in 1 2 3; do
+    if salida="$(git -C "$repo" fetch --quiet 2>&1)"; then traido=1; break; fi
+    if (( i < 3 )); then sleep $(( PAUSA * 2 )); fi
+  done
+  (( traido )) || no_aplicada "No se ha podido consultar el repositorio remoto (git fetch: ${salida%%$'\n'*}). Comprueba la conexión del servidor con GitHub."
+
+  local actual nuevo previo reanudar=0
+  actual="$(git -C "$repo" rev-parse HEAD)"
+  nuevo="$(git -C "$repo" rev-parse '@{u}')"
+  previo="$actual"
+  if [[ -f "$en_curso" ]]; then
+    # Una actualización anterior se cortó (se apagó el servidor, Ctrl-C…) o su
+    # vuelta atrás falló: el código y los contenedores pueden no coincidir. Esta
+    # vez se reconstruye y se comprueba aunque no haya nada nuevo, y la versión a
+    # la que volver es la que funcionaba antes de aquella.
+    local p; p="$(head -c 100 "$en_curso" | tr -dc '0-9a-f')"
+    if [[ ${#p} -ge 40 ]] && git -C "$repo" merge-base --is-ancestor "$p" HEAD 2>/dev/null; then previo="$p"; fi
+    reanudar=1
+    warn "La actualización anterior no terminó: se reconstruye y se comprueba de nuevo (versión de referencia: $(corto "$previo"))."
+  fi
+
+  if [[ "$actual" == "$nuevo" && "$reanudar" == 0 && "$FORZAR" != 1 ]]; then
+    rm -f "$fallida"
+    ok "Skyway ya está al día (commit $(corto "$actual")): no hay nada que actualizar."
+    if [[ "$AUTO" != 1 ]]; then info "Para reconstruir y comprobar igualmente, usa «skyway update --forzar»."; fi
+    return 0
+  fi
+
+  if ! git -C "$repo" merge-base --is-ancestor HEAD '@{u}'; then
+    no_aplicada "La copia del servidor y $rama han divergido (hay commits locales o se ha reescrito el historial remoto), así que no se puede avanzar en limpio. Revísalo con «git -C $repo status»."
+  fi
+
+  # Una versión que ya falló y se deshizo no se vuelve a probar cada noche
+  # (serían dos reinicios y un aviso diarios): se espera a que haya cambios
+  # nuevos o a que alguien la aplique a mano.
+  if [[ "$AUTO" == 1 && "$FORZAR" != 1 && "$reanudar" == 0 && -f "$fallida" ]] \
+    && [[ "$(head -c 100 "$fallida" | tr -dc '0-9a-f')" == "$nuevo" ]]; then
+    fallo "La actualización a $(corto "$nuevo") ya falló y se volvió a la versión anterior: no se reintenta automáticamente. Cuando esté revisada, aplícala con «skyway update»."
+    exit 1
+  fi
+
+  confirm "Se actualizará Skyway ($(corto "$actual") → $(corto "$nuevo")): se reconstruye la imagen y se reinicia el panel. Los datos y las aplicaciones no se tocan y, si algo falla, se vuelve a la versión anterior. ¿Continuar?" \
     || { info "Cancelado."; return 0; }
 
-  info "1/3 · Actualizando el código (git pull)…"
-  git -C "$repo" fetch --quiet origin 2>/dev/null || die "git fetch falló (¿acceso a GitHub desde el servidor?)."
-  if ! git -C "$repo" pull --ff-only >/dev/null 2>&1; then
-    die "git pull no pudo avanzar en limpio. Ponte en main y reintenta:\n    cd $repo && git checkout main && git pull --ff-only"
+  info "Estado antes de actualizar:"
+  comprobar_antes
+  if [[ "$AUTO" == 1 && "$reanudar" == 0 ]]; then
+    # Sin nadie delante no se actualiza un servidor que ya tenía un problema ni
+    # se arranca lo que alguien haya detenido a mano (por ejemplo, el panel
+    # mientras se restaura su base de datos).
+    if [[ "$BASE_PANEL" != 1 ]]; then
+      no_aplicada "El panel no respondía antes de actualizar ($URL_SALUD/api/health). Revisa el servidor y aplica la actualización con «skyway update»."
+    fi
+    if [[ "$BASE_TRAEFIK" == parado ]]; then
+      no_aplicada "Traefik (contenedor «skyway-traefik») no estaba en marcha antes de actualizar. Revisa el servidor y aplica la actualización con «skyway update»."
+    fi
   fi
-  local ver_repo; ver_repo="$(pkg_version "$repo/package.json")"
-  ok "Código en la versión ${ver_repo:-?}"
 
-  info "2/3 · Reconstruyendo la imagen y recreando el contenedor (puede tardar unos minutos)…"
-  ( cd "$repo" && $dc up -d --build ) || die "El build/arranque falló. Mira el detalle con:\n    cd $repo && $dc logs skyway"
-  ok "Contenedor recreado"
+  printf '%s\n' "$previo" > "$en_curso"
+  if [[ "$actual" != "$nuevo" ]]; then
+    info "Actualizando el código ($(corto "$actual") → $(corto "$nuevo"))…"
+    if ! salida="$(git -C "$repo" merge --ff-only --quiet '@{u}' 2>&1)"; then
+      if [[ "$reanudar" == 0 ]]; then rm -f "$en_curso"; fi
+      if [[ -n "$salida" ]]; then printf '%s\n' "$salida" | sed 's/^/    /' >&2; fi
+      no_aplicada "git no ha podido avanzar en limpio hasta $(corto "$nuevo"), probablemente por cambios locales en ficheros que la actualización modifica. Revísalos con «git -C $repo status»."
+    fi
+  fi
 
-  info "3/3 · Esperando a que responda…"
-  local url="${SKYWAY_HEALTH_URL:-http://localhost:4000}"
-  local ver='' i
-  for i in $(seq 1 30); do
-    ver="$(curl -fsS "$url/api/health" 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
-    [[ -n "$ver" ]] && break
-    sleep 2
-  done
-  if [[ -n "$ver" ]]; then
-    ok "Skyway en marcha · versión $ver"
-    [[ -n "$ver_repo" && "$ver" != "$ver_repo" ]] && warn "La versión que responde ($ver) no coincide con la del repo ($ver_repo): puede seguir arrancando; revisa «$dc logs skyway»."
+  local version; version="$(pkg_version "$repo/package.json" || true)"
+  info "Reconstruyendo la imagen y recreando los contenedores (puede tardar unos minutos)…"
+  local motivo=''
+  if ! ( cd "$repo" && $dc up -d --build ); then
+    motivo="la reconstrucción de la imagen o el arranque de los contenedores ha fallado"
   else
-    warn "No respondió $url/api/health en ~60 s. Puede seguir arrancando; míralo con:\n    cd $repo && $dc logs -f skyway"
+    info "Comprobando que todo responde (hasta unos 3 minutos)…"
+    if ! esperar_salud "$version"; then motivo="$FALLO"; fi
   fi
+
+  if [[ -z "$motivo" ]]; then
+    rm -f "$en_curso" "$fallida"
+    if [[ "$previo" == "$nuevo" ]]; then
+      # --forzar sin nada nuevo: se ha reconstruido lo mismo que ya había.
+      ok "Skyway reconstruido y comprobado: versión ${version:-?} (commit $(corto "$nuevo"))."
+      avisar info "Skyway se ha reconstruido y comprobado en la versión ${version:-?} (commit $(corto "$nuevo"))."
+    else
+      ok "Skyway actualizado y en marcha: versión ${version:-?} (commit $(corto "$nuevo"))."
+      avisar info "Skyway se ha actualizado a la versión ${version:-?} (commit $(corto "$nuevo"))."
+    fi
+    return 0
+  fi
+
+  fallo "La actualización ha fallado: $motivo."
+  if [[ "$previo" == "$nuevo" ]]; then
+    # --forzar o una reanudación sobre el mismo commit: no hay otra versión a la que volver.
+    info "Detalle: cd $repo && $dc logs --tail 100 skyway"
+    avisar error "La actualización de Skyway (commit $(corto "$nuevo")) ha fallado: $motivo. No hay una versión anterior a la que volver: es necesario revisar el servidor. Detalle: journalctl -u $UNIDAD."
+    exit 2
+  fi
+  printf '%s\n' "$nuevo" > "$fallida"
+  info "Volviendo a la versión anterior ($(corto "$previo"))…"
+  if volver_atras "$repo" "$previo" "$dc"; then
+    rm -f "$en_curso"
+    ok "Se ha vuelto a la versión anterior ($(corto "$previo")) y todo responde."
+    info "$NOTA_DATOS"
+    avisar error "La actualización automática de Skyway a $(corto "$nuevo") ha fallado ($motivo) y se ha vuelto a la versión anterior ($(corto "$previo")), que funciona. No se reintentará hasta que haya cambios nuevos. Detalle: journalctl -u $UNIDAD."
+    exit 1
+  fi
+  # El marcador de «en curso» se queda: la próxima ejecución vuelve a
+  # reconstruir y comprobar en lugar de dar por bueno lo que haya.
+  fallo "La vuelta a la versión anterior también ha fallado: $FALLO. Es necesario revisar el servidor."
+  info "Detalle: cd $repo && $dc logs --tail 100 skyway"
+  info "$NOTA_DATOS"
+  avisar error "La actualización automática de Skyway a $(corto "$nuevo") ha fallado ($motivo) y la vuelta a la versión anterior ($(corto "$previo")) también ($FALLO). Es necesario revisar el servidor. Detalle: journalctl -u $UNIDAD."
+  exit 2
+}
+
+# ---------- actualización automática (temporizador de systemd) ----------
+
+requiere_root() {
+  [[ "$(id -u)" == 0 ]] || die "«skyway auto-update $1» necesita permisos de administrador del sistema: ejecútalo con sudo («sudo skyway auto-update $1»)."
+}
+
+# Ruta para una línea Exec= de systemd: entre comillas, con «\» y «"»
+# escapados y con «%» y «$» duplicados (systemd los tomaría por
+# especificadores y variables).
+systemd_ruta() {
+  [[ "$1" != *$'\n'* ]] || die "La ruta $1 contiene un salto de línea: no se puede usar en una unidad de systemd."
+  printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g' -e 's/\$/$$/g')"
+}
+
+# Escribe un fichero de configuración del sistema de una vez (copia temporal y
+# renombrado): apt o systemd nunca leen uno a medias.
+escribir_fichero() {
+  local destino="$1" tmp
+  tmp="$(mktemp "$destino.XXXXXX")" || die "No se ha podido escribir $destino."
+  if ! { cat > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$destino"; }; then
+    rm -f "$tmp"
+    die "No se ha podido escribir $destino."
+  fi
+}
+
+# Debian, Ubuntu o derivadas, con apt: donde existe unattended-upgrades.
+es_debian() {
+  [[ -r "$OS_RELEASE" ]] || return 1
+  local id parecidos
+  id="$(sed -n 's/^ID=//p' "$OS_RELEASE" | tr -d "\"'" | head -n 1)"
+  parecidos="$(sed -n 's/^ID_LIKE=//p' "$OS_RELEASE" | tr -d "\"'" | head -n 1)"
+  [[ "$id" == debian || "$id" == ubuntu || " $parecidos " == *" debian "* || " $parecidos " == *" ubuntu "* ]] || return 1
+  command -v apt-get >/dev/null 2>&1 && command -v dpkg-query >/dev/null 2>&1
+}
+
+auto_update_on() {
+  requiere_root on
+  command -v systemctl >/dev/null 2>&1 \
+    || die "Este servidor no usa systemd. Programa «$SELF update --auto» con el planificador del sistema (por ejemplo, cron) a la hora que prefieras."
+  local hora="${HORA:-04:30}"
+  [[ "$hora" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "La hora (--hora) debe tener el formato HH:MM, por ejemplo 04:30."
+  local repo; repo="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd)" || die "No se ha encontrado la raíz del repositorio de Skyway."
+  [[ -f "$repo/docker-compose.yml" ]] || die "La actualización automática se activa en el servidor donde corre Skyway, y no existe $repo/docker-compose.yml."
+  # El temporizador corre como root: git tiene que poder leer así el repositorio
+  # (si es de otro usuario lo rechaza por «dubious ownership») y la copia tiene
+  # que seguir una rama remota, o fallaría todas las noches.
+  git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 \
+    || die "git no puede seguir una rama remota en $repo como root. Comprueba que la copia está en la rama principal («git -C $repo status») y que pertenece a root."
+  if [[ "$SISTEMA" == 1 ]] && ! es_debian; then
+    die "La opción --sistema solo está disponible en Debian y Ubuntu (unattended-upgrades). En otras distribuciones, configura los parches de seguridad con la herramienta del sistema y activa la actualización de Skyway sin --sistema."
+  fi
+  local dueno; dueno="$(stat -c %u "$SELF" 2>/dev/null || echo 0)"
+  if [[ "$dueno" != 0 ]]; then
+    warn "El script pertenece al usuario $dueno y el temporizador lo ejecuta como root: quien pueda modificarlo podrá ejecutar órdenes como root."
+  fi
+
+  local exec_start; exec_start="/bin/bash $(systemd_ruta "$SELF") update --auto"
+  mkdir -p "$SYSTEMD_DIR" || die "No se ha podido crear $SYSTEMD_DIR."
+  escribir_fichero "$SYSTEMD_DIR/$UNIDAD.service" <<EOF
+# Generado por «skyway auto-update on»: no lo edites a mano. Para cambiar la
+# hora, vuelve a ejecutar «sudo skyway auto-update on --hora HH:MM»; para
+# quitarlo, «sudo skyway auto-update off».
+[Unit]
+Description=Actualización automática de Skyway
+Documentation=https://github.com/NkrowOne/Skyway/blob/main/docs/FUNCIONALIDAD.md
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=$exec_start
+# Reconstruir la imagen tarda minutos; si algo se quedara bloqueado, se corta
+# y la ejecución siguiente lo retoma.
+TimeoutStartSec=1h
+EOF
+  escribir_fichero "$SYSTEMD_DIR/$UNIDAD.timer" <<EOF
+# Generado por «skyway auto-update on»: no lo edites a mano.
+[Unit]
+Description=Actualización automática de Skyway (cada día a las $hora)
+
+[Timer]
+OnCalendar=*-*-* $hora:00
+# Margen aleatorio para no coincidir al segundo con otras tareas programadas.
+RandomizedDelaySec=10min
+# Si el servidor estaba apagado a esa hora, se ejecuta al encenderlo.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload || die "No se ha podido recargar la configuración de systemd (systemctl daemon-reload)."
+  systemctl enable --now "$UNIDAD.timer" || die "No se ha podido activar $UNIDAD.timer."
+  ok "Actualización automática activada: cada día a las $hora, con hasta 10 minutos de margen aleatorio."
+  info "Consulta el resultado con «sudo skyway auto-update status». Con canales en Ajustes → Alertas, cada actualización y cada fallo se notifican por ellos."
+  if [[ "$SISTEMA" == 1 ]]; then
+    sistema_on "$hora"
+  elif [[ -f "$APT_CONF_DIR/$APT_SKYWAY" ]]; then
+    # Ya estaban activados: el reinicio se mueve con la hora de la actualización.
+    escribir_apt_skyway "$hora"
+    info "El reinicio por parches del sistema, si hace falta, será a las $(hora_reinicio "$hora")."
+  fi
+}
+
+# Una hora después de la actualización de Skyway (HH:MM), para el reinicio por
+# parches del sistema.
+hora_reinicio() {
+  local h="${1%%:*}" m="${1##*:}"
+  printf '%02d:%s' $(( (10#$h + 1) % 24 )) "$m"
+}
+
+# Parches de seguridad del sistema operativo con unattended-upgrades.
+sistema_on() {
+  local estado; estado="$(dpkg-query -W -f='${Status}' unattended-upgrades 2>/dev/null || true)"
+  if [[ "$estado" != *"install ok installed"* ]]; then
+    info "Instalando unattended-upgrades…"
+    if ! { DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unattended-upgrades; }; then
+      die "No se ha podido instalar unattended-upgrades. La actualización automática de Skyway sí ha quedado activada."
+    fi
+  fi
+  escribir_apt_skyway "$1"
+  # El fichero que crearía «dpkg-reconfigure unattended-upgrades». Si ya
+  # existe es del sistema o del operador: no se toca (el de Skyway, que se lee
+  # después, manda igualmente).
+  if [[ ! -e "$APT_CONF_DIR/20auto-upgrades" ]]; then
+    escribir_fichero "$APT_CONF_DIR/20auto-upgrades" <<'EOF'
+// Creado por «skyway auto-update on --sistema»; «sudo skyway auto-update off --sistema» lo retira.
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+  fi
+  ok "Parches de seguridad del sistema activados (unattended-upgrades): solo actualizaciones de seguridad y, si un parche lo exige, reinicio a las $(hora_reinicio "$1")."
+}
+
+# Configuración de unattended-upgrades de Skyway para una actualización a la
+# hora $1 (HH:MM).
+escribir_apt_skyway() {
+  local reinicio; reinicio="$(hora_reinicio "$1")"
+  mkdir -p "$APT_CONF_DIR" || die "No se ha podido crear $APT_CONF_DIR."
+  escribir_fichero "$APT_CONF_DIR/$APT_SKYWAY" <<EOF
+// Generado por «skyway auto-update on --sistema». Para quitarlo:
+//   sudo skyway auto-update off --sistema
+//
+// Solo actualizaciones de SEGURIDAD del sistema operativo. Los ficheros de
+// este directorio se leen por orden: este va después de 50unattended-upgrades,
+// vacía sus listas de orígenes (#clear) y deja solo los archivos de seguridad
+// de Debian y Ubuntu. Ni las versiones nuevas de la distribución ni los
+// repositorios de terceros (Docker incluido) se actualizan solos.
+#clear Unattended-Upgrade::Allowed-Origins;
+#clear Unattended-Upgrade::Origins-Pattern;
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Debian,codename=\${distro_codename}-security,label=Debian-Security";
+        "origin=Debian,codename=\${distro_codename},label=Debian-Security";
+        "origin=Ubuntu,archive=\${distro_codename}-security";
+        "origin=UbuntuESMApps,archive=\${distro_codename}-apps-security";
+        "origin=UbuntuESM,archive=\${distro_codename}-infra-security";
+};
+// Algunos parches (el núcleo, libc) solo surten efecto al reiniciar: en ese
+// caso, y solo en ese, se reinicia a las $reinicio. Es una hora después de la
+// actualización de Skyway ($1, con hasta 10 minutos de margen y unos minutos de
+// compilación y comprobaciones), así que un reinicio nunca corta una
+// actualización ni su vuelta atrás. Docker vuelve a arrancar los contenedores
+// al encender.
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "$reinicio";
+// Listas de paquetes y parches cada día, aunque 20auto-upgrades diga otra cosa.
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+}
+
+sistema_off() {
+  rm -f "$APT_CONF_DIR/$APT_SKYWAY"
+  if grep -qs 'skyway auto-update on --sistema' "$APT_CONF_DIR/20auto-upgrades"; then
+    rm -f "$APT_CONF_DIR/20auto-upgrades"
+  fi
+  ok "Se ha retirado la configuración de Skyway para los parches del sistema. unattended-upgrades sigue instalado y aplica la configuración propia de la distribución."
+}
+
+auto_update_off() {
+  requiere_root off
+  if command -v systemctl >/dev/null 2>&1; then
+    # Solo se detiene el temporizador: una actualización que esté en marcha
+    # termina (cortarla a medias dejaría el código y los contenedores en
+    # versiones distintas).
+    systemctl disable --now "$UNIDAD.timer" >/dev/null 2>&1 || true
+  fi
+  rm -f "$SYSTEMD_DIR/$UNIDAD.timer" "$SYSTEMD_DIR/$UNIDAD.service"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl reset-failed "$UNIDAD.service" >/dev/null 2>&1 || true
+  fi
+  ok "Actualización automática desactivada: se han retirado el temporizador y el servicio de systemd."
+  if [[ "$SISTEMA" == 1 ]]; then sistema_off; fi
+}
+
+auto_update_status() {
+  requiere_root status
+  if [[ ! -f "$SYSTEMD_DIR/$UNIDAD.timer" ]]; then
+    printf '%s\n' "Actualización automática: desactivada. Actívala con «sudo skyway auto-update on»."
+  else
+    local hora habilitado proxima fin codigo resultado
+    hora="$(sed -n 's/^OnCalendar=\*-\*-\* \([0-9][0-9]:[0-9][0-9]\):00$/\1/p' "$SYSTEMD_DIR/$UNIDAD.timer")"
+    habilitado="$(systemctl is-enabled "$UNIDAD.timer" 2>/dev/null || true)"
+    if [[ "$habilitado" == enabled ]]; then
+      printf '%s\n' "Actualización automática: activada, cada día a las ${hora:-?} (con hasta 10 minutos de margen aleatorio)."
+    else
+      printf '%s\n' "Actualización automática: instalada, pero el temporizador no está activo (${habilitado:-estado desconocido}). Vuelve a ejecutar «sudo skyway auto-update on»."
+    fi
+    proxima="$(systemctl show "$UNIDAD.timer" -p NextElapseUSecRealtime --value 2>/dev/null || true)"
+    printf '%s\n' "Próxima ejecución: ${proxima:-sin programar}."
+    fin="$(systemctl show "$UNIDAD.service" -p ExecMainExitTimestamp --value 2>/dev/null || true)"
+    if [[ -z "$fin" ]]; then
+      printf '%s\n' "Última ejecución: ninguna desde que arrancó el servidor."
+    else
+      codigo="$(systemctl show "$UNIDAD.service" -p ExecMainStatus --value 2>/dev/null || true)"
+      case "$codigo" in
+        0) resultado='correcta: actualizado y comprobado, o sin nada que actualizar';;
+        1) resultado='no se ha actualizado; el servidor sigue con la versión anterior';;
+        2) resultado='ha fallado y la vuelta atrás también: es necesario revisar el servidor';;
+        *) resultado="ha terminado de forma inesperada";;
+      esac
+      printf '%s\n' "Última ejecución: $fin · $resultado (código ${codigo:-?})."
+    fi
+  fi
+  if [[ -f "$APT_CONF_DIR/$APT_SKYWAY" ]]; then
+    local reinicio; reinicio="$(sed -n 's/^Unattended-Upgrade::Automatic-Reboot-Time "\([0-9:]*\)";$/\1/p' "$APT_CONF_DIR/$APT_SKYWAY")"
+    printf '%s\n' "Parches de seguridad del sistema: activados (unattended-upgrades; reinicio a las ${reinicio:-?} solo si un parche lo exige)."
+  else
+    printf '%s\n' "Parches de seguridad del sistema: no los gestiona Skyway (en Debian y Ubuntu, «sudo skyway auto-update on --sistema»)."
+  fi
+  if command -v journalctl >/dev/null 2>&1; then
+    printf '\n%s\n' "Últimas líneas del registro (journalctl -u $UNIDAD):"
+    journalctl -u "$UNIDAD" -n 30 --no-pager 2>/dev/null || true
+  fi
+}
+
+cmd_auto_update() {
+  case "${1:-status}" in
+    on) auto_update_on;;
+    off) auto_update_off;;
+    status) auto_update_status;;
+    *) die "Uso: skyway auto-update on [--hora HH:MM] [--sistema] | off [--sistema] | status";;
+  esac
 }
 
 usage() {
@@ -331,7 +915,12 @@ ${C_BOLD}skyway${C_RESET} — control de Skyway desde la terminal
   ${C_ACC}skyway rewind${C_RESET}  [servicio] [-f]   Rollback: elige a qué despliegue volver
   ${C_ACC}skyway status${C_RESET}  [servicio]        Estado y último despliegue
   ${C_ACC}skyway ls${C_RESET}                        Lista los servicios accesibles
-  ${C_ACC}skyway update${C_RESET}  [-y]              Actualiza el propio Skyway (git pull + rebuild); en el servidor
+
+En el servidor donde corre Skyway:
+  ${C_ACC}skyway update${C_RESET}  [-y] [--forzar]   Actualiza el propio Skyway y, si algo falla, vuelve a la versión anterior
+  ${C_ACC}skyway update --auto${C_RESET}             Lo mismo sin preguntas, con aviso por los canales de alertas
+  ${C_ACC}skyway auto-update${C_RESET} on [--hora HH:MM] [--sistema] | off [--sistema] | status
+                                   Actualización automática cada noche (systemd; con sudo)
 
 Opciones:
   -f, --follow   Sigue el despliegue hasta que termina (deploy, rewind)
@@ -339,9 +928,15 @@ Opciones:
   -y, --yes      No pregunta confirmación (stop, rewind, update)
   -u, --url URL  URL de Skyway (o \$SKYWAY_URL)
   -t, --token T  Token sky_… (o \$SKYWAY_TOKEN)
+  --forzar       Reconstruye y comprueba aunque no haya nada nuevo (update)
+  --hora HH:MM   Hora de la actualización diaria; por defecto, 04:30 (auto-update on)
+  --sistema      También los parches de seguridad del sistema con unattended-upgrades,
+                 en Debian y Ubuntu (auto-update on/off)
 
 «servicio» = id (svc_…), slug o parte del nombre. Sin él, se elige de una lista.
 Config persistente en ~/.config/skyway/config o ./.skywayrc (SKYWAY_URL, SKYWAY_TOKEN).
+«skyway update» termina con 0 (actualizado o sin nada nuevo), 1 (no se ha actualizado:
+el servidor sigue con la versión anterior) o 2 (también ha fallado la vuelta atrás).
 EOF
 }
 
@@ -349,12 +944,16 @@ EOF
 main() {
   load_config
   local cmd="" positional=""
-  FOLLOW=0; ASSUME_YES=0; REBUILD=0
+  FOLLOW=0; ASSUME_YES=0; REBUILD=0; AUTO=0; FORZAR=0; SISTEMA=0; HORA=''
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -f|--follow) FOLLOW=1;;
       -r|--rebuild) REBUILD=1;;
       -y|--yes) ASSUME_YES=1;;
+      --auto) AUTO=1; ASSUME_YES=1;;
+      --forzar) FORZAR=1;;
+      --sistema) SISTEMA=1;;
+      --hora) [[ $# -ge 2 ]] || die "Falta el valor de --hora (HH:MM)."; HORA="$2"; shift;;
       -u|--url) SKYWAY_URL="${2:-}"; shift;;
       -t|--token) SKYWAY_TOKEN="${2:-}"; shift;;
       -h|--help|help) usage; exit 0;;
@@ -366,9 +965,14 @@ main() {
 
   [[ -n "$cmd" ]] || { usage; exit 1; }
 
-  # `update` es local (opera sobre Docker en el servidor): no necesita token ni API.
+  # `update` y `auto-update` son locales (operan sobre Docker y systemd en el
+  # servidor): no necesitan token ni API.
   if [[ "$cmd" == "update" || "$cmd" == "upgrade" || "$cmd" == "self-update" ]]; then
     cmd_update
+    return
+  fi
+  if [[ "$cmd" == "auto-update" ]]; then
+    cmd_auto_update "$positional"
     return
   fi
 

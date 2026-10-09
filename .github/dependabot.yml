@@ -1,0 +1,91 @@
+# Actualizaciones de dependencias con Dependabot.
+#
+# Los parches (x.y.Z) de cada ecosistema llegan agrupados en un solo PR con un
+# grupo «parches-…», y las correcciones de seguridad de npm que son parche, en
+# el grupo «seguridad-npm». Esos PR se fusionan solos cuando la CI pasa entera
+# (.github/workflows/parches-automaticos.yml); el servidor los aplica esa noche
+# con `skyway update --auto`, que vuelve atrás si algo falla. Lo demás (versiones
+# menores y mayores) llega en PR sueltos que revisa una persona.
+#
+# Cada ecosistema tiene su día: el flujo solo fusiona un PR que ya incluye todo
+# lo que hay en main (lo fusionado es exactamente lo que probó la CI), y dos PR
+# abiertos a la vez se dejarían atrás el uno al otro.
+version: 2
+updates:
+  - package-ecosystem: npm
+    # Raíz del monorepo: los workspaces (server, web) comparten package-lock.json.
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Europe/Madrid
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: dependencias
+    groups:
+      parches-npm:
+        applies-to: version-updates
+        update-types: [patch]
+        patterns: ["*"]
+      seguridad-npm:
+        applies-to: security-updates
+        update-types: [patch]
+        patterns: ["*"]
+
+  # Imágenes base del Dockerfile (Node sobre Alpine).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "04:00"
+      timezone: Europe/Madrid
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: dependencias
+    ignore:
+      # Un salto de versión mayor (Node 24, Traefik 4) es una migración, no un parche.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      parches-imagenes:
+        update-types: [patch]
+        patterns: ["*"]
+
+  # Imágenes de docker-compose.yml (Traefik).
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: wednesday
+      time: "04:00"
+      timezone: Europe/Madrid
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: dependencias
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      parches-compose:
+        update-types: [patch]
+        patterns: ["*"]
+
+  # Acciones de la CI. Sus PR nunca se fusionan solos: modifican
+  # .github/workflows y GitHub no deja que el token de un flujo lo haga. Tampoco
+  # llegan al servidor.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: thursday
+      time: "04:00"
+      timezone: Europe/Madrid
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: dependencias
+    groups:
+      parches-acciones:
+        update-types: [patch]
+        patterns: ["*"]

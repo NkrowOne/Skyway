@@ -129,6 +129,7 @@ server/src/
     token.ts            crear (con caducidad) y revocar tokens de API; la usa el instalador de Mailway
     mailway.ts          conectar Mailway como Ajustes → Correo, con el token `mwt_…` por la entrada estándar
     cloudflare.ts       guardar el token de Cloudflare del administrador como Ajustes → Cloudflare, por la entrada estándar
+    aviso.ts            enviar un texto por los canales de alertas, como «Enviar notificación de prueba»; la usa `skyway update --auto`
     argumentos.ts       opciones `--clave valor`, mensajes de error y E/S comunes (inyectable en las pruebas)
 
 web/src/
@@ -1871,6 +1872,14 @@ printf '%s' "$TOKEN_MWT" | docker exec -i skyway node server/dist/tools/mailway.
 # (stdout: {"ok":true,"zones":N}; un token en los argumentos se rechaza sin leer nada):
 printf '%s' "$CF_TOKEN" | docker exec -i skyway node server/dist/tools/cloudflare.js conectar
 
+# Aviso por los canales de Ajustes → Alertas, como «Enviar notificación de prueba»; el texto
+# va como argumento (stdout: {"ok":true,"channels":["discord"],"failures":[]}; sin canales, código 0):
+docker exec skyway node server/dist/tools/aviso.js --nivel error --titulo "Actualización automática" --mensaje "…"
+
+# Actualizar Skyway (en el servidor; detalle en §9.1):
+skyway update                    # con vuelta atrás automática si algo falla
+sudo skyway auto-update on --sistema
+
 # Restaurar la BD del panel desde un snapshot (proceso manual a propósito):
 docker compose stop skyway
 docker run --rm -v skyway_skyway-data:/data alpine \
@@ -1909,11 +1918,168 @@ opción desconocida o repetida es un error.
   panel en marcha es otro proceso: lee la configuración de la base en cada
   petición y vuelve a pedir el token de Traefik en la siguiente lectura del
   puente; lo que tuviera en caché de la instancia anterior caduca en 5 minutos.
+- `aviso.js --nivel <info|error> --mensaje <texto> [--titulo <texto>]`: envía
+  el texto por los canales de alertas configurados (Discord, Telegram,
+  webhook) con `dispatchToChannelsDetailed`, lo mismo que «Enviar notificación
+  de prueba»; `error` sale como alerta crítica y, sin `--titulo`, el título es
+  «Aviso del servidor». No crea alertas en el panel ni audita. El resultado
+  nombra los canales y, si alguno falla, el estado HTTP o el código de red
+  (nunca la URL ni el token de Telegram), con código 1. Sin ningún canal
+  configurado no envía nada, lo indica en stderr y termina con código 0.
+  Mensaje de hasta 1500 caracteres y título de hasta 100; los caracteres de
+  control (salvo el salto de línea y el tabulador) se cambian por espacios. La
+  usa `skyway update --auto` (§9.1), que le pasa el texto como argumento de
+  `docker exec`, sin un shell de por medio.
 
-Las dos últimas las usa el instalador de Mailway (modo junto a Skyway) para
-emparejar los paneles sin pasos manuales: crea un token de Skyway de 60 minutos
-si no se le ha dado uno, despliega el panel de Mailway, conecta con el token de
-gestión que le devuelve Mailway y revoca el token de Skyway al terminar.
+`token.js` y `mailway.js` las usa el instalador de Mailway (modo junto a
+Skyway) para emparejar los paneles sin pasos manuales: crea un token de Skyway
+de 60 minutos si no se le ha dado uno, despliega el panel de Mailway, conecta
+con el token de gestión que le devuelve Mailway y revoca el token de Skyway al
+terminar.
 
 Despliegue con Docker: ver el `README.md` y el `docker-compose.yml` (incluye
 Traefik y publica la UI solo en `127.0.0.1:4000`).
+
+### 9.1 Actualizar Skyway y actualizaciones automáticas
+
+`scripts/skyway` (enlazado como `/usr/local/bin/skyway`, ver
+[CONTROL-REMOTO.md](CONTROL-REMOTO.md)) actualiza el propio Skyway en el
+servidor, sin API ni token:
+
+```bash
+skyway update                     # pregunta antes; -y no pregunta; --forzar reconstruye aunque no haya nada nuevo
+skyway update --auto              # sin preguntas y con aviso por los canales de alertas (lo usa el temporizador)
+sudo skyway auto-update on [--hora HH:MM] [--sistema]   # cada día a las 04:30 o a la hora indicada
+sudo skyway auto-update status    # si está activa, próxima ejecución, último resultado y registro
+sudo skyway auto-update off [--sistema]
+```
+
+**Qué hace `skyway update`.** Se ejecuta desde una copia temporal del script,
+para que actualizar el código no lo reescriba a mitad de ejecución.
+
+1. Consulta la rama remota que sigue la copia del servidor (normalmente
+   `origin/main`). Sin nada nuevo termina con código 0 sin reconstruir ni
+   reiniciar nada: la ejecución nocturna no reinicia el panel ni Traefik cada
+   día.
+2. Anota el estado de partida: el commit actual, si el panel responde en
+   `http://localhost:4000/api/health` (o `SKYWAY_HEALTH_URL`), si el contenedor
+   `skyway-traefik` está en marcha y, si el `.env` del repositorio tiene un
+   `SKYWAY_DOMAIN` público (no `*.localhost`), si el panel responde por HTTPS a
+   través de Traefik con un certificado válido
+   (`curl --resolve <dominio>:443:127.0.0.1`).
+3. Avanza el código solo en limpio (`git merge --ff-only`): con commits locales,
+   o con cambios sin confirmar en ficheros que la actualización modifica, no
+   aplica nada (código 1).
+4. Reconstruye la imagen y recrea los contenedores (`docker compose up -d
+   --build`).
+5. Durante unos 3 minutos comprueba que el panel responde con la versión del
+   `package.json` y que lo que funcionaba antes sigue funcionando: Traefik en
+   marcha sin reiniciarse (la misma hora de inicio en dos comprobaciones
+   seguidas) y el panel por HTTPS. Lo que ya fallaba antes de actualizar (un
+   certificado todavía sin emitir, un Traefik retirado en favor de un proxy
+   propio) no se exige.
+6. Si la compilación o una comprobación falla, vuelve automáticamente al
+   commit anterior con `git reset --keep` (deshace solo lo que trajo la
+   actualización y conserva los cambios locales de otros ficheros, por ejemplo
+   un `docker-compose.yml` retocado), lo reconstruye (la imagen base y la caché
+   de compilación de la versión anterior siguen en Docker) y lo comprueba
+   igual.
+
+Nunca toca volúmenes ni datos, y nunca restaura nada por su cuenta. Las
+migraciones de la base de datos del panel solo añaden tablas y columnas, así que
+la versión anterior funciona con una base ya migrada; si alguna vez hiciera
+falta volver atrás también los datos, la copia diaria del panel (hacia las
+04:00, en Ajustes → Copias de seguridad del panel) se restaura a mano con el
+procedimiento de §9.
+
+Códigos de salida: **0**, actualizado y comprobado, o nada que actualizar;
+**1**, no se ha actualizado y el servidor sigue con la versión que tenía (ha
+fallado y se ha vuelto atrás, o no se podía aplicar sin riesgo); **2**, ha
+fallado y la vuelta atrás también: hay que revisar el servidor
+(`docker compose logs skyway`).
+
+Una sola actualización a la vez (cerrojo `flock` en `.git/skyway-update.lock`).
+Dos marcadores en `.git/`: `skyway-update-en-curso`, si una ejecución se cortó a
+medias o su vuelta atrás falló (la siguiente reconstruye y comprueba aunque no
+haya nada nuevo, y vuelve, si hace falta, a la versión que funcionaba antes), y
+`skyway-update-fallida`, el commit que falló y se deshizo: `--auto` no lo
+reintenta hasta que haya otro commit nuevo; `skyway update` a mano sí.
+
+**Modo `--auto`.** Es el del temporizador: no pregunta y solo actualiza desde un
+estado sano. Si antes de empezar el panel no responde o Traefik está detenido,
+no aplica nada ni arranca nada (alguien puede haberlo detenido a propósito, por
+ejemplo para restaurar la base de datos) y termina con código 1; si lo detuvo
+una actualización cortada, sí sigue. Avisa por los canales de Ajustes → Alertas
+con `aviso.js` (sin canales, no envía nada): un aviso breve de información al
+actualizar («Skyway se ha actualizado a la versión X (commit abc1234).») y uno
+de error, con el motivo, cuando no se aplica, cuando se vuelve atrás y cuando la
+vuelta atrás falla. Sin nada nuevo no avisa, y un fallo al avisar nunca cambia
+el resultado.
+
+**Temporizador.** `auto-update on` (con sudo) escribe
+`/etc/systemd/system/skyway-auto-update.service` (`Type=oneshot`, como root,
+`skyway update --auto` con la ruta real del script, tope de 1 hora) y
+`skyway-auto-update.timer` (`OnCalendar=*-*-* 04:30:00` o la hora de `--hora`,
+en la hora local del servidor,
+`RandomizedDelaySec=10min`, `Persistent=true`: si el servidor estaba apagado,
+se ejecuta al encenderlo), y lo activa (`systemctl daemon-reload` y `enable
+--now`). Antes comprueba que git puede leer el repositorio como root y que la
+copia sigue una rama remota. Repetirlo con otra `--hora` cambia la hora. `status`
+muestra si está activo, la próxima ejecución, el resultado de la última (desde
+el último arranque) y las 30 últimas líneas del registro; el historial
+completo está en `journalctl -u skyway-auto-update`. `off` detiene el
+temporizador (una actualización en marcha termina) y borra las unidades.
+
+**Parches del sistema (`--sistema`, Debian y Ubuntu).** Instala
+`unattended-upgrades` si falta y escribe
+`/etc/apt/apt.conf.d/52skyway-actualizaciones`: vacía las listas de orígenes de
+`50unattended-upgrades` (`#clear`) y deja solo los archivos de seguridad de
+Debian y Ubuntu (también los de Ubuntu Pro/ESM, si están activos), y reinicia a
+las 05:30 solo cuando un parche lo exige (núcleo, libc): una hora después de
+la actualización de Skyway (04:30, más el margen aleatorio y la compilación),
+así que un reinicio nunca corta una actualización ni su vuelta atrás. Con otra
+`--hora`, el reinicio también va una hora después, y cambiar la hora sin
+repetir `--sistema` lo mueve igualmente.
+Crea `20auto-upgrades` (listas y parches cada día) solo si no existe. Ni las
+versiones nuevas de la distribución ni los repositorios de terceros (Docker
+incluido) se actualizan solos. `off --sistema` retira el fichero de Skyway (y
+`20auto-upgrades`, si lo creó Skyway); `unattended-upgrades` queda instalado con
+la configuración de la distribución. En otros sistemas, `--sistema` se rechaza
+sin instalar nada.
+
+**Qué llega al servidor.** Lo que esté en la rama principal, que el servidor
+sigue: también lo que fusiona una persona, con las mismas comprobaciones y la
+misma vuelta atrás. Dependabot (`.github/dependabot.yml`) abre cada semana, por
+ecosistema, un PR con los parches (`x.y.Z`) agrupados (`parches-npm`,
+`parches-imagenes` del `Dockerfile`, `parches-compose` de `docker-compose.yml`,
+`parches-acciones`) y, con las alertas de seguridad de npm, otro con las
+correcciones que son parche (`seguridad-npm`). Cada ecosistema tiene su día
+(de lunes a jueves, a las 04:00, hora de Madrid), para que no haya dos PR de
+parches abiertos a la vez. Las versiones menores y mayores llegan en PR sueltos
+que revisa una persona; un salto mayor de las imágenes (Node 24, Traefik 4) ni
+siquiera se propone. Las imágenes llevan versión exacta
+(`node:22.23.3-alpine` en las tres etapas del `Dockerfile`, `traefik:v3.7.14`
+en `docker-compose.yml`): una etiqueta flotante nunca se renovaría, porque
+`docker compose up` solo descarga las imágenes que faltan, y si lo hiciera
+sería sin pasar por la CI.
+
+**Fusión automática (`.github/workflows/parches-automaticos.yml`).** Al terminar
+la CI de un PR (`workflow_run`) cuya rama empieza por `dependabot/`, el flujo,
+solo con `gh` y sin descargar ni ejecutar el código del PR, busca el único PR
+abierto desde esa rama en el propio repositorio y exige: que su autor sea
+Dependabot (`app/dependabot`), que vaya contra la rama principal y que su
+último commit sea el que probó la CI; que el título sea de un grupo
+`parches-…` o `seguridad-…` y que no modifique `.github/workflows` (GitHub no
+deja que el token de un flujo lo haga, así que los parches de las acciones de
+la CI, que no llegan al servidor, los fusiona una persona); que todas las
+comprobaciones de ese commit hayan terminado bien (`success`, `skipped` o
+`neutral`); y que la rama incluya todo lo que hay en la principal
+(`behind_by` = 0), para que lo fusionado sea exactamente lo probado.
+Entonces lo fusiona con un commit de fusión
+(`gh pr merge --merge --delete-branch --match-head-commit <sha>`). Si algo no
+se cumple, termina sin error y deja el motivo en su registro. La fusión la hace
+el token del propio flujo, que no vuelve a lanzar la CI en la rama principal:
+no hace falta, porque el árbol fusionado es el que probó la CI del PR. En GitHub
+hay que activar las alertas y las actualizaciones de seguridad de Dependabot
+(Settings → Code security), y la protección de la rama principal, si la hay, no
+debe exigir revisiones: con ellas, la fusión falla y el PR espera a una persona.

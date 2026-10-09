@@ -1,0 +1,106 @@
+# Fusiona solos los PR de Dependabot con parches (grupos «parches-…» y
+# «seguridad-…» de .github/dependabot.yml) cuando la CI ha pasado entera.
+#
+# Se dispara al terminar la CI (workflow_run), no con el PR: así corre con el
+# código de main y con permiso para fusionar, mientras que la CI del PR corre
+# sin permisos de escritura ni secretos. Por eso este trabajo NUNCA descarga ni
+# ejecuta código del PR: solo consulta y fusiona con la CLI de GitHub (gh).
+#
+# Solo fusiona si:
+#   1. hay un único PR abierto desde esa rama, es de Dependabot, va contra la
+#      rama principal y su último commit es el que ha probado la CI;
+#   2. el título dice que es uno de los grupos de parches y no toca
+#      .github/workflows (el token del flujo no puede fusionar eso);
+#   3. todas las comprobaciones de ese commit han terminado bien;
+#   4. la rama incluye todo lo que hay en la principal, así que lo fusionado es
+#      exactamente lo que se ha probado.
+# Si no, termina sin error y deja escrito por qué. El servidor aplica lo
+# fusionado esa noche con `skyway update --auto`, que vuelve atrás si algo falla.
+name: Parches automáticos
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+# Una fusión cada vez: tras fusionar un PR, el siguiente ya ve la rama
+# principal nueva y la comprobación 4 lo deja para cuando esté al día.
+concurrency:
+  group: parches-automaticos
+  cancel-in-progress: false
+
+jobs:
+  fusionar:
+    name: Fusionar parches de Dependabot
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Comprobar y fusionar
+        # Los datos del evento llegan como variables de entorno y nunca se
+        # escriben dentro del script: un nombre de rama no puede inyectar órdenes.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REPO_PR: ${{ github.event.workflow_run.head_repository.full_name }}
+          RAMA: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          PRINCIPAL: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          saltar() { echo "No se fusiona: $*"; exit 0; }
+
+          [ "$REPO_PR" = "$REPO" ] || saltar "la rama es de otro repositorio ($REPO_PR)."
+
+          prs="$(gh pr list --repo "$REPO" --head "$RAMA" --state open \
+            --json number,title,author,headRefOid,isCrossRepository,baseRefName)"
+          propios="$(jq -c '[.[] | select(.isCrossRepository == false)]' <<<"$prs")"
+          [ "$(jq length <<<"$propios")" = 1 ] || saltar "no hay un único PR abierto desde la rama $RAMA."
+          numero="$(jq -r '.[0].number' <<<"$propios")"
+
+          # gh muestra a las aplicaciones como «app/<nombre>».
+          [ "$(jq -r '.[0].author.login' <<<"$propios")" = "app/dependabot" ] || saltar "el autor del PR #$numero no es Dependabot."
+          titulo="$(jq -r '.[0].title' <<<"$propios")"
+          echo "PR #$numero: $titulo"
+          [ "$(jq -r '.[0].baseRefName' <<<"$propios")" = "$PRINCIPAL" ] || saltar "el PR no va contra $PRINCIPAL."
+          [ "$(jq -r '.[0].headRefOid' <<<"$propios")" = "$SHA" ] \
+            || saltar "el PR tiene commits posteriores a los que ha probado la CI; se decidirá cuando termine la CI de esos."
+
+          # Títulos de Dependabot para un grupo: «Bump the parches-npm group with
+          # 3 updates», «… group across 1 directory with …» o, con una sola
+          # dependencia, «Bump x from 1.2.3 to 1.2.4 in the parches-npm group»;
+          # con el prefijo de commit delante («dependencias: bump …»).
+          grep -Eiq '(^|[[:space:]])the (parches|seguridad)-[a-z0-9_-]+ group([[:space:]]|$)' <<<"$titulo" \
+            || saltar "no es un grupo de parches («parches-…» o «seguridad-…»): lo revisa una persona."
+
+          # GitHub no deja que el token de un flujo cambie los flujos
+          # (.github/workflows): esa fusión fallaría. Son los parches de las
+          # acciones de la CI, que no llegan al servidor: los fusiona una persona.
+          ficheros="$(gh pr view "$numero" --repo "$REPO" --json files --jq '.files[].path')"
+          if grep -q '^\.github/workflows/' <<<"$ficheros"; then
+            saltar "el PR modifica .github/workflows y el token del flujo no puede fusionarlo: lo fusiona una persona."
+          fi
+
+          total="$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=1" --jq .total_count)"
+          [ "$total" -ge 1 ] || saltar "el commit no tiene ninguna comprobación."
+          pendientes="$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.status != "completed" or (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")) | "  \(.name): \(.status) \(.conclusion // "")"')"
+          if [ -n "$pendientes" ]; then
+            echo "$pendientes"
+            saltar "hay comprobaciones sin terminar o que no han terminado bien (arriba)."
+          fi
+
+          detras="$(gh api "repos/$REPO/compare/$PRINCIPAL...$SHA" --jq .behind_by)"
+          [ "$detras" = 0 ] \
+            || saltar "a la rama le faltan $detras commits de $PRINCIPAL, así que lo fusionado no sería lo que se ha probado. Dependabot la pone al día si hay conflictos; para forzarlo, comenta «@dependabot rebase» en el PR."
+
+          gh pr merge "$numero" --repo "$REPO" --merge --delete-branch --match-head-commit "$SHA"
+          echo "PR #$numero fusionado."

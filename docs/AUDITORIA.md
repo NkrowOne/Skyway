@@ -236,6 +236,25 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   «eliminar», recalcula la lista en el servidor (no se fía de la que manda el
   cliente) y audita cada borrado; nunca usa `docker volume prune`. Lo prueba
   `server/test/borrado.test.ts`.
+- **Actualizaciones automáticas** (`.github/dependabot.yml`,
+  `.github/workflows/parches-automaticos.yml`, `scripts/skyway`): solo se
+  fusionan solos los PR de Dependabot de los grupos de parches (`parches-…`,
+  `seguridad-…`), con todas las comprobaciones del commit en verde y la rama al
+  día con `main`, de modo que lo fusionado es exactamente lo que probó la CI;
+  las versiones menores y mayores las revisa una persona. El flujo con permiso
+  de escritura se dispara por `workflow_run` (corre el código de `main`, no el
+  del PR), solo usa `gh`, nunca descarga ni ejecuta el código del PR y recibe
+  los datos del evento por variables de entorno, sin interpolarlos en el script.
+  Las imágenes van con versión exacta: lo que corre es lo que pasó la CI. En el
+  servidor, `skyway update --auto` solo actualiza desde un estado sano,
+  comprueba el panel, Traefik y el HTTPS del panel, y si algo falla vuelve
+  automáticamente a la versión anterior, sin tocar volúmenes ni restaurar
+  datos; el texto de los avisos va a `docker exec` como argumento, sin shell.
+  `--sistema` limita unattended-upgrades a los orígenes de seguridad de Debian
+  y Ubuntu y solo reinicia cuando un parche lo exige, una hora después de la
+  actualización (05:30 por defecto). Lo prueban
+  `server/test/actualizacion-automatica.test.ts` (el script real con dobles de
+  docker, curl y systemctl) y `server/test/herramientas.test.ts`.
 
 ---
 
@@ -248,6 +267,14 @@ Estos no son defectos, sino consecuencias del propósito de la herramienta
   entra en Skyway controla todos los contenedores del servidor. Mitigado por bind
   local + TLS/VPN, contraseña fuerte y auditoría. Es el modelo esperado de un PaaS
   auto-alojado.
+- **El servidor ejecuta lo que llega a `main`**: con la actualización automática
+  activada, el temporizador ejecuta `skyway update --auto` como root y aplica
+  cada noche lo fusionado en la rama principal, también lo que fusiona una
+  persona; la seguridad de `main` (quién puede fusionar, protección de la rama)
+  es la del servidor. Mitigado: solo se fusionan solos los parches de
+  Dependabot con la CI en verde, el resto exige a una persona, `auto-update on`
+  avisa si el script no pertenece a root y nada se aplica sin las comprobaciones
+  ni la vuelta atrás.
 - **`exec` y consola de BBDD**: permiten ejecutar comandos y SQL arbitrarios en los
   contenedores del workspace del usuario. Es una función deliberada (migraciones,
   diagnóstico); autenticada, con acceso al workspace y auditada.
