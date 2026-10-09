@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.37.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.38.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -528,6 +528,23 @@ huérfanos).
   contraseña y por passkey. La IP real se obtiene respetando el proxy **solo**
   de rangos privados/loopback (`config.trustProxy`), de modo que un cliente en
   internet no puede falsear `X-Forwarded-For` para evadir el límite.
+- **IP real detrás del proxy de Cloudflare** (`docker-compose.yml`): Traefik
+  respeta el `X-Forwarded-For` que manda Cloudflare solo en el 443 y solo si la
+  conexión viene de sus rangos publicados (`CLOUDFLARE_IPV4` y
+  `CLOUDFLARE_IPV6` en `domains.ts`; una prueba comprueba que coinciden con el
+  compose). Las apps reciben así la IP del visitante: la primera de
+  `X-Forwarded-For` empezando por la derecha que no sea de Cloudflare ni de la
+  red de Docker (lo de su izquierda lo puede escribir el visitante).
+  `X-Real-Ip` sigue siendo la del nodo de Cloudflare, y `CF-Connecting-IP` solo
+  es fiable si la petición llega de Cloudflare: cualquiera que conecte
+  directamente puede escribirla. De cualquier otra IP, Traefik borra las
+  cabeceras `X-Forwarded-*` como siempre. En el 80 no se confía en nadie: con
+  el modo SSL/TLS «Flexible», Cloudflare entra por ahí diciendo «https» y, si
+  se le creyera, la web se serviría sin cifrar entre Cloudflare y el servidor
+  en lugar del bucle que Skyway detecta y avisa. El panel no cambia: su
+  `trustProxy` solo confía en rangos privados, así que detrás de Cloudflare
+  su límite de intentos cuenta la IP del nodo de Cloudflare, como antes, y
+  nadie puede falsearla.
 - **Cabeceras de seguridad** (todas las respuestas, `app.ts`): `Content-Security-Policy`
   (mismo origen; sin scripts externos ni inline), `X-Frame-Options: DENY`,
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,

@@ -265,6 +265,15 @@ export const FAQ: FaqEntry[] = [
     keywords: ['502', '503', '504', 'bad gateway', 'gateway timeout', '404', 'not found', 'dominio no funciona', 'no carga', 'no responde', 'se queda cargando', 'caido', 'traefik'],
   },
   {
+    id: 'ip-real-cloudflare',
+    category: 'dominios',
+    question: 'Con el proxy de Cloudflare, ¿qué IP del visitante recibe mi aplicación?',
+    answer:
+      'La del visitante, en la cabecera **X-Forwarded-For**: Traefik respeta la que manda Cloudflare (solo por HTTPS y solo si la conexión viene de Cloudflare). Toma la **primera IP empezando por la derecha** que no sea de Cloudflare ni de la red interna: lo que hay a su izquierda lo puede escribir el propio visitante. La mayoría de frameworks lo hacen solos si se les indica que confíen en el proxy (por ejemplo, `trust proxy` en Express o `TrustProxies` en Laravel).\n\n' +
+      '`X-Real-Ip` sigue llevando la IP del nodo de Cloudflare. `CF-Connecting-IP` también trae la del visitante, pero cualquiera que conecte directamente con el servidor puede escribirla: úsala solo si la petición llega desde una IP de Cloudflare.',
+    keywords: ['ip', 'ip real', 'cloudflare', 'proxy', 'x-forwarded-for', 'x-real-ip', 'cf-connecting-ip', 'visitante', 'cliente', 'trust proxy'],
+  },
+  {
     id: 'certificado-tls',
     category: 'dominios',
     question: 'El navegador indica que el certificado no es válido o que la conexión no es segura',
