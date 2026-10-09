@@ -148,6 +148,8 @@ export interface MailwayInfo {
     portal?: boolean;
     cloudflareSoloCrear?: boolean;
     webmailAutomatico?: boolean;
+    /** Admite los enlaces de bienvenida del cliente (`/api/clients/:id/invites`). */
+    invites?: boolean;
   };
   traefik?: { configPath: string; token: string } | null;
 }

@@ -141,6 +141,7 @@ describe('webmail propio: interruptor del webmail automático', () => {
     const r = await call('GET', `/api/projects/${projA.id}/mail`, memberA);
     expect(r.status, r.raw).toBe(200);
     expect(r.json.features.webmailAutomatico).toBe(true);
+    expect(r.json.features.invites).toBe(true);
     expect(r.json.summary.webmail).toEqual({ automatico: true, domains: [] });
   });
 
@@ -502,5 +503,30 @@ describe('configuración inicial: enlace de bienvenida', () => {
       client.externalRef = original;
     }
     expect(inviteCalls()).toEqual([]);
+  });
+
+  it('con un Mailway anterior (sin features.invites) no se ofrece ni se llama', async () => {
+    mw.invitesSoportado = false;
+    resetMailwayCaches();
+    try {
+      const view = await call('GET', `/api/projects/${projA.id}/mail`, ownerA);
+      expect(view.status, view.raw).toBe(200);
+      expect(view.json.features.invites).toBe(false);
+      mw.calls = [];
+      for (const [method, url] of [
+        ['GET', invites(projA.id)],
+        ['POST', invites(projA.id)],
+        ['GET', invites(projA.id, `/${primero}/url`)],
+        ['DELETE', invites(projA.id, `/${primero}`)],
+      ] as const) {
+        const r = await call(method, url, ownerA, method === 'POST' ? { email: 'nuevo@empresa.com' } : undefined);
+        expect(r.status, `${method} ${url}`).toBe(409);
+        expect(r.json.error).toMatch(/no permite enviar la configuración inicial/);
+      }
+      expect(inviteCalls()).toEqual([]);
+    } finally {
+      mw.invitesSoportado = true;
+      resetMailwayCaches();
+    }
   });
 });

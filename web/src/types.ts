@@ -1568,7 +1568,14 @@ export interface ProjectMailView {
   notice?: string | null;
   panelUrl: string | null;
   /** `webmailAutomatico`: interruptor global del webmail automático; null si Mailway no lo tiene. */
-  features: { cloudflare: boolean; autoconfig: boolean; portal: boolean; webmailAutomatico: boolean | null } | null;
+  features: {
+    cloudflare: boolean;
+    autoconfig: boolean;
+    portal: boolean;
+    webmailAutomatico: boolean | null;
+    /** El Mailway conectado admite los enlaces de bienvenida («Enviar configuración inicial»). */
+    invites: boolean;
+  } | null;
   link?: { clientId: string; clientName: string; createdAt: number; createdBy: string | null };
   summary?: MailSummary;
   /** El cliente visto desde la cuenta del proyecto; null sin cuenta. */

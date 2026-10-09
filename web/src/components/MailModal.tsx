@@ -481,9 +481,12 @@ export default function MailModal({
           )}
           {canManage && (
             <span className="flex flex-wrap items-center gap-1.5">
-              <Button variant="secondary" size="sm" onClick={() => setWelcomeOpen(true)}>
-                <Send size={12} /> Enviar configuración inicial
-              </Button>
+              {/* Solo con un Mailway que admite los enlaces de bienvenida. */}
+              {data.features?.invites && (
+                <Button variant="secondary" size="sm" onClick={() => setWelcomeOpen(true)}>
+                  <Send size={12} /> Enviar configuración inicial
+                </Button>
+              )}
               <Button variant="ghost" size="sm" onClick={() => setUnlinkOpen(true)} className="text-sub">
                 <Unlink size={13} /> Desactivar correo
               </Button>
@@ -568,6 +571,7 @@ export default function MailModal({
       {welcomeOpen && (
         <BienvenidaDialog
           projectId={projectId}
+          clientName={data?.summary?.client.name ?? null}
           workspaceName={account?.workspaceName ?? null}
           shared={!!account?.shared}
           blocked={!!data?.accountSuspended || !!data?.summary?.client.suspended}
@@ -1339,8 +1343,12 @@ function WebmailSection({
     queryFn: () => api.get<MailWebmailView>(base),
     staleTime: 15_000,
   });
-  // Marcar uno como principal cambia también los de los demás dominios.
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['mailWebmail', projectId] });
+  // Marcar uno como principal cambia también los de los demás dominios, y la
+  // tarjeta «Webmail propio» lee el resumen del correo: se refrescan los dos.
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['mailWebmail', projectId] });
+    void queryClient.invalidateQueries({ queryKey: mailKey(projectId) });
+  };
   const onError = (err: Error) => toast(err.message, 'err');
 
   const create = useMutation({

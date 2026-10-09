@@ -125,6 +125,8 @@ export const mw = {
   webmailAutoSoportado: true,
   /** Interruptor global del webmail automático de la instancia. */
   webmailAutoGlobal: true,
+  /** El Mailway conectado declara `features.invites` (enlaces de bienvenida). false = uno anterior. */
+  invitesSoportado: true,
   /** Enlaces de bienvenida de los clientes. */
   invites: [] as FakeInvite[],
   /** Usuarios del panel de Mailway (para `user_exists` y `existingUser`). */
@@ -317,6 +319,7 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
         portal: true,
         cloudflareSoloCrear: true,
         ...(mw.webmailAutoSoportado ? { webmailAutomatico: mw.webmailAutoGlobal } : {}),
+        ...(mw.invitesSoportado ? { invites: true } : {}),
       },
       traefik: admin ? { configPath: '/api/traefik/config', token: mw.traefikToken } : null,
       ...mw.infoOverride,

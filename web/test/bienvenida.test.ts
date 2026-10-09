@@ -49,6 +49,34 @@ describe('mailtoBienvenida', () => {
   });
 });
 
+describe('textoBienvenida según quién lo recibe', () => {
+  it('a quien aún no tiene acceso le dice que lo creará', () => {
+    const { body } = textoBienvenida({ ...base, existingUser: false });
+    expect(body).toContain('Con el siguiente enlace podrás crear tu acceso y, a continuación,');
+  });
+
+  it('a quien ya tiene acceso le dice que elegirá una contraseña nueva', () => {
+    const { body } = textoBienvenida({ ...base, existingUser: true });
+    expect(body).toContain('Ya tienes acceso a este panel: con el siguiente enlace podrás elegir una contraseña nueva');
+    expect(body).not.toMatch(/crear tu acceso/);
+  });
+
+  it('sin saberlo (al volver a ver un enlace) no promete ninguna de las dos', () => {
+    for (const existingUser of [null, undefined]) {
+      const { body } = textoBienvenida({ ...base, existingUser });
+      expect(body).toContain('Con el siguiente enlace podrás configurar tu acceso');
+      expect(body).not.toMatch(/crear tu acceso|contraseña nueva/);
+    }
+  });
+
+  it('sin el nombre del cliente no deja huecos en el asunto ni en el cuerpo', () => {
+    const { subject, body } = textoBienvenida({ ...base, clientName: '  ' });
+    expect(subject).toBe('Configuración inicial del correo');
+    expect(body).toContain('Se ha preparado el acceso al panel de correo. ');
+    expect(body).not.toMatch(/ de {2}| {2}al panel/);
+  });
+});
+
 describe('fmtCaducidad', () => {
   it('fecha y hora completas en español', () => {
     expect(fmtCaducidad(base.expiresAt)).toMatch(/^\d{1,2} de octubre de 2026 a las \d{2}:\d{2}$/);

@@ -593,8 +593,15 @@ function publicLink(link: MailwayLinkRow) {
  * Funciones de la instancia, sin salir a la red si aún no se conocen.
  * `webmailAutomatico` es el interruptor global del webmail automático, o null
  * si el Mailway conectado no lo tiene (la interfaz oculta entonces el suyo).
+ * `invites`: admite los enlaces de bienvenida («Enviar configuración inicial»).
  */
-function featuresOf(): { cloudflare: boolean; autoconfig: boolean; portal: boolean; webmailAutomatico: boolean | null } | null {
+function featuresOf(): {
+  cloudflare: boolean;
+  autoconfig: boolean;
+  portal: boolean;
+  webmailAutomatico: boolean | null;
+  invites: boolean;
+} | null {
   const f = cachedInfo()?.features;
   return f
     ? {
@@ -602,6 +609,7 @@ function featuresOf(): { cloudflare: boolean; autoconfig: boolean; portal: boole
         autoconfig: !!f.autoconfig,
         portal: !!f.portal,
         webmailAutomatico: typeof f.webmailAutomatico === 'boolean' ? f.webmailAutomatico : null,
+        invites: f.invites === true,
       }
     : null;
 }
@@ -965,6 +973,21 @@ async function suggestedInviteEmail(project: ProjectRow, clientId: string): Prom
   }
   if (!project.workspace_id) return null;
   return listWorkspaceUsers(project.workspace_id).find((u) => u.role === 'owner')?.email ?? null;
+}
+
+/**
+ * Los enlaces de bienvenida solo existen en un Mailway que declara
+ * `features.invites`: con uno anterior, 409 sin llamarle (como el webmail
+ * automático), en lugar de un 404 de Mailway que no explica nada.
+ */
+async function assertInvitesSupported(): Promise<void> {
+  const info = await getInfo();
+  if (info.features?.invites !== true) {
+    throw httpError(
+      409,
+      `La versión de Mailway conectada${versionMailway(info)} no permite enviar la configuración inicial. Es necesario actualizar Mailway.`,
+    );
+  }
 }
 
 /** Días u horas de validez, para la auditoría. */
@@ -1853,6 +1876,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
      * correos de contacto) exigen gestionar el proyecto. El identificador del
      * cliente sale siempre del vínculo del proyecto, y un enlace concreto se
      * busca antes entre los de ese cliente: si no es suyo, 404 sin llegar a él.
+     * Con un Mailway que no declara `features.invites`, 409 sin llamarle.
      */
     secured.get(
       '/api/projects/:id/mail/invites',
@@ -1860,6 +1884,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         const ctx = projectCtx(req, reply, { manage: true });
         if (!ctx) return reply;
         const link = requireLink(ctx.project);
+        await assertInvitesSupported();
         const summary = await ownedSummary(ctx.project, link);
         const invites = await clientInvites(link.client_id);
         return {
@@ -1884,6 +1909,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         if (!ctx) return reply;
         const body = inviteSchema.parse(req.body ?? {});
         const link = requireLink(ctx.project);
+        await assertInvitesSupported();
         assertAccountActive(ctx.project);
         const summary = await ownedSummary(ctx.project, link);
         if (summary.client.suspended) throw httpError(409, BIENVENIDA_CLIENTE_SUSPENDIDO);
@@ -1916,6 +1942,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         if (!ctx) return reply;
         const { inviteId } = req.params as { inviteId: string };
         const link = requireLink(ctx.project);
+        await assertInvitesSupported();
         await ownedSummary(ctx.project, link);
         const invite = await ownInvite(link.client_id, inviteId);
         let res: MailwayInviteLink;
@@ -1947,6 +1974,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         if (!ctx) return reply;
         const { inviteId } = req.params as { inviteId: string };
         const link = requireLink(ctx.project);
+        await assertInvitesSupported();
         await ownedSummary(ctx.project, link);
         const invite = await ownInvite(link.client_id, inviteId);
         if (invite.status === 'accepted') {

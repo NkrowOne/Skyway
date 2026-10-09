@@ -55,7 +55,16 @@ function EnlaceBienvenida({
 }) {
   // La URL llega de Mailway: solo se enlaza si es http(s).
   const url = safeHref(invite.url);
-  const mailto = url ? mailtoBienvenida({ email: invite.email, name: invite.name, clientName, url, expiresAt: invite.expiresAt }) : null;
+  const mailto = url
+    ? mailtoBienvenida({
+        email: invite.email,
+        name: invite.name,
+        clientName,
+        url,
+        expiresAt: invite.expiresAt,
+        existingUser: invite.existingUser,
+      })
+    : null;
   return (
     <div role="status" className="rounded-lg border border-ok/30 bg-ok/[.06] p-3">
       <p className="text-sm font-medium text-txt">
@@ -91,12 +100,15 @@ function EnlaceBienvenida({
 
 export default function BienvenidaDialog({
   projectId,
+  clientName: clienteDelResumen,
   workspaceName,
   shared,
   blocked,
   onClose,
 }: {
   projectId: string;
+  /** Nombre del cliente de correo del proyecto (del resumen), por si la lista de enlaces no ha llegado. */
+  clientName: string | null;
   /** Cuenta del proyecto; si su cliente de correo lo comparten sus proyectos, el acceso es a todo él. */
   workspaceName: string | null;
   shared: boolean;
@@ -122,7 +134,8 @@ export default function BienvenidaDialog({
   });
   const refresh = () => queryClient.invalidateQueries({ queryKey: inviteKey(projectId) });
   const email = editedEmail ?? list.data?.suggestedEmail ?? '';
-  const clientName = list.data?.clientName ?? workspaceName ?? '';
+  // El de la cuenta no sirve de respaldo: un proyecto con cliente propio no usa el de la cuenta.
+  const clientName = list.data?.clientName ?? clienteDelResumen ?? '';
 
   const create = useMutation({
     mutationFn: () =>

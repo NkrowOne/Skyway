@@ -19,19 +19,33 @@ export function fmtCaducidad(ts: number): string {
 export interface CorreoBienvenida {
   email: string;
   name: string;
-  /** Nombre del cliente de correo (el de la cuenta, si lo comparten sus proyectos). */
+  /** Nombre del cliente de correo (el de la cuenta, si lo comparten sus proyectos); vacío si no se conoce. */
   clientName: string;
   url: string;
   expiresAt: number | null;
+  /**
+   * La persona ya tiene acceso al panel de ese cliente: con el enlace elige
+   * una contraseña nueva. null o ausente: no se sabe (al volver a ver un enlace).
+   */
+  existingUser?: boolean | null;
+}
+
+/** Qué podrá hacer con el enlace quien lo recibe, según tenga ya acceso o no. */
+function queHaraConElEnlace(existingUser: boolean | null | undefined): string {
+  const despues = 'y, a continuación, añadir el dominio de la empresa y crear los buzones que necesites:';
+  if (existingUser === true) return `Ya tienes acceso a este panel: con el siguiente enlace podrás elegir una contraseña nueva ${despues}`;
+  if (existingUser === false) return `Con el siguiente enlace podrás crear tu acceso ${despues}`;
+  return `Con el siguiente enlace podrás configurar tu acceso ${despues}`;
 }
 
 /** Asunto y cuerpo del correo con el enlace: breve, profesional y tratando de tú a quien lo recibe. */
 export function textoBienvenida(c: CorreoBienvenida): { subject: string; body: string } {
   const nombre = c.name.trim();
+  const cliente = c.clientName.trim();
   const lineas = [
     nombre ? `Hola, ${nombre}:` : 'Hola:',
     '',
-    `Se ha preparado el acceso de ${c.clientName} al panel de correo. Con el siguiente enlace podrás crear tu acceso y, a continuación, añadir el dominio de la empresa y crear los buzones que necesites:`,
+    `${cliente ? `Se ha preparado el acceso de ${cliente} al panel de correo.` : 'Se ha preparado el acceso al panel de correo.'} ${queHaraConElEnlace(c.existingUser)}`,
     '',
     c.url,
     '',
@@ -42,7 +56,10 @@ export function textoBienvenida(c: CorreoBienvenida): { subject: string; body: s
     'Un saludo.',
   ];
   // Saltos de línea CRLF: es lo que pide RFC 6068 para el cuerpo de un enlace mailto.
-  return { subject: `Configuración inicial del correo de ${c.clientName}`, body: lineas.join('\r\n') };
+  return {
+    subject: cliente ? `Configuración inicial del correo de ${cliente}` : 'Configuración inicial del correo',
+    body: lineas.join('\r\n'),
+  };
 }
 
 /** Enlace mailto: con el asunto y el cuerpo codificados (un «&» o un «?» del nombre no rompen la dirección). */
