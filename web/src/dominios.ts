@@ -178,13 +178,19 @@ const LIMITE_MS = 30 * 60_000;
 
 /**
  * Cada cuánto se repite la comprobación del DNS de un dominio que aún no está
- * correcto, o false si ya no se repite. `transcurridoMs` es el tiempo desde
- * que se empezó a comprobar y `dominios` cuántos se comprueban a la vez en el
- * editor: con varios, el intervalo se alarga para que entre todos no pasen de
- * `CUPO_AUTOMATICO` peticiones por minuto y el servidor no responda 429.
+ * correcto, o false si ya no se repite. No se repite con el DNS correcto
+ * (`ok`) ni con un registro con el proxy de Cloudflare que no se puede
+ * verificar (`cloudflare_proxy`): esperar no lo cambia. El bucle del modo
+ * «Flexible» (`cloudflare_flexible`) sí: se corrige en Cloudflare y la
+ * siguiente comprobación ya es correcta.
+ *
+ * `transcurridoMs` es el tiempo desde que se empezó a comprobar y `dominios`
+ * cuántos se comprueban a la vez en el editor: con varios, el intervalo se
+ * alarga para que entre todos no pasen de `CUPO_AUTOMATICO` peticiones por
+ * minuto y el servidor no responda 429.
  */
 export function intervaloComprobacion(estado: string | undefined, transcurridoMs: number, dominios: number): number | false {
-  if (estado === 'ok') return false;
+  if (estado === 'ok' || estado === 'cloudflare_proxy') return false;
   if (transcurridoMs >= LIMITE_MS) return false;
   const base = transcurridoMs < FASE_RAPIDA_MS ? RAPIDO_MS : LENTO_MS;
   const minimoPorCupo = Math.ceil((Math.max(1, dominios) * 60_000) / CUPO_AUTOMATICO);

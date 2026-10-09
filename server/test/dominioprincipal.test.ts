@@ -214,8 +214,10 @@ describe('proxy de Cloudflare', () => {
     expect(clasificarDns('a.es', [IP], IP).status).toBe('ok');
     const proxy = clasificarDns('a.es', ['104.21.48.1', '172.67.150.20'], IP);
     expect(proxy.status).toBe('cloudflare_proxy');
-    // Una frase con el arreglo más simple; el modo SSL/TLS lo explica el panel aparte.
-    expect(proxy.message).toBe('El registro tiene el proxy de Cloudflare activado: cámbialo a «Solo DNS» (nube gris) en Cloudflare.');
+    // El proxy es la forma recomendada: sin su API solo se dice que no se puede ver a dónde lleva.
+    expect(proxy.message).toBe(
+      'El registro pasa por el proxy de Cloudflare: desde aquí no se puede comprobar a dónde lleva el tráfico. Si la web abre, está bien configurado.',
+    );
     expect(clasificarDns('a.es', ['198.51.100.1'], IP).message).toBe(`El dominio apunta a 198.51.100.1 en lugar de ${IP}.`);
     // Se sabe que pasa por Cloudflare aunque no se conozca la IP del servidor.
     expect(clasificarDns('a.es', ['104.21.48.1'], null).status).toBe('cloudflare_proxy');

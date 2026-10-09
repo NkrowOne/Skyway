@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react';
+import { Fragment, ReactNode, useState } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Cloud, ExternalLink, Plus, RefreshCw, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -19,9 +19,13 @@ const STATUS_META: Record<DomainCheck['status'], { label: string; tone: Tone }> 
   ok: { label: 'Configurado', tone: 'ok' },
   no_record: { label: 'Esperando DNS', tone: 'warn' },
   wrong_ip: { label: 'Apunta a otra IP', tone: 'err' },
-  // Aviso y no error: el proxy puede estar entregando el tráfico aquí, pero
-  // no se puede comprobar desde fuera.
-  cloudflare_proxy: { label: 'Proxy de Cloudflare', tone: 'warn' },
+  // Información y no aviso: el proxy de Cloudflare es la forma recomendada de
+  // servir la web. Solo falta saber a dónde lleva el tráfico, que desde fuera
+  // no se ve (a un administrador se le comprueba con la API de Cloudflare
+  // cuando su token ve la zona, y entonces sale «Configurado»).
+  cloudflare_proxy: { label: 'Proxy de Cloudflare', tone: 'info' },
+  // Error: la web no carga (el navegador corta el bucle de redirecciones).
+  cloudflare_flexible: { label: 'Bucle en Cloudflare', tone: 'err' },
   unknown: { label: 'Sin verificar', tone: 'neutral' },
 };
 
@@ -33,8 +37,11 @@ const TONE_DOT: Record<Tone, string> = {
   neutral: 'bg-subtle',
 };
 
-/** Estados en los que hace falta tocar el DNS: su detalle se abre solo. */
-const PENDIENTES: ReadonlySet<DomainCheck['status']> = new Set(['no_record', 'wrong_ip', 'cloudflare_proxy']);
+/**
+ * Estados en los que hay algo que corregir, en el DNS o en Cloudflare: su
+ * detalle se abre solo. El proxy sin verificar no está: no hay nada que hacer.
+ */
+const PENDIENTES: ReadonlySet<DomainCheck['status']> = new Set(['no_record', 'wrong_ip', 'cloudflare_flexible']);
 
 /** Divide un dominio en (nombre a crear, zona) de forma aproximada. */
 function splitDnsName(domain: string): { name: string; zone: string } {
@@ -83,6 +90,36 @@ function TablaRegistro({ domain, serverIp }: { domain: string; serverIp: string 
   );
 }
 
+/** Lo que solo hace falta leer una vez, plegado bajo el mensaje del estado. */
+function MasInformacion({ children }: { children: ReactNode }) {
+  return (
+    <details className="group">
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-xs text-subtle transition-colors hover:text-sub">
+        <ChevronRight size={12} className="shrink-0 transition-transform group-open:rotate-90" aria-hidden />
+        Más información
+      </summary>
+      <p className="details-body mt-1.5 text-xs text-subtle">{children}</p>
+    </details>
+  );
+}
+
+/**
+ * «Activar proxy en Cloudflare» o «Desactivar proxy en Cloudflare», con una
+ * nota opcional de cuándo conviene. Son las únicas modificaciones de un
+ * registro existente, y solo con este clic: el guardado automático nunca toca
+ * lo que ya existe.
+ */
+function BotonProxy({ activar, onClick, loading, nota }: { activar: boolean; onClick: () => void; loading?: boolean; nota?: string }) {
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <Button size="sm" variant="secondary" onClick={onClick} loading={loading} className="max-sm:h-10">
+        <Cloud size={12} /> {activar ? 'Activar proxy en Cloudflare' : 'Desactivar proxy en Cloudflare'}
+      </Button>
+      {nota && <p className="text-xs text-subtle">{nota}</p>}
+    </div>
+  );
+}
+
 /**
  * Qué hacer con el DNS, en una frase y el registro. Lo que repetía la etiqueta
  * («aún no existe registro…») o la propagación en cada fila ya no aparece: la
@@ -93,17 +130,23 @@ function DetalleDns({
   check,
   error,
   serverIp,
-  onDisableProxy,
-  disablingProxy,
+  onActivarProxy,
+  onDesactivarProxy,
+  cambiandoProxy,
+  notaSinProxy,
   enCloudflare,
 }: {
   domain: string;
   check: DomainCheck | undefined;
   error: Error | null;
   serverIp: string | null;
-  /** Quita el proxy en el Cloudflare del administrador (solo si el dominio está guardado y su zona en esa cuenta). */
-  onDisableProxy?: () => void;
-  disablingProxy?: boolean;
+  /** Pone el proxy en el Cloudflare del administrador (dominio guardado, zona en esa cuenta y HTTPS configurado). */
+  onActivarProxy?: () => void;
+  /** Quita el proxy en el Cloudflare del administrador (dominio guardado y zona en esa cuenta). */
+  onDesactivarProxy?: () => void;
+  cambiandoProxy?: boolean;
+  /** Por qué no se ofrece activar el proxy en un dominio que no lo tiene (p. ej., el certificado gratuito no lo cubre). */
+  notaSinProxy?: string;
   /** El DNS automático acaba de crear (o ya tenía) el registro A en Cloudflare. */
   enCloudflare?: boolean;
 }) {
@@ -111,8 +154,40 @@ function DetalleDns({
   const zona = <span className="font-mono text-txt">{zone}</span>;
   if (!check) return error ? <p className="text-xs text-err">{error.message}</p> : null;
   switch (check.status) {
-    case 'ok':
-      return <p className="text-xs text-sub">{check.message}</p>;
+    case 'ok': {
+      // `viaCloudflare` solo llega a un administrador: es quien puede cambiar
+      // el proxy, y sin él no se sabe si el registro lo tiene.
+      let proxy: ReactNode = null;
+      if (check.viaCloudflare) {
+        if (onDesactivarProxy) {
+          proxy = (
+            <BotonProxy
+              activar={false}
+              onClick={onDesactivarProxy}
+              loading={cambiandoProxy}
+              nota="Desactiva el proxy si el servicio necesita subidas de más de 100 MB o peticiones de más de 100 segundos: el plan gratuito de Cloudflare no las admite."
+            />
+          );
+        }
+      } else if (onActivarProxy) {
+        proxy = (
+          <BotonProxy
+            activar
+            onClick={onActivarProxy}
+            loading={cambiandoProxy}
+            nota="El modo SSL/TLS de la zona en Cloudflare debe ser «Completo (estricto)» o «Completo»."
+          />
+        );
+      } else if (notaSinProxy) {
+        proxy = <p className="text-xs text-subtle">{notaSinProxy}</p>;
+      }
+      return (
+        <>
+          <p className="text-xs text-sub">{check.message}</p>
+          {proxy}
+        </>
+      );
+    }
     case 'no_record':
       // Con el registro ya en Cloudflare, la tabla pediría crear lo que existe.
       if (enCloudflare) return <p className="text-xs text-sub">El registro ya está en Cloudflare; puede tardar unos minutos en propagarse.</p>;
@@ -135,31 +210,36 @@ function DetalleDns({
       return (
         <>
           <p className="text-xs text-sub">{check.message}</p>
-          {/* La única modificación de un registro existente, y solo con este clic:
-              el guardado automático nunca toca lo que ya existe. */}
-          {onDisableProxy && (
-            <div>
-              <Button size="sm" variant="secondary" onClick={onDisableProxy} loading={disablingProxy} className="max-sm:h-10">
-                <Cloud size={12} /> Desactivar proxy en Cloudflare
-              </Button>
-            </div>
+          {onDesactivarProxy && <BotonProxy activar={false} onClick={onDesactivarProxy} loading={cambiandoProxy} />}
+          <MasInformacion>
+            {serverIp && (
+              <>
+                El registro A debe apuntar a <span className="font-mono text-sub">{serverIp}</span>.{' '}
+              </>
+            )}
+            Con el proxy, el modo SSL/TLS de la zona en Cloudflare debe ser «Completo (estricto)» o «Completo», nunca
+            «Flexible». Let&apos;s Encrypt emite el certificado igualmente: Cloudflare deja pasar la ruta{' '}
+            <span className="font-mono">/.well-known/acme-challenge/</span> hasta este servidor.
+          </MasInformacion>
+        </>
+      );
+    case 'cloudflare_flexible':
+      return (
+        <>
+          <p className="text-xs text-sub">{check.message}</p>
+          {onDesactivarProxy && (
+            <BotonProxy
+              activar={false}
+              onClick={onDesactivarProxy}
+              loading={cambiandoProxy}
+              nota="Si no puedes cambiar ahora el modo SSL/TLS, desactiva el proxy de este dominio: la web volverá a abrir sin pasar por Cloudflare."
+            />
           )}
-          <details className="group">
-            <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-xs text-subtle transition-colors hover:text-sub">
-              <ChevronRight size={12} className="shrink-0 transition-transform group-open:rotate-90" aria-hidden />
-              Más información
-            </summary>
-            <p className="details-body mt-1.5 text-xs text-subtle">
-              {serverIp && (
-                <>
-                  El registro A debe apuntar a <span className="font-mono text-sub">{serverIp}</span>.{' '}
-                </>
-              )}
-              Para mantener el proxy, el modo SSL/TLS de Cloudflare debe ser «Full» o «Full (strict)» y «Always Use HTTPS» no
-              debe bloquear la ruta <span className="font-mono">/.well-known/acme-challenge</span>, que Let&apos;s Encrypt usa
-              para emitir el certificado.
-            </p>
-          </details>
+          <MasInformacion>
+            En Cloudflare, abre SSL/TLS → Información general y selecciona «Completo (estricto)» (o «Completo»). Con
+            «Flexible», Cloudflare se conecta a este servidor sin cifrado y el servidor redirige a HTTPS, lo que provoca el
+            bucle.
+          </MasInformacion>
         </>
       );
     default:
@@ -213,8 +293,9 @@ function DomainRow({
   onRemove,
   onRetryDns,
   retryingDns,
-  onDisableProxy,
-  disablingProxy,
+  onCambiarProxy,
+  cambiandoProxy,
+  motivoSinProxy = null,
 }: {
   domain: string;
   /** Es el dominio principal: el de PUBLIC_URL. */
@@ -232,12 +313,17 @@ function DomainRow({
   /** Repite el DNS automático de este dominio (solo administrador, tras un resultado que no es correcto). */
   onRetryDns?: () => void;
   retryingDns?: boolean;
-  /** «Desactivar proxy en Cloudflare» (solo administrador, dominio guardado y zona en su Cloudflare). */
-  onDisableProxy?: () => void;
-  disablingProxy?: boolean;
+  /** Activa (`true`) o desactiva el proxy de Cloudflare (solo administrador, dominio guardado y zona en su Cloudflare). */
+  onCambiarProxy?: (proxied: boolean) => void;
+  cambiandoProxy?: boolean;
+  /**
+   * Por qué no se ofrece activar el proxy (null: se ofrece). Vacío para el
+   * subdominio de la plataforma, que no necesita explicación.
+   */
+  motivoSinProxy?: string | null;
 }) {
-  // null: lo decide el estado (abierto si hay que tocar el DNS); un clic en el
-  // estado lo fija en uno u otro sentido.
+  // null: lo decide el estado (abierto si hay algo que corregir, `PENDIENTES`);
+  // un clic en el estado lo fija en uno u otro sentido.
   const [abierto, setAbierto] = useState<boolean | null>(null);
   // Desde cuándo se comprueba este dominio: la repetición automática se
   // espacia a los 2 minutos y se detiene a los 30.
@@ -257,6 +343,13 @@ function DomainRow({
   const meta = STATUS_META[status];
   const visible = abierto ?? PENDIENTES.has(status);
   const detalleId = `dns-${domain}`;
+  // Comprobado con la API de Cloudflare (solo para el administrador).
+  const conProxy = status === 'ok' && !!check.data?.check.viaCloudflare;
+  // Activarlo exige HTTPS: sin él, el servidor lo rechaza porque Cloudflare
+  // solo podría entregar la web en el modo «Flexible».
+  const activarProxy = onCambiarProxy && tls && motivoSinProxy === null ? () => onCambiarProxy(true) : undefined;
+  const notaSinProxy = onCambiarProxy && tls && motivoSinProxy ? motivoSinProxy : undefined;
+  const desactivarProxy = onCambiarProxy ? () => onCambiarProxy(false) : undefined;
 
   return (
     <li className="px-3 py-2.5">
@@ -291,6 +384,15 @@ function DomainRow({
             {/* Solo la primera vez: con la repetición automática, la etiqueta
                 parpadearía cada 15 s; el botón de comprobar ya gira. */}
             {check.isPending ? 'Comprobando…' : meta.label}
+            {/* Un icono y no texto: «con proxy de Cloudflare» no cabe junto al
+                dominio y las acciones sin partir la fila (en móvil, la etiqueta
+                en tres líneas). El detalle lo dice entero. */}
+            {conProxy && (
+              <span className="inline-flex text-subtle" title="Con el proxy de Cloudflare">
+                <Cloud size={12} aria-hidden />
+                <span className="sr-only">, con el proxy de Cloudflare</span>
+              </span>
+            )}
           </button>
           <button
             type="button"
@@ -362,8 +464,10 @@ function DomainRow({
             check={check.data?.check}
             error={check.error}
             serverIp={serverIp}
-            onDisableProxy={onDisableProxy}
-            disablingProxy={disablingProxy}
+            onActivarProxy={activarProxy}
+            notaSinProxy={notaSinProxy}
+            onDesactivarProxy={desactivarProxy}
+            cambiandoProxy={cambiandoProxy}
             enCloudflare={dns?.action === 'created' || dns?.action === 'kept'}
           />
         </div>
@@ -409,8 +513,8 @@ export default function DomainsEditor({
   onRetryDns,
   retryingDns,
   guardados,
-  onDisableProxy,
-  disablingProxy,
+  onCambiarProxy,
+  cambiandoProxy,
 }: {
   domains: string[];
   /** Dominios cuya pareja con o sin www se ha descartado (`dominiosSinPareja`). */
@@ -425,10 +529,10 @@ export default function DomainsEditor({
   retryingDns?: string | null;
   /** Dominios ya guardados en el servicio: las acciones en Cloudflare solo valen para ellos. */
   guardados?: string[];
-  /** Quita el proxy de Cloudflare de un dominio guardado (solo administrador). */
-  onDisableProxy?: (domain: string) => void;
-  /** Dominio cuyo proxy se está desactivando. */
-  disablingProxy?: string | null;
+  /** Activa (`proxied: true`) o desactiva el proxy de Cloudflare de un dominio guardado (solo administrador). */
+  onCambiarProxy?: (domain: string, proxied: boolean) => void;
+  /** Dominio cuyo proxy se está cambiando. */
+  cambiandoProxy?: string | null;
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -493,13 +597,26 @@ export default function DomainsEditor({
   const ofrecerGenerado = !!generated && !ordenados.includes(generated);
 
   /*
-   * El proxy solo se puede quitar desde aquí si la zona está en el Cloudflare
-   * del administrador. Con más zonas de las que se guardan (o sin la lista),
-   * no se sabe: se ofrece y el servidor responde si no la encuentra.
+   * El proxy solo se puede activar o quitar desde aquí si la zona está en el
+   * Cloudflare del administrador. Con más zonas de las que se guardan (o sin
+   * la lista), no se sabe: se ofrece y el servidor responde si no la encuentra.
    */
   const zonas = isAdmin && cloudflare.data?.configured ? cloudflare.data.zones : undefined;
   const enCloudflare = (d: string) =>
     zonas !== undefined && (!zonas || zonas.total > zonas.names.length || zonas.names.some((z) => d === z || d.endsWith(`.${z}`)));
+  /*
+   * El certificado gratuito de Cloudflare solo cubre la zona y un nivel de
+   * subdominio: con el proxy, un nombre más profundo daría un error de
+   * certificado. El subdominio generado tampoco: lo resuelve un comodín, sin
+   * registro propio que cambiar. Sin la lista de zonas no se sabe: se ofrece
+   * y el servidor responde.
+   */
+  const motivoSinProxy = (d: string): string | null => {
+    if (d === generated || (rootDomain && d.endsWith(`.${rootDomain}`))) return '';
+    const zona = zonas?.names.filter((z) => d === z || d.endsWith(`.${z}`)).sort((a, b) => b.length - a.length)[0];
+    if (!zona || d === zona || !d.slice(0, -(zona.length + 1)).includes('.')) return null;
+    return `El certificado gratuito de Cloudflare solo cubre ${zona} y un nivel de subdominio: este nombre va sin proxy.`;
+  };
 
   /** Toda edición pasa por aquí: la lista en el orden del principal y las renuncias limpias. */
   const cambiar = (siguientes: string[], renuncias: string[]) => {
@@ -521,7 +638,10 @@ export default function DomainsEditor({
   const comprobaciones = useQueries({
     queries: ordenados.map((d) => ({ queryKey: ['domainCheck', d], queryFn: () => comprobarDominio(d), enabled: false })),
   });
-  const hayPendientes = comprobaciones.some((c) => c.data && PENDIENTES.has(c.data.check.status));
+  // El bucle del modo «Flexible» no espera al DNS: se corrige en Cloudflare y vale al momento.
+  const hayPendientes = comprobaciones.some(
+    (c) => c.data && PENDIENTES.has(c.data.check.status) && c.data.check.status !== 'cloudflare_flexible',
+  );
 
   const add = (raw: string) => {
     const domain = raw.trim().toLowerCase();
@@ -586,10 +706,13 @@ export default function DomainsEditor({
                 onRemove={() => quitar(d)}
                 onRetryDns={onRetryDns ? () => onRetryDns(d) : undefined}
                 retryingDns={retryingDns === d}
-                onDisableProxy={
-                  onDisableProxy && guardados?.includes(d) && enCloudflare(d) ? () => onDisableProxy(d) : undefined
+                onCambiarProxy={
+                  onCambiarProxy && guardados?.includes(d) && enCloudflare(d)
+                    ? (proxied) => onCambiarProxy(d, proxied)
+                    : undefined
                 }
-                disablingProxy={disablingProxy === d}
+                cambiandoProxy={cambiandoProxy === d}
+                motivoSinProxy={motivoSinProxy(d)}
               />
             ))}
             {ofrecerGenerado && (
@@ -715,7 +838,15 @@ export default function DomainsEditor({
       {isAdmin && cloudflare.data?.configured && (
         <p className="flex items-start gap-1.5 text-xs text-subtle">
           <Cloud size={12} className="mt-0.5 shrink-0" aria-hidden />
-          <span>Al guardar, los dominios nuevos de tu Cloudflare reciben su registro A sin proxy. Un registro existente no se modifica.</span>
+          {/* Misma regla que el servidor: el registro lleva el proxy solo con
+              HTTPS. El de un dominio guardado se cambia en su detalle, y con
+              el DNS correcto ese detalle no se abre por sí mismo: la nota dice
+              dónde está. */}
+          <span>
+            {tls
+              ? 'Al guardar, los dominios nuevos de tu Cloudflare reciben su registro A con el proxy activado. Un registro existente no se modifica: su proxy se activa o desactiva en el detalle de cada dominio.'
+              : 'Al guardar, los dominios nuevos de tu Cloudflare reciben su registro A sin proxy: el proxy de Cloudflare requiere HTTPS. Un registro existente no se modifica.'}
+          </span>
         </p>
       )}
 

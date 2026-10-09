@@ -66,13 +66,37 @@ export interface DomainCheck {
   domain: string;
   /**
    * `cloudflare_proxy`: resuelve a direcciones del proxy de Cloudflare (nube
-   * naranja). No es un error: el proxy puede estar entregando el tráfico a
-   * este servidor, pero desde fuera no se puede comprobar.
+   * naranja) y no se ha podido comprobar a dónde entrega el tráfico (la zona
+   * no está en el token de Cloudflare o quien pregunta no es administrador).
+   * No es un error: con el proxy, desde fuera solo se ven las IP de
+   * Cloudflare. `cloudflare_flexible`: pasa por el proxy y apunta a este
+   * servidor, pero Cloudflare entra en un bucle de redirecciones porque el
+   * modo SSL/TLS de la zona es «Flexible».
    */
-  status: 'ok' | 'wrong_ip' | 'cloudflare_proxy' | 'no_record' | 'unknown';
+  status: 'ok' | 'wrong_ip' | 'cloudflare_proxy' | 'cloudflare_flexible' | 'no_record' | 'unknown';
   resolvedIps: string[];
   expectedIp: string | null;
   message: string;
+  /** Comprobado con la API de Cloudflare: apunta a este servidor con el proxy activo. */
+  viaCloudflare?: boolean;
+}
+
+/**
+ * Lo que dice la API de Cloudflare de un nombre (`verificarEnCloudflare`): sus
+ * registros llevan a este servidor (con el proxy o sin él), llevan a otro
+ * sitio (`detalle`, legible) o no se puede saber (null).
+ */
+export type VerificacionCloudflare = { estado: 'aqui'; proxied: boolean } | { estado: 'otro'; detalle: string } | null;
+
+export interface OpcionesComprobacion {
+  /**
+   * Comprueba con la API de Cloudflare a dónde lleva un nombre y si tiene el
+   * proxy. Lo pasa la ruta solo para el administrador: usa el token del
+   * operador.
+   */
+  verificar?: (domain: string) => Promise<VerificacionCloudflare>;
+  /** Detecta el bucle del modo «Flexible» (por defecto, `bucleFlexible`; las pruebas lo sustituyen). */
+  sondear?: (domain: string) => Promise<boolean>;
 }
 
 /**
@@ -127,8 +151,18 @@ export function esIpDeCloudflare(ip: string): boolean {
 /*
  * Una frase por estado: el panel ya muestra la etiqueta y el registro que hay
  * que crear, y los detalles del modo SSL/TLS los explica aparte (y la FAQ).
+ * El proxy de Cloudflare es la forma recomendada de servir una web: con él,
+ * lo único que no se puede hacer desde fuera es ver a dónde lleva.
  */
-const MENSAJE_PROXY_CLOUDFLARE = 'El registro tiene el proxy de Cloudflare activado: cámbialo a «Solo DNS» (nube gris) en Cloudflare.';
+const MENSAJE_PROXY_CLOUDFLARE =
+  'El registro pasa por el proxy de Cloudflare: desde aquí no se puede comprobar a dónde lleva el tráfico. Si la web abre, está bien configurado.';
+const MENSAJE_PROXY_AQUI = 'El dominio apunta a este servidor a través del proxy de Cloudflare.';
+const MENSAJE_PROXY_RECIEN_ACTIVADO =
+  'El dominio apunta a este servidor con el proxy de Cloudflare activado; desde fuera puede tardar unos minutos en verse.';
+const MENSAJE_PROXY_RECIEN_QUITADO =
+  'El dominio apunta a este servidor sin el proxy de Cloudflare; desde fuera puede tardar unos minutos en verse.';
+const MENSAJE_FLEXIBLE =
+  'Cloudflare entra en un bucle de redirecciones porque el modo SSL/TLS de la zona es «Flexible». Cámbialo a «Completo (estricto)» en Cloudflare → SSL/TLS.';
 
 /**
  * Diagnóstico de un dominio a partir de lo que resuelve, sin red: separado de
@@ -171,8 +205,85 @@ export function clasificarDns(domain: string, resolvedIps: string[], expectedIp:
   };
 }
 
-/** Comprueba si un dominio ya apunta a este servidor, con diagnóstico legible. */
-export async function checkDomain(domain: string): Promise<DomainCheck> {
+/**
+ * ¿Entra Cloudflare en un bucle con este dominio? Con el modo SSL/TLS
+ * «Flexible», Cloudflare pide la web a este servidor por HTTP y Traefik la
+ * redirige a HTTPS, así que el navegador vuelve a pedir la misma dirección sin
+ * fin. Se pide la portada por HTTPS (a través de Cloudflare) sin seguir
+ * redirecciones: el bucle es una redirección a esa misma dirección. Cualquier
+ * otra respuesta (también un error, un desafío contra bots o un certificado
+ * que aún se está emitiendo) no lo es.
+ */
+export async function bucleFlexible(domain: string): Promise<boolean> {
+  const url = `https://${domain}/`;
+  try {
+    const res = await fetch(url, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(6000),
+      headers: { 'user-agent': 'Skyway (comprobación del dominio)' },
+    });
+    await res.body?.cancel().catch(() => undefined);
+    if (![301, 302, 303, 307, 308].includes(res.status)) return false;
+    const location = res.headers.get('location');
+    if (!location) return false;
+    const destino = new URL(location, url);
+    return (
+      destino.protocol === 'https:' &&
+      destino.hostname === domain &&
+      (destino.port === '' || destino.port === '443') &&
+      destino.pathname === '/' &&
+      destino.search === ''
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Completa la comprobación con lo que dice la API de Cloudflare (solo si
+ * quien pregunta puede usarla: `verificar`). Es la que manda sobre el proxy:
+ * el DNS público tarda unos minutos en reflejar que se ha activado o quitado,
+ * y de ella depende qué botón se ofrece.
+ * - Resuelve a este servidor: si el registro ya tiene el proxy (recién
+ *   activado), se indica (`viaCloudflare`).
+ * - Resuelve al proxy de Cloudflare: si lleva a este servidor, está bien,
+ *   salvo que Cloudflare entre en el bucle del modo «Flexible» (solo con
+ *   HTTPS: sin él, este servidor no redirige); si el registro ya no tiene el
+ *   proxy (recién quitado), también está bien; si lleva a otro sitio, es una
+ *   IP equivocada.
+ * Si no se puede saber, se queda como estaba.
+ */
+export async function completarConCloudflare(base: DomainCheck, opts: OpcionesComprobacion = {}): Promise<DomainCheck> {
+  if (!opts.verificar || !base.expectedIp) return base;
+  if (base.status !== 'cloudflare_proxy' && base.status !== 'ok') return base;
+  const verificacion = await opts.verificar(base.domain).catch(() => null);
+  if (base.status === 'ok') {
+    return verificacion?.estado === 'aqui' && verificacion.proxied
+      ? { ...base, viaCloudflare: true, message: MENSAJE_PROXY_RECIEN_ACTIVADO }
+      : base;
+  }
+  if (!verificacion) return base;
+  if (verificacion.estado === 'otro') {
+    return {
+      ...base,
+      status: 'wrong_ip',
+      message: `En Cloudflare, ${base.domain} tiene ${verificacion.detalle} en lugar de un registro A hacia ${base.expectedIp}.`,
+    };
+  }
+  if (!verificacion.proxied) return { ...base, status: 'ok', message: MENSAJE_PROXY_RECIEN_QUITADO };
+  const sondear = opts.sondear ?? bucleFlexible;
+  if (getSetting('letsencryptEmail') && (await sondear(base.domain).catch(() => false))) {
+    return { ...base, status: 'cloudflare_flexible', viaCloudflare: true, message: MENSAJE_FLEXIBLE };
+  }
+  return { ...base, status: 'ok', viaCloudflare: true, message: MENSAJE_PROXY_AQUI };
+}
+
+/**
+ * Comprueba si un dominio ya apunta a este servidor, con diagnóstico legible.
+ * Con `opts.verificar` (administrador), un nombre con el proxy de Cloudflare
+ * se comprueba además con su API (`completarConCloudflare`).
+ */
+export async function checkDomain(domain: string, opts: OpcionesComprobacion = {}): Promise<DomainCheck> {
   const { ip: expectedIp } = await getServerIp();
 
   let resolvedIps: string[] = [];
@@ -197,5 +308,5 @@ export async function checkDomain(domain: string): Promise<DomainCheck> {
     };
   }
 
-  return clasificarDns(domain, resolvedIps, expectedIp);
+  return completarConCloudflare(clasificarDns(domain, resolvedIps, expectedIp), opts);
 }
