@@ -60,6 +60,8 @@ export interface FakeAppPassword {
   name: string;
   revokedAt: number | null;
   createdAt: number;
+  /** Invalidada al cambiar Mailway de motor (Stalwart 0.15 → 0.16): ya no funciona. */
+  invalidatedAt?: number | null;
 }
 export interface FakeWhitelabel {
   id: string;
@@ -127,6 +129,25 @@ export const mw = {
   webmailAutoGlobal: true,
   /** El Mailway conectado declara `features.invites` (enlaces de bienvenida). false = uno anterior. */
   invitesSoportado: true,
+  /**
+   * El Mailway conectado marca las contraseñas de aplicación que invalida un
+   * cambio de motor: declara `features.appPasswordInvalidation` y `engine`, y
+   * las contraseñas llevan `invalidatedAt`. false = uno anterior, sin nada de eso.
+   */
+  invalidacionSoportada: true,
+  /** API del motor que anuncia `engine.api`. */
+  motor: 'rest015' as 'rest015' | 'jmap016' | 'demo',
+  /** Si se indica, crear una contraseña de aplicación responde este error. */
+  fallarCreacionContrasena: null as { status: number; error: string; code: string } | null,
+  /** Si es true, revocar una contraseña de aplicación responde 500. */
+  fallarRevocacionContrasena: false,
+  /** Retraso de la respuesta al crear una contraseña de aplicación (para cruzar operaciones). */
+  retrasoCreacionContrasenaMs: 0,
+  /**
+   * Retraso del resumen de un cliente. Se calcula ANTES de esperar, como una
+   * respuesta que salió de Mailway antes de un cambio posterior.
+   */
+  retrasoResumenMs: 0,
   /** Enlaces de bienvenida de los clientes. */
   invites: [] as FakeInvite[],
   /** Usuarios del panel de Mailway (para `user_exists` y `existingUser`). */
@@ -168,6 +189,25 @@ export const mw = {
 };
 
 const nextId = (p: string) => `${p}_${++mw.seq}`;
+
+/**
+ * Lo que hace Mailway al pasar de Stalwart 0.15 a 0.16: las contraseñas de
+ * aplicación vigentes dejan de funcionar y quedan marcadas como invalidadas
+ * (las de `filtro`, si se indica). Devuelve las que ha invalidado.
+ */
+export function cambiarDeMotor(filtro: (a: FakeAppPassword) => boolean = () => true): FakeAppPassword[] {
+  mw.motor = 'jmap016';
+  const ahora = Date.now();
+  const invalidadas = mw.appPasswords.filter((a) => !a.revokedAt && !a.invalidatedAt && filtro(a));
+  for (const a of invalidadas) a.invalidatedAt = ahora;
+  return invalidadas;
+}
+
+/** Contraseña de aplicación como la devuelve Mailway: `invalidatedAt` solo si lo admite. */
+function appPasswordRecord(a: FakeAppPassword) {
+  const { invalidatedAt, ...rest } = a;
+  return mw.invalidacionSoportada ? { ...rest, invalidatedAt: invalidatedAt ?? null } : rest;
+}
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -320,7 +360,9 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
         cloudflareSoloCrear: true,
         ...(mw.webmailAutoSoportado ? { webmailAutomatico: mw.webmailAutoGlobal } : {}),
         ...(mw.invitesSoportado ? { invites: true } : {}),
+        ...(mw.invalidacionSoportada ? { appPasswordInvalidation: true } : {}),
       },
+      ...(mw.invalidacionSoportada ? { engine: { api: mw.motor } } : {}),
       traefik: admin ? { configPath: '/api/traefik/config', token: mw.traefikToken } : null,
       ...mw.infoOverride,
     });
@@ -389,7 +431,7 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
     const mailboxes = mw.mailboxes.filter((x) => ids.has(x.domainId));
     const boxIds = new Set(mailboxes.map((x) => x.id));
     const plan = mw.plans.find((p) => p.id === client.planId) ?? mw.plans[0];
-    return json(200, {
+    const respuesta = json(200, {
       // Como Mailway: el cliente del resumen no lleva el correo de contacto ni el plan.
       client: {
         id: client.id,
@@ -404,10 +446,12 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
       domains: domains.map(domainRecord),
       mailboxes,
       apiKeys: mw.apiKeys.filter((k) => k.clientId === client.id),
-      appPasswords: mw.appPasswords.filter((a) => boxIds.has(a.mailboxId)),
+      appPasswords: mw.appPasswords.filter((a) => boxIds.has(a.mailboxId)).map(appPasswordRecord),
       connection: { imap: null, submission: null, webmailUrl: mw.infoOverride.webmailUrl ?? 'https://webmail.example.com' },
       ...(mw.webmailAutoSoportado ? { webmailDomains: webmailDelCliente(client.id) } : {}),
     });
+    if (mw.retrasoResumenMs > 0) await new Promise((r) => setTimeout(r, mw.retrasoResumenMs));
+    return respuesta;
   }
   if ((m = path.match(/^\/api\/clients\/([^/]+)$/)) && (method === 'GET' || method === 'PATCH')) {
     if (!admin) return forbidden();
@@ -716,8 +760,10 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
     return json(200, { mailbox: box, password: 'Contraseña-Del-Buzon-1' });
   }
   if ((m = path.match(/^\/api\/mailboxes\/([^/]+)\/app-passwords\/([^/]+)$/)) && method === 'DELETE') {
+    if (mw.fallarRevocacionContrasena) return json(500, { error: 'Error interno del servidor.', code: 'internal' });
     const app = mw.appPasswords.find((a) => a.id === m![2] && a.mailboxId === m![1]);
     if (!app) return json(404, { error: 'Contraseña de aplicación no encontrada.', code: 'not_found' });
+    // Idempotente, también con una invalidada: como Mailway.
     app.revokedAt ??= Date.now();
     return json(200, { ok: true });
   }
@@ -739,15 +785,32 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
     if (m[2] === '/setup-links') {
       return json(200, { link: { id: 'lnk_1', url: `${MW_BASE}/conectar/tok-secreto`, expiresAt: 99, hasPassword: !!b.password } });
     }
+    if (m[2] === '/app-passwords' && method === 'GET') {
+      return json(200, { appPasswords: mw.appPasswords.filter((a) => a.mailboxId === box.id).map(appPasswordRecord) });
+    }
     if (m[2] === '/app-passwords' && method === 'POST') {
+      if (mw.retrasoCreacionContrasenaMs > 0) await new Promise((r) => setTimeout(r, mw.retrasoCreacionContrasenaMs));
+      if (mw.fallarCreacionContrasena) {
+        const f = mw.fallarCreacionContrasena;
+        return json(f.status, { error: f.error, code: f.code });
+      }
       const name = typeof b.name === 'string' ? b.name.trim() : '';
       if (!name || name.length > 60) return badRequest('El nombre no puede superar los 60 caracteres.');
-      if (mw.appPasswords.filter((a) => a.mailboxId === box.id && !a.revokedAt).length >= 25) {
+      // Las invalidadas ya no cuentan para el límite: como Mailway.
+      if (mw.appPasswords.filter((a) => a.mailboxId === box.id && !a.revokedAt && !a.invalidatedAt).length >= 25) {
         return json(409, { error: 'Este buzón ya tiene 25 contraseñas de aplicación activas.', code: 'app_password_limit' });
       }
-      const app: FakeAppPassword = { id: nextId('app'), mailboxId: box.id, email: box.email, name, revokedAt: null, createdAt: Date.now() };
+      const app: FakeAppPassword = {
+        id: nextId('app'),
+        mailboxId: box.id,
+        email: box.email,
+        name,
+        revokedAt: null,
+        createdAt: Date.now(),
+        invalidatedAt: null,
+      };
       mw.appPasswords.push(app);
-      return json(200, { appPassword: app, password: `ContraseñaDeAplicacion-Secreta-${app.id}` });
+      return json(200, { appPassword: appPasswordRecord(app), password: `ContraseñaDeAplicacion-Secreta-${app.id}` });
     }
   }
   if (path === '/api/apikeys' && method === 'POST') {

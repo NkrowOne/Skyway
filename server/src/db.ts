@@ -15,6 +15,8 @@ import {
   InvoiceRow,
   InvoiceSeriesRow,
   MailwayLinkRow,
+  MailwayRenovacionRow,
+  MailwayRenovacionStatus,
   PendingChargeRow,
   PriceTierRow,
   ProductRow,
@@ -653,6 +655,22 @@ export function initDb(): void {
       value_hash TEXT NOT NULL,
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (service_id, key)
+    );
+    -- Renovación automática de la contraseña de aplicación de un servicio
+    -- conectado por SMTP cuando Mailway la invalida (cambio de motor, ver
+    -- mailwayrenovacion.ts). Recuerda la que creó Skyway para sustituirla: con
+    -- ella, un intento que no llegó a revocar la invalidada no crea otra. Y el
+    -- motivo por el que espera o no se ha podido hacer, para la interfaz. Sin
+    -- secretos: solo identificadores de Mailway, el buzón y el despliegue.
+    CREATE TABLE IF NOT EXISTS mailway_renovaciones (
+      service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
+      status TEXT NOT NULL,
+      reason TEXT,
+      renewed_at INTEGER,
+      app_password_id TEXT,
+      mailbox TEXT,
+      deployment_id TEXT,
+      updated_at INTEGER NOT NULL
     );
   `);
 
@@ -1609,6 +1627,82 @@ export function writeManagedEnv(serviceId: string, entries: Record<string, { val
       upsertManaged.run(serviceId, key, origin, hashEnvValue(value), at);
     }
   })();
+}
+
+// ---------- correo: renovación de contraseñas de aplicación invalidadas ----------
+
+export function getMailwayRenovacion(serviceId: string): MailwayRenovacionRow | undefined {
+  return stmt('SELECT * FROM mailway_renovaciones WHERE service_id = ?').get(serviceId) as MailwayRenovacionRow | undefined;
+}
+
+/** Renovaciones de los servicios de un proyecto. */
+export function listMailwayRenovaciones(projectId: string): MailwayRenovacionRow[] {
+  return stmt(
+    `SELECT r.* FROM mailway_renovaciones r JOIN services s ON s.id = r.service_id
+      WHERE s.project_id = ? ORDER BY r.updated_at DESC`,
+  ).all(projectId) as MailwayRenovacionRow[];
+}
+
+/**
+ * Anota que la renovación espera o no se ha podido hacer. Conserva la última
+ * que se completó: su contraseña sigue siendo la de las variables.
+ */
+export function setMailwayRenovacionPendiente(
+  serviceId: string,
+  status: Exclude<MailwayRenovacionStatus, 'renewed'>,
+  reason: string,
+): void {
+  stmt(
+    `INSERT INTO mailway_renovaciones (service_id, status, reason, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(service_id) DO UPDATE SET status = excluded.status, reason = excluded.reason, updated_at = excluded.updated_at`,
+  ).run(serviceId, status, reason, now());
+}
+
+/**
+ * Escribe las variables con la contraseña nueva y anota la renovación en la
+ * misma transacción: si las variables la tienen, Skyway sabe cuál es, y un
+ * intento posterior no crea otra aunque la invalidada siga sin revocar.
+ */
+export function writeMailwayRenovacion(
+  serviceId: string,
+  entries: Record<string, { value: string; origin: string }>,
+  renovacion: { appPasswordId: string; mailbox: string },
+): void {
+  const at = now();
+  db.transaction(() => {
+    writeManagedEnv(serviceId, entries);
+    stmt(
+      `INSERT INTO mailway_renovaciones (service_id, status, reason, renewed_at, app_password_id, mailbox, deployment_id, updated_at)
+       VALUES (?, 'renewed', NULL, ?, ?, ?, NULL, ?)
+       ON CONFLICT(service_id) DO UPDATE SET status = 'renewed', reason = NULL, renewed_at = excluded.renewed_at,
+         app_password_id = excluded.app_password_id, mailbox = excluded.mailbox, deployment_id = NULL,
+         updated_at = excluded.updated_at`,
+    ).run(serviceId, at, renovacion.appPasswordId, renovacion.mailbox, at);
+  })();
+}
+
+/** Despliegue lanzado para aplicar la contraseña renovada. */
+export function setMailwayRenovacionDeployment(serviceId: string, deploymentId: string): void {
+  stmt('UPDATE mailway_renovaciones SET deployment_id = ? WHERE service_id = ?').run(deploymentId, serviceId);
+}
+
+/**
+ * Lo que se anotó como pendiente ya no hace falta (se ha vuelto a conectar el
+ * correo, o el servicio ya no usa esa contraseña): vuelve a la última
+ * renovación completada o, si no hubo ninguna, se olvida.
+ */
+export function clearMailwayRenovacionPendiente(serviceId: string): void {
+  db.transaction(() => {
+    stmt(`DELETE FROM mailway_renovaciones WHERE service_id = ? AND renewed_at IS NULL`).run(serviceId);
+    stmt(
+      `UPDATE mailway_renovaciones SET status = 'renewed', reason = NULL, updated_at = ? WHERE service_id = ? AND status <> 'renewed'`,
+    ).run(now(), serviceId);
+  })();
+}
+
+/** Al volver a conectar el correo del servicio por SMTP, la renovación anterior deja de contar. */
+export function deleteMailwayRenovacion(serviceId: string): void {
+  stmt('DELETE FROM mailway_renovaciones WHERE service_id = ?').run(serviceId);
 }
 
 // ---------- deployments ----------

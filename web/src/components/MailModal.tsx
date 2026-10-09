@@ -42,6 +42,7 @@ import {
   ProjectMailView,
   Service,
 } from '../types';
+import { avisoRenovacion } from '../renovacion';
 import { cx, fmtBytes, fmtDateTime, safeHref, Tone } from '../utils';
 import { avisoDnsCorreo } from './DnsAutoResult';
 import BienvenidaDialog from './MailBienvenida';
@@ -105,6 +106,13 @@ interface AltaDominioCorreo {
   cloudflare: MailAutoDnsResult | null;
   cloudflareReason: string | null;
 }
+
+/** Borde y fondo del aviso de la renovación automática de una contraseña de aplicación, según cómo haya ido. */
+const RENEWAL_TONE: Record<'ok' | 'warn' | 'err', string> = {
+  ok: 'border-ok/30 bg-ok/[.06]',
+  warn: 'border-warn/30 bg-warn/[.07]',
+  err: 'border-err/30 bg-err/[.07]',
+};
 
 /** Estados del webmail con el dominio del cliente, en el orden en que los recorre. */
 const WEBMAIL_STATUS: Record<MailWebmailStatus, { tone: Tone; label: string }> = {
@@ -2129,6 +2137,10 @@ function ConnectTab({
   // alargarían la lista.
   const appPasswords = (view.summary?.appPasswords ?? []).filter((a) => !a.revokedAt);
   const apiKeys = (view.summary?.apiKeys ?? []).filter((k) => !k.revokedAt);
+  // Renovación automática de la contraseña de aplicación del servicio elegido,
+  // si Mailway la invalidó al cambiar de motor de correo.
+  const renewal = service ? view.renewals?.[service.id] : undefined;
+  const renewalNote = renewal ? avisoRenovacion(renewal) : null;
 
   // Con qué nombres recibe el servicio el correo: los que espera su web (su
   // .env.example o su skyway.json) y, si no los nombra, los de siempre.
@@ -2227,6 +2239,25 @@ function ConnectTab({
           </select>
         </Field>
       </div>
+
+      {renewalNote && service && (
+        <div
+          role={renewalNote.tone === 'ok' ? 'status' : 'alert'}
+          className={cx('rounded-lg border px-3.5 py-2.5 text-xs leading-5 text-sub', RENEWAL_TONE[renewalNote.tone])}
+        >
+          <p className="font-medium text-txt">{renewalNote.title}</p>
+          {renewalNote.detail && <p className="mt-0.5">{renewalNote.detail}</p>}
+          {renewalNote.deploymentFailed && (
+            <Link
+              to={`/projects/${projectId}?s=${service.id}&tab=deployments`}
+              onClick={onClose}
+              className="mt-1 inline-block font-medium text-acc-soft hover:underline"
+            >
+              Ver los despliegues del servicio
+            </Link>
+          )}
+        </div>
+      )}
 
       <Segmented
         full
@@ -2346,6 +2377,7 @@ function ConnectTab({
                 name={a.name}
                 detail={a.email}
                 createdAt={a.createdAt}
+                invalidated={!!a.invalidatedAt}
                 canManage={view.canManage}
                 onRevoke={() => onRevoke({ kind: 'app', item: a })}
               />
@@ -2373,6 +2405,7 @@ function CredentialRow({
   name,
   detail,
   createdAt,
+  invalidated = false,
   canManage,
   onRevoke,
 }: {
@@ -2380,6 +2413,8 @@ function CredentialRow({
   name: string;
   detail: string;
   createdAt: number | null;
+  /** Mailway la invalidó al cambiar de motor de correo: ya no funciona, pero se puede revocar. */
+  invalidated?: boolean;
   canManage: boolean;
   onRevoke: () => void;
 }) {
@@ -2389,6 +2424,11 @@ function CredentialRow({
         <p className="flex flex-wrap items-center gap-2">
           <Chip size="sm">{kind}</Chip>
           <span className="break-all font-mono text-xs text-txt">{name}</span>
+          {invalidated && (
+            <Chip size="sm" tone="warn" dot title="Ha dejado de funcionar tras la actualización del servidor de correo.">
+              Invalidada
+            </Chip>
+          )}
         </p>
         <p className="mt-0.5 break-all text-xs text-subtle">
           {detail}

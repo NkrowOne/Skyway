@@ -141,6 +141,11 @@ export interface MailwayInfo {
    * `webmailAutomatico`: interruptor GLOBAL del webmail automático de la
    * instancia (`webmail.<dominio>` de cada dominio, sin pedirlo). Ausente en un
    * Mailway que no lo tiene: entonces Skyway no ofrece el interruptor del cliente.
+   *
+   * `appPasswordInvalidation`: Mailway marca con `invalidatedAt` las
+   * contraseñas de aplicación que dejan de funcionar al cambiar de motor (las
+   * de Stalwart 0.15 no sobreviven al paso a la 0.16). Sin ella, Skyway no da
+   * ninguna por invalidada (ver `mailwayrenovacion.ts`).
    */
   features?: {
     cloudflare?: boolean;
@@ -150,7 +155,10 @@ export interface MailwayInfo {
     webmailAutomatico?: boolean;
     /** Admite los enlaces de bienvenida del cliente (`/api/clients/:id/invites`). */
     invites?: boolean;
+    appPasswordInvalidation?: boolean;
   };
+  /** API del motor de correo con la que trabaja Mailway; ausente en versiones anteriores. */
+  engine?: { api?: 'rest015' | 'jmap016' | 'demo' | null } | null;
   traefik?: { configPath: string; token: string } | null;
 }
 
@@ -249,6 +257,13 @@ export interface MailwayAppPasswordInfo {
   name: string;
   createdAt?: number;
   revokedAt?: number | null;
+  /**
+   * Cuándo dejó de funcionar por un cambio de motor de Mailway (ver
+   * `features.appPasswordInvalidation`). Se puede seguir revocando y ya no
+   * cuenta para el límite de contraseñas activas del buzón. Ausente en
+   * versiones anteriores: entonces no está invalidada.
+   */
+  invalidatedAt?: number | null;
 }
 
 export interface MailwayUsage {

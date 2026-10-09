@@ -1463,6 +1463,24 @@ export interface MailAppPassword {
   name: string;
   createdAt: number | null;
   revokedAt: number | null;
+  /** Dejó de funcionar al cambiar Mailway de motor de correo; null si no (o con un Mailway anterior). */
+  invalidatedAt?: number | null;
+}
+
+/**
+ * Renovación automática de la contraseña de aplicación de un servicio
+ * conectado por SMTP, cuando Mailway la invalida al cambiar de motor.
+ * `renewed`: hecha; `waiting`: se hará cuando se pueda (servicio detenido,
+ * despliegue en curso…); `failed`: no se ha podido hacer (`reason`).
+ */
+export interface MailRenewal {
+  status: 'renewed' | 'waiting' | 'failed';
+  reason: string | null;
+  /** Última renovación completada, aunque después haya fallado otra. */
+  renewedAt: number | null;
+  mailbox: string | null;
+  /** Despliegue que la aplica; null si el servicio no se había desplegado nunca. */
+  deployment: { id: string; status: DeploymentStatus } | null;
 }
 
 export interface MailSummary {
@@ -1582,6 +1600,8 @@ export interface ProjectMailView {
   account?: MailAccountView | null;
   /** Dominios registrables de los servicios del proyecto que el cliente de correo aún no tiene. */
   suggestedDomains: string[];
+  /** Renovaciones automáticas de las contraseñas de aplicación, por servicio (solo con el correo activado). */
+  renewals?: Record<string, MailRenewal>;
 }
 
 export type MailWebmailStatus = 'pending_dns' | 'issuing' | 'active' | 'error';

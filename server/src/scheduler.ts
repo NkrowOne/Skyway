@@ -5,6 +5,7 @@ import { billingAutomationTick } from './billingauto';
 import { backupSupported, createBackup, deleteBackup, listBackups } from './backups';
 import { listProjects, listServicesForProjects, resolveAlertsByDedupe } from './db';
 import { dockerAvailable } from './docker/client';
+import { renovarContrasenasInvalidadas } from './mailwayrenovacion';
 import { createSystemBackup, listSystemBackups, pruneSystemBackups } from './sysbackup';
 import { DatabaseConfig } from './types';
 import { withDeadline } from './util';
@@ -54,7 +55,7 @@ function systemBackupTick(now: Date): void {
   }
 }
 
-async function tick(): Promise<void> {
+async function tick(log: { warn: (msg: string) => void }): Promise<void> {
   const nowDate = new Date();
   try {
     systemBackupTick(nowDate);
@@ -75,6 +76,15 @@ async function tick(): Promise<void> {
     /* la sincronización de precios es best-effort: sin red, se reintenta en el próximo tick */
   }
   if (!(await dockerAvailable())) return;
+  try {
+    // Contraseñas de aplicación que Mailway ha invalidado al cambiar de motor:
+    // se renuevan y se vuelve a desplegar el servicio. Con Docker disponible
+    // (sin él no se podría desplegar) y antes de los volcados, que pueden
+    // tardar minutos y retrasarían la reparación.
+    await renovarContrasenasInvalidadas((msg) => log.warn(msg));
+  } catch (err: any) {
+    log.warn(`Renovación de contraseñas de aplicación: ${err?.message || err}`);
+  }
   const now = nowDate;
 
   const projects = listProjects();
@@ -131,7 +141,7 @@ export function startScheduler(log: { warn: (msg: string) => void }): void {
     // encima del que aún está en marcha.
     if (tickRunning) return;
     tickRunning = true;
-    tick()
+    tick(log)
       .catch((err) => log.warn(`scheduler: ${err?.message || err}`))
       .finally(() => {
         tickRunning = false;

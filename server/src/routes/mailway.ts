@@ -131,16 +131,26 @@ import {
   requireLink,
   revokeIgnoringGone,
   serviceOfProject,
+  withMailCredentialLock,
 } from '../mailconnect';
 import { LOCAL_PART_RE } from '../mailenv';
 import { guardarConfigMailway, mailwayConfigSchema, probarConexionMailway } from '../mailwayconfig';
+import { forgetProjectRenewals, renewalsOfProject, renovarCorreoDelProyecto } from '../mailwayrenovacion';
 import { markManualAction } from '../monitor';
 import { isWorkspaceActive, moduleAllowedForProject, workspaceOfProject } from '../quota';
 import { rateLimit } from '../ratelimit';
 import { MailwayLinkRow, ProjectRow, UserRow, WorkspaceRow } from '../types';
+import { withTimeout } from '../util';
 import { domainSchema } from './services';
 
 const MODULO_INACTIVO = 'El módulo «Correo» no está activo en este workspace.';
+
+/**
+ * Lo que espera la vista del correo a la renovación automática de las
+ * contraseñas invalidadas: con Mailway respondiendo, renovar es cuestión de
+ * dos o tres peticiones; si tarda más, sigue por detrás.
+ */
+const RENOVACION_VISTA_MS = 8000;
 
 /**
  * Código con el que se contesta un fallo de Mailway. Los 400/404/409/429 de
@@ -553,7 +563,16 @@ function publicApiKey(k: MailwayApiKeyInfo) {
 }
 
 function publicAppPassword(a: MailwayAppPasswordInfo) {
-  return { id: a.id, mailboxId: a.mailboxId, email: a.email, name: a.name, createdAt: a.createdAt ?? null, revokedAt: a.revokedAt ?? null };
+  return {
+    id: a.id,
+    mailboxId: a.mailboxId,
+    email: a.email,
+    name: a.name,
+    createdAt: a.createdAt ?? null,
+    revokedAt: a.revokedAt ?? null,
+    // Dejó de funcionar al cambiar Mailway de motor (null con un Mailway anterior).
+    invalidatedAt: typeof a.invalidatedAt === 'number' ? a.invalidatedAt : null,
+  };
 }
 
 function publicSummary(s: MailwaySummary, opts: { isAdmin: boolean }) {
@@ -1264,6 +1283,17 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           }
           throw err;
         }
+        // Quien gestiona el proyecto, al abrir su correo, repara al momento las
+        // contraseñas de aplicación que Mailway haya invalidado al cambiar de
+        // motor, sin esperar al ciclo de fondo. Con un plazo: si Mailway tarda,
+        // la renovación sigue por detrás y la vista no la espera.
+        if (base.canManage) {
+          const renovacion = renovarCorreoDelProyecto(project, link, summary, (msg) => req.log.warn(msg));
+          if (await withTimeout(renovacion, RENOVACION_VISTA_MS, () => false)) {
+            const leido = summary;
+            summary = await ownedSummary(project, link).catch(() => leido);
+          }
+        }
         const account = await mailAccount(req, project, user, summary);
         // El nombre que recuerdan los vínculos es el de Mailway, que es la fuente.
         setMailwayLinkClientName(summary.client.id, summary.client.name);
@@ -1276,6 +1306,8 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           panelUrl: publicPanelUrl(),
           features: featuresOf(),
           suggestedDomains: suggestedDomains(id, summary.domains.map((d) => d.domain)),
+          // Renovaciones automáticas de las contraseñas de aplicación de sus servicios.
+          renewals: renewalsOfProject(id),
         };
       }),
     );
@@ -1459,6 +1491,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         const workspace = workspaceOfMailProject(ctx.project);
         const deLaCuenta = !released && !!workspace && (await getClientByRef(workspaceExternalRef(workspace.id)))?.id === link.client_id;
         deleteMailwayLink(ctx.project.id);
+        forgetProjectRenewals(ctx.project.id);
         setSetting(ownClientKey(ctx.project.id), null);
         writePreviousClient(ctx.project.id, deLaCuenta ? null : { clientId: link.client_id, clientName: link.client_name });
         audit(req, 'mailway_unlinked', {
@@ -2202,7 +2235,9 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
      * `mailConnectNames`), sin pisar ninguna que alguien haya puesto a mano.
      * Devuelve solo los NOMBRES: los valores son secretos y ya están donde
      * tienen que estar. La credencial del mismo tipo que Skyway creó antes para
-     * este servicio se revoca.
+     * este servicio se revoca. Con el turno de las credenciales del servicio:
+     * una renovación automática en marcha sobre él termina antes, y el resumen
+     * se lee después, con lo que haya dejado.
      */
     secured.post(
       '/api/projects/:id/mail/connect',
@@ -2221,18 +2256,13 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         const service = serviceOfProject(ctx.project.id, body.serviceId);
         assertAccountActive(ctx.project);
         const link = requireLink(ctx.project);
-        const summary = await ownedSummary(ctx.project, link);
-        assertClientActive(summary);
-        const mailbox = ownMailbox(summary, body.mailboxId);
-        const info = await getInfo();
-        const { keys, kept, revoked } = await connectServiceMail({
-          project: ctx.project,
-          link,
-          summary,
-          service,
-          mailbox,
-          mode: body.mode,
-          info,
+        const { keys, kept, revoked, mailbox } = await withMailCredentialLock(service.id, async () => {
+          const summary = await ownedSummary(ctx.project, link);
+          assertClientActive(summary);
+          const box = ownMailbox(summary, body.mailboxId);
+          const info = await getInfo();
+          const r = await connectServiceMail({ project: ctx.project, link, summary, service, mailbox: box, mode: body.mode, info });
+          return { ...r, mailbox: box };
         });
 
         let deploymentId: string | null = null;
