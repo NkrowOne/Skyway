@@ -17,6 +17,7 @@ import {
   Plug,
   Plus,
   RefreshCw,
+  Send,
   Star,
   Trash2,
   Unlink,
@@ -24,6 +25,7 @@ import {
 import { api } from '../api';
 import {
   MailApiKey,
+  MailAccountView,
   MailAppPassword,
   MailAutoDnsResult,
   MailCloudflarePlan,
@@ -32,14 +34,18 @@ import {
   MailMailbox,
   MailOptions,
   MailWebmail,
+  MailWebmailAuto,
+  MailWebmailAutoResult,
   MailWebmailCloudflareResult,
   MailWebmailStatus,
   MailWebmailView,
   ProjectMailView,
   Service,
 } from '../types';
+import { avisoRenovacion } from '../renovacion';
 import { cx, fmtBytes, fmtDateTime, safeHref, Tone } from '../utils';
 import { avisoDnsCorreo } from './DnsAutoResult';
+import BienvenidaDialog from './MailBienvenida';
 import {
   Button,
   Chip,
@@ -54,15 +60,19 @@ import {
   Segmented,
   Skeleton,
   Tabs,
+  Toggle,
   useToast,
 } from './ui';
 
 /**
  * Correo del proyecto (integración con Mailway): activar el cliente de correo,
  * dominios con sus registros DNS (Cloudflare o fichero de zona) y su webmail en
- * `webmail.<dominio>`, buzones y la conexión de los servicios por SMTP o por la
- * API de envío. Los dominios de los servicios del proyecto se proponen como
- * dominios de correo.
+ * `webmail.<dominio>` («Webmail propio», con el interruptor del webmail
+ * automático), buzones, la conexión de los servicios por SMTP o por la API de
+ * envío y la configuración inicial (enlace de bienvenida de la persona de
+ * contacto). Los dominios de los servicios del proyecto se proponen como
+ * dominios de correo. Los proyectos de una cuenta comparten el cliente de
+ * correo de la cuenta: lo que se hace aquí vale para todos ellos.
  *
  * Las contraseñas y los enlaces de configuración se muestran UNA vez, en el
  * momento en que Mailway los genera: Skyway no los guarda ni puede volver a
@@ -97,13 +107,26 @@ interface AltaDominioCorreo {
   cloudflareReason: string | null;
 }
 
+/** Borde y fondo del aviso de la renovación automática de una contraseña de aplicación, según cómo haya ido. */
+const RENEWAL_TONE: Record<'ok' | 'warn' | 'err', string> = {
+  ok: 'border-ok/30 bg-ok/[.06]',
+  warn: 'border-warn/30 bg-warn/[.07]',
+  err: 'border-err/30 bg-err/[.07]',
+};
+
 /** Estados del webmail con el dominio del cliente, en el orden en que los recorre. */
 const WEBMAIL_STATUS: Record<MailWebmailStatus, { tone: Tone; label: string }> = {
   pending_dns: { tone: 'warn', label: 'Esperando DNS' },
   issuing: { tone: 'info', label: 'Emitiendo certificado' },
   active: { tone: 'ok', label: 'En servicio' },
-  error: { tone: 'err', label: 'Error' },
+  error: { tone: 'err', label: 'Con error' },
 };
+
+/** «a», «a y b», «a, b y c»: nombres en una frase. */
+function listaNombres(nombres: string[]): string {
+  if (nombres.length <= 1) return nombres.join('');
+  return `${nombres.slice(0, -1).join(', ')} y ${nombres[nombres.length - 1]}`;
+}
 
 /**
  * Buzones que casi todo dominio necesita. Sin postmaster ni abuse: son de la
@@ -153,7 +176,9 @@ export default function MailModal({
   const [unlinkOpen, setUnlinkOpen] = useState(false);
   const [revokeCred, setRevokeCred] = useState<CredentialToRevoke | null>(null);
   const [secret, setSecret] = useState<SecretShown | null>(null);
-  const childOpen = !!cfDomain || !!resetBox || !!deleteBox || unlinkOpen || !!revokeCred;
+  const [webmailOffOpen, setWebmailOffOpen] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  const childOpen = !!cfDomain || !!resetBox || !!deleteBox || unlinkOpen || !!revokeCred || webmailOffOpen || welcomeOpen;
 
   const view = useQuery({
     queryKey: mailKey(projectId),
@@ -163,9 +188,14 @@ export default function MailModal({
   });
   const invalidate = () => queryClient.invalidateQueries({ queryKey: mailKey(projectId) });
 
-  // Al cerrar se olvida la contraseña mostrada: no debe seguir en pantalla al volver.
+  // Al cerrar se olvida la contraseña mostrada (no debe seguir en pantalla al
+  // volver) y se cierran los diálogos que dependían del panel.
   useEffect(() => {
-    if (!open) setSecret(null);
+    if (!open) {
+      setSecret(null);
+      setWelcomeOpen(false);
+      setWebmailOffOpen(false);
+    }
   }, [open]);
 
   const resetPassword = useMutation({
@@ -218,10 +248,36 @@ export default function MailModal({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  const webmailAuto = useMutation({
+    mutationFn: (activo: boolean) =>
+      api.put<MailWebmailAutoResult>(`/projects/${projectId}/mail/webmail-automatico`, { activo }),
+    onSuccess: (res) => {
+      setWebmailOffOpen(false);
+      // El estado nuevo, sin esperar a releer el correo: el interruptor no parpadea.
+      queryClient.setQueryData<ProjectMailView>(mailKey(projectId), (old) =>
+        old?.summary ? { ...old, summary: { ...old.summary, webmail: { automatico: res.automatico, domains: res.domains } } } : old,
+      );
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ['mailWebmail', projectId] });
+      toast(
+        !res.automatico
+          ? 'Webmail automático desactivado.'
+          : res.global
+            ? 'Webmail automático activado. Las direcciones nuevas pueden tardar unos minutos en estar en servicio.'
+            : 'Webmail automático activado para este cliente. No tendrá efecto mientras esté desactivado en Mailway para todo el servidor.',
+        'ok',
+      );
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
   const data = view.data;
   const canManage = !!data?.canManage;
   // Mailway envía la URL del panel: solo se pinta como enlace si es http(s).
   const panelHref = safeHref(data?.panelUrl);
+  // Los proyectos de una cuenta comparten su cliente de correo: los textos lo dicen.
+  const account = data?.account ?? null;
+  const cuentaCompartida = account?.shared ? account.workspaceName : null;
 
   let body: React.ReactNode;
   if (view.isLoading) {
@@ -346,6 +402,15 @@ export default function MailModal({
             )}
           </span>
         </div>
+        {account?.shared && <AccountNote account={account} />}
+        {account?.ownClient && (
+          <p role="note" className="rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs leading-5 text-sub">
+            <span className="font-medium text-txt">Este proyecto tiene su propio cliente en Mailway.</span> Los proyectos de una cuenta
+            comparten su cliente de correo, pero este proyecto ya tenía el suyo y la cuenta «{account.workspaceName}» tenía otro
+            («{account.ownClient.workspaceClientName}»): para no fusionar nada, lo conserva y sigue funcionando igual. Para unificarlos,
+            un administrador debe trasladar sus dominios y buzones en Mailway.
+          </p>
+        )}
 
         <Tabs
           className="-mx-5 px-3"
@@ -368,6 +433,20 @@ export default function MailModal({
             cloudflare={data.features?.cloudflare !== false}
             onInvalidate={invalidate}
             onCloudflare={setCfDomain}
+            webmailPropio={
+              // Solo con un Mailway que tiene el webmail automático (lo declara en sus funciones).
+              typeof data.features?.webmailAutomatico === 'boolean' && summary.webmail ? (
+                <WebmailPropioCard
+                  webmail={summary.webmail}
+                  globalOn={data.features.webmailAutomatico}
+                  account={account}
+                  canManage={canManage}
+                  blocked={blocked}
+                  pending={webmailAuto.isPending}
+                  onChange={(activo) => (activo ? webmailAuto.mutate(true) : setWebmailOffOpen(true))}
+                />
+              ) : null
+            }
           />
         )}
         {tab === 'mailboxes' && (
@@ -409,9 +488,17 @@ export default function MailModal({
             <span />
           )}
           {canManage && (
-            <Button variant="ghost" size="sm" onClick={() => setUnlinkOpen(true)} className="text-sub">
-              <Unlink size={13} /> Desactivar correo
-            </Button>
+            <span className="flex flex-wrap items-center gap-1.5">
+              {/* Solo con un Mailway que admite los enlaces de bienvenida. */}
+              {data.features?.invites && (
+                <Button variant="secondary" size="sm" onClick={() => setWelcomeOpen(true)}>
+                  <Send size={12} /> Enviar configuración inicial
+                </Button>
+              )}
+              <Button variant="ghost" size="sm" onClick={() => setUnlinkOpen(true)} className="text-sub">
+                <Unlink size={13} /> Desactivar correo
+              </Button>
+            </span>
           )}
         </div>
       </div>
@@ -468,10 +555,37 @@ export default function MailModal({
         onConfirm={() => unlink.mutate()}
         loading={unlink.isPending}
         title="Desactivar el correo del proyecto"
-        message="El proyecto dejará de estar vinculado a su cliente de correo. Los dominios, buzones y mensajes se conservan en Mailway y el correo sigue funcionando; solo deja de gestionarse desde Skyway. Si vuelves a activar el correo más adelante, podrás recuperar este mismo cliente con sus dominios y buzones."
+        message={
+          cuentaCompartida
+            ? `El proyecto dejará de utilizar el cliente de correo de la cuenta «${cuentaCompartida}». Los dominios, buzones y mensajes se conservan en Mailway y los demás proyectos de la cuenta lo siguen utilizando. Si vuelves a activar el correo más adelante, el proyecto se vinculará de nuevo a este mismo cliente.`
+            : 'El proyecto dejará de estar vinculado a su cliente de correo. Los dominios, buzones y mensajes se conservan en Mailway y el correo sigue funcionando; solo deja de gestionarse desde Skyway. Si vuelves a activar el correo más adelante, podrás recuperar este mismo cliente con sus dominios y buzones.'
+        }
         confirmLabel="Desactivar correo"
         confirmVariant="secondary"
       />
+
+      <ConfirmModal
+        open={webmailOffOpen}
+        onClose={() => setWebmailOffOpen(false)}
+        onConfirm={() => webmailAuto.mutate(false)}
+        loading={webmailAuto.isPending}
+        title="Desactivar el webmail automático"
+        message={`Las direcciones de webmail que Mailway creó automáticamente para ${
+          cuentaCompartida ? `la cuenta «${cuentaCompartida}» (todos sus proyectos)` : 'este proyecto'
+        } dejarán de funcionar y los titulares de los buzones volverán a utilizar el webmail general. También se eliminarán los registros DNS que Mailway creó para ellas. Si vuelves a activarlo, se crearán de nuevo. Los webmail configurados a mano se conservan.`}
+        confirmLabel="Desactivar"
+      />
+
+      {welcomeOpen && (
+        <BienvenidaDialog
+          projectId={projectId}
+          clientName={data?.summary?.client.name ?? null}
+          workspaceName={account?.workspaceName ?? null}
+          shared={!!account?.shared}
+          blocked={!!data?.accountSuspended || !!data?.summary?.client.suspended}
+          onClose={() => setWelcomeOpen(false)}
+        />
+      )}
 
       <ConfirmModal
         open={!!revokeCred}
@@ -528,9 +642,13 @@ function ActivateForm({
     if (defaultPlanId) setPlanId((p) => p || defaultPlanId);
   }, [defaultPlanId]);
 
-  const previousAvailable = !!options.data?.previous?.available;
-  const mode: ActivateMode = chosenMode ?? (previousAvailable ? 'previous' : 'create');
-  const name = editedName ?? options.data?.defaultName ?? projectName;
+  // Proyecto de una cuenta: el cliente es el de la cuenta y lleva su nombre.
+  const workspace = options.data?.workspace ?? null;
+  // La cuenta ya tiene cliente: activar el correo vincula el proyecto a él, sin más opciones.
+  const workspaceClient = workspace?.client ?? null;
+  const previousAvailable = !workspaceClient && !!options.data?.previous?.available;
+  const mode: ActivateMode = workspaceClient ? 'create' : (chosenMode ?? (previousAvailable ? 'previous' : 'create'));
+  const name = workspace ? (options.data?.defaultName ?? workspace.name) : (editedName ?? options.data?.defaultName ?? projectName);
 
   const activate = useMutation({
     mutationFn: async () => {
@@ -539,7 +657,8 @@ function ActivateForm({
         mode === 'create'
           ? {
               mode,
-              name: name.trim() || undefined,
+              // En una cuenta, el nombre lo fija la cuenta: no se envía.
+              name: workspace ? undefined : name.trim() || undefined,
               // Solo el administrador elige el plan; al propietario se le asigna el predeterminado.
               planId: options.data?.canChoosePlan ? planId || undefined : undefined,
               contactEmail: contactEmail.trim() || undefined,
@@ -604,14 +723,46 @@ function ActivateForm({
 
   const { plans, clients, canChoosePlan, previous } = options.data;
   const assignedPlan = plans.find((p) => p.id === planId) ?? plans[0];
-  const canSubmit = mode === 'create' ? name.trim().length >= 2 : mode === 'existing' ? !!clientId : previousAvailable;
+  const canSubmit =
+    mode === 'create' ? !!workspace || name.trim().length >= 2 : mode === 'existing' ? !!clientId : previousAvailable;
   const modes: { key: ActivateMode; label: string }[] = [
     ...(previousAvailable ? [{ key: 'previous' as const, label: 'Recuperar cliente anterior' }] : []),
-    { key: 'create', label: 'Crear cliente nuevo' },
+    { key: 'create', label: workspace ? 'Crear cliente de la cuenta' : 'Crear cliente nuevo' },
     ...(isAdmin ? [{ key: 'existing' as const, label: 'Vincular cliente existente' }] : []),
   ];
   const planLabel = (p: MailOptions['plans'][number]) =>
     `${p.name} · ${p.maxDomains} dominio(s), ${p.maxMailboxes} buzones de ${fmtBytes(p.mailboxQuotaMb * 1024 * 1024)}`;
+
+  const dominiosSugeridos =
+    suggestedDomains.length > 0 ? (
+      <Field
+        group
+        label="Dominios de correo"
+        hint="Dominios de los servicios del proyecto. Los seleccionados se añaden al activar el correo; podrás añadir otros después."
+      >
+        <div className="flex flex-wrap gap-x-4 gap-y-2">
+          {suggestedDomains.map((d) => (
+            <label key={d} className="flex min-w-0 items-center gap-2 text-sm text-sub">
+              <input
+                type="checkbox"
+                className="h-4 w-4 shrink-0 accent-acc"
+                checked={extraDomains.includes(d)}
+                onChange={(e) => setExtraDomains((prev) => (e.target.checked ? [...prev, d] : prev.filter((x) => x !== d)))}
+              />
+              <span className="break-all font-mono text-xs text-txt">{d}</span>
+            </label>
+          ))}
+        </div>
+      </Field>
+    ) : null;
+
+  const enviar = (
+    <div className="flex justify-end">
+      <Button type="submit" loading={activate.isPending} disabled={!canSubmit}>
+        <Mail size={14} /> Activar correo
+      </Button>
+    </div>
+  );
 
   return (
     <form
@@ -621,109 +772,126 @@ function ActivateForm({
         if (canSubmit) activate.mutate();
       }}
     >
-      <p className="text-sm leading-relaxed text-sub">
-        Al activar el correo se crea en Mailway un cliente para este proyecto. Después podrás añadir tus dominios, crear buzones y
-        conectarlos a los servicios.
-      </p>
+      {workspace && workspaceClient ? (
+        <>
+          <p className="text-sm leading-relaxed text-sub">
+            Los proyectos de la cuenta «{workspace.name}» comparten un único cliente de correo en Mailway. Al activar el correo, este
+            proyecto se vinculará al cliente <span className="font-semibold text-txt">{workspaceClient.name}</span>
+            {workspaceClient.planName ? ` (plan ${workspaceClient.planName})` : ''} y utilizará sus dominios, buzones y plan.
+          </p>
+          {dominiosSugeridos}
+          {enviar}
+        </>
+      ) : (
+        <>
+          <p className="text-sm leading-relaxed text-sub">
+            {workspace
+              ? `Al activar el correo se crea en Mailway el cliente de correo de la cuenta «${workspace.name}», que compartirán todos sus proyectos que activen el correo. Después podrás añadir tus dominios, crear buzones y conectarlos a los servicios.`
+              : 'Al activar el correo se crea en Mailway un cliente para este proyecto. Después podrás añadir tus dominios, crear buzones y conectarlos a los servicios.'}
+          </p>
 
-      {modes.length > 1 && (
-        <Segmented full label="Origen del cliente de correo" value={mode} onChange={setMode} options={modes} />
-      )}
+          {modes.length > 1 && (
+            <Segmented full label="Origen del cliente de correo" value={mode} onChange={setMode} options={modes} />
+          )}
 
-      {previous && !previous.available && (
-        <p className="rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
-          {previous.reason ?? `No es posible recuperar el cliente anterior «${previous.clientName}».`} Si creas un cliente nuevo,
-          los dominios del cliente anterior no se podrán añadir de nuevo mientras sigan dados de alta en Mailway.
-        </p>
-      )}
+          {previous && !previous.available && (
+            <p className="rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
+              {previous.reason ?? `No es posible recuperar el cliente anterior «${previous.clientName}».`} Si creas un cliente nuevo,
+              los dominios del cliente anterior no se podrán añadir de nuevo mientras sigan dados de alta en Mailway.
+            </p>
+          )}
 
-      {mode === 'previous' && previous ? (
-        <p className="rounded-lg border border-line bg-bg px-3 py-2.5 text-sm text-sub">
-          Se volverá a vincular el cliente <span className="font-semibold text-txt">{previous.clientName}</span>, que este proyecto
-          utilizaba antes, con sus dominios, buzones y credenciales.
-        </p>
-      ) : mode === 'create' ? (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Nombre del cliente" hint="Entre 2 y 80 caracteres.">
-            <input
-              className="input"
-              value={name}
-              minLength={2}
-              maxLength={80}
-              onChange={(e) => setName(e.target.value)}
-              required
-            />
-          </Field>
-          {canChoosePlan ? (
-            <Field label="Plan de correo" hint={plans.length === 0 ? 'Mailway no tiene planes: se aplicará el predeterminado.' : undefined}>
-              <select className="input" value={planId} onChange={(e) => setPlanId(e.target.value)} disabled={plans.length === 0}>
-                {plans.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {planLabel(p)}
+          {mode === 'previous' && previous ? (
+            <p className="rounded-lg border border-line bg-bg px-3 py-2.5 text-sm text-sub">
+              Se volverá a vincular el cliente <span className="font-semibold text-txt">{previous.clientName}</span>, que este proyecto
+              utilizaba antes, con sus dominios, buzones y credenciales.
+              {workspace ? ` Pasará a ser el cliente de correo de la cuenta «${workspace.name}» y tomará su nombre.` : ''}
+            </p>
+          ) : mode === 'create' ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {workspace ? (
+                <Field label="Nombre del cliente" hint="Es el de la cuenta: si la cuenta cambia de nombre, el cliente de correo también.">
+                  <input className="input text-sub" readOnly value={name} />
+                </Field>
+              ) : (
+                <Field label="Nombre del cliente" hint="Entre 2 y 80 caracteres.">
+                  <input
+                    className="input"
+                    value={name}
+                    minLength={2}
+                    maxLength={80}
+                    onChange={(e) => setName(e.target.value)}
+                    required
+                  />
+                </Field>
+              )}
+              {canChoosePlan ? (
+                <Field label="Plan de correo" hint={plans.length === 0 ? 'Mailway no tiene planes: se aplicará el predeterminado.' : undefined}>
+                  <select className="input" value={planId} onChange={(e) => setPlanId(e.target.value)} disabled={plans.length === 0}>
+                    {plans.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {planLabel(p)}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              ) : (
+                <Field label="Plan de correo" hint="Lo asigna el administrador de la plataforma.">
+                  <input className="input text-sub" readOnly value={assignedPlan ? planLabel(assignedPlan) : 'Plan predeterminado de Mailway'} />
+                </Field>
+              )}
+              <Field label="Correo electrónico de contacto" hint="Opcional. Mailway lo utiliza para los avisos del cliente.">
+                <input
+                  className="input"
+                  type="email"
+                  placeholder="contacto@tuempresa.com"
+                  value={contactEmail}
+                  onChange={(e) => setContactEmail(e.target.value)}
+                />
+              </Field>
+              {dominiosSugeridos && <div className="sm:col-span-2">{dominiosSugeridos}</div>}
+            </div>
+          ) : (
+            <Field
+              label="Cliente de Mailway"
+              hint={
+                workspace
+                  ? `Pasará a ser el cliente de correo de la cuenta «${workspace.name}» y tomará su nombre. Los clientes vinculados a otra cuenta, a otro proyecto o a otra integración no se pueden seleccionar.`
+                  : 'Los clientes ya vinculados a otro proyecto o integración no se pueden seleccionar.'
+              }
+            >
+              <select className="input" value={clientId} onChange={(e) => setClientId(e.target.value)}>
+                <option value="">Selecciona un cliente…</option>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id} disabled={!c.available}>
+                    {c.name}
+                    {c.linkedTo ? ` (vinculado a ${c.linkedTo})` : ''}
                   </option>
                 ))}
               </select>
             </Field>
-          ) : (
-            <Field label="Plan de correo" hint="Lo asigna el administrador de la plataforma.">
-              <input className="input text-sub" readOnly value={assignedPlan ? planLabel(assignedPlan) : 'Plan predeterminado de Mailway'} />
-            </Field>
           )}
-          <Field label="Correo electrónico de contacto" hint="Opcional. Mailway lo utiliza para los avisos del cliente.">
-            <input
-              className="input"
-              type="email"
-              placeholder="contacto@tuempresa.com"
-              value={contactEmail}
-              onChange={(e) => setContactEmail(e.target.value)}
-            />
-          </Field>
-          {suggestedDomains.length > 0 && (
-            <div className="sm:col-span-2">
-              <Field
-                group
-                label="Dominios de correo"
-                hint="Dominios de los servicios del proyecto. Los seleccionados se añaden al activar el correo; podrás añadir otros después."
-              >
-                <div className="flex flex-wrap gap-x-4 gap-y-2">
-                  {suggestedDomains.map((d) => (
-                    <label key={d} className="flex min-w-0 items-center gap-2 text-sm text-sub">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 shrink-0 accent-acc"
-                        checked={extraDomains.includes(d)}
-                        onChange={(e) =>
-                          setExtraDomains((prev) => (e.target.checked ? [...prev, d] : prev.filter((x) => x !== d)))
-                        }
-                      />
-                      <span className="break-all font-mono text-xs text-txt">{d}</span>
-                    </label>
-                  ))}
-                </div>
-              </Field>
-            </div>
-          )}
-        </div>
-      ) : (
-        <Field label="Cliente de Mailway" hint="Los clientes ya vinculados a otro proyecto o integración no se pueden seleccionar.">
-          <select className="input" value={clientId} onChange={(e) => setClientId(e.target.value)}>
-            <option value="">Selecciona un cliente…</option>
-            {clients.map((c) => (
-              <option key={c.id} value={c.id} disabled={!c.available}>
-                {c.name}
-                {c.linkedTo ? ` (vinculado a ${c.linkedTo})` : ''}
-              </option>
-            ))}
-          </select>
-        </Field>
-      )}
 
-      <div className="flex justify-end">
-        <Button type="submit" loading={activate.isPending} disabled={!canSubmit}>
-          <Mail size={14} /> Activar correo
-        </Button>
-      </div>
+          {enviar}
+        </>
+      )}
     </form>
+  );
+}
+
+// ---------- cliente de la cuenta ----------
+
+/** El cliente de correo es el de la cuenta: lo comparten sus proyectos con el correo activado. */
+function AccountNote({ account }: { account: MailAccountView }) {
+  const otros = account.projects.map((p) => `«${p.name}»`);
+  return (
+    <p className="text-xs leading-5 text-subtle">
+      Es el cliente de correo de la cuenta «{account.workspaceName}»:{' '}
+      {otros.length > 0
+        ? `también lo ${otros.length === 1 ? 'utiliza el proyecto' : 'utilizan los proyectos'} ${listaNombres(otros)}.`
+        : 'lo comparten todos sus proyectos con el correo activado.'}{' '}
+      Los dominios, los buzones y el plan son los mismos en todos ellos.
+    </p>
   );
 }
 
@@ -738,6 +906,7 @@ function DomainsTab({
   cloudflare,
   onInvalidate,
   onCloudflare,
+  webmailPropio,
 }: {
   projectId: string;
   blocked: boolean;
@@ -747,6 +916,8 @@ function DomainsTab({
   cloudflare: boolean;
   onInvalidate: () => void;
   onCloudflare: (d: MailDomain) => void;
+  /** «Webmail propio», si el Mailway conectado tiene el webmail automático. */
+  webmailPropio: React.ReactNode;
 }) {
   const toast = useToast();
   const [domain, setDomain] = useState('');
@@ -832,6 +1003,111 @@ function DomainsTab({
             onCloudflare={() => onCloudflare(d)}
           />
         ))
+      )}
+
+      {webmailPropio}
+    </div>
+  );
+}
+
+/**
+ * Webmail propio: los webmail de marca del cliente de correo (`webmail.<dominio>`)
+ * y el interruptor del webmail automático de Mailway, que los da de alta solo
+ * para cada dominio con la propiedad comprobada, con su registro DNS. Es un
+ * ajuste del cliente de correo: en una cuenta, vale para todos sus proyectos.
+ */
+function WebmailPropioCard({
+  webmail,
+  globalOn,
+  account,
+  canManage,
+  blocked,
+  pending,
+  onChange,
+}: {
+  webmail: MailWebmailAuto;
+  /** Interruptor global de Mailway: apagado, el del cliente no tiene efecto. */
+  globalOn: boolean;
+  account: MailAccountView | null;
+  canManage: boolean;
+  blocked: boolean;
+  pending: boolean;
+  onChange: (activo: boolean) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-line bg-bg">
+      <div className="px-3.5 py-3">
+        <p className="flex items-center gap-1.5 text-sm font-medium text-txt">
+          <Globe size={14} className="shrink-0 text-subtle" aria-hidden /> Webmail propio
+        </p>
+        <p className="mt-0.5 text-xs leading-5 text-subtle">
+          Los titulares de los buzones acceden al webmail con el dominio de la empresa, en webmail.&lt;dominio&gt;, con un certificado
+          propio.
+          {account?.shared ? ` Es un ajuste del cliente de correo de la cuenta «${account.workspaceName}»: se aplica a todos sus proyectos.` : ''}
+        </p>
+      </div>
+      <div className="flex items-center justify-between gap-3 border-t border-line/60 px-3.5 py-2.5">
+        <div className="min-w-0">
+          <p className="text-sm text-txt">Crear el webmail automáticamente</p>
+          <p className="mt-0.5 text-xs leading-5 text-subtle">
+            Mailway crea el webmail de cada dominio en cuanto se comprueba su propiedad. Al desactivarlo, se retiran los que creó
+            automáticamente.
+          </p>
+        </div>
+        <Toggle
+          checked={webmail.automatico}
+          onChange={onChange}
+          // Encenderlo da de alta nombres: no con la cuenta o el cliente suspendidos. Apagarlo, siempre.
+          disabled={!canManage || pending || (blocked && !webmail.automatico)}
+          label="Crear el webmail automáticamente"
+        />
+      </div>
+      {(!globalOn || !canManage) && (
+        <div className="space-y-1 border-t border-line/60 px-3.5 py-2.5 text-xs leading-5">
+          {!globalOn && (
+            <p className="text-warn">
+              El webmail automático está desactivado para todo el servidor en Mailway: este ajuste se guarda, pero no tiene efecto hasta
+              que se active allí.
+            </p>
+          )}
+          {!canManage && <p className="text-subtle">Solo el propietario de la cuenta o un administrador puede cambiarlo.</p>}
+        </div>
+      )}
+      {webmail.domains.length === 0 ? (
+        <p className="border-t border-line/60 px-3.5 py-2.5 text-xs leading-5 text-subtle">
+          {webmail.automatico && globalOn
+            ? 'Todavía no hay ningún webmail propio: se creará automáticamente para cada dominio en cuanto se compruebe su propiedad.'
+            : 'No hay ningún webmail propio. Se puede configurar en cada dominio, en «Webmail en webmail.<dominio>».'}
+        </p>
+      ) : (
+        webmail.domains.map((d) => {
+          const st = WEBMAIL_STATUS[d.status] ?? WEBMAIL_STATUS.error;
+          const href = safeHref(d.url);
+          const nota = d.conflict ?? (d.status !== 'active' ? d.detail : '');
+          return (
+            <div key={d.hostname} className="border-t border-line/60 px-3.5 py-2.5 text-xs">
+              <p className="flex flex-wrap items-center gap-2">
+                <span className="min-w-0 break-all font-mono text-sm text-txt">{d.hostname}</span>
+                <Chip size="sm" tone={st.tone} dot>
+                  {st.label}
+                </Chip>
+                {d.isPrimary && <Chip size="sm">Principal</Chip>}
+                {d.automatico && <Chip size="sm">Automático</Chip>}
+                {href && (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 font-medium text-acc-soft hover:underline"
+                  >
+                    Abrir <ExternalLink size={12} />
+                  </a>
+                )}
+              </p>
+              {nota && <p className={cx('mt-1 leading-5', d.conflict ? 'text-warn' : 'text-subtle')}>{nota}</p>}
+            </div>
+          );
+        })
       )}
     </div>
   );
@@ -1075,8 +1351,12 @@ function WebmailSection({
     queryFn: () => api.get<MailWebmailView>(base),
     staleTime: 15_000,
   });
-  // Marcar uno como principal cambia también los de los demás dominios.
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['mailWebmail', projectId] });
+  // Marcar uno como principal cambia también los de los demás dominios, y la
+  // tarjeta «Webmail propio» lee el resumen del correo: se refrescan los dos.
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['mailWebmail', projectId] });
+    void queryClient.invalidateQueries({ queryKey: mailKey(projectId) });
+  };
   const onError = (err: Error) => toast(err.message, 'err');
 
   const create = useMutation({
@@ -1857,6 +2137,10 @@ function ConnectTab({
   // alargarían la lista.
   const appPasswords = (view.summary?.appPasswords ?? []).filter((a) => !a.revokedAt);
   const apiKeys = (view.summary?.apiKeys ?? []).filter((k) => !k.revokedAt);
+  // Renovación automática de la contraseña de aplicación del servicio elegido,
+  // si Mailway la invalidó al cambiar de motor de correo.
+  const renewal = service ? view.renewals?.[service.id] : undefined;
+  const renewalNote = renewal ? avisoRenovacion(renewal) : null;
 
   // Con qué nombres recibe el servicio el correo: los que espera su web (su
   // .env.example o su skyway.json) y, si no los nombra, los de siempre.
@@ -1955,6 +2239,25 @@ function ConnectTab({
           </select>
         </Field>
       </div>
+
+      {renewalNote && service && (
+        <div
+          role={renewalNote.tone === 'ok' ? 'status' : 'alert'}
+          className={cx('rounded-lg border px-3.5 py-2.5 text-xs leading-5 text-sub', RENEWAL_TONE[renewalNote.tone])}
+        >
+          <p className="font-medium text-txt">{renewalNote.title}</p>
+          {renewalNote.detail && <p className="mt-0.5">{renewalNote.detail}</p>}
+          {renewalNote.deploymentFailed && (
+            <Link
+              to={`/projects/${projectId}?s=${service.id}&tab=deployments`}
+              onClick={onClose}
+              className="mt-1 inline-block font-medium text-acc-soft hover:underline"
+            >
+              Ver los despliegues del servicio
+            </Link>
+          )}
+        </div>
+      )}
 
       <Segmented
         full
@@ -2074,6 +2377,7 @@ function ConnectTab({
                 name={a.name}
                 detail={a.email}
                 createdAt={a.createdAt}
+                invalidated={!!a.invalidatedAt}
                 canManage={view.canManage}
                 onRevoke={() => onRevoke({ kind: 'app', item: a })}
               />
@@ -2101,6 +2405,7 @@ function CredentialRow({
   name,
   detail,
   createdAt,
+  invalidated = false,
   canManage,
   onRevoke,
 }: {
@@ -2108,6 +2413,8 @@ function CredentialRow({
   name: string;
   detail: string;
   createdAt: number | null;
+  /** Mailway la invalidó al cambiar de motor de correo: ya no funciona, pero se puede revocar. */
+  invalidated?: boolean;
   canManage: boolean;
   onRevoke: () => void;
 }) {
@@ -2117,6 +2424,11 @@ function CredentialRow({
         <p className="flex flex-wrap items-center gap-2">
           <Chip size="sm">{kind}</Chip>
           <span className="break-all font-mono text-xs text-txt">{name}</span>
+          {invalidated && (
+            <Chip size="sm" tone="warn" dot title="Ha dejado de funcionar tras la actualización del servidor de correo.">
+              Invalidada
+            </Chip>
+          )}
         </p>
         <p className="mt-0.5 break-all text-xs text-subtle">
           {detail}

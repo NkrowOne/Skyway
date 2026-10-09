@@ -52,16 +52,17 @@ import {
   CLIENTE_SUSPENDIDO,
   CUENTA_SUSPENDIDA,
   NO_CONFIGURADO,
-  apiKeyName,
-  appPasswordName,
   connectServiceMail,
+  credentialNames,
   httpError,
   isRefError,
   knownMailValues,
   mailConnectNames,
+  mailCredentialGeneration,
   mailOrigin,
   ownedSummary,
   partialConnectionMessage,
+  withMailCredentialLock,
 } from './mailconnect';
 import { MailMode, MailRole, mailValue } from './mailenv';
 import { MailwayError, MailwayInfo, MailwayMailbox, MailwaySummary, createMailbox, getInfo, mailwayConfigured } from './mailway';
@@ -459,11 +460,12 @@ export function buildPlan(opts: {
   // Correo: los nombres los decide lo mismo que «Conectar a un servicio».
   if (wantsMail) {
     const mode = wantsMail.mode;
-    const credName = mode === 'smtp' ? appPasswordName(service) : apiKeyName(service);
+    // Los mismos nombres con los que «Conectar a un servicio» reconoce la credencial del servicio.
+    const credNames = credentialNames(service, mode, mail?.link ?? null);
     const hadCredential = !!mail?.summary &&
       (mode === 'smtp'
-        ? mail.summary.appPasswords.some((a) => !a.revokedAt && a.name === credName)
-        : mail.summary.apiKeys.some((k) => !k.revokedAt && k.name === credName));
+        ? mail.summary.appPasswords.some((a) => !a.revokedAt && credNames.includes(a.name))
+        : mail.summary.apiKeys.some((k) => !k.revokedAt && credNames.includes(k.name)));
     const known = knownMailValues(mail?.info ?? null, mode, mail?.mailbox?.email ?? null);
     const names = mailConnectNames(service, mode, known, hadCredential);
     const blocked = mail && !mail.available ? mail.reason : null;
@@ -515,7 +517,7 @@ export function buildPlan(opts: {
     // aplicación abre todo su correo por IMAP. Si el servicio ya tiene una de
     // Skyway en ESE buzón, volver a conectarlo no da nada nuevo.
     const holdsCredential =
-      !!existing && !!mail?.summary && mail.summary.appPasswords.some((a) => !a.revokedAt && a.name === credName && a.mailboxId === existing.id);
+      !!existing && !!mail?.summary && mail.summary.appPasswords.some((a) => !a.revokedAt && credNames.includes(a.name) && a.mailboxId === existing.id);
     const status: PlanStatus = anyBlocked || noSecret || partial ? 'blocked' : anyApply ? 'apply' : 'done';
     plan.resources.push({
       key: 'mail',
@@ -688,6 +690,9 @@ async function applyPlanLocked(opts: ApplyOptions): Promise<{ result: ApplyResul
   const service = getService(opts.service.id) ?? opts.service;
   const cfg = service.config as GitConfig;
   const target: PlanTarget = { service, domains: cfg.domains ?? [] };
+  // Antes de leer el resumen del correo con el plan: al conectar se sabrá si
+  // entretanto otro ha cambiado las credenciales del servicio.
+  const generation = mailCredentialGeneration(service.id);
   const { plan, mail } = await planWithMail({ project, user, target, needs: cfg.needs });
   const result: ApplyResult = { applied: [], pending: [], kept: [], blocked: [], created: [], errors: [] };
   // La aprobación vale para el plan revisado, no para el que haya ahora: entre
@@ -757,21 +762,25 @@ async function applyPlanLocked(opts: ApplyOptions): Promise<{ result: ApplyResul
       result.pending.push(...mailVars.map((v) => v.name));
       result.errors.push(`Correo: no se ha conectado ${mailRes.target}. ${mailRes.confirmation} Confírmalo para aplicarlo.`);
     } else if (mail?.available && mail.link && mail.summary && mail.info && mail.mailbox && mailRes.mode) {
+      const link = mail.link;
+      const planned = mail.summary;
+      const info = mail.info;
+      const wanted = mail.mailbox;
+      const mode = mailRes.mode;
       try {
-        let mailbox = mail.mailbox.existing;
-        if (!mailbox) {
-          const created = await createMailbox({ domainId: mail.mailbox.domainId, localPart: mail.mailbox.email.split('@')[0] });
-          mailbox = created.mailbox;
-          result.created.push(mailbox.email);
-        }
-        const connected = await connectServiceMail({
-          project,
-          link: mail.link,
-          summary: mail.summary,
-          service,
-          mailbox,
-          mode: mailRes.mode,
-          info: mail.info,
+        // Con el turno de las credenciales del servicio, como «Conectar a un servicio».
+        const connected = await withMailCredentialLock(service.id, async () => {
+          let mailbox = wanted.existing;
+          if (!mailbox) {
+            const created = await createMailbox({ domainId: wanted.domainId, localPart: wanted.email.split('@')[0] });
+            mailbox = created.mailbox;
+            result.created.push(mailbox.email);
+          }
+          // Si otro ha cambiado las credenciales desde que se leyó el plan (una
+          // renovación automática, un «Conectar»), las que hay que revocar son
+          // las de ahora.
+          const summary = mailCredentialGeneration(service.id) === generation ? planned : await ownedSummary(project, link);
+          return connectServiceMail({ project, link, summary, service, mailbox, mode, info });
         });
         result.applied.push(...connected.keys);
         result.kept.push(...connected.kept.filter((k) => !result.kept.includes(k)));

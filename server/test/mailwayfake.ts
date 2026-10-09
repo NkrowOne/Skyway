@@ -18,6 +18,9 @@ export interface FakeClient {
   externalRef: string | null;
   suspended: boolean;
   planId: string;
+  contactEmail?: string;
+  /** Interruptor del webmail automático del cliente (activado si no se indica, como en Mailway). */
+  webmailAutomatico?: boolean;
 }
 export interface FakeDomain {
   id: string;
@@ -57,6 +60,8 @@ export interface FakeAppPassword {
   name: string;
   revokedAt: number | null;
   createdAt: number;
+  /** Invalidada al cambiar Mailway de motor (Stalwart 0.15 → 0.16): ya no funciona. */
+  invalidatedAt?: number | null;
 }
 export interface FakeWhitelabel {
   id: string;
@@ -69,6 +74,23 @@ export interface FakeWhitelabel {
   activatedAt: number | null;
   createdAt: number;
   isPrimary: boolean;
+  /** Lo dio de alta el webmail automático (se retira al apagarlo). */
+  automatico?: boolean;
+}
+/** Enlace de bienvenida de un cliente (`invitaciones.ts` de Mailway). */
+export interface FakeInvite {
+  id: string;
+  clientId: string;
+  email: string;
+  name: string;
+  token: string;
+  createdAt: number;
+  expiresAt: number;
+  openedAt: number | null;
+  acceptedAt: number | null;
+  revokedAt: number | null;
+  /** false = Mailway ya no conserva la URL (no se puede volver a mostrar). */
+  recoverable: boolean;
 }
 export interface FakeCall {
   method: string;
@@ -97,6 +119,43 @@ export const mw = {
   appPasswords: [] as FakeAppPassword[],
   /** Dominios propios de los clientes (marca blanca). */
   whitelabel: [] as FakeWhitelabel[],
+  /**
+   * El Mailway conectado tiene el webmail automático: lo declara en
+   * `features.webmailAutomatico`, lo incluye en el resumen y admite su
+   * interruptor. false = un Mailway anterior.
+   */
+  webmailAutoSoportado: true,
+  /** Interruptor global del webmail automático de la instancia. */
+  webmailAutoGlobal: true,
+  /** El Mailway conectado declara `features.invites` (enlaces de bienvenida). false = uno anterior. */
+  invitesSoportado: true,
+  /**
+   * El Mailway conectado marca las contraseñas de aplicación que invalida un
+   * cambio de motor: declara `features.appPasswordInvalidation` y `engine`, y
+   * las contraseñas llevan `invalidatedAt`. false = uno anterior, sin nada de eso.
+   */
+  invalidacionSoportada: true,
+  /** API del motor que anuncia `engine.api`. */
+  motor: 'rest015' as 'rest015' | 'jmap016' | 'demo',
+  /** Si se indica, crear una contraseña de aplicación responde este error. */
+  fallarCreacionContrasena: null as { status: number; error: string; code: string } | null,
+  /** Si es true, revocar una contraseña de aplicación responde 500. */
+  fallarRevocacionContrasena: false,
+  /** Retraso de la respuesta al crear una contraseña de aplicación (para cruzar operaciones). */
+  retrasoCreacionContrasenaMs: 0,
+  /**
+   * Retraso del resumen de un cliente. Se calcula ANTES de esperar, como una
+   * respuesta que salió de Mailway antes de un cambio posterior.
+   */
+  retrasoResumenMs: 0,
+  /** Enlaces de bienvenida de los clientes. */
+  invites: [] as FakeInvite[],
+  /** Usuarios del panel de Mailway (para `user_exists` y `existingUser`). */
+  panelUsers: [{ email: 'admin@mail.example.com', role: 'admin', clientId: null }] as {
+    email: string;
+    role: 'admin' | 'client';
+    clientId: string | null;
+  }[],
   /**
    * Si es true, el DNS de los dominios propios ya apunta al servidor: cada
    * comprobación los avanza de «Esperando DNS» a «Emitiendo certificado» y
@@ -130,6 +189,25 @@ export const mw = {
 };
 
 const nextId = (p: string) => `${p}_${++mw.seq}`;
+
+/**
+ * Lo que hace Mailway al pasar de Stalwart 0.15 a 0.16: las contraseñas de
+ * aplicación vigentes dejan de funcionar y quedan marcadas como invalidadas
+ * (las de `filtro`, si se indica). Devuelve las que ha invalidado.
+ */
+export function cambiarDeMotor(filtro: (a: FakeAppPassword) => boolean = () => true): FakeAppPassword[] {
+  mw.motor = 'jmap016';
+  const ahora = Date.now();
+  const invalidadas = mw.appPasswords.filter((a) => !a.revokedAt && !a.invalidatedAt && filtro(a));
+  for (const a of invalidadas) a.invalidatedAt = ahora;
+  return invalidadas;
+}
+
+/** Contraseña de aplicación como la devuelve Mailway: `invalidatedAt` solo si lo admite. */
+function appPasswordRecord(a: FakeAppPassword) {
+  const { invalidatedAt, ...rest } = a;
+  return mw.invalidacionSoportada ? { ...rest, invalidatedAt: invalidatedAt ?? null } : rest;
+}
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -169,6 +247,21 @@ function instrucciones(hostname: string) {
     },
     { type: 'A', name: hostname, value: '203.0.113.10', recommended: false, help: 'Alternativa: apunta directamente a la IP del servidor.' },
   ];
+}
+
+/** Webmail de marca de un cliente como lo resumen Mailway (resumen e interruptor del webmail automático). */
+function webmailDelCliente(clientId: string) {
+  return mw.whitelabel
+    .filter((w) => w.clientId === clientId && w.kind === 'webmail')
+    .map((w) => ({ id: w.id, hostname: w.hostname, status: w.status, detail: w.detail, automatico: !!w.automatico, isPrimary: w.isPrimary }));
+}
+
+/** Estado de un enlace de bienvenida, como `estado()` de `invitaciones.ts`. */
+function estadoInvitacion(i: FakeInvite): 'pending' | 'accepted' | 'expired' | 'revoked' {
+  if (i.acceptedAt) return 'accepted';
+  if (i.revokedAt) return 'revoked';
+  if (i.expiresAt <= Date.now()) return 'expired';
+  return 'pending';
 }
 
 /** Siguiente estado de un dominio propio al comprobarlo (refreshClientDomain de Mailway, simplificado). */
@@ -260,7 +353,16 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
       smtp: { host: 'mail.example.com', port: 465, security: 'SSL/TLS' },
       submission: { host: 'mail.example.com', port: 587, security: 'STARTTLS' },
       user: { id: 'usr_1', email: 'admin@mail.example.com', name: 'Admin', role: mw.role, clientId: null },
-      features: { cloudflare: true, autoconfig: true, portal: true, cloudflareSoloCrear: true },
+      features: {
+        cloudflare: true,
+        autoconfig: true,
+        portal: true,
+        cloudflareSoloCrear: true,
+        ...(mw.webmailAutoSoportado ? { webmailAutomatico: mw.webmailAutoGlobal } : {}),
+        ...(mw.invitesSoportado ? { invites: true } : {}),
+        ...(mw.invalidacionSoportada ? { appPasswordInvalidation: true } : {}),
+      },
+      ...(mw.invalidacionSoportada ? { engine: { api: mw.motor } } : {}),
       traefik: admin ? { configPath: '/api/traefik/config', token: mw.traefikToken } : null,
       ...mw.infoOverride,
     });
@@ -288,6 +390,7 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
       externalRef: String(b.externalRef),
       suspended: false,
       planId: typeof b.planId === 'string' ? b.planId : 'pln_1',
+      contactEmail: typeof b.contactEmail === 'string' ? b.contactEmail : '',
     };
     mw.clients.push(client);
     return json(200, { client, created: true });
@@ -295,15 +398,19 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
   if (path === '/api/integrations/clients/by-ref') {
     if (!admin) return forbidden();
     const client = mw.clients.find((c) => c.externalRef === url.searchParams.get('externalRef'));
-    return client ? json(200, { client }) : json(404, { error: 'Cliente no encontrado.', code: 'not_found' });
+    return client ? json(200, { client }) : json(404, { error: 'Cliente no encontrado.', code: 'client_not_found' });
   }
   if ((m = path.match(/^\/api\/integrations\/clients\/([^/]+)\/link$/))) {
     if (!admin) return forbidden();
     const client = mw.clients.find((c) => c.id === m![1]);
     if (!client) return json(404, { error: 'Cliente no encontrado.' });
     if (method === 'PUT') {
-      if (mw.clients.some((c) => c.id !== client.id && c.externalRef === b.externalRef)) {
-        return json(409, { error: 'Otro cliente ya usa esa referencia.', code: 'conflict' });
+      const otro = mw.clients.find((c) => c.id !== client.id && c.externalRef === b.externalRef);
+      if (otro) {
+        return json(409, {
+          error: `La referencia externa ya está vinculada a otro cliente («${otro.name}»). Desvincúlala antes de asignarla a este.`,
+          code: 'external_ref_in_use',
+        });
       }
       client.externalRef = String(b.externalRef);
     } else {
@@ -324,16 +431,173 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
     const mailboxes = mw.mailboxes.filter((x) => ids.has(x.domainId));
     const boxIds = new Set(mailboxes.map((x) => x.id));
     const plan = mw.plans.find((p) => p.id === client.planId) ?? mw.plans[0];
-    return json(200, {
-      client,
+    const respuesta = json(200, {
+      // Como Mailway: el cliente del resumen no lleva el correo de contacto ni el plan.
+      client: {
+        id: client.id,
+        name: client.name,
+        slug: client.slug,
+        externalRef: client.externalRef,
+        suspended: client.suspended,
+        ...(mw.webmailAutoSoportado ? { webmailAutomatico: client.webmailAutomatico !== false } : {}),
+      },
       plan,
       usage: { domains: domains.length, mailboxes: mailboxes.length },
       domains: domains.map(domainRecord),
       mailboxes,
       apiKeys: mw.apiKeys.filter((k) => k.clientId === client.id),
-      appPasswords: mw.appPasswords.filter((a) => boxIds.has(a.mailboxId)),
+      appPasswords: mw.appPasswords.filter((a) => boxIds.has(a.mailboxId)).map(appPasswordRecord),
       connection: { imap: null, submission: null, webmailUrl: mw.infoOverride.webmailUrl ?? 'https://webmail.example.com' },
+      ...(mw.webmailAutoSoportado ? { webmailDomains: webmailDelCliente(client.id) } : {}),
     });
+    if (mw.retrasoResumenMs > 0) await new Promise((r) => setTimeout(r, mw.retrasoResumenMs));
+    return respuesta;
+  }
+  if ((m = path.match(/^\/api\/clients\/([^/]+)$/)) && (method === 'GET' || method === 'PATCH')) {
+    if (!admin) return forbidden();
+    const client = mw.clients.find((c) => c.id === m![1]);
+    if (!client) return json(404, { error: 'Cliente no encontrado.', code: 'not_found' });
+    if (method === 'PATCH') {
+      // Como Mailway: parcial, y el nombre entre 2 y 80 caracteres.
+      if (b.name !== undefined) {
+        const name = typeof b.name === 'string' ? b.name.trim() : '';
+        if (name.length < 2) return badRequest('El nombre del cliente debe tener al menos 2 caracteres.');
+        if (name.length > 80) return badRequest('El nombre del cliente no puede superar los 80 caracteres.');
+        client.name = name;
+      }
+    }
+    const plan = mw.plans.find((p) => p.id === client.planId) ?? mw.plans[0];
+    const full = { ...client, contactEmail: client.contactEmail ?? '', plan, users: [] };
+    return json(200, method === 'GET' ? { client: full, plan, users: [] } : { client: full });
+  }
+  if ((m = path.match(/^\/api\/clients\/([^/]+)\/webmail-automatico$/)) && method === 'PUT' && mw.webmailAutoSoportado) {
+    if (!admin) return forbidden();
+    const client = mw.clients.find((c) => c.id === m![1]);
+    if (!client) return json(404, { error: 'Cliente no encontrado.', code: 'not_found' });
+    if (typeof b.activo !== 'boolean') return badRequest('Indica si el webmail automático debe estar activado.');
+    client.webmailAutomatico = b.activo;
+    if (!b.activo) {
+      // Retira los que creó solo; los dados de alta a mano se quedan.
+      mw.whitelabel = mw.whitelabel.filter((w) => !(w.clientId === client.id && w.automatico));
+    } else if (mw.webmailAutoGlobal) {
+      // Prepara en el momento webmail.<dominio> de cada dominio con la propiedad comprobada.
+      for (const d of mw.domains.filter((x) => x.clientId === client.id && x.ownershipVerifiedAt !== null)) {
+        const hostname = `webmail.${d.domain.toLowerCase()}`;
+        if (mw.whitelabel.some((w) => w.hostname === hostname)) continue;
+        const w: FakeWhitelabel = {
+          id: nextId('wld'),
+          clientId: client.id,
+          hostname,
+          kind: 'webmail',
+          status: 'pending_dns',
+          detail: '',
+          lastCheckedAt: null,
+          activatedAt: null,
+          createdAt: Date.now(),
+          isPrimary: false,
+          automatico: true,
+        };
+        comprobarDominioPropio(w);
+        mw.whitelabel.push(w);
+      }
+    }
+    return json(200, { webmailAutomatico: client.webmailAutomatico, global: mw.webmailAutoGlobal, webmailDomains: webmailDelCliente(client.id) });
+  }
+  if ((m = path.match(/^\/api\/clients\/([^/]+)\/invites$/))) {
+    if (!admin) return forbidden();
+    const client = mw.clients.find((c) => c.id === m![1]);
+    if (!client) return json(404, { error: 'Cliente no encontrado.', code: 'not_found' });
+    if (method === 'GET') {
+      const invites = mw.invites
+        .filter((i) => i.clientId === client.id)
+        .sort((a, z) => z.createdAt - a.createdAt)
+        .slice(0, 50)
+        .map((i) => {
+          const status = estadoInvitacion(i);
+          return {
+            id: i.id,
+            email: i.email,
+            name: i.name,
+            createdAt: i.createdAt,
+            expiresAt: i.expiresAt,
+            openedAt: i.openedAt,
+            acceptedAt: i.acceptedAt,
+            revokedAt: i.revokedAt,
+            status,
+            recoverable: status === 'pending' && i.recoverable,
+          };
+        });
+      return json(200, { invites });
+    }
+    if (method === 'POST') {
+      const email = typeof b.email === 'string' ? b.email.trim().toLowerCase() : '';
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return badRequest('El correo de la persona de contacto no es válido.');
+      const name = typeof b.name === 'string' ? b.name.trim() : '';
+      if (name.length > 80) return badRequest('El nombre no puede superar los 80 caracteres.');
+      const ttlHours = b.ttlHours === undefined ? 168 : b.ttlHours;
+      if (typeof ttlHours !== 'number' || !Number.isInteger(ttlHours) || ttlHours < 1 || ttlHours > 720) {
+        return badRequest('La validez máxima del enlace es de 720 horas (30 días).');
+      }
+      if (client.suspended) {
+        return badRequest('El cliente está suspendido. Reactívalo antes de enviarle un enlace de bienvenida.', 'client_suspended');
+      }
+      const usuario = mw.panelUsers.find((u) => u.email.toLowerCase() === email);
+      if (usuario && !(usuario.role === 'client' && usuario.clientId === client.id)) {
+        return json(409, { error: 'Ya existe un usuario con ese correo.', code: 'user_exists' });
+      }
+      const ahora = Date.now();
+      // Un solo enlace válido por persona: el nuevo sustituye a los pendientes.
+      for (const i of mw.invites) {
+        if (i.clientId === client.id && i.email === email && !i.acceptedAt && !i.revokedAt) i.revokedAt = ahora;
+      }
+      const invite: FakeInvite = {
+        id: nextId('inv'),
+        clientId: client.id,
+        email,
+        name,
+        token: `tok-bienvenida-${mw.seq}`,
+        createdAt: ahora,
+        expiresAt: ahora + ttlHours * 3_600_000,
+        openedAt: null,
+        acceptedAt: null,
+        revokedAt: null,
+        recoverable: true,
+      };
+      mw.invites.push(invite);
+      return json(200, {
+        invite: {
+          id: invite.id,
+          url: `${MW_BASE}/bienvenida/${invite.token}`,
+          email,
+          name,
+          expiresAt: invite.expiresAt,
+          existingUser: !!usuario,
+        },
+      });
+    }
+  }
+  if ((m = path.match(/^\/api\/clients\/([^/]+)\/invites\/([^/]+)(\/url)?$/))) {
+    if (!admin) return forbidden();
+    const invite = mw.invites.find((i) => i.id === m![2] && i.clientId === m![1]);
+    if (!invite) return json(404, { error: 'Enlace de bienvenida no encontrado.', code: 'not_found' });
+    if (m[3] && method === 'GET') {
+      if (estadoInvitacion(invite) !== 'pending') {
+        return json(404, {
+          error: 'Este enlace de bienvenida no es válido o ha caducado. Solicita uno nuevo a tu proveedor de correo.',
+          code: 'invite_invalid',
+        });
+      }
+      if (!invite.recoverable) {
+        return json(409, { error: 'Este enlace ya no se puede volver a enviar. Crea uno nuevo.', code: 'invite_not_recoverable' });
+      }
+      return json(200, {
+        invite: { id: invite.id, url: `${MW_BASE}/bienvenida/${invite.token}`, email: invite.email, name: invite.name, expiresAt: invite.expiresAt },
+      });
+    }
+    if (!m[3] && method === 'DELETE') {
+      if (!invite.acceptedAt) invite.revokedAt ??= Date.now();
+      return json(200, { ok: true });
+    }
   }
   if (path === '/api/cloudflare/accounts' && method === 'GET') {
     // Como Mailway: el administrador filtra por cliente con ?clientId.
@@ -496,8 +760,10 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
     return json(200, { mailbox: box, password: 'Contraseña-Del-Buzon-1' });
   }
   if ((m = path.match(/^\/api\/mailboxes\/([^/]+)\/app-passwords\/([^/]+)$/)) && method === 'DELETE') {
+    if (mw.fallarRevocacionContrasena) return json(500, { error: 'Error interno del servidor.', code: 'internal' });
     const app = mw.appPasswords.find((a) => a.id === m![2] && a.mailboxId === m![1]);
     if (!app) return json(404, { error: 'Contraseña de aplicación no encontrada.', code: 'not_found' });
+    // Idempotente, también con una invalidada: como Mailway.
     app.revokedAt ??= Date.now();
     return json(200, { ok: true });
   }
@@ -519,15 +785,32 @@ export async function fakeFetch(input: string | URL | Request, init: RequestInit
     if (m[2] === '/setup-links') {
       return json(200, { link: { id: 'lnk_1', url: `${MW_BASE}/conectar/tok-secreto`, expiresAt: 99, hasPassword: !!b.password } });
     }
+    if (m[2] === '/app-passwords' && method === 'GET') {
+      return json(200, { appPasswords: mw.appPasswords.filter((a) => a.mailboxId === box.id).map(appPasswordRecord) });
+    }
     if (m[2] === '/app-passwords' && method === 'POST') {
+      if (mw.retrasoCreacionContrasenaMs > 0) await new Promise((r) => setTimeout(r, mw.retrasoCreacionContrasenaMs));
+      if (mw.fallarCreacionContrasena) {
+        const f = mw.fallarCreacionContrasena;
+        return json(f.status, { error: f.error, code: f.code });
+      }
       const name = typeof b.name === 'string' ? b.name.trim() : '';
       if (!name || name.length > 60) return badRequest('El nombre no puede superar los 60 caracteres.');
-      if (mw.appPasswords.filter((a) => a.mailboxId === box.id && !a.revokedAt).length >= 25) {
+      // Las invalidadas ya no cuentan para el límite: como Mailway.
+      if (mw.appPasswords.filter((a) => a.mailboxId === box.id && !a.revokedAt && !a.invalidatedAt).length >= 25) {
         return json(409, { error: 'Este buzón ya tiene 25 contraseñas de aplicación activas.', code: 'app_password_limit' });
       }
-      const app: FakeAppPassword = { id: nextId('app'), mailboxId: box.id, email: box.email, name, revokedAt: null, createdAt: Date.now() };
+      const app: FakeAppPassword = {
+        id: nextId('app'),
+        mailboxId: box.id,
+        email: box.email,
+        name,
+        revokedAt: null,
+        createdAt: Date.now(),
+        invalidatedAt: null,
+      };
       mw.appPasswords.push(app);
-      return json(200, { appPassword: app, password: `ContraseñaDeAplicacion-Secreta-${app.id}` });
+      return json(200, { appPassword: appPasswordRecord(app), password: `ContraseñaDeAplicacion-Secreta-${app.id}` });
     }
   }
   if (path === '/api/apikeys' && method === 'POST') {

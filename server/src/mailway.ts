@@ -1,8 +1,9 @@
 /**
  * Cliente de la API de integraciones de Mailway (el servicio de correo
  * multicliente del operador). Skyway lo usa para crear y gestionar, desde cada
- * proyecto, el cliente de correo, sus dominios y buzones, y para inyectar en los
- * servicios las credenciales de envío.
+ * proyecto, el cliente de correo (uno por cuenta: lo comparten los proyectos de
+ * la cuenta), sus dominios y buzones, y para inyectar en los servicios las
+ * credenciales de envío.
  *
  * Sin dependencias: `fetch` con plazo, JSON y un token de gestión (`mwt_…`)
  * que se guarda en Ajustes y JAMÁS se devuelve ni se registra. Con un token de
@@ -39,9 +40,52 @@ export function previousClientKey(projectId: string): string {
   return `mailway.previousClient:${projectId}`;
 }
 
-/** Prefijo de la referencia externa con la que Mailway identifica al proyecto. */
+/** Referencia externa con la que Mailway identifica a un proyecto sin cuenta (o el cliente propio de uno). */
 export function projectExternalRef(projectId: string): string {
   return `skyway:project:${projectId}`;
+}
+
+/** Referencia externa con la que Mailway identifica a una cuenta (workspace) de Skyway. */
+export function workspaceExternalRef(workspaceId: string): string {
+  return `skyway:workspace:${workspaceId}`;
+}
+
+/**
+ * Referencia del cliente de correo de un proyecto. Todos los proyectos de una
+ * cuenta comparten el cliente de la cuenta (dominios, buzones y plan); uno sin
+ * cuenta tiene el suyo.
+ */
+export function clientRefFor(project: Pick<ProjectRow, 'id' | 'workspace_id'>): string {
+  return project.workspace_id ? workspaceExternalRef(project.workspace_id) : projectExternalRef(project.id);
+}
+
+/**
+ * Referencias con las que un cliente de Mailway es de este proyecto: la de su
+ * cuenta y la suya propia. La propia sigue valiendo en un proyecto de una
+ * cuenta para el cliente que tenía antes de compartirlos (mientras no se migra
+ * o si la cuenta ya tenía otro): esa referencia solo puede ser de él.
+ */
+export function acceptedClientRefs(project: Pick<ProjectRow, 'id' | 'workspace_id'>): string[] {
+  const propia = projectExternalRef(project.id);
+  return project.workspace_id ? [workspaceExternalRef(project.workspace_id), propia] : [propia];
+}
+
+/**
+ * Nombre válido para un cliente de Mailway (de 2 a 80 caracteres) a partir del
+ * de la cuenta o el del proyecto, que en Skyway pueden tener 1 carácter.
+ */
+export function mailwayClientName(name: string, prefijo: 'Cuenta' | 'Proyecto'): string {
+  const n = name.trim();
+  return (n.length >= 2 ? n : `${prefijo} ${n}`.trim()).slice(0, 80).trim();
+}
+
+/**
+ * Proyecto de una cuenta que conserva su propio cliente de Mailway porque, al
+ * pasar a un cliente por cuenta, la cuenta ya tenía otro (`{workspaceClientId,
+ * workspaceClientName, at}` en JSON). Se recuerda para registrarlo una sola vez.
+ */
+export function ownClientKey(projectId: string): string {
+  return `mailway.ownClient:${projectId}`;
 }
 
 export type MailwayErrorKind = 'config' | 'auth' | 'http' | 'network' | 'timeout';
@@ -93,8 +137,28 @@ export interface MailwayInfo {
    * de marca blanca con `soloCrear` solo crean lo que falta, sin modificar
    * nada, y la cuenta de Cloudflare de la instancia asociada a un dominio
    * nunca se usa con `soloCliente`. Sin ella, Skyway no pide el DNS automático.
+   *
+   * `webmailAutomatico`: interruptor GLOBAL del webmail automático de la
+   * instancia (`webmail.<dominio>` de cada dominio, sin pedirlo). Ausente en un
+   * Mailway que no lo tiene: entonces Skyway no ofrece el interruptor del cliente.
+   *
+   * `appPasswordInvalidation`: Mailway marca con `invalidatedAt` las
+   * contraseñas de aplicación que dejan de funcionar al cambiar de motor (las
+   * de Stalwart 0.15 no sobreviven al paso a la 0.16). Sin ella, Skyway no da
+   * ninguna por invalidada (ver `mailwayrenovacion.ts`).
    */
-  features?: { cloudflare?: boolean; autoconfig?: boolean; portal?: boolean; cloudflareSoloCrear?: boolean };
+  features?: {
+    cloudflare?: boolean;
+    autoconfig?: boolean;
+    portal?: boolean;
+    cloudflareSoloCrear?: boolean;
+    webmailAutomatico?: boolean;
+    /** Admite los enlaces de bienvenida del cliente (`/api/clients/:id/invites`). */
+    invites?: boolean;
+    appPasswordInvalidation?: boolean;
+  };
+  /** API del motor de correo con la que trabaja Mailway; ausente en versiones anteriores. */
+  engine?: { api?: 'rest015' | 'jmap016' | 'demo' | null } | null;
   traefik?: { configPath: string; token: string } | null;
 }
 
@@ -193,6 +257,13 @@ export interface MailwayAppPasswordInfo {
   name: string;
   createdAt?: number;
   revokedAt?: number | null;
+  /**
+   * Cuándo dejó de funcionar por un cambio de motor de Mailway (ver
+   * `features.appPasswordInvalidation`). Se puede seguir revocando y ya no
+   * cuenta para el límite de contraseñas activas del buzón. Ausente en
+   * versiones anteriores: entonces no está invalidada.
+   */
+  invalidatedAt?: number | null;
 }
 
 export interface MailwayUsage {
@@ -203,8 +274,31 @@ export interface MailwayUsage {
   messagesLast30d?: number;
 }
 
+/**
+ * Webmail de marca de un cliente tal como lo devuelven su resumen y el
+ * interruptor del webmail automático (sin `clientId`: las dos rutas ya son de
+ * un cliente).
+ */
+export interface MailwayWebmailDomain {
+  id: string;
+  hostname: string;
+  status: MailwayWhitelabelStatus;
+  detail?: string;
+  /** Lo dio de alta el webmail automático: es de los que se retiran al apagarlo. */
+  automatico?: boolean;
+  isPrimary?: boolean;
+}
+
 export interface MailwaySummary {
-  client: { id: string; name: string; slug: string; externalRef: string | null; suspended: boolean };
+  client: {
+    id: string;
+    name: string;
+    slug: string;
+    externalRef: string | null;
+    suspended: boolean;
+    /** Interruptor del webmail automático del cliente (ausente en un Mailway que no lo tiene). */
+    webmailAutomatico?: boolean;
+  };
   plan: MailwayPlan | null;
   usage: MailwayUsage | null;
   domains: MailwayDomain[];
@@ -217,6 +311,8 @@ export interface MailwaySummary {
     submission?: MailwayEndpoint;
     webmailUrl?: string;
   };
+  /** Webmail de marca del cliente; null si el Mailway conectado no lo incluye en el resumen. */
+  webmailDomains: MailwayWebmailDomain[] | null;
 }
 
 export interface MailwayDnsRecord {
@@ -455,7 +551,7 @@ function originOf(base: string): string {
 }
 
 interface RequestOpts {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   /** Configuración alternativa (probar valores aún sin guardar). */
   config?: MailwayConfig;
@@ -591,7 +687,7 @@ async function parseResponse<T>(res: Response, credencial: string, texto = false
 /** Petición autenticada con el token de gestión. */
 export function mailwayFetch<T>(
   path: string,
-  opts: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown; config?: MailwayConfig } = {},
+  opts: { method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; body?: unknown; config?: MailwayConfig } = {},
 ): Promise<T> {
   return requestMailway<T>(path, opts);
 }
@@ -701,6 +797,8 @@ export async function unlinkClient(clientId: string, expectedRef?: string): Prom
  * vinculado todavía la lleva. Si ya es de otra integración (o no tiene
  * ninguna), borrarla desvincularía algo que no es de este proyecto: Mailway
  * pone la referencia a null sin mirar cuál era. Devuelve si se ha soltado.
+ * Nunca toca la referencia de una cuenta: el cliente de una cuenta la conserva
+ * aunque sus proyectos desactiven el correo o se borren.
  */
 export async function releaseProjectClient(projectId: string, clientId: string): Promise<boolean> {
   const owner = await getClientByRef(projectExternalRef(projectId));
@@ -712,6 +810,33 @@ export async function releaseProjectClient(projectId: string, clientId: string):
     throw err;
   }
   return true;
+}
+
+/**
+ * Suelta en Mailway la referencia de una cuenta eliminada, si algún cliente
+ * todavía la lleva, con la condición en la propia petición (como al soltar la
+ * de un proyecto). El cliente y sus buzones siguen en Mailway. Devuelve el
+ * cliente que la llevaba, o null si no había ninguno o ya no era suya.
+ */
+export async function releaseWorkspaceClient(workspaceId: string): Promise<MailwayClient | null> {
+  const ref = workspaceExternalRef(workspaceId);
+  const owner = await getClientByRef(ref);
+  if (!owner) return null;
+  try {
+    await unlinkClient(owner.id, ref);
+  } catch (err) {
+    if (err instanceof MailwayError && (err.status === 404 || err.status === 409)) return null;
+    throw err;
+  }
+  return owner;
+}
+
+/** Cambia el nombre del cliente en Mailway (ruta de administración, `PATCH /api/clients/:id`). */
+export async function renameClient(clientId: string, name: string): Promise<void> {
+  const res = await mailwayFetch<{ client?: { id?: unknown } }>(`/api/clients/${enc(clientId)}`, { method: 'PATCH', body: { name } });
+  if (!res.client || res.client.id !== clientId) {
+    throw new MailwayError('http', 'La respuesta de Mailway no corresponde al cliente que se ha renombrado.', 502);
+  }
 }
 
 export async function getSummary(clientId: string): Promise<MailwaySummary> {
@@ -728,7 +853,25 @@ export async function getSummary(clientId: string): Promise<MailwaySummary> {
     apiKeys: Array.isArray(res.apiKeys) ? res.apiKeys : [],
     appPasswords: Array.isArray(res.appPasswords) ? res.appPasswords : [],
     connection: res.connection,
+    webmailDomains: Array.isArray(res.webmailDomains) ? res.webmailDomains : null,
   };
+}
+
+/** Forma mínima de una dirección de correo (la validación de verdad la hacen el formulario y Mailway). */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Correo de contacto del cliente en Mailway, o null si no tiene (o la
+ * respuesta no es de ese cliente). Solo sirve para proponerlo en el enlace de
+ * bienvenida: nunca se usa sin que alguien lo revise.
+ */
+export async function getClientContactEmail(clientId: string): Promise<string | null> {
+  const res = await mailwayFetch<{ client?: { id?: unknown; contactEmail?: unknown } }>(`/api/clients/${enc(clientId)}`);
+  const client = res.client;
+  if (!client || client.id !== clientId || typeof client.contactEmail !== 'string') return null;
+  // Mailway lo guarda tal como se escribió; el enlace de bienvenida, en minúsculas.
+  const email = client.contactEmail.trim().toLowerCase();
+  return EMAIL_RE.test(email) && email.length <= 254 ? email : null;
 }
 
 // ---------- dominios ----------
@@ -1221,6 +1364,117 @@ export function applyWhitelabelCloudflare(
 /** Marca el webmail como principal de su cliente (debe estar en servicio). */
 export function setPrimaryWebmail(id: string): Promise<{ domain: MailwayWhitelabelDomain }> {
   return mailwayFetch(`/api/whitelabel/domains/${enc(id)}/primary`, { method: 'POST' });
+}
+
+// ---------- webmail automático (webmail.<dominio> de cada dominio, sin pedirlo) ----------
+
+export interface MailwayWebmailAutomatico {
+  /** Interruptor del cliente, tal como queda. */
+  webmailAutomatico: boolean;
+  /** Interruptor global de la instancia; null si Mailway no lo ha indicado. */
+  global: boolean | null;
+  /** Webmail de marca del cliente después del cambio. */
+  webmailDomains: MailwayWebmailDomain[];
+}
+
+/**
+ * Enciende o apaga el webmail automático del cliente. Encendido, Mailway
+ * prepara en el momento `webmail.<dominio>` de cada dominio con la propiedad
+ * comprobada (pueden volver esperando DNS o emitiendo el certificado y quedar
+ * en servicio a los pocos minutos); apagado, retira los que creó solo, con el
+ * registro DNS que creó para ellos. Mientras el interruptor global esté
+ * apagado, el del cliente se guarda pero no tiene efecto.
+ */
+export async function setWebmailAutomatico(clientId: string, activo: boolean): Promise<MailwayWebmailAutomatico> {
+  const res = await mailwayFetch<Partial<MailwayWebmailAutomatico>>(`/api/clients/${enc(clientId)}/webmail-automatico`, {
+    method: 'PUT',
+    body: { activo },
+  });
+  if (typeof res.webmailAutomatico !== 'boolean') {
+    throw new MailwayError('http', 'La respuesta de Mailway no es válida: falta el estado del webmail automático.', 502);
+  }
+  return {
+    webmailAutomatico: res.webmailAutomatico,
+    global: typeof res.global === 'boolean' ? res.global : null,
+    webmailDomains: Array.isArray(res.webmailDomains) ? res.webmailDomains : [],
+  };
+}
+
+// ---------- configuración inicial (enlace de bienvenida del cliente) ----------
+
+export type MailwayInviteStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
+
+/**
+ * Enlace de bienvenida tal como lo lista Mailway: sin la URL, que es una
+ * credencial (con ella se crea un acceso al panel del cliente).
+ */
+export interface MailwayInvite {
+  id: string;
+  email: string;
+  name: string;
+  createdAt: number;
+  expiresAt: number;
+  openedAt: number | null;
+  acceptedAt: number | null;
+  revokedAt: number | null;
+  status: MailwayInviteStatus;
+  /** Pendiente y con la URL todavía recuperable: se puede volver a mostrar. */
+  recoverable: boolean;
+}
+
+/** Enlace de bienvenida con su URL: solo al crearlo y al recuperarlo. */
+export interface MailwayInviteLink {
+  id: string;
+  url: string;
+  email: string;
+  name: string;
+  expiresAt: number;
+  /** El correo ya es de un usuario de ese cliente: con el enlace elige una contraseña nueva (solo al crearlo). */
+  existingUser?: boolean;
+}
+
+function inviteOf(res: { invite?: MailwayInviteLink }): MailwayInviteLink {
+  if (!res.invite || typeof res.invite.id !== 'string' || !res.invite.id) {
+    throw new MailwayError('http', 'La respuesta de Mailway no incluye el enlace de bienvenida.', 502);
+  }
+  return res.invite;
+}
+
+/**
+ * Crea el enlace de bienvenida de la persona de contacto del cliente: con él
+ * crea su acceso al panel de Mailway y entra en la puesta en marcha (dominio y
+ * buzones). Sirve una vez y sustituye al que esa persona tuviera pendiente.
+ * Mailway responde 409 `user_exists` si el correo es de la administración o
+ * de otro cliente, y 400 `client_suspended` con el cliente suspendido.
+ */
+export async function createInvite(
+  clientId: string,
+  input: { email: string; name?: string; ttlHours?: number },
+): Promise<MailwayInviteLink> {
+  return inviteOf(await mailwayFetch(`/api/clients/${enc(clientId)}/invites`, { method: 'POST', body: input }));
+}
+
+/** Enlaces de bienvenida del cliente (los más recientes, como los da Mailway). Sin la lista, es un fallo. */
+export async function listInvites(clientId: string): Promise<MailwayInvite[]> {
+  const res = await mailwayFetch<{ invites?: MailwayInvite[] }>(`/api/clients/${enc(clientId)}/invites`);
+  if (!Array.isArray(res.invites)) {
+    throw new MailwayError('http', 'La respuesta de Mailway no incluye la lista de enlaces de bienvenida.', 502);
+  }
+  return res.invites;
+}
+
+/**
+ * URL de un enlace pendiente, para volver a enviarlo. 404 `invite_invalid` si
+ * ya se ha usado, revocado o caducado; 409 `invite_not_recoverable` si Mailway
+ * ya no la conserva.
+ */
+export async function getInviteUrl(clientId: string, inviteId: string): Promise<MailwayInviteLink> {
+  return inviteOf(await mailwayFetch(`/api/clients/${enc(clientId)}/invites/${enc(inviteId)}/url`));
+}
+
+/** Revoca un enlace de bienvenida: deja de servir al instante. */
+export async function revokeInvite(clientId: string, inviteId: string): Promise<void> {
+  await mailwayFetch(`/api/clients/${enc(clientId)}/invites/${enc(inviteId)}`, { method: 'DELETE' });
 }
 
 // ---------- Traefik ----------

@@ -1,18 +1,30 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { parse as parseDomain } from 'tldts';
 import { z } from 'zod';
-import { assertProjectAccess, assertProjectManage, canManageProject, currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
+import {
+  accessibleProjectRows,
+  assertProjectAccess,
+  assertProjectManage,
+  canManageProject,
+  currentUser,
+  requireAdmin,
+  requireAuth,
+  requireSession,
+} from '../auth';
 import { audit } from '../audit';
 import {
+  MailwayLinkWithProject,
   deleteMailwayLink,
   getMailwayLink,
-  getMailwayLinkByClient,
   getProject,
   getService,
   getSetting,
   insertMailwayLink,
   listMailwayLinks,
+  listMailwayLinksByClient,
   listServices,
+  listWorkspaceUsers,
+  setMailwayLinkClientName,
   setSetting,
   reservarNombresMailway,
 } from '../db';
@@ -23,30 +35,41 @@ import {
   MailwayApiKeyInfo,
   MailwayAutoDnsResult,
   MailwayAppPasswordInfo,
+  MailwayClient,
   MailwayDnsInstruction,
   MailwayDomain,
   MailwayError,
   MailwayInfo,
+  MailwayInvite,
+  MailwayInviteLink,
+  MailwayInviteStatus,
   MailwayMailbox,
   MailwayPlan,
   MailwaySummary,
+  MailwayWebmailDomain,
   MailwayWhitelabelDomain,
+  MailwayWhitelabelStatus,
   WebZoneRecord,
   ZONE_LEVELS,
+  acceptedClientRefs,
   appendWebRecords,
   applyCloudflare,
   applyWhitelabelCloudflare,
   cachedInfo,
+  clientRefFor,
   createDomain,
+  createInvite,
   createMailbox,
   createSetupLink,
   createWhitelabelDomain,
   deleteMailbox,
   ensureClient,
   getClientByRef,
+  getClientContactEmail,
   getCloudflarePlan,
   getDomainDns,
   getInfo,
+  getInviteUrl,
   getSummary,
   getWhitelabelDomain,
   getZoneFile,
@@ -54,10 +77,13 @@ import {
   linkClient,
   listClientCloudflareAccounts,
   listClients,
+  listInvites,
   listPlans,
   listWhitelabelDomains,
+  mailwayClientName,
   mailwayConfigured,
   mailwayReservedHosts,
+  ownClientKey,
   previousClientKey,
   projectExternalRef,
   publicPanelUrl,
@@ -67,12 +93,22 @@ import {
   resetMailboxPassword,
   revokeApiKey,
   revokeAppPassword,
+  revokeInvite,
   safeHttpUrl,
   setPrimaryWebmail,
+  setWebmailAutomatico,
   stripWebRecords,
   verifyDomain,
   verifyWhitelabelDomain,
+  workspaceExternalRef,
 } from '../mailway';
+import {
+  alinearNombreCliente,
+  migrarVinculo,
+  readOwnClient,
+  workspaceClientName,
+  workspaceOfMailProject,
+} from '../mailwaycuentas';
 import {
   forgetMailwayTraefik,
   mailwayTraefikConfig,
@@ -95,16 +131,26 @@ import {
   requireLink,
   revokeIgnoringGone,
   serviceOfProject,
+  withMailCredentialLock,
 } from '../mailconnect';
 import { LOCAL_PART_RE } from '../mailenv';
 import { guardarConfigMailway, mailwayConfigSchema, probarConexionMailway } from '../mailwayconfig';
+import { forgetProjectRenewals, renewalsOfProject, renovarCorreoDelProyecto } from '../mailwayrenovacion';
 import { markManualAction } from '../monitor';
 import { isWorkspaceActive, moduleAllowedForProject, workspaceOfProject } from '../quota';
 import { rateLimit } from '../ratelimit';
-import { MailwayLinkRow, ProjectRow, UserRow } from '../types';
+import { MailwayLinkRow, ProjectRow, UserRow, WorkspaceRow } from '../types';
+import { withTimeout } from '../util';
 import { domainSchema } from './services';
 
 const MODULO_INACTIVO = 'El módulo «Correo» no está activo en este workspace.';
+
+/**
+ * Lo que espera la vista del correo a la renovación automática de las
+ * contraseñas invalidadas: con Mailway respondiendo, renovar es cuestión de
+ * dos o tres peticiones; si tarda más, sigue por detrás.
+ */
+const RENOVACION_VISTA_MS = 8000;
 
 /**
  * Código con el que se contesta un fallo de Mailway. Los 400/404/409/429 de
@@ -197,16 +243,65 @@ function writePreviousClient(projectId: string, value: PreviousClient | null): v
   setSetting(previousClientKey(projectId), value ? JSON.stringify(value) : null);
 }
 
+// ---------- quién puede compartir un cliente (un cliente por cuenta) ----------
+
+/**
+ * Vínculo de OTRO proyecto con el cliente que impide vincularlo a este, o
+ * undefined si no hay ninguno. Los proyectos de una cuenta comparten el
+ * cliente de la cuenta; uno de otra cuenta (o cualquier otro, si el proyecto
+ * no tiene cuenta) vería y borraría sus buzones.
+ */
+function linkedElsewhere(project: ProjectRow, links: MailwayLinkWithProject[]): MailwayLinkWithProject | undefined {
+  return links.find((l) => l.project_id !== project.id && (!project.workspace_id || l.workspace_id !== project.workspace_id));
+}
+
+function linkedElsewhereError(project: ProjectRow): Error {
+  return httpError(
+    409,
+    project.workspace_id
+      ? 'Ese cliente de Mailway ya está vinculado a un proyecto de otra cuenta.'
+      : 'Ese cliente de Mailway ya está vinculado a otro proyecto.',
+  );
+}
+
+/**
+ * Por qué no se puede vincular este cliente al proyecto (lo que se enseña
+ * como «vinculado a…»), o null si se puede: lo tiene en Skyway un proyecto que
+ * no es de la misma cuenta, o en Mailway lleva una referencia que no es de
+ * este proyecto ni de su cuenta (la de otro proyecto, otra cuenta u otra
+ * integración).
+ */
+function clientUnavailable(project: ProjectRow, client: { externalRef?: string | null }, links: MailwayLinkWithProject[]): string | null {
+  const ajeno = linkedElsewhere(project, links);
+  if (ajeno) return `proyecto «${ajeno.project_name}»`;
+  const ref = client.externalRef ?? null;
+  return ref !== null && !acceptedClientRefs(project).includes(ref) ? ref : null;
+}
+
+/**
+ * Cliente que la cuenta del proyecto ya tiene en Mailway (referencia
+ * `skyway:workspace:<id>`), o null. La búsqueda por referencia tiene que
+ * devolver un cliente con esa misma referencia.
+ */
+async function workspaceClient(workspace: WorkspaceRow): Promise<MailwayClient | null> {
+  const ref = workspaceExternalRef(workspace.id);
+  const client = await getClientByRef(ref);
+  if (client && (typeof client.id !== 'string' || client.externalRef !== ref)) {
+    throw new MailwayError('http', 'La respuesta de Mailway no corresponde al cliente de la cuenta.', 502);
+  }
+  return client;
+}
+
 /**
  * ¿Se puede recuperar el cliente anterior? Solo si sigue existiendo, ningún
- * otro proyecto lo tiene y su referencia en Mailway está libre o es la del
- * proyecto: si otra integración lo ha tomado, ya no es de este proyecto.
+ * proyecto de otra cuenta lo tiene y su referencia en Mailway está libre o es
+ * del proyecto o de su cuenta: si otra integración lo ha tomado, ya no es suyo.
  */
 async function previousClientStatus(
-  projectId: string,
+  project: ProjectRow,
   prev: PreviousClient,
 ): Promise<{ available: true; name: string; externalRef: string | null } | { available: false; reason: string }> {
-  if (getMailwayLinkByClient(prev.clientId)) {
+  if (linkedElsewhere(project, listMailwayLinksByClient(prev.clientId))) {
     return { available: false, reason: `El cliente anterior «${prev.clientName}» está vinculado a otro proyecto.` };
   }
   let client;
@@ -219,7 +314,7 @@ async function previousClientStatus(
     throw err;
   }
   const ref = client.externalRef ?? null;
-  if (ref !== null && ref !== projectExternalRef(projectId)) {
+  if (ref !== null && !acceptedClientRefs(project).includes(ref)) {
     return {
       available: false,
       reason: `El cliente anterior «${client.name}» está vinculado ahora a otra integración. Un administrador puede liberarlo desde Mailway.`,
@@ -234,10 +329,70 @@ function defaultPlan(plans: MailwayPlan[]): MailwayPlan | null {
   return plans.find((p) => p.id === configured) ?? plans[0] ?? null;
 }
 
-/** Mailway exige al menos 2 caracteres en el nombre del cliente; un proyecto puede tener 1. */
-function defaultClientName(projectName: string): string {
-  const name = projectName.trim();
-  return (name.length >= 2 ? name : `Proyecto ${name}`.trim()).slice(0, 80);
+/**
+ * Nombre del cliente que se crea para el proyecto: el de su cuenta (lo
+ * comparten todos sus proyectos) o, sin cuenta, el del proyecto. Mailway exige
+ * al menos 2 caracteres y en Skyway pueden tener 1.
+ */
+function defaultClientName(project: ProjectRow, workspace: WorkspaceRow | undefined): string {
+  return workspace ? workspaceClientName(workspace) : mailwayClientName(project.name, 'Proyecto');
+}
+
+/**
+ * El cliente de una cuenta lleva el nombre de la cuenta. Si Mailway no deja
+ * cambiarlo, se registra y se sigue con el que tiene: se reintenta al abrir el
+ * correo del proyecto. Devuelve el nombre con el que queda.
+ */
+async function nombreDeCuenta(req: FastifyRequest, clientId: string, actual: string, workspace: WorkspaceRow): Promise<string> {
+  try {
+    return await alinearNombreCliente(clientId, actual, workspace);
+  } catch (err) {
+    if (!(err instanceof MailwayError)) throw err;
+    req.log.warn({ clientId }, `No se ha podido poner al cliente de Mailway el nombre de la cuenta: ${err.message}`);
+    return actual;
+  }
+}
+
+/**
+ * Cliente de correo del proyecto visto desde la cuenta: si es el de la cuenta
+ * (y con qué otros proyectos de la cuenta, de los que quien pregunta puede
+ * ver, lo comparte) o si el proyecto conserva su propio cliente. De paso,
+ * migra el vínculo de antes de compartirlos (`migrarVinculo`) y alinea el
+ * nombre del cliente con el de la cuenta. Ningún fallo de Mailway aquí impide
+ * mostrar el correo: se registra y se reintenta la próxima vez.
+ */
+async function mailAccount(req: FastifyRequest, project: ProjectRow, user: UserRow, summary: MailwaySummary) {
+  const workspace = workspaceOfMailProject(project);
+  if (!workspace) return null;
+  const ref = workspaceExternalRef(workspace.id);
+  let ownClient: { workspaceClientName: string } | null = null;
+  try {
+    if (summary.client.externalRef === projectExternalRef(project.id)) {
+      const r = await migrarVinculo(project, workspace, summary.client);
+      if (r.estado === 'cuenta') Object.assign(summary.client, { externalRef: ref, name: r.name });
+      else ownClient = { workspaceClientName: r.cuenta.name };
+    } else if (summary.client.externalRef === ref) {
+      summary.client.name = await alinearNombreCliente(summary.client.id, summary.client.name, workspace);
+    }
+  } catch (err) {
+    if (!(err instanceof MailwayError)) throw err;
+    req.log.warn({ projectId: project.id }, `Cliente de correo de la cuenta: ${err.message}`);
+    const recordado = summary.client.externalRef === projectExternalRef(project.id) ? readOwnClient(project.id) : null;
+    if (recordado) ownClient = { workspaceClientName: recordado.workspaceClientName };
+  }
+  const shared = summary.client.externalRef === ref;
+  const otros = shared
+    ? listMailwayLinksByClient(summary.client.id)
+        .filter((l) => l.project_id !== project.id && l.workspace_id === workspace.id)
+        .map((l) => getProject(l.project_id))
+        .filter((p): p is ProjectRow => !!p)
+    : [];
+  return {
+    workspaceName: workspace.name,
+    shared,
+    projects: accessibleProjectRows(user, otros).map((p) => ({ id: p.id, name: p.name })),
+    ownClient,
+  };
 }
 
 /** El dominio, si pertenece al cliente del proyecto; si no, 404 (como si no existiera). */
@@ -408,10 +563,19 @@ function publicApiKey(k: MailwayApiKeyInfo) {
 }
 
 function publicAppPassword(a: MailwayAppPasswordInfo) {
-  return { id: a.id, mailboxId: a.mailboxId, email: a.email, name: a.name, createdAt: a.createdAt ?? null, revokedAt: a.revokedAt ?? null };
+  return {
+    id: a.id,
+    mailboxId: a.mailboxId,
+    email: a.email,
+    name: a.name,
+    createdAt: a.createdAt ?? null,
+    revokedAt: a.revokedAt ?? null,
+    // Dejó de funcionar al cambiar Mailway de motor (null con un Mailway anterior).
+    invalidatedAt: typeof a.invalidatedAt === 'number' ? a.invalidatedAt : null,
+  };
 }
 
-function publicSummary(s: MailwaySummary) {
+function publicSummary(s: MailwaySummary, opts: { isAdmin: boolean }) {
   return {
     client: { id: s.client.id, name: s.client.name, slug: s.client.slug, suspended: !!s.client.suspended },
     plan: s.plan
@@ -427,6 +591,12 @@ function publicSummary(s: MailwaySummary) {
       submission: s.connection?.submission ?? null,
       webmailUrl: safeHttpUrl(s.connection?.webmailUrl),
     },
+    // Webmail propio: interruptor del webmail automático del cliente y sus
+    // webmail de marca. null con un Mailway que no lo incluye en el resumen.
+    webmail:
+      typeof s.client.webmailAutomatico === 'boolean' && s.webmailDomains
+        ? { automatico: s.client.webmailAutomatico, domains: publicWebmailDomains(s.webmailDomains, s.domains, opts) }
+        : null,
   };
 }
 
@@ -438,10 +608,29 @@ function publicLink(link: MailwayLinkRow) {
   return { clientId: link.client_id, clientName: link.client_name, createdAt: link.created_at, createdBy: link.created_by };
 }
 
-/** Funciones de la instancia, sin salir a la red si aún no se conocen. */
-function featuresOf(): { cloudflare: boolean; autoconfig: boolean; portal: boolean } | null {
+/**
+ * Funciones de la instancia, sin salir a la red si aún no se conocen.
+ * `webmailAutomatico` es el interruptor global del webmail automático, o null
+ * si el Mailway conectado no lo tiene (la interfaz oculta entonces el suyo).
+ * `invites`: admite los enlaces de bienvenida («Enviar configuración inicial»).
+ */
+function featuresOf(): {
+  cloudflare: boolean;
+  autoconfig: boolean;
+  portal: boolean;
+  webmailAutomatico: boolean | null;
+  invites: boolean;
+} | null {
   const f = cachedInfo()?.features;
-  return f ? { cloudflare: !!f.cloudflare, autoconfig: !!f.autoconfig, portal: !!f.portal } : null;
+  return f
+    ? {
+        cloudflare: !!f.cloudflare,
+        autoconfig: !!f.autoconfig,
+        portal: !!f.portal,
+        webmailAutomatico: typeof f.webmailAutomatico === 'boolean' ? f.webmailAutomatico : null,
+        invites: f.invites === true,
+      }
+    : null;
 }
 
 /** Lee la información de la instancia sin que un fallo impida mostrar el resto. */
@@ -639,6 +828,193 @@ function publicWebmail(d: MailwayWhitelabelDomain, instructions?: MailwayDnsInst
   };
 }
 
+// ---------- webmail propio (webmail automático) ----------
+
+/**
+ * Webmail de marca del cliente (resumen o interruptor) tal como sale hacia la
+ * web: solo nombres válidos que cuelgan de un dominio de correo del cliente
+ * (lo demás no es suyo y no se enseña), sin identificadores de Mailway y con
+ * el enlace formado por Skyway. Con el nombre en un servicio de Skyway o en el
+ * panel, `conflict` lo explica y no hay enlace: llevaría a ese servicio.
+ */
+function publicWebmailDomains(list: MailwayWebmailDomain[], domains: MailwayDomain[], opts: { isAdmin: boolean }) {
+  const zonas = domains.filter((d) => typeof d?.domain === 'string').map((d) => d.domain.toLowerCase());
+  const out: {
+    hostname: string;
+    status: MailwayWhitelabelStatus;
+    detail: string;
+    automatico: boolean;
+    isPrimary: boolean;
+    url: string | null;
+    conflict: string | null;
+  }[] = [];
+  for (const d of list) {
+    const hostname = typeof d?.hostname === 'string' ? d.hostname.trim().toLowerCase() : '';
+    if (!HOST_RE.test(hostname) || !zonas.some((z) => hostname.endsWith(`.${z}`))) continue;
+    if (out.some((o) => o.hostname === hostname)) continue;
+    const status = WEBMAIL_STATUS.has(d.status) ? d.status : 'error';
+    const conflict = webmailHostError(hostname, opts);
+    out.push({
+      hostname,
+      status,
+      detail: typeof d.detail === 'string' ? d.detail : '',
+      automatico: d.automatico === true,
+      isPrimary: d.isPrimary === true,
+      url: status === 'active' && !conflict ? `https://${hostname}` : null,
+      conflict,
+    });
+  }
+  return out;
+}
+
+// ---------- configuración inicial (enlace de bienvenida) ----------
+
+const INVITE_STATUS = new Set<MailwayInviteStatus>(['pending', 'accepted', 'expired', 'revoked']);
+
+const instante = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+interface PublicInvite {
+  id: string;
+  email: string;
+  name: string;
+  createdAt: number | null;
+  expiresAt: number | null;
+  openedAt: number | null;
+  acceptedAt: number | null;
+  revokedAt: number | null;
+  status: MailwayInviteStatus;
+  recoverable: boolean;
+}
+
+/**
+ * Enlace de bienvenida de la lista, solo con los campos conocidos. Un estado
+ * que no se reconoce se deduce de las fechas; solo se puede volver a mostrar
+ * uno pendiente que Mailway marque como recuperable.
+ */
+function publicInvite(i: MailwayInvite): PublicInvite | null {
+  if (!i || typeof i.id !== 'string' || !i.id || typeof i.email !== 'string') return null;
+  const expiresAt = instante(i.expiresAt);
+  const acceptedAt = instante(i.acceptedAt);
+  const revokedAt = instante(i.revokedAt);
+  const status: MailwayInviteStatus = INVITE_STATUS.has(i.status)
+    ? i.status
+    : acceptedAt
+      ? 'accepted'
+      : revokedAt
+        ? 'revoked'
+        : expiresAt !== null && expiresAt <= Date.now()
+          ? 'expired'
+          : 'pending';
+  return {
+    id: i.id,
+    email: i.email,
+    name: typeof i.name === 'string' ? i.name : '',
+    createdAt: instante(i.createdAt),
+    expiresAt,
+    openedAt: instante(i.openedAt),
+    acceptedAt,
+    revokedAt,
+    status,
+    recoverable: status === 'pending' && i.recoverable === true,
+  };
+}
+
+/** Enlaces de bienvenida del cliente, ya saneados. */
+async function clientInvites(clientId: string): Promise<PublicInvite[]> {
+  return (await listInvites(clientId)).map(publicInvite).filter((i): i is PublicInvite => i !== null);
+}
+
+/**
+ * El enlace, si es del cliente vinculado; si no, 404 sin llegar a la ruta
+ * del enlace (como si no existiera). Mailway lista los 50 más recientes.
+ */
+async function ownInvite(clientId: string, inviteId: string): Promise<PublicInvite> {
+  const invite = (await clientInvites(clientId)).find((i) => i.id === inviteId);
+  if (!invite) throw httpError(404, 'Enlace de bienvenida no encontrado en este proyecto');
+  return invite;
+}
+
+/** El enlace con su URL tal como sale hacia la web (la URL, ya comprobada que es http o https). */
+function publicInviteLink(link: MailwayInviteLink, url: string, fallback: { email: string; name: string }) {
+  return {
+    id: link.id,
+    url,
+    email: typeof link.email === 'string' && link.email ? link.email : fallback.email,
+    name: typeof link.name === 'string' ? link.name : fallback.name,
+    expiresAt: instante(link.expiresAt),
+    existingUser: link.existingUser === true,
+  };
+}
+
+const BIENVENIDA_CLIENTE_SUSPENDIDO =
+  'El cliente de correo de este proyecto está suspendido en Mailway: no es posible enviar la configuración inicial hasta que se reactive.';
+
+/**
+ * Los errores de Mailway con un significado propio en los enlaces de
+ * bienvenida, explicados para quien lo pide desde Skyway. El resto se
+ * traslada tal cual (`guarded`).
+ */
+function errorBienvenida(err: unknown): unknown {
+  if (!(err instanceof MailwayError)) return err;
+  switch (err.code) {
+    case 'user_exists':
+      // No se dice de quién es: la administración u otro cliente, da igual a quien lo pide.
+      return httpError(
+        409,
+        'Ese correo electrónico ya lo utiliza otra cuenta del servicio de correo y no puede recibir la configuración inicial de este cliente. Indica otro correo electrónico.',
+      );
+    case 'client_suspended':
+      return httpError(409, BIENVENIDA_CLIENTE_SUSPENDIDO);
+    case 'invite_invalid':
+      return httpError(404, 'Este enlace de bienvenida ya no es válido: se ha utilizado, se ha revocado o ha caducado. Crea uno nuevo.');
+    case 'invite_not_recoverable':
+      return httpError(
+        409,
+        'Este enlace de bienvenida ya no se puede volver a mostrar. Crea uno nuevo para la misma persona: sustituirá al pendiente.',
+      );
+    default:
+      return err;
+  }
+}
+
+/**
+ * Correo que se propone para el enlace de bienvenida: el de contacto del
+ * cliente en Mailway o, si no lo tiene, el del propietario de la cuenta del
+ * proyecto. Solo se propone (el formulario lo deja cambiar), así que un fallo
+ * al consultarlo no impide nada.
+ */
+async function suggestedInviteEmail(project: ProjectRow, clientId: string): Promise<string | null> {
+  try {
+    const contacto = await getClientContactEmail(clientId);
+    if (contacto) return contacto;
+  } catch (err) {
+    if (!(err instanceof MailwayError)) throw err;
+  }
+  if (!project.workspace_id) return null;
+  return listWorkspaceUsers(project.workspace_id).find((u) => u.role === 'owner')?.email ?? null;
+}
+
+/**
+ * Los enlaces de bienvenida solo existen en un Mailway que declara
+ * `features.invites`: con uno anterior, 409 sin llamarle (como el webmail
+ * automático), en lugar de un 404 de Mailway que no explica nada.
+ */
+async function assertInvitesSupported(): Promise<void> {
+  const info = await getInfo();
+  if (info.features?.invites !== true) {
+    throw httpError(
+      409,
+      `La versión de Mailway conectada${versionMailway(info)} no permite enviar la configuración inicial. Es necesario actualizar Mailway.`,
+    );
+  }
+}
+
+/** Días u horas de validez, para la auditoría. */
+function validez(ttlHours: number): string {
+  if (ttlHours % 24 === 0) return `${ttlHours / 24} ${ttlHours === 24 ? 'día' : 'días'}`;
+  return `${ttlHours} ${ttlHours === 1 ? 'hora' : 'horas'}`;
+}
+
 // ---------- registros web del fichero de zona ----------
 
 /**
@@ -720,6 +1096,23 @@ const linkSchema = z.discriminatedUnion('mode', [
   // Recuperar el cliente que el proyecto tenía antes de desactivar el correo.
   z.object({ mode: z.literal('previous') }),
 ]);
+
+/** Enlace de bienvenida: los mismos límites que Mailway (validez de 1 hora a 30 días; 7 días si no se indica). */
+const inviteSchema = z.object({
+  email: z
+    .string({ required_error: 'Indica el correo electrónico de la persona de contacto.' })
+    .trim()
+    .toLowerCase()
+    .email('El correo electrónico de la persona de contacto no es válido')
+    .max(254, 'El correo electrónico admite como máximo 254 caracteres'),
+  name: z.string().trim().max(80, 'El nombre admite como máximo 80 caracteres').optional(),
+  ttlHours: z
+    .number({ invalid_type_error: 'La validez del enlace debe indicarse en horas.' })
+    .int('La validez del enlace debe indicarse en horas enteras')
+    .min(1, 'La validez mínima del enlace es de 1 hora')
+    .max(720, 'La validez máxima del enlace es de 30 días (720 horas)')
+    .optional(),
+});
 
 export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
   /**
@@ -807,10 +1200,15 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
 
     /**
      * Estado del correo del proyecto. Si Skyway no tiene el vínculo pero
-     * Mailway conserva un cliente con la referencia del proyecto (base del
-     * panel restaurada, vínculo creado desde otro Skyway), se recupera solo.
-     * `suggestedDomains` propone, para activar el correo o añadir un dominio,
-     * los dominios registrables de los servicios del proyecto.
+     * Mailway conserva un cliente con la referencia propia del proyecto (base
+     * del panel restaurada, vínculo creado desde otro Skyway), se recupera
+     * solo. Con la de su cuenta no: la comparten todos los proyectos de la
+     * cuenta y recuperarlo activaría el correo en proyectos que nunca lo
+     * activaron (al activarlo, el proyecto se vincula a ese mismo cliente).
+     * `account` dice si el cliente es el de la cuenta y con qué otros
+     * proyectos se comparte. `suggestedDomains` propone, para activar el
+     * correo o añadir un dominio, los dominios registrables de los servicios
+     * del proyecto.
      */
     secured.get(
       '/api/projects/:id/mail',
@@ -843,8 +1241,12 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
             // Un token sin permisos de administrador no puede buscar por referencia: no es un fallo de la vista.
             if (!(err instanceof MailwayError && err.kind === 'http' && err.status === 403)) throw err;
           }
-          if (client && !getMailwayLinkByClient(client.id)) {
-            link = insertMailwayLink({ project_id: id, client_id: client.id, client_name: client.name, created_by: null });
+          if (client && listMailwayLinksByClient(client.id).length === 0) {
+            // Es el cliente propio del proyecto: lo que tenga con el nombre de antes es suyo.
+            link = insertMailwayLink(
+              { project_id: id, client_id: client.id, client_name: client.name, created_by: null },
+              { legacyCredentials: true },
+            );
             writePreviousClient(id, null);
             audit(req, 'mailway_link_restored', { type: 'project', id, detail: `${project.name} → ${client.name}` });
           }
@@ -873,6 +1275,7 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
               linked: true,
               link: publicLink(link),
               notice,
+              account: null,
               panelUrl: publicPanelUrl(),
               features: featuresOf(),
               suggestedDomains: [],
@@ -880,14 +1283,31 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           }
           throw err;
         }
+        // Quien gestiona el proyecto, al abrir su correo, repara al momento las
+        // contraseñas de aplicación que Mailway haya invalidado al cambiar de
+        // motor, sin esperar al ciclo de fondo. Con un plazo: si Mailway tarda,
+        // la renovación sigue por detrás y la vista no la espera.
+        if (base.canManage) {
+          const renovacion = renovarCorreoDelProyecto(project, link, summary, (msg) => req.log.warn(msg));
+          if (await withTimeout(renovacion, RENOVACION_VISTA_MS, () => false)) {
+            const leido = summary;
+            summary = await ownedSummary(project, link).catch(() => leido);
+          }
+        }
+        const account = await mailAccount(req, project, user, summary);
+        // El nombre que recuerdan los vínculos es el de Mailway, que es la fuente.
+        setMailwayLinkClientName(summary.client.id, summary.client.name);
         return {
           ...base,
           linked: true,
-          link: publicLink(link),
-          summary: publicSummary(summary),
+          link: publicLink({ ...link, client_name: summary.client.name }),
+          summary: publicSummary(summary, { isAdmin }),
+          account,
           panelUrl: publicPanelUrl(),
           features: featuresOf(),
           suggestedDomains: suggestedDomains(id, summary.domains.map((d) => d.domain)),
+          // Renovaciones automáticas de las contraseñas de aplicación de sus servicios.
+          renewals: renewalsOfProject(id),
         };
       }),
     );
@@ -896,7 +1316,9 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
      * Opciones del formulario de activación: planes (el administrador elige
      * entre todos; el propietario ve el que se le asignará), clientes para
      * vincular (solo el administrador) y el cliente anterior del proyecto, si
-     * lo hay y se puede recuperar.
+     * lo hay y se puede recuperar. En un proyecto de una cuenta, `workspace`
+     * dice qué cliente tiene ya la cuenta: si tiene uno, activar el correo
+     * vincula el proyecto a él (no se elige plan, nombre ni cliente).
      */
     secured.get(
       '/api/projects/:id/mail/options',
@@ -904,28 +1326,24 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         const ctx = projectCtx(req, reply, { manage: true });
         if (!ctx) return reply;
         if (!mailwayConfigured()) throw httpError(409, NO_CONFIGURADO);
+        const workspace = workspaceOfMailProject(ctx.project);
+        const cuenta = workspace ? await workspaceClient(workspace) : null;
         const all = await listPlans();
         const def = defaultPlan(all);
         const plans = (ctx.isAdmin ? all : def ? [def] : []).map(publicPlan);
         let clients: { id: string; name: string; available: boolean; linkedTo: string | null }[] = [];
-        if (ctx.isAdmin) {
-          const ref = projectExternalRef(ctx.project.id);
-          const byClient = new Map(listMailwayLinks().map((l) => [l.client_id, l.project_name]));
+        // Con el cliente de la cuenta ya creado no se vincula otro: la cuenta tiene uno solo.
+        if (ctx.isAdmin && !cuenta) {
+          const links = listMailwayLinks();
           clients = (await listClients()).map((c) => {
-            const project = byClient.get(c.id);
-            const otherRef = c.externalRef && c.externalRef !== ref ? c.externalRef : null;
-            return {
-              id: c.id,
-              name: c.name,
-              available: !project && !otherRef,
-              linkedTo: project ? `proyecto «${project}»` : otherRef,
-            };
+            const motivo = clientUnavailable(ctx.project, c, links.filter((l) => l.client_id === c.id));
+            return { id: c.id, name: c.name, available: !motivo, linkedTo: motivo };
           });
         }
-        const prev = readPreviousClient(ctx.project.id);
+        const prev = cuenta ? null : readPreviousClient(ctx.project.id);
         let previous: { clientName: string; available: boolean; reason: string | null } | null = null;
         if (prev) {
-          const st = await previousClientStatus(ctx.project.id, prev);
+          const st = await previousClientStatus(ctx.project, prev);
           previous = st.available
             ? { clientName: st.name, available: true, reason: null }
             : { clientName: prev.clientName, available: false, reason: st.reason };
@@ -934,13 +1352,27 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           plans,
           clients,
           defaultPlanId: def?.id ?? null,
-          canChoosePlan: ctx.isAdmin,
-          defaultName: defaultClientName(ctx.project.name),
+          canChoosePlan: ctx.isAdmin && !cuenta,
+          defaultName: defaultClientName(ctx.project, workspace),
           previous,
+          workspace: workspace
+            ? {
+                name: workspace.name,
+                client: cuenta ? { name: cuenta.name, planName: all.find((p) => p.id === cuenta.planId)?.name ?? null } : null,
+              }
+            : null,
         };
       }),
     );
 
+    /**
+     * Activa el correo del proyecto. En un proyecto de una cuenta, el cliente
+     * es el de la cuenta (`skyway:workspace:<id>`, con el nombre de la
+     * cuenta): si ya existe, el proyecto se vincula a él sin crear nada; si
+     * no, se crea (o se recupera el anterior o, un administrador, vincula uno
+     * existente) y pasa a ser el de la cuenta. Sin cuenta, como siempre: un
+     * cliente propio con la referencia del proyecto.
+     */
     secured.post(
       '/api/projects/:id/mail/link',
       { preHandler: rateLimit({ max: 10, windowMs: 60_000 }) },
@@ -951,12 +1383,32 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         assertAccountActive(ctx.project);
         if (getMailwayLink(ctx.project.id)) throw httpError(409, 'El correo ya está activado en este proyecto.');
         const body = linkSchema.parse(req.body);
-        const ref = projectExternalRef(ctx.project.id);
+        // Vincular un cliente que ya existe da a este proyecto sus buzones: solo el administrador.
+        if (body.mode === 'existing' && !ctx.isAdmin) {
+          return reply.code(403).send({ error: 'Solo un administrador puede vincular un cliente existente de Mailway.' });
+        }
+        const workspace = workspaceOfMailProject(ctx.project);
+        if (ctx.project.workspace_id && !workspace) throw httpError(409, 'No se encuentra la cuenta del proyecto.');
+        const ref = clientRefFor(ctx.project);
 
-        let client;
+        let client: { id: string; name: string } | null = null;
         let created = false;
         let detalle = '';
-        if (body.mode === 'create') {
+        // Credenciales con el nombre de antes: solo en un cliente que era de este proyecto.
+        let legacyCredentials = false;
+        const cuenta = workspace ? await workspaceClient(workspace) : null;
+        if (cuenta && workspace) {
+          // La cuenta ya tiene su cliente: es el de todos sus proyectos.
+          const pedido = body.mode === 'existing' ? body.clientId : body.mode === 'previous' ? readPreviousClient(ctx.project.id)?.clientId : cuenta.id;
+          if (pedido !== cuenta.id) {
+            throw httpError(
+              409,
+              `La cuenta «${workspace.name}» ya tiene su cliente de correo en Mailway («${cuenta.name}»). Activa el correo para vincular el proyecto a ese cliente.`,
+            );
+          }
+          client = cuenta;
+          detalle = ` (cliente de la cuenta «${workspace.name}»)`;
+        } else if (body.mode === 'create') {
           // El plan fija lo que el cliente puede crear en Mailway: el
           // propietario recibe el predeterminado; solo el administrador elige.
           let planId: string | undefined = body.planId;
@@ -971,48 +1423,50 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           }
           const res = await ensureClient({
             externalRef: ref,
-            name: body.name || defaultClientName(ctx.project.name),
+            // En una cuenta, el nombre es el de la cuenta: no se elige.
+            name: workspace ? defaultClientName(ctx.project, workspace) : body.name || defaultClientName(ctx.project, undefined),
             ...(planId ? { planId } : {}),
             ...(body.contactEmail ? { contactEmail: body.contactEmail } : {}),
           });
           client = res.client;
           created = !!res.created;
-          if (created) detalle = ' (cliente nuevo)';
+          if (created) detalle = workspace ? ` (cliente nuevo de la cuenta «${workspace.name}»)` : ' (cliente nuevo)';
         } else if (body.mode === 'previous') {
           const prev = readPreviousClient(ctx.project.id);
           if (!prev) throw httpError(404, 'Este proyecto no tiene ningún cliente de correo anterior que recuperar.');
-          const st = await previousClientStatus(ctx.project.id, prev);
+          const st = await previousClientStatus(ctx.project, prev);
           if (!st.available) throw httpError(409, st.reason);
+          // En una cuenta pasa a ser el cliente de la cuenta, con sus dominios y buzones.
           client = st.externalRef === ref ? { id: prev.clientId, name: st.name } : await linkClient(prev.clientId, ref);
+          legacyCredentials = true;
           detalle = ' (cliente anterior recuperado)';
         } else {
-          // Vincular un cliente que ya existe da a este proyecto sus buzones: solo el administrador.
-          if (!ctx.isAdmin) return reply.code(403).send({ error: 'Solo un administrador puede vincular un cliente existente de Mailway.' });
-          if (getMailwayLinkByClient(body.clientId)) {
-            throw httpError(409, 'Ese cliente de Mailway ya está vinculado a otro proyecto.');
-          }
+          if (linkedElsewhere(ctx.project, listMailwayLinksByClient(body.clientId))) throw linkedElsewhereError(ctx.project);
           const current = (await listClients()).find((c) => c.id === body.clientId);
           if (!current) throw httpError(404, 'Cliente de Mailway no encontrado');
-          if (current.externalRef && current.externalRef !== ref) {
+          if (current.externalRef && !acceptedClientRefs(ctx.project).includes(current.externalRef)) {
             throw httpError(409, `El cliente «${current.name}» ya está vinculado a otra integración (${current.externalRef}).`);
           }
-          client = await linkClient(body.clientId, ref);
+          // En una cuenta pasa a ser el de la cuenta. Si otro cliente ya tiene
+          // esa referencia, Mailway responde 409 «external_ref_in_use» con el
+          // motivo, que se traslada tal cual.
+          client = current.externalRef === ref ? current : await linkClient(body.clientId, ref);
+          if (workspace) detalle = ` (cliente de la cuenta «${workspace.name}»)`;
         }
         if (!client?.id) throw new MailwayError('http', 'La respuesta de Mailway no incluye el cliente.', 502);
-        if (getMailwayLinkByClient(client.id)) {
-          throw httpError(409, 'Ese cliente de Mailway ya está vinculado a otro proyecto.');
-        }
-        const link = insertMailwayLink({
-          project_id: ctx.project.id,
-          client_id: client.id,
-          client_name: client.name,
-          created_by: req.authActor ?? null,
-        });
+        // Por si entretanto lo ha tomado un proyecto que no es de la cuenta.
+        if (linkedElsewhere(ctx.project, listMailwayLinksByClient(client.id))) throw linkedElsewhereError(ctx.project);
+        const clientName = workspace ? await nombreDeCuenta(req, client.id, client.name, workspace) : client.name;
+        const link = insertMailwayLink(
+          { project_id: ctx.project.id, client_id: client.id, client_name: clientName, created_by: req.authActor ?? null },
+          { legacyCredentials },
+        );
         writePreviousClient(ctx.project.id, null);
+        setSetting(ownClientKey(ctx.project.id), null);
         audit(req, 'mailway_linked', {
           type: 'project',
           id: ctx.project.id,
-          detail: `${ctx.project.name} → ${client.name}${detalle}`,
+          detail: `${ctx.project.name} → ${clientName}${detalle}`,
         });
         reply.code(201);
         return { ok: true, created, link: publicLink(link) };
@@ -1020,9 +1474,12 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
     );
 
     /**
-     * Desactiva el correo: el cliente y sus buzones siguen en Mailway. La
-     * referencia del proyecto solo se retira si el cliente todavía la lleva, y
-     * se recuerda el cliente para poder recuperarlo al reactivar.
+     * Desactiva el correo: solo se retira el vínculo de este proyecto; el
+     * cliente y sus buzones siguen en Mailway. El cliente de una cuenta
+     * conserva la referencia de la cuenta (aunque fuera el último proyecto que
+     * lo usaba): al volver a activar el correo, el proyecto se vincula de nuevo
+     * a él. Un cliente propio, como siempre: su referencia solo se retira si
+     * todavía la lleva, y se recuerda para poder recuperarlo al reactivar.
      */
     secured.delete(
       '/api/projects/:id/mail/link',
@@ -1031,14 +1488,24 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         if (!ctx) return reply;
         const link = requireLink(ctx.project);
         const released = await releaseProjectClient(ctx.project.id, link.client_id);
+        const workspace = workspaceOfMailProject(ctx.project);
+        const deLaCuenta = !released && !!workspace && (await getClientByRef(workspaceExternalRef(workspace.id)))?.id === link.client_id;
         deleteMailwayLink(ctx.project.id);
-        writePreviousClient(ctx.project.id, { clientId: link.client_id, clientName: link.client_name });
+        forgetProjectRenewals(ctx.project.id);
+        setSetting(ownClientKey(ctx.project.id), null);
+        writePreviousClient(ctx.project.id, deLaCuenta ? null : { clientId: link.client_id, clientName: link.client_name });
         audit(req, 'mailway_unlinked', {
           type: 'project',
           id: ctx.project.id,
-          detail: `${ctx.project.name} ✕ ${link.client_name}${released ? '' : ' (la referencia en Mailway ya no era de este proyecto: no se ha modificado)'}`,
+          detail:
+            `${ctx.project.name} ✕ ${link.client_name}` +
+            (deLaCuenta && workspace
+              ? ` (sigue siendo el cliente de la cuenta «${workspace.name}»)`
+              : released
+                ? ''
+                : ' (la referencia en Mailway ya no era de este proyecto: no se ha modificado)'),
         });
-        return { ok: true, released };
+        return { ok: true, released, workspaceClient: deLaCuenta };
       }),
     );
 
@@ -1379,6 +1846,180 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
       }),
     );
 
+    // ---------- webmail propio (webmail automático del cliente) ----------
+
+    /**
+     * Interruptor del webmail automático del cliente del proyecto. Encendido,
+     * Mailway da de alta por su cuenta `webmail.<dominio>` de cada dominio con
+     * la propiedad comprobada (con su registro DNS); apagado, retira los que
+     * creó solo, con ese registro, y los titulares vuelven al webmail general.
+     * Mientras el interruptor global de Mailway esté apagado, el cambio se
+     * guarda sin efecto (`global: false`). Encenderlo da de alta nombres, así
+     * que exige la cuenta y el cliente activos; apagarlo, no. Con un Mailway
+     * sin la función, 409 sin llamarle.
+     */
+    secured.put(
+      '/api/projects/:id/mail/webmail-automatico',
+      { preHandler: rateLimit({ max: 10, windowMs: 60_000 }) },
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply, { manage: true });
+        if (!ctx) return reply;
+        const body = z
+          .object({
+            activo: z.boolean({
+              required_error: 'Indica si el webmail automático debe estar activado.',
+              invalid_type_error: 'Indica si el webmail automático debe estar activado (true o false).',
+            }),
+          })
+          .parse(req.body ?? {});
+        const link = requireLink(ctx.project);
+        if (body.activo) assertAccountActive(ctx.project);
+        // Como en el resto de rutas: el cliente tiene que seguir siendo el del proyecto.
+        const summary = await ownedSummary(ctx.project, link);
+        if (body.activo) assertClientActive(summary);
+        const info = await getInfo();
+        const global = info.features?.webmailAutomatico;
+        if (typeof global !== 'boolean') {
+          throw httpError(
+            409,
+            `La versión de Mailway conectada${versionMailway(info)} no permite crear el webmail automáticamente. Es necesario actualizar Mailway.`,
+          );
+        }
+        const res = await setWebmailAutomatico(link.client_id, body.activo);
+        const domains = publicWebmailDomains(res.webmailDomains, summary.domains, { isAdmin: ctx.isAdmin });
+        // Reservados ya, sin esperar a la siguiente lectura del puente (como el
+        // alta a mano): mientras esperan DNS, ningún servicio de otro cliente
+        // puede asignárselos.
+        if (res.webmailAutomatico) for (const d of domains) reserveWhitelabelHost(d.hostname);
+        audit(req, 'mailway_webmail_automatico', {
+          type: 'project',
+          id: ctx.project.id,
+          detail: `${ctx.project.name}: ${res.webmailAutomatico ? 'activado' : 'desactivado'}`,
+        });
+        return { automatico: res.webmailAutomatico, global: res.global ?? global, domains };
+      }),
+    );
+
+    // ---------- configuración inicial (enlace de bienvenida del cliente) ----------
+
+    /**
+     * El enlace de bienvenida da a quien lo recibe un acceso propio al panel de
+     * Mailway con todo el cliente del proyecto (dominios, buzones,
+     * contraseñas): crearlo, verlo, revocarlo e incluso listarlos (llevan los
+     * correos de contacto) exigen gestionar el proyecto. El identificador del
+     * cliente sale siempre del vínculo del proyecto, y un enlace concreto se
+     * busca antes entre los de ese cliente: si no es suyo, 404 sin llegar a él.
+     * Con un Mailway que no declara `features.invites`, 409 sin llamarle.
+     */
+    secured.get(
+      '/api/projects/:id/mail/invites',
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply, { manage: true });
+        if (!ctx) return reply;
+        const link = requireLink(ctx.project);
+        await assertInvitesSupported();
+        const summary = await ownedSummary(ctx.project, link);
+        const invites = await clientInvites(link.client_id);
+        return {
+          invites,
+          suggestedEmail: await suggestedInviteEmail(ctx.project, link.client_id),
+          clientName: summary.client.name,
+        };
+      }),
+    );
+
+    /**
+     * Crea el enlace de bienvenida de la persona de contacto del cliente: con
+     * él crea su acceso al panel de Mailway y entra en la puesta en marcha
+     * (dominio y buzones). Sirve una sola vez y sustituye al que esa persona
+     * tuviera pendiente. La URL se devuelve aquí y no se audita.
+     */
+    secured.post(
+      '/api/projects/:id/mail/invites',
+      { preHandler: rateLimit({ max: 10, windowMs: 60_000 }) },
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply, { manage: true });
+        if (!ctx) return reply;
+        const body = inviteSchema.parse(req.body ?? {});
+        const link = requireLink(ctx.project);
+        await assertInvitesSupported();
+        assertAccountActive(ctx.project);
+        const summary = await ownedSummary(ctx.project, link);
+        if (summary.client.suspended) throw httpError(409, BIENVENIDA_CLIENTE_SUSPENDIDO);
+        const ttlHours = body.ttlHours ?? 168;
+        let invite: MailwayInviteLink;
+        try {
+          invite = await createInvite(link.client_id, { email: body.email, ...(body.name ? { name: body.name } : {}), ttlHours });
+        } catch (err) {
+          throw errorBienvenida(err);
+        }
+        const url = safeHttpUrl(invite.url);
+        if (!url) throw new MailwayError('http', 'Mailway ha devuelto un enlace de bienvenida no válido.', 502);
+        // El enlace es una credencial: se audita para quién se creó, nunca su URL.
+        audit(req, 'mailway_invite_created', {
+          type: 'project',
+          id: ctx.project.id,
+          detail: `${ctx.project.name}: ${body.email} (válido ${validez(ttlHours)})`,
+        });
+        reply.code(201);
+        return { invite: publicInviteLink(invite, url, { email: body.email, name: body.name ?? '' }) };
+      }),
+    );
+
+    /** URL de un enlace pendiente, para volver a enviarlo. */
+    secured.get(
+      '/api/projects/:id/mail/invites/:inviteId/url',
+      { preHandler: rateLimit({ max: 20, windowMs: 60_000 }) },
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply, { manage: true });
+        if (!ctx) return reply;
+        const { inviteId } = req.params as { inviteId: string };
+        const link = requireLink(ctx.project);
+        await assertInvitesSupported();
+        await ownedSummary(ctx.project, link);
+        const invite = await ownInvite(link.client_id, inviteId);
+        let res: MailwayInviteLink;
+        try {
+          res = await getInviteUrl(link.client_id, invite.id);
+        } catch (err) {
+          throw errorBienvenida(err);
+        }
+        if (res.id !== invite.id) {
+          throw new MailwayError('http', 'La respuesta de Mailway no corresponde a este enlace de bienvenida.', 502);
+        }
+        const url = safeHttpUrl(res.url);
+        if (!url) throw new MailwayError('http', 'Mailway ha devuelto un enlace de bienvenida no válido.', 502);
+        audit(req, 'mailway_invite_viewed', { type: 'project', id: ctx.project.id, detail: `${ctx.project.name}: ${invite.email}` });
+        // `existingUser` solo lo indica Mailway al crearlo: aquí no se sabe.
+        return { invite: { ...publicInviteLink(res, url, invite), existingUser: null } };
+      }),
+    );
+
+    /**
+     * Revoca un enlace pendiente. Uno caducado o ya revocado no tiene nada que
+     * revocar (200 sin llamar a Mailway); uno aceptado, tampoco: el acceso ya
+     * existe y revocar el enlace no lo retiraría (409).
+     */
+    secured.delete(
+      '/api/projects/:id/mail/invites/:inviteId',
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply, { manage: true });
+        if (!ctx) return reply;
+        const { inviteId } = req.params as { inviteId: string };
+        const link = requireLink(ctx.project);
+        await assertInvitesSupported();
+        await ownedSummary(ctx.project, link);
+        const invite = await ownInvite(link.client_id, inviteId);
+        if (invite.status === 'accepted') {
+          throw httpError(409, 'Este enlace de bienvenida ya se ha utilizado: la persona de contacto ya tiene su acceso al panel de Mailway.');
+        }
+        if (invite.status !== 'pending') return { ok: true, revoked: false };
+        await revokeIgnoringGone(() => revokeInvite(link.client_id, invite.id));
+        audit(req, 'mailway_invite_revoked', { type: 'project', id: ctx.project.id, detail: `${ctx.project.name}: ${invite.email}` });
+        return { ok: true, revoked: true };
+      }),
+    );
+
     // ---------- buzones ----------
 
     /**
@@ -1594,7 +2235,9 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
      * `mailConnectNames`), sin pisar ninguna que alguien haya puesto a mano.
      * Devuelve solo los NOMBRES: los valores son secretos y ya están donde
      * tienen que estar. La credencial del mismo tipo que Skyway creó antes para
-     * este servicio se revoca.
+     * este servicio se revoca. Con el turno de las credenciales del servicio:
+     * una renovación automática en marcha sobre él termina antes, y el resumen
+     * se lee después, con lo que haya dejado.
      */
     secured.post(
       '/api/projects/:id/mail/connect',
@@ -1613,18 +2256,13 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         const service = serviceOfProject(ctx.project.id, body.serviceId);
         assertAccountActive(ctx.project);
         const link = requireLink(ctx.project);
-        const summary = await ownedSummary(ctx.project, link);
-        assertClientActive(summary);
-        const mailbox = ownMailbox(summary, body.mailboxId);
-        const info = await getInfo();
-        const { keys, kept, revoked } = await connectServiceMail({
-          project: ctx.project,
-          link,
-          summary,
-          service,
-          mailbox,
-          mode: body.mode,
-          info,
+        const { keys, kept, revoked, mailbox } = await withMailCredentialLock(service.id, async () => {
+          const summary = await ownedSummary(ctx.project, link);
+          assertClientActive(summary);
+          const box = ownMailbox(summary, body.mailboxId);
+          const info = await getInfo();
+          const r = await connectServiceMail({ project: ctx.project, link, summary, service, mailbox: box, mode: body.mode, info });
+          return { ...r, mailbox: box };
         });
 
         let deploymentId: string | null = null;

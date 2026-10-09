@@ -227,6 +227,32 @@ export function Segmented<T extends string | number>({
   );
 }
 
+// ---------- Toggle ----------
+/**
+ * Interruptor accesible y compacto, en el estilo del panel. El dibujo mide 22px,
+ * pero la zona que responde al toque la amplía un pseudoelemento hasta ~42px:
+ * así se mantiene discreto sin ser imposible de acertar con el pulgar.
+ */
+export function Toggle({ checked, onChange, disabled, label }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; label?: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={cx(
+        'relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors duration-200 before:absolute before:-inset-2.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acc',
+        checked ? 'bg-acc' : 'bg-surface2',
+        disabled && 'cursor-not-allowed opacity-50',
+      )}
+    >
+      <span className={cx('inline-block h-[16px] w-[16px] rounded-full bg-white shadow transition-transform duration-200', checked ? 'translate-x-[19px]' : 'translate-x-[3px]')} />
+    </button>
+  );
+}
+
 // ---------- EmptyState ----------
 /**
  * Hueco vacío con salida. Un panel sin datos no es un error: es el momento de

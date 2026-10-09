@@ -11,6 +11,7 @@ import { startMonitor, stopMonitor } from './monitor';
 import { closeAllSse } from './sse';
 import { startScheduler, stopScheduler } from './scheduler';
 import { startAutoDeploy, stopAutoDeploy } from './autodeploy';
+import { migrarVinculosACuentas } from './mailwaycuentas';
 
 async function main(): Promise<void> {
   ensureDataDirs();
@@ -61,6 +62,13 @@ async function main(): Promise<void> {
 
   await app.listen({ port: config.port, host: config.host });
   app.log.info(`Skyway listo en http://localhost:${config.port}`);
+
+  // Vínculos de correo de antes de compartir un cliente por cuenta: se pasan
+  // al de su cuenta en segundo plano, sin retrasar el arranque. Lo que falle
+  // se registra y se reintenta al abrir el correo del proyecto.
+  void migrarVinculosACuentas((msg) => app.log.warn(msg)).catch((err: unknown) => {
+    app.log.warn({ err }, 'Migración de los clientes de correo por cuenta');
+  });
 }
 
 /** Margen para terminar lo que esté en curso antes de matar el proceso. */

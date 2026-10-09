@@ -229,6 +229,7 @@ export const DEPLOY_TRIGGER_LABEL: Record<string, string> = {
   rollback: 'reversión',
   import: 'importación',
   mailway: 'correo',
+  mailway_renovacion: 'renovación del correo',
 };
 
 export function isActiveDeploy(status: DeploymentStatus): boolean {
@@ -260,6 +261,8 @@ export const ALERT_TYPE_LABEL: Record<string, string> = {
   db_integrity: 'Base de datos del panel dañada',
   disk_quota: 'Espacio asignado superado',
   disk_quota_soon: 'Espacio asignado al 90 %',
+  mail_password_renewed: 'Contraseña de aplicación renovada',
+  mail_password_renewal_failed: 'Contraseña de aplicación sin renovar',
 };
 
 export const AUDIT_ACTION_LABEL: Record<string, string> = {
@@ -326,6 +329,16 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   mailway_webmail_created: 'Webmail con el dominio del cliente configurado',
   mailway_webmail_dns_applied: 'Registro DNS del webmail creado en Cloudflare',
   mailway_webmail_primary: 'Webmail principal del cliente de correo modificado',
+  mailway_webmail_automatico: 'Webmail automático del cliente de correo activado o desactivado',
+  mailway_invite_created: 'Enlace de configuración inicial creado',
+  mailway_invite_viewed: 'Enlace de configuración inicial consultado',
+  mailway_invite_revoked: 'Enlace de configuración inicial revocado',
+  mailway_client_renamed: 'Cliente de correo renombrado como su cuenta',
+  mailway_client_rename_failed: 'No se ha podido renombrar el cliente de correo de la cuenta',
+  mailway_client_shared: 'Cliente de correo del proyecto convertido en el de su cuenta',
+  mailway_client_kept: 'Proyecto con su propio cliente de correo (la cuenta ya tenía otro)',
+  mailway_client_released: 'Cliente de correo de una cuenta eliminada liberado',
+  mailway_client_release_failed: 'No se ha podido liberar el cliente de correo de una cuenta eliminada',
   mailway_mailbox_created: 'Buzón creado',
   mailway_mailbox_password_reset: 'Contraseña de buzón restablecida',
   mailway_mailbox_deleted: 'Buzón eliminado',
@@ -333,6 +346,7 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   mailway_service_connected: 'Correo conectado a un servicio',
   mailway_disconnected: 'Mailway desconectado',
   mailway_app_password_revoked: 'Contraseña de aplicación revocada',
+  mailway_app_password_renewed: 'Contraseña de aplicación renovada automáticamente',
   mailway_api_key_revoked: 'Clave de API de correo revocada',
 };
 

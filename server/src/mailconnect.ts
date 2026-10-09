@@ -2,26 +2,40 @@
  * Correo de un proyecto visto desde un servicio: comprobar que el cliente de
  * Mailway vinculado sigue siendo el del proyecto, elegir con qué nombres
  * recibe el servicio las variables de correo y crear la credencial de envío.
- * Lo usan las rutas del correo (`routes/mailway.ts`) y el plan de
- * integraciones (`integrations.ts`), para que «Conectar a un servicio» y el
- * plan de una web nueva escriban exactamente lo mismo.
+ * Lo usan las rutas del correo (`routes/mailway.ts`), el plan de
+ * integraciones (`integrations.ts`) y la renovación automática de las
+ * contraseñas de aplicación invalidadas (`mailwayrenovacion.ts`), para que
+ * «Conectar a un servicio», el plan de una web nueva y la renovación escriban
+ * exactamente lo mismo.
  */
-import { getMailwayLink, getProject, getService, writeManagedEnv } from './db';
+import { createHash } from 'crypto';
+import { resolveServiceAlerts } from './alerts';
+import { deleteMailwayRenovacion, getMailwayLink, getProject, getService, writeManagedEnv } from './db';
 import {
   MailwayError,
   MailwayInfo,
   MailwayMailbox,
   MailwaySummary,
+  acceptedClientRefs,
   createApiKey,
   createAppPassword,
   getSummary,
   mailwayConfigured,
-  projectExternalRef,
   publicPanelUrl,
   revokeApiKey,
   revokeAppPassword,
 } from './mailway';
-import { CONNECTION_ROLES, MailMode, MailRole, ROLES_BY_MODE, SECRET_ROLES, mailTargets, mailValue, mailVarsOf } from './mailenv';
+import {
+  CONNECTION_ROLES,
+  MailMode,
+  MailRole,
+  MailValues,
+  ROLES_BY_MODE,
+  SECRET_ROLES,
+  mailTargets,
+  mailValue,
+  mailVarsOf,
+} from './mailenv';
 import { envStateOf, writeDecision } from './managedenv';
 import { isWorkspaceActive, workspaceOfProject } from './quota';
 import { GitConfig, MailwayLinkRow, ProjectRow, ServiceRow } from './types';
@@ -55,19 +69,55 @@ export const BUZONES_RESERVADOS = new Set([
 /** Prefijo de las claves de API que crea Skyway (así se distinguen de las demás del cliente). */
 export const PREFIJO_CLAVE = 'Skyway · ';
 
+/** Prefijo de las contraseñas de aplicación que crea Skyway. */
+const PREFIJO_CONTRASENA = 'skyway:';
+
 /**
- * Nombre de la clave de API de un servicio. Mailway admite 60 caracteres, y el
- * slug del servicio (≤ 35) es estable aunque se renombren proyecto o servicio:
- * con él se encuentra la clave anterior al volver a conectar. El proyecto no
- * hace falta, porque el cliente de correo ya es el del proyecto.
+ * Lo que distingue a las credenciales de un servicio dentro de su cliente de
+ * correo: el slug del servicio, estable aunque se renombren proyecto o
+ * servicio (con él se encuentra la credencial anterior al volver a conectar).
+ * En un proyecto de una cuenta, también el del proyecto: los proyectos de una
+ * cuenta comparten cliente, dos pueden tener un servicio «web», y con solo el
+ * slug del servicio, volver a conectar uno revocaría la credencial del otro.
  */
+function credentialScope(service: ServiceRow): string {
+  const project = getProject(service.project_id);
+  return project?.workspace_id ? `${project.slug}/${service.slug}` : service.slug;
+}
+
+/**
+ * Nombre de una credencial: Mailway admite 60 caracteres. Si no cabe, se
+ * recorta con un sufijo sacado de los identificadores (que no cambian): sin
+ * él, dos servicios podrían acabar con el mismo nombre recortado.
+ */
+function credentialName(prefix: string, service: ServiceRow, scope: string): string {
+  const full = `${prefix}${scope}`;
+  if (full.length <= 60) return full;
+  const sufijo = `~${createHash('sha256').update(`${service.project_id}/${service.id}`).digest('hex').slice(0, 8)}`;
+  return `${full.slice(0, 60 - sufijo.length)}${sufijo}`;
+}
+
+/** Nombre de la clave de API de un servicio («Skyway · web» o, en una cuenta, «Skyway · tienda/web»). */
 export function apiKeyName(service: ServiceRow): string {
-  return `${PREFIJO_CLAVE}${service.slug}`.slice(0, 60);
+  return credentialName(PREFIJO_CLAVE, service, credentialScope(service));
 }
 
 /** Nombre de la contraseña de aplicación de un servicio (mismo criterio que la clave). */
 export function appPasswordName(service: ServiceRow): string {
-  return `skyway:${service.slug}`.slice(0, 60);
+  return credentialName(PREFIJO_CONTRASENA, service, credentialScope(service));
+}
+
+/**
+ * Nombres con los que se reconoce la credencial del servicio en ese modo: el
+ * actual y, si el vínculo es de antes de compartir los clientes por cuenta
+ * (`legacy_credentials`), también el de entonces (solo el slug del servicio):
+ * en aquel cliente, que era solo de este proyecto, únicamente pudo crearla él.
+ * En un vínculo nuevo, ese nombre podría ser de otro proyecto de la cuenta.
+ */
+export function credentialNames(service: ServiceRow, mode: MailMode, link: MailwayLinkRow | null): string[] {
+  const actual = mode === 'smtp' ? appPasswordName(service) : apiKeyName(service);
+  const antiguo = credentialName(mode === 'smtp' ? PREFIJO_CONTRASENA : PREFIJO_CLAVE, service, service.slug);
+  return link?.legacy_credentials && antiguo !== actual ? [actual, antiguo] : [actual];
 }
 
 /** Error con código HTTP que el manejador global devuelve tal cual. */
@@ -107,14 +157,23 @@ export function isRefError(err: unknown): err is Error {
 /**
  * Resumen del cliente vinculado, comprobando que sigue siendo el de ESTE
  * proyecto. Skyway habla con Mailway con un token de administrador: si la
- * referencia externa del cliente no es exactamente la del proyecto (se ha
- * desvinculado o vinculado a otra cosa desde Mailway), no se opera sobre él.
+ * referencia externa del cliente no es exactamente una de las del proyecto
+ * (`acceptedClientRefs`: la de su cuenta, que comparten los proyectos de la
+ * cuenta, o la suya propia), no se opera sobre él: se ha desvinculado o
+ * vinculado a otra cosa desde Mailway, o el proyecto ha cambiado de cuenta.
  * Una referencia vacía tampoco vale: puede ser un cliente que el operador ha
  * retirado a propósito de este proyecto.
  */
 export async function ownedSummary(project: ProjectRow, link: MailwayLinkRow): Promise<MailwaySummary> {
-  const summary = await getSummary(link.client_id);
-  const expected = projectExternalRef(project.id);
+  return checkOwnedSummary(project, link, await getSummary(link.client_id));
+}
+
+/**
+ * Las comprobaciones de `ownedSummary` sobre un resumen ya leído: la
+ * renovación automática lee uno por cliente y lo comprueba para cada proyecto
+ * que lo comparte, en vez de pedirlo otra vez por proyecto.
+ */
+export function checkOwnedSummary(project: ProjectRow, link: MailwayLinkRow, summary: MailwaySummary): MailwaySummary {
   if (summary.client.id !== link.client_id) {
     throw new MailwayError('http', 'La respuesta de Mailway no corresponde al cliente vinculado.', 502);
   }
@@ -125,7 +184,7 @@ export async function ownedSummary(project: ProjectRow, link: MailwayLinkRow): P
         'Desactiva el correo en este proyecto; después podrás activarlo de nuevo recuperando ese mismo cliente.',
     );
   }
-  if (ref !== expected) {
+  if (!acceptedClientRefs(project).includes(ref)) {
     throw refError(
       `El cliente de Mailway «${summary.client.name}» está vinculado a otra integración. ` +
         'Desactiva el correo en este proyecto; el cliente y sus buzones se conservan en Mailway.',
@@ -146,6 +205,54 @@ export async function revokeIgnoringGone(fn: () => Promise<void>): Promise<void>
     throw err;
   }
 }
+
+// ---------- un cambio de credencial a la vez por servicio ----------
+
+/**
+ * Cola por servicio de los cambios de su credencial de correo. «Conectar a un
+ * servicio», el plan de integraciones y la renovación automática leen las
+ * credenciales del cliente, crean una, escriben las variables y revocan la
+ * anterior: dos a la vez sobre el mismo servicio podían revocar la que la otra
+ * acababa de escribir y dejarle una que ya no funciona. Se espera turno en vez
+ * de rechazar: cada cambio dura lo que tardan dos o tres peticiones a Mailway.
+ */
+const credentialQueues = new Map<string, Promise<void>>();
+
+/**
+ * Turnos terminados por servicio. Quien leyó el resumen del cliente antes de
+ * pedir turno lo compara al entrar: si ha cambiado, otro ha tocado entretanto
+ * las credenciales del servicio y ese resumen ya no vale.
+ */
+const credentialGenerations = new Map<string, number>();
+
+export function mailCredentialGeneration(serviceId: string): number {
+  return credentialGenerations.get(serviceId) ?? 0;
+}
+
+export async function withMailCredentialLock<T>(serviceId: string, fn: () => Promise<T>): Promise<T> {
+  const previous = credentialQueues.get(serviceId) ?? Promise.resolve();
+  let release!: () => void;
+  const own = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queue = previous.then(() => own);
+  credentialQueues.set(serviceId, queue);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    credentialGenerations.set(serviceId, mailCredentialGeneration(serviceId) + 1);
+    release();
+    if (credentialQueues.get(serviceId) === queue) credentialQueues.delete(serviceId);
+  }
+}
+
+/**
+ * Tipo de la alerta que deja una renovación automática de la contraseña de
+ * aplicación que no se ha podido hacer (`mailwayrenovacion.ts`). Volver a
+ * conectar el correo del servicio la resuelve.
+ */
+export const RENEWAL_FAILED_ALERT = 'mail_password_renewal_failed';
 
 // ---------- nombres de las variables de correo de un servicio ----------
 
@@ -277,8 +384,22 @@ export function mailConnectNames(
 }
 
 /** Servidor de envío autenticado (587, STARTTLS): las aplicaciones no están en la red interna del correo. */
-function submissionOf(info: MailwayInfo): { host: string | null; port: number } {
+export function submissionOf(info: MailwayInfo): { host: string | null; port: number } {
   return { host: info.submission?.host || info.mailHostname || null, port: info.submission?.port || 587 };
+}
+
+/** Variables que se escriben: el valor de cada papel y el origen con el que Skyway recuerda que es suyo. */
+export function mailEntries(
+  mode: MailMode,
+  targets: readonly MailTarget[],
+  values: MailValues,
+): Record<string, { value: string; origin: string }> {
+  const entries: Record<string, { value: string; origin: string }> = {};
+  for (const t of targets) {
+    const value = mailValue(t.role, values);
+    if (value !== null) entries[t.name] = { value, origin: mailOrigin(mode, t.role) };
+  }
+  return entries;
 }
 
 /** Lo que se conoce sin crear nada: sirve para la vista previa de los nombres. */
@@ -301,7 +422,8 @@ export interface MailConnectResult {
  * válida sin que nadie la use (y Mailway limita las contraseñas de aplicación
  * activas por buzón). Si la credencial no cabe en ninguna variable (todas
  * puestas a mano), o si cabe pero el servidor, el puerto o el usuario están
- * puestos a mano con otro valor, no se crea nada (409).
+ * puestos a mano con otro valor, no se crea nada (409). Quien llama tiene el
+ * turno del servicio (`withMailCredentialLock`) y leyó `summary` dentro de él.
  */
 export async function connectServiceMail(opts: {
   project: ProjectRow;
@@ -320,9 +442,10 @@ export async function connectServiceMail(opts: {
     throw new MailwayError('config', 'No se conoce la URL pública de Mailway: configúrala en Ajustes → Correo (Mailway).');
   }
 
-  const credName = mode === 'smtp' ? appPasswordName(service) : apiKeyName(service);
-  const previousApps = mode === 'smtp' ? summary.appPasswords.filter((a) => !a.revokedAt && a.name === credName) : [];
-  const previousKeys = mode === 'api' ? summary.apiKeys.filter((k) => !k.revokedAt && k.name === credName) : [];
+  const credNames = credentialNames(service, mode, link);
+  const credName = credNames[0];
+  const previousApps = mode === 'smtp' ? summary.appPasswords.filter((a) => !a.revokedAt && credNames.includes(a.name)) : [];
+  const previousKeys = mode === 'api' ? summary.apiKeys.filter((k) => !k.revokedAt && credNames.includes(k.name)) : [];
   const names = mailConnectNames(
     service,
     mode,
@@ -367,13 +490,15 @@ export async function connectServiceMail(opts: {
     apiKey = res.key;
   }
 
-  const values = { host, port, user: mailbox.email, password, from: mailbox.email, apiUrl, apiKey };
-  const entries: Record<string, { value: string; origin: string }> = {};
-  for (const t of names.targets) {
-    const value = mailValue(t.role, values);
-    if (value !== null) entries[t.name] = { value, origin: mailOrigin(mode, t.role) };
-  }
+  const entries = mailEntries(mode, names.targets, { host, port, user: mailbox.email, password, from: mailbox.email, apiUrl, apiKey });
   writeManagedEnv(service.id, entries);
+  if (password) {
+    // Contraseña de aplicación nueva, elegida por quien conecta: lo que anotó
+    // una renovación automática anterior (y su alerta, si no pudo hacerse) ya
+    // no describe la credencial del servicio.
+    deleteMailwayRenovacion(service.id);
+    resolveServiceAlerts(service.id, RENEWAL_FAILED_ALERT);
+  }
   return { keys: Object.keys(entries), kept: names.kept, revoked };
 }
 
