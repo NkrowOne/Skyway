@@ -207,9 +207,9 @@ Cada dominio nuevo registrable o con www (`ejemplo.com`, `www.ejemplo.com`) se
 guarda con su pareja con o sin www, también por la API, y la pareja pasa por el
 mismo DNS automático. Para no añadirla, indica el dominio en
 `config.dominiosSinPareja` (en el alta, `dominiosSinPareja` junto a `domains`).
-Quitar el proxy de Cloudflare de un dominio (`POST
-/api/services/:id/cloudflare-proxy`) exige sesión de navegador: no está
-disponible con un token `sky_`.
+Poner o quitar el proxy de Cloudflare de un dominio (`POST
+/api/services/:id/cloudflare-proxy`, con `proxied: true` para ponerlo) exige
+sesión de navegador: no está disponible con un token `sky_`.
 
 Al editar un servicio, el registro solo se crea si la petición indica en
 `domainsBase` los dominios de los que parte (los que leyó antes de editar). Así

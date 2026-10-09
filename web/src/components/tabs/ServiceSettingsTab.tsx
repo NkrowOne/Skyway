@@ -299,10 +299,12 @@ export default function ServiceSettingsTab({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  // «Desactivar proxy en Cloudflare» de un dominio guardado (solo administrador).
-  // La respuesta trae el DNS comprobado de nuevo: la fila se actualiza con él.
-  const disableProxy = useMutation({
-    mutationFn: (domain: string) => api.post<CloudflareProxyResult>(`/services/${service.id}/cloudflare-proxy`, { domain }),
+  // «Activar proxy en Cloudflare» o «Desactivar proxy en Cloudflare» de un
+  // dominio guardado (solo administrador). La respuesta trae el DNS
+  // comprobado de nuevo: la fila se actualiza con él.
+  const proxyCloudflare = useMutation({
+    mutationFn: ({ domain, proxied }: { domain: string; proxied: boolean }) =>
+      api.post<CloudflareProxyResult>(`/services/${service.id}/cloudflare-proxy`, { domain, proxied }),
     onSuccess: (data) => {
       toast(data.result.message, 'ok');
       queryClient.setQueryData(['domainCheck', data.result.domain], { check: data.check });
@@ -576,8 +578,8 @@ export default function ServiceSettingsTab({
               onRetryDns={(d) => retryDns.mutate(d)}
               retryingDns={retryDns.isPending ? retryDns.variables : null}
               guardados={baseline.domains}
-              onDisableProxy={isAdmin ? (d) => disableProxy.mutate(d) : undefined}
-              disablingProxy={disableProxy.isPending ? disableProxy.variables : null}
+              onCambiarProxy={isAdmin ? (domain, proxied) => proxyCloudflare.mutate({ domain, proxied }) : undefined}
+              cambiandoProxy={proxyCloudflare.isPending ? proxyCloudflare.variables?.domain : null}
             />
           </SectionCard>
         )}

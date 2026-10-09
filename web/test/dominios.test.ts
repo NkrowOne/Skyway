@@ -70,12 +70,23 @@ describe('intervaloComprobacion', () => {
   it('cada 15 s los dos primeros minutos, después cada minuto y se detiene a los 30', () => {
     expect(intervaloComprobacion('no_record', 0, 1)).toBe(15_000);
     expect(intervaloComprobacion(undefined, 60_000, 1)).toBe(15_000);
-    expect(intervaloComprobacion('cloudflare_proxy', 3 * 60_000, 1)).toBe(60_000);
+    expect(intervaloComprobacion('wrong_ip', 3 * 60_000, 1)).toBe(60_000);
     expect(intervaloComprobacion('no_record', 30 * 60_000, 1)).toBe(false);
   });
 
   it('se detiene en cuanto el DNS es correcto', () => {
     expect(intervaloComprobacion('ok', 0, 1)).toBe(false);
+  });
+
+  it('no repite un registro con el proxy de Cloudflare que no se puede verificar: esperar no lo cambia', () => {
+    expect(intervaloComprobacion('cloudflare_proxy', 0, 1)).toBe(false);
+    expect(intervaloComprobacion('cloudflare_proxy', 3 * 60_000, 1)).toBe(false);
+  });
+
+  it('sigue comprobando el bucle del modo «Flexible», que se corrige en Cloudflare', () => {
+    expect(intervaloComprobacion('cloudflare_flexible', 0, 1)).toBe(15_000);
+    expect(intervaloComprobacion('cloudflare_flexible', 3 * 60_000, 1)).toBe(60_000);
+    expect(intervaloComprobacion('cloudflare_flexible', 30 * 60_000, 1)).toBe(false);
   });
 
   it('con varios dominios, entre todos no pasan de 20 comprobaciones por minuto (el servidor admite 30)', () => {

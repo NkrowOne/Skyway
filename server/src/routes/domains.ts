@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { requireAuth } from '../auth';
+import { currentUser, requireAuth } from '../auth';
+import { verificarEnCloudflare } from '../cloudflaredns';
 import { getSetting } from '../db';
 import { checkDomain, getServerIp } from '../domains';
 import { rateLimit } from '../ratelimit';
@@ -36,6 +37,10 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     if (!DOMAIN_RE.test(body.domain)) {
       return reply.code(400).send({ error: `"${body.domain}" no parece un dominio válido (ej: app.midominio.com)` });
     }
-    return { check: await checkDomain(body.domain) };
+    // Un nombre con el proxy de Cloudflare se comprueba con su API, que usa el
+    // token del operador: solo para el administrador. A cualquier otro se le
+    // da la comprobación de siempre (desde fuera, sin saber a dónde lleva).
+    const verificar = currentUser(req)?.role === 'admin' ? verificarEnCloudflare : undefined;
+    return { check: await checkDomain(body.domain, { verificar }) };
   });
 }

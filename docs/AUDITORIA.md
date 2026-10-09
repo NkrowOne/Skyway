@@ -206,9 +206,15 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   prueba las del cliente). Con un Mailway anterior no se le llama nunca en ese
   caso. Un dominio que falló se reintenta solo a petición del administrador y
   nombrando ese dominio (`POST /api/services/:id/cloudflare-dns`). El cliente
-  de Cloudflare no tiene métodos para cambiar registros (solo borra, a petición del
-  administrador, uno que creó Skyway sin cambios): lo existente se respeta y un
-  conflicto se informa. El token solo viaja en la cabecera `Authorization` a
+  de Cloudflare solo cambia un registro existente para ponerle o quitarle el
+  proxy (`proxied`, nada más), por un clic expreso del administrador con
+  sesión de navegador y solo en los A de ese nombre que apuntan al servidor
+  (nunca a medias); aparte, solo borra, a petición del administrador, uno que
+  creó Skyway sin cambios: lo existente se respeta y un conflicto se informa.
+  La comprobación de un dominio con el proxy pregunta a la API de Cloudflare
+  (solo lectura) a dónde lleva el registro únicamente para el administrador:
+  para cualquier otro no sale ninguna petición a Cloudflare ni a la web
+  (`server/test/cloudflare-proxy-web.test.ts`). El token solo viaja en la cabecera `Authorization` a
   `api.cloudflare.com`; los mensajes de error no lo incluyen y la herramienta
   de terminal lo lee solo de la entrada estándar (un token en los argumentos se
   rechaza antes de leer nada).

@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.37.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.38.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -1129,17 +1129,30 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   que le falta la pareja (por renuncia o por ser de antes) lo indica en su fila
   con una línea ámbar («Sin www.ejemplo.com: la web no responde con www.») y un
   botón «Añadir», que también retira la renuncia. El subdominio generado se
-  ofrece como fila sugerida al final de la lista. Para el administrador con
-  Cloudflare configurado, un dominio guardado en estado «Proxy de Cloudflare»
-  cuya zona está en su cuenta muestra «Desactivar proxy en Cloudflare»
-  (§7.13). La comprobación del DNS de cada dominio que aún no es correcto se
-  repite sola: cada 15 s los dos primeros minutos, después cada minuto y hasta
-  30 minutos, solo con la pestaña visible y con el intervalo alargado según el
-  número de dominios para no pasar de 20 comprobaciones por minuto (el tope del
-  servidor es 30). Un dominio que resuelve a las IP del proxy de Cloudflare (nube
-  naranja) se indica como «Proxy de Cloudflare» (aviso, no error): el arreglo
-  recomendado («Solo DNS») a la vista y, en «Más información», lo que necesita
-  Let's Encrypt para mantener el proxy.
+  ofrece como fila sugerida al final de la lista. La comprobación del DNS de
+  cada dominio que aún no es correcto se repite sola: cada 15 s los dos
+  primeros minutos, después cada minuto y hasta 30 minutos, solo con la pestaña
+  visible y con el intervalo alargado según el número de dominios para no pasar
+  de 20 comprobaciones por minuto (el tope del servidor es 30).
+  **Proxy de Cloudflare** (nube naranja), la forma recomendada de servir una
+  web: desde fuera, un dominio con el proxy solo resuelve a IP de Cloudflare.
+  Para el administrador, si la zona está en su Cloudflare, se pregunta a la API
+  (solo lectura) a dónde lleva el registro: si apunta a este servidor la fila
+  dice «Configurado» con el proxy y, con HTTPS, se pide la portada a través de
+  Cloudflare para detectar el bucle del modo SSL/TLS «Flexible» («Bucle en
+  Cloudflare», error, con cómo pasar a «Completo (estricto)»); si apunta a otro
+  sitio, «Apunta a otra IP» con lo que hay en Cloudflare. Si no se puede saber
+  (otra cuenta de Cloudflare, sin token, o quien mira no es administrador), la
+  fila dice «Proxy de Cloudflare» en tono neutro y no se repite la
+  comprobación. Para el administrador, la API manda sobre el proxy: el DNS
+  público tarda unos minutos en reflejar que se ha activado o quitado. Con su
+  zona en su cuenta, el administrador ve en el detalle del dominio «Activar
+  proxy en Cloudflare» (dominio sin el proxy, con HTTPS y que cubra el
+  certificado gratuito de Cloudflare: la zona y un nivel de subdominio; nunca
+  el subdominio generado) o «Desactivar proxy en Cloudflare» (dominio con el
+  proxy, también en el bucle del modo «Flexible» como arreglo rápido; para un
+  servicio que no funciona detrás de él: subidas de más de 100 MB o peticiones
+  de más de 100 s en el plan gratuito de Cloudflare) (§7.13).
 - **Página de estado pública**: dashboard compartible por token (sin login), con
   disponibilidad 90 días, incidencias y aviso de mantenimiento; token rotable.
 - **Importador de Railway**: analiza un proyecto por la API oficial y recrea
@@ -1667,7 +1680,7 @@ distroless), el explorador lo indica y no está disponible.
 | GET | `/domains/server-ip` | auth | IP del servidor (configurada o detectada) |
 | GET | `/domains/config` | auth | `{rootDomain, tls}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin) |
 | GET | `/projects/:id/github/needs` | +access | dependencias del repo antes de crearlo (`repo`, `branch`, `rootDir?`, `source?`, `name?`): `needs`, `suggestions`, `missing`, `mail`, `manifest`, `envFile` (§5.5) y `plan`, el plan de integraciones sin efectos (§5.7) |
-| POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`) → `{check: {domain, status, resolvedIps, expectedIp, message}}`; `status`: `ok`, `wrong_ip`, `cloudflare_proxy` (resuelve solo a IP del proxy de Cloudflare: no se puede verificar desde fuera; el mensaje indica la opción «Solo DNS»; el panel explica aparte el modo SSL/TLS «Full»/«Full (strict)» y «Always Use HTTPS»); `message` es siempre una sola frase, `no_record` o `unknown`; 30 por minuto y usuario, después 429 (el editor repite sola la comprobación de los dominios pendientes por debajo de ese tope) |
+| POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`) → `{check: {domain, status, resolvedIps, expectedIp, message, viaCloudflare?}}`; `status`: `ok`, `wrong_ip`, `cloudflare_proxy` (resuelve solo a IP del proxy de Cloudflare y no se ha podido ver a dónde lleva), `cloudflare_flexible` (con el proxy apunta aquí, pero Cloudflare entra en el bucle de redirecciones del modo SSL/TLS «Flexible»), `no_record` o `unknown`; `message` es siempre una sola frase. Solo para el administrador, un nombre con el proxy se comprueba con la API de Cloudflare (solo lectura, `verificarEnCloudflare`: sigue un CNAME hasta tres saltos y el comodín más cercano) y, si apunta aquí, sale `ok` con `viaCloudflare: true` (o `cloudflare_flexible`, si con HTTPS la portada pedida a través de Cloudflare redirige a sí misma); si apunta a otro sitio, `wrong_ip`. La API manda sobre el proxy mientras el DNS público se pone al día: un nombre que aún resuelve a la IP del servidor pero ya tiene el proxy sale con `viaCloudflare: true`, y uno que aún resuelve a Cloudflare pero ya no lo tiene, `ok` sin él. Para cualquier otro no sale ninguna petición a Cloudflare ni a la web; 30 por minuto y usuario, después 429 (el editor repite sola la comprobación de los dominios pendientes por debajo de ese tope) |
 | GET | `/public/status/:token` | público | página de estado pública (cacheada) |
 | GET | `/projects/:id/status-page` | +access | config de la página de estado |
 | POST | `/projects/:id/status-page` | admin | activa/desactiva y aviso |
@@ -1757,7 +1770,7 @@ Zone · Read» y «Zone · DNS · Edit»; la clave global se rechaza). Se guarda
 | POST | `/cloudflare/test` | admin | `{token?}`: prueba el indicado sin guardarlo o, sin él, el guardado (y refresca sus zonas y `lastError`) → `{ok, zones}`. 12/min |
 | GET | `/cloudflare/records` | admin | registros que ha creado el DNS automático → `{records: [{domain, zone, content, project: {id, name} \| null, usedBy: {id, name, project} \| null, createdAt}]}` |
 | POST | `/services/:id/cloudflare-dns` | admin | `{domain}`: repite el DNS automático de **ese** dominio del servicio (tras un `error`, un `conflict` resuelto a mano o un `skipped` por zona o IP) → `{dns}`. 404 si el dominio no está en el servicio, 400 sin token. Nunca recorre los demás dominios del servicio. 30/min |
-| POST | `/services/:id/cloudflare-proxy` | admin + session | `{domain}` («Desactivar proxy en Cloudflare»): quita el proxy de los registros **A** de **ese** nombre exacto que apuntan a la IP del servidor, enviando solo `proxied: false` (ni el destino ni el tipo cambian), y vuelve a comprobar el DNS → `{result: {domain, changed, message}, check}`. Si algún A/AAAA con proxy de ese nombre apunta a otro sitio (otra IP, o un AAAA), 409 sin modificar ninguno; un CNAME, 409; sin zona en el Cloudflare del token o sin registro A, 404; sin token o sin IP del servidor, 400; 404 si el dominio no está guardado en el servicio. `changed: 0` si ya no tenían proxy. Audita `cloudflare_proxy_disabled` («dominio: N registro(s)»). Es la única modificación de un registro existente y siempre es un clic expreso: el DNS automático al guardar sigue sin tocar lo que existe. 10/min |
+| POST | `/services/:id/cloudflare-proxy` | admin + session | `{domain, proxied?}`: «Activar proxy en Cloudflare» (`proxied: true`) o «Desactivar proxy en Cloudflare» (sin `proxied` o `false`). Pone o quita el proxy de los registros **A** de **ese** nombre exacto que apuntan a la IP del servidor, enviando solo `proxied` (ni el destino ni el tipo cambian), y vuelve a comprobar el DNS con la API de Cloudflare → `{result: {domain, changed, message}, check}`. Al activarlo, si algún A/AAAA de ese nombre apunta a otro sitio (otra IP, o un AAAA), 409 sin modificar ninguno (con el proxy, Cloudflare repartiría el tráfico entre ellos); al desactivarlo, lo mismo con los que tienen proxy. Activarlo sin HTTPS configurado (correo de Let's Encrypt), 409: Cloudflare solo podría entregar la web en el modo «Flexible». Activarlo en un nombre que no cubre el certificado gratuito de Cloudflare (más de un nivel por debajo de la zona), 409: los visitantes verían un error de certificado. Un CNAME, 409; sin zona en el Cloudflare del token o sin registro A, 404; sin token o sin IP del servidor, 400; 404 si el dominio no está guardado en el servicio. `changed: 0` si ya estaban así. Audita `cloudflare_proxy_enabled` o `cloudflare_proxy_disabled` («dominio: N registro(s)»). Son las únicas modificaciones de un registro existente y siempre son un clic expreso: el DNS automático al guardar sigue sin tocar lo que existe. 10/min |
 | DELETE | `/cloudflare/records/:domain` | admin | borra en Cloudflare el registro creado y libera el nombre → `{ok, result: 'deleted'\|'gone'\|'released', records}`. 409 si el dominio sigue asignado a un servicio o si el registro se ha modificado en Cloudflare y sigue apuntando a la IP (no se toca y sigue reservado); si ya no existe (`gone`) o apunta a otro sitio (`released`), solo se libera el nombre. Audita `cloudflare_dns_record_deleted`. 30/min |
 
 **DNS automático** (`cloudflaredns.ts`). Tras dar de alta dominios **nuevos**
@@ -1786,8 +1799,16 @@ hay token, para cada dominio que **escribe esa petición**:
    zona (`*.padre`, luego `*.abuelo`…): si alguno de sus A/AAAA/CNAME apunta a
    otro sitio → `conflict` (crear el A cambiaría a dónde va hoy el tráfico);
    si es el del padre y ya apunta a la IP → `kept`.
-4. Si no, se crea un A hacia la IP (`proxied: false`, TTL automático,
-   comentario «Skyway») → `created`.
+4. Si no, se crea un A hacia la IP (TTL automático, comentario «Skyway») →
+   `created`. Con HTTPS configurado (correo de Let's Encrypt), con el proxy de
+   Cloudflare (`proxied: true`): Let's Encrypt valida igualmente porque
+   Cloudflare deja pasar `/.well-known/acme-challenge/` hasta el servidor. Sin
+   HTTPS, sin proxy (`proxied: false`): Cloudflare solo podría entregar la web
+   en el modo «Flexible». Tampoco en un nombre que no cubre el certificado
+   gratuito de Cloudflare (la zona y un nivel de subdominio):
+   `api.tienda.ejemplo.com` daría un error de certificado con el proxy
+   (`cubiertoPorCertificadoCloudflare`). Un A que ya existía no se toca, tenga o no el proxy
+   (`kept` lo dice).
 
 Sin IP del servidor (Ajustes o autodetectada) → `skipped` sin llamar a
 Cloudflare. Un error del token (no válido o revocado —Cloudflare responde
