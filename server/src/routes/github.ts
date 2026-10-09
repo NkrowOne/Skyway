@@ -77,10 +77,11 @@ function verifyState(raw: string | undefined, kind: SetupState['kind']): SetupSt
  * es lo que el usuario está usando ahora mismo para ver el panel.
  */
 function baseUrlOf(req: FastifyRequest): string {
-  // req.hostname/req.protocol respetan `config.trustProxy`: solo se hace caso a
+  // req.host/req.protocol respetan `config.trustProxy`: solo se hace caso a
   // X-Forwarded-* si el proxy es de confianza. Leer la cabecera a pelo dejaría
-  // que cualquiera decidiera qué URLs lleva el manifiesto de la App.
-  const host = req.hostname;
+  // que cualquiera decidiera qué URLs lleva el manifiesto de la App. Es
+  // `req.host` y no `req.hostname` porque en Fastify 5 este pierde el puerto.
+  const host = req.host;
   if (!host) throw new Error('No se pudo determinar la URL pública del panel');
   return `${req.protocol}://${host}`;
 }

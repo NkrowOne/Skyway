@@ -31,10 +31,18 @@ setUnauthorizedHandler(() => {
   queryClient.setQueryData(['me'], { needsSetup: false, user: null });
 });
 
+/*
+ * `useTransitions={false}`: React Router 7 envuelve por defecto en
+ * `React.startTransition` las actualizaciones del router, y eso cambia la
+ * prioridad de esos renders y cuándo aparece el indicador de un `Suspense` que
+ * ya estaba visible (se mantiene la pantalla anterior hasta que llega el chunk,
+ * p. ej. al cambiar `?s=` en un proyecto). La 6 lo hacía sin transiciones (no se
+ * activó `v7_startTransition`); así se conserva ese comportamiento.
+ */
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter useTransitions={false}>
         <ToastProvider>
           <ErrorBoundary scope="el panel">
             <App />

@@ -167,7 +167,7 @@ web/src/
 
 ## 2. Arquitectura en ejecución
 
-- **Servidor**: Node 20+/TypeScript/Fastify. Estado en SQLite (`/data/skyway.db`,
+- **Servidor**: Node 22+/TypeScript/Fastify. Estado en SQLite (`/data/skyway.db`,
   modo WAL). Habla con Docker por `dockerode` + CLI (`docker build/pull`, `git`,
   `nixpacks`).
 - **Web**: React + Vite + Tailwind. El servidor sirve la web compilada en
@@ -539,7 +539,10 @@ huérfanos).
 - **Anti fuerza bruta**: límite por IP (8 intentos / 15 min) en login por
   contraseña y por passkey. La IP real se obtiene respetando el proxy **solo**
   de rangos privados/loopback (`config.trustProxy`), de modo que un cliente en
-  internet no puede falsear `X-Forwarded-For` para evadir el límite.
+  internet no puede falsear `X-Forwarded-For` para evadir el límite. Lo mismo
+  vale para `X-Forwarded-Host` y `X-Forwarded-Proto` (HSTS, cookie `Secure`,
+  guarda CSRF y URLs públicas del panel): solo cuentan si los envía un proxy
+  de confianza.
 - **IP real detrás del proxy de Cloudflare** (`docker-compose.yml`): Traefik
   respeta el `X-Forwarded-For` que manda Cloudflare solo en el 443 y solo si la
   conexión viene de sus rangos publicados (`CLOUDFLARE_IPV4` y
