@@ -104,6 +104,12 @@ describe('cuerpos de las peticiones', () => {
     expect(roto.statusCode).toBe(400);
   });
 
+  it('un OPTIONS sin cuerpo con Content-Type JSON también se atiende como antes', async () => {
+    const r = await app.inject({ method: 'OPTIONS', url: '/api/health', headers: { 'content-type': 'application/json' } });
+    expect(r.statusCode, r.body).toBe(404);
+    expect(r.json()).toEqual({ error: 'No encontrado' });
+  });
+
   it('la subida de archivos admite más de 1 MB y corta pasados 100 MB', async () => {
     const subir = (bytes: number) =>
       app.inject({

@@ -164,24 +164,49 @@ describe('TRUST_PROXY', () => {
     expect([0, 1, 2].map((hop) => dos('203.0.113.1', hop))).toEqual([true, true, false]);
   });
 
-  it('con un número de saltos la IP sigue saliendo de X-Forwarded-For', async () => {
+  it('con un número de saltos, IP, protocolo y host salen de las cabeceras como con Fastify 4', async () => {
     const original = config.trustProxy;
     const apps: FastifyInstance[] = [];
     try {
-      const conSaltos = async (valor: string): Promise<FastifyInstance> => {
+      const construir = async (valor: string): Promise<FastifyInstance> => {
         config.trustProxy = parseTrustProxy(valor);
         const a = buildApp();
         apps.push(a);
         await a.ready();
         return a;
       };
+      const reenviada = { host: 'skyway:4000', 'x-forwarded-host': 'panel.example.com', 'x-forwarded-proto': 'https' };
+      const url = async (a: FastifyInstance, remoteAddress: string) =>
+        (await a.inject({ method: 'GET', url: '/api/github/app', headers: { cookie, ...reenviada }, remoteAddress })).json().webhookUrl;
+
       // Un salto: el proxy inmediato (sea cual sea su dirección) y el cliente es el último de la lista.
-      const uno = await conSaltos('1');
+      const uno = await construir('1');
       expect((await loginFallido(uno, { xff: '198.51.100.1, 203.0.113.9', remoteAddress: '198.51.100.200' })).ip).toBe('203.0.113.9');
-      const dos = await conSaltos('2');
+      // Como entonces, el salto inmediato es de confianza: X-Forwarded-Proto y -Host también cuentan.
+      expect(await url(uno, '198.51.100.200')).toBe('https://panel.example.com/api/webhooks/github/app');
+      const login = await uno.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        payload: BIEN,
+        headers: { 'x-forwarded-proto': 'https', 'x-forwarded-for': '203.0.113.88' },
+        remoteAddress: '198.51.100.200',
+      });
+      expect(login.statusCode).toBe(200);
+      expect(String(login.headers['set-cookie'])).toMatch(/; Secure; SameSite=Lax$/);
+      expect(login.headers['strict-transport-security']).toBe('max-age=15552000; includeSubDomains');
+
+      const dos = await construir('2');
       expect((await loginFallido(dos, { xff: '198.51.100.1, 203.0.113.9', remoteAddress: '198.51.100.200' })).ip).toBe('198.51.100.1');
-      const ninguno = await conSaltos('0');
+
+      // `true`: todos los saltos, hasta el primero de la lista.
+      const todos = await construir('true');
+      expect((await loginFallido(todos, { xff: '198.51.100.2, 203.0.113.9', remoteAddress: '198.51.100.202' })).ip).toBe('198.51.100.2');
+      expect(await url(todos, '198.51.100.202')).toBe('https://panel.example.com/api/webhooks/github/app');
+
+      // 0 (o `false`): ninguno; las cabeceras de reenvío no cuentan.
+      const ninguno = await construir('0');
       expect((await loginFallido(ninguno, { xff: '198.51.100.1', remoteAddress: '198.51.100.201' })).ip).toBe('198.51.100.201');
+      expect(await url(ninguno, '127.0.0.1')).toBe('http://skyway:4000/api/webhooks/github/app');
     } finally {
       config.trustProxy = original;
       for (const a of apps) await a.close();

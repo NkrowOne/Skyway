@@ -161,14 +161,15 @@ export function buildApp(): FastifyInstance {
     }
   });
 
-  // Un DELETE sin cuerpo (ni Content-Length ni Transfer-Encoding) que trae
-  // `Content-Type: application/json` —scripts y agentes que mandan esa cabecera
-  // en todas sus peticiones, `curl -X DELETE -H 'Content-Type: application/json'`—
-  // funcionaba con Fastify 4, que no analizaba el cuerpo; Fastify 5 lo analiza
-  // y responde 400 «Body cannot be empty…». Sin cuerpo, la cabecera no describe
-  // nada: se retira para que la API responda como antes.
+  // Un DELETE u OPTIONS sin cuerpo (ni Content-Length ni Transfer-Encoding) que
+  // trae `Content-Type: application/json` —scripts y agentes que mandan esa
+  // cabecera en todas sus peticiones, `curl -X DELETE -H 'Content-Type:
+  // application/json'`— funcionaba con Fastify 4, que en esos dos métodos no
+  // analizaba el cuerpo; Fastify 5 lo analiza y responde 400 «Body cannot be
+  // empty…». Sin cuerpo, la cabecera no describe nada: se retira para que la
+  // API responda como antes. Ni la web ni `scripts/skyway` envían algo así.
   app.addHook('onRequest', async (req) => {
-    if (req.method !== 'DELETE') return;
+    if (req.method !== 'DELETE' && req.method !== 'OPTIONS') return;
     const headers = req.raw.headers;
     if (headers['content-type'] !== undefined && headers['content-length'] === undefined && headers['transfer-encoding'] === undefined) {
       delete headers['content-type'];
