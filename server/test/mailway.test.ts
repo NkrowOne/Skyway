@@ -45,6 +45,8 @@ let adminCookie = '';
 let ownerHeaders: Record<string, string>;
 let memberHeaders: Record<string, string>;
 let ownerNoMailHeaders: Record<string, string>;
+let wsId = '';
+let wsBlogId = '';
 let projA: ProjectRow;
 let projC: ProjectRow;
 let projSinCorreo: ProjectRow;
@@ -94,11 +96,15 @@ beforeAll(async () => {
   expect(setup.statusCode, setup.body).toBe(200);
   adminCookie = String(setup.headers['set-cookie']).split(';')[0];
 
-  // Cuenta con el módulo de correo y cuenta sin él.
+  // Dos cuentas con el módulo de correo (cada una tendrá su cliente de
+  // Mailway) y una sin él.
   const ws = createWorkspaceRow('Cliente Correo', { modules_override: JSON.stringify(['mail']) });
+  const wsBlog = createWorkspaceRow('Blog S.L.', { modules_override: JSON.stringify(['mail']) });
   const wsNo = createWorkspaceRow('Cliente Sin Correo', { modules_override: JSON.stringify(['domains']) });
+  wsId = ws.id;
+  wsBlogId = wsBlog.id;
   projA = createProject('Tienda', 'tienda', null, ws.id);
-  projC = createProject('Blog', 'blog', null, ws.id);
+  projC = createProject('Blog', 'blog', null, wsBlog.id);
   projSinCorreo = createProject('Otro', 'otro', null, wsNo.id);
 
   const owner = createUser('owner@example.com', hashPassword('contraseña1'), 'owner', ws.id);
@@ -245,7 +251,7 @@ describe('correo de un proyecto', () => {
     expect(adm.json.moduleEnabled).toBe(true);
   });
 
-  it('un miembro no puede activar el correo; el propietario sí, creando el cliente con la referencia del proyecto', async () => {
+  it('un miembro no puede activar el correo; el propietario sí, creando el cliente de la cuenta con su nombre', async () => {
     let r = await call('POST', `/api/projects/${projA.id}/mail/link`, memberHeaders, { mode: 'create' });
     expect(r.status).toBe(403);
     r = await call('GET', `/api/projects/${projA.id}/mail/options`, ownerHeaders);
@@ -254,27 +260,34 @@ describe('correo de un proyecto', () => {
     expect(r.json.clients).toEqual([]); // solo el administrador ve los clientes
     r = await call('POST', `/api/projects/${projA.id}/mail/link`, ownerHeaders, { mode: 'existing', clientId: 'cli_x' });
     expect(r.status).toBe(403);
-    r = await call('POST', `/api/projects/${projA.id}/mail/link`, ownerHeaders, { mode: 'create', planId: 'pln_1' });
+    r = await call('POST', `/api/projects/${projA.id}/mail/link`, ownerHeaders, { mode: 'create', planId: 'pln_1', name: 'Otro nombre' });
     expect(r.status, r.raw).toBe(201);
-    const client = mw.clients.find((c) => c.externalRef === `skyway:project:${projA.id}`);
-    expect(client?.name).toBe('Tienda');
+    // El cliente es el de la cuenta: su referencia y su nombre (el que se envíe no cuenta).
+    const client = mw.clients.find((c) => c.externalRef === `skyway:workspace:${wsId}`);
+    expect(client?.name).toBe('Cliente Correo');
     expect(getMailwayLink(projA.id)?.client_id).toBe(client?.id);
     r = await call('POST', `/api/projects/${projA.id}/mail/link`, ownerHeaders, { mode: 'create' });
     expect(r.status).toBe(409);
   });
 
-  it('el administrador vincula un cliente existente, pero no uno ya vinculado', async () => {
-    const libre: FakeClient = { id: 'cli_libre', name: 'Blog S.L.', slug: 'blog', externalRef: null, suspended: false, planId: 'pln_1' };
+  it('el administrador vincula un cliente existente, que pasa a ser el de la cuenta, pero no el de otra cuenta', async () => {
+    const libre: FakeClient = { id: 'cli_libre', name: 'Blog antiguo', slug: 'blog', externalRef: null, suspended: false, planId: 'pln_1' };
     mw.clients.push(libre);
     const ocupadoA = getMailwayLink(projA.id)!.client_id;
     let r = await call('POST', `/api/projects/${projC.id}/mail/link`, admin(), { mode: 'existing', clientId: ocupadoA });
     expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/proyecto de otra cuenta/);
     const opts = await call('GET', `/api/projects/${projC.id}/mail/options`, admin());
-    expect(opts.json.clients.find((c: Json) => c.id === ocupadoA).available).toBe(false);
+    expect(opts.json.workspace).toEqual({ name: 'Blog S.L.', client: null });
+    expect(opts.json.defaultName).toBe('Blog S.L.');
+    expect(opts.json.clients.find((c: Json) => c.id === ocupadoA)).toMatchObject({ available: false, linkedTo: 'proyecto «Tienda»' });
     expect(opts.json.clients.find((c: Json) => c.id === 'cli_libre').available).toBe(true);
     r = await call('POST', `/api/projects/${projC.id}/mail/link`, admin(), { mode: 'existing', clientId: 'cli_libre' });
     expect(r.status, r.raw).toBe(201);
-    expect(libre.externalRef).toBe(`skyway:project:${projC.id}`);
+    // Con la referencia de la cuenta y su nombre.
+    expect(libre.externalRef).toBe(`skyway:workspace:${wsBlogId}`);
+    expect(libre.name).toBe('Blog S.L.');
+    expect(getMailwayLink(projC.id)?.client_name).toBe('Blog S.L.');
   });
 
   it('dominios y buzones se crean en el cliente del proyecto; la contraseña se entrega una vez y no se audita', async () => {
@@ -460,34 +473,68 @@ describe('correo de un proyecto', () => {
     expect(mw.mailboxes.some((m) => m.id === mailboxA)).toBe(false);
   });
 
-  it('recupera el vínculo desde la referencia de Mailway si Skyway lo ha perdido', async () => {
+  it('si Skyway pierde el vínculo de un proyecto de una cuenta, no se activa solo; al activarlo vuelve al mismo cliente', async () => {
+    const clientId = getMailwayLink(projA.id)!.client_id;
     deleteMailwayLink(projA.id);
-    const r = await call('GET', `/api/projects/${projA.id}/mail`, memberHeaders);
+    let r = await call('GET', `/api/projects/${projA.id}/mail`, memberHeaders);
+    expect(r.status, r.raw).toBe(200);
+    // La referencia de la cuenta la comparten todos sus proyectos: no dice que este tuviera el correo activado.
+    expect(r.json.linked).toBe(false);
+    expect(getMailwayLink(projA.id)).toBeUndefined();
+    const clientes = mw.clients.length;
+    r = await call('POST', `/api/projects/${projA.id}/mail/link`, ownerHeaders, { mode: 'create' });
+    expect(r.status, r.raw).toBe(201);
+    expect(r.json.created).toBe(false);
+    expect(getMailwayLink(projA.id)?.client_id).toBe(clientId);
+    expect(mw.clients).toHaveLength(clientes);
+  });
+
+  it('un proyecto sin cuenta recupera el vínculo desde su referencia si Skyway lo ha perdido', async () => {
+    const suelto = createProject('Suelto', 'suelto', null, null);
+    let r = await call('POST', `/api/projects/${suelto.id}/mail/link`, admin(), { mode: 'create' });
+    expect(r.status, r.raw).toBe(201);
+    const client = mw.clients.find((c) => c.externalRef === `skyway:project:${suelto.id}`);
+    expect(client?.name).toBe('Suelto');
+    deleteMailwayLink(suelto.id);
+    r = await call('GET', `/api/projects/${suelto.id}/mail`, admin());
     expect(r.status, r.raw).toBe(200);
     expect(r.json.linked).toBe(true);
-    expect(getMailwayLink(projA.id)).toBeDefined();
+    expect(r.json.account).toBeNull();
+    expect(getMailwayLink(suelto.id)?.client_id).toBe(client?.id);
     expect(listAudit({ action: 'mailway_link_restored' }).length).toBe(1);
+    // Y desactivarlo suelta su referencia, como siempre.
+    r = await call('DELETE', `/api/projects/${suelto.id}/mail/link`, admin());
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json).toMatchObject({ released: true, workspaceClient: false });
+    expect(client?.externalRef).toBeNull();
   });
 
   it('si el cliente pasa a otra referencia, deja de operarse desde el proyecto', async () => {
     const client = mw.clients.find((c) => c.id === getMailwayLink(projA.id)!.client_id)!;
+    const original = client.externalRef;
     client.externalRef = 'otra-integracion:1';
     const r = await call('POST', `/api/projects/${projA.id}/mail/domains/${domainA}/verify`, ownerHeaders);
     expect(r.status).toBe(409);
-    client.externalRef = `skyway:project:${projA.id}`;
+    client.externalRef = original;
   });
 
-  it('desactivar el correo suelta la referencia en Mailway y conserva sus datos', async () => {
+  it('desactivar el correo de un proyecto de una cuenta conserva la referencia de la cuenta y sus datos', async () => {
     let r = await call('DELETE', `/api/projects/${projA.id}/mail/link`, memberHeaders);
     expect(r.status).toBe(403);
     const clientId = getMailwayLink(projA.id)!.client_id;
     r = await call('DELETE', `/api/projects/${projA.id}/mail/link`, ownerHeaders);
     expect(r.status, r.raw).toBe(200);
+    expect(r.json).toMatchObject({ released: false, workspaceClient: true });
     expect(getMailwayLink(projA.id)).toBeUndefined();
-    expect(mw.clients.find((c) => c.id === clientId)?.externalRef).toBeNull();
+    // Era el último proyecto de la cuenta con correo: la cuenta conserva su cliente igualmente.
+    expect(mw.clients.find((c) => c.id === clientId)?.externalRef).toBe(`skyway:workspace:${wsId}`);
     expect(mw.domains.some((d) => d.clientId === clientId)).toBe(true);
+    expect(getSetting(`mailway.previousClient:${projA.id}`)).toBeNull();
     r = await call('GET', `/api/projects/${projA.id}/mail`, ownerHeaders);
     expect(r.json.linked).toBe(false);
+    const opts = await call('GET', `/api/projects/${projA.id}/mail/options`, ownerHeaders);
+    expect(opts.json.previous).toBeNull();
+    expect(opts.json.workspace).toEqual({ name: 'Cliente Correo', client: { name: 'Cliente Correo', planName: 'Básico' } });
   });
 
   it('si Mailway no encuentra el cliente vinculado, lo indica sin borrar nada y permite desactivarlo', async () => {

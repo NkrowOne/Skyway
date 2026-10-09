@@ -90,13 +90,23 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   dos de ellos críticos— y deja 13 puntos pendientes.
 
 - **Integración con Mailway (correo)** (`mailway.ts`, `mailwaytraefik.ts`,
-  `routes/mailway.ts`): el token de gestión `mwt_…` es de **administrador** de
-  Mailway, así que el aislamiento entre proyectos lo impone Skyway: cada ruta con
-  `:domainId`/`:mailboxId`/`:appId`/`:keyId` lo busca primero en el resumen del
-  cliente vinculado al proyecto y, si no es suyo, responde **404 sin llamar a
-  Mailway**; si la referencia externa del cliente no es exactamente
-  `skyway:project:<id>` (también vacía), 409 en **todas** las rutas de proyecto,
-  incluida el alta de dominios. Activar, desactivar, crear buzones, conectar
+  `mailwaycuentas.ts`, `mailwayrenovacion.ts`, `routes/mailway.ts`): el token
+  de gestión `mwt_…` es de **administrador** de Mailway, así que el
+  aislamiento lo impone Skyway: cada
+  ruta con `:domainId`/`:mailboxId`/`:appId`/`:keyId` lo busca primero en el
+  resumen del cliente vinculado al proyecto, y cada `:inviteId` en la lista de
+  enlaces de bienvenida de ese cliente, y si no es suyo responde **404 sin
+  llamar a Mailway**; si la referencia externa del cliente no es exactamente
+  una de las del proyecto —la de su cuenta (`skyway:workspace:<id>`) o la suya
+  (`skyway:project:<id>`)— (también vacía), 409 en **todas** las rutas de
+  proyecto, incluida el alta de dominios. Un cliente lo comparten como mucho
+  los proyectos de **una misma cuenta**: vincular el de otra cuenta, otro
+  proyecto u otra integración responde 409 sin tocar Mailway, y los nombres de
+  las credenciales de envío llevan el slug del proyecto para que volver a
+  conectar un servicio nunca revoque la credencial del servicio homónimo de
+  otro proyecto de la cuenta. El interruptor del webmail automático y los
+  enlaces de bienvenida (que dan un acceso al panel de Mailway con todo el
+  cliente) exigen gestionar el proyecto; la URL de un enlace nunca se audita. Activar, desactivar, crear buzones, conectar
   servicios, revocar credenciales, aplicar DNS en Cloudflare, restablecer
   contraseñas, crear enlaces **con contraseña** (además con tope de 5 cada 10 min:
   Mailway la comprueba y sería un oráculo) y borrar buzones exigen gestionar el
@@ -116,6 +126,27 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   **El token no viaja por un dominio ajeno**: si el dominio de la URL pública lo
   sirve un servicio de Skyway que no es del proyecto de Mailway, Skyway no la usa
   (solo la dirección interna del panel) y no deja guardarla.
+  **Renovación automática de las contraseñas de aplicación** (`mailwayrenovacion.ts`):
+  cuando Mailway invalida las del motor anterior al pasar a Stalwart 0.16
+  (`invalidatedAt`, solo si lo anuncia `features.appPasswordInvalidation`), Skyway
+  crea otra para el mismo buzón y la escribe sin pedir permiso a nadie, así que
+  aplica las mismas reglas que «Conectar a un servicio» y alguna más: solo en
+  servicios cuyas variables llevan, sin tocar, la credencial que escribió Skyway
+  (en una conexión anterior a `service_managed_env`, además con el usuario igual
+  al buzón de la invalidada); nunca sobrescribe una variable puesta a mano ni
+  añade una que no estuviera, y si el servidor, el puerto o el usuario apuntan a
+  otro proveedor no crea nada (la contraseña nueva viajaría a ese tercero). La
+  nueva se guarda antes de revocar la invalidada, el cliente y el buzón salen del
+  resumen del cliente vinculado (comprobado como en las rutas, con
+  `checkOwnedSummary`) y el cambio va con el turno por servicio que comparten
+  «Conectar a un servicio» y el plan de integraciones (`withMailCredentialLock`).
+  No despliega un servicio detenido a mano ni encima de un despliegue en curso.
+  Cada renovación queda en la auditoría como `mailway_app_password_renewed`
+  (actor `sistema`, objetivo el servicio; buzón, nombres de las variables, si la
+  invalidada se revocó y si se lanzó el despliegue: nunca la contraseña) y avisa
+  por los canales de alertas, también sin secretos. Al abrir el correo del
+  proyecto solo la dispara quien lo gestiona, que podría hacer lo mismo con
+  «Conectar a un servicio».
   **Webmail con el dominio del cliente** (marca blanca, `…/domains/:domainId/webmail`):
   las rutas no aceptan identificadores de marca blanca; el nombre (`webmail.<dominio>`)
   se deriva del dominio del cliente, el dominio propio se busca entre los del

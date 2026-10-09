@@ -886,6 +886,39 @@ export interface MailwayLinkRow {
   client_name: string;
   created_by: string | null; // email de quien lo activó
   created_at: number;
+  /**
+   * 1 = vínculo anterior a compartir el cliente entre los proyectos de una
+   * cuenta: las credenciales de envío con el nombre de antes (solo el slug del
+   * servicio) que haya en el cliente son de este proyecto.
+   */
+  legacy_credentials: number;
+}
+
+/**
+ * Estado de la renovación automática de la contraseña de aplicación SMTP de
+ * un servicio (ver `mailwayrenovacion.ts`):
+ * - `renewed`: la última renovación terminó; las variables tienen la nueva.
+ * - `waiting`: hay que renovarla y se espera a que se pueda (servicio
+ *   detenido, despliegue en curso, cuenta suspendida…), sin crear nada.
+ * - `failed`: no se ha podido renovar; `reason` dice por qué.
+ */
+export type MailwayRenovacionStatus = 'renewed' | 'waiting' | 'failed';
+
+export interface MailwayRenovacionRow {
+  service_id: string;
+  status: MailwayRenovacionStatus;
+  /** Por qué espera o ha fallado (texto para la interfaz, sin secretos); null en `renewed`. */
+  reason: string | null;
+  /** Última renovación completada (variables escritas), aunque después haya fallado otra. */
+  renewed_at: number | null;
+  /** Contraseña de aplicación que creó esa renovación: la que tienen las variables. */
+  app_password_id: string | null;
+  /** Buzón de esa contraseña. */
+  mailbox: string | null;
+  /** Despliegue lanzado para aplicarla; null si el servicio no se había desplegado nunca. */
+  deployment_id: string | null;
+  /** Último intento o comprobación. */
+  updated_at: number;
 }
 
 /**

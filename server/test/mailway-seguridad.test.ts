@@ -165,7 +165,8 @@ describe('activación y plan (R1, #8)', () => {
   });
 
   it('#8: un proyecto de un carácter recibe un nombre de cliente válido; un nombre de 1 carácter se rechaza', async () => {
-    const corto = createProject('X', 'x', null, wsA.id);
+    // Sin cuenta: el cliente es solo suyo y lleva el nombre del proyecto.
+    const corto = createProject('X', 'x', null, null);
     let r = await call('POST', `/api/projects/${corto.id}/mail/link`, admin(), { mode: 'create', name: 'a' });
     expect(r.status).toBe(400);
     const opts = await call('GET', `/api/projects/${corto.id}/mail/options`, admin());
@@ -257,7 +258,8 @@ describe('conectar servicios y credenciales (#1, #2, #3)', () => {
     const r = await call('POST', `/api/projects/${largo.id}/mail/connect`, ownerA, { serviceId: svc.id, mailboxId: b.json.mailbox.id, mode: 'api' });
     expect(r.status, r.raw).toBe(200);
     const created = mw.apiKeys.find((k) => k.senderMailboxId === b.json.mailbox.id)!;
-    expect(created.name).toBe('Skyway · servidor-de-notificaciones');
+    // En una cuenta lleva también el slug del proyecto: sus proyectos comparten el cliente de correo.
+    expect(created.name).toBe('Skyway · plataforma-reservas/servidor-de-notificaciones');
     expect(created.name.length).toBeLessThanOrEqual(60);
   });
 
@@ -271,7 +273,7 @@ describe('conectar servicios y credenciales (#1, #2, #3)', () => {
     expect(r.status, r.raw).toBe(200);
     expect(r.json.revoked).toBe(1);
     expect(getEnv(svcA.id).SMTP_PASS).not.toBe(primera);
-    const smtp = mw.appPasswords.filter((a) => a.name === 'skyway:api');
+    const smtp = mw.appPasswords.filter((a) => a.name === 'skyway:tienda/api');
     expect(smtp).toHaveLength(2);
     expect(smtp.filter((a) => !a.revokedAt)).toHaveLength(1);
 
@@ -284,10 +286,10 @@ describe('conectar servicios y credenciales (#1, #2, #3)', () => {
     expect(r.json.revoked).toBe(0);
     r = await connect('api');
     expect(r.json.revoked).toBe(1);
-    const claves = mw.apiKeys.filter((k) => k.name === 'Skyway · api');
+    const claves = mw.apiKeys.filter((k) => k.name === 'Skyway · tienda/api');
     expect(claves.filter((k) => !k.revokedAt)).toHaveLength(1);
     // Cambiar de modo no revoca la del otro tipo: su variable sigue en el servicio.
-    expect(mw.appPasswords.filter((a) => a.name === 'skyway:api' && !a.revokedAt)).toHaveLength(1);
+    expect(mw.appPasswords.filter((a) => a.name === 'skyway:tienda/api' && !a.revokedAt)).toHaveLength(1);
     expect(listAudit({ action: 'mailway_service_connected' }).some((a) => String(a.detail).includes('revocada'))).toBe(true);
   });
 
@@ -295,7 +297,7 @@ describe('conectar servicios y credenciales (#1, #2, #3)', () => {
     const view = await call('GET', `/api/projects/${projA.id}/mail`, memberA);
     expect(view.status, view.raw).toBe(200);
     const app = view.json.summary.appPasswords.find((a: Json) => !a.revokedAt);
-    const key = view.json.summary.apiKeys.find((k: Json) => !k.revokedAt);
+    const key = view.json.summary.apiKeys.find((k: Json) => !k.revokedAt && k.name === 'Skyway · tienda/api');
     expect(key.createdBySkyway).toBe(true);
     expect(view.raw).not.toContain('ClaveApiSecreta');
 
@@ -310,7 +312,17 @@ describe('conectar servicios y credenciales (#1, #2, #3)', () => {
     // Revocar dos veces no falla.
     expect((await call('DELETE', `/api/projects/${projA.id}/mail/api-keys/${key.id}`, ownerA)).status).toBe(200);
     // La de otro cliente no existe para este proyecto (y no llega a Mailway).
-    const ajena = mw.apiKeys.find((k) => k.clientId !== clientOf(projA.id).id)!;
+    const ajena = {
+      id: 'key_otro_cliente',
+      clientId: 'cli_otro',
+      name: 'Skyway · web',
+      prefix: 'mw_Otro',
+      senderMailboxId: 'mbx_otro',
+      senderEmail: 'web@otro.example',
+      revokedAt: null,
+      createdAt: 1,
+    };
+    mw.apiKeys.push(ajena);
     mw.calls = [];
     expect((await call('DELETE', `/api/projects/${projA.id}/mail/api-keys/${ajena.id}`, ownerA)).status).toBe(404);
     expect(mailwayCalls((c) => c.method === 'DELETE')).toEqual([]);
@@ -335,7 +347,7 @@ describe('conectar servicios y credenciales (#1, #2, #3)', () => {
     r = await call('DELETE', `/api/projects/${projA.id}/mail/mailboxes/${mailboxA}`, ownerA);
     expect(r.status).toBe(409);
     expect(r.json.error).toMatch(/Revoque esas claves/);
-    expect(mw.apiKeys.filter((k) => k.name === 'Skyway · api' && !k.revokedAt)).toHaveLength(0);
+    expect(mw.apiKeys.filter((k) => k.name === 'Skyway · tienda/api' && !k.revokedAt)).toHaveLength(0);
 
     expect((await call('DELETE', `/api/projects/${projA.id}/mail/api-keys/key_manual`, ownerA)).status).toBe(200);
     r = await call('DELETE', `/api/projects/${projA.id}/mail/mailboxes/${mailboxA}`, ownerA);
@@ -449,9 +461,11 @@ describe('Cloudflare solo con las cuentas del cliente (C1)', () => {
 // ======================= referencia externa (R5, R6, #4, #15) =======================
 
 describe('referencia externa del cliente (R5, R6, #4, #15)', () => {
-  it('R5: sin referencia o con la de otro proyecto no se opera, tampoco al añadir dominios', async () => {
+  it('R5: sin referencia o con la de otro proyecto u otra cuenta no se opera, tampoco al añadir dominios', async () => {
     const client = clientOf(projA.id);
-    for (const ref of [null, 'skyway:project:OTRO']) {
+    const original = client.externalRef;
+    expect(original).toBe(`skyway:workspace:${wsA.id}`);
+    for (const ref of [null, 'skyway:project:OTRO', 'skyway:workspace:OTRA']) {
       client.externalRef = ref;
       const view = await call('GET', `/api/projects/${projA.id}/mail`, memberA);
       expect(view.status, view.raw).toBe(200);
@@ -464,46 +478,71 @@ describe('referencia externa del cliente (R5, R6, #4, #15)', () => {
       r = await call('POST', `/api/projects/${projA.id}/mail/domains/${domainA}/verify`, memberA);
       expect(r.status).toBe(409);
     }
-    client.externalRef = `skyway:project:${projA.id}`;
+    client.externalRef = original;
   });
 
   it('R6/#4: desactivar no borra la referencia de otra integración', async () => {
-    const tmp = createProject('Temporal', 'temporal', null, wsA.id);
-    expect((await call('POST', `/api/projects/${tmp.id}/mail/link`, ownerA, { mode: 'create' })).status).toBe(201);
+    // Sin cuenta: su referencia es la del proyecto y desactivar la suelta (si todavía es suya).
+    const tmp = createProject('Temporal', 'temporal', null, null);
+    expect((await call('POST', `/api/projects/${tmp.id}/mail/link`, admin(), { mode: 'create' })).status).toBe(201);
     const client = clientOf(tmp.id);
     client.externalRef = 'skyway:project:OTRO';
-    const r = await call('DELETE', `/api/projects/${tmp.id}/mail/link`, ownerA);
+    mw.calls = [];
+    const r = await call('DELETE', `/api/projects/${tmp.id}/mail/link`, admin());
     expect(r.status, r.raw).toBe(200);
     expect(r.json.released).toBe(false);
     expect(client.externalRef).toBe('skyway:project:OTRO');
-    expect(mailwayCalls((c) => c.method === 'DELETE' && c.path.endsWith('/link'))).toEqual([]);
+    expect(mailwayCalls((c) => c.method === 'DELETE' && c.path.includes('/link'))).toEqual([]);
     expect(getMailwayLink(tmp.id)).toBeUndefined();
     // Y no se ofrece recuperarlo: ya es de otra integración.
-    const opts = await call('GET', `/api/projects/${tmp.id}/mail/options`, ownerA);
+    const opts = await call('GET', `/api/projects/${tmp.id}/mail/options`, admin());
     expect(opts.json.previous).toMatchObject({ available: false });
-    const again = await call('POST', `/api/projects/${tmp.id}/mail/link`, ownerA, { mode: 'previous' });
+    const again = await call('POST', `/api/projects/${tmp.id}/mail/link`, admin(), { mode: 'previous' });
     expect(again.status).toBe(409);
   });
 
-  it('#15: tras desactivar, el propietario recupera el mismo cliente con sus dominios', async () => {
+  it('#15: tras desactivar, el propietario vuelve a activarlo y recupera el mismo cliente con sus dominios', async () => {
     const before = clientOf(projA.id);
     let r = await call('DELETE', `/api/projects/${projA.id}/mail/link`, ownerA);
     expect(r.status, r.raw).toBe(200);
-    expect(r.json.released).toBe(true);
-    expect(before.externalRef).toBeNull();
+    // El cliente de la cuenta conserva su referencia: no hace falta «recuperarlo».
+    expect(r.json).toMatchObject({ released: false, workspaceClient: true });
+    expect(before.externalRef).toBe(`skyway:workspace:${wsA.id}`);
 
     const opts = await call('GET', `/api/projects/${projA.id}/mail/options`, ownerA);
-    expect(opts.json.previous).toEqual({ clientName: before.name, available: true, reason: null });
+    expect(opts.json.previous).toBeNull();
+    expect(opts.json.workspace.client.name).toBe(before.name);
     // Un miembro no puede reactivar.
-    expect((await call('POST', `/api/projects/${projA.id}/mail/link`, memberA, { mode: 'previous' })).status).toBe(403);
-    r = await call('POST', `/api/projects/${projA.id}/mail/link`, ownerA, { mode: 'previous' });
+    expect((await call('POST', `/api/projects/${projA.id}/mail/link`, memberA, { mode: 'create' })).status).toBe(403);
+    r = await call('POST', `/api/projects/${projA.id}/mail/link`, ownerA, { mode: 'create' });
     expect(r.status, r.raw).toBe(201);
     expect(getMailwayLink(projA.id)?.client_id).toBe(before.id);
-    expect(before.externalRef).toBe(`skyway:project:${projA.id}`);
+    expect(before.externalRef).toBe(`skyway:workspace:${wsA.id}`);
     const view = await call('GET', `/api/projects/${projA.id}/mail`, ownerA);
     expect(view.json.summary.domains.map((d: Json) => d.id)).toContain(domainA);
-    // El recuerdo se consume: no se puede recuperar dos veces.
     expect(getSetting(`mailway.previousClient:${projA.id}`)).toBeNull();
+  });
+
+  it('#15 sin cuenta: tras desactivar, el administrador recupera el mismo cliente con sus dominios', async () => {
+    const suelto = createProject('Suelto', 'suelto', null, null);
+    expect((await call('POST', `/api/projects/${suelto.id}/mail/link`, admin(), { mode: 'create' })).status).toBe(201);
+    const before = clientOf(suelto.id);
+    const d = await call('POST', `/api/projects/${suelto.id}/mail/domains`, admin(), { domain: 'suelto.example' });
+    expect(d.status, d.raw).toBe(201);
+    let r = await call('DELETE', `/api/projects/${suelto.id}/mail/link`, admin());
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json.released).toBe(true);
+    expect(before.externalRef).toBeNull();
+    const opts = await call('GET', `/api/projects/${suelto.id}/mail/options`, admin());
+    expect(opts.json.previous).toEqual({ clientName: before.name, available: true, reason: null });
+    r = await call('POST', `/api/projects/${suelto.id}/mail/link`, admin(), { mode: 'previous' });
+    expect(r.status, r.raw).toBe(201);
+    expect(getMailwayLink(suelto.id)?.client_id).toBe(before.id);
+    expect(before.externalRef).toBe(`skyway:project:${suelto.id}`);
+    const view = await call('GET', `/api/projects/${suelto.id}/mail`, admin());
+    expect(view.json.summary.domains.map((x: Json) => x.id)).toContain(d.json.domain.id);
+    // El recuerdo se consume: no se puede recuperar dos veces.
+    expect(getSetting(`mailway.previousClient:${suelto.id}`)).toBeNull();
   });
 });
 

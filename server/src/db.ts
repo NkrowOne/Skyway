@@ -15,6 +15,8 @@ import {
   InvoiceRow,
   InvoiceSeriesRow,
   MailwayLinkRow,
+  MailwayRenovacionRow,
+  MailwayRenovacionStatus,
   PendingChargeRow,
   PriceTierRow,
   ProductRow,
@@ -597,12 +599,16 @@ export function initDb(): void {
     CREATE INDEX IF NOT EXISTS idx_pending_charges_workspace ON pending_charges(workspace_id, status);
     CREATE INDEX IF NOT EXISTS idx_usage_meter_lookup ON usage_meter_hourly(subject_id, meter, hour);
     -- Vínculo proyecto ↔ cliente de Mailway (correo). En Mailway el cliente
-    -- lleva la referencia externa «skyway:project:<id>», que es la fuente de
-    -- verdad; esta fila es su espejo local para no preguntar a Mailway en cada
-    -- vista y para comprobar que un dominio o buzón pertenece al proyecto.
-    -- Un cliente solo puede estar vinculado a un proyecto: la referencia
-    -- externa es única en Mailway y dos proyectos compartiendo cliente verían
-    -- (y borrarían) los buzones del otro.
+    -- lleva la referencia externa de la cuenta del proyecto
+    -- («skyway:workspace:<id>») o, en un proyecto sin cuenta (y en los clientes
+    -- propios de antes de compartirlos), la del proyecto
+    -- («skyway:project:<id>»). Esa referencia es la fuente de verdad; esta fila
+    -- es su espejo local para no preguntar a Mailway en cada vista y para
+    -- comprobar que un dominio o buzón pertenece al proyecto. Los proyectos de
+    -- una MISMA cuenta comparten su cliente (dominios, buzones y plan); nunca
+    -- proyectos de cuentas distintas, que verían (y borrarían) los buzones del
+    -- otro: lo impone routes/mailway.ts al vincular. El índice único por
+    -- cliente de antes lo retira mailwayLinksCompartidos().
     CREATE TABLE IF NOT EXISTS mailway_links (
       project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
       client_id TEXT NOT NULL,
@@ -610,7 +616,7 @@ export function initDb(): void {
       created_by TEXT,
       created_at INTEGER NOT NULL
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_mailway_links_client ON mailway_links(client_id);
+    CREATE INDEX IF NOT EXISTS idx_mailway_links_client_id ON mailway_links(client_id);
     -- Variables que escribió Skyway por su cuenta (correo, plan de
     -- integraciones) con el hash del valor que escribió. Es lo que permite
     -- distinguir una variable que Skyway puede actualizar de una que alguien ha
@@ -649,6 +655,22 @@ export function initDb(): void {
       value_hash TEXT NOT NULL,
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (service_id, key)
+    );
+    -- Renovación automática de la contraseña de aplicación de un servicio
+    -- conectado por SMTP cuando Mailway la invalida (cambio de motor, ver
+    -- mailwayrenovacion.ts). Recuerda la que creó Skyway para sustituirla: con
+    -- ella, un intento que no llegó a revocar la invalidada no crea otra. Y el
+    -- motivo por el que espera o no se ha podido hacer, para la interfaz. Sin
+    -- secretos: solo identificadores de Mailway, el buzón y el despliegue.
+    CREATE TABLE IF NOT EXISTS mailway_renovaciones (
+      service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
+      status TEXT NOT NULL,
+      reason TEXT,
+      renewed_at INTEGER,
+      app_password_id TEXT,
+      mailbox TEXT,
+      deployment_id TEXT,
+      updated_at INTEGER NOT NULL
     );
   `);
 
@@ -750,6 +772,10 @@ export function initDb(): void {
   // el pago no debe revivir lo que se cortó a mano.
   ensureColumn('workspace_api_keys', 'suspended_by', 'TEXT');
   ensureColumn('workspace_subscriptions', 'paused_by', 'TEXT');
+  // 1 = las credenciales de envío con el nombre de antes (solo el slug del
+  // servicio) que haya en el cliente de correo son de este proyecto: las creó
+  // cuando el cliente era solo suyo. Ver `credentialNames` en mailconnect.ts.
+  ensureColumn('mailway_links', 'legacy_credentials', 'INTEGER NOT NULL DEFAULT 0');
 
   seedDefaultPlans();
   // El orden importa: `migrateClientsToWorkspaces` es quien rellena
@@ -764,6 +790,25 @@ export function initDb(): void {
   // su primer tramo de historial de plan.
   backfillPlanPeriods();
   releaseDeletedProjectRefs();
+  mailwayLinksCompartidos();
+}
+
+/**
+ * Los proyectos de una misma cuenta comparten su cliente de Mailway, así que
+ * `mailway_links` deja de tener un índice único por cliente (el normal lo crea
+ * el esquema). Los vínculos que ya existían son de clientes que eran de un solo
+ * proyecto: las credenciales de envío con el nombre de antes que haya en ellos
+ * son suyas (`legacy_credentials`). Una sola vez, en una transacción.
+ */
+function mailwayLinksCompartidos(): void {
+  if (getSetting('migrations:mailway_links_shared_v1') === 'done') return;
+  db.transaction(() => {
+    db.exec(`
+      DROP INDEX IF EXISTS idx_mailway_links_client;
+      UPDATE mailway_links SET legacy_credentials = 1;
+    `);
+    setSetting('migrations:mailway_links_shared_v1', 'done');
+  })();
 }
 
 /**
@@ -1584,6 +1629,82 @@ export function writeManagedEnv(serviceId: string, entries: Record<string, { val
   })();
 }
 
+// ---------- correo: renovación de contraseñas de aplicación invalidadas ----------
+
+export function getMailwayRenovacion(serviceId: string): MailwayRenovacionRow | undefined {
+  return stmt('SELECT * FROM mailway_renovaciones WHERE service_id = ?').get(serviceId) as MailwayRenovacionRow | undefined;
+}
+
+/** Renovaciones de los servicios de un proyecto. */
+export function listMailwayRenovaciones(projectId: string): MailwayRenovacionRow[] {
+  return stmt(
+    `SELECT r.* FROM mailway_renovaciones r JOIN services s ON s.id = r.service_id
+      WHERE s.project_id = ? ORDER BY r.updated_at DESC`,
+  ).all(projectId) as MailwayRenovacionRow[];
+}
+
+/**
+ * Anota que la renovación espera o no se ha podido hacer. Conserva la última
+ * que se completó: su contraseña sigue siendo la de las variables.
+ */
+export function setMailwayRenovacionPendiente(
+  serviceId: string,
+  status: Exclude<MailwayRenovacionStatus, 'renewed'>,
+  reason: string,
+): void {
+  stmt(
+    `INSERT INTO mailway_renovaciones (service_id, status, reason, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(service_id) DO UPDATE SET status = excluded.status, reason = excluded.reason, updated_at = excluded.updated_at`,
+  ).run(serviceId, status, reason, now());
+}
+
+/**
+ * Escribe las variables con la contraseña nueva y anota la renovación en la
+ * misma transacción: si las variables la tienen, Skyway sabe cuál es, y un
+ * intento posterior no crea otra aunque la invalidada siga sin revocar.
+ */
+export function writeMailwayRenovacion(
+  serviceId: string,
+  entries: Record<string, { value: string; origin: string }>,
+  renovacion: { appPasswordId: string; mailbox: string },
+): void {
+  const at = now();
+  db.transaction(() => {
+    writeManagedEnv(serviceId, entries);
+    stmt(
+      `INSERT INTO mailway_renovaciones (service_id, status, reason, renewed_at, app_password_id, mailbox, deployment_id, updated_at)
+       VALUES (?, 'renewed', NULL, ?, ?, ?, NULL, ?)
+       ON CONFLICT(service_id) DO UPDATE SET status = 'renewed', reason = NULL, renewed_at = excluded.renewed_at,
+         app_password_id = excluded.app_password_id, mailbox = excluded.mailbox, deployment_id = NULL,
+         updated_at = excluded.updated_at`,
+    ).run(serviceId, at, renovacion.appPasswordId, renovacion.mailbox, at);
+  })();
+}
+
+/** Despliegue lanzado para aplicar la contraseña renovada. */
+export function setMailwayRenovacionDeployment(serviceId: string, deploymentId: string): void {
+  stmt('UPDATE mailway_renovaciones SET deployment_id = ? WHERE service_id = ?').run(deploymentId, serviceId);
+}
+
+/**
+ * Lo que se anotó como pendiente ya no hace falta (se ha vuelto a conectar el
+ * correo, o el servicio ya no usa esa contraseña): vuelve a la última
+ * renovación completada o, si no hubo ninguna, se olvida.
+ */
+export function clearMailwayRenovacionPendiente(serviceId: string): void {
+  db.transaction(() => {
+    stmt(`DELETE FROM mailway_renovaciones WHERE service_id = ? AND renewed_at IS NULL`).run(serviceId);
+    stmt(
+      `UPDATE mailway_renovaciones SET status = 'renewed', reason = NULL, updated_at = ? WHERE service_id = ? AND status <> 'renewed'`,
+    ).run(now(), serviceId);
+  })();
+}
+
+/** Al volver a conectar el correo del servicio por SMTP, la renovación anterior deja de contar. */
+export function deleteMailwayRenovacion(serviceId: string): void {
+  stmt('DELETE FROM mailway_renovaciones WHERE service_id = ?').run(serviceId);
+}
+
 // ---------- deployments ----------
 export function createDeployment(
   serviceId: string,
@@ -1897,25 +2018,57 @@ export function getMailwayLink(projectId: string): MailwayLinkRow | undefined {
   return stmt('SELECT * FROM mailway_links WHERE project_id = ?').get(projectId) as MailwayLinkRow | undefined;
 }
 
-export function getMailwayLinkByClient(clientId: string): MailwayLinkRow | undefined {
-  return stmt('SELECT * FROM mailway_links WHERE client_id = ?').get(clientId) as MailwayLinkRow | undefined;
-}
+/** Vínculo con el nombre y la cuenta de su proyecto. */
+export type MailwayLinkWithProject = MailwayLinkRow & { project_name: string; workspace_id: string | null };
 
-/** Vínculos con el nombre de su proyecto: el formulario de vincular un cliente existente dice cuál está ocupado. */
-export function listMailwayLinks(): (MailwayLinkRow & { project_name: string })[] {
+/**
+ * Proyectos vinculados a un cliente de Mailway, del más antiguo al más nuevo.
+ * Varios solo si son de la misma cuenta (los que comparten su cliente).
+ */
+export function listMailwayLinksByClient(clientId: string): MailwayLinkWithProject[] {
   return stmt(
-      `SELECT l.*, p.name AS project_name FROM mailway_links l JOIN projects p ON p.id = l.project_id
-       ORDER BY l.created_at ASC`,
+      `SELECT l.*, p.name AS project_name, p.workspace_id AS workspace_id
+         FROM mailway_links l JOIN projects p ON p.id = l.project_id
+        WHERE l.client_id = ? ORDER BY l.created_at ASC`,
     )
-    .all() as (MailwayLinkRow & { project_name: string })[];
+    .all(clientId) as MailwayLinkWithProject[];
 }
 
-export function insertMailwayLink(row: Omit<MailwayLinkRow, 'created_at'>): MailwayLinkRow {
-  const full: MailwayLinkRow = { ...row, created_at: now() };
+/**
+ * Vínculos con el nombre y la cuenta de su proyecto, del más antiguo al más
+ * nuevo: el formulario de vincular un cliente existente dice cuál está
+ * ocupado, y la migración a clientes por cuenta respeta ese orden.
+ */
+export function listMailwayLinks(): MailwayLinkWithProject[] {
+  return stmt(
+      `SELECT l.*, p.name AS project_name, p.workspace_id AS workspace_id
+         FROM mailway_links l JOIN projects p ON p.id = l.project_id
+        ORDER BY l.created_at ASC`,
+    )
+    .all() as MailwayLinkWithProject[];
+}
+
+/**
+ * `legacyCredentials`: el cliente era solo de este proyecto (su cliente propio,
+ * recuperado), así que las credenciales con el nombre de antes que tenga son
+ * suyas. Si no, nunca: en un cliente compartido serían de otro proyecto de la
+ * cuenta (ver `credentialNames` en mailconnect.ts).
+ */
+export function insertMailwayLink(
+  row: Omit<MailwayLinkRow, 'created_at' | 'legacy_credentials'>,
+  opts: { legacyCredentials?: boolean } = {},
+): MailwayLinkRow {
+  const full: MailwayLinkRow = { ...row, created_at: now(), legacy_credentials: opts.legacyCredentials ? 1 : 0 };
   stmt(
-    `INSERT INTO mailway_links (project_id, client_id, client_name, created_by, created_at) VALUES (?, ?, ?, ?, ?)`,
-  ).run(full.project_id, full.client_id, full.client_name, full.created_by, full.created_at);
+    `INSERT INTO mailway_links (project_id, client_id, client_name, created_by, created_at, legacy_credentials)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(full.project_id, full.client_id, full.client_name, full.created_by, full.created_at, full.legacy_credentials);
   return full;
+}
+
+/** Nombre del cliente que recuerdan todos sus vínculos (Mailway es la fuente: se copia de allí). */
+export function setMailwayLinkClientName(clientId: string, clientName: string): void {
+  stmt('UPDATE mailway_links SET client_name = ? WHERE client_id = ? AND client_name <> ?').run(clientName, clientId, clientName);
 }
 
 export function deleteMailwayLink(projectId: string): void {

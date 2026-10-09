@@ -1463,6 +1463,24 @@ export interface MailAppPassword {
   name: string;
   createdAt: number | null;
   revokedAt: number | null;
+  /** Dejó de funcionar al cambiar Mailway de motor de correo; null si no (o con un Mailway anterior). */
+  invalidatedAt?: number | null;
+}
+
+/**
+ * Renovación automática de la contraseña de aplicación de un servicio
+ * conectado por SMTP, cuando Mailway la invalida al cambiar de motor.
+ * `renewed`: hecha; `waiting`: se hará cuando se pueda (servicio detenido,
+ * despliegue en curso…); `failed`: no se ha podido hacer (`reason`).
+ */
+export interface MailRenewal {
+  status: 'renewed' | 'waiting' | 'failed';
+  reason: string | null;
+  /** Última renovación completada, aunque después haya fallado otra. */
+  renewedAt: number | null;
+  mailbox: string | null;
+  /** Despliegue que la aplica; null si el servicio no se había desplegado nunca. */
+  deployment: { id: string; status: DeploymentStatus } | null;
 }
 
 export interface MailSummary {
@@ -1478,6 +1496,83 @@ export interface MailSummary {
     submission: { host: string; port: number; security: string } | null;
     webmailUrl: string | null;
   };
+  /** Webmail propio del cliente; null si el Mailway conectado no tiene el webmail automático. */
+  webmail: MailWebmailAuto | null;
+}
+
+/** Webmail de marca del cliente de correo (`webmail.<dominio>`), creado a mano o por el webmail automático. */
+export interface MailWebmailAutoDomain {
+  hostname: string;
+  status: MailWebmailStatus;
+  /** Último resultado de la comprobación, redactado por Mailway. */
+  detail: string;
+  /** Lo creó el webmail automático: se retira al desactivarlo. */
+  automatico: boolean;
+  isPrimary: boolean;
+  /** Solo en servicio y sin conflicto. */
+  url: string | null;
+  /** Motivo por el que el nombre no funciona (lo sirve un servicio, es el del panel…). */
+  conflict: string | null;
+}
+
+export interface MailWebmailAuto {
+  /** Interruptor del webmail automático del cliente de correo. */
+  automatico: boolean;
+  domains: MailWebmailAutoDomain[];
+}
+
+/** Respuesta de `PUT …/mail/webmail-automatico`. */
+export interface MailWebmailAutoResult {
+  automatico: boolean;
+  /** Interruptor global de Mailway: apagado, el del cliente no tiene efecto. */
+  global: boolean;
+  domains: MailWebmailAutoDomain[];
+}
+
+/** El cliente de correo del proyecto visto desde su cuenta. */
+export interface MailAccountView {
+  workspaceName: string;
+  /** El cliente es el de la cuenta: lo comparten sus proyectos con el correo activado. */
+  shared: boolean;
+  /** Otros proyectos de la cuenta que lo utilizan (de los que el usuario puede ver). */
+  projects: { id: string; name: string }[];
+  /** El proyecto conserva su propio cliente: la cuenta ya tenía otro. */
+  ownClient: { workspaceClientName: string } | null;
+}
+
+export type MailInviteStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
+
+/** Enlace de bienvenida (configuración inicial) de la persona de contacto del cliente. */
+export interface MailInvite {
+  id: string;
+  email: string;
+  name: string;
+  createdAt: number | null;
+  expiresAt: number | null;
+  openedAt: number | null;
+  acceptedAt: number | null;
+  revokedAt: number | null;
+  status: MailInviteStatus;
+  /** Pendiente y se puede volver a mostrar. */
+  recoverable: boolean;
+}
+
+/** Enlace de bienvenida con su URL: al crearlo y al volver a mostrarlo. */
+export interface MailInviteLink {
+  id: string;
+  url: string;
+  email: string;
+  name: string;
+  expiresAt: number | null;
+  /** El correo ya tiene acceso al panel del cliente (elegirá una contraseña nueva); null si no se sabe. */
+  existingUser: boolean | null;
+}
+
+export interface MailInvitesView {
+  invites: MailInvite[];
+  /** Correo de contacto del cliente o del propietario de la cuenta. */
+  suggestedEmail: string | null;
+  clientName: string;
 }
 
 export interface ProjectMailView {
@@ -1490,11 +1585,23 @@ export interface ProjectMailView {
   linked: boolean;
   notice?: string | null;
   panelUrl: string | null;
-  features: { cloudflare: boolean; autoconfig: boolean; portal: boolean } | null;
+  /** `webmailAutomatico`: interruptor global del webmail automático; null si Mailway no lo tiene. */
+  features: {
+    cloudflare: boolean;
+    autoconfig: boolean;
+    portal: boolean;
+    webmailAutomatico: boolean | null;
+    /** El Mailway conectado admite los enlaces de bienvenida («Enviar configuración inicial»). */
+    invites: boolean;
+  } | null;
   link?: { clientId: string; clientName: string; createdAt: number; createdBy: string | null };
   summary?: MailSummary;
+  /** El cliente visto desde la cuenta del proyecto; null sin cuenta. */
+  account?: MailAccountView | null;
   /** Dominios registrables de los servicios del proyecto que el cliente de correo aún no tiene. */
   suggestedDomains: string[];
+  /** Renovaciones automáticas de las contraseñas de aplicación, por servicio (solo con el correo activado). */
+  renewals?: Record<string, MailRenewal>;
 }
 
 export type MailWebmailStatus = 'pending_dns' | 'issuing' | 'active' | 'error';
@@ -1540,6 +1647,8 @@ export interface MailOptions {
   defaultName: string;
   /** Cliente que el proyecto tenía antes de desactivar el correo. */
   previous: { clientName: string; available: boolean; reason: string | null } | null;
+  /** Cuenta del proyecto y el cliente de correo que ya tiene (lo comparten sus proyectos); null sin cuenta. */
+  workspace: { name: string; client: { name: string; planName: string | null } | null } | null;
 }
 
 export interface MailCloudflarePlan {
