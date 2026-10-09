@@ -58,6 +58,23 @@ Abre `http://IP-DEL-SERVIDOR:4000` (o `http://tu-dominio`) y crea la cuenta de a
 
 > El contenedor de Skyway monta `/var/run/docker.sock` para orquestar los contenedores de tus aplicaciones directamente sobre el Docker del host. Eso implica que quien tenga acceso a Skyway controla el Docker del servidor: usa una contraseña fuerte y, a ser posible, no expongas el puerto 4000 públicamente (usa el dominio con TLS o una VPN).
 
+## Actualizaciones
+
+Skyway se actualiza desde el propio servidor con el comando `skyway` (`scripts/skyway`). Enlázalo una vez desde la carpeta de Skyway y activa la actualización automática:
+
+```bash
+sudo ln -s "$PWD/scripts/skyway" /usr/local/bin/skyway
+sudo skyway auto-update on --sistema   # cada noche, y parches de seguridad del sistema (Debian y Ubuntu)
+sudo skyway auto-update status         # próxima ejecución, último resultado y registro
+skyway update                          # actualizar ahora, a mano
+```
+
+**Qué es automático.** Los parches de las dependencias y de las imágenes (Node, Traefik): Dependabot los propone cada semana y, si la CI pasa entera, se fusionan solos. Cada noche, a las 04:30, el servidor aplica lo que haya en `main` (también lo que fusiona una persona): reconstruye, comprueba que el panel, Traefik y el HTTPS del panel responden y, si algo falla, vuelve automáticamente a la versión anterior. Sin nada nuevo no reinicia nada. Con `--sistema`, unattended-upgrades instala los parches de seguridad del sistema y, solo si uno lo exige (núcleo, libc), reinicia el servidor a las 05:30, una hora después de la actualización.
+
+**Qué no lo es.** Las versiones menores y mayores (llegan en PR que revisa una persona), las versiones nuevas de la distribución o de Docker y restaurar datos: una actualización nunca toca los volúmenes, las migraciones de la base de datos del panel solo añaden tablas y columnas y, si alguna vez hiciera falta, la copia diaria del panel se restaura a mano.
+
+`skyway update` termina con **0** (actualizado, o sin nada nuevo), **1** (no se ha actualizado: el servidor sigue con la versión anterior) o **2** (también ha fallado la vuelta atrás: hay que revisar el servidor). El resultado de cada noche está en `sudo skyway auto-update status` y en `journalctl -u skyway-auto-update`, y llega por los canales de Ajustes → Alertas: un aviso breve al actualizar y otro, con el motivo, si algo falla. Detalle en [docs/FUNCIONALIDAD.md](docs/FUNCIONALIDAD.md) §9.1.
+
 ## Primeros pasos
 
 1. **Crea un proyecto** — por ejemplo `mi-saas`. Cada proyecto tiene su red privada `skyway-mi-saas`.
@@ -149,7 +166,8 @@ server/src/
   docker/                 contenedores, redes, stats, logs
   deploy/                 builder (git+docker/nixpacks), orquestador, cola
   routes/                 API REST + SSE + webhooks (+ monitor, websites, status público)
-  tools/                  herramientas de terminal: contraseña, tokens de API y conexión con Mailway
+  tools/                  herramientas de terminal: contraseña, tokens de API, conexión con Mailway y avisos
+scripts/skyway            CLI: despliegues por la API y actualización del propio Skyway en el servidor
 web/src/
   pages/                  Dashboard, Proyecto, Monitor, Sitios, Estado público...
   components/             canvas de servicios, drawer con pestañas, gráficas

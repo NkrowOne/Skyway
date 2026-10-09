@@ -40,7 +40,11 @@ services:
       - traefik.http.services.skyway.loadbalancer.server.port=4000
 
   traefik:
-    image: traefik:v3.7
+    # Versión exacta: los parches llegan como PR de Dependabot que han pasado la
+    # CI, y `skyway update` los aplica (y vuelve atrás si algo falla). Con una
+    # etiqueta flotante como «v3.7», `docker compose up` seguiría usando la
+    # imagen que ya tuviera el servidor: solo descarga las que faltan.
+    image: traefik:v3.7.14
     container_name: skyway-traefik
     restart: unless-stopped
     command:

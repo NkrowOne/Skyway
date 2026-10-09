@@ -4,7 +4,8 @@
  * y `tools/mailway.ts` (conectar Mailway como en Ajustes → Correo). Se llaman
  * sus funciones exportadas, sin lanzar procesos, y lo que crean se comprueba
  * contra las rutas reales con `app.inject()`. Mailway es el doble de
- * `mailwayfake.ts`.
+ * `mailwayfake.ts`. También `tools/aviso.ts`, con la que `skyway update
+ * --auto` avisa por los canales de alertas.
  */
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
@@ -24,6 +25,7 @@ import {
 } from '../src/db';
 import { resetMailwayCaches } from '../src/mailway';
 import { resetMailwayTraefikState } from '../src/mailwaytraefik';
+import { ejecutarAviso } from '../src/tools/aviso';
 import { ejecutarMailway } from '../src/tools/mailway';
 import { ejecutarToken } from '../src/tools/token';
 import type { GitConfig, ServiceRow } from '../src/types';
@@ -447,6 +449,126 @@ describe('herramienta mailway: conectar con el token de la entrada estándar', (
   });
 });
 
+// ======================= aviso.js =======================
+
+describe('herramienta aviso: un mensaje por los canales de alertas', () => {
+  const DISCORD = 'https://discord.example.com/api/webhooks/1/secreto-de-discord';
+  const TELEGRAM = '123456:secreto-de-telegram';
+  let enviados: { url: string; body: Json }[] = [];
+  let telegramRechaza = false;
+
+  // Discord y Telegram falsos: se anota lo enviado y Telegram puede rechazar el token.
+  beforeAll(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        enviados.push({ url, body: JSON.parse(String(init.body)) });
+        if (url.includes('api.telegram.org') && telegramRechaza) {
+          return new Response('{"ok":false,"error_code":401,"description":"Unauthorized"}', { status: 401 });
+        }
+        return new Response('{}', { status: 200 });
+      }),
+    );
+  });
+
+  afterAll(() => {
+    vi.stubGlobal('fetch', vi.fn(fakeFetch));
+    for (const k of ['alertDiscordUrl', 'alertTelegramToken', 'alertTelegramChat', 'alertWebhookUrl']) setSetting(k, null);
+  });
+
+  beforeEach(() => {
+    enviados = [];
+    telegramRechaza = false;
+  });
+
+  async function aviso(argv: string[]) {
+    const r = io();
+    const code = await ejecutarAviso(argv, r.io);
+    return { code, out: r.out, err: r.err };
+  }
+
+  it('sin canales configurados no envía nada y termina con código 0', async () => {
+    const r = await aviso(['--nivel', 'info', '--mensaje', 'Skyway se ha actualizado.']);
+    expect(r.code).toBe(0);
+    expect(r.out.map((l) => JSON.parse(l))).toEqual([{ ok: true, channels: [], failures: [] }]);
+    expect(r.err.join('\n')).toMatch(/No hay ningún canal de notificación configurado \(Ajustes → Alertas\)/);
+    expect(enviados).toEqual([]);
+  });
+
+  it('valida los argumentos antes de enviar nada', async () => {
+    setSetting('alertDiscordUrl', DISCORD);
+    const casos: [string[], RegExp][] = [
+      [[], /Uso:/],
+      [['--mensaje', 'Hola'], /--nivel/],
+      [['--nivel', 'aviso', '--mensaje', 'Hola'], /«info» o «error»/],
+      [['--nivel', 'info'], /Indica el texto del aviso con --mensaje/],
+      [['--nivel', 'info', '--mensaje', ' \r\n '], /no puede estar vacío/],
+      [['--nivel', 'info', '--mensaje', 'x'.repeat(1501)], /como máximo 1500 caracteres/],
+      [['--nivel', 'info', '--mensaje', 'Hola', '--titulo', 'x'.repeat(101)], /como máximo 100 caracteres/],
+      [['--nivel', 'info', '--mensaje', 'Hola', '--canal', 'discord'], /Opción desconocida: --canal/],
+      [['--nivel', 'info', '--nivel', 'error', '--mensaje', 'Hola'], /repetida/],
+      [['info', 'Hola'], /Argumento no reconocido/],
+    ];
+    for (const [argv, motivo] of casos) {
+      const r = await aviso(argv);
+      expect(r.code, argv.join(' ')).toBe(1);
+      expect(r.out, argv.join(' ')).toEqual([]);
+      expect(r.err.join('\n'), argv.join(' ')).toMatch(motivo);
+    }
+    expect(enviados).toEqual([]);
+  });
+
+  it('envía el texto a todos los canales: un error, como alerta crítica y sin caracteres de control', async () => {
+    setSetting('alertDiscordUrl', DISCORD);
+    setSetting('alertTelegramToken', TELEGRAM);
+    setSetting('alertTelegramChat', '42');
+    const r = await aviso([
+      '--nivel',
+      'error',
+      '--titulo',
+      'Actualización automática',
+      '--mensaje',
+      'La actualización ha fallado.\r\u001b[31m Se ha vuelto a la versión anterior.',
+    ]);
+    expect(r.code, r.err.join('\n')).toBe(0);
+    expect(r.err).toEqual([]);
+    expect(JSON.parse(r.out[0])).toEqual({ ok: true, channels: ['discord', 'telegram'], failures: [] });
+    expect(enviados.map((e) => e.url).sort()).toEqual([DISCORD, `https://api.telegram.org/bot${TELEGRAM}/sendMessage`].sort());
+    const discord = enviados.find((e) => e.url === DISCORD)!.body.content as string;
+    expect(discord.startsWith('🔴 [Skyway] Actualización automática\nLa actualización ha fallado.')).toBe(true);
+    expect(discord).toContain('Se ha vuelto a la versión anterior.');
+    expect(discord).not.toMatch(/[\r\u001b]/);
+    expect(enviados.find((e) => e.url.includes('telegram'))!.body).toMatchObject({ chat_id: '42' });
+
+    // Sin --titulo, el genérico; «info», como información.
+    enviados = [];
+    expect((await aviso(['--nivel', 'info', '--mensaje', 'Skyway se ha actualizado.'])).code).toBe(0);
+    expect(enviados.find((e) => e.url === DISCORD)!.body.content).toBe('🔵 [Skyway] Aviso del servidor\nSkyway se ha actualizado.');
+  });
+
+  it('un canal que falla: código 1, cuál y por qué, sin el token ni la URL', async () => {
+    setSetting('alertDiscordUrl', DISCORD);
+    setSetting('alertTelegramToken', TELEGRAM);
+    setSetting('alertTelegramChat', '42');
+    telegramRechaza = true;
+    const r = await aviso(['--nivel', 'error', '--mensaje', 'La actualización ha fallado.']);
+    expect(r.code).toBe(1);
+    const res = JSON.parse(r.out[0]);
+    expect(res.ok).toBe(false);
+    expect(res.channels).toEqual(['discord', 'telegram']);
+    expect(res.failures).toHaveLength(1);
+    expect(res.failures[0]).toMatchObject({ channel: 'telegram' });
+    expect(res.failures[0].error).toMatch(/^HTTP 401/);
+    expect(r.err.join('\n')).toMatch(/No se ha podido enviar el aviso por telegram: HTTP 401/);
+    const todo = [...r.out, ...r.err].join('\n');
+    expect(todo).not.toContain('secreto-de-telegram');
+    expect(todo).not.toContain('secreto-de-discord');
+    // Discord sí lo ha recibido.
+    expect(enviados.some((e) => e.url === DISCORD)).toBe(true);
+  });
+});
+
 // ======================= rutas citadas =======================
 
 describe('rutas de las herramientas en la documentación y en la interfaz', () => {
@@ -461,7 +583,7 @@ describe('rutas de las herramientas en la documentación y en la interfaz', () =
 
   it('cada «node …tools/x.js» citado es server/dist/tools/x.js de una herramienta que existe', () => {
     const fuentes = fs.readdirSync(path.join(raiz, 'server/src/tools')).map((f) => `server/src/tools/${f}`);
-    const ficheros = ['README.md', 'docs/FUNCIONALIDAD.md', 'docs/CONTROL-REMOTO.md', 'web/src/pages/Login.tsx', ...fuentes];
+    const ficheros = ['README.md', 'docs/FUNCIONALIDAD.md', 'docs/CONTROL-REMOTO.md', 'web/src/pages/Login.tsx', 'scripts/skyway', ...fuentes];
     let citas = 0;
     for (const rel of ficheros) {
       for (const m of leer(rel).matchAll(/node\s+(\S*tools\/([a-z-]+)\.js)/g)) {
