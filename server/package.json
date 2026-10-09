@@ -13,7 +13,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@fastify/cookie": "^9.4.0",
+    "@fastify/cookie": "^11.1.2",
     "@fastify/static": "^7.0.4",
     "@simplewebauthn/server": "^9.0.3",
     "@simplewebauthn/types": "^9.0.1",
