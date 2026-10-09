@@ -389,7 +389,8 @@ export async function aiGatewayRoutes(app: FastifyInstance): Promise<void> {
         }
 
         if (!stream) {
-          const data = await upstream.json().catch(() => ({}));
+          // Cuerpo del proveedor sin tipar: `Response.json()` de Node devuelve `unknown`.
+          const data: any = await upstream.json().catch(() => ({}));
           billUsage(ctx, model, usageMetadataFromOpenAI(data?.usage), (data?.id as string) || null);
           return reply.code(upstream.status).send(data);
         }

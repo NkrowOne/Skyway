@@ -129,7 +129,7 @@ La UI de desarrollo (`http://localhost:5173`) proxya `/api` al servidor. Para pr
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Servidor**: Node 20+ / TypeScript / Fastify. Estado en SQLite (`/data/skyway.db`). Habla con Docker vía `dockerode` + CLI (builds).
+- **Servidor**: Node 22+ / TypeScript / Fastify. Estado en SQLite (`/data/skyway.db`). Habla con Docker vía `dockerode` + CLI (builds).
 - **Pipeline de despliegue**: clone superficial → build (Dockerfile o Nixpacks) → recrear contenedor con env resuelto, límites de recursos, red y labels de Traefik → verificación → purga de imágenes antiguas (se conservan las 5 últimas por servicio para rollback).
 - **Web**: React + Vite + Tailwind. Logs y métricas por SSE.
 - **Un build concurrente por servicio**; en paralelo, tantos como núcleos − 1 (entre 2 y 4, configurable con `BUILD_CONCURRENCY`).

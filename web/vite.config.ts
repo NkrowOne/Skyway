@@ -2,14 +2,14 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 // Prefijos de ruta del framework y de sus dependencias internas (scheduler, el
-// router de Remix, el núcleo de react-query): con la función de reparto hay que
-// nombrarlas también, o quedarían en chunks sueltos fuera de «vendor».
+// núcleo de react-query): con la función de reparto hay que nombrarlas también,
+// o quedarían en chunks sueltos fuera de «vendor». React Router 7 ya incluye su
+// router en `react-router` (antes venía aparte, en `@remix-run/router`).
 const VENDOR = [
   'node_modules/react/',
   'node_modules/react-dom/',
   'node_modules/scheduler/',
   'node_modules/react-router',
-  'node_modules/@remix-run/',
   'node_modules/@tanstack/',
 ];
 
