@@ -3,6 +3,24 @@ import type { SkywayManifest } from './manifest';
 
 export type ServiceType = 'git' | 'database' | 'image';
 
+/**
+ * Cómo se sustituye la versión en marcha al desplegar (ver `deploy/estrategia.ts`).
+ * 'overlap' («Sin corte»): la versión nueva arranca y se valida mientras la
+ * anterior sigue atendiendo, y solo después se retira la anterior. 'recreate'
+ * («Una sola copia»): se detiene la anterior y después arranca la nueva. Existe
+ * porque un bot de polling (Telegram, Discord…) o un worker no admiten dos
+ * copias a la vez: la segunda recibe un 409 o procesa el mismo trabajo dos veces.
+ */
+export type DeployStrategy = 'overlap' | 'recreate';
+
+/**
+ * Proveedores cuyos webhooks se avisan en un cambio de dominio: registran la
+ * URL una vez y, en general, no siguen redirecciones (Telegram y Stripe tratan
+ * una respuesta 3xx como un fallo), así que un nombre que pasa a redirigir deja
+ * de recibir sus avisos.
+ */
+export type ProveedorWebhook = 'telegram' | 'discord' | 'slack' | 'whatsapp' | 'twilio' | 'stripe';
+
 export interface VolumeMount {
   name: string;
   containerPath: string;
@@ -34,6 +52,12 @@ export interface DetectedNeeds {
   manifestFile?: string | null;
   /** Por qué no se ha podido usar el manifiesto, si lo hay y no es válido. */
   manifestError?: string | null;
+  /**
+   * Bibliotecas de bots y webhooks del repositorio («package.json: telegraf»);
+   * ausente si no hay ninguna. El cambio de dominio las usa para avisar de los
+   * webhooks registrados con la URL anterior, que una redirección no salva.
+   */
+  bots?: { proveedor: ProveedorWebhook; evidencia: string }[];
   detectedAt: number;
 }
 
@@ -99,6 +123,30 @@ export interface GitConfig {
   healthcheckPath?: string | null;
   replicas?: number;
   /**
+   * 'recreate' («Una sola copia»): se detiene la versión anterior (parada limpia) y
+   * después arranca la nueva, sin copia de validación «--next». 'overlap' («Sin
+   * corte»): la nueva arranca y se valida antes de retirar la anterior. Ausente:
+   * lo decide `estrategiaDespliegue` (una sola copia si el servicio no recibe
+   * tráfico: sin dominio, healthcheck ni llamadas de otros servicios). Con
+   * volúmenes o puerto público siempre es 'recreate': dos procesos no pueden
+   * escribir el mismo volumen ni publicar el mismo puerto del host.
+   */
+  deployStrategy?: DeployStrategy;
+  /**
+   * Segundos entre SIGTERM y SIGKILL al parar una copia (0–600). Ausente:
+   * RAILWAY_DEPLOYMENT_DRAINING_SECONDS del entorno o 30. Se fija también como
+   * `StopTimeout` del contenedor, para que un `docker stop` ajeno a Skyway o el
+   * apagado del daemon den el mismo plazo.
+   */
+  stopGraceSeconds?: number;
+  /**
+   * Orden que se ejecuta DENTRO del contenedor antes del SIGTERM (hasta 1000
+   * caracteres), con la gracia como plazo: para procesos que necesitan un aviso
+   * propio para cerrar (vaciar una cola, darse de baja de un servicio). Viaja en
+   * una variable del `exec`, nunca interpolada en un shell.
+   */
+  stopCommand?: string;
+  /**
    * Auto-desplegar al detectar un commit nuevo en la rama (sondeo periódico de
    * `git ls-remote`, sin webhook ni URL pública). `false` lo desactiva; ausente
    * = activado. La primera comprobación fija la línea base y no despliega: solo
@@ -138,6 +186,12 @@ export interface DatabaseConfig {
   diskMb?: number | null;
   backupSchedule?: 'daily' | 'weekly' | null;
   backupRetention?: number;
+  /**
+   * Segundos entre SIGTERM y SIGKILL al parar (0–600). Ausente:
+   * RAILWAY_DEPLOYMENT_DRAINING_SECONDS o 30. Un motor que se mata a mitad de
+   * escribir tiene que recuperarse al arrancar: mejor darle tiempo a cerrar.
+   */
+  stopGraceSeconds?: number;
 }
 
 export interface ImageConfig {
@@ -173,6 +227,30 @@ export interface ImageConfig {
   imageVolumes?: string[];
   healthcheckPath?: string | null;
   replicas?: number;
+  /**
+   * 'recreate' («Una sola copia»): se detiene la versión anterior (parada limpia) y
+   * después arranca la nueva, sin copia de validación «--next». 'overlap' («Sin
+   * corte»): la nueva arranca y se valida antes de retirar la anterior. Ausente:
+   * lo decide `estrategiaDespliegue` (una sola copia si el servicio no recibe
+   * tráfico: sin dominio, healthcheck ni llamadas de otros servicios). Con
+   * volúmenes o puerto público siempre es 'recreate': dos procesos no pueden
+   * escribir el mismo volumen ni publicar el mismo puerto del host.
+   */
+  deployStrategy?: DeployStrategy;
+  /**
+   * Segundos entre SIGTERM y SIGKILL al parar una copia (0–600). Ausente:
+   * RAILWAY_DEPLOYMENT_DRAINING_SECONDS del entorno o 30. Se fija también como
+   * `StopTimeout` del contenedor, para que un `docker stop` ajeno a Skyway o el
+   * apagado del daemon den el mismo plazo.
+   */
+  stopGraceSeconds?: number;
+  /**
+   * Orden que se ejecuta DENTRO del contenedor antes del SIGTERM (hasta 1000
+   * caracteres), con la gracia como plazo: para procesos que necesitan un aviso
+   * propio para cerrar (vaciar una cola, darse de baja de un servicio). Viaja en
+   * una variable del `exec`, nunca interpolada en un shell.
+   */
+  stopCommand?: string;
 }
 
 export type ServiceConfig = GitConfig | DatabaseConfig | ImageConfig;
