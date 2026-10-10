@@ -6,7 +6,9 @@ import {
   enumerar,
   fechaLarga,
   MigracionSkyway,
+  servirTambien,
   UsuarioSinGestionar,
+  usosQueCambian,
   WebhookEnRiesgo,
 } from '../../cambioDominio';
 import { Button, Chip, ConfirmModal, useToast } from '../ui';
@@ -18,16 +20,43 @@ type Persona = NonNullable<MigracionSkyway['correo']>['buzones']['lista'][number
 /** Nombre de la aplicación a partir de su credencial («skyway:tienda» → «tienda»). */
 const appsDe = (p: Persona) => p.usadoPorApps.filter((n) => n.startsWith('skyway:')).map((n) => n.slice('skyway:'.length));
 
-/** «Bot» (TG_SMTP_LOGIN), los servicios que heredan las compartidas (SMTP_USER)…: lo que se vuelve a desplegar. */
-function despliegues(usuarios: readonly UsuarioSinGestionar[]): string {
-  const porServicio = new Map<string, Set<string>>();
-  for (const u of usuarios) {
-    for (const x of u.usos) {
-      const nombre = x.ambito === 'project' ? 'los servicios que heredan las variables compartidas' : `«${x.serviceName ?? '?'}»`;
-      porServicio.set(nombre, (porServicio.get(nombre) ?? new Set()).add(x.key));
-    }
+/** «Bot» (TG_SMTP_LOGIN), los servicios que usan las compartidas (SMTP_USER)…, agrupados por servicio. */
+function porServicio(usos: UsuarioSinGestionar['usos']): string {
+  const grupos = new Map<string, Set<string>>();
+  for (const x of usos) {
+    const nombre = x.ambito === 'project' ? 'los servicios que usan las variables compartidas' : `«${x.serviceName ?? '?'}»`;
+    grupos.set(nombre, (grupos.get(nombre) ?? new Set()).add(x.key));
   }
-  return enumerar([...porServicio].map(([nombre, keys]) => `${nombre} (${[...keys].join(', ')})`));
+  return enumerar([...grupos].map(([nombre, keys]) => `${nombre} (${[...keys].join(', ')})`));
+}
+
+/** Lo que se vuelve a desplegar: solo los usos que se reescriben, no los que ya llevan el usuario con el que entrará el buzón. */
+function despliegues(usuarios: readonly UsuarioSinGestionar[]): string {
+  return porServicio(usuarios.flatMap((u) => usosQueCambian(u).cambian));
+}
+
+/** Los que ya llevan el usuario nuevo: entran en cuanto se actualiza el buzón, sin desplegar nada. */
+function yaNuevos(usuarios: readonly UsuarioSinGestionar[]): string {
+  return porServicio(usuarios.flatMap((u) => usosQueCambian(u).yaNuevos));
+}
+
+/** Confirmación de «Actualizar y desplegar» de un buzón. */
+function mensajeActualizarYDesplegar(u: UsuarioSinGestionar): string {
+  const cambian = despliegues([u]);
+  const nuevos = yaNuevos([u]);
+  const partes: string[] = [];
+  if (u.pendiente) {
+    partes.push(
+      cambian
+        ? `${u.email} pasará a entrar con ${u.email} en lugar de ${u.login} (también para las personas que lo usan) y se volverán a desplegar: ${cambian}.`
+        : `${u.email} pasará a entrar con ${u.email} en lugar de ${u.login} (también para las personas que lo usan).`,
+    );
+    if (nuevos) partes.push(`Ya usan ${u.email} y entrarán en cuanto se actualice el buzón, sin volver a desplegar: ${nuevos}.`);
+  } else if (cambian) {
+    partes.push(`Se volverán a desplegar ${cambian} para que entren con ${u.login}.`);
+  }
+  partes.push('La contraseña no cambia.');
+  return partes.join(' ');
 }
 
 /**
@@ -89,11 +118,7 @@ export default function FaseTransicion({
   });
   // Tras pasar, «Servir también» vuelve a desplegar el servicio con el nombre anterior.
   const servir = useMutation({
-    mutationFn: async (w: WebhookEnRiesgo) => {
-      let vista: MigracionSkyway | null = null;
-      for (const h of w.hosts) vista = await cambioDominioApi.modoHost(projectId, m.id, { serviceId: h.serviceId, from: h.from, modo: 'servir' });
-      return vista;
-    },
+    mutationFn: (w: WebhookEnRiesgo) => servirTambien(projectId, m.id, w),
     onSuccess: (v) => {
       setWebhook(null);
       if (v) onCambio(v);
@@ -186,8 +211,9 @@ export default function FaseTransicion({
             ))}
           </ul>
           <p className="mt-1.5 text-xs leading-5 text-subtle">
-            Son variables que Skyway no gestiona (puestas a mano o con otro nombre). «Actualizar y desplegar» actualiza el usuario del buzón, las
-            cambia al usuario nuevo y vuelve a desplegar esos servicios con la versión en marcha. La baja de {m.fromDomain} lo hace también.
+            Son variables que Skyway no gestiona (puestas a mano, con otro nombre o que toman el usuario de otra variable). «Actualizar y
+            desplegar» actualiza el usuario del buzón, las cambia al usuario nuevo y vuelve a desplegar los servicios que las usan con la
+            versión en marcha. La baja de {m.fromDomain} lo hace también.
           </p>
         </Bloque>
       )}
@@ -309,7 +335,7 @@ export default function FaseTransicion({
       >
         <div className="mt-2 flex flex-col gap-2 text-sm leading-6 text-sub">
           {apps.length > 0 && <p>{mensajeMx}</p>}
-          {m.usuariosSinGestionar.length > 0 && (
+          {despliegues(m.usuariosSinGestionar) && (
             <p>
               También pasarán a entrar con su usuario de {m.toDomain} y se volverán a desplegar con la versión en marcha:{' '}
               {despliegues(m.usuariosSinGestionar)}.
@@ -356,7 +382,7 @@ export default function FaseTransicion({
             está en marcha, sin poder enviar durante unos segundos.
           </p>
         )}
-        {persona && sinGestionarDe(persona.id).length > 0 && (
+        {persona && despliegues(sinGestionarDe(persona.id)) && (
           <p className="mt-2 text-sm text-sub">
             También se volverán a desplegar, con {persona.email}: {despliegues(sinGestionarDe(persona.id))}.
           </p>
@@ -369,13 +395,7 @@ export default function FaseTransicion({
         onConfirm={() => sinGestionar && actualizar.mutate(sinGestionar.mailboxId)}
         loading={actualizar.isPending}
         title="Actualizar y desplegar"
-        message={
-          sinGestionar
-            ? sinGestionar.pendiente
-              ? `${sinGestionar.email} pasará a entrar con ${sinGestionar.email} en lugar de ${sinGestionar.login} (también para las personas que lo usan) y se volverán a desplegar: ${despliegues([sinGestionar])}. La contraseña no cambia.`
-              : `Se volverán a desplegar ${despliegues([sinGestionar])} para que entren con ${sinGestionar.login}. La contraseña no cambia.`
-            : ''
-        }
+        message={sinGestionar ? mensajeActualizarYDesplegar(sinGestionar) : ''}
         confirmLabel="Actualizar y desplegar"
         confirmVariant="primary"
       />

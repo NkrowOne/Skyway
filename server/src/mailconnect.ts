@@ -659,11 +659,24 @@ function urlConOtroUsuario(url: string, usuarios: ReadonlyMap<string, string>): 
  * Usuario de correo (en minúsculas) que lleva una variable: su valor si su
  * nombre es el de un usuario SMTP, también con un prefijo propio
  * (`TG_SMTP_LOGIN`, `mailRoleLoose`), o el usuario de una URL SMTP. null si
- * no lleva ninguno.
+ * no lleva ninguno. `comoUsuario`: el valor entero es un usuario aunque el
+ * nombre no lo diga (lo referencia un usuario SMTP: `SMTP_USER=${{shared.LOGIN}}`).
  */
-export function usuarioDeVariable(key: string, valor: string): string | null {
-  if (mailRoleLoose(key) === 'user') return valor.trim().toLowerCase() || null;
+export function usuarioDeVariable(key: string, valor: string, comoUsuario = false): string | null {
+  if (comoUsuario || mailRoleLoose(key) === 'user') return valor.trim().toLowerCase() || null;
   return usuarioDeUrlSmtp(valor)?.trim().toLowerCase() || null;
+}
+
+/**
+ * El texto con el que una variable entra en el correo, tal como está escrito
+ * (sin resolver ni decodificar): el valor entero de un usuario SMTP o el
+ * usuario de una URL SMTP. Sirve para seguir sus referencias
+ * (`SMTP_USER=${{shared.LOGIN}}`, `smtp://${{shared.LOGIN}}:…@host`) hasta la
+ * variable que de verdad lleva la dirección.
+ */
+export function textoUsuarioDeVariable(key: string, valor: string): string | null {
+  if (mailRoleLoose(key) === 'user') return valor;
+  return partesUrlSmtp(valor)?.usuario ?? null;
 }
 
 /**
@@ -750,8 +763,8 @@ export function usuarioQueRefrescaSkyway(state: EnvState, key: string): boolean 
 }
 
 /** Nuevo valor de una variable de usuario según `usuarios` (dirección vieja → nueva), o null si no cambia. */
-function usuarioReescrito(key: string, valor: string, usuarios: ReadonlyMap<string, string>): string | null {
-  if (mailRoleLoose(key) === 'user') {
+function usuarioReescrito(key: string, valor: string, usuarios: ReadonlyMap<string, string>, comoUsuario: boolean): string | null {
+  if (comoUsuario || mailRoleLoose(key) === 'user') {
     const nuevo = usuarios.get(valor.trim().toLowerCase());
     return nuevo && nuevo !== valor ? nuevo : null;
   }
@@ -767,6 +780,8 @@ function usuarioReescrito(key: string, valor: string, usuarios: ReadonlyMap<stri
  * contraseña de aplicación creada a mano, un `TG_SMTP_LOGIN`, una URL escrita
  * a mano. Tras actualizar el usuario de un buzón (o dar de baja el dominio
  * anterior), el servicio dejaría de poder enviar con el usuario de antes.
+ * `comoUsuario`: variables con otro nombre a las que apunta un usuario SMTP
+ * (`SMTP_USER=${{web.LOGIN_CORREO}}`); su valor entero es el usuario.
  *
  * Las que escribió Skyway y nadie ha cambiado conservan su origen
  * (`writeManagedEnv`); el resto, como estaban (`patchEnv`). No sube la
@@ -776,6 +791,7 @@ export function reescribirUsuariosSinGestionar(
   serviceId: string,
   usuarios: ReadonlyMap<string, string>,
   excluir: ReadonlySet<string> = new Set(),
+  comoUsuario: ReadonlySet<string> = new Set(),
 ): string[] {
   const service = getService(serviceId);
   if (!service) return [];
@@ -786,7 +802,7 @@ export function reescribirUsuariosSinGestionar(
   const sueltas: Record<string, string> = {};
   for (const [key, valor] of Object.entries(state.env)) {
     if (excluir.has(key)) continue;
-    const nuevo = usuarioReescrito(key, valor, mapa);
+    const nuevo = usuarioReescrito(key, valor, mapa, comoUsuario.has(key));
     if (nuevo === null) continue;
     if (managedUnchanged(state, key)) gestionadas[key] = { value: nuevo, origin: state.managed[key].origin };
     else sueltas[key] = nuevo;
@@ -798,15 +814,19 @@ export function reescribirUsuariosSinGestionar(
 
 /**
  * Lo mismo con las variables compartidas del proyecto. Quien llama vuelve a
- * desplegar los servicios que las heredan (los que no definen una propia con
- * el mismo nombre). Devuelve las claves cambiadas.
+ * desplegar los servicios cuyo entorno resuelto cambia (los que las heredan o
+ * las referencian). Devuelve las claves cambiadas.
  */
-export function reescribirUsuariosCompartidos(projectId: string, usuarios: ReadonlyMap<string, string>): string[] {
+export function reescribirUsuariosCompartidos(
+  projectId: string,
+  usuarios: ReadonlyMap<string, string>,
+  comoUsuario: ReadonlySet<string> = new Set(),
+): string[] {
   const mapa = mapaDirecciones(usuarios);
   if (mapa.size === 0) return [];
   const cambios: Record<string, string> = {};
   for (const [key, valor] of Object.entries(getProjectVars(projectId))) {
-    const nuevo = usuarioReescrito(key, valor, mapa);
+    const nuevo = usuarioReescrito(key, valor, mapa, comoUsuario.has(key));
     if (nuevo !== null) cambios[key] = nuevo;
   }
   if (Object.keys(cambios).length > 0) patchProjectVars(projectId, cambios, []);

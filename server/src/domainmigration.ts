@@ -111,6 +111,7 @@ import {
   requireLink,
   reescribirUsuariosCompartidos,
   reescribirUsuariosSinGestionar,
+  textoUsuarioDeVariable,
   usuarioDeVariable,
   usuarioQueRefrescaSkyway,
 } from './mailconnect';
@@ -706,22 +707,91 @@ function validarHosts(
 
 // ---------- variables ----------
 
+/** Una referencia `${{servicio.VARIABLE}}` o `${{shared.VARIABLE}}` (la misma sintaxis que resuelve `variables.ts`). */
+const REFERENCIA = /\$\{\{\s*([A-Za-z0-9 _.-]+?)\.([A-Za-z0-9_]+)\s*\}\}/g;
+const AMBITO_COMPARTIDAS = new Set(['shared', 'proyecto', 'project']);
+
+/** Variables cuyo valor entero es un usuario para entrar en el correo aunque su nombre no lo diga. */
+interface ClavesUsuario {
+  proyecto: Set<string>;
+  /** Por servicio (no bases de datos). */
+  servicios: Map<string, Set<string>>;
+}
+
+/**
+ * Variables a las que apunta un usuario SMTP con una referencia:
+ * `SMTP_USER=${{shared.LOGIN_CORREO}}` o `smtp://${{web.LOGIN}}:…@host`. Su
+ * nombre no dice que sean un usuario, pero lo son: al pasar no se cambian (el
+ * buzón aún entra con el anterior) y al actualizar el buzón o dar de baja el
+ * dominio anterior se ponen al día como cualquier otro usuario. Se siguen las
+ * referencias encadenadas, con el mismo límite que al resolver.
+ */
+function clavesUsuarioPorReferencia(projectId: string): ClavesUsuario {
+  const servicios = listServices(projectId).filter((s) => s.type !== 'database');
+  const compartidas = getProjectVars(projectId);
+  const envs = new Map(servicios.map((s) => [s.id, getEnv(s.id)]));
+  const out: ClavesUsuario = { proyecto: new Set(), servicios: new Map() };
+  const buscar = (nombre: string) => {
+    const n = nombre.trim().toLowerCase();
+    return servicios.find((s) => s.name.toLowerCase() === n || s.slug === n);
+  };
+  const pendientes: { texto: string; nivel: number }[] = [];
+  const desde = (key: string, valor: string) => {
+    const texto = textoUsuarioDeVariable(key, valor);
+    if (texto?.includes('${{')) pendientes.push({ texto, nivel: 0 });
+  };
+  for (const [key, valor] of Object.entries(compartidas)) desde(key, valor);
+  for (const env of envs.values()) for (const [key, valor] of Object.entries(env)) desde(key, valor);
+  while (pendientes.length > 0) {
+    const { texto, nivel } = pendientes.pop()!;
+    if (nivel > 5) continue;
+    for (const m of texto.matchAll(REFERENCIA)) {
+      const key = m[2];
+      let valor: string | undefined;
+      if (AMBITO_COMPARTIDAS.has(m[1].trim().toLowerCase())) {
+        valor = compartidas[key];
+        if (valor === undefined || out.proyecto.has(key)) continue;
+        out.proyecto.add(key);
+      } else {
+        const destino = buscar(m[1]);
+        valor = destino ? envs.get(destino.id)?.[key] : undefined;
+        if (!destino || valor === undefined) continue;
+        const suyas = out.servicios.get(destino.id) ?? new Set<string>();
+        if (suyas.has(key)) continue;
+        out.servicios.set(destino.id, suyas.add(key));
+      }
+      if (valor.includes('${{')) pendientes.push({ texto: valor, nivel: nivel + 1 });
+    }
+  }
+  return out;
+}
+
 /**
  * Valores de las variables del proyecto que el cambio puede tocar: las
  * compartidas, las de cada servicio (no las bases de datos, que no se vuelven
  * a desplegar) y los argumentos de compilación. Una variable que escribió
- * Skyway y nadie ha cambiado lleva su origen: se reescribe conservándolo.
+ * Skyway y nadie ha cambiado lleva su origen: se reescribe conservándolo. Las
+ * que referencia un usuario SMTP van marcadas como usuario (`clavesUsuarioPorReferencia`).
  */
 function valoresVariables(projectId: string): ValorVariable[] {
   const out: ValorVariable[] = [];
+  const comoUsuario = clavesUsuarioPorReferencia(projectId);
   for (const [key, valor] of Object.entries(getProjectVars(projectId))) {
-    out.push({ ambito: 'project', serviceId: null, key, valor, origen: null });
+    out.push({ ambito: 'project', serviceId: null, key, valor, origen: null, ...(comoUsuario.proyecto.has(key) ? { usuario: true } : {}) });
   }
   for (const s of listServices(projectId)) {
     if (s.type === 'database') continue;
     const state = envStateOf(s);
+    const suyas = comoUsuario.servicios.get(s.id);
     for (const [key, valor] of Object.entries(state.env)) {
-      out.push({ ambito: 'service', serviceId: s.id, key, valor, origen: managedUnchanged(state, key) ? state.managed[key].origin : null });
+      out.push({
+        ambito: 'service',
+        serviceId: s.id,
+        key,
+        valor,
+        origen: managedUnchanged(state, key) ? state.managed[key].origin : null,
+        ...(suyas?.has(key) ? { usuario: true } : {}),
+      });
     }
     const args = s.type === 'git' ? (s.config as GitConfig).buildArgs : undefined;
     for (const [key, valor] of Object.entries(args ?? {})) {
@@ -932,11 +1002,13 @@ const ORDEN_PROVEEDORES: readonly ProveedorAviso[] = ['telegram', 'discord', 'sl
  * `.env.example`) y sus dependencias (`needs.bots`). «webhook» (un nombre que
  * no dice el proveedor) solo si no hay otro más concreto.
  */
-function proveedoresDeServicio(s: ServiceRow): { proveedores: ProveedorAviso[]; evidencias: string[] } {
+function proveedoresDeServicio(s: ServiceRow, entorno: Record<string, string>): { proveedores: ProveedorAviso[]; evidencias: string[] } {
   const claves = Object.keys(getEnv(s.id));
   const cfg = s.type === 'git' ? (s.config as GitConfig) : null;
-  if (cfg) claves.push(...Object.keys(cfg.buildArgs ?? {}), ...(cfg.needs?.expectedVars ?? []));
-  const porClave = proveedoresDeClaves(claves);
+  const args = Object.fromEntries(Object.entries(cfg?.buildArgs ?? {}).filter((e): e is [string, string] => typeof e[1] === 'string'));
+  if (cfg) claves.push(...Object.keys(args), ...(cfg.needs?.expectedVars ?? []));
+  // Con sus valores (resueltos): un webhook de salida (`https://hooks.slack.com/…`) no recibe nada.
+  const porClave = proveedoresDeClaves(claves, { ...args, ...entorno });
   const bots = cfg?.needs?.bots ?? [];
   const hay = (p: ProveedorAviso) => porClave.some((x) => x.proveedor === p) || bots.some((b) => b.proveedor === p);
   let proveedores = ORDEN_PROVEEDORES.filter(hay);
@@ -965,9 +1037,10 @@ function webhooksEnRiesgo(projectId: string, hosts: readonly HostPlan[], pasada 
   const out: WebhookEnRiesgo[] = [];
   for (const s of listServices(projectId)) {
     if (s.type === 'database') continue;
-    const { proveedores, evidencias } = proveedoresDeServicio(s);
+    const entorno = resolveServiceEnv(s);
+    const { proveedores, evidencias } = proveedoresDeServicio(s, entorno);
     if (proveedores.length === 0) continue;
-    const valores = Object.values(resolveServiceEnv(s));
+    const valores = Object.values(entorno);
     if (s.type === 'git') valores.push(...Object.values((s.config as GitConfig).buildArgs ?? {}).filter((v): v is string => typeof v === 'string'));
     const vistos = new Set<string>();
     const suyos = redirigen.filter((h) => {
@@ -1607,7 +1680,7 @@ export async function vistaMigracion(row: DomainMigrationRow, isAdmin: boolean, 
     } catch (err) {
       avisos.push(`No se ha podido calcular el cambio de las variables: ${mensajeDe(err)}`);
     }
-    avisos.push(...avisosDelProyecto(row.project_id, row.hosts, row.from_domain, row.to_domain));
+    avisos.push(...avisosDelProyecto(row.project_id, row.hosts, row.from_domain, row.to_domain), ...avisosServirPrincipal(row.project_id, row.hosts));
   }
 
   const tls = tlsEnabled();
@@ -1757,7 +1830,12 @@ function dominiosDelProyecto(projectId: string): string[] {
  * el servicio ya sirve los nombres nuevos y su prepublicación sobra; si falla,
  * el contenedor anterior sigue en marcha y la interfaz ofrece reintentar.
  */
-function desplegar(mid: string, service: ServiceRow, opts: { imageTag?: string } = {}): string {
+/**
+ * Lanza el despliegue de un servicio afectado y lo anota en el cambio.
+ * `correo`: es el que pone al día su usuario de correo; se guarda con él para
+ * retomar su seguimiento (reintento y alerta) tras un reinicio.
+ */
+function desplegar(mid: string, service: ServiceRow, opts: { imageTag?: string; correo?: CorreoDelDespliegue } = {}): string {
   markManualAction(service.id);
   let depId: string;
   try {
@@ -1768,7 +1846,8 @@ function desplegar(mid: string, service: ServiceRow, opts: { imageTag?: string }
     setDomainMigrationServicio(mid, service.id, { deploymentId: null, estado: 'error', error: mensajeDe(err) });
     throw err;
   }
-  setDomainMigrationServicio(mid, service.id, { deploymentId: depId, estado: 'desplegando', error: null });
+  const entrada: ServicioConCorreo = { deploymentId: depId, estado: 'desplegando', error: null, ...(opts.correo ? { correo: opts.correo } : {}) };
+  setDomainMigrationServicio(mid, service.id, entrada);
   return depId;
 }
 
@@ -2391,7 +2470,8 @@ export async function cancelarCambio(req: FastifyRequest, project: ProjectRow, m
 
 export interface PeticionModoHost {
   serviceId: string;
-  from: string;
+  /** Uno o varios nombres del mismo servicio: tras pasar, todos con un solo despliegue. */
+  from: string | string[];
   modo: 'servir' | 'redirigir';
 }
 
@@ -2399,25 +2479,31 @@ function errorHostPrincipal(from: string, service: ServiceRow): ErrorCambio {
   return new ErrorCambio(
     409,
     'host_principal',
-    `${from} pasaría a ser el dominio principal de «${service.name}» y cambiaría su PUBLIC_URL. ` +
+    `${from} pasaría a ser otra vez el dominio principal de «${service.name}» y cambiaría su PUBLIC_URL, que ya es la nueva. ` +
       'Vuelve a registrar el webhook con la URL nueva en el proveedor.',
   );
 }
 
 /**
- * «Servir también» un nombre que redirige (o volver a redirigirlo): un
+ * «Servir también» nombres que redirigen (o volver a redirigirlos): un
  * webhook registrado en el proveedor con la URL anterior no sigue una
  * redirección (Telegram y Stripe la tratan como un fallo), así que el nombre
  * anterior se sigue sirviendo, sin redirigir.
  *
- * Antes de pasar solo cambia el modo del nombre en el cambio, en los dos
- * sentidos. Después de pasar, solo de «redirigir» a «servir», en una
- * transacción: el nombre anterior vuelve al final de los dominios del servicio
- * (el principal no cambia: si cambiara, 409 `host_principal`), se borra su
- * redirección y se prepublica con su DNS dado por bueno (ya apuntaba aquí)
- * para que no quede sin servir mientras se despliega el servicio con la
- * imagen en marcha. Un «Volver» posterior lo trata como cualquier otro nombre
- * que se sirve. Idempotente: con el modo ya pedido, no hace nada.
+ * Antes de pasar solo cambia el modo de los nombres en el cambio, en los dos
+ * sentidos, con el mismo criterio que la vista previa: servir también el
+ * nombre que seguirá siendo el principal se admite, con su aviso
+ * (`avisosServirPrincipal`). Después de pasar, solo de «redirigir» a
+ * «servir», en una transacción: los nombres anteriores vuelven al final de
+ * los dominios del servicio (el principal no cambia: su PUBLIC_URL ya es la
+ * nueva y volver a la anterior a estas alturas obligaría a desplegar a quien
+ * la usa; si cambiara, 409 `host_principal`), se borran sus redirecciones y
+ * se prepublican con su DNS dado por bueno (ya apuntaba aquí) para que no
+ * queden sin servir mientras se despliega el servicio con la imagen en
+ * marcha. Varios nombres del mismo servicio van en una sola petición: con
+ * uno por petición, el despliegue de la primera haría rechazar la segunda.
+ * Un «Volver» posterior los trata como cualquier otro nombre que se sirve.
+ * Idempotente: los nombres que ya tienen el modo pedido no cambian.
  */
 export async function cambiarModoHost(
   req: FastifyRequest,
@@ -2426,64 +2512,69 @@ export async function cambiarModoHost(
   body: PeticionModoHost,
 ): Promise<{ vista: MigracionSkyway; desplegado: boolean }> {
   const isAdmin = currentUser(req)?.role === 'admin';
-  const from = normalizarNombre(body.from);
+  const nombres = sinRepetidos((Array.isArray(body.from) ? body.from : [body.from]).map(normalizarNombre));
   const admite = (r: DomainMigrationRow) => r.estado === 'preparando' || r.estado === 'lista' || r.estado === 'pasada';
   exigirEstado(admite(cambioDelProyecto(project, mid)));
   return withLockProyecto(project.id, async () => {
     const row = cambioDelProyecto(project, mid);
     exigirEstado(admite(row));
-    const i = row.hosts.findIndex((h) => h.serviceId === body.serviceId && h.from === from);
-    if (i < 0) throw new ErrorCambio(404, 'not_found', `${from} no forma parte de este cambio de dominio.`);
-    const actual = row.hosts[i];
-    if (actual.modo === body.modo) return { vista: await vistaMigracion(row, isAdmin), desplegado: false };
-    if (actual.modo === 'no_cambiar') {
-      throw new ErrorCambio(409, 'migration_state', `${from} no cambia de nombre en este cambio de dominio: no hay redirección que cambiar.`);
+    const indices = nombres.map((from) => {
+      const i = row.hosts.findIndex((h) => h.serviceId === body.serviceId && h.from === from);
+      if (i < 0) throw new ErrorCambio(404, 'not_found', `${from} no forma parte de este cambio de dominio.`);
+      return i;
+    });
+    const aCambiar = indices.filter((i) => row.hosts[i].modo !== body.modo);
+    if (aCambiar.length === 0) return { vista: await vistaMigracion(row, isAdmin), desplegado: false };
+    const quietos = aCambiar.filter((i) => row.hosts[i].modo === 'no_cambiar').map((i) => row.hosts[i].from);
+    if (quietos.length > 0) {
+      throw new ErrorCambio(409, 'migration_state', `${quietos.join(', ')} no cambia de nombre en este cambio de dominio: no hay redirección que cambiar.`);
     }
     if (row.estado === 'pasada' && body.modo !== 'servir') {
-      throw new ErrorCambio(409, 'migration_state', `Después de pasar, ${from} ya no puede volver a redirigir desde el asistente.`);
+      throw new ErrorCambio(409, 'migration_state', 'Después de pasar, un nombre que se sirve también ya no puede volver a redirigir desde el asistente.');
     }
-    const service = getService(actual.serviceId);
+    const service = getService(body.serviceId);
     if (!service || service.project_id !== project.id || service.type === 'database') {
       throw new ErrorCambio(404, 'not_found', 'Servicio no encontrado.');
     }
-    const hosts = row.hosts.map((h, j) => (j === i ? { ...h, modo: body.modo } : h));
-    const raiz = getSetting('rootDomain');
-    const detalle = `«${from}»: ${actual.modo} → ${body.modo}`;
+    const cambiar = new Set(aCambiar);
+    const hosts = row.hosts.map((h, j) => (cambiar.has(j) ? { ...h, modo: body.modo } : h));
+    const froms = aCambiar.map((i) => row.hosts[i].from);
+    const detalle = aCambiar.map((i) => `«${row.hosts[i].from}»: ${row.hosts[i].modo} → ${body.modo}`).join(', ');
 
     if (row.estado !== 'pasada') {
-      if (body.modo === 'servir') {
-        const suyos = (lista: readonly HostPlan[]) => hostsActivos(lista).filter((h) => h.serviceId === service.id);
-        const con = dominiosTrasPasar(dominiosDe(service), suyos(hosts));
-        const sin = dominiosTrasPasar(dominiosDe(service), suyos(row.hosts));
-        if (dominioPrincipal(con, raiz) !== dominioPrincipal(sin, raiz)) throw errorHostPrincipal(from, service);
-      }
       if (!updateDomainMigration(row.id, { hosts }, { siEstado: [row.estado] })) throw errorEstado();
       audit(req, 'domain_migration_host_mode', { type: 'project', id: project.id, detail: detalle });
       return { vista: await vistaMigracion(cambioDelProyecto(project, mid), isAdmin), desplegado: false };
     }
 
+    const raiz = getSetting('rootDomain');
     const actuales = dominiosDe(service);
-    if (dominioPrincipal(sinRepetidos([...actuales, from]), raiz) !== dominioPrincipal(actuales, raiz)) throw errorHostPrincipal(from, service);
-    const conflicto = domainClaimError([from], { projectId: project.id, serviceId: service.id, isAdmin, current: actuales });
+    const principal = dominioPrincipal(sinRepetidos([...actuales, ...froms]), raiz);
+    if (principal !== dominioPrincipal(actuales, raiz)) throw errorHostPrincipal(principal ?? froms[0], service);
+    const conflicto = domainClaimError(froms, { projectId: project.id, serviceId: service.id, isAdmin, current: actuales });
     if (conflicto) throw new ErrorCambio(409, 'domain_in_use', conflicto);
     // Con un despliegue en curso (el de pasar, que compila la cabeza de la
     // rama), desplegar ahora la imagen en marcha lo dejaría en la versión
     // anterior en cuanto termine el otro.
     if (listDeployments(service.id, 5).some((d) => DESPLIEGUE_EN_CURSO.has(d.status))) {
-      throw new ErrorCambio(409, 'migration_services_pending', `«${service.name}» se está desplegando: espera a que termine para servir también ${from}.`);
+      throw new ErrorCambio(
+        409,
+        'migration_services_pending',
+        `«${service.name}» se está desplegando: espera a que termine para servir también ${froms.join(', ')}.`,
+      );
     }
     // La imagen antes de tocar nada: entre la configuración y el despliegue no hay ninguna espera.
     const imageTag = await imagenEnMarcha(service);
     const ahora = Date.now();
     transaction(() => {
       const s = getService(service.id)!;
-      updateService(s.id, s.name, { ...(s.config as object), domains: sinRepetidos([...dominiosDe(s), from]) } as ServiceRow['config']);
-      deleteDomainRedirectHosts(project.id, [from]);
-      const ajenos = upsertPrepublished([{ host: from, project_id: project.id, service_id: s.id, migration_id: row.id }]);
+      updateService(s.id, s.name, { ...(s.config as object), domains: sinRepetidos([...dominiosDe(s), ...froms]) } as ServiceRow['config']);
+      deleteDomainRedirectHosts(project.id, froms);
+      const ajenos = upsertPrepublished(froms.map((host) => ({ host, project_id: project.id, service_id: s.id, migration_id: row.id })));
       if (ajenos.length > 0) {
-        throw new ErrorCambio(409, 'domain_in_use', `El dominio ${from} lo utiliza otro proyecto (redirección o cambio de dominio en curso) y no se puede asignar a este servicio.`);
+        throw new ErrorCambio(409, 'domain_in_use', `El dominio ${ajenos[0]} lo utiliza otro proyecto (redirección o cambio de dominio en curso) y no se puede asignar a este servicio.`);
       }
-      markPrepublishedDns(from, ahora);
+      for (const host of froms) markPrepublishedDns(host, ahora);
       updateDomainMigration(row.id, { hosts });
       bumpConfigRev([s.id]);
     });
@@ -2528,18 +2619,21 @@ interface UsoUsuario {
 
 /** Lo que se lee una vez para buscar los usos de todos los buzones de un cambio. */
 interface ContextoUsos {
-  servicios: { service: ServiceRow; state: EnvState }[];
+  /** `entorno`: el resuelto, con el que se despliega (referencias y compartidas incluidas). */
+  servicios: { service: ServiceRow; state: EnvState; entorno: Record<string, string> }[];
   compartidas: Record<string, string>;
   porCredencial: Map<string, ServiceRow>;
+  comoUsuario: ClavesUsuario;
 }
 
 function contextoUsos(projectId: string): ContextoUsos {
   return {
     servicios: listServices(projectId)
       .filter((s) => s.type !== 'database')
-      .map((service) => ({ service, state: envStateOf(service) })),
+      .map((service) => ({ service, state: envStateOf(service), entorno: resolveServiceEnv(service) })),
     compartidas: getProjectVars(projectId),
     porCredencial: serviciosPorCredencial(projectId),
+    comoUsuario: clavesUsuarioPorReferencia(projectId),
   };
 }
 
@@ -2556,6 +2650,12 @@ function loginsDe(row: DomainMigrationRow, b: BuzonVista): Set<string> {
  * propio (`TG_SMTP_LOGIN`), una URL SMTP, en un servicio sin la credencial o
  * compartidas. Las que escribió Skyway en el servicio de su credencial las pone
  * al día `refrescarVariablesCorreo` (`usuarioQueRefrescaSkyway`).
+ *
+ * Las de un servicio se miran con el valor con el que se despliegan (el
+ * entorno resuelto): `SMTP_USER=${{shared.SMTP_USER}}` entra con la dirección
+ * de la compartida y se enseña con su nombre. Las que solo hereda sin
+ * definirlas ya salen como compartidas. Las variables con otro nombre a las
+ * que apunta un usuario SMTP (`clavesUsuarioPorReferencia`) también cuentan.
  */
 function usosSinGestionar(ctx: ContextoUsos, row: DomainMigrationRow, b: BuzonVista): UsoUsuario[] {
   const logins = loginsDe(row, b);
@@ -2566,16 +2666,17 @@ function usosSinGestionar(ctx: ContextoUsos, row: DomainMigrationRow, b: BuzonVi
       .filter((id): id is string => !!id),
   );
   const out: UsoUsuario[] = [];
-  for (const { service, state } of ctx.servicios) {
-    for (const [key, valor] of Object.entries(state.env)) {
-      const usuario = usuarioDeVariable(key, valor);
+  for (const { service, state, entorno } of ctx.servicios) {
+    const comoUsuario = ctx.comoUsuario.servicios.get(service.id);
+    for (const [key, crudo] of Object.entries(state.env)) {
+      const usuario = usuarioDeVariable(key, entorno[key] ?? crudo, comoUsuario?.has(key) ?? false);
       if (!usuario || !logins.has(usuario)) continue;
       if (conCredencial.has(service.id) && usuarioQueRefrescaSkyway(state, key)) continue;
       out.push({ ambito: 'service', serviceId: service.id, serviceName: service.name, key, usuario });
     }
   }
   for (const [key, valor] of Object.entries(ctx.compartidas)) {
-    const usuario = usuarioDeVariable(key, valor);
+    const usuario = usuarioDeVariable(key, valor, ctx.comoUsuario.proyecto.has(key));
     if (usuario && logins.has(usuario)) out.push({ ambito: 'project', serviceId: null, serviceName: null, key, usuario });
   }
   return out;
@@ -2624,6 +2725,31 @@ function conAplicaciones(ctx: ContextoUsos, row: DomainMigrationRow, b: BuzonVis
   return usaAppsSkyway(b) || usosSinGestionar(ctx, row, b).length > 0;
 }
 
+/**
+ * Lo que necesita el seguimiento de un despliegue que pone al día el usuario
+ * de correo de un servicio. Se guarda con el servicio del cambio
+ * (`servicios_json` guarda el objeto entero) para retomarlo, con su reintento
+ * y su alerta, si Skyway se reinicia mientras tanto.
+ */
+interface CorreoDelDespliegue {
+  /** Usuario con el que entraba (el del contenedor en marcha) y con el que entra ahora. */
+  de: string;
+  a: string;
+  /** Imagen en marcha que se vuelve a desplegar (el reintento usa la misma). */
+  imageTag?: string;
+  /** Este despliegue ya es el reintento: si falla, no hay otro. */
+  reintento: boolean;
+}
+
+type ServicioConCorreo = ServicioMigracion & { correo?: CorreoDelDespliegue };
+
+/** Lo del correo de la entrada de un servicio del cambio, si lo tiene (leído de JSON: se comprueba). */
+function correoDe(s: ServicioMigracion): CorreoDelDespliegue | null {
+  const c = (s as ServicioConCorreo).correo;
+  if (!c || typeof c !== 'object' || typeof c.de !== 'string' || typeof c.a !== 'string') return null;
+  return { de: c.de, a: c.a, ...(typeof c.imageTag === 'string' ? { imageTag: c.imageTag } : {}), reintento: c.reintento === true };
+}
+
 /** Un despliegue que pone al día el usuario de correo de un servicio. */
 interface DespliegueCorreo {
   serviceId: string;
@@ -2636,16 +2762,30 @@ interface DespliegueCorreo {
 }
 
 /**
+ * ¿Tiene el servicio alguna versión desplegada? Uno que nunca se ha
+ * desplegado bien no tiene un contenedor que poner al día (su primer
+ * despliegue ya saldrá con el usuario nuevo), y desplegarlo ahora compilaría
+ * la cabeza de la rama sin que nadie lo haya pedido.
+ */
+function tieneVersionEnMarcha(s: ServiceRow): boolean {
+  return listDeployments(s.id, 50).some((d) => d.status === 'success');
+}
+
+/**
  * Pone al día las aplicaciones que envían con buzones del cambio, buzón a
  * buzón: su usuario en Mailway (si sigue pendiente) y, justo después, las
  * variables de correo de sus servicios y un despliegue con la imagen que ya
  * está en marcha. La ventana sin poder enviar es la del relevo del contenedor.
  *
- * Los servicios son los de su credencial de Skyway (`refrescarVariablesCorreo`:
- * usuario y remitente que escribió Skyway) y los que entran con un usuario del
- * buzón por su cuenta (`reescribirUsuariosSinGestionar`: un `SMTP_USER` con una
- * contraseña creada a mano, un `TG_SMTP_LOGIN`, una URL SMTP). Las compartidas
- * se reescriben también, y se despliegan los servicios que las heredan.
+ * Se reescriben las variables de los servicios de su credencial de Skyway
+ * (`refrescarVariablesCorreo`: usuario y remitente que escribió Skyway), las
+ * que entran con un usuario del buzón por su cuenta
+ * (`reescribirUsuariosSinGestionar`: un `SMTP_USER` con una contraseña creada
+ * a mano, un `TG_SMTP_LOGIN`, una URL SMTP) y las compartidas. Se vuelven a
+ * desplegar los servicios cuyo entorno resuelto cambia, como al pasar: los
+ * reescritos, los que heredan la compartida y los que la referencian
+ * (`SMTP_USER=${{shared.SMTP_USER}}`, `${{mailer.SMTP_USER}}`). Los que nunca
+ * se han desplegado solo quedan pendientes.
  *
  * El orden (Mailway → variables → despliegue) no cambia: desplegar antes con
  * el usuario nuevo solo sería seguro con un único servicio por buzón y con
@@ -2670,6 +2810,11 @@ async function ponerAlDiaApps(
   const porCredencial = serviciosPorCredencial(row.project_id);
   const lanzados: DespliegueCorreo[] = [];
   const actualizados: BuzonVista[] = [];
+  const imagenes = new Map<string, string | undefined>();
+  const imagenDe = async (s: ServiceRow) => {
+    if (!imagenes.has(s.id)) imagenes.set(s.id, await imagenEnMarcha(s));
+    return imagenes.get(s.id);
+  };
   for (const b of buzones) {
     const deCredencial = new Set(
       [...new Set(b.usadoPorApps)].map((n) => porCredencial.get(n)?.id).filter((id): id is string => !!id),
@@ -2688,62 +2833,83 @@ async function ponerAlDiaApps(
       if (viejo.toLowerCase() !== nuevo) usuarios.set(viejo.toLowerCase(), nuevo);
     }
     if (usuarios.size === 0) continue;
-    const entraCon = (key: string, valor: string) => {
-      const u = usuarioDeVariable(key, valor);
+    const comoUsuario = clavesUsuarioPorReferencia(row.project_id);
+    const entraCon = (key: string, valor: string, marcadas?: ReadonlySet<string>) => {
+      const u = usuarioDeVariable(key, valor, marcadas?.has(key) ?? false);
       return !!u && usuarios.has(u);
     };
     const servicios = listServices(row.project_id).filter((s) => s.type !== 'database');
-    const candidatos = servicios.filter((s) => deCredencial.has(s.id) || Object.entries(getEnv(s.id)).some(([k, v]) => entraCon(k, v)));
-    const compartidas = Object.entries(getProjectVars(row.project_id))
-      .filter(([k, v]) => entraCon(k, v))
-      .map(([k]) => k);
-    // Los que heredan una compartida que cambia: los que no tienen una propia con ese nombre.
-    const herederos = compartidas.length > 0 ? servicios.filter((s) => compartidas.some((k) => getEnv(s.id)[k] === undefined)) : [];
-
+    // El entorno resuelto antes de escribir: el de cada servicio que cambie se vuelve a desplegar.
+    const antes = new Map(servicios.map((s) => [s.id, resolveServiceEnv(s)]));
+    const candidatos = servicios.filter(
+      (s) => deCredencial.has(s.id) || Object.entries(getEnv(s.id)).some(([k, v]) => entraCon(k, v, comoUsuario.servicios.get(s.id))),
+    );
     // La imagen antes de tocar nada: entre las variables y el despliegue no
-    // hay ninguna espera, así que no puede quedar una sin el otro.
-    const imagenes = new Map<string, string | undefined>();
-    for (const s of [...candidatos, ...herederos]) if (!imagenes.has(s.id)) imagenes.set(s.id, await imagenEnMarcha(s));
+    // hay ninguna espera, así que no puede quedar una sin el otro. Se toma de
+    // los que se reescriben y de los que entran con el usuario por herencia o
+    // por referencia, que son los que van a cambiar.
+    for (const s of servicios) {
+      const previsto = candidatos.includes(s) || Object.entries(antes.get(s.id) ?? {}).some(([k, v]) => entraCon(k, v));
+      if (previsto && tieneVersionEnMarcha(s)) await imagenDe(s);
+    }
 
-    const aDesplegar = new Set<string>();
+    const reescritos = new Set<string>();
     for (const s of candidatos) {
       // El remitente también: si alguien excluyó el suyo al pasar, la dirección
       // anterior deja de ser del buzón con la baja y el servidor la rechazaría.
       const refrescadas = deCredencial.has(s.id)
         ? refrescarVariablesCorreo(s.id, { usuarios, remitentes: usuarios }, { credencialSmtp: true })
         : [];
-      const sueltas = reescribirUsuariosSinGestionar(s.id, usuarios, new Set(refrescadas));
-      if (refrescadas.length + sueltas.length > 0) aDesplegar.add(s.id);
+      const sueltas = reescribirUsuariosSinGestionar(s.id, usuarios, new Set(refrescadas), comoUsuario.servicios.get(s.id));
+      if (refrescadas.length + sueltas.length > 0) reescritos.add(s.id);
     }
-    if (reescribirUsuariosCompartidos(row.project_id, usuarios).length > 0) for (const s of herederos) aDesplegar.add(s.id);
+    reescribirUsuariosCompartidos(row.project_id, usuarios, comoUsuario.proyecto);
 
     const de = [...usuarios.keys()][0];
     for (const s of servicios) {
-      if (!aDesplegar.has(s.id)) continue;
+      const cambia = reescritos.has(s.id) || huellaEntorno(antes.get(s.id) ?? {}) !== huellaEntorno(resolveServiceEnv(s));
+      if (!cambia) continue;
       bumpConfigRev([s.id]);
-      const imageTag = imagenes.get(s.id);
-      lanzados.push({ serviceId: s.id, deploymentId: desplegar(mid, s, { imageTag }), ...(imageTag ? { imageTag } : {}), de, a: nuevo });
+      if (!tieneVersionEnMarcha(s)) continue;
+      // Uno que no se previó (referencia el remitente de otro servicio) espera
+      // a su imagen ya con las variables escritas: queda pendiente si algo falla.
+      const imageTag = imagenes.has(s.id) ? imagenes.get(s.id) : await imagenDe(s);
+      const correo: CorreoDelDespliegue = { de, a: nuevo, ...(imageTag ? { imageTag } : {}), reintento: false };
+      lanzados.push({ serviceId: s.id, deploymentId: desplegar(mid, s, { imageTag, correo }), ...(imageTag ? { imageTag } : {}), de, a: nuevo });
     }
   }
   return { lanzados, actualizados };
 }
 
+/** Por qué no ha terminado bien el despliegue con el usuario nuevo (para el error y la alerta). */
+const MOTIVO_SIN_ENVIAR = {
+  doble: 'ha fallado dos veces',
+  reinicio: 'no ha terminado bien tras un reinicio de Skyway',
+} as const;
+
 /** Prefijo del error de un servicio cuyo despliegue con el usuario nuevo ha fallado dos veces. */
-const FALLO_DOBLE = 'El despliegue ha fallado dos veces';
+const FALLO_DOBLE = `El despliegue ${MOTIVO_SIN_ENVIAR.doble}`;
 
 /**
- * El servicio tiene ya el usuario nuevo y su despliegue ha fallado dos veces:
- * el contenedor en marcha sigue entrando con el anterior, que ya no existe, y
- * no puede enviar. Alerta crítica (se cierra sola con el siguiente despliegue
- * correcto) y el error en el servicio del cambio, con la salida.
+ * El servicio tiene ya el usuario nuevo y su despliegue no ha terminado bien
+ * (ha fallado dos veces, o un reinicio de Skyway lo cortó): el contenedor en
+ * marcha sigue entrando con el anterior, que ya no existe, y no puede enviar.
+ * Alerta crítica (se cierra sola con el siguiente despliegue correcto) y el
+ * error en el servicio del cambio, con la salida.
  */
-function avisarCorreoSinEnviar(mid: string, l: DespliegueCorreo, deploymentId: string | null): void {
+function avisarCorreoSinEnviar(
+  mid: string,
+  l: DespliegueCorreo,
+  deploymentId: string | null,
+  motivo: keyof typeof MOTIVO_SIN_ENVIAR = 'doble',
+): void {
   const service = getService(l.serviceId);
   const nombre = service?.name ?? 'el servicio';
+  const porque = MOTIVO_SIN_ENVIAR[motivo];
   setDomainMigrationServicio(mid, l.serviceId, {
     deploymentId,
     estado: 'error',
-    error: `${FALLO_DOBLE} y «${nombre}» no puede enviar correo: su usuario ya es ${l.a} y el contenedor en marcha sigue con ${l.de}. Pulsa «Reintentar este servicio».`,
+    error: `El despliegue ${porque} y «${nombre}» no puede enviar correo: su usuario ya es ${l.a} y el contenedor en marcha sigue con ${l.de}. Pulsa «Reintentar este servicio».`,
   });
   if (!service) return;
   fireAlert({
@@ -2752,7 +2918,7 @@ function avisarCorreoSinEnviar(mid: string, l: DespliegueCorreo, deploymentId: s
     serviceId: service.id,
     dedupe: true,
     title: `«${service.name}» no puede enviar correo`,
-    message: `El usuario de correo de «${service.name}» ha cambiado a ${l.a} y su despliegue ha fallado dos veces: el contenedor en marcha sigue entrando con ${l.de}, que ya no es válido.`,
+    message: `El usuario de correo de «${service.name}» ha cambiado a ${l.a} y su despliegue ${porque}: el contenedor en marcha sigue entrando con ${l.de}, que ya no es válido.`,
     explanation: 'Abre «Cambiar de dominio» en el proyecto y pulsa «Reintentar este servicio». Si vuelve a fallar, revisa el registro del despliegue.',
   });
 }
@@ -2768,15 +2934,27 @@ function sigueSiendoDelCambio(mid: string, serviceId: string, deploymentId: stri
  * vez con la misma imagen: con el usuario ya cambiado en Mailway, un fallo
  * pasajero (la red al arrancar, el registro de imágenes) dejaría el servicio
  * sin poder enviar. Si vuelve a fallar, `avisarCorreoSinEnviar`.
+ * `reintentar: false` (al retomarlo tras un reinicio, cuando el reintento ya
+ * se ha hecho): si falla, se avisa sin más.
  */
-async function seguirDespliegueCorreo(mid: string, l: DespliegueCorreo, plazoMs: number): Promise<boolean> {
+async function seguirDespliegueCorreo(
+  mid: string,
+  l: DespliegueCorreo,
+  plazoMs: number,
+  opts: { reintentar?: boolean; motivo?: keyof typeof MOTIVO_SIN_ENVIAR } = {},
+): Promise<boolean> {
   if (await seguirDespliegue(mid, l.serviceId, l.deploymentId, plazoMs)) return true;
   if (getDeployment(l.deploymentId)?.status !== 'failed' || !sigueSiendoDelCambio(mid, l.serviceId, l.deploymentId)) return false;
+  if (opts.reintentar === false) {
+    avisarCorreoSinEnviar(mid, l, l.deploymentId, opts.motivo);
+    return false;
+  }
   const service = getService(l.serviceId);
   if (!service) return false;
   let reintento: string;
   try {
-    reintento = desplegar(mid, service, l.imageTag ? { imageTag: l.imageTag } : {});
+    const correo: CorreoDelDespliegue = { de: l.de, a: l.a, ...(l.imageTag ? { imageTag: l.imageTag } : {}), reintento: true };
+    reintento = desplegar(mid, service, { imageTag: l.imageTag, correo });
   } catch {
     avisarCorreoSinEnviar(mid, l, null);
     return false;
@@ -3214,17 +3392,40 @@ export function marcarCambiosInterrumpidos(): { interrumpidos: number; seguidos:
   for (const row of listDomainMigrationsByEstado(['preparando', 'lista', 'pasada', 'pasando', 'volviendo', 'dando_de_baja', 'terminada', 'cancelada'])) {
     for (const [sid, s] of Object.entries(row.servicios)) {
       if (s.estado !== 'desplegando' || !s.deploymentId) continue;
+      // El que ponía al día el usuario de correo: el usuario ya cambió en
+      // Mailway, así que si no termina bien el servicio no puede enviar.
+      const correo = correoDe(s);
+      const seguido = (deploymentId: string): DespliegueCorreo | null =>
+        correo ? { serviceId: sid, deploymentId, de: correo.de, a: correo.a, ...(correo.imageTag ? { imageTag: correo.imageTag } : {}) } : null;
       const e = estadoServicio(sid, s);
       if (e.estado !== 'desplegando' || !e.deploymentId) {
         // Ya terminó (o se cortó sin reintento): se anota tal cual.
         setDomainMigrationServicio(row.id, sid, e);
         if (e.estado === 'ok') deletePrepublished(row.id, sid);
+        else if (correo) avisarCorreoSinEnviar(row.id, seguido(s.deploymentId)!, e.deploymentId, 'reinicio');
         continue;
       }
       const depId = e.deploymentId;
-      if (depId !== s.deploymentId) setDomainMigrationServicio(row.id, sid, { deploymentId: depId, estado: 'desplegando', error: null });
+      if (depId !== s.deploymentId) {
+        // El reintento automático tras el reinicio (`resumeInterruptedDeployments`) hace de reintento.
+        const entrada: ServicioConCorreo = {
+          deploymentId: depId,
+          estado: 'desplegando',
+          error: null,
+          ...(correo ? { correo: { ...correo, reintento: true } } : {}),
+        };
+        setDomainMigrationServicio(row.id, sid, entrada);
+      }
+      const l = seguido(depId);
       enSegundoPlano(async () => {
-        await seguirDespliegue(row.id, sid, depId);
+        if (l) {
+          await seguirDespliegueCorreo(row.id, l, PLAZO_DESPLIEGUE_BAJA_MS, {
+            reintentar: depId === s.deploymentId && !correo!.reintento,
+            motivo: 'reinicio',
+          });
+        } else {
+          await seguirDespliegue(row.id, sid, depId);
+        }
       });
       seguidos += 1;
     }

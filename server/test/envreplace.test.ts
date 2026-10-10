@@ -415,4 +415,37 @@ describe('bots: usuarios con prefijo propio y proveedores de webhooks', () => {
     // Sin el proveedor al principio del nombre (ni Stripe como tramo propio), nada.
     expect(proveedoresDeClaves(['SETTING_TG_ID', 'MYSTRIPE_KEY', 'DATABASE_URL', 'ROBOT_TOKENS'])).toEqual([]);
   });
+
+  it('proveedoresDeClaves: los webhooks de salida (publicar en un canal) no reciben nada', () => {
+    // Por el nombre: el webhook entrante de Slack y el de Discord son URLs a las que se publica.
+    expect(proveedoresDeClaves(['SLACK_WEBHOOK_URL', 'DISCORD_WEBHOOK_URL', 'SLACK_ALERTS_WEBHOOK', 'NEXT_PUBLIC_DISCORD_WEBHOOK_URL'])).toEqual([]);
+    // Por el valor, con cualquier nombre.
+    expect(
+      proveedoresDeClaves(['ALERTS_WEBHOOK_URL', 'AVISOS_WEBHOOK', 'TEAMS_WEBHOOK', 'WEBHOOK_URL'], {
+        ALERTS_WEBHOOK_URL: 'https://hooks.slack.com/services/T0/B0/x',
+        AVISOS_WEBHOOK: ' https://discord.com/api/webhooks/1/y ',
+        TEAMS_WEBHOOK: 'https://empresa.webhook.office.com/webhookb2/z',
+        WEBHOOK_URL: 'https://api.dominio.es/tg',
+      }),
+    ).toEqual([{ proveedor: 'webhook', clave: 'WEBHOOK_URL' }]);
+    // Lo que recibe de Slack o de Discord sigue contando.
+    expect(proveedoresDeClaves(['SLACK_SIGNING_SECRET', 'DISCORD_PUBLIC_KEY'], { SLACK_SIGNING_SECRET: 'x' })).toEqual([
+      { proveedor: 'slack', clave: 'SLACK_SIGNING_SECRET' },
+      { proveedor: 'discord', clave: 'DISCORD_PUBLIC_KEY' },
+    ]);
+  });
+
+  it('planificar: una variable marcada como usuario (la referencia un SMTP_USER) no cambia y sale como nota', () => {
+    const mapa: MapaCambio = { hosts: [], direcciones: [{ from: 'bot@dominio.es', to: 'bot@dominio2.es' }] };
+    const plan = planificar(
+      [
+        valor('bot@dominio.es', { ambito: 'project', serviceId: null, key: 'LOGIN_CORREO', usuario: true }),
+        valor('bot@dominio.es', { ambito: 'project', serviceId: null, key: 'AVISOS_PARA' }),
+      ],
+      mapa,
+      'dominio.es',
+    );
+    expect(plan.cambios.map((c) => [c.key, c.despues])).toEqual([['AVISOS_PARA', 'bot@dominio2.es']]);
+    expect(plan.usuarios.map((u) => [u.key, u.nombres])).toEqual([['LOGIN_CORREO', ['bot@dominio.es']]]);
+  });
 });

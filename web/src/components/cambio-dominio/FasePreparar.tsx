@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Download, RefreshCw } from 'lucide-react';
-import { cambioDominioApi, contar, enumerar, MigracionSkyway, WebhookEnRiesgo } from '../../cambioDominio';
+import { cambioDominioApi, contar, enumerar, MigracionSkyway, servirTambien, WebhookEnRiesgo } from '../../cambioDominio';
 import { copyToClipboard } from '../../utils';
 import { Button, Chip, ConfirmModal, Modal, useToast } from '../ui';
 import { Aviso, Avisos, AvisosWebhooks, Bloque, Condicion } from './comunes';
@@ -69,11 +69,7 @@ export default function FasePreparar({
 
   // «Servir también» los nombres en los que el servicio recibe webhooks: solo cambia el modo (nada se despliega hasta pasar).
   const servir = useMutation({
-    mutationFn: async (w: WebhookEnRiesgo) => {
-      let vista: MigracionSkyway | null = null;
-      for (const h of w.hosts) vista = await cambioDominioApi.modoHost(projectId, m.id, { serviceId: h.serviceId, from: h.from, modo: 'servir' });
-      return vista;
-    },
+    mutationFn: (w: WebhookEnRiesgo) => servirTambien(projectId, m.id, w),
     onSuccess: (v, w) => {
       if (v) onCambio(v);
       toast(`${enumerar(w.hosts.map((h) => h.from))} se ${w.hosts.length === 1 ? 'servirá' : 'servirán'} también al pasar, sin redirigir.`, 'ok');

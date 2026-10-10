@@ -231,8 +231,12 @@ export const cambioDominioApi = {
   /** Cambia el MX del dominio nuevo a este servidor en su zona de Cloudflare (recibía en otro proveedor). */
   cambiarMx: (projectId: string, mid: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/mx`),
   pasar: (projectId: string, mid: string, expect: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/switch`, { expect }),
-  /** «Servir también» un nombre que redirige (o volver a redirigirlo antes de pasar). Tras pasar, vuelve a desplegar el servicio. */
-  modoHost: (projectId: string, mid: string, body: { serviceId: string; from: string; modo: 'servir' | 'redirigir' }) =>
+  /**
+   * «Servir también» nombres de un servicio que redirigen (o volver a
+   * redirigirlos antes de pasar). Tras pasar, vuelve a desplegar el servicio:
+   * todos sus nombres van en la misma petición.
+   */
+  modoHost: (projectId: string, mid: string, body: { serviceId: string; from: string | string[]; modo: 'servir' | 'redirigir' }) =>
     api.post<MigracionSkyway>(`${base(projectId)}/${mid}/hosts/mode`, body),
   volver: (projectId: string, mid: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/rollback`),
   cancelar: (projectId: string, mid: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/cancel`),
@@ -303,6 +307,30 @@ const NOMBRE_PROVEEDOR: Record<ProveedorAviso, string> = {
   stripe: 'Stripe',
   webhook: 'webhooks',
 };
+
+/**
+ * «Servir también» los nombres de un aviso de webhooks: una petición por
+ * servicio que los sirve, con todos sus nombres (tras pasar, un solo
+ * despliegue por servicio). Devuelve la última vista.
+ */
+export async function servirTambien(projectId: string, mid: string, w: WebhookEnRiesgo): Promise<MigracionSkyway | null> {
+  const porServicio = new Map<string, string[]>();
+  for (const h of w.hosts) porServicio.set(h.serviceId, [...(porServicio.get(h.serviceId) ?? []), h.from]);
+  let vista: MigracionSkyway | null = null;
+  for (const [serviceId, from] of porServicio) vista = await cambioDominioApi.modoHost(projectId, mid, { serviceId, from, modo: 'servir' });
+  return vista;
+}
+
+/**
+ * Usos sin gestionar que se reescriben y se vuelven a desplegar al actualizar
+ * el buzón (o en la baja): los que no llevan ya el usuario con el que entrará
+ * (la dirección, si está pendiente; el de ahora, si no). Los que ya lo llevan
+ * entrarán en cuanto se actualice, sin desplegar nada.
+ */
+export function usosQueCambian(u: UsuarioSinGestionar): { cambian: UsuarioSinGestionar['usos']; yaNuevos: UsuarioSinGestionar['usos'] } {
+  const destino = (u.pendiente ? u.email : u.login).toLowerCase();
+  return { cambian: u.usos.filter((x) => x.usuario !== destino), yaNuevos: u.usos.filter((x) => x.usuario === destino) };
+}
 
 /** «a», «a y b», «a, b y c». */
 export function enumerar(lista: readonly string[]): string {

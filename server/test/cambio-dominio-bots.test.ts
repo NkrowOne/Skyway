@@ -36,12 +36,14 @@ import {
   listAlerts,
   listAudit,
   patchEnv,
+  ServicioMigracion,
+  setDomainMigrationServicio,
   setProjectVars,
   setSetting,
   updateDeployment,
   writeManagedEnv,
 } from '../src/db';
-import { esperarTareasCambioDominio, resetCambioDominioCaches } from '../src/domainmigration';
+import { esperarTareasCambioDominio, marcarCambiosInterrumpidos, resetCambioDominioCaches } from '../src/domainmigration';
 import { appPasswordName, reescribirUsuariosSinGestionar, usuarioDeUrlSmtp } from '../src/mailconnect';
 import { MAILWAY_SETTING, projectExternalRef, resetMailwayCaches } from '../src/mailway';
 import type { DetectedNeeds, GitConfig, ImageConfig, ProjectRow, ServiceRow } from '../src/types';
@@ -178,6 +180,7 @@ describe('webhooks y referencias', () => {
   let pagos: ServiceRow;
   let tienda: ServiceRow;
   let www: ServiceRow;
+  let alertas: ServiceRow;
   let base = '';
   let mid = '';
 
@@ -202,6 +205,9 @@ describe('webhooks y referencias', () => {
     // Un nombre «www» que pasa a otro sin «www»: servirlo también lo haría principal.
     www = createService(proj.id, 'Portada', 'portada', 'git', gitCfg(['www.bots.es']));
     patchEnv(www.id, { SLACK_SIGNING_SECRET: 's' }, []);
+    // Solo publica en Slack y en Discord (webhooks de salida): no recibe nada.
+    alertas = createService(proj.id, 'Alertas', 'alertas', 'git', gitCfg(['alertas.bots.es']));
+    patchEnv(alertas.id, { SLACK_WEBHOOK_URL: 'https://hooks.slack.com/services/T0/B0/x', AVISOS_WEBHOOK: 'https://discord.com/api/webhooks/1/y' }, []);
     base = `/api/projects/${proj.id}/domain-migrations`;
   });
 
@@ -230,6 +236,7 @@ describe('webhooks y referencias', () => {
     expect(webhooks.find((w) => w.serviceId === pagos.id)).toMatchObject({ proveedores: ['discord'], evidencias: ['package.json: discord.js'] });
     expect(webhooks.find((w) => w.serviceId === tienda.id)).toMatchObject({ proveedores: ['stripe'], evidencias: ['STRIPE_WEBHOOK_SECRET'] });
     expect(webhooks.some((w) => w.serviceId === poll.id || w.serviceId === api.id)).toBe(false);
+    expect(webhooks.some((w) => w.serviceId === alertas.id)).toBe(false);
 
     // El bot sin dominio se vuelve a desplegar porque usa la dirección de la API, con una sola copia.
     const servicios = r.json.servicios as Json[];
@@ -279,20 +286,27 @@ describe('webhooks y referencias', () => {
       expect.arrayContaining(['«tg.bots.es»: redirigir → servir', '«tg.bots.es»: servir → redirigir']),
     );
 
-    // La portada, servida también, seguiría con www.bots.es como principal.
-    const principal = await call('POST', `${base}/${mid}/hosts/mode`, { serviceId: www.id, from: 'www.bots.es', modo: 'servir' });
-    expect(principal.status).toBe(409);
-    expect(principal.json.code).toBe('host_principal');
+    // La portada, servida también, seguiría con www.bots.es como principal:
+    // se admite con el mismo aviso que en la vista previa, y se puede deshacer.
+    const principal = await call('POST', `${base}/${mid}/hosts/mode`, { serviceId: www.id, from: ['www.bots.es'], modo: 'servir' });
+    expect(principal.status, principal.raw).toBe(200);
+    expect(principal.json.avisos).toContain(
+      'Con «Servir también», www.bots.es seguirá siendo el dominio principal de «Portada»: su PUBLIC_URL no pasará a app.bots2.es.',
+    );
+    const deshecho = await call('POST', `${base}/${mid}/hosts/mode`, { serviceId: www.id, from: 'www.bots.es', modo: 'redirigir' });
+    expect(deshecho.status, deshecho.raw).toBe(200);
+    expect((deshecho.json.avisos as string[]).some((a) => a.startsWith('Con «Servir también»'))).toBe(false);
 
     const ajeno = await call('POST', `${base}/${mid}/hosts/mode`, { serviceId: tg.id, from: 'otro.bots.es', modo: 'servir' });
     expect(ajeno.status).toBe(404);
     expect(ajeno.json.code).toBe('not_found');
     const malo = await call('POST', `${base}/${mid}/hosts/mode`, { serviceId: tg.id, from: 'tg.bots.es', modo: 'no_cambiar' });
     expect(malo.status).toBe(400);
+    expect((await call('POST', `${base}/${mid}/hosts/mode`, { serviceId: tg.id, from: [], modo: 'servir' })).status).toBe(400);
   });
 
   it('pasar: los que referencian la dirección de un servicio que cambia se despliegan y suben su revisión', async () => {
-    dnsAqui('tg.bots2.es', 'api.bots2.es', 'pagos.bots2.es', 'shop.bots2.es', 'app.bots2.es');
+    dnsAqui('tg.bots2.es', 'api.bots2.es', 'pagos.bots2.es', 'shop.bots2.es', 'app.bots2.es', 'alertas.bots2.es');
     const vista = (await call('POST', `${base}/${mid}/check`)).json;
     expect(vista.estado).toBe('lista');
     expect((vista.alPasar as Json[]).find((s) => s.serviceId === hook.id)?.motivos).toEqual(['referencias']);
@@ -357,6 +371,56 @@ describe('webhooks y referencias', () => {
     expect(revision(hook)).toBe(antes + 1);
     await esperarTareasCambioDominio();
     expect(getDomainMigration(mid)!.estado).toBe('lista');
+  });
+});
+
+describe('«Servir también» varios nombres de un servicio tras pasar', () => {
+  it('van en una sola petición: los dos se sirven, sin redirección, con un solo despliegue', async () => {
+    const proj = createProject('Tienda dos nombres', 'tienda-dos', null, workspaceId);
+    const web = createService(proj.id, 'Web', 'web', 'git', gitCfg(['www.ea.es', 'ea.es']));
+    patchEnv(web.id, { STRIPE_WEBHOOK_SECRET: 'whsec_x' }, []);
+    enMarcha(web, 'skyway/tienda-dos-web:v1');
+    const base = `/api/projects/${proj.id}/domain-migrations`;
+    const plan = await call('POST', `${base}/plan`, { fromDomain: 'ea.es', toDomain: 'ea2.es' });
+    expect(plan.status, plan.raw).toBe(200);
+    const creada = await call('POST', base, { fromDomain: 'ea.es', toDomain: 'ea2.es', hosts: hostsDe(plan.json), excluidas: [], expect: plan.json.expect });
+    expect(creada.status, creada.raw).toBe(201);
+    const mid = creada.json.id as string;
+    dnsAqui('www.ea2.es', 'ea2.es');
+    const vista = (await call('POST', `${base}/${mid}/check`)).json;
+    expect(vista.estado).toBe('lista');
+    const sw = await call('POST', `${base}/${mid}/switch`, { expect: vista.variables.huella });
+    expect(sw.status, sw.raw).toBe(202);
+    await esperarTareasCambioDominio();
+    const pasada = (await call('GET', `${base}/${mid}`)).json;
+    const aviso = (pasada.webhooks as Json[]).find((w) => w.serviceId === web.id);
+    expect(aviso.hosts.map((h: Json) => h.from)).toEqual(['www.ea.es', 'ea.es']);
+
+    m.triggers = [];
+    let terminar: () => void = () => {};
+    m.espera = new Promise<void>((res) => {
+      terminar = res;
+    });
+    const r = await call('POST', `${base}/${mid}/hosts/mode`, { serviceId: web.id, from: aviso.hosts.map((h: Json) => h.from), modo: 'servir' });
+    expect(r.status, r.raw).toBe(202);
+    expect(dominios(web)).toEqual(['www.ea2.es', 'ea2.es', 'www.ea.es', 'ea.es']);
+    expect(getDomainRedirect('www.ea.es')).toBeUndefined();
+    expect(getDomainRedirect('ea.es')).toBeUndefined();
+    expect(getPrepublished('www.ea.es')?.dns_ok_at).toBeTypeOf('number');
+    expect(getPrepublished('ea.es')?.dns_ok_at).toBeTypeOf('number');
+    expect(m.triggers).toEqual([{ serviceId: web.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/tienda-dos-web:v1' }]);
+    expect((r.json.webhooks as Json[]).some((w) => w.serviceId === web.id)).toBe(false);
+    expect(listAudit({ action: 'domain_migration_host_mode' }).map((a) => a.detail)).toContain(
+      '«www.ea.es»: redirigir → servir, «ea.es»: redirigir → servir',
+    );
+    m.espera = null;
+    terminar();
+    await esperarTareasCambioDominio();
+    // Repetirlo no despliega otra vez.
+    m.triggers = [];
+    const otra = await call('POST', `${base}/${mid}/hosts/mode`, { serviceId: web.id, from: ['www.ea.es', 'ea.es'], modo: 'servir' });
+    expect(otra.status, otra.raw).toBe(200);
+    expect(m.triggers).toEqual([]);
   });
 });
 
@@ -545,6 +609,74 @@ describe('usuario SMTP compartido', () => {
   });
 });
 
+describe('usuario SMTP por referencia', () => {
+  it('pasar no cambia la variable a la que apunta un usuario; «Actualizar ahora» la reescribe y despliega a quien la usa', async () => {
+    const p = proyectoConBuzones('referencias', 'xc.es', ['avisos', 'alertas']);
+    setProjectVars(p.proj.id, { SMTP_USER: 'avisos@xc.es', SMTP_PASS: 'manual', MAIL_LOGIN_COMUN: 'alertas@xc.es' });
+    // Toma la compartida por referencia (la define, así que no la «hereda»).
+    const worker = createService(p.proj.id, 'Worker', 'worker', 'git', gitCfg([]));
+    patchEnv(worker.id, { SMTP_USER: '${{shared.SMTP_USER}}' }, []);
+    enMarcha(worker, 'skyway/referencias-worker:v1');
+    // Referencia a la de otro servicio, que a su vez referencia la compartida.
+    const cron = createService(p.proj.id, 'Cron', 'cron', 'git', gitCfg([]));
+    patchEnv(cron.id, { SMTP_USER: '${{worker.SMTP_USER}}' }, []);
+    enMarcha(cron, 'skyway/referencias-cron:v1');
+    // Un usuario con una compartida cuyo nombre no dice que sea un usuario.
+    const bot = createService(p.proj.id, 'Bot', 'bot', 'git', gitCfg([]));
+    patchEnv(bot.id, { SMTP_USER: '${{shared.MAIL_LOGIN_COMUN}}', SMTP_PASS: 'manual' }, []);
+    enMarcha(bot, 'skyway/referencias-bot:v1');
+    // Nunca desplegado: hereda la compartida, pero no hay contenedor que poner al día.
+    const nuevo = createService(p.proj.id, 'Nuevo', 'nuevo', 'git', gitCfg([]));
+
+    const { mid, plan } = await pasar(p, 'xc.es', 'xc2.es');
+    expect((plan.variables.cambios as Json[]).map((c) => c.key)).not.toContain('MAIL_LOGIN_COMUN');
+    expect((plan.variables.notas as Json[]).map((x) => x.texto)).toContain(
+      'alertas@xc.es aparece en MAIL_LOGIN_COMUN como usuario para entrar en el correo: no se cambia al pasar. El buzón sigue entrando con ese usuario hasta que se actualice o se dé de baja xc.es.',
+    );
+    expect(getProjectVars(p.proj.id)).toMatchObject({ SMTP_USER: 'avisos@xc.es', MAIL_LOGIN_COMUN: 'alertas@xc.es' });
+
+    const v = (await call('GET', `${p.base}/${mid}`)).json;
+    const porBuzon = new Map((v.usuariosSinGestionar as Json[]).map((u) => [u.email, u]));
+    expect(porBuzon.get('avisos@xc2.es').usos.map((u: Json) => [u.serviceName, u.key, u.usuario])).toEqual([
+      ['Worker', 'SMTP_USER', 'avisos@xc.es'],
+      ['Cron', 'SMTP_USER', 'avisos@xc.es'],
+      [null, 'SMTP_USER', 'avisos@xc.es'],
+    ]);
+    expect(porBuzon.get('alertas@xc2.es').usos.map((u: Json) => [u.serviceName, u.key, u.usuario])).toEqual([
+      ['Bot', 'SMTP_USER', 'alertas@xc.es'],
+      [null, 'MAIL_LOGIN_COMUN', 'alertas@xc.es'],
+    ]);
+
+    m.triggers = [];
+    const revNuevo = revision(nuevo);
+    const r = await call('POST', `${p.base}/${mid}/mailboxes/${p.buzon.avisos}/login-update`);
+    expect(r.status, r.raw).toBe(200);
+    expect(getProjectVars(p.proj.id).SMTP_USER).toBe('avisos@xc2.es');
+    expect(getEnv(worker.id).SMTP_USER).toBe('${{shared.SMTP_USER}}');
+    expect(m.triggers).toEqual([
+      { serviceId: worker.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/referencias-worker:v1' },
+      { serviceId: cron.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/referencias-cron:v1' },
+    ]);
+    // Sin versión en marcha: queda pendiente, sin compilar nada.
+    expect(revision(nuevo)).toBe(revNuevo + 1);
+    await esperarTareasCambioDominio();
+
+    m.triggers = [];
+    const r2 = await call('POST', `${p.base}/${mid}/mailboxes/${p.buzon.alertas}/login-update`);
+    expect(r2.status, r2.raw).toBe(200);
+    expect(getProjectVars(p.proj.id).MAIL_LOGIN_COMUN).toBe('alertas@xc2.es');
+    // Todo servicio recibe las compartidas que no define: el entorno de los
+    // tres cambia y se despliegan los tres (el nuevo sigue sin desplegar).
+    expect(m.triggers).toEqual([
+      { serviceId: worker.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/referencias-worker:v1' },
+      { serviceId: cron.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/referencias-cron:v1' },
+      { serviceId: bot.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/referencias-bot:v1' },
+    ]);
+    await esperarTareasCambioDominio();
+    expect((await call('GET', `${p.base}/${mid}`)).json.usuariosSinGestionar).toEqual([]);
+  });
+});
+
 describe('despliegue con el usuario nuevo: reintento y alerta', () => {
   function botConLogin(slug: string, dominio: string) {
     const p = proyectoConBuzones(slug, dominio, ['bot']);
@@ -599,6 +731,90 @@ describe('despliegue con el usuario nuevo: reintento y alerta', () => {
     });
     // Una sola alerta aunque se repita.
     expect(listAlerts({ openOnly: true }).filter((a) => a.service_id === bot.id && a.type === 'mail_login_deploy_failed')).toHaveLength(1);
+  });
+});
+
+describe('despliegue con el usuario nuevo tras un reinicio de Skyway', () => {
+  function botConLogin(slug: string, dominio: string) {
+    const p = proyectoConBuzones(slug, dominio, ['bot']);
+    const bot = createService(p.proj.id, 'Bot', 'bot', 'git', gitCfg([]));
+    patchEnv(bot.id, { TG_SMTP_LOGIN: `bot@${dominio}`, SMTP_PASS: 'manual' }, []);
+    enMarcha(bot, `skyway/${slug}-bot:v1`);
+    return { p, bot };
+  }
+
+  /** La entrada del servicio como la deja el despliegue con el usuario nuevo justo antes del reinicio. */
+  function cortado(mid: string, bot: ServiceRow, dominio: string, tag: string): string {
+    const dep = createDeployment(bot.id, 'cambio-de-dominio', tag);
+    // `markStaleDeploymentsFailed`: el reinicio lo deja fallido.
+    updateDeployment(dep.id, { status: 'failed', error: 'Interrumpido por un reinicio de Skyway.' });
+    const entrada = {
+      deploymentId: dep.id,
+      estado: 'desplegando',
+      error: null,
+      correo: { de: `bot@${dominio}`, a: `bot@${dominio.replace('.es', '2.es')}`, imageTag: tag, reintento: false },
+    };
+    setDomainMigrationServicio(mid, bot.id, entrada as ServicioMigracion);
+    return dep.id;
+  }
+
+  const alertaDe = (bot: ServiceRow) => listAlerts({ openOnly: true }).find((a) => a.service_id === bot.id && a.type === 'mail_login_deploy_failed');
+
+  it('«Actualizar ahora» guarda con el despliegue lo necesario para retomarlo', async () => {
+    const { p, bot } = botConLogin('guarda', 'g.es');
+    const { mid } = await pasar(p, 'g.es', 'g2.es');
+    let soltar: () => void = () => {};
+    m.espera = new Promise<void>((r) => {
+      soltar = r;
+    });
+    const r = await call('POST', `${p.base}/${mid}/mailboxes/${p.buzon.bot}/login-update`);
+    expect(r.status, r.raw).toBe(200);
+    expect(getDomainMigration(mid)!.servicios[bot.id]).toMatchObject({
+      estado: 'desplegando',
+      correo: { de: 'bot@g.es', a: 'bot@g2.es', imageTag: 'skyway/guarda-bot:v1', reintento: false },
+    });
+    m.espera = null;
+    soltar();
+    await esperarTareasCambioDominio();
+    expect(getDomainMigration(mid)!.servicios[bot.id]).toMatchObject({ estado: 'ok' });
+  });
+
+  it('el reintento automático del arranque hace de reintento: si falla, alerta crítica sin desplegar otra vez', async () => {
+    const { p, bot } = botConLogin('rearranque', 'h.es');
+    const { mid } = await pasar(p, 'h.es', 'h2.es');
+    cortado(mid, bot, 'h.es', 'skyway/rearranque-bot:v1');
+    // `resumeInterruptedDeployments` lo vuelve a lanzar con la misma imagen.
+    const retry = createDeployment(bot.id, 'retry', 'skyway/rearranque-bot:v1');
+    m.triggers = [];
+    m.resultado = 'failed';
+    marcarCambiosInterrumpidos();
+    expect(getDomainMigration(mid)!.servicios[bot.id]).toMatchObject({ deploymentId: retry.id, estado: 'desplegando', correo: { reintento: true } });
+    await esperarTareasCambioDominio();
+    expect(m.triggers).toEqual([]);
+    expect(getDomainMigration(mid)!.servicios[bot.id]).toMatchObject({
+      deploymentId: retry.id,
+      estado: 'error',
+      error:
+        'El despliegue no ha terminado bien tras un reinicio de Skyway y «Bot» no puede enviar correo: su usuario ya es bot@h2.es y el contenedor en marcha sigue con bot@h.es. Pulsa «Reintentar este servicio».',
+    });
+    expect(alertaDe(bot)).toMatchObject({
+      severity: 'critical',
+      message:
+        'El usuario de correo de «Bot» ha cambiado a bot@h2.es y su despliegue no ha terminado bien tras un reinicio de Skyway: el contenedor en marcha sigue entrando con bot@h.es, que ya no es válido.',
+    });
+  });
+
+  it('si el reinicio no deja ningún despliegue en curso, la alerta salta al arrancar', async () => {
+    const { p, bot } = botConLogin('sinreintento', 'q.es');
+    const { mid } = await pasar(p, 'q.es', 'q2.es');
+    const depId = cortado(mid, bot, 'q.es', 'skyway/sinreintento-bot:v1');
+    m.triggers = [];
+    marcarCambiosInterrumpidos();
+    expect(getDomainMigration(mid)!.servicios[bot.id]).toMatchObject({ deploymentId: depId, estado: 'error' });
+    expect(getDomainMigration(mid)!.servicios[bot.id].error).toMatch(/^El despliegue no ha terminado bien tras un reinicio de Skyway y «Bot»/);
+    expect(alertaDe(bot)?.severity).toBe('critical');
+    await esperarTareasCambioDominio();
+    expect(m.triggers).toEqual([]);
   });
 });
 

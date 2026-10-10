@@ -306,6 +306,36 @@ describe('detección de bots y webhooks (needs.bots)', () => {
     expect(needs.sources).toEqual(expect.arrayContaining(['package.json', 'requirements.txt', 'go.mod', 'Gemfile', 'composer.json']));
   });
 
+  it('Python: dependencias de Poetry (solo las de producción) y nombres normalizados como en PyPI', () => {
+    const poetry = needsFrom({
+      'pyproject.toml': [
+        '[tool.poetry]',
+        'name = "bot"',
+        '',
+        '[tool.poetry.dependencies]',
+        'python = "^3.11"',
+        'aiogram = "^3.4"',
+        'Discord_Py = { version = "^2.3", extras = ["voice"] }',
+        '',
+        '[tool.poetry.group.dev.dependencies]',
+        'stripe = "^9"',
+        '',
+        '[[tool.poetry.source]]',
+        'twilio = "no es una dependencia"',
+      ].join('\n'),
+    })!;
+    expect(poetry.bots).toEqual([
+      { proveedor: 'telegram', evidencia: 'pyproject.toml: aiogram' },
+      { proveedor: 'discord', evidencia: 'pyproject.toml: discord-py' },
+    ]);
+    // `discord.py` (como se escribe en PyPI) y `discord-py` son el mismo paquete.
+    const req = needsFrom({ 'requirements.txt': 'discord.py==2.3\nPython_Telegram.Bot>=21\n' })!;
+    expect(req.bots).toEqual([
+      { proveedor: 'discord', evidencia: 'requirements.txt: discord-py' },
+      { proveedor: 'telegram', evidencia: 'requirements.txt: python-telegram-bot' },
+    ]);
+  });
+
   it('un repositorio que solo es un bot ya dice algo; sin bibliotecas de bots, no hay `bots`', () => {
     const bot = needsFrom({ 'package.json': JSON.stringify({ dependencies: { grammy: '^1' } }) });
     expect(bot).not.toBeNull();

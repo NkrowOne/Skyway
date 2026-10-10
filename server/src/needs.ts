@@ -212,7 +212,7 @@ const PYPI_BOTS: Record<string, ProveedorWebhook> = {
   'python-telegram-bot': 'telegram',
   aiogram: 'telegram',
   pytelegrambotapi: 'telegram',
-  'discord.py': 'discord',
+  'discord-py': 'discord',
   'py-cord': 'discord',
   nextcord: 'discord',
   'slack-bolt': 'slack',
@@ -307,11 +307,40 @@ function readSmall(file: string): string | null {
   }
 }
 
+/**
+ * Nombre de un paquete de Python normalizado como lo compara PyPI (PEP 503):
+ * en minúsculas y con cualquier tramo de «-», «_» o «.» como un «-».
+ * `discord.py`, `Discord_Py` y `discord-py` son el mismo paquete.
+ */
+const pyNorm = (name: string): string => name.toLowerCase().replace(/[-_.]+/g, '-');
+
 /** Nombre de paquete Python sin versión ni extras: `psycopg[binary]>=3` → `psycopg`. */
 const pyName = (line: string): string | null => {
   const m = line.trim().match(/^([A-Za-z0-9][A-Za-z0-9._-]*)/);
-  return m ? m[1].toLowerCase().replace(/_/g, '-') : null;
+  return m ? pyNorm(m[1]) : null;
 };
+
+/**
+ * Dependencias de Poetry (`[tool.poetry.dependencies]`, o su grupo `main`):
+ * el nombre va como clave, sin comillas (`aiogram = "^3.0"`), así que la
+ * búsqueda de nombres entre comillas no las ve. Como en npm, solo las de
+ * producción: los grupos de desarrollo y de pruebas no se despliegan.
+ */
+function dependenciasPoetry(text: string): string[] {
+  const out: string[] = [];
+  let dentro = false;
+  for (const linea of text.split(/\r?\n/)) {
+    const seccion = linea.match(/^\s*\[\[?([^\]]*)\]\]?\s*(?:#.*)?$/);
+    if (seccion) {
+      dentro = /^tool\.poetry\.(?:group\.main\.)?dependencies$/.test(seccion[1].trim());
+      continue;
+    }
+    if (!dentro) continue;
+    const m = linea.match(/^\s*["']?([A-Za-z0-9][A-Za-z0-9._-]*)["']?\s*=/);
+    if (m) out.push(pyNorm(m[1]));
+  }
+  return out;
+}
 
 /**
  * Inspecciona el repositorio clonado. Mira en `rootDir` y en la raíz (en un
@@ -426,9 +455,13 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
     }
     const pyproject = read('pyproject.toml');
     if (pyproject) {
-      // Sin parsear TOML entero: las dependencias van entre comillas y con eso basta.
-      for (const m of pyproject.text.matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*[<>=!~;\s"']/g)) {
-        const n = m[1].toLowerCase().replace(/_/g, '-');
+      // Sin parsear TOML entero: las dependencias de PEP 621 van entre comillas
+      // y con eso basta; las de Poetry, como claves de su sección.
+      const nombres = new Set([
+        ...[...pyproject.text.matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*[<>=!~;\s"']/g)].map((m) => pyNorm(m[1])),
+        ...dependenciasPoetry(pyproject.text),
+      ]);
+      for (const n of nombres) {
         const engine = PYPI[n];
         if (engine) {
           found(engine, `${pyproject.rel}: ${n}`);
