@@ -66,6 +66,7 @@ import {
   listDomainMigrations,
   listDomainMigrationsByEstado,
   listDomainRedirects,
+  listMailwayLinksByClient,
   listPrepublished,
   listServices,
   listSnapshots,
@@ -99,6 +100,7 @@ import {
   ValorVariable,
 } from './envreplace';
 import { credentialNames, ownedSummary, refrescarVariablesCorreo, requireLink } from './mailconnect';
+import { mailRoleOf } from './mailenv';
 import {
   appendWebRecords,
   CambioDominioVista,
@@ -798,6 +800,66 @@ function huellaPlan(p: {
   return sha256(JSON.stringify([p.fromDomain, p.toDomain, p.soloWeb, hosts, p.variables, correo]));
 }
 
+/** Una dirección de `dominio` (también dentro de una URL `smtp://usuario%40dominio:…`). */
+function direccionDe(dominio: string): RegExp {
+  return new RegExp(`@${dominio.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9.-])`, 'i');
+}
+
+function decodificar(valor: string): string {
+  try {
+    return decodeURIComponent(valor);
+  } catch {
+    return valor;
+  }
+}
+
+/**
+ * Servicios de OTROS proyectos que envían con direcciones de `fromDomain`
+ * desde el mismo cliente de correo. Los proyectos de una cuenta comparten su
+ * cliente de Mailway (Skyway 0.38): el dominio de correo y sus buzones son de
+ * toda la cuenta y el cambio de Mailway los muda todos, pero el asistente solo
+ * cambia las variables y despliega los servicios de SU proyecto. Tras la baja
+ * (o al actualizar el usuario de un buzón), esas aplicaciones se quedarían con
+ * un usuario o un remitente que ya no existen. Se miran las variables de
+ * correo (usuario, remitente y URL SMTP, `mailRoleOf`) de sus servicios y las
+ * compartidas de su proyecto, las escribiera Skyway o no.
+ */
+function enviosDeOtrosProyectos(projectId: string, clientId: string, fromDomain: string): string[] {
+  const direccion = direccionDe(fromDomain);
+  const usa = (vars: Record<string, string>) =>
+    Object.entries(vars).some(([key, value]) => {
+      const role = mailRoleOf(key);
+      return (role === 'user' || role === 'from' || role === 'url') && direccion.test(decodificar(value));
+    });
+  const out: string[] = [];
+  for (const link of listMailwayLinksByClient(clientId)) {
+    if (link.project_id === projectId) continue;
+    const proyecto = link.project_name ?? link.project_id;
+    if (usa(getProjectVars(link.project_id))) out.push(`«${proyecto}» (variables compartidas)`);
+    for (const s of listServices(link.project_id)) {
+      if (s.type !== 'database' && usa(getEnv(s.id))) out.push(`«${proyecto} / ${s.name}»`);
+    }
+  }
+  return out;
+}
+
+/** Por qué el correo de `fromDomain` no se puede cambiar desde este proyecto (`enviosDeOtrosProyectos`), o null. */
+function bloqueoCorreoCompartido(projectId: string, clientId: string, fromDomain: string): string | null {
+  const otros = enviosDeOtrosProyectos(projectId, clientId, fromDomain);
+  if (otros.length === 0) return null;
+  const lista = otros.length > 3 ? `${otros.slice(0, 3).join(', ')} y ${otros.length - 3} más` : otros.join(', ');
+  return (
+    `El correo de ${fromDomain} es de toda la cuenta y también envían con él servicios de otros proyectos (${lista}). ` +
+    'Este asistente solo actualiza los servicios de este proyecto: cambia antes el usuario y el remitente de esos servicios, desconecta su correo o cambia solo la web.'
+  );
+}
+
+/** Lo mismo que `bloqueoCorreoCompartido`, como error de una acción del cambio. */
+function exigirCorreoNoCompartido(row: DomainMigrationRow, link: MailwayLinkRow): void {
+  const motivo = bloqueoCorreoCompartido(row.project_id, link.client_id, row.from_domain);
+  if (motivo) throw new ErrorCambio(409, 'migration_shared_mail', `${motivo} No se ha cambiado nada.`);
+}
+
 /**
  * Vista previa del cambio: el mapa de nombres, el plan del correo de Mailway
  * (sin efectos) y el de las variables, con sus bloqueos y la huella con la que
@@ -854,6 +916,8 @@ export async function calcularPlan(req: FastifyRequest, project: ProjectRow, bod
     // Mailway no bloquea un cambio idéntico al que ya está abierto (crear lo
     // devuelve, es idempotente), pero si no lo abrió este proyecto no se
     // puede gestionar desde aquí (`exigirCambioPropio`): se dice ya en el plan.
+    const compartido = correo.link ? bloqueoCorreoCompartido(project.id, correo.link.client_id, fromDomain) : null;
+    if (compartido) bloqueos.push(compartido);
     const enCambio = correo.dominio.migracion;
     const propio = !!abierta && abierta.from_domain === fromDomain && abierta.to_domain === toDomain;
     if (enCambio && !propio && !planCorreo.bloqueos.some((b) => b.code === 'migration_exists')) {
@@ -1335,7 +1399,14 @@ export async function vistaMigracion(row: DomainMigrationRow, isAdmin: boolean, 
   // `solo_web`, no el id de Mailway: un cambio con el correo cuyo alta en
   // Mailway no se pudo confirmar sigue siendo un cambio con el correo.
   const conCorreo = !row.solo_web;
-  const bajaBloqueada = (correo?.bloqueosBaja ?? []).some((b) => b.code !== 'mailbox_used_by_app');
+  // Correo de la cuenta que también usan otros proyectos para enviar: la baja
+  // (y actualizar el usuario de un buzón) los dejaría sin poder hacerlo.
+  const compartido =
+    conCorreo && row.mailway_client_id && (row.estado === 'pasada' || row.estado === 'dando_de_baja')
+      ? bloqueoCorreoCompartido(row.project_id, row.mailway_client_id, row.from_domain)
+      : null;
+  if (compartido) avisos.push(compartido);
+  const bajaBloqueada = !!compartido || (correo?.bloqueosBaja ?? []).some((b) => b.code !== 'mailbox_used_by_app');
   const conError = !!row.error;
   return {
     id: row.id,
@@ -2158,7 +2229,8 @@ export async function darDeBajaCambio(req: FastifyRequest, project: ProjectRow, 
     const row = conciliarServicios(cambioDelProyecto(project, mid));
     exigirEstado(puede(row));
     exigirServiciosDesplegados(row, `dar de baja ${row.from_domain}`);
-    await correoDelCambio(project, row, isAdmin);
+    const { link } = await correoDelCambio(project, row, isAdmin);
+    exigirCorreoNoCompartido(row, link);
     // La baja cambia el usuario de las aplicaciones y las despliega ANTES de
     // pedírsela a Mailway, que solo entonces mide el MX: con el MX anterior
     // aún aquí (el fallo más probable), ese cambio irreversible ya estaría
@@ -2343,9 +2415,11 @@ export async function actualizarPersona(req: FastifyRequest, project: ProjectRow
     const row = cambioDelProyecto(project, mid);
     if (!row.mailway_migration_id) throw new ErrorCambio(409, 'migration_state', 'Este cambio de dominio no incluye el correo.');
     exigirEstado(puede(row));
-    await correoDelCambio(project, row, isAdmin);
+    const { link } = await correoDelCambio(project, row, isAdmin);
     const correo = await vistaCorreo(row, true);
     const buzon = correo.buzones.lista.find((b) => b.id === mailboxId);
+    // Cambiar su usuario dejaría sin enviar a las aplicaciones de otros proyectos que lo usan.
+    if (buzon) exigirCorreoNoCompartido(row, link);
     if (!buzon) throw new ErrorCambio(404, 'not_found', 'Ese buzón no forma parte de este cambio de dominio.');
     if (usaAppsSkyway(buzon)) {
       const { lanzados, actualizados } = await ponerAlDiaApps(mid, row, [buzon]);

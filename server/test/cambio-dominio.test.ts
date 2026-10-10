@@ -1533,4 +1533,75 @@ describe('cliente de correo compartido por los proyectos de una cuenta', () => {
     expect(m.triggers).toEqual([{ serviceId: p.web.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/legado-web:v1' }]);
     expect(getDomainMigration(mid)!.estado).toBe('terminada');
   });
+
+  it('otro proyecto de la cuenta que envía con el dominio: la baja y «Actualizar ahora» responden 409 sin tocar nada', async () => {
+    const p = proyectoConCorreo('compartido', 'compartido.es');
+    const { mid } = await hastaPasada(p, 'compartido.es', 'compartido2.es');
+    // Otro proyecto de la cuenta vinculado al mismo cliente, con un servicio que envía como tienda@compartido.es.
+    const otro = createProject('Blog', 'blog-compartido', null, workspaceId);
+    insertMailwayLink({ project_id: otro.id, client_id: p.clientId, client_name: 'compartido', created_by: null });
+    const blog = createService(otro.id, 'Blog', 'blog', 'git', gitCfg([]));
+    writeManagedEnv(blog.id, {
+      SMTP_USER: { value: 'tienda@compartido.es', origin: 'mail.smtp.user' },
+      SMTP_FROM: { value: 'tienda@compartido.es', origin: 'mail.smtp.from' },
+    });
+    mw.calls = [];
+    m.triggers = [];
+    // El asistente ya no ofrece la baja y dice por qué.
+    const vista = (await call('GET', `${p.base}/${mid}`, ownerHeaders)).json;
+    expect(vista.puedeDarDeBaja).toBe(false);
+    expect(vista.avisos).toContainEqual(expect.stringMatching(/también envían con él servicios de otros proyectos/));
+    const r = await call('POST', `${p.base}/${mid}/retire`, ownerHeaders, { confirm: 'compartido.es' });
+    expect(r.status).toBe(409);
+    expect(r.json.code).toBe('migration_shared_mail');
+    expect(r.json.error).toMatch(/también envían con él servicios de otros proyectos \(«Blog \/ Blog»\)/);
+    expect(llamadas(/login-update|\/retire$/)).toEqual([]);
+    expect(m.triggers).toEqual([]);
+    expect(getEnv(p.web.id).SMTP_USER).toBe('tienda@compartido.es');
+    expect(getDomainMigration(mid)).toMatchObject({ estado: 'pasada', error: null });
+    const persona = await call('POST', `${p.base}/${mid}/mailboxes/${p.buzonId}/login-update`, ownerHeaders);
+    expect(persona.status).toBe(409);
+    expect(persona.json.code).toBe('migration_shared_mail');
+    expect(llamadas(/login-update/)).toEqual([]);
+
+    // Con el remitente y el usuario del otro servicio ya en el dominio nuevo, la baja sigue.
+    writeManagedEnv(blog.id, {
+      SMTP_USER: { value: 'tienda@compartido2.es', origin: 'mail.smtp.user' },
+      SMTP_FROM: { value: 'tienda@compartido2.es', origin: 'mail.smtp.from' },
+    });
+    m.resultado = 'success';
+    const ok = await call('POST', `${p.base}/${mid}/retire`, ownerHeaders, { confirm: 'compartido.es' });
+    expect(ok.status, ok.raw).toBe(202);
+    await esperarTareasCambioDominio();
+    expect(getDomainMigration(mid)!.estado).toBe('terminada');
+  });
+
+  it('el plan lo dice antes de preparar nada, también por las variables compartidas, y «Solo la web» no se bloquea', async () => {
+    const q = proyectoConCorreo('compartido-b', 'compartido-b.es');
+    let plan = await call('POST', `${q.base}/plan`, ownerHeaders, { fromDomain: 'compartido-b.es', toDomain: 'compartido-b2.es' });
+    expect(plan.status, plan.raw).toBe(200);
+    expect(plan.json.bloqueos).toEqual([]);
+    // Un proyecto de la cuenta con otro cliente no cuenta.
+    const ajeno = createProject('Ajeno B', 'ajeno-b', null, workspaceId);
+    setProjectVars(ajeno.id, { SMTP_FROM: 'tienda@compartido-b.es' });
+    expect((await call('POST', `${q.base}/plan`, ownerHeaders, { fromDomain: 'compartido-b.es', toDomain: 'compartido-b2.es' })).json.bloqueos).toEqual([]);
+    // Con el mismo cliente, sí.
+    const cuarto = createProject('Cuarto', 'cuarto-b', null, workspaceId);
+    insertMailwayLink({ project_id: cuarto.id, client_id: q.clientId, client_name: 'compartido-b', created_by: null });
+    setProjectVars(cuarto.id, { SMTP_FROM: 'tienda@compartido-b.es' });
+    plan = await call('POST', `${q.base}/plan`, ownerHeaders, { fromDomain: 'compartido-b.es', toDomain: 'compartido-b2.es' });
+    expect(plan.json.bloqueos).toEqual([expect.stringMatching(/«Cuarto» \(variables compartidas\)/)]);
+    const r = await call('POST', q.base, ownerHeaders, {
+      fromDomain: 'compartido-b.es',
+      toDomain: 'compartido-b2.es',
+      hosts: plan.json.hosts.map((h: Json) => ({ serviceId: h.serviceId, from: h.from, to: h.to, modo: h.modo })),
+      excluidas: [],
+      expect: plan.json.expect,
+    });
+    expect(r.status).toBe(409);
+    expect(r.json.code).toBe('migration_blocked');
+    // Con «Solo la web» el correo no se toca.
+    plan = await call('POST', `${q.base}/plan`, ownerHeaders, { fromDomain: 'compartido-b.es', toDomain: 'compartido-b2.es', soloWeb: true });
+    expect(plan.json.bloqueos).toEqual([]);
+  });
 });
