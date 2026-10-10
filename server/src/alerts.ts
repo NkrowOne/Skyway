@@ -39,6 +39,19 @@ function enviarACanales(alerta: OutgoingAlert): void {
  */
 export const AUTODEPLOY_ALERT_TYPE = 'autodeploy_failing';
 
+/**
+ * Aviso único de los servicios ya desplegados que pasan a «una sola copia» de
+ * forma automática (`deploy/avisoestrategia.ts`). Un despliegue correcto no lo
+ * resuelve: precisamente desde el despliegue siguiente se nota el cambio.
+ */
+export const ESTRATEGIA_ALERT_TYPE = 'estrategia_una_sola_copia';
+/**
+ * La versión anterior no atendió SIGTERM y se detuvo con SIGKILL en un
+ * despliegue con «una sola copia»: la gracia entera fue tiempo sin servicio. La
+ * resuelve el siguiente despliegue cuya parada no se fuerza, no cualquiera.
+ */
+export const PARADA_FORZADA_ALERT_TYPE = 'parada_forzada';
+
 export interface FireAlertInput {
   severity: AlertSeverity;
   type: string;

@@ -2066,6 +2066,11 @@ export function reusableBuild(serviceId: string, commitSha: string, buildKey: st
  * despliegue y necesita SU config-as-code: si aquel commit declaraba otro
  * comando de arranque o healthcheck, volver a esa imagen sin volver a esa
  * configuración arrancaría una mezcla de las dos versiones.
+ *
+ * Primero los que tienen configuración guardada: un despliegue que volvió a
+ * desplegar la imagen sin compilar (vuelta atrás, pestaña Correo, cambio de
+ * dominio) no la guardaba antes, y por ser el más reciente tapaba al que la
+ * construyó. Un build siempre la guarda (`'null'` si el repositorio no tiene).
  */
 export function deploymentForImage(serviceId: string, imageTag: string): DeploymentRow | undefined {
   const row = stmt(
@@ -2073,7 +2078,7 @@ export function deploymentForImage(serviceId: string, imageTag: string): Deploym
               build_key, repo_config, force_build, created_at, finished_at
          FROM deployments
         WHERE service_id = ? AND image_tag = ? AND status = 'success'
-        ORDER BY created_at DESC LIMIT 1`,
+        ORDER BY (repo_config IS NOT NULL) DESC, created_at DESC LIMIT 1`,
     )
     .get(serviceId, imageTag) as Omit<DeploymentRow, 'logs'> | undefined;
   return row ? { ...row, logs: '' } : undefined;

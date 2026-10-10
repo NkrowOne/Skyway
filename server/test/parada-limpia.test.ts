@@ -48,6 +48,7 @@ import {
   resumeInterruptedDeployments,
   triggerDeploy,
 } from '../src/deploy/deployer';
+import { GRACIA_VALIDACION_MAXIMA } from '../src/deploy/estrategia';
 import { readRailwayRepoConfig, hasRailwayConfig } from '../src/deploy/railwayconfig';
 import type { RunSpec } from '../src/docker/containers';
 import { hashPassword } from '../src/util';
@@ -519,7 +520,9 @@ describe('identidad por copia', () => {
     expect(next.env.SKYWAY_REPLICA).toBe('1');
     expect(nueva.env.SKYWAY_VALIDATION).toBeUndefined();
     expect(next.env.SKYWAY_INSTANCE_ID).not.toBe(nueva.env.SKYWAY_INSTANCE_ID);
-    expect(m.paradas.get(`${base}--next`)?.graciaSegundos).toBe(30);
+    // La «--next» nunca atendió: gracia corta (antes, la del servicio entera).
+    expect(m.paradas.get(`${base}--next`)?.graciaSegundos).toBe(GRACIA_VALIDACION_MAXIMA);
+    expect(m.paradas.get(`${base}--prev`)?.graciaSegundos).toBe(30);
   });
 
   it('un RAILWAY_REPLICA_ID definido por el usuario se respeta', async () => {
@@ -704,9 +707,10 @@ describe('rutas del servicio', () => {
     expect(m.eventos).toEqual([`renombrar:${base}--prev>${base}`, `arrancar:${base}`]);
   });
 
-  it('Reiniciar para todas las copias a la vez con el comando y la gracia, las vuelve a arrancar y avisa del SIGKILL', async () => {
+  it('Reiniciar con «una sola copia» para todas las copias a la vez con el comando y la gracia, y no arranca ninguna hasta pararlas todas', async () => {
     const { s, base } = bot({ stopGraceSeconds: 15, stopCommand: 'echo adiós', replicas: 2 }, 2);
     m.forzadas.add(`${base}-r2`);
+    m.espera.set(`${base}-r2`, 80);
     const r = await pedir('POST', `/api/services/${s.id}/restart`);
     expect(r.statusCode, r.body).toBe(200);
     expect(JSON.parse(r.body).forced).toEqual([`${base}-r2`]);
@@ -714,10 +718,25 @@ describe('rutas del servicio', () => {
     const primeraParada = m.eventos.findIndex((e) => e.startsWith('parada:'));
     expect(idx(`parar:${base}(t=15)`)).toBeLessThan(primeraParada);
     expect(idx(`parar:${base}-r2(t=15)`)).toBeLessThan(primeraParada);
-    expect(idx(`arrancar:${base}`)).toBeGreaterThan(idx(`parada:${base}`));
+    // La primera copia no vuelve a arrancar mientras la segunda sigue parándose.
+    expect(idx(`arrancar:${base}`)).toBeGreaterThan(idx(`parada:${base}-r2`));
     expect(idx(`arrancar:${base}-r2`)).toBeGreaterThan(idx(`parada:${base}-r2`));
     // El mismo contenedor (conserva su identidad), sin archivar su registro.
     expect(m.eventos.some((e) => e.startsWith('crear:') || e.startsWith('archivar:'))).toBe(false);
+    expect([...m.contenedores.values()].every((c) => c.running)).toBe(true);
+  });
+
+  it('Reiniciar con «sin corte» va réplica a réplica: siempre queda una en servicio', async () => {
+    const p = proyecto();
+    const web = createService(p.id, 'web', 'web', 'image', { image: 'nginx', port: 80, domains: ['web.acme.es'], replicas: 3 } as any);
+    const base = `skyway-${p.slug}-web`;
+    for (const n of [base, `${base}-r2`, `${base}-r3`]) m.contenedores.set(n, { running: true, serviceId: web.id });
+    const r = await pedir('POST', `/api/services/${web.id}/restart`);
+    expect(r.statusCode, r.body).toBe(200);
+    // Cada réplica vuelve a arrancar antes de que se pare la siguiente.
+    expect(idx(`arrancar:${base}`)).toBeLessThan(idx(`parar:${base}-r2(t=30)`));
+    expect(idx(`arrancar:${base}-r2`)).toBeLessThan(idx(`parar:${base}-r3(t=30)`));
+    expect(idx(`arrancar:${base}-r3`)).toBeGreaterThan(idx(`parada:${base}-r3`));
     expect([...m.contenedores.values()].every((c) => c.running)).toBe(true);
   });
 
@@ -829,6 +848,8 @@ describe('rutas del servicio', () => {
       reason: 'sin_trafico',
       automatic: true,
       calledByOthers: false,
+      repoHealthcheckPath: null,
+      botLibraries: [],
       stopGraceSeconds: 30,
       stopGraceSource: 'defecto',
     });

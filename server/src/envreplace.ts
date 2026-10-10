@@ -438,7 +438,13 @@ const WIDGET = /(?:^|_)(?:TURNSTILE|RECAPTCHA|HCAPTCHA)_/;
  * externo, corregir las URL guardadas en la base de datos). No bloquean nada.
  * `hostViejo`, si se conoce, completa la orden de WordPress.
  */
-export function avisosDeVariables(claves: string[], pilas: string[], hostNuevo: string, hostViejo?: string): string[] {
+export function avisosDeVariables(
+  claves: string[],
+  pilas: string[],
+  hostNuevo: string,
+  hostViejo?: string,
+  opts: { sinStripe?: boolean } = {},
+): string[] {
   const k = claves.map((c) => c.toUpperCase());
   const base = k.map((c) => c.replace(PREFIJO_PUBLICO, ''));
   const nuevo = normalizar(hostNuevo);
@@ -453,7 +459,10 @@ export function avisosDeVariables(claves: string[], pilas: string[], hostNuevo: 
   if (base.some((c) => GITHUB.has(c))) {
     out.push('GitHub → Developer settings → OAuth Apps: cambia la Authorization callback URL.');
   }
-  if (k.some((c) => STRIPE.test(c))) {
+  // `sinStripe`: el asistente ya avisa de Stripe por servicio (webhooks en
+  // nombres que redirigen, con «Servir también»), y dos avisos del mismo
+  // endpoint confunden.
+  if (!opts.sinStripe && k.some((c) => STRIPE.test(c))) {
     out.push(
       `Stripe → Webhooks: crea el endpoint en https://${nuevo}/… (Stripe no sigue redirecciones) y actualiza STRIPE_WEBHOOK_SECRET.`,
     );

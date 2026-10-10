@@ -14,7 +14,10 @@
  * un bot a simple vista: un servicio de repositorio siempre tiene puerto
  * interno (3000 por defecto). Un bot no tiene dominio, ni ruta de healthcheck,
  * ni otros servicios que lo llamen por la red interna; una API interna sí tiene
- * quien la llame y no debe quedarse sin servicio en cada despliegue.
+ * quien la llame y no debe quedarse sin servicio en cada despliegue. Un bot de
+ * Telegram o Discord que se reconoce por su biblioteca y no tiene dominio va a
+ * «una sola copia» aunque tenga healthcheck (lo habitual en lo que viene de
+ * Railway) o alguien lo llame: con dos copias, falla él.
  *
  * «Lo llaman otros servicios» solo se ve en lo que Skyway guarda (variables,
  * build args y comandos de arranque de los demás servicios). Una llamada escrita
@@ -26,8 +29,8 @@
  * vez por despliegue.
  */
 
-import { getEnv, getProjectVars, listServices } from '../db';
-import type { DeployStrategy, GitConfig, ImageConfig, ServiceRow } from '../types';
+import { deploymentForImage, getEnv, getProjectVars, lastSuccessfulImage, listServices } from '../db';
+import type { DeployStrategy, GitConfig, ImageConfig, ProveedorWebhook, ServiceRow } from '../types';
 
 /** Gracia de parada (SIGTERM → SIGKILL) si ni el servicio ni Railway dicen otra. */
 export const GRACIA_PARADA_POR_DEFECTO = 30;
@@ -40,13 +43,19 @@ export const GRACIA_PARADA_MAXIMA = 600;
  */
 export const GRACIA_PARADA_MINIMA_BASE_DE_DATOS = 10;
 export const COMANDO_PARADA_MAXIMO = 1000;
+/**
+ * Gracia de la copia de validación «--next» como mucho: no ha atendido nada, y
+ * con la gracia completa una copia que no atiende SIGTERM alargaba cada
+ * despliegue «sin corte» hasta 30 s más.
+ */
+export const GRACIA_VALIDACION_MAXIMA = 10;
 
-export type MotivoEstrategia = 'elegida' | 'base_de_datos' | 'estado' | 'sin_trafico' | 'con_trafico';
+export type MotivoEstrategia = 'elegida' | 'base_de_datos' | 'estado' | 'sin_trafico' | 'bot' | 'con_trafico';
 
 export interface EstrategiaServicio {
   estrategia: DeployStrategy;
   motivo: MotivoEstrategia;
-  /** true si no hay `deployStrategy` y la decide Skyway (motivos sin_trafico / con_trafico). */
+  /** true si no hay `deployStrategy` y la decide Skyway (motivos sin_trafico / bot / con_trafico). */
   automatica: boolean;
 }
 
@@ -62,8 +71,30 @@ const TEXTO_MOTIVO: Record<MotivoEstrategia, string> = {
   base_de_datos: 'base de datos',
   estado: 'tiene volúmenes o puerto público',
   sin_trafico: 'sin dominio, healthcheck ni llamadas de otros servicios',
+  bot: 'bot de Telegram o Discord sin dominio',
   con_trafico: 'recibe tráfico: dominio, healthcheck o llamadas de otros servicios',
 };
+
+/**
+ * Bibliotecas cuyo bot, sin dominio, mantiene su propia conexión con el
+ * proveedor: el polling de Telegram (`getUpdates`; con dos copias, una recibe
+ * un 409 y la otra se queda sin actualizaciones) y el gateway de Discord (las
+ * dos copias contestan a cada mensaje). Slack, Twilio, WhatsApp y Stripe
+ * reciben webhooks o solo envían: dos copias no se pisan.
+ */
+const BOT_CON_CONEXION_PROPIA: ReadonlySet<ProveedorWebhook> = new Set(['telegram', 'discord']);
+
+/**
+ * Pura. Bibliotecas de Telegram o Discord detectadas en el repositorio
+ * (`needs.bots`, solo servicios de repositorio), como su evidencia
+ * («package.json: telegraf»). Vacío si no hay ninguna.
+ */
+export function bibliotecasDeBot(service: ServiceRow): string[] {
+  if (service.type !== 'git') return [];
+  const bots = (service.config as GitConfig).needs?.bots;
+  if (!Array.isArray(bots)) return [];
+  return bots.filter((b) => BOT_CON_CONEXION_PROPIA.has(b.proveedor)).map((b) => b.evidencia);
+}
 
 /**
  * Variables de sistema que delatan que otro servicio llama a este por la red
@@ -98,10 +129,22 @@ function esEstrategia(v: unknown): v is DeployStrategy {
  *     corte»: dos procesos no pueden escribir el mismo volumen ni publicar el
  *     mismo puerto del host.
  *  3. La elegida en Ajustes (`deployStrategy`).
- *  4. Automática: sin dominio, sin healthcheck y sin que otro servicio lo llame
+ *  4. Automática: un bot de Telegram o Discord (biblioteca detectada en el
+ *     repositorio) sin dominio → una sola copia, aunque tenga healthcheck o lo
+ *     llamen otros servicios: con dos copias el bot falla durante el relevo
+ *     (Telegram responde 409 y la copia nueva puede no pasar la validación).
+ *  5. Automática: sin dominio, sin healthcheck y sin que otro servicio lo llame
  *     → una sola copia; si no, sin corte.
+ *
+ * El healthcheck es el de Ajustes o el del repositorio (`healthcheckRepo`, el
+ * de railway.json o railway.toml), que es el que valida el despliegue: un
+ * healthcheck dice que el servicio atiende y que se quiere validar sin cortar.
  */
-export function estrategiaDespliegue(service: ServiceRow, llamadoPorOtros: boolean): EstrategiaServicio {
+export function estrategiaDespliegue(
+  service: ServiceRow,
+  llamadoPorOtros: boolean,
+  healthcheckRepo: string | null = null,
+): EstrategiaServicio {
   if (service.type === 'database') return { estrategia: 'recreate', motivo: 'base_de_datos', automatica: false };
   const cfg = configDeApp(service);
   if ((cfg.volumes?.length ?? 0) > 0 || !!cfg.hostPort) {
@@ -114,11 +157,37 @@ export function estrategiaDespliegue(service: ServiceRow, llamadoPorOtros: boole
   // repositorio siempre tiene puerto (3000 por defecto).
   const sinPuerto = service.type === 'image' && !(cfg as ImageConfig).port;
   const conDominio = !sinPuerto && (cfg.domains?.length ?? 0) > 0;
-  const conHealthcheck = !sinPuerto && typeof cfg.healthcheckPath === 'string' && cfg.healthcheckPath.trim() !== '';
+  const enAjustes = typeof cfg.healthcheckPath === 'string' && cfg.healthcheckPath.trim() !== '';
+  const enRepo = typeof healthcheckRepo === 'string' && healthcheckRepo.trim() !== '';
+  const conHealthcheck = !sinPuerto && (enAjustes || enRepo);
+  if (!conDominio && bibliotecasDeBot(service).length > 0) {
+    return { estrategia: 'recreate', motivo: 'bot', automatica: true };
+  }
   if (!conDominio && !conHealthcheck && !llamadoPorOtros) {
     return { estrategia: 'recreate', motivo: 'sin_trafico', automatica: true };
   }
   return { estrategia: 'overlap', motivo: 'con_trafico', automatica: true };
+}
+
+/**
+ * Ruta de healthcheck que declaraba el repositorio (railway.json o
+ * railway.toml) en la versión en marcha: la del último despliegue correcto, o
+ * la del que construyó su imagen. Es la mejor estimación de la del próximo
+ * despliegue fuera de él (Ajustes, Reiniciar, el cambio de dominio); el
+ * desplegador usa la del commit que despliega.
+ */
+export function healthcheckDelRepositorio(service: ServiceRow): string | null {
+  if (service.type !== 'git') return null;
+  const imagen = lastSuccessfulImage(service.id);
+  const dep = imagen ? deploymentForImage(service.id, imagen) : undefined;
+  if (!dep?.repo_config) return null;
+  try {
+    const cfg = JSON.parse(dep.repo_config) as { healthcheckPath?: unknown } | null;
+    const ruta = cfg && typeof cfg.healthcheckPath === 'string' ? cfg.healthcheckPath.trim() : '';
+    return ruta || null;
+  } catch {
+    return null;
+  }
 }
 
 function escaparRegExp(s: string): string {
@@ -206,14 +275,20 @@ export function llamadoPorOtros(service: ServiceRow): boolean {
 }
 
 /**
- * estrategiaDespliegue(service, llamadoPorOtros(service)). Solo lee la base
- * cuando hace falta: si el servicio tiene dominio, volúmenes o una estrategia
- * elegida, las llamadas de otros no cambian el resultado.
+ * estrategiaDespliegue(service, llamadoPorOtros(service), healthcheck del
+ * repositorio). `healthcheckRepo` lo pasa el desplegador (el del commit que
+ * despliega); sin él, el de la versión en marcha (`healthcheckDelRepositorio`).
+ * Solo lee la base cuando hace falta: si el servicio tiene dominio, volúmenes,
+ * una estrategia elegida o es un bot, ni las llamadas de otros ni el
+ * healthcheck del repositorio cambian el resultado.
  */
-export function estrategiaEfectiva(service: ServiceRow): EstrategiaServicio {
+export function estrategiaEfectiva(service: ServiceRow, healthcheckRepo?: string | null): EstrategiaServicio {
   const sinLlamadas = estrategiaDespliegue(service, false);
   if (sinLlamadas.motivo !== 'sin_trafico') return sinLlamadas;
-  return estrategiaDespliegue(service, llamadoPorOtros(service));
+  const repo = healthcheckRepo === undefined ? healthcheckDelRepositorio(service) : healthcheckRepo;
+  const conRepo = estrategiaDespliegue(service, false, repo);
+  if (conRepo.motivo !== 'sin_trafico') return conRepo;
+  return estrategiaDespliegue(service, llamadoPorOtros(service), repo);
 }
 
 /**

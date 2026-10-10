@@ -341,13 +341,18 @@ export function enumerar(lista: readonly string[]): string {
 /**
  * Aviso de un servicio con webhooks en nombres que redirigen. Telegram y
  * Stripe documentan que una redirección es un fallo; del resto no consta, así
- * que se dice con prudencia. `pasada`: el cambio ya ha pasado y el nombre
- * anterior sigue redirigiendo.
+ * que se dice con prudencia. Que use la biblioteca o tenga el token no dice que
+ * reciba webhooks (puede solo enviar: notificaciones de Telegram, SMS de
+ * Twilio, Stripe Checkout sin webhooks): «puede recibir». `pasada`: el cambio
+ * ya ha pasado y el nombre anterior sigue redirigiendo.
  */
 export function textoWebhook(w: WebhookEnRiesgo, pasada = false): string {
   const concretos = w.proveedores.filter((p) => p !== 'webhook').map((p) => NOMBRE_PROVEEDOR[p]);
   const hosts = enumerar(w.hosts.map((h) => h.from));
-  const uso = concretos.length > 0 ? `«${w.serviceName}» usa ${enumerar(concretos)} y recibe sus webhooks en ${hosts}.` : `«${w.serviceName}» recibe webhooks en ${hosts}.`;
+  const uso =
+    concretos.length > 0
+      ? `«${w.serviceName}» usa ${enumerar(concretos)} y puede recibir sus webhooks en ${hosts}.`
+      : `«${w.serviceName}» puede recibir webhooks en ${hosts}.`;
   const estrictos = w.proveedores.filter((p) => p === 'telegram' || p === 'stripe').map((p) => NOMBRE_PROVEEDOR[p]);
   const efecto = pasada ? 'ya no le llega' : 'dejará de recibir al pasar';
   const riesgo =
@@ -357,5 +362,8 @@ export function textoWebhook(w: WebhookEnRiesgo, pasada = false): string {
   const salida = pasada
     ? 'Vuelve a registrarlo con la URL nueva, o sirve también el nombre anterior.'
     : 'Vuelve a registrarlo con la URL nueva después de pasar, o sirve también el nombre anterior.';
-  return `${uso} ${riesgo} ${salida}`;
+  // El endpoint nuevo de Stripe tiene otro secreto de firma: es lo que se
+  // olvida, y sin él la web rechaza todos los eventos.
+  const stripe = w.proveedores.includes('stripe') ? ' En Stripe, el endpoint nuevo tiene otro secreto de firma: actualiza STRIPE_WEBHOOK_SECRET.' : '';
+  return `${uso} ${riesgo} ${salida}${stripe}`;
 }

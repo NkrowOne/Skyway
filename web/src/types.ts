@@ -871,12 +871,16 @@ export interface DatabaseConfig {
 export interface ServiceDeployInfo {
   /** Estrategia efectiva: 'recreate' = una sola copia; 'overlap' = sin corte. */
   strategy: 'overlap' | 'recreate';
-  /** Por qué: elegida en Ajustes, base de datos, volúmenes o puerto público, o la regla automática. */
-  reason: 'elegida' | 'base_de_datos' | 'estado' | 'sin_trafico' | 'con_trafico';
+  /** Por qué: elegida en Ajustes, base de datos, volúmenes o puerto público, o la regla automática (`bot`: Telegram o Discord sin dominio). */
+  reason: 'elegida' | 'base_de_datos' | 'estado' | 'sin_trafico' | 'bot' | 'con_trafico';
   /** true si no hay estrategia elegida y la decide Skyway. */
   automatic: boolean;
   /** Otro servicio del proyecto lo llama por la red interna (`${{svc.INTERNAL_URL}}`, `svc:3000`…). */
   calledByOthers: boolean;
+  /** Ruta de healthcheck del repositorio (railway.json o railway.toml) en la versión en marcha; cuenta como la de Ajustes. */
+  repoHealthcheckPath: string | null;
+  /** Bibliotecas de Telegram o Discord del repositorio («package.json: telegraf»): sin dominio, una sola copia. */
+  botLibraries: string[];
   /** Gracia de parada efectiva, en segundos. */
   stopGraceSeconds: number;
   /** De dónde sale la gracia: el servicio, RAILWAY_DEPLOYMENT_DRAINING_SECONDS o el valor por defecto. */

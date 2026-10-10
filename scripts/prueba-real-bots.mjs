@@ -620,7 +620,11 @@ async function principal() {
     const n2 = a.finales.filter((f) => (f.nombre ?? '').endsWith('--next'));
     const envNext = a.arranques.find((x) => (x.nombre ?? '').endsWith('--next'));
     ok('control «sin corte»: la medición ve el solape', a.max >= 2, `máximo ${a.max}`);
+    ok('control «sin corte»: nunca tres copias (la «--next» se retira antes del relevo)', a.max <= 2, `máximo ${a.max}`);
     ok('«--next» se para con SIGTERM (código 0), no con SIGKILL', n2.length > 0 && n2.every((f) => f.codigo === 0), n2.map((f) => f.codigo).join(','));
+    const finNext = Math.max(...n2.map((f) => f.t));
+    const arranqueNueva = a.arranques.find((x) => x.nombre === baseBot)?.t ?? 0;
+    ok('«--next» termina antes de que arranque la copia nueva', n2.length > 0 && finNext <= arranqueNueva, `fin ${finNext}, arranque ${arranqueNueva}`);
     const baseNueva = a.arranques.find((x) => x.nombre === baseBot);
     nota(`instancias: «--next» ${envNext?.instancia}, nueva ${baseNueva?.instancia}`);
     ok('«--next» tiene su propia identidad, distinta de la copia que la sustituye', !!envNext?.instancia && !!baseNueva?.instancia && envNext.instancia !== baseNueva.instancia);
@@ -878,6 +882,7 @@ async function principal() {
     for (const t of s.horasFallo) nota(`fallo de la sonda a las ${new Date(t).toISOString()}: ${eventosCerca(web.id, t)}`);
     for (const l of lineasClave(d.logs)) nota(`registro: ${l}`);
     ok('web: hay solape (la nueva arranca antes de parar la anterior)', a.max >= 2, `máximo ${a.max}`);
+    ok('web: nunca tres copias a la vez (la «--next» se retira antes del relevo)', a.max <= 2, `máximo ${a.max}`);
     ok('web: nunca se queda sin copias en marcha', a.min >= 1, `mínimo ${a.min}`);
     // Sin Traefik, la sonda entra por el alias de la red del proyecto, y el DNS
     // de Docker reparte entre las copias: la que acaba de arrancar figura un
@@ -937,6 +942,29 @@ async function principal() {
       );
       ok('web tras la caída: el reintento termina bien y no quedan restos', fin?.status === 'success' && finales.length === 1 && finales[0].estado === 'running', JSON.stringify(finales));
       ok('web tras la caída: nunca sin copias ni corte', a.min >= 1 && s2.rachaMax <= 2 && s2.fallos <= 4, `mínimo ${a.min}, fallos ${s2.fallos}/${s2.total}, racha máxima ${s2.rachaMax}`);
+    }
+
+    if (MODO === 'paquete') {
+      // Antes de la parada limpia, Reiniciar iba réplica a réplica; parar todas
+      // a la vez dejaba la web sin servicio durante la gracia y el arranque.
+      titulo('14c. Web con dos réplicas: Reiniciar va réplica a réplica');
+      await api('PATCH', `/services/${web.id}`, { config: { replicas: 2 } });
+      d = await desplegar(web.id);
+      ok('web: despliegue con dos réplicas correcto', d.status === 'success', d.error ?? '');
+      await dormir(2000);
+      desde = Date.now();
+      const rr = await api('POST', `/services/${web.id}/restart`, {});
+      await dormir(2500);
+      a = analizar(web.id, desde);
+      const s3 = leerSonda(desde);
+      nota(resumen(a));
+      nota(`sonda: ${s3.total} peticiones, ${s3.fallos} fallos, racha máxima ${s3.rachaMax}`);
+      ok('reiniciar la web: respuesta correcta', rr.json?.ok === true, JSON.stringify(rr.json));
+      ok('reiniciar la web: las dos réplicas se reinician', a.arranques.length === 2 && a.finales.length === 2, resumen(a));
+      ok('reiniciar la web: nunca sin copias en marcha', a.min >= 1, `mínimo ${a.min}`);
+      ok('reiniciar la web: sin corte', s3.total > 10 && s3.rachaMax <= 2, `${s3.fallos}/${s3.total}, racha máxima ${s3.rachaMax}`);
+      await api('PATCH', `/services/${web.id}`, { config: { replicas: 1 } });
+      await desplegar(web.id);
     }
   }
 

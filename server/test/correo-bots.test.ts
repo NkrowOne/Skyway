@@ -336,6 +336,32 @@ describe('conectar y volver a desplegar: la versión en marcha, no la cabeza de 
     ]);
   });
 
+  it('«Desplegar ahora» tras conectar sin desplegar hace lo que la casilla: la versión en marcha, o compilar si había otros cambios', async () => {
+    const svc = workerDesplegado(tienda, 'worker-f', 'skyway/tienda-worker-f:ffff6666');
+    let r = await call('POST', `/api/projects/${tienda.id}/mail/connect`, owner, { serviceId: svc.id, mailboxId: mailboxBot, mode: 'api' });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json).toMatchObject({ needsRedeploy: true, deploymentId: null, rebuild: false });
+    r = await call('POST', `/api/projects/${tienda.id}/mail/redeploy`, owner, { serviceId: svc.id, rebuild: r.json.rebuild });
+    expect(r.status, r.raw).toBe(202);
+    expect(r.json).toMatchObject({ imagenEnMarcha: true });
+    // Antes, el botón llamaba al despliegue normal: compilaba la cabeza de la rama.
+    expect(m.triggers).toEqual([{ serviceId: svc.id, trigger: 'mailway', imageTag: 'skyway/tienda-worker-f:ffff6666' }]);
+
+    const otro = workerDesplegado(tienda, 'worker-g', 'skyway/tienda-worker-g:gggg7777');
+    bumpConfigRev([otro.id]);
+    r = await call('POST', `/api/projects/${tienda.id}/mail/connect`, owner, { serviceId: otro.id, mailboxId: mailboxBot, mode: 'api' });
+    expect(r.json).toMatchObject({ needsRedeploy: true, rebuild: true });
+    r = await call('POST', `/api/projects/${tienda.id}/mail/redeploy`, owner, { serviceId: otro.id, rebuild: true });
+    expect(r.status, r.raw).toBe(202);
+    expect(m.triggers.at(-1)).toEqual({ serviceId: otro.id, trigger: 'mailway' });
+
+    // Un servicio de otro proyecto no se despliega desde este.
+    const ajeno = workerDesplegado(suelto, 'worker-h', 'skyway/suelto-worker-h:hhhh8888');
+    r = await call('POST', `/api/projects/${tienda.id}/mail/redeploy`, owner, { serviceId: ajeno.id });
+    expect(r.status).toBe(404);
+    expect(m.triggers.some((t) => t.serviceId === ajeno.id)).toBe(false);
+  });
+
   it('un servicio detenido desde el panel solo se despliega si se pide (la API no cambia)', async () => {
     const svc = bot(tienda, 'bot-detenido');
     setServiceStopped(svc.id, true);

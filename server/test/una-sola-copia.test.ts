@@ -16,8 +16,20 @@
  * desplegador no la esperara, el arranque de la nueva quedaría delante.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { closeDb, createDeployment, createProject, createService, getDeployment, initDb, updateDeployment } from '../src/db';
-import { awaitDeployment, cancelDeployment, triggerDeploy } from '../src/deploy/deployer';
+import {
+  closeDb,
+  createDeployment,
+  createProject,
+  createService,
+  deploymentForImage,
+  getDeployment,
+  initDb,
+  listAlerts,
+  listDeployments,
+  updateDeployment,
+} from '../src/db';
+import { awaitDeployment, cancelDeployment, resumeInterruptedDeployments, triggerDeploy } from '../src/deploy/deployer';
+import { GRACIA_VALIDACION_MAXIMA } from '../src/deploy/estrategia';
 
 const m = vi.hoisted(() => ({
   eventos: [] as string[],
@@ -35,6 +47,8 @@ const m = vi.hoisted(() => ({
   comandos: new Map<string, string | null | undefined>(),
   /** Se llama al empezar cada parada (para cancelar a mitad). */
   alParar: null as ((nombre: string) => void) | null,
+  /** Copias que «terminan con SIGKILL» al pararlas. */
+  forzadas: new Set<string>(),
 }));
 
 function contar(serviceId: string): void {
@@ -104,7 +118,7 @@ vi.mock('../src/docker/containers', async (importOriginal) => {
       }
       c.running = false;
       m.eventos.push(`parada:${name}`);
-      return { existia: true, forzada: false, comando: null };
+      return { existia: true, forzada: m.forzadas.has(name), comando: null };
     }),
     startContainer: vi.fn(async (name: string) => {
       m.eventos.push(`arrancar:${name}`);
@@ -153,6 +167,7 @@ beforeEach(() => {
   m.espera.clear();
   m.fallan.clear();
   m.comandos.clear();
+  m.forzadas.clear();
   m.alParar = null;
 });
 
@@ -191,6 +206,33 @@ async function desplegar(serviceId: string, trigger = 'manual', imageTag?: strin
 }
 
 const idx = (evento: string) => m.eventos.indexOf(evento);
+
+/** railway.json leído por un build (`RailwayRepoConfig`, como lo guarda el desplegador). */
+function configRepo(campos: Record<string, unknown>): string {
+  return JSON.stringify({
+    builder: null,
+    buildCommand: null,
+    dockerfilePath: null,
+    watchPatterns: [],
+    startCommand: null,
+    preDeployCommand: null,
+    healthcheckPath: null,
+    healthcheckTimeout: null,
+    numReplicas: null,
+    restartPolicyType: null,
+    restartPolicyMaxRetries: null,
+    cronSchedule: null,
+    source: 'railway.json',
+    ...campos,
+  });
+}
+
+/** El despliegue más reciente del servicio, esperado hasta su estado final. */
+async function esperarUltimo(serviceId: string) {
+  const ultimo = listDeployments(serviceId, 1)[0];
+  const fin = await awaitDeployment(ultimo.id, 60_000);
+  return getDeployment(fin!.id)!;
+}
 
 describe('una sola copia por defecto en servicios sin tráfico', () => {
   it('un bot sin puerto ni dominio: se para la versión anterior antes de crear la nueva, sin «--next»', async () => {
@@ -292,30 +334,31 @@ describe('sin corte y estrategia elegida', () => {
     expect(dep.status, dep.error ?? '').toBe('success');
     expect(dep.logs).toMatch(/Estrategia: sin corte \(recibe tráfico: dominio, healthcheck o llamadas de otros servicios\)/);
     expect(idx(`crear:${base}--next`)).toBeGreaterThan(-1);
-    expect(idx(`parar:${base}--next(t=30)`)).toBeGreaterThan(idx(`crear:${base}--next`));
+    // Gracia corta: la «--next» nunca atendió (con la del servicio, 30 s más
+    // por despliegue si no atiende SIGTERM).
+    expect(idx(`parar:${base}--next(t=${GRACIA_VALIDACION_MAXIMA})`)).toBeGreaterThan(idx(`crear:${base}--next`));
     expect(idx(`borrar:${base}--next`)).toBeGreaterThan(idx(`parada:${base}--next`));
     // La anterior se retira después de que la nueva esté en marcha, y se
     // archiva y se borra después de pararla.
     expect(idx(`parar:${base}--prev(t=30)`)).toBeGreaterThan(idx(`crear:${base}`));
     expect(idx(`archivar:${base}--prev`)).toBeGreaterThan(idx(`parada:${base}--prev`));
     expect(idx(`borrar:${base}--prev`)).toBeGreaterThan(idx(`parada:${base}--prev`));
-    // La anterior y la nueva; y, unos instantes, la «--next» validada, que ya
-    // ha recibido SIGTERM y se para en segundo plano mientras sigue el relevo.
-    expect(m.maximo.get(s.id)).toBeGreaterThanOrEqual(2);
-    expect(m.maximo.get(s.id)).toBeLessThanOrEqual(3);
+    // La anterior y la nueva, nunca tres: la «--next» se retira antes del relevo.
+    expect(m.maximo.get(s.id)).toBe(2);
   });
 
-  it('la parada de la «--next» validada no retrasa el relevo, pero el despliegue la espera; y va sin el comando al parar', async () => {
-    const { s, base } = servicioImagen({ image: 'nginx:alpine', port: 80, domains: ['bot.acme.es'], stopCommand: 'curl -s "$URL/deleteWebhook"' });
+  it('la «--next» validada se retira antes del relevo, con su gracia corta (o la del servicio si es menor) y sin el comando al parar', async () => {
+    const { s, base } = servicioImagen({ image: 'nginx:alpine', port: 80, domains: ['bot.acme.es'], stopCommand: 'curl -s "$URL/deleteWebhook"', stopGraceSeconds: 4 });
     m.espera.set(`${base}--next`, 300);
     const dep = await desplegar(s.id);
     expect(dep.status, dep.error ?? '').toBe('success');
-    // La copia nueva se crea mientras la «--next» aún se está parando…
-    expect(idx(`crear:${base}`)).toBeGreaterThan(idx(`parar:${base}--next(t=30)`));
-    expect(idx(`crear:${base}`)).toBeLessThan(idx(`parada:${base}--next`));
-    // …y el despliegue no termina sin haberla retirado.
+    // La copia nueva no se crea hasta que la «--next» se ha parado y retirado:
+    // antes convivían la anterior, la «--next» y la nueva (el triple de memoria).
+    expect(idx(`parar:${base}--next(t=4)`)).toBeGreaterThan(-1);
+    expect(idx(`crear:${base}`)).toBeGreaterThan(idx(`borrar:${base}--next`));
     expect(idx(`borrar:${base}--next`)).toBeGreaterThan(idx(`parada:${base}--next`));
     expect(m.contenedores.has(`${base}--next`)).toBe(false);
+    expect(m.maximo.get(s.id)).toBe(2);
     // El comando al parar no se ejecuta en la copia de validación; sí en la anterior.
     expect(m.comandos.get(`${base}--next`)).toBeNull();
     expect(m.comandos.get(`${base}--prev`)).toBe('curl -s "$URL/deleteWebhook"');
@@ -397,19 +440,104 @@ describe('lo que la regla automática no ve, en el registro', () => {
     expect(dep.logs).toMatch(/ℹ Una sola copia elegida automáticamente: .*elige «Sin corte» en Ajustes del servicio → Despliegue y parada/);
   });
 
-  it('un bot con healthcheck queda «sin corte»: el registro avisa del 409 de la segunda copia', async () => {
+  it('un bot de Telegram con healthcheck va a «una sola copia»: con dos copias, él mismo falla en el relevo', async () => {
     const { s, base, imagen } = servicioGit({
       healthcheckPath: '/health',
       needs: { engines: [], sources: [], bots: [{ proveedor: 'telegram', evidencia: 'package.json: telegraf' }], detectedAt: 1 },
     });
     const dep = await desplegar(s.id, 'rollback', imagen);
     expect(dep.status, dep.error ?? '').toBe('success');
-    expect(dep.logs).toMatch(/Estrategia: sin corte/);
+    expect(dep.logs).toMatch(/Estrategia: una sola copia \(bot de Telegram o Discord sin dominio\)/);
     expect(dep.logs).toMatch(
-      /ℹ El repositorio usa una biblioteca de bots \(package\.json: telegraf\) y el servicio se despliega «sin corte» por su ruta de healthcheck: .*409.*«Una sola copia»/,
+      /ℹ Una sola copia elegida automáticamente: el repositorio usa una biblioteca de bots \(package\.json: telegraf\).*Su healthcheck no recibirá respuesta.*«Sin corte»/,
     );
-    expect(idx(`crear:${base}--next`)).toBeGreaterThan(-1);
-    // Con una biblioteca de bots no se sugiere «sin corte».
+    expect(m.eventos.some((e) => e.includes('--next'))).toBe(false);
+    expect(m.contenedores.get(base)?.running).toBe(true);
+  });
+
+  it('un bot de Discord con dominio queda «sin corte», con el aviso del polling; uno de Stripe no cambia nada', async () => {
+    const discord = servicioGit({
+      domains: ['bot.acme.es'],
+      needs: { engines: [], sources: [], bots: [{ proveedor: 'discord', evidencia: 'requirements.txt: discord-py' }], detectedAt: 1 },
+    });
+    let dep = await desplegar(discord.s.id, 'rollback', discord.imagen);
+    expect(dep.status, dep.error ?? '').toBe('success');
+    expect(dep.logs).toMatch(/Estrategia: sin corte/);
+    expect(dep.logs).toMatch(/ℹ El repositorio usa una biblioteca de bots \(requirements\.txt: discord-py\) y el servicio se despliega «sin corte» por su dominio: .*409.*«Una sola copia»/);
+
+    // Stripe recibe webhooks o solo cobra: dos copias no se pisan, y sin
+    // dominio ni healthcheck manda la regla de siempre.
+    const stripe = servicioGit({
+      healthcheckPath: '/health',
+      needs: { engines: [], sources: [], bots: [{ proveedor: 'stripe', evidencia: 'package.json: stripe' }], detectedAt: 1 },
+    });
+    dep = await desplegar(stripe.s.id, 'rollback', stripe.imagen);
+    expect(dep.status, dep.error ?? '').toBe('success');
+    expect(dep.logs).toMatch(/Estrategia: sin corte \(recibe tráfico/);
+    expect(dep.logs).not.toMatch(/biblioteca de bots/);
+  });
+});
+
+describe('lo que cambia en servicios que ya funcionaban', () => {
+  it('una parada forzada con «una sola copia» abre una alerta; un despliegue correcto no la cierra, uno sin SIGKILL sí', async () => {
+    const { s, base } = servicioImagen({});
+    m.forzadas.add(`${base}--prev`);
+    let dep = await desplegar(s.id);
+    expect(dep.status, dep.error ?? '').toBe('success');
+    const abiertas = () => listAlerts({ openOnly: true }).filter((a) => a.service_id === s.id && a.type === 'parada_forzada');
+    expect(abiertas()).toHaveLength(1);
+    expect(abiertas()[0].message).toMatch(/no terminó con SIGTERM en 30 s y se detuvo con SIGKILL/);
+    expect(abiertas()[0].explanation).toMatch(/baja la gracia de parada en Ajustes del servicio/);
+    // La segunda vez, sin SIGKILL: se cierra sola.
+    m.forzadas.clear();
+    dep = await desplegar(s.id);
+    expect(dep.status, dep.error ?? '').toBe('success');
+    expect(abiertas()).toHaveLength(0);
+  });
+
+  it('el healthcheck del repositorio cuenta como el de Ajustes: «sin corte»', async () => {
+    const { s, imagen } = servicioGit();
+    const origen = deploymentForImage(s.id, imagen)!;
+    updateDeployment(origen.id, { repo_config: configRepo({ healthcheckPath: '/salud' }) });
+    const dep = await desplegar(s.id, 'rollback', imagen);
+    expect(dep.status, dep.error ?? '').toBe('success');
+    expect(dep.logs).toMatch(/Estrategia: sin corte \(recibe tráfico/);
     expect(dep.logs).not.toMatch(/Una sola copia elegida automáticamente/);
+  });
+
+  it('volver a desplegar una imagen sin compilar guarda su configuración del repositorio: la siguiente vuelta la conserva', async () => {
+    const { s, imagen } = servicioGit();
+    const origen = deploymentForImage(s.id, imagen)!;
+    const config = configRepo({ healthcheckPath: '/salud', startCommand: 'node bot.js', builder: 'NIXPACKS' });
+    updateDeployment(origen.id, { repo_config: config });
+    // La pestaña Correo vuelve a desplegar la versión en marcha.
+    let dep = await desplegar(s.id, 'mailway', imagen);
+    expect(dep.status, dep.error ?? '').toBe('success');
+    expect(dep.logs).toMatch(/Se vuelve a desplegar la imagen en marcha/);
+    expect(getDeployment(dep.id)!.repo_config).toBe(config);
+    // Una fila de antes de copiarla (sin configuración) no tapa a la que construyó la imagen.
+    const vieja = createDeployment(s.id, 'cambio-de-dominio', imagen);
+    updateDeployment(vieja.id, { status: 'success', image_tag: imagen });
+    expect(deploymentForImage(s.id, imagen)!.repo_config).toBe(config);
+    dep = await desplegar(s.id, 'mailway', imagen);
+    expect(dep.status, dep.error ?? '').toBe('success');
+    expect(dep.logs).toMatch(/Estrategia: sin corte/);
+    expect(getDeployment(dep.id)!.repo_config).toBe(config);
+  });
+
+  it('el reintento tras un reinicio de un despliegue de la pestaña Correo no lo llama «Rollback»', async () => {
+    const { s, imagen } = servicioGit();
+    // Despliegue de Correo con la imagen en marcha, cortado por un reinicio.
+    const cortado = createDeployment(s.id, 'mailway', imagen);
+    updateDeployment(cortado.id, { status: 'failed', interrupted: 1, finished_at: Date.now() });
+    const { retried } = resumeInterruptedDeployments();
+    expect(retried).toBeGreaterThanOrEqual(1);
+    const reintento = listAlerts({ openOnly: true }).find((a) => a.service_id === s.id && a.type === 'deploy_interrupted');
+    expect(reintento).toBeTruthy();
+    const fin = await esperarUltimo(s.id);
+    expect(fin.trigger).toBe('reintento');
+    expect(fin.status, fin.error ?? '').toBe('success');
+    expect(fin.logs).toMatch(/Se vuelve a desplegar la imagen en marcha/);
+    expect(fin.logs).not.toMatch(/Rollback a la imagen/);
   });
 });

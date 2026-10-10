@@ -10,7 +10,19 @@
  *    RAILWAY_DEPLOYMENT_DRAINING_SECONDS o 30 s.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { closeDb, createProject, createService, initDb, setEnv, setProjectVars } from '../src/db';
+import {
+  closeDb,
+  createDeployment,
+  createProject,
+  createService,
+  initDb,
+  listAlerts,
+  setEnv,
+  setProjectVars,
+  setSetting,
+  updateDeployment,
+} from '../src/db';
+import { avisarServiciosQuePasanAUnaSolaCopia } from '../src/deploy/avisoestrategia';
 import {
   COMANDO_PARADA_MAXIMO,
   comandoParada,
@@ -20,6 +32,7 @@ import {
   GRACIA_PARADA_MINIMA_BASE_DE_DATOS,
   GRACIA_PARADA_POR_DEFECTO,
   graciaParada,
+  healthcheckDelRepositorio,
   llamadoPorOtros,
   referenciaInterna,
   referenciaInternaEnVariables,
@@ -146,6 +159,34 @@ describe('estrategiaDespliegue', () => {
     // Las llamadas de otros servicios cuentan aunque no haya puerto declarado:
     // la imagen puede escuchar en uno que nadie anotó.
     expect(estrategiaDespliegue(imagen(), true).estrategia).toBe('overlap');
+  });
+
+  it('el healthcheck del repositorio cuenta como el de Ajustes', () => {
+    const conTrafico = { estrategia: 'overlap', motivo: 'con_trafico', automatica: true };
+    expect(estrategiaDespliegue(app(), false, '/salud')).toEqual(conTrafico);
+    expect(estrategiaDespliegue(app(), false, '  ').motivo).toBe('sin_trafico');
+    expect(estrategiaDespliegue(app(), false, null).motivo).toBe('sin_trafico');
+  });
+
+  it('un bot de Telegram o Discord sin dominio: una sola copia aunque tenga healthcheck o lo llamen', () => {
+    const bots = (proveedor: string, evidencia: string) => ({
+      needs: { engines: [], sources: [], bots: [{ proveedor, evidencia }], detectedAt: 1 },
+    });
+    const bot = { estrategia: 'recreate', motivo: 'bot', automatica: true };
+    expect(estrategiaDespliegue(app({ healthcheckPath: '/health', ...bots('telegram', 'package.json: telegraf') } as never), true)).toEqual(bot);
+    expect(estrategiaDespliegue(app(bots('discord', 'requirements.txt: discord-py') as never), false, '/salud')).toEqual(bot);
+    // Con dominio puede recibir webhooks: «sin corte».
+    expect(estrategiaDespliegue(app({ domains: ['bot.acme.es'], ...bots('telegram', 'package.json: grammy') } as never), false).motivo).toBe(
+      'con_trafico',
+    );
+    // Stripe, Slack o Twilio no mantienen una conexión propia: la regla de siempre.
+    expect(estrategiaDespliegue(app({ healthcheckPath: '/health', ...bots('stripe', 'package.json: stripe') } as never), false).motivo).toBe(
+      'con_trafico',
+    );
+    // Lo elegido en Ajustes y los volúmenes mandan.
+    expect(estrategiaDespliegue(app({ deployStrategy: 'overlap', ...bots('telegram', 'package.json: telegraf') } as never), false).motivo).toBe(
+      'elegida',
+    );
   });
 
   it('una base de datos: siempre una sola copia, antes que cualquier otra regla', () => {
@@ -331,6 +372,60 @@ describe('llamadoPorOtros y estrategiaEfectiva (leen la base)', () => {
   });
 });
 
+describe('healthcheck del repositorio y aviso único (leen la base)', () => {
+  const cfgGit = (extra: Partial<GitConfig> = {}): GitConfig => ({
+    repoUrl: 'https://github.com/acme/x',
+    branch: 'main',
+    port: 3000,
+    domains: [],
+    webhookSecret: 'x',
+    ...extra,
+  });
+  const desplegado = (serviceId: string, imagen: string, repoConfig: string | null = null) => {
+    const d = createDeployment(serviceId, 'manual');
+    updateDeployment(d.id, { status: 'success', image_tag: imagen, repo_config: repoConfig });
+    return d;
+  };
+
+  it('estrategiaEfectiva lee el healthcheck del repositorio de la versión en marcha', () => {
+    const p = createProject('Repo', 'repo-hc');
+    const api = createService(p.id, 'api', 'api', 'git', cfgGit());
+    expect(healthcheckDelRepositorio(api)).toBeNull();
+    const construida = desplegado(api.id, 'skyway/api:1', JSON.stringify({ healthcheckPath: '/salud', watchPatterns: [] }));
+    expect(healthcheckDelRepositorio(api)).toBe('/salud');
+    expect(estrategiaEfectiva(api).motivo).toBe('con_trafico');
+    // Una vuelta a esa imagen sin configuración guardada no la tapa.
+    desplegado(api.id, 'skyway/api:1');
+    expect(healthcheckDelRepositorio(api)).toBe('/salud');
+    // El desplegador pasa la del commit que despliega, y esa manda.
+    expect(estrategiaEfectiva(api, null).motivo).toBe('sin_trafico');
+    expect(construida.id).toBeTruthy();
+  });
+
+  it('avisa una sola vez de los servicios ya desplegados que pasan a «una sola copia»', () => {
+    setSetting('avisoEstrategiaUnaSolaCopia', null);
+    const p = createProject('Aviso', 'aviso-unico');
+    const bot = createService(p.id, 'bot', 'bot', 'image', { image: 'busybox', domains: [] } as unknown as ImageConfig);
+    const nuevo = createService(p.id, 'nuevo', 'nuevo', 'image', { image: 'busybox', domains: [] } as unknown as ImageConfig);
+    const web = createService(p.id, 'web', 'web', 'git', cfgGit({ domains: ['web.acme.es'] }));
+    const elegido = createService(p.id, 'cola', 'cola', 'git', cfgGit({ deployStrategy: 'recreate' }));
+    const db = createService(p.id, 'db', 'db', 'database', { engine: 'postgres', version: '16' } as unknown as DatabaseConfig);
+    for (const s of [bot, web, elegido, db]) desplegado(s.id, `img-${s.slug}`);
+
+    const avisados = avisarServiciosQuePasanAUnaSolaCopia();
+    const alertas = listAlerts({ openOnly: true }).filter((a) => a.project_id === p.id && a.type === 'estrategia_una_sola_copia');
+    expect(alertas.map((a) => a.service_id)).toEqual([bot.id]);
+    expect(avisados).toBeGreaterThanOrEqual(1);
+    expect(alertas[0].title).toBe('«bot» se desplegará con una sola copia');
+    expect(alertas[0].message).toMatch(/Hasta ahora se desplegaba sin corte/);
+    expect(alertas[0].explanation).toMatch(/elige «Sin corte» en Ajustes del servicio → Despliegue y parada/);
+    // Sin despliegue correcto (`nuevo`), con dominio, elegida o base de datos: sin aviso.
+    expect(alertas.some((a) => a.service_id === nuevo.id)).toBe(false);
+    // Una sola vez.
+    expect(avisarServiciosQuePasanAUnaSolaCopia()).toBe(0);
+  });
+});
+
 describe('graciaParada', () => {
   it('la del servicio manda', () => {
     expect(graciaParada(app({ stopGraceSeconds: 20 }), { RAILWAY_DEPLOYMENT_DRAINING_SECONDS: '45' })).toEqual({
@@ -412,6 +507,9 @@ describe('describirEstrategia', () => {
     );
     expect(describirEstrategia({ estrategia: 'recreate', motivo: 'base_de_datos', automatica: false })).toBe(
       'una sola copia (base de datos)',
+    );
+    expect(describirEstrategia({ estrategia: 'recreate', motivo: 'bot', automatica: true })).toBe(
+      'una sola copia (bot de Telegram o Discord sin dominio)',
     );
   });
 });

@@ -865,7 +865,13 @@ function planVariables(
  * cambio no puede hacer por sí solo (dar de alta la URL nueva en un proveedor
  * externo, corregir las URL guardadas en una base de datos).
  */
-function avisosDelProyecto(projectId: string, hosts: readonly HostPlan[], fromDomain: string, toDomain: string): string[] {
+function avisosDelProyecto(
+  projectId: string,
+  hosts: readonly HostPlan[],
+  fromDomain: string,
+  toDomain: string,
+  webhooks: readonly WebhookEnRiesgo[] = [],
+): string[] {
   const claves = valoresVariables(projectId).map((v) => v.key);
   const servicios = listServices(projectId);
   const pilas = servicios
@@ -873,7 +879,9 @@ function avisosDelProyecto(projectId: string, hosts: readonly HostPlan[], fromDo
     .filter((p): p is string => typeof p === 'string' && p !== 'wordpress');
   const activos = hostsActivos(hosts);
   const principal = activos[0];
-  const out = avisosDeVariables(claves, pilas, principal?.to ?? toDomain, principal?.from ?? fromDomain);
+  // El de Stripe sobra si ya hay un aviso de webhooks de Stripe por servicio.
+  const sinStripe = webhooks.some((w) => w.proveedores.includes('stripe'));
+  const out = avisosDeVariables(claves, pilas, principal?.to ?? toDomain, principal?.from ?? fromDomain, { sinStripe });
   // La orden de WordPress, con los nombres del propio WordPress (no los de otro servicio).
   for (const s of servicios.filter(esWordpress)) {
     const suyo = activos.find((h) => h.serviceId === s.id);
@@ -1254,7 +1262,10 @@ export async function calcularPlan(req: FastifyRequest, project: ProjectRow, bod
   const direcciones = planCorreo ? [...planCorreo.buzones, ...planCorreo.alias].map((x) => ({ from: x.de, to: x.a })) : [];
   const vars = planVariables(project.id, hosts, direcciones, fromDomain, body.excluidas ?? []);
 
-  if (!relacionados) avisos.push(...avisosDelProyecto(project.id, hosts, fromDomain, toDomain), ...avisosServirPrincipal(project.id, hosts));
+  const webhooks = relacionados ? [] : webhooksEnRiesgo(project.id, hosts);
+  if (!relacionados) {
+    avisos.push(...avisosDelProyecto(project.id, hosts, fromDomain, toDomain, webhooks), ...avisosServirPrincipal(project.id, hosts));
+  }
 
   const { ip } = await getServerIp();
   const automatico = isAdmin && cloudflareConfigurado();
@@ -1271,7 +1282,7 @@ export async function calcularPlan(req: FastifyRequest, project: ProjectRow, bod
     correo: planCorreo,
     variables: vars.vista,
     servicios: alPasarVista(afectados),
-    webhooks: relacionados ? [] : webhooksEnRiesgo(project.id, hosts),
+    webhooks,
     avisos,
     bloqueos,
     expect: huellaPlan({ fromDomain, toDomain, soloWeb, hosts, variables: vars.vista.huella, correo: planCorreo }),
@@ -1674,6 +1685,10 @@ export async function vistaMigracion(row: DomainMigrationRow, isAdmin: boolean, 
 
   let variables: PlanVariablesVista | null = null;
   let alPasar: MigracionSkyway['alPasar'] = null;
+  // Webhooks en nombres que redirigen al pasar (antes de pasar, los del mapa):
+  // se enseñan y deciden si el aviso general de Stripe sobra.
+  const webhooksAntes =
+    !opts.ligera && (row.estado === 'preparando' || row.estado === 'lista') ? webhooksEnRiesgo(row.project_id, row.hosts) : [];
   const antesDePasar = row.estado === 'preparando' || row.estado === 'lista' || (row.estado === 'pasando' && !!row.error);
   if (antesDePasar && !opts.ligera) {
     try {
@@ -1683,7 +1698,10 @@ export async function vistaMigracion(row: DomainMigrationRow, isAdmin: boolean, 
     } catch (err) {
       avisos.push(`No se ha podido calcular el cambio de las variables: ${mensajeDe(err)}`);
     }
-    avisos.push(...avisosDelProyecto(row.project_id, row.hosts, row.from_domain, row.to_domain), ...avisosServirPrincipal(row.project_id, row.hosts));
+    avisos.push(
+      ...avisosDelProyecto(row.project_id, row.hosts, row.from_domain, row.to_domain, webhooksAntes),
+      ...avisosServirPrincipal(row.project_id, row.hosts),
+    );
   }
 
   const tls = tlsEnabled();
@@ -1739,10 +1757,8 @@ export async function vistaMigracion(row: DomainMigrationRow, isAdmin: boolean, 
 
   // Webhooks en nombres que redirigen: antes de pasar, los del mapa; después,
   // los que siguen redirigiendo (no los que ya se sirven también).
-  let webhooks: WebhookEnRiesgo[] = [];
-  if (!opts.ligera && (row.estado === 'preparando' || row.estado === 'lista')) {
-    webhooks = webhooksEnRiesgo(row.project_id, row.hosts);
-  } else if (!opts.ligera && row.estado === 'pasada') {
+  let webhooks: WebhookEnRiesgo[] = webhooksAntes;
+  if (!opts.ligera && row.estado === 'pasada') {
     const redirigen = new Set(redirecciones.map((r) => r.host));
     webhooks = webhooksEnRiesgo(row.project_id, row.hosts.filter((h) => redirigen.has(h.from)), true);
   }
@@ -2550,6 +2566,13 @@ export async function cambiarModoHost(
       return { vista: await vistaMigracion(cambioDelProyecto(project, mid), isAdmin), desplegado: false };
     }
 
+    // Después de pasar, servir también escribe dominios, quita la redirección y
+    // despliega: con la cuenta suspendida el despliegue fallaría y dejaría el
+    // servicio en error en el cambio, con la redirección ya quitada.
+    const workspace = workspaceOfProject(project.id);
+    if (workspace && !isWorkspaceActive(workspace)) {
+      throw new ErrorCambio(403, 'account_suspended', 'La cuenta de este proyecto está suspendida: no es posible servir también un nombre hasta reactivarla.');
+    }
     const raiz = getSetting('rootDomain');
     const actuales = dominiosDe(service);
     const principal = dominioPrincipal(sinRepetidos([...actuales, ...froms]), raiz);

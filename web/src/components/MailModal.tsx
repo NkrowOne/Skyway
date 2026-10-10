@@ -2449,6 +2449,8 @@ function ConnectTab({
     revoked: number;
     /** Detenido desde el panel al conectar: su contenedor conserva la credencial revocada. */
     detenido: boolean;
+    /** Había otros cambios sin desplegar al conectar: «Desplegar ahora» compila en vez de reutilizar la versión en marcha. */
+    rebuild: boolean;
   } | null>(null);
 
   const service = deployables.find((s) => s.id === serviceId) ?? deployables[0];
@@ -2496,7 +2498,7 @@ function ConnectTab({
 
   const connect = useMutation({
     mutationFn: () =>
-      api.post<{ ok: boolean; keys: string[]; kept?: string[]; needsRedeploy: boolean; revoked?: number }>(`/projects/${projectId}/mail/connect`, {
+      api.post<{ ok: boolean; keys: string[]; kept?: string[]; needsRedeploy: boolean; revoked?: number; rebuild?: boolean }>(`/projects/${projectId}/mail/connect`, {
         serviceId: service?.id,
         mailboxId: mailbox?.id,
         mode,
@@ -2512,6 +2514,7 @@ function ConnectTab({
         needsRedeploy: res.needsRedeploy,
         revoked: res.revoked ?? 0,
         detenido,
+        rebuild: res.rebuild ?? false,
       });
       queryClient.invalidateQueries({ queryKey: ['env', service.id] });
       queryClient.invalidateQueries({ queryKey: ['mailConnectPreview', projectId, service.id] });
@@ -2524,9 +2527,12 @@ function ConnectTab({
 
   // Conectado sin desplegar y con la credencial anterior revocada: el servicio
   // no puede enviar hasta el próximo despliegue, así que se ofrece aquí mismo.
+  // Lo mismo que la casilla: la versión en marcha con las variables nuevas, no
+  // la cabeza de la rama (que podía publicar commits que nadie había pedido).
   const deployNow = useMutation({
-    mutationFn: (id: string) => api.post<{ deployment: Deployment }>(`/services/${id}/deploy`, {}),
-    onSuccess: (_res, id) => {
+    mutationFn: (r: { serviceId: string; rebuild: boolean }) =>
+      api.post<{ deployment: Deployment }>(`/projects/${projectId}/mail/redeploy`, { serviceId: r.serviceId, rebuild: r.rebuild }),
+    onSuccess: (_res, { serviceId: id }) => {
       setResult((r) => (r && r.serviceId === id ? { ...r, needsRedeploy: false } : r));
       queryClient.invalidateQueries({ queryKey: ['project', projectId] });
       toast('Despliegue iniciado.', 'ok');
@@ -2778,7 +2784,7 @@ function ConnectTab({
                 size="sm"
                 variant="secondary"
                 className="mt-2"
-                onClick={() => deployNow.mutate(result.serviceId)}
+                onClick={() => deployNow.mutate({ serviceId: result.serviceId, rebuild: result.rebuild })}
                 loading={deployNow.isPending}
               >
                 <Rocket size={12} /> Desplegar ahora

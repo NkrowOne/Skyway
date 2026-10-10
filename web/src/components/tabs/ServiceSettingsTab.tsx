@@ -421,18 +421,21 @@ export default function ServiceSettingsTab({
   // Estrategia con lo que hay en el formulario, con la misma regla que el
   // servidor (`estrategiaDespliegue`): así «Automático — ahora: …» y los avisos
   // de réplicas cambian en cuanto se quita un dominio o se añade un volumen,
-  // antes de guardar. Que otro servicio lo llame por la red interna solo lo
-  // sabe el servidor (`deploy.calledByOthers`). Un servicio de imagen sin
-  // puerto no tiene router ni sonda: su dominio o su healthcheck no le llevan
-  // tráfico.
+  // antes de guardar. Que otro servicio lo llame por la red interna, el
+  // healthcheck del repositorio y las bibliotecas de Telegram o Discord solo los
+  // sabe el servidor (`deploy`). Un servicio de imagen sin puerto no tiene
+  // router ni sonda: su dominio o su healthcheck no le llevan tráfico.
   const conEstado = form.volumePaths.length > 0 || form.hostPort.trim() !== '';
   const sinPuerto = isImage && form.port.trim() === '';
   const conDominio = !sinPuerto && form.domains.length > 0;
-  const conHealthcheck = !sinPuerto && form.healthcheckPath.trim() !== '';
+  const healthcheckRepo = deploy?.repoHealthcheckPath ?? null;
+  const conHealthcheck = !sinPuerto && (form.healthcheckPath.trim() !== '' || !!healthcheckRepo);
   const sinTrafico = !conDominio && !conHealthcheck && !deploy?.calledByOthers;
-  // Bibliotecas de bots detectadas en el repositorio (`needs.bots`).
-  const bibliotecasBot = isGit ? ((cfg as { needs?: { bots?: { evidencia: string }[] } }).needs?.bots ?? []) : [];
-  const automatica: 'recreate' | 'overlap' = sinTrafico ? 'recreate' : 'overlap';
+  // Bibliotecas de Telegram o Discord detectadas en el repositorio: sin
+  // dominio, el bot va a «una sola copia» aunque tenga healthcheck o lo llamen.
+  const bibliotecasBot = deploy?.botLibraries ?? [];
+  const botSinDominio = !conDominio && bibliotecasBot.length > 0;
+  const automatica: 'recreate' | 'overlap' = botSinDominio || sinTrafico ? 'recreate' : 'overlap';
   const efectiva: 'recreate' | 'overlap' =
     isDb || conEstado ? 'recreate' : form.deployStrategy === 'auto' ? automatica : form.deployStrategy;
 
@@ -744,15 +747,23 @@ export default function ServiceSettingsTab({
               </Field>
             )}
           </div>
-          {!isDb && replicasN > 1 && sinTrafico && (
+          {!isDb && replicasN > 1 && (botSinDominio || sinTrafico) && (
             <p className="mt-2.5 flex items-start gap-1.5 rounded-lg border border-warn/35 bg-warn/[.06] px-3 py-2.5 text-xs text-sub">
               <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warn" aria-hidden />
-              <span className="leading-relaxed">
-                Este servicio no recibe tráfico (sin dominio, healthcheck ni llamadas de otros servicios): con {replicasN} réplicas hay{' '}
-                {replicasN} copias en marcha a la vez de forma permanente. Un bot de polling (Telegram, Discord…) solo admite una; un
-                worker tiene que repartir el trabajo con <span className="font-mono">SKYWAY_REPLICA</span> y{' '}
-                <span className="font-mono">SKYWAY_REPLICAS</span> o usar una cola.
-              </span>
+              {botSinDominio ? (
+                <span className="leading-relaxed">
+                  El repositorio usa una biblioteca de bots de Telegram o Discord: con {replicasN} réplicas hay {replicasN} copias del bot en
+                  marcha a la vez de forma permanente, y un bot que pide actualizaciones (polling) o se conecta al gateway de Discord solo
+                  admite una. Vuelve a 1 réplica.
+                </span>
+              ) : (
+                <span className="leading-relaxed">
+                  Este servicio no recibe tráfico (sin dominio, healthcheck ni llamadas de otros servicios): con {replicasN} réplicas hay{' '}
+                  {replicasN} copias en marcha a la vez de forma permanente. Un bot de polling (Telegram, Discord…) solo admite una; un
+                  worker tiene que repartir el trabajo con <span className="font-mono">SKYWAY_REPLICA</span> y{' '}
+                  <span className="font-mono">SKYWAY_REPLICAS</span> o usar una cola.
+                </span>
+              )}
             </p>
           )}
           {!isDb && replicasN > 1 && (
@@ -860,11 +871,21 @@ export default function ServiceSettingsTab({
                     ? 'Con volúmenes o puerto público, la versión anterior siempre se detiene antes de arrancar la nueva.'
                     : form.deployStrategy === 'auto'
                       ? `${ESTRATEGIA[efectiva].descripcion} ${
-                          sinTrafico
-                            ? 'Se aplica porque el servicio no tiene dominio, healthcheck ni llamadas de otros servicios. Las llamadas escritas en el código o la configuración de otro servicio no se detectan: si las hay, elige «Sin corte».'
-                            : bibliotecasBot.length > 0 && !conDominio
-                              ? 'Se aplica por su healthcheck o por llamadas de otros servicios, pero el repositorio usa una biblioteca de bots: si el bot pide actualizaciones (polling) y no recibe webhooks, elige «Una sola copia», porque con dos copias recibe un error 409.'
-                              : 'Se aplica porque el servicio recibe tráfico (dominio, healthcheck o llamadas de otros servicios).'
+                          botSinDominio
+                            ? `Se aplica porque el repositorio usa una biblioteca de bots de Telegram o Discord (${bibliotecasBot.join(', ')}) y el servicio no tiene dominio: dos copias del bot a la vez se pisan.${
+                                conHealthcheck || deploy?.calledByOthers
+                                  ? ' Mientras se detiene la versión anterior y arranca la nueva, su healthcheck y las llamadas de otros servicios no reciben respuesta. Si el bot recibe webhooks a través de otro servicio, elige «Sin corte».'
+                                  : ''
+                              }`
+                            : sinTrafico
+                              ? 'Se aplica porque el servicio no tiene dominio, ruta de healthcheck (en Ajustes o en el repositorio) ni llamadas de otros servicios. Las llamadas escritas en el código o la configuración de otro servicio no se detectan: si las hay, elige «Sin corte».'
+                              : bibliotecasBot.length > 0
+                                ? 'Se aplica por su dominio, pero el repositorio usa una biblioteca de bots: si el bot pide actualizaciones (polling) en vez de recibir webhooks, elige «Una sola copia», porque con dos copias recibe un error 409.'
+                                : `Se aplica porque el servicio recibe tráfico (dominio, healthcheck o llamadas de otros servicios).${
+                                    healthcheckRepo && form.healthcheckPath.trim() === '' && !conDominio && !deploy?.calledByOthers
+                                      ? ` La ruta de healthcheck es la del repositorio (${healthcheckRepo}).`
+                                      : ''
+                                  }`
                         }`
                       : ESTRATEGIA[efectiva].descripcion
                 }

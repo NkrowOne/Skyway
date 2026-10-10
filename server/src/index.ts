@@ -5,6 +5,7 @@ import { auditSystem } from './audit';
 import { config, ensureDataDirs } from './config';
 import { checkIntegrity, closeDb, initDb, markStaleDeploymentsFailed } from './db';
 import { abortActiveDeployments, limpiarIntercambiosAlArrancar, resumeInterruptedDeployments } from './deploy/deployer';
+import { avisarServiciosQuePasanAUnaSolaCopia } from './deploy/avisoestrategia';
 import { marcarCambiosInterrumpidos } from './domainmigration';
 import { panelDomainWarning } from './paneldomain';
 import { refreshTraefikAcme } from './tls';
@@ -79,6 +80,15 @@ async function main(): Promise<void> {
     } catch (err) {
       app.log.warn({ err }, 'No se pudieron revisar los restos de intercambios interrumpidos');
     }
+  }
+  // Una sola vez por instalación: los servicios ya desplegados que su próximo
+  // despliegue hará con «una sola copia» (antes, siempre «sin corte»), avisados
+  // en Alertas antes de que se note.
+  try {
+    const avisados = avisarServiciosQuePasanAUnaSolaCopia();
+    if (avisados > 0) app.log.info(`${avisados} servicios pasan a desplegarse con una sola copia: aviso en Alertas`);
+  } catch (err) {
+    app.log.warn({ err }, 'No se pudo avisar de los servicios que pasan a una sola copia');
   }
   // Lo que cortó el reinicio anterior: alerta y, una sola vez, reintento.
   try {

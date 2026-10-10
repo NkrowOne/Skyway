@@ -44,11 +44,14 @@ import {
 } from '../quota';
 import { archiveContainerLogs, despliegueEnCurso, limpiarRestosEnCola } from '../deploy/deployer';
 import {
+  bibliotecasDeBot,
   comandoParada,
   estrategiaDespliegue,
+  estrategiaEfectiva,
   GRACIA_PARADA_MAXIMA,
   GRACIA_PARADA_MINIMA_BASE_DE_DATOS,
   graciaParada,
+  healthcheckDelRepositorio,
   llamadoPorOtros,
 } from '../deploy/estrategia';
 import { EnvFileSource, envImportContextFor, fetchRepoEnvFiles, finalizeEnvImport, planEnvImport } from '../deploy/envimport';
@@ -1334,12 +1337,15 @@ function auditPlan(req: FastifyRequest, service: ServiceRow, result: ApplyResult
  * para no coincidir con la limpieza que encola el arranque de Skyway. Al
  * detener, una «--prev» que vuelve a su nombre no se arranca: se va a parar.
  *
- * Detener y Reiniciar paran todas las copias a la vez, con parada limpia, y
- * responden `forced` con las que no terminaron con SIGTERM a tiempo. Reiniciar
- * es parar con gracia y volver a arrancar el MISMO contenedor (conserva su
- * identidad), como `docker restart`, pero con el comando al parar y sabiendo
- * si hubo SIGKILL. Al registro del servidor solo va el resultado del comando,
- * nunca lo que escribe: ese registro no es del proyecto.
+ * Detener para todas las copias a la vez, con parada limpia, y responde
+ * `forced` con las que no terminaron con SIGTERM a tiempo. Reiniciar es parar
+ * con gracia y volver a arrancar el MISMO contenedor (conserva su identidad),
+ * como `docker restart`, pero con el comando al parar y sabiendo si hubo
+ * SIGKILL; y sigue la estrategia del servicio: con «sin corte», réplica a
+ * réplica (siempre queda una en servicio, como antes de la parada limpia); con
+ * «una sola copia», se paran todas y después arrancan todas (nunca conviven la
+ * que se para y la que arranca). Al registro del servidor solo va el resultado
+ * del comando, nunca lo que escribe: ese registro no es del proyecto.
  */
 async function accionSobreCopias(
   req: FastifyRequest,
@@ -1385,14 +1391,37 @@ async function accionSobreCopias(
       }
     }
   } else {
-    // Todas a la vez: en serie, N réplicas con su gracia eran N veces la espera.
-    const resultados = await Promise.allSettled(
-      nombres.map(async (n) => {
-        const r = await pararConGracia(n, { graciaSegundos, comando, log: registro, salidaComando: false });
-        if (r.existia && action === 'restart') await startContainer(n);
-        return r;
-      }),
-    );
+    const parar = (n: string) => pararConGracia(n, { graciaSegundos, comando, log: registro, salidaComando: false });
+    let resultados: PromiseSettledResult<Awaited<ReturnType<typeof parar>>>[];
+    if (action === 'restart' && nombres.length > 1 && estrategiaEfectiva(service).estrategia === 'overlap') {
+      // «Sin corte»: réplica a réplica. Todas a la vez dejaban una web con
+      // varias réplicas sin servicio durante la gracia y el arranque.
+      resultados = [];
+      for (const n of nombres) {
+        try {
+          const r = await parar(n);
+          if (r.existia) await startContainer(n);
+          resultados.push({ status: 'fulfilled', value: r });
+        } catch (err) {
+          resultados.push({ status: 'rejected', reason: err });
+        }
+      }
+    } else {
+      // Detener, o Reiniciar con «una sola copia»: todas a la vez (en serie, N
+      // réplicas con su gracia eran N veces la espera) y, al reiniciar, ninguna
+      // vuelve a arrancar hasta que se han parado todas.
+      resultados = await Promise.allSettled(nombres.map(parar));
+      if (action === 'restart') {
+        for (const [k, r] of resultados.entries()) {
+          if (r.status !== 'fulfilled' || !r.value.existia) continue;
+          try {
+            await startContainer(nombres[k]);
+          } catch (err) {
+            resultados[k] = { status: 'rejected', reason: err };
+          }
+        }
+      }
+    }
     for (const [k, r] of resultados.entries()) {
       if (r.status === 'rejected') {
         if (r.reason?.statusCode !== 404) fallo = r.reason;
@@ -1462,12 +1491,14 @@ function entornosDeHermanos(service: ServiceRow): Map<string, string> {
 /**
  * Cómo se despliega y se para el servicio (`ServiceDeployInfo` de la web): la
  * estrategia efectiva y su motivo, si otro servicio lo llama por la red
- * interna (con eso Ajustes calcula el «ahora» de «Automático» mientras se
+ * interna, el healthcheck del repositorio y las bibliotecas de Telegram o
+ * Discord (con eso Ajustes calcula el «ahora» de «Automático» mientras se
  * edita) y la gracia de parada con su origen.
  */
 function infoDespliegue(service: ServiceRow) {
   const llamado = service.type === 'database' ? false : llamadoPorOtros(service);
-  const e = estrategiaDespliegue(service, llamado);
+  const repoHealthcheck = healthcheckDelRepositorio(service);
+  const e = estrategiaDespliegue(service, llamado, repoHealthcheck);
   let env: Record<string, string> = {};
   try {
     env = resolveServiceEnv(service);
@@ -1480,6 +1511,8 @@ function infoDespliegue(service: ServiceRow) {
     reason: e.motivo,
     automatic: e.automatica,
     calledByOthers: llamado,
+    repoHealthcheckPath: repoHealthcheck,
+    botLibraries: bibliotecasDeBot(service),
     stopGraceSeconds: g.segundos,
     stopGraceSource: g.origen,
   };

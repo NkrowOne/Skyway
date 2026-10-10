@@ -41,6 +41,7 @@ import {
   setProjectVars,
   setSetting,
   updateDeployment,
+  updateWorkspace,
   writeManagedEnv,
 } from '../src/db';
 import { esperarTareasCambioDominio, marcarCambiosInterrumpidos, resetCambioDominioCaches } from '../src/domainmigration';
@@ -252,6 +253,17 @@ describe('webhooks y referencias', () => {
     });
     expect(servir.status, servir.raw).toBe(200);
     expect((servir.json.webhooks as Json[]).some((w) => w.serviceId === tg.id)).toBe(false);
+    // Stripe: con el aviso de webhooks de la tienda, el general sobra (antes
+    // salían los dos); si la tienda sigue sirviendo su nombre, vuelve el general.
+    const avisoStripe = (avisos: string[]) => avisos.some((a) => a.startsWith('Stripe → Webhooks'));
+    expect(avisoStripe(r.json.avisos)).toBe(false);
+    const tiendaServida = await call('POST', `${base}/plan`, {
+      fromDomain: 'bots.es',
+      toDomain: 'bots2.es',
+      hosts: mapa(r0.json).map((h: Json) => (h.from === 'shop.bots.es' ? { ...h, modo: 'servir' } : h)),
+    });
+    expect((tiendaServida.json.webhooks as Json[]).some((w) => w.serviceId === tienda.id)).toBe(false);
+    expect(avisoStripe(tiendaServida.json.avisos)).toBe(true);
     // Servir también el nombre que es el principal lo deja como PUBLIC_URL: se avisa.
     const principal = await call('POST', `${base}/plan`, {
       fromDomain: 'bots.es',
@@ -351,6 +363,16 @@ describe('webhooks y referencias', () => {
     const atras = await call('POST', `${base}/${mid}/hosts/mode`, { serviceId: tg.id, from: 'tg.bots.es', modo: 'redirigir' });
     expect(atras.status).toBe(409);
     expect(atras.json.code).toBe('migration_state');
+
+    // Con la cuenta suspendida no se sirve también nada: el despliegue fallaría
+    // con la redirección ya quitada.
+    updateWorkspace(workspaceId, { status: 'suspended' });
+    const suspendida = await call('POST', `${base}/${mid}/hosts/mode`, { serviceId: pagos.id, from: 'pagos.bots.es', modo: 'servir' });
+    updateWorkspace(workspaceId, { status: 'active' });
+    expect(suspendida.status).toBe(403);
+    expect(suspendida.json.code).toBe('account_suspended');
+    expect(getDomainRedirect('pagos.bots.es')?.to_host).toBe('pagos.bots2.es');
+    expect(dominios(pagos)).toEqual(['pagos.bots2.es']);
 
     // La portada (www.bots.es → app.bots2.es): servirla la haría principal.
     const principal = await call('POST', `${base}/${mid}/hosts/mode`, { serviceId: www.id, from: 'www.bots.es', modo: 'servir' });

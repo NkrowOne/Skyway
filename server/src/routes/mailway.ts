@@ -2638,7 +2638,46 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
             `${revoked ? ` · ${revoked} credencial(es) anterior(es) revocada(s)` : ''}` +
             `${body.redeploy ? (imagen ? ' · despliegue iniciado con la versión en marcha' : ' · despliegue iniciado') : ''}`,
         });
-        return { ok: true, keys, kept, needsRedeploy: !body.redeploy, deploymentId, revoked };
+        // `rebuild`: había otros cambios sin desplegar, y «Desplegar ahora»
+        // (`/mail/redeploy`) tiene que compilar en vez de volver a desplegar la
+        // versión en marcha, como habría hecho la casilla.
+        return { ok: true, keys, kept, needsRedeploy: !body.redeploy, deploymentId, revoked, rebuild: habiaPendientes };
+      }),
+    );
+
+    /**
+     * «Desplegar ahora» del resultado de conectar sin volver a desplegar: lo
+     * mismo que habría hecho la casilla «Volver a desplegar ahora», la versión
+     * en marcha con las variables nuevas (origen `mailway`). Antes el botón
+     * llamaba al despliegue normal, que compila la cabeza de la rama: publicaba
+     * commits que nadie había pedido y, si la compilación fallaba, el servicio
+     * seguía con la credencial revocada. Con `rebuild` (había otros cambios sin
+     * desplegar al conectar) o sin imagen en marcha, compila.
+     */
+    secured.post(
+      '/api/projects/:id/mail/redeploy',
+      { preHandler: rateLimit({ max: 20, windowMs: 60_000 }) },
+      guarded(async (req, reply) => {
+        const ctx = projectCtx(req, reply, { manage: true });
+        if (!ctx) return reply;
+        const body = z
+          .object({
+            serviceId: z.string().trim().min(1).max(100),
+            rebuild: z.boolean().optional().default(false),
+          })
+          .parse(req.body);
+        const service = serviceOfProject(ctx.project.id, body.serviceId);
+        assertAccountActive(ctx.project);
+        const imagen = body.rebuild ? undefined : await imagenEnMarcha(service);
+        markManualAction(service.id);
+        const deployment = triggerDeploy(service.id, 'mailway', imagen ? { imageTag: imagen } : {});
+        audit(req, 'mailway_service_redeploy', {
+          type: 'service',
+          id: service.id,
+          detail: `${service.name}${imagen ? ' (versión en marcha)' : ''}`,
+        });
+        reply.code(202);
+        return { deployment, imagenEnMarcha: !!imagen };
       }),
     );
   });
