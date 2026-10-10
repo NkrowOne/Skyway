@@ -469,9 +469,12 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      está en marcha y el servicio tiene **comando al parar** (`stopCommand`), se
      ejecuta dentro con `docker exec` y la orden fija `eval "$SKYWAY_STOP_CMD"`
      (el texto viaja en la variable `SKYWAY_STOP_CMD`, nunca interpolado en un
-     shell del host ni del contenedor), con la gracia como plazo; si falla, vence
-     el plazo o la imagen no tiene `sh`, se registra (código y últimas 20
-     líneas) y se sigue. El comando al parar **no** se ejecuta en la copia de
+     shell del host ni del contenedor), con la gracia como plazo; si falla o
+     vence el plazo, se registra (código y últimas 20 líneas) y se sigue. Si la
+     imagen no tiene `sh` (distroless, scratch), Docker responde 126/127 con el
+     error del runtime OCI: el registro lo dice así («⚠ La imagen de <nombre> no
+     incluye «sh»: el comando al parar no se puede ejecutar y se continúa con
+     SIGTERM…») en vez de un «código 127» que parece un fallo del comando. El comando al parar **no** se ejecuta en la copia de
      validación `--next` (ni en sus restos) ni en la réplica nueva que falla en
      «sin corte»: la versión anterior sigue en servicio, y el comando podría
      deshacer lo que ella registró (el webhook de un bot). Con «sin corte», el
@@ -600,6 +603,24 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
    `alerts.rollback_to` el despliegue correcto al que se volvía, y Alertas
    ofrece «Volver a esta versión» en lugar de «Desplegar» (que desplegaría la
    cabeza de la rama).
+
+**Prueba real con Docker** (`scripts/prueba-real-bots.mjs`, §9). Arranca un
+Skyway propio (carpeta de datos temporal, puerto 4999 solo en 127.0.0.1) y mide
+con `docker events` cuántas copias de cada servicio hay en marcha a la vez y
+con qué código termina cada una: un bot de imagen sin puerto ni dominio, un bot
+de repositorio local (vuelta atrás y sondeo de la rama) y una web con
+healthcheck a la que una sonda en la red del proyecto pide cada 0,1 s. Cubre
+volver a desplegar, réplicas, comando al parar (también con comillas, con
+código distinto de 0, sin terminar y en una imagen sin `sh`), SIGKILL al agotar
+la gracia, Reiniciar, Detener e Iniciar con restos, «sin corte» elegido a mano,
+caídas de Skyway (`SIGKILL` y apagado ordenado) durante la parada de la versión
+anterior, durante la validación de la nueva y con dos réplicas, versión rota,
+Cancelar, «Desplegar todos» y la web sin corte también tras una caída. Al
+terminar retira el proyecto, los contenedores, las imágenes y las redes que ha
+creado. Sin Traefik, la sonda entra por el alias de la red del proyecto, y el
+DNS de Docker reparte entre las copias: alguna petición suelta puede fallar en
+el instante en que una copia entra o sale (también antes de «una sola copia»
+y la parada limpia); un corte serían decenas seguidas.
 
 **Feed de despliegues.** Cada cambio de fase (encolado, construyendo,
 desplegando, terminado) se publica en un bus en memoria (`events.ts`) que
@@ -2822,6 +2843,12 @@ npm start            # sirve todo en :4000 (producción)
 npm run typecheck    # server + web (incluye server/test)
 npm run lint         # reglas de hooks de React en la web
 npm test             # vitest: server/test (base SQLite temporal, sin Docker) y web/test
+
+# Prueba real con Docker de «una sola copia», la parada limpia, la identidad por copia y
+# los restos de intercambios (no la ejecuta la CI; necesita Docker y busybox:stable en local):
+node scripts/prueba-real-bots.mjs                                   # todo (unos 8 min)
+SECCIONES=despliegue,web node scripts/prueba-real-bots.mjs           # solo algunas secciones
+SKYWAY_DIR=/ruta/a/otra/copia MODO=actual node scripts/prueba-real-bots.mjs   # versión anterior: mide el solape
 
 # Restablecer contraseña desde el servidor (último recurso):
 docker exec -it skyway node server/dist/tools/reset-password.js <email> [nueva]

@@ -384,6 +384,29 @@ describe('docker/containers.ts: parada limpia', () => {
     expect(log.join('\n')).not.toMatch(/secreto/);
   });
 
+  it('ejecutarComandoParada en una imagen sin «sh»: lo dice claro y la parada sigue', async () => {
+    const { pararConGracia } = await real();
+    d.estado.set('sinsh', { running: true, exitCode: 0, oom: false });
+    // Lo que devuelve Docker 29 con una imagen sin /bin/sh (visto en la prueba
+    // real de scripts/prueba-real-bots.mjs): código 127 y el error del runtime.
+    d.salidaExec = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "sh": executable file not found in $PATH\r\n';
+    d.codigoExec = 127;
+    const log: string[] = [];
+    const r = await pararConGracia('sinsh', { graciaSegundos: 5, comando: 'echo hola', log: (l) => log.push(l) });
+    expect(r).toMatchObject({ existia: true, comando: 'fallo' });
+    expect(log.join('\n')).toMatch(/La imagen de sinsh no incluye «sh»: el comando al parar no se puede ejecutar/);
+    expect(log.join('\n')).not.toMatch(/OCI runtime|código 127/);
+    expect(d.ordenes).toContain('stop:sinsh:t=5');
+    // Un 127 del propio comando (una orden que no existe dentro del shell) sigue
+    // contándose como siempre, con su salida.
+    d.estado.set('consh', { running: true, exitCode: 0, oom: false });
+    d.salidaExec = 'sh: vaciar-cola: not found\n';
+    const log2: string[] = [];
+    await pararConGracia('consh', { graciaSegundos: 5, comando: 'vaciar-cola', log: (l) => log2.push(l) });
+    expect(log2.join('\n')).toMatch(/terminó con el código 127: se continúa con SIGTERM/);
+    expect(log2.join('\n')).toMatch(/vaciar-cola: not found/);
+  });
+
   it('pararConGracia: 137 por falta de memoria, o inmediato, no es una parada forzada', async () => {
     const { pararConGracia } = await real();
     d.estado.set('oom', { running: true, exitCode: 0, oom: false });

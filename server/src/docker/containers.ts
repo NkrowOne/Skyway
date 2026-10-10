@@ -124,6 +124,8 @@ export async function restartContainer(name: string, graceSeconds = 10): Promise
 
 /** Líneas de la salida del comando al parar que se copian al registro. */
 const LINEAS_COMANDO_PARADA = 20;
+/** Error del runtime OCI cuando la imagen no tiene el `sh` con que se lanza el comando al parar. */
+const SIN_SH_RE = /exec: "sh": (executable file not found|no such file or directory)/;
 
 /**
  * Ejecuta el comando al parar dentro del contenedor, con `gracia` segundos de
@@ -151,6 +153,17 @@ export async function ejecutarComandoParada(
       timeoutMs: plazo * 1000,
       maxOutput: 8000,
     });
+    // Sin `sh` en la imagen (distroless, scratch), Docker no llega a ejecutar
+    // nada: responde 126/127 y el error del runtime OCI como única salida. Con
+    // Docker real se ve «terminó con el código 127» seguido de ese texto, que
+    // parece un fallo del comando escrito en Ajustes; se dice qué pasa.
+    if (!res.timedOut && (res.exitCode === 126 || res.exitCode === 127) && SIN_SH_RE.test(res.output)) {
+      log?.(
+        `⚠ La imagen de ${name} no incluye «sh»: el comando al parar no se puede ejecutar y se continúa con SIGTERM. ` +
+          'Elimina el comando al parar en Ajustes del servicio → Despliegue y parada, o usa una imagen que incluya «sh».',
+      );
+      return 'fallo';
+    }
     const lineas = res.output
       .split('\n')
       .map((l) => l.replace(/\r$/, ''))
