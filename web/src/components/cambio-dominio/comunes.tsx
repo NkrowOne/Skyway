@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronDown, CircleDashed, Info, Loader2 } from 'lucide-react';
+import { textoWebhook, WebhookEnRiesgo } from '../../cambioDominio';
 import { cx } from '../../utils';
+import { Button } from '../ui';
 
 /** Las cuatro fases del asistente, en el orden en que se recorren. */
 const PASOS = ['Qué cambia', 'Preparar', 'En transición', 'Terminado'] as const;
@@ -144,5 +146,54 @@ export function Bloque({ titulo, acciones, children }: { titulo: string; accione
       </div>
       {children}
     </section>
+  );
+}
+
+/**
+ * Un aviso por servicio con webhooks en nombres que redirigen (o redirigirán)
+ * al pasar, con «Servir también»: el webhook registrado con la URL anterior no
+ * sigue la redirección. `pasada`: el cambio ya ha pasado.
+ */
+export function AvisosWebhooks({
+  webhooks,
+  pasada = false,
+  onServir,
+  ocupado = null,
+  deshabilitado = false,
+}: {
+  webhooks: WebhookEnRiesgo[];
+  pasada?: boolean;
+  onServir?: (w: WebhookEnRiesgo) => void;
+  /** Servicio cuyo «Servir también» está en curso. */
+  ocupado?: string | null;
+  deshabilitado?: boolean;
+}) {
+  if (webhooks.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-2">
+      {webhooks.map((w) => (
+        <Aviso key={w.serviceId} tono="warn">
+          <p>{textoWebhook(w, pasada)}</p>
+          {w.evidencias.length > 0 && (
+            <p className="mt-0.5 break-words text-subtle">
+              Detectado por <span className="font-mono">{w.evidencias.join(', ')}</span>.
+            </p>
+          )}
+          {onServir && (
+            <div className="mt-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => onServir(w)}
+                loading={ocupado === w.serviceId}
+                disabled={deshabilitado || (!!ocupado && ocupado !== w.serviceId)}
+              >
+                Servir también
+              </Button>
+            </div>
+          )}
+        </Aviso>
+      ))}
+    </div>
   );
 }

@@ -17,13 +17,15 @@
  *   (las referencias se resuelven solas al desplegar);
  * - el cálculo parte siempre del valor ORIGINAL (la instantánea): repetirlo da
  *   el mismo resultado aunque un dominio sea subdominio del otro;
- * - un usuario para entrar no cambia (`SMTP_USER`, `MAIL_USERNAME`… o el
- *   usuario de una URL): tras pasar, el buzón sigue entrando con su dirección
- *   anterior hasta que se actualiza, y la aplicación dejaría de enviar.
+ * - un usuario para entrar no cambia (`SMTP_USER`, `MAIL_USERNAME`, uno con
+ *   prefijo propio como `TG_SMTP_LOGIN`… o el usuario de una URL): tras pasar,
+ *   el buzón sigue entrando con su dirección anterior hasta que se actualiza,
+ *   y la aplicación dejaría de enviar.
  */
 import crypto from 'crypto';
 import { getDomain } from 'tldts';
-import { mailRoleOf } from './mailenv';
+import { mailRoleLoose } from './mailenv';
+import type { ProveedorWebhook } from './types';
 
 export type AmbitoVariable = 'service' | 'project' | 'build';
 
@@ -291,9 +293,14 @@ export function aplicarMapa(valor: string, mapa: MapaCambio, opciones: { key?: s
   return { valor: r.valor, ocurrencias: r.ocurrencias };
 }
 
-/** ¿Es el nombre de un usuario SMTP (`SMTP_USER`, `EMAIL_HOST_USER`…)? */
+/**
+ * ¿Es el nombre de un usuario SMTP (`SMTP_USER`, `EMAIL_HOST_USER`…)? También
+ * con un prefijo propio (`TG_SMTP_LOGIN`, `BOT_SMTP_USER`, `mailRoleLoose`):
+ * cambiarlo al pasar dejaría al bot entrando con un usuario que todavía no
+ * existe.
+ */
 function esUsuarioCorreo(key: string | undefined): boolean {
-  return !!key && mailRoleOf(key.toUpperCase()) === 'user';
+  return !!key && mailRoleLoose(key) === 'user';
 }
 
 /** Texto de una mención sin mapa para la interfaz. */
@@ -459,6 +466,47 @@ export function avisosDeVariables(claves: string[], pilas: string[], hostNuevo: 
         : `Haz una copia de la base de datos y ejecuta wp search-replace con la dirección antigua y 'https://${nuevo}' --all-tables. ` +
             'Mientras tanto, la redirección mantiene funcionando los enlaces.',
     );
+  }
+  return out;
+}
+
+// ---------- webhooks de bots ----------
+
+/** Proveedor de webhooks del que avisa un cambio de dominio; `webhook` cuando el nombre no dice cuál. */
+export type ProveedorAviso = ProveedorWebhook | 'webhook';
+
+/**
+ * Prefijos que delatan un proveedor de webhooks. Stripe con el tema en
+ * cualquier tramo (`NEXT_PUBLIC_STRIPE_…`, `APP_STRIPE_…`), como su aviso; el
+ * resto, al principio del nombre sin el prefijo público: `TG_` en medio de otro
+ * nombre (`SETTING_TG_…`) no dice nada.
+ */
+const PROVEEDOR_POR_PREFIJO: [RegExp, ProveedorWebhook][] = [
+  [/^(?:TELEGRAM|TG)_/, 'telegram'],
+  [/^DISCORD_/, 'discord'],
+  [/^SLACK_/, 'slack'],
+  [/^WHATSAPP_/, 'whatsapp'],
+  [/^TWILIO_/, 'twilio'],
+];
+/** Un token de bot sin proveedor en el nombre, o cualquier variable de webhooks. */
+const WEBHOOK_GENERICO = /(?:^|_)BOT_TOKEN$|WEBHOOK/;
+
+/**
+ * Proveedores de webhooks que delatan los nombres de las variables de un
+ * servicio, uno por variable (el más concreto): `TELEGRAM_BOT_TOKEN` es de
+ * Telegram aunque también sea un token de bot. Un webhook registrado en el
+ * proveedor con la URL anterior no sigue la redirección del cambio de dominio
+ * (Telegram y Stripe tratan una redirección como un fallo): el asistente avisa
+ * y ofrece seguir sirviendo el nombre anterior.
+ */
+export function proveedoresDeClaves(claves: readonly string[]): { proveedor: ProveedorAviso; clave: string }[] {
+  const out: { proveedor: ProveedorAviso; clave: string }[] = [];
+  for (const clave of new Set(claves)) {
+    const k = clave.toUpperCase();
+    const base = k.replace(PREFIJO_PUBLICO, '');
+    const concreto = STRIPE.test(k) ? 'stripe' : PROVEEDOR_POR_PREFIJO.find(([re]) => re.test(base))?.[1];
+    if (concreto) out.push({ proveedor: concreto, clave });
+    else if (WEBHOOK_GENERICO.test(k)) out.push({ proveedor: 'webhook', clave });
   }
   return out;
 }

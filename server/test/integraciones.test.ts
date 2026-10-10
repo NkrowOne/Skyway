@@ -281,6 +281,40 @@ describe('detección del correo', () => {
   });
 });
 
+describe('detección de bots y webhooks (needs.bots)', () => {
+  it('por sus bibliotecas en cada ecosistema, con el fichero y el paquete; solo las de producción en npm', () => {
+    const needs = needsFrom({
+      'package.json': JSON.stringify({ dependencies: { telegraf: '^4', 'discord.js': '^14' }, devDependencies: { stripe: '^14' } }),
+      'requirements.txt': 'aiogram==3.4\npython-telegram-bot[job-queue]>=21\nslack_bolt==1.18\n',
+      'go.mod': 'module bot\n\nrequire (\n\tgithub.com/bwmarrin/discordgo v0.27.1\n\tgithub.com/stripe/stripe-go/v76 v76.0.0\n)\n',
+      Gemfile: "gem 'telegram-bot-ruby'\ngem 'twilio-ruby'\n",
+      'composer.json': JSON.stringify({ require: { 'nutgram/nutgram': '^4', 'stripe/stripe-php': '^13' } }),
+    })!;
+    expect(needs.bots).toEqual([
+      { proveedor: 'telegram', evidencia: 'package.json: telegraf' },
+      { proveedor: 'discord', evidencia: 'package.json: discord.js' },
+      { proveedor: 'telegram', evidencia: 'requirements.txt: aiogram' },
+      { proveedor: 'telegram', evidencia: 'requirements.txt: python-telegram-bot' },
+      { proveedor: 'slack', evidencia: 'requirements.txt: slack-bolt' },
+      { proveedor: 'discord', evidencia: 'go.mod: github.com/bwmarrin/discordgo' },
+      { proveedor: 'stripe', evidencia: 'go.mod: github.com/stripe/stripe-go/v76' },
+      { proveedor: 'telegram', evidencia: 'Gemfile: telegram-bot-ruby' },
+      { proveedor: 'twilio', evidencia: 'Gemfile: twilio-ruby' },
+      { proveedor: 'telegram', evidencia: 'composer.json: nutgram/nutgram' },
+      { proveedor: 'stripe', evidencia: 'composer.json: stripe/stripe-php' },
+    ]);
+    expect(needs.sources).toEqual(expect.arrayContaining(['package.json', 'requirements.txt', 'go.mod', 'Gemfile', 'composer.json']));
+  });
+
+  it('un repositorio que solo es un bot ya dice algo; sin bibliotecas de bots, no hay `bots`', () => {
+    const bot = needsFrom({ 'package.json': JSON.stringify({ dependencies: { grammy: '^1' } }) });
+    expect(bot).not.toBeNull();
+    expect(bot!.bots).toEqual([{ proveedor: 'telegram', evidencia: 'package.json: grammy' }]);
+    expect(needsFrom({ 'package.json': JSON.stringify({ dependencies: { pg: '^8' } }) })!.bots).toBeUndefined();
+    expect(needsFrom({ 'package.json': JSON.stringify({ devDependencies: { stripe: '^14' } }) })).toBeNull();
+  });
+});
+
 // ======================= C) manifiesto =======================
 
 describe('manifiesto skyway.json', () => {

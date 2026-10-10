@@ -1508,7 +1508,11 @@ export type EstadoCambio =
 export interface PlanCambioDominio {
   desde: { domainId: string; domain: string };
   hacia: { domain: string; existe: boolean; domainId: string | null };
-  buzones: { id: string; de: string; a: string; usadoPorApps: string[] }[];
+  /**
+   * `appsManuales`: contraseñas de aplicación activas que no creó Skyway (las
+   * que no empiezan por `skyway:`). Opcional: un Mailway anterior no lo manda.
+   */
+  buzones: { id: string; de: string; a: string; usadoPorApps: string[]; appsManuales?: string[] }[];
   alias: { id: string; de: string; a: string }[];
   formularios: { id: string; name: string; origenesNuevos: string[] }[];
   webmail: { viejo: string | null; nuevo: string | null };
@@ -1553,7 +1557,8 @@ export interface CambioDominioVista {
   buzones: {
     total: number;
     pendientes: number;
-    lista: { id: string; email: string; login: string; pendiente: boolean; usadoPorApps: string[] }[];
+    /** `appsManuales`, como en el plan (opcional: un Mailway anterior no lo manda). */
+    lista: { id: string; email: string; login: string; pendiente: boolean; usadoPorApps: string[]; appsManuales?: string[] }[];
   };
   alias: { total: number };
   webmail: { viejo: CambioDominioWebmail | null; nuevo: CambioDominioWebmail | null };

@@ -14,8 +14,10 @@ import {
   mensajeSinMapa,
   mensajeUsuario,
   planificar,
+  proveedoresDeClaves,
   quitarBloqueWordpress,
 } from '../src/envreplace';
+import { mailRoleLoose, mailRoleOf } from '../src/mailenv';
 
 const MAPA: MapaCambio = {
   hosts: [
@@ -340,5 +342,77 @@ describe('avisosDeVariables', () => {
     ]);
     // Sin el tema como tramo propio del nombre, no hay aviso.
     expect(avisosDeVariables(['KEYCLOAK_AUTH_URL', 'OAUTH_URL', 'MYSTRIPE_KEY', 'GOOGLE_ANALYTICS_ID'], [], 'www.dominio2.es')).toEqual([]);
+  });
+});
+
+describe('bots: usuarios con prefijo propio y proveedores de webhooks', () => {
+  it('mailRoleLoose reconoce el nombre conocido más largo tras un prefijo propio; mailRoleOf no cambia', () => {
+    expect(mailRoleLoose('TG_SMTP_LOGIN')).toBe('user');
+    expect(mailRoleLoose('BOT_SMTP_USER')).toBe('user');
+    expect(mailRoleLoose('MYAPP_EMAIL_HOST_USER')).toBe('user');
+    expect(mailRoleLoose('tg_smtp_login')).toBe('user');
+    expect(mailRoleLoose('SMTP_USER')).toBe('user');
+    expect(mailRoleLoose('NOTIFY_MAIL_FROM')).toBe('from');
+    expect(mailRoleLoose('BOT_SMTP_URL')).toBe('url');
+    // Nada que reconocer: ni el nombre del servidor de Mailway ni un sufijo suelto.
+    expect(mailRoleLoose('MAIL_HOSTNAME')).toBeNull();
+    expect(mailRoleLoose('APP_USER')).toBeNull();
+    expect(mailRoleLoose('TELEGRAM_BOT_TOKEN')).toBeNull();
+    expect(mailRoleOf('TG_SMTP_LOGIN')).toBeNull();
+  });
+
+  it('al pasar, TG_SMTP_LOGIN y BOT_SMTP_USER son el usuario para entrar: no cambian y salen como nota', () => {
+    const mapa: MapaCambio = { hosts: [], direcciones: [{ from: 'bot@dominio.es', to: 'bot@dominio2.es' }] };
+    const plan = planificar(
+      [
+        valor('bot@dominio.es', { key: 'TG_SMTP_LOGIN' }),
+        valor('bot@dominio.es', { key: 'BOT_SMTP_USER' }),
+        valor('bot@dominio.es', { key: 'BOT_MAIL_FROM' }),
+      ],
+      mapa,
+      'dominio.es',
+    );
+    expect(plan.cambios.map((c) => [c.key, c.despues])).toEqual([['BOT_MAIL_FROM', 'bot@dominio2.es']]);
+    expect(plan.usuarios.map((u) => [u.key, u.nombres])).toEqual([
+      ['BOT_SMTP_USER', ['bot@dominio.es']],
+      ['TG_SMTP_LOGIN', ['bot@dominio.es']],
+    ]);
+    expect(aplicarMapa('bot@dominio.es', mapa, { key: 'TG_SMTP_LOGIN' }).valor).toBe('bot@dominio.es');
+  });
+
+  it('proveedoresDeClaves: uno por variable, el más concreto; webhook cuando el nombre no dice cuál', () => {
+    expect(
+      proveedoresDeClaves([
+        'TELEGRAM_BOT_TOKEN',
+        'TG_WEBHOOK_SECRET',
+        'DISCORD_PUBLIC_KEY',
+        'SLACK_SIGNING_SECRET',
+        'WHATSAPP_TOKEN',
+        'TWILIO_AUTH_TOKEN',
+        'STRIPE_WEBHOOK_SECRET',
+        'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY',
+        'VITE_TELEGRAM_BOT_NAME',
+        'BOT_TOKEN',
+        'MY_BOT_TOKEN',
+        'WEBHOOK_URL',
+        'GITHUB_WEBHOOK_SECRET',
+      ]),
+    ).toEqual([
+      { proveedor: 'telegram', clave: 'TELEGRAM_BOT_TOKEN' },
+      { proveedor: 'telegram', clave: 'TG_WEBHOOK_SECRET' },
+      { proveedor: 'discord', clave: 'DISCORD_PUBLIC_KEY' },
+      { proveedor: 'slack', clave: 'SLACK_SIGNING_SECRET' },
+      { proveedor: 'whatsapp', clave: 'WHATSAPP_TOKEN' },
+      { proveedor: 'twilio', clave: 'TWILIO_AUTH_TOKEN' },
+      { proveedor: 'stripe', clave: 'STRIPE_WEBHOOK_SECRET' },
+      { proveedor: 'stripe', clave: 'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY' },
+      { proveedor: 'telegram', clave: 'VITE_TELEGRAM_BOT_NAME' },
+      { proveedor: 'webhook', clave: 'BOT_TOKEN' },
+      { proveedor: 'webhook', clave: 'MY_BOT_TOKEN' },
+      { proveedor: 'webhook', clave: 'WEBHOOK_URL' },
+      { proveedor: 'webhook', clave: 'GITHUB_WEBHOOK_SECRET' },
+    ]);
+    // Sin el proveedor al principio del nombre (ni Stripe como tramo propio), nada.
+    expect(proveedoresDeClaves(['SETTING_TG_ID', 'MYSTRIPE_KEY', 'DATABASE_URL', 'ROBOT_TOKENS'])).toEqual([]);
   });
 });

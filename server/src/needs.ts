@@ -7,7 +7,7 @@ import { ghFetch } from './github/client';
 import { MailMode, mailRoleOf, mailVarsOf, suggestedMailMode } from './mailenv';
 import { MANIFEST_FILE, MANIFEST_MAX_BYTES, parseManifest } from './manifest';
 import { getTemplate } from './templates';
-import { DetectedNeeds, GitConfig, ServiceRow } from './types';
+import { DetectedNeeds, GitConfig, ProveedorWebhook, ServiceRow } from './types';
 import { ReferenceGroup } from './variables';
 
 /**
@@ -191,6 +191,59 @@ const GO_MAIL: RegExp[] = [
   /github\.com\/sendgrid\/sendgrid-go/,
 ];
 
+/*
+ * Bibliotecas de bots y de webhooks, por ecosistema. Un servicio que las usa
+ * puede recibir llamadas del proveedor en una URL registrada allí (el webhook
+ * de Telegram, los eventos de Slack o de Stripe): en un cambio de dominio, esa
+ * URL no se actualiza sola y la redirección no la salva. Solo se avisa; nada
+ * de esto cambia cómo se despliega el servicio.
+ */
+const NPM_BOTS: Record<string, ProveedorWebhook> = {
+  telegraf: 'telegram',
+  grammy: 'telegram',
+  'node-telegram-bot-api': 'telegram',
+  'discord.js': 'discord',
+  '@discordjs/core': 'discord',
+  '@slack/bolt': 'slack',
+  twilio: 'twilio',
+  stripe: 'stripe',
+};
+const PYPI_BOTS: Record<string, ProveedorWebhook> = {
+  'python-telegram-bot': 'telegram',
+  aiogram: 'telegram',
+  pytelegrambotapi: 'telegram',
+  'discord.py': 'discord',
+  'py-cord': 'discord',
+  nextcord: 'discord',
+  'slack-bolt': 'slack',
+  twilio: 'twilio',
+  stripe: 'stripe',
+};
+const GO_BOTS: [RegExp, ProveedorWebhook][] = [
+  [/github\.com\/go-telegram-bot-api\/[A-Za-z0-9._/-]+/, 'telegram'],
+  [/gopkg\.in\/(?:tucnak\/)?telebot[A-Za-z0-9._/-]*/, 'telegram'],
+  [/github\.com\/go-telegram\/bot\b/, 'telegram'],
+  [/github\.com\/bwmarrin\/discordgo\b/, 'discord'],
+  [/github\.com\/slack-go\/slack\b/, 'slack'],
+  [/github\.com\/twilio\/twilio-go\b/, 'twilio'],
+  [/github\.com\/stripe\/stripe-go[A-Za-z0-9._/-]*/, 'stripe'],
+];
+const GEM_BOTS: Record<string, ProveedorWebhook> = {
+  'telegram-bot-ruby': 'telegram',
+  discordrb: 'discord',
+  'slack-ruby-bot': 'slack',
+  'twilio-ruby': 'twilio',
+  stripe: 'stripe',
+};
+const COMPOSER_BOTS: Record<string, ProveedorWebhook> = {
+  'irazasyed/telegram-bot-sdk': 'telegram',
+  'longman/telegram-bot': 'telegram',
+  'nutgram/nutgram': 'telegram',
+  'team-reflex/discord-php': 'discord',
+  'twilio/sdk': 'twilio',
+  'stripe/stripe-php': 'stripe',
+};
+
 /**
  * Nombre de variable → (motor, papel). `sql` es «la base relacional que haya»:
  * `DATABASE_URL` o `DB_HOST` valen igual para Postgres y MySQL, y lo decide lo
@@ -282,6 +335,11 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
     if (!mailEvidence.includes(evidence)) mailEvidence.push(evidence);
     sources.add(source);
   };
+  const bots: { proveedor: ProveedorWebhook; evidencia: string }[] = [];
+  const botFound = (proveedor: ProveedorWebhook, evidencia: string, source: string) => {
+    if (!bots.some((b) => b.evidencia === evidencia)) bots.push({ proveedor, evidencia });
+    sources.add(source);
+  };
   let manifestFile: string | null = null;
   let manifestText: string | null = null;
   let manifestTooBig = false;
@@ -342,6 +400,9 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
         // Solo las de producción: un nodemailer de desarrollo (pruebas) no es correo de la web.
         for (const name of Object.keys(parsed.dependencies ?? {})) {
           if (NPM_MAIL.has(name)) mailFound(`${pkg.rel}: ${name}`, pkg.rel);
+          // Como el correo: un stripe de desarrollo (pruebas con su CLI) no recibe webhooks.
+          const bot = Object.hasOwn(NPM_BOTS, name) ? NPM_BOTS[name] : undefined;
+          if (bot) botFound(bot, `${pkg.rel}: ${name}`, pkg.rel);
         }
       } catch {
         /* un package.json roto ya lo contará el build */
@@ -359,6 +420,8 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           sources.add(req.rel);
         }
         if (n && PYPI_MAIL.has(n)) mailFound(`${req.rel}: ${n}`, req.rel);
+        const bot = n && Object.hasOwn(PYPI_BOTS, n) ? PYPI_BOTS[n] : undefined;
+        if (bot) botFound(bot, `${req.rel}: ${n}`, req.rel);
       }
     }
     const pyproject = read('pyproject.toml');
@@ -372,6 +435,8 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           sources.add(pyproject.rel);
         }
         if (PYPI_MAIL.has(n)) mailFound(`${pyproject.rel}: ${n}`, pyproject.rel);
+        const bot = Object.hasOwn(PYPI_BOTS, n) ? PYPI_BOTS[n] : undefined;
+        if (bot) botFound(bot, `${pyproject.rel}: ${n}`, pyproject.rel);
       }
     }
 
@@ -387,6 +452,10 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
         const hit = gomod.text.match(re);
         if (hit) mailFound(`${gomod.rel}: ${hit[0]}`, gomod.rel);
       }
+      for (const [re, proveedor] of GO_BOTS) {
+        const hit = gomod.text.match(re);
+        if (hit) botFound(proveedor, `${gomod.rel}: ${hit[0]}`, gomod.rel);
+      }
     }
 
     const gemfile = read('Gemfile');
@@ -398,6 +467,8 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           sources.add(gemfile.rel);
         }
         if (GEM_MAIL.has(m[1])) mailFound(`${gemfile.rel}: ${m[1]}`, gemfile.rel);
+        const bot = Object.hasOwn(GEM_BOTS, m[1]) ? GEM_BOTS[m[1]] : undefined;
+        if (bot) botFound(bot, `${gemfile.rel}: ${m[1]}`, gemfile.rel);
       }
     }
 
@@ -413,6 +484,8 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
         }
         for (const name of Object.keys(parsed.require ?? {})) {
           if (COMPOSER_MAIL.has(name)) mailFound(`${composer.rel}: ${name}`, composer.rel);
+          const bot = Object.hasOwn(COMPOSER_BOTS, name) ? COMPOSER_BOTS[name] : undefined;
+          if (bot) botFound(bot, `${composer.rel}: ${name}`, composer.rel);
         }
       } catch {
         /* idem */
@@ -476,7 +549,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
     manifest = manifestTooBig ? { manifest: null, error: `${MANIFEST_FILE} ocupa más de 64 KB.` } : parseManifest(manifestText ?? '');
   }
 
-  if (engines.size === 0 && expectedVars.length === 0 && !mail && manifestFile === null) return null;
+  if (engines.size === 0 && expectedVars.length === 0 && !mail && manifestFile === null && bots.length === 0) return null;
   return {
     engines: [...engines.entries()].map(([template, evidence]) => ({ template, evidence })),
     expectedVars,
@@ -486,6 +559,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
     manifest: manifest?.manifest ?? null,
     manifestFile,
     manifestError: manifest?.error ?? null,
+    ...(bots.length > 0 ? { bots } : {}),
     detectedAt: Date.now(),
   };
 }

@@ -1,14 +1,34 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { cambioDominioApi, contar, fechaLarga, MigracionSkyway } from '../../cambioDominio';
-import { Button, ConfirmModal, useToast } from '../ui';
-import { Aviso, Avisos, Bloque } from './comunes';
+import {
+  cambioDominioApi,
+  contar,
+  enumerar,
+  fechaLarga,
+  MigracionSkyway,
+  UsuarioSinGestionar,
+  WebhookEnRiesgo,
+} from '../../cambioDominio';
+import { Button, Chip, ConfirmModal, useToast } from '../ui';
+import { Aviso, Avisos, AvisosWebhooks, Bloque } from './comunes';
 import ServiciosCambio from './ServiciosCambio';
 
 type Persona = NonNullable<MigracionSkyway['correo']>['buzones']['lista'][number];
 
 /** Nombre de la aplicación a partir de su credencial («skyway:tienda» → «tienda»). */
 const appsDe = (p: Persona) => p.usadoPorApps.filter((n) => n.startsWith('skyway:')).map((n) => n.slice('skyway:'.length));
+
+/** «Bot» (TG_SMTP_LOGIN), los servicios que heredan las compartidas (SMTP_USER)…: lo que se vuelve a desplegar. */
+function despliegues(usuarios: readonly UsuarioSinGestionar[]): string {
+  const porServicio = new Map<string, Set<string>>();
+  for (const u of usuarios) {
+    for (const x of u.usos) {
+      const nombre = x.ambito === 'project' ? 'los servicios que heredan las variables compartidas' : `«${x.serviceName ?? '?'}»`;
+      porServicio.set(nombre, (porServicio.get(nombre) ?? new Set()).add(x.key));
+    }
+  }
+  return enumerar([...porServicio].map(([nombre, keys]) => `${nombre} (${[...keys].join(', ')})`));
+}
 
 /**
  * Paso 3, «En transición»: la web y el correo ya están en el dominio nuevo y
@@ -29,6 +49,8 @@ export default function FaseTransicion({
   const [bajaAbierta, setBajaAbierta] = useState(false);
   const [terminarAbierto, setTerminarAbierto] = useState(false);
   const [persona, setPersona] = useState<Persona | null>(null);
+  const [sinGestionar, setSinGestionar] = useState<UsuarioSinGestionar | null>(null);
+  const [webhook, setWebhook] = useState<WebhookEnRiesgo | null>(null);
 
   const volver = useMutation({
     mutationFn: () => cambioDominioApi.volver(projectId, m.id),
@@ -59,8 +81,23 @@ export default function FaseTransicion({
     mutationFn: (mailboxId: string) => cambioDominioApi.actualizarPersona(projectId, m.id, mailboxId),
     onSuccess: (v) => {
       setPersona(null);
+      setSinGestionar(null);
       onCambio(v);
       toast('Usuario actualizado', 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  // Tras pasar, «Servir también» vuelve a desplegar el servicio con el nombre anterior.
+  const servir = useMutation({
+    mutationFn: async (w: WebhookEnRiesgo) => {
+      let vista: MigracionSkyway | null = null;
+      for (const h of w.hosts) vista = await cambioDominioApi.modoHost(projectId, m.id, { serviceId: h.serviceId, from: h.from, modo: 'servir' });
+      return vista;
+    },
+    onSuccess: (v) => {
+      setWebhook(null);
+      if (v) onCambio(v);
+      toast('Se sirve también el nombre anterior: el servicio se está desplegando.', 'ok');
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -75,6 +112,8 @@ export default function FaseTransicion({
   const conWeb = m.hosts.some((h) => h.modo !== 'no_cambiar');
   const viejoWebmail = correo?.webmail.viejo?.hostname ?? null;
   const mensajeMx = `${m.fromDomain} dejará de recibir correo en esta plataforma. Antes, su MX tiene que apuntar a otro sitio o ser un MX nulo («0 .»).`;
+  const nombreServicio = (id: string) => m.hosts.find((h) => h.serviceId === id)?.serviceName ?? 'el servicio';
+  const sinGestionarDe = (mailboxId: string) => m.usuariosSinGestionar.filter((u) => u.mailboxId === mailboxId);
 
   return (
     <div className="flex flex-col gap-5">
@@ -104,6 +143,55 @@ export default function FaseTransicion({
         accion={m.estado !== 'pasada' ? null : m.soloWeb ? 'terminar' : `dar de baja ${m.fromDomain}`}
       />
 
+      {m.estado === 'pasada' && (
+        <AvisosWebhooks
+          webhooks={m.webhooks}
+          pasada
+          onServir={(w) => setWebhook(w)}
+          ocupado={servir.isPending ? (servir.variables?.serviceId ?? null) : null}
+          deshabilitado={ocupado}
+        />
+      )}
+
+      {m.usuariosSinGestionar.length > 0 && (
+        <Bloque titulo="Servicios que envían con un usuario que cambia">
+          <ul className="divide-y divide-line rounded-lg border border-line bg-bg">
+            {m.usuariosSinGestionar.map((u) => (
+              <li key={u.mailboxId} className="flex flex-col gap-2 px-3.5 py-2.5">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                  <span className="min-w-0 flex-1 basis-60">
+                    <span className="block break-all font-mono text-sm text-txt">{u.email}</span>
+                    <span className="mt-0.5 block break-words text-xs leading-5 text-subtle">
+                      Entra con {u.login}
+                      {u.pendiente ? ' · Pendiente de actualizar' : ''}
+                    </span>
+                  </span>
+                  <Button variant="secondary" size="sm" onClick={() => setSinGestionar(u)} disabled={m.estado !== 'pasada'}>
+                    Actualizar y desplegar
+                  </Button>
+                </div>
+                <ul className="flex flex-col gap-1">
+                  {u.usos.map((x) => (
+                    <li key={`${x.ambito}:${x.serviceId ?? ''}:${x.key}`} className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
+                      <span className="text-sub">{x.ambito === 'project' ? 'Compartida' : x.serviceName}</span>
+                      <span className="break-all font-mono text-txt">{x.key}</span>
+                      <span className="break-all font-mono text-subtle">{x.usuario}</span>
+                      <Chip tone={x.estado === 'no_entra' ? 'err' : 'warn'} size="sm">
+                        {x.estado === 'no_entra' ? 'No entra' : 'Entra hasta actualizar'}
+                      </Chip>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1.5 text-xs leading-5 text-subtle">
+            Son variables que Skyway no gestiona (puestas a mano o con otro nombre). «Actualizar y desplegar» actualiza el usuario del buzón, las
+            cambia al usuario nuevo y vuelve a desplegar esos servicios con la versión en marcha. La baja de {m.fromDomain} lo hace también.
+          </p>
+        </Bloque>
+      )}
+
       {correo && (
         <Bloque titulo="Personas pendientes de actualizar dispositivos">
           {pendientes.length === 0 ? (
@@ -130,6 +218,14 @@ export default function FaseTransicion({
           )}
         </Bloque>
       )}
+
+      <Avisos
+        tono="info"
+        avisos={m.appsManuales.map(
+          (a) =>
+            `${a.email} tiene contraseñas de aplicación creadas a mano (${a.apps.join(', ')}) y no lo usa ningún servicio de este proyecto: las aplicaciones que las usan tendrán que entrar con ${a.email} tras actualizarlo o dar de baja ${m.fromDomain}.`,
+        )}
+      />
 
       <Avisos tono="info" avisos={m.avisos} />
 
@@ -213,6 +309,12 @@ export default function FaseTransicion({
       >
         <div className="mt-2 flex flex-col gap-2 text-sm leading-6 text-sub">
           {apps.length > 0 && <p>{mensajeMx}</p>}
+          {m.usuariosSinGestionar.length > 0 && (
+            <p>
+              También pasarán a entrar con su usuario de {m.toDomain} y se volverán a desplegar con la versión en marcha:{' '}
+              {despliegues(m.usuariosSinGestionar)}.
+            </p>
+          )}
           {pendientes.length > 0 && (
             <div>
               <p>
@@ -254,7 +356,46 @@ export default function FaseTransicion({
             está en marcha, sin poder enviar durante unos segundos.
           </p>
         )}
+        {persona && sinGestionarDe(persona.id).length > 0 && (
+          <p className="mt-2 text-sm text-sub">
+            También se volverán a desplegar, con {persona.email}: {despliegues(sinGestionarDe(persona.id))}.
+          </p>
+        )}
       </ConfirmModal>
+
+      <ConfirmModal
+        open={!!sinGestionar}
+        onClose={() => setSinGestionar(null)}
+        onConfirm={() => sinGestionar && actualizar.mutate(sinGestionar.mailboxId)}
+        loading={actualizar.isPending}
+        title="Actualizar y desplegar"
+        message={
+          sinGestionar
+            ? sinGestionar.pendiente
+              ? `${sinGestionar.email} pasará a entrar con ${sinGestionar.email} en lugar de ${sinGestionar.login} (también para las personas que lo usan) y se volverán a desplegar: ${despliegues([sinGestionar])}. La contraseña no cambia.`
+              : `Se volverán a desplegar ${despliegues([sinGestionar])} para que entren con ${sinGestionar.login}. La contraseña no cambia.`
+            : ''
+        }
+        confirmLabel="Actualizar y desplegar"
+        confirmVariant="primary"
+      />
+
+      <ConfirmModal
+        open={!!webhook}
+        onClose={() => setWebhook(null)}
+        onConfirm={() => webhook && servir.mutate(webhook)}
+        loading={servir.isPending}
+        title="Servir también el nombre anterior"
+        message={
+          webhook
+            ? `${webhook.hosts.map((h) => `${h.from} dejará de redirigir y se servirá también desde «${nombreServicio(h.serviceId)}».`).join(' ')} ${
+                new Set(webhook.hosts.map((h) => h.serviceId)).size === 1 ? 'Se vuelve a desplegar el servicio.' : 'Se vuelven a desplegar los servicios.'
+              }`
+            : ''
+        }
+        confirmLabel="Servir también"
+        confirmVariant="primary"
+      />
 
       {m.estado === 'pasada' && pendientes.length > 0 && (
         <p className="text-xs leading-5 text-subtle">
