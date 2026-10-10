@@ -656,6 +656,55 @@ describe('renovación de las contraseñas de aplicación invalidadas', () => {
     expect(triggerDeploy).toHaveBeenCalledTimes(1);
   });
 
+  it('durante un cambio de dominio, la renovación conserva el usuario del motor (la dirección anterior)', async () => {
+    const web = servicio(tienda, 'Web');
+    await conectar(tienda, web, buzonTienda);
+    // Como tras «Pasar» un cambio de dominio de Mailway: el buzón ya es
+    // hola@tienda2.example, pero entra con la dirección anterior hasta la baja.
+    const buzon = mw.mailboxes.find((b) => b.id === buzonTienda)!;
+    const original = { ...buzon };
+    buzon.email = 'hola@tienda2.example';
+    buzon.usuarioMotor = 'hola@tienda.example';
+    // Una conexión anterior a llevar la cuenta de lo escrito, con el usuario de siempre.
+    const legado = servicio(tienda, 'Legado');
+    setEnv(legado.id, {
+      SMTP_HOST: 'mail.example.com',
+      SMTP_PORT: '587',
+      SMTP_SECURE: 'false',
+      SMTP_USER: 'hola@tienda.example',
+      SMTP_PASS: 'ContraseñaDeAntes',
+    });
+    mw.appPasswords.push({
+      id: 'app_legado',
+      mailboxId: buzonTienda,
+      email: 'hola@tienda2.example',
+      name: nombreDe(tienda, legado),
+      revokedAt: null,
+      createdAt: 1,
+      invalidatedAt: null,
+    });
+    try {
+      for (const s of [web, legado]) desplegado(s.id);
+      const antes = getEnv(web.id);
+      expect(antes.SMTP_USER).toBe('hola@tienda.example');
+      invalidar();
+
+      await pasada();
+
+      const [nueva] = vigentes(nombreDe(tienda, web));
+      expect(nueva).toBeDefined();
+      // El usuario sigue siendo el del motor; el remitente, la dirección del buzón (la nueva).
+      expect(getEnv(web.id)).toEqual({ ...antes, SMTP_PASS: secreto(nueva), SMTP_FROM: 'hola@tienda2.example' });
+      const [nuevaLegado] = vigentes(nombreDe(tienda, legado));
+      expect(nuevaLegado).toBeDefined();
+      expect(getEnv(legado.id)).toMatchObject({ SMTP_USER: 'hola@tienda.example', SMTP_PASS: secreto(nuevaLegado) });
+      expect(triggerDeploy).toHaveBeenCalledTimes(2);
+    } finally {
+      Object.assign(buzon, original);
+      delete buzon.usuarioMotor;
+    }
+  });
+
   it('un servicio que nunca se ha desplegado recibe la nueva sin desplegarlo', async () => {
     const web = servicio(tienda, 'Web');
     await conectar(tienda, web, buzonTienda);

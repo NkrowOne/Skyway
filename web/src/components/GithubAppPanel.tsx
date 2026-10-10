@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, ExternalLink, Plus, RefreshCw, Settings2, ShieldAlert, Trash2, Zap } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ExternalLink, Plus, RefreshCw, Settings2, ShieldAlert, Trash2, Zap } from 'lucide-react';
 import { api } from '../api';
 import { GithubAppStatus, GithubInstallation } from '../types';
 import { timeAgo } from '../utils';
@@ -17,6 +17,70 @@ import { useCreateGithubApp } from './useGithubApp';
  * no copia ni pega nada, y al terminar el webhook de despliegue ya está puesto
  * para todos los repos que se conecten después.
  */
+
+/**
+ * La URL del webhook que tiene la App EN GITHUB, comparada con la del panel.
+ * Antes se mostraba la calculada como «ya configurada en la App», aunque la App
+ * se hubiera creado por el túnel SSH o el panel hubiera cambiado de dominio: los
+ * push no llegaban y el panel decía lo contrario.
+ */
+function WebhookUrl({ status, fixing, onFix }: { status?: GithubAppStatus; fixing: boolean; onFix: () => void }) {
+  if (!status) return null;
+  const actual = status.webhookUrlActual ?? null;
+  const coincide = actual !== null && actual === status.webhookUrl;
+  const url = (value: string) => (
+    <span className="max-w-full truncate rounded-md border border-line bg-surface px-1.5 py-px font-mono text-xs text-sub">{value}</span>
+  );
+  if (actual === null) {
+    return (
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-subtle">
+        <span>URL del webhook:</span>
+        {url(status.webhookUrl)}
+        <CopyButton value={status.webhookUrl} className="max-sm:p-2.5 sm:p-0.5" title="Copiar URL del webhook" />
+        {status.webhookUrlError && <span>(no se ha podido comprobar la configurada en GitHub: {status.webhookUrlError})</span>}
+      </div>
+    );
+  }
+  if (coincide) {
+    return (
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-subtle">
+        <span>URL del webhook (configurada en la App):</span>
+        {url(actual)}
+        <CopyButton value={actual} className="max-sm:p-2.5 sm:p-0.5" title="Copiar URL del webhook" />
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3 flex flex-col gap-2 rounded-lg border border-warn/35 bg-warn/[.06] px-3 py-2.5 text-xs text-sub">
+      <p className="flex items-start gap-1.5 leading-relaxed">
+        <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warn" aria-hidden />
+        <span>
+          La App envía los push a una dirección que no es la del panel: los despliegues inmediatos no llegan y solo funciona la
+          comprobación periódica de las ramas.
+        </span>
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-subtle">En GitHub:</span>
+        {url(actual)}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-subtle">Del panel:</span>
+        {url(status.webhookUrl)}
+      </div>
+      {status.panelReachable === false ? (
+        <p className="text-subtle">
+          Define <span className="font-mono">SKYWAY_DOMAIN</span> y accede al panel por ese dominio para poder corregirla.
+        </p>
+      ) : (
+        <div>
+          <Button size="sm" variant="secondary" onClick={onFix} loading={fixing}>
+            Actualizar a este dominio
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function GithubAppPanel() {
   const toast = useToast();
@@ -61,6 +125,16 @@ export default function GithubAppPanel() {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Corrige en GitHub la URL del webhook para que apunte al dominio actual del panel.
+  const fixWebhook = useMutation({
+    mutationFn: () => api.post<{ webhookUrlActual: string }>('/github/app/webhook-url'),
+    onSuccess: () => {
+      toast('URL del webhook actualizada en GitHub', 'ok');
+      queryClient.invalidateQueries({ queryKey: ['githubApp'] });
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
   const syncInstallation = useMutation({
     mutationFn: (id: string) => api.post(`/github/installations/${id}/sync`),
     onSuccess: () => {
@@ -82,6 +156,17 @@ export default function GithubAppPanel() {
         <p className="mt-1.5 max-w-xl text-xs text-sub">
           GitHub abrirá un formulario con los datos ya cumplimentados; solo es necesario confirmarlo.
         </p>
+        {/* Por el túnel SSH (localhost) y sin dominio, GitHub no podría entregar los push. */}
+        {status.data?.panelReachable === false && (
+          <p className="mt-3 flex max-w-xl items-start gap-1.5 rounded-lg border border-warn/35 bg-warn/[.06] px-3 py-2 text-xs text-sub">
+            <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warn" aria-hidden />
+            <span className="leading-relaxed">
+              El panel no tiene un dominio público ({status.data.webhookUrl.replace(/\/api\/.*$/, '')}): GitHub no puede entregar los
+              push a esa dirección y los despliegues dependerían solo de la comprobación periódica. Define{' '}
+              <span className="font-mono">SKYWAY_DOMAIN</span> y crea la App desde ese dominio.
+            </span>
+          </p>
+        )}
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
           <Field
             label="Organización (opcional)"
@@ -144,13 +229,7 @@ export default function GithubAppPanel() {
         </div>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-subtle">
-        <span>URL del webhook (ya configurada en la App):</span>
-        <span className="rounded-md border border-line bg-surface px-1.5 py-px font-mono text-xs text-sub">
-          {status.data?.webhookUrl}
-        </span>
-        <CopyButton value={status.data?.webhookUrl ?? ''} className="max-sm:p-2.5 sm:p-0.5" title="Copiar URL del webhook" />
-      </div>
+      <WebhookUrl status={status.data} fixing={fixWebhook.isPending} onFix={() => fixWebhook.mutate()} />
 
       <div className="mt-4 border-t border-line pt-4">
         <h3 className="text-xs font-semibold">Cuentas conectadas</h3>

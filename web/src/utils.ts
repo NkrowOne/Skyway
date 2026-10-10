@@ -230,6 +230,8 @@ export const DEPLOY_TRIGGER_LABEL: Record<string, string> = {
   import: 'importación',
   mailway: 'correo',
   mailway_renovacion: 'renovación del correo',
+  reintento: 'reintento tras reinicio',
+  'cambio-de-dominio': 'cambio de dominio',
 };
 
 export function isActiveDeploy(status: DeploymentStatus): boolean {
@@ -263,6 +265,8 @@ export const ALERT_TYPE_LABEL: Record<string, string> = {
   disk_quota_soon: 'Espacio asignado al 90 %',
   mail_password_renewed: 'Contraseña de aplicación renovada',
   mail_password_renewal_failed: 'Contraseña de aplicación sin renovar',
+  deploy_interrupted: 'Despliegue interrumpido',
+  autodeploy_failing: 'Despliegue automático sin funcionar',
 };
 
 export const AUDIT_ACTION_LABEL: Record<string, string> = {
@@ -295,6 +299,7 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   data_migration_canceled: 'Copia de datos cancelada',
   github_app_created: 'GitHub App conectada',
   github_app_disconnected: 'GitHub App desenlazada',
+  github_app_webhook_updated: 'URL del webhook de la GitHub App actualizada',
   github_installation_connected: 'Cuenta de GitHub conectada',
   github_installation_removed: 'Cuenta de GitHub desconectada',
   github_installation_deleted: 'Instalación de GitHub eliminada en GitHub',
@@ -326,6 +331,10 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   mailway_unlinked: 'Correo desactivado en el proyecto',
   mailway_domain_added: 'Dominio de correo añadido',
   mailway_dns_applied: 'Registros DNS de correo aplicados en Cloudflare',
+  mailway_dns_undone: 'Último cambio DNS de correo deshecho en Cloudflare',
+  mailway_host_released: 'Nombre anterior de Mailway liberado',
+  cloudflare_dns_replaced: 'Registro de la web reemplazado en Cloudflare',
+  cloudflare_dns_restored: 'Registros anteriores de la web restaurados en Cloudflare',
   mailway_webmail_created: 'Webmail con el dominio del cliente configurado',
   mailway_webmail_dns_applied: 'Registro DNS del webmail creado en Cloudflare',
   mailway_webmail_primary: 'Webmail principal del cliente de correo modificado',
@@ -348,6 +357,18 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   mailway_app_password_revoked: 'Contraseña de aplicación revocada',
   mailway_app_password_renewed: 'Contraseña de aplicación renovada automáticamente',
   mailway_api_key_revoked: 'Clave de API de correo revocada',
+  mailway_mailbox_login_updated: 'Usuario de un buzón actualizado (cambio de dominio)',
+  domain_migration_created: 'Cambio de dominio preparado',
+  domain_migration_switched: 'Cambio de dominio: paso al dominio nuevo',
+  domain_migration_rolled_back: 'Cambio de dominio: vuelta al dominio anterior',
+  domain_migration_cancelled: 'Cambio de dominio cancelado',
+  domain_migration_retired: 'Cambio de dominio: dominio anterior dado de baja',
+  domain_migration_finished: 'Cambio de dominio terminado (solo la web)',
+  domain_migration_interrupted: 'Cambio de dominio interrumpido por un reinicio',
+  domain_migration_mx_changed: 'Cambio de dominio: MX del dominio nuevo cambiado en Cloudflare',
+  domain_migration_service_retried: 'Cambio de dominio: despliegue de un servicio reintentado',
+  domain_redirects_removed: 'Redirecciones del dominio anterior quitadas',
+  service_env_replaced: 'Variables cambiadas por un cambio de dominio',
 };
 
 /**
@@ -394,6 +415,15 @@ export const CMD_ENTER_LABEL = isMac ? '⌘↵' : 'Ctrl+↵';
  */
 export const EMPTY_LIST: never[] = [];
 export const EMPTY_RECORD: Record<string, never> = {};
+
+/**
+ * ¿Tiene el objeto esta clave PROPIA? `clave in obj` consulta también la cadena
+ * de prototipos: una variable llamada `constructor` o `toString` contaba como
+ * presente aunque se hubiera borrado, y no llegaba a eliminarse.
+ */
+export function tieneClave(obj: object, clave: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, clave);
+}
 
 /**
  * `owner/repo` a partir de lo que alguien escribe o pega: el atajo, la URL de

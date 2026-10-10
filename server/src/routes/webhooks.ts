@@ -26,6 +26,27 @@ import { hmacSha256, safeEqual } from '../util';
 const IN_PROGRESS = new Set(['queued', 'building', 'deploying']);
 
 /**
+ * Por qué un push a `head` no necesita otro despliegue, o null si lo necesita.
+ * La comparten el webhook de la App y el de cada servicio: con los dos
+ * configurados, cada push encolaba dos despliegues del mismo commit y el
+ * segundo volvía a sustituir el contenedor (un segundo corte con volúmenes).
+ *
+ *  - El commit ya está desplegado, o desplegándose (`lastBuiltCommitSha` solo
+ *    cuenta los correctos y los vivos: un reenvío de un push que falló sí despliega).
+ *  - Hay un despliegue vivo que todavía no ha clonado: clonará la cabeza actual.
+ *    Uno que ya clonó OTRO commit no lo cubre, y el push nuevo se encola detrás.
+ */
+function pushCovered(serviceId: string, head: string | null): string | null {
+  if (head && head === lastBuiltCommitSha(serviceId)) return `commit ${head.slice(0, 7)} ya desplegado`;
+  const latest = latestDeployment(serviceId);
+  if (latest && IN_PROGRESS.has(latest.status)) {
+    const clonaraLaCabeza = !latest.commit_sha && !latest.image_tag && !latest.target_commit;
+    if (!head || clonaraLaCabeza || latest.commit_sha === head) return 'ya hay un despliegue en curso';
+  }
+  return null;
+}
+
+/**
  * Servicios que hay que desplegar por un push a `owner/repo#rama`.
  *
  * El filtro de autorización es la instalación: solo se despliegan servicios de
@@ -140,14 +161,7 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
       const skipped: string[] = [];
 
       for (const { service, name } of matches) {
-        if (head && head === lastBuiltCommitSha(service.id)) {
-          skipped.push(name);
-          continue;
-        }
-        // Con un despliegue vivo no se encola otro: el que está en marcha ya
-        // clonará la cabeza actual, y apilarlos solo alarga la cola.
-        const latest = latestDeployment(service.id);
-        if (latest && IN_PROGRESS.has(latest.status)) {
+        if (pushCovered(service.id, head)) {
           skipped.push(name);
           continue;
         }
@@ -205,12 +219,12 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
         return { ok: true, ignored: 'auto-deploy desactivado en este servicio' };
       }
 
-      // Cabeza del push (sha completo). Si ya se construyó ese commit —por el
-      // sondeo, un deploy manual o un webhook anterior— no se repite.
+      // Cabeza del push (sha completo). Si ese commit ya está desplegado, o lo
+      // va a desplegar uno en curso —el del webhook de la App, si también está
+      // configurado—, no se repite.
       const head = (payload?.after as string | undefined) || (payload?.head_commit?.id as string | undefined) || null;
-      if (head && head === lastBuiltCommitSha(service.id)) {
-        return { ok: true, ignored: `commit ${head.slice(0, 7)} ya desplegado` };
-      }
+      const cubierto = pushCovered(service.id, head);
+      if (cubierto) return { ok: true, ignored: cubierto };
 
       // Sincroniza la línea base del sondeo para que no vuelva a encolar este commit.
       if (head) noteAutoDeployBaseline(service.id, head);

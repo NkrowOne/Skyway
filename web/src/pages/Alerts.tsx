@@ -1,7 +1,7 @@
 import { memo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Archive, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket } from 'lucide-react';
+import { Archive, CheckCircle2, Cpu, Lightbulb, MemoryStick, Power, RefreshCw, Rocket, RotateCcw } from 'lucide-react';
 import { api } from '../api';
 import { Button, Chip, ErrorState, Segmented, Skeleton, useToast } from '../components/ui';
 import { Alert, Me } from '../types';
@@ -24,6 +24,8 @@ const SEVERITY_TEXT: Record<string, string> = {
 
 const TYPE_ICON: Record<string, typeof Rocket> = {
   deploy_failed: Rocket,
+  deploy_interrupted: Rocket,
+  autodeploy_failing: Rocket,
   cpu_high: Cpu,
   mem_high: MemoryStick,
   service_down: Power,
@@ -36,14 +38,26 @@ const TYPE_ICON: Record<string, typeof Rocket> = {
  * repintarse esa tarjeta. `onResolve` recibe el id en vez de cerrar sobre él
  * para que la función sea la misma en cada render y el memo sirva de algo.
  */
+/** Alertas que se arreglan volviendo a desplegar: llevan el botón a mano. */
+const REDESPLEGABLES = new Set(['deploy_interrupted', 'deploy_failed']);
+
 const AlertCard = memo(function AlertCard({
   alert,
   onResolve,
   resolving,
+  onDeploy,
+  deploying,
+  onRollback,
+  rollingBack,
 }: {
   alert: Alert;
   onResolve: (id: string) => void;
   resolving: boolean;
+  onDeploy: (serviceId: string) => void;
+  deploying: boolean;
+  /** Recibe el despliegue correcto al que volver (`rollback_to`). */
+  onRollback: (deploymentId: string) => void;
+  rollingBack: boolean;
 }) {
   const resolved = !!alert.resolved_at;
   const Icon = TYPE_ICON[alert.type] ?? Rocket;
@@ -111,6 +125,32 @@ const AlertCard = memo(function AlertCard({
                 Ir al servicio →
               </Link>
             )}
+            {/*
+             * Si lo que falló volvía a una versión anterior, reintentar es volver
+             * a esa versión: «Desplegar» desplegaría la cabeza de la rama, justo
+             * lo contrario de lo que se pidió.
+             */}
+            {!resolved && alert.service_id && REDESPLEGABLES.has(alert.type) && (alert.rollback_to ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-[30px] max-sm:h-10"
+                onClick={() => onRollback(alert.rollback_to!)}
+                loading={rollingBack}
+              >
+                <RotateCcw size={12} /> Volver a esta versión
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-[30px] max-sm:h-10"
+                onClick={() => onDeploy(alert.service_id!)}
+                loading={deploying}
+              >
+                <Rocket size={12} /> Desplegar
+              </Button>
+            ))}
             {resolved ? (
               <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-ok">
                 <CheckCircle2 size={12} /> Resuelta {fmtDateTime(alert.resolved_at!)}
@@ -150,6 +190,26 @@ export default function AlertsPage() {
     queryFn: () => api.get<{ alerts: Alert[]; unread: number }>(`/alerts?limit=100&open=false`),
     refetchInterval: 15_000,
     enabled: !openOnly,
+  });
+
+  // Volver a desplegar desde la propia alerta (despliegue interrumpido o fallido).
+  const deploy = useMutation({
+    mutationFn: (serviceId: string) => api.post(`/services/${serviceId}/deploy`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['alerts'] });
+      toast('Despliegue iniciado. La alerta se cerrará sola si termina correctamente.', 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  // Repetir una vuelta atrás que falló o se cortó (rollback a la misma versión).
+  const rollback = useMutation({
+    mutationFn: (deploymentId: string) => api.post(`/deployments/${deploymentId}/rollback`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['alerts'] });
+      toast('Vuelta a la versión iniciada. La alerta se cerrará sola si termina correctamente.', 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
   });
 
   const resolve = useMutation({
@@ -256,6 +316,10 @@ export default function AlertsPage() {
             onResolve={resolve.mutate}
             // Solo la alerta que se está resolviendo enseña el spinner; antes lo enseñaban todas a la vez.
             resolving={resolve.isPending && resolve.variables === a.id}
+            onDeploy={deploy.mutate}
+            deploying={deploy.isPending && deploy.variables === a.service_id}
+            onRollback={rollback.mutate}
+            rollingBack={rollback.isPending && rollback.variables === a.rollback_to}
           />
         ))}
       </div>

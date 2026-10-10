@@ -1,14 +1,16 @@
+import { domainToASCII } from 'url';
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
 import { audit } from '../audit';
 import { cloudflareConfigurado } from '../cloudflareconfig';
-import { cambiarProxyCloudflare, dnsAutomaticoAdmin, dnsSinBase, verificarEnCloudflare } from '../cloudflaredns';
+import { cambiarProxyCloudflare, dnsAutomaticoAdmin, dnsSinBase, planReemplazo, reemplazarRegistros, verificarEnCloudflare } from '../cloudflaredns';
 import { dbConsoleEngine } from '../dbconsole';
 import { domainClaimError, dominiosConPareja } from '../domainguard';
 import { limpiarSinPareja, ordenarDominios } from '../dominioprincipal';
 import { markManualAction } from '../monitor';
 import {
+  bumpConfigRev,
   countWorkspaceServices,
   createService,
   getEnv,
@@ -18,11 +20,17 @@ import {
   getService,
   getSetting,
   latestDeployment,
+  patchEnv,
+  servicesWithPendingChanges,
   setEnv,
   setServiceStopped,
   uniqueServiceSlug,
   updateService,
 } from '../db';
+import { autoDeployStatus } from '../autodeploy';
+import { FULL_SHA_RE } from '../deploy/builder';
+import { githubAppConfigured } from '../github/app';
+import { panelBaseUrl } from '../paneldomain';
 import {
   effectiveQuota,
   isWorkspaceActive,
@@ -106,11 +114,39 @@ export function publicServiceConfig<T extends ServiceConfig>(cfg: T): T {
  * regla que capturara el tráfico de los dominios de otros clientes.
  */
 const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/**
+ * Lo que escribe una persona como dominio, en la forma que va a Traefik y al
+ * DNS: sin esquema, ruta ni puerto (se pega a menudo la URL de la web), sin el
+ * punto final y en ASCII («panadería.es» → «xn--panadera-i2a.es», como hace
+ * Mailway). Devuelve '' si no es un nombre de host; la validación de
+ * `HOSTNAME` viene después, sobre el resultado.
+ */
+export function normalizarDominio(raw: string): string {
+  let host = raw.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) {
+    try {
+      host = new URL(host).hostname;
+    } catch {
+      return '';
+    }
+  } else {
+    host = host.split(/[/?#]/)[0].replace(/:\d+$/, '');
+  }
+  host = host.replace(/\.$/, '');
+  // domainToASCII devuelve '' para lo que no puede ser un dominio.
+  return host ? domainToASCII(host) : '';
+}
+
 export const domainSchema = z
   .string()
   .trim()
-  .transform((d) => d.toLowerCase())
-  .refine((d) => HOSTNAME.test(d), 'Dominio no válido: solo letras, números, guiones y puntos');
+  .max(2000)
+  .transform(normalizarDominio)
+  .refine(
+    (d) => HOSTNAME.test(d),
+    'Dominio no válido: escribe solo el nombre, por ejemplo app.midominio.com (se admiten acentos y «ñ»).',
+  );
 
 /**
  * Dominios cuya pareja con o sin www se descarta (`dominiosSinPareja`). Se
@@ -243,6 +279,38 @@ const REDEPLOY_FIELDS = [
   'repoUrl', 'connectorId', 'githubInstallationId', 'branch', 'rootDir', 'dockerfilePath', 'builder', 'startCmd', 'buildCmd', 'port',
   'domains', 'hostPort', 'version', 'image', 'buildArgs', 'healthcheckPath', 'volumes', 'replicas',
 ] as const;
+
+/** Nombre de variable de entorno admitido. */
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Cambios de variables de quien edita (`set` y `unset`), calculados contra lo
+ * que cargó. Sustituye al reemplazo de la lista entera (PUT), que borraba lo que
+ * otros habían escrito entretanto (ver `patchEnv`).
+ */
+export const envPatchSchema = z.object({
+  set: z.record(z.string()).default({}),
+  unset: z.array(z.string().max(200)).max(1000).default([]),
+});
+
+/** Primera clave que no es un nombre de variable válido, o null. */
+export function invalidEnvKey(keys: Iterable<string>): string | null {
+  for (const key of keys) if (!ENV_KEY_RE.test(key)) return key;
+  return null;
+}
+
+/**
+ * ¿Recibe este servicio los push por el webhook de la GitHub App? Lo hace si
+ * clona con una instalación de la App que sigue conectada y activa: la App
+ * recibe los eventos de los repos a los que tiene acceso. Entonces el webhook
+ * manual sobra (y con los dos cada push desplegaba dos veces).
+ */
+function coveredByGithubApp(service: ServiceRow): boolean {
+  if (service.type !== 'git' || !githubAppConfigured()) return false;
+  const rowId = (service.config as GitConfig).githubInstallationId;
+  const row = rowId ? getGithubInstallation(rowId) : undefined;
+  return !!row && row.suspended !== 1;
+}
 
 function loadService(id: string): { service: ServiceRow; project: NonNullable<ReturnType<typeof getProject>> } | null {
   const service = getService(id);
@@ -482,6 +550,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
       const { result, plan } = applied;
       auditPlan(req, found.service, result);
+      if (result.applied.length > 0) bumpConfigRev([id]);
       let deploymentId: string | null = null;
       if (body.redeploy && result.applied.length > 0) {
         markManualAction(id);
@@ -502,12 +571,23 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const snap = await dockerSnapshot(PANEL_MAX_AGE_MS);
     const docker = snap.docker;
     const runtime = runtimeIn(snap, id);
+    const isGit = found.service.type === 'git';
     return {
       // El secreto del webhook sí va (Ajustes lo copia); los build args, tapados.
       service: { ...found.service, config: maskBuildArgs(found.service.config) },
       project: found.project,
       runtime,
       latestDeployment: latestDeployment(id) ?? null,
+      // Cambios guardados que su último despliegue correcto no lleva: lo guarda
+      // el servidor, así que el aviso sobrevive a cerrar el panel o recargar.
+      pendingChanges: servicesWithPendingChanges([found.service]).has(id),
+      // Sondeo del auto-deploy: última comprobación y su error, si lo hubo.
+      autoDeploy: isGit && (found.service.config as GitConfig).autoDeploy !== false ? autoDeployStatus(id) : null,
+      // Webhook manual: con el dominio del panel (no el del túnel SSH) y si ya
+      // lo cubre la GitHub App, para no configurar los dos.
+      webhook: isGit
+        ? { url: `${panelBaseUrl(req)}/api/webhooks/github/${id}`, coveredByApp: coveredByGithubApp(found.service) }
+        : null,
       // Quién tiene consola lo decide el servidor: el panel no puede saber si
       // una imagen cualquiera es una base de datos sin repetir aquí la tabla de
       // imágenes conocidas, y dos copias de esa tabla se separan a la primera.
@@ -763,6 +843,8 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // Un cambio que solo surte efecto al redesplegar queda como «sin desplegar».
+    if (needsRedeploy) bumpConfigRev([id]);
     const updated = getService(id)!;
     audit(req, 'service_updated', { type: 'service', id, detail: updated.name });
     // DNS automático solo de los dominios que añade ESTA petición: los que ya
@@ -841,6 +923,65 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
   );
 
   /**
+   * Reemplazo en Cloudflare del registro de la web del hosting anterior
+   * (traer una web a Skyway). Solo el administrador y en dos pasos: la
+   * revisión (GET, no toca nada) enseña los A/AAAA/CNAME exactos de ese
+   * nombre que se sustituirían, y la confirmación (POST, con sesión de
+   * navegador) los repite: si la zona ha cambiado entre medias, no se toca
+   * nada. Nunca se reemplazan los nombres de la plataforma ni los reservados
+   * a otro proyecto (`planReemplazo`). Lo borrado se guarda para restaurarlo
+   * en Ajustes → Cloudflare.
+   */
+  const dominioDelServicio = (service: ServiceRow, domain: string): boolean =>
+    ((service.config as { domains?: string[] }).domains ?? []).map((d) => d.trim().toLowerCase()).includes(domain);
+
+  app.get(
+    '/api/services/:id/cloudflare-dns/replace',
+    { preHandler: [requireAdmin, rateLimit({ max: 30, windowMs: 60_000 })] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const found = loadService(id);
+      if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+      const { domain } = z.object({ domain: z.string().trim().toLowerCase().min(1).max(253) }).parse(req.query ?? {});
+      if (!dominioDelServicio(found.service, domain)) {
+        return reply.code(404).send({ error: `El dominio ${domain} no está asignado a este servicio. Guarda antes los cambios.` });
+      }
+      return { plan: await planReemplazo(domain, found.project.id) };
+    },
+  );
+
+  app.post(
+    '/api/services/:id/cloudflare-dns/replace',
+    { preHandler: [requireAdmin, requireSession, rateLimit({ max: 10, windowMs: 60_000 })] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const found = loadService(id);
+      if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+      const body = z
+        .object({
+          domain: z.string().trim().toLowerCase().min(1).max(253),
+          // Los registros que el administrador ha revisado y confirma sustituir.
+          records: z
+            .array(z.object({ id: z.string().min(1).max(100), type: z.enum(['A', 'AAAA', 'CNAME']), content: z.string().max(500) }))
+            .min(1, 'Indica los registros que confirmas sustituir.')
+            .max(20),
+        })
+        .parse(req.body ?? {});
+      if (!dominioDelServicio(found.service, body.domain)) {
+        return reply.code(404).send({ error: `El dominio ${body.domain} no está asignado a este servicio. Guarda antes los cambios.` });
+      }
+      const dns = await reemplazarRegistros(
+        body.domain,
+        found.project.id,
+        body.records,
+        (action, target) => audit(req, action, target),
+        { type: 'service', id },
+      );
+      return { dns: [dns] };
+    },
+  );
+
+  /**
    * Elimina el servicio con TODOS sus datos (contenedores, volúmenes que no
    * comparta con otro servicio, imágenes construidas y copias de seguridad;
    * ver `purge.ts`), con la misma regla que el borrado de proyectos: sin
@@ -906,14 +1047,23 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
-    const body = z.object({ force: z.boolean().optional() }).parse(req.body ?? {});
+    const body = z
+      .object({
+        force: z.boolean().optional(),
+        // Reconstruir un commit concreto (una versión cuya imagen ya se purgó).
+        commit: z.string().trim().toLowerCase().regex(FULL_SHA_RE, 'El commit debe ser un SHA completo de 40 caracteres').optional(),
+      })
+      .parse(req.body ?? {});
+    if (body.commit && found.service.type !== 'git') {
+      return reply.code(400).send({ error: 'Solo los servicios de repositorio pueden reconstruir un commit concreto.', code: 'not_git' });
+    }
     markManualAction(id);
     audit(req, 'service_deploy', {
       type: 'service',
       id,
-      detail: `${found.service.name}${body.force ? ' (reconstrucción forzada)' : ''}`,
+      detail: `${found.service.name}${body.commit ? ` (reconstrucción del commit ${body.commit.slice(0, 7)})` : body.force ? ' (reconstrucción forzada)' : ''}`,
     });
-    const deployment = triggerDeploy(id, 'manual', { forceBuild: body.force });
+    const deployment = triggerDeploy(id, 'manual', { forceBuild: body.force, targetCommit: body.commit });
     reply.code(202);
     return { deployment };
   });
@@ -985,18 +1135,45 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     const body = z.object({ vars: z.record(z.string()) }).parse(req.body);
-    for (const key of Object.keys(body.vars)) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-        return reply.code(400).send({ error: `Nombre de variable inválido: ${key}` });
-      }
-    }
+    const mala = invalidEnvKey(Object.keys(body.vars));
+    if (mala !== null) return reply.code(400).send({ error: `Nombre de variable inválido: ${mala}`, code: 'invalid_key' });
     setEnv(id, body.vars);
+    bumpConfigRev([id]);
     audit(req, 'service_env_updated', {
       type: 'service',
       id,
       detail: `${found.service.name}: ${Object.keys(body.vars).length} variables`,
     });
     return { ok: true, needsRedeploy: true };
+  });
+
+  /**
+   * Guardado de la pestaña Variables: solo los cambios de quien edita, sobre
+   * las variables ACTUALES. El PUT reemplazaba la lista entera y borraba en
+   * silencio lo que otro había escrito mientras se editaba: lo que importa el
+   * primer despliegue, los secretos que genera el manifiesto (que el siguiente
+   * despliegue regeneraría con otro valor) o las credenciales SMTP de Correo.
+   */
+  app.patch('/api/services/:id/env', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const found = loadService(id);
+    if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
+    const body = envPatchSchema.parse(req.body ?? {});
+    const mala = invalidEnvKey([...Object.keys(body.set), ...body.unset]);
+    if (mala !== null) return reply.code(400).send({ error: `Nombre de variable inválido: ${mala}`, code: 'invalid_key' });
+    const cambiadas = Object.keys(body.set).length;
+    const quitadas = body.unset.filter((k) => !Object.hasOwn(body.set, k)).length;
+    if (cambiadas + quitadas > 0) {
+      patchEnv(id, body.set, body.unset);
+      bumpConfigRev([id]);
+      audit(req, 'service_env_updated', {
+        type: 'service',
+        id,
+        detail: `${found.service.name}: ${cambiadas} definidas, ${quitadas} eliminadas`,
+      });
+    }
+    return { ok: true, needsRedeploy: cambiadas + quitadas > 0, vars: getEnv(id) };
   });
 
   /**
@@ -1055,6 +1232,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
               : `Se ${n === 1 ? 'importaría 1 variable' : `importarían ${n} variables`}${pendientes}.`,
         };
       }
+      if (n > 0) bumpConfigRev([id]);
       audit(req, 'service_env_imported', {
         type: 'service',
         id,

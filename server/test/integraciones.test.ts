@@ -907,16 +907,23 @@ describe('alta desde un repositorio con el plan', () => {
 // ======================= D) DNS unificado =======================
 
 describe('fichero de zona con los registros web del proyecto', () => {
-  it('función pura: A hacia la IP, sin duplicar lo que trae el fichero, y el webmail', () => {
+  it('función pura: A hacia la IP comentados, sin duplicar lo que trae el fichero, y el webmail', () => {
     const zone = ['$TTL 3600', 'tienda.es.\tIN\tMX\t10 mail.example.com.', 'autoconfig.tienda.es.\tIN\tCNAME\tmail.example.com.', ''].join('\n');
     const { zone: out, added } = appendWebRecords(zone, 'tienda.es', {
       serverIp: '203.0.113.5',
       hosts: ['www.tienda.es', 'tienda.es', 'autoconfig.tienda.es', 'otra.com', 'WWW.tienda.es'],
       webmail: { name: 'webmail.tienda.es', type: 'CNAME', value: 'mail.example.com.' },
     });
-    expect(added).toBe(3);
-    expect(out).toContain('tienda.es.\t3600\tIN\tA\t203.0.113.5');
-    expect(out).toContain('www.tienda.es.\t3600\tIN\tA\t203.0.113.5');
+    // El importador añade y no sustituye: un A activo en el dominio raíz o en
+    // www se sumaría al del hosting anterior y el tráfico se repartiría entre
+    // los dos. Van comentados, con la instrucción de borrar antes el actual.
+    expect(added).toBe(1);
+    expect(out).toContain('; tienda.es.\t3600\tIN\tA\t203.0.113.5');
+    expect(out).toContain('; www.tienda.es.\t3600\tIN\tA\t203.0.113.5');
+    const activas = out.split('\n').filter((l) => l.trim() && !l.trim().startsWith(';'));
+    expect(activas.some((l) => /\tIN\tA\t203\.0\.113\.5/.test(l))).toBe(false);
+    expect(out).toMatch(/importar añade y no\n;  sustituye/);
+    expect(out).toMatch(/bórralo antes en tu proveedor de DNS/);
     expect(out).toContain('webmail.tienda.es.\t3600\tIN\tCNAME\tmail.example.com.');
     expect(out).toContain('autoconfig.tienda.es: se omite');
     expect(out).not.toContain('otra.com');
@@ -939,8 +946,8 @@ describe('fichero de zona con los registros web del proyecto', () => {
     expect((await call('POST', `/api/projects/${projA.id}/mail/domains/${domainA}/webmail`, ownerA)).status).toBe(201);
     r = await call('GET', `/api/projects/${projA.id}/mail/domains/${domainA}/zonefile`, memberA);
     expect(r.status, r.raw).toBe(200);
-    expect(r.raw).toContain('www.tienda.es.\t3600\tIN\tA\t198.51.100.7');
-    expect(r.raw).toContain('tienda.es.\t3600\tIN\tA\t198.51.100.7');
+    expect(r.raw).toContain('; www.tienda.es.\t3600\tIN\tA\t198.51.100.7');
+    expect(r.raw).toContain('; tienda.es.\t3600\tIN\tA\t198.51.100.7');
     expect(r.raw).toContain('webmail.tienda.es.\t3600\tIN\tCNAME\tmail.example.com.');
     expect(r.raw).not.toContain('intruso');
     expect(r.raw).not.toContain('otraempresa');

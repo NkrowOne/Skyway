@@ -320,8 +320,11 @@ export interface AppManifest {
  * repos (clonar) y sus metadatos, y recibir el evento `push`. Nada de escritura:
  * Skyway nunca empuja a GitHub.
  */
-export function buildAppManifest(baseUrl: string, suffix: string): AppManifest {
+export function buildAppManifest(baseUrl: string, suffix: string, hookBaseUrl: string = baseUrl): AppManifest {
   const base = baseUrl.replace(/\/+$/, '');
+  // Los retornos vuelven a donde está el navegador (con su sesión); el webhook
+  // va al dominio público del panel, que es el que GitHub puede alcanzar.
+  const hookBase = hookBaseUrl.replace(/\/+$/, '');
   let host = 'skyway';
   try {
     host = new URL(base).hostname;
@@ -336,7 +339,7 @@ export function buildAppManifest(baseUrl: string, suffix: string): AppManifest {
   return {
     name,
     url: base,
-    hook_attributes: { url: `${base}/api/webhooks/github/app`, active: true },
+    hook_attributes: { url: `${hookBase}/api/webhooks/github/app`, active: true },
     redirect_url: `${base}/api/github/app/setup`,
     callback_urls: [`${base}/api/github/app/setup`],
     setup_url: `${base}/api/github/app/installed`,
@@ -374,6 +377,30 @@ export async function convertManifestCode(code: string): Promise<GithubAppConfig
   setSetting(SETTING.htmlUrl, String(body.html_url ?? `https://github.com/apps/${body.slug}`));
   tokenCache.clear();
   return githubAppConfig()!;
+}
+
+/**
+ * URL del webhook que GitHub tiene REALMENTE configurada en la App
+ * (`GET /app/hook/config`, autenticado como App). El panel la calculaba con el
+ * host de la petición y la presentaba como «ya configurada»: si la App se creó
+ * por el túnel SSH o el panel cambió de dominio, decía una cosa y GitHub
+ * enviaba los push a otra.
+ */
+export async function getAppWebhookUrl(): Promise<string | null> {
+  const cfg = githubAppConfig();
+  if (!cfg) return null;
+  const res = await appFetch(cfg, '/app/hook/config', { timeoutMs: 8_000 });
+  const body: any = await res.json().catch(() => null);
+  return typeof body?.url === 'string' ? body.url : null;
+}
+
+/** Cambia la URL del webhook de la App en GitHub (`PATCH /app/hook/config`). */
+export async function setAppWebhookUrl(url: string): Promise<string | null> {
+  const cfg = githubAppConfig();
+  if (!cfg) throw new GithubError('La GitHub App no está configurada en este servidor.');
+  const res = await appFetch(cfg, '/app/hook/config', { method: 'PATCH', body: { url }, timeoutMs: 10_000 });
+  const body: any = await res.json().catch(() => null);
+  return typeof body?.url === 'string' ? body.url : null;
 }
 
 /** URL donde el usuario instala la App sobre su cuenta u organización. */

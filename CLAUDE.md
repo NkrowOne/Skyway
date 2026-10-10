@@ -10,7 +10,10 @@ rendimiento y calidad del código (hallazgos, cambios aplicados y pendientes),
 **[docs/AUDITORIA-RENDIMIENTO.md](docs/AUDITORIA-RENDIMIENTO.md)**. Para control
 remoto por API/agentes, **[docs/CONTROL-REMOTO.md](docs/CONTROL-REMOTO.md)**. El
 manifiesto `skyway.json` de las webs (plan de integraciones con bases y correo)
-está en **[docs/MANIFIESTO.md](docs/MANIFIESTO.md)**.
+está en **[docs/MANIFIESTO.md](docs/MANIFIESTO.md)**. El asistente «Cambiar de
+dominio» (web, variables y correo de Mailway; redirecciones y prepublicación en
+el proveedor HTTP de Traefik) está en
+**[docs/FUNCIONALIDAD.md](docs/FUNCIONALIDAD.md) §6.1**.
 
 ## Qué es
 
@@ -66,6 +69,16 @@ Si arreglas un fallo con una prueba que lo reproduce, mejor.
 - **Rutas**: usa `requireAuth`/`requireSession`/`requireAdmin` + `assertProjectAccess`
   según el recurso. Valida el cuerpo con **zod**. Audita las acciones sensibles
   con `audit(req, 'accion', {...})`.
+- **Cambio de dominio** (`domainmigration.ts`): terminología fija — cambio de
+  dominio, dominio actual / dominio anterior y dominio nuevo, nombre nuevo,
+  preparar, pasar, volver, cancelar, dar de baja (con correo) o terminar (solo
+  la web), redirección (temporal los 7 primeros días, después permanente),
+  prepublicación, «Actualizar mis dispositivos» y usuario para entrar en el
+  correo. Las acciones toman el cerrojo del proyecto (`withLockProyecto`),
+  guardan el estado intermedio antes de empezar y son idempotentes; el estado
+  del correo vive solo en Mailway. Los routers de los servicios llevan la
+  huella de sus hosts en el nombre (`traefikRouter`): no lo cambies a un
+  nombre fijo.
 - **Docker/BBDD/archivos**: nunca interpoles entrada del usuario en un shell;
   pásala como variable de entorno del `exec` (patrón en `dbconsole.ts` y
   `files.ts`).
