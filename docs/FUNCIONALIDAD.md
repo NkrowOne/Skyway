@@ -2227,9 +2227,15 @@ comprobaciones de ese commit hayan terminado bien (`success`, `skipped` o
 (`behind_by` = 0), para que lo fusionado sea exactamente lo probado.
 Entonces lo fusiona con un commit de fusión
 (`gh pr merge --merge --delete-branch --match-head-commit <sha>`). Si algo no
-se cumple, termina sin error y deja el motivo en su registro. La fusión la hace
-el token del propio flujo, que no vuelve a lanzar la CI en la rama principal:
-no hace falta, porque el árbol fusionado es el que probó la CI del PR. En GitHub
-hay que activar las alertas y las actualizaciones de seguridad de Dependabot
-(Settings → Code security), y la protección de la rama principal, si la hay, no
-debe exigir revisiones: con ellas, la fusión falla y el PR espera a una persona.
+se cumple, termina sin error y deja el motivo en su registro. Las ejecuciones
+esperan en fila (`concurrency` con `queue: max`), una fusión cada vez y sin que
+GitHub descarte ninguna cuando la CI de varios PR termina a la vez. Si la rama
+principal avanza antes de la fusión, el PR se queda sin fusionar: Dependabot lo
+pone al día solo si hay conflictos, así que sin ellos hay que comentar
+`@dependabot rebase` en el PR, y al terminar su CI el flujo lo vuelve a evaluar.
+La fusión la hace el token del propio flujo, que no vuelve a lanzar la CI en la
+rama principal: no hace falta, porque el árbol fusionado es el que probó la CI
+del PR. En GitHub hay que activar las alertas y las actualizaciones de seguridad
+de Dependabot (Settings → Code security), y la protección de la rama principal,
+si la hay, no debe exigir revisiones: con ellas, la fusión falla y el PR espera
+a una persona.
