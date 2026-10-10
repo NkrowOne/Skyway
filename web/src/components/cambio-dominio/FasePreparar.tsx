@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Download, RefreshCw } from 'lucide-react';
-import { cambioDominioApi, contar, MigracionSkyway } from '../../cambioDominio';
+import { cambioDominioApi, contar, enumerar, MigracionSkyway, servirTambien, WebhookEnRiesgo } from '../../cambioDominio';
 import { copyToClipboard } from '../../utils';
 import { Button, Chip, ConfirmModal, Modal, useToast } from '../ui';
-import { Aviso, Avisos, Bloque, Condicion } from './comunes';
+import { Aviso, Avisos, AvisosWebhooks, Bloque, Condicion } from './comunes';
 import ServiciosCambio from './ServiciosCambio';
 
 const DNS_CHIP = {
@@ -67,6 +67,16 @@ export default function FasePreparar({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // «Servir también» los nombres en los que el servicio recibe webhooks: solo cambia el modo (nada se despliega hasta pasar).
+  const servir = useMutation({
+    mutationFn: (w: WebhookEnRiesgo) => servirTambien(projectId, m.id, w),
+    onSuccess: (v, w) => {
+      if (v) onCambio(v);
+      toast(`${enumerar(w.hosts.map((h) => h.from))} se ${w.hosts.length === 1 ? 'servirá' : 'servirán'} también al pasar, sin redirigir.`, 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
   const mx = useMutation({
     mutationFn: () => cambioDominioApi.cambiarMx(projectId, m.id),
     onSuccess: (v) => {
@@ -95,6 +105,8 @@ export default function FasePreparar({
   const sinDesplegar = m.servicios.some((s) => s.estado !== 'ok');
   const redirige = m.hosts.some((h) => h.modo === 'redirigir');
   const reinicios = (m.alPasar ?? []).filter((s) => s.reinicio);
+  // Solo por usar la dirección de otro servicio que cambia de nombre (`${{api.PUBLIC_URL}}`).
+  const porReferencias = (m.alPasar ?? []).filter((s) => s.motivos.length > 0 && s.motivos.every((x) => x === 'referencias'));
   const variables = (m.variables?.cambios ?? []).filter((c) => !c.excluida);
   // Tras un «Volver», quien ya había actualizado sus dispositivos entra con su
   // usuario del dominio nuevo; al cancelar, Mailway le devuelve el anterior.
@@ -236,6 +248,12 @@ export default function FasePreparar({
         </Bloque>
       )}
 
+      <AvisosWebhooks
+        webhooks={m.webhooks}
+        onServir={(w) => servir.mutate(w)}
+        ocupado={servir.isPending ? (servir.variables?.serviceId ?? null) : null}
+      />
+
       {sinDesplegar && <ServiciosCambio projectId={projectId} m={m} onCambio={onCambio} accion="cancelar el cambio" />}
 
       <Avisos tono="info" avisos={m.avisos} />
@@ -270,9 +288,21 @@ export default function FasePreparar({
               {m.alPasar!.map((s) => s.nombre).join(', ')}.
             </p>
           )}
+          {porReferencias.map((s) => (
+            <p key={s.serviceId} className="text-xs leading-5 text-subtle">
+              «{s.nombre}» se vuelve a desplegar porque usa la dirección de un servicio que cambia de nombre.
+            </p>
+          ))}
           {reinicios.length > 0 && (
             <p>
-              Los servicios con volúmenes ({reinicios.map((s) => s.nombre).join(', ')}) se reinician: unos segundos sin servicio.
+              Los servicios que se despliegan con una sola copia ({reinicios.map((s) => s.nombre).join(', ')}) se detienen antes de arrancar la
+              versión nueva: unos segundos sin servicio.
+            </p>
+          )}
+          {m.webhooks.length > 0 && (
+            <p className="text-xs leading-5 text-subtle">
+              {enumerar(m.webhooks.map((w) => `«${w.serviceName}»`))} {m.webhooks.length === 1 ? 'recibe' : 'reciben'} webhooks en nombres que
+              van a redirigir: vuelve a registrarlos con la URL nueva después de pasar.
             </p>
           )}
           {redirige && <p>Durante 7 días la redirección es temporal; después pasa a ser permanente.</p>}

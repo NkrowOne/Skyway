@@ -17,13 +17,15 @@
  *   (las referencias se resuelven solas al desplegar);
  * - el cálculo parte siempre del valor ORIGINAL (la instantánea): repetirlo da
  *   el mismo resultado aunque un dominio sea subdominio del otro;
- * - un usuario para entrar no cambia (`SMTP_USER`, `MAIL_USERNAME`… o el
- *   usuario de una URL): tras pasar, el buzón sigue entrando con su dirección
- *   anterior hasta que se actualiza, y la aplicación dejaría de enviar.
+ * - un usuario para entrar no cambia (`SMTP_USER`, `MAIL_USERNAME`, uno con
+ *   prefijo propio como `TG_SMTP_LOGIN`… o el usuario de una URL): tras pasar,
+ *   el buzón sigue entrando con su dirección anterior hasta que se actualiza,
+ *   y la aplicación dejaría de enviar.
  */
 import crypto from 'crypto';
 import { getDomain } from 'tldts';
-import { mailRoleOf } from './mailenv';
+import { mailRoleLoose } from './mailenv';
+import type { ProveedorWebhook } from './types';
 
 export type AmbitoVariable = 'service' | 'project' | 'build';
 
@@ -47,6 +49,13 @@ export interface ValorVariable {
    * (`refrescarVariablesCorreo`), que sabe qué usuario y qué remitente tocan.
    */
   origen: string | null;
+  /**
+   * El valor entero es un usuario para entrar en el correo aunque el nombre
+   * no lo diga: lo referencia un usuario SMTP (`SMTP_USER=${{shared.LOGIN}}`).
+   * Cambiarlo al pasar dejaría a quien lo usa entrando con un usuario que el
+   * buzón todavía no tiene.
+   */
+  usuario?: boolean;
 }
 
 /** Variable identificada por su ámbito, su servicio y su nombre. */
@@ -291,9 +300,14 @@ export function aplicarMapa(valor: string, mapa: MapaCambio, opciones: { key?: s
   return { valor: r.valor, ocurrencias: r.ocurrencias };
 }
 
-/** ¿Es el nombre de un usuario SMTP (`SMTP_USER`, `EMAIL_HOST_USER`…)? */
+/**
+ * ¿Es el nombre de un usuario SMTP (`SMTP_USER`, `EMAIL_HOST_USER`…)? También
+ * con un prefijo propio (`TG_SMTP_LOGIN`, `BOT_SMTP_USER`, `mailRoleLoose`):
+ * cambiarlo al pasar dejaría al bot entrando con un usuario que todavía no
+ * existe.
+ */
 function esUsuarioCorreo(key: string | undefined): boolean {
-  return !!key && mailRoleOf(key.toUpperCase()) === 'user';
+  return !!key && mailRoleLoose(key) === 'user';
 }
 
 /** Texto de una mención sin mapa para la interfaz. */
@@ -347,7 +361,7 @@ export function planificar(
   const usuarios: AvisoSinMapa[] = [];
   for (const v of valores) {
     if (v.origen?.startsWith('mail.')) continue;
-    const r = analizar(v.valor, compilado, { fromDomain: from, usuario: esUsuarioCorreo(v.key) });
+    const r = analizar(v.valor, compilado, { fromDomain: from, usuario: v.usuario === true || esUsuarioCorreo(v.key) });
     if (r.sinMapa.length > 0) avisosSinMapa.push({ ambito: v.ambito, key: v.key, serviceId: v.serviceId, nombres: r.sinMapa });
     if (r.usuarios.length > 0) usuarios.push({ ambito: v.ambito, key: v.key, serviceId: v.serviceId, nombres: r.usuarios });
     if (r.ocurrencias === 0) continue;
@@ -459,6 +473,62 @@ export function avisosDeVariables(claves: string[], pilas: string[], hostNuevo: 
         : `Haz una copia de la base de datos y ejecuta wp search-replace con la dirección antigua y 'https://${nuevo}' --all-tables. ` +
             'Mientras tanto, la redirección mantiene funcionando los enlaces.',
     );
+  }
+  return out;
+}
+
+// ---------- webhooks de bots ----------
+
+/** Proveedor de webhooks del que avisa un cambio de dominio; `webhook` cuando el nombre no dice cuál. */
+export type ProveedorAviso = ProveedorWebhook | 'webhook';
+
+/**
+ * Prefijos que delatan un proveedor de webhooks. Stripe con el tema en
+ * cualquier tramo (`NEXT_PUBLIC_STRIPE_…`, `APP_STRIPE_…`), como su aviso; el
+ * resto, al principio del nombre sin el prefijo público: `TG_` en medio de otro
+ * nombre (`SETTING_TG_…`) no dice nada.
+ */
+const PROVEEDOR_POR_PREFIJO: [RegExp, ProveedorWebhook][] = [
+  [/^(?:TELEGRAM|TG)_/, 'telegram'],
+  [/^DISCORD_/, 'discord'],
+  [/^SLACK_/, 'slack'],
+  [/^WHATSAPP_/, 'whatsapp'],
+  [/^TWILIO_/, 'twilio'],
+];
+/** Un token de bot sin proveedor en el nombre, o cualquier variable de webhooks. */
+const WEBHOOK_GENERICO = /(?:^|_)BOT_TOKEN$|WEBHOOK/;
+/**
+ * Webhooks DE SALIDA: la URL a la que el servicio publica mensajes (un canal
+ * de Slack o de Discord), no una por la que recibe. `SLACK_WEBHOOK_URL` y
+ * `DISCORD_WEBHOOK_URL` son casi siempre eso; con otro nombre, lo dice el
+ * valor (`https://hooks.slack.com/…`). Un cambio de dominio no les afecta.
+ */
+const WEBHOOK_SALIENTE_CLAVE = /^(?:SLACK|DISCORD)_(?:[A-Z0-9]+_)*WEBHOOK(?:_URL)?$/;
+const WEBHOOK_SALIENTE_VALOR =
+  /^https?:\/\/(?:hooks\.slack\.com|(?:[a-z0-9-]+\.)?discord(?:app)?\.com\/api\/webhooks|[a-z0-9-]+\.webhook\.office\.com|outlook\.office\.com\/webhook|chat\.googleapis\.com)\//i;
+
+/**
+ * Proveedores de webhooks que delatan los nombres de las variables de un
+ * servicio, uno por variable (el más concreto): `TELEGRAM_BOT_TOKEN` es de
+ * Telegram aunque también sea un token de bot. Un webhook registrado en el
+ * proveedor con la URL anterior no sigue la redirección del cambio de dominio
+ * (Telegram y Stripe tratan una redirección como un fallo): el asistente avisa
+ * y ofrece seguir sirviendo el nombre anterior. `valores` (los de las
+ * variables, si se conocen) descarta los webhooks de salida.
+ */
+export function proveedoresDeClaves(
+  claves: readonly string[],
+  valores: Readonly<Record<string, string>> = {},
+): { proveedor: ProveedorAviso; clave: string }[] {
+  const out: { proveedor: ProveedorAviso; clave: string }[] = [];
+  for (const clave of new Set(claves)) {
+    const k = clave.toUpperCase();
+    const base = k.replace(PREFIJO_PUBLICO, '');
+    const valor = Object.hasOwn(valores, clave) ? valores[clave] : undefined;
+    if (WEBHOOK_SALIENTE_CLAVE.test(base) || (typeof valor === 'string' && WEBHOOK_SALIENTE_VALOR.test(valor.trim()))) continue;
+    const concreto = STRIPE.test(k) ? 'stripe' : PROVEEDOR_POR_PREFIJO.find(([re]) => re.test(base))?.[1];
+    if (concreto) out.push({ proveedor: concreto, clave });
+    else if (WEBHOOK_GENERICO.test(k)) out.push({ proveedor: 'webhook', clave });
   }
   return out;
 }

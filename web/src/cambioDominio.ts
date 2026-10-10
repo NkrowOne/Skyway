@@ -55,12 +55,53 @@ export interface PlanVariables {
 export interface PlanCorreo {
   desde: { domainId: string; domain: string };
   hacia: { domain: string; existe: boolean; domainId: string | null };
-  buzones: { id: string; de: string; a: string; usadoPorApps: string[] }[];
+  /** `appsManuales`: contraseñas de aplicación creadas a mano (un Mailway anterior no lo manda). */
+  buzones: { id: string; de: string; a: string; usadoPorApps: string[]; appsManuales?: string[] }[];
   alias: { id: string; de: string; a: string }[];
   formularios: { id: string; name: string; origenesNuevos: string[] }[];
   webmail: { viejo: string | null; nuevo: string | null };
   avisos: { code: string; mensaje: string }[];
   bloqueos: { code: string; mensaje: string }[];
+}
+
+/** Proveedor de webhooks del aviso; `webhook` cuando el nombre de la variable no dice cuál. */
+export type ProveedorAviso = 'telegram' | 'discord' | 'slack' | 'whatsapp' | 'twilio' | 'stripe' | 'webhook';
+
+/** Por qué se vuelve a desplegar un servicio al pasar (`referencias`: usa la dirección de otro que cambia de nombre). */
+export type MotivoDespliegue = 'dominios' | 'variables' | 'compartidas' | 'remitente' | 'referencias';
+
+/** Servicio que se volverá a desplegar al pasar. `reinicio`: se despliega con una sola copia. */
+export interface ServicioAlPasar {
+  serviceId: string;
+  nombre: string;
+  reinicio: boolean;
+  motivos: MotivoDespliegue[];
+}
+
+/** Servicio que recibe webhooks en nombres que redirigen (o redirigirán) al pasar. */
+export interface WebhookEnRiesgo {
+  serviceId: string;
+  serviceName: string;
+  proveedores: ProveedorAviso[];
+  evidencias: string[];
+  hosts: { serviceId: string; from: string; to: string }[];
+}
+
+/** Buzón con el que entran variables que Skyway no gestiona (un `TG_SMTP_LOGIN`, un `SMTP_USER` puesto a mano…). */
+export interface UsuarioSinGestionar {
+  mailboxId: string;
+  email: string;
+  login: string;
+  pendiente: boolean;
+  usos: {
+    ambito: 'service' | 'project';
+    serviceId: string | null;
+    serviceName: string | null;
+    key: string;
+    usuario: string;
+    /** `cambiara`: entra hoy y dejará de entrar al actualizar el buzón o en la baja; `no_entra`: ya no entra. */
+    estado: 'cambiara' | 'no_entra';
+  }[];
 }
 
 export interface PlanSkyway {
@@ -72,7 +113,8 @@ export interface PlanSkyway {
   correoDisponible: CorreoDisponible;
   correo: PlanCorreo | null;
   variables: PlanVariables;
-  servicios: { serviceId: string; nombre: string; reinicio: boolean }[];
+  servicios: ServicioAlPasar[];
+  webhooks: WebhookEnRiesgo[];
   avisos: string[];
   bloqueos: string[];
   expect: string;
@@ -103,7 +145,7 @@ export interface CambioCorreo {
   buzones: {
     total: number;
     pendientes: number;
-    lista: { id: string; email: string; login: string; pendiente: boolean; usadoPorApps: string[] }[];
+    lista: { id: string; email: string; login: string; pendiente: boolean; usadoPorApps: string[]; appsManuales?: string[] }[];
   };
   alias: { total: number };
   webmail: {
@@ -144,7 +186,13 @@ export interface MigracionSkyway {
   correo: CambioCorreo | null;
   variables: PlanVariables | null;
   /** Servicios que se volverán a desplegar al pasar (solo antes de pasar). */
-  alPasar: { serviceId: string; nombre: string; reinicio: boolean }[] | null;
+  alPasar: ServicioAlPasar[] | null;
+  /** Servicios con webhooks en nombres que redirigen (antes de pasar y, después, mientras sigan redirigiendo). */
+  webhooks: WebhookEnRiesgo[];
+  /** Buzones con los que entran variables que Skyway no gestiona (en transición). */
+  usuariosSinGestionar: UsuarioSinGestionar[];
+  /** Buzones pendientes con contraseñas creadas a mano que ningún servicio del proyecto usa. */
+  appsManuales: { mailboxId: string; email: string; apps: string[] }[];
   /** IP a la que tienen que apuntar los registros A de los nombres nuevos. */
   ipServidor: string | null;
   avisos: string[];
@@ -183,6 +231,13 @@ export const cambioDominioApi = {
   /** Cambia el MX del dominio nuevo a este servidor en su zona de Cloudflare (recibía en otro proveedor). */
   cambiarMx: (projectId: string, mid: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/mx`),
   pasar: (projectId: string, mid: string, expect: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/switch`, { expect }),
+  /**
+   * «Servir también» nombres de un servicio que redirigen (o volver a
+   * redirigirlos antes de pasar). Tras pasar, vuelve a desplegar el servicio:
+   * todos sus nombres van en la misma petición.
+   */
+  modoHost: (projectId: string, mid: string, body: { serviceId: string; from: string | string[]; modo: 'servir' | 'redirigir' }) =>
+    api.post<MigracionSkyway>(`${base(projectId)}/${mid}/hosts/mode`, body),
   volver: (projectId: string, mid: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/rollback`),
   cancelar: (projectId: string, mid: string) => api.post<MigracionSkyway>(`${base(projectId)}/${mid}/cancel`),
   darDeBaja: (projectId: string, mid: string, confirm: string) =>
@@ -241,4 +296,66 @@ export function contar(n: number, singular: string, plural: string): string {
 /** Huella de una variable para las exclusiones. */
 export function claveDe(c: Clave): string {
   return `${c.ambito}\u0000${c.serviceId ?? ''}\u0000${c.key}`;
+}
+
+const NOMBRE_PROVEEDOR: Record<ProveedorAviso, string> = {
+  telegram: 'Telegram',
+  discord: 'Discord',
+  slack: 'Slack',
+  whatsapp: 'WhatsApp',
+  twilio: 'Twilio',
+  stripe: 'Stripe',
+  webhook: 'webhooks',
+};
+
+/**
+ * «Servir también» los nombres de un aviso de webhooks: una petición por
+ * servicio que los sirve, con todos sus nombres (tras pasar, un solo
+ * despliegue por servicio). Devuelve la última vista.
+ */
+export async function servirTambien(projectId: string, mid: string, w: WebhookEnRiesgo): Promise<MigracionSkyway | null> {
+  const porServicio = new Map<string, string[]>();
+  for (const h of w.hosts) porServicio.set(h.serviceId, [...(porServicio.get(h.serviceId) ?? []), h.from]);
+  let vista: MigracionSkyway | null = null;
+  for (const [serviceId, from] of porServicio) vista = await cambioDominioApi.modoHost(projectId, mid, { serviceId, from, modo: 'servir' });
+  return vista;
+}
+
+/**
+ * Usos sin gestionar que se reescriben y se vuelven a desplegar al actualizar
+ * el buzón (o en la baja): los que no llevan ya el usuario con el que entrará
+ * (la dirección, si está pendiente; el de ahora, si no). Los que ya lo llevan
+ * entrarán en cuanto se actualice, sin desplegar nada.
+ */
+export function usosQueCambian(u: UsuarioSinGestionar): { cambian: UsuarioSinGestionar['usos']; yaNuevos: UsuarioSinGestionar['usos'] } {
+  const destino = (u.pendiente ? u.email : u.login).toLowerCase();
+  return { cambian: u.usos.filter((x) => x.usuario !== destino), yaNuevos: u.usos.filter((x) => x.usuario === destino) };
+}
+
+/** «a», «a y b», «a, b y c». */
+export function enumerar(lista: readonly string[]): string {
+  if (lista.length <= 1) return lista[0] ?? '';
+  return `${lista.slice(0, -1).join(', ')} y ${lista[lista.length - 1]}`;
+}
+
+/**
+ * Aviso de un servicio con webhooks en nombres que redirigen. Telegram y
+ * Stripe documentan que una redirección es un fallo; del resto no consta, así
+ * que se dice con prudencia. `pasada`: el cambio ya ha pasado y el nombre
+ * anterior sigue redirigiendo.
+ */
+export function textoWebhook(w: WebhookEnRiesgo, pasada = false): string {
+  const concretos = w.proveedores.filter((p) => p !== 'webhook').map((p) => NOMBRE_PROVEEDOR[p]);
+  const hosts = enumerar(w.hosts.map((h) => h.from));
+  const uso = concretos.length > 0 ? `«${w.serviceName}» usa ${enumerar(concretos)} y recibe sus webhooks en ${hosts}.` : `«${w.serviceName}» recibe webhooks en ${hosts}.`;
+  const estrictos = w.proveedores.filter((p) => p === 'telegram' || p === 'stripe').map((p) => NOMBRE_PROVEEDOR[p]);
+  const efecto = pasada ? 'ya no le llega' : 'dejará de recibir al pasar';
+  const riesgo =
+    estrictos.length > 0
+      ? `${enumerar(estrictos)} no ${estrictos.length === 1 ? 'sigue' : 'siguen'} redirecciones: si el webhook se registró con la URL anterior, ${efecto}.`
+      : `Si el webhook se registró con la URL anterior, ${pasada ? 'puede que ya no le llegue' : 'puede dejar de recibir al pasar'}.`;
+  const salida = pasada
+    ? 'Vuelve a registrarlo con la URL nueva, o sirve también el nombre anterior.'
+    : 'Vuelve a registrarlo con la URL nueva después de pasar, o sirve también el nombre anterior.';
+  return `${uso} ${riesgo} ${salida}`;
 }
