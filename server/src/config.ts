@@ -79,7 +79,7 @@ export const config = {
    * para un proxy que no reenvía el Host real y no se puede corregir.
    */
   csrfOriginCheck: process.env.CSRF_ORIGIN_CHECK !== 'false',
-  version: '0.38.0',
+  version: '0.39.0',
 };
 
 export function ensureDataDirs(): void {
