@@ -21,7 +21,7 @@ Encrypt), backups, alertas, multi-empresa y roles. Un binario Node + SQLite.
 
 ## Estructura
 
-- `server/` — Node 20+/TypeScript/Fastify. Estado en SQLite. Orquesta Docker con
+- `server/` — Node 22+/TypeScript/Fastify 5. Estado en SQLite. Orquesta Docker con
   `dockerode` + CLI. Una ruta por área en `server/src/routes/`. Ver el mapa de
   módulos en `docs/FUNCIONALIDAD.md` §1.
 - `web/` — React + Vite + Tailwind. El servidor sirve `web/dist` en producción.

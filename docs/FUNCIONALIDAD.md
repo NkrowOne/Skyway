@@ -167,7 +167,7 @@ web/src/
 
 ## 2. Arquitectura en ejecución
 
-- **Servidor**: Node 20+/TypeScript/Fastify. Estado en SQLite (`/data/skyway.db`,
+- **Servidor**: Node 22+/TypeScript/Fastify. Estado en SQLite (`/data/skyway.db`,
   modo WAL). Habla con Docker por `dockerode` + CLI (`docker build/pull`, `git`,
   `nixpacks`).
 - **Web**: React + Vite + Tailwind. El servidor sirve la web compilada en
@@ -539,7 +539,10 @@ huérfanos).
 - **Anti fuerza bruta**: límite por IP (8 intentos / 15 min) en login por
   contraseña y por passkey. La IP real se obtiene respetando el proxy **solo**
   de rangos privados/loopback (`config.trustProxy`), de modo que un cliente en
-  internet no puede falsear `X-Forwarded-For` para evadir el límite.
+  internet no puede falsear `X-Forwarded-For` para evadir el límite. Lo mismo
+  vale para `X-Forwarded-Host` y `X-Forwarded-Proto` (HSTS, cookie `Secure`,
+  guarda CSRF y URLs públicas del panel): solo cuentan si los envía un proxy
+  de confianza.
 - **IP real detrás del proxy de Cloudflare** (`docker-compose.yml`): Traefik
   respeta el `X-Forwarded-For` que manda Cloudflare solo en el 443 y solo si la
   conexión viene de sus rangos publicados (`CLOUDFLARE_IPV4` y
@@ -2224,9 +2227,15 @@ comprobaciones de ese commit hayan terminado bien (`success`, `skipped` o
 (`behind_by` = 0), para que lo fusionado sea exactamente lo probado.
 Entonces lo fusiona con un commit de fusión
 (`gh pr merge --merge --delete-branch --match-head-commit <sha>`). Si algo no
-se cumple, termina sin error y deja el motivo en su registro. La fusión la hace
-el token del propio flujo, que no vuelve a lanzar la CI en la rama principal:
-no hace falta, porque el árbol fusionado es el que probó la CI del PR. En GitHub
-hay que activar las alertas y las actualizaciones de seguridad de Dependabot
-(Settings → Code security), y la protección de la rama principal, si la hay, no
-debe exigir revisiones: con ellas, la fusión falla y el PR espera a una persona.
+se cumple, termina sin error y deja el motivo en su registro. Las ejecuciones
+esperan en fila (`concurrency` con `queue: max`), una fusión cada vez y sin que
+GitHub descarte ninguna cuando la CI de varios PR termina a la vez. Si la rama
+principal avanza antes de la fusión, el PR se queda sin fusionar: Dependabot lo
+pone al día solo si hay conflictos, así que sin ellos hay que comentar
+`@dependabot rebase` en el PR, y al terminar su CI el flujo lo vuelve a evaluar.
+La fusión la hace el token del propio flujo, que no vuelve a lanzar la CI en la
+rama principal: no hace falta, porque el árbol fusionado es el que probó la CI
+del PR. En GitHub hay que activar las alertas y las actualizaciones de seguridad
+de Dependabot (Settings → Code security), y la protección de la rama principal,
+si la hay, no debe exigir revisiones: con ellas, la fusión falla y el PR espera
+a una persona.
