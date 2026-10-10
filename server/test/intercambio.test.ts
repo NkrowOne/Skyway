@@ -14,8 +14,9 @@
  *
  * Sin Docker: se sustituyen las llamadas al daemon por un registro de eventos,
  * y las sondas (`execInContainer`) responden según lo que pida cada prueba.
- * Las paradas van por `pararConGracia` (SIGTERM con la gracia del servicio) y
- * el registro de la versión anterior se archiva después de pararla.
+ * Las paradas van por `pararConGracia` (SIGTERM con la gracia del servicio):
+ * el doble tarda y anota `parada:<nombre>` al terminar, y el registro de la
+ * versión anterior se archiva y se retira después de esa parada.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { closeDb, createDeployment, createProject, createService, getDeployment, getService, initDb, listAlerts, setEnv, updateDeployment } from '../src/db';
@@ -84,6 +85,8 @@ vi.mock('../src/docker/containers', async (importOriginal) => {
       if (!m.vivos.has(name)) return { existia: false, forzada: false, comando: null };
       m.eventos.push(`parar:${name}`);
       m.gracias.set(name, opts.graciaSegundos);
+      await new Promise((r) => setTimeout(r, 20));
+      m.eventos.push(`parada:${name}`);
       return { existia: true, forzada: false, comando: null };
     }),
     getRuntime: vi.fn(async (name: string) => {
@@ -181,11 +184,12 @@ describe('intercambio sin corte', () => {
     // Parada limpia con la gracia por defecto y, DESPUÉS, el archivo del
     // registro (conserva lo que escribió al recibir SIGTERM) y la retirada.
     expect(m.gracias.get(`${nombre}--prev`)).toBe(30);
-    expect(m.eventos.indexOf(`archivar:${nombre}--prev`)).toBeGreaterThan(parada);
+    // Se espera a que termine la parada antes de archivar y retirar.
+    expect(m.eventos.indexOf(`archivar:${nombre}--prev`)).toBeGreaterThan(m.eventos.indexOf(`parada:${nombre}--prev`));
     expect(m.eventos.indexOf(`borrar:${nombre}--prev`)).toBeGreaterThan(m.eventos.indexOf(`archivar:${nombre}--prev`));
     // La copia de validación también se para con SIGTERM antes de retirarla.
     expect(m.eventos.indexOf(`parar:${nombre}--next`)).toBeGreaterThan(-1);
-    expect(m.eventos.indexOf(`parar:${nombre}--next`)).toBeLessThan(m.eventos.indexOf(`borrar:${nombre}--next`));
+    expect(m.eventos.indexOf(`parada:${nombre}--next`)).toBeLessThan(m.eventos.indexOf(`borrar:${nombre}--next`));
   });
 
   it('si la copia nueva no llega a responder, se restaura la anterior', async () => {

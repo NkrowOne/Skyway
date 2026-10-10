@@ -422,9 +422,16 @@ export default function ServiceSettingsTab({
   // servidor (`estrategiaDespliegue`): así «Automático — ahora: …» y los avisos
   // de réplicas cambian en cuanto se quita un dominio o se añade un volumen,
   // antes de guardar. Que otro servicio lo llame por la red interna solo lo
-  // sabe el servidor (`deploy.calledByOthers`).
+  // sabe el servidor (`deploy.calledByOthers`). Un servicio de imagen sin
+  // puerto no tiene router ni sonda: su dominio o su healthcheck no le llevan
+  // tráfico.
   const conEstado = form.volumePaths.length > 0 || form.hostPort.trim() !== '';
-  const sinTrafico = form.domains.length === 0 && form.healthcheckPath.trim() === '' && !deploy?.calledByOthers;
+  const sinPuerto = isImage && form.port.trim() === '';
+  const conDominio = !sinPuerto && form.domains.length > 0;
+  const conHealthcheck = !sinPuerto && form.healthcheckPath.trim() !== '';
+  const sinTrafico = !conDominio && !conHealthcheck && !deploy?.calledByOthers;
+  // Bibliotecas de bots detectadas en el repositorio (`needs.bots`).
+  const bibliotecasBot = isGit ? ((cfg as { needs?: { bots?: { evidencia: string }[] } }).needs?.bots ?? []) : [];
   const automatica: 'recreate' | 'overlap' = sinTrafico ? 'recreate' : 'overlap';
   const efectiva: 'recreate' | 'overlap' =
     isDb || conEstado ? 'recreate' : form.deployStrategy === 'auto' ? automatica : form.deployStrategy;
@@ -854,8 +861,10 @@ export default function ServiceSettingsTab({
                     : form.deployStrategy === 'auto'
                       ? `${ESTRATEGIA[efectiva].descripcion} ${
                           sinTrafico
-                            ? 'Se aplica porque el servicio no tiene dominio, healthcheck ni llamadas de otros servicios.'
-                            : 'Se aplica porque el servicio recibe tráfico (dominio, healthcheck o llamadas de otros servicios).'
+                            ? 'Se aplica porque el servicio no tiene dominio, healthcheck ni llamadas de otros servicios. Las llamadas escritas en el código o la configuración de otro servicio no se detectan: si las hay, elige «Sin corte».'
+                            : bibliotecasBot.length > 0 && !conDominio
+                              ? 'Se aplica por su healthcheck o por llamadas de otros servicios, pero el repositorio usa una biblioteca de bots: si el bot pide actualizaciones (polling) y no recibe webhooks, elige «Una sola copia», porque con dos copias recibe un error 409.'
+                              : 'Se aplica porque el servicio recibe tráfico (dominio, healthcheck o llamadas de otros servicios).'
                         }`
                       : ESTRATEGIA[efectiva].descripcion
                 }
@@ -877,13 +886,17 @@ export default function ServiceSettingsTab({
             <div className="flex flex-col gap-3">
               <Field
                 label="Gracia de parada (s)"
-                hint="SIGTERM y, si el proceso no termina en este plazo, SIGKILL. Vacío: 30 s o RAILWAY_DEPLOYMENT_DRAINING_SECONDS."
+                hint={
+                  isDb
+                    ? 'SIGTERM y, si el motor no termina en este plazo, SIGKILL. De 10 a 600; vacío: 30 s.'
+                    : 'SIGTERM y, si el proceso no termina en este plazo, SIGKILL. Vacío: 30 s o RAILWAY_DEPLOYMENT_DRAINING_SECONDS.'
+                }
               >
                 <input
                   className="input tnum"
                   type="number"
                   inputMode="numeric"
-                  min="0"
+                  min={isDb ? '10' : '0'}
                   max="600"
                   // Lo que se aplicaría con el campo vacío: si la gracia viene del
                   // propio servicio, el servidor no dice cuál sería sin ella.
@@ -893,7 +906,15 @@ export default function ServiceSettingsTab({
                 />
               </Field>
               {!isDb && (
-                <Field label="Comando al parar" hint="Opcional. Se ejecuta dentro del contenedor antes del SIGTERM, con el mismo plazo.">
+                <Field
+                  label="Comando al parar"
+                  hint={
+                    'Opcional. Se ejecuta dentro del contenedor antes del SIGTERM, con el mismo plazo. Usa las variables del servicio ($VARIABLE) en vez de escribir secretos.' +
+                    (efectiva === 'overlap' && form.stopCommand.trim() !== ''
+                      ? ' Con «Sin corte», el de la versión anterior se ejecuta cuando la nueva ya está en servicio (en la copia de validación no se ejecuta): no lo uses para deshacer lo que la nueva registra al arrancar, como el webhook de un bot; para eso, elige «Una sola copia».'
+                      : '')
+                  }
+                >
                   <input
                     className="input font-mono text-xs"
                     value={form.stopCommand}

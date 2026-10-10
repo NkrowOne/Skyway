@@ -132,12 +132,17 @@ const LINEAS_COMANDO_PARADA = 20;
  * un shell, ni del host ni del contenedor. Un fallo (sin `sh` en la imagen, un
  * código distinto de 0, el plazo vencido) se registra y no impide la parada:
  * el comando es una cortesía previa al SIGTERM, no una condición.
+ *
+ * Con `salida: false` solo se registra el resultado (el código), no lo que el
+ * comando escribió: es lo que piden las acciones del panel, cuyo registro es el
+ * del servidor y no el del despliegue, y un comando puede imprimir un secreto.
  */
 export async function ejecutarComandoParada(
   name: string,
   comando: string,
   graciaSegundos: number,
   log?: (l: string) => void,
+  opts: { salida?: boolean } = {},
 ): Promise<'ok' | 'fallo' | 'plazo'> {
   const plazo = Math.max(1, graciaSegundos);
   try {
@@ -159,7 +164,7 @@ export async function ejecutarComandoParada(
           ? `Comando al parar de ${name} ejecutado (código 0).`
           : `⚠ El comando al parar de ${name} terminó con el código ${res.exitCode ?? 'desconocido'}: se continúa con SIGTERM.`,
     );
-    for (const l of lineas) log?.(`  ${l}`);
+    if (opts.salida !== false) for (const l of lineas) log?.(`  ${l}`);
     return estado;
   } catch (err: any) {
     log?.(`⚠ No se pudo ejecutar el comando al parar en ${name} (${err?.message || err}): se continúa con SIGTERM.`);
@@ -174,6 +179,16 @@ export interface ResultadoParada {
   comando: 'ok' | 'fallo' | 'plazo' | null;
 }
 
+/** Estado de un contenedor; `null` solo si Docker responde que no existe (404). */
+async function inspeccionar(name: string): Promise<Docker.ContainerInspectInfo | null> {
+  try {
+    return await dockerQuery.getContainer(name).inspect();
+  } catch (err: any) {
+    if (err?.statusCode === 404) return null;
+    throw err;
+  }
+}
+
 /**
  * Parada limpia de una copia de un servicio: el comando al parar (si lo hay y
  * la copia está en marcha), después `docker stop -t <gracia>` (SIGTERM y, al
@@ -186,35 +201,55 @@ export interface ResultadoParada {
  *
  * La parada forzada se distingue por el código 137 sin `OOMKilled` y después
  * de agotar la gracia: un 137 inmediato es otra cosa (el contenedor ya estaba
- * así). Casi siempre significa que el PID 1 no atiende SIGTERM —un comando de
- * arranque en `sh -c` sin `exec`—, y se dice cómo arreglarlo. No se activa
- * `Init` (tini) de forma global: rompe imágenes que necesitan ser el PID 1.
+ * así). Casi siempre significa que el proceso principal no atiende SIGTERM (la
+ * aplicación como PID 1 sin manejador, o un `sh -c` que no reenvía la señal),
+ * y se dice cómo arreglarlo. No se activa `Init` (tini) de forma global: rompe
+ * imágenes que necesitan ser el PID 1.
  *
- * Nunca lanza por un contenedor que no existe (`existia: false`).
+ * Solo un 404 de Docker es «no existe» (`existia: false`, sin lanzar). Antes se
+ * consultaba con `findContainer`, que convierte cualquier error en «no existe»:
+ * con el daemon lento (la consulta vence a los 30 s) la copia no se paraba,
+ * seguía en marcha junto a la nueva y acababa retirada con `remove --force`.
+ * Ahora, si no se puede consultar, se para igualmente (sin el comando, porque
+ * no se sabe si está en marcha) y un fallo de la parada se propaga: quien
+ * llama decide (restaurar la versión anterior, responder con error).
  */
 export async function pararConGracia(
   name: string,
-  opts: { graciaSegundos: number; comando?: string | null; log?: (l: string) => void },
+  opts: { graciaSegundos: number; comando?: string | null; log?: (l: string) => void; salidaComando?: boolean },
 ): Promise<ResultadoParada> {
   const gracia = Math.max(0, Math.floor(opts.graciaSegundos));
-  const antes = await findContainer(name);
-  if (!antes) return { existia: false, forzada: false, comando: null };
+  let antes: Docker.ContainerInspectInfo | null | undefined;
+  try {
+    antes = await inspeccionar(name);
+  } catch (err: any) {
+    opts.log?.(`⚠ No se pudo consultar el estado de ${name} (${err?.message || err}): se detiene igualmente.`);
+    antes = undefined;
+  }
+  if (antes === null) return { existia: false, forzada: false, comando: null };
   let comando: ResultadoParada['comando'] = null;
-  if (antes.State?.Running && opts.comando) {
-    comando = await ejecutarComandoParada(name, opts.comando, gracia, opts.log);
+  if (antes?.State?.Running && opts.comando) {
+    comando = await ejecutarComandoParada(name, opts.comando, gracia, opts.log, { salida: opts.salidaComando });
   }
   const inicio = Date.now();
-  await stopContainer(name, gracia);
+  try {
+    await docker.getContainer(name).stop({ t: gracia });
+  } catch (err: any) {
+    // 304: ya estaba parado. 404: desapareció entre la consulta y la parada.
+    if (err?.statusCode === 404) return { existia: false, forzada: false, comando };
+    if (err?.statusCode !== 304) throw err;
+  }
   const tardo = Date.now() - inicio;
-  const despues = await findContainer(name);
+  const despues = await inspeccionar(name).catch(() => null);
   const st = despues?.State;
   const forzada =
     !!st && !st.Running && st.ExitCode === 137 && !st.OOMKilled && gracia > 0 && tardo >= gracia * 1000 * 0.9;
   if (forzada) {
     opts.log?.(
-      `⚠ ${name} no terminó con SIGTERM en ${gracia} s y se detuvo con SIGKILL. El proceso principal no atiende SIGTERM: ` +
-        'si el comando de arranque es una sola orden, empiézalo con «exec»; si el proceso necesita más tiempo para cerrar, ' +
-        'aumenta la gracia de parada en Ajustes del servicio.',
+      `⚠ ${name} no terminó con SIGTERM en ${gracia} s y se detuvo con SIGKILL. Si la aplicación es el proceso principal ` +
+        'del contenedor, tiene que atender SIGTERM (cerrar y salir): sin un manejador, el sistema descarta la señal. Si el ' +
+        'comando de arranque es una sola orden, empiézalo con «exec». Aumenta la gracia de parada en Ajustes del servicio ' +
+        'solo si el proceso ya atiende SIGTERM y necesita más tiempo para cerrar.',
     );
   }
   return { existia: true, forzada, comando };

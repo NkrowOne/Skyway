@@ -15,7 +15,8 @@
  *
  * Sin Docker: las funciones de `docker/containers.ts` se prueban contra un
  * cliente de Docker simulado; el desplegador y las rutas, contra un doble en
- * memoria de los contenedores que anota cada operación.
+ * memoria de los contenedores que anota cada operación. La parada del doble
+ * tarda y anota `parada:<nombre>` al terminar, para comprobar que se espera.
  */
 import { Readable } from 'stream';
 import type { FastifyInstance } from 'fastify';
@@ -26,6 +27,9 @@ import {
   createDeployment,
   createProject,
   createService,
+  createUser,
+  createWorkspaceRow,
+  listAudit,
   getDeployment,
   getService,
   initDb,
@@ -46,17 +50,21 @@ import {
 } from '../src/deploy/deployer';
 import { readRailwayRepoConfig, hasRailwayConfig } from '../src/deploy/railwayconfig';
 import type { RunSpec } from '../src/docker/containers';
+import { hashPassword } from '../src/util';
 
 const SAME_ORIGIN = { 'sec-fetch-site': 'same-origin' };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const m = vi.hoisted(() => ({
   eventos: [] as string[],
-  contenedores: new Map<string, { running: boolean; serviceId: string }>(),
+  /** `deployment`: la etiqueta `skyway.deployment` del contenedor. */
+  contenedores: new Map<string, { running: boolean; serviceId: string; deployment?: string }>(),
   /** Spec con la que se creó cada contenedor (el último con ese nombre). */
   specs: new Map<string, any>(),
   /** Opciones con las que se paró cada copia. */
-  paradas: new Map<string, { graciaSegundos: number; comando?: string | null }>(),
+  paradas: new Map<string, { graciaSegundos: number; comando?: string | null; salidaComando?: boolean }>(),
+  /** Cuánto tarda en pararse cada copia (ms); por defecto, 20. */
+  espera: new Map<string, number>(),
   /** Copias que «terminan con SIGKILL» al pararlas. */
   forzadas: new Set<string>(),
 }));
@@ -72,18 +80,25 @@ const d = vi.hoisted(() => ({
   salidaExec: 'línea 1\nadiós\n',
   codigoExec: 0 as number | null,
   lista: [] as { Names: string[]; Labels: Record<string, string> }[],
+  /** Contenedores cuya consulta (`inspect`) falla con un error que no es 404. */
+  fallaConsulta: new Set<string>(),
+  /** Código con que falla `stop` en cada contenedor. */
+  fallaStop: new Map<string, number>(),
 }));
 
 vi.mock('../src/docker/client', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/docker/client')>();
   const contenedor = (name: string) => ({
     inspect: async () => {
+      if (d.fallaConsulta.has(name)) throw Object.assign(new Error('tiempo de espera agotado'), { statusCode: undefined });
       const st = d.estado.get(name);
       if (!st) throw Object.assign(new Error('no existe'), { statusCode: 404 });
       return { Config: { Labels: {} }, State: { Running: st.running, ExitCode: st.exitCode, OOMKilled: st.oom } };
     },
     stop: async (opts: { t: number }) => {
       d.ordenes.push(`stop:${name}:t=${opts.t}`);
+      const codigo = d.fallaStop.get(name);
+      if (codigo) throw Object.assign(new Error(`stop ${codigo}`), { statusCode: codigo });
       const st = d.estado.get(name);
       if (!st) throw Object.assign(new Error('no existe'), { statusCode: 404 });
       const fin = d.salida.get(name) ?? { exitCode: 0 };
@@ -134,7 +149,7 @@ vi.mock('../src/docker/containers', async (importOriginal) => {
     ...mod,
     findContainer: vi.fn(async (name: string) => {
       const c = m.contenedores.get(name);
-      return c ? { Config: { Labels: { 'skyway.deployment': 'dep-anterior' } }, State: { Running: c.running } } : null;
+      return c ? { Config: { Labels: { 'skyway.deployment': c.deployment ?? 'dep-anterior' } }, State: { Running: c.running } } : null;
     }),
     listServiceContainers: vi.fn(async (serviceId: string) =>
       [...m.contenedores].filter(([, c]) => c.serviceId === serviceId).map(([name]) => ({ id: `id-${name}`, name })),
@@ -156,14 +171,18 @@ vi.mock('../src/docker/containers', async (importOriginal) => {
       m.eventos.push(`borrar:${name}`);
       m.contenedores.delete(name);
     }),
-    pararConGracia: vi.fn(async (name: string, opts: { graciaSegundos: number; comando?: string | null }) => {
-      const c = m.contenedores.get(name);
-      if (!c) return { existia: false, forzada: false, comando: null };
-      m.eventos.push(`parar:${name}(t=${opts.graciaSegundos})`);
-      m.paradas.set(name, { graciaSegundos: opts.graciaSegundos, comando: opts.comando });
-      c.running = false;
-      return { existia: true, forzada: m.forzadas.has(name), comando: opts.comando ? 'ok' : null };
-    }),
+    pararConGracia: vi.fn(
+      async (name: string, opts: { graciaSegundos: number; comando?: string | null; salidaComando?: boolean }) => {
+        const c = m.contenedores.get(name);
+        if (!c) return { existia: false, forzada: false, comando: null };
+        m.eventos.push(`parar:${name}(t=${opts.graciaSegundos})`);
+        m.paradas.set(name, { graciaSegundos: opts.graciaSegundos, comando: opts.comando, salidaComando: opts.salidaComando });
+        await new Promise((r) => setTimeout(r, m.espera.get(name) ?? 20));
+        c.running = false;
+        m.eventos.push(`parada:${name}`);
+        return { existia: true, forzada: m.forzadas.has(name), comando: opts.comando ? 'ok' : null };
+      },
+    ),
     startContainer: vi.fn(async (name: string) => {
       m.eventos.push(`arrancar:${name}`);
       const c = m.contenedores.get(name);
@@ -220,6 +239,9 @@ beforeEach(() => {
   m.specs.clear();
   m.paradas.clear();
   m.forzadas.clear();
+  m.espera.clear();
+  d.fallaConsulta.clear();
+  d.fallaStop.clear();
   d.creados.length = 0;
   d.ordenes.length = 0;
   d.execs.length = 0;
@@ -326,8 +348,40 @@ describe('docker/containers.ts: parada limpia', () => {
     const r = await pararConGracia('sordo', { graciaSegundos: 1, log: (l) => log.push(l) });
     expect(r.forzada).toBe(true);
     expect(log.join('\n')).toMatch(
-      /⚠ sordo no terminó con SIGTERM en 1 s y se detuvo con SIGKILL\. El proceso principal no atiende SIGTERM: si el comando de arranque es una sola orden, empiézalo con «exec»/,
+      /⚠ sordo no terminó con SIGTERM en 1 s y se detuvo con SIGKILL\. Si la aplicación es el proceso principal del contenedor, tiene que atender SIGTERM \(cerrar y salir\): sin un manejador, el sistema descarta la señal\. Si el comando de arranque es una sola orden, empiézalo con «exec»\. Aumenta la gracia de parada en Ajustes del servicio solo si el proceso ya atiende SIGTERM/,
     );
+  });
+
+  it('pararConGracia: si no se puede consultar el contenedor (no es un 404), lo para igualmente y sin el comando', async () => {
+    const { pararConGracia } = await real();
+    d.estado.set('lento', { running: true, exitCode: 0, oom: false });
+    d.fallaConsulta.add('lento');
+    const log: string[] = [];
+    const r = await pararConGracia('lento', { graciaSegundos: 30, comando: 'echo adiós', log: (l) => log.push(l) });
+    expect(r.existia).toBe(true);
+    expect(d.ordenes).toEqual(['stop:lento:t=30']);
+    expect(d.execs).toHaveLength(0);
+    expect(log.join('\n')).toMatch(/No se pudo consultar el estado de lento \(tiempo de espera agotado\): se detiene igualmente/);
+  });
+
+  it('pararConGracia: un fallo de la parada se propaga; un 404 en la parada es «no existe»', async () => {
+    const { pararConGracia } = await real();
+    d.estado.set('roto', { running: true, exitCode: 0, oom: false });
+    d.fallaStop.set('roto', 500);
+    await expect(pararConGracia('roto', { graciaSegundos: 5 })).rejects.toThrow(/stop 500/);
+    d.estado.set('ido', { running: true, exitCode: 0, oom: false });
+    d.fallaStop.set('ido', 404);
+    await expect(pararConGracia('ido', { graciaSegundos: 5 })).resolves.toMatchObject({ existia: false });
+  });
+
+  it('ejecutarComandoParada con salida: false registra el código pero no lo que escribe', async () => {
+    const { pararConGracia } = await real();
+    d.estado.set('c1', { running: true, exitCode: 0, oom: false });
+    d.salidaExec = 'TOKEN=secreto\n';
+    const log: string[] = [];
+    await pararConGracia('c1', { graciaSegundos: 5, comando: 'env', log: (l) => log.push(l), salidaComando: false });
+    expect(log.join('\n')).toMatch(/Comando al parar de c1 ejecutado \(código 0\)/);
+    expect(log.join('\n')).not.toMatch(/secreto/);
   });
 
   it('pararConGracia: 137 por falta de memoria, o inmediato, no es una parada forzada', async () => {
@@ -467,6 +521,62 @@ describe('restos de un intercambio interrumpido', () => {
     expect(m.contenedores.get(base)?.running).toBe(true);
   });
 
+  it('«--prev» del último despliegue correcto y base de uno que no terminó: se recupera la anterior', async () => {
+    // Skyway cayó mientras validaba la versión nueva (una sola copia): la base
+    // es la nueva, sin validar y quizá parada; la «--prev», la que funcionaba.
+    const { s, base } = bot({ stopCommand: 'echo adiós' }, 0);
+    const bueno = createDeployment(s.id, 'manual');
+    updateDeployment(bueno.id, { status: 'success' });
+    const cortado = createDeployment(s.id, 'manual');
+    updateDeployment(cortado.id, { status: 'canceled' });
+    m.contenedores.set(base, { running: false, serviceId: s.id, deployment: cortado.id });
+    m.contenedores.set(`${base}--prev`, { running: false, serviceId: s.id, deployment: bueno.id });
+    const hecho = await limpiarRestosIntercambio(getService(s.id)!);
+    expect(hecho.join('\n')).toMatch(/Recuperada la versión anterior de un despliegue interrumpido.*vuelve a su nombre y queda en marcha/);
+    expect(m.eventos).toEqual([
+      `parar:${base}(t=30)`,
+      `parada:${base}`,
+      `archivar:${base}`,
+      `borrar:${base}`,
+      `renombrar:${base}--prev>${base}`,
+      `arrancar:${base}`,
+    ]);
+    expect(m.contenedores.get(base)).toMatchObject({ running: true, deployment: bueno.id });
+  });
+
+  it('lo mismo pedido por Detener: la anterior vuelve a su nombre sin arrancarse', async () => {
+    const { s, base } = bot({}, 0);
+    const bueno = createDeployment(s.id, 'manual');
+    updateDeployment(bueno.id, { status: 'success' });
+    const cortado = createDeployment(s.id, 'manual');
+    updateDeployment(cortado.id, { status: 'failed' });
+    m.contenedores.set(base, { running: true, serviceId: s.id, deployment: cortado.id });
+    m.contenedores.set(`${base}--prev`, { running: false, serviceId: s.id, deployment: bueno.id });
+    await limpiarRestosIntercambio(getService(s.id)!, undefined, { sinArrancar: true });
+    expect(m.eventos).not.toContain(`arrancar:${base}`);
+    expect(m.contenedores.get(base)?.deployment).toBe(bueno.id);
+  });
+
+  it('base de un despliegue correcto: se retira la «--prev»', async () => {
+    const { s, base } = bot({}, 0);
+    const viejo = createDeployment(s.id, 'manual');
+    updateDeployment(viejo.id, { status: 'success' });
+    const nuevo = createDeployment(s.id, 'manual');
+    updateDeployment(nuevo.id, { status: 'success' });
+    m.contenedores.set(base, { running: true, serviceId: s.id, deployment: nuevo.id });
+    m.contenedores.set(`${base}--prev`, { running: true, serviceId: s.id, deployment: viejo.id });
+    await limpiarRestosIntercambio(getService(s.id)!);
+    expect(m.eventos).toEqual([`parar:${base}--prev(t=30)`, `parada:${base}--prev`, `borrar:${base}--prev`]);
+    expect(m.contenedores.get(base)?.deployment).toBe(nuevo.id);
+  });
+
+  it('la «--next» de un resto se para sin el comando al parar', async () => {
+    const { s, base } = bot({ stopCommand: 'curl -s "$URL/deleteWebhook"' });
+    m.contenedores.set(`${base}--next`, { running: true, serviceId: s.id });
+    await limpiarRestosIntercambio(getService(s.id)!);
+    expect(m.paradas.get(`${base}--next`)?.comando).toBeNull();
+  });
+
   it('«--prev» sin copia nueva: vuelve a su nombre y se arranca', async () => {
     const { s, base } = bot({}, 0);
     m.contenedores.set(`${base}--prev`, { running: false, serviceId: s.id });
@@ -528,8 +638,14 @@ describe('rutas del servicio', () => {
     expect(idx(`parar:${base}-r2--prev(t=20)`)).toBeLessThan(idx(`borrar:${base}-r2--prev`));
     expect(idx(`parar:${base}(t=20)`)).toBeGreaterThan(-1);
     expect(idx(`parar:${base}-r2(t=20)`)).toBeGreaterThan(-1);
-    expect(idx(`archivar:${base}`)).toBeGreaterThan(idx(`parar:${base}(t=20)`));
-    expect([...m.contenedores.values()].some((c) => c.running)).toBe(false);
+    expect(idx(`archivar:${base}`)).toBeGreaterThan(idx(`parada:${base}`));
+    // Todas a la vez: las dos réplicas empiezan a pararse antes de que termine ninguna.
+    const primeraParada = m.eventos.findIndex((e) => e === `parada:${base}` || e === `parada:${base}-r2`);
+    expect(idx(`parar:${base}(t=20)`)).toBeLessThan(primeraParada);
+    expect(idx(`parar:${base}-r2(t=20)`)).toBeLessThan(primeraParada);
+    // Al registro del servidor solo va el resultado del comando al parar.
+    expect(m.paradas.get(base)?.salidaComando).toBe(false);
+    expect([...m.contenedores.values()].some((c) => c.serviceId === s.id && c.running)).toBe(false);
     expect(getService(s.id)!.stopped_at).toBeTruthy();
   });
 
@@ -565,15 +681,35 @@ describe('rutas del servicio', () => {
     expect(m.eventos).toEqual([`renombrar:${base}--prev>${base}`, `arrancar:${base}`]);
   });
 
-  it('Reiniciar ejecuta el comando al parar y reinicia con la gracia', async () => {
-    const { s, base } = bot({ stopGraceSeconds: 15, stopCommand: 'echo adiós' }, 0);
-    d.estado.set(base, { running: true, exitCode: 0, oom: false });
-    // Reiniciar busca la copia con `findContainer`: el doble la da por existente.
-    m.contenedores.set(base, { running: true, serviceId: s.id });
+  it('Reiniciar para todas las copias a la vez con el comando y la gracia, las vuelve a arrancar y avisa del SIGKILL', async () => {
+    const { s, base } = bot({ stopGraceSeconds: 15, stopCommand: 'echo adiós', replicas: 2 }, 2);
+    m.forzadas.add(`${base}-r2`);
     const r = await pedir('POST', `/api/services/${s.id}/restart`);
     expect(r.statusCode, r.body).toBe(200);
-    expect(d.execs[0]?.Env).toEqual(['SKYWAY_STOP_CMD=echo adiós']);
-    expect(d.ordenes.indexOf(`exec:${base}`)).toBeLessThan(d.ordenes.indexOf(`restart:${base}:t=15`));
+    expect(JSON.parse(r.body).forced).toEqual([`${base}-r2`]);
+    expect(m.paradas.get(base)).toEqual({ graciaSegundos: 15, comando: 'echo adiós', salidaComando: false });
+    const primeraParada = m.eventos.findIndex((e) => e.startsWith('parada:'));
+    expect(idx(`parar:${base}(t=15)`)).toBeLessThan(primeraParada);
+    expect(idx(`parar:${base}-r2(t=15)`)).toBeLessThan(primeraParada);
+    expect(idx(`arrancar:${base}`)).toBeGreaterThan(idx(`parada:${base}`));
+    expect(idx(`arrancar:${base}-r2`)).toBeGreaterThan(idx(`parada:${base}-r2`));
+    // El mismo contenedor (conserva su identidad), sin archivar su registro.
+    expect(m.eventos.some((e) => e.startsWith('crear:') || e.startsWith('archivar:'))).toBe(false);
+    expect([...m.contenedores.values()].every((c) => c.running)).toBe(true);
+  });
+
+  it('Detener justo después del arranque de Skyway no trata dos veces los mismos restos', async () => {
+    const { s, base } = bot();
+    m.contenedores.set(`${base}--next`, { running: true, serviceId: s.id });
+    m.espera.set(`${base}--next`, 150);
+    d.lista = [{ Names: [`/${base}--next`], Labels: { 'skyway.managed': 'true', 'skyway.service': s.id } }];
+    await limpiarIntercambiosAlArrancar(() => undefined);
+    const r = await pedir('POST', `/api/services/${s.id}/stop`);
+    expect(r.statusCode, r.body).toBe(200);
+    expect(m.eventos.filter((e) => e === `parar:${base}--next(t=30)`)).toHaveLength(1);
+    expect(m.eventos.filter((e) => e === `borrar:${base}--next`)).toHaveLength(1);
+    // La acción esperó a la limpieza encolada: la «--next» ya no estaba al parar.
+    expect(idx(`borrar:${base}--next`)).toBeLessThan(idx(`parar:${base}(t=30)`));
   });
 
   it('PATCH valida y guarda la estrategia, la gracia y el comando al parar', async () => {
@@ -600,17 +736,65 @@ describe('rutas del servicio', () => {
     r = await patch({ stopGraceSeconds: 0, stopCommand: null });
     expect(r.statusCode, r.body).toBe(200);
     expect(cfg().stopGraceSeconds).toBe(0);
+
+    // Las cifras como texto valen; un texto vacío la deja sin fijar (antes: 0,
+    // SIGKILL inmediato en cada parada), y un booleano no es una gracia.
+    r = await patch({ stopGraceSeconds: '25' });
+    expect(r.statusCode, r.body).toBe(200);
+    expect(cfg().stopGraceSeconds).toBe(25);
+    r = await patch({ stopGraceSeconds: '' });
+    expect(r.statusCode, r.body).toBe(200);
+    expect(cfg().stopGraceSeconds).toBeUndefined();
+    for (const malo of [true, '2x', 'abc']) {
+      r = await patch({ stopGraceSeconds: malo });
+      expect(r.statusCode, JSON.stringify(malo)).toBe(400);
+    }
+  });
+
+  it('el comando al parar queda en la auditoría y exige el módulo «Terminal de comandos»', async () => {
+    const { s } = bot();
+    let r = await pedir('PATCH', `/api/services/${s.id}`, { config: { stopCommand: 'node scripts/vaciar-cola.js' } });
+    expect(r.statusCode, r.body).toBe(200);
+    const entrada = listAudit({ action: 'service_stop_command' }).find((a) => a.target_id === s.id);
+    expect(entrada?.detail).toBe('bot: node scripts/vaciar-cola.js');
+
+    // Propietario de un workspace sin el módulo: no puede poner uno nuevo, pero
+    // sí guardar el resto de ajustes con el que ya hay, y quitarlo.
+    const ws = createWorkspaceRow('Sin terminal', { modules_override: JSON.stringify(['domains']) });
+    const p = createProject('Bots sin terminal', `sin-terminal-${Math.random().toString(36).slice(2, 8)}`, null, ws.id);
+    const svc = createService(p.id, 'bot', 'bot', 'image', { image: 'busybox:stable', domains: [], stopCommand: 'echo de antes' } as any);
+    const email = `owner-${Math.random().toString(36).slice(2, 8)}@example.com`;
+    createUser(email, hashPassword('contraseña1'), 'owner', ws.id);
+    const login = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email, password: 'contraseña1' }, headers: SAME_ORIGIN });
+    expect(login.statusCode, login.body).toBe(200);
+    const suya = String(login.headers['set-cookie']).split(';')[0];
+    const patchSuyo = (config: Record<string, unknown>) =>
+      app.inject({ method: 'PATCH', url: `/api/services/${svc.id}`, headers: { cookie: suya, ...SAME_ORIGIN }, payload: { config } });
+    r = await patchSuyo({ stopCommand: 'curl -s https://x' });
+    expect(r.statusCode, r.body).toBe(403);
+    expect(JSON.parse(r.body).error).toMatch(/Terminal de comandos/);
+    r = await patchSuyo({ stopCommand: 'echo de antes', stopGraceSeconds: 12 });
+    expect(r.statusCode, r.body).toBe(200);
+    r = await patchSuyo({ stopCommand: null });
+    expect(r.statusCode, r.body).toBe(200);
+    expect((getService(svc.id)!.config as unknown as Record<string, unknown>).stopCommand).toBeUndefined();
   });
 
   it('PATCH de una base de datos: solo la gracia', async () => {
     const p = proyecto();
     const db = createService(p.id, 'postgres', 'postgres', 'database', { template: 'postgres' } as any);
-    const r = await pedir('PATCH', `/api/services/${db.id}`, { config: { deployStrategy: 'overlap', stopGraceSeconds: 60, stopCommand: 'x' } });
+    let r = await pedir('PATCH', `/api/services/${db.id}`, { config: { deployStrategy: 'overlap', stopGraceSeconds: 60, stopCommand: 'x' } });
     expect(r.statusCode, r.body).toBe(200);
     const cfg = getService(db.id)!.config as unknown as Record<string, unknown>;
     expect(cfg.stopGraceSeconds).toBe(60);
     expect(cfg.deployStrategy).toBeUndefined();
     expect(cfg.stopCommand).toBeUndefined();
+    // Una base de datos nunca se para con menos de 10 s.
+    r = await pedir('PATCH', `/api/services/${db.id}`, { config: { stopGraceSeconds: 5 } });
+    expect(r.statusCode, r.body).toBe(400);
+    expect(JSON.parse(r.body).error).toMatch(/de 10 a 600 segundos/);
+    r = await pedir('PATCH', `/api/services/${db.id}`, { config: { stopGraceSeconds: 10 } });
+    expect(r.statusCode, r.body).toBe(200);
   });
 
   it('GET trae cómo se despliega y se para el servicio', async () => {
