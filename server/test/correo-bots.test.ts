@@ -4,9 +4,12 @@
  * servicio (la pestaña los usa para saber si conectar revoca una credencial
  * en uso y marcar «Volver a desplegar ahora», y para no equivocarse con el
  * usuario del buzón en los proyectos de una cuenta) y si el servicio no tiene
- * dominio (para recomendar la API de envío). El contrato de `POST …/connect`
- * no cambia: sin `redeploy`, no se despliega. Mailway es el doble de
- * `mailwayfake.ts`.
+ * dominio (para recomendar la API de envío), y con qué nombre lleva cada
+ * papel (la ayuda de la API nombra las variables que el servicio espera). El
+ * contrato de `POST …/connect` no cambia: sin `redeploy`, no se despliega; con
+ * él, se vuelve a desplegar la versión en marcha, sin compilar la cabeza de la
+ * rama, salvo que hubiera otros cambios pendientes o un despliegue en curso.
+ * Mailway es el doble de `mailwayfake.ts`.
  */
 import fs from 'fs';
 import os from 'os';
@@ -16,16 +19,21 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { buildApp } from '../src/app';
 import { API_TOKEN_PREFIX, hashApiToken } from '../src/auth';
 import {
+  bumpConfigRev,
   closeDb,
+  createDeployment,
   createProject,
   createService,
   createUser,
   createWorkspaceRow,
   getEnv,
+  getService,
   initDb,
   insertApiToken,
   insertMailwayLink,
   listDeployments,
+  setServiceStopped,
+  updateDeployment,
 } from '../src/db';
 import { detectNeeds } from '../src/needs';
 import type { DetectedNeeds, GitConfig, ImageConfig, ProjectRow, ServiceRow, UserRow } from '../src/types';
@@ -34,6 +42,30 @@ import { MW_BASE, MW_TOKEN, fakeFetch, mw } from './mailwayfake';
 
 // El cuerpo de una respuesta HTTP es frontera: se inspecciona sin tipar.
 type Json = any;
+
+const m = vi.hoisted(() => ({
+  triggers: [] as { serviceId: string; trigger: string; imageTag?: string }[],
+  /** Imágenes que ya no están en el disco (purgadas). */
+  purgadas: new Set<string>(),
+}));
+
+// Sin desplegar de verdad: se crea la fila, como haría triggerDeploy, y se
+// apunta con qué imagen se pidió.
+vi.mock('../src/deploy/deployer', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../src/deploy/deployer')>();
+  const db = await import('../src/db');
+  return {
+    ...mod,
+    triggerDeploy: vi.fn((serviceId: string, trigger: string, opts: { imageTag?: string } = {}) => {
+      m.triggers.push({ serviceId, trigger, ...(opts.imageTag ? { imageTag: opts.imageTag } : {}) });
+      return db.createDeployment(serviceId, trigger, opts.imageTag ?? null);
+    }),
+  };
+});
+vi.mock('../src/docker/containers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/docker/containers')>()),
+  imageExists: vi.fn(async (tag: string) => !m.purgadas.has(tag)),
+}));
 
 const SAME_ORIGIN = { 'sec-fetch-site': 'same-origin' };
 
@@ -141,7 +173,36 @@ afterAll(async () => {
 
 beforeEach(() => {
   mw.calls = [];
+  m.triggers = [];
+  m.purgadas.clear();
 });
+
+/** Un worker de repositorio sin dominio, con un despliegue correcto de la imagen `imagen`. */
+function workerDesplegado(project: ProjectRow, slug: string, imagen: string): ServiceRow {
+  const svc = createService(project.id, 'Worker', slug, 'git', {
+    repoUrl: `https://github.com/x/${slug}`,
+    branch: 'main',
+    port: null,
+    domains: [],
+    webhookSecret: 'w',
+  } as unknown as GitConfig);
+  const dep = createDeployment(svc.id, 'manual');
+  updateDeployment(dep.id, { status: 'success', image_tag: imagen, config_rev: getService(svc.id)?.config_rev ?? 0, finished_at: Date.now() });
+  return svc;
+}
+
+async function conectarYDesplegar(project: ProjectRow, svc: ServiceRow, who: Record<string, string>) {
+  const r = await call('POST', `/api/projects/${project.id}/mail/connect`, who, {
+    serviceId: svc.id,
+    mailboxId: mailboxBot,
+    mode: 'api',
+    redeploy: true,
+  });
+  expect(r.status, r.raw).toBe(200);
+  expect(r.json).toMatchObject({ ok: true, needsRedeploy: false });
+  expect(r.json.deploymentId).toBeTruthy();
+  return r.json;
+}
 
 describe('vista previa de «Conectar a un servicio»: nombres de la credencial', () => {
   it('en un proyecto suelto, el slug del servicio', async () => {
@@ -199,6 +260,90 @@ describe('vista previa: servicio sin dominio', () => {
       webhookSecret: 'w',
     } as GitConfig);
     expect((await preview(tienda, web, 'api', owner)).sinDominio).toBe(false);
+  });
+});
+
+describe('vista previa: qué variable lleva cada papel', () => {
+  it('sin manifiesto, los nombres de siempre', async () => {
+    const svc = bot(tienda, 'bot-nombres');
+    expect((await preview(tienda, svc, 'api', owner)).roleNames).toMatchObject({
+      api_url: 'MAILWAY_API_URL',
+      api_key: 'MAILWAY_API_KEY',
+      from: 'MAIL_FROM',
+    });
+  });
+
+  it('con un skyway.json que los nombra de otra forma, los suyos: la ayuda y el ejemplo de la pestaña los usan', async () => {
+    const svc = createService(tienda.id, 'Avisos', 'avisos', 'git', {
+      repoUrl: 'https://github.com/x/avisos',
+      branch: 'main',
+      port: null,
+      domains: [],
+      webhookSecret: 'w',
+      needs: needsFrom({
+        'skyway.json': JSON.stringify({
+          version: 1,
+          integrations: { mail: { mode: 'api', mailbox: 'bot' } },
+          env: { MAIL_API: { from: 'mail.api_url' }, MAIL_TOKEN: { from: 'mail.api_key' }, REMITENTE: { from: 'mail.from' } },
+        }),
+      }),
+    } as unknown as GitConfig);
+    const p = await preview(tienda, svc, 'api', owner);
+    expect(p.roleNames).toEqual({ api_url: 'MAIL_API', api_key: 'MAIL_TOKEN', from: 'REMITENTE' });
+    expect(p.keys).toEqual(expect.arrayContaining(['MAIL_API', 'MAIL_TOKEN', 'REMITENTE']));
+  });
+});
+
+describe('conectar y volver a desplegar: la versión en marcha, no la cabeza de la rama', () => {
+  it('con una imagen correcta en marcha y nada más pendiente, se despliega esa imagen', async () => {
+    const svc = workerDesplegado(tienda, 'worker-a', 'skyway/tienda-worker-a:aaaa1111');
+    await conectarYDesplegar(tienda, svc, owner);
+    expect(m.triggers).toEqual([{ serviceId: svc.id, trigger: 'mailway', imageTag: 'skyway/tienda-worker-a:aaaa1111' }]);
+  });
+
+  it('con cambios guardados sin desplegar de antes de conectar, un despliegue normal (los aplica)', async () => {
+    const svc = workerDesplegado(tienda, 'worker-b', 'skyway/tienda-worker-b:bbbb2222');
+    bumpConfigRev([svc.id]);
+    await conectarYDesplegar(tienda, svc, owner);
+    expect(m.triggers).toEqual([{ serviceId: svc.id, trigger: 'mailway' }]);
+  });
+
+  it('con otro despliegue en cola, un despliegue normal: fijar la imagen desharía el que va delante', async () => {
+    const svc = workerDesplegado(tienda, 'worker-c', 'skyway/tienda-worker-c:cccc3333');
+    createDeployment(svc.id, 'manual');
+    await conectarYDesplegar(tienda, svc, owner);
+    expect(m.triggers).toEqual([{ serviceId: svc.id, trigger: 'mailway' }]);
+  });
+
+  it('con la imagen purgada, un servicio de imagen Docker o sin despliegues correctos, un despliegue normal', async () => {
+    const purgado = workerDesplegado(tienda, 'worker-d', 'skyway/tienda-worker-d:dddd4444');
+    m.purgadas.add('skyway/tienda-worker-d:dddd4444');
+    await conectarYDesplegar(tienda, purgado, owner);
+    const imagen = bot(tienda, 'bot-imagen');
+    await conectarYDesplegar(tienda, imagen, owner);
+    const nuevo = createService(tienda.id, 'Nuevo', 'worker-e', 'git', {
+      repoUrl: 'https://github.com/x/worker-e',
+      branch: 'main',
+      port: null,
+      domains: [],
+      webhookSecret: 'w',
+    } as unknown as GitConfig);
+    await conectarYDesplegar(tienda, nuevo, owner);
+    expect(m.triggers).toEqual([
+      { serviceId: purgado.id, trigger: 'mailway' },
+      { serviceId: imagen.id, trigger: 'mailway' },
+      { serviceId: nuevo.id, trigger: 'mailway' },
+    ]);
+  });
+
+  it('un servicio detenido desde el panel solo se despliega si se pide (la API no cambia)', async () => {
+    const svc = bot(tienda, 'bot-detenido');
+    setServiceStopped(svc.id, true);
+    const r = await call('POST', `/api/projects/${tienda.id}/mail/connect`, owner, { serviceId: svc.id, mailboxId: mailboxBot, mode: 'api' });
+    expect(r.status, r.raw).toBe(200);
+    expect(r.json).toMatchObject({ needsRedeploy: true, deploymentId: null });
+    expect(m.triggers).toEqual([]);
+    expect(getService(svc.id)?.stopped_at).toBeTruthy();
   });
 });
 

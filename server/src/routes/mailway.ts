@@ -14,6 +14,7 @@ import {
 import { audit } from '../audit';
 import {
   MailwayLinkWithProject,
+  activeDeploymentIdsForServices,
   deleteMailwayLink,
   getMailwayLink,
   getProject,
@@ -25,11 +26,14 @@ import {
   listMailwayLinksByClient,
   listServices,
   listWorkspaceUsers,
+  lastSuccessfulImage,
+  servicesWithPendingChanges,
   setMailwayLinkClientName,
   setSetting,
   reservarNombresMailway,
 } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
+import { imageExists } from '../docker/containers';
 import { panelDomains, webmailHostError } from '../domainguard';
 import { bloqueoPorCambioConCorreo } from '../domainmigration';
 import { consultarMx } from '../domains';
@@ -155,7 +159,7 @@ import { forgetProjectRenewals, renewalsOfProject, renovarCorreoDelProyecto } fr
 import { markManualAction } from '../monitor';
 import { isWorkspaceActive, moduleAllowedForProject, workspaceOfProject } from '../quota';
 import { rateLimit } from '../ratelimit';
-import { MailwayLinkRow, ProjectRow, UserRow, WorkspaceRow } from '../types';
+import { MailwayLinkRow, ProjectRow, ServiceRow, UserRow, WorkspaceRow } from '../types';
 import { withTimeout } from '../util';
 import { domainSchema } from './services';
 
@@ -1256,6 +1260,31 @@ const inviteSchema = z.object({
     .max(720, 'La validez máxima del enlace es de 30 días (720 horas)')
     .optional(),
 });
+
+/**
+ * Imagen que tiene en marcha un servicio de repositorio, para volver a
+ * desplegarlo tras conectar el correo sin compilar la cabeza de la rama: lo
+ * que cambia son variables. Desplegar la cabeza publicaba commits que nadie
+ * había pedido desplegar (con el despliegue automático desactivado) y, mientras
+ * compilaba, el contenedor seguía con la credencial ya revocada; si la
+ * compilación fallaba, se quedaba con ella. Es la misma regla que la baja del
+ * cambio de dominio (`imagenEnMarcha` de `domainmigration.ts`).
+ *
+ * Sin imagen (servicio de imagen Docker, nunca desplegado bien, imagen purgada)
+ * o con otro despliegue en cola o en curso (que terminaría después con una
+ * versión más nueva, y esta la desharía), un despliegue normal.
+ */
+async function imagenEnMarcha(service: ServiceRow): Promise<string | undefined> {
+  if (service.type !== 'git') return undefined;
+  if (activeDeploymentIdsForServices([service.id]).length > 0) return undefined;
+  const tag = lastSuccessfulImage(service.id);
+  if (!tag) return undefined;
+  try {
+    return (await imageExists(tag)) ? tag : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
   /**
@@ -2515,8 +2544,11 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
      * credencial de Skyway del servicio en ese modo (en un proyecto de una
      * cuenta llevan también el del proyecto): con ellos la pestaña sabe, sin
      * repetir la regla, si conectar revoca una credencial que el contenedor en
-     * marcha está usando. `sinDominio` (ni dominios ni ruta de healthcheck: un
-     * bot o un worker) le sirve para recomendar la API de envío.
+     * marcha está usando. `sinDominio` (ni dominios ni ruta de healthcheck:
+     * casi siempre un bot o un worker) le sirve para recomendar la API de
+     * envío. `roleNames` dice qué variable lleva cada papel (la primera, si
+     * hay varias): la ayuda del modo API y su ejemplo nombran las que el
+     * servicio espera, no siempre `MAILWAY_API_URL` y `MAILWAY_API_KEY`.
      */
     secured.get(
       '/api/projects/:id/mail/connect/preview',
@@ -2542,6 +2574,10 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           conflicts: names.conflicts,
           credentialNames: credentialNames(service, query.mode, link),
           sinDominio: (config.domains ?? []).length === 0 && !config.healthcheckPath?.trim(),
+          roleNames: names.targets.reduce<Record<string, string>>((acc, t) => {
+            if (!(t.role in acc)) acc[t.role] = t.name;
+            return acc;
+          }, {}),
         };
       }),
     );
@@ -2554,7 +2590,8 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
      * tienen que estar. La credencial del mismo tipo que Skyway creó antes para
      * este servicio se revoca. Con el turno de las credenciales del servicio:
      * una renovación automática en marcha sobre él termina antes, y el resumen
-     * se lee después, con lo que haya dejado.
+     * se lee después, con lo que haya dejado. Con `redeploy`, la versión en
+     * marcha con las variables nuevas (ver `imagenEnMarcha`).
      */
     secured.post(
       '/api/projects/:id/mail/connect',
@@ -2573,6 +2610,9 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         const service = serviceOfProject(ctx.project.id, body.serviceId);
         assertAccountActive(ctx.project);
         const link = requireLink(ctx.project);
+        // Antes de conectar, que sube la revisión de la configuración: después
+        // ya no se distingue lo que estaba pendiente de lo que escribe esto.
+        const habiaPendientes = servicesWithPendingChanges([service]).has(service.id);
         const { keys, kept, revoked, mailbox } = await withMailCredentialLock(service.id, async () => {
           const summary = await ownedSummary(ctx.project, link);
           assertClientActive(summary);
@@ -2583,9 +2623,11 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
         });
 
         let deploymentId: string | null = null;
+        let imagen: string | undefined;
         if (body.redeploy) {
+          imagen = habiaPendientes ? undefined : await imagenEnMarcha(service);
           markManualAction(service.id);
-          deploymentId = triggerDeploy(service.id, 'mailway').id;
+          deploymentId = triggerDeploy(service.id, 'mailway', imagen ? { imageTag: imagen } : {}).id;
         }
         audit(req, 'mailway_service_connected', {
           type: 'service',
@@ -2593,7 +2635,8 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           detail:
             `${service.name} ← ${mailbox.email} (${body.mode === 'smtp' ? 'SMTP' : 'API'}): ${keys.join(', ')}` +
             `${kept.length ? ` · sin tocar (puestas a mano): ${kept.join(', ')}` : ''}` +
-            `${revoked ? ` · ${revoked} credencial(es) anterior(es) revocada(s)` : ''}${body.redeploy ? ' · despliegue iniciado' : ''}`,
+            `${revoked ? ` · ${revoked} credencial(es) anterior(es) revocada(s)` : ''}` +
+            `${body.redeploy ? (imagen ? ' · despliegue iniciado con la versión en marcha' : ' · despliegue iniciado') : ''}`,
         });
         return { ok: true, keys, kept, needsRedeploy: !body.redeploy, deploymentId, revoked };
       }),
