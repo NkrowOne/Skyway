@@ -187,9 +187,11 @@ export interface DatabaseConfig {
   backupSchedule?: 'daily' | 'weekly' | null;
   backupRetention?: number;
   /**
-   * Segundos entre SIGTERM y SIGKILL al parar (0–600). Ausente:
-   * RAILWAY_DEPLOYMENT_DRAINING_SECONDS o 30. Un motor que se mata a mitad de
-   * escribir tiene que recuperarse al arrancar: mejor darle tiempo a cerrar.
+   * Segundos entre SIGTERM y SIGKILL al parar (10–600). Ausente: 30. Un motor
+   * que se mata a mitad de escribir tiene que recuperarse al arrancar: mejor
+   * darle tiempo a cerrar. RAILWAY_DEPLOYMENT_DRAINING_SECONDS no se aplica a
+   * las bases: en Skyway las variables compartidas también les llegan, y un
+   * valor pensado para un bot las dejaría con SIGKILL en cada parada.
    */
   stopGraceSeconds?: number;
 }

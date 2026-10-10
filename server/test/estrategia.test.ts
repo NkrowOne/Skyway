@@ -17,12 +17,15 @@ import {
   describirEstrategia,
   estrategiaDespliegue,
   estrategiaEfectiva,
+  GRACIA_PARADA_MINIMA_BASE_DE_DATOS,
   GRACIA_PARADA_POR_DEFECTO,
   graciaParada,
   llamadoPorOtros,
   referenciaInterna,
+  referenciaInternaEnVariables,
 } from '../src/deploy/estrategia';
 import { searchFaq } from '../src/help/assistant';
+import { rewriteRailwayRefs, type RailwayRefCtx } from '../src/railway/importer';
 import type { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from '../src/types';
 
 beforeAll(() => {
@@ -89,7 +92,7 @@ describe('estrategiaDespliegue', () => {
     expect(estrategiaDespliegue(app({ domains: ['bot.acme.es'] }), false)).toEqual(conTrafico);
     expect(estrategiaDespliegue(app({ healthcheckPath: '/health' }), false)).toEqual(conTrafico);
     expect(estrategiaDespliegue(app(), true)).toEqual(conTrafico);
-    expect(estrategiaDespliegue(imagen({ domains: ['w.acme.es'] }), false)).toEqual(conTrafico);
+    expect(estrategiaDespliegue(imagen({ port: 80, domains: ['w.acme.es'] }), false)).toEqual(conTrafico);
   });
 
   it('un healthcheck vacío o en blanco no cuenta como tráfico', () => {
@@ -131,6 +134,20 @@ describe('estrategiaDespliegue', () => {
     expect(estrategiaDespliegue(app({ volumes: [], hostPort: null }), false).motivo).toBe('sin_trafico');
   });
 
+  it('un servicio de imagen sin puerto no recibe tráfico aunque guarde un dominio o un healthcheck', () => {
+    // Sin puerto no hay router de Traefik ni sonda: lo que quedó guardado (un
+    // servicio importado de Railway sin puerto conocido) no le lleva tráfico.
+    const sinTrafico = { estrategia: 'recreate', motivo: 'sin_trafico', automatica: true };
+    expect(estrategiaDespliegue(imagen({ domains: ['w.acme.es'] }), false)).toEqual(sinTrafico);
+    expect(estrategiaDespliegue(imagen({ port: null, healthcheckPath: '/health' }), false)).toEqual(sinTrafico);
+    // Con puerto, el dominio y el healthcheck sí cuentan.
+    expect(estrategiaDespliegue(imagen({ port: 8080, domains: ['w.acme.es'] }), false).estrategia).toBe('overlap');
+    expect(estrategiaDespliegue(imagen({ port: 8080, healthcheckPath: '/health' }), false).estrategia).toBe('overlap');
+    // Las llamadas de otros servicios cuentan aunque no haya puerto declarado:
+    // la imagen puede escuchar en uno que nadie anotó.
+    expect(estrategiaDespliegue(imagen(), true).estrategia).toBe('overlap');
+  });
+
   it('una base de datos: siempre una sola copia, antes que cualquier otra regla', () => {
     expect(estrategiaDespliegue(baseDeDatos(), true)).toEqual({ estrategia: 'recreate', motivo: 'base_de_datos', automatica: false });
     expect(estrategiaDespliegue(baseDeDatos({ hostPort: 5432, domains: ['db.acme.es'] }), true).motivo).toBe('base_de_datos');
@@ -156,6 +173,13 @@ describe('referenciaInterna', () => {
     expect(referenciaInterna(['postgres://u:p@api:5432/db'], api)).toBe(true);
     expect(referenciaInterna(['api.railway.internal'], api)).toBe(true);
     expect(referenciaInterna(['http://api.railway.internal:3000/v1'], api)).toBe(true);
+    // Donde empieza una dirección: tras un espacio, una coma, «=», comillas…
+    expect(referenciaInterna(['node proxy.js --upstream api:3000'], api)).toBe(true);
+    expect(referenciaInterna(['worker:4000,api:3000'], api)).toBe(true);
+    expect(referenciaInterna(['--target=api:3000'], api)).toBe(true);
+    expect(referenciaInterna(['["api:3000"]'], api)).toBe(true);
+    expect(referenciaInterna(['ws://API:3000/socket'], api)).toBe(true);
+    expect(referenciaInterna(['cd /app &&\nexec node x.js api:3000'], api)).toBe(true);
   });
 
   it('no cuenta lo que solo se parece', () => {
@@ -169,6 +193,10 @@ describe('referenciaInterna', () => {
     expect(referenciaInterna(['http://old-api:3000'], api)).toBe(false);
     expect(referenciaInterna(['http://v2.api:3000'], api)).toBe(false);
     expect(referenciaInterna(['http://api-2:3000'], api)).toBe(false);
+    expect(referenciaInterna(['http://x_api:3000'], api)).toBe(false);
+    // Un trozo de ruta o de una clave no es una dirección.
+    expect(referenciaInterna(['https://x.acme.es/v1/bot:1234'], { name: 'Bot', slug: 'bot' })).toBe(false);
+    expect(referenciaInterna(['cache:bot:10'], { name: 'Bot', slug: 'bot' })).toBe(false);
     // Puerto de una cifra o de seis: no es un puerto.
     expect(referenciaInterna(['api:3'], api)).toBe(false);
     expect(referenciaInterna(['api:300000'], api)).toBe(false);
@@ -180,6 +208,44 @@ describe('referenciaInterna', () => {
   it('un slug con caracteres especiales de expresión regular no rompe la búsqueda', () => {
     expect(referenciaInterna(['http://a-b:3000'], { name: 'a-b', slug: 'a-b' })).toBe(true);
     expect(referenciaInterna(['http://axb:3000'], { name: 'a.b', slug: 'a.b' })).toBe(false);
+  });
+});
+
+describe('referenciaInternaEnVariables', () => {
+  const api = { name: 'API', slug: 'api' };
+
+  it('cuenta el slug a secas en una clave de host', () => {
+    expect(referenciaInternaEnVariables({ API_HOST: 'api' }, api)).toBe(true);
+    expect(referenciaInternaEnVariables({ BACKEND_HOSTNAME: ' API ' }, api)).toBe(true);
+    expect(referenciaInternaEnVariables({ PGHOST: 'api' }, api)).toBe(true);
+    expect(referenciaInternaEnVariables({ UPSTREAM_ADDR: 'api' }, api)).toBe(true);
+    expect(referenciaInternaEnVariables({ API_DOMAIN: 'api' }, api)).toBe(true);
+    // Y todo lo que ya cuenta en `referenciaInterna`.
+    expect(referenciaInternaEnVariables({ URL: 'http://api:3000' }, api)).toBe(true);
+  });
+
+  it('no cuenta el slug en otra clave, ni otro valor en una clave de host', () => {
+    expect(referenciaInternaEnVariables({ SERVICE_NAME: 'api' }, api)).toBe(false);
+    expect(referenciaInternaEnVariables({ API_HOST: 'api.example.com' }, api)).toBe(false);
+    expect(referenciaInternaEnVariables({ API_HOST: 'myapi' }, api)).toBe(false);
+    expect(referenciaInternaEnVariables({}, api)).toBe(false);
+  });
+
+  it('reconoce lo que deja la importación de Railway', () => {
+    const ctx: RailwayRefCtx = {
+      byName: new Map([
+        ['api', { slug: 'api', port: null, domains: [], vars: new Set<string>() }],
+        ['web', { slug: 'web', port: 3000, domains: ['web.acme.es'], vars: new Set<string>() }],
+      ]),
+      sharedVars: new Set(),
+      projectName: 'Acme',
+      environmentName: 'production',
+    };
+    const vars = { API_HOST: '${{api.RAILWAY_PRIVATE_DOMAIN}}' };
+    rewriteRailwayRefs('web', vars, ctx);
+    expect(vars).toEqual({ API_HOST: 'api' });
+    expect(referenciaInterna(Object.values(vars), api)).toBe(false);
+    expect(referenciaInternaEnVariables(vars, api)).toBe(true);
   });
 });
 
@@ -220,6 +286,38 @@ describe('llamadoPorOtros y estrategiaEfectiva (leen la base)', () => {
     expect(llamadoPorOtros(bot)).toBe(true);
     expect(estrategiaEfectiva(bot).motivo).toBe('con_trafico');
   });
+
+  it('cuenta también los build args y el comando de arranque de los demás servicios', () => {
+    const p = createProject('Proxy', 'proxy');
+    const cfgGit = (extra: Partial<GitConfig> = {}): GitConfig => ({
+      repoUrl: 'https://github.com/acme/x',
+      branch: 'main',
+      port: 3000,
+      domains: [],
+      webhookSecret: 'x',
+      ...extra,
+    });
+    const interna = createService(p.id, 'interna', 'interna', 'git', cfgGit());
+    const cola = createService(p.id, 'cola', 'cola', 'git', cfgGit());
+    const propio = createService(p.id, 'propio', 'propio', 'git', cfgGit({ startCmd: 'node x.js --self propio:3000' }));
+    expect(llamadoPorOtros(interna)).toBe(false);
+    expect(llamadoPorOtros(cola)).toBe(false);
+    // Su propio comando de arranque no cuenta.
+    expect(llamadoPorOtros(propio)).toBe(false);
+
+    createService(p.id, 'front', 'front', 'git', cfgGit({ domains: ['front.acme.es'], buildArgs: { API_URL: 'http://interna:3000' } }));
+    expect(llamadoPorOtros(interna)).toBe(true);
+    expect(llamadoPorOtros(cola)).toBe(false);
+
+    createService(p.id, 'nginx', 'nginx', 'image', {
+      image: 'nginx:1.27',
+      port: 80,
+      domains: [],
+      startCmd: 'UPSTREAM=cola:8080 exec nginx -g "daemon off;"',
+    } as ImageConfig);
+    expect(llamadoPorOtros(cola)).toBe(true);
+    expect(estrategiaEfectiva(cola)).toEqual({ estrategia: 'overlap', motivo: 'con_trafico', automatica: true });
+  });
 });
 
 describe('graciaParada', () => {
@@ -231,6 +329,17 @@ describe('graciaParada', () => {
     expect(graciaParada(app({ stopGraceSeconds: 0 }), {})).toEqual({ segundos: 0, origen: 'servicio' });
     expect(graciaParada(app({ stopGraceSeconds: 600 }), {})).toEqual({ segundos: 600, origen: 'servicio' });
     expect(graciaParada(baseDeDatos({ stopGraceSeconds: 90 }), {})).toEqual({ segundos: 90, origen: 'servicio' });
+  });
+
+  it('una base de datos no lee la variable de Railway y nunca baja de 10 s', () => {
+    // Las compartidas llegan también a las bases: un 0 pensado para los bots
+    // no puede dejar Postgres o Redis con SIGKILL en cada parada.
+    expect(GRACIA_PARADA_MINIMA_BASE_DE_DATOS).toBe(10);
+    expect(graciaParada(baseDeDatos(), { RAILWAY_DEPLOYMENT_DRAINING_SECONDS: '0' })).toEqual({ segundos: 30, origen: 'defecto' });
+    expect(graciaParada(baseDeDatos(), { RAILWAY_DEPLOYMENT_DRAINING_SECONDS: '120' })).toEqual({ segundos: 30, origen: 'defecto' });
+    expect(graciaParada(baseDeDatos({ stopGraceSeconds: 0 }), {})).toEqual({ segundos: 10, origen: 'servicio' });
+    expect(graciaParada(baseDeDatos({ stopGraceSeconds: 5 }), {})).toEqual({ segundos: 10, origen: 'servicio' });
+    expect(graciaParada(baseDeDatos({ stopGraceSeconds: 10 }), {})).toEqual({ segundos: 10, origen: 'servicio' });
   });
 
   it('un valor del servicio fuera de rango o no entero se descarta', () => {

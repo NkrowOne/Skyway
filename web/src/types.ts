@@ -863,7 +863,7 @@ export interface DatabaseConfig {
   diskMb?: number | null;
   backupSchedule?: 'daily' | 'weekly' | null;
   backupRetention?: number;
-  /** Segundos entre SIGTERM y SIGKILL al parar (0–600); ausente = RAILWAY_DEPLOYMENT_DRAINING_SECONDS o 30. */
+  /** Segundos entre SIGTERM y SIGKILL al parar (10–600); ausente = 30 (RAILWAY_DEPLOYMENT_DRAINING_SECONDS no se aplica a las bases). */
   stopGraceSeconds?: number;
 }
 
