@@ -10,7 +10,17 @@
  */
 import { createHash } from 'crypto';
 import { resolveServiceAlerts } from './alerts';
-import { bumpConfigRev, deleteMailwayRenovacion, getMailwayLink, getProject, getService, patchEnv, writeManagedEnv } from './db';
+import {
+  bumpConfigRev,
+  deleteMailwayRenovacion,
+  getMailwayLink,
+  getProject,
+  getProjectVars,
+  getService,
+  patchEnv,
+  patchProjectVars,
+  writeManagedEnv,
+} from './db';
 import {
   MailwayError,
   MailwayInfo,
@@ -33,11 +43,12 @@ import {
   MailValues,
   ROLES_BY_MODE,
   SECRET_ROLES,
+  mailRoleLoose,
   mailTargets,
   mailValue,
   mailVarsOf,
 } from './mailenv';
-import { envStateOf, managedUnchanged, writeDecision } from './managedenv';
+import { EnvState, envStateOf, managedUnchanged, writeDecision } from './managedenv';
 import { isWorkspaceActive, workspaceOfProject } from './quota';
 import { GitConfig, MailwayLinkRow, ProjectRow, ServiceRow } from './types';
 
@@ -299,7 +310,7 @@ export interface MailConnectNames {
   /**
    * Variables de conexión (servidor, puerto, usuario, URL de la API) puestas a
    * mano con un valor distinto del de Mailway. Con alguna, escribir la
-   * credencial dejaría la web conectada a medias, así que no se conecta. Solo
+   * credencial dejaría el servicio conectado a medias, así que no se conecta. Solo
    * las que se pueden comparar: sin conocer el valor de Mailway (la vista
    * previa no sabe el buzón) no se da por conflicto.
    */
@@ -311,7 +322,7 @@ export function partialConnectionMessage(conflicts: string[]): string {
   const una = conflicts.length === 1;
   return (
     `${conflicts.join(', ')} ${una ? 'tiene' : 'tienen'} un valor puesto a mano distinto del de Mailway: escribir solo la credencial ` +
-    'dejaría la web conectada a medias, con la credencial de Mailway y el servidor, el puerto o el usuario de otro proveedor. ' +
+    'dejaría el servicio conectado a medias, con la credencial de Mailway y el servidor, el puerto o el usuario de otro proveedor. ' +
     `${una ? 'Elimínala o vacíala' : 'Elimínalas o vacíalas'} en la pestaña «Variables» del servicio si quieres que ${una ? 'la gestione' : 'las gestione'} Skyway.`
   );
 }
@@ -598,21 +609,74 @@ function mapaDirecciones(mapa: ReadonlyMap<string, string> | undefined): Map<str
 }
 
 /**
- * La URL `smtp://usuario:clave@host:puerto` con otro usuario, o null si no se
- * reconoce o su usuario no está en el mapa. La contraseña se copia tal cual
- * (ya va codificada): sin leerla, no hay forma de equivocarse con ella.
+ * Partes de una URL `smtp(s)://usuario:clave@host:puerto`: el esquema, el
+ * usuario tal como está escrito y lo que va detrás (`:clave@host…`), o null si
+ * no es una URL SMTP con usuario. El usuario termina en el primer «:» de lo que
+ * va antes del ÚLTIMO «@» de la autoridad: así también se reconoce el que se
+ * escribió a mano sin codificar (`smtp://bot@dominio.es:clave@mail…`). La
+ * contraseña no se lee.
  */
-function urlConOtroUsuario(url: string, usuarios: Map<string, string>): string | null {
-  const m = url.match(/^(smtps?:\/\/)([^:@/?#]*)(:[^@/?#]*)?@(.+)$/i);
+function partesUrlSmtp(url: string): { esquema: string; usuario: string; resto: string } | null {
+  const m = url.trim().match(/^(smtps?:\/\/)([^/?#]*)(.*)$/is);
   if (!m) return null;
-  let actual: string;
+  const arroba = m[2].lastIndexOf('@');
+  if (arroba < 0) return null;
+  const credenciales = m[2].slice(0, arroba);
+  const dosPuntos = credenciales.indexOf(':');
+  const usuario = dosPuntos < 0 ? credenciales : credenciales.slice(0, dosPuntos);
+  if (!usuario) return null;
+  return { esquema: m[1], usuario, resto: `${credenciales.slice(usuario.length)}${m[2].slice(arroba)}${m[3]}` };
+}
+
+function decodificarUsuario(usuario: string): string | null {
   try {
-    actual = decodeURIComponent(m[2]);
+    return decodeURIComponent(usuario);
   } catch {
     return null;
   }
-  const nuevo = usuarios.get(actual.trim().toLowerCase());
-  return nuevo ? `${m[1]}${encodeURIComponent(nuevo)}${m[3] ?? ''}@${m[4]}` : null;
+}
+
+/** Usuario (decodificado) de una URL `smtp(s)://usuario:clave@host`, o null. */
+export function usuarioDeUrlSmtp(url: string): string | null {
+  const partes = partesUrlSmtp(url);
+  return partes ? decodificarUsuario(partes.usuario) : null;
+}
+
+/**
+ * La URL `smtp://usuario:clave@host:puerto` con otro usuario (codificado, como
+ * la escribe Skyway), o null si no se reconoce o su usuario no está en el
+ * mapa. La contraseña se copia tal cual: sin leerla, no hay forma de
+ * equivocarse con ella.
+ */
+function urlConOtroUsuario(url: string, usuarios: ReadonlyMap<string, string>): string | null {
+  const partes = partesUrlSmtp(url);
+  const actual = partes ? decodificarUsuario(partes.usuario) : null;
+  const nuevo = actual ? usuarios.get(actual.trim().toLowerCase()) : undefined;
+  return partes && nuevo ? `${partes.esquema}${encodeURIComponent(nuevo)}${partes.resto}` : null;
+}
+
+/**
+ * Usuario de correo (en minúsculas) que lleva una variable: su valor si su
+ * nombre es el de un usuario SMTP, también con un prefijo propio
+ * (`TG_SMTP_LOGIN`, `mailRoleLoose`), o el usuario de una URL SMTP. null si
+ * no lleva ninguno. `comoUsuario`: el valor entero es un usuario aunque el
+ * nombre no lo diga (lo referencia un usuario SMTP: `SMTP_USER=${{shared.LOGIN}}`).
+ */
+export function usuarioDeVariable(key: string, valor: string, comoUsuario = false): string | null {
+  if (comoUsuario || mailRoleLoose(key) === 'user') return valor.trim().toLowerCase() || null;
+  return usuarioDeUrlSmtp(valor)?.trim().toLowerCase() || null;
+}
+
+/**
+ * El texto con el que una variable entra en el correo, tal como está escrito
+ * (sin resolver ni decodificar): el valor entero de un usuario SMTP o el
+ * usuario de una URL SMTP. Sirve para seguir sus referencias
+ * (`SMTP_USER=${{shared.LOGIN}}`, `smtp://${{shared.LOGIN}}:…@host`) hasta la
+ * variable que de verdad lleva la dirección.
+ */
+export function textoUsuarioDeVariable(key: string, valor: string): string | null {
+  if (mailRoleLoose(key) === 'user') return valor;
+  return partesUrlSmtp(valor)?.usuario ?? null;
 }
 
 /**
@@ -681,6 +745,92 @@ export function refrescarVariablesCorreo(
     patchEnv(serviceId, legado, []);
   }
   return [...Object.keys(entries), ...Object.keys(legado)].sort();
+}
+
+/**
+ * ¿Pone al día `refrescarVariablesCorreo` (con `credencialSmtp`) esta variable
+ * de usuario de un servicio con la contraseña de aplicación de Skyway? Las que
+ * escribió Skyway y nadie ha cambiado (`mail.smtp.user` y la URL), y en una
+ * conexión de antes de llevar la cuenta, `SMTP_USER`. Las demás (puestas a
+ * mano, con otro nombre o en un servicio sin esa credencial) son «sin
+ * gestionar»: las pone al día `reescribirUsuariosSinGestionar`.
+ */
+export function usuarioQueRefrescaSkyway(state: EnvState, key: string): boolean {
+  const managed = state.managed[key];
+  if (managed) return (managed.origin === 'mail.smtp.user' || managed.origin === 'mail.smtp.url') && managedUnchanged(state, key);
+  const registrada = Object.values(state.managed).some((m) => m.origin.startsWith('mail.smtp.'));
+  return !registrada && mailTargets('smtp', []).some((d) => d.role === 'user' && d.name === key);
+}
+
+/** Nuevo valor de una variable de usuario según `usuarios` (dirección vieja → nueva), o null si no cambia. */
+function usuarioReescrito(key: string, valor: string, usuarios: ReadonlyMap<string, string>, comoUsuario: boolean): string | null {
+  if (comoUsuario || mailRoleLoose(key) === 'user') {
+    const nuevo = usuarios.get(valor.trim().toLowerCase());
+    return nuevo && nuevo !== valor ? nuevo : null;
+  }
+  const url = urlConOtroUsuario(valor, usuarios);
+  return url && url !== valor ? url : null;
+}
+
+/**
+ * Reescribe en el servicio las variables de papel usuario (`mailRoleLoose`)
+ * cuyo valor es una clave de `usuarios` (dirección vieja → nueva, sin
+ * mayúsculas) y el usuario de las URL SMTP (codificado), salvo las de
+ * `excluir`. Son las que Skyway no gestiona: un `SMTP_USER` con una
+ * contraseña de aplicación creada a mano, un `TG_SMTP_LOGIN`, una URL escrita
+ * a mano. Tras actualizar el usuario de un buzón (o dar de baja el dominio
+ * anterior), el servicio dejaría de poder enviar con el usuario de antes.
+ * `comoUsuario`: variables con otro nombre a las que apunta un usuario SMTP
+ * (`SMTP_USER=${{web.LOGIN_CORREO}}`); su valor entero es el usuario.
+ *
+ * Las que escribió Skyway y nadie ha cambiado conservan su origen
+ * (`writeManagedEnv`); el resto, como estaban (`patchEnv`). No sube la
+ * revisión: quien llama decide cuándo desplegar. Devuelve las claves cambiadas.
+ */
+export function reescribirUsuariosSinGestionar(
+  serviceId: string,
+  usuarios: ReadonlyMap<string, string>,
+  excluir: ReadonlySet<string> = new Set(),
+  comoUsuario: ReadonlySet<string> = new Set(),
+): string[] {
+  const service = getService(serviceId);
+  if (!service) return [];
+  const mapa = mapaDirecciones(usuarios);
+  if (mapa.size === 0) return [];
+  const state = envStateOf(service);
+  const gestionadas: Record<string, { value: string; origin: string }> = {};
+  const sueltas: Record<string, string> = {};
+  for (const [key, valor] of Object.entries(state.env)) {
+    if (excluir.has(key)) continue;
+    const nuevo = usuarioReescrito(key, valor, mapa, comoUsuario.has(key));
+    if (nuevo === null) continue;
+    if (managedUnchanged(state, key)) gestionadas[key] = { value: nuevo, origin: state.managed[key].origin };
+    else sueltas[key] = nuevo;
+  }
+  writeManagedEnv(serviceId, gestionadas);
+  if (Object.keys(sueltas).length > 0) patchEnv(serviceId, sueltas, []);
+  return [...Object.keys(gestionadas), ...Object.keys(sueltas)].sort();
+}
+
+/**
+ * Lo mismo con las variables compartidas del proyecto. Quien llama vuelve a
+ * desplegar los servicios cuyo entorno resuelto cambia (los que las heredan o
+ * las referencian). Devuelve las claves cambiadas.
+ */
+export function reescribirUsuariosCompartidos(
+  projectId: string,
+  usuarios: ReadonlyMap<string, string>,
+  comoUsuario: ReadonlySet<string> = new Set(),
+): string[] {
+  const mapa = mapaDirecciones(usuarios);
+  if (mapa.size === 0) return [];
+  const cambios: Record<string, string> = {};
+  for (const [key, valor] of Object.entries(getProjectVars(projectId))) {
+    const nuevo = usuarioReescrito(key, valor, mapa, comoUsuario.has(key));
+    if (nuevo !== null) cambios[key] = nuevo;
+  }
+  if (Object.keys(cambios).length > 0) patchProjectVars(projectId, cambios, []);
+  return Object.keys(cambios).sort();
 }
 
 /** El servicio, si es del proyecto y se le puede conectar el correo; si no, el error de la ruta. */

@@ -6,7 +6,7 @@ import { dominioPrincipal } from '../dominios';
 import { useLatch, useLocalStorage, useMediaQuery, useRootDomain } from '../hooks';
 import { MetricPoint } from '../pages/Project';
 import { useServiceLiveReplicas, useServiceLiveState } from '../livemetrics';
-import { AutoDeployStatus, Deployment, DbOverview, Project, Runtime, Service, ServiceWebhookInfo } from '../types';
+import { AutoDeployStatus, Deployment, DbOverview, Project, Runtime, Service, ServiceDeployInfo, ServiceWebhookInfo } from '../types';
 import { cx, DEPLOY_STATUS_LABEL, isActiveDeploy, serviceStatus, timeAgo } from '../utils';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import DeploymentsTab from './tabs/DeploymentsTab';
@@ -146,6 +146,8 @@ export default function ServiceDrawer({
         pendingChanges?: boolean;
         autoDeploy?: AutoDeployStatus | null;
         webhook?: ServiceWebhookInfo | null;
+        /** Estrategia de despliegue efectiva y gracia de parada. */
+        deploy?: ServiceDeployInfo;
       }>(`/services/${serviceId}`),
     // El estado vivo del contenedor ya llega por el stream de métricas del
     // proyecto (livemetrics); esto solo refresca el último despliegue y la
@@ -211,9 +213,16 @@ export default function ServiceDrawer({
   });
 
   const action = useMutation({
-    mutationFn: (verb: 'start' | 'stop' | 'restart') => api.post(`/services/${serviceId}/${verb}`),
-    onSuccess: () => {
+    mutationFn: (verb: 'start' | 'stop' | 'restart') => api.post<{ forced?: string[] }>(`/services/${serviceId}/${verb}`),
+    onSuccess: (data, verb) => {
       setConfirmVerb(null);
+      // Detener y Reiniciar: las copias que no atendieron SIGTERM dentro de la
+      // gracia. Es un dato, no un error: la acción se ha completado igualmente.
+      const forzadas = data?.forced ?? [];
+      const slug = detail.data?.service.slug;
+      if (forzadas.length > 0 && slug) {
+        toast(avisoParadaForzada(forzadas, slug, configuredReplicasDe(detail.data?.service), verb === 'restart'), 'info');
+      }
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -626,6 +635,7 @@ export default function ServiceDrawer({
                 projectId={projectId}
                 autoDeploy={detail.data.autoDeploy ?? null}
                 webhook={detail.data.webhook ?? null}
+                deploy={detail.data.deploy ?? null}
                 onChanged={invalidate}
                 onNeedsRedeploy={() => setPendingRedeploy(true)}
                 onDirtyChange={setIsTabDirty}
@@ -689,5 +699,46 @@ export default function ServiceDrawer({
         confirmVariant="danger"
       />
     </aside>
+  );
+}
+
+/** Réplicas configuradas del servicio (las bases de datos, siempre una). */
+function configuredReplicasDe(service: Service | undefined): number {
+  const r = (service?.config as { replicas?: number } | undefined)?.replicas;
+  return typeof r === 'number' && r > 1 ? r : 1;
+}
+
+/** «1», «1 y 2», «1, 2 y 3». */
+function listaNumeros(n: number[]): string {
+  return n.length <= 1 ? String(n[0] ?? '') : `${n.slice(0, -1).join(', ')} y ${n[n.length - 1]}`;
+}
+
+/**
+ * Aviso de las copias que acabaron con SIGKILL al Detener o Reiniciar, con el
+ * número de réplica y nunca con el nombre interno del contenedor
+ * (`skyway-<proyecto>-<servicio>-r2`), que no se ve en ningún otro sitio.
+ */
+function avisoParadaForzada(contenedores: string[], slug: string, replicas: number, reinicio: boolean): string {
+  const sufijo = `-${slug}-r`;
+  const indices = [
+    ...new Set(
+      contenedores.map((c) => {
+        const i = c.lastIndexOf(sufijo);
+        const n = i >= 0 ? Number(c.slice(i + sufijo.length)) : NaN;
+        return Number.isInteger(n) && n > 1 ? n : 1;
+      }),
+    ),
+  ].sort((a, b) => a - b);
+  const una = indices.length === 1;
+  const sujeto =
+    replicas <= 1 && una && indices[0] === 1
+      ? 'El servicio no terminó'
+      : una
+        ? `La réplica ${indices[0]} no terminó`
+        : `Las réplicas ${listaNumeros(indices)} no terminaron`;
+  const parada = una ? 'se detuvo' : 'se detuvieron';
+  return (
+    `${sujeto} con SIGTERM a tiempo y ${parada} con SIGKILL${reinicio ? ' antes de volver a arrancar' : ''}. ` +
+    'Comprueba que el proceso atiende SIGTERM; si ya lo hace y necesita más tiempo para cerrar, aumenta la gracia de parada en Ajustes.'
   );
 }

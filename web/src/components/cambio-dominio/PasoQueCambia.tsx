@@ -7,13 +7,15 @@ import {
   claveDe,
   cambioDominioApi,
   contar,
+  enumerar,
   HostPlan,
   MigracionSkyway,
   ModoHost,
   PlanSkyway,
+  WebhookEnRiesgo,
 } from '../../cambioDominio';
 import { Button, Field, useToast } from '../ui';
-import { Aviso, Avisos, Desplegable } from './comunes';
+import { Aviso, Avisos, AvisosWebhooks, Desplegable } from './comunes';
 
 const ROTULO_AMBITO = { project: 'Compartida', service: 'Servicio', build: 'Compilación' } as const;
 
@@ -84,6 +86,16 @@ export default function PasoQueCambia({
     if (!plan) return;
     replanificar(
       hostsDe(plan).map((h, j) => (j === i ? { ...h, modo } : h)),
+      excluidasDe(plan),
+    );
+  };
+
+  // «Servir también» los nombres en los que un servicio recibe webhooks: vuelve a pedir el plan con ellos en «servir».
+  const servirTambien = (w: WebhookEnRiesgo) => {
+    if (!plan) return;
+    const suyo = (h: HostPlan) => w.hosts.some((x) => x.serviceId === h.serviceId && x.from === h.from);
+    replanificar(
+      hostsDe(plan).map((h) => (suyo(h) ? { ...h, modo: 'servir' as ModoHost } : h)),
       excluidasDe(plan),
     );
   };
@@ -175,6 +187,9 @@ export default function PasoQueCambia({
             abiertoInicial={plan.hosts.some((h) => h.error)}
           >
             {plan.hosts.length > 0 && (
+              <p className="mb-2 text-xs leading-5 text-subtle">Servir también: para APIs y webhooks que no siguen redirecciones.</p>
+            )}
+            {plan.hosts.length > 0 && (
               <ul className="flex flex-col divide-y divide-line">
                 {plan.hosts.map((h, i) => (
                   <li key={`${h.serviceId}:${h.from}`} className="flex flex-col gap-1.5 py-2 first:pt-0 last:pb-0">
@@ -202,6 +217,8 @@ export default function PasoQueCambia({
             )}
           </Desplegable>
 
+          <AvisosWebhooks webhooks={plan.webhooks} onServir={servirTambien} deshabilitado={calcular.isPending} />
+
           <Desplegable
             titulo={
               plan.correo
@@ -218,7 +235,10 @@ export default function PasoQueCambia({
           >
             {plan.correo && (plan.correo.buzones.length > 0 || plan.correo.alias.length > 0) && (
               <ul className="flex flex-col gap-1.5 text-xs">
-                {[...plan.correo.buzones.map((b) => ({ ...b, tipo: 'Buzón' })), ...plan.correo.alias.map((a) => ({ ...a, tipo: 'Alias', usadoPorApps: [] as string[] }))].map((b) => (
+                {[
+                  ...plan.correo.buzones.map((b) => ({ ...b, tipo: 'Buzón' })),
+                  ...plan.correo.alias.map((a) => ({ ...a, tipo: 'Alias', usadoPorApps: [] as string[], appsManuales: [] as string[] })),
+                ].map((b) => (
                   <li key={b.id} className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
                     <span className="text-subtle">{b.tipo}</span>
                     <span className="break-all font-mono text-sub">{b.de}</span>
@@ -227,6 +247,13 @@ export default function PasoQueCambia({
                     {b.usadoPorApps.length > 0 && (
                       <span className="text-subtle">
                         · Lo usa una aplicación para enviar ({b.usadoPorApps.map((n) => n.replace(/^skyway:/, '')).join(', ')})
+                      </span>
+                    )}
+                    {/* Las creadas a mano no las pone al día Skyway: tras actualizar el
+                        usuario o dar de baja, quien las usa tiene que entrar con la dirección nueva. */}
+                    {b.appsManuales && b.appsManuales.length > 0 && (
+                      <span className="text-warn">
+                        · Contraseñas de aplicación creadas a mano ({b.appsManuales.join(', ')}): tendrán que entrar con la dirección nueva
                       </span>
                     )}
                   </li>
@@ -243,6 +270,10 @@ export default function PasoQueCambia({
             <p className="text-xs leading-5 text-subtle">
               Al pasar se volverán a desplegar: {plan.servicios.map((s) => s.nombre).join(', ')}. Antes, en la preparación, no se despliega
               nada.
+              {plan.servicios.some((s) => s.reinicio) &&
+                ` ${enumerar(plan.servicios.filter((s) => s.reinicio).map((s) => `«${s.nombre}»`))} se ${
+                  plan.servicios.filter((s) => s.reinicio).length === 1 ? 'despliega' : 'despliegan'
+                } con una sola copia: unos segundos sin servicio.`}
             </p>
           )}
 

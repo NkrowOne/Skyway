@@ -747,6 +747,15 @@ export interface GitConfig {
   webhookSecret: string;
   healthcheckPath?: string | null;
   replicas?: number;
+  /**
+   * Cómo se sustituye la versión en marcha: 'recreate' («Una sola copia») o
+   * 'overlap' («Sin corte»). Ausente = lo decide Skyway (ver `ServiceDeployInfo`).
+   */
+  deployStrategy?: 'overlap' | 'recreate';
+  /** Segundos entre SIGTERM y SIGKILL al parar (0–600); ausente = RAILWAY_DEPLOYMENT_DRAINING_SECONDS o 30. */
+  stopGraceSeconds?: number;
+  /** Orden que se ejecuta dentro del contenedor antes del SIGTERM (hasta 1000 caracteres). */
+  stopCommand?: string;
   autoDeploy?: boolean;
   /** Importar el .env del repositorio al desplegar; ausente = activado. */
   autoImportEnv?: boolean;
@@ -854,6 +863,28 @@ export interface DatabaseConfig {
   diskMb?: number | null;
   backupSchedule?: 'daily' | 'weekly' | null;
   backupRetention?: number;
+  /** Segundos entre SIGTERM y SIGKILL al parar (10–600); ausente = 30 (RAILWAY_DEPLOYMENT_DRAINING_SECONDS no se aplica a las bases). */
+  stopGraceSeconds?: number;
+}
+
+/** Cómo se despliega y se para el servicio (`deploy` de GET /api/services/:id). */
+export interface ServiceDeployInfo {
+  /** Estrategia efectiva: 'recreate' = una sola copia; 'overlap' = sin corte. */
+  strategy: 'overlap' | 'recreate';
+  /** Por qué: elegida en Ajustes, base de datos, volúmenes o puerto público, o la regla automática (`bot`: Telegram o Discord sin dominio). */
+  reason: 'elegida' | 'base_de_datos' | 'estado' | 'sin_trafico' | 'bot' | 'con_trafico';
+  /** true si no hay estrategia elegida y la decide Skyway. */
+  automatic: boolean;
+  /** Otro servicio del proyecto lo llama por la red interna (`${{svc.INTERNAL_URL}}`, `svc:3000`…). */
+  calledByOthers: boolean;
+  /** Ruta de healthcheck del repositorio (railway.json o railway.toml) en la versión en marcha; cuenta como la de Ajustes. */
+  repoHealthcheckPath: string | null;
+  /** Bibliotecas de Telegram o Discord del repositorio («package.json: telegraf»): sin dominio, una sola copia. */
+  botLibraries: string[];
+  /** Gracia de parada efectiva, en segundos. */
+  stopGraceSeconds: number;
+  /** De dónde sale la gracia: el servicio, RAILWAY_DEPLOYMENT_DRAINING_SECONDS o el valor por defecto. */
+  stopGraceSource: 'servicio' | 'railway' | 'defecto';
 }
 
 export interface Service {

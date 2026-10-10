@@ -11,6 +11,7 @@ import { assertProjectAccess, assertProjectManage, currentUser, requireAuth } fr
 import {
   actualizarPersona,
   calcularPlan,
+  cambiarModoHost,
   cambiarMx,
   cambioDelProyecto,
   cancelarCambio,
@@ -61,6 +62,12 @@ const crearSchema = planSchema.extend({
 });
 
 const pasarSchema = z.object({ expect: z.string().trim().min(1, 'Falta la huella del plan revisado.').max(200) });
+// Varios nombres del mismo servicio van juntos: tras pasar, un solo despliegue para todos.
+const modoHostSchema = z.object({
+  serviceId: z.string().trim().min(1).max(100),
+  from: z.union([domainSchema, z.array(domainSchema).min(1).max(50)]),
+  modo: z.enum(['servir', 'redirigir']),
+});
 const confirmSchema = z.object({ confirm: z.string().max(300) });
 
 type Handler = (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
@@ -226,6 +233,25 @@ export async function domainMigrationRoutes(app: FastifyInstance): Promise<void>
         if (!project) return reply;
         const { mid } = req.params as { mid: string };
         return cambiarMx(req, project, mid);
+      }),
+    );
+
+    /**
+     * «Servir también» nombres de un servicio que redirigen (o volver a
+     * redirigirlos antes de pasar): 202 si se ha vuelto a desplegar el
+     * servicio (tras pasar), 200 si no.
+     */
+    r.post(
+      '/api/projects/:id/domain-migrations/:mid/hosts/mode',
+      { preHandler: rateLimit({ max: 20, windowMs: 60_000 }) },
+      guardado(async (req, reply) => {
+        const project = proyecto(req, reply);
+        if (!project) return reply;
+        const { mid } = req.params as { mid: string };
+        const body = modoHostSchema.parse(req.body ?? {});
+        const { vista, desplegado } = await cambiarModoHost(req, project, mid, body);
+        reply.code(desplegado ? 202 : 200);
+        return vista;
       }),
     );
 

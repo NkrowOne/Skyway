@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.39.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.40.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -124,14 +124,16 @@ server/src/
   docker/
     client.ts           instancia dockerode + ping cacheado
     networks.ts         red edge (Traefik) y red privada por proyecto
-    containers.ts       crear/arrancar/parar, stats, logs, exec, réplicas, labels
+    containers.ts       crear/arrancar/parar (parada limpia: `pararConGracia`), stats, logs, exec, réplicas, labels
     resources.ts        listar volúmenes y quién los monta; borrar volumen, red e imagen informando
                         del error (409 si están en uso) en vez de callarlo
     sampler.ts          muestreador único de Docker: una foto compartida (bajo demanda, con
                         coalescencia) que consumen panel, streams, monitor y vistas de estado
   deploy/
     builder.ts          clone (git) + build (Dockerfile o Nixpacks), enmascara secretos
-    deployer.ts         orquestador: build → swap sin corte → validación → rollback
+    deployer.ts         orquestador: build → intercambio (sin corte o una sola copia) → validación → rollback;
+                        identidad por copia y limpieza de restos de intercambios
+    estrategia.ts       estrategia de despliegue («Una sola copia» / «Sin corte»), gracia de parada y comando al parar
     queue.ts            cola serializada por servicio + semáforo de builds
     stackdeploy.ts      despliegue por etapas de una pila: espera de arranque + SQL de inicialización
     railwayconfig.ts    lectura de railway.json / railway.toml (config-as-code)
@@ -347,7 +349,91 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
    y nunca entran en el entorno del proceso `docker` (`deploy/predeployenv.ts`):
    con ellas en el entorno, quien edita variables elegía qué binario ejecuta
    Skyway con el socket de Docker en la mano.
-4. **Despliegue del contenedor** (swap con validación):
+4. **Despliegue del contenedor** (intercambio con validación):
+   - **Estrategia** (`deploy/estrategia.ts`): antes de tocar la versión en
+     marcha, el desplegador decide **una vez por despliegue** cómo sustituirla y
+     lo escribe en el registro («Estrategia: una sola copia (sin dominio,
+     healthcheck ni llamadas de otros servicios). Parada: SIGTERM y 30 s de
+     gracia.», con «comando al parar,» delante del SIGTERM si lo hay). Hay dos:
+     - **Sin corte** (`overlap`): la versión nueva arranca y se valida mientras la
+       anterior sigue atendiendo; durante unos segundos hay dos copias. Es lo
+       correcto para una web o una API.
+     - **Una sola copia** (`recreate`): se detiene la versión anterior (con parada
+       limpia) y después arranca la nueva; unos segundos sin servicio y nunca dos
+       copias a la vez. Es lo que necesita un bot de polling (Telegram, Discord…:
+       dos copias pidiendo actualizaciones reciben un 409) o un worker (dos copias
+       procesarían el mismo trabajo).
+
+     La elige `estrategiaDespliegue`, con estas reglas **en este orden**:
+     1. base de datos → una sola copia (motivo `base_de_datos`, no elegible);
+     2. volúmenes o puerto público → una sola copia (motivo `estado`, no
+        elegible: dos procesos no pueden escribir el mismo volumen ni publicar el
+        mismo puerto del host; gana a «sin corte» elegido);
+     3. la elegida en Ajustes del servicio (`deployStrategy`, motivo `elegida`);
+     4. automática: un **bot de Telegram o Discord sin dominio** (biblioteca
+        detectada en el repositorio, `needs.bots`: telegraf, grammy,
+        python-telegram-bot, aiogram, discord.js, discord.py…) → una sola copia
+        (motivo `bot`), **aunque tenga healthcheck o lo llamen otros
+        servicios**: con dos copias el bot falla él mismo durante el relevo
+        (Telegram responde 409 a una de las dos y la copia nueva puede no pasar
+        la validación; en Discord, las dos contestan a cada mensaje). Con dominio
+        puede recibir webhooks y sigue la regla 5. Slack, Twilio, WhatsApp y
+        Stripe reciben webhooks o solo envían: no cambian nada;
+     5. automática: **sin dominio, sin ruta de healthcheck y sin que otro servicio
+        del proyecto lo llame por la red interna** → una sola copia (motivo
+        `sin_trafico`); si no, sin corte (motivo `con_trafico`). La ruta de
+        healthcheck es la de Ajustes **o la del repositorio** (`railway.json` o
+        `railway.toml`), que es la que valida el despliegue y manda sobre la de
+        Ajustes: un healthcheck dice que el servicio atiende y que se quiere
+        validar sin cortar. El desplegador usa la del commit que despliega; fuera
+        de él (Ajustes, Reiniciar, el cambio de dominio) se usa la de la versión
+        en marcha (`healthcheckDelRepositorio`: la del último despliegue correcto
+        o la del que construyó su imagen), y la API la devuelve en
+        `deploy.repoHealthcheckPath`.
+
+     «Sin puerto» no sirve para reconocer un bot: un servicio de repositorio
+     siempre tiene puerto interno (3000 por defecto). Por eso cuentan el
+     healthcheck y las llamadas internas: una API interna que otro servicio llama
+     con `${{api.INTERNAL_URL}}` no debe quedarse sin servicio en cada despliegue.
+     Un servicio de imagen **sin puerto** no tiene router de Traefik ni sonda, así
+     que un dominio o un healthcheck que conserve (los de un servicio importado
+     de Railway sin puerto conocido) no cuentan.
+     «Lo llama otro servicio» (`llamadoPorOtros`) mira lo que Skyway guarda: las
+     variables compartidas del proyecto y, de los **demás** servicios, sus
+     variables, sus build args y su comando de arranque. Cuenta una referencia
+     `${{<nombre o slug>.INTERNAL_URL|INTERNAL_HOST|INTERNAL_PORT|RAILWAY_PRIVATE_DOMAIN}}`;
+     la dirección escrita a mano `<slug>:<puerto>` o `<slug>.railway.internal`
+     donde empieza una dirección (al principio del valor o tras `//`, `@`, `=`,
+     un espacio, una coma, un punto y coma, comillas, un paréntesis o un
+     corchete); la URL sin puerto `http://<slug>/…` o `http://<slug>` (un
+     nombre sin puntos justo detrás de `//` solo puede ser un host interno); y
+     el slug a secas en una variable cuyo nombre acaba en `HOST`,
+     `HOSTNAME`, `DOMAIN`, `ADDR` o `ADDRESS` (`API_HOST=api`, que es como deja
+     la importación de Railway un `${{api.RAILWAY_PRIVATE_DOMAIN}}`). Lo que solo
+     se parece no cuenta: `https://api.example.com`, `scope=api:read`, un trozo
+     de ruta como `https://x.com/v1/api:1234`, `http://apis/` o `${{api.PUBLIC_URL}}` (que entra
+     por el dominio). Una variable compartida cuenta aunque solo la use el propio
+     servicio: llega a todos y no se sabe quién la lee. **Una llamada escrita en
+     el código o en un fichero de la imagen** (un `proxy_pass http://api:3000` en
+     `nginx.conf`, una reescritura de Next.js) **no se detecta**: en ese caso,
+     elige «Sin corte» en Ajustes del servicio. Los servicios sin dominio que ya
+     existían pasan a «una sola copia» en su siguiente despliegue; Ajustes enseña
+     la estrategia efectiva y su motivo, y todo se puede elegir salvo las reglas
+     1 y 2. Para que ese cambio no se note solo después del corte, al arrancar
+     por primera vez esta versión Skyway crea **una vez** (ajuste
+     `avisoEstrategiaUnaSolaCopia`) una alerta en el panel, sin canales externos,
+     por cada servicio ya desplegado al que la regla automática da «una sola
+     copia» (tipo `estrategia_una_sola_copia`: ««bot» se desplegará con una sola
+     copia», con cómo volver a «Sin corte» y la gracia nueva). Un despliegue
+     correcto no la resuelve.
+
+     La estrategia se aplica en `deployContainer`, por el que pasan **todos** los
+     despliegues: push y sondeo, despliegue manual, volver atrás, reintento tras
+     un reinicio, «Desplegar todos», la pestaña Correo, el plan de integraciones,
+     la renovación de credenciales, las pilas, la importación de Railway y cada
+     paso del cambio de dominio (pasar, volver, cancelar y dar de baja). El
+     comando previo (punto 3) se ejecuta antes de parar nada: es una orden
+     puntual, no una copia del servicio.
    - **Validación**: healthcheck HTTP 2xx si hay ruta de healthcheck; si no, y
      el servicio recibe tráfico (dominio o puerto público), una **sonda TCP** a
      su puerto interno (`nc -z` desde el contenedor auxiliar `busybox`, mismo
@@ -358,26 +444,187 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      (`restartPolicyType`), una caída al arrancar no es un fallo en ninguno de
      los tres casos: se espera a que Docker la reinicie (hasta 90 s), salvo que
      sea definitiva (`on-failure` con código 0 o con los reintentos agotados).
-   - **Corte cero** (servicios sin volúmenes ni puerto de host): se arranca la
-     versión nueva en paralelo (`--next`, sin tráfico), se **valida** y luego se
-     intercambia réplica a réplica (rolling update). La versión anterior de cada
-     réplica **no se retira hasta que la copia nueva atiende**: la misma sonda
-     contra su nombre de contenedor en la red del proyecto o, si la imagen
-     declara `HEALTHCHECK`, hasta que Docker la marca `healthy` (Traefik no le
-     envía tráfico antes). Esa espera dura lo que Docker puede tardar en decidir
-     con el `HEALTHCHECK` de la imagen (`start_period + (interval + timeout) ×
-     retries`) si es mayor que el plazo del healthcheck del servicio: el primer
-     chequeo no llega hasta pasado el `interval`. Las etiquetas de Traefik llevan un middleware
-     `retry` (3 intentos): mientras la copia nueva arranca, una conexión
-     rechazada se reintenta y el balanceo la lleva a la anterior. Si no se pudo
-     comprobar nada (sin dominio ni healthcheck), el registro lo dice en vez de
-     anunciar «sin interrupción».
-   - **Con estado** (volúmenes/puerto fijo/BBDD): intercambio con **restauración
-     automática** — si la versión nueva falla la validación, vuelve la anterior.
-   - `recoverStaleSwap` repara restos (`--next`/`--prev`) de un swap interrumpido
-     por una caída del servidor.
+   - **Sin corte**: se arranca la versión nueva en paralelo como copia de
+     validación (`--next`, sin tráfico y con `SKYWAY_VALIDATION=1`), se
+     **valida** y se detiene con parada limpia (antes se borraba con SIGKILL),
+     con una gracia corta: la del servicio hasta 10 s como mucho
+     (`GRACIA_VALIDACION_MAXIMA`), porque nunca ha atendido. Se retira **antes**
+     del relevo, mientras la versión anterior sigue en servicio: así nunca hay
+     tres copias a la vez (antes se paraba en segundo plano con la gracia
+     completa, y convivía con la anterior y la nueva: el triple de memoria y
+     hasta 30 s más de despliegue). Después de validar se
+     intercambia réplica a réplica (rolling update). La
+     versión anterior de cada réplica **no se retira hasta que la copia nueva
+     atiende**: la misma sonda contra su nombre de contenedor en la red del
+     proyecto o, si la imagen declara `HEALTHCHECK`, hasta que Docker la marca
+     `healthy` (Traefik no le envía tráfico antes). Esa espera dura lo que
+     Docker puede tardar en decidir con el `HEALTHCHECK` de la imagen
+     (`start_period + (interval + timeout) × retries`) si es mayor que el plazo
+     del healthcheck del servicio: el primer chequeo no llega hasta pasado el
+     `interval`. Las etiquetas de Traefik llevan un middleware `retry` (3
+     intentos): mientras la copia nueva arranca, una conexión rechazada se
+     reintenta y el balanceo la lleva a la anterior. Si no se pudo comprobar
+     nada (sin dominio ni healthcheck), el registro lo dice en vez de anunciar
+     «sin interrupción». Una réplica nueva que falla se detiene con parada
+     limpia y se retira; la versión anterior de cada réplica y las réplicas
+     sobrantes se detienen con parada limpia, se archiva su registro y se
+     retiran.
+   - **Una sola copia** (sustituye a la rama «con estado» de antes y la
+     generaliza a N réplicas): las copias anteriores (nombres exactos
+     `<servicio>` y `<servicio>-rN`) se renombran a `--prev` y se detienen
+     **todas, en paralelo y con parada limpia, antes de arrancar ninguna
+     nueva**; se archiva su registro. Si alguna se detuvo con SIGKILL al agotar
+     la gracia, esa gracia fue tiempo sin servicio: además del aviso del
+     registro, una alerta del servicio en el panel (tipo `parada_forzada`, sin
+     canales externos: ««bot» no atiende SIGTERM», con cómo arreglarlo); se
+     cierra sola en el primer despliegue cuya parada no necesite SIGKILL, no en
+     cualquier despliegue correcto. Después arrancan las nuevas: la 1 con la
+     validación completa (y la política de reinicio del repositorio), de la 2 a
+     la N esperando a que estén listas. Si cualquier copia nueva falla, se añade
+     al registro su salida, se detienen y retiran las nuevas y se **restauran
+     todas las anteriores** (vuelven a su nombre y se arrancan): «La versión
+     nueva falló (…). Se restauró la versión anterior automáticamente.» (sin
+     versión anterior: «El contenedor terminó inesperadamente (…). Consulta el
+     registro del servicio.»). Si van bien, se retiran las `--prev`. El
+     registro lo dice al empezar («Una sola copia: se detiene la versión
+     anterior antes de arrancar la nueva…») y al terminar («Versión nueva en
+     marcha (una sola copia: la anterior se detuvo antes de arrancarla).»). Con
+     una réplica y volúmenes se comporta exactamente como antes. Varias réplicas
+     siguen exigiendo un servicio sin volúmenes ni puerto público. Una parada no
+     se puede interrumpir a mitad: «Cancelar» durante la parada de la versión
+     anterior surte efecto al terminarla, y la versión anterior se restaura.
+   - **Parada limpia** (`pararConGracia` en `docker/containers.ts`): toda
+     parada de una copia de un servicio sigue el mismo orden. Si el contenedor
+     está en marcha y el servicio tiene **comando al parar** (`stopCommand`), se
+     ejecuta dentro con `docker exec` y la orden fija `eval "$SKYWAY_STOP_CMD"`
+     (el texto viaja en la variable `SKYWAY_STOP_CMD`, nunca interpolado en un
+     shell del host ni del contenedor), con la gracia como plazo; si falla o
+     vence el plazo, se registra (código y últimas 20 líneas) y se sigue. Si la
+     imagen no tiene `sh` (distroless, scratch), Docker responde 126/127 con el
+     error del runtime OCI: el registro lo dice así («⚠ La imagen de <nombre> no
+     incluye «sh»: el comando al parar no se puede ejecutar y se continúa con
+     SIGTERM…») en vez de un «código 127» que parece un fallo del comando. El comando al parar **no** se ejecuta en la copia de
+     validación `--next` (ni en sus restos) ni en la réplica nueva que falla en
+     «sin corte»: la versión anterior sigue en servicio, y el comando podría
+     deshacer lo que ella registró (el webhook de un bot). Con «sin corte», el
+     de la versión anterior se ejecuta cuando la nueva ya está en servicio: el
+     registro y Ajustes lo advierten y recomiendan «Una sola copia» si el
+     comando da de baja algo compartido. Después, **SIGTERM** y, si el proceso no termina en la
+     **gracia**, **SIGKILL** (`docker stop -t <gracia>`). La gracia es la del
+     servicio (`stopGraceSeconds`, 0–600); si no la tiene,
+     `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` del entorno resuelto (solo dígitos,
+     hasta 600); si no, **30 s** (antes, 10 s fijos). En una **base de datos**
+     la variable de Railway no se aplica (en Skyway las variables compartidas
+     también llegan a las bases, y un valor pensado para que un bot se pare
+     rápido las dejaría con SIGKILL en cada parada) y la gracia nunca baja de
+     **10 s**. Se fija además como `StopTimeout` del contenedor al crearlo, de
+     modo que un `docker stop` ajeno a Skyway o el apagado del daemon den el
+     mismo plazo. Solo un 404 cuenta como «el contenedor no existe»: si la
+     consulta falla por otro motivo, el contenedor se para igualmente, sin el
+     comando, y un fallo de la parada se propaga a quien la pidió. En «una sola
+     copia», si alguna copia anterior no se puede detener, se restauran todas y
+     el despliegue falla con «No se pudo detener la versión anterior (…): sigue
+     en servicio y no se ha arrancado la nueva.»; un «Cancelar» a mitad deja el
+     despliegue como **cancelado** («Despliegue cancelado: restaurando la
+     versión anterior…»), no como fallido, y si la restauración falla el error
+     lo dice en vez de afirmar que se restauró.
+     Se usa con la versión anterior (en las dos estrategias), la copia
+     `--next` (también al fallar o cancelarse; con su gracia corta), la réplica
+     nueva que falla, las réplicas sobrantes, los restos de intercambios,
+     «Detener» y «Reiniciar». «Detener» para todas las copias a la vez;
+     «Reiniciar» sigue la estrategia: con «sin corte», réplica a réplica (cada
+     una vuelve a arrancar antes de parar la siguiente, así que siempre queda
+     una en servicio, como antes de la parada limpia); con «una sola copia»,
+     para todas a la vez y no arranca ninguna hasta que se han parado todas. Si la parada
+     termina con el código 137, sin `OOMKilled` y tras agotar la gracia, el
+     registro avisa: «⚠ <nombre> no terminó con SIGTERM en <N> s y se detuvo con
+     SIGKILL. Si la aplicación es el proceso principal del contenedor, tiene que
+     atender SIGTERM (cerrar y salir): sin un manejador, el sistema descarta la
+     señal. Si el comando de arranque es una sola orden, empiézalo con «exec».
+     Aumenta la gracia de parada en Ajustes del servicio solo si el proceso ya
+     atiende SIGTERM y necesita más tiempo para cerrar.». Hay dos causas
+     habituales. La primera: el proceso principal (PID 1) es la propia
+     aplicación y no tiene manejador de SIGTERM; el kernel descarta las señales
+     sin manejador que llegan al PID 1, así que Node sin
+     `process.on('SIGTERM', …)` o Python sin `signal.signal(signal.SIGTERM, …)`
+     siguen en marcha hasta el SIGKILL. La segunda: el comando de arranque va
+     envuelto en `sh -c` (Skyway lo envuelve así cuando la imagen no tiene un
+     shell como entrypoint) y el shell se queda como PID 1 sin reenviar la señal,
+     como hacen busybox y Alpine; con `exec`, la aplicación sustituye al shell
+     (y entonces tiene que atender SIGTERM, como en el primer caso). Subir la
+     gracia no arregla ninguna de las dos: con «una sola copia», la gracia se
+     suma al tiempo sin servicio, así que en un proceso que no atiende SIGTERM
+     conviene **bajarla**. No se activa `Init` (tini) de forma general: rompe
+     imágenes que necesitan ser el PID 1 (s6-overlay). El borrado de servicios y
+     proyectos (`purge.ts`) no cambia: 10 s de cortesía antes de borrar.
+   - **Configuración del repositorio al volver a desplegar una imagen**: un
+     despliegue que reutiliza una imagen sin compilar (vuelta atrás, pestaña
+     Correo, cambio de dominio, su reintento) lee la config-as-code del
+     despliegue que la construyó y ahora la **copia a su fila**
+     (`deployments.repo_config`); `deploymentForImage` prefiere los despliegues
+     con configuración guardada. Antes, la fila sin configuración del despliegue
+     más reciente de esa imagen tapaba a la que la construyó: la siguiente vuelta
+     a esa imagen arrancaba sin el comando de arranque ni el healthcheck del
+     repositorio, y el build siguiente la tomaba por un despliegue de antes de
+     railway.json (`previousBuilder`, que ahora también busca el que construyó
+     la imagen) y podía cambiar de constructor.
+   - **Registro de la versión anterior**: se archiva **después** de pararla, de
+     modo que conserva lo que escribe al recibir SIGTERM (antes se archivaba
+     antes de parar y se perdía el cierre).
+   - **Monitor**: justo antes de parar la versión anterior (y antes de cada
+     parada de réplicas) el desplegador llama a `markManualAction`: el monitor
+     solo perdona caídas durante 3 minutos tras una acción manual, y un build
+     largo seguido de «parar y arrancar» abría una alerta de caída falsa.
+   - **Identidad por copia**: cada contenedor recibe `SKYWAY_INSTANCE_ID` (un
+     UUID nuevo por contenedor creado: distinto en cada réplica, en `--next` y
+     en cada despliegue), `SKYWAY_REPLICA` (1…N; `--next` lleva 1),
+     `SKYWAY_REPLICAS` (réplicas configuradas), `SKYWAY_VALIDATION=1` solo en
+     `--next` y `RAILWAY_REPLICA_ID` igual a la instancia salvo que la defina el
+     usuario (§5.5). Las etiquetas `skyway.instance` y `skyway.replica` lo
+     repiten en el contenedor. `SKYWAY_DEPLOYMENT` y `RAILWAY_DEPLOYMENT_ID`
+     siguen siendo el id del despliegue, iguales en todas sus copias. Un
+     «Reiniciar» conserva el contenedor y, con él, su identidad.
+   - **Restos de intercambios** (`--next`/`--prev` que deja un intercambio
+     cortado por una caída o un apagado de Skyway; Docker termina por su cuenta
+     una parada a medias). `limpiarRestosIntercambio` los trata con parada
+     limpia: un `--next` se detiene y se retira. Un `--prev` cuya copia base
+     existe se decide por la etiqueta `skyway.deployment` de las dos: si la base
+     es de un despliegue que no terminó bien y el de la `--prev` está en
+     `success` (Skyway cayó mientras validaba la versión nueva), se detiene y se
+     retira la base y la `--prev` vuelve a su nombre, porque es la versión que
+     funcionaba; en otro caso se detiene y se retira la `--prev`. Un `--prev`
+     sin base vuelve a su nombre. La copia que vuelve a su nombre se arranca,
+     salvo que el servicio esté detenido a propósito (`stopped_at`) o que la
+     limpieza la pida «Detener». Se ejecuta:
+     al **arrancar Skyway** (con Docker disponible, `limpiarIntercambiosAlArrancar`
+     busca los contenedores `skyway.managed=true` cuyo nombre acaba en `--next`
+     o `--prev` y encola la limpieza en la cola de cada servicio, `deploy:<id>`,
+     **antes** que el reintento automático del despliegue cortado, sin esperar a
+     las paradas; los restos de servicios que ya no existen se dejan y se
+     registra un aviso; si hubo restos, queda en la auditoría como
+     `swap_leftovers_cleaned`); al principio de cada despliegue (sustituye a
+     `recoverStaleSwap`); y en **Detener, Iniciar y Reiniciar** si el servicio
+     no tiene un despliegue en cola o en marcha (con uno en marcha, sus
+     `--next`/`--prev` son suyos y no se tocan). La de estas acciones también
+     pasa por la cola `deploy:<id>` y la acción espera a que termine: así nunca
+     coincide con la del arranque sobre los mismos restos.
    - Antes de arrancar se inyectan las **variables de compatibilidad Railway**
-     (§5.5) sin pisar ninguna definida por el usuario.
+     (§5.5) sin pisar ninguna definida por el usuario. Si el entorno define
+     `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS`, el registro indica (ℹ) que Skyway no
+     la aplica y remite a Ajustes del servicio → Despliegue y parada; si hay
+     varias réplicas y el servicio no recibe tráfico (motivo `sin_trafico`),
+     también avisa de que hay N copias en marcha a la vez de forma permanente
+     (y, con el motivo `bot`, de que un bot de polling o del gateway de Discord
+     solo admite una). Otros avisos (ℹ) de la estrategia: un bot de Telegram o
+     Discord que pasa solo a «una sola copia» (y, si tiene healthcheck o lo
+     llaman, que no responderán durante el relevo y que, si recibe webhooks a
+     través de otro servicio, conviene «Sin corte»); uno con dominio que queda
+     «sin corte» (si pide actualizaciones en vez de recibir webhooks, recibe un
+     409: conviene «Una sola copia»); un servicio con puerto interno que pasa
+     solo a «una sola copia» (una llamada escrita en el código o en un
+     `proxy_pass` de otro servicio no se detecta; en ese caso, «Sin corte»); y
+     «sin corte» con comando al parar (el de la versión anterior se ejecuta con
+     la nueva ya en servicio).
    - Rutas que la imagen declara con `VOLUME` y que el servicio no monta: aviso
      en el registro (su contenido se reinicia en cada despliegue y el anterior
      queda en un volumen anónimo huérfano) y se anotan en `config.imageVolumes`
@@ -395,12 +642,35 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
    quedan con `interrupted = 1`. Al arrancar, cada servicio cuyo **último**
    despliegue quedó cortado recibe la alerta `deploy_interrupted` y **un**
    reintento automático (origen `reintento`; una vuelta atrás se reintenta como
-   vuelta atrás). Si el reintento también se corta, solo la alerta: un build que
+   vuelta atrás, y un despliegue del cambio de dominio o de la pestaña Correo
+   que llevaba imagen —la versión en marcha, o la que ya había construido— se
+   reintenta con esa imagen, sin compilar la cabeza de la rama; si esa imagen es
+   la del último despliegue correcto, el registro dice «Se vuelve a desplegar la
+   imagen en marcha…» y no «Rollback a la imagen…»), encolado detrás de la limpieza de los restos de intercambios
+   del servicio (punto 4). Si el reintento también se corta, solo la alerta: un build que
    tumba Skyway reintentado siempre sería un bucle de reinicios. Las alertas
    `deploy_failed` y `deploy_interrupted` de una vuelta atrás guardan en
    `alerts.rollback_to` el despliegue correcto al que se volvía, y Alertas
    ofrece «Volver a esta versión» en lugar de «Desplegar» (que desplegaría la
    cabeza de la rama).
+
+**Prueba real con Docker** (`scripts/prueba-real-bots.mjs`, §9). Arranca un
+Skyway propio (carpeta de datos temporal, puerto 4999 solo en 127.0.0.1) y mide
+con `docker events` cuántas copias de cada servicio hay en marcha a la vez y
+con qué código termina cada una: un bot de imagen sin puerto ni dominio, un bot
+de repositorio local (vuelta atrás y sondeo de la rama) y una web con
+healthcheck a la que una sonda en la red del proyecto pide cada 0,1 s. Cubre
+volver a desplegar, réplicas, comando al parar (también con comillas, con
+código distinto de 0, sin terminar y en una imagen sin `sh`), SIGKILL al agotar
+la gracia, Reiniciar, Detener e Iniciar con restos, «sin corte» elegido a mano,
+caídas de Skyway (`SIGKILL` y apagado ordenado) durante la parada de la versión
+anterior, durante la validación de la nueva y con dos réplicas, versión rota,
+Cancelar, «Desplegar todos» y la web sin corte también tras una caída. Al
+terminar retira el proyecto, los contenedores, las imágenes y las redes que ha
+creado. Sin Traefik, la sonda entra por el alias de la red del proyecto, y el
+DNS de Docker reparte entre las copias: alguna petición suelta puede fallar en
+el instante en que una copia entra o sale (también antes de «una sola copia»
+y la parada limpia); un corte serían decenas seguidas.
 
 **Feed de despliegues.** Cada cambio de fase (encolado, construyendo,
 desplegando, terminado) se publica en un bus en memoria (`events.ts`) que
@@ -676,8 +946,16 @@ huérfanos).
   previo al despliegue y la copia de datos entre bases: el comando y las URLs de
   conexión viajan por entorno y el shell los lee con `"$VAR"`. En el comando
   previo, además, los nombres que la CLI de Docker respeta en su entorno no se
-  le entregan como entorno (ver «Pipeline de despliegue»). `rootDir` y `dockerfilePath` se confinan al
-  repositorio clonado (`paths.ts`).
+  le entregan como entorno (ver «Pipeline de despliegue»). El comando al parar
+  (`stopCommand`) sigue el mismo patrón: viaja en `SKYWAY_STOP_CMD` del exec y se
+  ejecuta con la orden fija `eval "$SKYWAY_STOP_CMD"` dentro del contenedor del
+  servicio. A diferencia del comando de arranque, que solo corre al desplegar,
+  se ejecuta en el contenedor en marcha en cada parada, también al pulsar
+  Reiniciar: equivale a la terminal (`POST /services/:id/exec`) y tiene sus
+  mismas protecciones. Guardarlo exige el módulo «Terminal de comandos» y un
+  workspace no suspendido (la administración lo salta), y el cambio queda en la
+  auditoría como `service_stop_command`, con los primeros 120 caracteres.
+  `rootDir` y `dockerfilePath` se confinan al repositorio clonado (`paths.ts`).
 - **Superficie crítica**: quien accede a Skyway controla el Docker del host. El
   `docker-compose` publica la UI solo en `127.0.0.1:4000` (acceso por dominio+TLS
   vía Traefik, o túnel SSH). Recomendado: contraseña fuerte, dominio con TLS o
@@ -712,7 +990,10 @@ aplican **en caliente**.
 | `diskMb` | ✓ | ✓ | ✓ | cuota orientativa, vigilada por el monitor |
 | `healthcheckPath` | ✓ | ✓ | — | validación del deploy |
 | `volumes` | ✓ | ✓ | fijo (su volumen) | conserva nombre al editar |
-| `replicas` (1–10) | ✓ | ✓ | 1 | requiere sin volúmenes ni hostPort |
+| `replicas` (1–10) | ✓ | ✓ | 1 | requiere sin volúmenes ni hostPort; con «una sola copia», todas se detienen antes de arrancar las nuevas |
+| `deployStrategy` | ✓ | ✓ | — | «Al desplegar»: `recreate` («Una sola copia») u `overlap` («Sin corte»); ausente = automática (§2). Con volúmenes o puerto público, siempre una sola copia. No pide volver a desplegar: vale desde el siguiente despliegue |
+| `stopGraceSeconds` | ✓ | ✓ | ✓ (10–600) | gracia de parada (SIGTERM → SIGKILL), entero 0–600; ausente = `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` o 30 (§2). En una base de datos, de 10 a 600 y sin la variable de Railway: ausente = 30. Las paradas de Skyway leen siempre el valor actual; el `StopTimeout` del contenedor se actualiza en el siguiente despliegue. No pide volver a desplegar |
+| `stopCommand` | ✓ | ✓ | — | comando al parar (hasta 1000 caracteres): se ejecuta dentro del contenedor antes del SIGTERM, con la gracia como plazo (§2). Guardarlo exige el módulo «Terminal de comandos» (§4). No pide volver a desplegar |
 | `autoDeploy` | ✓ | — | — | sondeo de la rama; despliega al haber commit nuevo (opt-out) |
 | `needs` | ✓ | — | — | interno: dependencias detectadas en el repo en el último despliegue (§5.5), con el correo y el `skyway.json`. Se reescribe en cada clonado |
 | `integrationsPending` | ✓ | — | — | interno: variables que el `skyway.json` pide y esperan aprobación (§5.7): las bases, de cualquiera con acceso al proyecto; el correo, de quien lo gestiona. La tarjeta del servicio muestra «Pendiente de aprobar» |
@@ -722,7 +1003,41 @@ aplican **en caliente**.
 **Worker/módulo sin HTTP**: un servicio `image` con `port: null` (o un `git` cuyo
 proceso no escucha) corre en segundo plano; sin puerto no se crea router de
 Traefik y la validación del deploy usa el periodo de gracia en vez del healthcheck.
-Esto reproduce el comportamiento de un *worker* de Railway.
+Esto reproduce el comportamiento de un *worker* de Railway. Sin dominio, sin
+healthcheck y sin otros servicios que lo llamen, se despliega con **una sola
+copia** (§2): la versión anterior se detiene antes de arrancar la nueva.
+
+**Ajustes → Despliegue y parada** (servicios de repositorio y de imagen; en una
+base de datos, solo la gracia):
+
+- **Al desplegar**: «Automático (recomendado) — ahora: Una sola copia» (o «Sin
+  corte», según la regla del §2 aplicada al formulario y a `deploy.calledByOthers`,
+  `deploy.repoHealthcheckPath` y `deploy.botLibraries` del servidor; la ayuda
+  dice qué la decide, también la ruta de healthcheck del repositorio o la
+  biblioteca de bots), «Una sola copia: se detiene la versión anterior antes de arrancar
+  la nueva; unos segundos sin servicio. Recomendado para bots y workers.» y «Sin
+  corte: la versión nueva se valida antes de retirar la anterior; durante unos
+  segundos hay dos copias.». Con volúmenes o puerto público el selector está
+  deshabilitado: «Con volúmenes o puerto público, la versión anterior siempre se
+  detiene antes de arrancar la nueva.».
+- **Gracia de parada (s)**: 0–600, con la gracia efectiva como marcador
+  (`deploy.stopGraceSeconds`) y la ayuda «SIGTERM y, si el proceso no termina en
+  este plazo, SIGKILL. Vacío: 30 s o RAILWAY_DEPLOYMENT_DRAINING_SECONDS.». En
+  una base de datos, de 10 a 600 (vacío: 30 s).
+- **Comando al parar** (texto monoespaciado): «Opcional. Se ejecuta dentro del
+  contenedor antes del SIGTERM, con el mismo plazo.». Nunca pasa por un shell
+  del host. Como corre en el contenedor en marcha en cada parada, guardarlo
+  exige el módulo «Terminal de comandos», igual que la terminal (§4).
+- **Réplicas sin tráfico**: con más de una réplica y un servicio que no recibe
+  tráfico (la regla daría `sin_trafico`), Ajustes avisa en ámbar: «Este servicio
+  no recibe tráfico (sin dominio, healthcheck ni llamadas de otros servicios):
+  con N réplicas hay N copias en marcha a la vez de forma permanente. Un bot de
+  polling (Telegram, Discord…) solo admite una; un worker tiene que repartir el
+  trabajo con SKYWAY_REPLICA y SKYWAY_REPLICAS o usar una cola.»; para un bot de
+  Telegram o Discord sin dominio, que esas réplicas son copias del bot y solo
+  admite una. El registro del despliegue lo repite (ℹ). La nota de réplicas («siempre queda una réplica en
+  servicio») solo aparece con «sin corte»; con «una sola copia»: «Con una sola
+  copia, todas las réplicas se detienen antes de arrancar las nuevas.».
 
 Los servicios `image` admiten además dos campos que rellenan las pilas y que la
 API devuelve tal cual: `icon` (marca con la que el panel pinta el servicio, en vez
@@ -840,6 +1155,7 @@ después en la raíz del repo; se admiten JSON y un subconjunto de TOML.
 | `deploy.restartPolicyType`, `restartPolicyMaxRetries` | política de reinicio de Docker (`NEVER`→`no`, `ON_FAILURE`→`on-failure`, `ALWAYS`→`unless-stopped`) |
 | `deploy.numReplicas` | **no se aplica**: las réplicas consumen cuota del workspace y se fijan en Ajustes. Se avisa en el log |
 | `deploy.cronSchedule` | **no se aplica**: Skyway aún no ejecuta servicios programados. Se avisa en el log |
+| `deploy.drainingSeconds`, `deploy.overlapSeconds` | **no se aplican**: se leen y solo se indican en el registro (ℹ). La gracia de parada se fija en Ajustes del servicio → Despliegue y parada o con la variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`; el solape de Railway no tiene equivalente (§5.5) |
 | `build.watchPatterns` | sin efecto |
 
 La configuración leída se guarda con el despliegue (`deployments.repo_config`),
@@ -1072,10 +1388,54 @@ que una aplicación migrada que las lea siga funcionando:
 
 `RAILWAY_PROJECT_NAME`, `RAILWAY_PROJECT_ID`, `RAILWAY_SERVICE_NAME`,
 `RAILWAY_SERVICE_ID`, `RAILWAY_ENVIRONMENT`, `RAILWAY_ENVIRONMENT_NAME`,
-`RAILWAY_DEPLOYMENT_ID`, `RAILWAY_REPLICA_ID`, `RAILWAY_PRIVATE_DOMAIN` (el alias
+`RAILWAY_DEPLOYMENT_ID`, `RAILWAY_REPLICA_ID` (por copia: igual que
+`SKYWAY_INSTANCE_ID`; antes era el id del despliegue, el mismo en todas las
+réplicas), `RAILWAY_PRIVATE_DOMAIN` (el alias
 del servicio en la red del proyecto), `RAILWAY_TCP_PROXY_PORT`,
 `RAILWAY_PUBLIC_DOMAIN` y `RAILWAY_STATIC_URL` (si el servicio tiene dominio: el principal),
 `RAILWAY_GIT_COMMIT_SHA`, `RAILWAY_GIT_COMMIT_MESSAGE` y `RAILWAY_GIT_BRANCH`.
+
+Dos variables de Railway que gobiernan el relevo de versiones se tratan aparte:
+
+- **`RAILWAY_DEPLOYMENT_DRAINING_SECONDS` se lee**: si el servicio no tiene
+  gracia de parada propia (`stopGraceSeconds`), su valor del entorno resuelto
+  (solo dígitos, hasta 600; otro valor se descarta) es la gracia entre SIGTERM y
+  SIGKILL (§2). Es exactamente lo que significa en Railway, y una app migrada
+  que la fijó espera ese plazo. Ajustes indica de dónde sale la gracia
+  (`deploy.stopGraceSource`: `servicio`, `railway` o `defecto`). Las bases de
+  datos no la leen: en Skyway las variables compartidas también les llegan (en
+  Railway, no), y su gracia nunca baja de 10 s.
+- **`RAILWAY_DEPLOYMENT_OVERLAP_SECONDS` no se aplica.** En Railway, sin
+  volúmenes, la versión nueva arranca antes y la anterior sigue activa esos
+  segundos después de que la nueva esté lista (con un volumen, Railway detiene
+  antes la anterior): alarga el solape, y con `0` no significa «una sola
+  copia». Aplicarla solo serviría para que dos copias convivieran más tiempo, lo
+  contrario de lo que necesita un bot. Si el entorno la define, el registro del
+  despliegue lo indica (ℹ «Skyway no aplica RAILWAY_DEPLOYMENT_OVERLAP_SECONDS:
+  …») y remite a Ajustes del servicio → Despliegue y parada, donde se elige la
+  estrategia. Las claves `deploy.drainingSeconds` y `deploy.overlapSeconds` de
+  `railway.json` solo se indican en el registro (§5.3).
+
+**Variables de Skyway en cada copia.** Además de las de sistema, Skyway pone en
+cada contenedor:
+
+| Variable | Valor |
+| --- | --- |
+| `SKYWAY_PROJECT` | slug del proyecto |
+| `SKYWAY_SERVICE` | slug del servicio |
+| `SKYWAY_DEPLOYMENT` | id del despliegue (el mismo en todas sus copias) |
+| `SKYWAY_INSTANCE_ID` | UUID nuevo por contenedor creado: distinto en cada réplica, en la copia de validación `--next` y en cada despliegue. Un «Reiniciar» conserva el contenedor y, con él, su valor |
+| `SKYWAY_REPLICA` | índice de la réplica, de `1` a `N` (`--next` lleva `1`) |
+| `SKYWAY_REPLICAS` | número de réplicas configuradas |
+| `SKYWAY_VALIDATION` | `1` solo en la copia de validación `--next` (estrategia «sin corte»): una app puede evitar efectos de arranque (registrar un webhook, empezar a pedir actualizaciones, lanzar tareas) mientras se valida |
+
+Sirven para que un worker con varias réplicas reparta el trabajo
+(`SKYWAY_REPLICA` de `SKYWAY_REPLICAS`) y para distinguir en los registros o en
+un servicio externo qué copia hizo qué. Para repartir por índice, el worker
+tiene que ir con «una sola copia»: con «sin corte», durante el intercambio
+conviven la copia anterior y la nueva con el mismo índice (y `--next` lleva el
+1), así que ese tramo se procesaría dos veces. El contenedor lleva además las
+etiquetas `skyway.instance` y `skyway.replica`.
 
 ### 5.6 Copia de datos desde una base externa
 
@@ -1192,7 +1552,11 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
 - **Cambios sin desplegar**: cada servicio tiene una revisión de configuración
   (`services.config_rev`) que sube al guardar sus variables, las compartidas del
   proyecto, un campo que exige redesplegar, el `.env` importado, el plan de
-  integraciones o Correo → Conectar. Si es mayor que la del último despliegue
+  integraciones o Correo → Conectar, y también al guardar los dominios o el
+  puerto de **otro** servicio cuyas variables de sistema referencia
+  (`${{web.PUBLIC_URL}}`, `${{api.INTERNAL_URL}}`…): se compara el entorno
+  resuelto de los demás servicios antes y después de guardar, y los que cambian
+  quedan con cambios sin desplegar. Si es mayor que la del último despliegue
   correcto, `pendingChanges` es `true` en `GET /services/:id` y en cada servicio
   de `GET /projects/:id`: la tarjeta, el panel del servicio y `skyway status` lo
   muestran, también tras cerrar el panel o recargar. Las escrituras del propio
@@ -1365,7 +1729,7 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   visible una sola vez, sugerencias info/contacto/no-reply y **enlace de
   configuración** de dispositivos) y **conectar un
   servicio**: SMTP (contraseña de aplicación propia) o API de envío (clave
-  `mw_…`). Las variables se escriben **con los nombres que espera la web** —los
+  `mw_…`). Las variables se escriben **con los nombres que espera el servicio** —los
   de su `skyway.json` o, por la tabla de alias de `mailenv.ts`, los de su
   `.env.example`: `SMTP_PASSWORD`/`SMTP_PASS`/`MAIL_PASSWORD`/`EMAIL_HOST_PASSWORD`,
   `SMTP_FROM`/`MAIL_FROM`/`EMAIL_FROM`/`DEFAULT_FROM_EMAIL`,
@@ -1386,7 +1750,37 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   o `Skyway · <servicio>`; en un proyecto de una cuenta, `skyway:<proyecto>/<servicio>`)
   y actualiza lo que Skyway escribió (también lo de
   antes de llevar la cuenta de lo escrito); las credenciales vigentes se listan
-  y se revocan desde la misma pestaña. El **fichero de zona** añade, en
+  y se revocan desde la misma pestaña. Como el servicio en marcha sigue con la
+  credencial revocada hasta que se vuelve a desplegar, al volver a conectar un
+  servicio que ya tiene una credencial de Skyway en ese modo (la pestaña lo
+  sabe con los nombres de la vista previa, `credentialNames`) la casilla
+  «Volver a desplegar ahora» aparece **marcada** (salvo si el servicio está
+  detenido desde el panel: desplegar lo pondría en marcha, así que queda
+  desmarcada y el aviso explica que, para arrancarlo, hay que desplegarlo y no
+  usar «Iniciar», que arrancaría el contenedor con la credencial revocada;
+  «Conectar» espera a la vista previa y, si falla, se avisa de la revocación en
+  general) y el aviso lo explica («…
+  Sin volver a desplegar, el servicio no podrá enviar correo hasta el próximo
+  despliegue», y en SMTP, que cada intento con la contraseña revocada cuenta
+  para el bloqueo automático de IPs del servidor de correo), en ámbar si se
+  desmarca. Volver a desplegar desde aquí usa la imagen en marcha, sin compilar
+  la cabeza de la rama (§7.12). Si se conecta sin desplegar y se ha revocado
+  una credencial, el resultado lo avisa y ofrece «Desplegar ahora», que hace lo
+  mismo que la casilla (`POST …/mail/redeploy`: la versión en marcha con las
+  variables nuevas; antes era un despliegue normal, que compilaba la cabeza de
+  la rama, podía publicar commits que nadie había pedido y, si la compilación
+  fallaba, dejaba el servicio con la credencial revocada). La API no cambia: en
+  `POST …/mail/connect`, `redeploy` sigue siendo `false` si no se envía.
+  **Bots y workers**: para un servicio que solo envía se recomienda el modo
+  **API**: la clave `mw_…` solo envía desde su buzón, con los límites del plan y
+  un registro por clave, y no da acceso a su contenido; la contraseña de
+  aplicación del modo SMTP permite también leer el buzón por IMAP. La pestaña lo
+  dice en el modo SMTP y, si el servicio no tiene dominio ni healthcheck
+  (`sinDominio`), lo recomienda expresamente. `MAILWAY_API_URL` es la dirección
+  **base** de Mailway: para enviar, `POST {MAILWAY_API_URL}/v1/send` con la
+  cabecera `Authorization: Bearer {MAILWAY_API_KEY}` y un JSON con `to`,
+  `subject` y `text` o `html`; con la cabecera `Idempotency-Key`, un reintento no
+  envía el mensaje dos veces (la pestaña trae un ejemplo con `curl`). El **fichero de zona** añade, en
   secciones propias, los registros A de los servicios del **mismo proyecto**
   que cuelgan del dominio (hacia la IP pública de Ajustes; sin ella, se omiten
   con un aviso), comentados con la instrucción de borrar antes el registro del
@@ -1521,8 +1915,16 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   `envreplace.ts` con un **mapa exacto** (hosts servidos y direcciones que se
   mudan; `db.dominio.es` o una dirección que no está en Mailway no se cambian y
   se enseñan como nota), sin tocar referencias `${{…}}` ni los usuarios para
-  entrar en el correo; los argumentos de compilación se planifican sin enseñar
-  su valor. WordPress recibe en `WORDPRESS_CONFIG_EXTRA` un bloque que fija
+  entrar en el correo (también con un prefijo propio delante del nombre
+  conocido, como `TG_SMTP_LOGIN`, `BOT_SMTP_USER` o `MYAPP_EMAIL_HOST_USER`, que
+  salen como nota «usuario para entrar»); los argumentos de compilación se
+  planifican sin enseñar su valor. `servicios` lista los que se volverán a
+  desplegar con sus `motivos` (`dominios`, `variables`, `compartidas`,
+  `remitente`, `referencias`) y `reinicio` (se despliega con una sola copia,
+  `estrategiaEfectiva`: la confirmación de «Pasar» avisa de que esos servicios
+  se detienen antes de arrancar la versión nueva, unos segundos sin servicio);
+  `webhooks`, los servicios con webhooks en nombres que redirigen (ver
+  «Webhooks» más abajo). WordPress recibe en `WORDPRESS_CONFIG_EXTRA` un bloque que fija
   `WP_HOME`/`WP_SITEURL` (sin él, un bucle de redirecciones). La huella
   combinada (`expect`) cubre nombres, variables y los buzones y alias de
   Mailway: si algo cambia, 409 `plan_changed`.
@@ -1568,7 +1970,11 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   configuración), remitentes de correo gestionados (`refrescarVariablesCorreo`;
   el **usuario SMTP no cambia**: el buzón entra con el anterior hasta la baja),
   redirecciones (`permanent_from` = ahora + 7 días; antes se borran las que
-  salían de los nombres nuevos) y `bumpConfigRev`. Fuera de ella, un
+  salían de los nombres nuevos) y `bumpConfigRev`. Los servicios cuyo entorno
+  resuelto cambia por los dominios nuevos (los que referencian a otro con
+  `${{api.PUBLIC_URL}}`…) entran también en los afectados, con motivo
+  `referencias`: se compara el entorno resuelto de los servicios antes y
+  después de escribir. Fuera de ella, un
   despliegue normal de cada servicio afectado (`cambio-de-dominio`); al
   terminar bien se retira su prepublicación y, si falla, el contenedor anterior
   sigue sirviendo y la interfaz ofrece «Reintentar este servicio».
@@ -1577,7 +1983,9 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   guardada en un navegador no puede acabar en error), las variables clave a
   clave solo si su valor actual es el que escribió el cambio (si no, el aviso
   «No se ha restaurado X: cambió después del cambio de dominio.»), remitentes de
-  vuelta y sin redirecciones; después se despliegan los servicios afectados.
+  vuelta y sin redirecciones; después se despliegan los servicios afectados
+  (también, como al pasar, los que referencian la dirección de un servicio que
+  vuelve a cambiar de nombre).
   Los nombres viejos que el contenedor en marcha ya no tiene se **prepublican**
   (con el DNS dado por bueno) hasta que el despliegue termine bien: sin ello
   nadie los serviría mientras tanto, ni nunca si el despliegue falla. Un nombre
@@ -1599,10 +2007,12 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   409 `migration_old_mx_here` sin cambiar nada (Mailway lo mide de todos modos
   al dar de baja, pero cuando las aplicaciones ya tienen el usuario nuevo). En
   segundo plano,
-  buzón a buzón, los que usan aplicaciones de Skyway (`skyway:…`) pasan al
-  usuario nuevo si siguen pendientes (`login-update`) y, justo después, sus
-  servicios reciben el usuario y el remitente nuevos y se despliegan **con la
-  imagen en marcha** (15 min como máximo). Lo que decide si un servicio está al
+  buzón a buzón, los que usan aplicaciones de Skyway (`skyway:…`) **o** tienen
+  usos sin gestionar en el proyecto (ver más abajo) pasan al usuario nuevo si
+  siguen pendientes (`login-update`) y, justo después, sus servicios reciben el
+  usuario y el remitente nuevos y se despliegan **con la imagen en marcha** (15
+  min como máximo; un despliegue fallido se reintenta una vez, ver «Baja y
+  “Actualizar ahora”»). Lo que decide si un servicio está al
   día son sus variables, no que el buzón siga pendiente: una respuesta perdida
   o una baja a medias dejan el buzón al día y la aplicación con el usuario
   anterior. Solo con **todos** los servicios del cambio desplegados, Mailway da
@@ -1612,6 +2022,142 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   redirecciones se quedan.
   **Terminar** hace lo mismo en el caso «solo la web». **Quitar las
   redirecciones** las borra (recomendado: no antes de 12 meses).
+- **Webhooks y «Servir también»**: un servicio con indicios de recibir webhooks
+  —por sus variables (propias, de compilación y las esperadas del
+  `.env.example`): `TELEGRAM_*`/`TG_*` (Telegram), `DISCORD_*`, `SLACK_*`,
+  `WHATSAPP_*`, `TWILIO_*`, `STRIPE_*` (con o sin prefijo público), y
+  `BOT_TOKEN`, `*_BOT_TOKEN` o cualquier variable con `WEBHOOK` en el nombre
+  (webhook genérico); o por sus dependencias (`needs.bots`, §5.5: `telegraf`,
+  `grammy`, `node-telegram-bot-api`, `python-telegram-bot`, `aiogram`,
+  `discord.js`, `discord.py`, `discordgo`, `@slack/bolt`, `slack-bolt`, las SDK
+  de Twilio y de Stripe…; en npm, solo las de producción; en Python, los
+  nombres se comparan normalizados según PEP 503 y se leen también las
+  dependencias de Poetry de `[tool.poetry.dependencies]` y del grupo `main`,
+  no las de desarrollo)— sale en `webhooks`
+  del plan y de la vista si algún nombre que **redirige** al pasar le llega:
+  uno de los suyos, o uno del cambio que aparece en su entorno resuelto (un bot
+  sin dominio con `WEBHOOK_URL=${{api.PUBLIC_URL}}/tg` recibe en el nombre de
+  `api`). Cada entrada (`WebhookEnRiesgo`) lleva el servicio, los proveedores,
+  las evidencias («TELEGRAM_BOT_TOKEN», «package.json: telegraf») y los
+  nombres (`hosts[{serviceId, from, to}]`). El aviso dice que el servicio
+  «puede recibir» webhooks en esos nombres (usar la biblioteca o tener el token
+  no dice que los reciba: puede solo enviar notificaciones de Telegram, SMS de
+  Twilio o cobrar con Stripe Checkout sin webhooks), que Telegram y Stripe no
+  siguen redirecciones (un webhook registrado con la URL anterior deja de
+  recibir al pasar) y, del resto, que «puede dejar de recibir»; la salida es
+  volver a registrarlo con la URL nueva después de pasar o **«Servir también»**
+  el nombre anterior (modo `servir`: se sigue sirviendo, sin redirigir). Con
+  Stripe añade que el endpoint nuevo tiene otro secreto de firma
+  (`STRIPE_WEBHOOK_SECRET`), y entonces el aviso general de Stripe de
+  `avisos` («Stripe → Webhooks: crea el endpoint…») no sale: eran dos avisos
+  del mismo endpoint; sale si ningún servicio con Stripe queda en riesgo. Con la
+  cuenta suspendida, «Servir también» después de pasar responde 403
+  `account_suspended`, como pasar. Un bot
+  de polling sin dominio ni URL hacia un nombre del proyecto no sale: no recibe
+  webhooks. Tampoco los **webhooks de salida** (los que el servicio llama, no
+  los que recibe): ni las variables `SLACK_…WEBHOOK(_URL)` o
+  `DISCORD_…WEBHOOK(_URL)`, ni las de cualquier nombre cuyo valor resuelto
+  apunta a `hooks.slack.com`, `discord(app).com/api/webhooks`,
+  `*.webhook.office.com`, `outlook.office.com/webhook` o `chat.googleapis.com`.
+  La detección por dependencias (`needs.bots`) se rellena al desplegar: un
+  servicio desplegado con una versión anterior de Skyway solo avisa por sus
+  variables hasta su siguiente despliegue. «Servir también» está disponible en la vista previa (vuelve a pedir
+  el plan con esos nombres en `servir`), con el cambio preparado (`preparando` o
+  `lista`, en los dos sentidos) y **también después de pasar** (`pasada`, solo
+  de redirigir a servir; la vista solo enseña entonces los nombres que siguen
+  redirigiendo): en una transacción, el nombre anterior se añade al final de
+  los dominios del servicio, se borra su redirección, se prepublica (con el DNS
+  dado por bueno: ya apuntaba aquí) para que nadie lo deje sin servir mientras
+  despliega y sube `config_rev`; después el servicio se despliega con la imagen
+  en marcha. Los nombres de un mismo servicio van juntos (la web manda una
+  petición por servicio): una transacción y un solo despliegue. Antes de pasar
+  se admite servir también el nombre que seguirá siendo el principal del
+  servicio, con el mismo aviso que la vista previa; después de pasar se
+  rechaza con 409 `host_principal` (cambiaría su `PUBLIC_URL`, que ya es la
+  nueva). Auditoría `domain_migration_host_mode` («<nombre>: redirigir →
+  servir»).
+- **Servicios que usan la dirección de otro**: un servicio que no cambia de
+  nombre pero referencia uno que sí (`${{api.PUBLIC_URL}}`,
+  `${{web.PUBLIC_DOMAIN}}`…) se vuelve a desplegar al pasar y al volver, con
+  motivo `referencias` (««bot» se vuelve a desplegar porque usa la dirección de
+  un servicio que cambia de nombre.»). El plan lo predice resolviendo su entorno
+  con los dominios de después (`resolveServiceEnv(s, { dominios })`).
+- **Usuarios de correo que Skyway no gestiona**: el usuario para entrar se
+  reconoce también con un prefijo propio (`mailRoleLoose`: `TG_SMTP_LOGIN`,
+  `BOT_SMTP_USER`…), dentro de una URL SMTP (el usuario, decodificado:
+  `smtp://bot%40dominio.es:…@…`) y en las variables a las que apunta un usuario
+  SMTP (`SMTP_USER=${{shared.MAIL_LOGIN_COMUN}}`, `${{mailer.SMTP_USER}}`,
+  siguiendo hasta 5 referencias encadenadas): son usuario, no cambian al pasar
+  (salen como nota «usuario para entrar») y se ponen al día al actualizar el
+  buzón o en la baja. Los usos se buscan en el **entorno resuelto** de cada
+  servicio, con el nombre de la variable del servicio. En `pasada` y `dando_de_baja`, la vista enseña
+  en `usuariosSinGestionar` (por buzón del cambio: `mailboxId`, `email`,
+  `login`, `pendiente` y `usos`) las variables del proyecto, de servicio o
+  compartidas, cuyo usuario es la dirección anterior o la nueva del buzón y que
+  no son la variable de usuario que Skyway escribió con una credencial
+  `skyway:*` de ese buzón: una contraseña de aplicación creada a mano, una
+  variable con un nombre propio, una URL… Cada uso dice el servicio, la
+  variable, el usuario y su estado: `cambiara` (entra hoy y dejará de entrar al
+  actualizar el buzón o en la baja) o `no_entra` (ya no es el usuario del
+  buzón). El asistente los agrupa en «Servicios que envían con un usuario que
+  cambia» con **«Actualizar y desplegar»** por buzón, que es «Actualizar ahora»
+  (`…/login-update`): además de las credenciales `skyway:*`, reescribe esas
+  variables con el usuario nuevo (en una URL, codificado; lo que escribió
+  Skyway conserva su origen) y despliega con la imagen en marcha los servicios
+  cuyo entorno resuelto cambia (se guarda el de todos los que no son bases de
+  datos antes de reescribir y se compara después): así entran también los que
+  toman el usuario de otra variable y, con una compartida, los que la heredan
+  sin definirla (Skyway no puede saber si la usan). Un servicio que nunca se ha
+  desplegado bien solo queda con cambios sin desplegar (`bumpConfigRev`). Las
+  confirmaciones (la baja, «Actualizar ahora» y «Actualizar y desplegar») solo
+  nombran los usos que se reescriben; los que ya llevan la dirección nueva
+  salen aparte («Ya usan … y entrarán en cuanto se actualice el buzón, sin
+  volver a desplegar»). La baja y cancelar tras un «Volver»
+  hacen lo mismo con todos los buzones con credenciales `skyway:*` **o** con
+  usos sin gestionar.
+- **Contraseñas de aplicación creadas a mano**: con un Mailway que lo informa,
+  cada buzón del plan y de la vista trae `appsManuales` (las contraseñas de
+  aplicación activas que no son `skyway:*`; un Mailway anterior no lo manda y
+  no se avisa; Mailway ya descarta las revocadas y las invalidadas). Si un
+  buzón pendiente las tiene, la vista lo enseña en `appsManuales`
+  (`{mailboxId, email, apps, usadoEnProyecto}`) como aviso informativo: las
+  aplicaciones de fuera de Skyway que las usan tendrán que entrar con la
+  dirección nueva tras actualizar el buzón o tras la baja. Sale también si
+  algún servicio del proyecto usa el buzón (`usadoEnProyecto`): Skyway pone al
+  día ese servicio, pero no puede saber si la misma contraseña la usa además
+  algo de fuera. Las confirmaciones de «Actualizar ahora» y «Actualizar y
+  desplegar» de ese buzón lo repiten. Antes de preparar, el paso «Qué cambia»
+  del asistente lo dice en la lista de buzones («Contraseñas de aplicación
+  creadas a mano (…): tendrán que entrar con la dirección nueva»), además del
+  aviso general de Mailway.
+- **Baja y «Actualizar ahora» sin servicios que dejen de enviar**: el orden se
+  mantiene (usuario en Mailway → variables → despliegue con la imagen en
+  marcha). Desplegar antes con el usuario nuevo solo sería seguro con un único
+  servicio por buzón y con Mailway respondiendo: con dos servicios, si uno
+  falla, el otro ya estaría entrando con un usuario que aún no existe; y si
+  Mailway no responde después de desplegar, el servicio nuevo tampoco entra. En
+  su lugar: «una sola copia» por defecto en los bots retira la causa más
+  probable del fallo (el 409 de dos copias); un despliegue que falla (no uno
+  cancelado) se **reintenta una vez** automáticamente con la misma imagen; y si
+  vuelve a fallar, alerta **crítica** `mail_login_deploy_failed` del servicio
+  (««<servicio>» no puede enviar correo»: «El usuario de correo de
+  «<servicio>» ha cambiado a <nuevo> y su despliegue ha fallado dos veces: el
+  contenedor en marcha sigue entrando con <anterior>, que ya no es válido.»,
+  con la solución «Abre «Cambiar de dominio» en el proyecto y pulsa «Reintentar
+  este servicio». Si vuelve a fallar, revisa el registro del despliegue.») y el
+  error del servicio en el cambio: «El despliegue ha fallado dos veces y
+  «<servicio>» no puede enviar correo: su usuario ya es <a> y el contenedor en
+  marcha sigue con <de>. Pulsa «Reintentar este servicio».». La baja no sigue
+  (Mailway no da de baja el dominio anterior) y su error lo repite. La alerta
+  se cierra sola con el siguiente despliegue correcto del servicio. Lo usan la
+  baja (que espera), «Actualizar ahora» y cancelar (en segundo plano). Cada
+  despliegue guarda con el servicio del cambio lo que necesita su seguimiento
+  (`correo: {de, a, imageTag, reintento}`): si Skyway se reinicia a mitad,
+  `marcarCambiosInterrumpidos` lo retoma al arrancar. Si hay un reintento
+  automático del arranque en curso, cuenta como el reintento (si falla, la
+  alerta salta sin volver a desplegar); si no queda ningún despliegue en
+  curso, la alerta `mail_login_deploy_failed` salta al momento, con el texto
+  «no ha terminado bien tras un reinicio de Skyway».
 - **Servicios**: el estado de cada despliegue del cambio es el real
   (`estadoServicio`): un despliegue posterior correcto del servicio (manual, o
   el reintento automático del arranque) resuelve uno fallido. Cancelar,
@@ -1646,7 +2192,8 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   automático que lanzó el arranque en su lugar).
 - Auditoría: `domain_migration_created`, `…_switched`, `…_rolled_back`,
   `…_cancelled`, `…_retired`, `…_finished`, `…_service_retried`,
-  `…_mx_changed` y `domain_redirects_removed` (proyecto, `dominio.es → dominio2.es`);
+  `…_mx_changed`, `…_host_mode` y `domain_redirects_removed` (proyecto,
+  `dominio.es → dominio2.es`; en `…_host_mode`, el nombre y el cambio de modo);
   `service_env_replaced` con los nombres de las claves, nunca los valores;
   `mailway_mailbox_login_updated`.
 
@@ -1963,11 +2510,11 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada); 20 por minuto y usuario, después 429 |
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas, también `dns?` |
 | POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas y en el orden del dominio principal, §5.5), aquí y en el PATCH; se admiten acentos y «ñ» (se guardan en ASCII, *punycode*: `panadería.es` → `xn--panadera-i2a.es`, como en Mailway) y la URL pegada (se quitan esquema, ruta, puerto y punto final); cada dominio registrable o con www se guarda con su pareja con o sin www salvo los de `dominiosSinPareja` (opcional, máx. 200; la pareja que no se puede asignar se omite sin error, §5.5), y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, los de las rutas de Traefik de sus contenedores, los que fueron suyos y el administrador no ha liberado, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
-| GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`). Añade `pendingChanges`, `autoDeploy` (servicios git con auto-deploy: `{pollSeconds, checkedAt, okAt, error, failingSince, lastSeenSha}`) y `webhook` (`{url, coveredByApp}`: URL del webhook manual con el dominio del panel y si ya lo cubre la GitHub App) |
-| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); cada dominio **nuevo** registrable o con www llega con su pareja con o sin www salvo que esté en `config.dominiosSinPareja` (§5.5; la lista de renuncias se guarda limpia y, enviada sin `domains`, solo se filtra contra los actuales); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); la lista se guarda en el orden del dominio principal (§5.5), y un cambio solo de orden no cuenta como dominio nuevo (ni pide volver a desplegar si, ordenada, la lista queda igual); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había |
+| GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`). Añade `pendingChanges`, `autoDeploy` (servicios git con auto-deploy: `{pollSeconds, checkedAt, okAt, error, failingSince, lastSeenSha}`), `webhook` (`{url, coveredByApp}`: URL del webhook manual con el dominio del panel y si ya lo cubre la GitHub App) y `deploy` (`ServiceDeployInfo`: `{strategy: 'overlap'\|'recreate', reason: 'elegida'\|'base_de_datos'\|'estado'\|'sin_trafico'\|'con_trafico', automatic, calledByOthers, stopGraceSeconds, stopGraceSource: 'servicio'\|'railway'\|'defecto'}`: estrategia efectiva y su motivo, si otro servicio lo llama por la red interna y la gracia de parada efectiva con su origen, calculada con el entorno resuelto; §2) |
+| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); cada dominio **nuevo** registrable o con www llega con su pareja con o sin www salvo que esté en `config.dominiosSinPareja` (§5.5; la lista de renuncias se guarda limpia y, enviada sin `domains`, solo se filtra contra los actuales); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); la lista se guarda en el orden del dominio principal (§5.5), y un cambio solo de orden no cuenta como dominio nuevo (ni pide volver a desplegar si, ordenada, la lista queda igual); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había. `config` admite además `deployStrategy` (`'auto'`\|`'overlap'`\|`'recreate'`; `'auto'` lo deja sin fijar; se ignora en bases de datos), `stopGraceSeconds` (entero 0–600, también como cifras en texto; `null` o `""` lo dejan sin fijar; otro tipo da 400; en una base de datos, de 10 a 600: un valor menor da 400) y `stopCommand` (texto de hasta 1000 caracteres o `null`; vacío o `null` lo quita; se ignora en bases de datos; guardar uno nuevo exige el módulo «Terminal de comandos» y un workspace no suspendido, 403 si no, salvo a la administración, y queda en la auditoría como `service_stop_command` con los primeros 120 caracteres): ninguno pide volver a desplegar (la estrategia vale desde el siguiente despliegue y las paradas leen siempre la configuración actual). Al guardar `domains` o `port`, los demás servicios del proyecto cuyo entorno resuelto cambia (los que lo referencian con `${{<servicio>.PUBLIC_URL}}`, `INTERNAL_URL`…) quedan con cambios sin desplegar (`bumpConfigRev`) |
 | DELETE | `/services/:id?confirm=<nombre>` | +access | elimina el servicio con **todos sus datos** (§3.1), salvo los volúmenes que comparta con otro servicio del proyecto; `confirm` (nombre o slug), 503 y los dos 409 como en proyectos → `{ok, warnings, removed: {volumes[], images, backups}}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen; `{commit: <SHA de 40>}` reconstruye ese commit, solo git) |
-| POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor |
+| POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor. Si el servicio no tiene un despliegue en cola o en marcha, antes retiran (o devuelven a su nombre) los restos de intercambios `--next`/`--prev` con parada limpia (un error ahí se registra y no impide la acción). `stop` detiene todas las réplicas en paralelo con parada limpia (comando al parar, SIGTERM y la gracia, después SIGKILL; §2), archiva su registro después de pararlas y responde además `forced: string[]`, las copias que no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL (el panel lo avisa). `restart` detiene a la vez todas las copias con la misma parada limpia y vuelve a arrancar cada contenedor (el mismo: conserva su identidad, §2), y también responde `forced`. Las dos responden cuando termina la parada: con un comando al parar y una gracia largos puede tardar hasta el doble de la gracia. Si un proxy corta antes la conexión (el de Cloudflare espera 100 s), la parada sigue en el servidor hasta el final; el estado se ve al recargar |
 | GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, `mail`, `manifest`, §5.5) |
 | GET | `/services/:id/integrations` | +access | plan de integraciones del servicio sin efectos (§5.7) → `{plan, pending}`; `plan` null si no es de repositorio. `plan.fingerprint` es la huella que exige aprobar; cada recurso trae `canApprove` y `confirmation` |
 | POST | `/services/:id/integrations/apply` | +access | `{skip?, expect?, confirmMailboxAccess?, redeploy?}` → `{result: {applied, pending, kept, blocked, created, errors}, plan, needsRedeploy, deploymentId}`. Lo inofensivo lo aplica cualquiera con acceso; las bases también; el correo solo **manage** (si no, `pending`). Lo privilegiado exige `expect` = `plan.fingerprint` del plan revisado (sin él, `pending`; si no coincide, **409** `{error, plan}` sin aplicar nada); reutilizar en SMTP un buzón existente exige además `confirmMailboxAccess`. Nunca pisa variables puestas a mano. 409 si ya se está aplicando. 10/min. Audita `service_integrations_applied` (nombres, nunca valores) |
@@ -2144,8 +2691,9 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | DELETE | `/projects/:id/mail/mailboxes/:mailboxId` | manage | revoca antes las claves de API `Skyway · …` con ese buzón como remitente y elimina el buzón → `{ok, revokedApiKeys}`; si queda otra clave activa, 409 de Mailway |
 | DELETE | `/projects/:id/mail/app-passwords/:appId` | manage | revoca una contraseña de aplicación del cliente (404 si no es suya). Audita `mailway_app_password_revoked` |
 | DELETE | `/projects/:id/mail/api-keys/:keyId` | manage | revoca una clave de API del cliente (404 si no es suya). Audita `mailway_api_key_revoked` |
-| GET | `/projects/:id/mail/connect/preview` | auth + access | `?serviceId&mode` → `{mode, suggestedMode, keys, kept, secretPlaced, conflicts}`: con qué nombres recibiría el servicio el correo (los de su `skyway.json` o su `.env.example` por alias; los de siempre para lo que no nombra), cuáles se conservarían por tener un valor puesto a mano y, en `conflicts`, las de conexión (servidor, puerto, URL de la API) puestas a mano con otro valor, que harían responder 409 a la conexión. Sin crear nada; 404 si el servicio es de otro proyecto |
-| POST | `/projects/:id/mail/connect` | manage | `{serviceId, mailboxId, mode:'smtp'\|'api', redeploy?}` → `{ok, keys, kept, needsRedeploy, deploymentId, revoked}`. El servicio debe ser del proyecto y no de base de datos. Escribe con los nombres de la vista previa y **nunca pisa una variable puesta a mano** (van en `kept`); si la credencial no cabe en ninguna variable, o si el servidor, el puerto, el usuario o la URL de la API están puestos a mano con otro valor (conexión a medias), 409 sin crearla. Revoca antes la credencial del mismo tipo que Skyway creó para el servicio (`skyway:<slug>` o `Skyway · <slug>`; en un proyecto de una cuenta, cuyo cliente comparten sus proyectos, `skyway:<proyecto>/<slug>` o `Skyway · <proyecto>/<slug>`, y también la del nombre de antes si el vínculo es anterior a compartirlo; ≤ 60 caracteres, con un sufijo de los identificadores si hay que recortar). Nunca devuelve ni audita los valores. Con `redeploy`, despliegue con disparador `mailway`. Va con el turno de las credenciales del servicio (`withMailCredentialLock`): si la renovación automática está cambiando la suya, espera a que termine y lee el resumen después. Por SMTP, borra lo anotado de una renovación anterior y resuelve su alerta |
+| GET | `/projects/:id/mail/connect/preview` | auth + access | `?serviceId&mode` → `{mode, suggestedMode, keys, kept, secretPlaced, conflicts, credentialNames, sinDominio, roleNames}`: con qué nombres recibiría el servicio el correo (los de su `skyway.json` o su `.env.example` por alias; los de siempre para lo que no nombra), cuáles se conservarían por tener un valor puesto a mano y, en `conflicts`, las de conexión (servidor, puerto, URL de la API) puestas a mano con otro valor, que harían responder 409 a la conexión. `credentialNames`: los nombres con los que Skyway reconoce la credencial de ese servicio en ese modo (en SMTP, `skyway:<slug>`; en API, `Skyway · <slug>`; en un proyecto de una cuenta, con `<proyecto>/<slug>`; con un vínculo anterior a compartir el cliente, también el nombre de antes): una credencial vigente con uno de ellos se revocará al conectar, y la pestaña marca entonces «Volver a desplegar ahora». `sinDominio`: el servicio no tiene dominios ni ruta de healthcheck (casi siempre un bot o un worker), y la pestaña recomienda el modo API. `roleNames`: qué variable lleva cada papel (`api_url`, `api_key`, `from`…; la primera si hay varias): la ayuda y el ejemplo del modo API usan esos nombres. Sin crear nada; 404 si el servicio es de otro proyecto |
+| POST | `/projects/:id/mail/connect` | manage | `{serviceId, mailboxId, mode:'smtp'\|'api', redeploy?}` → `{ok, keys, kept, needsRedeploy, deploymentId, revoked, rebuild}` (`rebuild`: había otros cambios sin desplegar al conectar; `…/mail/redeploy` lo recibe). El servicio debe ser del proyecto y no de base de datos. Escribe con los nombres de la vista previa y **nunca pisa una variable puesta a mano** (van en `kept`); si la credencial no cabe en ninguna variable, o si el servidor, el puerto, el usuario o la URL de la API están puestos a mano con otro valor (conexión a medias), 409 sin crearla. Revoca antes la credencial del mismo tipo que Skyway creó para el servicio (`skyway:<slug>` o `Skyway · <slug>`; en un proyecto de una cuenta, cuyo cliente comparten sus proyectos, `skyway:<proyecto>/<slug>` o `Skyway · <proyecto>/<slug>`, y también la del nombre de antes si el vínculo es anterior a compartirlo; ≤ 60 caracteres, con un sufijo de los identificadores si hay que recortar). Nunca devuelve ni audita los valores. Con `redeploy`, despliegue con disparador `mailway`: de la imagen en marcha, sin compilar, si el servicio es de repositorio, tiene un despliegue correcto cuya imagen sigue en el disco, no tenía cambios sin desplegar antes de conectar y no hay otro despliegue en cola o en curso; si no, un despliegue normal (auditado «con la versión en marcha» cuando la fija; un reinicio de Skyway a mitad lo reintenta con la misma imagen) (sin él, `false` por defecto en la API, el servicio sigue con la credencial anterior, ya revocada, hasta el siguiente despliegue: `needsRedeploy` y `revoked` lo indican). En modo API, `MAILWAY_API_URL` es la dirección base de Mailway: el servicio envía con `POST {MAILWAY_API_URL}/v1/send`, cabecera `Authorization: Bearer {MAILWAY_API_KEY}` y JSON `{to, subject, text\|html}` (`Idempotency-Key` opcional para reintentar sin duplicar; referencia en `docs/API.md` de Mailway). Va con el turno de las credenciales del servicio (`withMailCredentialLock`): si la renovación automática está cambiando la suya, espera a que termine y lee el resumen después. Por SMTP, borra lo anotado de una renovación anterior y resuelve su alerta |
+| POST | `/projects/:id/mail/redeploy` | manage | `{serviceId, rebuild?}` → **202** `{deployment, imagenEnMarcha}`. «Desplegar ahora» del resultado de conectar sin volver a desplegar: lo mismo que la casilla, un despliegue con disparador `mailway` de la imagen en marcha (las mismas condiciones que `…/mail/connect` con `redeploy`); con `rebuild` (lo que devolvió conectar: había otros cambios sin desplegar) o sin imagen en marcha, un despliegue normal. 404 si el servicio es de otro proyecto; 403 con la cuenta suspendida. Audita `mailway_service_redeploy`. 20/min |
 
 Todas las rutas con `:domainId`/`:mailboxId`/`:appId`/`:keyId` comprueban antes,
 con el resumen del cliente vinculado, que el recurso es de ese cliente: si no,
@@ -2292,10 +2840,10 @@ desplegar: 409 `migration_services_pending`.
 
 | Método | Ruta | Descripción |
 | --- | --- | --- |
-| POST | `/plan` | `{fromDomain, toDomain, soloWeb?, hosts?, excluidas?}` → `PlanSkyway {hosts[{serviceId, from, to, modo, serviceName, error}], dnsWeb, correoDisponible: si/no_vinculado/sin_dominio/mailway_antiguo, correo, variables{cambios, notas, wordpress, huella}, servicios, avisos, bloqueos, expect}`. Sin efectos. 30/min |
+| POST | `/plan` | `{fromDomain, toDomain, soloWeb?, hosts?, excluidas?}` → `PlanSkyway {hosts[{serviceId, from, to, modo, serviceName, error}], dnsWeb, correoDisponible: si/no_vinculado/sin_dominio/mailway_antiguo, correo, variables{cambios, notas, wordpress, huella}, servicios[{serviceId, nombre, reinicio, motivos}], webhooks, avisos, bloqueos, expect}`. `motivos` ⊂ `dominios`, `variables`, `compartidas`, `remitente`, `referencias`; `reinicio` = se despliega con una sola copia. `webhooks` = `WebhookEnRiesgo[]` (`{serviceId, serviceName, proveedores, evidencias, hosts[{serviceId, from, to}]}`; proveedores `telegram`, `discord`, `slack`, `whatsapp`, `twilio`, `stripe` o `webhook`): servicios con webhooks en nombres que redirigen; «Servir también» vuelve a pedir el plan con esos nombres en `hosts` con `modo: 'servir'`. Con un Mailway que lo informa, cada buzón de `correo` trae `appsManuales`. Sin efectos. 30/min |
 | POST | `/projects/:id/domain-migrations` | `{fromDomain, toDomain, soloWeb?, hosts, excluidas, expect}` → 201 `MigracionSkyway` (+ `dns` del DNS automático), o 200 si ya estaba abierto con el mismo origen y destino. 409 `plan_changed` si `expect` no es la huella del plan, `migration_blocked` con el primer bloqueo, `migration_exists` con otro cambio abierto (también si Mailway devuelve uno que no abrió este proyecto) |
 | GET | `/projects/:id/domain-migrations` | `{abierta, anteriores (últimas 5), dominios}`; `?ligera=1` sin consultar a Mailway (el aviso de la página del proyecto) |
-| GET | `/:mid` | `MigracionSkyway {estado, paso, error, hosts[{…, dns, certificado}], compuertas[dns_web, certificados, correo], servicios[{despliegue, estado, error}], redirecciones, correo (vista de Mailway en vivo, caché de 10 s), variables (antes de pasar), alPasar, ipServidor, avisos, puede*, fechas}` |
+| GET | `/:mid` | `MigracionSkyway {estado, paso, error, hosts[{…, dns, certificado}], compuertas[dns_web, certificados, correo], servicios[{despliegue, estado, error}], redirecciones, correo (vista de Mailway en vivo, caché de 10 s), variables (antes de pasar), alPasar (con `motivos`), webhooks, usuariosSinGestionar, appsManuales, ipServidor, avisos, puede*, fechas}`. `webhooks` como en el plan (en `preparando` y `lista`; en `pasada`, solo los nombres que siguen redirigiendo). `usuariosSinGestionar` (en `pasada` y `dando_de_baja`; vacío en el resto) = `[{mailboxId, email, login, pendiente, usos[{ambito: 'service'\|'project', serviceId, serviceName, key, usuario, estado: 'cambiara'\|'no_entra'}]}]`. `appsManuales` = `[{mailboxId, email, apps, usadoEnProyecto}]`: buzones pendientes con contraseñas de aplicación creadas a mano; `usadoEnProyecto` si además lo usa algún servicio del proyecto (§6.1). El error de un servicio cuyo despliegue de correo ha fallado dos veces lo explica (alerta `mail_login_deploy_failed`) |
 | POST | `/:mid/check` | vuelve a medir (DNS, certificados y correo) y deja `lista` o `preparando`; con un alta en Mailway sin confirmar, la busca y la vincula. 60/min |
 | POST | `/:mid/mx` | cambia el MX del dominio nuevo a este servidor en su zona de Cloudflare (Mailway `POST /:id/mx`, con `soloCliente` fuera de la administración). Solo en `preparando`/`lista`, con la pre-recepción hecha (409 `migration_state`) y la zona en Cloudflare (400 `cloudflare_unavailable`). 10/min |
 | POST | `/:mid/switch` | `{expect}` (huella de `variables`) → 202. 409 `migration_not_ready`, `plan_changed` |
@@ -2304,8 +2852,9 @@ desplegar: 409 `migration_services_pending`.
 | POST | `/:mid/retire` | `{confirm}` → 202 (la baja sigue en segundo plano). 400 `confirm_mismatch`; 409 `migration_old_mx_here` antes de tocar las aplicaciones si el MX anterior apunta al servidor de correo; 409 `migration_shared_mail` si otro proyecto de la cuenta envía con el dominio anterior (§6.1) |
 | POST | `/:mid/finish` | `{confirm}` → 200 (solo la web) |
 | POST | `/:mid/redirects/remove` | `{confirm}` → 200 (en `terminada`) |
+| POST | `/:mid/hosts/mode` | `{serviceId (1–100), from, modo: 'servir'\|'redirigir'}` → la vista, **202** si lanzó un despliegue y 200 si no. `from` es un nombre o una lista de 1 a 50 nombres del mismo servicio (una transacción y un solo despliegue). «Servir también» de nombres del cambio: en `preparando`/`lista` cambia su modo en los dos sentidos (se admite servir el nombre que seguirá siendo el principal, con aviso); en `pasada`, solo de `redirigir` a `servir` (añade los nombres anteriores al final de los dominios del servicio, borra sus redirecciones, los prepublica, sube `config_rev` y despliega el servicio con la imagen en marcha). 409 `migration_state` (estado que no lo admite, un nombre que no cambia o `redirigir` tras pasar), 409 `host_principal` (solo tras pasar: el nombre anterior pasaría a ser el principal del servicio), 409 `migration_services_pending` (el servicio se está desplegando), 409 `domain_in_use` (el nombre lo usa otro proyecto), 403 `account_suspended` (solo tras pasar: la cuenta está suspendida y el despliegue fallaría con la redirección ya quitada), 404 `not_found` (el nombre no está en el cambio o el servicio no existe). Con el cerrojo del proyecto. Audita `domain_migration_host_mode`. 20/min |
 | POST | `/:mid/services/:sid/retry` | → 202 (servicio con el despliegue fallido; con la imagen en marcha si el fallido la reutilizaba; también en un cambio cancelado si no hay otro abierto) |
-| POST | `/:mid/mailboxes/:mbid/login-update` | → 200 («Actualizar ahora»; con aplicaciones del proyecto, también sus variables y un despliegue con la imagen en marcha). 409 `migration_shared_mail` como la baja |
+| POST | `/:mid/mailboxes/:mbid/login-update` | → 200 («Actualizar ahora» y «Actualizar y desplegar»; con aplicaciones del proyecto —credenciales `skyway:*` o usos sin gestionar del buzón, también en variables compartidas—, también sus variables y un despliegue con la imagen en marcha, con un reintento automático si falla y la alerta `mail_login_deploy_failed` si vuelve a fallar). 409 `migration_shared_mail` como la baja |
 | GET | `/:mid/zonefile` | `text/plain`: fichero de zona de Mailway del dominio nuevo (nivel `recomendados`: incluye el TXT de propiedad) más los registros A de la web, comentados; si el dominio nuevo recibe en otro proveedor, su MX también va comentado; solo la web, solo los A |
 
 ---
@@ -2363,6 +2912,12 @@ npm start            # sirve todo en :4000 (producción)
 npm run typecheck    # server + web (incluye server/test)
 npm run lint         # reglas de hooks de React en la web
 npm test             # vitest: server/test (base SQLite temporal, sin Docker) y web/test
+
+# Prueba real con Docker de «una sola copia», la parada limpia, la identidad por copia y
+# los restos de intercambios (no la ejecuta la CI; necesita Docker y busybox:stable en local):
+node scripts/prueba-real-bots.mjs                                   # todo (unos 8 min)
+SECCIONES=despliegue,web node scripts/prueba-real-bots.mjs           # solo algunas secciones
+SKYWAY_DIR=/ruta/a/otra/copia MODO=actual node scripts/prueba-real-bots.mjs   # versión anterior: mide el solape
 
 # Restablecer contraseña desde el servidor (último recurso):
 docker exec -it skyway node server/dist/tools/reset-password.js <email> [nueva]

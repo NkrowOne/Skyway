@@ -1,8 +1,11 @@
 /**
  * Reglas de la pestaña Correo que no dependen de React: qué se dice en la
- * tarjeta de un dominio que aún recibe en otro proveedor y qué SPF combinado
- * corresponde a cada registro.
+ * tarjeta de un dominio que aún recibe en otro proveedor, qué SPF combinado
+ * corresponde a cada registro y, al conectar un servicio, si se revoca una
+ * credencial en uso y si el buzón pasa a entrar con su dirección.
  */
+
+import type { MailApiKey, MailAppPassword, MailMailbox } from './types';
 
 /** Nombre DNS comparable: minúsculas y sin el punto final que traen algunos registros. */
 export function nombreDns(n: string): string {
@@ -46,4 +49,51 @@ export function spfSugeridosPorNombre(checks: readonly { id: string; suggested?:
     out.set(nombreDns(c.id.slice('spf:'.length)), c.suggested);
   }
   return out;
+}
+
+/**
+ * ¿Tiene el servicio una credencial de Skyway vigente en este modo? Es la que
+ * el servidor revoca al conectar, y el contenedor en marcha la sigue usando
+ * hasta el próximo despliegue. `credNames` son los nombres que da la vista
+ * previa (en un proyecto de una cuenta llevan también el proyecto): repetir
+ * aquí la regla del servidor ya falló una vez. Las listas son las vigentes.
+ */
+export function tieneCredencialVigente(
+  mode: 'smtp' | 'api',
+  credNames: readonly string[],
+  appPasswords: readonly Pick<MailAppPassword, 'name'>[],
+  apiKeys: readonly Pick<MailApiKey, 'name'>[],
+): boolean {
+  return (mode === 'smtp' ? appPasswords : apiKeys).some((c) => credNames.includes(c.name));
+}
+
+/**
+ * «Volver a desplegar ahora» mientras nadie lo toca: marcado si conectar
+ * revoca la credencial que usa el contenedor en marcha. No en un servicio
+ * detenido desde el panel: no hay nada en marcha que se quede sin enviar, y
+ * cualquier despliegue lo pondría en marcha (quizá se detuvo por algo).
+ */
+export function desplegarPorDefecto(reconecta: boolean, detenido: boolean): boolean {
+  return reconecta && !detenido;
+}
+
+/**
+ * Como `actualizaUsuarioAlConectar` del servidor: tras un cambio de dominio,
+ * conectar por SMTP un buzón que aún entra con su usuario anterior lo
+ * actualiza, salvo que lo usen otras aplicaciones de Skyway (que lo actualizan
+ * en la baja). La credencial propia del servicio no cuenta como «otra»: es la
+ * de `credNames`, que en un proyecto de una cuenta es
+ * `skyway:<proyecto>/<servicio>`, no `skyway:<servicio>`.
+ */
+export function actualizaUsuarioAlConectar(
+  mode: 'smtp' | 'api',
+  mailbox: Pick<MailMailbox, 'id' | 'loginPending'> | undefined,
+  appPasswords: readonly Pick<MailAppPassword, 'mailboxId' | 'name'>[],
+  credNames: readonly string[],
+): boolean {
+  return (
+    mode === 'smtp' &&
+    !!mailbox?.loginPending &&
+    !appPasswords.some((a) => a.mailboxId === mailbox.id && a.name.startsWith('skyway:') && !credNames.includes(a.name))
+  );
 }

@@ -7,7 +7,7 @@ import { ghFetch } from './github/client';
 import { MailMode, mailRoleOf, mailVarsOf, suggestedMailMode } from './mailenv';
 import { MANIFEST_FILE, MANIFEST_MAX_BYTES, parseManifest } from './manifest';
 import { getTemplate } from './templates';
-import { DetectedNeeds, GitConfig, ServiceRow } from './types';
+import { DetectedNeeds, GitConfig, ProveedorWebhook, ServiceRow } from './types';
 import { ReferenceGroup } from './variables';
 
 /**
@@ -191,6 +191,59 @@ const GO_MAIL: RegExp[] = [
   /github\.com\/sendgrid\/sendgrid-go/,
 ];
 
+/*
+ * Bibliotecas de bots y de webhooks, por ecosistema. Un servicio que las usa
+ * puede recibir llamadas del proveedor en una URL registrada allí (el webhook
+ * de Telegram, los eventos de Slack o de Stripe): en un cambio de dominio, esa
+ * URL no se actualiza sola y la redirección no la salva. Solo se avisa; nada
+ * de esto cambia cómo se despliega el servicio.
+ */
+const NPM_BOTS: Record<string, ProveedorWebhook> = {
+  telegraf: 'telegram',
+  grammy: 'telegram',
+  'node-telegram-bot-api': 'telegram',
+  'discord.js': 'discord',
+  '@discordjs/core': 'discord',
+  '@slack/bolt': 'slack',
+  twilio: 'twilio',
+  stripe: 'stripe',
+};
+const PYPI_BOTS: Record<string, ProveedorWebhook> = {
+  'python-telegram-bot': 'telegram',
+  aiogram: 'telegram',
+  pytelegrambotapi: 'telegram',
+  'discord-py': 'discord',
+  'py-cord': 'discord',
+  nextcord: 'discord',
+  'slack-bolt': 'slack',
+  twilio: 'twilio',
+  stripe: 'stripe',
+};
+const GO_BOTS: [RegExp, ProveedorWebhook][] = [
+  [/github\.com\/go-telegram-bot-api\/[A-Za-z0-9._/-]+/, 'telegram'],
+  [/gopkg\.in\/(?:tucnak\/)?telebot[A-Za-z0-9._/-]*/, 'telegram'],
+  [/github\.com\/go-telegram\/bot\b/, 'telegram'],
+  [/github\.com\/bwmarrin\/discordgo\b/, 'discord'],
+  [/github\.com\/slack-go\/slack\b/, 'slack'],
+  [/github\.com\/twilio\/twilio-go\b/, 'twilio'],
+  [/github\.com\/stripe\/stripe-go[A-Za-z0-9._/-]*/, 'stripe'],
+];
+const GEM_BOTS: Record<string, ProveedorWebhook> = {
+  'telegram-bot-ruby': 'telegram',
+  discordrb: 'discord',
+  'slack-ruby-bot': 'slack',
+  'twilio-ruby': 'twilio',
+  stripe: 'stripe',
+};
+const COMPOSER_BOTS: Record<string, ProveedorWebhook> = {
+  'irazasyed/telegram-bot-sdk': 'telegram',
+  'longman/telegram-bot': 'telegram',
+  'nutgram/nutgram': 'telegram',
+  'team-reflex/discord-php': 'discord',
+  'twilio/sdk': 'twilio',
+  'stripe/stripe-php': 'stripe',
+};
+
 /**
  * Nombre de variable → (motor, papel). `sql` es «la base relacional que haya»:
  * `DATABASE_URL` o `DB_HOST` valen igual para Postgres y MySQL, y lo decide lo
@@ -254,11 +307,40 @@ function readSmall(file: string): string | null {
   }
 }
 
+/**
+ * Nombre de un paquete de Python normalizado como lo compara PyPI (PEP 503):
+ * en minúsculas y con cualquier tramo de «-», «_» o «.» como un «-».
+ * `discord.py`, `Discord_Py` y `discord-py` son el mismo paquete.
+ */
+const pyNorm = (name: string): string => name.toLowerCase().replace(/[-_.]+/g, '-');
+
 /** Nombre de paquete Python sin versión ni extras: `psycopg[binary]>=3` → `psycopg`. */
 const pyName = (line: string): string | null => {
   const m = line.trim().match(/^([A-Za-z0-9][A-Za-z0-9._-]*)/);
-  return m ? m[1].toLowerCase().replace(/_/g, '-') : null;
+  return m ? pyNorm(m[1]) : null;
 };
+
+/**
+ * Dependencias de Poetry (`[tool.poetry.dependencies]`, o su grupo `main`):
+ * el nombre va como clave, sin comillas (`aiogram = "^3.0"`), así que la
+ * búsqueda de nombres entre comillas no las ve. Como en npm, solo las de
+ * producción: los grupos de desarrollo y de pruebas no se despliegan.
+ */
+function dependenciasPoetry(text: string): string[] {
+  const out: string[] = [];
+  let dentro = false;
+  for (const linea of text.split(/\r?\n/)) {
+    const seccion = linea.match(/^\s*\[\[?([^\]]*)\]\]?\s*(?:#.*)?$/);
+    if (seccion) {
+      dentro = /^tool\.poetry\.(?:group\.main\.)?dependencies$/.test(seccion[1].trim());
+      continue;
+    }
+    if (!dentro) continue;
+    const m = linea.match(/^\s*["']?([A-Za-z0-9][A-Za-z0-9._-]*)["']?\s*=/);
+    if (m) out.push(pyNorm(m[1]));
+  }
+  return out;
+}
 
 /**
  * Inspecciona el repositorio clonado. Mira en `rootDir` y en la raíz (en un
@@ -280,6 +362,11 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
   const mailEvidence: string[] = [];
   const mailFound = (evidence: string, source: string) => {
     if (!mailEvidence.includes(evidence)) mailEvidence.push(evidence);
+    sources.add(source);
+  };
+  const bots: { proveedor: ProveedorWebhook; evidencia: string }[] = [];
+  const botFound = (proveedor: ProveedorWebhook, evidencia: string, source: string) => {
+    if (!bots.some((b) => b.evidencia === evidencia)) bots.push({ proveedor, evidencia });
     sources.add(source);
   };
   let manifestFile: string | null = null;
@@ -342,6 +429,9 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
         // Solo las de producción: un nodemailer de desarrollo (pruebas) no es correo de la web.
         for (const name of Object.keys(parsed.dependencies ?? {})) {
           if (NPM_MAIL.has(name)) mailFound(`${pkg.rel}: ${name}`, pkg.rel);
+          // Como el correo: un stripe de desarrollo (pruebas con su CLI) no recibe webhooks.
+          const bot = Object.hasOwn(NPM_BOTS, name) ? NPM_BOTS[name] : undefined;
+          if (bot) botFound(bot, `${pkg.rel}: ${name}`, pkg.rel);
         }
       } catch {
         /* un package.json roto ya lo contará el build */
@@ -359,19 +449,27 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           sources.add(req.rel);
         }
         if (n && PYPI_MAIL.has(n)) mailFound(`${req.rel}: ${n}`, req.rel);
+        const bot = n && Object.hasOwn(PYPI_BOTS, n) ? PYPI_BOTS[n] : undefined;
+        if (bot) botFound(bot, `${req.rel}: ${n}`, req.rel);
       }
     }
     const pyproject = read('pyproject.toml');
     if (pyproject) {
-      // Sin parsear TOML entero: las dependencias van entre comillas y con eso basta.
-      for (const m of pyproject.text.matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*[<>=!~;\s"']/g)) {
-        const n = m[1].toLowerCase().replace(/_/g, '-');
+      // Sin parsear TOML entero: las dependencias de PEP 621 van entre comillas
+      // y con eso basta; las de Poetry, como claves de su sección.
+      const nombres = new Set([
+        ...[...pyproject.text.matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*[<>=!~;\s"']/g)].map((m) => pyNorm(m[1])),
+        ...dependenciasPoetry(pyproject.text),
+      ]);
+      for (const n of nombres) {
         const engine = PYPI[n];
         if (engine) {
           found(engine, `${pyproject.rel}: ${n}`);
           sources.add(pyproject.rel);
         }
         if (PYPI_MAIL.has(n)) mailFound(`${pyproject.rel}: ${n}`, pyproject.rel);
+        const bot = Object.hasOwn(PYPI_BOTS, n) ? PYPI_BOTS[n] : undefined;
+        if (bot) botFound(bot, `${pyproject.rel}: ${n}`, pyproject.rel);
       }
     }
 
@@ -387,6 +485,10 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
         const hit = gomod.text.match(re);
         if (hit) mailFound(`${gomod.rel}: ${hit[0]}`, gomod.rel);
       }
+      for (const [re, proveedor] of GO_BOTS) {
+        const hit = gomod.text.match(re);
+        if (hit) botFound(proveedor, `${gomod.rel}: ${hit[0]}`, gomod.rel);
+      }
     }
 
     const gemfile = read('Gemfile');
@@ -398,6 +500,8 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           sources.add(gemfile.rel);
         }
         if (GEM_MAIL.has(m[1])) mailFound(`${gemfile.rel}: ${m[1]}`, gemfile.rel);
+        const bot = Object.hasOwn(GEM_BOTS, m[1]) ? GEM_BOTS[m[1]] : undefined;
+        if (bot) botFound(bot, `${gemfile.rel}: ${m[1]}`, gemfile.rel);
       }
     }
 
@@ -413,6 +517,8 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
         }
         for (const name of Object.keys(parsed.require ?? {})) {
           if (COMPOSER_MAIL.has(name)) mailFound(`${composer.rel}: ${name}`, composer.rel);
+          const bot = Object.hasOwn(COMPOSER_BOTS, name) ? COMPOSER_BOTS[name] : undefined;
+          if (bot) botFound(bot, `${composer.rel}: ${name}`, composer.rel);
         }
       } catch {
         /* idem */
@@ -476,7 +582,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
     manifest = manifestTooBig ? { manifest: null, error: `${MANIFEST_FILE} ocupa más de 64 KB.` } : parseManifest(manifestText ?? '');
   }
 
-  if (engines.size === 0 && expectedVars.length === 0 && !mail && manifestFile === null) return null;
+  if (engines.size === 0 && expectedVars.length === 0 && !mail && manifestFile === null && bots.length === 0) return null;
   return {
     engines: [...engines.entries()].map(([template, evidence]) => ({ template, evidence })),
     expectedVars,
@@ -486,6 +592,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
     manifest: manifest?.manifest ?? null,
     manifestFile,
     manifestError: manifest?.error ?? null,
+    ...(bots.length > 0 ? { bots } : {}),
     detectedAt: Date.now(),
   };
 }

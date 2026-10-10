@@ -1,5 +1,5 @@
 import { ChildProcess, spawn } from 'child_process';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
@@ -24,11 +24,19 @@ import {
   getSetting,
   takeInterruptedDeployments,
 } from '../db';
-import { AUTODEPLOY_ALERT_TYPE, fireAlert, resolveAllServiceAlerts, resolveServiceAlerts } from '../alerts';
+import {
+  AUTODEPLOY_ALERT_TYPE,
+  ESTRATEGIA_ALERT_TYPE,
+  fireAlert,
+  PARADA_FORZADA_ALERT_TYPE,
+  resolveAllServiceAlerts,
+  resolveServiceAlerts,
+} from '../alerts';
+import { anotarParadaForzada } from './avisoestrategia';
 import { diagnose } from './diagnose';
 import { dominioPrincipal } from '../dominioprincipal';
 import { emitDeploy, emitDeployFeed, toDeployFeedItem } from '../events';
-import { docker, dockerAvailable } from '../docker/client';
+import { docker, dockerAvailable, dockerQuery } from '../docker/client';
 import {
   assertImageRef,
   configuredReplicas,
@@ -44,13 +52,15 @@ import {
   imageHealthcheckWindowMs,
   listServiceContainers,
   normalizeContainerPath,
+  pararConGracia,
   removeContainer,
   removeImage,
+  type ResultadoParada,
   renameContainer,
   replicaName,
+  RunSpec,
   runServiceContainer,
   startContainer,
-  stopContainer,
   volumeName,
   getRuntime,
   runArgsFor,
@@ -67,6 +77,17 @@ import { importRepoEnv } from './envimport';
 import { partitionPreDeployEnv } from './predeployenv';
 import { dockerRestartPolicy, hasRailwayConfig, RailwayRepoConfig, readRailwayRepoConfig } from './railwayconfig';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
+import {
+  comandoParada,
+  describirEstrategia,
+  EstrategiaServicio,
+  estrategiaDespliegue,
+  estrategiaEfectiva,
+  bibliotecasDeBot,
+  GRACIA_VALIDACION_MAXIMA,
+  graciaParada,
+  llamadoPorOtros,
+} from './estrategia';
 import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
 import { reconcileOnDeploy } from '../integrations';
 import { adviseEnv, detectNeeds } from '../needs';
@@ -379,6 +400,16 @@ export async function awaitDeployment(
   }
 }
 
+/** Disparadores cuyo reintento tras un reinicio despliega la imagen del despliegue cortado. */
+const CON_IMAGEN_AL_REINTENTAR = new Set(['rollback', 'cambio-de-dominio', 'mailway']);
+
+/**
+ * Disparadores que, con imagen, vuelven a desplegar la versión en marcha para
+ * que tome otras variables (el usuario o la credencial de correo): no son una
+ * vuelta atrás y el registro no debe decirlo.
+ */
+const MISMA_IMAGEN_SIN_COMPILAR = new Set(['cambio-de-dominio', 'mailway']);
+
 /**
  * Si el despliegue volvía a una versión anterior (una vuelta atrás, o el
  * reintento de una), el despliegue correcto cuya imagen se quería recuperar.
@@ -436,10 +467,11 @@ export function resumeInterruptedDeployments(): { retried: number; alerted: numb
     triggerDeploy(service.id, RETRY_TRIGGER, {
       // Una vuelta atrás se reintenta como vuelta atrás: desplegar la cabeza
       // desharía lo que se pidió. Lo mismo un despliegue del cambio de dominio
-      // con imagen: el de la baja vuelve a desplegar la versión en marcha con
-      // otro usuario SMTP, no código nuevo (el de «Pasar» solo la tiene si ya
-      // había construido, y es esa misma). El resto vuelve a construir (o reutilizar).
-      imageTag: (dep.trigger === 'rollback' || dep.trigger === 'cambio-de-dominio') && dep.image_tag ? dep.image_tag : undefined,
+      // o de la pestaña Correo con imagen: vuelven a desplegar la versión en
+      // marcha con otras variables de correo, no código nuevo (si no la
+      // fijaron, solo la tienen si ya habían construido, y es esa misma). El
+      // resto vuelve a construir (o reutilizar).
+      imageTag: CON_IMAGEN_AL_REINTENTAR.has(dep.trigger) && dep.image_tag ? dep.image_tag : undefined,
       forceBuild: dep.force_build === 1,
       targetCommit: dep.target_commit ?? undefined,
     });
@@ -505,19 +537,36 @@ async function runDeployment(deploymentId: string): Promise<void> {
       image = await preparePlainImage(service, log, job);
     } else if (deployment.image_tag) {
       image = deployment.image_tag;
-      log(`Rollback a la imagen ${image}`);
+      // El reintento tras un reinicio lleva el disparador `reintento`, no el
+      // original: si vuelve a desplegar la imagen que ya estaba en marcha (el
+      // de la pestaña Correo o el del cambio de dominio), tampoco es una vuelta
+      // atrás. Antes de este despliegue, la última correcta es la que corre.
+      const mismaImagen =
+        MISMA_IMAGEN_SIN_COMPILAR.has(deployment.trigger) ||
+        (deployment.trigger === RETRY_TRIGGER && lastSuccessfulImage(service.id) === image);
+      log(
+        mismaImagen
+          ? `Se vuelve a desplegar la imagen en marcha ${image} con las variables actuales, sin compilar.`
+          : `Rollback a la imagen ${image}`,
+      );
       if (!(await imageExists(image))) {
         throw new Error(`La imagen ${image} ya no existe en el servidor (se purgó). Realiza un despliegue normal.`);
       }
       // Volver a una versión anterior debe volver también a SU config-as-code:
       // si aquel commit declaraba otro comando de arranque, es el que toca.
       // La configuración vive en el despliegue que CONSTRUYÓ la imagen, no en
-      // esta fila de rollback (que nunca clonó nada).
+      // esta fila de rollback (que nunca clonó nada). Se copia a esta fila: sin
+      // ella, la siguiente vuelta a esta imagen (o el siguiente despliegue de la
+      // pestaña Correo) encontraba esta fila sin configuración y arrancaba sin
+      // el comando de arranque ni el healthcheck del repositorio, y el build
+      // siguiente la tomaba por un despliegue de antes de railway.json
+      // (`previousBuilder`) y podía cambiar de constructor.
       const origin = deploymentForImage(service.id, image);
       repoConfig = parseRepoConfig(origin?.repo_config ?? null);
-      if (origin?.commit_sha) {
-        updateDeployment(deploymentId, { commit_sha: origin.commit_sha, commit_msg: origin.commit_msg });
-      }
+      updateDeployment(deploymentId, {
+        ...(origin?.commit_sha ? { commit_sha: origin.commit_sha, commit_msg: origin.commit_msg } : {}),
+        ...(origin?.repo_config != null ? { repo_config: origin.repo_config } : {}),
+      });
     } else {
       const built = await buildGitImage(project, service, deploymentId, job, log);
       image = built.image;
@@ -557,7 +606,9 @@ async function runDeployment(deploymentId: string): Promise<void> {
     // atrás, uno manual) no dice que la rama vuelva a poder leerse, y cerrarla
     // aquí hacía que el siguiente ciclo abriera otra y volviera a notificar. La
     // cierra el propio sondeo cuando se recupera.
-    resolveAllServiceAlerts(service.id, false, [AUTODEPLOY_ALERT_TYPE]);
+    // Tampoco el aviso de «una sola copia» ni el de la parada forzada: los dos
+    // hablan justamente de lo que pasa en los despliegues correctos.
+    resolveAllServiceAlerts(service.id, false, [AUTODEPLOY_ALERT_TYPE, ESTRATEGIA_ALERT_TYPE, PARADA_FORZADA_ALERT_TYPE]);
   } catch (err: any) {
     if (err instanceof CanceledError || job.canceled) {
       const reason = job.cancelReason ?? 'Cancelado por el usuario';
@@ -1097,8 +1148,14 @@ async function resolveCloneToken(project: ProjectRow, cfg: GitConfig, log: (l: s
  * entero, y eso rompe cosas que llevaban meses en pie.
  */
 function previousBuilder(serviceId: string): string | null {
-  const previo = listDeployments(serviceId, 25).find((d) => d.status === 'success');
-  if (!previo) return null;
+  const ultimo = listDeployments(serviceId, 25).find((d) => d.status === 'success');
+  if (!ultimo) return null;
+  // Un despliegue que volvió a desplegar una imagen sin compilar (una vuelta
+  // atrás, la pestaña Correo, el cambio de dominio) de antes de que se copiara
+  // la configuración a su fila: cuenta el que construyó esa imagen. Sin esto,
+  // su fila sin configuración pasaba por un despliegue de antes de railway.json.
+  const previo =
+    ultimo.repo_config == null && ultimo.image_tag ? (deploymentForImage(serviceId, ultimo.image_tag) ?? ultimo) : ultimo;
   return (parseRepoConfig(previo.repo_config)?.builder || '').toUpperCase() || 'LEGACY';
 }
 
@@ -1166,7 +1223,7 @@ export function applyRailwayCompatEnv(
   put('RAILWAY_ENVIRONMENT', 'production');
   put('RAILWAY_ENVIRONMENT_NAME', 'production');
   put('RAILWAY_DEPLOYMENT_ID', deploymentId);
-  put('RAILWAY_REPLICA_ID', deploymentId);
+  // RAILWAY_REPLICA_ID no va aquí: es distinta en cada copia (`conIdentidad`).
   // El «dominio privado» de Railway es el nombre por el que un servicio llega a
   // otro dentro del proyecto: aquí, su alias en la red del proyecto.
   put('RAILWAY_PRIVATE_DOMAIN', service.slug);
@@ -1420,7 +1477,38 @@ async function deployContainer(
     log(`Política de reinicio del repositorio: ${repoConfig!.restartPolicyType} → docker «${restartPolicy.Name}».`);
   }
 
-  const spec = {
+  // Estrategia y parada, una vez por despliegue: `estrategiaEfectiva` lee las
+  // variables del proyecto (¿lo llama otro servicio por la red interna?), y la
+  // gracia sale del entorno RESUELTO, porque RAILWAY_DEPLOYMENT_DRAINING_SECONDS
+  // puede llegar como variable compartida. Las paradas de este despliegue —la
+  // versión anterior, la réplica que falla, las sobrantes— usan la misma gracia,
+  // que también se fija como `StopTimeout` (la «--next», una más corta, ver
+  // `retirarValidacion`). El healthcheck del repositorio cuenta como el de
+  // Ajustes: es el que valida este despliegue.
+  const estrategia = estrategiaEfectiva(service, repoConfig?.healthcheckPath ?? null);
+  const gracia = graciaParada(service, env);
+  const comando = comandoParada(service);
+  const parar = (nombre: string) => pararConGracia(nombre, { graciaSegundos: gracia.segundos, comando, log });
+  /**
+   * La copia de validación «--next» se para con SIGTERM, pero SIN el comando al
+   * parar: nunca ha atendido (lleva SKYWAY_VALIDATION=1) y la versión anterior
+   * sigue en servicio. Un comando natural como dar de baja el webhook de un bot
+   * (`deleteWebhook`) o soltar un registro global, ejecutado aquí, desharía lo
+   * que la copia que sirve tiene hecho.
+   *
+   * Y con una gracia corta (la del servicio, hasta `GRACIA_VALIDACION_MAXIMA`):
+   * no tiene peticiones que terminar, y con la gracia completa una copia que no
+   * atiende SIGTERM alargaba cada despliegue «sin corte» hasta 30 s o, parada en
+   * segundo plano, convivía con la versión anterior y la nueva (tres copias, el
+   * triple de memoria).
+   */
+  const graciaValidacion = Math.min(gracia.segundos, GRACIA_VALIDACION_MAXIMA);
+  const retirarValidacion = async () => {
+    await pararConGracia(tempName, { graciaSegundos: graciaValidacion, comando: null, log });
+    await removeContainer(tempName);
+  };
+
+  const spec: RunSpec = {
     project,
     service,
     image,
@@ -1435,11 +1523,11 @@ async function deployContainer(
     ...(entrypoint ? { entrypoint } : {}),
     volumes,
     ...(restartPolicy ? { restartPolicy } : {}),
+    stopGraceSeconds: gracia.segundos,
   };
 
   const name = containerName(project, service);
   const tempName = `${name}--next`;
-  const prevName = `${name}--prev`;
   // El healthcheck del repositorio manda sobre el del panel, igual que el
   // comando de arranque: es config-as-code y viaja con el commit.
   const healthcheckPath: string | null =
@@ -1458,11 +1546,16 @@ async function deployContainer(
   // Comando previo al despliegue (donde casi todo el mundo pone las
   // migraciones). Va ANTES de tocar la versión en marcha: si falla, el
   // despliegue se aborta y lo que está sirviendo sigue igual, como en Railway.
+  // También en «una sola copia»: es una orden puntual, no una copia del servicio.
   if (repoConfig?.preDeployCommand) {
-    await runPreDeploy(project, image, env, repoConfig.preDeployCommand, log, job);
+    // Un contenedor más, con su propio RAILWAY_REPLICA_ID (antes lo recibía de
+    // `applyRailwayCompatEnv`, que ya no lo pone: es distinto en cada copia).
+    const envPrevio = env.RAILWAY_REPLICA_ID === undefined ? { ...env, RAILWAY_REPLICA_ID: randomUUID() } : env;
+    await runPreDeploy(project, image, envPrevio, repoConfig.preDeployCommand, log, job);
   }
 
-  await recoverStaleSwap(service.id, log);
+  // Restos de un intercambio cortado (Skyway cayó a mitad): con parada limpia.
+  await limpiarRestosIntercambio(service, log);
 
   // El repo puede pedir réplicas, pero eso consume cuota del workspace y se
   // gestiona en el panel: se avisa en vez de aplicarlo a espaldas de nadie.
@@ -1480,6 +1573,29 @@ async function deployContainer(
   if (repoConfig?.cronSchedule) {
     log(`ℹ La configuración del repositorio declara un cron («${repoConfig.cronSchedule}»); Skyway aún no ejecuta servicios programados.`);
   }
+  // Lo de Railway sobre el relevo se lee y se cuenta, pero no se aplica tal
+  // cual: OVERLAP solo alarga el tiempo en que la versión anterior sigue viva
+  // DESPUÉS de arrancar la nueva (con 0 tampoco hay «una sola copia»), que es
+  // lo contrario de lo que necesita un bot. DRAINING sí tiene equivalente (la
+  // gracia de parada) y se lee de la variable; el del fichero solo se informa.
+  if (env.RAILWAY_DEPLOYMENT_OVERLAP_SECONDS !== undefined) {
+    log(
+      'ℹ Skyway no aplica RAILWAY_DEPLOYMENT_OVERLAP_SECONDS: en Railway solo alarga el tiempo en que la versión anterior sigue en ' +
+        'marcha después de arrancar la nueva, y con 0 no evita que haya dos copias a la vez. Para que no las haya, elige la ' +
+        'estrategia en Ajustes del servicio → Despliegue y parada.',
+    );
+  }
+  const declaradosRepo = [
+    repoConfig?.drainingSeconds != null ? `deploy.drainingSeconds (${repoConfig.drainingSeconds})` : null,
+    repoConfig?.overlapSeconds != null ? `deploy.overlapSeconds (${repoConfig.overlapSeconds})` : null,
+  ].filter((x): x is string => x !== null);
+  if (declaradosRepo.length > 0) {
+    log(
+      `ℹ La configuración del repositorio declara ${declaradosRepo.join(' y ')}; Skyway no aplica estos valores: la estrategia y la ` +
+        'gracia de parada se establecen en Ajustes del servicio → Despliegue y parada (la gracia, también con la variable ' +
+        'RAILWAY_DEPLOYMENT_DRAINING_SECONDS).',
+    );
+  }
 
   const replicas = configuredReplicas(service);
   if (replicas > 1 && (volumes.length > 0 || hostPort)) {
@@ -1487,18 +1603,43 @@ async function deployContainer(
       'Las réplicas requieren un servicio sin volúmenes y sin puerto público: varias copias no pueden compartir el mismo volumen de escritura ni el mismo puerto del host. Elimina esas opciones o vuelve a 1 réplica.',
     );
   }
+  const motivoSinTrafico = replicas > 1 ? sinTrafico(service, estrategia, repoConfig?.healthcheckPath ?? null) : null;
+  if (motivoSinTrafico === 'bot') {
+    log(
+      `ℹ El repositorio usa una biblioteca de bots de Telegram o Discord (${bibliotecasDeBot(service).join(', ')}): con ` +
+        `${replicas} réplicas hay ${replicas} copias del bot en marcha a la vez de forma permanente, y un bot que pide ` +
+        'actualizaciones (polling) o se conecta al gateway de Discord solo admite una. Vuelve a 1 réplica en Ajustes del servicio.',
+    );
+  } else if (motivoSinTrafico === 'sin_trafico') {
+    log(
+      `ℹ Este servicio no recibe tráfico (sin dominio, healthcheck ni llamadas de otros servicios): con ${replicas} réplicas hay ` +
+        `${replicas} copias en marcha a la vez de forma permanente. Un bot de polling (Telegram, Discord…) solo admite una; un ` +
+        'worker tiene que repartir el trabajo con SKYWAY_REPLICA y SKYWAY_REPLICAS o usar una cola.',
+    );
+  }
 
-  // Sin volúmenes ni puerto de host, la versión nueva puede convivir con la
-  // vieja unos segundos: corte cero. Con estado compartido, intercambio con
-  // restauración automática (nunca dos procesos escribiendo el mismo volumen).
-  const canOverlap = service.type !== 'database' && volumes.length === 0 && !hostPort;
-  const oldExists = !!(await findContainer(name));
+  log(
+    `Estrategia: ${describirEstrategia(estrategia)}. Parada: ${comando ? 'comando al parar, ' : ''}SIGTERM y ${gracia.segundos} s de gracia` +
+      `${gracia.origen === 'railway' ? ' (RAILWAY_DEPLOYMENT_DRAINING_SECONDS)' : ''}.`,
+  );
 
-  if (canOverlap) {
+  avisosDeEstrategia(service, estrategia, { domains, internalPort, healthcheckPath, comando }, log);
+
+  if (estrategia.estrategia === 'overlap') {
+    // «Sin corte»: la versión nueva convive con la vieja unos segundos. Solo
+    // sin volúmenes ni puerto de host (`estrategiaDespliegue` lo garantiza):
+    // nunca dos procesos escribiendo el mismo volumen.
+    const oldExists = !!(await findContainer(name));
     if (oldExists) {
       log('Validando la versión nueva antes de sustituir la actual (la versión anterior sigue en servicio)...');
+      // La copia de validación lleva su propia identidad y SKYWAY_VALIDATION=1:
+      // una app puede saltarse en ella los efectos de arranque (registrar un
+      // webhook, ocupar una cola) mientras la anterior sigue atendiendo.
+      const validacion = conIdentidad(env, { replica: 1, total: replicas, validacion: true });
       await runServiceContainer({
         ...spec,
+        env: validacion.env,
+        identidad: { instancia: validacion.instancia, replica: 1 },
         nameOverride: tempName,
         aliasOverride: `${service.slug}-next`,
         withTraefik: false,
@@ -1512,18 +1653,25 @@ async function deployContainer(
       try {
         verdict = await validateContainer(netName, `${service.slug}-next`, internalPort, healthcheckPath, tempName, log, probeTimeoutMs, null, job, tcpProbe);
       } catch (err) {
-        // Cancelado a mitad: el contenedor de prueba no se queda vivo.
-        await removeContainer(tempName).catch(() => undefined);
+        // Cancelado a mitad: el contenedor de prueba no se queda vivo, y se
+        // para como cualquier copia (SIGTERM y gracia), no de un SIGKILL.
+        await retirarValidacion().catch(() => undefined);
         throw err;
       }
       if (!verdict.ok) {
         await appendContainerTail(tempName, log);
-        await removeContainer(tempName);
+        await retirarValidacion();
         throw new Error(
           `La versión nueva no pasó la validación (${verdict.reason}). La versión anterior sigue en ejecución sin interrupción.`,
         );
       }
-      await removeContainer(tempName);
+      // Validada: se retira ANTES del relevo, con su gracia corta. En segundo
+      // plano convivía con la versión anterior y la nueva (tres copias); y la
+      // versión anterior sigue en servicio mientras tanto, así que esperar no
+      // deja el servicio sin atender.
+      await retirarValidacion().catch((err: any) => {
+        log(`⚠ No se pudo retirar la copia de validación ${tempName} (${err?.message || err}).`);
+      });
       log(replicas > 1 ? `Versión validada. Actualización rodante de ${replicas} réplicas...` : 'Versión validada. Intercambiando sin corte...');
     }
 
@@ -1538,8 +1686,11 @@ async function deployContainer(
       const rPrev = `${rn}--prev`;
       const hadOld = !!(await findContainer(rn));
       if (hadOld) await renameContainer(rn, rPrev);
+      // Cada copia, su identidad: dos réplicas con el mismo id no pueden
+      // repartirse el trabajo ni distinguirse en los registros.
+      const copia = conIdentidad(env, { replica: i, total: replicas });
       try {
-        await runServiceContainer({ ...spec, nameOverride: rn });
+        await runServiceContainer({ ...spec, env: copia.env, identidad: { instancia: copia.instancia, replica: i }, nameOverride: rn });
         if (!oldExists && i === 1) {
           // Primer despliegue: no hay versión anterior que proteger, y esta es
           // la validación completa (con la política de reinicio del repo).
@@ -1567,6 +1718,10 @@ async function deployContainer(
         }
       } catch (err: any) {
         await appendContainerTail(rn, log);
+        // Parada limpia sin el comando al parar, como la «--next»: la versión
+        // anterior de esta réplica sigue (o vuelve a estar) en servicio, y el
+        // comando de la copia que se descarta podría deshacer lo suyo.
+        await pararConGracia(rn, { graciaSegundos: gracia.segundos, comando: null, log });
         await removeContainer(rn);
         if (hadOld) {
           log(`La réplica ${i} falló: restaurando su versión anterior...`);
@@ -1578,8 +1733,12 @@ async function deployContainer(
         throw new Error(`La réplica ${i}/${replicas} no arrancó (${err?.message || err}).`);
       }
       if (hadOld) {
+        // El monitor no toma por caída la parada de la versión anterior; y el
+        // registro se archiva DESPUÉS de pararla, para que conserve lo que
+        // escribió al recibir SIGTERM (su cierre ordenado, o por qué no lo hubo).
+        markManualAction(service.id);
+        await parar(rPrev);
         await archiveContainerLogs(rPrev);
-        await stopContainer(rPrev);
         await removeContainer(rPrev);
       }
       if (replicas > 1) log(`Réplica ${i}/${replicas} lista.`);
@@ -1595,8 +1754,9 @@ async function deployContainer(
     for (const c of await listServiceContainers(service.id)) {
       if (!replicaPattern.test(c.name) || legit.has(c.name)) continue;
       log(`Retirando réplica sobrante ${c.name}...`);
+      markManualAction(service.id);
+      await parar(c.name);
       await archiveContainerLogs(c.name);
-      await stopContainer(c.name);
       await removeContainer(c.name);
     }
     if (!oldExists) log('Servicio en ejecución.');
@@ -1607,34 +1767,24 @@ async function deployContainer(
       );
     } else log('Intercambio completado sin interrupción del servicio.');
   } else {
-    if (oldExists) {
-      log('Servicio con estado (volúmenes/puerto fijo): intercambio con restauración automática...');
-      await renameContainer(name, prevName);
-      await stopContainer(prevName);
-    }
-    try {
-      await runServiceContainer(spec);
-      const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, name, log, probeTimeoutMs, restartPolicy, job, tcpProbe);
-      if (!verdict.ok) throw new Error(verdict.reason);
-    } catch (err: any) {
-      await appendContainerTail(name, log);
-      await removeContainer(name);
-      if (oldExists) {
-        log('La versión nueva falló: restaurando la anterior...');
-        await renameContainer(prevName, name);
-        await startContainer(name);
-        throw new Error(
-          `La versión nueva falló (${err?.message || err}). Se restauró la versión anterior automáticamente.`,
-        );
-      }
-      throw new Error(
-        `El contenedor terminó inesperadamente (${err?.message || err}). Consulta el registro del servicio.`,
-      );
-    }
-    if (oldExists) {
-      await archiveContainerLogs(prevName);
-      await removeContainer(prevName);
-    }
+    await desplegarUnaSolaCopia({
+      project,
+      service,
+      spec,
+      env,
+      replicas,
+      netName,
+      internalPort,
+      healthcheckPath,
+      probeTimeoutMs,
+      restartPolicy,
+      tcpProbe,
+      image,
+      parar,
+      graciaSegundos: gracia.segundos,
+      log,
+      job,
+    });
   }
 
   if (domains.length > 0) {
@@ -1739,38 +1889,489 @@ function recordNeeds(service: ServiceRow, cfg: GitConfig, workDir: string, log: 
   if (advice.mail && !needs.manifest) {
     const sinDefinir = advice.mail.vars.map((v) => v.name).filter((k) => !(k in getEnv(service.id)));
     log(
-      `La web envía correo (${advice.mail.evidence.join(' · ')}).` +
+      `El servicio envía correo (${advice.mail.evidence.join(' · ')}).` +
         (sinDefinir.length > 0
-          ? ` Faltan ${sinDefinir.join(', ')}: conéctala desde Correo → Conectar a un servicio, que las escribe con esos nombres.`
+          ? ` Faltan ${sinDefinir.join(', ')}: conéctalo desde Correo → Conectar a un servicio, que las escribe con esos nombres.`
           : ''),
     );
   }
   return changed;
 }
 
-/** Repara restos de un intercambio interrumpido (caída del servidor a mitad). */
-async function recoverStaleSwap(serviceId: string, log: (l: string) => void): Promise<void> {
-  let containers: { name: string }[] = [];
+/** Lo que necesita `desplegarUnaSolaCopia` del despliegue en curso. */
+interface DespliegueUnaSolaCopia {
+  project: ProjectRow;
+  service: ServiceRow;
+  spec: RunSpec;
+  env: Record<string, string>;
+  replicas: number;
+  netName: string;
+  internalPort: number | null;
+  healthcheckPath: string | null;
+  probeTimeoutMs: number;
+  restartPolicy: RestartPolicySpec | null;
+  tcpProbe: boolean;
+  image: string;
+  parar: (nombre: string) => Promise<ResultadoParada>;
+  /** Gracia de la parada, para el aviso de la parada forzada. */
+  graciaSegundos: number;
+  log: (l: string) => void;
+  job?: ActiveJob;
+}
+
+/** Índice de réplica de un nombre de copia (`<base>` = 1, `<base>-r3` = 3). */
+function indiceCopia(nombre: string, base: string): number {
+  return nombre === base ? 1 : Number(nombre.slice(base.length + 2)) || 0;
+}
+
+/**
+ * «Una sola copia» (estrategia 'recreate'): se detienen TODAS las copias de la
+ * versión anterior —en paralelo, con su parada limpia— antes de arrancar
+ * ninguna nueva, y después arrancan las N nuevas. Sin copia de validación
+ * «--next»: precisamente es la segunda copia lo que un bot de polling no
+ * admite (Telegram responde 409 a la segunda que pide actualizaciones) y lo
+ * que haría a un worker procesar dos veces el mismo trabajo.
+ *
+ * Es la rama «con estado» de siempre (volúmenes, puerto público, bases de
+ * datos) generalizada a N réplicas: con una réplica hace lo mismo. Las copias
+ * anteriores se apartan como «--prev» y, si cualquier copia nueva falla, se
+ * paran y retiran las nuevas y se restauran TODAS las anteriores.
+ */
+async function desplegarUnaSolaCopia(o: DespliegueUnaSolaCopia): Promise<void> {
+  const { project, service, log, job } = o;
+  const base = containerName(project, service);
+  const patron = new RegExp(`^${escapeRegExp(base)}(-r\\d+)?$`);
+  const encontradas = new Set((await listServiceContainers(service.id)).map((c) => c.name).filter((n) => patron.test(n)));
+  // La copia canónica también por su nombre, como antes: una copia sin la
+  // etiqueta del servicio no puede quedarse en marcha junto a la nueva.
+  if (!encontradas.has(base) && (await findContainer(base))) encontradas.add(base);
+  const anteriores = [...encontradas].sort((a, b) => indiceCopia(a, base) - indiceCopia(b, base));
+  const prev = (n: string) => `${n}--prev`;
+  const apartadas: string[] = [];
+  const nuevas: string[] = [];
+  const dockerHealthcheckMs = o.replicas > 1 ? await imageHealthcheckWindowMs(o.image) : null;
+  /** Motivo si no se pudo detener la versión anterior (y la nueva no llegó a arrancar). */
+  let errorParada: string | null = null;
+
   try {
-    containers = await listServiceContainers(serviceId);
-  } catch {
-    return;
-  }
-  for (const c of containers) {
-    if (c.name.endsWith('--next')) {
-      await removeContainer(c.name);
-      continue;
+    if (anteriores.length > 0) {
+      log(
+        anteriores.length > 1
+          ? `Una sola copia: se detienen las ${anteriores.length} copias de la versión anterior antes de arrancar la nueva...`
+          : 'Una sola copia: se detiene la versión anterior antes de arrancar la nueva...',
+      );
+      for (const n of anteriores) {
+        await renameContainer(n, prev(n));
+        apartadas.push(n);
+      }
+      // El monitor no debe tomar por caída los segundos sin servicio.
+      markManualAction(service.id);
+      // Todas a la vez, y se espera a TODAS aunque alguna falle: con
+      // `Promise.all`, la primera que fallaba disparaba la restauración mientras
+      // las demás seguían parándose, y una copia «restaurada» (arrancar una
+      // que sigue viva no hace nada) caía después por su parada pendiente.
+      const paradas = await Promise.allSettled(anteriores.map((n) => o.parar(prev(n))));
+      const rechazada = paradas.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+      if (rechazada) {
+        errorParada = String(rechazada.reason?.message || rechazada.reason);
+        throw new Error(errorParada);
+      }
+      // Una parada forzada aquí es tiempo sin servicio en cada despliegue: se
+      // recuerda en Alertas, fuera de este registro (o se cierra el aviso).
+      const forzadas = paradas.filter((r) => r.status === 'fulfilled' && r.value.forzada).length;
+      try {
+        anotarParadaForzada(service, forzadas, o.graciaSegundos);
+      } catch {
+        /* un aviso no puede tirar el despliegue */
+      }
+      // Después de parar: el registro conserva lo que escribió al recibir SIGTERM.
+      for (const n of anteriores) await archiveContainerLogs(prev(n));
+      // Una parada no se puede cortar a mitad: un «Cancelar» durante ella
+      // surte efecto aquí, y la versión anterior se restaura.
+      if (job?.canceled) throw new CanceledError();
     }
-    if (c.name.endsWith('--prev')) {
-      const base = c.name.slice(0, -'--prev'.length);
-      if (await findContainer(base)) {
-        await removeContainer(c.name);
+    for (let i = 1; i <= o.replicas; i++) {
+      const rn = replicaName(project, service, i);
+      const copia = conIdentidad(o.env, { replica: i, total: o.replicas });
+      nuevas.push(rn);
+      await runServiceContainer({ ...o.spec, env: copia.env, identidad: { instancia: copia.instancia, replica: i }, nameOverride: rn });
+      const etiqueta = o.replicas > 1 ? `réplica ${i}/${o.replicas}: ` : '';
+      if (i === 1) {
+        // La primera pasa la validación completa (healthcheck o sonda TCP, y
+        // la política de reinicio del repositorio), como la rama con estado.
+        const verdict = await validateContainer(
+          o.netName,
+          service.slug,
+          o.internalPort,
+          o.healthcheckPath,
+          rn,
+          log,
+          o.probeTimeoutMs,
+          o.restartPolicy,
+          job,
+          o.tcpProbe,
+        );
+        if (!verdict.ok) throw new Error(`${etiqueta}${verdict.reason}`);
       } else {
-        log(`Recuperando intercambio interrumpido: restaurando ${base}...`);
-        await renameContainer(c.name, base);
+        const ready = await waitReplicaReady(
+          {
+            netName: o.netName,
+            containerRef: rn,
+            port: o.internalPort,
+            healthcheckPath: o.healthcheckPath,
+            tcpProbe: o.tcpProbe,
+            dockerHealthcheckMs,
+            timeoutMs: o.probeTimeoutMs,
+          },
+          log,
+          job,
+        );
+        if (!ready.ok) throw new Error(`${etiqueta}${ready.reason}`);
+      }
+      if (o.replicas > 1) log(`Réplica ${i}/${o.replicas} lista.`);
+    }
+  } catch (err: any) {
+    const cancelado = err instanceof CanceledError || !!job?.canceled;
+    const fallida = nuevas[nuevas.length - 1];
+    if (fallida && !cancelado) await appendContainerTail(fallida, log);
+    for (const n of nuevas) {
+      await o.parar(n).catch(() => undefined);
+      await removeContainer(n).catch(() => undefined);
+    }
+    const sinRestaurar: string[] = [];
+    if (apartadas.length > 0) {
+      log(cancelado ? 'Despliegue cancelado: restaurando la versión anterior...' : 'La versión nueva falló: restaurando la anterior...');
+      for (const n of apartadas) {
+        try {
+          await renameContainer(prev(n), n);
+          await startContainer(n);
+        } catch (e: any) {
+          sinRestaurar.push(n);
+          log(`⚠ No se pudo restaurar ${n} (${e?.message || e}).`);
+        }
       }
     }
+    // La cancelación sigue siendo una cancelación (el despliegue queda como
+    // cancelado, no como fallido), con la versión anterior ya restaurada.
+    if (cancelado) throw err instanceof CanceledError ? err : new CanceledError();
+    const motivo = err?.message || String(err);
+    if (apartadas.length === 0) {
+      throw new Error(`El contenedor terminó inesperadamente (${motivo}). Consulta el registro del servicio.`);
+    }
+    if (errorParada !== null && sinRestaurar.length === 0) {
+      throw new Error(
+        `No se pudo detener la versión anterior (${errorParada}): sigue en servicio y no se ha arrancado la nueva. ` +
+          'Comprueba que Docker responde y vuelve a desplegar.',
+      );
+    }
+    if (sinRestaurar.length > 0) {
+      throw new Error(
+        `La versión nueva falló (${motivo}) y no se pudo restaurar la versión anterior (${sinRestaurar.join(', ')}): ` +
+          'consulta el registro del despliegue y vuelve a desplegar.',
+      );
+    }
+    throw new Error(`La versión nueva falló (${motivo}). Se restauró la versión anterior automáticamente.`);
   }
+  for (const n of anteriores) await removeContainer(prev(n));
+  log(anteriores.length > 0 ? 'Versión nueva en marcha (una sola copia: la anterior se detuvo antes de arrancarla).' : 'Servicio en ejecución.');
+}
+
+/**
+ * Lo que la regla automática no puede ver, dicho en el registro cuando importa:
+ *
+ *  - Un bot de Telegram o Discord sin dominio va a «una sola copia» aunque
+ *    tenga healthcheck o lo llamen otros servicios: si lo llaman, esas llamadas
+ *    fallan durante el relevo, y se dice.
+ *  - Un bot de Telegram o Discord CON dominio queda en «sin corte» (puede
+ *    recibir webhooks, y entonces dos copias no se pisan); si en realidad pide
+ *    actualizaciones (polling), con dos copias recibe un 409.
+ *  - Un servicio con puerto que pasa a «una sola copia» de forma automática:
+ *    una llamada escrita en el código o en la configuración de otro servicio
+ *    (un `proxy_pass` de nginx, una dirección montada en el código) no se detecta, y ese
+ *    servicio tendría unos segundos sin servicio en cada despliegue.
+ *  - «Sin corte» con comando al parar: el de la versión anterior se ejecuta
+ *    cuando la nueva ya está en servicio.
+ */
+function avisosDeEstrategia(
+  service: ServiceRow,
+  estrategia: EstrategiaServicio,
+  d: { domains: string[]; internalPort: number | null; healthcheckPath: string | null; comando: string | null },
+  log: (l: string) => void,
+): void {
+  const bots = bibliotecasDeBot(service);
+  if (estrategia.motivo === 'bot') {
+    const llamado = llamadoPorOtros(service);
+    log(
+      `ℹ Una sola copia elegida automáticamente: el repositorio usa una biblioteca de bots (${bots.join(', ')}) y el servicio no ` +
+        'tiene dominio, así que el bot pide sus actualizaciones (polling) o se conecta al gateway de Discord, y dos copias a la vez ' +
+        'se pisan.' +
+        (d.healthcheckPath || llamado
+          ? ` ${llamado ? 'Otro servicio lo llama por la red interna: esas llamadas fallarán' : 'Su healthcheck no recibirá respuesta'} ` +
+            'mientras se detiene la versión anterior y arranca la nueva. Si el bot recibe webhooks a través de otro servicio, ' +
+            'elige «Sin corte» en Ajustes del servicio → Despliegue y parada.'
+          : ''),
+    );
+  }
+  if (estrategia.estrategia === 'overlap' && estrategia.automatica && d.domains.length > 0 && bots.length > 0) {
+    log(
+      `ℹ El repositorio usa una biblioteca de bots (${bots.join(', ')}) y el servicio se despliega «sin corte» por su dominio: si ` +
+        'el bot recibe webhooks, dos copias no se pisan; si pide actualizaciones (polling), la segunda recibe un error 409 durante ' +
+        'el intercambio. En ese caso, elige «Una sola copia» en Ajustes del servicio → Despliegue y parada.',
+    );
+  }
+  if (estrategia.estrategia === 'recreate' && estrategia.motivo === 'sin_trafico' && d.internalPort) {
+    log(
+      'ℹ Una sola copia elegida automáticamente: el servicio no tiene dominio ni ruta de healthcheck (en Ajustes o en el ' +
+        'repositorio), y ninguna variable de otro servicio apunta a él. Si otro servicio lo llama por la red interna desde su ' +
+        'código o su configuración (por ejemplo, un proxy_pass de nginx), elige «Sin corte» en Ajustes del servicio → ' +
+        'Despliegue y parada para que no haya corte al desplegar.',
+    );
+  }
+  if (estrategia.estrategia === 'overlap' && d.comando) {
+    log(
+      'ℹ Con «sin corte», el comando al parar de la versión anterior se ejecuta cuando la nueva ya está en servicio (en la ' +
+        'copia de validación no se ejecuta): no debe deshacer lo que la nueva registra al arrancar, como el webhook de un bot.',
+    );
+  }
+}
+
+/**
+ * ¿Recibe tráfico el servicio, al margen de la estrategia que se haya elegido?
+ * Con varias réplicas y sin tráfico (sin dominio, healthcheck ni llamadas de
+ * otros servicios) hay N copias en marcha a la vez de forma permanente, y eso
+ * vale la pena decirlo también a quien eligió «una sola copia» a mano.
+ */
+function sinTrafico(service: ServiceRow, estrategia: EstrategiaServicio, healthcheckRepo: string | null): 'sin_trafico' | 'bot' | null {
+  if (estrategia.motivo === 'sin_trafico' || estrategia.motivo === 'bot') return estrategia.motivo;
+  if (estrategia.motivo !== 'elegida') return null;
+  const sinEleccion = { ...service, config: { ...service.config, deployStrategy: undefined } } as ServiceRow;
+  const motivo = estrategiaDespliegue(sinEleccion, llamadoPorOtros(service), healthcheckRepo).motivo;
+  return motivo === 'sin_trafico' || motivo === 'bot' ? motivo : null;
+}
+
+/**
+ * Copia del entorno con la identidad de ESTA copia (no modifica `env`).
+ *
+ * `SKYWAY_DEPLOYMENT` y `RAILWAY_DEPLOYMENT_ID` son iguales en todas las copias
+ * de un despliegue, y `RAILWAY_REPLICA_ID` también lo era (el id del
+ * despliegue): dos réplicas no podían distinguirse, ni la copia de validación
+ * de la que sirve. Cada contenedor recibe ahora un UUID propio
+ * (`SKYWAY_INSTANCE_ID`, nuevo en cada despliegue), su índice y el total
+ * (`SKYWAY_REPLICA`/`SKYWAY_REPLICAS`, para repartir el trabajo) y, solo la
+ * copia de validación «--next», `SKYWAY_VALIDATION=1`. `RAILWAY_REPLICA_ID`
+ * pasa a ser la instancia, como en Railway, salvo que el usuario la defina.
+ */
+export function conIdentidad(
+  env: Record<string, string>,
+  opts: { replica: number; total: number; validacion?: boolean },
+): { env: Record<string, string>; instancia: string } {
+  const instancia = randomUUID();
+  const out: Record<string, string> = {
+    ...env,
+    SKYWAY_INSTANCE_ID: instancia,
+    SKYWAY_REPLICA: String(opts.replica),
+    SKYWAY_REPLICAS: String(opts.total),
+  };
+  if (opts.validacion) out.SKYWAY_VALIDATION = '1';
+  else delete out.SKYWAY_VALIDATION;
+  if (out.RAILWAY_REPLICA_ID === undefined) out.RAILWAY_REPLICA_ID = instancia;
+  return { env: out, instancia };
+}
+
+const SUFIJO_NEXT = '--next';
+const SUFIJO_PREV = '--prev';
+
+/** ¿Tiene el servicio un despliegue en cola o en marcha? */
+export function despliegueEnCurso(serviceId: string): boolean {
+  return activeDeploymentIdsForServices([serviceId]).length > 0;
+}
+
+/** Estado del despliegue que creó un contenedor (etiqueta `skyway.deployment`), o null si no se sabe. */
+function estadoDespliegueDe(info: { Config?: { Labels?: Record<string, string> | null } } | null): DeploymentRow['status'] | null {
+  const id = info?.Config?.Labels?.['skyway.deployment'];
+  return id ? (deploymentSummary(id)?.status ?? null) : null;
+}
+
+/**
+ * Retira, con parada limpia, los restos de un intercambio interrumpido (Skyway
+ * cayó o se apagó a mitad de un despliegue):
+ *  - «--next» (copia de validación) → parar y retirar;
+ *  - «--prev» con su copia base presente → se decide por la etiqueta
+ *    `skyway.deployment` de las dos. Si la base es de un despliegue que no
+ *    terminó bien y la «--prev» de uno correcto, Skyway cayó mientras validaba
+ *    la versión nueva: se para y retira la base y la «--prev» vuelve a su
+ *    nombre, porque es la que funcionaba. En cualquier otro caso (la base es de
+ *    un despliegue correcto, o no se sabe) se para y retira la «--prev»;
+ *  - «--prev» sin base → vuelve a su nombre: es la única versión que hay.
+ *
+ * La copia que vuelve a su nombre se arranca, salvo que el servicio esté
+ * parado a propósito o que la limpieza la pida «Detener» (`sinArrancar`).
+ *
+ * Antes solo se hacía al principio del despliegue siguiente, con `remove
+ * --force` (SIGKILL) y quedándose siempre con la base: con «una sola copia»,
+ * una caída durante la validación tiraba la versión buena y dejaba en servicio
+ * la nueva sin validar (y quizá parada: la cancelación ya le había mandado
+ * SIGTERM). Un bot podía además seguir con dos copias vivas hasta el próximo
+ * despliegue, y Detener no las alcanzaba. Devuelve lo hecho, en texto (también
+ * va a `log`). Un resto que no se puede tratar se registra y no impide tratar
+ * los demás.
+ */
+export async function limpiarRestosIntercambio(
+  service: ServiceRow,
+  log?: (l: string) => void,
+  opts: { sinArrancar?: boolean } = {},
+): Promise<string[]> {
+  let contenedores: { name: string }[];
+  try {
+    contenedores = await listServiceContainers(service.id);
+  } catch {
+    return [];
+  }
+  const restos = contenedores
+    .map((c) => c.name)
+    .filter((n) => n.endsWith(SUFIJO_NEXT) || n.endsWith(SUFIJO_PREV))
+    // Primero las copias de validación: nunca son la versión que se queda.
+    .sort((a, b) => Number(b.endsWith(SUFIJO_NEXT)) - Number(a.endsWith(SUFIJO_NEXT)));
+  if (restos.length === 0) return [];
+  let env: Record<string, string> = {};
+  try {
+    env = resolveServiceEnv(service);
+  } catch {
+    /* sin entorno resuelto, la gracia del servicio o la de por defecto */
+  }
+  const graciaSegundos = graciaParada(service, env).segundos;
+  const comando = comandoParada(service);
+  const arrancar = !service.stopped_at && !opts.sinArrancar;
+  const hecho: string[] = [];
+  const anotar = (texto: string) => {
+    hecho.push(texto);
+    log?.(texto);
+  };
+  /** La «--prev» vuelve a su nombre (y se arranca si toca). */
+  const recuperar = async (nombre: string, base: string, motivo: string) => {
+    await renameContainer(nombre, base);
+    if (arrancar) await startContainer(base);
+    anotar(`${motivo}: ${base} vuelve a su nombre${arrancar ? ' y queda en marcha' : ''}.`);
+  };
+  for (const nombre of restos) {
+    if (nombre.endsWith(SUFIJO_NEXT)) {
+      try {
+        // Sin el comando al parar: la copia de validación nunca atendió.
+        await pararConGracia(nombre, { graciaSegundos, comando: null, log });
+        await removeContainer(nombre);
+        anotar(`Retirada la copia de validación ${nombre} de un intercambio interrumpido.`);
+      } catch (err: any) {
+        anotar(`⚠ No se pudo retirar ${nombre} (${err?.message || err}).`);
+      }
+      continue;
+    }
+    const base = nombre.slice(0, -SUFIJO_PREV.length);
+    const infoBase = await findContainer(base);
+    if (!infoBase) {
+      try {
+        await recuperar(nombre, base, 'Recuperado un intercambio interrumpido');
+      } catch (err: any) {
+        anotar(`⚠ No se pudo recuperar ${nombre} (${err?.message || err}).`);
+      }
+      continue;
+    }
+    const estadoBase = estadoDespliegueDe(infoBase);
+    const estadoPrev = estadoDespliegueDe(await findContainer(nombre));
+    const baseSinValidar = estadoBase !== null && estadoBase !== 'success' && estadoPrev === 'success';
+    try {
+      if (baseSinValidar) {
+        // La base es la versión nueva de un despliegue cortado: se para (con su
+        // comando: pudo llegar a atender), se archiva su registro y se retira.
+        await pararConGracia(base, { graciaSegundos, comando, log });
+        await archiveContainerLogs(base);
+        await removeContainer(base);
+        await recuperar(nombre, base, 'Recuperada la versión anterior de un despliegue interrumpido antes de terminar la validación');
+      } else {
+        await pararConGracia(nombre, { graciaSegundos, comando, log });
+        await removeContainer(nombre);
+        anotar(`Retirada la versión anterior ${nombre} de un intercambio interrumpido.`);
+      }
+    } catch (err: any) {
+      anotar(
+        baseSinValidar
+          ? `⚠ No se pudo recuperar la versión anterior ${nombre} (${err?.message || err}).`
+          : `⚠ No se pudo retirar ${nombre} (${err?.message || err}).`,
+      );
+    }
+  }
+  return hecho;
+}
+
+/**
+ * La misma limpieza, por la cola de despliegues del servicio (`deploy:<id>`) y
+ * esperando a que termine. La usan Detener, Iniciar y Reiniciar: así nunca
+ * coincide con la que encola el arranque de Skyway sobre los mismos restos (las
+ * dos acababan en 404 y 409 sueltos).
+ */
+export function limpiarRestosEnCola(
+  service: ServiceRow,
+  log?: (l: string) => void,
+  opts: { sinArrancar?: boolean } = {},
+): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    void enqueue(`deploy:${service.id}`, async () => {
+      try {
+        // Releída en la cola: lo que hubiera delante puede haberla cambiado.
+        resolve(await limpiarRestosIntercambio(getService(service.id) ?? service, log, opts));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
+}
+
+/**
+ * Al arrancar Skyway: los contenedores «--next»/«--prev» que dejó un
+ * intercambio cortado por el reinicio. Hasta ahora solo los limpiaba el
+ * despliegue siguiente del servicio, así que un bot podía seguir con dos
+ * copias vivas (y una de ellas, la de validación, sin el resto de su
+ * configuración) indefinidamente.
+ *
+ * La limpieza va por la cola de despliegues del servicio (`deploy:<id>`): el
+ * reintento automático del despliegue cortado (`resumeInterruptedDeployments`,
+ * que se llama después) se encola detrás y nunca coincide con ella. No espera
+ * a las paradas, para no retrasar el arranque. Los restos de un servicio que
+ * ya no existe se dejan como están y se avisa.
+ */
+export async function limpiarIntercambiosAlArrancar(
+  log: (msg: string) => void,
+): Promise<{ servicios: number; contenedores: number }> {
+  const lista = await dockerQuery.listContainers({ all: true, filters: { label: ['skyway.managed=true'] } as any });
+  const porServicio = new Map<string, string[]>();
+  for (const c of lista) {
+    const nombre = (c.Names?.[0] || '').replace(/^\//, '');
+    if (!nombre.endsWith(SUFIJO_NEXT) && !nombre.endsWith(SUFIJO_PREV)) continue;
+    const serviceId = c.Labels?.['skyway.service'];
+    if (!serviceId) continue;
+    porServicio.set(serviceId, [...(porServicio.get(serviceId) ?? []), nombre]);
+  }
+  let servicios = 0;
+  let contenedores = 0;
+  for (const [serviceId, nombres] of porServicio) {
+    const service = getService(serviceId);
+    if (!service) {
+      log(`Restos de un intercambio de un servicio que ya no existe: ${nombres.join(', ')}. No se tocan; retíralos a mano si no los necesitas.`);
+      continue;
+    }
+    servicios += 1;
+    contenedores += nombres.length;
+    void enqueue(`deploy:${serviceId}`, async () => {
+      // Releída en la cola: la de antes de encolar puede haber cambiado.
+      const actual = getService(serviceId);
+      if (!actual) return;
+      try {
+        await limpiarRestosIntercambio(actual, (l) => log(`«${actual.name}»: ${l}`));
+      } catch (err: any) {
+        log(`«${actual.name}»: no se pudieron retirar los restos de un intercambio (${err?.message || err}).`);
+      }
+    });
+  }
+  return { servicios, contenedores };
 }
 
 /**

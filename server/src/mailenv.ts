@@ -58,7 +58,7 @@ export const SECRET_ROLES: Record<MailMode, readonly MailRole[]> = {
 /**
  * Papeles que dicen a DÓNDE y con QUÉ usuario se presenta la credencial. Si uno
  * de ellos se queda con un valor puesto a mano distinto del de Mailway y se
- * escribe la credencial, la web queda conectada a medias: en el peor caso,
+ * escribe la credencial, el servicio queda conectado a medias: en el peor caso,
  * envía la contraseña de Mailway al servidor de otro proveedor.
  */
 export const CONNECTION_ROLES: Record<MailMode, readonly MailRole[]> = {
@@ -182,6 +182,28 @@ const ALIASES: Record<string, MailRole> = {
 /** Papel de un nombre de variable, o null si no es uno de correo conocido. */
 export function mailRoleOf(name: string): MailRole | null {
   return ALIASES[name] ?? null;
+}
+
+/**
+ * Papel con un prefijo propio delante del nombre conocido más largo en que
+ * termina (`TG_SMTP_LOGIN` → user, `MYAPP_EMAIL_HOST_USER` → user). Un bot o
+ * un worker suele llevar sus variables con el nombre del proyecto delante, y
+ * un cambio de dominio tiene que reconocer ahí el usuario con el que entra en
+ * el correo: tratarlo como una dirección lo dejaría sin poder enviar al pasar.
+ *
+ * Solo para RECONOCER (cambio de dominio): para escribir y para proponer
+ * nombres se usa `mailRoleOf`, que no adivina.
+ */
+export function mailRoleLoose(name: string): MailRole | null {
+  const n = name.trim().toUpperCase();
+  const exacto = ALIASES[n];
+  if (exacto) return exacto;
+  // De izquierda a derecha: el primer sufijo que casa es el más largo.
+  for (let i = n.indexOf('_'); i >= 0; i = n.indexOf('_', i + 1)) {
+    const role = ALIASES[n.slice(i + 1)];
+    if (role) return role;
+  }
+  return null;
 }
 
 /** Las variables esperadas (en su orden) que son de correo, con su papel. */

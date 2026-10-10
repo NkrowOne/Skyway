@@ -267,6 +267,7 @@ export const ALERT_TYPE_LABEL: Record<string, string> = {
   mail_password_renewal_failed: 'Contraseña de aplicación sin renovar',
   deploy_interrupted: 'Despliegue interrumpido',
   autodeploy_failing: 'Despliegue automático sin funcionar',
+  mail_login_deploy_failed: 'Servicio sin poder enviar correo',
 };
 
 export const AUDIT_ACTION_LABEL: Record<string, string> = {
@@ -289,6 +290,8 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   service_start: 'Servicio iniciado',
   service_stop: 'Servicio detenido',
   service_restart: 'Servicio reiniciado',
+  service_stop_command: 'Comando al parar modificado',
+  swap_leftovers_cleaned: 'Restos de despliegues interrumpidos retirados',
   service_env_updated: 'Variables actualizadas',
   settings_updated: 'Ajustes globales cambiados',
   webhook_push: 'Push recibido (webhook)',
@@ -367,6 +370,7 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   domain_migration_interrupted: 'Cambio de dominio interrumpido por un reinicio',
   domain_migration_mx_changed: 'Cambio de dominio: MX del dominio nuevo cambiado en Cloudflare',
   domain_migration_service_retried: 'Cambio de dominio: despliegue de un servicio reintentado',
+  domain_migration_host_mode: 'Cambio de dominio: nombre anterior servido o redirigido',
   domain_redirects_removed: 'Redirecciones del dominio anterior quitadas',
   service_env_replaced: 'Variables cambiadas por un cambio de dominio',
 };

@@ -177,6 +177,7 @@ server/src/
   routes/                 API REST + SSE + webhooks (+ monitor, websites, status público)
   tools/                  herramientas de terminal: contraseña, tokens de API, conexión con Mailway y avisos
 scripts/skyway            CLI: despliegues por la API y actualización del propio Skyway en el servidor
+scripts/prueba-real-bots.mjs  prueba real con Docker de una sola copia, parada limpia y restos de intercambios
 web/src/
   pages/                  Dashboard, Proyecto, Monitor, Sitios, Estado público...
   components/             canvas de servicios, drawer con pestañas, gráficas

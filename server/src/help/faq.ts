@@ -149,10 +149,23 @@ export const FAQ: FaqEntry[] = [
     category: 'despliegues',
     question: '¿Cómo ejecuto varias copias de mi servicio?',
     answer:
-      'En **Ajustes → Recursos → Réplicas** (de 1 a 10). Traefik reparte el tráfico del dominio entre todas y el panel muestra cuántas están en ejecución. Los despliegues sustituyen las réplicas una a una.\n\n' +
+      'En **Ajustes → Recursos → Réplicas** (de 1 a 10). Traefik reparte el tráfico del dominio entre todas y el panel muestra cuántas están en ejecución. Con la estrategia **Sin corte**, los despliegues sustituyen las réplicas una a una y siempre queda una en servicio; con **Una sola copia**, todas las réplicas se detienen antes de arrancar las nuevas.\n\n' +
       'Requisitos: el servicio no puede tener **volúmenes** (varias copias escribiendo en el mismo disco se sobrescribirían) ni **Puerto público** (solo una puede ocuparlo). Las réplicas consumen CPU y RAM de la cuota de la cuenta.\n\n' +
+      'En un servicio que no recibe tráfico (sin dominio, healthcheck ni llamadas de otros servicios, como un bot o un worker), cada réplica es una copia más en marcha **a la vez y de forma permanente**, y Ajustes lo avisa. Un bot de polling (Telegram, Discord…) solo admite una réplica; un worker tiene que repartir el trabajo con `SKYWAY_REPLICA` y `SKYWAY_REPLICAS` o usar una cola.\n\n' +
       'En la pestaña **Logs**, las líneas de las réplicas 2 en adelante llevan el prefijo `[r2]`, `[r3]`…',
-    keywords: ['replicas', 'escalar', 'scale', 'copias', 'instancias', 'balanceo', 'alta disponibilidad', 'horizontal'],
+    keywords: ['replicas', 'escalar', 'scale', 'copias', 'instancias', 'balanceo', 'alta disponibilidad', 'horizontal', 'varias copias', 'repartir trabajo'],
+  },
+  {
+    id: 'bot-o-worker-una-sola-copia',
+    category: 'despliegues',
+    question: '¿Cómo despliego un bot o un worker sin que haya dos copias a la vez?',
+    answer:
+      'Skyway sustituye la versión en marcha de una de estas dos formas, que se eligen en **Ajustes → Despliegue y parada → Al desplegar**:\n\n' +
+      '- **Sin corte**: la versión nueva arranca y se valida mientras la anterior sigue atendiendo, así que durante unos segundos hay dos copias. Es lo adecuado para una web o una API.\n' +
+      '- **Una sola copia**: se detiene la versión anterior y después arranca la nueva. Hay unos segundos sin servicio, pero nunca dos copias a la vez. Es lo adecuado para un bot que pide actualizaciones (con dos copias, Telegram responde con un error 409 «Conflict: terminated by other getUpdates request») y para un worker que procesa trabajos de una cola.\n\n' +
+      'Con **Automático (recomendado)**, Skyway elige «Una sola copia» si el servicio no tiene dominio, ni ruta de healthcheck (en Ajustes o en el `railway.json` del repositorio), ni otros servicios del proyecto que lo llamen por la red interna (con `${{bot.INTERNAL_URL}}` o `http://bot:3000` en sus variables, build args o comando de arranque); en otro caso, «Sin corte». Un bot de **Telegram o Discord** sin dominio, reconocido por su biblioteca en el repositorio (telegraf, grammy, python-telegram-bot, aiogram, discord.js, discord.py…), va siempre con «Una sola copia», aunque tenga healthcheck o lo llamen otros servicios. El selector indica cuál se aplica en cada momento y por qué. Con volúmenes o puerto público siempre se usa «Una sola copia». Skyway no ve una llamada escrita en el código o en un fichero de configuración de otro servicio (por ejemplo, un `proxy_pass` de nginx): si un servicio sin dominio recibe llamadas así, elige **Sin corte**. Los servicios ya desplegados que pasan a «Una sola copia» al actualizar Skyway reciben un aviso en Alertas.\n\n' +
+      'La elección se respeta en todos los despliegues: push, despliegue manual, volver a una versión anterior, conexión del correo y cambio de dominio. Las **réplicas** son otra cosa: cada réplica es una copia en marcha de forma permanente, así que un bot de polling necesita **1 réplica**.',
+    keywords: ['bot', 'bots', 'telegram', 'discord', 'slack', 'whatsapp', '409', 'conflict', 'getupdates', 'terminated by other getupdates request', 'polling', 'dos copias', 'dos instancias', 'duplicado', 'mensajes duplicados', 'worker', 'cola', 'una sola copia', 'sin corte', 'solape', 'overlap', 'recreate', 'estrategia', 'al desplegar'],
   },
   {
     id: 'metricas-y-cuotas',
@@ -169,10 +182,39 @@ export const FAQ: FaqEntry[] = [
     category: 'despliegues',
     question: '¿Cómo detengo, inicio o reinicio un servicio sin volver a desplegar?',
     answer:
-      'En la cabecera del servicio dispones de **Detener**, **Iniciar** y **Reiniciar**. Detener conserva la imagen, las variables y los volúmenes: al iniciar, el servicio vuelve exactamente al estado anterior, sin compilación.\n\n' +
+      'En la cabecera del servicio dispones de **Detener**, **Iniciar** y **Reiniciar**. Detener conserva la imagen, las variables y los volúmenes: al iniciar, el servicio vuelve exactamente al estado anterior, sin compilación. Reiniciar sigue la estrategia del servicio: con **Sin corte** y varias réplicas, las reinicia una a una (siempre queda una en servicio); con **Una sola copia**, las detiene todas y después las vuelve a arrancar.\n\n' +
       'Un servicio detenido manualmente aparece en gris y no genera alertas de caída. Si necesitas que deje de consumir cuota, es suficiente con detenerlo; para liberarla por completo, elimínalo desde Ajustes.\n\n' +
       'Si el servicio está caído sin que nadie lo haya detenido, consulta primero **Logs**: casi siempre hay una excepción justo antes del cierre.',
     keywords: ['parar', 'detener', 'stop', 'iniciar', 'start', 'reiniciar', 'restart', 'apagar', 'encender', 'detenido', 'gris'],
+  },
+  {
+    id: 'parada-limpia',
+    category: 'despliegues',
+    question: '¿Cómo se detiene un servicio? Gracia de parada y comando al parar',
+    answer:
+      'Cada vez que Skyway detiene una copia del servicio (al pulsar **Detener**, al sustituir la versión anterior en un despliegue o al retirar una copia que ha fallado) sigue el mismo orden:\n\n' +
+      '1. Si hay **comando al parar**, se ejecuta dentro del contenedor (por ejemplo, para vaciar una cola o cerrar conexiones), con el mismo plazo que la gracia. Si falla, la parada continúa.\n' +
+      '2. Se envía **SIGTERM** al proceso principal para que termine de forma ordenada.\n' +
+      '3. Si no ha terminado al agotar la **gracia de parada**, se envía **SIGKILL**.\n\n' +
+      'La gracia y el comando se configuran en **Ajustes → Despliegue y parada** (en una base de datos, solo la gracia). La gracia es de 30 segundos por defecto, de 0 a 600; si el servicio viene de Railway y define `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`, se usa ese valor. En una base de datos va de 10 a 600 y esa variable no se aplica.\n\n' +
+      'Si el registro indica que una copia **no terminó con SIGTERM y se detuvo con SIGKILL** (código de salida 137), el proceso no atiende SIGTERM o necesita más tiempo para cerrar. Hay dos causas habituales:\n\n' +
+      '- **La aplicación es el proceso principal del contenedor y no tiene manejador de SIGTERM.** El sistema descarta la señal, así que el proceso sigue hasta el SIGKILL. Añade uno que cierre y salga: en Node, `process.on(\'SIGTERM\', …)`; en Python, `signal.signal(signal.SIGTERM, …)`.\n' +
+      '- **El comando de arranque va envuelto en un shell** (Skyway lo ejecuta con `sh -c`) y el shell no reenvía la señal. Si es una sola orden, empiézala con `exec` (`exec node bot.js`): la aplicación sustituye al shell, y entonces tiene que atender SIGTERM como en el caso anterior.\n\n' +
+      'Aumentar la gracia solo sirve si el proceso ya atiende SIGTERM y necesita más tiempo. Con **Una sola copia**, la gracia se suma a los segundos sin servicio de cada despliegue: si el proceso no atiende SIGTERM, conviene bajarla, y Alertas lo recuerda («no atiende SIGTERM») hasta el primer despliegue que no necesite SIGKILL. La copia de validación de **Sin corte** se detiene con una gracia de 10 s como mucho, porque no ha atendido nada. Un código 137 sin ese aviso suele indicar falta de memoria.',
+    keywords: ['parar', 'detener', 'stop', 'sigterm', 'sigkill', 'kill', 'señal', 'gracia', 'gracia de parada', 'comando al parar', 'graceful shutdown', 'apagado', 'cierre ordenado', '137', 'exec', 'drain', 'draining', 'railway_deployment_draining_seconds', 'tarda en parar', 'no se detiene', 'pid 1', 'manejador', 'process.on'],
+  },
+  {
+    id: 'identidad-de-cada-copia',
+    category: 'despliegues',
+    question: '¿Cómo sabe cada copia quién es?',
+    answer:
+      'Cada contenedor del servicio recibe estas variables, además de las que definas:\n\n' +
+      '- `SKYWAY_INSTANCE_ID`: identificador único de esa copia. Es distinto en cada réplica y cambia en cada despliegue; **Reiniciar** lo conserva, porque no crea un contenedor nuevo.\n' +
+      '- `SKYWAY_REPLICA` y `SKYWAY_REPLICAS`: número de la réplica (de 1 a N) y total de réplicas. Permiten que un worker con varias réplicas reparta el trabajo: por ejemplo, que cada réplica procese solo los elementos cuyo número módulo `SKYWAY_REPLICAS` sea igual a `SKYWAY_REPLICA` − 1. Para repartir así, despliégalo con **Una sola copia**: con **Sin corte**, durante el intercambio conviven la copia anterior y la nueva con el mismo número de réplica (la copia de validación lleva el 1), y ese tramo se procesaría dos veces.\n' +
+      '- `SKYWAY_VALIDATION=1`: solo en la copia de validación de los despliegues **Sin corte**, que arranca unos segundos para comprobar la versión nueva antes de sustituir la anterior. Una aplicación puede consultarla para no registrar webhooks ni empezar a procesar trabajo durante esa comprobación.\n' +
+      '- `SKYWAY_DEPLOYMENT`: identificador del despliegue, igual en todas sus copias.\n\n' +
+      'Por compatibilidad con Railway, `RAILWAY_REPLICA_ID` tiene el mismo valor que `SKYWAY_INSTANCE_ID`, salvo que definas esa variable.',
+    keywords: ['replica', 'instancia', 'instance', 'identificador', 'skyway_instance_id', 'skyway_replica', 'skyway_replicas', 'skyway_validation', 'railway_replica_id', 'skyway_deployment', 'copia', 'quien soy', 'repartir trabajo', 'worker', 'validacion'],
   },
   {
     id: 'eliminar-servicio-o-proyecto',
@@ -305,10 +347,10 @@ export const FAQ: FaqEntry[] = [
       '- **Webmail propio**: si el servicio de correo crea el webmail automáticamente, la pestaña **Dominios** muestra el de cada dominio con su estado, y el interruptor **Crear el webmail automáticamente** lo activa o lo desactiva para el cliente de correo (en una cuenta, para todos sus proyectos). Al desactivarlo, los webmail creados automáticamente dejan de funcionar y los titulares vuelven al webmail general.\n' +
       '- **Configuración inicial**: **Enviar configuración inicial** crea un enlace para la persona de contacto del cliente. Con él crea su propio acceso al panel de correo y un asistente le guía para añadir el dominio y los buzones. El enlace sirve una sola vez y caduca en el plazo elegido; se puede copiar, enviar por correo, volver a ver mientras esté pendiente o revocar.\n' +
       '- **Buzones**: el propietario de la cuenta crea las direcciones que necesite; info, contacto y no-reply se proponen con un clic (los nombres reservados, como postmaster o abuse, solo los crea el administrador). La contraseña se muestra **una sola vez**; para configurar el correo en un teléfono o en un ordenador, envía al titular el **enlace de configuración**.\n' +
-      '- **Conectar a un servicio**: elige el servicio y el buzón remitente. En modo **SMTP** se añaden `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`… con una contraseña de aplicación propia; en modo **API**, `MAILWAY_API_URL`, `MAILWAY_API_KEY` y `MAIL_FROM`. Si el servicio ya estaba conectado, la credencial anterior se revoca. Es necesario volver a desplegar el servicio para aplicarlas. Las credenciales vigentes se pueden revocar desde la misma pestaña.\n' +
+      '- **Conectar a un servicio**: elige el servicio y el buzón remitente. En modo **SMTP** se añaden `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`… con una contraseña de aplicación propia; en modo **API**, `MAILWAY_API_URL`, `MAILWAY_API_KEY` y `MAIL_FROM`. Es necesario volver a desplegar el servicio para aplicarlas. Si el servicio ya estaba conectado, la credencial anterior se revoca y **Volver a desplegar ahora** aparece marcado: sin desplegar, el servicio no puede enviar correo hasta el siguiente despliegue. En modo API, `MAILWAY_API_URL` es la dirección base del servicio de correo: para enviar, haz POST a `{MAILWAY_API_URL}/v1/send` con la cabecera `Authorization: Bearer {MAILWAY_API_KEY}`. Para un bot o un worker que solo envía se recomienda el modo API: la clave solo envía desde su buzón, mientras que la contraseña de aplicación también permite leer el buzón por IMAP. Las credenciales vigentes se pueden revocar desde la misma pestaña.\n' +
       '- **Actualización del servidor de correo**: si una actualización del servidor de correo invalida la contraseña de aplicación de un servicio conectado por SMTP, Skyway crea una nueva para el mismo buzón, la guarda en sus variables y vuelve a desplegar el servicio, sin intervención. En **Conectar a un servicio** se indica cuándo se renovó o por qué no ha sido posible todavía (por ejemplo, porque el servicio está detenido: se renueva cuando vuelve a estar en marcha). Los servicios conectados por la API de envío no se ven afectados.\n\n' +
       'Si el botón **Correo** indica que no está disponible, el plan de la cuenta no incluye el módulo «Correo» o el administrador aún no ha conectado Mailway.',
-    keywords: ['correo', 'email', 'e-mail', 'mail', 'buzon', 'buzones', 'smtp', 'mx', 'dkim', 'spf', 'dmarc', 'mailway', 'enviar correos', 'nodemailer', 'webmail', 'cuenta de correo', 'fichero de zona', 'marca blanca', 'configuracion inicial', 'enlace de bienvenida', 'contraseña de aplicacion', 'renovada', 'invalidada', 'no envia correo'],
+    keywords: ['correo', 'email', 'e-mail', 'mail', 'buzon', 'buzones', 'smtp', 'mx', 'dkim', 'spf', 'dmarc', 'mailway', 'enviar correos', 'nodemailer', 'webmail', 'cuenta de correo', 'fichero de zona', 'marca blanca', 'configuracion inicial', 'enlace de bienvenida', 'contraseña de aplicacion', 'renovada', 'invalidada', 'no envia correo', 'api de envio', 'v1/send', 'mailway_api_url', 'correo desde un bot'],
     links: [{ label: 'Configurar Mailway (administrador)', to: '/settings#mailway' }],
   },
 

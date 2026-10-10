@@ -32,6 +32,7 @@ import {
   insertApiToken,
   insertDomainMigration,
   insertMailwayLink,
+  listAlerts,
   listAudit,
   listDomainRedirects,
   listSnapshots,
@@ -600,7 +601,7 @@ describe('con el correo en Mailway', () => {
 });
 
 describe('baja con el despliegue de la aplicación fallido', () => {
-  it('no se llama a la baja de Mailway y el cambio vuelve a «pasada» con el error', async () => {
+  it('se reintenta una vez; si vuelve a fallar, no se llama a la baja de Mailway, alerta y el cambio vuelve a «pasada» con el error', async () => {
     const p = proyectoConCorreo('fallida', 'fallida.es');
     const { mid, mailwayId } = await hastaPasada(p, 'fallida.es', 'fallida2.es');
     mw.calls = [];
@@ -612,13 +613,19 @@ describe('baja con el despliegue de la aplicación fallido', () => {
 
     expect(llamadas(/login-update/).length).toBe(1);
     expect(getEnv(p.web.id).SMTP_USER).toBe('tienda@fallida2.es');
-    expect(m.triggers).toEqual([{ serviceId: p.web.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/fallida-web:v1' }]);
+    // El despliegue y su reintento, con la misma imagen en marcha.
+    const conImagen = { serviceId: p.web.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/fallida-web:v1' };
+    expect(m.triggers).toEqual([conImagen, conImagen]);
     expect(llamadas(/\/retire$/)).toEqual([]);
     const row = getDomainMigration(mid)!;
     expect(row.estado).toBe('pasada');
-    expect(row.error).toMatch(/no se ha dado de baja fallida\.es/);
-    expect(row.servicios[p.web.id]).toMatchObject({ estado: 'error', error: 'El contenedor no ha arrancado.' });
+    const sinEnviar =
+      'El despliegue ha fallado dos veces y «Web» no puede enviar correo: su usuario ya es tienda@fallida2.es y el contenedor en marcha sigue con tienda@fallida.es. Pulsa «Reintentar este servicio».';
+    expect(row.error).toBe(`${sinEnviar} No se ha dado de baja fallida.es: vuelve a darlo de baja cuando el servicio esté desplegado.`);
+    expect(row.servicios[p.web.id]).toMatchObject({ estado: 'error', error: sinEnviar });
     expect(mw.migraciones.find((x) => x.id === mailwayId)?.estado).toBe('pasado');
+    const alerta = listAlerts({ openOnly: true }).find((a) => a.service_id === p.web.id && a.type === 'mail_login_deploy_failed');
+    expect(alerta).toMatchObject({ severity: 'critical', title: '«Web» no puede enviar correo' });
 
     // Con el servicio sin desplegar no se puede dar de baja: la aplicación
     // tiene el usuario nuevo, pero su contenedor en marcha, el anterior.
@@ -711,7 +718,8 @@ describe('WordPress y fichero de zona (solo la web)', () => {
     const r = await call('POST', `${base}/plan`, admin(), { fromDomain: 'wp-viejo.es', toDomain: 'wp-nuevo.es' });
     expect(r.status, r.raw).toBe(200);
     expect(r.json.variables.wordpress).toEqual([{ serviceId: wp.id, serviceName: 'Blog', url: 'http://www.wp-nuevo.es' }]);
-    expect(r.json.servicios).toEqual([{ serviceId: wp.id, nombre: 'Blog', reinicio: true }]);
+    // Con volúmenes, una sola copia: se detiene antes de arrancar la versión nueva.
+    expect(r.json.servicios).toEqual([{ serviceId: wp.id, nombre: 'Blog', reinicio: true, motivos: ['dominios'] }]);
     expect(r.json.avisos.some((a: string) => a.includes("wp search-replace 'https://www.wp-viejo.es' 'https://www.wp-nuevo.es'"))).toBe(true);
     const creada = await call('POST', base, admin(), {
       fromDomain: 'wp-viejo.es',
@@ -736,7 +744,7 @@ describe('WordPress y fichero de zona (solo la web)', () => {
     dnsAqui('www.wp-nuevo.es');
     const vista = (await call('POST', `${base}/${mid}/check`, admin())).json;
     expect(vista.estado).toBe('lista');
-    expect(vista.alPasar).toEqual([{ serviceId: wp.id, nombre: 'Blog', reinicio: true }]);
+    expect(vista.alPasar).toEqual([{ serviceId: wp.id, nombre: 'Blog', reinicio: true, motivos: ['dominios'] }]);
     const r = await call('POST', `${base}/${mid}/switch`, admin(), { expect: vista.variables.huella });
     expect(r.status, r.raw).toBe(202);
     expect(getEnv(wp.id).WORDPRESS_CONFIG_EXTRA).toBe(
@@ -1305,10 +1313,12 @@ describe('revisión final: cancelar tras volver, cambios ajenos y el proyecto', 
     expect(mw.migraciones.find((x) => x.id === mailwayId)?.estado).toBe('cancelada');
     expect(mw.mailboxes.find((b) => b.id === p.buzonId)?.usuarioMotor).toBeNull();
     expect(getEnv(p.web.id)).toMatchObject({ SMTP_USER: 'tienda@cancelapp.es', SMTP_FROM: 'tienda@cancelapp.es' });
-    expect(m.triggers).toEqual([{ serviceId: p.web.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/cancelapp-web:v1' }]);
     await esperarTareasCambioDominio();
+    // El despliegue falla y se reintenta una vez, con la misma imagen.
+    const conImagen = { serviceId: p.web.id, trigger: 'cambio-de-dominio', imageTag: 'skyway/cancelapp-web:v1' };
+    expect(m.triggers).toEqual([conImagen, conImagen]);
 
-    // Si ese despliegue falla, se reintenta desde el cambio cancelado (con la misma imagen).
+    // Si el reintento también falla, se reintenta desde el cambio cancelado (con la misma imagen).
     const lista = (await call('GET', p.base, ownerHeaders)).json;
     expect(lista.abierta).toBeNull();
     expect(lista.anteriores[0].servicios).toEqual([expect.objectContaining({ serviceId: p.web.id, estado: 'error' })]);

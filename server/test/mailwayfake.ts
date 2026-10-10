@@ -329,6 +329,10 @@ function mailboxRecord(box: FakeMailbox) {
 const appsSkyway = (mailboxId: string) =>
   mw.appPasswords.filter((a) => a.mailboxId === mailboxId && !a.revokedAt && a.name.startsWith('skyway:')).map((a) => a.name);
 
+/** Las demás contraseñas de aplicación activas del buzón: las creadas a mano (Mailway 1.6, `appsManuales`). */
+const appsManuales = (mailboxId: string) =>
+  mw.appPasswords.filter((a) => a.mailboxId === mailboxId && !a.revokedAt && !a.name.startsWith('skyway:')).map((a) => a.name);
+
 function domainRecord(fake: FakeDomain) {
   const { cloudflareAccountId, checks, ...d } = fake;
   return {
@@ -1052,6 +1056,7 @@ export function vistaCambio(c: FakeMigracion) {
     login: b.usuarioMotor ?? b.email,
     pendiente: !!b.usuarioMotor,
     usadoPorApps: appsSkyway(b.id),
+    appsManuales: appsManuales(b.id),
   }));
   const ok = c.compuertasOk;
   const compuertas = (Object.keys(TITULOS_COMPUERTA) as (keyof typeof TITULOS_COMPUERTA)[]).map((id) => ({
@@ -1134,7 +1139,7 @@ function planCambio(from: FakeDomain, to: string) {
   return {
     desde: { domainId: from.id, domain: from.domain },
     hacia: { domain: to, existe: !!destino, domainId: destino?.id ?? null },
-    buzones: buzones.map((x) => ({ id: x.id, de: x.email, a: `${x.localPart}@${to}`, usadoPorApps: appsSkyway(x.id) })),
+    buzones: buzones.map((x) => ({ id: x.id, de: x.email, a: `${x.localPart}@${to}`, usadoPorApps: appsSkyway(x.id), appsManuales: appsManuales(x.id) })),
     alias: aliases.map((x) => ({ id: x.id, de: x.email, a: `${x.localPart}@${to}` })),
     formularios: [],
     webmail: { viejo: null, nuevo: null },
