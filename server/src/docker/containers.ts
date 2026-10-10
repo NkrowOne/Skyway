@@ -95,10 +95,16 @@ export async function getRuntime(name: string, signal?: AbortSignal): Promise<Se
   };
 }
 
-export async function stopContainer(name: string): Promise<void> {
+/**
+ * `docker stop -t <graceSeconds>`: SIGTERM y, si el proceso no ha terminado en
+ * ese plazo, SIGKILL. Los 10 s por defecto son los de siempre y los conserva
+ * quien no trae su propia gracia (el borrado de servicios y proyectos); las
+ * paradas de una copia en servicio van por `pararConGracia`.
+ */
+export async function stopContainer(name: string, graceSeconds = 10): Promise<void> {
   const c = docker.getContainer(name);
   try {
-    await c.stop({ t: 10 });
+    await c.stop({ t: graceSeconds });
   } catch (err: any) {
     if (err?.statusCode !== 304 && err?.statusCode !== 404) throw err;
   }
@@ -112,8 +118,141 @@ export async function startContainer(name: string): Promise<void> {
   }
 }
 
-export async function restartContainer(name: string): Promise<void> {
-  await docker.getContainer(name).restart({ t: 10 });
+export async function restartContainer(name: string, graceSeconds = 10): Promise<void> {
+  await docker.getContainer(name).restart({ t: graceSeconds });
+}
+
+/** Líneas de la salida del comando al parar que se copian al registro. */
+const LINEAS_COMANDO_PARADA = 20;
+
+/**
+ * Ejecuta el comando al parar dentro del contenedor, con `gracia` segundos de
+ * plazo (al menos uno). El texto viaja en la variable `SKYWAY_STOP_CMD` del
+ * exec y la orden es fija (`eval "$SKYWAY_STOP_CMD"`): nunca se interpola en
+ * un shell, ni del host ni del contenedor. Un fallo (sin `sh` en la imagen, un
+ * código distinto de 0, el plazo vencido) se registra y no impide la parada:
+ * el comando es una cortesía previa al SIGTERM, no una condición.
+ *
+ * Con `salida: false` solo se registra el resultado (el código), no lo que el
+ * comando escribió: es lo que piden las acciones del panel, cuyo registro es el
+ * del servidor y no el del despliegue, y un comando puede imprimir un secreto.
+ */
+export async function ejecutarComandoParada(
+  name: string,
+  comando: string,
+  graciaSegundos: number,
+  log?: (l: string) => void,
+  opts: { salida?: boolean } = {},
+): Promise<'ok' | 'fallo' | 'plazo'> {
+  const plazo = Math.max(1, graciaSegundos);
+  try {
+    const res = await execInContainer(name, 'eval "$SKYWAY_STOP_CMD"', {
+      env: [`SKYWAY_STOP_CMD=${comando}`],
+      timeoutMs: plazo * 1000,
+      maxOutput: 8000,
+    });
+    const lineas = res.output
+      .split('\n')
+      .map((l) => l.replace(/\r$/, ''))
+      .filter((l) => l.trim())
+      .slice(-LINEAS_COMANDO_PARADA);
+    const estado = res.timedOut ? 'plazo' : res.exitCode === 0 ? 'ok' : 'fallo';
+    log?.(
+      estado === 'plazo'
+        ? `⚠ El comando al parar de ${name} no terminó en ${plazo} s: se continúa con SIGTERM.`
+        : estado === 'ok'
+          ? `Comando al parar de ${name} ejecutado (código 0).`
+          : `⚠ El comando al parar de ${name} terminó con el código ${res.exitCode ?? 'desconocido'}: se continúa con SIGTERM.`,
+    );
+    if (opts.salida !== false) for (const l of lineas) log?.(`  ${l}`);
+    return estado;
+  } catch (err: any) {
+    log?.(`⚠ No se pudo ejecutar el comando al parar en ${name} (${err?.message || err}): se continúa con SIGTERM.`);
+    return 'fallo';
+  }
+}
+
+export interface ResultadoParada {
+  existia: boolean;
+  /** Terminó con SIGKILL al agotar la gracia (137, sin OOMKilled). */
+  forzada: boolean;
+  comando: 'ok' | 'fallo' | 'plazo' | null;
+}
+
+/** Estado de un contenedor; `null` solo si Docker responde que no existe (404). */
+async function inspeccionar(name: string): Promise<Docker.ContainerInspectInfo | null> {
+  try {
+    return await dockerQuery.getContainer(name).inspect();
+  } catch (err: any) {
+    if (err?.statusCode === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * Parada limpia de una copia de un servicio: el comando al parar (si lo hay y
+ * la copia está en marcha), después `docker stop -t <gracia>` (SIGTERM y, al
+ * agotar la gracia, SIGKILL) y, por último, si terminó por el SIGKILL.
+ *
+ * Antes las copias que se descartaban («--next», la réplica nueva que fallaba,
+ * los restos de un intercambio) se retiraban con `remove --force`, que es un
+ * SIGKILL directo: un bot a mitad de responder o un worker a mitad de un
+ * trabajo no tenía ocasión de cerrar. Y la gracia era fija (10 s).
+ *
+ * La parada forzada se distingue por el código 137 sin `OOMKilled` y después
+ * de agotar la gracia: un 137 inmediato es otra cosa (el contenedor ya estaba
+ * así). Casi siempre significa que el proceso principal no atiende SIGTERM (la
+ * aplicación como PID 1 sin manejador, o un `sh -c` que no reenvía la señal),
+ * y se dice cómo arreglarlo. No se activa `Init` (tini) de forma global: rompe
+ * imágenes que necesitan ser el PID 1.
+ *
+ * Solo un 404 de Docker es «no existe» (`existia: false`, sin lanzar). Antes se
+ * consultaba con `findContainer`, que convierte cualquier error en «no existe»:
+ * con el daemon lento (la consulta vence a los 30 s) la copia no se paraba,
+ * seguía en marcha junto a la nueva y acababa retirada con `remove --force`.
+ * Ahora, si no se puede consultar, se para igualmente (sin el comando, porque
+ * no se sabe si está en marcha) y un fallo de la parada se propaga: quien
+ * llama decide (restaurar la versión anterior, responder con error).
+ */
+export async function pararConGracia(
+  name: string,
+  opts: { graciaSegundos: number; comando?: string | null; log?: (l: string) => void; salidaComando?: boolean },
+): Promise<ResultadoParada> {
+  const gracia = Math.max(0, Math.floor(opts.graciaSegundos));
+  let antes: Docker.ContainerInspectInfo | null | undefined;
+  try {
+    antes = await inspeccionar(name);
+  } catch (err: any) {
+    opts.log?.(`⚠ No se pudo consultar el estado de ${name} (${err?.message || err}): se detiene igualmente.`);
+    antes = undefined;
+  }
+  if (antes === null) return { existia: false, forzada: false, comando: null };
+  let comando: ResultadoParada['comando'] = null;
+  if (antes?.State?.Running && opts.comando) {
+    comando = await ejecutarComandoParada(name, opts.comando, gracia, opts.log, { salida: opts.salidaComando });
+  }
+  const inicio = Date.now();
+  try {
+    await docker.getContainer(name).stop({ t: gracia });
+  } catch (err: any) {
+    // 304: ya estaba parado. 404: desapareció entre la consulta y la parada.
+    if (err?.statusCode === 404) return { existia: false, forzada: false, comando };
+    if (err?.statusCode !== 304) throw err;
+  }
+  const tardo = Date.now() - inicio;
+  const despues = await inspeccionar(name).catch(() => null);
+  const st = despues?.State;
+  const forzada =
+    !!st && !st.Running && st.ExitCode === 137 && !st.OOMKilled && gracia > 0 && tardo >= gracia * 1000 * 0.9;
+  if (forzada) {
+    opts.log?.(
+      `⚠ ${name} no terminó con SIGTERM en ${gracia} s y se detuvo con SIGKILL. Si la aplicación es el proceso principal ` +
+        'del contenedor, tiene que atender SIGTERM (cerrar y salir): sin un manejador, el sistema descarta la señal. Si el ' +
+        'comando de arranque es una sola orden, empiézalo con «exec». Aumenta la gracia de parada en Ajustes del servicio ' +
+        'solo si el proceso ya atiende SIGTERM y necesita más tiempo para cerrar.',
+    );
+  }
+  return { existia: true, forzada, comando };
 }
 
 /**
@@ -457,6 +596,13 @@ export interface RunSpec {
    * `restartPolicyType` de la config-as-code de Railway.
    */
   restartPolicy?: 'unless-stopped' | 'no' | { Name: string; MaximumRetryCount?: number };
+  /**
+   * Gracia de parada (`StopTimeout`): la respeta también un `docker stop` sin
+   * `-t` que no venga de Skyway, y el apagado del daemon.
+   */
+  stopGraceSeconds?: number;
+  /** Identidad de esta copia (etiquetas `skyway.instance` y `skyway.replica`). */
+  identidad?: { instancia: string; replica: number };
 }
 
 /** Crea y arranca el contenedor de un servicio (elimina el homónimo si existe). */
@@ -475,6 +621,9 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
     'skyway.project': spec.project.id,
     'skyway.service': spec.service.id,
     'skyway.deployment': spec.deploymentId,
+    ...(spec.identidad
+      ? { 'skyway.instance': spec.identidad.instancia, 'skyway.replica': String(spec.identidad.replica) }
+      : {}),
     ...(withTraefik && spec.internalPort
       ? traefikLabels(spec.project, spec.service, spec.domains, spec.internalPort)
       : {}),
@@ -509,6 +658,7 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
     Cmd: spec.cmd || undefined,
     ...(spec.entrypoint ? { Entrypoint: spec.entrypoint } : {}),
     ExposedPorts: exposed,
+    ...(spec.stopGraceSeconds !== undefined ? { StopTimeout: spec.stopGraceSeconds } : {}),
     HostConfig: hostConfig,
     NetworkingConfig: {
       EndpointsConfig: {
