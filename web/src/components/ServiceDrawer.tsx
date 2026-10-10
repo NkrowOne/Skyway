@@ -6,7 +6,7 @@ import { dominioPrincipal } from '../dominios';
 import { useLatch, useLocalStorage, useMediaQuery, useRootDomain } from '../hooks';
 import { MetricPoint } from '../pages/Project';
 import { useServiceLiveReplicas, useServiceLiveState } from '../livemetrics';
-import { AutoDeployStatus, Deployment, DbOverview, Project, Runtime, Service, ServiceWebhookInfo } from '../types';
+import { AutoDeployStatus, Deployment, DbOverview, Project, Runtime, Service, ServiceDeployInfo, ServiceWebhookInfo } from '../types';
 import { cx, DEPLOY_STATUS_LABEL, isActiveDeploy, serviceStatus, timeAgo } from '../utils';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import DeploymentsTab from './tabs/DeploymentsTab';
@@ -146,6 +146,8 @@ export default function ServiceDrawer({
         pendingChanges?: boolean;
         autoDeploy?: AutoDeployStatus | null;
         webhook?: ServiceWebhookInfo | null;
+        /** Estrategia de despliegue efectiva y gracia de parada. */
+        deploy?: ServiceDeployInfo;
       }>(`/services/${serviceId}`),
     // El estado vivo del contenedor ya llega por el stream de métricas del
     // proyecto (livemetrics); esto solo refresca el último despliegue y la
@@ -211,9 +213,20 @@ export default function ServiceDrawer({
   });
 
   const action = useMutation({
-    mutationFn: (verb: 'start' | 'stop' | 'restart') => api.post(`/services/${serviceId}/${verb}`),
-    onSuccess: () => {
+    mutationFn: (verb: 'start' | 'stop' | 'restart') => api.post<{ forced?: string[] }>(`/services/${serviceId}/${verb}`),
+    onSuccess: (data) => {
       setConfirmVerb(null);
+      // Detener: las copias que no atendieron SIGTERM dentro de la gracia. Es
+      // un dato, no un error: el servicio está parado igualmente.
+      const forzadas = data?.forced ?? [];
+      if (forzadas.length > 0) {
+        toast(
+          forzadas.length === 1
+            ? `${forzadas[0]} no terminó con SIGTERM a tiempo y se detuvo con SIGKILL. Si necesita más tiempo para cerrar, aumenta la gracia de parada en Ajustes.`
+            : `${forzadas.join(', ')} no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL. Si necesitan más tiempo para cerrar, aumenta la gracia de parada en Ajustes.`,
+          'info',
+        );
+      }
       invalidate();
     },
     onError: (err: Error) => toast(err.message, 'err'),
@@ -626,6 +639,7 @@ export default function ServiceDrawer({
                 projectId={projectId}
                 autoDeploy={detail.data.autoDeploy ?? null}
                 webhook={detail.data.webhook ?? null}
+                deploy={detail.data.deploy ?? null}
                 onChanged={invalidate}
                 onNeedsRedeploy={() => setPendingRedeploy(true)}
                 onDirtyChange={setIsTabDirty}

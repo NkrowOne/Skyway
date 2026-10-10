@@ -1,5 +1,5 @@
 import { ChildProcess, spawn } from 'child_process';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
@@ -28,7 +28,7 @@ import { AUTODEPLOY_ALERT_TYPE, fireAlert, resolveAllServiceAlerts, resolveServi
 import { diagnose } from './diagnose';
 import { dominioPrincipal } from '../dominioprincipal';
 import { emitDeploy, emitDeployFeed, toDeployFeedItem } from '../events';
-import { docker, dockerAvailable } from '../docker/client';
+import { docker, dockerAvailable, dockerQuery } from '../docker/client';
 import {
   assertImageRef,
   configuredReplicas,
@@ -44,13 +44,14 @@ import {
   imageHealthcheckWindowMs,
   listServiceContainers,
   normalizeContainerPath,
+  pararConGracia,
   removeContainer,
   removeImage,
   renameContainer,
   replicaName,
+  RunSpec,
   runServiceContainer,
   startContainer,
-  stopContainer,
   volumeName,
   getRuntime,
   runArgsFor,
@@ -67,6 +68,15 @@ import { importRepoEnv } from './envimport';
 import { partitionPreDeployEnv } from './predeployenv';
 import { dockerRestartPolicy, hasRailwayConfig, RailwayRepoConfig, readRailwayRepoConfig } from './railwayconfig';
 import { acquireBuildSlot, enqueue, releaseBuildSlot } from './queue';
+import {
+  comandoParada,
+  describirEstrategia,
+  EstrategiaServicio,
+  estrategiaDespliegue,
+  estrategiaEfectiva,
+  graciaParada,
+  llamadoPorOtros,
+} from './estrategia';
 import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
 import { reconcileOnDeploy } from '../integrations';
 import { adviseEnv, detectNeeds } from '../needs';
@@ -1166,7 +1176,7 @@ export function applyRailwayCompatEnv(
   put('RAILWAY_ENVIRONMENT', 'production');
   put('RAILWAY_ENVIRONMENT_NAME', 'production');
   put('RAILWAY_DEPLOYMENT_ID', deploymentId);
-  put('RAILWAY_REPLICA_ID', deploymentId);
+  // RAILWAY_REPLICA_ID no va aquí: es distinta en cada copia (`conIdentidad`).
   // El «dominio privado» de Railway es el nombre por el que un servicio llega a
   // otro dentro del proyecto: aquí, su alias en la red del proyecto.
   put('RAILWAY_PRIVATE_DOMAIN', service.slug);
@@ -1420,7 +1430,23 @@ async function deployContainer(
     log(`Política de reinicio del repositorio: ${repoConfig!.restartPolicyType} → docker «${restartPolicy.Name}».`);
   }
 
-  const spec = {
+  // Estrategia y parada, una vez por despliegue: `estrategiaEfectiva` lee las
+  // variables del proyecto (¿lo llama otro servicio por la red interna?), y la
+  // gracia sale del entorno RESUELTO, porque RAILWAY_DEPLOYMENT_DRAINING_SECONDS
+  // puede llegar como variable compartida. Todas las paradas de este despliegue
+  // —la versión anterior, «--next», la réplica que falla, las sobrantes— usan la
+  // misma gracia y el mismo comando, que también se fija como `StopTimeout`.
+  const estrategia = estrategiaEfectiva(service);
+  const gracia = graciaParada(service, env);
+  const comando = comandoParada(service);
+  const parar = (nombre: string) => pararConGracia(nombre, { graciaSegundos: gracia.segundos, comando, log });
+  /** Parada limpia y después fuera: nunca el SIGKILL directo de `remove --force`. */
+  const retirar = async (nombre: string) => {
+    await parar(nombre);
+    await removeContainer(nombre);
+  };
+
+  const spec: RunSpec = {
     project,
     service,
     image,
@@ -1435,11 +1461,11 @@ async function deployContainer(
     ...(entrypoint ? { entrypoint } : {}),
     volumes,
     ...(restartPolicy ? { restartPolicy } : {}),
+    stopGraceSeconds: gracia.segundos,
   };
 
   const name = containerName(project, service);
   const tempName = `${name}--next`;
-  const prevName = `${name}--prev`;
   // El healthcheck del repositorio manda sobre el del panel, igual que el
   // comando de arranque: es config-as-code y viaja con el commit.
   const healthcheckPath: string | null =
@@ -1458,11 +1484,13 @@ async function deployContainer(
   // Comando previo al despliegue (donde casi todo el mundo pone las
   // migraciones). Va ANTES de tocar la versión en marcha: si falla, el
   // despliegue se aborta y lo que está sirviendo sigue igual, como en Railway.
+  // También en «una sola copia»: es una orden puntual, no una copia del servicio.
   if (repoConfig?.preDeployCommand) {
     await runPreDeploy(project, image, env, repoConfig.preDeployCommand, log, job);
   }
 
-  await recoverStaleSwap(service.id, log);
+  // Restos de un intercambio cortado (Skyway cayó a mitad): con parada limpia.
+  await limpiarRestosIntercambio(service, log);
 
   // El repo puede pedir réplicas, pero eso consume cuota del workspace y se
   // gestiona en el panel: se avisa en vez de aplicarlo a espaldas de nadie.
@@ -1480,6 +1508,29 @@ async function deployContainer(
   if (repoConfig?.cronSchedule) {
     log(`ℹ La configuración del repositorio declara un cron («${repoConfig.cronSchedule}»); Skyway aún no ejecuta servicios programados.`);
   }
+  // Lo de Railway sobre el relevo se lee y se cuenta, pero no se aplica tal
+  // cual: OVERLAP solo alarga el tiempo en que la versión anterior sigue viva
+  // DESPUÉS de arrancar la nueva (con 0 tampoco hay «una sola copia»), que es
+  // lo contrario de lo que necesita un bot. DRAINING sí tiene equivalente (la
+  // gracia de parada) y se lee de la variable; el del fichero solo se informa.
+  if (env.RAILWAY_DEPLOYMENT_OVERLAP_SECONDS !== undefined) {
+    log(
+      'ℹ Skyway no aplica RAILWAY_DEPLOYMENT_OVERLAP_SECONDS: en Railway solo alarga el tiempo en que la versión anterior sigue en ' +
+        'marcha después de arrancar la nueva, y con 0 no evita que haya dos copias a la vez. Para que no las haya, elige la ' +
+        'estrategia en Ajustes del servicio → Despliegue y parada.',
+    );
+  }
+  const declaradosRepo = [
+    repoConfig?.drainingSeconds != null ? `deploy.drainingSeconds (${repoConfig.drainingSeconds})` : null,
+    repoConfig?.overlapSeconds != null ? `deploy.overlapSeconds (${repoConfig.overlapSeconds})` : null,
+  ].filter((x): x is string => x !== null);
+  if (declaradosRepo.length > 0) {
+    log(
+      `ℹ La configuración del repositorio declara ${declaradosRepo.join(' y ')}; Skyway no aplica estos valores: la estrategia y la ` +
+        'gracia de parada se establecen en Ajustes del servicio → Despliegue y parada (la gracia, también con la variable ' +
+        'RAILWAY_DEPLOYMENT_DRAINING_SECONDS).',
+    );
+  }
 
   const replicas = configuredReplicas(service);
   if (replicas > 1 && (volumes.length > 0 || hostPort)) {
@@ -1487,18 +1538,34 @@ async function deployContainer(
       'Las réplicas requieren un servicio sin volúmenes y sin puerto público: varias copias no pueden compartir el mismo volumen de escritura ni el mismo puerto del host. Elimina esas opciones o vuelve a 1 réplica.',
     );
   }
+  if (replicas > 1 && sinTrafico(service, estrategia)) {
+    log(
+      `ℹ Este servicio no recibe tráfico (sin dominio, healthcheck ni llamadas de otros servicios): con ${replicas} réplicas hay ` +
+        `${replicas} copias en marcha a la vez de forma permanente. Un bot de polling (Telegram, Discord…) solo admite una; un ` +
+        'worker tiene que repartir el trabajo con SKYWAY_REPLICA y SKYWAY_REPLICAS o usar una cola.',
+    );
+  }
 
-  // Sin volúmenes ni puerto de host, la versión nueva puede convivir con la
-  // vieja unos segundos: corte cero. Con estado compartido, intercambio con
-  // restauración automática (nunca dos procesos escribiendo el mismo volumen).
-  const canOverlap = service.type !== 'database' && volumes.length === 0 && !hostPort;
-  const oldExists = !!(await findContainer(name));
+  log(
+    `Estrategia: ${describirEstrategia(estrategia)}. Parada: ${comando ? 'comando al parar, ' : ''}SIGTERM y ${gracia.segundos} s de gracia` +
+      `${gracia.origen === 'railway' ? ' (RAILWAY_DEPLOYMENT_DRAINING_SECONDS)' : ''}.`,
+  );
 
-  if (canOverlap) {
+  if (estrategia.estrategia === 'overlap') {
+    // «Sin corte»: la versión nueva convive con la vieja unos segundos. Solo
+    // sin volúmenes ni puerto de host (`estrategiaDespliegue` lo garantiza):
+    // nunca dos procesos escribiendo el mismo volumen.
+    const oldExists = !!(await findContainer(name));
     if (oldExists) {
       log('Validando la versión nueva antes de sustituir la actual (la versión anterior sigue en servicio)...');
+      // La copia de validación lleva su propia identidad y SKYWAY_VALIDATION=1:
+      // una app puede saltarse en ella los efectos de arranque (registrar un
+      // webhook, ocupar una cola) mientras la anterior sigue atendiendo.
+      const validacion = conIdentidad(env, { replica: 1, total: replicas, validacion: true });
       await runServiceContainer({
         ...spec,
+        env: validacion.env,
+        identidad: { instancia: validacion.instancia, replica: 1 },
         nameOverride: tempName,
         aliasOverride: `${service.slug}-next`,
         withTraefik: false,
@@ -1512,18 +1579,19 @@ async function deployContainer(
       try {
         verdict = await validateContainer(netName, `${service.slug}-next`, internalPort, healthcheckPath, tempName, log, probeTimeoutMs, null, job, tcpProbe);
       } catch (err) {
-        // Cancelado a mitad: el contenedor de prueba no se queda vivo.
-        await removeContainer(tempName).catch(() => undefined);
+        // Cancelado a mitad: el contenedor de prueba no se queda vivo, y se
+        // para como cualquier copia (SIGTERM y gracia), no de un SIGKILL.
+        await retirar(tempName).catch(() => undefined);
         throw err;
       }
       if (!verdict.ok) {
         await appendContainerTail(tempName, log);
-        await removeContainer(tempName);
+        await retirar(tempName);
         throw new Error(
           `La versión nueva no pasó la validación (${verdict.reason}). La versión anterior sigue en ejecución sin interrupción.`,
         );
       }
-      await removeContainer(tempName);
+      await retirar(tempName);
       log(replicas > 1 ? `Versión validada. Actualización rodante de ${replicas} réplicas...` : 'Versión validada. Intercambiando sin corte...');
     }
 
@@ -1538,8 +1606,11 @@ async function deployContainer(
       const rPrev = `${rn}--prev`;
       const hadOld = !!(await findContainer(rn));
       if (hadOld) await renameContainer(rn, rPrev);
+      // Cada copia, su identidad: dos réplicas con el mismo id no pueden
+      // repartirse el trabajo ni distinguirse en los registros.
+      const copia = conIdentidad(env, { replica: i, total: replicas });
       try {
-        await runServiceContainer({ ...spec, nameOverride: rn });
+        await runServiceContainer({ ...spec, env: copia.env, identidad: { instancia: copia.instancia, replica: i }, nameOverride: rn });
         if (!oldExists && i === 1) {
           // Primer despliegue: no hay versión anterior que proteger, y esta es
           // la validación completa (con la política de reinicio del repo).
@@ -1567,7 +1638,7 @@ async function deployContainer(
         }
       } catch (err: any) {
         await appendContainerTail(rn, log);
-        await removeContainer(rn);
+        await retirar(rn);
         if (hadOld) {
           log(`La réplica ${i} falló: restaurando su versión anterior...`);
           await renameContainer(rPrev, rn);
@@ -1578,8 +1649,12 @@ async function deployContainer(
         throw new Error(`La réplica ${i}/${replicas} no arrancó (${err?.message || err}).`);
       }
       if (hadOld) {
+        // El monitor no toma por caída la parada de la versión anterior; y el
+        // registro se archiva DESPUÉS de pararla, para que conserve lo que
+        // escribió al recibir SIGTERM (su cierre ordenado, o por qué no lo hubo).
+        markManualAction(service.id);
+        await parar(rPrev);
         await archiveContainerLogs(rPrev);
-        await stopContainer(rPrev);
         await removeContainer(rPrev);
       }
       if (replicas > 1) log(`Réplica ${i}/${replicas} lista.`);
@@ -1595,8 +1670,9 @@ async function deployContainer(
     for (const c of await listServiceContainers(service.id)) {
       if (!replicaPattern.test(c.name) || legit.has(c.name)) continue;
       log(`Retirando réplica sobrante ${c.name}...`);
+      markManualAction(service.id);
+      await parar(c.name);
       await archiveContainerLogs(c.name);
-      await stopContainer(c.name);
       await removeContainer(c.name);
     }
     if (!oldExists) log('Servicio en ejecución.');
@@ -1607,34 +1683,23 @@ async function deployContainer(
       );
     } else log('Intercambio completado sin interrupción del servicio.');
   } else {
-    if (oldExists) {
-      log('Servicio con estado (volúmenes/puerto fijo): intercambio con restauración automática...');
-      await renameContainer(name, prevName);
-      await stopContainer(prevName);
-    }
-    try {
-      await runServiceContainer(spec);
-      const verdict = await validateContainer(netName, service.slug, internalPort, healthcheckPath, name, log, probeTimeoutMs, restartPolicy, job, tcpProbe);
-      if (!verdict.ok) throw new Error(verdict.reason);
-    } catch (err: any) {
-      await appendContainerTail(name, log);
-      await removeContainer(name);
-      if (oldExists) {
-        log('La versión nueva falló: restaurando la anterior...');
-        await renameContainer(prevName, name);
-        await startContainer(name);
-        throw new Error(
-          `La versión nueva falló (${err?.message || err}). Se restauró la versión anterior automáticamente.`,
-        );
-      }
-      throw new Error(
-        `El contenedor terminó inesperadamente (${err?.message || err}). Consulta el registro del servicio.`,
-      );
-    }
-    if (oldExists) {
-      await archiveContainerLogs(prevName);
-      await removeContainer(prevName);
-    }
+    await desplegarUnaSolaCopia({
+      project,
+      service,
+      spec,
+      env,
+      replicas,
+      netName,
+      internalPort,
+      healthcheckPath,
+      probeTimeoutMs,
+      restartPolicy,
+      tcpProbe,
+      image,
+      parar,
+      log,
+      job,
+    });
   }
 
   if (domains.length > 0) {
@@ -1739,38 +1804,315 @@ function recordNeeds(service: ServiceRow, cfg: GitConfig, workDir: string, log: 
   if (advice.mail && !needs.manifest) {
     const sinDefinir = advice.mail.vars.map((v) => v.name).filter((k) => !(k in getEnv(service.id)));
     log(
-      `La web envía correo (${advice.mail.evidence.join(' · ')}).` +
+      `El servicio envía correo (${advice.mail.evidence.join(' · ')}).` +
         (sinDefinir.length > 0
-          ? ` Faltan ${sinDefinir.join(', ')}: conéctala desde Correo → Conectar a un servicio, que las escribe con esos nombres.`
+          ? ` Faltan ${sinDefinir.join(', ')}: conéctalo desde Correo → Conectar a un servicio, que las escribe con esos nombres.`
           : ''),
     );
   }
   return changed;
 }
 
-/** Repara restos de un intercambio interrumpido (caída del servidor a mitad). */
-async function recoverStaleSwap(serviceId: string, log: (l: string) => void): Promise<void> {
-  let containers: { name: string }[] = [];
+/** Lo que necesita `desplegarUnaSolaCopia` del despliegue en curso. */
+interface DespliegueUnaSolaCopia {
+  project: ProjectRow;
+  service: ServiceRow;
+  spec: RunSpec;
+  env: Record<string, string>;
+  replicas: number;
+  netName: string;
+  internalPort: number | null;
+  healthcheckPath: string | null;
+  probeTimeoutMs: number;
+  restartPolicy: RestartPolicySpec | null;
+  tcpProbe: boolean;
+  image: string;
+  parar: (nombre: string) => Promise<unknown>;
+  log: (l: string) => void;
+  job?: ActiveJob;
+}
+
+/** Índice de réplica de un nombre de copia (`<base>` = 1, `<base>-r3` = 3). */
+function indiceCopia(nombre: string, base: string): number {
+  return nombre === base ? 1 : Number(nombre.slice(base.length + 2)) || 0;
+}
+
+/**
+ * «Una sola copia» (estrategia 'recreate'): se detienen TODAS las copias de la
+ * versión anterior —en paralelo, con su parada limpia— antes de arrancar
+ * ninguna nueva, y después arrancan las N nuevas. Sin copia de validación
+ * «--next»: precisamente es la segunda copia lo que un bot de polling no
+ * admite (Telegram responde 409 a la segunda que pide actualizaciones) y lo
+ * que haría a un worker procesar dos veces el mismo trabajo.
+ *
+ * Es la rama «con estado» de siempre (volúmenes, puerto público, bases de
+ * datos) generalizada a N réplicas: con una réplica hace lo mismo. Las copias
+ * anteriores se apartan como «--prev» y, si cualquier copia nueva falla, se
+ * paran y retiran las nuevas y se restauran TODAS las anteriores.
+ */
+async function desplegarUnaSolaCopia(o: DespliegueUnaSolaCopia): Promise<void> {
+  const { project, service, log, job } = o;
+  const base = containerName(project, service);
+  const patron = new RegExp(`^${escapeRegExp(base)}(-r\\d+)?$`);
+  const encontradas = new Set((await listServiceContainers(service.id)).map((c) => c.name).filter((n) => patron.test(n)));
+  // La copia canónica también por su nombre, como antes: una copia sin la
+  // etiqueta del servicio no puede quedarse en marcha junto a la nueva.
+  if (!encontradas.has(base) && (await findContainer(base))) encontradas.add(base);
+  const anteriores = [...encontradas].sort((a, b) => indiceCopia(a, base) - indiceCopia(b, base));
+  const prev = (n: string) => `${n}--prev`;
+  const apartadas: string[] = [];
+  const nuevas: string[] = [];
+  const dockerHealthcheckMs = o.replicas > 1 ? await imageHealthcheckWindowMs(o.image) : null;
+
   try {
-    containers = await listServiceContainers(serviceId);
-  } catch {
-    return;
+    if (anteriores.length > 0) {
+      log(
+        anteriores.length > 1
+          ? `Una sola copia: se detienen las ${anteriores.length} copias de la versión anterior antes de arrancar la nueva...`
+          : 'Una sola copia: se detiene la versión anterior antes de arrancar la nueva...',
+      );
+      for (const n of anteriores) {
+        await renameContainer(n, prev(n));
+        apartadas.push(n);
+      }
+      // El monitor no debe tomar por caída los segundos sin servicio.
+      markManualAction(service.id);
+      await Promise.all(anteriores.map((n) => o.parar(prev(n))));
+      // Después de parar: el registro conserva lo que escribió al recibir SIGTERM.
+      for (const n of anteriores) await archiveContainerLogs(prev(n));
+      // Una parada no se puede cortar a mitad: un «Cancelar» durante ella
+      // surte efecto aquí, y la versión anterior se restaura.
+      if (job?.canceled) throw new CanceledError();
+    }
+    for (let i = 1; i <= o.replicas; i++) {
+      const rn = replicaName(project, service, i);
+      const copia = conIdentidad(o.env, { replica: i, total: o.replicas });
+      nuevas.push(rn);
+      await runServiceContainer({ ...o.spec, env: copia.env, identidad: { instancia: copia.instancia, replica: i }, nameOverride: rn });
+      const etiqueta = o.replicas > 1 ? `réplica ${i}/${o.replicas}: ` : '';
+      if (i === 1) {
+        // La primera pasa la validación completa (healthcheck o sonda TCP, y
+        // la política de reinicio del repositorio), como la rama con estado.
+        const verdict = await validateContainer(
+          o.netName,
+          service.slug,
+          o.internalPort,
+          o.healthcheckPath,
+          rn,
+          log,
+          o.probeTimeoutMs,
+          o.restartPolicy,
+          job,
+          o.tcpProbe,
+        );
+        if (!verdict.ok) throw new Error(`${etiqueta}${verdict.reason}`);
+      } else {
+        const ready = await waitReplicaReady(
+          {
+            netName: o.netName,
+            containerRef: rn,
+            port: o.internalPort,
+            healthcheckPath: o.healthcheckPath,
+            tcpProbe: o.tcpProbe,
+            dockerHealthcheckMs,
+            timeoutMs: o.probeTimeoutMs,
+          },
+          log,
+          job,
+        );
+        if (!ready.ok) throw new Error(`${etiqueta}${ready.reason}`);
+      }
+      if (o.replicas > 1) log(`Réplica ${i}/${o.replicas} lista.`);
+    }
+  } catch (err: any) {
+    const fallida = nuevas[nuevas.length - 1];
+    if (fallida) await appendContainerTail(fallida, log);
+    for (const n of nuevas) {
+      await o.parar(n).catch(() => undefined);
+      await removeContainer(n).catch(() => undefined);
+    }
+    if (apartadas.length > 0) {
+      log('La versión nueva falló: restaurando la anterior...');
+      for (const n of apartadas) {
+        try {
+          await renameContainer(prev(n), n);
+          await startContainer(n);
+        } catch (e: any) {
+          log(`⚠ No se pudo restaurar ${n} (${e?.message || e}).`);
+        }
+      }
+      throw new Error(`La versión nueva falló (${err?.message || err}). Se restauró la versión anterior automáticamente.`);
+    }
+    throw new Error(`El contenedor terminó inesperadamente (${err?.message || err}). Consulta el registro del servicio.`);
   }
-  for (const c of containers) {
-    if (c.name.endsWith('--next')) {
-      await removeContainer(c.name);
+  for (const n of anteriores) await removeContainer(prev(n));
+  log(anteriores.length > 0 ? 'Versión nueva en marcha (una sola copia: la anterior se detuvo antes de arrancarla).' : 'Servicio en ejecución.');
+}
+
+/**
+ * ¿Recibe tráfico el servicio, al margen de la estrategia que se haya elegido?
+ * Con varias réplicas y sin tráfico (sin dominio, healthcheck ni llamadas de
+ * otros servicios) hay N copias en marcha a la vez de forma permanente, y eso
+ * vale la pena decirlo también a quien eligió «una sola copia» a mano.
+ */
+function sinTrafico(service: ServiceRow, estrategia: EstrategiaServicio): boolean {
+  if (estrategia.motivo === 'sin_trafico') return true;
+  if (estrategia.motivo !== 'elegida') return false;
+  const sinEleccion = { ...service, config: { ...service.config, deployStrategy: undefined } } as ServiceRow;
+  return estrategiaDespliegue(sinEleccion, llamadoPorOtros(service)).motivo === 'sin_trafico';
+}
+
+/**
+ * Copia del entorno con la identidad de ESTA copia (no modifica `env`).
+ *
+ * `SKYWAY_DEPLOYMENT` y `RAILWAY_DEPLOYMENT_ID` son iguales en todas las copias
+ * de un despliegue, y `RAILWAY_REPLICA_ID` también lo era (el id del
+ * despliegue): dos réplicas no podían distinguirse, ni la copia de validación
+ * de la que sirve. Cada contenedor recibe ahora un UUID propio
+ * (`SKYWAY_INSTANCE_ID`, nuevo en cada despliegue), su índice y el total
+ * (`SKYWAY_REPLICA`/`SKYWAY_REPLICAS`, para repartir el trabajo) y, solo la
+ * copia de validación «--next», `SKYWAY_VALIDATION=1`. `RAILWAY_REPLICA_ID`
+ * pasa a ser la instancia, como en Railway, salvo que el usuario la defina.
+ */
+export function conIdentidad(
+  env: Record<string, string>,
+  opts: { replica: number; total: number; validacion?: boolean },
+): { env: Record<string, string>; instancia: string } {
+  const instancia = randomUUID();
+  const out: Record<string, string> = {
+    ...env,
+    SKYWAY_INSTANCE_ID: instancia,
+    SKYWAY_REPLICA: String(opts.replica),
+    SKYWAY_REPLICAS: String(opts.total),
+  };
+  if (opts.validacion) out.SKYWAY_VALIDATION = '1';
+  else delete out.SKYWAY_VALIDATION;
+  if (out.RAILWAY_REPLICA_ID === undefined) out.RAILWAY_REPLICA_ID = instancia;
+  return { env: out, instancia };
+}
+
+const SUFIJO_NEXT = '--next';
+const SUFIJO_PREV = '--prev';
+
+/** ¿Tiene el servicio un despliegue en cola o en marcha? */
+export function despliegueEnCurso(serviceId: string): boolean {
+  return activeDeploymentIdsForServices([serviceId]).length > 0;
+}
+
+/**
+ * Retira, con parada limpia, los restos de un intercambio interrumpido (Skyway
+ * cayó a mitad de un despliegue):
+ *  - «--next» (copia de validación) → parar y retirar;
+ *  - «--prev» con su copia nueva presente → parar y retirar;
+ *  - «--prev» sin copia nueva → vuelve a su nombre y, si el servicio no está
+ *    parado a propósito, se arranca: es la única versión que hay.
+ *
+ * Antes solo se hacía al principio del despliegue siguiente y con `remove
+ * --force` (SIGKILL): un bot podía quedarse con dos copias vivas hasta el
+ * próximo despliegue, y Detener no las alcanzaba. Devuelve lo hecho, en texto
+ * (también va a `log`). Un resto que no se puede tratar se registra y no
+ * impide tratar los demás.
+ */
+export async function limpiarRestosIntercambio(service: ServiceRow, log?: (l: string) => void): Promise<string[]> {
+  let contenedores: { name: string }[];
+  try {
+    contenedores = await listServiceContainers(service.id);
+  } catch {
+    return [];
+  }
+  const restos = contenedores
+    .map((c) => c.name)
+    .filter((n) => n.endsWith(SUFIJO_NEXT) || n.endsWith(SUFIJO_PREV))
+    // Primero las copias de validación: nunca son la versión que se queda.
+    .sort((a, b) => Number(b.endsWith(SUFIJO_NEXT)) - Number(a.endsWith(SUFIJO_NEXT)));
+  if (restos.length === 0) return [];
+  const presentes = new Set(contenedores.map((c) => c.name));
+  let env: Record<string, string> = {};
+  try {
+    env = resolveServiceEnv(service);
+  } catch {
+    /* sin entorno resuelto, la gracia del servicio o la de por defecto */
+  }
+  const graciaSegundos = graciaParada(service, env).segundos;
+  const comando = comandoParada(service);
+  const hecho: string[] = [];
+  const anotar = (texto: string) => {
+    hecho.push(texto);
+    log?.(texto);
+  };
+  for (const nombre of restos) {
+    try {
+      if (nombre.endsWith(SUFIJO_NEXT)) {
+        await pararConGracia(nombre, { graciaSegundos, comando, log });
+        await removeContainer(nombre);
+        anotar(`Retirada la copia de validación ${nombre} de un intercambio interrumpido.`);
+        continue;
+      }
+      const base = nombre.slice(0, -SUFIJO_PREV.length);
+      if (presentes.has(base) || (await findContainer(base))) {
+        await pararConGracia(nombre, { graciaSegundos, comando, log });
+        await removeContainer(nombre);
+        anotar(`Retirada la versión anterior ${nombre} de un intercambio interrumpido.`);
+      } else {
+        await renameContainer(nombre, base);
+        presentes.add(base);
+        if (!service.stopped_at) await startContainer(base);
+        anotar(`Recuperado un intercambio interrumpido: ${base} vuelve a su nombre${service.stopped_at ? '' : ' y en marcha'}.`);
+      }
+    } catch (err: any) {
+      anotar(`⚠ No se pudo retirar ${nombre} (${err?.message || err}).`);
+    }
+  }
+  return hecho;
+}
+
+/**
+ * Al arrancar Skyway: los contenedores «--next»/«--prev» que dejó un
+ * intercambio cortado por el reinicio. Hasta ahora solo los limpiaba el
+ * despliegue siguiente del servicio, así que un bot podía seguir con dos
+ * copias vivas (y una de ellas, la de validación, sin el resto de su
+ * configuración) indefinidamente.
+ *
+ * La limpieza va por la cola de despliegues del servicio (`deploy:<id>`): el
+ * reintento automático del despliegue cortado (`resumeInterruptedDeployments`,
+ * que se llama después) se encola detrás y nunca coincide con ella. No espera
+ * a las paradas, para no retrasar el arranque. Los restos de un servicio que
+ * ya no existe se dejan como están y se avisa.
+ */
+export async function limpiarIntercambiosAlArrancar(
+  log: (msg: string) => void,
+): Promise<{ servicios: number; contenedores: number }> {
+  const lista = await dockerQuery.listContainers({ all: true, filters: { label: ['skyway.managed=true'] } as any });
+  const porServicio = new Map<string, string[]>();
+  for (const c of lista) {
+    const nombre = (c.Names?.[0] || '').replace(/^\//, '');
+    if (!nombre.endsWith(SUFIJO_NEXT) && !nombre.endsWith(SUFIJO_PREV)) continue;
+    const serviceId = c.Labels?.['skyway.service'];
+    if (!serviceId) continue;
+    porServicio.set(serviceId, [...(porServicio.get(serviceId) ?? []), nombre]);
+  }
+  let servicios = 0;
+  let contenedores = 0;
+  for (const [serviceId, nombres] of porServicio) {
+    const service = getService(serviceId);
+    if (!service) {
+      log(`Restos de un intercambio de un servicio que ya no existe: ${nombres.join(', ')}. No se tocan; retíralos a mano si no los necesitas.`);
       continue;
     }
-    if (c.name.endsWith('--prev')) {
-      const base = c.name.slice(0, -'--prev'.length);
-      if (await findContainer(base)) {
-        await removeContainer(c.name);
-      } else {
-        log(`Recuperando intercambio interrumpido: restaurando ${base}...`);
-        await renameContainer(c.name, base);
+    servicios += 1;
+    contenedores += nombres.length;
+    void enqueue(`deploy:${serviceId}`, async () => {
+      // Releída en la cola: la de antes de encolar puede haber cambiado.
+      const actual = getService(serviceId);
+      if (!actual) return;
+      try {
+        await limpiarRestosIntercambio(actual, (l) => log(`«${actual.name}»: ${l}`));
+      } catch (err: any) {
+        log(`«${actual.name}»: no se pudieron retirar los restos de un intercambio (${err?.message || err}).`);
       }
-    }
+    });
   }
+  return { servicios, contenedores };
 }
 
 /**

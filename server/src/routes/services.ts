@@ -20,6 +20,7 @@ import {
   getService,
   getSetting,
   latestDeployment,
+  listServices,
   patchEnv,
   servicesWithPendingChanges,
   setEnv,
@@ -41,7 +42,8 @@ import {
   workspaceOfProject,
   workspacePlan,
 } from '../quota';
-import { archiveContainerLogs } from '../deploy/deployer';
+import { archiveContainerLogs, despliegueEnCurso, limpiarRestosIntercambio } from '../deploy/deployer';
+import { comandoParada, estrategiaDespliegue, graciaParada, llamadoPorOtros } from '../deploy/estrategia';
 import { EnvFileSource, envImportContextFor, fetchRepoEnvFiles, finalizeEnvImport, planEnvImport } from '../deploy/envimport';
 import { GithubError, parseGithubSlug } from '../github/client';
 import { resolveGitToken } from '../github/resolve';
@@ -51,11 +53,14 @@ import { checkDomain } from '../domains';
 import {
   configuredReplicas,
   containerName,
+  ejecutarComandoParada,
+  findContainer,
   getRuntime,
+  listServiceContainers,
+  pararConGracia,
   replicaName,
   restartContainer,
   startContainer,
-  stopContainer,
   updateResources,
 } from '../docker/containers';
 import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
@@ -64,8 +69,8 @@ import { getTemplate, templateList } from '../templates';
 import { applyPlan, applyPlanFromRepo, ApplyResult, PlanChangedError, planWithMail } from '../integrations';
 import { adviseEnv } from '../needs';
 import { availableReferences, resolveServiceEnv } from '../variables';
-import { DatabaseConfig, GitConfig, ImageConfig, ServiceConfig, ServiceRow } from '../types';
-import { randomToken, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
+import { DatabaseConfig, GitConfig, ImageConfig, ProjectRow, ServiceConfig, ServiceRow } from '../types';
+import { now, randomToken, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
 import { confirmsDeletion, purgeService, PurgeBlockedError, purgeSummary, warningsForAudit } from '../purge';
 
 /** Antigüedad tolerada de la foto de Docker en las lecturas del panel. */
@@ -246,6 +251,11 @@ const patchSchema = z.object({
       replicas: z.coerce.number().int().min(1).max(10).optional(),
       backupSchedule: z.enum(['daily', 'weekly']).nullable().optional(),
       backupRetention: z.coerce.number().int().min(1).max(60).optional(),
+      // Despliegue y parada (`deploy/estrategia.ts`). 'auto' es la ausencia de
+      // elección, igual que en el constructor; null deja la gracia por defecto.
+      deployStrategy: z.enum(['overlap', 'recreate', 'auto']).optional(),
+      stopGraceSeconds: z.coerce.number().int().min(0).max(600).nullable().optional(),
+      stopCommand: z.string().trim().max(1000, 'El comando al parar admite hasta 1000 caracteres.').nullable().optional(),
     })
     .optional(),
   /**
@@ -592,6 +602,9 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       // una imagen cualquiera es una base de datos sin repetir aquí la tabla de
       // imágenes conocidas, y dos copias de esa tabla se separan a la primera.
       dbConsole: dbConsoleEngine(found.service),
+      // Cómo se despliega y se para: la estrategia efectiva y su motivo, para
+      // que Ajustes enseñe qué hace «Automático» con este servicio ahora.
+      deploy: infoDespliegue(found.service),
     };
   });
 
@@ -650,7 +663,9 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         if (key === 'autoDeploy' && found.service.type !== 'git') continue;
         if (key === 'autoImportEnv' && found.service.type !== 'git') continue;
         // Campos que no aplican a bases de datos: se ignoran sin efecto.
-        if (found.service.type === 'database' && ['replicas', 'healthcheckPath'].includes(key)) continue;
+        // Ni la estrategia ni el comando al parar: una base de datos se despliega
+        // siempre con una sola copia y su parada la gobierna el motor.
+        if (found.service.type === 'database' && ['replicas', 'healthcheckPath', 'deployStrategy', 'stopCommand'].includes(key)) continue;
         if (found.service.type !== 'database' && ['backupSchedule', 'backupRetention'].includes(key)) continue;
         // Un servicio git siempre escucha en un puerto: null no lo borra.
         if (key === 'port' && value === null && found.service.type === 'git') continue;
@@ -658,6 +673,8 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         // 'auto' es la ausencia de elección: se guarda como tal, y así volver a
         // «Automático» no cuenta como cambio frente a un servicio que nunca lo tocó.
         if (key === 'builder' && value === 'auto') normalized = undefined;
+        if (key === 'deployStrategy' && value === 'auto') normalized = undefined;
+        if (key === 'stopCommand' && value === '') normalized = undefined;
 
         // Las lecturas devuelven los build args tapados (`•••`): un cliente de la
         // API que reenvíe la config tal cual conserva el valor que ya tenía en vez
@@ -815,8 +832,21 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // Los servicios que usan la dirección de este (`${{web.PUBLIC_URL}}`,
+    // `${{api.INTERNAL_URL}}`) la llevan escrita en su entorno desde su último
+    // despliegue: si cambian los dominios o el puerto, quedan con «cambios sin
+    // desplegar» para que se vea que también hay que volver a desplegarlos.
+    // Foto de su entorno resuelto antes de guardar; se compara después.
+    const fotoHermanos =
+      body.config?.domains !== undefined || body.config?.port !== undefined ? entornosDeHermanos(found.service) : null;
+
     const name = body.name ?? found.service.name;
     updateService(id, name, newCfg);
+    if (fotoHermanos) {
+      const despues = entornosDeHermanos(found.service);
+      const cambian = [...fotoHermanos].filter(([sid, antes]) => despues.has(sid) && despues.get(sid) !== antes).map(([sid]) => sid);
+      if (cambian.length > 0) bumpConfigRev(cambian);
+    }
 
     if (resourcesChanged && !(await dockerAvailable())) {
       // Sin Docker no se pueden aplicar en caliente: que el panel pida redesplegar
@@ -1076,41 +1106,89 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       if (!assertProjectAccess(req, reply, found.project.id)) return reply;
       if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
       markManualAction(id);
-      const total = configuredReplicas(found.service);
-      const lastDep = latestDeployment(found.service.id);
+      const service = found.service;
+      // Restos de un intercambio cortado («--next», «--prev»): sin un
+      // despliegue en cola o en marcha no son de nadie, y Detener tiene que
+      // alcanzarlos (un bot con una «--next» viva seguiría contestando). Con
+      // un despliegue en curso son suyos y no se tocan. Al detener, una
+      // «--prev» sin versión nueva vuelve a su nombre sin arrancarse: se va a
+      // parar a continuación.
+      if (!despliegueEnCurso(id)) {
+        try {
+          await limpiarRestosIntercambio(action === 'stop' ? { ...service, stopped_at: service.stopped_at ?? now() } : service, (l) =>
+            req.log.info(`«${service.name}»: ${l}`),
+          );
+        } catch (err) {
+          req.log.warn({ err }, `No se pudieron retirar los restos de un intercambio de «${service.name}»`);
+        }
+      }
+      let env: Record<string, string> = {};
+      try {
+        env = resolveServiceEnv(service);
+      } catch {
+        /* sin entorno resuelto, la gracia del servicio o la de por defecto */
+      }
+      const graciaSegundos = graciaParada(service, env).segundos;
+      const comando = comandoParada(service);
+      const lastDep = latestDeployment(service.id);
+      const nombres = await copiasDelServicio(found.project, service, action === 'stop');
       // Se actúa réplica a réplica: una que aún no existe (réplicas ampliadas en
       // Ajustes sin redesplegar, o un servicio nunca desplegado) no puede
       // convertir en 500 la acción sobre las que sí están.
       let tocadas = 0;
       let fallo: any = null;
-      for (let i = 1; i <= total; i++) {
-        const name = replicaName(found.project, found.service, i);
-        try {
-          if (action === 'start') {
-            await startContainer(name);
-          } else if (action === 'stop') {
-            await archiveContainerLogs(name, lastDep?.id);
-            await stopContainer(name);
-          } else {
-            await restartContainer(name);
+      /** Copias que no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL. */
+      const forced: string[] = [];
+      if (action === 'stop') {
+        // Todas a la vez: en serie, N réplicas con su gracia eran N veces la espera.
+        const resultados = await Promise.allSettled(nombres.map((n) => pararConGracia(n, { graciaSegundos, comando })));
+        for (const [k, r] of resultados.entries()) {
+          if (r.status === 'rejected') {
+            if (r.reason?.statusCode !== 404) fallo = r.reason;
+            continue;
           }
+          if (!r.value.existia) continue;
           tocadas += 1;
-        } catch (err: any) {
-          if (err?.statusCode === 404) continue;
-          fallo = err;
+          if (r.value.forzada) forced.push(nombres[k]);
+          // Después de parar: el registro guarda también lo que la copia
+          // escribió al recibir SIGTERM (su cierre, o por qué no lo hubo).
+          await archiveContainerLogs(nombres[k], lastDep?.id);
+        }
+      } else {
+        for (const name of nombres) {
+          try {
+            if (action === 'start') {
+              await startContainer(name);
+            } else {
+              // Reiniciar también es una parada: primero el comando al parar
+              // (solo si la copia está en marcha) y la misma gracia.
+              if (comando && (await findContainer(name))?.State?.Running) {
+                await ejecutarComandoParada(name, comando, graciaSegundos, (l) => req.log.info(l));
+              }
+              await restartContainer(name, graciaSegundos);
+            }
+            tocadas += 1;
+          } catch (err: any) {
+            if (err?.statusCode === 404) continue;
+            fallo = err;
+          }
         }
       }
       if (fallo) return reply.code(500).send({ error: fallo?.message || 'Operación fallida' });
       if (tocadas === 0 && action !== 'stop') {
         return reply.code(409).send({ error: 'El contenedor aún no existe: es necesario desplegar el servicio primero' });
       }
-      audit(req, `service_${action}`, { type: 'service', id, detail: found.service.name });
+      audit(req, `service_${action}`, { type: 'service', id, detail: service.name });
       // Una parada pedida desde aquí no es una caída: el panel la pinta en gris.
       setServiceStopped(id, action === 'stop');
       // La acción acaba de cambiar los contenedores: la foto compartida ya no
       // vale y aquí se lee la verdad, no la caché.
       invalidateDockerSnapshot();
-      return { ok: true, runtime: await getRuntime(containerName(found.project, found.service)) };
+      return {
+        ok: true,
+        runtime: await getRuntime(containerName(found.project, service)),
+        ...(action === 'stop' ? { forced } : {}),
+      };
     });
   }
 
@@ -1263,4 +1341,65 @@ function auditPlan(req: FastifyRequest, service: ServiceRow, result: ApplyResult
     result.kept.length ? `sin tocar (puestas a mano): ${result.kept.join(', ')}` : '',
   ].filter(Boolean);
   audit(req, 'service_integrations_applied', { type: 'service', id: service.id, detail: `${service.name} · ${partes.join(' · ')}` });
+}
+
+/**
+ * Copias del servicio sobre las que actúan Iniciar, Detener y Reiniciar: las
+ * réplicas configuradas y, al detener, también las que siguen en marcha con un
+ * índice mayor (réplicas reducidas en Ajustes sin volver a desplegar): Detener
+ * no puede dejar ninguna copia viva.
+ */
+async function copiasDelServicio(project: ProjectRow, service: ServiceRow, conSobrantes: boolean): Promise<string[]> {
+  const nombres = Array.from({ length: configuredReplicas(service) }, (_, i) => replicaName(project, service, i + 1));
+  if (!conSobrantes) return nombres;
+  const base = containerName(project, service);
+  const patron = new RegExp(`^${escaparRegExp(base)}-r\\d+$`);
+  try {
+    for (const c of await listServiceContainers(service.id)) {
+      if (patron.test(c.name) && !nombres.includes(c.name)) nombres.push(c.name);
+    }
+  } catch {
+    /* sin listado, al menos las configuradas */
+  }
+  return nombres;
+}
+
+function escaparRegExp(texto: string): string {
+  return texto.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Entorno resuelto de los DEMÁS servicios (no bases de datos) del proyecto, para compararlo. */
+function entornosDeHermanos(service: ServiceRow): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const s of listServices(service.project_id)) {
+    if (s.id === service.id || s.type === 'database') continue;
+    out.set(s.id, JSON.stringify(resolveServiceEnv(s)));
+  }
+  return out;
+}
+
+/**
+ * Cómo se despliega y se para el servicio (`ServiceDeployInfo` de la web): la
+ * estrategia efectiva y su motivo, si otro servicio lo llama por la red
+ * interna (con eso Ajustes calcula el «ahora» de «Automático» mientras se
+ * edita) y la gracia de parada con su origen.
+ */
+function infoDespliegue(service: ServiceRow) {
+  const llamado = service.type === 'database' ? false : llamadoPorOtros(service);
+  const e = estrategiaDespliegue(service, llamado);
+  let env: Record<string, string> = {};
+  try {
+    env = resolveServiceEnv(service);
+  } catch {
+    /* sin entorno resuelto, la gracia del servicio o la de por defecto */
+  }
+  const g = graciaParada(service, env);
+  return {
+    strategy: e.estrategia,
+    reason: e.motivo,
+    automatic: e.automatica,
+    calledByOthers: llamado,
+    stopGraceSeconds: g.segundos,
+    stopGraceSource: g.origen,
+  };
 }

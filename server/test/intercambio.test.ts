@@ -14,6 +14,8 @@
  *
  * Sin Docker: se sustituyen las llamadas al daemon por un registro de eventos,
  * y las sondas (`execInContainer`) responden según lo que pida cada prueba.
+ * Las paradas van por `pararConGracia` (SIGTERM con la gracia del servicio) y
+ * el registro de la versión anterior se archiva después de pararla.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { closeDb, createDeployment, createProject, createService, getDeployment, getService, initDb, listAlerts, setEnv, updateDeployment } from '../src/db';
@@ -34,6 +36,8 @@ const m = vi.hoisted(() => ({
   volumenes: [] as string[],
   /** Estados que irá devolviendo `getRuntime` para un contenedor antes de «running». */
   estados: new Map<string, { state: string; exitCode: number | null; restartCount?: number }[]>(),
+  /** Gracia con la que se paró cada copia. */
+  gracias: new Map<string, number>(),
 }));
 
 vi.mock('../src/docker/client', async (importOriginal) => {
@@ -55,7 +59,9 @@ vi.mock('../src/docker/containers', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/docker/containers')>();
   return {
     ...mod,
-    findContainer: vi.fn(async (name: string) => (m.vivos.has(name) ? { Config: { Labels: {} }, State: { Running: true } } : null)),
+    findContainer: vi.fn(async (name: string) =>
+      m.vivos.has(name) ? { Config: { Labels: { 'skyway.deployment': 'dep-anterior' } }, State: { Running: true } } : null,
+    ),
     runServiceContainer: vi.fn(async (spec: Parameters<typeof mod.runServiceContainer>[0]) => {
       const name = spec.nameOverride ?? mod.containerName(spec.project, spec.service);
       m.eventos.push(`crear:${name}`);
@@ -73,6 +79,12 @@ vi.mock('../src/docker/containers', async (importOriginal) => {
     }),
     stopContainer: vi.fn(async (name: string) => {
       m.eventos.push(`parar:${name}`);
+    }),
+    pararConGracia: vi.fn(async (name: string, opts: { graciaSegundos: number }) => {
+      if (!m.vivos.has(name)) return { existia: false, forzada: false, comando: null };
+      m.eventos.push(`parar:${name}`);
+      m.gracias.set(name, opts.graciaSegundos);
+      return { existia: true, forzada: false, comando: null };
     }),
     getRuntime: vi.fn(async (name: string) => {
       const siguiente = m.vivos.has(name) ? m.estados.get(name)?.shift() : undefined;
@@ -103,7 +115,10 @@ vi.mock('../src/docker/containers', async (importOriginal) => {
       return { state: 'running', exitCode: null, health: (m.salud.shift() ?? 'healthy') as 'starting' | 'healthy' | 'unhealthy' };
     }),
     listServiceContainers: vi.fn(async () => []),
-    fetchLogsText: vi.fn(async () => ''),
+    fetchLogsText: vi.fn(async (name: string) => {
+      m.eventos.push(`archivar:${name}`);
+      return '';
+    }),
   };
 });
 
@@ -126,6 +141,7 @@ beforeEach(() => {
   m.salud = [];
   m.volumenes = [];
   m.estados.clear();
+  m.gracias.clear();
 });
 
 /** Servicio de imagen con dominio; `enMarcha` = ya tiene una versión sirviendo. */
@@ -162,6 +178,14 @@ describe('intercambio sin corte', () => {
     expect(m.sondeos.get(real)).toBe(3);
     expect(parada).toBeGreaterThan(ultimaSonda);
     expect(dep.logs).toMatch(/Intercambio completado sin interrupción/);
+    // Parada limpia con la gracia por defecto y, DESPUÉS, el archivo del
+    // registro (conserva lo que escribió al recibir SIGTERM) y la retirada.
+    expect(m.gracias.get(`${nombre}--prev`)).toBe(30);
+    expect(m.eventos.indexOf(`archivar:${nombre}--prev`)).toBeGreaterThan(parada);
+    expect(m.eventos.indexOf(`borrar:${nombre}--prev`)).toBeGreaterThan(m.eventos.indexOf(`archivar:${nombre}--prev`));
+    // La copia de validación también se para con SIGTERM antes de retirarla.
+    expect(m.eventos.indexOf(`parar:${nombre}--next`)).toBeGreaterThan(-1);
+    expect(m.eventos.indexOf(`parar:${nombre}--next`)).toBeLessThan(m.eventos.indexOf(`borrar:${nombre}--next`));
   });
 
   it('si la copia nueva no llega a responder, se restaura la anterior', async () => {

@@ -1,8 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, Power, X } from 'lucide-react';
 import { api } from '../../api';
-import { AutoDeployStatus, CloudflareProxyResult, DbTemplate, DnsAutoResult, Me, Service, ServiceWebhookInfo } from '../../types';
+import {
+  AutoDeployStatus,
+  CloudflareProxyResult,
+  DbTemplate,
+  DnsAutoResult,
+  Me,
+  Service,
+  ServiceDeployInfo,
+  ServiceWebhookInfo,
+} from '../../types';
 import { cx, timeAgo } from '../../utils';
 import { avisoDns } from '../DnsAutoResult';
 import DomainsEditor from '../DomainsEditor';
@@ -97,6 +106,11 @@ interface FormState {
   healthcheckPath: string;
   replicas: string;
   volumePaths: string[];
+  /** «Al desplegar»: 'auto' = sin elección (lo decide Skyway con la regla de `estrategiaDespliegue`). */
+  deployStrategy: 'auto' | 'overlap' | 'recreate';
+  /** Gracia de parada en segundos; vacío = RAILWAY_DEPLOYMENT_DRAINING_SECONDS o 30. */
+  stopGraceSeconds: string;
+  stopCommand: string;
 }
 
 function formFromService(service: Service): FormState {
@@ -128,8 +142,24 @@ function formFromService(service: Service): FormState {
     healthcheckPath: cfg.healthcheckPath ?? '',
     replicas: String((cfg as any).replicas ?? 1),
     volumePaths: ((cfg as any).volumes ?? []).map((v: { containerPath: string }) => v.containerPath),
+    deployStrategy: cfg.deployStrategy ?? 'auto',
+    stopGraceSeconds: typeof cfg.stopGraceSeconds === 'number' ? String(cfg.stopGraceSeconds) : '',
+    stopCommand: cfg.stopCommand ?? '',
   };
 }
+
+/** Texto de cada estrategia, igual que en el registro del despliegue. */
+const ESTRATEGIA = {
+  recreate: {
+    nombre: 'Una sola copia',
+    descripcion:
+      'Una sola copia: se detiene la versión anterior antes de arrancar la nueva; unos segundos sin servicio. Recomendado para bots y workers.',
+  },
+  overlap: {
+    nombre: 'Sin corte',
+    descripcion: 'Sin corte: la versión nueva se valida antes de retirar la anterior; durante unos segundos hay dos copias.',
+  },
+} as const;
 
 /** Línea de estado del sondeo: cuándo se comprobó la rama y si falló. */
 function EstadoAutoDeploy({ status }: { status: AutoDeployStatus }) {
@@ -159,6 +189,7 @@ export default function ServiceSettingsTab({
   projectId,
   autoDeploy = null,
   webhook = null,
+  deploy = null,
   onChanged,
   onDeleted,
   onNeedsRedeploy,
@@ -170,6 +201,8 @@ export default function ServiceSettingsTab({
   autoDeploy?: AutoDeployStatus | null;
   /** Webhook manual: URL con el dominio del panel y si ya lo cubre la GitHub App. */
   webhook?: ServiceWebhookInfo | null;
+  /** Cómo se despliega y se para el servicio según el servidor (`deploy` de GET /api/services/:id). */
+  deploy?: ServiceDeployInfo | null;
   onChanged: () => void;
   onDeleted: () => void;
   /** Aviso al panel de que hay cambios guardados que solo surten efecto al redesplegar. */
@@ -252,11 +285,15 @@ export default function ServiceSettingsTab({
         memoryMb: form.memoryMb ? Number(form.memoryMb) : null,
         diskMb: form.diskMb ? Number(form.diskMb) : null,
         alertsMuted: form.alertsMuted,
+        // Vacío: la gracia por defecto (o la de Railway). El servidor valida 0–600.
+        stopGraceSeconds: form.stopGraceSeconds.trim() === '' ? null : Number(form.stopGraceSeconds),
         ...(!isDb
           ? {
               healthcheckPath: form.healthcheckPath.trim() || null,
               volumes: form.volumePaths.map((p) => ({ containerPath: p })),
               replicas: Math.max(1, Number(form.replicas) || 1),
+              deployStrategy: form.deployStrategy,
+              stopCommand: form.stopCommand.trim() || null,
             }
           : {}),
       };
@@ -380,6 +417,17 @@ export default function ServiceSettingsTab({
   // Rutas que la imagen guarda con VOLUME y no tienen volumen: se pierden en cada despliegue.
   const volumenesSinMontar = (cfg.imageVolumes ?? []).filter((p) => !form.volumePaths.includes(p));
   const replicasN = Number(form.replicas) || 1;
+
+  // Estrategia con lo que hay en el formulario, con la misma regla que el
+  // servidor (`estrategiaDespliegue`): así «Automático — ahora: …» y los avisos
+  // de réplicas cambian en cuanto se quita un dominio o se añade un volumen,
+  // antes de guardar. Que otro servicio lo llame por la red interna solo lo
+  // sabe el servidor (`deploy.calledByOthers`).
+  const conEstado = form.volumePaths.length > 0 || form.hostPort.trim() !== '';
+  const sinTrafico = form.domains.length === 0 && form.healthcheckPath.trim() === '' && !deploy?.calledByOthers;
+  const automatica: 'recreate' | 'overlap' = sinTrafico ? 'recreate' : 'overlap';
+  const efectiva: 'recreate' | 'overlap' =
+    isDb || conEstado ? 'recreate' : form.deployStrategy === 'auto' ? automatica : form.deployStrategy;
 
   return (
     <>
@@ -689,9 +737,22 @@ export default function ServiceSettingsTab({
               </Field>
             )}
           </div>
+          {!isDb && replicasN > 1 && sinTrafico && (
+            <p className="mt-2.5 flex items-start gap-1.5 rounded-lg border border-warn/35 bg-warn/[.06] px-3 py-2.5 text-xs text-sub">
+              <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warn" aria-hidden />
+              <span className="leading-relaxed">
+                Este servicio no recibe tráfico (sin dominio, healthcheck ni llamadas de otros servicios): con {replicasN} réplicas hay{' '}
+                {replicasN} copias en marcha a la vez de forma permanente. Un bot de polling (Telegram, Discord…) solo admite una; un
+                worker tiene que repartir el trabajo con <span className="font-mono">SKYWAY_REPLICA</span> y{' '}
+                <span className="font-mono">SKYWAY_REPLICAS</span> o usar una cola.
+              </span>
+            </p>
+          )}
           {!isDb && replicasN > 1 && (
             <p className="mt-2.5 rounded-lg border border-acc/30 bg-acc/[.08] px-3 py-2.5 text-xs text-sub">
-              Con {replicasN} réplicas el tráfico se distribuye y los despliegues son progresivos: siempre queda una réplica en servicio.
+              {efectiva === 'overlap'
+                ? `Con ${replicasN} réplicas el tráfico se distribuye y los despliegues son progresivos: siempre queda una réplica en servicio. `
+                : 'Con una sola copia, todas las réplicas se detienen antes de arrancar las nuevas. '}
               Requiere un servicio <strong className="text-txt">sin volúmenes ni puerto público</strong>
               {(form.volumePaths.length > 0 || form.hostPort) && (
                 <span className="text-err"> — esta condición no se cumple actualmente: retíralos antes de guardar</span>
@@ -772,6 +833,81 @@ export default function ServiceSettingsTab({
             </div>
           </SectionCard>
         )}
+
+        <SectionCard
+          icon={<Power size={14} />}
+          iconClass="text-sub"
+          title="Despliegue y parada"
+          description={
+            isDb
+              ? 'Cómo se detiene la base de datos al desplegar, detener o reiniciar'
+              : 'Cómo se sustituye la versión en marcha y cómo se detiene cada copia'
+          }
+        >
+          <div className="flex flex-col gap-3">
+            {!isDb && (
+              <Field
+                label="Al desplegar"
+                hint={
+                  conEstado
+                    ? 'Con volúmenes o puerto público, la versión anterior siempre se detiene antes de arrancar la nueva.'
+                    : form.deployStrategy === 'auto'
+                      ? `${ESTRATEGIA[efectiva].descripcion} ${
+                          sinTrafico
+                            ? 'Se aplica porque el servicio no tiene dominio, healthcheck ni llamadas de otros servicios.'
+                            : 'Se aplica porque el servicio recibe tráfico (dominio, healthcheck o llamadas de otros servicios).'
+                        }`
+                      : ESTRATEGIA[efectiva].descripcion
+                }
+              >
+                <select
+                  className="input"
+                  value={conEstado ? 'recreate' : form.deployStrategy}
+                  disabled={conEstado}
+                  onChange={(e) => set('deployStrategy', e.target.value as FormState['deployStrategy'])}
+                >
+                  <option value="auto">Automático (recomendado) — ahora: {ESTRATEGIA[automatica].nombre}</option>
+                  <option value="recreate">{ESTRATEGIA.recreate.nombre}</option>
+                  <option value="overlap">{ESTRATEGIA.overlap.nombre}</option>
+                </select>
+              </Field>
+            )}
+            {/* Uno debajo de otro: la ayuda de la gracia lleva un nombre de variable
+                largo que en media columna no cabe y desbordaría en un drawer estrecho. */}
+            <div className="flex flex-col gap-3">
+              <Field
+                label="Gracia de parada (s)"
+                hint="SIGTERM y, si el proceso no termina en este plazo, SIGKILL. Vacío: 30 s o RAILWAY_DEPLOYMENT_DRAINING_SECONDS."
+              >
+                <input
+                  className="input tnum"
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  max="600"
+                  // Lo que se aplicaría con el campo vacío: si la gracia viene del
+                  // propio servicio, el servidor no dice cuál sería sin ella.
+                  placeholder={String(deploy && deploy.stopGraceSource !== 'servicio' ? deploy.stopGraceSeconds : 30)}
+                  value={form.stopGraceSeconds}
+                  onChange={(e) => set('stopGraceSeconds', e.target.value)}
+                />
+              </Field>
+              {!isDb && (
+                <Field label="Comando al parar" hint="Opcional. Se ejecuta dentro del contenedor antes del SIGTERM, con el mismo plazo.">
+                  <input
+                    className="input font-mono text-xs"
+                    value={form.stopCommand}
+                    onChange={(e) => set('stopCommand', e.target.value)}
+                    maxLength={1000}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                </Field>
+              )}
+            </div>
+          </div>
+        </SectionCard>
 
         {/*
           * Sin fondo rojo permanente: un panel de alarma que está siempre
