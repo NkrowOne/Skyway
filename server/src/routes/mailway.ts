@@ -138,6 +138,7 @@ import {
   assertAccountActive,
   assertClientActive,
   connectServiceMail,
+  credentialNames,
   httpError,
   isRefError,
   knownMailValues,
@@ -2507,9 +2508,15 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
 
     /**
      * Nombres con los que el servicio recibiría el correo en cada modo, sin
-     * crear nada: los que su web espera (`skyway.json` o `.env.example`), los
-     * de siempre para lo que no nombra y, en `kept`, los que tienen un valor
-     * puesto a mano y no se tocarían. Así la pestaña lo dice antes de conectar.
+     * crear nada: los que el servicio espera (`skyway.json` o `.env.example`),
+     * los de siempre para lo que no nombra y, en `kept`, los que tienen un
+     * valor puesto a mano y no se tocarían. Así la pestaña lo dice antes de
+     * conectar. `credentialNames` son los nombres con los que se reconoce la
+     * credencial de Skyway del servicio en ese modo (en un proyecto de una
+     * cuenta llevan también el del proyecto): con ellos la pestaña sabe, sin
+     * repetir la regla, si conectar revoca una credencial que el contenedor en
+     * marcha está usando. `sinDominio` (ni dominios ni ruta de healthcheck: un
+     * bot o un worker) le sirve para recomendar la API de envío.
      */
     secured.get(
       '/api/projects/:id/mail/connect/preview',
@@ -2520,10 +2527,11 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           .object({ serviceId: z.string().trim().min(1).max(100), mode: z.enum(['smtp', 'api']).default('smtp') })
           .parse(req.query ?? {});
         const service = serviceOfProject(ctx.project.id, query.serviceId);
-        requireLink(ctx.project);
+        const link = requireLink(ctx.project);
         // Solo para comparar valores no secretos (servidor, puerto): sin red si no se conoce aún.
         const names = mailConnectNames(service, query.mode, knownMailValues(cachedInfo(), query.mode, null), false);
-        const needs = service.type === 'git' ? (service.config as { needs?: { mail?: { mode: string } | null } }).needs : undefined;
+        const config = service.config as { needs?: { mail?: { mode: string } | null }; domains?: string[]; healthcheckPath?: string | null };
+        const needs = service.type === 'git' ? config.needs : undefined;
         return {
           mode: query.mode,
           suggestedMode: needs?.mail?.mode ?? null,
@@ -2532,13 +2540,15 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
           secretPlaced: names.secretPlaced,
           // Servidor, puerto o URL de otro proveedor puestos a mano: conectar respondería 409.
           conflicts: names.conflicts,
+          credentialNames: credentialNames(service, query.mode, link),
+          sinDominio: (config.domains ?? []).length === 0 && !config.healthcheckPath?.trim(),
         };
       }),
     );
 
     /**
      * Crea en Mailway una credencial de envío para el buzón y la escribe en las
-     * variables del servicio con los nombres que su web espera (ver
+     * variables del servicio con los nombres que el servicio espera (ver
      * `mailConnectNames`), sin pisar ninguna que alguien haya puesto a mano.
      * Devuelve solo los NOMBRES: los valores son secretos y ya están donde
      * tienen que estar. La credencial del mismo tipo que Skyway creó antes para

@@ -640,7 +640,7 @@ function confirmacionCorreo(
   if (opts.compartida) {
     partes.push(
       `El buzón ${existing.email} ya existe: su contraseña de aplicación da acceso IMAP y SMTP a todo su correo, y la leerá ` +
-        'cualquiera que vea las variables del servicio. Apruébalo solo si ese buzón es para los envíos de la web.',
+        'cualquiera que vea las variables del servicio. Apruébalo solo si ese buzón es para los envíos de este servicio.',
     );
   }
   if (opts.actualizaUsuario && existing.login && existing.login !== existing.email) {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { ReactNode, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
@@ -17,6 +17,7 @@ import {
   Plug,
   Plus,
   RefreshCw,
+  Rocket,
   Send,
   RotateCcw,
   Star,
@@ -26,6 +27,7 @@ import {
 import { api } from '../api';
 import { entregaMientrasMxFuera, nombreDns, spfSugeridosPorNombre } from '../correo';
 import {
+  Deployment,
   MailApiKey,
   MailAccountView,
   MailAppPassword,
@@ -2347,18 +2349,52 @@ function SecretPanel({ projectId, secret, onDismiss }: { projectId: string; secr
 
 // ---------- conectar a un servicio ----------
 
-const MODE_HELP: Record<'smtp' | 'api', { title: string; text: string; vars: string[] }> = {
+/** Nombre de variable, ruta o cabecera dentro de un texto de ayuda. */
+function Mono({ children }: { children: ReactNode }) {
+  return <span className="break-all font-mono text-txt">{children}</span>;
+}
+
+/**
+ * Qué crea cada modo y qué permite. La contraseña de aplicación abre también
+ * el buzón por IMAP, y la clave de la API solo envía desde él: para un bot o
+ * un worker que solo envía, la API es lo prudente. `MAILWAY_API_URL` es la
+ * dirección base de Mailway (la de su panel), no la del envío: sin decirlo,
+ * quien programa el servicio hace POST a la base y recibe un 404.
+ */
+const MODE_HELP: Record<'smtp' | 'api', { title: string; text: ReactNode; vars: string[] }> = {
   smtp: {
     title: 'SMTP',
-    text: 'Se crea una contraseña de aplicación propia para el servicio (la contraseña del buzón no cambia). Compatible con cualquier biblioteca de correo: Nodemailer, PHPMailer, Django, Laravel, Rails…',
+    text: (
+      <>
+        Se crea una contraseña de aplicación propia para el servicio (la contraseña del buzón no cambia). Compatible con cualquier
+        biblioteca de correo: Nodemailer, PHPMailer, Django, Laravel, Rails… La contraseña de aplicación también permite leer el
+        buzón por IMAP. Para un bot o un worker que solo envía, es preferible la API de envío.
+      </>
+    ),
     vars: ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM'],
   },
   api: {
     title: 'API de envío',
-    text: 'Se crea una clave de la API de envío de Mailway con el buzón como remitente. Indicado para correo transaccional mediante HTTP, con límites de envío y registro por clave.',
+    text: (
+      <>
+        Se crea una clave de la API de envío de Mailway con el buzón como remitente: solo permite enviar desde ese buzón, con los
+        límites del plan y un registro por clave. <Mono>MAILWAY_API_URL</Mono> es la dirección base de Mailway: para enviar, haz
+        POST a <Mono>{'{MAILWAY_API_URL}/v1/send'}</Mono> con la cabecera <Mono>{'Authorization: Bearer {MAILWAY_API_KEY}'}</Mono> y
+        un JSON con <Mono>to</Mono>, <Mono>subject</Mono> y <Mono>text</Mono> o <Mono>html</Mono>. Con la cabecera{' '}
+        <Mono>Idempotency-Key</Mono>, un reintento no envía el mensaje dos veces.
+      </>
+    ),
     vars: ['MAILWAY_API_URL', 'MAILWAY_API_KEY', 'MAIL_FROM'],
   },
 };
+
+/** Ejemplo de envío por la API, con las variables que Skyway escribe en el servicio. */
+const EJEMPLO_API = [
+  'curl -X POST "$MAILWAY_API_URL/v1/send" \\',
+  '  -H "Authorization: Bearer $MAILWAY_API_KEY" \\',
+  '  -H "Content-Type: application/json" \\',
+  `  -d '{"to": "cliente@example.com", "subject": "Pedido confirmado", "text": "Tu pedido está en camino."}'`,
+].join('\n');
 
 function ConnectTab({
   projectId,
@@ -2384,7 +2420,10 @@ function ConnectTab({
   const [serviceId, setServiceId] = useState(deployables[0]?.id ?? '');
   const [mailboxId, setMailboxId] = useState(mailboxes[0]?.id ?? '');
   const [mode, setMode] = useState<'smtp' | 'api'>('smtp');
-  const [redeploy, setRedeploy] = useState(false);
+  // null hasta que alguien lo marque o lo desmarque: mientras, lo decide
+  // `reconecta` (ver debajo). Vuelve a null al cambiar de servicio o de modo,
+  // porque la credencial que se revocaría es otra.
+  const [redeploy, setRedeploy] = useState<boolean | null>(null);
   const [result, setResult] = useState<{
     serviceId: string;
     serviceName: string;
@@ -2405,18 +2444,36 @@ function ConnectTab({
   const renewal = service ? view.renewals?.[service.id] : undefined;
   const renewalNote = renewal ? avisoRenovacion(renewal) : null;
 
-  // Con qué nombres recibe el servicio el correo: los que espera su web (su
-  // .env.example o su skyway.json) y, si no los nombra, los de siempre.
+  // Con qué nombres recibe el servicio el correo: los que espera el servicio
+  // (su .env.example o su skyway.json) y, si no los nombra, los de siempre.
   const preview = useQuery({
     queryKey: ['mailConnectPreview', projectId, service?.id, mode],
     queryFn: () =>
-      api.get<{ keys: string[]; kept: string[]; secretPlaced: boolean; conflicts?: string[]; suggestedMode: 'smtp' | 'api' | null }>(
-        `/projects/${projectId}/mail/connect/preview?${new URLSearchParams({ serviceId: service!.id, mode })}`,
-      ),
+      api.get<{
+        keys: string[];
+        kept: string[];
+        secretPlaced: boolean;
+        conflicts?: string[];
+        suggestedMode: 'smtp' | 'api' | null;
+        /** Nombres con los que se reconoce la credencial de Skyway del servicio en este modo. */
+        credentialNames: string[];
+        /** Sin dominios ni healthcheck: un bot o un worker. */
+        sinDominio: boolean;
+      }>(`/projects/${projectId}/mail/connect/preview?${new URLSearchParams({ serviceId: service!.id, mode })}`),
     enabled: !!service && view.linked,
     staleTime: 15_000,
     retry: false,
   });
+
+  // El servicio ya tiene una credencial de Skyway vigente en este modo: el
+  // servidor la revoca al conectar, y el contenedor en marcha sigue con ella
+  // hasta el próximo despliegue. Entonces volver a desplegar es lo seguro, y
+  // se marca solo. Los nombres los da el servidor (en una cuenta llevan el
+  // proyecto): repetir aquí la regla ya falló una vez.
+  const credNames = preview.data?.credentialNames ?? [];
+  const reconecta =
+    mode === 'smtp' ? appPasswords.some((a) => credNames.includes(a.name)) : apiKeys.some((k) => credNames.includes(k.name));
+  const redeployNow = redeploy ?? reconecta;
 
   const connect = useMutation({
     mutationFn: () =>
@@ -2424,7 +2481,7 @@ function ConnectTab({
         serviceId: service?.id,
         mailboxId: mailbox?.id,
         mode,
-        redeploy,
+        redeploy: redeployNow,
       }),
     onSuccess: (res) => {
       if (!service) return;
@@ -2444,6 +2501,27 @@ function ConnectTab({
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
+
+  // Conectado sin desplegar y con la credencial anterior revocada: el servicio
+  // no puede enviar hasta el próximo despliegue, así que se ofrece aquí mismo.
+  const deployNow = useMutation({
+    mutationFn: (id: string) => api.post<{ deployment: Deployment }>(`/services/${id}/deploy`, {}),
+    onSuccess: (_res, id) => {
+      setResult((r) => (r && r.serviceId === id ? { ...r, needsRedeploy: false } : r));
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+      toast('Despliegue iniciado.', 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const elegirServicio = (id: string) => {
+    setServiceId(id);
+    setRedeploy(null);
+  };
+  const elegirModo = (m: 'smtp' | 'api') => {
+    setMode(m);
+    setRedeploy(null);
+  };
 
   if (deployables.length === 0) {
     return (
@@ -2483,17 +2561,19 @@ function ConnectTab({
   // conectar por SMTP un buzón que aún entra con su usuario anterior lo
   // actualiza (salvo que lo usen otras aplicaciones de Skyway, que lo
   // actualizan en la baja), y los dispositivos de la persona dejan de conectar.
-  const credencial = service ? `skyway:${service.slug}`.slice(0, 60) : '';
+  // La credencial propia del servicio es la de `credentialNames`: en un
+  // proyecto de una cuenta es `skyway:<proyecto>/<servicio>`, no el slug solo.
   const actualizaUsuario =
     mode === 'smtp' &&
     !!mailbox?.loginPending &&
-    !appPasswords.some((a) => a.mailboxId === mailbox.id && a.name.startsWith('skyway:') && a.name !== credencial);
+    !appPasswords.some((a) => a.mailboxId === mailbox.id && a.name.startsWith('skyway:') && !credNames.includes(a.name));
+  const sinDominio = mode === 'smtp' && !!preview.data?.sinDominio;
 
   return (
     <div className="flex flex-col gap-3.5">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Field label="Servicio">
-          <select className="input" value={service?.id ?? ''} onChange={(e) => setServiceId(e.target.value)}>
+          <select className="input" value={service?.id ?? ''} onChange={(e) => elegirServicio(e.target.value)}>
             {deployables.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -2535,7 +2615,7 @@ function ConnectTab({
         full
         label="Modo de conexión"
         value={mode}
-        onChange={setMode}
+        onChange={elegirModo}
         options={[
           { key: 'smtp', label: 'SMTP' },
           { key: 'api', label: 'API de envío' },
@@ -2543,13 +2623,33 @@ function ConnectTab({
       />
       <div className="rounded-lg border border-line bg-bg px-3.5 py-3 text-xs leading-5 text-sub">
         <p>{help.text}</p>
+        {mode === 'api' && (
+          <details className="group mt-1.5">
+            <summary className="inline-flex cursor-pointer list-none items-center gap-1 font-medium text-sub hover:text-txt">
+              <ChevronDown size={12} className="shrink-0 transition-transform duration-200 ease-out group-open:rotate-180" aria-hidden />
+              Ejemplo
+            </summary>
+            <div className="details-body mt-1.5 flex items-start gap-1">
+              <code className="block min-w-0 flex-1 overflow-x-auto whitespace-pre rounded-md bg-term p-2 font-mono text-micro text-txt/[.88]">
+                {EJEMPLO_API}
+              </code>
+              <CopyButton value={EJEMPLO_API} title="Copiar ejemplo" />
+            </div>
+          </details>
+        )}
+        {sinDominio && (
+          <p className="mt-1.5 text-txt">
+            Para un servicio sin dominio (un bot o un worker) se recomienda la API de envío: la clave solo envía desde este buzón y no
+            da acceso a su contenido.
+          </p>
+        )}
         {suggested && suggested !== mode && (
           <p className="mt-1.5 text-warn">
-            La web de este servicio espera {suggested === 'api' ? 'la API de envío' : 'SMTP'}: comprueba el modo antes de conectar.
+            Este servicio espera {suggested === 'api' ? 'la API de envío' : 'SMTP'}: comprueba el modo antes de conectar.
           </p>
         )}
         <p className="mt-1.5">
-          Variables que se añaden al servicio{preview.data ? ', con los nombres que espera su web' : ''}:{' '}
+          Variables que se añaden al servicio{preview.data ? ', con los nombres que espera el servicio' : ''}:{' '}
           {names.map((v, i) => (
             <span key={v}>
               <span className="font-mono text-txt">{v}</span>
@@ -2569,14 +2669,19 @@ function ConnectTab({
         {conflicts.length > 0 && (
           <p className="mt-1.5 text-warn">
             <span className="font-mono">{conflicts.join(', ')}</span> {conflicts.length === 1 ? 'tiene' : 'tienen'} un valor puesto a mano
-            distinto del de Mailway: con la credencial de Mailway, la web se conectaría a otro servidor. Elimina o vacía{' '}
+            distinto del de Mailway: con la credencial de Mailway, el servicio se conectaría a otro servidor. Elimina o vacía{' '}
             {conflicts.length === 1 ? 'esa variable' : 'esas variables'} en la pestaña «Variables» del servicio para conectar el correo.
           </p>
         )}
-        <p className="mt-1.5">
-          Si el servicio ya estaba conectado en este modo, la credencial anterior se revoca: hasta que se vuelva a desplegar, el
-          servicio no podrá enviar correo.
-        </p>
+        {reconecta && service && (
+          <p role={redeployNow ? undefined : 'alert'} className={cx('mt-1.5', !redeployNow && 'text-warn')}>
+            «{service.name}» ya tiene una credencial de Skyway en este modo y se revoca al conectar. Sin volver a desplegar, el servicio
+            no podrá enviar correo hasta el próximo despliegue
+            {mode === 'smtp'
+              ? ', y cada intento con la contraseña revocada cuenta para el bloqueo automático de IPs del servidor de correo.'
+              : '.'}
+          </p>
+        )}
         {actualizaUsuario && mailbox && (
           <p className="mt-1.5 text-warn">
             <span className="break-all font-mono">{mailbox.email}</span> todavía entra con{' '}
@@ -2588,7 +2693,7 @@ function ConnectTab({
       </div>
 
       <label className="flex items-center gap-2 text-sm text-sub">
-        <input type="checkbox" className="h-4 w-4 shrink-0 accent-acc" checked={redeploy} onChange={(e) => setRedeploy(e.target.checked)} />
+        <input type="checkbox" className="h-4 w-4 shrink-0 accent-acc" checked={redeployNow} onChange={(e) => setRedeploy(e.target.checked)} />
         Volver a desplegar ahora
       </label>
 
@@ -2624,12 +2729,31 @@ function ConnectTab({
               No se han modificado, porque tienen un valor puesto a mano: <span className="font-mono text-txt">{result.kept.join(', ')}</span>.
             </p>
           )}
-          {result.revoked > 0 && <p className="mt-1">Se ha revocado la credencial que el servicio tenía antes.</p>}
-          <p className="mt-1">
-            {result.needsRedeploy
-              ? 'Es necesario volver a desplegar el servicio para aplicar los cambios.'
-              : 'Se ha iniciado un nuevo despliegue del servicio.'}
-          </p>
+          {result.revoked > 0 && result.needsRedeploy ? (
+            <div role="alert" className="mt-2 rounded-md border border-warn/30 bg-warn/[.07] px-3 py-2">
+              <p className="text-warn">
+                Se ha revocado la credencial anterior: el servicio no podrá enviar correo hasta que se vuelva a desplegar.
+              </p>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2"
+                onClick={() => deployNow.mutate(result.serviceId)}
+                loading={deployNow.isPending}
+              >
+                <Rocket size={12} /> Desplegar ahora
+              </Button>
+            </div>
+          ) : (
+            <>
+              {result.revoked > 0 && <p className="mt-1">Se ha revocado la credencial que el servicio tenía antes.</p>}
+              <p className="mt-1">
+                {result.needsRedeploy
+                  ? 'Es necesario volver a desplegar el servicio para aplicar los cambios.'
+                  : 'Se ha iniciado un nuevo despliegue del servicio.'}
+              </p>
+            </>
+          )}
           <Link
             to={`/projects/${projectId}?s=${result.serviceId}&tab=variables`}
             onClick={onClose}
