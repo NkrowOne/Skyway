@@ -388,11 +388,13 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      la dirección escrita a mano `<slug>:<puerto>` o `<slug>.railway.internal`
      donde empieza una dirección (al principio del valor o tras `//`, `@`, `=`,
      un espacio, una coma, un punto y coma, comillas, un paréntesis o un
-     corchete); y el slug a secas en una variable cuyo nombre acaba en `HOST`,
+     corchete); la URL sin puerto `http://<slug>/…` o `http://<slug>` (un
+     nombre sin puntos justo detrás de `//` solo puede ser un host interno); y
+     el slug a secas en una variable cuyo nombre acaba en `HOST`,
      `HOSTNAME`, `DOMAIN`, `ADDR` o `ADDRESS` (`API_HOST=api`, que es como deja
      la importación de Railway un `${{api.RAILWAY_PRIVATE_DOMAIN}}`). Lo que solo
      se parece no cuenta: `https://api.example.com`, `scope=api:read`, un trozo
-     de ruta como `https://x.com/v1/api:1234` o `${{api.PUBLIC_URL}}` (que entra
+     de ruta como `https://x.com/v1/api:1234`, `http://apis/` o `${{api.PUBLIC_URL}}` (que entra
      por el dominio). Una variable compartida cuenta aunque solo la use el propio
      servicio: llega a todos y no se sabe quién la lee. **Una llamada escrita en
      el código o en un fichero de la imagen** (un `proxy_pass http://api:3000` en
@@ -469,7 +471,13 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      (el texto viaja en la variable `SKYWAY_STOP_CMD`, nunca interpolado en un
      shell del host ni del contenedor), con la gracia como plazo; si falla, vence
      el plazo o la imagen no tiene `sh`, se registra (código y últimas 20
-     líneas) y se sigue. Después, **SIGTERM** y, si el proceso no termina en la
+     líneas) y se sigue. El comando al parar **no** se ejecuta en la copia de
+     validación `--next` (ni en sus restos) ni en la réplica nueva que falla en
+     «sin corte»: la versión anterior sigue en servicio, y el comando podría
+     deshacer lo que ella registró (el webhook de un bot). Con «sin corte», el
+     de la versión anterior se ejecuta cuando la nueva ya está en servicio: el
+     registro y Ajustes lo advierten y recomiendan «Una sola copia» si el
+     comando da de baja algo compartido. Después, **SIGTERM** y, si el proceso no termina en la
      **gracia**, **SIGKILL** (`docker stop -t <gracia>`). La gracia es la del
      servicio (`stopGraceSeconds`, 0–600); si no la tiene,
      `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` del entorno resuelto (solo dígitos,
@@ -479,7 +487,15 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      rápido las dejaría con SIGKILL en cada parada) y la gracia nunca baja de
      **10 s**. Se fija además como `StopTimeout` del contenedor al crearlo, de
      modo que un `docker stop` ajeno a Skyway o el apagado del daemon den el
-     mismo plazo.
+     mismo plazo. Solo un 404 cuenta como «el contenedor no existe»: si la
+     consulta falla por otro motivo, el contenedor se para igualmente, sin el
+     comando, y un fallo de la parada se propaga a quien la pidió. En «una sola
+     copia», si alguna copia anterior no se puede detener, se restauran todas y
+     el despliegue falla con «No se pudo detener la versión anterior (…): sigue
+     en servicio y no se ha arrancado la nueva.»; un «Cancelar» a mitad deja el
+     despliegue como **cancelado** («Despliegue cancelado: restaurando la
+     versión anterior…»), no como fallido, y si la restauración falla el error
+     lo dice en vez de afirmar que se restauró.
      Se usa con la versión anterior (en las dos estrategias), la copia
      `--next` (también al fallar o cancelarse), la réplica nueva que falla, las
      réplicas sobrantes, los restos de intercambios y «Detener». Si la parada
@@ -525,8 +541,8 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      una parada a medias). `limpiarRestosIntercambio` los trata con parada
      limpia: un `--next` se detiene y se retira. Un `--prev` cuya copia base
      existe se decide por la etiqueta `skyway.deployment` de las dos: si la base
-     es de un despliegue que no terminó y la `--prev` es del último despliegue
-     correcto (Skyway cayó mientras validaba la versión nueva), se detiene y se
+     es de un despliegue que no terminó bien y el de la `--prev` está en
+     `success` (Skyway cayó mientras validaba la versión nueva), se detiene y se
      retira la base y la `--prev` vuelve a su nombre, porque es la versión que
      funcionaba; en otro caso se detiene y se retira la `--prev`. Un `--prev`
      sin base vuelve a su nombre. La copia que vuelve a su nombre se arranca,
@@ -550,6 +566,14 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      la aplica y remite a Ajustes del servicio → Despliegue y parada; si hay
      varias réplicas y el servicio no recibe tráfico (motivo `sin_trafico`),
      también avisa de que hay N copias en marcha a la vez de forma permanente.
+     Otros avisos (ℹ) de la estrategia: un repositorio con una biblioteca de
+     bots (`needs.bots`) que queda «sin corte» de forma automática por su ruta
+     de healthcheck o por las llamadas de otros servicios (dos copias de un bot
+     de polling reciben un 409: si no recibe webhooks, conviene «Una sola
+     copia»); un servicio con puerto interno que pasa solo a «una sola copia»
+     (una llamada escrita en el código o en un `proxy_pass` de otro servicio no
+     se detecta; en ese caso, «Sin corte»); y «sin corte» con comando al parar
+     (el de la versión anterior se ejecuta con la nueva ya en servicio).
    - Rutas que la imagen declara con `VOLUME` y que el servicio no monta: aviso
      en el registro (su contenido se reinicia en cada despliegue y el anterior
      queda en un volumen anónimo huérfano) y se anotan en `config.imageVolumes`
@@ -567,7 +591,9 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
    quedan con `interrupted = 1`. Al arrancar, cada servicio cuyo **último**
    despliegue quedó cortado recibe la alerta `deploy_interrupted` y **un**
    reintento automático (origen `reintento`; una vuelta atrás se reintenta como
-   vuelta atrás), encolado detrás de la limpieza de los restos de intercambios
+   vuelta atrás, y un despliegue del cambio de dominio o de la pestaña Correo
+   que llevaba imagen —la versión en marcha, o la que ya había construido— se
+   reintenta con esa imagen, sin compilar la cabeza de la rama), encolado detrás de la limpieza de los restos de intercambios
    del servicio (punto 4). Si el reintento también se corta, solo la alerta: un build que
    tumba Skyway reintentado siempre sería un bucle de reinicios. Las alertas
    `deploy_failed` y `deploy_interrupted` de una vuelta atrás guardan en
@@ -1654,12 +1680,19 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   credencial revocada hasta que se vuelve a desplegar, al volver a conectar un
   servicio que ya tiene una credencial de Skyway en ese modo (la pestaña lo
   sabe con los nombres de la vista previa, `credentialNames`) la casilla
-  «Volver a desplegar ahora» aparece **marcada** y el aviso lo explica («…
+  «Volver a desplegar ahora» aparece **marcada** (salvo si el servicio está
+  detenido desde el panel: desplegar lo pondría en marcha, así que queda
+  desmarcada y el aviso explica que, para arrancarlo, hay que desplegarlo y no
+  usar «Iniciar», que arrancaría el contenedor con la credencial revocada;
+  «Conectar» espera a la vista previa y, si falla, se avisa de la revocación en
+  general) y el aviso lo explica («…
   Sin volver a desplegar, el servicio no podrá enviar correo hasta el próximo
   despliegue», y en SMTP, que cada intento con la contraseña revocada cuenta
   para el bloqueo automático de IPs del servidor de correo), en ámbar si se
-  desmarca. Si se conecta sin desplegar y se ha revocado una credencial, el
-  resultado lo avisa y ofrece «Desplegar ahora». La API no cambia: en
+  desmarca. Volver a desplegar desde aquí usa la imagen en marcha, sin compilar
+  la cabeza de la rama (§7.12). Si se conecta sin desplegar y se ha revocado
+  una credencial, el resultado lo avisa y ofrece «Desplegar ahora» (un
+  despliegue normal, como «Desplegar» en el servicio). La API no cambia: en
   `POST …/mail/connect`, `redeploy` sigue siendo `false` si no se envía.
   **Bots y workers**: para un servicio que solo envía se recomienda el modo
   **API**: la clave `mw_…` solo envía desde su buzón, con los límites del plan y
@@ -1920,7 +1953,10 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   (webhook genérico); o por sus dependencias (`needs.bots`, §5.5: `telegraf`,
   `grammy`, `node-telegram-bot-api`, `python-telegram-bot`, `aiogram`,
   `discord.js`, `discord.py`, `discordgo`, `@slack/bolt`, `slack-bolt`, las SDK
-  de Twilio y de Stripe…; en npm, solo las de producción)— sale en `webhooks`
+  de Twilio y de Stripe…; en npm, solo las de producción; en Python, los
+  nombres se comparan normalizados según PEP 503 y se leen también las
+  dependencias de Poetry de `[tool.poetry.dependencies]` y del grupo `main`,
+  no las de desarrollo)— sale en `webhooks`
   del plan y de la vista si algún nombre que **redirige** al pasar le llega:
   uno de los suyos, o uno del cambio que aparece en su entorno resuelto (un bot
   sin dominio con `WEBHOOK_URL=${{api.PUBLIC_URL}}/tg` recibe en el nombre de
@@ -1932,7 +1968,14 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   volver a registrarlo con la URL nueva después de pasar o **«Servir también»**
   el nombre anterior (modo `servir`: se sigue sirviendo, sin redirigir). Un bot
   de polling sin dominio ni URL hacia un nombre del proyecto no sale: no recibe
-  webhooks. «Servir también» está disponible en la vista previa (vuelve a pedir
+  webhooks. Tampoco los **webhooks de salida** (los que el servicio llama, no
+  los que recibe): ni las variables `SLACK_…WEBHOOK(_URL)` o
+  `DISCORD_…WEBHOOK(_URL)`, ni las de cualquier nombre cuyo valor resuelto
+  apunta a `hooks.slack.com`, `discord(app).com/api/webhooks`,
+  `*.webhook.office.com`, `outlook.office.com/webhook` o `chat.googleapis.com`.
+  La detección por dependencias (`needs.bots`) se rellena al desplegar: un
+  servicio desplegado con una versión anterior de Skyway solo avisa por sus
+  variables hasta su siguiente despliegue. «Servir también» está disponible en la vista previa (vuelve a pedir
   el plan con esos nombres en `servir`), con el cambio preparado (`preparando` o
   `lista`, en los dos sentidos) y **también después de pasar** (`pasada`, solo
   de redirigir a servir; la vista solo enseña entonces los nombres que siguen
@@ -1940,9 +1983,13 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   los dominios del servicio, se borra su redirección, se prepublica (con el DNS
   dado por bueno: ya apuntaba aquí) para que nadie lo deje sin servir mientras
   despliega y sube `config_rev`; después el servicio se despliega con la imagen
-  en marcha. Se rechaza con 409 `host_principal` si el nombre anterior pasaría a
-  ser el principal del servicio (cambiaría su `PUBLIC_URL`). Auditoría
-  `domain_migration_host_mode` («<nombre>: redirigir → servir»).
+  en marcha. Los nombres de un mismo servicio van juntos (la web manda una
+  petición por servicio): una transacción y un solo despliegue. Antes de pasar
+  se admite servir también el nombre que seguirá siendo el principal del
+  servicio, con el mismo aviso que la vista previa; después de pasar se
+  rechaza con 409 `host_principal` (cambiaría su `PUBLIC_URL`, que ya es la
+  nueva). Auditoría `domain_migration_host_mode` («<nombre>: redirigir →
+  servir»).
 - **Servicios que usan la dirección de otro**: un servicio que no cambia de
   nombre pero referencia uno que sí (`${{api.PUBLIC_URL}}`,
   `${{web.PUBLIC_DOMAIN}}`…) se vuelve a desplegar al pasar y al volver, con
@@ -1951,8 +1998,13 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   con los dominios de después (`resolveServiceEnv(s, { dominios })`).
 - **Usuarios de correo que Skyway no gestiona**: el usuario para entrar se
   reconoce también con un prefijo propio (`mailRoleLoose`: `TG_SMTP_LOGIN`,
-  `BOT_SMTP_USER`…) y dentro de una URL SMTP (el usuario, decodificado:
-  `smtp://bot%40dominio.es:…@…`). En `pasada` y `dando_de_baja`, la vista enseña
+  `BOT_SMTP_USER`…), dentro de una URL SMTP (el usuario, decodificado:
+  `smtp://bot%40dominio.es:…@…`) y en las variables a las que apunta un usuario
+  SMTP (`SMTP_USER=${{shared.MAIL_LOGIN_COMUN}}`, `${{mailer.SMTP_USER}}`,
+  siguiendo hasta 5 referencias encadenadas): son usuario, no cambian al pasar
+  (salen como nota «usuario para entrar») y se ponen al día al actualizar el
+  buzón o en la baja. Los usos se buscan en el **entorno resuelto** de cada
+  servicio, con el nombre de la variable del servicio. En `pasada` y `dando_de_baja`, la vista enseña
   en `usuariosSinGestionar` (por buzón del cambio: `mailboxId`, `email`,
   `login`, `pendiente` y `usos`) las variables del proyecto, de servicio o
   compartidas, cuyo usuario es la dirección anterior o la nueva del buzón y que
@@ -1965,19 +2017,30 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   cambia» con **«Actualizar y desplegar»** por buzón, que es «Actualizar ahora»
   (`…/login-update`): además de las credenciales `skyway:*`, reescribe esas
   variables con el usuario nuevo (en una URL, codificado; lo que escribió
-  Skyway conserva su origen) y despliega sus servicios con la imagen en marcha;
-  una variable compartida se reescribe en el proyecto y se despliegan los
-  servicios que la heredan sin definirla. La confirmación lista los servicios y
-  las variables, y la de la baja también. La baja y cancelar tras un «Volver»
+  Skyway conserva su origen) y despliega con la imagen en marcha los servicios
+  cuyo entorno resuelto cambia (se guarda el de todos los que no son bases de
+  datos antes de reescribir y se compara después): así entran también los que
+  toman el usuario de otra variable y, con una compartida, los que la heredan
+  sin definirla (Skyway no puede saber si la usan). Un servicio que nunca se ha
+  desplegado bien solo queda con cambios sin desplegar (`bumpConfigRev`). Las
+  confirmaciones (la baja, «Actualizar ahora» y «Actualizar y desplegar») solo
+  nombran los usos que se reescriben; los que ya llevan la dirección nueva
+  salen aparte («Ya usan … y entrarán en cuanto se actualice el buzón, sin
+  volver a desplegar»). La baja y cancelar tras un «Volver»
   hacen lo mismo con todos los buzones con credenciales `skyway:*` **o** con
   usos sin gestionar.
 - **Contraseñas de aplicación creadas a mano**: con un Mailway que lo informa,
   cada buzón del plan y de la vista trae `appsManuales` (las contraseñas de
   aplicación activas que no son `skyway:*`; un Mailway anterior no lo manda y
-  no se avisa). Si un buzón las tiene y ningún servicio del proyecto lo usa, la
-  vista lo enseña en `appsManuales` (`{mailboxId, email, apps}`) como aviso
-  informativo: las aplicaciones de fuera de Skyway que las usan tendrán que
-  entrar con la dirección nueva tras actualizar el buzón o tras la baja.
+  no se avisa; Mailway ya descarta las revocadas y las invalidadas). Si un
+  buzón pendiente las tiene, la vista lo enseña en `appsManuales`
+  (`{mailboxId, email, apps, usadoEnProyecto}`) como aviso informativo: las
+  aplicaciones de fuera de Skyway que las usan tendrán que entrar con la
+  dirección nueva tras actualizar el buzón o tras la baja. Sale también si
+  algún servicio del proyecto usa el buzón (`usadoEnProyecto`): Skyway pone al
+  día ese servicio, pero no puede saber si la misma contraseña la usa además
+  algo de fuera. Las confirmaciones de «Actualizar ahora» y «Actualizar y
+  desplegar» de ese buzón lo repiten.
 - **Baja y «Actualizar ahora» sin servicios que dejen de enviar**: el orden se
   mantiene (usuario en Mailway → variables → despliegue con la imagen en
   marcha). Desplegar antes con el usuario nuevo solo sería seguro con un único
@@ -1998,7 +2061,14 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   marcha sigue con <de>. Pulsa «Reintentar este servicio».». La baja no sigue
   (Mailway no da de baja el dominio anterior) y su error lo repite. La alerta
   se cierra sola con el siguiente despliegue correcto del servicio. Lo usan la
-  baja (que espera), «Actualizar ahora» y cancelar (en segundo plano).
+  baja (que espera), «Actualizar ahora» y cancelar (en segundo plano). Cada
+  despliegue guarda con el servicio del cambio lo que necesita su seguimiento
+  (`correo: {de, a, imageTag, reintento}`): si Skyway se reinicia a mitad,
+  `marcarCambiosInterrumpidos` lo retoma al arrancar. Si hay un reintento
+  automático del arranque en curso, cuenta como el reintento (si falla, la
+  alerta salta sin volver a desplegar); si no queda ningún despliegue en
+  curso, la alerta `mail_login_deploy_failed` salta al momento, con el texto
+  «no ha terminado bien tras un reinicio de Skyway».
 - **Servicios**: el estado de cada despliegue del cambio es el real
   (`estadoServicio`): un despliegue posterior correcto del servicio (manual, o
   el reintento automático del arranque) resuelve uno fallido. Cancelar,
@@ -2352,10 +2422,10 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas, también `dns?` |
 | POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas y en el orden del dominio principal, §5.5), aquí y en el PATCH; se admiten acentos y «ñ» (se guardan en ASCII, *punycode*: `panadería.es` → `xn--panadera-i2a.es`, como en Mailway) y la URL pegada (se quitan esquema, ruta, puerto y punto final); cada dominio registrable o con www se guarda con su pareja con o sin www salvo los de `dominiosSinPareja` (opcional, máx. 200; la pareja que no se puede asignar se omite sin error, §5.5), y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, los de las rutas de Traefik de sus contenedores, los que fueron suyos y el administrador no ha liberado, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`). Añade `pendingChanges`, `autoDeploy` (servicios git con auto-deploy: `{pollSeconds, checkedAt, okAt, error, failingSince, lastSeenSha}`), `webhook` (`{url, coveredByApp}`: URL del webhook manual con el dominio del panel y si ya lo cubre la GitHub App) y `deploy` (`ServiceDeployInfo`: `{strategy: 'overlap'\|'recreate', reason: 'elegida'\|'base_de_datos'\|'estado'\|'sin_trafico'\|'con_trafico', automatic, calledByOthers, stopGraceSeconds, stopGraceSource: 'servicio'\|'railway'\|'defecto'}`: estrategia efectiva y su motivo, si otro servicio lo llama por la red interna y la gracia de parada efectiva con su origen, calculada con el entorno resuelto; §2) |
-| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); cada dominio **nuevo** registrable o con www llega con su pareja con o sin www salvo que esté en `config.dominiosSinPareja` (§5.5; la lista de renuncias se guarda limpia y, enviada sin `domains`, solo se filtra contra los actuales); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); la lista se guarda en el orden del dominio principal (§5.5), y un cambio solo de orden no cuenta como dominio nuevo (ni pide volver a desplegar si, ordenada, la lista queda igual); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había. `config` admite además `deployStrategy` (`'auto'`\|`'overlap'`\|`'recreate'`; `'auto'` lo deja sin fijar; se ignora en bases de datos), `stopGraceSeconds` (entero 0–600 o `null`, que lo deja sin fijar; en una base de datos, de 10 a 600: un valor menor da 400) y `stopCommand` (texto de hasta 1000 caracteres o `null`; vacío o `null` lo quita; se ignora en bases de datos; guardar uno nuevo exige el módulo «Terminal de comandos» y un workspace no suspendido, 403 si no, salvo a la administración, y queda en la auditoría como `service_stop_command` con los primeros 120 caracteres): ninguno pide volver a desplegar (la estrategia vale desde el siguiente despliegue y las paradas leen siempre la configuración actual). Al guardar `domains` o `port`, los demás servicios del proyecto cuyo entorno resuelto cambia (los que lo referencian con `${{<servicio>.PUBLIC_URL}}`, `INTERNAL_URL`…) quedan con cambios sin desplegar (`bumpConfigRev`) |
+| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); cada dominio **nuevo** registrable o con www llega con su pareja con o sin www salvo que esté en `config.dominiosSinPareja` (§5.5; la lista de renuncias se guarda limpia y, enviada sin `domains`, solo se filtra contra los actuales); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); la lista se guarda en el orden del dominio principal (§5.5), y un cambio solo de orden no cuenta como dominio nuevo (ni pide volver a desplegar si, ordenada, la lista queda igual); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había. `config` admite además `deployStrategy` (`'auto'`\|`'overlap'`\|`'recreate'`; `'auto'` lo deja sin fijar; se ignora en bases de datos), `stopGraceSeconds` (entero 0–600, también como cifras en texto; `null` o `""` lo dejan sin fijar; otro tipo da 400; en una base de datos, de 10 a 600: un valor menor da 400) y `stopCommand` (texto de hasta 1000 caracteres o `null`; vacío o `null` lo quita; se ignora en bases de datos; guardar uno nuevo exige el módulo «Terminal de comandos» y un workspace no suspendido, 403 si no, salvo a la administración, y queda en la auditoría como `service_stop_command` con los primeros 120 caracteres): ninguno pide volver a desplegar (la estrategia vale desde el siguiente despliegue y las paradas leen siempre la configuración actual). Al guardar `domains` o `port`, los demás servicios del proyecto cuyo entorno resuelto cambia (los que lo referencian con `${{<servicio>.PUBLIC_URL}}`, `INTERNAL_URL`…) quedan con cambios sin desplegar (`bumpConfigRev`) |
 | DELETE | `/services/:id?confirm=<nombre>` | +access | elimina el servicio con **todos sus datos** (§3.1), salvo los volúmenes que comparta con otro servicio del proyecto; `confirm` (nombre o slug), 503 y los dos 409 como en proyectos → `{ok, warnings, removed: {volumes[], images, backups}}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen; `{commit: <SHA de 40>}` reconstruye ese commit, solo git) |
-| POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor. Si el servicio no tiene un despliegue en cola o en marcha, antes retiran (o devuelven a su nombre) los restos de intercambios `--next`/`--prev` con parada limpia (un error ahí se registra y no impide la acción). `stop` detiene todas las réplicas en paralelo con parada limpia (comando al parar, SIGTERM y la gracia, después SIGKILL; §2), archiva su registro después de pararlas y responde además `forced: string[]`, las copias que no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL (el panel lo avisa). `restart` ejecuta el comando al parar si lo hay y reinicia con la gracia del servicio. Las dos responden cuando termina la parada: con un comando al parar y una gracia largos puede tardar hasta el doble de la gracia. Si un proxy corta antes la conexión (el de Cloudflare espera 100 s), la parada sigue en el servidor hasta el final; el estado se ve al recargar |
+| POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor. Si el servicio no tiene un despliegue en cola o en marcha, antes retiran (o devuelven a su nombre) los restos de intercambios `--next`/`--prev` con parada limpia (un error ahí se registra y no impide la acción). `stop` detiene todas las réplicas en paralelo con parada limpia (comando al parar, SIGTERM y la gracia, después SIGKILL; §2), archiva su registro después de pararlas y responde además `forced: string[]`, las copias que no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL (el panel lo avisa). `restart` detiene a la vez todas las copias con la misma parada limpia y vuelve a arrancar cada contenedor (el mismo: conserva su identidad, §2), y también responde `forced`. Las dos responden cuando termina la parada: con un comando al parar y una gracia largos puede tardar hasta el doble de la gracia. Si un proxy corta antes la conexión (el de Cloudflare espera 100 s), la parada sigue en el servidor hasta el final; el estado se ve al recargar |
 | GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, `mail`, `manifest`, §5.5) |
 | GET | `/services/:id/integrations` | +access | plan de integraciones del servicio sin efectos (§5.7) → `{plan, pending}`; `plan` null si no es de repositorio. `plan.fingerprint` es la huella que exige aprobar; cada recurso trae `canApprove` y `confirmation` |
 | POST | `/services/:id/integrations/apply` | +access | `{skip?, expect?, confirmMailboxAccess?, redeploy?}` → `{result: {applied, pending, kept, blocked, created, errors}, plan, needsRedeploy, deploymentId}`. Lo inofensivo lo aplica cualquiera con acceso; las bases también; el correo solo **manage** (si no, `pending`). Lo privilegiado exige `expect` = `plan.fingerprint` del plan revisado (sin él, `pending`; si no coincide, **409** `{error, plan}` sin aplicar nada); reutilizar en SMTP un buzón existente exige además `confirmMailboxAccess`. Nunca pisa variables puestas a mano. 409 si ya se está aplicando. 10/min. Audita `service_integrations_applied` (nombres, nunca valores) |
@@ -2532,8 +2602,8 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | DELETE | `/projects/:id/mail/mailboxes/:mailboxId` | manage | revoca antes las claves de API `Skyway · …` con ese buzón como remitente y elimina el buzón → `{ok, revokedApiKeys}`; si queda otra clave activa, 409 de Mailway |
 | DELETE | `/projects/:id/mail/app-passwords/:appId` | manage | revoca una contraseña de aplicación del cliente (404 si no es suya). Audita `mailway_app_password_revoked` |
 | DELETE | `/projects/:id/mail/api-keys/:keyId` | manage | revoca una clave de API del cliente (404 si no es suya). Audita `mailway_api_key_revoked` |
-| GET | `/projects/:id/mail/connect/preview` | auth + access | `?serviceId&mode` → `{mode, suggestedMode, keys, kept, secretPlaced, conflicts, credentialNames, sinDominio}`: con qué nombres recibiría el servicio el correo (los de su `skyway.json` o su `.env.example` por alias; los de siempre para lo que no nombra), cuáles se conservarían por tener un valor puesto a mano y, en `conflicts`, las de conexión (servidor, puerto, URL de la API) puestas a mano con otro valor, que harían responder 409 a la conexión. `credentialNames`: los nombres con los que Skyway reconoce la credencial de ese servicio en ese modo (en SMTP, `skyway:<slug>`; en API, `Skyway · <slug>`; en un proyecto de una cuenta, con `<proyecto>/<slug>`; con un vínculo anterior a compartir el cliente, también el nombre de antes): una credencial vigente con uno de ellos se revocará al conectar, y la pestaña marca entonces «Volver a desplegar ahora». `sinDominio`: el servicio no tiene dominios ni ruta de healthcheck (un bot o un worker), y la pestaña recomienda el modo API. Sin crear nada; 404 si el servicio es de otro proyecto |
-| POST | `/projects/:id/mail/connect` | manage | `{serviceId, mailboxId, mode:'smtp'\|'api', redeploy?}` → `{ok, keys, kept, needsRedeploy, deploymentId, revoked}`. El servicio debe ser del proyecto y no de base de datos. Escribe con los nombres de la vista previa y **nunca pisa una variable puesta a mano** (van en `kept`); si la credencial no cabe en ninguna variable, o si el servidor, el puerto, el usuario o la URL de la API están puestos a mano con otro valor (conexión a medias), 409 sin crearla. Revoca antes la credencial del mismo tipo que Skyway creó para el servicio (`skyway:<slug>` o `Skyway · <slug>`; en un proyecto de una cuenta, cuyo cliente comparten sus proyectos, `skyway:<proyecto>/<slug>` o `Skyway · <proyecto>/<slug>`, y también la del nombre de antes si el vínculo es anterior a compartirlo; ≤ 60 caracteres, con un sufijo de los identificadores si hay que recortar). Nunca devuelve ni audita los valores. Con `redeploy`, despliegue con disparador `mailway` (sin él, `false` por defecto en la API, el servicio sigue con la credencial anterior, ya revocada, hasta el siguiente despliegue: `needsRedeploy` y `revoked` lo indican). En modo API, `MAILWAY_API_URL` es la dirección base de Mailway: el servicio envía con `POST {MAILWAY_API_URL}/v1/send`, cabecera `Authorization: Bearer {MAILWAY_API_KEY}` y JSON `{to, subject, text\|html}` (`Idempotency-Key` opcional para reintentar sin duplicar; referencia en `docs/API.md` de Mailway). Va con el turno de las credenciales del servicio (`withMailCredentialLock`): si la renovación automática está cambiando la suya, espera a que termine y lee el resumen después. Por SMTP, borra lo anotado de una renovación anterior y resuelve su alerta |
+| GET | `/projects/:id/mail/connect/preview` | auth + access | `?serviceId&mode` → `{mode, suggestedMode, keys, kept, secretPlaced, conflicts, credentialNames, sinDominio, roleNames}`: con qué nombres recibiría el servicio el correo (los de su `skyway.json` o su `.env.example` por alias; los de siempre para lo que no nombra), cuáles se conservarían por tener un valor puesto a mano y, en `conflicts`, las de conexión (servidor, puerto, URL de la API) puestas a mano con otro valor, que harían responder 409 a la conexión. `credentialNames`: los nombres con los que Skyway reconoce la credencial de ese servicio en ese modo (en SMTP, `skyway:<slug>`; en API, `Skyway · <slug>`; en un proyecto de una cuenta, con `<proyecto>/<slug>`; con un vínculo anterior a compartir el cliente, también el nombre de antes): una credencial vigente con uno de ellos se revocará al conectar, y la pestaña marca entonces «Volver a desplegar ahora». `sinDominio`: el servicio no tiene dominios ni ruta de healthcheck (casi siempre un bot o un worker), y la pestaña recomienda el modo API. `roleNames`: qué variable lleva cada papel (`api_url`, `api_key`, `from`…; la primera si hay varias): la ayuda y el ejemplo del modo API usan esos nombres. Sin crear nada; 404 si el servicio es de otro proyecto |
+| POST | `/projects/:id/mail/connect` | manage | `{serviceId, mailboxId, mode:'smtp'\|'api', redeploy?}` → `{ok, keys, kept, needsRedeploy, deploymentId, revoked}`. El servicio debe ser del proyecto y no de base de datos. Escribe con los nombres de la vista previa y **nunca pisa una variable puesta a mano** (van en `kept`); si la credencial no cabe en ninguna variable, o si el servidor, el puerto, el usuario o la URL de la API están puestos a mano con otro valor (conexión a medias), 409 sin crearla. Revoca antes la credencial del mismo tipo que Skyway creó para el servicio (`skyway:<slug>` o `Skyway · <slug>`; en un proyecto de una cuenta, cuyo cliente comparten sus proyectos, `skyway:<proyecto>/<slug>` o `Skyway · <proyecto>/<slug>`, y también la del nombre de antes si el vínculo es anterior a compartirlo; ≤ 60 caracteres, con un sufijo de los identificadores si hay que recortar). Nunca devuelve ni audita los valores. Con `redeploy`, despliegue con disparador `mailway`: de la imagen en marcha, sin compilar, si el servicio es de repositorio, tiene un despliegue correcto cuya imagen sigue en el disco, no tenía cambios sin desplegar antes de conectar y no hay otro despliegue en cola o en curso; si no, un despliegue normal (auditado «con la versión en marcha» cuando la fija; un reinicio de Skyway a mitad lo reintenta con la misma imagen) (sin él, `false` por defecto en la API, el servicio sigue con la credencial anterior, ya revocada, hasta el siguiente despliegue: `needsRedeploy` y `revoked` lo indican). En modo API, `MAILWAY_API_URL` es la dirección base de Mailway: el servicio envía con `POST {MAILWAY_API_URL}/v1/send`, cabecera `Authorization: Bearer {MAILWAY_API_KEY}` y JSON `{to, subject, text\|html}` (`Idempotency-Key` opcional para reintentar sin duplicar; referencia en `docs/API.md` de Mailway). Va con el turno de las credenciales del servicio (`withMailCredentialLock`): si la renovación automática está cambiando la suya, espera a que termine y lee el resumen después. Por SMTP, borra lo anotado de una renovación anterior y resuelve su alerta |
 
 Todas las rutas con `:domainId`/`:mailboxId`/`:appId`/`:keyId` comprueban antes,
 con el resumen del cliente vinculado, que el recurso es de ese cliente: si no,
@@ -2683,7 +2753,7 @@ desplegar: 409 `migration_services_pending`.
 | POST | `/plan` | `{fromDomain, toDomain, soloWeb?, hosts?, excluidas?}` → `PlanSkyway {hosts[{serviceId, from, to, modo, serviceName, error}], dnsWeb, correoDisponible: si/no_vinculado/sin_dominio/mailway_antiguo, correo, variables{cambios, notas, wordpress, huella}, servicios[{serviceId, nombre, reinicio, motivos}], webhooks, avisos, bloqueos, expect}`. `motivos` ⊂ `dominios`, `variables`, `compartidas`, `remitente`, `referencias`; `reinicio` = se despliega con una sola copia. `webhooks` = `WebhookEnRiesgo[]` (`{serviceId, serviceName, proveedores, evidencias, hosts[{serviceId, from, to}]}`; proveedores `telegram`, `discord`, `slack`, `whatsapp`, `twilio`, `stripe` o `webhook`): servicios con webhooks en nombres que redirigen; «Servir también» vuelve a pedir el plan con esos nombres en `hosts` con `modo: 'servir'`. Con un Mailway que lo informa, cada buzón de `correo` trae `appsManuales`. Sin efectos. 30/min |
 | POST | `/projects/:id/domain-migrations` | `{fromDomain, toDomain, soloWeb?, hosts, excluidas, expect}` → 201 `MigracionSkyway` (+ `dns` del DNS automático), o 200 si ya estaba abierto con el mismo origen y destino. 409 `plan_changed` si `expect` no es la huella del plan, `migration_blocked` con el primer bloqueo, `migration_exists` con otro cambio abierto (también si Mailway devuelve uno que no abrió este proyecto) |
 | GET | `/projects/:id/domain-migrations` | `{abierta, anteriores (últimas 5), dominios}`; `?ligera=1` sin consultar a Mailway (el aviso de la página del proyecto) |
-| GET | `/:mid` | `MigracionSkyway {estado, paso, error, hosts[{…, dns, certificado}], compuertas[dns_web, certificados, correo], servicios[{despliegue, estado, error}], redirecciones, correo (vista de Mailway en vivo, caché de 10 s), variables (antes de pasar), alPasar (con `motivos`), webhooks, usuariosSinGestionar, appsManuales, ipServidor, avisos, puede*, fechas}`. `webhooks` como en el plan (en `preparando` y `lista`; en `pasada`, solo los nombres que siguen redirigiendo). `usuariosSinGestionar` (en `pasada` y `dando_de_baja`; vacío en el resto) = `[{mailboxId, email, login, pendiente, usos[{ambito: 'service'\|'project', serviceId, serviceName, key, usuario, estado: 'cambiara'\|'no_entra'}]}]`. `appsManuales` = `[{mailboxId, email, apps}]`: buzones con contraseñas de aplicación creadas a mano y sin usos en el proyecto (§6.1). El error de un servicio cuyo despliegue de correo ha fallado dos veces lo explica (alerta `mail_login_deploy_failed`) |
+| GET | `/:mid` | `MigracionSkyway {estado, paso, error, hosts[{…, dns, certificado}], compuertas[dns_web, certificados, correo], servicios[{despliegue, estado, error}], redirecciones, correo (vista de Mailway en vivo, caché de 10 s), variables (antes de pasar), alPasar (con `motivos`), webhooks, usuariosSinGestionar, appsManuales, ipServidor, avisos, puede*, fechas}`. `webhooks` como en el plan (en `preparando` y `lista`; en `pasada`, solo los nombres que siguen redirigiendo). `usuariosSinGestionar` (en `pasada` y `dando_de_baja`; vacío en el resto) = `[{mailboxId, email, login, pendiente, usos[{ambito: 'service'\|'project', serviceId, serviceName, key, usuario, estado: 'cambiara'\|'no_entra'}]}]`. `appsManuales` = `[{mailboxId, email, apps, usadoEnProyecto}]`: buzones pendientes con contraseñas de aplicación creadas a mano; `usadoEnProyecto` si además lo usa algún servicio del proyecto (§6.1). El error de un servicio cuyo despliegue de correo ha fallado dos veces lo explica (alerta `mail_login_deploy_failed`) |
 | POST | `/:mid/check` | vuelve a medir (DNS, certificados y correo) y deja `lista` o `preparando`; con un alta en Mailway sin confirmar, la busca y la vincula. 60/min |
 | POST | `/:mid/mx` | cambia el MX del dominio nuevo a este servidor en su zona de Cloudflare (Mailway `POST /:id/mx`, con `soloCliente` fuera de la administración). Solo en `preparando`/`lista`, con la pre-recepción hecha (409 `migration_state`) y la zona en Cloudflare (400 `cloudflare_unavailable`). 10/min |
 | POST | `/:mid/switch` | `{expect}` (huella de `variables`) → 202. 409 `migration_not_ready`, `plan_changed` |
@@ -2692,7 +2762,7 @@ desplegar: 409 `migration_services_pending`.
 | POST | `/:mid/retire` | `{confirm}` → 202 (la baja sigue en segundo plano). 400 `confirm_mismatch`; 409 `migration_old_mx_here` antes de tocar las aplicaciones si el MX anterior apunta al servidor de correo; 409 `migration_shared_mail` si otro proyecto de la cuenta envía con el dominio anterior (§6.1) |
 | POST | `/:mid/finish` | `{confirm}` → 200 (solo la web) |
 | POST | `/:mid/redirects/remove` | `{confirm}` → 200 (en `terminada`) |
-| POST | `/:mid/hosts/mode` | `{serviceId (1–100), from, modo: 'servir'\|'redirigir'}` → la vista, **202** si lanzó un despliegue y 200 si no. «Servir también» de un nombre del cambio: en `preparando`/`lista` cambia su modo en los dos sentidos; en `pasada`, solo de `redirigir` a `servir` (añade el nombre anterior al final de los dominios del servicio, borra su redirección, lo prepublica, sube `config_rev` y despliega el servicio con la imagen en marcha). 409 `migration_state` (estado que no lo admite o `redirigir` tras pasar), 409 `host_principal` (el nombre anterior pasaría a ser el principal del servicio), 404 `not_found` (el nombre no está en el cambio). Con el cerrojo del proyecto. Audita `domain_migration_host_mode`. 20/min |
+| POST | `/:mid/hosts/mode` | `{serviceId (1–100), from, modo: 'servir'\|'redirigir'}` → la vista, **202** si lanzó un despliegue y 200 si no. `from` es un nombre o una lista de 1 a 50 nombres del mismo servicio (una transacción y un solo despliegue). «Servir también» de nombres del cambio: en `preparando`/`lista` cambia su modo en los dos sentidos (se admite servir el nombre que seguirá siendo el principal, con aviso); en `pasada`, solo de `redirigir` a `servir` (añade los nombres anteriores al final de los dominios del servicio, borra sus redirecciones, los prepublica, sube `config_rev` y despliega el servicio con la imagen en marcha). 409 `migration_state` (estado que no lo admite, un nombre que no cambia o `redirigir` tras pasar), 409 `host_principal` (solo tras pasar: el nombre anterior pasaría a ser el principal del servicio), 409 `migration_services_pending` (el servicio se está desplegando), 409 `domain_in_use` (el nombre lo usa otro proyecto), 404 `not_found` (el nombre no está en el cambio o el servicio no existe). Con el cerrojo del proyecto. Audita `domain_migration_host_mode`. 20/min |
 | POST | `/:mid/services/:sid/retry` | → 202 (servicio con el despliegue fallido; con la imagen en marcha si el fallido la reutilizaba; también en un cambio cancelado si no hay otro abierto) |
 | POST | `/:mid/mailboxes/:mbid/login-update` | → 200 («Actualizar ahora» y «Actualizar y desplegar»; con aplicaciones del proyecto —credenciales `skyway:*` o usos sin gestionar del buzón, también en variables compartidas—, también sus variables y un despliegue con la imagen en marcha, con un reintento automático si falla y la alerta `mail_login_deploy_failed` si vuelve a fallar). 409 `migration_shared_mail` como la baja |
 | GET | `/:mid/zonefile` | `text/plain`: fichero de zona de Mailway del dominio nuevo (nivel `recomendados`: incluye el TXT de propiedad) más los registros A de la web, comentados; si el dominio nuevo recibe en otro proveedor, su MX también va comentado; solo la web, solo los A |

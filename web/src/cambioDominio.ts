@@ -191,8 +191,8 @@ export interface MigracionSkyway {
   webhooks: WebhookEnRiesgo[];
   /** Buzones con los que entran variables que Skyway no gestiona (en transición). */
   usuariosSinGestionar: UsuarioSinGestionar[];
-  /** Buzones pendientes con contraseñas creadas a mano que ningún servicio del proyecto usa. */
-  appsManuales: { mailboxId: string; email: string; apps: string[] }[];
+  /** Buzones pendientes con contraseñas creadas a mano (`usadoEnProyecto`: además lo usa algún servicio del proyecto). */
+  appsManuales: { mailboxId: string; email: string; apps: string[]; usadoEnProyecto: boolean }[];
   /** IP a la que tienen que apuntar los registros A de los nombres nuevos. */
   ipServidor: string | null;
   avisos: string[];

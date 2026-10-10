@@ -60,6 +60,24 @@ function mensajeActualizarYDesplegar(u: UsuarioSinGestionar): string {
 }
 
 /**
+ * Aviso de un buzón con contraseñas de aplicación creadas a mano. Si algún
+ * servicio del proyecto lo usa, Skyway lo pone al día, pero no puede saber si
+ * la misma contraseña la usa además algo de fuera.
+ */
+function textoAppsManuales(a: MigracionSkyway['appsManuales'][number], fromDomain: string): string {
+  const apps = a.apps.join(', ');
+  return a.usadoEnProyecto
+    ? `${a.email} tiene además contraseñas de aplicación creadas a mano (${apps}): Skyway pone al día los servicios de este proyecto que lo usan, pero si alguna aplicación de fuera de Skyway usa esas contraseñas, tendrá que entrar con ${a.email} tras actualizarlo o dar de baja ${fromDomain}.`
+    : `${a.email} tiene contraseñas de aplicación creadas a mano (${apps}) y no lo usa ningún servicio de este proyecto: las aplicaciones que las usan tendrán que entrar con ${a.email} tras actualizarlo o dar de baja ${fromDomain}.`;
+}
+
+/** La misma advertencia en la confirmación de actualizar un buzón. */
+function notaAppsManuales(a: MigracionSkyway['appsManuales'][number] | undefined): string | null {
+  if (!a) return null;
+  return `Contraseñas de aplicación creadas a mano: ${a.apps.join(', ')}. Las aplicaciones de fuera de Skyway que las usen tendrán que entrar con ${a.email}.`;
+}
+
+/**
  * Paso 3, «En transición»: la web y el correo ya están en el dominio nuevo y
  * el anterior redirige (y sigue recibiendo correo). Desde aquí se actualizan
  * las personas, se vuelve atrás o se da de baja el dominio anterior.
@@ -139,6 +157,7 @@ export default function FaseTransicion({
   const mensajeMx = `${m.fromDomain} dejará de recibir correo en esta plataforma. Antes, su MX tiene que apuntar a otro sitio o ser un MX nulo («0 .»).`;
   const nombreServicio = (id: string) => m.hosts.find((h) => h.serviceId === id)?.serviceName ?? 'el servicio';
   const sinGestionarDe = (mailboxId: string) => m.usuariosSinGestionar.filter((u) => u.mailboxId === mailboxId);
+  const manualesDe = (mailboxId: string) => notaAppsManuales(m.appsManuales.find((a) => a.mailboxId === mailboxId));
 
   return (
     <div className="flex flex-col gap-5">
@@ -247,10 +266,7 @@ export default function FaseTransicion({
 
       <Avisos
         tono="info"
-        avisos={m.appsManuales.map(
-          (a) =>
-            `${a.email} tiene contraseñas de aplicación creadas a mano (${a.apps.join(', ')}) y no lo usa ningún servicio de este proyecto: las aplicaciones que las usan tendrán que entrar con ${a.email} tras actualizarlo o dar de baja ${m.fromDomain}.`,
-        )}
+        avisos={m.appsManuales.map((a) => textoAppsManuales(a, m.fromDomain))}
       />
 
       <Avisos tono="info" avisos={m.avisos} />
@@ -387,6 +403,7 @@ export default function FaseTransicion({
             También se volverán a desplegar, con {persona.email}: {despliegues(sinGestionarDe(persona.id))}.
           </p>
         )}
+        {persona && manualesDe(persona.id) && <p className="mt-2 text-sm text-sub">{manualesDe(persona.id)}</p>}
       </ConfirmModal>
 
       <ConfirmModal
@@ -398,7 +415,11 @@ export default function FaseTransicion({
         message={sinGestionar ? mensajeActualizarYDesplegar(sinGestionar) : ''}
         confirmLabel="Actualizar y desplegar"
         confirmVariant="primary"
-      />
+      >
+        {sinGestionar?.pendiente && manualesDe(sinGestionar.mailboxId) && (
+          <p className="mt-2 text-sm text-sub">{manualesDe(sinGestionar.mailboxId)}</p>
+        )}
+      </ConfirmModal>
 
       <ConfirmModal
         open={!!webhook}

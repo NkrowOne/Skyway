@@ -25,7 +25,14 @@ import {
   Unlink,
 } from 'lucide-react';
 import { api } from '../api';
-import { entregaMientrasMxFuera, nombreDns, spfSugeridosPorNombre } from '../correo';
+import {
+  actualizaUsuarioAlConectar,
+  desplegarPorDefecto,
+  entregaMientrasMxFuera,
+  nombreDns,
+  spfSugeridosPorNombre,
+  tieneCredencialVigente,
+} from '../correo';
 import {
   Deployment,
   MailApiKey,
@@ -2403,53 +2410,6 @@ function ejemploApi(nombres: NombresApi): string {
     '  -H "Content-Type: application/json" \\',
     `  -d '{"to": "cliente@example.com", "subject": "Pedido confirmado", "text": "Tu pedido está en camino."}'`,
   ].join('\n');
-}
-
-/**
- * ¿Tiene el servicio una credencial de Skyway vigente en este modo? Es la que
- * el servidor revoca al conectar, y el contenedor en marcha la sigue usando
- * hasta el próximo despliegue. `credNames` son los nombres que da la vista
- * previa (en un proyecto de una cuenta llevan también el proyecto): repetir
- * aquí la regla del servidor ya falló una vez. Las listas son las vigentes.
- */
-function tieneCredencialVigente(
-  mode: 'smtp' | 'api',
-  credNames: readonly string[],
-  appPasswords: readonly Pick<MailAppPassword, 'name'>[],
-  apiKeys: readonly Pick<MailApiKey, 'name'>[],
-): boolean {
-  return (mode === 'smtp' ? appPasswords : apiKeys).some((c) => credNames.includes(c.name));
-}
-
-/**
- * «Volver a desplegar ahora» mientras nadie lo toca: marcado si conectar
- * revoca la credencial que usa el contenedor en marcha. No en un servicio
- * detenido desde el panel: no hay nada en marcha que se quede sin enviar, y
- * cualquier despliegue lo pondría en marcha (quizá se detuvo por algo).
- */
-function desplegarPorDefecto(reconecta: boolean, detenido: boolean): boolean {
-  return reconecta && !detenido;
-}
-
-/**
- * Como `actualizaUsuarioAlConectar` del servidor: tras un cambio de dominio,
- * conectar por SMTP un buzón que aún entra con su usuario anterior lo
- * actualiza, salvo que lo usen otras aplicaciones de Skyway (que lo actualizan
- * en la baja). La credencial propia del servicio no cuenta como «otra»: es la
- * de `credNames`, que en un proyecto de una cuenta es
- * `skyway:<proyecto>/<servicio>`, no `skyway:<servicio>`.
- */
-function actualizaUsuarioAlConectar(
-  mode: 'smtp' | 'api',
-  mailbox: Pick<MailMailbox, 'id' | 'loginPending'> | undefined,
-  appPasswords: readonly Pick<MailAppPassword, 'mailboxId' | 'name'>[],
-  credNames: readonly string[],
-): boolean {
-  return (
-    mode === 'smtp' &&
-    !!mailbox?.loginPending &&
-    !appPasswords.some((a) => a.mailboxId === mailbox.id && a.name.startsWith('skyway:') && !credNames.includes(a.name))
-  );
 }
 
 function ConnectTab({

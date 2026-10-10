@@ -542,7 +542,12 @@ describe('usuarios SMTP que Skyway no gestiona', () => {
       ['BOT_SMTP_USER', 'tg@b.es', 'cambiara'],
       ['TG_SMTP_LOGIN', 'tg@b.es', 'cambiara'],
     ]);
-    expect(v.appsManuales).toEqual([{ mailboxId: p.buzon.externo, email: 'externo@b2.es', apps: ['n8n-a-mano'] }]);
+    // También el buzón que usa un servicio del proyecto: Skyway pone al día el
+    // servicio, pero la misma contraseña puede usarla algo de fuera.
+    expect(v.appsManuales).toEqual([
+      { mailboxId: p.buzon.avisos, email: 'avisos@b2.es', apps: ['bot-avisos-a-mano'], usadoEnProyecto: true },
+      { mailboxId: p.buzon.externo, email: 'externo@b2.es', apps: ['n8n-a-mano'], usadoEnProyecto: false },
+    ]);
   });
 
   it('«Actualizar ahora» reescribe esas variables (la URL, codificada) y despliega con la imagen en marcha', async () => {

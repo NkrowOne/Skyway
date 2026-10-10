@@ -132,9 +132,12 @@ function escaparRegExp(s: string): string {
  * mayúsculas o slug) o la dirección literal `<slug>:<puerto>` / `<slug>.railway.internal`
  * donde empieza una dirección: al principio del valor o tras `//`, `@`, `=`, un
  * espacio, una coma, un punto y coma, comillas o un paréntesis o corchete.
+ * También la URL sin puerto `http://<slug>/…` (o `http://<slug>` a secas): un
+ * nombre sin puntos justo detrás de `//` solo puede ser un host de la red
+ * interna.
  *
- * La dirección literal exige el puerto (o el sufijo de Railway) para no
- * confundir `api` con cualquier palabra: `scope=api:read` o
+ * Fuera de una URL, la dirección literal exige el puerto (o el sufijo de
+ * Railway) para no confundir `api` con cualquier palabra: `scope=api:read` o
  * `https://api.example.com` no son llamadas a este servicio. Tampoco un trozo de
  * ruta (`https://x/v1/bot:1234`) ni de una clave (`cache:bot:10`), que no
  * empiezan donde empieza una dirección. `${{api.PUBLIC_URL}}` tampoco cuenta:
@@ -153,12 +156,16 @@ export function referenciaInterna(valores: Iterable<string>, service: Pick<Servi
     `(?<=^|//|[\\s@=,;"'(\\[])${s}(?::[0-9]{2,5}(?![0-9])|\\.railway\\.internal(?![A-Za-z0-9-]))`,
     'i',
   );
+  // `http://api/v1`, `http://api?x`, `"http://api"`: el host termina en una
+  // barra, `?`, `#`, un separador o el final del valor (no en un punto: eso es
+  // `api.example.com`).
+  const urlSinPuerto = new RegExp(`(?<=//)${s}(?=[/?#\\s"',;)\\]]|$)`, 'i');
   for (const valor of valores) {
     if (typeof valor !== 'string' || valor === '') continue;
     for (const m of valor.matchAll(REFERENCIA_RE)) {
       if (VARIABLES_INTERNAS.has(m[2]) && esEste(m[1])) return true;
     }
-    if (literal.test(valor)) return true;
+    if (literal.test(valor) || urlSinPuerto.test(valor)) return true;
   }
   return false;
 }

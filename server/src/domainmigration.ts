@@ -308,11 +308,14 @@ export interface MigracionSkyway {
   /** Buzones con los que entran variables que Skyway no gestiona («pasada» y «dando_de_baja»). */
   usuariosSinGestionar: UsuarioSinGestionar[];
   /**
-   * Buzones pendientes con contraseñas de aplicación creadas a mano y que
-   * ningún servicio del proyecto usa: las aplicaciones de fuera tendrán que
-   * entrar con la dirección nueva tras actualizarlos o dar de baja el dominio.
+   * Buzones pendientes con contraseñas de aplicación creadas a mano: las
+   * aplicaciones de fuera de Skyway que las usen tendrán que entrar con la
+   * dirección nueva tras actualizarlos o dar de baja el dominio.
+   * `usadoEnProyecto`: algún servicio del proyecto usa el buzón (con su
+   * credencial de Skyway o con variables sin gestionar), y a esos Skyway sí
+   * los pone al día; la misma contraseña puede usarla además algo de fuera.
    */
-  appsManuales: { mailboxId: string; email: string; apps: string[] }[];
+  appsManuales: { mailboxId: string; email: string; apps: string[]; usadoEnProyecto: boolean }[];
   /** IP a la que tienen que apuntar los registros A de los nombres nuevos. */
   ipServidor: string | null;
   avisos: string[];
@@ -2704,20 +2707,22 @@ function usuariosSinGestionarDe(ctx: ContextoUsos, row: DomainMigrationRow, corr
 
 /**
  * Buzones pendientes con contraseñas de aplicación creadas a mano (Mailway
- * 1.6+) que ningún servicio del proyecto usa: son de aplicaciones de fuera de
- * Skyway, que tendrán que entrar con la dirección nueva.
+ * 1.6+). Salen también los que usa algún servicio del proyecto: Skyway pone
+ * al día ese servicio, pero no puede saber si la misma contraseña la usa
+ * además una aplicación de fuera (un n8n, un cliente de correo), y esa tendrá
+ * que entrar con la dirección nueva. Mailway ya descarta las revocadas y las
+ * invalidadas.
  */
 function appsManualesDe(ctx: ContextoUsos, row: DomainMigrationRow, correo: CambioDominioVista): MigracionSkyway['appsManuales'] {
   return correo.buzones.lista
-    .filter(
-      (b) =>
-        b.pendiente &&
-        Array.isArray(b.appsManuales) &&
-        b.appsManuales.length > 0 &&
-        !b.usadoPorApps.some((n) => ctx.porCredencial.has(n)) &&
-        usosSinGestionar(ctx, row, b).length === 0,
-    )
-    .map((b) => ({ mailboxId: b.id, email: b.email, apps: (b.appsManuales ?? []).filter((n): n is string => typeof n === 'string') }));
+    .filter((b) => b.pendiente && Array.isArray(b.appsManuales) && b.appsManuales.length > 0)
+    .map((b) => ({
+      mailboxId: b.id,
+      email: b.email,
+      apps: (b.appsManuales ?? []).filter((n): n is string => typeof n === 'string'),
+      usadoEnProyecto: b.usadoPorApps.some((n) => ctx.porCredencial.has(n)) || usosSinGestionar(ctx, row, b).length > 0,
+    }))
+    .filter((a) => a.apps.length > 0);
 }
 
 /** ¿Hay servicios que poner al día con este buzón: los de su credencial de Skyway o variables sin gestionar? */

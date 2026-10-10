@@ -180,6 +180,12 @@ describe('referenciaInterna', () => {
     expect(referenciaInterna(['["api:3000"]'], api)).toBe(true);
     expect(referenciaInterna(['ws://API:3000/socket'], api)).toBe(true);
     expect(referenciaInterna(['cd /app &&\nexec node x.js api:3000'], api)).toBe(true);
+    // URL sin puerto: un nombre sin puntos tras `//` es un host interno.
+    expect(referenciaInterna(['http://api/'], api)).toBe(true);
+    expect(referenciaInterna(['http://api'], api)).toBe(true);
+    expect(referenciaInterna(['http://API/v1/avisos?x=1'], api)).toBe(true);
+    expect(referenciaInterna(['http://api?x=1'], api)).toBe(true);
+    expect(referenciaInterna(['curl -fsS "http://api" && node index.js'], api)).toBe(true);
   });
 
   it('no cuenta lo que solo se parece', () => {
@@ -194,6 +200,11 @@ describe('referenciaInterna', () => {
     expect(referenciaInterna(['http://v2.api:3000'], api)).toBe(false);
     expect(referenciaInterna(['http://api-2:3000'], api)).toBe(false);
     expect(referenciaInterna(['http://x_api:3000'], api)).toBe(false);
+    // Sin puerto, solo como host completo de la URL.
+    expect(referenciaInterna(['https://api.example.com/v1'], api)).toBe(false);
+    expect(referenciaInterna(['http://apis/'], api)).toBe(false);
+    expect(referenciaInterna(['https://x.es/api/v1'], api)).toBe(false);
+    expect(referenciaInterna(['http://user@api-2/'], api)).toBe(false);
     // Un trozo de ruta o de una clave no es una dirección.
     expect(referenciaInterna(['https://x.acme.es/v1/bot:1234'], { name: 'Bot', slug: 'bot' })).toBe(false);
     expect(referenciaInterna(['cache:bot:10'], { name: 'Bot', slug: 'bot' })).toBe(false);

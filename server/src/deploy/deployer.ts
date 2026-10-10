@@ -389,6 +389,16 @@ export async function awaitDeployment(
   }
 }
 
+/** Disparadores cuyo reintento tras un reinicio despliega la imagen del despliegue cortado. */
+const CON_IMAGEN_AL_REINTENTAR = new Set(['rollback', 'cambio-de-dominio', 'mailway']);
+
+/**
+ * Disparadores que, con imagen, vuelven a desplegar la versión en marcha para
+ * que tome otras variables (el usuario o la credencial de correo): no son una
+ * vuelta atrás y el registro no debe decirlo.
+ */
+const MISMA_IMAGEN_SIN_COMPILAR = new Set(['cambio-de-dominio', 'mailway']);
+
 /**
  * Si el despliegue volvía a una versión anterior (una vuelta atrás, o el
  * reintento de una), el despliegue correcto cuya imagen se quería recuperar.
@@ -446,10 +456,11 @@ export function resumeInterruptedDeployments(): { retried: number; alerted: numb
     triggerDeploy(service.id, RETRY_TRIGGER, {
       // Una vuelta atrás se reintenta como vuelta atrás: desplegar la cabeza
       // desharía lo que se pidió. Lo mismo un despliegue del cambio de dominio
-      // con imagen: el de la baja vuelve a desplegar la versión en marcha con
-      // otro usuario SMTP, no código nuevo (el de «Pasar» solo la tiene si ya
-      // había construido, y es esa misma). El resto vuelve a construir (o reutilizar).
-      imageTag: (dep.trigger === 'rollback' || dep.trigger === 'cambio-de-dominio') && dep.image_tag ? dep.image_tag : undefined,
+      // o de la pestaña Correo con imagen: vuelven a desplegar la versión en
+      // marcha con otras variables de correo, no código nuevo (si no la
+      // fijaron, solo la tienen si ya habían construido, y es esa misma). El
+      // resto vuelve a construir (o reutilizar).
+      imageTag: CON_IMAGEN_AL_REINTENTAR.has(dep.trigger) && dep.image_tag ? dep.image_tag : undefined,
       forceBuild: dep.force_build === 1,
       targetCommit: dep.target_commit ?? undefined,
     });
@@ -515,7 +526,11 @@ async function runDeployment(deploymentId: string): Promise<void> {
       image = await preparePlainImage(service, log, job);
     } else if (deployment.image_tag) {
       image = deployment.image_tag;
-      log(`Rollback a la imagen ${image}`);
+      log(
+        MISMA_IMAGEN_SIN_COMPILAR.has(deployment.trigger)
+          ? `Se vuelve a desplegar la imagen en marcha ${image} con las variables actuales, sin compilar.`
+          : `Rollback a la imagen ${image}`,
+      );
       if (!(await imageExists(image))) {
         throw new Error(`La imagen ${image} ya no existe en el servidor (se purgó). Realiza un despliegue normal.`);
       }
@@ -2016,7 +2031,7 @@ async function desplegarUnaSolaCopia(o: DespliegueUnaSolaCopia): Promise<void> {
  *    un bot de polling con dos copias recibe un 409 en la segunda.
  *  - Un servicio con puerto que pasa a «una sola copia» de forma automática:
  *    una llamada escrita en el código o en la configuración de otro servicio
- *    (un `proxy_pass` de nginx, `http://api/` sin puerto) no se detecta, y ese
+ *    (un `proxy_pass` de nginx, una dirección montada en el código) no se detecta, y ese
  *    servicio tendría unos segundos sin servicio en cada despliegue. No se dice
  *    si el repositorio es claramente un bot.
  *  - «Sin corte» con comando al parar: el de la versión anterior se ejecuta
