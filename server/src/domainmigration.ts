@@ -37,7 +37,7 @@ import { getDomain } from 'tldts';
 import { audit, auditSystem } from './audit';
 import { currentUser } from './auth';
 import { cloudflareConfigurado } from './cloudflareconfig';
-import { dnsAutomaticoAdmin, ResultadoDns } from './cloudflaredns';
+import { dnsAutomaticoAdmin, ResultadoDns, verificarEnCloudflare } from './cloudflaredns';
 import {
   AmbitoVariableMigracion,
   bumpConfigRev,
@@ -1078,12 +1078,33 @@ export async function prepararCambio(
 
 // ---------- comprobar ----------
 
-async function estadoHost(host: string): Promise<EstadoHostWeb> {
-  const chk = await checkDomain(host);
-  const dns: EstadoDnsHost = chk.status === 'ok' ? 'ok' : chk.status === 'unknown' ? 'desconocido' : 'pendiente';
+/**
+ * DNS y certificado de un nombre nuevo. El proxy de Cloudflare es la forma
+ * recomendada de servir una web y el DNS automático lo pone con HTTPS: a la
+ * administración, un nombre con el proxy se comprueba con la API de
+ * Cloudflare, como en «Comprobar DNS» (`routes/domains.ts`). Sin ella (quien
+ * comprueba no administra, o el token no ve la zona), no se puede saber a
+ * dónde lleva: vale si ya se comprobó que apuntaba aquí y, si no, no se
+ * prepublica (Traefik no vuelve a pedir un certificado que falló). Un CAA que
+ * no autoriza a Let's Encrypt deja el DNS correcto y el certificado
+ * pendiente, con el registro que falta.
+ */
+async function estadoHost(host: string, isAdmin: boolean): Promise<EstadoHostWeb> {
+  const chk = await checkDomain(host, isAdmin ? { verificar: verificarEnCloudflare } : {});
+  let dns: EstadoDnsHost = chk.status === 'ok' || chk.status === 'caa' ? 'ok' : chk.status === 'unknown' ? 'desconocido' : 'pendiente';
+  let detalle = chk.message;
+  if (chk.status === 'cloudflare_proxy') {
+    dns = getPrepublished(host)?.dns_ok_at ? 'ok' : 'desconocido';
+    if (dns !== 'ok') {
+      detalle =
+        `${host} pasa por el proxy de Cloudflare y desde aquí no se puede comprobar a dónde lleva. ` +
+        'Desactiva el proxy de ese nombre mientras se prepara el cambio (puedes activarlo de nuevo después de pasar) o pide a la administración que lo compruebe.';
+    }
+  }
   if (dns === 'ok' && getPrepublished(host)?.dns_ok_at == null) markPrepublishedDns(host, Date.now());
-  if (!tlsEnabled()) return { dns, certificado: 'sin_tls', detalle: chk.message };
-  if (dns !== 'ok') return { dns, certificado: 'pendiente', detalle: `Esperando al DNS de ${host}. ${chk.message}` };
+  if (!tlsEnabled()) return { dns, certificado: 'sin_tls', detalle };
+  if (dns !== 'ok') return { dns, certificado: 'pendiente', detalle: `Esperando al DNS de ${host}. ${detalle}` };
+  if (chk.status === 'caa') return { dns, certificado: 'pendiente', detalle };
   const tlsLocal = await comprobarTlsLocal(host);
   const certificado: EstadoCertificado = tlsLocal.estado === 'ok' ? 'ok' : tlsLocal.estado === 'invalido' ? 'pendiente' : 'desconocido';
   return { dns, certificado, detalle: certificado === 'ok' ? `Certificado listo para ${host}.` : tlsLocal.detalle };
@@ -1253,7 +1274,7 @@ async function comprobarSinCerrojo(project: ProjectRow, inicial: DomainMigration
   let row = inicial;
   const nuevos = [...new Set(hostsActivos(row.hosts).map((h) => h.to))];
   const web = new Map<string, EstadoHostWeb>();
-  const resultados = await Promise.all(nuevos.map(async (h) => [h, await estadoHost(h)] as const));
+  const resultados = await Promise.all(nuevos.map(async (h) => [h, await estadoHost(h, isAdmin)] as const));
   for (const [h, e] of resultados) web.set(h, e);
   cacheWeb.set(row.id, web);
 

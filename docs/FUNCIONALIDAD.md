@@ -1544,9 +1544,13 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   y lo vincula, o lo vuelve a pedir (crear es idempotente); «Cancelar» lo busca
   y lo cancela allí. Para la administración, DNS automático de los nombres
   nuevos (§7.13). El asistente comprueba cada 30 s: DNS de los nombres nuevos
-  (bloquea), certificado servido por Traefik con SNI (`comprobarTlsLocal`;
-  bloquea si no es válido, no si no se puede comprobar o no hay TLS) y correo
-  de Mailway en `listo` (bloquea). Si el dominio nuevo recibe hoy en otro
+  (bloquea; a la administración, un nombre con el proxy de Cloudflare se
+  comprueba con su API, como en `POST /domains/check`; sin ella no se sabe a
+  dónde lleva, así que vale solo si ya se comprobó y, si no, no se prepublica y
+  se explica cómo seguir), certificado servido por Traefik con SNI
+  (`comprobarTlsLocal`; bloquea si no es válido, no si no se puede comprobar o
+  no hay TLS; un CAA que no autoriza a Let's Encrypt lo deja pendiente con el
+  registro que falta) y correo de Mailway en `listo` (bloquea). Si el dominio nuevo recibe hoy en otro
   proveedor, el fichero de zona trae su MX comentado (importar lo añadiría al
   actual en vez de sustituirlo) y, con la zona en Cloudflare, «Cambiar el MX a
   este servidor» se lo pide a Mailway tras la pre-recepción.

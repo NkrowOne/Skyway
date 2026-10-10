@@ -35,6 +35,7 @@ import {
   listAudit,
   listDomainRedirects,
   listSnapshots,
+  markPrepublishedDns,
   patchEnv,
   reservarNombresMailway,
   setEnv,
@@ -1603,5 +1604,67 @@ describe('cliente de correo compartido por los proyectos de una cuenta', () => {
     // Con «Solo la web» el correo no se toca.
     plan = await call('POST', `${q.base}/plan`, ownerHeaders, { fromDomain: 'compartido-b.es', toDomain: 'compartido-b2.es', soloWeb: true });
     expect(plan.json.bloqueos).toEqual([]);
+  });
+});
+
+/*
+ * Skyway 0.38 sirve las webs con el proxy de Cloudflare (y el DNS automático lo
+ * pone con HTTPS): desde fuera, un nombre con el proxy solo resuelve a las IP de
+ * Cloudflare.
+ */
+describe('preparar con el proxy de Cloudflare o un CAA en los nombres nuevos', () => {
+  /** Proyecto de solo web con `www.<dominio>`, preparado por la administración hacia `<nuevo>`. */
+  async function preparado(slug: string, dominio: string, nuevo: string) {
+    const proj = createProject(`Proxy ${slug}`, slug, null, workspaceId);
+    createService(proj.id, 'Web', 'web', 'git', gitCfg([`www.${dominio}`]));
+    const base = `/api/projects/${proj.id}/domain-migrations`;
+    const plan = (await call('POST', `${base}/plan`, admin(), { fromDomain: dominio, toDomain: nuevo })).json;
+    const r = await call('POST', base, admin(), {
+      fromDomain: dominio,
+      toDomain: nuevo,
+      hosts: plan.hosts.map((h: Json) => ({ serviceId: h.serviceId, from: h.from, to: h.to, modo: h.modo })),
+      excluidas: [],
+      expect: plan.expect,
+    });
+    expect(r.status, r.raw).toBe(201);
+    return { base, mid: r.json.id as string };
+  }
+
+  it('sin poder comprobarlo no se prepublica y se explica; comprobado antes, sigue valiendo', async () => {
+    const { base, mid } = await preparado('proxy-a', 'proxy-a.es', 'proxy-a2.es');
+    dnsFalso.a.set('www.proxy-a2.es', ['104.21.48.1']);
+    try {
+      let v = (await call('POST', `${base}/${mid}/check`, ownerHeaders)).json;
+      expect(v.estado).toBe('preparando');
+      expect(v.compuertas.find((c: Json) => c.id === 'dns_web')).toMatchObject({ ok: false, bloquea: true });
+      expect(v.hosts[0]).toMatchObject({ to: 'www.proxy-a2.es', dns: 'desconocido' });
+      expect(v.hosts[0].detalle).toMatch(/pasa por el proxy de Cloudflare y desde aquí no se puede comprobar a dónde lleva/);
+      expect(getPrepublished('www.proxy-a2.es')?.dns_ok_at).toBeNull();
+
+      // La administración ya lo comprobó con la API de Cloudflare (o el DNS apuntaba aquí antes de activar el proxy).
+      markPrepublishedDns('www.proxy-a2.es', Date.now());
+      v = (await call('POST', `${base}/${mid}/check`, ownerHeaders)).json;
+      expect(v.hosts[0].dns).toBe('ok');
+      expect(v.compuertas.find((c: Json) => c.id === 'dns_web')).toMatchObject({ ok: true });
+    } finally {
+      dnsFalso.a.delete('www.proxy-a2.es');
+    }
+  });
+
+  it('un CAA que no autoriza a Let\'s Encrypt: el DNS vale, pero el certificado queda pendiente con el registro que falta', async () => {
+    const { base, mid } = await preparado('caa-b', 'caa-b.es', 'caa-b2.es');
+    dnsAqui('www.caa-b2.es');
+    dnsFalso.caa.set('caa-b2.es', [{ critical: 0, issue: 'sectigo.com' }]);
+    setSetting('letsencryptEmail', 'ops@example.com');
+    try {
+      const v = (await call('POST', `${base}/${mid}/check`, ownerHeaders)).json;
+      expect(v.hosts[0]).toMatchObject({ to: 'www.caa-b2.es', dns: 'ok', certificado: 'pendiente' });
+      expect(v.hosts[0].detalle).toMatch(/registro CAA 0 issue "letsencrypt\.org"/);
+      expect(v.compuertas.find((c: Json) => c.id === 'certificados')).toMatchObject({ ok: false, bloquea: true });
+      expect(getPrepublished('www.caa-b2.es')?.dns_ok_at).toBeTruthy();
+    } finally {
+      setSetting('letsencryptEmail', null);
+      dnsFalso.caa.delete('caa-b2.es');
+    }
   });
 });

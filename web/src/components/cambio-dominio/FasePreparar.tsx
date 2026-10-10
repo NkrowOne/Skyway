@@ -134,6 +134,8 @@ export default function FasePreparar({
                 <span className="block text-xs text-subtle">
                   {m.ipServidor ? `Registro A → ${m.ipServidor}, sin proxy` : 'Registro A hacia la IP de este servidor, sin proxy'}
                 </span>
+                {/* Sin comprobar: por qué (el proxy de Cloudflare, un DNS que no responde) y qué hacer. */}
+                {h.dns === 'desconocido' && h.detalle && <span className="mt-0.5 block text-xs text-sub">{h.detalle}</span>}
               </span>
               <Chip tone={DNS_CHIP[h.dns].tone} size="sm" dot>
                 {DNS_CHIP[h.dns].label}
@@ -197,7 +199,13 @@ export default function FasePreparar({
                           ? `No se ha podido comprobar el certificado de ${h.to}`
                           : `Esperando el certificado de ${h.to}`
                   }
-                  detalle={h.certificado === 'desconocido' ? 'No impide pasar.' : undefined}
+                  detalle={
+                    h.certificado === 'desconocido'
+                      ? 'No impide pasar.'
+                      : h.dns === 'ok' && h.certificado === 'pendiente' && h.detalle
+                        ? h.detalle
+                        : undefined
+                  }
                 />
               ))
             )}
