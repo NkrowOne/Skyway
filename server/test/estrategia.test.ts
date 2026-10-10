@@ -22,6 +22,7 @@ import {
   llamadoPorOtros,
   referenciaInterna,
 } from '../src/deploy/estrategia';
+import { searchFaq } from '../src/help/assistant';
 import type { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from '../src/types';
 
 beforeAll(() => {
@@ -292,5 +293,18 @@ describe('describirEstrategia', () => {
     expect(describirEstrategia({ estrategia: 'recreate', motivo: 'base_de_datos', automatica: false })).toBe(
       'una sola copia (base de datos)',
     );
+  });
+});
+
+describe('ayuda: las preguntas de bots llegan a sus respuestas', () => {
+  it('el 409 de Telegram y las dos copias llevan a «una sola copia»', () => {
+    expect(searchFaq('mi bot de telegram da error 409')[0].id).toBe('bot-o-worker-una-sola-copia');
+    expect(searchFaq('hay dos copias del worker a la vez').map((f) => f.id)).toContain('bot-o-worker-una-sola-copia');
+  });
+
+  it('SIGTERM y la gracia llevan a la parada limpia; la identidad, a sus variables', () => {
+    expect(searchFaq('el contenedor no se detiene con SIGTERM')[0].id).toBe('parada-limpia');
+    expect(searchFaq('gracia de parada')[0].id).toBe('parada-limpia');
+    expect(searchFaq('SKYWAY_INSTANCE_ID')[0].id).toBe('identidad-de-cada-copia');
   });
 });
