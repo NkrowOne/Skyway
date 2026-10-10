@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import Fastify, { FastifyInstance, FastifyRequest } from 'fastify';
+import Fastify, { FastifyError, FastifyInstance, FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 import { ZodError } from 'zod';
@@ -83,7 +83,10 @@ function rechazarPorOrigen(req: FastifyRequest): boolean {
   const puertoDefecto = originUrl.protocol === 'https:' ? ':443' : ':80';
   const normalizar = (h: string): string => h.toLowerCase().replace(new RegExp(`${puertoDefecto}$`), '');
   const originHost = normalizar(originUrl.host);
-  const hosts = [req.hostname, req.headers.host].filter((h): h is string => typeof h === 'string' && h.length > 0);
+  // `req.host` es el Host con su puerto (X-Forwarded-Host si viene de un proxy
+  // de confianza). En Fastify 5 `req.hostname` ya no lleva el puerto: con él,
+  // un panel en un puerto propio (túnel a :4000) no coincidiría con su Origin.
+  const hosts = [req.host, req.headers.host].filter((h): h is string => typeof h === 'string' && h.length > 0);
   return !hosts.some((h) => normalizar(h) === originHost);
 }
 
@@ -102,7 +105,10 @@ export function buildApp(): FastifyInstance {
   const app = Fastify({
     logger: { level: process.env.LOG_LEVEL || 'info' },
     // Solo se confía en cabeceras de proxy de rangos privados/loopback por
-    // defecto (ver config.trustProxy): impide falsear la IP del cliente.
+    // defecto (ver config.trustProxy): impide falsear la IP del cliente. Con
+    // Fastify 5 (desde 5.8.3), X-Forwarded-Host y X-Forwarded-Proto también
+    // cuentan solo si la conexión llega de un proxy de confianza; antes se
+    // aceptaban de cualquiera.
     trustProxy: config.trustProxy,
     bodyLimit: 1024 * 1024,
   });
@@ -146,7 +152,7 @@ export function buildApp(): FastifyInstance {
     if (req.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
 
     if (config.csrfOriginCheck && rechazarPorOrigen(req)) {
-      req.log.warn({ origin: req.headers.origin, host: req.hostname, url: req.url }, 'Petición con cookie rechazada por origen');
+      req.log.warn({ origin: req.headers.origin, host: req.host, url: req.url }, 'Petición con cookie rechazada por origen');
       return reply.code(403).send({
         error:
           'Petición rechazada: su origen no coincide con el del panel. Si accedes a través de un proxy, ' +
@@ -155,7 +161,24 @@ export function buildApp(): FastifyInstance {
     }
   });
 
-  app.setErrorHandler((err, req, reply) => {
+  // Un DELETE u OPTIONS sin cuerpo (ni Content-Length ni Transfer-Encoding) que
+  // trae `Content-Type: application/json` —scripts y agentes que mandan esa
+  // cabecera en todas sus peticiones, `curl -X DELETE -H 'Content-Type:
+  // application/json'`— funcionaba con Fastify 4, que en esos dos métodos no
+  // analizaba el cuerpo; Fastify 5 lo analiza y responde 400 «Body cannot be
+  // empty…». Sin cuerpo, la cabecera no describe nada: se retira para que la
+  // API responda como antes. Ni la web ni `scripts/skyway` envían algo así.
+  app.addHook('onRequest', async (req) => {
+    if (req.method !== 'DELETE' && req.method !== 'OPTIONS') return;
+    const headers = req.raw.headers;
+    if (headers['content-type'] !== undefined && headers['content-length'] === undefined && headers['transfer-encoding'] === undefined) {
+      delete headers['content-type'];
+    }
+  });
+
+  // Fastify 5 tipa el error como `unknown`; lo que llega aquí es lo que lanzan
+  // las rutas y el propio Fastify, y se trata igual que antes.
+  app.setErrorHandler((err: FastifyError, req, reply) => {
     if (err instanceof ZodError) {
       const message = err.issues.map((i) => i.message).join('; ');
       return reply.code(400).send({ error: message });
@@ -226,13 +249,16 @@ export function buildApp(): FastifyInstance {
     app.register(fastifyStatic, {
       root: config.webDist,
       index: ['index.html'],
-      setHeaders: (res, filePath) => {
+      // Desde @fastify/static 10 recibe el `reply` de Fastify (antes, el flujo
+      // de `send`) y se llama después de copiar las cabeceras de `send`: la
+      // Cache-Control de aquí sustituye a la suya, como antes.
+      setHeaders: (reply, filePath) => {
         if (filePath.includes(path.sep + 'assets' + path.sep) || filePath.includes('/assets/')) {
           // Assets versionados con hash de Vite: caché inmutable de 1 año
-          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          reply.header('Cache-Control', 'public, max-age=31536000, immutable');
         } else {
           // index.html y otros archivos raíz: no-cache para detección inmediata de versiones nuevas
-          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          reply.header('Cache-Control', 'no-cache, no-store, must-revalidate');
         }
       },
     });

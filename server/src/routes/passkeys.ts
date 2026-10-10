@@ -6,11 +6,9 @@ import {
   verifyAuthenticationResponse,
   verifyRegistrationResponse,
 } from '@simplewebauthn/server';
-import type {
-  AuthenticationResponseJSON,
-  AuthenticatorTransportFuture,
-  RegistrationResponseJSON,
-} from '@simplewebauthn/types';
+// Desde SimpleWebAuthn 13 los tipos vienen en el propio paquete del servidor
+// (`@simplewebauthn/types` quedó obsoleto).
+import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import {
   clearLoginFailures,
   currentUser,
@@ -34,6 +32,15 @@ import { randomToken, safeParse } from '../util';
 
 const RP_NAME = 'Skyway';
 const CHALLENGE_TTL_MS = 5 * 60_000;
+
+/**
+ * Algoritmos de clave pública que se ofrecen al registrar y se aceptan al
+ * verificar el registro: EdDSA, ES256 y RS256, los mismos de siempre.
+ * SimpleWebAuthn 14 añade ML-DSA-44 a su lista por defecto cuando el entorno
+ * lo admite; fijarla evita que las opciones de registro cambien con la versión
+ * de Node. No afecta al inicio de sesión: la clave guardada indica su algoritmo.
+ */
+const ALGORITMOS = [-8, -7, -257];
 
 // Retos pendientes en memoria: se consumen una vez y caducan solos.
 const regChallenges = new Map<string, { challenge: string; rpId: string; origin: string; expires: number }>();
@@ -66,7 +73,9 @@ function capChallenges(map: Map<string, unknown>): void {
  * controla —el cliente— elegía contra qué origen se verificaba su propio reto.
  */
 function rpInfo(req: FastifyRequest): { rpId: string; origin: string } {
-  const host = (req.hostname || 'localhost').toLowerCase();
+  // `req.host` conserva el puerto (en Fastify 5 `req.hostname` lo pierde): el
+  // origen esperado de un panel en :4000 es `http://localhost:4000`.
+  const host = (req.host || 'localhost').toLowerCase();
   const rpId = host.split(':')[0];
   let origin = `${req.protocol}://${host}`;
   const originHeader = req.headers.origin;
@@ -81,12 +90,27 @@ function rpInfo(req: FastifyRequest): { rpId: string; origin: string } {
   return { rpId, origin };
 }
 
-function b64uToBuffer(value: string): Uint8Array {
+function b64uToBuffer(value: string): Uint8Array<ArrayBuffer> {
   return new Uint8Array(Buffer.from(value, 'base64url'));
 }
 
 function bufferToB64u(value: Uint8Array): string {
   return Buffer.from(value).toString('base64url');
+}
+
+/**
+ * Identificador de usuario (user handle) que guarda el autenticador. La web
+ * decodifica `options.user.id` como base64url, y SimpleWebAuthn 9 lo enviaba
+ * tal cual: los autenticadores guardaron los bytes de decodificar el id de
+ * Skyway (`usr_` + 16 hexadecimales, base64url válido). Desde la versión 10 la
+ * librería pide los bytes y los codifica ella; se le dan esos mismos bytes, de
+ * modo que `user.id` sigue siendo exactamente el id y una passkey nueva de la
+ * misma cuenta no aparece en el autenticador como otro usuario. Un id que no
+ * fuera base64url canónico (nunca lo ha habido) iría como texto UTF-8.
+ */
+function userHandle(userId: string): Uint8Array<ArrayBuffer> {
+  const bytes = b64uToBuffer(userId);
+  return bufferToB64u(bytes) === userId ? bytes : new Uint8Array(Buffer.from(userId, 'utf8'));
 }
 
 export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
@@ -116,18 +140,19 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
       const options = await generateRegistrationOptions({
         rpName: RP_NAME,
         rpID: rpId,
-        userID: user.id,
+        userID: userHandle(user.id),
         userName: user.email,
+        // SimpleWebAuthn 10 dejó el nombre visible vacío por defecto; antes era el correo.
+        userDisplayName: user.email,
         attestationType: 'none',
-        excludeCredentials: existing.map((p) => ({
-          id: b64uToBuffer(p.credential_id),
-          type: 'public-key' as const,
-        })),
+        // Los ids guardados ya son base64url, que es lo que pide la librería desde la 10.
+        excludeCredentials: existing.map((p) => ({ id: p.credential_id })),
         authenticatorSelection: {
           // residentKey requerido → login sin escribir email (descubrible).
           residentKey: 'required',
           userVerification: 'preferred',
         },
+        supportedAlgorithmIDs: ALGORITMOS,
       });
       sweep(regChallenges);
       regChallenges.set(user.id, { challenge: options.challenge, rpId, origin, expires: Date.now() + CHALLENGE_TTL_MS });
@@ -152,6 +177,7 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
           expectedOrigin: pending.origin,
           expectedRPID: pending.rpId,
           requireUserVerification: false,
+          supportedAlgorithmIDs: ALGORITMOS,
         });
       } catch (err: any) {
         return reply.code(400).send({ error: `No se pudo verificar la passkey: ${err?.message ?? 'error'}` });
@@ -160,16 +186,18 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(400).send({ error: 'La verificación de la passkey falló' });
       }
       const info = verification.registrationInfo;
-      const transports = (body.response as RegistrationResponseJSON).response?.transports as
-        | AuthenticatorTransportFuture[]
-        | undefined;
+      // Desde SimpleWebAuthn 11 el id llega ya en base64url sin relleno (lo que
+      // se guardaba al codificar los bytes) y la clave COSE, en bytes: las filas
+      // nuevas tienen el mismo formato que las de siempre.
+      const { credential } = info;
+      const transports = credential.transports;
       let row;
       try {
         row = insertPasskey({
           user_id: user.id,
-          credential_id: bufferToB64u(info.credentialID),
-          public_key: bufferToB64u(info.credentialPublicKey),
-          counter: info.counter,
+          credential_id: credential.id,
+          public_key: bufferToB64u(credential.publicKey),
+          counter: credential.counter,
           transports: transports ? JSON.stringify(transports) : null,
           device_type: info.credentialDeviceType ?? null,
           backed_up: info.credentialBackedUp ? 1 : 0,
@@ -238,7 +266,7 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(401).send({ error: 'Passkey no reconocida' });
     }
     // Columna JSON almacenada: una fila corrupta no debe tumbar el login con un 500.
-    const transports = safeParse<AuthenticatorTransportFuture[]>(passkey.transports, []);
+    const transports = safeParse<string[]>(passkey.transports, []);
     let verification;
     try {
       verification = await verifyAuthenticationResponse({
@@ -246,9 +274,11 @@ export async function passkeyRoutes(app: FastifyInstance): Promise<void> {
         expectedChallenge: pending.challenge,
         expectedOrigin: pending.origin,
         expectedRPID: pending.rpId,
-        authenticator: {
-          credentialID: b64uToBuffer(passkey.credential_id),
-          credentialPublicKey: b64uToBuffer(passkey.public_key),
+        // Las passkeys guardadas tienen el id y la clave COSE en base64url: el id
+        // se pasa tal cual (SimpleWebAuthn 11+ lo espera así) y la clave, en bytes.
+        credential: {
+          id: passkey.credential_id,
+          publicKey: b64uToBuffer(passkey.public_key),
           counter: passkey.counter,
           transports: transports.length > 0 ? transports : undefined,
         },
