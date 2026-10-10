@@ -32,6 +32,11 @@ updates:
         applies-to: security-updates
         update-types: [patch]
         patterns: ["*"]
+    ignore:
+      # vite 8 compila con Rolldown y necesita @vitejs/plugin-react 6 (la 4.7
+      # solo admite hasta vite 7): se sube junto con el plugin, a mano.
+      - dependency-name: vite
+        versions: [">=8.0.0"]
 
   # Imágenes base del Dockerfile (Node sobre Alpine).
   - package-ecosystem: docker
