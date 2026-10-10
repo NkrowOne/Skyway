@@ -30,9 +30,17 @@ permissions:
 
 # Una fusión cada vez: tras fusionar un PR, el siguiente ya ve la rama
 # principal nueva y la comprobación 4 lo deja para cuando esté al día.
+#
+# `queue: max` deja esperar en fila a todas las ejecuciones. Con el valor por
+# defecto (`single`) solo puede haber una pendiente: GitHub cancela la que
+# esperaba cuando llega otra y esa evaluación se pierde sin dejar registro. Pasa
+# cuando la CI de varios PR termina casi a la vez, como los lunes con el grupo
+# de parches de npm y los PR sueltos del mismo día: el 9 de octubre de 2026 se
+# cancelaron así dos de las cuatro ejecuciones que llegaron en siete segundos.
 concurrency:
   group: parches-automaticos
   cancel-in-progress: false
+  queue: max
 
 jobs:
   fusionar:
