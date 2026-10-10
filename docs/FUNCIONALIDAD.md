@@ -1595,7 +1595,7 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   409 `migration_old_mx_here` sin cambiar nada (Mailway lo mide de todos modos
   al dar de baja, pero cuando las aplicaciones ya tienen el usuario nuevo). En
   segundo plano,
-  buzón a buzón, los que usan aplicaciones de Skyway (`skyway:<slug>`) pasan al
+  buzón a buzón, los que usan aplicaciones de Skyway (`skyway:…`) pasan al
   usuario nuevo si siguen pendientes (`login-update`) y, justo después, sus
   servicios reciben el usuario y el remitente nuevos y se despliegan **con la
   imagen en marcha** (15 min como máximo). Lo que decide si un servicio está al
@@ -1620,6 +1620,21 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   se elimina el proyecto ni se desactiva su correo (409 `migration_open`): el
   cambio de Mailway (origen `skyway`) quedaría abierto sin que nadie pudiera
   cerrarlo desde su panel.
+- **Correo de la cuenta**: los proyectos de una cuenta comparten su cliente de
+  Mailway, así que el dominio de correo y sus buzones son de toda la cuenta y
+  el cambio de Mailway los muda todos; el asistente, en cambio, solo actualiza
+  y despliega los servicios de su proyecto. Mientras otro proyecto vinculado al
+  mismo cliente tenga variables de correo (usuario, remitente o URL SMTP, del
+  servicio o compartidas) con una dirección del dominio anterior, el plan lo
+  bloquea (salvo «Solo la web»), la vista no ofrece la baja y lo explica, y la
+  baja y «Actualizar ahora» responden 409 `migration_shared_mail` sin cambiar
+  nada: tras la baja, esas aplicaciones se quedarían con un usuario o un
+  remitente que ya no existen. Las credenciales de los servicios se reconocen
+  con los nombres de `credentialNames` (`skyway:<proyecto>/<servicio>` en una
+  cuenta y, en un vínculo de antes de compartir los clientes,
+  `skyway:<servicio>`). La renovación automática de las contraseñas de
+  aplicación (`mailwayrenovacion.ts`) escribe el usuario del motor (`login`):
+  entre «Pasar» y la baja, la dirección anterior.
 - Las acciones guardan el estado intermedio antes de empezar y son
   idempotentes («Reintentar»); un mutex en memoria por proyecto las serializa.
   Al arrancar, `marcarCambiosInterrumpidos` deja con error los que cortó el
@@ -2161,7 +2176,7 @@ Zone · Read» y «Zone · DNS · Edit»; la clave global se rechaza). Se guarda
 | DELETE | `/cloudflare/config` | admin + session | borra el token, las zonas y el último fallo → `{ok, config}`. Audita `cloudflare_token_removed`. Los registros ya creados se conservan |
 | POST | `/cloudflare/test` | admin | `{token?}`: prueba el indicado sin guardarlo o, sin él, el guardado (y refresca sus zonas y `lastError`) → `{ok, zones}`. 12/min |
 | GET | `/cloudflare/records` | admin | registros que ha creado el DNS automático → `{records: [{domain, zone, content, project: {id, name} \| null, usedBy: {id, name, project} \| null, createdAt, replaced: [{type, content, proxied}] \| null, replacedCreated: boolean \| null}]}` (`replaced`: lo que sustituyó un reemplazo y se puede restaurar; `replacedCreated`: si el A lo creó el reemplazo y restaurar lo retira, o ya estaba y se conserva) |
-| GET | `/services/:id/cloudflare-dns/replace` | admin | `?domain=`: revisión del reemplazo del registro de la web del hosting anterior (no toca nada) → `{plan: {domain, zone, ip, actuales: [{id, type, content, proxied, ttl}], conservaA, avisos[], motivo}}`; `motivo` dice por qué no se puede (nombre de la plataforma, reservado a otro proyecto, nada que reemplazar). 404 si el dominio no está guardado en el servicio. 30/min |
+| GET | `/services/:id/cloudflare-dns/replace` | admin | `?domain=`: revisión del reemplazo del registro de la web del hosting anterior (no toca nada) → `{plan: {domain, zone, ip, actuales: [{id, type, content, proxied, ttl}], conservaA, proxied, avisos[], motivo}}` (`proxied`: el A nuevo lleva el proxy de Cloudflare); `motivo` dice por qué no se puede (nombre de la plataforma, reservado a otro proyecto, nada que reemplazar). 404 si el dominio no está guardado en el servicio. 30/min |
 | POST | `/services/:id/cloudflare-dns/replace` | admin + session | `{domain, records: [{id, type: A\|AAAA\|CNAME, content}]}` (los de la revisión) → `{dns: [{domain, action: 'created', message}]}`. 409 si los registros del nombre ya no son exactamente esos o si el nombre no se puede reemplazar. Un lote atómico; guarda copia. Audita `cloudflare_dns_replaced`. 10/min |
 | POST | `/cloudflare/records/:domain/restore` | admin + session | deshace un reemplazo: recrea los registros anteriores (proxy, TTL y comentario) y retira el A de Skyway si lo creó el reemplazo, en un lote → `{ok, result: {restaurados, retirado}, records}`. 404 sin copia, 409 si el nombre tiene otros registros de dirección (no cuenta un AAAA hacia `serverIpv6`, que ya estaba y se conserva) o el A se ha modificado. Libera la reserva si el A era de Skyway. Audita `cloudflare_dns_restored`. 10/min |
 | POST | `/services/:id/cloudflare-dns` | admin | `{domain}`: repite el DNS automático de **ese** dominio del servicio (tras un `error`, un `conflict` resuelto a mano o un `skipped` por zona o IP) → `{dns}`. 404 si el dominio no está en el servicio, 400 sin token. Nunca recorre los demás dominios del servicio. 30/min |
@@ -2245,8 +2260,10 @@ registros, el proxy y los avisos; la confirmación
 responde 409 sin tocar nada. El cambio va en **un solo lote atómico** de
 Cloudflare (`/dns_records/batch`: borrados y alta, o nada). También se retiran
 los AAAA del hosting anterior (con ellos, los visitantes con IPv6 y Let's
-Encrypt seguirían llegando allí); el A nuevo va sin proxy (Let's Encrypt valida
-por HTTP) y la revisión avisa si el anterior lo tenía. Nunca se reemplazan el
+Encrypt seguirían llegando allí); el A nuevo sigue la regla del DNS automático
+(con el proxy de Cloudflare si la plataforma tiene HTTPS y el certificado
+gratuito de Cloudflare cubre el nombre; la revisión lo dice en `proxied`) y la
+revisión avisa si el anterior tenía el proxy y el nuevo no lo llevará. Nunca se reemplazan el
 dominio del panel (`SKYWAY_DOMAIN`), el `rootDomain`, los nombres de Mailway
 (actuales, anteriores, publicados o de marca blanca) ni un nombre reservado a
 otro proyecto; nunca MX, TXT ni otros nombres. Lo borrado se guarda en
@@ -2280,11 +2297,11 @@ desplegar: 409 `migration_services_pending`.
 | POST | `/:mid/switch` | `{expect}` (huella de `variables`) → 202. 409 `migration_not_ready`, `plan_changed` |
 | POST | `/:mid/rollback` | → 202 |
 | POST | `/:mid/cancel` | → 200 (tras un «Volver», pone al día las aplicaciones que envían con los buzones que recuperan su usuario de `dominio.es`) |
-| POST | `/:mid/retire` | `{confirm}` → 202 (la baja sigue en segundo plano). 400 `confirm_mismatch`; 409 `migration_old_mx_here` antes de tocar las aplicaciones si el MX anterior apunta al servidor de correo |
+| POST | `/:mid/retire` | `{confirm}` → 202 (la baja sigue en segundo plano). 400 `confirm_mismatch`; 409 `migration_old_mx_here` antes de tocar las aplicaciones si el MX anterior apunta al servidor de correo; 409 `migration_shared_mail` si otro proyecto de la cuenta envía con el dominio anterior (§6.1) |
 | POST | `/:mid/finish` | `{confirm}` → 200 (solo la web) |
 | POST | `/:mid/redirects/remove` | `{confirm}` → 200 (en `terminada`) |
 | POST | `/:mid/services/:sid/retry` | → 202 (servicio con el despliegue fallido; con la imagen en marcha si el fallido la reutilizaba; también en un cambio cancelado si no hay otro abierto) |
-| POST | `/:mid/mailboxes/:mbid/login-update` | → 200 («Actualizar ahora»; con aplicaciones del proyecto, también sus variables y un despliegue con la imagen en marcha) |
+| POST | `/:mid/mailboxes/:mbid/login-update` | → 200 («Actualizar ahora»; con aplicaciones del proyecto, también sus variables y un despliegue con la imagen en marcha). 409 `migration_shared_mail` como la baja |
 | GET | `/:mid/zonefile` | `text/plain`: fichero de zona de Mailway del dominio nuevo (nivel `recomendados`: incluye el TXT de propiedad) más los registros A de la web, comentados; si el dominio nuevo recibe en otro proveedor, su MX también va comentado; solo la web, solo los A |
 
 ---
@@ -2458,8 +2475,16 @@ para que actualizar el código no lo reescriba a mitad de ejecución.
 3. Avanza el código solo en limpio (`git merge --ff-only`): con commits locales,
    o con cambios sin confirmar en ficheros que la actualización modifica, no
    aplica nada (código 1).
-4. Reconstruye la imagen y recrea los contenedores (`docker compose up -d
-   --build`).
+4. Construye la imagen nueva con el panel aún en marcha (`docker compose
+   build`): si falla, el panel no se ha tocado y se vuelve al commit anterior.
+   Antes de recrear el contenedor mira si hay despliegues en cola o en marcha
+   (leyendo la base del panel desde el propio contenedor, en solo lectura): si
+   los hay, los enumera y espera a que terminen (con `-y` o `--auto`, sin
+   preguntar; como mucho 30 minutos). Un despliegue cortado por el reinicio se
+   reintenta una vez al arrancar, con su alerta. A mano, quien actualiza puede
+   no esperar y no reiniciar: el código vuelve a la versión que corre y termina
+   con código 1 sin cambiar nada. Después recrea los contenedores (`docker
+   compose up -d --build`, que ya no compila nada).
 5. Durante unos 3 minutos comprueba que el panel responde con la versión del
    `package.json` y que lo que funcionaba antes sigue funcionando: Traefik en
    marcha sin reiniciarse (la misma hora de inicio en dos comprobaciones
@@ -2472,6 +2497,11 @@ para que actualizar el código no lo reescriba a mitad de ejecución.
    un `docker-compose.yml` retocado), lo reconstruye (la imagen base y la caché
    de compilación de la versión anterior siguen en Docker) y lo comprueba
    igual.
+7. Si todo ha ido bien, avisa si la imagen se quedó sin Nixpacks (se descarga
+   al construir y, si falla, la imagen se construye igual: los repositorios sin
+   Dockerfile dejarían de compilar) con la orden para reconstruirla sin caché y,
+   solo a mano, ofrece borrar las imágenes sin etiqueta que deja cada
+   actualización (`docker image prune -f`).
 
 Nunca toca volúmenes ni datos, y nunca restaura nada por su cuenta. Las
 migraciones de la base de datos del panel solo añaden tablas y columnas, así que
