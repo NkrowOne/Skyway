@@ -22,13 +22,16 @@ import {
   configureUrl,
   convertManifestCode,
   forgetInstallationToken,
+  getAppWebhookUrl,
   getInstallation,
   githubAppConfig,
   githubAppConfigured,
   installUrlFresh,
   listInstallationRepos,
   refreshAppInfo,
+  setAppWebhookUrl,
 } from '../github/app';
+import { isLocalOrIpHost, panelBaseUrl } from '../paneldomain';
 import { GithubError, getGithubRepo, listGithubBranches, parseGithubSlug } from '../github/client';
 import { installationTokenFor } from '../github/resolve';
 import { draftService, planWithMail } from '../integrations';
@@ -84,6 +87,33 @@ function baseUrlOf(req: FastifyRequest): string {
   const host = req.host;
   if (!host) throw new Error('No se pudo determinar la URL pública del panel');
   return `${req.protocol}://${host}`;
+}
+
+/**
+ * URL del webhook que tiene la App en GitHub, memorizada un minuto: Ajustes la
+ * pide en cada visita y no hace falta preguntar a GitHub cada vez. Va ligada a
+ * la App: tras sustituirla, la memoria de la anterior enseñaba su URL y el
+ * aviso de «no es la del panel», falso, durante ese minuto.
+ */
+let webhookCache: { at: number; appId: string | null; url: string | null; error: string | null } | null = null;
+const WEBHOOK_CACHE_MS = 60_000;
+
+async function actualWebhookUrl(force = false): Promise<{ url: string | null; error: string | null }> {
+  const appId = githubAppConfig()?.appId ?? null;
+  if (!force && webhookCache && webhookCache.appId === appId && Date.now() - webhookCache.at < WEBHOOK_CACHE_MS) {
+    return webhookCache;
+  }
+  try {
+    webhookCache = { at: Date.now(), appId, url: await getAppWebhookUrl(), error: null };
+  } catch (err: any) {
+    webhookCache = { at: Date.now(), appId, url: null, error: err?.message || 'No se pudo consultar a GitHub' };
+  }
+  return webhookCache;
+}
+
+/** URL del webhook de la App que corresponde al panel (con su dominio, no el del túnel). */
+function expectedWebhookUrl(req: FastifyRequest): string {
+  return `${panelBaseUrl(req)}/api/webhooks/github/app`;
 }
 
 /** Vista pública de una instalación (no hay secreto que ocultar, pero sí ruido). */
@@ -218,13 +248,54 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/github/app', async (req) => {
     const cfg = await refreshAppInfo();
     const user = currentUser(req)!;
+    const isAdmin = user.role === 'admin';
+    const expected = expectedWebhookUrl(req);
+    // La URL que GitHub tiene DE VERDAD (solo para el administrador, que es
+    // quien puede corregirla): antes se enseñaba la calculada como «ya
+    // configurada», aunque la App se hubiera creado por el túnel SSH o el panel
+    // hubiera cambiado de dominio desde entonces.
+    const actual = cfg && isAdmin ? await actualWebhookUrl() : null;
     return {
       configured: !!cfg,
       // Solo el admin puede crear o desenlazar la App del servidor.
-      canConfigure: user.role === 'admin',
+      canConfigure: isAdmin,
       app: cfg ? { slug: cfg.slug, name: cfg.name, htmlUrl: cfg.htmlUrl } : null,
-      webhookUrl: `${baseUrlOf(req)}/api/webhooks/github/app`,
+      webhookUrl: expected,
+      webhookUrlActual: actual?.url ?? null,
+      webhookUrlError: actual?.error ?? null,
+      // GitHub no puede entregar eventos a localhost ni a una IP del túnel: si
+      // el panel no tiene dominio, crear la App desde aquí dejaría el webhook roto.
+      panelReachable: !isLocalOrIpHost(new URL(expected).hostname),
     };
+  });
+
+  /**
+   * Corrige la URL del webhook de la App en GitHub para que apunte al dominio
+   * actual del panel (tras crearla por el túnel o cambiar SKYWAY_DOMAIN). Sin
+   * cuerpo: la URL la decide el servidor, nunca quien llama.
+   */
+  app.post('/api/github/app/webhook-url', { preHandler: [requireAdmin, requireSession] }, async (req, reply) => {
+    if (!githubAppConfig()) {
+      return reply.code(409).send({ error: 'La GitHub App no está configurada en este servidor.', code: 'app_not_configured' });
+    }
+    const url = expectedWebhookUrl(req);
+    if (isLocalOrIpHost(new URL(url).hostname)) {
+      return reply.code(400).send({
+        error:
+          'El panel no tiene un dominio público (SKYWAY_DOMAIN) y GitHub no puede entregar los push a esta dirección. ' +
+          'Define SKYWAY_DOMAIN y accede al panel por ese dominio antes de actualizar el webhook.',
+        code: 'panel_not_public',
+      });
+    }
+    try {
+      const saved = await setAppWebhookUrl(url);
+      webhookCache = { at: Date.now(), appId: githubAppConfig()?.appId ?? null, url: saved ?? url, error: null };
+      audit(req, 'github_app_webhook_updated', { type: 'settings', id: githubAppConfig()?.appId ?? 'github-app', detail: url });
+      return { ok: true, webhookUrlActual: saved ?? url };
+    } catch (err: any) {
+      if (err instanceof GithubError) return reply.code(502).send({ error: err.message, code: 'github_error' });
+      throw err;
+    }
   });
 
   /**
@@ -239,7 +310,8 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
     const user = currentUser(req)!;
     const state = signState({ kind: 'manifest', userId: user.id });
     // GitHub exige nombre único global: un sufijo corto evita el choque más común.
-    const manifest = buildAppManifest(baseUrlOf(req), randomAlnum(5));
+    // El webhook, con el dominio del panel aunque se cree desde el túnel SSH.
+    const manifest = buildAppManifest(baseUrlOf(req), randomAlnum(5), panelBaseUrl(req));
     const action = body.org
       ? `https://github.com/organizations/${encodeURIComponent(body.org)}/settings/apps/new?state=${encodeURIComponent(state)}`
       : `https://github.com/settings/apps/new?state=${encodeURIComponent(state)}`;
@@ -261,6 +333,7 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
     }
     try {
       const cfg = await convertManifestCode(query.code);
+      webhookCache = null; // la de la App anterior ya no dice nada
       audit(req, 'github_app_created', { type: 'settings', id: cfg.appId, detail: cfg.name });
       return redirectToPanel(reply, '/settings?github=creada#github');
     } catch (err: any) {
@@ -273,6 +346,7 @@ export async function githubRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/github/app/disconnect', { preHandler: [requireAdmin, requireSession] }, async (req) => {
     const cfg = githubAppConfig();
     clearGithubApp();
+    webhookCache = null;
     audit(req, 'github_app_disconnected', { type: 'settings', id: cfg?.appId ?? 'github-app', detail: cfg?.name ?? '' });
     return { ok: true };
   });

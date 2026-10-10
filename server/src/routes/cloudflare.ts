@@ -9,7 +9,7 @@ import {
   guardarTokenCloudflare,
   probarTokenCloudflare,
 } from '../cloudflareconfig';
-import { borrarRegistroCreado, registrosCreados } from '../cloudflaredns';
+import { borrarRegistroCreado, registrosCreados, restaurarReemplazo } from '../cloudflaredns';
 import { rateLimit } from '../ratelimit';
 
 /**
@@ -51,6 +51,21 @@ export async function cloudflareRoutes(app: FastifyInstance): Promise<void> {
       async (req) => {
         const { domain } = z.object({ domain: z.string().trim().toLowerCase().min(1).max(253) }).parse(req.params);
         const result = await borrarRegistroCreado(domain, (action, target) => audit(req, action, target));
+        return { ok: true, result, records: registrosCreados() };
+      },
+    );
+
+    /**
+     * Deshace el reemplazo de un nombre: vuelve a crear los registros del
+     * hosting anterior y retira el A de Skyway, de una vez. Con sesión de
+     * navegador, como el reemplazo: devuelve el tráfico de la web a otro sitio.
+     */
+    secured.post(
+      '/api/cloudflare/records/:domain/restore',
+      { preHandler: [requireAdmin, requireSession, rateLimit({ max: 10, windowMs: 60_000 })] },
+      async (req) => {
+        const { domain } = z.object({ domain: z.string().trim().toLowerCase().min(1).max(253) }).parse(req.params);
+        const result = await restaurarReemplazo(domain, (action, target) => audit(req, action, target));
         return { ok: true, result, records: registrosCreados() };
       },
     );

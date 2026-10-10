@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Check, ChevronDown, History, LifeBuoy, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
-import { api, openStream } from '../../api';
+import { Check, ChevronDown, Hammer, History, LifeBuoy, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
+import { api, ApiError, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, EMPTY_LIST, fmtDuration, isActiveDeploy, ServiceStatusKind, timeAgo } from '../../utils';
 import LogViewer from '../LogViewer';
@@ -362,6 +362,8 @@ export default function DeploymentsTab({
   // Volver a una versión anterior es un cambio en producción: como el resto de
   // acciones de ese calado, pasa por una confirmación.
   const [rollbackTo, setRollbackTo] = useState<Deployment | null>(null);
+  // Versión cuya imagen ya se purgó: se reconstruye su commit en vez de volver a ella.
+  const [rebuildFrom, setRebuildFrom] = useState<Deployment | null>(null);
   // La tarjeta que se está plegando sigue montada hasta acabar su animación.
   const [closingId, setClosingId] = useState<string | null>(null);
   const closeTimer = useRef<number>();
@@ -391,6 +393,22 @@ export default function DeploymentsTab({
     mutationFn: (deploymentId: string) => api.post<{ deployment: Deployment }>(`/deployments/${deploymentId}/rollback`),
     onSuccess: (data) => {
       toast('Restaurando la versión anterior…', 'ok');
+      toggle(data.deployment.id);
+      queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
+    },
+    onError: (err: Error) => {
+      toast(err.message, 'err');
+      // La imagen se purgó entre la carga y el clic: la lista lo marcará y ofrecerá reconstruir.
+      if (err instanceof ApiError && err.code === 'image_purged') {
+        queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
+      }
+    },
+  });
+
+  const rebuild = useMutation({
+    mutationFn: (commit: string) => api.post<{ deployment: Deployment }>(`/services/${serviceId}/deploy`, { commit }),
+    onSuccess: (data) => {
+      toast('Reconstruyendo la versión desde su commit…', 'ok');
       toggle(data.deployment.id);
       queryClient.invalidateQueries({ queryKey: ['deployments', serviceId] });
     },
@@ -484,6 +502,19 @@ export default function DeploymentsTab({
         confirmVariant="secondary"
         loading={rollback.isPending}
       />
+      <ConfirmModal
+        open={!!rebuildFrom}
+        onClose={() => setRebuildFrom(null)}
+        onConfirm={() => {
+          if (rebuildFrom?.commit_sha) rebuild.mutate(rebuildFrom.commit_sha);
+          setRebuildFrom(null);
+        }}
+        title="Reconstruir esta versión"
+        message={`La imagen de esta versión ya no está en el servidor (solo se conservan las de las últimas versiones correctas). Se clonará el commit ${rebuildFrom?.commit_sha?.slice(0, 7) ?? ''} y se compilará de nuevo con la configuración actual del servicio; después sustituirá a la versión en ejecución.`}
+        confirmLabel="Reconstruir y desplegar"
+        confirmVariant="secondary"
+        loading={rebuild.isPending}
+      />
 
       {ordered.map((d) => {
         const open = openId === d.id;
@@ -563,19 +594,32 @@ export default function DeploymentsTab({
                     <XCircle size={14} aria-hidden />
                   </button>
                 )}
-                {d.id !== currentId && d.status === 'success' && serviceType === 'git' && (
+                {d.id !== currentId && d.status === 'success' && serviceType === 'git' && (d.imageAvailable !== false || d.commit_sha) && (
                   /* Es un cambio en producción: separado de «Logs» para que no se pulse de paso. */
                   <>
                   <span aria-hidden className="mx-0.5 h-4 w-px shrink-0 bg-line" />
-                  <button
-                    type="button"
-                    onClick={() => setRollbackTo(d)}
-                    className="press flex h-10 w-10 items-center justify-center rounded-lg leading-none text-subtle hover:bg-surface2 hover:text-txt sm:h-7 sm:w-7"
-                    title="Volver a esta versión"
-                    aria-label="Volver a esta versión"
-                  >
-                    <RotateCcw size={13} aria-hidden />
-                  </button>
+                  {d.imageAvailable === false ? (
+                    // Sin imagen, «volver» fallaría: se ofrece reconstruir su commit.
+                    <button
+                      type="button"
+                      onClick={() => setRebuildFrom(d)}
+                      className="press flex h-10 w-10 items-center justify-center rounded-lg leading-none text-subtle hover:bg-surface2 hover:text-txt sm:h-7 sm:w-7"
+                      title="La imagen de esta versión ya no está en el servidor: reconstruir su commit"
+                      aria-label="Reconstruir esta versión"
+                    >
+                      <Hammer size={13} aria-hidden />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setRollbackTo(d)}
+                      className="press flex h-10 w-10 items-center justify-center rounded-lg leading-none text-subtle hover:bg-surface2 hover:text-txt sm:h-7 sm:w-7"
+                      title="Volver a esta versión"
+                      aria-label="Volver a esta versión"
+                    >
+                      <RotateCcw size={13} aria-hidden />
+                    </button>
+                  )}
                   </>
                 )}
               </span>

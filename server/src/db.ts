@@ -776,6 +776,107 @@ export function initDb(): void {
   // servicio) que haya en el cliente de correo son de este proyecto: las creó
   // cuando el cliente era solo suyo. Ver `credentialNames` en mailconnect.ts.
   ensureColumn('mailway_links', 'legacy_credentials', 'INTEGER NOT NULL DEFAULT 0');
+  // Despliegue cortado por un reinicio o un apagado de Skyway: 1 = pendiente de
+  // tratar al arrancar (alerta y, una sola vez, reintento), 2 = ya tratado.
+  // Sin la marca no había forma de distinguirlo de un fallo normal.
+  ensureColumn('deployments', 'interrupted', 'INTEGER NOT NULL DEFAULT 0');
+  // Revisión de la configuración del servicio (variables propias, compartidas
+  // del proyecto y campos que exigen redesplegar). Sube con cada cambio guardado
+  // y cada despliegue anota la que aplicó: «Cambios sin desplegar» sale de
+  // comparar las dos, y no de un estado de la interfaz que se perdía al cerrarla.
+  ensureColumn('services', 'config_rev', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('deployments', 'config_rev', 'INTEGER');
+  // Commit concreto que se pidió reconstruir (versiones cuya imagen ya se purgó).
+  ensureColumn('deployments', 'target_commit', 'TEXT');
+  // Estado del auto-deploy por sondeo, por servicio. La línea base («última
+  // cabeza tratada») vivía solo en memoria: tras un reinicio el primer sondeo la
+  // fijaba en la cabeza ACTUAL y un push hecho mientras Skyway estaba parado no
+  // se desplegaba nunca. También guarda la última comprobación y su error, que
+  // antes se perdían sin rastro (`if (!head) return`).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS autodeploy_state (
+      service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
+      last_seen_sha TEXT,
+      checked_at INTEGER,
+      ok_at INTEGER,
+      error TEXT,
+      failing_since INTEGER
+    );
+  `);
+  // Alerta de un despliegue que volvía a una versión anterior: el despliegue
+  // correcto cuya imagen se quería recuperar. Sin esto, la alerta ofrecía
+  // «Desplegar», que despliega la cabeza de la rama: justo lo contrario.
+  ensureColumn('alerts', 'rollback_to', 'TEXT');
+  // Copia de lo que sustituyó el DNS automático al reemplazar, a petición del
+  // administrador, el A/AAAA/CNAME del hosting anterior (JSON con los
+  // registros borrados y si el A lo creó Skyway): sin ella, «Restaurar» no
+  // podría devolver la zona a como estaba.
+  ensureColumn('cloudflare_dns_records', 'replaced', 'TEXT');
+  // Cambio de dominio de un proyecto (dominio.es → dominio2.es): el asistente
+  // guarda aquí su estado para que «Volver» y «Reintentar» sobrevivan a un
+  // reinicio. El estado del correo vive solo en Mailway (`mailway_migration_id`).
+  // Un proyecto solo tiene UN cambio abierto (el índice parcial): dos a la vez
+  // sobre los mismos servicios se pisarían los dominios y las variables.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS domain_migrations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      from_domain TEXT NOT NULL,
+      to_domain TEXT NOT NULL,
+      estado TEXT NOT NULL,
+      paso TEXT NOT NULL DEFAULT '',
+      error TEXT,
+      solo_web INTEGER NOT NULL DEFAULT 0,
+      hosts_json TEXT NOT NULL,
+      env_json TEXT NOT NULL,
+      mailway_client_id TEXT,
+      mailway_migration_id TEXT,
+      servicios_json TEXT NOT NULL DEFAULT '{}',
+      created_by TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      pasada_at INTEGER,
+      terminada_at INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_domain_migrations_abierta ON domain_migrations(project_id)
+      WHERE estado NOT IN ('terminada','cancelada');
+    -- Valores anteriores al cambio, en claro como env_vars, para deshacer clave
+    -- a clave: «Volver» solo restaura una variable si su valor actual sigue
+    -- siendo el que escribió el cambio (valor_escrito). Se purgan al terminar.
+    CREATE TABLE IF NOT EXISTS domain_migration_snapshots (
+      migration_id TEXT NOT NULL REFERENCES domain_migrations(id) ON DELETE CASCADE,
+      ambito TEXT NOT NULL,
+      service_id TEXT NOT NULL DEFAULT '',
+      key TEXT NOT NULL,
+      valor_original TEXT NOT NULL,
+      valor_escrito TEXT,
+      PRIMARY KEY (migration_id, ambito, service_id, key)
+    );
+    -- Redirecciones del nombre viejo al nuevo que Skyway publica por su
+    -- proveedor HTTP de Traefik. Sin service_id a propósito: sobreviven al
+    -- borrado del servicio (los enlaces antiguos siguen funcionando), no al del
+    -- proyecto.
+    CREATE TABLE IF NOT EXISTS domain_redirects (
+      host TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      to_host TEXT NOT NULL,
+      migration_id TEXT,
+      permanent_from INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    -- Nombres nuevos que se sirven antes de pasar (prepublicación), para que su
+    -- certificado exista antes del cambio. Solo se publican con dns_ok_at.
+    CREATE TABLE IF NOT EXISTS domain_prepublished (
+      host TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+      migration_id TEXT NOT NULL,
+      dns_ok_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_domain_redirects_migration ON domain_redirects(migration_id);
+    CREATE INDEX IF NOT EXISTS idx_domain_prepublished_migration ON domain_prepublished(migration_id);
+  `);
 
   seedDefaultPlans();
   // El orden importa: `migrateClientsToWorkspaces` es quien rellena
@@ -1581,6 +1682,138 @@ export function setEnv(serviceId: string, vars: Record<string, string>): void {
   tx();
 }
 
+/**
+ * Aplica solo los cambios de quien edita (`set` y `unset`) sobre las variables
+ * ACTUALES. Reemplazar la lista entera borraba lo que otro había escrito entre
+ * la carga del formulario y el guardado: las variables que importa el primer
+ * despliegue, los secretos que genera el manifiesto o las credenciales SMTP de
+ * Correo → Conectar.
+ */
+export function patchEnv(serviceId: string, set: Record<string, string>, unset: readonly string[]): void {
+  const upsert = stmt(
+    'INSERT INTO env_vars (service_id, key, value) VALUES (?, ?, ?) ON CONFLICT(service_id, key) DO UPDATE SET value = excluded.value',
+  );
+  const del = stmt('DELETE FROM env_vars WHERE service_id = ? AND key = ?');
+  db.transaction(() => {
+    for (const key of unset) if (!Object.hasOwn(set, key)) del.run(serviceId, key);
+    for (const [key, value] of Object.entries(set)) upsert.run(serviceId, key, value);
+  })();
+}
+
+// ---------- revisión de la configuración (cambios sin desplegar) ----------
+
+/**
+ * Sube la revisión de configuración de unos servicios: hay cambios guardados que
+ * solo surten efecto al redesplegar. Solo la llaman las escrituras de quien
+ * edita (rutas), nunca las del propio despliegue, que se aplican en él mismo.
+ */
+export function bumpConfigRev(serviceIds: readonly string[]): void {
+  if (serviceIds.length === 0) return;
+  const upd = stmt('UPDATE services SET config_rev = config_rev + 1 WHERE id = ?');
+  db.transaction(() => {
+    for (const id of new Set(serviceIds)) upd.run(id);
+  })();
+}
+
+/** Las variables compartidas llegan a todos los servicios del proyecto. */
+export function bumpProjectConfigRev(projectId: string): void {
+  stmt('UPDATE services SET config_rev = config_rev + 1 WHERE project_id = ?').run(projectId);
+}
+
+/**
+ * Revisión aplicada por el último despliegue CORRECTO de cada servicio. Solo
+ * tienen entrada los servicios con algún despliegue correcto; un despliegue
+ * anterior a la columna cuenta como revisión 0.
+ */
+export function appliedConfigRevs(serviceIds: string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const lote of lotes([...new Set(serviceIds)])) {
+    const rows = stmt(
+      `SELECT d.service_id AS service_id, d.config_rev AS config_rev
+         FROM deployments d
+         JOIN (SELECT service_id, MAX(created_at) AS created_at FROM deployments
+                WHERE status = 'success' AND service_id IN (${lote.map(() => '?').join(',')}) GROUP BY service_id) ult
+           ON ult.service_id = d.service_id AND ult.created_at = d.created_at
+        WHERE d.status = 'success'
+        ORDER BY d.rowid ASC`,
+    ).all(...lote) as { service_id: string; config_rev: number | null }[];
+    for (const r of rows) out.set(r.service_id, r.config_rev ?? 0);
+  }
+  return out;
+}
+
+/** Servicios con cambios guardados que su último despliegue correcto no lleva. */
+export function servicesWithPendingChanges(services: readonly ServiceRow[]): Set<string> {
+  const applied = appliedConfigRevs(services.map((s) => s.id));
+  const out = new Set<string>();
+  for (const s of services) {
+    const rev = applied.get(s.id);
+    // Sin ningún despliegue correcto no hay «cambios sin aplicar»: falta el primero.
+    if (rev !== undefined && (s.config_rev ?? 0) > rev) out.add(s.id);
+  }
+  return out;
+}
+
+// ---------- estado del auto-deploy por sondeo ----------
+
+export interface AutoDeployStateRow {
+  service_id: string;
+  /** Última cabeza de la rama ya tratada (línea base del sondeo). */
+  last_seen_sha: string | null;
+  checked_at: number | null;
+  ok_at: number | null;
+  error: string | null;
+  failing_since: number | null;
+}
+
+export function listAutoDeployStates(): Map<string, AutoDeployStateRow> {
+  const rows = stmt('SELECT * FROM autodeploy_state').all() as AutoDeployStateRow[];
+  return new Map(rows.map((r) => [r.service_id, r]));
+}
+
+export function getAutoDeployState(serviceId: string): AutoDeployStateRow | undefined {
+  return stmt('SELECT * FROM autodeploy_state WHERE service_id = ?').get(serviceId) as AutoDeployStateRow | undefined;
+}
+
+/** Comprobación correcta: la cabeza `sha` queda como línea base y se cierra la racha de fallos. */
+export function recordAutoDeployOk(serviceId: string, sha: string): void {
+  const at = now();
+  stmt(
+    `INSERT INTO autodeploy_state (service_id, last_seen_sha, checked_at, ok_at, error, failing_since)
+     VALUES (?, ?, ?, ?, NULL, NULL)
+     ON CONFLICT(service_id) DO UPDATE SET last_seen_sha = excluded.last_seen_sha, checked_at = excluded.checked_at,
+       ok_at = excluded.ok_at, error = NULL, failing_since = NULL`,
+  ).run(serviceId, sha, at, at);
+}
+
+/** Comprobación fallida: conserva la línea base y abre (o alarga) la racha de fallos. */
+export function recordAutoDeployFailure(serviceId: string, error: string): AutoDeployStateRow {
+  const at = now();
+  stmt(
+    `INSERT INTO autodeploy_state (service_id, last_seen_sha, checked_at, ok_at, error, failing_since)
+     VALUES (?, NULL, ?, NULL, ?, ?)
+     ON CONFLICT(service_id) DO UPDATE SET checked_at = excluded.checked_at, error = excluded.error,
+       failing_since = COALESCE(autodeploy_state.failing_since, excluded.failing_since)`,
+  ).run(serviceId, at, error.slice(0, 500), at);
+  return getAutoDeployState(serviceId)!;
+}
+
+/**
+ * Olvida el estado de los servicios que ya no se sondean (auto-deploy apagado o
+ * borrados). Devuelve los que olvida, para cerrar su alerta de sondeo.
+ */
+export function forgetAutoDeployStates(keep: ReadonlySet<string>): string[] {
+  const ids = (stmt('SELECT service_id FROM autodeploy_state').all() as { service_id: string }[])
+    .map((r) => r.service_id)
+    .filter((id) => !keep.has(id));
+  if (ids.length === 0) return ids;
+  const del = stmt('DELETE FROM autodeploy_state WHERE service_id = ?');
+  db.transaction(() => {
+    for (const id of ids) del.run(id);
+  })();
+  return ids;
+}
+
 // ---------- variables gestionadas por Skyway ----------
 
 export interface ManagedEnvEntry {
@@ -1710,7 +1943,7 @@ export function createDeployment(
   serviceId: string,
   trigger: string,
   imageTag?: string | null,
-  opts: { forceBuild?: boolean } = {},
+  opts: { forceBuild?: boolean; targetCommit?: string | null } = {},
 ): DeploymentRow {
   const row: DeploymentRow = {
     id: id('dep'),
@@ -1726,6 +1959,7 @@ export function createDeployment(
     build_key: null,
     repo_config: null,
     force_build: opts.forceBuild ? 1 : 0,
+    target_commit: opts.targetCommit ?? null,
     created_at: now(),
     finished_at: null,
   };
@@ -1733,9 +1967,9 @@ export function createDeployment(
   // marcado como «parado adrede» lo pintaría en gris mientras se construye.
   db.transaction(() => {
     stmt(
-      `INSERT INTO deployments (id, service_id, status, trigger, commit_sha, commit_msg, image_tag, logs, error, force_build, created_at, finished_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(row.id, row.service_id, row.status, row.trigger, row.commit_sha, row.commit_msg, row.image_tag, row.logs, row.error, row.force_build, row.created_at, row.finished_at);
+      `INSERT INTO deployments (id, service_id, status, trigger, commit_sha, commit_msg, image_tag, logs, error, force_build, target_commit, created_at, finished_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(row.id, row.service_id, row.status, row.trigger, row.commit_sha, row.commit_msg, row.image_tag, row.logs, row.error, row.force_build, row.target_commit, row.created_at, row.finished_at);
     // Desplegar arranca el contenedor: la parada manual anterior deja de contar.
     setServiceStopped(serviceId, false);
   })();
@@ -1745,7 +1979,7 @@ export function createDeployment(
 /** Columnas que `updateDeployment` admite: el SQL se compone con los nombres de las claves. */
 const DEPLOYMENT_COLUMNS = new Set([
   'status', 'commit_sha', 'commit_msg', 'image_tag', 'logs', 'runtime_logs', 'error', 'finished_at',
-  'build_key', 'repo_config', 'build_vars',
+  'build_key', 'repo_config', 'build_vars', 'interrupted', 'config_rev',
 ]);
 
 export function updateDeployment(
@@ -1764,6 +1998,8 @@ export function updateDeployment(
       | 'build_key'
       | 'repo_config'
       | 'build_vars'
+      | 'interrupted'
+      | 'config_rev'
     >
   >,
 ): void {
@@ -1791,7 +2027,7 @@ export function getDeployment(deploymentId: string): DeploymentRow | undefined {
 export function deploymentSummary(deploymentId: string): DeploymentRow | undefined {
   const row = stmt(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
-              build_key, repo_config, force_build, created_at, finished_at
+              build_key, repo_config, force_build, target_commit, created_at, finished_at
          FROM deployments WHERE id = ?`,
     )
     .get(deploymentId) as Omit<DeploymentRow, 'logs'> | undefined;
@@ -1801,7 +2037,7 @@ export function deploymentSummary(deploymentId: string): DeploymentRow | undefin
 export function listDeployments(serviceId: string, limit = 20): DeploymentRow[] {
   return stmt(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
-              build_key, repo_config, force_build, created_at, finished_at
+              build_key, repo_config, force_build, target_commit, created_at, finished_at
          FROM deployments WHERE service_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
     )
     .all(serviceId, limit)
@@ -1862,7 +2098,7 @@ export function lastSuccessfulImage(serviceId: string): string | null {
 export function latestDeployment(serviceId: string): DeploymentRow | undefined {
   const row = stmt(
       `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
-              build_key, repo_config, force_build, created_at, finished_at
+              build_key, repo_config, force_build, target_commit, created_at, finished_at
          FROM deployments WHERE service_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     )
     .get(serviceId) as Omit<DeploymentRow, 'logs'> | undefined;
@@ -1961,14 +2197,38 @@ export function activeDeploymentsByProject(projectId: string): Record<string, De
 }
 
 /**
- * SHA del último commit que Skyway llegó a construir para el servicio (clon
- * realizado, con éxito o no). Sirve al auto-deploy para no re-desplegar un
- * commit ya tratado —lo desplegara el webhook, un deploy manual o el propio
- * sondeo— y evitar duplicados y bucles.
+ * SHA del último commit que Skyway desplegó con éxito, o que está desplegando
+ * ahora mismo, para el servicio. Sirve al webhook y al auto-deploy para no
+ * repetir un commit ya tratado —lo desplegara el webhook, un deploy manual o el
+ * propio sondeo— y evitar duplicados y bucles.
+ *
+ * Los fallidos y cancelados NO cuentan: antes sí, y un despliegue cortado por un
+ * reinicio (o que falló por algo ajeno al código) dejaba ese commit por
+ * «ya desplegado», así que ni «Redeliver» en GitHub lo volvía a lanzar. Esto es
+ * lo que usan los webhooks; el sondeo usa `lastAttemptedCommitSha`.
  */
 export function lastBuiltCommitSha(serviceId: string): string | null {
-  const row = stmt('SELECT commit_sha FROM deployments WHERE service_id = ? AND commit_sha IS NOT NULL ORDER BY created_at DESC LIMIT 1')
-    .get(serviceId) as { commit_sha: string } | undefined;
+  const row = stmt(
+    `SELECT commit_sha FROM deployments
+      WHERE service_id = ? AND commit_sha IS NOT NULL AND status IN ('success', 'queued', 'building', 'deploying')
+      ORDER BY created_at DESC LIMIT 1`,
+  ).get(serviceId) as { commit_sha: string } | undefined;
+  return row?.commit_sha ?? null;
+}
+
+/**
+ * SHA del último commit que Skyway intentó desplegar, saliera como saliera. Lo
+ * usa el sondeo del auto-deploy: un despliegue manual de una cabeza que el
+ * sondeo aún no había visto y que falla no debe relanzarse solo al minuto
+ * siguiente (sería el mismo build roto otra vez). Un commit fallido se vuelve a
+ * lanzar a mano, con «Redeliver» en GitHub o con el siguiente push.
+ */
+export function lastAttemptedCommitSha(serviceId: string): string | null {
+  const row = stmt(
+    `SELECT commit_sha FROM deployments
+      WHERE service_id = ? AND commit_sha IS NOT NULL
+      ORDER BY created_at DESC LIMIT 1`,
+  ).get(serviceId) as { commit_sha: string } | undefined;
   return row?.commit_sha ?? null;
 }
 
@@ -2011,6 +2271,18 @@ export function setProjectVars(projectId: string, vars: Record<string, string>):
     for (const [k, v] of Object.entries(vars)) ins.run(projectId, k, v);
   });
   tx();
+}
+
+/** Como `patchEnv`, para las variables compartidas: solo lo que cambió quien edita. */
+export function patchProjectVars(projectId: string, set: Record<string, string>, unset: readonly string[]): void {
+  const upsert = stmt(
+    'INSERT INTO project_vars (project_id, key, value) VALUES (?, ?, ?) ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value',
+  );
+  const del = stmt('DELETE FROM project_vars WHERE project_id = ? AND key = ?');
+  db.transaction(() => {
+    for (const key of unset) if (!Object.hasOwn(set, key)) del.run(projectId, key);
+    for (const [key, value] of Object.entries(set)) upsert.run(projectId, key, value);
+  })();
 }
 
 // ---------- correo: vínculo proyecto ↔ cliente de Mailway ----------
@@ -2076,14 +2348,19 @@ export function deleteMailwayLink(projectId: string): void {
 }
 
 /**
- * Todos los dominios asignados a servicios de Skyway, en minúsculas. El puente
- * de Traefik de Mailway los usa para no aceptar nunca una ruta que se apropie
- * de un dominio que ya sirve una aplicación del panel. Lee solo la columna de
- * configuración y tolera filas ilegibles, como `parseService`.
+ * Todos los nombres que Skyway publica en Traefik, en minúsculas: los dominios
+ * de los servicios y, además, los de las redirecciones y la prepublicación de
+ * un cambio de dominio (que Skyway sirve por su proveedor HTTP aunque ningún
+ * servicio los tenga en `domains`). El puente de Traefik de Mailway los usa
+ * para no aceptar nunca una ruta que se apropie de uno de ellos. Lee solo la
+ * columna de configuración y tolera filas ilegibles, como `parseService`.
  */
 export function listAssignedDomains(): string[] {
   const out = new Set<string>();
   for (const row of serviceDomainRows()) for (const d of row.domains) out.add(d);
+  for (const r of stmt('SELECT host FROM domain_redirects UNION SELECT host FROM domain_prepublished').all() as { host: string }[]) {
+    out.add(r.host);
+  }
   return [...out];
 }
 
@@ -2093,11 +2370,6 @@ export function findServiceIdByDomain(domain: string): string | undefined {
   return serviceDomainRows().find((r) => r.domains.includes(wanted))?.id;
 }
 
-/**
- * Todos los servicios que tienen asignado ese dominio. Normalmente uno o
- * ninguno; puede haber más en instalaciones anteriores a la comprobación de
- * dominios únicos (`domainguard.ts`), y quien pregunta tiene que verlos todos.
- */
 // ---------- registros del DNS automático en Cloudflare ----------
 export interface CloudflareDnsRecordRow {
   domain: string;
@@ -2107,6 +2379,8 @@ export interface CloudflareDnsRecordRow {
   content: string;
   project_id: string | null;
   created_at: number;
+  /** JSON de `ReemplazoGuardado` (cloudflaredns.ts) si el registro sustituyó a otros; null si no. */
+  replaced: string | null;
 }
 
 export function getCloudflareDnsRecord(domain: string): CloudflareDnsRecordRow | undefined {
@@ -2119,13 +2393,21 @@ export function listCloudflareDnsRecords(): CloudflareDnsRecordRow[] {
   return stmt('SELECT * FROM cloudflare_dns_records ORDER BY domain').all() as CloudflareDnsRecordRow[];
 }
 
-export function upsertCloudflareDnsRecord(row: Omit<CloudflareDnsRecordRow, 'created_at'>): void {
+/**
+ * Anota (o reescribe) el registro creado de un nombre. `replaced` solo lo da
+ * un reemplazo; un alta normal lo deja en null, así que una copia antigua no
+ * sobrevive a un registro nuevo.
+ */
+export function upsertCloudflareDnsRecord(
+  row: Omit<CloudflareDnsRecordRow, 'created_at' | 'replaced'> & { replaced?: string | null },
+): void {
   stmt(
-    `INSERT INTO cloudflare_dns_records (domain, zone_id, zone_name, record_id, content, project_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO cloudflare_dns_records (domain, zone_id, zone_name, record_id, content, project_id, created_at, replaced)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(domain) DO UPDATE SET zone_id = excluded.zone_id, zone_name = excluded.zone_name,
-       record_id = excluded.record_id, content = excluded.content, project_id = excluded.project_id`,
-  ).run(row.domain, row.zone_id, row.zone_name, row.record_id, row.content, row.project_id, now());
+       record_id = excluded.record_id, content = excluded.content, project_id = excluded.project_id,
+       replaced = excluded.replaced`,
+  ).run(row.domain, row.zone_id, row.zone_name, row.record_id, row.content, row.project_id, now(), row.replaced ?? null);
 }
 
 /** El administrador asigna un nombre reservado a otro proyecto: la reserva pasa a ese proyecto. */
@@ -2174,6 +2456,13 @@ export function deleteCloudflareDnsRecord(domain: string): void {
   stmt('DELETE FROM cloudflare_dns_records WHERE domain = ?').run(domain.trim().toLowerCase());
 }
 
+/**
+ * Todos los servicios que tienen asignado ese dominio. Normalmente uno o
+ * ninguno; puede haber más en instalaciones anteriores a la comprobación de
+ * dominios únicos (`domainguard.ts`), y quien pregunta tiene que verlos todos.
+ * Solo los dominios servidos: las redirecciones y la prepublicación no son de
+ * ningún servicio (ver `getDomainRedirect` y `getPrepublished`).
+ */
 export function serviceIdsForDomain(domain: string): string[] {
   const wanted = domain.trim().toLowerCase();
   return serviceDomainRows()
@@ -2196,6 +2485,454 @@ function serviceDomainRows(): { id: string; domains: string[] }[] {
     }
   }
   return out;
+}
+
+// ---------- cambio de dominio de un proyecto ----------
+
+export type EstadoMigracionDominio =
+  | 'preparando'
+  | 'lista'
+  | 'pasando'
+  | 'pasada'
+  | 'volviendo'
+  | 'dando_de_baja'
+  | 'terminada'
+  | 'cancelada';
+
+/** Estados finales: solo en ellos el proyecto puede abrir otro cambio. */
+export const ESTADOS_MIGRACION_CERRADA: readonly EstadoMigracionDominio[] = ['terminada', 'cancelada'];
+
+export type ModoHostMigracion = 'redirigir' | 'servir' | 'no_cambiar';
+export type AmbitoVariableMigracion = 'service' | 'project' | 'build';
+
+/** Un nombre de un servicio y su sustituto (`hosts_json`). */
+export interface HostMigracion {
+  serviceId: string;
+  from: string;
+  to: string;
+  modo: ModoHostMigracion;
+}
+
+/** Variable que el usuario ha excluido del cambio (`env_json.excluidas`). */
+export interface ClaveMigracion {
+  ambito: AmbitoVariableMigracion;
+  serviceId: string | null;
+  key: string;
+}
+
+export interface EnvMigracion {
+  excluidas: ClaveMigracion[];
+  /** Huella del plan de variables con el que se preparó (`envreplace.ts`). */
+  huella: string;
+}
+
+/** Despliegue de un servicio afectado (`servicios_json`). */
+export interface ServicioMigracion {
+  deploymentId: string | null;
+  estado: string;
+  error: string | null;
+}
+
+/**
+ * Fila de `domain_migrations` con las columnas JSON ya leídas (`hosts`, `env`
+ * y `servicios`, sin el sufijo `_json`). Una columna ilegible se lee vacía,
+ * como la `config` de `parseService`: una fila rota no tumba el asistente.
+ */
+export interface DomainMigrationRow {
+  id: string;
+  project_id: string;
+  from_domain: string;
+  to_domain: string;
+  estado: EstadoMigracionDominio;
+  paso: string;
+  error: string | null;
+  solo_web: boolean;
+  hosts: HostMigracion[];
+  env: EnvMigracion;
+  mailway_client_id: string | null;
+  mailway_migration_id: string | null;
+  servicios: Record<string, ServicioMigracion>;
+  created_by: string | null;
+  created_at: number;
+  updated_at: number;
+  pasada_at: number | null;
+  terminada_at: number | null;
+}
+
+function leerJson<T>(texto: unknown, vacio: T): T {
+  if (typeof texto !== 'string') return vacio;
+  try {
+    const v = JSON.parse(texto) as unknown;
+    if (Array.isArray(vacio) ? Array.isArray(v) : !!v && typeof v === 'object' && !Array.isArray(v)) return v as T;
+  } catch {
+    /* columna ilegible: se lee vacía */
+  }
+  return vacio;
+}
+
+function parseDomainMigration(row: any): DomainMigrationRow {
+  const { hosts_json, env_json, servicios_json, solo_web, ...rest } = row;
+  const env = leerJson<Partial<EnvMigracion>>(env_json, {});
+  return {
+    ...rest,
+    solo_web: !!solo_web,
+    hosts: leerJson<HostMigracion[]>(hosts_json, []),
+    env: { excluidas: Array.isArray(env.excluidas) ? env.excluidas : [], huella: typeof env.huella === 'string' ? env.huella : '' },
+    servicios: leerJson<Record<string, ServicioMigracion>>(servicios_json, {}),
+  };
+}
+
+/** Normaliza un nombre como lo guarda `domains` de un servicio: minúsculas y sin punto final. */
+function nombreHost(host: string): string {
+  return host.trim().toLowerCase().replace(/\.$/, '');
+}
+
+/**
+ * Da de alta un cambio de dominio. Lanza el error de SQLite
+ * (`SQLITE_CONSTRAINT_UNIQUE`) si el proyecto ya tiene uno abierto: quien
+ * llama lo comprueba antes con `getOpenDomainMigration`, dentro de su cerrojo.
+ */
+export function insertDomainMigration(row: {
+  id?: string;
+  project_id: string;
+  from_domain: string;
+  to_domain: string;
+  estado?: EstadoMigracionDominio;
+  paso?: string;
+  error?: string | null;
+  solo_web?: boolean;
+  hosts: HostMigracion[];
+  env: EnvMigracion;
+  mailway_client_id?: string | null;
+  mailway_migration_id?: string | null;
+  servicios?: Record<string, ServicioMigracion>;
+  created_by?: string | null;
+}): DomainMigrationRow {
+  const at = now();
+  const migrationId = row.id ?? id('dmig');
+  stmt(
+    `INSERT INTO domain_migrations (id, project_id, from_domain, to_domain, estado, paso, error, solo_web, hosts_json, env_json,
+       mailway_client_id, mailway_migration_id, servicios_json, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    migrationId,
+    row.project_id,
+    nombreHost(row.from_domain),
+    nombreHost(row.to_domain),
+    row.estado ?? 'preparando',
+    row.paso ?? '',
+    row.error ?? null,
+    row.solo_web ? 1 : 0,
+    JSON.stringify(row.hosts),
+    JSON.stringify(row.env),
+    row.mailway_client_id ?? null,
+    row.mailway_migration_id ?? null,
+    JSON.stringify(row.servicios ?? {}),
+    row.created_by ?? null,
+    at,
+    at,
+  );
+  return getDomainMigration(migrationId)!;
+}
+
+export function getDomainMigration(migrationId: string): DomainMigrationRow | undefined {
+  const row = stmt('SELECT * FROM domain_migrations WHERE id = ?').get(migrationId);
+  return row ? parseDomainMigration(row) : undefined;
+}
+
+/** El cambio abierto del proyecto (el que no está terminado ni cancelado), o undefined. */
+export function getOpenDomainMigration(projectId: string): DomainMigrationRow | undefined {
+  const row = stmt(
+    `SELECT * FROM domain_migrations WHERE project_id = ? AND estado NOT IN ('terminada','cancelada')`,
+  ).get(projectId);
+  return row ? parseDomainMigration(row) : undefined;
+}
+
+/** Cambios del proyecto, del más reciente al más antiguo. */
+export function listDomainMigrations(projectId: string, limit = 50): DomainMigrationRow[] {
+  return (stmt('SELECT * FROM domain_migrations WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?').all(
+    projectId,
+    limit,
+  ) as any[]).map(parseDomainMigration);
+}
+
+/**
+ * Cambios de TODOS los proyectos en esos estados. Al arrancar, los que quedaron
+ * a medias (`pasando`, `volviendo`, `dando_de_baja`) se marcan con un error
+ * para que la interfaz ofrezca «Reintentar»: no se reanudan solos.
+ */
+export function listDomainMigrationsByEstado(estados: readonly EstadoMigracionDominio[]): DomainMigrationRow[] {
+  if (estados.length === 0) return [];
+  return (stmt(
+    `SELECT * FROM domain_migrations WHERE estado IN (${estados.map(() => '?').join(',')}) ORDER BY created_at ASC, rowid ASC`,
+  ).all(...estados) as any[]).map(parseDomainMigration);
+}
+
+export type DomainMigrationPatch = Partial<
+  Pick<
+    DomainMigrationRow,
+    | 'estado'
+    | 'paso'
+    | 'error'
+    | 'solo_web'
+    | 'hosts'
+    | 'env'
+    | 'mailway_client_id'
+    | 'mailway_migration_id'
+    | 'servicios'
+    | 'pasada_at'
+    | 'terminada_at'
+  >
+>;
+
+/** Campo del parche → columna y cómo se guarda (lista blanca, como el resto de `update*`). */
+const DOMAIN_MIGRATION_COLUMNS: Record<keyof DomainMigrationPatch, (v: any) => [string, unknown]> = {
+  estado: (v) => ['estado', v],
+  paso: (v) => ['paso', v ?? ''],
+  error: (v) => ['error', v ?? null],
+  solo_web: (v) => ['solo_web', v ? 1 : 0],
+  hosts: (v) => ['hosts_json', JSON.stringify(v ?? [])],
+  env: (v) => ['env_json', JSON.stringify(v ?? { excluidas: [], huella: '' })],
+  mailway_client_id: (v) => ['mailway_client_id', v ?? null],
+  mailway_migration_id: (v) => ['mailway_migration_id', v ?? null],
+  servicios: (v) => ['servicios_json', JSON.stringify(v ?? {})],
+  pasada_at: (v) => ['pasada_at', v ?? null],
+  terminada_at: (v) => ['terminada_at', v ?? null],
+};
+
+/**
+ * Actualiza un cambio de dominio (y su `updated_at`). Con `siEstado`, solo si
+ * su estado sigue siendo uno de esos: así dos acciones que leyeron el mismo
+ * estado no pueden avanzar las dos. Devuelve si ha cambiado la fila.
+ */
+export function updateDomainMigration(
+  migrationId: string,
+  patch: DomainMigrationPatch,
+  opts: { siEstado?: readonly EstadoMigracionDominio[] } = {},
+): boolean {
+  const sets: string[] = ['updated_at = ?'];
+  const values: unknown[] = [now()];
+  for (const [campo, valor] of Object.entries(patch)) {
+    const columna = DOMAIN_MIGRATION_COLUMNS[campo as keyof DomainMigrationPatch];
+    if (!columna || valor === undefined) continue;
+    const [nombre, guardado] = columna(valor);
+    sets.push(`${nombre} = ?`);
+    values.push(guardado);
+  }
+  let where = 'id = ?';
+  values.push(migrationId);
+  if (opts.siEstado) {
+    if (opts.siEstado.length === 0) return false;
+    where += ` AND estado IN (${opts.siEstado.map(() => '?').join(',')})`;
+    values.push(...opts.siEstado);
+  }
+  return stmt(`UPDATE domain_migrations SET ${sets.join(', ')} WHERE ${where}`).run(...values).changes > 0;
+}
+
+/**
+ * Borra un cambio de dominio con todo lo que cuelga de él: sus instantáneas
+ * (en cascada), su prepublicación y sus redirecciones, en una transacción. Es
+ * la marcha atrás de «Preparar» cuando Mailway rechaza el cambio: sin borrar
+ * también la prepublicación, sus nombres seguirían reservados al proyecto
+ * (`listAssignedDomains`, `domainguard.ts`) sin ningún cambio que los use.
+ * Devuelve si existía.
+ */
+export function deleteDomainMigration(migrationId: string): boolean {
+  return db.transaction(() => {
+    stmt('DELETE FROM domain_prepublished WHERE migration_id = ?').run(migrationId);
+    stmt('DELETE FROM domain_redirects WHERE migration_id = ?').run(migrationId);
+    stmt('DELETE FROM domain_migration_snapshots WHERE migration_id = ?').run(migrationId);
+    return stmt('DELETE FROM domain_migrations WHERE id = ?').run(migrationId).changes > 0;
+  })();
+}
+
+/**
+ * Anota el despliegue de un servicio afectado sin pisar los de los demás: los
+ * despliegues terminan cada uno a su tiempo y cada uno escribe solo su entrada
+ * (leer y escribir en la misma transacción).
+ */
+export function setDomainMigrationServicio(migrationId: string, serviceId: string, servicio: ServicioMigracion | null): void {
+  db.transaction(() => {
+    const actual = getDomainMigration(migrationId);
+    if (!actual) return;
+    const servicios = { ...actual.servicios };
+    if (servicio) servicios[serviceId] = servicio;
+    else delete servicios[serviceId];
+    updateDomainMigration(migrationId, { servicios });
+  })();
+}
+
+/** Instantánea de un valor que el cambio de dominio sustituye (`domain_migration_snapshots`). */
+export interface DomainMigrationSnapshotRow {
+  migration_id: string;
+  /** `domains` guarda la lista de dominios del servicio (en JSON) con la clave `domains`. */
+  ambito: AmbitoVariableMigracion | 'domains';
+  /** '' para las variables del proyecto. */
+  service_id: string;
+  key: string;
+  valor_original: string;
+  /** Lo que escribió el cambio; null si todavía no ha escrito nada. */
+  valor_escrito: string | null;
+}
+
+/**
+ * Guarda (o sustituye) la instantánea de un valor. Al pasar de nuevo tras
+ * «Volver», el valor actual vuelve a ser el original y se sustituye la fila.
+ */
+export function putSnapshot(row: Omit<DomainMigrationSnapshotRow, 'service_id' | 'valor_escrito'> & {
+  service_id?: string | null;
+  valor_escrito?: string | null;
+}): void {
+  stmt(
+    `INSERT INTO domain_migration_snapshots (migration_id, ambito, service_id, key, valor_original, valor_escrito)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(migration_id, ambito, service_id, key) DO UPDATE SET
+       valor_original = excluded.valor_original, valor_escrito = excluded.valor_escrito`,
+  ).run(row.migration_id, row.ambito, row.service_id ?? '', row.key, row.valor_original, row.valor_escrito ?? null);
+}
+
+export function listSnapshots(migrationId: string): DomainMigrationSnapshotRow[] {
+  return stmt(
+    'SELECT * FROM domain_migration_snapshots WHERE migration_id = ? ORDER BY ambito, service_id, key',
+  ).all(migrationId) as DomainMigrationSnapshotRow[];
+}
+
+/** Los valores anteriores están en claro: se borran en cuanto el cambio termina. */
+export function purgeSnapshots(migrationId: string): number {
+  return stmt('DELETE FROM domain_migration_snapshots WHERE migration_id = ?').run(migrationId).changes;
+}
+
+/** Redirección de un nombre viejo al nuevo (`domain_redirects`). */
+export interface DomainRedirectRow {
+  host: string;
+  project_id: string;
+  to_host: string;
+  migration_id: string | null;
+  /** Desde cuándo es permanente (301/308); antes, temporal (302/307). */
+  permanent_from: number;
+  created_at: number;
+}
+
+export function getDomainRedirect(host: string): DomainRedirectRow | undefined {
+  return stmt('SELECT * FROM domain_redirects WHERE host = ?').get(nombreHost(host)) as DomainRedirectRow | undefined;
+}
+
+/** Todas las redirecciones (las publica el proveedor HTTP de Traefik) o, con `migrationId`, las de ese cambio. */
+export function listDomainRedirects(migrationId?: string): DomainRedirectRow[] {
+  if (migrationId !== undefined) {
+    return stmt('SELECT * FROM domain_redirects WHERE migration_id = ? ORDER BY host').all(migrationId) as DomainRedirectRow[];
+  }
+  return stmt('SELECT * FROM domain_redirects ORDER BY host').all() as DomainRedirectRow[];
+}
+
+/**
+ * Crea las redirecciones (en una transacción). Repetirla con el mismo nombre
+ * («Reintentar») la sustituye, pero nunca se apropia de la redirección de OTRO
+ * proyecto: esa fila se deja como está (`domainguard.ts` ya impide llegar
+ * aquí). Devuelve los nombres que NO ha escrito por ser de otro proyecto,
+ * para que quien llama no dé por hecha una redirección que no existe.
+ */
+export function insertDomainRedirects(
+  rows: readonly { host: string; project_id: string; to_host: string; migration_id?: string | null; permanent_from: number }[],
+): string[] {
+  const guardar = stmt(
+    `INSERT INTO domain_redirects (host, project_id, to_host, migration_id, permanent_from, created_at) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(host) DO UPDATE SET to_host = excluded.to_host, migration_id = excluded.migration_id,
+       permanent_from = excluded.permanent_from
+     WHERE domain_redirects.project_id = excluded.project_id`,
+  );
+  const at = now();
+  const ajenos: string[] = [];
+  db.transaction(() => {
+    for (const r of rows) {
+      const host = nombreHost(r.host);
+      const res = guardar.run(host, r.project_id, nombreHost(r.to_host), r.migration_id ?? null, r.permanent_from, at);
+      if (res.changes === 0) ajenos.push(host);
+    }
+  })();
+  return ajenos;
+}
+
+export function deleteDomainRedirects(migrationId: string): number {
+  return stmt('DELETE FROM domain_redirects WHERE migration_id = ?').run(migrationId).changes;
+}
+
+/**
+ * Quita las redirecciones del proyecto que salen de esos nombres. Al pasar, los
+ * nombres nuevos pueden ser el origen de una redirección de un cambio anterior
+ * (ida y vuelta entre dos dominios): el orden de `redirecciones.ts` ya no la
+ * publica mientras el servicio los sirve, pero la fila sobraría y volvería a
+ * salir en cuanto el servicio dejara de reclamarlos. Nunca toca las de otro
+ * proyecto. Devuelve cuántas ha borrado.
+ */
+export function deleteDomainRedirectHosts(projectId: string, hosts: readonly string[]): number {
+  const borrar = stmt('DELETE FROM domain_redirects WHERE project_id = ? AND host = ?');
+  let borradas = 0;
+  db.transaction(() => {
+    for (const host of hosts) borradas += borrar.run(projectId, nombreHost(host)).changes;
+  })();
+  return borradas;
+}
+
+/** Nombre nuevo servido antes de pasar (`domain_prepublished`). */
+export interface DomainPrepublishedRow {
+  host: string;
+  project_id: string;
+  service_id: string;
+  migration_id: string;
+  /** Cuándo dio `ok` su DNS; null mientras no apunte aquí (y entonces no se publica). */
+  dns_ok_at: number | null;
+  created_at: number;
+}
+
+export function getPrepublished(host: string): DomainPrepublishedRow | undefined {
+  return stmt('SELECT * FROM domain_prepublished WHERE host = ?').get(nombreHost(host)) as DomainPrepublishedRow | undefined;
+}
+
+/** Toda la prepublicación (la publica el proveedor HTTP de Traefik) o, con `migrationId`, la de ese cambio. */
+export function listPrepublished(migrationId?: string): DomainPrepublishedRow[] {
+  if (migrationId !== undefined) {
+    return stmt('SELECT * FROM domain_prepublished WHERE migration_id = ? ORDER BY host').all(migrationId) as DomainPrepublishedRow[];
+  }
+  return stmt('SELECT * FROM domain_prepublished ORDER BY host').all() as DomainPrepublishedRow[];
+}
+
+/**
+ * Anota los nombres que se prepublican (en una transacción). Repetirla
+ * conserva `dns_ok_at` (el DNS es del nombre, no del servicio) y, como las
+ * redirecciones, nunca se apropia de la fila de otro proyecto. Devuelve los
+ * nombres que NO ha escrito por ser de otro proyecto.
+ */
+export function upsertPrepublished(
+  rows: readonly { host: string; project_id: string; service_id: string; migration_id: string }[],
+): string[] {
+  const guardar = stmt(
+    `INSERT INTO domain_prepublished (host, project_id, service_id, migration_id, dns_ok_at, created_at) VALUES (?, ?, ?, ?, NULL, ?)
+     ON CONFLICT(host) DO UPDATE SET service_id = excluded.service_id, migration_id = excluded.migration_id
+     WHERE domain_prepublished.project_id = excluded.project_id`,
+  );
+  const at = now();
+  const ajenos: string[] = [];
+  db.transaction(() => {
+    for (const r of rows) {
+      const host = nombreHost(r.host);
+      if (guardar.run(host, r.project_id, r.service_id, r.migration_id, at).changes === 0) ajenos.push(host);
+    }
+  })();
+  return ajenos;
+}
+
+/** El DNS del nombre ya apunta aquí (`at`) o ha dejado de hacerlo (null). */
+export function markPrepublishedDns(host: string, at: number | null): void {
+  stmt('UPDATE domain_prepublished SET dns_ok_at = ? WHERE host = ?').run(at, nombreHost(host));
+}
+
+/** Retira la prepublicación del cambio (o solo la de un servicio, cuando su despliegue ya sirve los nombres). */
+export function deletePrepublished(migrationId: string, serviceId?: string): number {
+  if (serviceId !== undefined) {
+    return stmt('DELETE FROM domain_prepublished WHERE migration_id = ? AND service_id = ?').run(migrationId, serviceId).changes;
+  }
+  return stmt('DELETE FROM domain_prepublished WHERE migration_id = ?').run(migrationId).changes;
 }
 
 // ---------- conectores de GitHub por proyecto ----------
@@ -2388,6 +3125,7 @@ export function insertAlert(alert: {
   message: string;
   explanation?: string | null;
   dedupe_key?: string | null;
+  rollback_to?: string | null;
 }): AlertRow | null {
   // Comprobación e inserción en la misma transacción: la deduplicación es una
   // lectura seguida de una escritura y no hay UNIQUE que la respalde.
@@ -2413,11 +3151,12 @@ function insertAlertTx(alert: Parameters<typeof insertAlert>[0]): AlertRow | nul
     dedupe_key: alert.dedupe_key ?? null,
     resolved_at: null,
     read_at: null,
+    rollback_to: alert.rollback_to ?? null,
   };
   stmt(
-    `INSERT INTO alerts (id, ts, severity, type, project_id, service_id, workspace_id, title, message, explanation, dedupe_key, resolved_at, read_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(row.id, row.ts, row.severity, row.type, row.project_id, row.service_id, alert.workspace_id ?? null, row.title, row.message, row.explanation, row.dedupe_key, row.resolved_at, row.read_at);
+    `INSERT INTO alerts (id, ts, severity, type, project_id, service_id, workspace_id, title, message, explanation, dedupe_key, resolved_at, read_at, rollback_to)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.id, row.ts, row.severity, row.type, row.project_id, row.service_id, alert.workspace_id ?? null, row.title, row.message, row.explanation, row.dedupe_key, row.resolved_at, row.read_at, row.rollback_to);
   return row;
 }
 
@@ -2515,15 +3254,16 @@ export function closeAlertsFor(target: { projectId: string } | { serviceId: stri
   ).run(ts, ts, value);
 }
 
-/** Resuelve TODAS las alertas abiertas de un servicio sin importar el tipo. */
-export function resolveAllOpenServiceAlerts(serviceId: string): AlertRow[] {
-  const open = stmt('SELECT * FROM alerts WHERE service_id = ? AND resolved_at IS NULL')
-    .all(serviceId) as AlertRow[];
+/** Resuelve las alertas abiertas de un servicio, de cualquier tipo salvo los de `exceptTypes`. */
+export function resolveAllOpenServiceAlerts(serviceId: string, exceptTypes: readonly string[] = []): AlertRow[] {
+  const open = (stmt('SELECT * FROM alerts WHERE service_id = ? AND resolved_at IS NULL').all(serviceId) as AlertRow[])
+    .filter((a) => !exceptTypes.includes(a.type));
   if (open.length > 0) {
-    stmt('UPDATE alerts SET resolved_at = ? WHERE service_id = ? AND resolved_at IS NULL').run(
-      now(),
-      serviceId,
-    );
+    const upd = stmt('UPDATE alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL');
+    const ts = now();
+    db.transaction(() => {
+      for (const a of open) upd.run(ts, a.id);
+    })();
   }
   return open;
 }
@@ -2605,11 +3345,32 @@ export function openAlertCountsByServiceForProjects(projectIds: string[]): Recor
 
 export function markStaleDeploymentsFailed(): number {
   const res = stmt(
-      `UPDATE deployments SET status = 'failed', error = 'Interrumpido por reinicio del servidor', finished_at = ?
+      `UPDATE deployments SET status = 'failed', error = 'Interrumpido por reinicio del servidor', finished_at = ?, interrupted = 1
        WHERE status IN ('queued', 'building', 'deploying')`,
     )
     .run(now());
   return res.changes;
+}
+
+/**
+ * Despliegues cortados por un reinicio o un apagado que aún no se han tratado:
+ * el último de cada servicio, si es uno de ellos (si después hubo otro, ya no
+ * hay nada que reanudar). Los marca todos como tratados en la misma
+ * transacción, para que el siguiente arranque no los vuelva a reintentar.
+ */
+export function takeInterruptedDeployments(): DeploymentRow[] {
+  return db.transaction(() => {
+    const rows = stmt(
+      `SELECT d.id, d.service_id, d.status, d.trigger, d.commit_sha, d.commit_msg, d.image_tag, d.error, d.diagnosis,
+              d.build_key, d.repo_config, d.force_build, d.target_commit, d.interrupted, d.created_at, d.finished_at
+         FROM deployments d
+        WHERE d.interrupted = 1
+          AND d.id = (SELECT d2.id FROM deployments d2 WHERE d2.service_id = d.service_id
+                       ORDER BY d2.created_at DESC, d2.rowid DESC LIMIT 1)`,
+    ).all() as Omit<DeploymentRow, 'logs'>[];
+    stmt('UPDATE deployments SET interrupted = 2 WHERE interrupted = 1').run();
+    return rows.map((r) => ({ ...r, logs: '' }));
+  })();
 }
 
 // ---------- planes de facturación ----------
