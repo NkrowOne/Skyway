@@ -1363,9 +1363,16 @@ null` si hay que crearla), `missing` (variables esperadas sin propuesta
 automática) y `needs` (motores con su pista). Los nombres se casan por papel:
 `DB_HOST` → `${{Postgres.PGHOST}}`, `S3_ACCESS_KEY` → `${{MinIO.MINIO_ROOT_USER}}`,
 `NEXTAUTH_URL` → `${{<este servicio>.PUBLIC_URL}}` si tiene dominio. La pestaña
-Variables lo pinta como aviso con «Añadir», «Añadir todas» y «Crear <motor> y
-conectar» (crea la base en el proyecto y añade las referencias de golpe). Nada de
-esto escribe una variable por su cuenta: todo se propone y se aplica al guardar y
+Variables lo pinta en la sección plegable «Variables sugeridas» (abierta de
+entrada si el repositorio espera algo): cada sugerencia con su «Añadir» propio
+—las que no tienen valor añaden solo esa fila, con el cursor en el valor; nunca
+se añade un lote de variables vacías—, «Añadir las N referencias» cuando hay
+varias con valor real, «Crear <motor> y conectar» (crea la base en el proyecto y
+añade sus referencias) y unas habituales (`NODE_ENV`, `TZ`, `LOG_LEVEL`,
+`PORT`). Los **nombres nuevos se escriben en mayúsculas** al teclear, pegar o
+editar el texto `.env` (solo lo que va antes del `=`); los que ya existen, o los
+que el repositorio espera con minúsculas, se respetan tal cual. Nada de esto
+escribe una variable por su cuenta: todo se propone y se aplica al guardar y
 redesplegar.
 
 Lo mismo **antes de crear el servicio**: al elegir repositorio y rama en «Nuevo
@@ -2530,12 +2537,35 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/deployments/:id/cancel` | +access | cancela uno en curso |
 | POST | `/deployments/:id/rollback` | +access | redespliega una imagen anterior (solo git); 409 `image_purged` (con `commit`) si la imagen ya no está en el servidor, sin crear despliegue ni alerta |
 | GET | `/deployments/:id/logs/stream` | +access | **SSE** de build/deploy |
+| GET | `/deployments/:id/logs` | +access | registro de compilación y despliegue (`buildLogs`) y salida de la aplicación (`runtimeLogs`: del contenedor de esa versión si sigue vivo, si no la archivada). Con `?runtime=0` solo el de compilación y despliegue, sin consultar a Docker: es lo que pide la lista de despliegues |
+| GET | `/deployments/:id/logs/download` | +access | registro completo del despliegue (compilación, despliegue y aplicación) como adjunto de texto |
 | GET | `/projects/:id/deploys/stream` | +access | **SSE** del feed de despliegues del proyecto (evento `snapshot` + un `deploy` por cambio de fase). Independiente: pensado para agentes y automatizaciones que solo quieren los despliegues |
 | GET | `/services/:id/logs/stream` | +access | **SSE** de logs de ejecución de todas las réplicas (cada línea con su cursor de tiempo, que viaja también como `id` del evento; las réplicas 2..n llevan prefijo `[rN]`). Si el contenedor se sustituye o se para, avisa (`notice`) y se vuelve a enganchar solo. Al reconectar, `Last-Event-ID` reanuda desde ese cursor |
 | GET | `/services/:id/logs/tail` | +access | páginado hacia atrás: solo líneas **estrictamente** anteriores a un cursor (`?limit=&before=`) para cargar historial al subir. Docker filtra por segundos enteros: se pide de más y se recorta, y `hasMore` dice si queda historial |
 | GET | `/services/:id/logs/download` | +access | descarga íntegra del log del contenedor como adjunto de texto (`?timestamps=1` para incluir sellos) |
 | GET | `/projects/:id/metrics/stream` | +access | **SSE** de métricas en vivo del proyecto: `metrics` cada 2,5 s y, por la misma conexión, los despliegues (`deploys` al conectar + un `deploy` por cambio de fase). El panel abre solo esta, no las dos |
 | GET | `/services/:id/metrics/history` | +access | histórico de consumo del servicio (`?hours=`): CPU/RAM (media y pico), red y disco |
+
+**Consola de logs** (`web/src/components/LogViewer.tsx`, la misma en Logs,
+Despliegues y la copia de datos). La lista de Despliegues enseña solo
+compilación y despliegue; la salida de la aplicación está en Logs («Aplicación»)
+y se llega desde cada versión con «Ver la salida de la aplicación de esta
+versión».
+
+- **Fecha y hora** en cada línea (`12 oct 14:03:22`, hora local), o solo la
+  hora, UTC o tiempo transcurrido. Tocar una línea abre su detalle: fecha
+  completa, ISO en UTC, JSON legible si la línea lo es, «Copiar línea» y, con
+  filtros, «Ver en contexto» (quita los filtros y salta a esa línea).
+- **Búsqueda** sin distinguir mayúsculas: palabras (todas), `"frase exacta"`,
+  `-excluir`, `a OR b`, `/expresión regular/` y `level:error` / `level:warn`;
+  más los botones Todo / Errores / Avisos. El nivel sale del propio log cuando
+  lo declara (JSON, `level=`, etiqueta `ERROR`/`[warn]`, escala de pino) y, si
+  no, de palabras completas (`TypeError`, `Traceback`, `✖`, `⚠`…).
+- **En vivo**: al subir a leer, o con «En vivo» → pausa, la vista se congela y
+  las líneas nuevas se cuentan en «Reanudar +N» sin mover lo que se lee. Las
+  líneas de los streams se pintan por tandas de 60 ms (`web/src/logbatch.ts`).
+- La vista (fecha, ajuste de línea, numeración) se recuerda en el navegador; en
+  el móvil la numeración arranca apagada.
 
 ### 7.5.1 Copia de datos desde una base externa (§5.6)
 | Método | Ruta | Nivel | Descripción |
