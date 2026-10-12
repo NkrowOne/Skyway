@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import Docker from 'dockerode';
 import { PassThrough } from 'stream';
 import { StringDecoder } from 'string_decoder';
@@ -5,7 +6,7 @@ import { docker, dockerQuery } from './client';
 import { baselineFrom, CpuBaseline, cpuPercentFromBaseline, cpuPercentFromDocker, DockerStatsSample } from './cpu';
 import { countStrictlyBefore } from './logcursor';
 import { EDGE_NETWORK, projectNetworkName } from './networks';
-import { getSetting } from '../db';
+import { tlsEnabled } from '../tls';
 import { ContainerState, ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
 import { lineSplitter } from '../util';
 
@@ -94,10 +95,16 @@ export async function getRuntime(name: string, signal?: AbortSignal): Promise<Se
   };
 }
 
-export async function stopContainer(name: string): Promise<void> {
+/**
+ * `docker stop -t <graceSeconds>`: SIGTERM y, si el proceso no ha terminado en
+ * ese plazo, SIGKILL. Los 10 s por defecto son los de siempre y los conserva
+ * quien no trae su propia gracia (el borrado de servicios y proyectos); las
+ * paradas de una copia en servicio van por `pararConGracia`.
+ */
+export async function stopContainer(name: string, graceSeconds = 10): Promise<void> {
   const c = docker.getContainer(name);
   try {
-    await c.stop({ t: 10 });
+    await c.stop({ t: graceSeconds });
   } catch (err: any) {
     if (err?.statusCode !== 304 && err?.statusCode !== 404) throw err;
   }
@@ -111,8 +118,154 @@ export async function startContainer(name: string): Promise<void> {
   }
 }
 
-export async function restartContainer(name: string): Promise<void> {
-  await docker.getContainer(name).restart({ t: 10 });
+export async function restartContainer(name: string, graceSeconds = 10): Promise<void> {
+  await docker.getContainer(name).restart({ t: graceSeconds });
+}
+
+/** Líneas de la salida del comando al parar que se copian al registro. */
+const LINEAS_COMANDO_PARADA = 20;
+/** Error del runtime OCI cuando la imagen no tiene el `sh` con que se lanza el comando al parar. */
+const SIN_SH_RE = /exec: "sh": (executable file not found|no such file or directory)/;
+
+/**
+ * Ejecuta el comando al parar dentro del contenedor, con `gracia` segundos de
+ * plazo (al menos uno). El texto viaja en la variable `SKYWAY_STOP_CMD` del
+ * exec y la orden es fija (`eval "$SKYWAY_STOP_CMD"`): nunca se interpola en
+ * un shell, ni del host ni del contenedor. Un fallo (sin `sh` en la imagen, un
+ * código distinto de 0, el plazo vencido) se registra y no impide la parada:
+ * el comando es una cortesía previa al SIGTERM, no una condición.
+ *
+ * Con `salida: false` solo se registra el resultado (el código), no lo que el
+ * comando escribió: es lo que piden las acciones del panel, cuyo registro es el
+ * del servidor y no el del despliegue, y un comando puede imprimir un secreto.
+ */
+export async function ejecutarComandoParada(
+  name: string,
+  comando: string,
+  graciaSegundos: number,
+  log?: (l: string) => void,
+  opts: { salida?: boolean } = {},
+): Promise<'ok' | 'fallo' | 'plazo'> {
+  const plazo = Math.max(1, graciaSegundos);
+  try {
+    const res = await execInContainer(name, 'eval "$SKYWAY_STOP_CMD"', {
+      env: [`SKYWAY_STOP_CMD=${comando}`],
+      timeoutMs: plazo * 1000,
+      maxOutput: 8000,
+    });
+    // Sin `sh` en la imagen (distroless, scratch), Docker no llega a ejecutar
+    // nada: responde 126/127 y el error del runtime OCI como única salida. Con
+    // Docker real se ve «terminó con el código 127» seguido de ese texto, que
+    // parece un fallo del comando escrito en Ajustes; se dice qué pasa.
+    if (!res.timedOut && (res.exitCode === 126 || res.exitCode === 127) && SIN_SH_RE.test(res.output)) {
+      log?.(
+        `⚠ La imagen de ${name} no incluye «sh»: el comando al parar no se puede ejecutar y se continúa con SIGTERM. ` +
+          'Elimina el comando al parar en Ajustes del servicio → Despliegue y parada, o usa una imagen que incluya «sh».',
+      );
+      return 'fallo';
+    }
+    const lineas = res.output
+      .split('\n')
+      .map((l) => l.replace(/\r$/, ''))
+      .filter((l) => l.trim())
+      .slice(-LINEAS_COMANDO_PARADA);
+    const estado = res.timedOut ? 'plazo' : res.exitCode === 0 ? 'ok' : 'fallo';
+    log?.(
+      estado === 'plazo'
+        ? `⚠ El comando al parar de ${name} no terminó en ${plazo} s: se continúa con SIGTERM.`
+        : estado === 'ok'
+          ? `Comando al parar de ${name} ejecutado (código 0).`
+          : `⚠ El comando al parar de ${name} terminó con el código ${res.exitCode ?? 'desconocido'}: se continúa con SIGTERM.`,
+    );
+    if (opts.salida !== false) for (const l of lineas) log?.(`  ${l}`);
+    return estado;
+  } catch (err: any) {
+    log?.(`⚠ No se pudo ejecutar el comando al parar en ${name} (${err?.message || err}): se continúa con SIGTERM.`);
+    return 'fallo';
+  }
+}
+
+export interface ResultadoParada {
+  existia: boolean;
+  /** Terminó con SIGKILL al agotar la gracia (137, sin OOMKilled). */
+  forzada: boolean;
+  comando: 'ok' | 'fallo' | 'plazo' | null;
+}
+
+/** Estado de un contenedor; `null` solo si Docker responde que no existe (404). */
+async function inspeccionar(name: string): Promise<Docker.ContainerInspectInfo | null> {
+  try {
+    return await dockerQuery.getContainer(name).inspect();
+  } catch (err: any) {
+    if (err?.statusCode === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * Parada limpia de una copia de un servicio: el comando al parar (si lo hay y
+ * la copia está en marcha), después `docker stop -t <gracia>` (SIGTERM y, al
+ * agotar la gracia, SIGKILL) y, por último, si terminó por el SIGKILL.
+ *
+ * Antes las copias que se descartaban («--next», la réplica nueva que fallaba,
+ * los restos de un intercambio) se retiraban con `remove --force`, que es un
+ * SIGKILL directo: un bot a mitad de responder o un worker a mitad de un
+ * trabajo no tenía ocasión de cerrar. Y la gracia era fija (10 s).
+ *
+ * La parada forzada se distingue por el código 137 sin `OOMKilled` y después
+ * de agotar la gracia: un 137 inmediato es otra cosa (el contenedor ya estaba
+ * así). Casi siempre significa que el proceso principal no atiende SIGTERM (la
+ * aplicación como PID 1 sin manejador, o un `sh -c` que no reenvía la señal),
+ * y se dice cómo arreglarlo. No se activa `Init` (tini) de forma global: rompe
+ * imágenes que necesitan ser el PID 1.
+ *
+ * Solo un 404 de Docker es «no existe» (`existia: false`, sin lanzar). Antes se
+ * consultaba con `findContainer`, que convierte cualquier error en «no existe»:
+ * con el daemon lento (la consulta vence a los 30 s) la copia no se paraba,
+ * seguía en marcha junto a la nueva y acababa retirada con `remove --force`.
+ * Ahora, si no se puede consultar, se para igualmente (sin el comando, porque
+ * no se sabe si está en marcha) y un fallo de la parada se propaga: quien
+ * llama decide (restaurar la versión anterior, responder con error).
+ */
+export async function pararConGracia(
+  name: string,
+  opts: { graciaSegundos: number; comando?: string | null; log?: (l: string) => void; salidaComando?: boolean },
+): Promise<ResultadoParada> {
+  const gracia = Math.max(0, Math.floor(opts.graciaSegundos));
+  let antes: Docker.ContainerInspectInfo | null | undefined;
+  try {
+    antes = await inspeccionar(name);
+  } catch (err: any) {
+    opts.log?.(`⚠ No se pudo consultar el estado de ${name} (${err?.message || err}): se detiene igualmente.`);
+    antes = undefined;
+  }
+  if (antes === null) return { existia: false, forzada: false, comando: null };
+  let comando: ResultadoParada['comando'] = null;
+  if (antes?.State?.Running && opts.comando) {
+    comando = await ejecutarComandoParada(name, opts.comando, gracia, opts.log, { salida: opts.salidaComando });
+  }
+  const inicio = Date.now();
+  try {
+    await docker.getContainer(name).stop({ t: gracia });
+  } catch (err: any) {
+    // 304: ya estaba parado. 404: desapareció entre la consulta y la parada.
+    if (err?.statusCode === 404) return { existia: false, forzada: false, comando };
+    if (err?.statusCode !== 304) throw err;
+  }
+  const tardo = Date.now() - inicio;
+  const despues = await inspeccionar(name).catch(() => null);
+  const st = despues?.State;
+  const forzada =
+    !!st && !st.Running && st.ExitCode === 137 && !st.OOMKilled && gracia > 0 && tardo >= gracia * 1000 * 0.9;
+  if (forzada) {
+    opts.log?.(
+      `⚠ ${name} no terminó con SIGTERM en ${gracia} s y se detuvo con SIGKILL. Si la aplicación es el proceso principal ` +
+        'del contenedor, tiene que atender SIGTERM (cerrar y salir): sin un manejador, el sistema descarta la señal. Si el ' +
+        'comando de arranque es una sola orden, empiézalo con «exec». Aumenta la gracia de parada en Ajustes del servicio ' +
+        'solo si el proceso ya atiende SIGTERM y necesita más tiempo para cerrar.',
+    );
+  }
+  return { existia: true, forzada, comando };
 }
 
 /**
@@ -249,6 +402,91 @@ export async function imageExposedPorts(image: string): Promise<number[]> {
   }
 }
 
+/**
+ * Rutas que la imagen declara con VOLUME (las suyas y las heredadas). En una
+ * ruta así que no tenga volumen configurado, Docker crea un volumen ANÓNIMO
+ * por contenedor: cada despliegue arranca con uno vacío y el anterior queda
+ * huérfano (con los datos dentro). Es una pista para avisar, nunca para crear
+ * el volumen a escondidas: con volúmenes el intercambio deja de ser sin corte.
+ */
+export async function imageDeclaredVolumes(image: string): Promise<string[]> {
+  try {
+    const info = await dockerQuery.getImage(image).inspect();
+    const vols = (info.Config?.Volumes || {}) as Record<string, unknown>;
+    return Object.keys(vols)
+      .map((p) => normalizeContainerPath(p))
+      .filter((p) => p.startsWith('/'))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** `/data/` y `/data` son la misma ruta de montaje. */
+export function normalizeContainerPath(p: string): string {
+  const trimmed = p.trim();
+  return trimmed.length > 1 ? trimmed.replace(/\/+$/, '') : trimmed;
+}
+
+/** Valores de Docker para lo que un HEALTHCHECK no indica (en ms). */
+const HEALTHCHECK_DEFAULTS = { interval: 30_000, timeout: 30_000, startPeriod: 0, retries: 3 };
+
+/**
+ * ¿La imagen declara un HEALTHCHECK de Docker? Con él, Traefik no envía tráfico
+ * al contenedor hasta que Docker lo marca «healthy»: retirar la versión anterior
+ * antes de eso deja el dominio sin servidor.
+ *
+ * Devuelve cuánto puede tardar Docker, como mucho, en dar un veredicto
+ * («healthy» o «unhealthy»), o null si la imagen no declara ninguno. El primer
+ * chequeo no llega hasta pasado el `interval` (30 s por defecto), así que
+ * esperar solo el plazo del healthcheck del servicio (que puede ser de 5 s)
+ * daba por fallida una versión que Docker aún no había llegado a mirar.
+ */
+export async function imageHealthcheckWindowMs(image: string): Promise<number | null> {
+  try {
+    const info = await dockerQuery.getImage(image).inspect();
+    const hc = (info.Config as
+      | { Healthcheck?: { Test?: string[]; Interval?: number; Timeout?: number; StartPeriod?: number; Retries?: number } }
+      | undefined)?.Healthcheck;
+    const test = hc?.Test;
+    if (!Array.isArray(test) || test.length === 0 || test[0] === 'NONE') return null;
+    // Docker los guarda en nanosegundos; 0 o ausente es «el valor por defecto».
+    const ms = (ns: number | undefined, fallback: number) => (ns && ns > 0 ? Math.round(ns / 1e6) : fallback);
+    const interval = ms(hc!.Interval, HEALTHCHECK_DEFAULTS.interval);
+    const timeout = ms(hc!.Timeout, HEALTHCHECK_DEFAULTS.timeout);
+    const startPeriod = ms(hc!.StartPeriod, HEALTHCHECK_DEFAULTS.startPeriod);
+    const retries = hc!.Retries && hc!.Retries > 0 ? hc!.Retries : HEALTHCHECK_DEFAULTS.retries;
+    return startPeriod + (interval + timeout) * retries;
+  } catch {
+    return null;
+  }
+}
+
+/** Estado del contenedor y de su HEALTHCHECK (null si no tiene). */
+export async function containerHealth(
+  name: string,
+): Promise<{ state: string; exitCode: number | null; health: 'starting' | 'healthy' | 'unhealthy' | null }> {
+  const info = await findContainer(name);
+  if (!info) return { state: 'not_created', exitCode: null, health: null };
+  const health = (info.State as { Health?: { Status?: string } }).Health?.Status;
+  return {
+    state: info.State.Status,
+    exitCode: info.State.Running ? null : info.State.ExitCode,
+    health: health === 'starting' || health === 'healthy' || health === 'unhealthy' ? health : null,
+  };
+}
+
+/**
+ * Etiquetas de imagen presentes en el servidor para un repositorio
+ * (`skyway/<proyecto>-<servicio>`), en una sola consulta al daemon.
+ */
+export async function imageTagsOf(repository: string): Promise<Set<string>> {
+  const list = await dockerQuery.listImages({ filters: { reference: [repository] } as any });
+  const tags = new Set<string>();
+  for (const img of list) for (const tag of img.RepoTags ?? []) tags.add(tag);
+  return tags;
+}
+
 export async function imageExists(tag: string): Promise<boolean> {
   try {
     await dockerQuery.getImage(tag).inspect();
@@ -258,6 +496,38 @@ export async function imageExists(tag: string): Promise<boolean> {
   }
 }
 
+/**
+ * Nombre BASE de lo que el servicio declara en Traefik: el servicio
+ * (`skyway-<proyecto>-<servicio>`, `…@docker` desde el proveedor HTTP) y sus
+ * middlewares. Es idéntico en todas las versiones del contenedor, así que
+ * Traefik los fusiona: las réplicas y los relevos suman servidores al mismo
+ * balanceo.
+ */
+export function traefikServiceName(project: ProjectRow, service: ServiceRow): string {
+  return `skyway-${project.slug}-${service.slug}`;
+}
+
+/**
+ * Hosts normalizados del router (minúsculas, sin repetidos y ordenados) y su
+ * nombre: el base más una huella de los hosts.
+ *
+ * Traefik borra un router que dos contenedores definen con el mismo nombre y
+ * reglas distintas («Router defined multiple times with different
+ * configurations»). Con un nombre fijo, al cambiar los dominios de un servicio
+ * la versión vieja y la nueva convivían durante el relevo (hasta que la nueva
+ * responde, ver `waitReplicaReady`) y TODOS los nombres del servicio daban 404,
+ * también los que no cambiaban. Con la huella en el nombre, dos versiones con
+ * los mismos hosts generan exactamente el mismo router (se fusionan) y dos con
+ * hosts distintos, routers distintos que conviven. Por eso la regla se escribe
+ * también con los hosts ordenados: el mismo conjunto en otro orden no puede
+ * dar dos definiciones distintas del mismo router.
+ */
+export function traefikRouter(project: ProjectRow, service: ServiceRow, domains: string[]): { router: string; hosts: string[] } {
+  const hosts = [...new Set(domains.map((d) => d.trim().toLowerCase()).filter(Boolean))].sort();
+  const huella = crypto.createHash('sha256').update(hosts.join(',')).digest('hex').slice(0, 8);
+  return { router: `${traefikServiceName(project, service)}-${huella}`, hosts };
+}
+
 export function traefikLabels(
   project: ProjectRow,
   service: ServiceRow,
@@ -265,30 +535,49 @@ export function traefikLabels(
   port: number,
 ): Record<string, string> {
   const labels: Record<string, string> = {};
-  if (domains.length === 0) return labels;
-  const router = `skyway-${project.slug}-${service.slug}`;
-  const rule = domains.map((d) => `Host(\`${d}\`)`).join(' || ');
-  const tls = !!getSetting('letsencryptEmail');
+  const { router, hosts } = traefikRouter(project, service, domains);
+  if (hosts.length === 0) return labels;
+  // Servicio y middlewares conservan el nombre base (ver `traefikServiceName`);
+  // solo los routers llevan la huella de sus hosts.
+  const base = traefikServiceName(project, service);
+  const rule = hosts.map((d) => `Host(\`${d}\`)`).join(' || ');
+  // TLS efectivo: el ajuste del panel y un correo válido en Traefik. Sin lo
+  // segundo no se emite ningún certificado, y redirigir a https dejaba el
+  // dominio sirviendo el certificado por defecto de Traefik (ver tls.ts).
+  const tls = tlsEnabled();
   labels['traefik.enable'] = 'true';
   labels['traefik.docker.network'] = EDGE_NETWORK;
   // Router HTTP (puerto 80). Con TLS activo se añade un segundo router HTTPS:
   // un único router con tls=true rechazaría las conexiones en claro del puerto 80.
+  // El servicio va explícito: con el nombre del router distinto del del
+  // servicio, Traefik ya no los empareja por nombre.
   labels[`traefik.http.routers.${router}.rule`] = rule;
   labels[`traefik.http.routers.${router}.entrypoints`] = 'web';
+  labels[`traefik.http.routers.${router}.service`] = base;
   if (tls) {
     labels[`traefik.http.routers.${router}-secure.rule`] = rule;
     labels[`traefik.http.routers.${router}-secure.entrypoints`] = 'websecure';
     labels[`traefik.http.routers.${router}-secure.tls.certresolver`] = 'le';
+    labels[`traefik.http.routers.${router}-secure.service`] = base;
     // Con HTTPS disponible, el router de texto en claro deja de servir contenido
     // y solo redirige: si no, el puerto 80 seguiría entregando la web —y con
     // ella cookies de sesión o claves de API— sin cifrar, para siempre. El reto
     // HTTP-01 de Let's Encrypt no se ve afectado: Traefik lo atiende en un
     // router interno propio, con prioridad por encima de este.
-    labels[`traefik.http.middlewares.${router}-https.redirectscheme.scheme`] = 'https';
-    labels[`traefik.http.middlewares.${router}-https.redirectscheme.permanent`] = 'true';
-    labels[`traefik.http.routers.${router}.middlewares`] = `${router}-https`;
+    labels[`traefik.http.middlewares.${base}-https.redirectscheme.scheme`] = 'https';
+    labels[`traefik.http.middlewares.${base}-https.redirectscheme.permanent`] = 'true';
+    labels[`traefik.http.routers.${router}.middlewares`] = `${base}-https`;
   }
-  labels[`traefik.http.services.${router}.loadbalancer.server.port`] = String(port);
+  // Durante un intercambio la versión nueva entra en el balanceo en cuanto
+  // nace, aunque aún no escuche: sin esto, mientras arranca, una de cada dos
+  // peticiones acababa en 502. Con «retry», una conexión rechazada se reintenta
+  // y el balanceo la lleva a la versión anterior, que sigue en pie hasta que la
+  // nueva responde (ver `waitReplicaReady` en el deployer). Traefik solo
+  // reintenta si el servidor no llegó a contestar.
+  labels[`traefik.http.middlewares.${base}-retry.retry.attempts`] = '3';
+  labels[`traefik.http.middlewares.${base}-retry.retry.initialinterval`] = '100ms';
+  labels[`traefik.http.routers.${router}${tls ? '-secure' : ''}.middlewares`] = `${base}-retry`;
+  labels[`traefik.http.services.${base}.loadbalancer.server.port`] = String(port);
   return labels;
 }
 
@@ -320,6 +609,13 @@ export interface RunSpec {
    * `restartPolicyType` de la config-as-code de Railway.
    */
   restartPolicy?: 'unless-stopped' | 'no' | { Name: string; MaximumRetryCount?: number };
+  /**
+   * Gracia de parada (`StopTimeout`): la respeta también un `docker stop` sin
+   * `-t` que no venga de Skyway, y el apagado del daemon.
+   */
+  stopGraceSeconds?: number;
+  /** Identidad de esta copia (etiquetas `skyway.instance` y `skyway.replica`). */
+  identidad?: { instancia: string; replica: number };
 }
 
 /** Crea y arranca el contenedor de un servicio (elimina el homónimo si existe). */
@@ -338,6 +634,9 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
     'skyway.project': spec.project.id,
     'skyway.service': spec.service.id,
     'skyway.deployment': spec.deploymentId,
+    ...(spec.identidad
+      ? { 'skyway.instance': spec.identidad.instancia, 'skyway.replica': String(spec.identidad.replica) }
+      : {}),
     ...(withTraefik && spec.internalPort
       ? traefikLabels(spec.project, spec.service, spec.domains, spec.internalPort)
       : {}),
@@ -372,6 +671,7 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
     Cmd: spec.cmd || undefined,
     ...(spec.entrypoint ? { Entrypoint: spec.entrypoint } : {}),
     ExposedPorts: exposed,
+    ...(spec.stopGraceSeconds !== undefined ? { StopTimeout: spec.stopGraceSeconds } : {}),
     HostConfig: hostConfig,
     NetworkingConfig: {
       EndpointsConfig: {

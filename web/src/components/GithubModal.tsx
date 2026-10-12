@@ -232,6 +232,12 @@ export default function GithubModal({
                       <p className="mx-auto mt-1 max-w-md text-xs text-sub">
                         La App se crea una sola vez por servidor. Después, cada cuenta se conecta con un clic.
                       </p>
+                      {appStatus.data?.panelReachable === false && (
+                        <p className="mx-auto mt-2 max-w-md text-xs text-warn">
+                          El panel no tiene un dominio público: GitHub no podrá entregar los push a esta dirección. Define
+                          SKYWAY_DOMAIN y crea la App desde ese dominio.
+                        </p>
+                      )}
                       <Button className="mt-4" onClick={() => createApp.create(appOrg)} loading={createApp.pending}>
                         <ModuleLogo kind="github" size={14} /> Crear la App en GitHub
                       </Button>

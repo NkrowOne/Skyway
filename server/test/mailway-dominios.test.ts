@@ -14,11 +14,13 @@ import {
   createService,
   createUser,
   createWorkspaceRow,
+  deleteDomainMigration,
   getMailwayLink,
   getService,
   getSetting,
   initDb,
   insertApiToken,
+  insertDomainMigration,
   listAudit,
   setSetting,
   setUserProjects,
@@ -219,6 +221,51 @@ describe('dominios sugeridos', () => {
     r = await call('POST', `/api/projects/${projB.id}/mail/domains`, ownerB, { domain: 'ajeno.com' });
     expect(r.status, r.raw).toBe(201);
     domainB = r.json.domain.id;
+  });
+
+  it('tras dar de baja un dominio en un cambio de dominio no se vuelve a proponer, aunque la web lo siga sirviendo', async () => {
+    // tienda.es ya no está en el resumen de Mailway (se dio de baja), pero un
+    // servicio del proyecto lo sigue sirviendo (modo «servir»).
+    const terminado = insertDomainMigration({
+      project_id: projA.id,
+      from_domain: 'tienda.es',
+      to_domain: 'tienda-nueva.es',
+      estado: 'terminada',
+      hosts: [],
+      env: { excluidas: [], huella: '' },
+      mailway_migration_id: 'dmig_mailway_1',
+    });
+    try {
+      let r = await call('GET', `/api/projects/${projA.id}/mail`, memberA);
+      expect(r.status, r.raw).toBe(200);
+      expect(r.json.suggestedDomains).toEqual(['tienda.co.uk']);
+      // Un cambio cancelado no retira nada, y uno solo de la web nunca tocó el correo.
+      deleteDomainMigration(terminado.id);
+      const cancelado = insertDomainMigration({
+        project_id: projA.id,
+        from_domain: 'tienda.es',
+        to_domain: 'tienda-nueva.es',
+        estado: 'cancelada',
+        hosts: [],
+        env: { excluidas: [], huella: '' },
+        mailway_migration_id: 'dmig_mailway_2',
+      });
+      const soloWeb = insertDomainMigration({
+        project_id: projA.id,
+        from_domain: 'tienda.co.uk',
+        to_domain: 'tienda-nueva.es',
+        estado: 'terminada',
+        solo_web: true,
+        hosts: [],
+        env: { excluidas: [], huella: '' },
+      });
+      r = await call('GET', `/api/projects/${projA.id}/mail`, memberA);
+      expect(r.json.suggestedDomains).toEqual(['tienda.es', 'tienda.co.uk']);
+      deleteDomainMigration(cancelado.id);
+      deleteDomainMigration(soloWeb.id);
+    } finally {
+      deleteDomainMigration(terminado.id);
+    }
   });
 });
 

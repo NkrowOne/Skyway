@@ -1,5 +1,6 @@
 import { getEnv, getProjectVars, getSetting, listServices } from './db';
 import { dominioPrincipal } from './dominioprincipal';
+import { tlsEnabled } from './tls';
 import { getTemplate } from './templates';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from './types';
 
@@ -54,7 +55,7 @@ export function systemVars(
     out.PUBLIC_DOMAIN = principal;
     // El esquema lo decide quien enruta: sin correo de Let's Encrypt, Traefik
     // no monta el router seguro y prometer https lleva a un certificado ajeno.
-    out.PUBLIC_URL = `${getSetting('letsencryptEmail') ? 'https' : 'http'}://${principal}`;
+    out.PUBLIC_URL = `${tlsEnabled() ? 'https' : 'http'}://${principal}`;
   }
   return out;
 }
@@ -66,8 +67,16 @@ export function systemVars(
  * - Si el servicio apuntado no tiene esa variable guardada, prueba con las de
  *   sistema (`INTERNAL_URL`, `PUBLIC_URL`…): lo guardado siempre gana, así que
  *   quien defina a mano una `PUBLIC_URL` distinta sigue mandando.
+ *
+ * `opts.dominios` (id de servicio → dominios) calcula las variables de sistema
+ * de esos servicios con otros dominios que los guardados: el cambio de dominio
+ * lo usa para saber, antes de pasar, qué servicios verán otra dirección en
+ * `${{api.PUBLIC_URL}}` y hay que volver a desplegar.
  */
-export function resolveServiceEnv(service: ServiceRow): Record<string, string> {
+export function resolveServiceEnv(
+  service: ServiceRow,
+  opts: { dominios?: ReadonlyMap<string, readonly string[]> } = {},
+): Record<string, string> {
   const siblings = listServices(service.project_id);
   const shared = getProjectVars(service.project_id);
   const envByService = new Map<string, Record<string, string>>();
@@ -78,7 +87,8 @@ export function resolveServiceEnv(service: ServiceRow): Record<string, string> {
   const systemOf = (s: ServiceRow): Record<string, string> => {
     let vars = systemByService.get(s.id);
     if (!vars) {
-      vars = systemVars(s);
+      const dominios = opts.dominios?.get(s.id);
+      vars = dominios ? systemVars(s, { domains: [...dominios] }) : systemVars(s);
       systemByService.set(s.id, vars);
     }
     return vars;

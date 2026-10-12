@@ -22,13 +22,17 @@ const SCRIPT = path.resolve(__dirname, '../../scripts/skyway');
  */
 const DOBLES: Record<string, string[]> = {
   // compose up «despliega» la versión del package.json del directorio actual
-  // (el repositorio), salvo el número de «up» que diga FALSO_UP_FALLA.
+  // (el repositorio), salvo el número de «up» que diga FALSO_UP_FALLA; compose
+  // build falla con FALSO_BUILD_FALLA. `exec -i skyway node -` (despliegues en
+  // curso) responde una línea mientras queden consultas en FALSO_DESPLIEGUES, y
+  // `exec skyway nixpacks` falla con FALSO_SIN_NIXPACKS.
   docker: [
     'e="$FALSO_DIR"',
     'printf \'docker %s\\n\' "$*" >> "$e/llamadas"',
     'ups=$(cat "$e/ups" 2>/dev/null || echo 0)',
     'case "$1 ${2:-}" in',
     '  "compose version") echo "Docker Compose version v2.29.7"; exit 0;;',
+    '  "compose build") if [ -n "${FALSO_BUILD_FALLA:-}" ]; then echo "fallo simulado del build" >&2; exit 1; fi; exit 0;;',
     '  "compose up")',
     '    ups=$((ups + 1)); echo "$ups" > "$e/ups"',
     '    for n in ${FALSO_UP_FALLA:-}; do',
@@ -55,6 +59,16 @@ const DOBLES: Record<string, string[]> = {
     '    esac',
     '    exit 0;;',
     '  exec)',
+    '    if [ "${2:-}" = "-i" ]; then',
+    '      cat > /dev/null',
+    '      n=$(cat "$e/despliegues" 2>/dev/null || echo "${FALSO_DESPLIEGUES:-0}")',
+    '      if [ "$n" -gt 0 ]; then echo "web (building)"; echo $((n - 1)) > "$e/despliegues"; else echo 0 > "$e/despliegues"; fi',
+    '      exit 0',
+    '    fi',
+    '    if [ "${3:-}" = "nixpacks" ]; then',
+    '      if [ -n "${FALSO_SIN_NIXPACKS:-}" ]; then exit 127; fi',
+    '      echo "nixpacks 1.39.0"; exit 0',
+    '    fi',
     '    nivel=""; mensaje=""',
     '    while [ $# -gt 0 ]; do',
     '      case "$1" in --nivel) nivel="$2"; shift;; --mensaje) mensaje="$2"; shift;; esac',
@@ -299,6 +313,51 @@ describe('skyway update --auto', () => {
     expect(ups()).toBe(2);
     expect(desplegada()).toBe('0.1.0');
     expect(avisos()[0].nivel).toBe('error');
+  });
+
+  it('construye la imagen con el panel en marcha y espera a los despliegues en curso antes de recrearlo', () => {
+    const nuevo = publicar('0.2.0');
+    const r = skyway(['update', '--auto'], { FALSO_DESPLIEGUES: '2', SKYWAY_UPDATE_PAUSA_DESPLIEGUES: '0' });
+    expect(r.code, r.salida).toBe(0);
+    expect(cabeza()).toBe(nuevo);
+    expect(desplegada()).toBe('0.2.0');
+    expect(r.salida).toMatch(/Hay despliegues en curso; reiniciar el panel ahora los interrumpiría/);
+    expect(r.salida).toMatch(/web \(building\)/);
+    expect(r.salida).toMatch(/No quedan despliegues en curso/);
+    // El orden: build, consultas hasta que no queda ninguno, y después «up».
+    const orden = llamadas().filter((l) => l.startsWith('docker compose build') || l.startsWith('docker exec -i') || l === 'docker compose up -d --build');
+    expect(orden).toEqual([
+      'docker compose build',
+      'docker exec -i skyway node -',
+      'docker exec -i skyway node -',
+      'docker exec -i skyway node -',
+      'docker compose up -d --build',
+    ]);
+    // El aviso de siempre, sin líneas de más por las consultas al contenedor.
+    expect(avisos()).toEqual([{ nivel: 'info', mensaje: `Skyway se ha actualizado a la versión 0.2.0 (commit ${nuevo.slice(0, 7)}).` }]);
+  });
+
+  it('si el build falla, el panel no se toca y se vuelve a la versión anterior', () => {
+    const antes = cabeza();
+    publicar('0.2.0');
+    const r = skyway(['update', '--auto'], { FALSO_BUILD_FALLA: '1' });
+    expect(r.code, r.salida).toBe(1);
+    expect(r.salida).toMatch(/La actualización ha fallado: la reconstrucción de la imagen ha fallado/);
+    expect(cabeza()).toBe(antes);
+    // Ni consulta de despliegues ni «up» de la versión nueva: solo el de la vuelta atrás.
+    expect(llamadas().filter((l) => l.startsWith('docker exec -i'))).toEqual([]);
+    expect(ups()).toBe(1);
+    expect(desplegada()).toBe('0.1.0');
+  });
+
+  it('sin Nixpacks en la imagen nueva lo avisa, pero la actualización es correcta', () => {
+    publicar('0.2.0');
+    const r = skyway(['update', '--auto'], { FALSO_SIN_NIXPACKS: '1' });
+    expect(r.code, r.salida).toBe(0);
+    expect(r.salida).toMatch(/Nixpacks no está instalado en la imagen/);
+    expect(desplegada()).toBe('0.2.0');
+    // La limpieza de imágenes sin etiqueta solo se ofrece a mano.
+    expect(llamadas().some((l) => l.startsWith('docker images'))).toBe(false);
   });
 
   it('si la vuelta atrás también falla: código 2, aviso, y la siguiente ejecución lo retoma', () => {

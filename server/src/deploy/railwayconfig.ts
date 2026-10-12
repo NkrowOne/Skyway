@@ -27,6 +27,15 @@ export interface RailwayRepoConfig {
   restartPolicyType: string | null;
   restartPolicyMaxRetries: number | null;
   cronSchedule: string | null;
+  /**
+   * `deploy.drainingSeconds` y `deploy.overlapSeconds`. Solo se informan en el
+   * registro: la gracia de parada y la estrategia se deciden en Ajustes del
+   * servicio (o con RAILWAY_DEPLOYMENT_DRAINING_SECONDS), y el solape de
+   * Railway no tiene equivalente que convenga aplicar (ver `deployContainer`).
+   * Opcionales porque las filas guardadas antes no los llevan.
+   */
+  drainingSeconds?: number | null;
+  overlapSeconds?: number | null;
   /** Ruta relativa del fichero del que salió, para poder decirlo en el log. */
   source: string | null;
 }
@@ -44,6 +53,8 @@ const EMPTY: RailwayRepoConfig = {
   restartPolicyType: null,
   restartPolicyMaxRetries: null,
   cronSchedule: null,
+  drainingSeconds: null,
+  overlapSeconds: null,
   source: null,
 };
 
@@ -162,6 +173,8 @@ function fromSections(build: any, deploy: any, source: string): RailwayRepoConfi
     restartPolicyType: str(deploy?.restartPolicyType)?.toUpperCase() ?? null,
     restartPolicyMaxRetries: num(deploy?.restartPolicyMaxRetries),
     cronSchedule: str(deploy?.cronSchedule),
+    drainingSeconds: num(deploy?.drainingSeconds),
+    overlapSeconds: num(deploy?.overlapSeconds),
     source,
   };
 }
@@ -230,7 +243,9 @@ export function hasRailwayConfig(cfg: RailwayRepoConfig): boolean {
     !!cfg.restartPolicyType ||
     cfg.restartPolicyMaxRetries !== null ||
     cfg.watchPatterns.length > 0 ||
-    !!cfg.cronSchedule
+    !!cfg.cronSchedule ||
+    (cfg.drainingSeconds ?? null) !== null ||
+    (cfg.overlapSeconds ?? null) !== null
   );
 }
 

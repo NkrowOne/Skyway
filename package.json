@@ -1,6 +1,6 @@
 {
   "name": "skyway",
-  "version": "0.38.0",
+  "version": "0.40.0",
   "private": true,
   "description": "Plataforma de despliegue auto-alojada estilo Railway: despliega repos de GitHub y bases de datos en tu propio servidor con Docker.",
   "workspaces": [
@@ -19,6 +19,6 @@
     "test": "npm run test -w server && npm run test -w web"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^10.0.5"
   }
 }

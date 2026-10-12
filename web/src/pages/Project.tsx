@@ -1,7 +1,7 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { BellRing, Database, FileText, KeyRound, Layers, Mail, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
+import { ArrowLeftRight, BellRing, Database, FileText, KeyRound, Layers, Mail, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Signal, Trash2, X } from 'lucide-react';
 import { ApiError, api, openStream } from '../api';
 import { useLatch, usePresence } from '../hooks';
 import { Button, Chip, ConfirmModal, CopyButton, EmptyState, ErrorState, Field, Menu, MenuItem, Modal, Skeleton, useToast } from '../components/ui';
@@ -12,6 +12,7 @@ import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { clearLiveSnapshot, publishLiveSnapshot, useLiveSnapshot } from '../livemetrics';
 import { ActiveDeploy, MailwayStatus, Me, MetricsSnapshot, Project, ProjectMailView, Service } from '../types';
 import { CMD_K_LABEL, cx, EMPTY_LIST, EMPTY_RECORD, isActiveDeploy, serviceStatus } from '../utils';
+import { cambioDominioApi, ESTADO_CAMBIO_LABEL } from '../cambioDominio';
 
 // Carga diferida: el drawer del servicio (con sus 8 pestañas y modales) y los
 // modales de cabecera solo se descargan al abrirlos, no al entrar al proyecto.
@@ -21,6 +22,7 @@ const SharedVarsModal = lazy(() => import('../components/SharedVarsModal'));
 const GithubModal = lazy(() => import('../components/GithubModal'));
 const StatusPageModal = lazy(() => import('../components/StatusPageModal'));
 const MailModal = lazy(() => import('../components/MailModal'));
+const CambioDominioModal = lazy(() => import('../components/cambio-dominio/CambioDominioModal'));
 const ImportReportView = lazy(() => import('../components/RailwayImportModal').then((m) => ({ default: m.ImportReportView })));
 
 /** Pestañas del drawer que se pueden pedir por URL (`?tab=`). */
@@ -267,6 +269,7 @@ export default function ProjectPage() {
   const [githubOpen, setGithubOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [mailOpen, setMailOpen] = useState(false);
+  const [cambioOpen, setCambioOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
   const [editClient, setEditClient] = useState('');
@@ -293,6 +296,7 @@ export default function ProjectPage() {
   const githubLatched = useLatch(githubOpen);
   const statusLatched = useLatch(statusOpen);
   const mailLatched = useLatch(mailOpen);
+  const cambioLatched = useLatch(cambioOpen);
 
   const project = useQuery({
     queryKey: ['project', projectId],
@@ -310,6 +314,26 @@ export default function ProjectPage() {
     refetchInterval: () => (liveRef.current ? 20_000 : 4000),
     enabled: !!projectId,
   });
+
+  /*
+   * `?nuevo=1` (al venir de crear el proyecto): se abre «Nuevo servicio» en
+   * cuanto se sabe que el proyecto está vacío, y se quita el parámetro para
+   * que volver atrás o recargar no lo abra otra vez.
+   */
+  const pideNuevo = searchParams.get('nuevo') === '1';
+  const serviciosCargados = project.data?.services.length;
+  useEffect(() => {
+    if (!pideNuevo || serviciosCargados === undefined) return;
+    if (serviciosCargados === 0) setNewOpen(true);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('nuevo');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [pideNuevo, serviciosCargados, setSearchParams]);
 
   const { historyRef, deploys, live } = useProjectStream(projectId, () => {
     queryClient.invalidateQueries({ queryKey: ['project', projectId] });
@@ -335,6 +359,23 @@ export default function ProjectPage() {
     enabled: deleteOpen && !!projectId && !!mailStatus.data?.configured,
     staleTime: 15_000,
     retry: false,
+  });
+
+  // Cambiar de dominio es una decisión de estructura (como renombrar o borrar):
+  // solo la administración o el propietario de la cuenta del proyecto.
+  const puedeGestionar =
+    isAdmin ||
+    (me.data?.user?.role === 'owner' &&
+      !!me.data?.user?.workspaceId &&
+      project.data?.project.workspace_id === me.data?.user?.workspaceId);
+  // Aviso de un cambio de dominio abierto. Sin consultar a Mailway: solo dice
+  // que hay uno y en qué estado; el asistente trae el detalle al abrirlo.
+  const cambioResumen = useQuery({
+    queryKey: ['cambioDominioResumen', projectId],
+    queryFn: () => cambioDominioApi.listar(projectId!, { ligera: true }),
+    enabled: !!projectId && puedeGestionar,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 
   const importReport = useQuery({
@@ -568,6 +609,16 @@ export default function ProjectPage() {
                   <Mail size={13} /> Correo
                 </Button>
               )}
+              {isManager && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setCambioOpen(true)}
+                  title="Pasar la web y el correo del proyecto a otro dominio sin perder nada"
+                >
+                  <ArrowLeftRight size={13} /> Cambiar de dominio
+                </Button>
+              )}
             </div>
 
             <Button size="sm" className="max-sm:h-11 max-sm:flex-1" onClick={() => setNewOpen(true)}>
@@ -645,6 +696,16 @@ export default function ProjectPage() {
                   {isManager && (
                     <>
                       <MenuItem
+                        className="sm:hidden"
+                        icon={<ArrowLeftRight size={14} />}
+                        onClick={() => {
+                          setMenuOpen(false);
+                          setCambioOpen(true);
+                        }}
+                      >
+                        Cambiar de dominio
+                      </MenuItem>
+                      <MenuItem
                         icon={<Pencil size={14} />}
                         onClick={() => {
                           setMenuOpen(false);
@@ -671,6 +732,21 @@ export default function ProjectPage() {
             </div>
           </div>
         </div>
+
+        {cambioResumen.data?.abierta && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
+            <span className="flex min-w-0 flex-1 items-center gap-2 text-acc-soft">
+              <ArrowLeftRight size={15} className="shrink-0" />
+              <span className="min-w-0 break-words">
+                Cambio de dominio en curso: {cambioResumen.data.abierta.fromDomain} → {cambioResumen.data.abierta.toDomain} (
+                {ESTADO_CAMBIO_LABEL[cambioResumen.data.abierta.estado].toLowerCase()}).
+              </span>
+            </span>
+            <Button size="sm" variant="secondary" onClick={() => setCambioOpen(true)}>
+              Abrir
+            </Button>
+          </div>
+        )}
 
         {importReport.data?.report && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-acc/40 bg-acc/10 px-4 py-2.5 text-sm">
@@ -905,6 +981,12 @@ export default function ProjectPage() {
             projectName={proj.name}
             services={services}
           />
+        </Suspense>
+      )}
+
+      {cambioLatched && (
+        <Suspense fallback={null}>
+          <CambioDominioModal open={cambioOpen} onClose={() => setCambioOpen(false)} projectId={proj.id} />
         </Suspense>
       )}
 

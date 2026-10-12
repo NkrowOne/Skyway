@@ -136,7 +136,9 @@ const RULES: Rule[] = [
     test: (e) => has(e, 'No se encontró Dockerfile y Nixpacks no está instalado'),
     title: 'No es posible construir este repositorio',
     cause: 'El repositorio no tiene Dockerfile y el servidor no tiene Nixpacks instalado para detectar y construir el proyecto automáticamente.',
-    fix: 'Opción A: añade un `Dockerfile` al repositorio. Opción B: instala Nixpacks en el servidor (`curl -sSL https://nixpacks.com/install.sh | bash`); la imagen oficial de Skyway ya lo incluye.',
+    // Nixpacks va dentro de la imagen de Skyway: instalarlo en el host no sirve
+    // de nada, y su script oficial ni siquiera funciona en Alpine.
+    fix: 'Opción A: añade un `Dockerfile` al repositorio. Opción B: reconstruye la imagen de Skyway, que incluye Nixpacks, con `skyway update` (si persiste, `docker compose build --no-cache skyway && docker compose up -d`): la descarga de Nixpacks falló al construirla.',
   },
   {
     id: 'oom-killed',

@@ -4,7 +4,11 @@ import { fireAlert } from './alerts';
 import { auditSystem } from './audit';
 import { config, ensureDataDirs } from './config';
 import { checkIntegrity, closeDb, initDb, markStaleDeploymentsFailed } from './db';
-import { abortActiveDeployments } from './deploy/deployer';
+import { abortActiveDeployments, limpiarIntercambiosAlArrancar, resumeInterruptedDeployments } from './deploy/deployer';
+import { avisarServiciosQuePasanAUnaSolaCopia } from './deploy/avisoestrategia';
+import { marcarCambiosInterrumpidos } from './domainmigration';
+import { panelDomainWarning } from './paneldomain';
+import { refreshTraefikAcme } from './tls';
 import { dockerAvailable } from './docker/client';
 import { ensureNetwork, EDGE_NETWORK } from './docker/networks';
 import { startMonitor, stopMonitor } from './monitor';
@@ -21,6 +25,8 @@ async function main(): Promise<void> {
   const app = buildApp();
 
   if (stale > 0) app.log.warn(`${stale} despliegues interrumpidos marcados como fallidos`);
+  const avisoDominio = panelDomainWarning();
+  if (avisoDominio) app.log.warn(avisoDominio);
 
   // Integridad de la BD del panel: detectar corrupción (disco, apagón) al
   // arrancar, cuando aún hay backups recientes, y no semanas después.
@@ -43,7 +49,8 @@ async function main(): Promise<void> {
     }
   }
 
-  if (await dockerAvailable(true)) {
+  const conDocker = await dockerAvailable(true);
+  if (conDocker) {
     try {
       await ensureNetwork(EDGE_NETWORK);
     } catch (err) {
@@ -56,6 +63,48 @@ async function main(): Promise<void> {
   startMonitor({ warn: (msg) => app.log.warn(msg) });
   startScheduler({ warn: (msg) => app.log.warn(msg) });
   startAutoDeploy({ warn: (msg) => app.log.warn(msg) });
+  // El correo real de Traefik decide si hay TLS (tls.ts): se lee ya, antes de
+  // que el panel o un despliegue lo pregunten.
+  void refreshTraefikAcme();
+  // Restos de un intercambio que el reinicio cortó a mitad («--next», «--prev»):
+  // un bot podía quedarse con dos copias vivas hasta su siguiente despliegue.
+  // Solo se encola su limpieza (por la cola de cada servicio) y va ANTES del
+  // reintento automático, que se encola detrás y nunca coincide con ella.
+  if (conDocker) {
+    try {
+      const { servicios, contenedores } = await limpiarIntercambiosAlArrancar((msg) => app.log.warn(msg));
+      if (contenedores > 0) {
+        app.log.warn(`Restos de intercambios interrumpidos: ${contenedores} contenedores de ${servicios} servicios; se retiran en segundo plano`);
+        auditSystem('swap_leftovers_cleaned', `${contenedores} contenedores de ${servicios} servicios`);
+      }
+    } catch (err) {
+      app.log.warn({ err }, 'No se pudieron revisar los restos de intercambios interrumpidos');
+    }
+  }
+  // Una sola vez por instalación: los servicios ya desplegados que su próximo
+  // despliegue hará con «una sola copia» (antes, siempre «sin corte»), avisados
+  // en Alertas antes de que se note.
+  try {
+    const avisados = avisarServiciosQuePasanAUnaSolaCopia();
+    if (avisados > 0) app.log.info(`${avisados} servicios pasan a desplegarse con una sola copia: aviso en Alertas`);
+  } catch (err) {
+    app.log.warn({ err }, 'No se pudo avisar de los servicios que pasan a una sola copia');
+  }
+  // Lo que cortó el reinicio anterior: alerta y, una sola vez, reintento.
+  try {
+    const { retried, alerted } = resumeInterruptedDeployments();
+    if (alerted > 0) app.log.warn(`${alerted} despliegues interrumpidos por el reinicio: ${retried} reintentados automáticamente`);
+  } catch (err) {
+    app.log.warn({ err }, 'No se pudieron reanudar los despliegues interrumpidos');
+  }
+  // Los cambios de dominio que el reinicio cortó a mitad de pasar, volver o
+  // dar de baja: quedan con un error y «Reintentar» (no se reanudan solos).
+  try {
+    const { interrumpidos } = marcarCambiosInterrumpidos();
+    if (interrumpidos > 0) app.log.warn(`${interrumpidos} cambios de dominio interrumpidos por el reinicio`);
+  } catch (err) {
+    app.log.warn({ err }, 'No se pudieron revisar los cambios de dominio interrumpidos');
+  }
   auditSystem('server_started', `v${config.version}`);
 
   installProcessHandlers(app);

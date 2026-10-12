@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { ReactNode, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
@@ -17,13 +17,24 @@ import {
   Plug,
   Plus,
   RefreshCw,
+  Rocket,
   Send,
+  RotateCcw,
   Star,
   Trash2,
   Unlink,
 } from 'lucide-react';
 import { api } from '../api';
 import {
+  actualizaUsuarioAlConectar,
+  desplegarPorDefecto,
+  entregaMientrasMxFuera,
+  nombreDns,
+  spfSugeridosPorNombre,
+  tieneCredencialVigente,
+} from '../correo';
+import {
+  Deployment,
   MailApiKey,
   MailAccountView,
   MailAppPassword,
@@ -31,6 +42,8 @@ import {
   MailCloudflarePlan,
   MailCloudflareResult,
   MailDomain,
+  MailDomainConflict,
+  MailDomainPrecheck,
   MailMailbox,
   MailOptions,
   MailWebmail,
@@ -428,6 +441,7 @@ export default function MailModal({
             projectId={projectId}
             blocked={blocked}
             canManage={canManage}
+            isAdmin={data.isAdmin}
             domains={summary.domains}
             suggestedDomains={data.suggestedDomains ?? []}
             cloudflare={data.features?.cloudflare !== false}
@@ -901,6 +915,7 @@ function DomainsTab({
   projectId,
   blocked,
   canManage,
+  isAdmin,
   domains,
   suggestedDomains,
   cloudflare,
@@ -911,6 +926,7 @@ function DomainsTab({
   projectId: string;
   blocked: boolean;
   canManage: boolean;
+  isAdmin: boolean;
   domains: MailDomain[];
   suggestedDomains: string[];
   cloudflare: boolean;
@@ -921,11 +937,15 @@ function DomainsTab({
 }) {
   const toast = useToast();
   const [domain, setDomain] = useState('');
+  // Dominio que recibe hoy el correo en otro proveedor: se pide confirmación antes de añadirlo.
+  const [confirmar, setConfirmar] = useState<MailDomainPrecheck | null>(null);
+  const [dnsAhora, setDnsAhora] = useState(false);
 
   const add = useMutation({
-    mutationFn: (value: string) => api.post<AltaDominioCorreo>(`/projects/${projectId}/mail/domains`, { domain: value }),
+    mutationFn: (v: { domain: string; autoDns?: boolean }) => api.post<AltaDominioCorreo>(`/projects/${projectId}/mail/domains`, v),
     onSuccess: (res) => {
       setDomain('');
+      setConfirmar(null);
       onInvalidate();
       // Con el DNS automático (administrador con Cloudflare en Mailway), el segundo aviso dice qué se ha hecho.
       const aviso = avisoDnsCorreo(res.domain.domain, res.cloudflare, res.cloudflareReason);
@@ -940,13 +960,98 @@ function DomainsTab({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  /*
+   * Antes de añadirlo se mira dónde recibe hoy el correo. Añadirlo no mueve el
+   * MX, pero si recibe en otro proveedor hay que saber qué pasa mientras tanto
+   * (lo que se envía a ese dominio desde aquí, el DNS automático), y un clic
+   * en una sugerencia no debe bastar para eso.
+   */
+  const comprobar = useMutation({
+    mutationFn: (value: string) =>
+      api.get<MailDomainPrecheck>(`/projects/${projectId}/mail/domain-check?domain=${encodeURIComponent(value)}`),
+    onSuccess: (res) => {
+      if (res.recepcion === 'otro') {
+        setDnsAhora(false);
+        setConfirmar(res);
+      } else {
+        add.mutate({ domain: res.domain });
+      }
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const pedirAlta = (value: string) => {
+    if (value.trim() && !blocked) comprobar.mutate(value.trim());
+  };
+  const ocupado = comprobar.isPending || add.isPending;
+  // Solo un Mailway posterior a la 1.2 dice `recepcionExterna` (y entrega en
+  // el proveedor actual lo que se envía desde aquí a un dominio que recibe
+  // fuera). Sin ningún dominio todavía no se sabe qué Mailway es.
+  const mailwayEncamina = domains.some((d) => typeof d.recepcionExterna === 'boolean');
+
   return (
     <div className="flex flex-col gap-3">
+      {confirmar && (
+        <Modal open onClose={() => setConfirmar(null)} title={`${confirmar.domain} recibe el correo en otro proveedor`}>
+          <div className="flex flex-col gap-3 text-sm text-sub">
+            <p>
+              Su registro MX apunta hoy a <span className="break-all font-mono text-txt">{confirmar.mx.join(', ')}</span>. Añadir el
+              dominio aquí no cambia el MX: el correo sigue llegando allí hasta que hagas el cambio.
+            </p>
+            <ul className="list-disc space-y-1 pl-5 text-xs leading-5">
+              <li>
+                Para trasladar el correo, crea primero aquí los buzones y cambia el MX cuando estén listos. No importes el fichero de
+                zona ni reemplaces el MX en Cloudflare antes de ese momento: el correo se repartiría entre los dos proveedores.
+              </li>
+              {mailwayEncamina ? (
+                <>
+                  <li>
+                    Para usar este servidor solo para enviar (por ejemplo, desde la web), no cambies el MX. Si el dominio ya tiene un
+                    SPF, complétalo con el valor que se indique en la tarjeta del dominio en lugar de sustituirlo.
+                  </li>
+                  <li>
+                    Mientras el MX siga allí, la tarjeta del dominio indicará cómo se entrega el correo que se envíe a este dominio
+                    desde este servidor (la web, otros buzones).
+                  </li>
+                </>
+              ) : (
+                <li>
+                  Según la versión del servidor de correo, lo que se envíe desde aquí a direcciones de este dominio (por ejemplo, el
+                  formulario de contacto de la web) puede quedarse en este servidor aunque el MX siga allí: la tarjeta del dominio
+                  indicará cómo se entrega. Si el dominio ya tiene un SPF, complétalo con el valor que se indique en ella en lugar de
+                  sustituirlo.
+                </li>
+              )}
+            </ul>
+            {confirmar.dnsAutomatico && (
+              <label className="flex items-start gap-2 rounded-lg border border-line bg-bg px-3 py-2 text-xs">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-acc"
+                  checked={dnsAhora}
+                  onChange={(e) => setDnsAhora(e.target.checked)}
+                />
+                <span>
+                  <span className="font-medium text-txt">Configurar ahora el DNS en Cloudflare.</span> Crea los registros que faltan sin
+                  sustituir ninguno. Es preferible dejarlo para el traslado y revisar antes los cambios con «Configurar en Cloudflare».
+                </span>
+              </label>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setConfirmar(null)}>
+                Cancelar
+              </Button>
+              <Button onClick={() => add.mutate({ domain: confirmar.domain, autoDns: dnsAhora })} loading={add.isPending}>
+                Añadir el dominio
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
       <form
         className="flex flex-col gap-2 sm:flex-row"
         onSubmit={(e) => {
           e.preventDefault();
-          if (domain.trim() && !blocked) add.mutate(domain.trim());
+          pedirAlta(domain);
         }}
       >
         <input
@@ -958,7 +1063,7 @@ function DomainsTab({
           autoCapitalize="none"
           spellCheck={false}
         />
-        <Button type="submit" variant="secondary" loading={add.isPending} disabled={!domain.trim() || blocked} className="max-sm:h-11">
+        <Button type="submit" variant="secondary" loading={ocupado} disabled={!domain.trim() || blocked} className="max-sm:h-11">
           <Globe size={13} /> Añadir dominio
         </Button>
       </form>
@@ -970,8 +1075,8 @@ function DomainsTab({
             <button
               key={d}
               type="button"
-              disabled={add.isPending}
-              onClick={() => add.mutate(d)}
+              disabled={ocupado}
+              onClick={() => pedirAlta(d)}
               title={`Añadir ${d} como dominio de correo`}
               aria-label={`Añadir ${d} como dominio de correo`}
               className="press flex items-center gap-1 rounded-md border border-acc/40 bg-acc/[.06] px-2 py-0.5 font-mono text-xs font-medium text-acc-soft transition-colors hover:border-acc hover:bg-acc/10 disabled:cursor-not-allowed disabled:opacity-45 max-sm:py-1.5"
@@ -998,6 +1103,7 @@ function DomainsTab({
             domain={d}
             blocked={blocked}
             canManage={canManage}
+            isAdmin={isAdmin}
             cloudflare={cloudflare}
             onInvalidate={onInvalidate}
             onCloudflare={() => onCloudflare(d)}
@@ -1118,6 +1224,7 @@ function DomainCard({
   domain,
   blocked,
   canManage,
+  isAdmin,
   cloudflare,
   onInvalidate,
   onCloudflare,
@@ -1126,6 +1233,7 @@ function DomainCard({
   domain: MailDomain;
   blocked: boolean;
   canManage: boolean;
+  isAdmin: boolean;
   cloudflare: boolean;
   onInvalidate: () => void;
   onCloudflare: () => void;
@@ -1134,9 +1242,24 @@ function DomainCard({
   const [showDns, setShowDns] = useState(false);
   const [showWebmail, setShowWebmail] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [confirmarZona, setConfirmarZona] = useState(false);
   const status = DOMAIN_STATUS[domain.status] ?? DOMAIN_STATUS.pending_dns;
 
+  // ¿Recibe hoy el correo en otro proveedor? Un dominio verificado tiene el MX aquí: no hace falta preguntar.
+  const conflicto = useQuery({
+    queryKey: ['mailConflicto', projectId, domain.id],
+    queryFn: () => api.get<MailDomainConflict>(`/projects/${projectId}/mail/domains/${domain.id}/conflicto`),
+    enabled: domain.status !== 'active',
+    staleTime: 300_000,
+    retry: false,
+  });
+  const otroProveedor = conflicto.data?.hayOtroProveedor ? conflicto.data : null;
+  // SPF con el que sustituir el actual (el actual más lo que le falta), por nombre de registro.
+  const spfPorNombre = spfSugeridosPorNombre(domain.dns.checks);
+  const spfSugerido = spfPorNombre.get(nombreDns(domain.domain)) ?? null;
+
   const downloadZone = async () => {
+    setConfirmarZona(false);
     setDownloading(true);
     try {
       await downloadFromApi(`/projects/${projectId}/mail/domains/${domain.id}/zonefile`, `${domain.domain}-mailway-recomendados.txt`);
@@ -1174,6 +1297,17 @@ function DomainCard({
 
   return (
     <div className="rounded-lg border border-line bg-bg">
+      <ConfirmModal
+        open={confirmarZona}
+        onClose={() => setConfirmarZona(false)}
+        onConfirm={() => void downloadZone()}
+        title="El dominio recibe el correo en otro proveedor"
+        message={`El fichero de zona trae un MX hacia este servidor. Importarlo ahora añadiría ese MX junto a ${
+          otroProveedor?.mxActuales.join(', ') ?? 'los actuales'
+        }: el correo se repartiría entre los dos proveedores y parte se perdería. Impórtalo solo al hacer el cambio, después de borrar los MX del proveedor anterior.`}
+        confirmLabel="Descargar igualmente"
+        confirmVariant="secondary"
+      />
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-3">
         <div className="min-w-0 flex-1 basis-48">
           <p className="flex flex-wrap items-center gap-2">
@@ -1206,11 +1340,26 @@ function DomainCard({
         </div>
       </div>
 
+      {otroProveedor && (
+        <div role="note" className="flex items-start gap-1.5 border-t border-line/60 bg-warn/[.06] px-3.5 py-2.5 text-xs text-sub">
+          <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warn" />
+          <div className="min-w-0 space-y-1">
+            <p>
+              <span className="font-medium text-txt">Este dominio recibe el correo en otro proveedor</span> (MX:{' '}
+              <span className="break-all font-mono">{otroProveedor.mxActuales.join(', ')}</span>).{' '}
+              {entregaMientrasMxFuera(domain.domain, domain.recepcionExterna, isAdmin)}
+            </p>
+            {otroProveedor.avisoMtaSts && <p>{otroProveedor.avisoMtaSts}</p>}
+          </div>
+        </div>
+      )}
+
       {domain.ownershipPending && (
         <div className="border-t border-line/60 px-3.5 py-2.5 text-xs text-sub">
           <p>
-            Antes de crear buzones es necesario comprobar que el dominio es tuyo: apunta el registro MX a este servidor de correo o
-            añade el siguiente registro en el proveedor de DNS del dominio y pulsa «Verificar ahora».
+            Antes de crear buzones es necesario comprobar que el dominio es tuyo: añade el siguiente registro en el proveedor de DNS
+            del dominio y pulsa «Verificar ahora». Este registro no cambia dónde se recibe el correo; apuntar el MX a este servidor
+            también lo comprueba, pero traslada aquí todo el correo del dominio.
           </p>
           {domain.ownershipRecord && (
             <div className="mt-2 flex flex-col gap-1 rounded-md border border-line bg-surface px-3 py-2 sm:flex-row sm:items-start sm:gap-3">
@@ -1237,6 +1386,13 @@ function DomainCard({
                 <span className="font-medium text-txt">{c.label}</span>
                 {c.status === 'mismatch' ? ': el valor publicado no coincide con el esperado.' : c.status === 'missing' ? ': no se ha encontrado el registro.' : ': no se ha podido comprobar.'}
                 {c.help ? ` ${c.help}` : ''}
+                {c.suggested && (
+                  <span className="mt-1 flex items-start gap-1">
+                    <span className="shrink-0">Sustituye el actual por:</span>
+                    <span className="min-w-0 break-all font-mono text-txt">{c.suggested}</span>
+                    <CopyButton value={c.suggested} title="Copiar el valor combinado" className="-my-0.5 shrink-0" />
+                  </span>
+                )}
               </span>
             </li>
           ))}
@@ -1269,33 +1425,54 @@ function DomainCard({
               <p className="text-xs text-subtle">Mailway no ha indicado ningún registro para este dominio.</p>
             ) : (
               <>
-                <p className="mb-2 text-xs text-subtle">Crea estos registros en el proveedor de DNS del dominio.</p>
+                <p className="mb-2 text-xs text-subtle">
+                  Crea estos registros en el proveedor de DNS del dominio
+                  {spfPorNombre.size > 0 ? '; el SPF que ya existe no se crea: se sustituye por el valor combinado que se indica' : ''}.
+                </p>
                 <div className="overflow-hidden rounded-md border border-line">
-                  {dns.data.records.map((r, i) => (
-                    <div
-                      key={`${r.type}-${r.name}-${i}`}
-                      className="flex flex-col gap-1 border-b border-line/60 bg-surface px-3 py-2 text-xs last:border-b-0 sm:flex-row sm:items-start sm:gap-3"
-                    >
-                      <span className="w-14 shrink-0 font-mono font-semibold text-txt">{r.type}</span>
-                      <span className="flex min-w-0 items-start gap-1 sm:w-48 sm:shrink-0">
-                        <span className="min-w-0 break-all font-mono text-sub">{r.name}</span>
-                        <CopyButton value={r.name} title="Copiar nombre" className="-my-0.5 shrink-0" />
-                      </span>
-                      <span className="flex min-w-0 flex-1 items-start gap-1">
-                        <span className="min-w-0 flex-1 break-all font-mono text-txt">{r.content}</span>
-                        <CopyButton value={r.content} title="Copiar valor" className="-my-0.5 shrink-0" />
-                      </span>
-                    </div>
-                  ))}
+                  {dns.data.records.map((r, i) => {
+                    // Un SPF que ya existe se combina, nunca se duplica: con dos, ninguno vale.
+                    const esSpf = r.type === 'TXT' && /^"?v=spf1(\s|"|$)/i.test(r.content.trim());
+                    const spfDeLaFila = esSpf ? (spfPorNombre.get(nombreDns(r.name)) ?? null) : null;
+                    const valor = spfDeLaFila ?? r.content;
+                    return (
+                      <div
+                        key={`${r.type}-${r.name}-${i}`}
+                        className="flex flex-col gap-1 border-b border-line/60 bg-surface px-3 py-2 text-xs last:border-b-0 sm:flex-row sm:items-start sm:gap-3"
+                      >
+                        <span className="w-14 shrink-0 font-mono font-semibold text-txt">{r.type}</span>
+                        <span className="flex min-w-0 items-start gap-1 sm:w-48 sm:shrink-0">
+                          <span className="min-w-0 break-all font-mono text-sub">{r.name}</span>
+                          <CopyButton value={r.name} title="Copiar nombre" className="-my-0.5 shrink-0" />
+                        </span>
+                        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                          <span className="flex min-w-0 items-start gap-1">
+                            <span className="min-w-0 flex-1 break-all font-mono text-txt">{valor}</span>
+                            <CopyButton value={valor} title="Copiar valor" className="-my-0.5 shrink-0" />
+                          </span>
+                          {spfDeLaFila && (
+                            <span className="text-subtle">Sustituye el SPF actual por este valor: combina el que ya tiene con este servidor.</span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
                 <div className="mt-2.5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-xs leading-5 text-subtle">
                     Para crear todos los registros de una vez, descarga el fichero de zona e impórtalo en Cloudflare, en DNS →
-                    Registros → Importar y exportar, sin activar el proxy. Incluye también, en su propia sección, los registros
-                    de los servicios de este proyecto que usan el dominio y el del webmail; si el dominio ya tiene un registro
-                    SPF, conserva solo uno.
+                    Registros → Importar y exportar, sin activar el proxy. Importar añade y no sustituye: los registros de los
+                    servicios de este proyecto que usan el dominio van comentados (borra antes el registro actual de ese nombre) y,
+                    si el dominio ya tiene un SPF, no importes el del fichero: combínalos en uno
+                    {spfSugerido ? <> (<span className="break-all font-mono">{spfSugerido}</span>)</> : ''}.
                   </p>
-                  <Button size="sm" variant="secondary" onClick={() => void downloadZone()} loading={downloading} className="shrink-0">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => (otroProveedor ? setConfirmarZona(true) : void downloadZone())}
+                    loading={downloading}
+                    className="shrink-0"
+                  >
                     <Download size={12} /> Descargar fichero de zona
                   </Button>
                 </div>
@@ -1569,6 +1746,9 @@ function CloudflareDialog({
 }) {
   const toast = useToast();
   const [replaceConflicts, setReplaceConflicts] = useState(false);
+  // Conflictos elegidos uno a uno («TIPO:nombre»), con un Mailway que lo admite.
+  const [seleccion, setSeleccion] = useState<string[]>([]);
+  const [confirmarDeshacer, setConfirmarDeshacer] = useState(false);
   const [result, setResult] = useState<MailCloudflareResult | null>(null);
 
   const plan = useQuery({
@@ -1579,9 +1759,13 @@ function CloudflareDialog({
     gcTime: 0,
   });
 
+  const porRegistro = !!plan.data?.porRegistro;
   const apply = useMutation({
     mutationFn: () =>
-      api.post<MailCloudflareResult>(`/projects/${projectId}/mail/domains/${domain.id}/cloudflare/apply`, { replaceConflicts }),
+      api.post<MailCloudflareResult>(
+        `/projects/${projectId}/mail/domains/${domain.id}/cloudflare/apply`,
+        porRegistro ? { replace: seleccion } : { replaceConflicts },
+      ),
     onSuccess: (res) => {
       setResult(res);
       onApplied();
@@ -1590,8 +1774,33 @@ function CloudflareDialog({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Deshace el último cambio: vuelve lo que reemplazó y se retira lo que se creó en su lugar.
+  const deshacer = useMutation({
+    mutationFn: () =>
+      api.post<{ restaurados: { type: string; name: string }[]; retirados: { type: string; name: string }[] }>(
+        `/projects/${projectId}/mail/domains/${domain.id}/cloudflare/undo`,
+      ),
+    onSuccess: (res) => {
+      setConfirmarDeshacer(false);
+      onApplied();
+      void plan.refetch();
+      toast(`Cambio deshecho: ${res.restaurados.length} registro(s) restaurado(s) y ${res.retirados.length} retirado(s).`, 'ok');
+    },
+    onError: (err: Error) => {
+      setConfirmarDeshacer(false);
+      toast(err.message, 'err');
+    },
+  });
+
   const p = plan.data;
-  const pendientes = p ? p.summary.create + p.summary.update + (replaceConflicts ? p.summary.conflict : 0) : 0;
+  const clave = (c: { type: string; name: string }) => `${c.type.toUpperCase()}:${c.name}`;
+  const alternar = (k: string) => setSeleccion((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]));
+  // «Hacer el cambio de proveedor»: el MX y lo que se crea con él (SPF y DMARC); el resto se conserva.
+  const delCambio = p ? p.changes.filter((c) => c.action === 'conflict' && c.alCambiar && c.reemplazable !== false) : [];
+  const cambioProveedor = delCambio.some((c) => c.type === 'MX') ? delCambio.map(clave) : [];
+  const pendientes = p
+    ? p.summary.create + p.summary.update + (porRegistro ? seleccion.length : replaceConflicts ? p.summary.conflict : 0)
+    : 0;
 
   return (
     <Modal open onClose={onClose} title={`Cloudflare · ${domain.domain}`} wide>
@@ -1611,7 +1820,7 @@ function CloudflareDialog({
             <ul className="space-y-1 rounded-lg border border-line bg-bg px-3 py-2 text-xs">
               {result.applied.map((a, i) => (
                 <li key={`${a.type}-${a.name}-${i}`} className="break-all font-mono text-sub">
-                  {a.action === 'create' ? 'Creado' : 'Actualizado'} · {a.type} {a.name}
+                  {a.action === 'create' ? 'Creado' : a.action === 'replace' ? 'Reemplazado' : 'Actualizado'} · {a.type} {a.name}
                 </li>
               ))}
             </ul>
@@ -1660,16 +1869,61 @@ function CloudflareDialog({
               </Chip>
             ))}
           </div>
+          {p.copia && p.copia.borrados.length > 0 && (
+            <div className="rounded-lg border border-line bg-bg px-3 py-2 text-xs text-sub">
+              <p>
+                El último cambio reemplazó{' '}
+                <span className="break-all font-mono text-txt">
+                  {p.copia.borrados.map((b) => `${b.type} ${b.priority != null ? `${b.priority} ` : ''}${b.content}`).join(', ')}
+                </span>
+                . Mailway guarda una copia por si hay que volver atrás.
+              </p>
+              {confirmarDeshacer ? (
+                <div className="mt-2 flex flex-col gap-2">
+                  <p className="text-warn">
+                    Se volverán a crear los registros reemplazados y se retirarán los que se crearon en su lugar. Si el MX vuelve al
+                    proveedor anterior, el correo dejará de llegar a este servidor en cuanto se propague el DNS.
+                  </p>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button variant="ghost" size="sm" onClick={() => setConfirmarDeshacer(false)}>
+                      Cancelar
+                    </Button>
+                    <Button variant="danger" size="sm" onClick={() => deshacer.mutate()} loading={deshacer.isPending}>
+                      Deshacer el cambio
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button variant="secondary" size="sm" className="mt-2" onClick={() => setConfirmarDeshacer(true)} disabled={!canManage}>
+                  <RotateCcw size={12} /> Deshacer el cambio
+                </Button>
+              )}
+            </div>
+          )}
           <div className="max-h-[45dvh] overflow-y-auto rounded-lg border border-line">
             {p.changes.map((c, i) => (
               <div key={`${c.type}-${c.name}-${i}`} className="border-b border-line/60 bg-bg px-3 py-2 text-xs last:border-b-0">
                 <p className="flex flex-wrap items-center gap-2">
+                  {porRegistro && c.action === 'conflict' && c.reemplazable !== false && (
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 shrink-0 accent-acc"
+                      checked={seleccion.includes(clave(c))}
+                      onChange={() => alternar(clave(c))}
+                      disabled={!canManage}
+                      aria-label={`Reemplazar ${c.type} ${c.name}`}
+                    />
+                  )}
                   <Chip size="sm" tone={CHANGE_LABEL[c.action].tone} dot>
                     {CHANGE_LABEL[c.action].label}
                   </Chip>
                   <span className="font-mono font-semibold">{c.type}</span>
                   <span className="min-w-0 break-all font-mono text-sub">{c.name}</span>
                   {!c.required && <span className="text-subtle">(recomendado)</span>}
+                  {c.alCambiar && <span className="text-subtle">(con el cambio de proveedor)</span>}
+                  {porRegistro && c.action === 'conflict' && c.reemplazable === false && (
+                    <span className="text-subtle">(no se puede reemplazar desde aquí)</span>
+                  )}
                 </p>
                 <p className="mt-1 break-all font-mono text-txt">
                   {c.priority != null ? `${c.priority} ` : ''}
@@ -1682,7 +1936,25 @@ function CloudflareDialog({
               </div>
             ))}
           </div>
-          {p.summary.conflict > 0 && (
+          {porRegistro && p.summary.conflict > 0 && (
+            <div className="rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
+              <p>
+                Marca en cada conflicto si se reemplaza. Mailway guarda una copia de lo que reemplaza para poder deshacerlo. Si el
+                dominio recibe hoy correo en otro proveedor, dejará de recibirlo allí en cuanto se cambie el MX: hazlo solo al
+                trasladar el correo a este servidor, y conserva el resto (autodiscover, el <span className="font-mono">mail.</span> del
+                hosting) hasta terminar la importación y la reconfiguración de los dispositivos.
+              </p>
+              {cambioProveedor.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => setSeleccion(cambioProveedor)} disabled={!canManage}>
+                    Hacer el cambio de proveedor
+                  </Button>
+                  <span>Marca solo el MX y lo que debe crearse con él; el resto se conserva.</span>
+                </div>
+              )}
+            </div>
+          )}
+          {!porRegistro && p.summary.conflict > 0 && (
             <label className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
               <input
                 type="checkbox"
@@ -2084,18 +2356,61 @@ function SecretPanel({ projectId, secret, onDismiss }: { projectId: string; secr
 
 // ---------- conectar a un servicio ----------
 
-const MODE_HELP: Record<'smtp' | 'api', { title: string; text: string; vars: string[] }> = {
-  smtp: {
-    title: 'SMTP',
-    text: 'Se crea una contraseña de aplicación propia para el servicio (la contraseña del buzón no cambia). Compatible con cualquier biblioteca de correo: Nodemailer, PHPMailer, Django, Laravel, Rails…',
-    vars: ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM'],
-  },
-  api: {
-    title: 'API de envío',
-    text: 'Se crea una clave de la API de envío de Mailway con el buzón como remitente. Indicado para correo transaccional mediante HTTP, con límites de envío y registro por clave.',
-    vars: ['MAILWAY_API_URL', 'MAILWAY_API_KEY', 'MAIL_FROM'],
-  },
+/** Nombre de variable, ruta o cabecera dentro de un texto de ayuda. */
+function Mono({ children }: { children: ReactNode }) {
+  return <span className="break-all font-mono text-txt">{children}</span>;
+}
+
+/** Nombres de las variables de la API en el servicio: los que espera, o los de siempre. */
+interface NombresApi {
+  url: string;
+  key: string;
+}
+
+const MODE_HELP: Record<'smtp' | 'api', { title: string; vars: string[] }> = {
+  smtp: { title: 'SMTP', vars: ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM'] },
+  api: { title: 'API de envío', vars: ['MAILWAY_API_URL', 'MAILWAY_API_KEY', 'MAIL_FROM'] },
 };
+
+/**
+ * Qué crea cada modo y qué permite. La contraseña de aplicación abre también
+ * el buzón por IMAP, y la clave de la API solo envía desde él: para un bot o
+ * un worker que solo envía, la API es lo prudente. La URL de la API es la
+ * dirección base de Mailway (la de su panel), no la del envío: sin decirlo,
+ * quien programa el servicio hace POST a la base y recibe un 404. Las
+ * variables se nombran como las espera el servicio (`roleNames` de la vista
+ * previa): un `skyway.json` puede llamarlas de otra forma.
+ */
+function AyudaModo({ mode, nombres }: { mode: 'smtp' | 'api'; nombres: NombresApi }) {
+  if (mode === 'smtp') {
+    return (
+      <>
+        Se crea una contraseña de aplicación propia para el servicio (la contraseña del buzón no cambia). Compatible con cualquier
+        biblioteca de correo: Nodemailer, PHPMailer, Django, Laravel, Rails… La contraseña de aplicación también permite leer el
+        buzón por IMAP. Para un bot o un worker que solo envía, es preferible la API de envío.
+      </>
+    );
+  }
+  return (
+    <>
+      Se crea una clave de la API de envío de Mailway con el buzón como remitente: solo permite enviar desde ese buzón, con los
+      límites del plan y un registro por clave. <Mono>{nombres.url}</Mono> es la dirección base de Mailway: para enviar, haz POST a{' '}
+      <Mono>{`{${nombres.url}}/v1/send`}</Mono> con la cabecera <Mono>{`Authorization: Bearer {${nombres.key}}`}</Mono> y un JSON con{' '}
+      <Mono>to</Mono>, <Mono>subject</Mono> y <Mono>text</Mono> o <Mono>html</Mono>. Con la cabecera <Mono>Idempotency-Key</Mono>,
+      un reintento no envía el mensaje dos veces.
+    </>
+  );
+}
+
+/** Ejemplo de envío por la API, con las variables que Skyway escribe en el servicio. */
+function ejemploApi(nombres: NombresApi): string {
+  return [
+    `curl -X POST "$${nombres.url}/v1/send" \\`,
+    `  -H "Authorization: Bearer $${nombres.key}" \\`,
+    '  -H "Content-Type: application/json" \\',
+    `  -d '{"to": "cliente@example.com", "subject": "Pedido confirmado", "text": "Tu pedido está en camino."}'`,
+  ].join('\n');
+}
 
 function ConnectTab({
   projectId,
@@ -2121,7 +2436,10 @@ function ConnectTab({
   const [serviceId, setServiceId] = useState(deployables[0]?.id ?? '');
   const [mailboxId, setMailboxId] = useState(mailboxes[0]?.id ?? '');
   const [mode, setMode] = useState<'smtp' | 'api'>('smtp');
-  const [redeploy, setRedeploy] = useState(false);
+  // null hasta que alguien lo marque o lo desmarque: mientras, lo decide
+  // `reconecta` (ver debajo). Vuelve a null al cambiar de servicio o de modo,
+  // porque la credencial que se revocaría es otra.
+  const [redeploy, setRedeploy] = useState<boolean | null>(null);
   const [result, setResult] = useState<{
     serviceId: string;
     serviceName: string;
@@ -2129,6 +2447,10 @@ function ConnectTab({
     kept: string[];
     needsRedeploy: boolean;
     revoked: number;
+    /** Detenido desde el panel al conectar: su contenedor conserva la credencial revocada. */
+    detenido: boolean;
+    /** Había otros cambios sin desplegar al conectar: «Desplegar ahora» compila en vez de reutilizar la versión en marcha. */
+    rebuild: boolean;
   } | null>(null);
 
   const service = deployables.find((s) => s.id === serviceId) ?? deployables[0];
@@ -2142,26 +2464,45 @@ function ConnectTab({
   const renewal = service ? view.renewals?.[service.id] : undefined;
   const renewalNote = renewal ? avisoRenovacion(renewal) : null;
 
-  // Con qué nombres recibe el servicio el correo: los que espera su web (su
-  // .env.example o su skyway.json) y, si no los nombra, los de siempre.
+  // Con qué nombres recibe el servicio el correo: los que espera el servicio
+  // (su .env.example o su skyway.json) y, si no los nombra, los de siempre.
   const preview = useQuery({
     queryKey: ['mailConnectPreview', projectId, service?.id, mode],
     queryFn: () =>
-      api.get<{ keys: string[]; kept: string[]; secretPlaced: boolean; conflicts?: string[]; suggestedMode: 'smtp' | 'api' | null }>(
-        `/projects/${projectId}/mail/connect/preview?${new URLSearchParams({ serviceId: service!.id, mode })}`,
-      ),
+      api.get<{
+        keys: string[];
+        kept: string[];
+        secretPlaced: boolean;
+        conflicts?: string[];
+        suggestedMode: 'smtp' | 'api' | null;
+        /** Nombres con los que se reconoce la credencial de Skyway del servicio en este modo. */
+        credentialNames: string[];
+        /** Sin dominios ni healthcheck: casi siempre un bot o un worker. */
+        sinDominio: boolean;
+        /** Variable que lleva cada papel (`api_url`, `api_key`…), con el nombre que espera el servicio. */
+        roleNames?: Record<string, string>;
+      }>(`/projects/${projectId}/mail/connect/preview?${new URLSearchParams({ serviceId: service!.id, mode })}`),
     enabled: !!service && view.linked,
     staleTime: 15_000,
     retry: false,
   });
 
+  // Sin la vista previa no se sabe si conectar revoca la credencial que usa el
+  // contenedor en marcha: «Conectar» espera a que llegue (si falla, se avisa
+  // de la revocación en general y se puede conectar igual).
+  const previewCargando = !!service && view.linked && preview.isLoading;
+  const credNames = preview.data?.credentialNames ?? [];
+  const reconecta = tieneCredencialVigente(mode, credNames, appPasswords, apiKeys);
+  const detenido = !!service?.stopped_at;
+  const redeployNow = redeploy ?? desplegarPorDefecto(reconecta, detenido);
+
   const connect = useMutation({
     mutationFn: () =>
-      api.post<{ ok: boolean; keys: string[]; kept?: string[]; needsRedeploy: boolean; revoked?: number }>(`/projects/${projectId}/mail/connect`, {
+      api.post<{ ok: boolean; keys: string[]; kept?: string[]; needsRedeploy: boolean; revoked?: number; rebuild?: boolean }>(`/projects/${projectId}/mail/connect`, {
         serviceId: service?.id,
         mailboxId: mailbox?.id,
         mode,
-        redeploy,
+        redeploy: redeployNow,
       }),
     onSuccess: (res) => {
       if (!service) return;
@@ -2172,6 +2513,8 @@ function ConnectTab({
         kept: res.kept ?? [],
         needsRedeploy: res.needsRedeploy,
         revoked: res.revoked ?? 0,
+        detenido,
+        rebuild: res.rebuild ?? false,
       });
       queryClient.invalidateQueries({ queryKey: ['env', service.id] });
       queryClient.invalidateQueries({ queryKey: ['mailConnectPreview', projectId, service.id] });
@@ -2181,6 +2524,30 @@ function ConnectTab({
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
+
+  // Conectado sin desplegar y con la credencial anterior revocada: el servicio
+  // no puede enviar hasta el próximo despliegue, así que se ofrece aquí mismo.
+  // Lo mismo que la casilla: la versión en marcha con las variables nuevas, no
+  // la cabeza de la rama (que podía publicar commits que nadie había pedido).
+  const deployNow = useMutation({
+    mutationFn: (r: { serviceId: string; rebuild: boolean }) =>
+      api.post<{ deployment: Deployment }>(`/projects/${projectId}/mail/redeploy`, { serviceId: r.serviceId, rebuild: r.rebuild }),
+    onSuccess: (_res, { serviceId: id }) => {
+      setResult((r) => (r && r.serviceId === id ? { ...r, needsRedeploy: false } : r));
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+      toast('Despliegue iniciado.', 'ok');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  const elegirServicio = (id: string) => {
+    setServiceId(id);
+    setRedeploy(null);
+  };
+  const elegirModo = (m: 'smtp' | 'api') => {
+    setMode(m);
+    setRedeploy(null);
+  };
 
   if (deployables.length === 0) {
     return (
@@ -2212,16 +2579,25 @@ function ConnectTab({
 
   const help = MODE_HELP[mode];
   const names = preview.data?.keys ?? help.vars;
+  const nombresApi: NombresApi = {
+    url: preview.data?.roleNames?.api_url ?? 'MAILWAY_API_URL',
+    key: preview.data?.roleNames?.api_key ?? 'MAILWAY_API_KEY',
+  };
+  const ejemplo = ejemploApi(nombresApi);
   const kept = preview.data?.kept ?? [];
   const suggested = preview.data?.suggestedMode ?? null;
   // Servidor, puerto o URL de otro proveedor puestos a mano: la conexión quedaría a medias.
   const conflicts = preview.data?.secretPlaced ? (preview.data.conflicts ?? []) : [];
+  // Tras un cambio de dominio, conectar por SMTP un buzón que aún entra con su
+  // usuario anterior lo actualiza, y los dispositivos de la persona dejan de conectar.
+  const actualizaUsuario = actualizaUsuarioAlConectar(mode, mailbox, appPasswords, credNames);
+  const sinDominio = mode === 'smtp' && !!preview.data?.sinDominio;
 
   return (
     <div className="flex flex-col gap-3.5">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Field label="Servicio">
-          <select className="input" value={service?.id ?? ''} onChange={(e) => setServiceId(e.target.value)}>
+          <select className="input" value={service?.id ?? ''} onChange={(e) => elegirServicio(e.target.value)}>
             {deployables.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -2263,21 +2639,43 @@ function ConnectTab({
         full
         label="Modo de conexión"
         value={mode}
-        onChange={setMode}
+        onChange={elegirModo}
         options={[
           { key: 'smtp', label: 'SMTP' },
           { key: 'api', label: 'API de envío' },
         ]}
       />
       <div className="rounded-lg border border-line bg-bg px-3.5 py-3 text-xs leading-5 text-sub">
-        <p>{help.text}</p>
+        <p>
+          <AyudaModo mode={mode} nombres={nombresApi} />
+        </p>
+        {mode === 'api' && (
+          <details className="group mt-1.5">
+            <summary className="inline-flex cursor-pointer list-none items-center gap-1 font-medium text-sub hover:text-txt">
+              <ChevronDown size={12} className="shrink-0 transition-transform duration-200 ease-out group-open:rotate-180" aria-hidden />
+              Ejemplo
+            </summary>
+            <div className="details-body mt-1.5 flex items-start gap-1">
+              <code className="block min-w-0 flex-1 overflow-x-auto whitespace-pre rounded-md bg-term p-2 font-mono text-micro text-txt/[.88]">
+                {ejemplo}
+              </code>
+              <CopyButton value={ejemplo} title="Copiar ejemplo" />
+            </div>
+          </details>
+        )}
+        {sinDominio && (
+          <p className="mt-1.5 text-txt">
+            Este servicio no tiene dominio. Si solo envía correo, como un bot o un worker, se recomienda la API de envío: la clave solo
+            envía desde este buzón y no da acceso a su contenido.
+          </p>
+        )}
         {suggested && suggested !== mode && (
           <p className="mt-1.5 text-warn">
-            La web de este servicio espera {suggested === 'api' ? 'la API de envío' : 'SMTP'}: comprueba el modo antes de conectar.
+            Este servicio espera {suggested === 'api' ? 'la API de envío' : 'SMTP'}: comprueba el modo antes de conectar.
           </p>
         )}
         <p className="mt-1.5">
-          Variables que se añaden al servicio{preview.data ? ', con los nombres que espera su web' : ''}:{' '}
+          Variables que se añaden al servicio{preview.data ? ', con los nombres que espera el servicio' : ''}:{' '}
           {names.map((v, i) => (
             <span key={v}>
               <span className="font-mono text-txt">{v}</span>
@@ -2297,18 +2695,49 @@ function ConnectTab({
         {conflicts.length > 0 && (
           <p className="mt-1.5 text-warn">
             <span className="font-mono">{conflicts.join(', ')}</span> {conflicts.length === 1 ? 'tiene' : 'tienen'} un valor puesto a mano
-            distinto del de Mailway: con la credencial de Mailway, la web se conectaría a otro servidor. Elimina o vacía{' '}
+            distinto del de Mailway: con la credencial de Mailway, el servicio se conectaría a otro servidor. Elimina o vacía{' '}
             {conflicts.length === 1 ? 'esa variable' : 'esas variables'} en la pestaña «Variables» del servicio para conectar el correo.
           </p>
         )}
-        <p className="mt-1.5">
-          Si el servicio ya estaba conectado en este modo, la credencial anterior se revoca: hasta que se vuelva a desplegar, el
-          servicio no podrá enviar correo.
-        </p>
+        {preview.isError && (
+          <p className="mt-1.5">
+            Si el servicio ya estaba conectado en este modo, la credencial anterior se revoca: hasta que se vuelva a desplegar, el
+            servicio no podrá enviar correo.
+          </p>
+        )}
+        {reconecta && service && !detenido && (
+          <p role={redeployNow ? undefined : 'alert'} className={cx('mt-1.5', !redeployNow && 'text-warn')}>
+            «{service.name}» ya tiene una credencial de Skyway en este modo y se revoca al conectar. Sin volver a desplegar, el servicio
+            no podrá enviar correo hasta el próximo despliegue
+            {mode === 'smtp'
+              ? ', y cada intento con la contraseña revocada cuenta para el bloqueo automático de IPs del servidor de correo.'
+              : '.'}
+          </p>
+        )}
+        {reconecta && service && detenido && (
+          <p className="mt-1.5">
+            «{service.name}» ya tiene una credencial de Skyway en este modo y se revoca al conectar. El servicio está detenido: cuando
+            quieras ponerlo en marcha, vuelve a desplegarlo en lugar de usar «Iniciar», porque el contenedor detenido conserva la
+            credencial revocada.
+          </p>
+        )}
+        {detenido && redeployNow && (
+          <p role="alert" className="mt-1.5 text-warn">
+            El servicio está detenido: volver a desplegarlo ahora lo pondrá en marcha.
+          </p>
+        )}
+        {actualizaUsuario && mailbox && (
+          <p className="mt-1.5 text-warn">
+            <span className="break-all font-mono">{mailbox.email}</span> todavía entra con{' '}
+            <span className="break-all font-mono">{mailbox.login}</span>: al conectar pasará a entrar con su dirección, y los dispositivos que
+            sigan configurados con <span className="break-all font-mono">{mailbox.login}</span> dejarán de conectar hasta que se actualicen.
+            La contraseña no cambia.
+          </p>
+        )}
       </div>
 
       <label className="flex items-center gap-2 text-sm text-sub">
-        <input type="checkbox" className="h-4 w-4 shrink-0 accent-acc" checked={redeploy} onChange={(e) => setRedeploy(e.target.checked)} />
+        <input type="checkbox" className="h-4 w-4 shrink-0 accent-acc" checked={redeployNow} onChange={(e) => setRedeploy(e.target.checked)} />
         Volver a desplegar ahora
       </label>
 
@@ -2320,7 +2749,7 @@ function ConnectTab({
         <Button
           onClick={() => connect.mutate()}
           loading={connect.isPending}
-          disabled={!view.canManage || !service || !mailbox || blocked || conflicts.length > 0}
+          disabled={!view.canManage || !service || !mailbox || blocked || conflicts.length > 0 || previewCargando}
         >
           <Plug size={13} /> Conectar
         </Button>
@@ -2344,12 +2773,33 @@ function ConnectTab({
               No se han modificado, porque tienen un valor puesto a mano: <span className="font-mono text-txt">{result.kept.join(', ')}</span>.
             </p>
           )}
-          {result.revoked > 0 && <p className="mt-1">Se ha revocado la credencial que el servicio tenía antes.</p>}
-          <p className="mt-1">
-            {result.needsRedeploy
-              ? 'Es necesario volver a desplegar el servicio para aplicar los cambios.'
-              : 'Se ha iniciado un nuevo despliegue del servicio.'}
-          </p>
+          {result.revoked > 0 && result.needsRedeploy ? (
+            <div role="alert" className="mt-2 rounded-md border border-warn/30 bg-warn/[.07] px-3 py-2">
+              <p className="text-warn">
+                {result.detenido
+                  ? 'Se ha revocado la credencial anterior. El servicio está detenido: cuando quieras ponerlo en marcha, vuelve a desplegarlo en lugar de usar «Iniciar», porque el contenedor detenido conserva la credencial revocada.'
+                  : 'Se ha revocado la credencial anterior: el servicio no podrá enviar correo hasta que se vuelva a desplegar.'}
+              </p>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2"
+                onClick={() => deployNow.mutate({ serviceId: result.serviceId, rebuild: result.rebuild })}
+                loading={deployNow.isPending}
+              >
+                <Rocket size={12} /> Desplegar ahora
+              </Button>
+            </div>
+          ) : (
+            <>
+              {result.revoked > 0 && <p className="mt-1">Se ha revocado la credencial que el servicio tenía antes.</p>}
+              <p className="mt-1">
+                {result.needsRedeploy
+                  ? 'Es necesario volver a desplegar el servicio para aplicar los cambios.'
+                  : 'Se ha iniciado un nuevo despliegue del servicio.'}
+              </p>
+            </>
+          )}
           <Link
             to={`/projects/${projectId}?s=${result.serviceId}&tab=variables`}
             onClick={onClose}

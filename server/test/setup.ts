@@ -8,6 +8,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterAll } from 'vitest';
+// Ninguna prueba consulta el DNS real (ver `dnsfake.ts`).
+import './dnsfake';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skyway-test-'));
 process.env.DATA_DIR = dir;

@@ -152,16 +152,27 @@ function smtpUser(state: EnvState): string | null {
 }
 
 /**
+ * Usuarios con los que entra el buzón de una contraseña de aplicación: su
+ * dirección y, tras un cambio de dominio que aún no ha actualizado su usuario,
+ * el del motor (`login`, Mailway 1.3+), que sigue siendo la dirección
+ * anterior: es el que llevan las variables de las aplicaciones hasta la baja.
+ */
+function usuariosDe(a: MailwayAppPasswordInfo, summary: MailwaySummary | null): string[] {
+  const login = summary?.mailboxes.find((m) => m.id === a.mailboxId)?.login;
+  return login && login !== a.email ? [a.email, login] : [a.email];
+}
+
+/**
  * ¿Es una de las invalidadas la que llevan las variables? En una conexión
  * anterior a llevar la cuenta de lo escrito, solo si el usuario de las
  * variables es su buzón: sin esa comprobación, unas variables SMTP puestas a
  * mano con esos nombres se tomarían por las de Skyway.
  */
-function usesInvalidated(state: EnvState, dead: readonly MailwayAppPasswordInfo[]): boolean {
+function usesInvalidated(state: EnvState, dead: readonly MailwayAppPasswordInfo[], summary: MailwaySummary | null): boolean {
   if (dead.length === 0 || !carriesSkywaySmtpPassword(state)) return false;
   if (smtpTracked(state)) return true;
   const user = smtpUser(state);
-  return dead.some((a) => a.email === user);
+  return !!user && dead.some((a) => usuariosDe(a, summary).includes(user));
 }
 
 /**
@@ -334,7 +345,7 @@ async function renewWithSummary(service: ServiceRow, pass: Pass, summary: Mailwa
   const state = envStateOf(service);
   // Nada invalidado, o el servicio ya no usa la contraseña de Skyway (alguien
   // la ha cambiado; en una conexión anterior, con otro buzón): nada que hacer.
-  if (!usesInvalidated(state, dead)) {
+  if (!usesInvalidated(state, dead, summary)) {
     clearPending(service.id);
     return 'none';
   }
@@ -345,7 +356,7 @@ async function renewWithSummary(service: ServiceRow, pass: Pass, summary: Mailwa
 
   const tracked = smtpTracked(state);
   const user = smtpUser(state);
-  const previous = dead.find((a) => a.email === user) ?? dead[0];
+  const previous = (user ? dead.find((a) => usuariosDe(a, summary).includes(user)) : undefined) ?? dead[0];
   const wait = waitReason(service, project, summary);
   if (wait) return waiting(service.id, wait);
   const mailbox = summary.mailboxes.find((m) => m.id === previous.mailboxId);
@@ -363,10 +374,14 @@ async function renewWithSummary(service: ServiceRow, pass: Pass, summary: Mailwa
   // Las mismas reglas que «Conectar a un servicio», antes de crear nada: si el
   // servidor, el puerto o el usuario están puestos a mano con otro valor, la
   // contraseña nueva acabaría en otro proveedor.
-  const connect = mailConnectNames(service, 'smtp', { host, port, from: mailbox.email }, true);
+  // El usuario es el del motor (tras un cambio de dominio, la dirección
+  // anterior hasta la baja), como al conectar: con la dirección nueva, la
+  // aplicación no podría entrar.
+  const usuario = mailbox.login || mailbox.email;
+  const connect = mailConnectNames(service, 'smtp', { host, port, from: mailbox.email, user: usuario }, true);
   if (connect.conflicts.length > 0) return failed(service, project, partialConnectionMessage(connect.conflicts));
   if (!tracked) {
-    const distintas = legacyMismatches(state, { host, port, user: mailbox.email });
+    const distintas = legacyMismatches(state, { host, port, user: usuario });
     if (distintas.length > 0) {
       const una = distintas.length === 1;
       return failed(
@@ -381,7 +396,7 @@ async function renewWithSummary(service: ServiceRow, pass: Pass, summary: Mailwa
 
   // Qué se escribirá, antes de crear nada: sin una variable que reciba la
   // contraseña nueva, crearla solo dejaría otra sin usar en Mailway.
-  const base: MailValues = { host, port, user: mailbox.email, password: null, from: mailbox.email, apiUrl: null, apiKey: null };
+  const base: MailValues = { host, port, user: usuario, password: null, from: mailbox.email, apiUrl: null, apiKey: null };
   const toWrite = varsToRenew(connect.targets, state, base);
   const secretRoles = new Set(SECRET_ROLES.smtp);
   if (!toWrite.some((t) => secretRoles.has(t.role))) {
@@ -550,7 +565,7 @@ export async function renovarContrasenasInvalidadas(aviso: Aviso): Promise<void>
       for (const service of g.services) {
         // Lo normal en cada pasada: nada invalidado. Sin turno ni más
         // peticiones; solo se quita lo que quedara anotado.
-        if (!usesInvalidated(envStateOf(service), invalidatedOf(service, g.link, summary))) {
+        if (!usesInvalidated(envStateOf(service), invalidatedOf(service, g.link, summary), summary)) {
           clearPending(service.id);
           continue;
         }
@@ -586,7 +601,7 @@ export async function renovarCorreoDelProyecto(
     const due: ServiceRow[] = [];
     for (const service of listServices(project.id)) {
       if (service.type === 'database') continue;
-      if (!usesInvalidated(envStateOf(service), invalidatedOf(service, link, summary))) {
+      if (!usesInvalidated(envStateOf(service), invalidatedOf(service, link, summary), summary)) {
         clearPending(service.id);
         continue;
       }

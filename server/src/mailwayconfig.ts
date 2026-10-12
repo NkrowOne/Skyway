@@ -13,10 +13,12 @@ import {
   MAILWAY_SETTING,
   MailwayConfig,
   getInfo,
+  hostOf,
   internalPanelUrl,
   normalizeBaseUrl,
   publicBaseConflict,
   readMailwayConfig,
+  rememberPreviousHosts,
   resetMailwayCaches,
   safeHttpUrl,
 } from './mailway';
@@ -201,6 +203,9 @@ export function guardarConfigMailway(body: MailwayConfigInput, auditar: AuditarC
   if (next.baseUrl !== before.baseUrl) {
     setSetting(MAILWAY_SETTING.baseUrl, next.baseUrl);
     cambios.push(next.baseUrl ? 'URL del panel' : 'URL del panel (eliminada)');
+    // El nombre anterior sigue apuntando aquí hasta que cambie su DNS: queda reservado.
+    const anterior = hostOf(before.baseUrl);
+    if (anterior) rememberPreviousHosts([anterior]);
   }
   if (next.token !== before.token) {
     setSetting(MAILWAY_SETTING.token, next.token);

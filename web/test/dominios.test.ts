@@ -8,6 +8,9 @@ import {
   ordenarDominios,
   parejasWwwPendientes,
   parejaWww,
+  dominioUnicode,
+  nombreEnZona,
+  normalizarEntradaDominio,
 } from '../src/dominios';
 
 const ROOT = 'apps.plataforma.com';
@@ -129,5 +132,59 @@ describe('la copia de la web y la del servidor coinciden', () => {
     for (const d of caso.domains) expect(parejaWww(d, ROOT)).toEqual(servidor.parejaWww(d, ROOT));
     const sin = caso.sinPareja ?? caso.domains;
     expect(limpiarSinPareja(sin, caso.domains, ROOT)).toEqual(servidor.limpiarSinPareja(sin, caso.domains, ROOT));
+  });
+});
+
+describe('normalizarEntradaDominio', () => {
+  it('admite acentos y «ñ» y los guarda en punycode, como el servidor y Mailway', () => {
+    expect(normalizarEntradaDominio('panadería.es')).toBe('xn--panadera-i2a.es');
+    expect(normalizarEntradaDominio('Peña.COM.es')).toBe('xn--pea-8ma.com.es');
+  });
+
+  it('quita el esquema, la ruta, el puerto y el punto final de una URL pegada', () => {
+    expect(normalizarEntradaDominio('https://www.panaderiasol.es')).toBe('www.panaderiasol.es');
+    expect(normalizarEntradaDominio('https://www.panaderiasol.es/tienda?x=1')).toBe('www.panaderiasol.es');
+    expect(normalizarEntradaDominio('www.panaderiasol.es/tienda')).toBe('www.panaderiasol.es');
+    expect(normalizarEntradaDominio('app.ejemplo.es:8080')).toBe('app.ejemplo.es');
+    expect(normalizarEntradaDominio('ejemplo.es.')).toBe('ejemplo.es');
+  });
+
+  it('rechaza lo que no es un dominio', () => {
+    expect(normalizarEntradaDominio('')).toBe('');
+    expect(normalizarEntradaDominio('localhost')).toBe('');
+    expect(normalizarEntradaDominio('a b.es')).toBe('');
+    expect(normalizarEntradaDominio('dominio_con_guion_bajo.es')).toBe('');
+    // Como el servidor: un correo pegado no se queda en silencio con su dominio.
+    expect(normalizarEntradaDominio('info@cliente.es')).toBe('');
+    expect(normalizarEntradaDominio('cliente.es\\tienda')).toBe('');
+  });
+});
+
+describe('dominioUnicode', () => {
+  it('enseña el dominio como se escribe', () => {
+    expect(dominioUnicode('xn--panadera-i2a.es')).toBe('panadería.es');
+    expect(dominioUnicode('www.xn--pea-8ma.com.es')).toBe('www.peña.com.es');
+    expect(dominioUnicode('ejemplo.es')).toBe('ejemplo.es');
+  });
+
+  it('un punycode roto se deja como está', () => {
+    expect(dominioUnicode('xn--ab!c.es')).toBe('xn--ab!c.es');
+  });
+
+  it('ida y vuelta', () => {
+    for (const d of ['panadería.es', 'añadir.ejemplo.es', 'müller.de', 'example.中国']) {
+      expect(dominioUnicode(normalizarEntradaDominio(d))).toBe(d);
+    }
+  });
+});
+
+describe('nombreEnZona', () => {
+  it('da el nombre que se escribe en el panel DNS de la zona', () => {
+    expect(nombreEnZona('caa.es', 'caa.es')).toBe('@');
+    expect(nombreEnZona('www.caa.es.', 'caa.es')).toBe('www');
+    expect(nombreEnZona('a.b.panaderia.com.es', 'panaderia.com.es')).toBe('a.b');
+    // Fuera de la zona (un CAA en el sufijo, por ejemplo) no hay nombre relativo.
+    expect(nombreEnZona('com.es', 'panaderia.com.es')).toBeNull();
+    expect(nombreEnZona('otrocaa.es', 'caa.es')).toBeNull();
   });
 });
