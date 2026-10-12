@@ -214,7 +214,9 @@ export function startDataMigration(service: ServiceRow, project: ProjectRow, sou
   jobs.set(service.id, job);
 
   const log = (line: string) => {
-    const stamped = `${new Date().toISOString().slice(11, 19)} ${line}`;
+    // Sello ISO completo, como el log de los despliegues: con solo la hora
+    // (en UTC) el visor no podía enseñar la fecha y la pintaba como local.
+    const stamped = `${new Date().toISOString()} ${line}`;
     if (migration.logs.length < MAX_LOG_CHARS) migration.logs += stamped + '\n';
     bus.emit(channel(service.id), { type: 'log', line: stamped });
   };

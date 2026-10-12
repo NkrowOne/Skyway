@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Database, XCircle } from 'lucide-react';
 import { api, openStream } from '../api';
+import { LOG_FLUSH_MS } from '../logbatch';
 import { Button, Field, Modal, useToast } from './ui';
 import LogViewer from './LogViewer';
 
@@ -53,10 +54,11 @@ export default function DataMigrationModal({
   // vez de un setState por línea, que con un dump rápido encolaba cientos de
   // renders por segundo y congelaba el desplazamiento.
   const pendingRef = useRef<string[]>([]);
-  const rafRef = useRef(0);
+  const flushTimerRef = useRef(0);
 
   const flush = () => {
-    rafRef.current = 0;
+    if (flushTimerRef.current) window.clearTimeout(flushTimerRef.current);
+    flushTimerRef.current = 0;
     if (pendingRef.current.length === 0) return;
     const chunk = pendingRef.current;
     pendingRef.current = [];
@@ -66,14 +68,15 @@ export default function DataMigrationModal({
     });
   };
 
+  // Por tandas y no por frame: ver `logbatch.ts`.
   const push = (line: string) => {
     pendingRef.current.push(line);
-    if (!rafRef.current) rafRef.current = requestAnimationFrame(flush);
+    if (!flushTimerRef.current) flushTimerRef.current = window.setTimeout(flush, LOG_FLUSH_MS);
   };
 
   const cancelFlush = () => {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = 0;
+    if (flushTimerRef.current) window.clearTimeout(flushTimerRef.current);
+    flushTimerRef.current = 0;
     pendingRef.current = [];
   };
 
@@ -276,7 +279,7 @@ export default function DataMigrationModal({
                   visor se salía de la hoja inferior. */}
               <LogViewer
                 lines={lines}
-                toolbar
+                live={running && !streamLost}
                 title="Copia de datos"
                 downloadName={`copia-${serviceName}.log`}
                 onDownload={() => void downloadFull()}

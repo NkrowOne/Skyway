@@ -15,6 +15,7 @@ import {
   isActiveDeploy,
   timeAgo,
 } from '../../utils';
+import { createBatcher } from '../../logbatch';
 import LogViewer from '../LogViewer';
 import { Menu, Segmented, Skeleton, useToast } from '../ui';
 
@@ -161,12 +162,7 @@ export default function LogsTab({
     followingRef.current = true;
     let retryTimer = 0;
 
-    const pending: WireRow[] = [];
-    let raf = 0;
-    const flush = () => {
-      raf = 0;
-      if (!pending.length) return;
-      const incoming = pending.splice(0);
+    const batch = createBatcher<WireRow>((incoming) => {
       const seen = seenRef.current;
       const add: Row[] = [];
       for (const r of incoming) {
@@ -190,12 +186,11 @@ export default function LogsTab({
         }
         return next;
       });
-    };
+    });
 
     const es = openStream(`/services/${serviceId}/logs/stream`);
     es.addEventListener('log', (ev) => {
-      pending.push(JSON.parse((ev as MessageEvent).data) as WireRow);
-      if (!raf) raf = requestAnimationFrame(flush);
+      batch.push(JSON.parse((ev as MessageEvent).data) as WireRow);
     });
     es.addEventListener('notice', (ev) => {
       const data = JSON.parse((ev as MessageEvent).data);
@@ -221,7 +216,7 @@ export default function LogsTab({
     };
 
     return () => {
-      if (raf) cancelAnimationFrame(raf);
+      batch.clear();
       if (retryTimer) window.clearTimeout(retryTimer);
       es.close();
     };
@@ -317,28 +312,20 @@ export default function LogsTab({
   useEffect(() => {
     if (!buildStreamId) return;
     setBuildingLines([]);
-    const pending: string[] = [];
-    let raf = 0;
-    const flush = () => {
-      raf = 0;
-      if (!pending.length) return;
-      const add = pending.splice(0);
-      setBuildingLines((prev) => (prev.length ? prev.concat(add) : add));
-    };
+    // Un build escupe ráfagas de cientos de líneas: se pintan por tandas.
+    const batch = createBatcher<string>((add) => setBuildingLines((prev) => (prev.length ? prev.concat(add) : add)));
     const es = openStream(`/deployments/${buildStreamId}/logs/stream`);
     es.addEventListener('snapshot', (ev) => {
       const data = JSON.parse((ev as MessageEvent).data);
-      pending.length = 0;
+      batch.clear();
       setBuildingLines(data.logs ? data.logs.split('\n').filter(Boolean) : []);
     });
     es.addEventListener('log', (ev) => {
-      // Un build escupe ráfagas de cientos de líneas: se agrupan por frame en
-      // vez de forzar un render por línea, que en el móvil se notaba a tirones.
-      pending.push(JSON.parse((ev as MessageEvent).data).line);
-      if (!raf) raf = requestAnimationFrame(flush);
+      batch.push(JSON.parse((ev as MessageEvent).data).line);
     });
+    es.addEventListener('done', () => batch.flush());
     return () => {
-      if (raf) cancelAnimationFrame(raf);
+      batch.clear();
       es.close();
     };
   }, [buildStreamId]);
@@ -478,8 +465,10 @@ export default function LogsTab({
 
   return (
     <div className="flex min-h-0 h-full flex-1 flex-col overflow-hidden p-2.5 sm:p-4">
-      {/* ── BARRA SUPERIOR ESTILO RAILWAY: SELECTOR DE DESPLIEGUE + SUBPESTAÑAS LIMPIAS ── */}
-      <div className="mb-2 flex flex-col gap-2 rounded-xl border border-line bg-surface p-2 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+      {/* Qué se lee: el despliegue (en vivo o uno del historial) y el origen.
+          En una sola fila también en el móvil: cada fila de cromo es una
+          línea de log menos en pantalla. */}
+      <div className="mb-2 flex items-center gap-2 rounded-xl border border-line bg-surface p-1.5 shadow-sm sm:p-2">
         {/* Selector de despliegue desplegable con nombres amigables */}
         <div className="relative min-w-0 flex-1">
           <button
@@ -495,7 +484,10 @@ export default function LogsTab({
             {isLiveMode ? (
               <div className="flex min-w-0 items-center gap-2 truncate">
                 <span className="pulse-soft h-2 w-2 shrink-0 rounded-full bg-ok" />
-                <span className="truncate font-semibold">Despliegue actual (en vivo)</span>
+                <span className="truncate font-semibold">
+                  <span className="sm:hidden">En vivo</span>
+                  <span className="max-sm:hidden">Despliegue actual (en vivo)</span>
+                </span>
                 {activeDeploy && (
                   <span className="shrink-0 rounded bg-warn/15 px-1 py-0.5 text-micro font-semibold text-warn">
                     {DEPLOY_STATUS_LABEL[activeDeploy.status]}
@@ -533,7 +525,7 @@ export default function LogsTab({
             open={selectorOpen}
             onClose={() => setSelectorOpen(false)}
             align="left"
-            className="max-h-[min(380px,60dvh)] w-full min-w-0 overflow-y-auto overscroll-contain sm:min-w-[290px] sm:w-[360px]"
+            className="max-h-[min(380px,60dvh)] w-[min(360px,calc(100vw-40px))] overflow-y-auto overscroll-contain"
           >
             <div>
               <div className="px-2.5 py-1.5 eyebrow text-subtle">
@@ -626,22 +618,29 @@ export default function LogsTab({
             En el móvil ocupa su fila entera y se reparte: dos pastillas anchas
             que se aciertan con el pulgar. */}
         <Segmented
-          full
-          className="sm:w-fit"
           label="Origen del registro"
           value={stageTab}
           onChange={setStageTab}
           options={[
-            { key: 'runtime', label: 'Aplicación', icon: <Terminal size={13} aria-hidden /> },
-            { key: 'build', label: 'Compilación', icon: <Code2 size={13} aria-hidden /> },
+            {
+              key: 'runtime',
+              label: 'Aplicación',
+              icon: <Terminal size={13} aria-hidden className="max-sm:hidden" />,
+              title: 'Lo que escribe la aplicación mientras se ejecuta',
+            },
+            {
+              key: 'build',
+              label: 'Compilación',
+              icon: <Code2 size={13} aria-hidden className="max-sm:hidden" />,
+              title: 'La compilación y el despliegue de la versión',
+            },
           ]}
         />
       </div>
 
-      {/* ── VISOR DE LOGS PROFESIONAL RESPONSIVO CON SCROLL Y TIMESTAMPS GARANTIZADOS ── */}
       <LogViewer
         lines={displayLines}
-        toolbar
+        live={stageTab === 'build' ? !!buildStreamId : liveRuntime && attached && !liveNotice}
         replicas={replicas}
         state={viewerState}
         onRetry={handleRetry}

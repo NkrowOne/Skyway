@@ -662,9 +662,14 @@ details[open] > .details-body {
   position: sticky;
   left: 0;
   z-index: 1;
+  min-width: calc(var(--gutter-ch, 3.8) * 1ch);
   user-select: none;
   background: var(--color-term);
   color: color-mix(in oklab, var(--color-subtle) 78%, transparent);
+}
+/* Una línea se toca para ver su detalle: el ratón lo insinúa sin teñir la consola. */
+.log-row:hover {
+  background: color-mix(in oklab, var(--color-txt) 3%, transparent);
 }
 /* Riel de nivel: un filo de color a la izquierda marca error/aviso sin teñir toda la fila. */
 .log-row-err {
@@ -699,12 +704,43 @@ details[open] > .details-body {
   color: var(--color-term);
   font-weight: 600;
 }
-/* Timestamp de log formateado */
+/* Fecha y hora de cada línea: anchura fija por formato (--ts-ch) para que el texto arranque alineado. */
 .log-ts {
+  min-width: calc(var(--ts-ch, 16) * 1ch);
   user-select: none;
   color: color-mix(in oklab, var(--color-subtle) 85%, transparent);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+/* Línea abierta en el detalle. */
+.log-row.log-row-sel {
+  box-shadow: inset 2px 0 0 var(--color-acc);
+  background: color-mix(in oklab, var(--color-acc) 14%, transparent);
+}
+.log-row-sel .log-gutter {
+  background: color-mix(in oklab, var(--color-acc) 16%, var(--color-term));
+  color: var(--color-acc-soft);
+  box-shadow: inset 2px 0 0 var(--color-acc);
+}
+/* Detalle de una línea: sube desde el pie de la consola. */
+@keyframes log-sheet-in {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.log-sheet {
+  animation: log-sheet-in 0.2s var(--ease-spring);
+}
+@media (prefers-reduced-motion: reduce) {
+  .log-sheet {
+    animation: none;
+  }
 }
 /* Pantalla completa de la consola: sube y se asienta; se despide en reversa. */
 @keyframes console-in {

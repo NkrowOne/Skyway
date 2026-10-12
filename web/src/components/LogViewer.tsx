@@ -3,14 +3,17 @@ import { createPortal } from 'react-dom';
 import {
   ArrowDown,
   ArrowUpToLine,
-  ChevronsDown,
   Check,
+  CircleHelp,
   Clock,
   Copy,
   Download,
   Hash,
+  LocateFixed,
   Maximize2,
   Minimize2,
+  Pause,
+  Play,
   Search,
   SlidersHorizontal,
   Trash2,
@@ -22,19 +25,26 @@ import { ErrorState, Menu, MenuItem, Spinner, useToast } from './ui';
 
 export type Level = 'err' | 'warn' | 'plain';
 export type LevelFilter = 'all' | 'err' | 'warn';
-export type LogStage = 'all' | 'build' | 'deploy' | 'runtime' | 'sys';
-export type TimestampFormat = 'time' | 'datetime' | 'utc' | 'relative';
+export type TimestampFormat = 'datetime' | 'time' | 'utc' | 'relative';
 
 /** Formateador de miles reutilizable (locale fija). */
 const NF = new Intl.NumberFormat('es');
 
 /*
- * Formateadores de hora fijos. `toLocaleTimeString` construye uno nuevo en
- * cada llamada y aquí se llama una vez por línea visible cada vez que entra
- * una ráfaga: con quince mil líneas en vivo eran quince mil instancias por frame.
+ * Formateadores de fecha fijos. `toLocaleString` construye uno nuevo en cada
+ * llamada, y aquí se formatea una vez por línea pintada.
  */
-const TIME_FMT = new Intl.DateTimeFormat('es-ES', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-const DATETIME_FMT = new Intl.DateTimeFormat('es-ES', { day: '2-digit', month: '2-digit' });
+const TIME_FMT = new Intl.DateTimeFormat('es-ES', { hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const DAY_FMT = new Intl.DateTimeFormat('es-ES', { day: '2-digit', month: 'short' });
+const UTC_TIME_FMT = new Intl.DateTimeFormat('es-ES', {
+  hourCycle: 'h23',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  timeZone: 'UTC',
+});
+const UTC_DAY_FMT = new Intl.DateTimeFormat('es-ES', { day: '2-digit', month: 'short', timeZone: 'UTC' });
+const FULL_FMT = new Intl.DateTimeFormat('es-ES', { dateStyle: 'full', timeStyle: 'long' });
 
 /**
  * Filas por bloque. El bloque es la unidad que se pinta o se sustituye por un
@@ -50,162 +60,298 @@ const OVERSCAN_PX = 800;
 const DEFAULT_LINE_H = 22;
 /** Texto de la sonda que mide la anchura de un carácter de la monoespaciada. */
 const PROBE = '0000000000000000000000000000000000000000';
+/**
+ * Alto fijo de la franja de «Cargar líneas anteriores». Al ser fijo, el techo
+ * del lienzo se conoce sin medir nada: antes se medía en cada render con
+ * `getBoundingClientRect`, y en el móvil cada ráfaga forzaba una maquetación
+ * completa de la consola.
+ */
+const BANNER_H = 44;
 
-/** Heurística de niveles: error/fatal/panic → err; warn → warn; resto neutro. */
-function detectLevel(line: string): Level {
-  const l = line.toLowerCase();
+/* ───────────────────────── Análisis de cada línea ────────────────────────── */
+
+/*
+ * Nivel declarado por la propia línea: JSON (`"level":"error"`, pino con
+ * `"level":50`), logfmt (`level=warn`) o una etiqueta al principio
+ * (`ERROR`, `[warn]`, `npm WARN`). Manda sobre la heurística: «INFO: 0
+ * errores» no es un error aunque diga «errores».
+ */
+const LEVEL_JSON = /"(?:level|severity|lvl|levelname|loglevel|log\.level)"\s*:\s*"?([A-Za-z]+|\d{2})\b/;
+const LEVEL_KV = /(?:^|[\s,;])(?:level|lvl|severity)=["']?([A-Za-z]+)/i;
+const LEVEL_TAG =
+  /^.{0,48}?(?:\b(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|FATAL|CRIT|CRITICAL|PANIC|EMERG|ALERT|SEVERE)\b|\[(trace|debug|info|notice|warn|warning|error|err|fatal|crit|critical|panic|emerg|alert)\])/;
+/* Heurística para el texto libre, con palabras completas: «errorHandler» o «ERROR_LOG» no son errores. */
+const ERR_HINT = /\b(?:errors?|fatal|panic|exception|traceback|uncaught)\b|✖|❌|✗/i;
+/** TypeError, ValueError, NullPointerException…: sin límite de palabra delante. */
+const ERR_CLASS = /[A-Z][a-zA-Z]*(?:Error|Exception)\b/;
+const ERR_NONE = /\b(?:0|no|zero|sin|without)\s+(?:errors?|errores|exceptions?)\b/i;
+const WARN_HINT = /\b(?:warn|warning|warnings|deprecated|deprecation)\b|⚠/i;
+const WARN_NONE = /\b(?:0|no|zero|sin|without)\s+(?:warnings?|avisos)\b/i;
+
+function levelFromWord(word: string): Level {
+  if (/^\d+$/.test(word)) {
+    // Escala numérica de pino/bunyan: 40 aviso, 50 error, 60 fatal.
+    const n = Number(word);
+    return n >= 50 ? 'err' : n >= 40 ? 'warn' : 'plain';
+  }
+  const w = word.toLowerCase();
+  if (w.startsWith('warn')) return 'warn';
   if (
-    l.includes('error') ||
-    l.includes(' err ') ||
-    l.includes('fatal') ||
-    l.includes('panic') ||
-    l.includes('[error]') ||
-    l.includes('level=error') ||
-    l.includes('"level":"error"')
+    w === 'error' ||
+    w === 'err' ||
+    w === 'fatal' ||
+    w.startsWith('crit') ||
+    w === 'panic' ||
+    w.startsWith('emerg') ||
+    w === 'alert' ||
+    w === 'severe'
   ) {
     return 'err';
   }
-  if (
-    l.includes('warn') ||
-    l.includes('warning') ||
-    l.includes('[warn]') ||
-    l.includes('level=warn') ||
-    l.includes('"level":"warn"')
-  ) {
-    return 'warn';
-  }
+  return 'plain';
+}
+
+export function detectLevel(text: string): Level {
+  const declared = LEVEL_JSON.exec(text) ?? LEVEL_KV.exec(text);
+  if (declared) return levelFromWord(declared[1]);
+  const tag = LEVEL_TAG.exec(text);
+  if (tag) return levelFromWord(tag[1] ?? tag[2]);
+  if ((ERR_HINT.test(text) || ERR_CLASS.test(text)) && !ERR_NONE.test(text)) return 'err';
+  if (WARN_HINT.test(text) && !WARN_NONE.test(text)) return 'warn';
   return 'plain';
 }
 
 export interface ParsedRow {
   raw: string;
   cleanText: string;
+  /** Instante de la línea (ms), si trae un sello con fecha. */
   ts: number | null;
-  iso: string | null;
-  stage: LogStage;
+  /** Sello solo con hora (HH:mm:ss) de registros antiguos, que no traen fecha. */
+  clock: string | null;
   lvl: Level;
 }
 
-/** Parsea una línea de log extrayendo timestamp (ISO/Docker/RFC3339/legacy), fase y nivel. */
-export function parseRawLine(raw: string, defaultStage: LogStage = 'all'): ParsedRow {
-  let text = stripAnsi(raw).trimEnd();
+/** Sello ISO de Docker o del servidor al principio de la línea (fracción de 0 a 9 cifras). */
+const ISO_HEAD = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:[.,](\d{1,9}))?(Z|[+-]\d{2}:?\d{2})?(?=\s|$)/;
+const CLOCK_HEAD = /^(\d{2}:\d{2}:\d{2})(?:\.\d+)?\s/;
+
+/** Parsea una línea de log: sello de tiempo (ISO/Docker o la hora sola de los registros antiguos) y nivel. */
+export function parseRawLine(raw: string): ParsedRow {
+  let text = (raw.includes('\u001b') ? stripAnsi(raw) : raw).trimEnd();
   let ts: number | null = null;
-  let iso: string | null = null;
-  let stage: LogStage = defaultStage;
+  let clock: string | null = null;
 
-  // 1. Detección de timestamp ISO de Docker (2026-08-27T19:24:12.123456789Z o 2026-08-27 19:24:12)
-  const spaceIdx = text.indexOf(' ');
-  if (spaceIdx >= 19 && text[4] === '-' && text[7] === '-' && (text[10] === 'T' || text[10] === ' ')) {
-    const candidate = text.slice(0, spaceIdx);
-    const parsed = Date.parse(candidate);
-    if (Number.isFinite(parsed)) {
-      ts = parsed;
-      iso = candidate;
-      text = text.slice(spaceIdx + 1).trimStart();
+  const c0 = text.charCodeAt(0);
+  if (c0 >= 48 && c0 <= 57) {
+    const m = ISO_HEAD.exec(text);
+    if (m) {
+      /*
+       * Se normaliza antes de `Date.parse`: Safari no entiende el espacio en
+       * vez de la «T», ni más de tres cifras de fracción (Docker da nueve).
+       */
+      const ms = (m[3] ?? '').padEnd(3, '0').slice(0, 3);
+      const zone = !m[4] || m[4] === 'Z' || m[4].includes(':') ? m[4] ?? '' : `${m[4].slice(0, 3)}:${m[4].slice(3)}`;
+      const t = Date.parse(`${m[1]}T${m[2]}.${ms}${zone}`);
+      if (Number.isFinite(t)) {
+        ts = t;
+        text = text.slice(m[0].length).trimStart();
+      }
+    } else {
+      const k = CLOCK_HEAD.exec(text);
+      if (k) {
+        clock = k[1];
+        text = text.slice(k[0].length).trimStart();
+      }
     }
-  } else if (spaceIdx >= 8 && spaceIdx <= 12 && /^\d{2}:\d{2}:\d{2}/.test(text)) {
-    // Sello legacy HH:mm:ss
-    iso = text.slice(0, spaceIdx);
-    text = text.slice(spaceIdx + 1).trimStart();
   }
 
-  // 2. Detección de fase explícita ([build], [deploy], [runtime], [sys])
-  const lower = text.toLowerCase();
-  if (lower.startsWith('[build]') || lower.startsWith('build:')) {
-    stage = 'build';
-    text = text.replace(/^\[build\]\s*|^build:\s*/i, '');
-  } else if (lower.startsWith('[deploy]') || lower.startsWith('deploy:')) {
-    stage = 'deploy';
-    text = text.replace(/^\[deploy\]\s*|^deploy:\s*/i, '');
-  } else if (lower.startsWith('[runtime]') || lower.startsWith('runtime:')) {
-    stage = 'runtime';
-    text = text.replace(/^\[runtime\]\s*|^runtime:\s*/i, '');
-  } else if (lower.startsWith('[sys]') || lower.startsWith('[system]') || lower.startsWith('system:')) {
-    stage = 'sys';
-    text = text.replace(/^\[(sys|system)\]\s*|^(sys|system):\s*/i, '');
-  }
+  // Barras de progreso (`\r`): de cada línea solo cuenta lo último que se pintó.
+  const cr = text.lastIndexOf('\r');
+  if (cr >= 0) text = text.slice(cr + 1);
 
-  const lvl = detectLevel(text);
-
-  return {
-    raw,
-    cleanText: text,
-    ts,
-    iso,
-    stage,
-    lvl,
-  };
+  return { raw, cleanText: text, ts, clock, lvl: detectLevel(text) };
 }
 
-/** Formatea una marca de tiempo según el formato seleccionado. */
-function formatTimestamp(ts: number | null, iso: string | null, format: TimestampFormat): string {
-  if (!ts && iso) {
-    const parsed = Date.parse(iso);
-    if (Number.isFinite(parsed)) ts = parsed;
-  }
-  if (!ts && !iso) return '';
-  if (format === 'relative' && ts) {
-    const diff = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-    if (diff < 10) return '<10s';
-    if (diff < 60) return `${diff}s`;
-    if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
-    return `${Math.floor(diff / 86400)}d`;
-  }
-  if (format === 'utc' && ts) {
-    return new Date(ts).toISOString().slice(11, 19) + ' UTC';
-  }
-  if (format === 'datetime' && ts) {
-    const d = new Date(ts);
-    return `${DATETIME_FMT.format(d)} ${TIME_FMT.format(d)}`;
-  }
-  // format === 'time' (default)
-  if (ts) return TIME_FMT.format(new Date(ts));
-  return iso ? iso.slice(0, 8) : '';
+/* ───────────────────────── Marcas de tiempo ──────────────────────────────── */
+
+/** «12 oct»: algunas versiones de ICU añaden un punto a la abreviatura. */
+function dayLabel(fmt: Intl.DateTimeFormat, d: Date): string {
+  return fmt.format(d).replace('.', '');
 }
 
-/** Tooltip con información temporal completa para el hover. */
-function timestampTooltip(ts: number | null, iso: string | null): string | undefined {
-  if (!ts && !iso) return undefined;
-  if (ts) {
-    const d = new Date(ts);
-    return `Fecha local: ${d.toLocaleString('es-ES')}\nISO: ${d.toISOString()}\nUTC: ${d.toUTCString()}`;
-  }
-  return `Hora: ${iso}`;
+export function relativeTime(ts: number, now = Date.now()): string {
+  const s = Math.max(0, Math.floor((now - ts) / 1000));
+  if (s < 5) return 'ahora';
+  if (s < 60) return `hace ${s} s`;
+  if (s < 3600) return `hace ${Math.floor(s / 60)} min`;
+  if (s < 86_400) return `hace ${Math.floor(s / 3600)} h`;
+  return `hace ${Math.floor(s / 86_400)} d`;
 }
+
+function formatTs(ts: number, format: TimestampFormat): string {
+  const d = new Date(ts);
+  switch (format) {
+    case 'time':
+      return TIME_FMT.format(d);
+    case 'utc':
+      return `${dayLabel(UTC_DAY_FMT, d)} ${UTC_TIME_FMT.format(d)}`;
+    case 'relative':
+      return relativeTime(ts);
+    default:
+      return `${dayLabel(DAY_FMT, d)} ${TIME_FMT.format(d)}`;
+  }
+}
+
+/** Anchura de la columna de hora por formato, en caracteres. */
+const TS_CH: Record<TimestampFormat, number> = { datetime: 16, time: 8, utc: 16, relative: 11 };
 
 /*
- * Hora y tooltip de cada fila, calculados una sola vez por fila y formato. Con
- * catorce mil filas en el buffer, formatearlas todas con `Intl` en cada ráfaga
- * era el coste que dejaba el hilo principal del móvil sin responder. El
- * formato relativo cambia con el reloj y no se cachea.
+ * Texto de la hora por fila y formato, calculado solo para las filas que se
+ * pintan y una sola vez. Antes se formateaban las catorce mil del buffer (y
+ * su tooltip con tres fechas más) en cada cambio de filtro: era lo que dejaba
+ * el móvil sin responder al cambiar de pestaña. El relativo cambia con el
+ * reloj y no se guarda.
  */
-const TS_CACHE = new WeakMap<ParsedRow, { by: Partial<Record<TimestampFormat, string>>; tip?: string; tipDone: boolean }>();
-function tsEntry(r: ParsedRow) {
+const TS_CACHE = new WeakMap<ParsedRow, Partial<Record<TimestampFormat, string>>>();
+export function tsText(r: ParsedRow, format: TimestampFormat): string {
+  if (r.ts === null) return r.clock ?? '';
+  if (format === 'relative') return relativeTime(r.ts);
   let c = TS_CACHE.get(r);
   if (!c) {
-    c = { by: {}, tipDone: false };
+    c = {};
     TS_CACHE.set(r, c);
   }
-  return c;
-}
-function tsStringCached(r: ParsedRow, format: TimestampFormat): string {
-  if (format === 'relative') return formatTimestamp(r.ts, r.iso, format);
-  const c = tsEntry(r);
-  let s = c.by[format];
+  let s = c[format];
   if (s === undefined) {
-    s = formatTimestamp(r.ts, r.iso, format);
-    c.by[format] = s;
+    s = formatTs(r.ts, format);
+    c[format] = s;
   }
   return s;
 }
-function tsTooltipCached(r: ParsedRow): string | undefined {
-  const c = tsEntry(r);
-  if (!c.tipDone) {
-    c.tip = timestampTooltip(r.ts, r.iso);
-    c.tipDone = true;
+
+/* ───────────────────────── Búsqueda ──────────────────────────────────────── */
+
+/**
+ * Consulta de búsqueda con la sintaxis habitual de los visores de logs
+ * (Railway, Papertrail, Datadog): palabras sueltas (todas), «"frase exacta"»,
+ * «-excluir», «OR» entre alternativas, «/expresión regular/» y
+ * «level:error» / «level:warn». Sin distinguir mayúsculas.
+ */
+export interface LogQuery {
+  active: boolean;
+  test: (text: string, lvl: Level) => boolean;
+  /** Resalta lo buscado (global, sin distinguir mayúsculas); null si no hay nada que resaltar. */
+  mark: RegExp | null;
+  /** Aviso para quien busca, si algo no se ha podido interpretar. */
+  error: string | null;
+}
+
+interface Term {
+  neg: boolean;
+  re: RegExp | null;
+  lvl: Level | null;
+}
+
+const EMPTY_QUERY: LogQuery = { active: false, test: () => true, mark: null, error: null };
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const literal = (s: string) => new RegExp(escapeRe(s), 'i');
+
+function levelKeyword(v: string): Level | null {
+  const w = v.toLowerCase();
+  if (w === 'error' || w === 'errors' || w === 'err' || w === 'errores') return 'err';
+  if (w === 'warn' || w === 'warning' || w === 'warnings' || w === 'aviso' || w === 'avisos') return 'warn';
+  return null;
+}
+
+/** Barra de cierre de una expresión regular: la siguiente sin escapar que va seguida de espacio o del final. */
+function regexEnd(src: string, from: number): number {
+  for (let j = from + 1; j < src.length; j++) {
+    if (src[j] === '\\') {
+      j++;
+      continue;
+    }
+    if (src[j] === '/' && (j + 1 === src.length || /\s/.test(src[j + 1]))) return j;
   }
-  return c.tip;
+  return -1;
+}
+
+export function parseQuery(input: string): LogQuery {
+  const src = input.trim();
+  if (!src) return EMPTY_QUERY;
+  const alts: Term[][] = [[]];
+  const marks: string[] = [];
+  let error: string | null = null;
+  const n = src.length;
+  let i = 0;
+  while (i < n) {
+    if (/\s/.test(src[i])) {
+      i++;
+      continue;
+    }
+    // «OR» en mayúsculas y como palabra suelta separa alternativas.
+    if (src.startsWith('OR', i) && (i + 2 === n || /\s/.test(src[i + 2]))) {
+      if (alts[alts.length - 1].length) alts.push([]);
+      i += 2;
+      continue;
+    }
+    let neg = false;
+    if (src[i] === '-' && i + 1 < n && !/\s/.test(src[i + 1])) {
+      neg = true;
+      i++;
+    }
+    let re: RegExp | null = null;
+    let lvl: Level | null = null;
+    if (src[i] === '"') {
+      const end = src.indexOf('"', i + 1);
+      const body = end < 0 ? src.slice(i + 1) : src.slice(i + 1, end);
+      i = end < 0 ? n : end + 1;
+      if (!body) continue;
+      re = literal(body);
+    } else if (src[i] === '/') {
+      const end = regexEnd(src, i);
+      if (end > i + 1) {
+        const body = src.slice(i + 1, end);
+        i = end + 1;
+        try {
+          re = new RegExp(body, 'i');
+        } catch {
+          error = 'La expresión regular no es válida: se busca como texto.';
+          re = literal(body);
+        }
+      }
+    }
+    if (!re) {
+      let j = i;
+      while (j < n && !/\s/.test(src[j])) j++;
+      const word = src.slice(i, j);
+      i = j;
+      if (!word) continue;
+      const kv = /^@?(?:level|nivel):(\w+)$/i.exec(word);
+      lvl = kv ? levelKeyword(kv[1]) : null;
+      if (!lvl) re = literal(word);
+    }
+    alts[alts.length - 1].push({ neg, re, lvl });
+    if (!neg && re) marks.push(re.source);
+  }
+  const groups = alts.filter((a) => a.length > 0);
+  if (!groups.length) return error ? { ...EMPTY_QUERY, error } : EMPTY_QUERY;
+
+  let mark: RegExp | null = null;
+  if (marks.length) {
+    try {
+      mark = new RegExp(marks.map((s) => `(?:${s})`).join('|'), 'gi');
+    } catch {
+      mark = null;
+    }
+  }
+  const hit = (t: Term, text: string, lvl: Level) => (t.lvl ? lvl === t.lvl : t.re!.test(text));
+  return {
+    active: true,
+    test: (text, lvl) => groups.some((g) => g.every((t) => hit(t, text, lvl) !== t.neg)),
+    mark,
+    error,
+  };
 }
 
 /* ───────────────────────── Modelo incremental del buffer ─────────────────── */
@@ -276,6 +422,23 @@ export function diffLines(prev: readonly string[], cur: readonly string[]): Line
   return NO_OVERLAP;
 }
 
+/**
+ * Lo que se enseña mientras se lee sin seguir el final. Las líneas nuevas se
+ * siguen recibiendo, pero no entran en la vista hasta reanudar: lo que se
+ * está leyendo no se mueve y, con la vista quieta, no hay nada que repintar
+ * (en el móvil, una consola que no paraba de crecer bajo el dedo era lo que
+ * la dejaba sin respuesta). Sí entra el historial que se carga por delante, y
+ * lo que el buffer recorta por delante sale también de la vista.
+ */
+export function freezeLines(frozen: readonly string[], lines: readonly string[]): readonly string[] {
+  if (frozen === lines) return frozen;
+  const d = diffLines(frozen, lines);
+  if (d.kept === 0) return lines;
+  if (d.front > 0) return lines.slice(0, d.front + d.kept);
+  if (d.front < 0) return lines.slice(0, d.kept);
+  return frozen;
+}
+
 export interface VisibleRow {
   /**
    * Identidad estable de la fila desde que se abrió el visor: no cambia al
@@ -284,8 +447,6 @@ export interface VisibleRow {
    */
   id: number;
   row: ParsedRow;
-  tsString: string;
-  tsTooltip?: string;
 }
 
 export interface Chunk {
@@ -300,19 +461,16 @@ interface Counts {
 }
 
 export interface ViewOptions {
-  defaultStage: LogStage;
-  /** Texto buscado, ya recortado. */
+  /** Texto buscado, ya recortado (sintaxis de `parseQuery`). */
   q: string;
   level: LevelFilter;
-  stage: LogStage;
-  tsFormat: TimestampFormat;
-  tick: number;
 }
 
 export interface ViewModel {
   lines: readonly string[];
-  defaultStage: LogStage;
   key: string;
+  /** Cambia cada vez que se empieza de cero (otra fuente): los ids dejan de valer. */
+  gen: number;
   rows: ParsedRow[];
   /** id de `rows[0]`; los ids son consecutivos. */
   firstId: number;
@@ -327,11 +485,7 @@ export interface ViewModel {
   prevFirstChunkKey: number | null;
   /** Filas visibles recortadas del primer bloque que sobrevive (recorte parcial). */
   partialCut: number;
-  /**
-   * Filas visibles añadidas al FINAL en este paso. Para el contador de no
-   * leídas: con el buffer lleno cada ráfaga entra por detrás y sale por
-   * delante, y la longitud no cambia.
-   */
+  /** Filas visibles añadidas al FINAL en este paso. */
   appended: number;
 }
 
@@ -348,8 +502,8 @@ export function createViewState(): ViewState {
   return {
     model: {
       lines: EMPTY_LINES,
-      defaultStage: 'all',
       key: '',
+      gen: 0,
       rows: [],
       firstId: 1,
       origin: 0,
@@ -367,7 +521,7 @@ export function createViewState(): ViewState {
 }
 
 function viewKey(o: ViewOptions): string {
-  return `${o.q}\u0000${o.level}\u0000${o.stage}\u0000${o.tsFormat}\u0000${o.tsFormat === 'relative' ? o.tick : 0}`;
+  return `${o.q}\u0000${o.level}`;
 }
 
 function countRange(rows: readonly ParsedRow[], from: number, to: number): Counts {
@@ -381,18 +535,11 @@ function countRange(rows: readonly ParsedRow[], from: number, to: number): Count
   return { err, warn };
 }
 
-/**
- * Filtro de filas. La búsqueda va con una expresión regular sin distinguir
- * mayúsculas: `toLowerCase()` por fila creaba catorce mil cadenas nuevas por
- * cada tecla pulsada.
- */
 function makeMatcher(o: ViewOptions): (r: ParsedRow) => boolean {
-  const { level, stage } = o;
-  const re = o.q ? new RegExp(o.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
-  return (r) =>
-    (level === 'all' || r.lvl === level) &&
-    (stage === 'all' || r.stage === 'all' || r.stage === stage) &&
-    (!re || re.test(r.cleanText));
+  const { level } = o;
+  const query = parseQuery(o.q);
+  if (!query.active) return level === 'all' ? () => true : (r) => r.lvl === level;
+  return (r) => (level === 'all' || r.lvl === level) && query.test(r.cleanText, r.lvl);
 }
 
 function groupChunks(rows: VisibleRow[], state: ViewState): Chunk[] {
@@ -444,17 +591,16 @@ function appendChunks(chunks: Chunk[], tail: VisibleRow[], state: ViewState): Ch
 export function advanceView(state: ViewState, lines: readonly string[], opts: ViewOptions): ViewModel {
   const prev = state.model;
   const key = viewKey(opts);
-  if (prev.lines === lines && prev.key === key && prev.defaultStage === opts.defaultStage) return prev;
+  if (prev.lines === lines && prev.key === key) return prev;
 
-  const sameLines = prev.lines === lines && prev.defaultStage === opts.defaultStage;
+  const sameLines = prev.lines === lines;
   const delta: LinesDelta = sameLines ? { front: 0, kept: prev.rows.length } : diffLines(prev.lines, lines);
-  const reset = !sameLines && (delta.kept === 0 || prev.defaultStage !== opts.defaultStage);
+  const reset = !sameLines && delta.kept === 0;
   const cache = state.cache;
-  const defaultStage = opts.defaultStage;
   const parse = (raw: string): ParsedRow => {
     let r = cache.get(raw);
     if (!r) {
-      r = parseRawLine(raw, defaultStage);
+      r = parseRawLine(raw);
       cache.set(raw, r);
     }
     return r;
@@ -464,6 +610,7 @@ export function advanceView(state: ViewState, lines: readonly string[], opts: Vi
   let firstId: number;
   let origin: number;
   let counts: Counts;
+  let gen = prev.gen;
   /** Índice en `rows` donde empiezan las filas nuevas del final. */
   let tailFrom: number;
   /** Filas nuevas por delante (historial). */
@@ -481,6 +628,7 @@ export function advanceView(state: ViewState, lines: readonly string[], opts: Vi
     for (let i = 0; i < lines.length; i++) rows[i] = parse(lines[i]);
     firstId = 1;
     origin = 0;
+    gen++;
     counts = countRange(rows, 0, rows.length);
     tailFrom = rows.length;
   } else if (delta.front < 0) {
@@ -517,10 +665,7 @@ export function advanceView(state: ViewState, lines: readonly string[], opts: Vi
   }
 
   const matches = makeMatcher(opts);
-  const mk = (i: number): VisibleRow => {
-    const r = rows[i];
-    return { id: firstId + i, row: r, tsString: tsStringCached(r, opts.tsFormat), tsTooltip: tsTooltipCached(r) };
-  };
+  const mk = (i: number): VisibleRow => ({ id: firstId + i, row: rows[i] });
 
   let visible: VisibleRow[];
   let chunks: Chunk[];
@@ -563,8 +708,8 @@ export function advanceView(state: ViewState, lines: readonly string[], opts: Vi
 
   const next: ViewModel = {
     lines,
-    defaultStage,
     key,
+    gen,
     rows,
     firstId,
     origin,
@@ -578,6 +723,20 @@ export function advanceView(state: ViewState, lines: readonly string[], opts: Vi
   };
   state.model = next;
   return next;
+}
+
+/** Índice del bloque que contiene la fila `id` (los bloques van en orden de id), o -1. */
+function chunkIndexOf(chunks: Chunk[], id: number): number {
+  let a = 0;
+  let b = chunks.length - 1;
+  while (a <= b) {
+    const m = (a + b) >> 1;
+    const rows = chunks[m].rows;
+    if (id < rows[0].id) b = m - 1;
+    else if (id > rows[rows.length - 1].id) a = m + 1;
+    else return rows.some((v) => v.id === id) ? m : -1;
+  }
+  return -1;
 }
 
 /* ───────────────────────── Ventana de pintado ────────────────────────────── */
@@ -602,12 +761,25 @@ interface Layout {
 
 const EMPTY_LAYOUT: Layout = { offsets: [0], total: 0, lineH: DEFAULT_LINE_H, index: new Map(), start: 0, end: -1, canvasTop: 0 };
 
-function computeLayout(chunks: Chunk[], heights: Map<number, number>, estLines: (c: Chunk) => number, fallbackLineH: number): Layout {
+/**
+ * Alto medido de un bloque, con las filas que tenía al medirlo: un bloque que
+ * conserva su clave pero cambia de filas (el último al llegar líneas, el
+ * primero al recortar) ya no mide lo mismo, y su medida vieja descuadraba el
+ * relleno de arriba.
+ */
+type Heights = Map<number, { rows: VisibleRow[]; h: number }>;
+
+function measured(heights: Heights, c: Chunk): number | undefined {
+  const m = heights.get(c.key);
+  return m && m.rows === c.rows ? m.h : undefined;
+}
+
+function computeLayout(chunks: Chunk[], heights: Heights, estLines: (c: Chunk) => number, fallbackLineH: number): Layout {
   const n = chunks.length;
   let px = 0;
   let ln = 0;
   for (const c of chunks) {
-    const h = heights.get(c.key);
+    const h = measured(heights, c);
     if (h !== undefined) {
       px += h;
       ln += estLines(c);
@@ -621,7 +793,7 @@ function computeLayout(chunks: Chunk[], heights: Map<number, number>, estLines: 
     const c = chunks[i];
     offsets[i] = off;
     index.set(c.key, i);
-    const h = heights.get(c.key);
+    const h = measured(heights, c);
     off += h !== undefined ? h : estLines(c) * lineH;
   }
   offsets[n] = off;
@@ -669,90 +841,123 @@ function computeRange(offsets: number[], following: boolean, top: number, viewpo
   return [start, end];
 }
 
+/* ───────────────────────── Preferencias de vista ─────────────────────────── */
+
+interface ViewPrefs {
+  wrap: boolean;
+  gutter: boolean;
+  showTs: boolean;
+  tsFormat: TimestampFormat;
+}
+
+const PREFS_KEY = 'skyway.logs.vista';
+const TS_FORMATS: readonly TimestampFormat[] = ['datetime', 'time', 'utc', 'relative'];
+
+/**
+ * La vista se recuerda en este navegador: antes cada consola nueva volvía a
+ * los valores de fábrica y había que reconfigurarla cada vez. En el móvil la
+ * numeración arranca apagada: la anchura es para el texto.
+ */
+function isNarrow(): boolean {
+  try {
+    return window.matchMedia('(max-width: 639px)').matches;
+  } catch {
+    return false;
+  }
+}
+
+function loadPrefs(): ViewPrefs {
+  const base: ViewPrefs = { wrap: true, gutter: !isNarrow(), showTs: true, tsFormat: 'datetime' };
+  try {
+    const raw = window.localStorage.getItem(PREFS_KEY);
+    if (!raw) return base;
+    const p = JSON.parse(raw) as Partial<ViewPrefs>;
+    return {
+      wrap: typeof p.wrap === 'boolean' ? p.wrap : base.wrap,
+      gutter: typeof p.gutter === 'boolean' ? p.gutter : base.gutter,
+      showTs: typeof p.showTs === 'boolean' ? p.showTs : base.showTs,
+      tsFormat: TS_FORMATS.includes(p.tsFormat as TimestampFormat) ? (p.tsFormat as TimestampFormat) : base.tsFormat,
+    };
+  } catch {
+    return base;
+  }
+}
+
 /* ───────────────────────── Filas ─────────────────────────────────────────── */
 
-/** Resalta TODAS las coincidencias (sin distinguir mayúsculas) de `q` en la línea. */
-function highlight(line: string, q: string): React.ReactNode {
-  if (!q) return line;
-  const lower = line.toLowerCase();
-  const needle = q.toLowerCase();
+/** Resalta todas las coincidencias de la búsqueda en la línea. */
+function highlight(line: string, mark: RegExp | null): React.ReactNode {
+  if (!mark || !line) return line;
+  mark.lastIndex = 0;
   const out: React.ReactNode[] = [];
-  let i = 0;
+  let last = 0;
   let key = 0;
-  for (;;) {
-    const idx = lower.indexOf(needle, i);
-    if (idx < 0) {
-      out.push(line.slice(i));
-      break;
+  let m: RegExpExecArray | null;
+  while ((m = mark.exec(line)) && key < 200) {
+    if (m[0].length === 0) {
+      // Una expresión que casa con la cadena vacía no avanzaría nunca.
+      mark.lastIndex++;
+      continue;
     }
-    if (idx > i) out.push(line.slice(i, idx));
+    if (m.index > last) out.push(line.slice(last, m.index));
     out.push(
       <mark key={key++} className="log-mark">
-        {line.slice(idx, idx + q.length)}
+        {m[0]}
       </mark>,
     );
-    i = idx + q.length;
+    last = m.index + m[0].length;
   }
+  if (!out.length) return line;
+  if (last < line.length) out.push(line.slice(last));
   return out;
 }
 
 const LogRow = memo(function LogRow({
+  id,
   n,
-  text,
-  tsString,
-  tsTooltip,
-  lvl,
+  row,
+  tsFormat,
+  tick,
   wrap,
   gutter,
   showTs,
-  query,
+  mark,
+  selected,
 }: {
+  id: number;
   n: number;
-  text: string;
-  tsString: string;
-  tsTooltip?: string;
-  lvl: Level;
+  row: ParsedRow;
+  tsFormat: TimestampFormat;
+  /** Solo cambia con el formato relativo: obliga a repintar «hace 5 s». */
+  tick: number;
   wrap: boolean;
   gutter: boolean;
   showTs: boolean;
-  query: string;
+  mark: RegExp | null;
+  selected: boolean;
 }) {
+  void tick;
+  const ts = showTs ? tsText(row, tsFormat) : '';
   return (
     <div
+      data-id={id}
       className={cx(
-        'log-row flex w-full items-baseline hover:bg-white/[.02]',
-        lvl === 'err' && 'log-row-err',
-        lvl === 'warn' && 'log-row-warn',
+        'log-row flex w-full items-baseline',
+        row.lvl === 'err' && 'log-row-err',
+        row.lvl === 'warn' && 'log-row-warn',
+        selected && 'log-row-sel',
       )}
     >
-      {gutter && (
-        <span
-          className="log-gutter tnum select-none px-2 text-right text-xs tabular-nums text-subtle/70"
-          style={{ minWidth: 'calc(var(--gutter-ch, 3.8) * 1ch)' }}
-        >
-          {n}
-        </span>
-      )}
-      {showTs && (
-        <span
-          className={cx(
-            'log-ts tnum shrink-0 select-none px-2 text-xs tabular-nums text-subtle transition-colors hover:text-txt',
-            !tsString && 'opacity-0',
-          )}
-          title={tsTooltip}
-          style={{ minWidth: tsString && tsString.length > 10 ? '13ch' : '8ch' }}
-        >
-          {tsString || '00:00:00'}
-        </span>
-      )}
+      {gutter && <span className="log-gutter tnum select-none px-2 text-right text-xs tabular-nums">{n}</span>}
+      {showTs && <span className={cx('log-ts tnum shrink-0 select-none px-2 text-xs', !ts && 'opacity-0')}>{ts || '00:00:00'}</span>}
       <span
         className={cx(
-          'flex flex-1 items-baseline py-px pr-3',
+          'log-text min-w-0 flex-1 py-px pr-3',
           !gutter && !showTs ? 'pl-3' : 'pl-1',
           wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre',
         )}
       >
-        <span className="log-text min-w-0 flex-1">{highlight(text, query)}</span>
+        {highlight(row.cleanText, mark)}
       </span>
     </div>
   );
@@ -767,19 +972,26 @@ const LogChunk = memo(function LogChunk({
   chunkKey,
   rows,
   origin,
+  tsFormat,
+  tick,
   wrap,
   gutter,
   showTs,
-  query,
+  mark,
+  selectedId,
   onMeasure,
 }: {
   chunkKey: number;
   rows: VisibleRow[];
   origin: number;
+  tsFormat: TimestampFormat;
+  tick: number;
   wrap: boolean;
   gutter: boolean;
   showTs: boolean;
-  query: string;
+  mark: RegExp | null;
+  /** Solo la del bloque que la contiene: así una selección no repinta los demás. */
+  selectedId: number | null;
   onMeasure: (key: number, el: HTMLDivElement | null) => void;
 }) {
   const refCb = useCallback((el: HTMLDivElement | null) => onMeasure(chunkKey, el), [chunkKey, onMeasure]);
@@ -788,32 +1000,158 @@ const LogChunk = memo(function LogChunk({
       {rows.map((v) => (
         <LogRow
           key={v.id}
+          id={v.id}
           n={v.id - origin}
-          text={v.row.cleanText}
-          tsString={v.tsString}
-          tsTooltip={v.tsTooltip}
-          lvl={v.row.lvl}
+          row={v.row}
+          tsFormat={tsFormat}
+          tick={tick}
           wrap={wrap}
           gutter={gutter}
           showTs={showTs}
-          query={query}
+          mark={mark}
+          selected={v.id === selectedId}
         />
       ))}
     </div>
   );
 });
 
+/* ───────────────────────── Detalle de una línea ──────────────────────────── */
+
+/** JSON legible si la línea es un objeto JSON (con o sin el prefijo de réplica `[rN]`). */
+function prettyJson(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start < 0 || start > 8 || !text.endsWith('}')) return null;
+  try {
+    const value: unknown = JSON.parse(text.slice(start));
+    return value && typeof value === 'object' ? JSON.stringify(value, null, 2) : null;
+  } catch {
+    return null;
+  }
+}
+
+const LEVEL_BADGE: Record<Level, { label: string; cls: string } | null> = {
+  err: { label: 'Error', cls: 'bg-err/15 text-err' },
+  warn: { label: 'Aviso', cls: 'bg-warn/15 text-warn' },
+  plain: null,
+};
+
+function LineDetail({
+  n,
+  row,
+  canShowContext,
+  onShowContext,
+  onClose,
+}: {
+  n: number;
+  row: ParsedRow;
+  canShowContext: boolean;
+  onShowContext: () => void;
+  onClose: () => void;
+}) {
+  const toast = useToast();
+  const pretty = useMemo(() => prettyJson(row.cleanText), [row]);
+  const badge = LEVEL_BADGE[row.lvl];
+  const date = row.ts !== null ? new Date(row.ts) : null;
+
+  const copy = (text: string, what: string) => {
+    void copyToClipboard(text).then((ok) =>
+      toast(ok ? `${what} copiado al portapapeles.` : 'No se ha podido copiar al portapapeles.', ok ? 'ok' : 'err'),
+    );
+  };
+
+  return (
+    <div
+      className="log-sheet absolute inset-x-0 bottom-0 z-30 flex max-h-[72%] flex-col border-t border-line bg-surface font-sans shadow-modal"
+      role="dialog"
+      aria-label={`Detalle de la línea ${n}`}
+    >
+      <div className="flex items-start justify-between gap-2 border-b border-line px-3 py-2">
+        <div className="min-w-0">
+          <p className="flex flex-wrap items-center gap-2 text-xs font-semibold text-txt">
+            {badge && <span className={cx('rounded px-1.5 py-0.5 text-micro font-semibold', badge.cls)}>{badge.label}</span>}
+            <span>Línea {NF.format(n)}</span>
+          </p>
+          {date ? (
+            <>
+              <p className="mt-1 text-xs text-sub first-letter:uppercase">{FULL_FMT.format(date)}</p>
+              <p className="mt-0.5 break-all font-mono text-micro text-subtle">
+                {date.toISOString()} · {relativeTime(date.getTime())}
+              </p>
+            </>
+          ) : (
+            row.clock && <p className="mt-1 text-xs text-sub">Hora registrada: {row.clock}</p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="press -mr-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-subtle hover:bg-surface2 hover:text-txt sm:h-8 sm:w-8"
+          title="Cerrar (Esc)"
+          aria-label="Cerrar el detalle"
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <pre className="min-h-0 flex-1 select-text overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 font-mono text-[12.5px] leading-[1.6] text-txt">
+        {pretty ?? (row.cleanText || ' ')}
+      </pre>
+      <div className="flex flex-wrap items-center gap-1.5 border-t border-line px-3 py-2">
+        <button
+          type="button"
+          onClick={() => copy(row.cleanText, 'Texto')}
+          className="press flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface2/60 px-2.5 text-xs font-medium text-sub hover:text-txt sm:h-8"
+        >
+          <Copy size={13} aria-hidden /> Copiar línea
+        </button>
+        {pretty && (
+          <button
+            type="button"
+            onClick={() => copy(pretty, 'JSON')}
+            className="press flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface2/60 px-2.5 text-xs font-medium text-sub hover:text-txt sm:h-8"
+          >
+            <Copy size={13} aria-hidden /> Copiar JSON
+          </button>
+        )}
+        {canShowContext && (
+          <button
+            type="button"
+            onClick={onShowContext}
+            className="press flex h-9 items-center gap-1.5 rounded-lg border border-acc/40 bg-acc/10 px-2.5 text-xs font-semibold text-acc-soft hover:bg-acc/15 sm:h-8"
+            title="Quitar los filtros y mostrar las líneas de alrededor"
+          >
+            <LocateFixed size={13} aria-hidden /> Ver en contexto
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ───────────────────────── Ayuda de búsqueda ─────────────────────────────── */
+
+const SEARCH_EXAMPLES: { q: string; desc: string }[] = [
+  { q: 'timeout redis', desc: 'Líneas con las dos palabras' },
+  { q: '"connection refused"', desc: 'El texto exacto' },
+  { q: 'error -healthcheck', desc: 'Sin las que contienen una palabra' },
+  { q: 'timeout OR refused', desc: 'Cualquiera de las dos' },
+  { q: '/5\\d\\d/', desc: 'Expresión regular (aquí, códigos 5xx)' },
+  { q: 'level:error', desc: 'Solo errores (también level:warn)' },
+];
+
 function ToolButton({
   title,
   onClick,
   active,
   disabled,
+  className,
   children,
 }: {
   title: string;
   onClick: () => void;
   active?: boolean;
   disabled?: boolean;
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -825,11 +1163,10 @@ function ToolButton({
       onClick={onClick}
       disabled={disabled}
       className={cx(
-        // 36px con el pulgar, 32px con ratón. Antes pedía siete y medio, un paso
-        // que la escala de Tailwind no tiene: por debajo de 640px estos ocho
-        // botones se quedaban sin tamaño y los dimensionaba el icono.
-        'press flex h-9 w-9 sm:h-8 sm:w-8 items-center justify-center rounded-lg leading-none disabled:opacity-40 transition-colors',
+        // 36px con el pulgar, 32px con ratón.
+        'press flex h-9 w-9 shrink-0 items-center justify-center rounded-lg leading-none transition-colors disabled:opacity-40 sm:h-8 sm:w-8',
         active ? 'bg-acc/[.16] text-acc-soft' : 'text-subtle hover:bg-surface2 hover:text-txt',
+        className,
       )}
     >
       {children}
@@ -837,15 +1174,17 @@ function ToolButton({
   );
 }
 
+/* ───────────────────────── Visor ─────────────────────────────────────────── */
+
 /**
- * Consola de logs con scroll al fondo garantizado, marcas de tiempo completas
- * y herramientas de búsqueda, copia y descarga.
+ * Consola de logs: búsqueda con sintaxis, filtro por nivel, fecha y hora en
+ * cada línea, detalle de una línea al tocarla y seguimiento en vivo que se
+ * pausa al subir a leer.
  *
  * Solo pinta los bloques de filas que caen cerca del hueco visible; el resto
  * es relleno de su alto (medido si ya se pintó, estimado si no). Con catorce
- * mil filas en el DOM el navegador del móvil no daba abasto —aunque no las
- * maquetara, tenía que tenerlas—; con unas trescientas, el gesto de scroll
- * va a la velocidad del dedo.
+ * mil filas en el DOM el navegador del móvil no daba abasto; con unas
+ * trescientas, el gesto de scroll va a la velocidad del dedo.
  *
  * Va en `memo`: la pestaña que lo aloja se re-renderiza con cada sondeo de
  * despliegues aunque no haya líneas nuevas.
@@ -853,8 +1192,8 @@ function ToolButton({
 function LogViewerImpl({
   lines,
   className,
-  toolbar = false,
-  bare = false,
+  toolbar = true,
+  live = false,
   replicas = 1,
   downloadName,
   statusNote,
@@ -865,18 +1204,19 @@ function LogViewerImpl({
   startReached = false,
   onDownload,
   onFollowChange,
-  stageFilter: controlledStageFilter,
-  defaultStage = 'all',
-  extraHeaderLeft,
-  extraHeaderRight,
   state = 'ready',
   onRetry,
   emptyMessage,
 }: {
-  lines: string[];
+  lines: readonly string[];
   className?: string;
   toolbar?: boolean;
-  bare?: boolean;
+  /**
+   * La fuente sigue escribiendo (stream abierto). Solo entonces se habla de
+   * «En vivo» y se ofrece pausar: antes un log archivado decía «En vivo» solo
+   * por estar al final.
+   */
+  live?: boolean;
   replicas?: number;
   downloadName?: string;
   statusNote?: string | null;
@@ -888,15 +1228,9 @@ function LogViewerImpl({
   startReached?: boolean;
   onDownload?: () => void;
   onFollowChange?: (follow: boolean) => void;
-  stageFilter?: LogStage;
-  defaultStage?: LogStage;
-  extraHeaderLeft?: React.ReactNode;
-  extraHeaderRight?: React.ReactNode;
   /**
-   * Qué le pasa a la fuente de los logs. Sin esto, una consola vacía decía
-   * «Sin logs todavía…» tanto si estaba cargando como si la petición había
-   * fallado como si de verdad no había nada: tres situaciones distintas con
-   * el mismo mensaje, y solo una de ellas cierta.
+   * Qué le pasa a la fuente de los logs: cargando, con error o lista. Una
+   * consola vacía no dice lo mismo en cada caso.
    */
   state?: 'loading' | 'error' | 'ready';
   onRetry?: () => void;
@@ -911,34 +1245,52 @@ function LogViewerImpl({
   const scrollRaf = useRef(0);
   const olderRequestedRef = useRef(false);
   const lastTopRef = useRef(0);
-  const unreadCountRef = useRef(0);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const [follow, setFollow] = useState(true);
-  const [unreadCount, setUnreadCount] = useState(0);
   const [filter, setFilter] = useState('');
   const [level, setLevel] = useState<LevelFilter>('all');
-  const [internalStage] = useState<LogStage>(defaultStage);
-  const [wrap, setWrap] = useState(true);
-  const [gutter, setGutter] = useState(true);
-  const [showTs, setShowTs] = useState(true);
-  const [tsFormat, setTsFormat] = useState<TimestampFormat>('time');
+  const [prefs, setPrefs] = useState<ViewPrefs>(loadPrefs);
+  const [narrow] = useState(isNarrow);
+  const { wrap, gutter, showTs, tsFormat } = prefs;
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  /*
+   * Alto disponible para los menús: la consola recorta lo que se sale de ella
+   * y, incrustada en un despliegue, mide poco. El menú se ajusta a lo que
+   * queda debajo del botón y, si no cabe, se desplaza dentro.
+   */
+  const shellRef = useRef<HTMLElement>(null);
+  const [menuMaxH, setMenuMaxH] = useState<number | undefined>(undefined);
+  const fitMenu = (anchor: HTMLElement) => {
+    const shell = shellRef.current;
+    if (shell) setMenuMaxH(Math.max(150, shell.getBoundingClientRect().bottom - anchor.getBoundingClientRect().bottom - 14));
+  };
   const [copied, setCopied] = useState(false);
   // Se limpia al desmontar: el temporizador tocaba estado de un visor ya cerrado.
   const copiedTimer = useRef<number>();
   useEffect(() => () => window.clearTimeout(copiedTimer.current), []);
   const [maximized, setMaximized] = useState(false);
   const [clearedUntil, setClearedUntil] = useState<number>(0);
+  /** Línea abierta en el detalle (con la generación del modelo en que se eligió). */
+  const [picked, setPicked] = useState<{ gen: number; id: number } | null>(null);
+  /** Línea a la que saltar al quitar los filtros («Ver en contexto»). */
+  const [jumpId, setJumpId] = useState<number | null>(null);
 
-  const stage = controlledStageFilter ?? internalStage;
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+    } catch {
+      /* almacenamiento bloqueado: la vista vale para esta sesión */
+    }
+  }, [prefs]);
+  const setPref = <K extends keyof ViewPrefs>(key: K, value: ViewPrefs[K]) => setPrefs((p) => ({ ...p, [key]: value }));
 
   /*
    * «Limpiar la vista» guarda un índice absoluto. Si la fuente cambia (otro
    * despliegue, otra pestaña) o el padre recorta el buffer por delante, ese
    * índice apunta más allá del final y la consola se quedaba vacía para
-   * siempre diciendo «Sin logs todavía…». Se olvida en cuanto deja de tener
-   * sentido.
+   * siempre. Se olvida en cuanto deja de tener sentido.
    */
   useEffect(() => {
     if (clearedUntil > 0 && lines.length < clearedUntil) setClearedUntil(0);
@@ -960,20 +1312,12 @@ function LogViewerImpl({
    */
   const deferredFilter = useDeferredValue(filter);
   const q = deferredFilter.trim();
+  const query = useMemo(() => parseQuery(q), [q]);
 
   const effectiveLines = useMemo(
     () => (clearedUntil > 0 && clearedUntil <= lines.length ? lines.slice(clearedUntil) : lines),
     [lines, clearedUntil],
   );
-
-  const viewRef = useRef<ViewState | null>(null);
-  if (!viewRef.current) viewRef.current = createViewState();
-  const view = viewRef.current;
-  const model = useMemo(
-    () => advanceView(view, effectiveLines, { defaultStage, q, level, stage, tsFormat, tick }),
-    [view, effectiveLines, defaultStage, q, level, stage, tsFormat, tick],
-  );
-  const { rows, counts, visible, chunks, origin } = model;
 
   /*
    * El seguimiento vive también en una ref, actualizada en el mismo instante
@@ -982,12 +1326,69 @@ function LogViewerImpl({
    * pinta se decide con el dato de este mismo frame.
    */
   const followRef = useRef(true);
+  /** Pausa pedida con el botón: volver al fondo con el dedo no la quita. */
+  const pinnedRef = useRef(false);
+  /** Se seguía el final al abrir el detalle: al cerrarlo se reanuda. */
+  const resumeOnCloseRef = useRef(false);
+
+  /* ── Vista congelada mientras se lee (ver `freezeLines`) ── */
+  const frozenRef = useRef<readonly string[] | null>(null);
+  const shownRef = useRef<readonly string[]>(EMPTY_LINES);
+  let shown: readonly string[];
+  if (follow) {
+    frozenRef.current = null;
+    shown = effectiveLines;
+  } else {
+    shown = freezeLines(frozenRef.current ?? shownRef.current, effectiveLines);
+    frozenRef.current = shown;
+  }
+  shownRef.current = shown;
+  const pendingNew = follow ? 0 : Math.max(0, effectiveLines.length - shown.length);
+
+  const viewRef = useRef<ViewState | null>(null);
+  if (!viewRef.current) viewRef.current = createViewState();
+  const view = viewRef.current;
+  const model = useMemo(() => advanceView(view, shown, { q, level }), [view, shown, q, level]);
+  const { rows, counts, visible, chunks, origin } = model;
+
+  /*
+   * Recorte por delante mientras se lee (buffer lleno): se apunta, ANTES de
+   * pintar, qué línea está arriba del todo y a qué altura, para dejarla
+   * exactamente ahí después. La estimación por alto medio de línea derivaba
+   * unos píxeles en cada tanda y, con la aplicación escribiendo sin parar, lo
+   * que se estaba leyendo se iba moviendo solo.
+   */
+  const anchorRef = useRef<{ id: number; top: number } | null>(null);
+  const anchoredModelRef = useRef<ViewModel | null>(null);
+  if (anchoredModelRef.current !== model) {
+    anchoredModelRef.current = model;
+    anchorRef.current = null;
+    const body = ref.current;
+    const canvas = canvasRef.current;
+    if (!followRef.current && model.delta && model.delta.front < 0 && body && canvas) {
+      const top = body.getBoundingClientRect().top;
+      for (const node of canvas.querySelectorAll<HTMLElement>('[data-id]')) {
+        const r = node.getBoundingClientRect();
+        if (r.bottom > top + 1) {
+          anchorRef.current = { id: Number(node.dataset.id), top: r.top - top };
+          break;
+        }
+      }
+    }
+  }
+
+  const selected = useMemo(() => {
+    if (!picked || picked.gen !== model.gen) return null;
+    const i = picked.id - model.firstId;
+    return i >= 0 && i < model.rows.length ? { id: picked.id, n: picked.id - model.origin, row: model.rows[i] } : null;
+  }, [picked, model]);
+  const selectedId = selected?.id ?? null;
+  const sheetOpenRef = useRef(false);
+  sheetOpenRef.current = selected !== null;
+
   /*
    * En iOS, escribir `scrollTop` mientras hay un dedo en la pantalla —o durante
-   * la inercia justo después— cancela el gesto. Con líneas entrando sin parar,
-   * el seguimiento mandaba al fondo cada pocos milisegundos y era imposible
-   * arrastrar hacia arriba: el visor parecía bloqueado, y como en móvil ocupa
-   * la pantalla entera, parecía bloqueada la web. Mientras dura el gesto no se
+   * la inercia justo después— cancela el gesto. Mientras dura el gesto no se
    * escribe el scroll; cuando se asienta, si toca seguir, se va al fondo.
    */
   const gestureRef = useRef(false);
@@ -996,17 +1397,18 @@ function LogViewerImpl({
 
   /* ── Ventana de pintado ── */
   /** Alto real de cada bloque pintado alguna vez, por clave. */
-  const heightsRef = useRef(new Map<number, number>());
+  const heightsRef = useRef<Heights>(new Map());
+  /** Bloques del último render, para saber con qué filas se mide cada clave. */
+  const chunksRef = useRef<Chunk[]>([]);
   /** Líneas visuales estimadas por bloque (para su ancho de columna). */
   const linesCacheRef = useRef(new Map<number, { rows: VisibleRow[]; n: number }>());
   /** Caracteres por línea de texto con ajuste de línea; 0 = sin ajuste o sin medir. */
   const colsRef = useRef(0);
   const scrollTopRef = useRef(0);
   const viewportRef = useRef(0);
-  const canvasTopRef = useRef(0);
   const layoutRef = useRef<Layout>(EMPTY_LAYOUT);
   const prevLayoutRef = useRef<Layout>(EMPTY_LAYOUT);
-  const [, setLayoutTick] = useState(0);
+  const [layoutTick, setLayoutTick] = useState(0);
   const relayout = useCallback(() => setLayoutTick((n) => n + 1), []);
 
   /*
@@ -1032,16 +1434,13 @@ function LogViewerImpl({
     return n;
   };
 
+  const hasBanner = canLoadOlder || (startReached && visible.length > 0);
+  chunksRef.current = chunks;
   const layout = computeLayout(chunks, heightsRef.current, estLines, maximized ? 23 : DEFAULT_LINE_H);
-  const [start, end] = computeRange(
-    layout.offsets,
-    followRef.current,
-    scrollTopRef.current - canvasTopRef.current,
-    viewportRef.current || 600,
-  );
+  layout.canvasTop = hasBanner ? BANNER_H : 0;
+  const [start, end] = computeRange(layout.offsets, followRef.current, scrollTopRef.current - layout.canvasTop, viewportRef.current || 600);
   layout.start = start;
   layout.end = end;
-  layout.canvasTop = canvasTopRef.current;
   prevLayoutRef.current = layoutRef.current;
   layoutRef.current = layout;
 
@@ -1066,11 +1465,12 @@ function LogViewerImpl({
       if (key === undefined) continue;
       const h = e.borderBoxSize && e.borderBoxSize.length ? e.borderBoxSize[0].blockSize : e.contentRect.height;
       if (h <= 0) continue;
-      const old = heights.get(key);
-      if (old !== undefined && Math.abs(old - h) < 0.5) continue;
-      heights.set(key, h);
       const idx = lay.index.get(key);
-      if (idx === undefined) continue;
+      const rows = idx !== undefined ? chunksRef.current[idx]?.rows : undefined;
+      if (idx === undefined || !rows) continue;
+      const old = heights.get(key);
+      if (old && old.rows === rows && Math.abs(old.h - h) < 0.5) continue;
+      heights.set(key, { rows, h });
       const used = lay.offsets[idx + 1] - lay.offsets[idx];
       if (Math.abs(h - used) < 0.5) continue;
       if (followRef.current) continue;
@@ -1108,18 +1508,56 @@ function LogViewerImpl({
   }, [wrap, maximized]);
 
   /*
+   * Caracteres por línea (anchura de la columna de texto / anchura de un
+   * carácter). Se mide solo cuando puede cambiar —anchura del hueco, ajuste,
+   * numeración, hora, pantalla completa—, no en cada render: era una
+   * maquetación forzada por ráfaga. Si cambia, las medidas anteriores ya no
+   * valen y los bloques pintados se vuelven a medir aquí mismo.
+   */
+  const measureCols = useCallback(() => {
+    const canvas = canvasRef.current;
+    const probe = probeRef.current;
+    let cols = 0;
+    if (wrap && canvas && probe) {
+      const span = canvas.querySelector<HTMLElement>('.log-text');
+      const charW = probe.getBoundingClientRect().width / PROBE.length;
+      if (span && charW > 0) {
+        const cs = window.getComputedStyle(span);
+        const inner = span.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+        cols = Math.max(1, Math.floor(inner / charW));
+      }
+    }
+    if (cols === colsRef.current) return;
+    colsRef.current = cols;
+    linesCacheRef.current.clear();
+    const heights = heightsRef.current;
+    heights.clear();
+    const rowsByKey = new Map(chunksRef.current.map((c) => [c.key, c.rows]));
+    for (const [key, node] of keyElRef.current) {
+      const h = node.getBoundingClientRect().height;
+      const rows = rowsByKey.get(key);
+      if (h > 0 && rows) heights.set(key, { rows, h });
+    }
+    relayout();
+  }, [wrap, relayout]);
+
+  const hasRows = visible.length > 0;
+  useLayoutEffect(() => {
+    measureCols();
+  }, [measureCols, gutter, showTs, tsFormat, maximized, hasRows]);
+
+  /*
    * Posición escrita por el propio visor. El evento de scroll que provoca
-   * llega DESPUÉS, y para entonces el alto total puede haber cambiado (una
-   * estimación de bloque sustituida por su medida): visto desde ese evento el
-   * fondo ya no era el fondo, se daba por hecho que alguien había subido y el
-   * seguimiento se apagaba solo. Un evento que trae exactamente la posición
-   * escrita no es un gesto y no decide nada.
+   * llega DESPUÉS, y para entonces el alto total puede haber cambiado: visto
+   * desde ese evento el fondo ya no era el fondo y el seguimiento se apagaba
+   * solo. Un evento que trae exactamente la posición escrita no es un gesto.
    */
   const programmaticTopRef = useRef(-1);
   const writeScrollTop = useCallback((el: HTMLDivElement, value: number) => {
     el.scrollTop = value;
     // Se lee de vuelta: el navegador recorta al máximo posible.
     programmaticTopRef.current = el.scrollTop;
+    scrollTopRef.current = programmaticTopRef.current;
   }, []);
 
   const scrollToBottom = useCallback(() => {
@@ -1137,8 +1575,6 @@ function LogViewerImpl({
     });
   }, [writeScrollTop]);
 
-  // El anclaje al cargar historial se calcula del modelo (bloques añadidos por
-  // delante), no de una foto del alto: ver el efecto de anclaje más abajo.
   const triggerLoadOlder = () => {
     if (!onLoadOlder || loadingOlder || !canLoadOlder || olderRequestedRef.current) return;
     olderRequestedRef.current = true;
@@ -1150,8 +1586,7 @@ function LogViewerImpl({
   /*
    * Historial al llegar arriba, pero solo con el gesto asentado: si se pedía
    * en plena inercia, el desplazamiento que recoloca la lectura sobre las
-   * líneas nuevas caía con el dedo aún en juego, iOS lo ignoraba y el visor
-   * se quedaba arriba pidiendo página tras página.
+   * líneas nuevas caía con el dedo aún en juego y iOS lo ignoraba.
    */
   const maybeLoadOlder = useCallback((node: HTMLDivElement) => {
     if (gestureRef.current) return;
@@ -1177,9 +1612,12 @@ function LogViewerImpl({
       }
     }, 180);
   }, [scrollToBottom, maybeLoadOlder]);
-  useEffect(() => () => {
-    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+    },
+    [],
+  );
 
   /*
    * `overscroll-behavior: contain` solo cuando hay algo que desplazar (ver
@@ -1208,99 +1646,92 @@ function LogViewerImpl({
       const idx = lay.index.get(model.prevFirstChunkKey);
       if (idx !== undefined && idx > 0) el.scrollTop += lay.offsets[idx];
     } else if (d.front < 0 && model.chunks.length) {
-      const prevLay = prevLayoutRef.current;
-      const j = prevLay.index.get(model.chunks[0].key);
-      const removed = (j !== undefined ? prevLay.offsets[j] : 0) + model.partialCut * lay.lineH;
-      if (removed > 0) el.scrollTop = Math.max(0, el.scrollTop - removed);
+      const a = anchorRef.current;
+      const node = a ? canvasRef.current?.querySelector<HTMLElement>(`[data-id="${a.id}"]`) : null;
+      if (a && node) {
+        const delta = node.getBoundingClientRect().top - el.getBoundingClientRect().top - a.top;
+        if (Math.abs(delta) > 0.5) writeScrollTop(el, el.scrollTop + delta);
+        /*
+         * El primer bloque, recortado, ya mide lo que mide en pantalla: se
+         * anota para que el observador no lo compense una segunda vez.
+         */
+        const first = model.chunks[0];
+        const firstEl = keyElRef.current.get(first.key);
+        if (firstEl) heightsRef.current.set(first.key, { rows: first.rows, h: firstEl.getBoundingClientRect().height });
+        relayout();
+      } else {
+        const prevLay = prevLayoutRef.current;
+        const j = prevLay.index.get(model.chunks[0].key);
+        const removed = (j !== undefined ? prevLay.offsets[j] : 0) + model.partialCut * lay.lineH;
+        if (removed > 0) el.scrollTop = Math.max(0, el.scrollTop - removed);
+      }
     }
-  }, [model]);
+  }, [model, relayout, writeScrollTop]);
 
   /*
-   * Geometría del hueco tras cada render: alto visible, techo del lienzo y
-   * caracteres por línea (anchura de la sonda / anchura de la columna de
-   * texto). Si cambian las columnas —giro, teclado, numeración o fechas
-   * apagadas— las medidas anteriores ya no valen.
+   * Siguiendo el final, el fondo se garantiza cuando cambia lo pintado: líneas
+   * nuevas o una estimación de alto sustituida por su medida.
    */
   useLayoutEffect(() => {
-    const body = ref.current;
-    if (!body) return;
-    viewportRef.current = body.clientHeight;
-    const canvas = canvasRef.current;
-    canvasTopRef.current = canvas
-      ? canvas.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop
-      : 0;
-    let cols = 0;
-    if (wrap && canvas && probeRef.current) {
-      const span = canvas.querySelector<HTMLElement>('.log-text');
-      const charW = probeRef.current.getBoundingClientRect().width / PROBE.length;
-      if (span && charW > 0) cols = Math.max(1, Math.floor(span.clientWidth / charW));
-    }
-    if (cols !== colsRef.current) {
-      colsRef.current = cols;
-      linesCacheRef.current.clear();
-      // Las medidas anteriores ya no valen; los bloques pintados se vuelven a
-      // medir aquí mismo (el observador solo avisa si CAMBIAN de tamaño).
-      const heights = heightsRef.current;
-      heights.clear();
-      for (const [key, node] of keyElRef.current) {
-        const h = node.getBoundingClientRect().height;
-        if (h > 0) heights.set(key, h);
-      }
-      relayout();
-    }
-    // Siguiendo el final, el fondo se garantiza en CADA render antes de pintar:
-    // también cuando lo que cambia es una estimación de alto y no las líneas.
+    syncScrollable();
     if (followRef.current) scrollToBottom();
-  });
+  }, [model, layoutTick, maximized, syncScrollable, scrollToBottom]);
 
-
-  // Líneas nuevas: siguiendo, se limpia el contador; si no, se cuentan LÍNEAS
-  // (no renders: una ráfaga de 300 líneas en un frame decía «+1»).
-  useLayoutEffect(() => {
-    if (followRef.current) {
-      if (unreadCountRef.current !== 0) {
-        unreadCountRef.current = 0;
-        setUnreadCount(0);
-      }
-    } else if (model.appended > 0) {
-      unreadCountRef.current += model.appended;
-      setUnreadCount(unreadCountRef.current);
-    }
-    syncScrollable();
-  }, [model, syncScrollable]);
-
-  // El ajuste de línea cambia el alto del contenido sin cambiar el del hueco.
-  useEffect(() => {
-    syncScrollable();
-  }, [wrap, maximized, syncScrollable]);
-
-  // Si el hueco cambia de alto (acordeón, teclado del móvil, giro) y se estaba
-  // siguiendo, el fondo sigue siendo el fondo; si no, se recalcula qué se pinta.
+  // Si el hueco cambia de tamaño (acordeón, teclado del móvil, giro) y se
+  // estaba siguiendo, el fondo sigue siendo el fondo; si no, se recalcula qué
+  // se pinta. Un cambio de anchura cambia además los caracteres por línea.
   useEffect(() => {
     const el = ref.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
+    let lastW = el.clientWidth;
+    viewportRef.current = el.clientHeight;
     const ro = new ResizeObserver(() => {
       viewportRef.current = el.clientHeight;
+      if (el.clientWidth !== lastW) {
+        lastW = el.clientWidth;
+        measureCols();
+      }
       syncScrollable();
       if (followRef.current) scrollToBottom();
       else relayout();
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [maximized, scrollToBottom, syncScrollable, relayout]);
+  }, [maximized, scrollToBottom, syncScrollable, relayout, measureCols]);
 
   const startFollowing = useCallback(() => {
+    pinnedRef.current = false;
+    resumeOnCloseRef.current = false;
     followRef.current = true;
     setFollow(true);
-    unreadCountRef.current = 0;
-    setUnreadCount(0);
     scrollToBottom();
   }, [scrollToBottom]);
 
-  // Si cambia el filtro o fase, reiniciar a follow y saltar abajo
+  const pause = useCallback(() => {
+    pinnedRef.current = true;
+    followRef.current = false;
+    setFollow(false);
+  }, []);
+
+  /*
+   * Al cambiar la búsqueda o el nivel se vuelve al final, salvo que el
+   * cambio venga de «Ver en contexto», que quita los filtros para saltar a
+   * una línea concreta.
+   */
+  const jumpPendingRef = useRef(false);
   useEffect(() => {
+    if (jumpPendingRef.current) return;
     startFollowing();
-  }, [stage, level, q, startFollowing]);
+  }, [level, q, startFollowing]);
+
+  // Otra fuente (otro despliegue, otra pestaña, la vista limpiada): se empieza
+  // por lo último, aunque en la anterior se estuviera leyendo más arriba.
+  const genRef = useRef(model.gen);
+  useEffect(() => {
+    if (genRef.current === model.gen) return;
+    genRef.current = model.gen;
+    if (!jumpPendingRef.current) startFollowing();
+  }, [model.gen, startFollowing]);
 
   useEffect(() => {
     onFollowChange?.(follow);
@@ -1316,8 +1747,15 @@ function LogViewerImpl({
     const el = ref.current;
     if (!el) return;
     if (followRef.current) scrollToBottom();
-    else el.scrollTop = lastTopRef.current;
-  }, [maximized, scrollToBottom]);
+    else writeScrollTop(el, lastTopRef.current);
+  }, [maximized, scrollToBottom, writeScrollTop]);
+
+  const closeDetail = useCallback(() => {
+    setPicked(null);
+    if (resumeOnCloseRef.current) startFollowing();
+  }, [startFollowing]);
+  const closeDetailRef = useRef(closeDetail);
+  closeDetailRef.current = closeDetail;
 
   useEffect(() => {
     if (!maximized) return;
@@ -1329,11 +1767,12 @@ function LogViewerImpl({
     root?.setAttribute('aria-hidden', 'true');
     overlayRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        setMaximized(false);
-      }
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Primero se cierra el detalle de la línea; con otro Esc, la pantalla completa.
+      if (sheetOpenRef.current) closeDetailRef.current();
+      else setMaximized(false);
     };
     window.addEventListener('keydown', onKey, true);
     return () => {
@@ -1345,6 +1784,70 @@ function LogViewerImpl({
     };
   }, [maximized]);
 
+  /*
+   * La línea elegida queda a la vista por encima del detalle, que ocupa la
+   * parte de abajo de la consola.
+   */
+  useLayoutEffect(() => {
+    if (selectedId === null) return;
+    const el = ref.current;
+    const node = canvasRef.current?.querySelector<HTMLElement>(`[data-id="${selectedId}"]`);
+    const sheet = el?.parentElement?.querySelector<HTMLElement>('.log-sheet');
+    if (!el || !node || !sheet) return;
+    const overlap = node.getBoundingClientRect().bottom - sheet.getBoundingClientRect().top + 8;
+    if (overlap > 0) writeScrollTop(el, el.scrollTop + overlap);
+    // Solo al abrir: después manda quien lee.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
+  /*
+   * «Ver en contexto», en dos tiempos: primero se lleva el tramo pintado al
+   * bloque que contiene la línea (sin filtros, puede estar a miles de filas)
+   * y, ya pintada, se coloca a un tercio del alto.
+   */
+  const jumpTriesRef = useRef(0);
+  useLayoutEffect(() => {
+    if (jumpId === null || q !== '' || level !== 'all') return;
+    const el = ref.current;
+    const finish = () => {
+      jumpPendingRef.current = false;
+      jumpTriesRef.current = 0;
+      setJumpId(null);
+    };
+    if (!el) return finish();
+    // Un cuarto por debajo del techo: la mitad de abajo la ocupa el detalle.
+    const place = () => {
+      const node = canvasRef.current?.querySelector<HTMLElement>(`[data-id="${jumpId}"]`);
+      if (!node) return false;
+      const delta = node.getBoundingClientRect().top - el.getBoundingClientRect().top - el.clientHeight / 4;
+      if (Math.abs(delta) > 2) writeScrollTop(el, Math.max(0, el.scrollTop + delta));
+      return true;
+    };
+    if (place()) {
+      // Los bloques recién pintados se miden y ajustan su alto en el frame
+      // siguiente: una segunda colocación deja la línea donde se quería.
+      requestAnimationFrame(() => {
+        place();
+        relayout();
+      });
+      return finish();
+    }
+    const idx = chunkIndexOf(model.chunks, jumpId);
+    if (idx < 0 || ++jumpTriesRef.current > 3) return finish();
+    writeScrollTop(el, layoutRef.current.offsets[idx] + layoutRef.current.canvasTop);
+    relayout();
+  }, [jumpId, model, q, level, layoutTick, relayout, writeScrollTop]);
+
+  const showInContext = (id: number) => {
+    jumpPendingRef.current = true;
+    jumpTriesRef.current = 0;
+    resumeOnCloseRef.current = false;
+    pause();
+    setFilter('');
+    setLevel('all');
+    setJumpId(id);
+  };
+
   const onScroll = () => {
     const el = ref.current;
     if (!el) return;
@@ -1355,7 +1858,8 @@ function LogViewerImpl({
     scrollTopRef.current = top;
     const programmatic = programmaticTopRef.current >= 0 && Math.abs(top - programmaticTopRef.current) < 1;
     programmaticTopRef.current = -1;
-    if (!programmatic) followRef.current = el.scrollHeight - top - el.clientHeight < 45;
+    // Volver al fondo con el dedo reanuda, salvo una pausa pedida con el botón.
+    if (!programmatic) followRef.current = el.scrollHeight - top - el.clientHeight < 45 && !pinnedRef.current;
     // Scroll con el dedo levantado = inercia: el gesto sigue vivo hasta que pare.
     if (gestureRef.current) settleSoon();
     if (scrollRaf.current) return;
@@ -1364,10 +1868,6 @@ function LogViewerImpl({
       const node = ref.current;
       if (!node) return;
       setFollow(followRef.current);
-      if (followRef.current && unreadCountRef.current !== 0) {
-        unreadCountRef.current = 0;
-        setUnreadCount(0);
-      }
       if (!followRef.current) {
         // El hueco visible se acerca al borde de lo pintado: se mueve el tramo.
         const lay = layoutRef.current;
@@ -1382,32 +1882,57 @@ function LogViewerImpl({
     });
   };
 
-  useEffect(() => () => {
-    if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
+    },
+    [],
+  );
 
-  const jump = (to: 'top' | 'bottom') => {
+  const jumpToTop = () => {
     const el = ref.current;
     if (!el) return;
-    if (to === 'top') {
-      followRef.current = false;
-      setFollow(false);
-      writeScrollTop(el, 0);
-    } else {
-      startFollowing();
-    }
+    followRef.current = false;
+    setFollow(false);
+    writeScrollTop(el, 0);
+    relayout();
   };
 
-  const plainText = (includeTimestamps = showTs) => {
-    return visible
-      .map((v) => (includeTimestamps && v.tsString ? `${v.tsString} ${v.row.cleanText}` : v.row.cleanText))
-      .join('\n');
+  /*
+   * Tocar una línea abre su detalle. Un clic que termina una selección de
+   * texto no cuenta: en el escritorio se sigue pudiendo seleccionar y copiar
+   * a mano. Mientras el detalle está abierto la vista se queda quieta.
+   */
+  const onCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim()) return;
+    const node = (e.target as HTMLElement).closest<HTMLElement>('[data-id]');
+    if (!node) return;
+    const id = Number(node.dataset.id);
+    if (!Number.isFinite(id)) return;
+    if (selectedId === id) {
+      closeDetail();
+      return;
+    }
+    if (selectedId === null) resumeOnCloseRef.current = followRef.current;
+    if (followRef.current) pause();
+    setPicked({ gen: model.gen, id });
   };
+
+  const plainText = (format: TimestampFormat | 'iso' | null) =>
+    visible
+      .map((v) => {
+        const r = v.row;
+        if (!format) return r.cleanText;
+        const ts = format === 'iso' ? (r.ts !== null ? new Date(r.ts).toISOString() : r.clock ?? '') : tsText(r, format);
+        return ts ? `${ts} ${r.cleanText}` : r.cleanText;
+      })
+      .join('\n');
 
   const copyAll = () => {
     if (visible.length === 0) return;
     const count = visible.length;
-    void copyToClipboard(plainText(showTs)).then((ok) => {
+    void copyToClipboard(plainText(showTs ? tsFormat : null)).then((ok) => {
       if (ok) {
         setCopied(true);
         window.clearTimeout(copiedTimer.current);
@@ -1420,7 +1945,7 @@ function LogViewerImpl({
   };
 
   const download = () => {
-    const blob = new Blob([plainText(true)], { type: 'text/plain;charset=utf-8' });
+    const blob = new Blob([plainText('iso')], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -1429,16 +1954,15 @@ function LogViewerImpl({
     // En diferido: revocar en el acto puede abortar la descarga en Firefox.
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   };
+  const runDownload = onDownload ?? download;
 
-  const clearBuffer = () => {
-    setClearedUntil(lines.length);
-  };
-
-  const filtering = level !== 'all' || stage !== 'all' || q.length > 0;
-  const showChrome = toolbar || !!title || maximized || !!extraHeaderLeft || !!extraHeaderRight;
+  const filtering = level !== 'all' || query.active;
   // Ancho del canalón según el mayor número de línea que se pinta (mínimo tres cifras).
   const maxLineNo = visible.length ? visible[visible.length - 1].id - origin : 0;
   const gutterCh = Math.max(3, String(maxLineNo).length) + 0.8;
+  useLayoutEffect(() => {
+    measureCols();
+  }, [gutterCh, measureCols]);
 
   const levelChip = (key: LevelFilter, label: string, n?: number, tone?: 'err' | 'warn') => (
     <button
@@ -1446,283 +1970,364 @@ function LogViewerImpl({
       onClick={() => setLevel(key)}
       aria-pressed={level === key}
       className={cx(
-        'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors duration-150 max-sm:h-9',
+        'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors duration-150 max-sm:h-8',
         level === key
           ? tone === 'err'
-            ? 'bg-err/[.18] text-err font-semibold'
+            ? 'bg-err/[.18] font-semibold text-err'
             : tone === 'warn'
-              ? 'bg-warn/[.18] text-warn font-semibold'
-              : 'bg-acc/[.18] text-acc-soft font-semibold'
+              ? 'bg-warn/[.18] font-semibold text-warn'
+              : 'bg-acc/[.18] font-semibold text-acc-soft'
           : 'text-subtle hover:bg-surface2 hover:text-txt',
       )}
     >
       {tone && <span className={cx('h-[5px] w-[5px] rounded-full', tone === 'err' ? 'bg-err' : 'bg-warn')} />}
       {label}
-      {n !== undefined && n > 0 && <span className="tnum opacity-85 font-mono">{NF.format(n)}</span>}
+      {n !== undefined && n > 0 && <span className="tnum font-mono opacity-85">{NF.format(n)}</span>}
     </button>
+  );
+
+  const levelChips = (
+    <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-line bg-term p-0.5">
+      {levelChip('all', 'Todo')}
+      {levelChip('err', 'Errores', counts.err, 'err')}
+      {levelChip('warn', 'Avisos', counts.warn, 'warn')}
+    </div>
+  );
+
+  // En vivo: el estado es a la vez el botón. Siguiendo dice «En vivo» y
+  // pausa; en pausa dice lo que hace al pulsarlo y cuántas líneas esperan.
+  const liveControl = live ? (
+    <button
+      type="button"
+      onClick={follow ? pause : startFollowing}
+      aria-pressed={!follow}
+      title={follow ? 'Pausar la vista (las líneas nuevas se siguen recibiendo)' : 'Reanudar y mostrar lo último'}
+      className={cx(
+        'press flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition-colors sm:h-8',
+        follow ? 'text-ok hover:bg-ok/10' : 'bg-warn/[.14] text-warn hover:bg-warn/20',
+      )}
+    >
+      {follow ? (
+        <>
+          <span className="pulse-soft h-2 w-2 rounded-full bg-ok" aria-hidden />
+          En vivo
+          <Pause size={12} className="opacity-60 max-sm:hidden" aria-hidden />
+        </>
+      ) : (
+        <>
+          <Play size={12} aria-hidden />
+          Reanudar
+          {pendingNew > 0 && <span className="tnum font-mono">+{pendingNew > 999 ? '999+' : NF.format(pendingNew)}</span>}
+        </>
+      )}
+    </button>
+  ) : null;
+
+  const lineCount = (
+    <span className="hidden min-w-0 truncate text-xs text-subtle sm:inline">
+      {filtering ? (
+        <>
+          <span className="tnum font-medium text-txt/90">{NF.format(visible.length)}</span> de{' '}
+          <span className="tnum">{NF.format(rows.length)}</span> líneas
+        </>
+      ) : (
+        <>
+          <span className="tnum font-medium text-txt/80">{NF.format(rows.length)}</span> líneas
+        </>
+      )}
+      {replicas > 1 && <span title="Las líneas de cada réplica llevan su prefijo [rN]"> · {replicas} réplicas</span>}
+    </span>
   );
 
   const shell = (
     <section
+      ref={shellRef}
       className={cx(
         'log-shell relative flex min-h-0 w-full flex-col overflow-hidden bg-term',
-        maximized ? 'rounded-none' : cx(!bare && 'rounded-xl border border-line shadow-sm', className),
+        maximized ? 'rounded-none' : cx('rounded-xl border border-line shadow-sm', className),
       )}
-      style={{ '--gutter-ch': gutterCh } as React.CSSProperties}
+      style={{ '--gutter-ch': gutterCh, '--ts-ch': TS_CH[tsFormat] } as React.CSSProperties}
       onKeyDown={(e) => {
-        // Ctrl/⌘+F con el foco dentro de la consola busca AQUÍ, no en la página:
-        // el placeholder lo prometía y no había nada detrás.
-        if (toolbar && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+        const typing = (e.target as HTMLElement).tagName === 'INPUT';
+        // Ctrl/⌘+F o «/» con el foco dentro de la consola buscan AQUÍ, no en la página.
+        if (toolbar && (((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') || (e.key === '/' && !typing))) {
           e.preventDefault();
           searchRef.current?.focus();
           searchRef.current?.select();
+          return;
+        }
+        if (e.key === 'Escape' && !maximized) {
+          if (selected) {
+            e.stopPropagation();
+            closeDetail();
+          } else if (typing && filter) {
+            e.stopPropagation();
+            setFilter('');
+          }
         }
       }}
     >
-      {showChrome && (
-        <div className="flex shrink-0 items-center justify-between gap-2.5 border-b border-line bg-term2 px-3 py-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2.5">
-            {extraHeaderLeft}
-            {title && (
-              <span className="truncate font-mono eyebrow text-sub">
-                {title}
-              </span>
-            )}
-            <span className="flex shrink-0 items-center gap-1.5 text-xs text-subtle">
-              {!toolbar && (
-                <span
-                  className={cx('h-[6px] w-[6px] rounded-full', follow ? 'pulse-soft bg-ok' : 'bg-subtle')}
-                  title={follow ? 'En vivo' : 'En pausa'}
-                />
-              )}
-              <span className="tnum font-medium text-txt/80">{NF.format(rows.length)}</span>
-              <span>líneas</span>
-              {replicas > 1 && (
-                <span className="hidden text-subtle sm:inline" title="Las líneas de cada réplica llevan su prefijo [rN]">
-                  · {replicas} réplicas
-                </span>
-              )}
-            </span>
-          </div>
-
-          <div className="flex shrink-0 items-center gap-1">
-            {extraHeaderRight}
-            <ToolButton
-              title={maximized ? 'Restaurar (Esc)' : 'Pantalla completa'}
-              onClick={() => setMaximized((m) => !m)}
-            >
-              {maximized ? <Minimize2 size={15} /> : <Maximize2 size={14} />}
-            </ToolButton>
-            {maximized && (
-              <ToolButton title="Cerrar (Esc)" onClick={() => setMaximized(false)}>
-                <X size={16} />
-              </ToolButton>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ── TOOLBAR LIMPIA Y RESPONSIVA (SIN CONFLICTOS DE ICONOS) ── */}
       {toolbar && (
-        <div className="flex shrink-0 flex-col gap-2 border-b border-line bg-term2 px-2.5 py-2 sm:flex-row sm:items-center sm:justify-between">
-          {/* Fila izquierda: Buscador + Filtros de nivel */}
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 sm:gap-2">
-            {/* Buscador interactivo */}
-            <div className="flex h-8 min-w-[140px] flex-1 items-center gap-2 rounded-lg border border-line bg-term px-2.5 focus-within:border-acc">
-              <Search size={13} className="shrink-0 text-subtle" />
+        <div className="flex shrink-0 flex-col gap-1.5 border-b border-line bg-term2 px-2 py-2 sm:px-2.5">
+          {/* Fila 1: búsqueda, con el nivel al lado (escritorio) o el control de vivo (móvil). */}
+          <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
+            {/* `relative`: la ayuda se ancla a la caja de búsqueda y nunca se sale de la consola. */}
+            <div className="relative flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg border border-line bg-term px-2.5 focus-within:border-acc sm:h-8">
+              <Search size={13} className="shrink-0 text-subtle" aria-hidden />
               <input
                 ref={searchRef}
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                placeholder="Buscar en el registro"
+                placeholder={narrow ? 'Buscar' : 'Buscar: palabras, "frase", -excluir'}
+                aria-label="Buscar en el registro"
                 spellCheck={false}
                 autoCapitalize="none"
                 autoCorrect="off"
                 enterKeyHint="search"
                 // El 16px del móvil lo pone la regla global anti-zoom de iOS; aquí solo el escritorio.
-                className="min-w-0 flex-1 bg-transparent font-mono text-txt outline-none placeholder:text-subtle sm:text-xs"
+                className="min-w-0 flex-1 bg-transparent font-mono text-txt outline-none placeholder:font-sans placeholder:text-subtle sm:text-xs"
               />
               {filter && (
-                <div className="flex items-center gap-1">
-                  <span className="text-micro text-subtle tabular-nums font-mono">
-                    {NF.format(visible.length)} {visible.length === 1 ? 'coincidencia' : 'coincidencias'}
+                <>
+                  <span className="shrink-0 font-mono text-micro tabular-nums text-subtle" aria-live="polite">
+                    {NF.format(visible.length)}
+                    <span className="max-sm:hidden"> {visible.length === 1 ? 'coincidencia' : 'coincidencias'}</span>
                   </span>
                   <button
                     type="button"
                     onClick={() => setFilter('')}
-                    className="press shrink-0 text-subtle hover:text-txt"
-                    title="Limpiar filtro"
-                    aria-label="Limpiar filtro"
+                    className="press -mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded text-subtle hover:text-txt"
+                    title="Borrar la búsqueda"
+                    aria-label="Borrar la búsqueda"
                   >
-                    <X size={12} />
+                    <X size={13} />
                   </button>
-                </div>
+                </>
               )}
+              <button
+                  type="button"
+                  onClick={(e) => {
+                    fitMenu(e.currentTarget);
+                    setHelpOpen((o) => !o);
+                  }}
+                  aria-expanded={helpOpen}
+                  className={cx(
+                    'press -mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded',
+                    helpOpen ? 'text-acc-soft' : 'text-subtle hover:text-txt',
+                  )}
+                  title="Cómo buscar"
+                  aria-label="Cómo buscar"
+                >
+                  <CircleHelp size={14} />
+                </button>
+                <Menu open={helpOpen} onClose={() => setHelpOpen(false)} align="right" className="w-[min(340px,100%)]">
+                  <div className="overflow-y-auto overscroll-contain px-1.5 py-1 font-sans" style={{ maxHeight: menuMaxH }}>
+                    <p className="px-1 pb-1 eyebrow text-subtle">Cómo buscar</p>
+                    {SEARCH_EXAMPLES.map((ex) => (
+                      <button
+                        key={ex.q}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setFilter(ex.q);
+                          setHelpOpen(false);
+                          searchRef.current?.focus();
+                        }}
+                        className="flex min-h-9 w-full items-baseline justify-between gap-3 rounded-lg px-1.5 py-1.5 text-left hover:bg-surface2"
+                      >
+                        <code className="shrink-0 font-mono text-xs text-acc-soft">{ex.q}</code>
+                        <span className="min-w-0 text-right text-xs text-sub">{ex.desc}</span>
+                      </button>
+                    ))}
+                    <p className="mt-1.5 border-t border-line px-1 pt-2 text-xs leading-5 text-sub">
+                      Toca una línea para ver su fecha completa, copiarla o verla en contexto. Al subir a leer, la vista se
+                      pausa; «Reanudar» vuelve a lo último.
+                    </p>
+                    <p className="mt-1 px-1 pb-1 text-xs text-subtle max-sm:hidden">
+                      Atajos: «/» o Ctrl+F para buscar; Esc para cerrar.
+                    </p>
+                  </div>
+                </Menu>
             </div>
-
-            {/* Filtros de nivel */}
-            <div className="flex shrink-0 items-center gap-0.5 rounded-lg bg-term p-0.5 border border-line">
-              {levelChip('all', 'Todo')}
-              {levelChip('err', 'Errores', counts.err, 'err')}
-              {levelChip('warn', 'Avisos', counts.warn, 'warn')}
-            </div>
+            <div className="max-sm:hidden">{levelChips}</div>
+            {liveControl && <div className="sm:hidden">{liveControl}</div>}
           </div>
+          {query.error && <p className="px-1 text-xs text-warn">{query.error}</p>}
 
-          {/* Fila derecha: Botones de acción sin solapamiento */}
-          <div className="flex shrink-0 items-center justify-between sm:justify-end gap-1">
-            {/* Lo que se usa a diario, con su nombre puesto: bajar al último
-                error, copiar lo que se ve y llevarse el log. Lo demás vive en
-                «Vista», que es donde se busca lo que se toca una vez. En el
-                móvil «Al final» sobra: cuando no se sigue el final, el botón
-                flotante ya lo ofrece, y la fila no da para cuatro rótulos. */}
-            <button
-              type="button"
-              onClick={() => jump('bottom')}
-              className="press hidden h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt sm:flex sm:h-8"
-              title="Ir al final del registro"
-            >
-              {/* Distinto del icono de descargar: a 14px eran dos flechas iguales. */}
-              <ChevronsDown size={14} aria-hidden />
-              <span>Al final</span>
-            </button>
-            <button
-              type="button"
-              onClick={copyAll}
-              disabled={visible.length === 0}
-              className="press flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40 sm:h-8"
-              title="Copiar las líneas visibles al portapapeles"
-            >
-              {copied ? <Check size={14} className="pop-in text-ok" aria-hidden /> : <Copy size={14} aria-hidden />}
-              <span>{copied ? 'Copiado' : 'Copiar'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={onDownload ?? download}
-              disabled={!onDownload && visible.length === 0}
-              className="press flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40 sm:h-8"
-              title={onDownload ? 'Descargar el registro completo' : 'Descargar el registro'}
-            >
-              <Download size={14} aria-hidden />
-              <span>Descargar</span>
-            </button>
-
-            <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-line" />
-
-            <div className="relative">
+          {/* Fila 2: nivel (móvil) o estado (escritorio), y las acciones. */}
+          <div className="flex min-w-0 items-center justify-between gap-1.5">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <div className="sm:hidden">{levelChips}</div>
+              {maximized && title && <span className="hidden truncate font-mono text-xs text-sub sm:inline">{title}</span>}
+              {liveControl && <div className="max-sm:hidden">{liveControl}</div>}
+              {lineCount}
+            </div>
+            <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
               <button
                 type="button"
-                onClick={() => setViewMenuOpen((o) => !o)}
-                aria-expanded={viewMenuOpen}
-                className={cx(
-                  'press flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors sm:h-8',
-                  viewMenuOpen ? 'bg-surface2 text-txt' : 'text-sub hover:bg-surface2 hover:text-txt',
-                )}
-                title="Opciones de visualización del registro"
+                onClick={copyAll}
+                disabled={visible.length === 0}
+                className="press hidden h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40 sm:flex"
+                title={filtering ? 'Copiar las líneas filtradas' : 'Copiar las líneas al portapapeles'}
               >
-                <SlidersHorizontal size={14} aria-hidden />
-                <span>Vista</span>
+                {copied ? <Check size={14} className="pop-in text-ok" aria-hidden /> : <Copy size={14} aria-hidden />}
+                <span>{copied ? 'Copiado' : 'Copiar'}</span>
               </button>
-              <Menu open={viewMenuOpen} onClose={() => setViewMenuOpen(false)} align="right" className="w-[248px]">
-                <div>
-                  <p className="px-2.5 py-1 eyebrow text-subtle">Vista</p>
-                  <MenuItem icon={<Hash size={14} />} active={gutter} onClick={() => setGutter((g) => !g)}>
-                    <span className="flex items-center justify-between gap-2">
-                      Numerar líneas
-                      {gutter && <Check size={13} className="shrink-0 text-acc-soft" />}
-                    </span>
-                  </MenuItem>
-                  <MenuItem icon={<WrapText size={14} />} active={wrap} onClick={() => setWrap((w) => !w)}>
-                    <span className="flex items-center justify-between gap-2">
-                      Ajuste de línea
-                      {wrap && <Check size={13} className="shrink-0 text-acc-soft" />}
-                    </span>
-                  </MenuItem>
-                  <MenuItem icon={<Clock size={14} />} active={showTs} onClick={() => setShowTs((v) => !v)}>
-                    <span className="flex items-center justify-between gap-2">
-                      Marcas de tiempo
-                      {showTs && <Check size={13} className="shrink-0 text-acc-soft" />}
-                    </span>
-                  </MenuItem>
-                  {/* El formato solo aparece cuando las fechas están puestas:
-                      elegir entre cuatro formatos de algo oculto no significa nada. */}
-                  {showTs && (
-                    <div className="mb-1 ml-4 flex flex-col border-l border-line pl-1.5">
-                      {(
-                        [
-                          { key: 'time', label: 'Hora (HH:mm:ss)' },
-                          { key: 'datetime', label: 'Fecha y hora' },
-                          { key: 'utc', label: 'Hora UTC' },
-                          { key: 'relative', label: 'Tiempo relativo' },
-                        ] as const
-                      ).map((opt) => (
-                        <MenuItem key={opt.key} active={tsFormat === opt.key} onClick={() => setTsFormat(opt.key)}>
-                          <span className="flex items-center justify-between gap-2 text-xs">
-                            {opt.label}
-                            {tsFormat === opt.key && <Check size={13} className="shrink-0 text-acc-soft" />}
-                          </span>
-                        </MenuItem>
-                      ))}
+              <button
+                type="button"
+                onClick={runDownload}
+                disabled={!onDownload && visible.length === 0}
+                className="press hidden h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sub transition-colors hover:bg-surface2 hover:text-txt disabled:opacity-40 sm:flex"
+                title={onDownload ? 'Descargar el registro completo' : 'Descargar el registro'}
+              >
+                <Download size={14} aria-hidden />
+                <span>Descargar</span>
+              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    fitMenu(e.currentTarget);
+                    setViewMenuOpen((o) => !o);
+                  }}
+                  aria-expanded={viewMenuOpen}
+                  className={cx(
+                    'press flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors max-sm:w-9 max-sm:justify-center max-sm:px-0 sm:h-8',
+                    viewMenuOpen ? 'bg-surface2 text-txt' : 'text-sub hover:bg-surface2 hover:text-txt',
+                  )}
+                  title="Opciones del registro"
+                  aria-label="Opciones del registro"
+                >
+                  <SlidersHorizontal size={14} aria-hidden />
+                  <span className="max-sm:hidden">Vista</span>
+                </button>
+                <Menu open={viewMenuOpen} onClose={() => setViewMenuOpen(false)} align="right" className="w-[264px]">
+                  <div className="overflow-y-auto overscroll-contain" style={{ maxHeight: menuMaxH }}>
+                    {/* En el móvil la fila no da para todo: copiar y descargar viven aquí. */}
+                    <div className="grid grid-cols-2 gap-1 p-1 sm:hidden">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          copyAll();
+                          setViewMenuOpen(false);
+                        }}
+                        disabled={visible.length === 0}
+                        className="press flex h-10 items-center justify-center gap-1.5 rounded-lg border border-line bg-surface2/60 text-xs font-medium text-sub disabled:opacity-40"
+                      >
+                        <Copy size={14} aria-hidden /> Copiar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          runDownload();
+                          setViewMenuOpen(false);
+                        }}
+                        className="press flex h-10 items-center justify-center gap-1.5 rounded-lg border border-line bg-surface2/60 text-xs font-medium text-sub"
+                      >
+                        <Download size={14} aria-hidden /> Descargar
+                      </button>
                     </div>
-                  )}
+                    <p className="px-2.5 py-1 eyebrow text-subtle">Vista</p>
+                    <MenuItem icon={<Clock size={14} />} active={showTs} onClick={() => setPref('showTs', !showTs)}>
+                      <span className="flex items-center justify-between gap-2">
+                        Fecha y hora
+                        {showTs && <Check size={13} className="shrink-0 text-acc-soft" />}
+                      </span>
+                    </MenuItem>
+                    {/* El formato solo aparece cuando la fecha está puesta:
+                        elegir entre formatos de algo oculto no significa nada. */}
+                    {showTs && (
+                      <div className="mx-1 mb-1 grid grid-cols-4 gap-0.5 rounded-lg border border-line bg-surface2/50 p-0.5" role="group" aria-label="Formato de la fecha">
+                        {(
+                          [
+                            { key: 'datetime', label: 'Fecha', title: 'Fecha y hora local (12 oct 14:03:22)' },
+                            { key: 'time', label: 'Hora', title: 'Solo la hora local' },
+                            { key: 'utc', label: 'UTC', title: 'Fecha y hora en UTC' },
+                            { key: 'relative', label: 'Hace', title: 'Tiempo transcurrido (hace 5 min)' },
+                          ] as const
+                        ).map((opt) => (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            onClick={() => setPref('tsFormat', opt.key)}
+                            aria-pressed={tsFormat === opt.key}
+                            title={opt.title}
+                            className={cx(
+                              'press h-8 rounded-md text-xs font-medium transition-colors',
+                              tsFormat === opt.key ? 'bg-surface font-semibold text-txt shadow-lvl1' : 'text-subtle hover:text-txt',
+                            )}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <MenuItem icon={<WrapText size={14} />} active={wrap} onClick={() => setPref('wrap', !wrap)}>
+                      <span className="flex items-center justify-between gap-2">
+                        Ajuste de línea
+                        {wrap && <Check size={13} className="shrink-0 text-acc-soft" />}
+                      </span>
+                    </MenuItem>
+                    <MenuItem icon={<Hash size={14} />} active={gutter} onClick={() => setPref('gutter', !gutter)}>
+                      <span className="flex items-center justify-between gap-2">
+                        Numerar líneas
+                        {gutter && <Check size={13} className="shrink-0 text-acc-soft" />}
+                      </span>
+                    </MenuItem>
 
-                  <div className="my-1 border-t border-line" />
+                    <div className="my-1 border-t border-line" />
 
-                  <MenuItem
-                    icon={<ArrowUpToLine size={14} />}
-                    onClick={() => {
-                      jump('top');
-                      setViewMenuOpen(false);
-                    }}
-                  >
-                    Ir al principio
-                  </MenuItem>
-                  {clearedUntil === 0 ? (
                     <MenuItem
-                      icon={<Trash2 size={14} />}
-                      onClick={clearBuffer}
-                      className={cx(visible.length === 0 && 'pointer-events-none opacity-40')}
+                      icon={<ArrowUpToLine size={14} />}
+                      onClick={() => {
+                        jumpToTop();
+                        setViewMenuOpen(false);
+                      }}
                     >
-                      Limpiar la vista
+                      Ir al principio
                     </MenuItem>
-                  ) : (
-                    <MenuItem icon={<Trash2 size={14} />} onClick={() => setClearedUntil(0)}>
-                      Restaurar {NF.format(clearedUntil)} líneas ocultas
-                    </MenuItem>
-                  )}
-                </div>
-              </Menu>
+                    {clearedUntil === 0 ? (
+                      <MenuItem
+                        icon={<Trash2 size={14} />}
+                        onClick={() => {
+                          setClearedUntil(lines.length);
+                          setViewMenuOpen(false);
+                        }}
+                        className={cx(visible.length === 0 && 'pointer-events-none opacity-40')}
+                      >
+                        Limpiar la vista
+                      </MenuItem>
+                    ) : (
+                      <MenuItem icon={<Trash2 size={14} />} onClick={() => setClearedUntil(0)}>
+                        Restaurar {NF.format(clearedUntil)} líneas ocultas
+                      </MenuItem>
+                    )}
+                  </div>
+                </Menu>
+              </div>
+              <ToolButton
+                title={maximized ? 'Restaurar (Esc)' : 'Pantalla completa'}
+                onClick={() => setMaximized((m) => !m)}
+                className={cx(maximized && 'max-sm:hidden')}
+              >
+                {maximized ? <Minimize2 size={15} /> : <Maximize2 size={14} />}
+              </ToolButton>
+              {maximized && (
+                <ToolButton title="Cerrar (Esc)" onClick={() => setMaximized(false)}>
+                  <X size={16} />
+                </ToolButton>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* Solo aparece cuando tiene algo que contar: un aviso, un filtro activo
-          o el seguimiento en vivo. Vacía era una franja de cromo sin función. */}
-      {toolbar && (statusNote || filtering || follow) && (
-        <div className="flex shrink-0 items-center justify-between gap-2.5 border-b border-line bg-term2 px-3 py-1.5 text-xs text-subtle">
-          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
-            {statusNote ? (
-              <span className="font-medium text-warn">{statusNote}</span>
-            ) : filtering ? (
-              <span>
-                <span className="tnum font-medium text-txt/90">{NF.format(visible.length)}</span> de{' '}
-                <span className="tnum">{NF.format(rows.length)}</span> líneas
-              </span>
-            ) : null}
-          </span>
-
-          {/* Con un aviso del servidor («Docker no está disponible») no se
-              está en vivo de nada: las dos cosas a la vez se contradecían. */}
-          {follow && !statusNote && (
-            <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-ok">
-              <span className="pulse-soft h-1.5 w-1.5 rounded-full bg-ok" />
-              En vivo
-            </span>
-          )}
-        </div>
+      {/* Solo cuando hay algo que contar: un aviso del servidor o de la fuente. */}
+      {statusNote && (
+        <div className="shrink-0 border-b border-line bg-term2 px-3 py-1.5 text-xs font-medium text-warn">{statusNote}</div>
       )}
 
-      <div className="relative min-h-0 flex-1 w-full overflow-hidden">
+      <div className="relative min-h-0 w-full flex-1 overflow-hidden">
         <div
           ref={ref}
           onScroll={onScroll}
@@ -1744,24 +2349,21 @@ function LogViewerImpl({
             {PROBE}
           </span>
 
-          {canLoadOlder ? (
-            <div className="flex justify-center p-2.5">
-              <button
-                type="button"
-                onClick={triggerLoadOlder}
-                disabled={loadingOlder}
-                className="press inline-flex items-center gap-1.5 rounded-lg border border-line bg-term2 px-3 py-1 text-xs text-sub hover:text-txt disabled:opacity-50 max-sm:h-9"
-              >
-                {loadingOlder ? 'Cargando líneas anteriores…' : 'Cargar líneas anteriores'}
-              </button>
-            </div>
-          ) : (
-            startReached &&
-            visible.length > 0 && (
-              <div className="flex justify-center p-2.5 font-sans">
+          {hasBanner && (
+            <div className="flex items-center justify-center font-sans" style={{ height: BANNER_H }}>
+              {canLoadOlder ? (
+                <button
+                  type="button"
+                  onClick={triggerLoadOlder}
+                  disabled={loadingOlder}
+                  className="press inline-flex h-8 items-center gap-1.5 rounded-lg border border-line bg-term2 px-3 text-xs text-sub hover:text-txt disabled:opacity-50"
+                >
+                  {loadingOlder ? 'Cargando líneas anteriores…' : 'Cargar líneas anteriores'}
+                </button>
+              ) : (
                 <span className="eyebrow text-subtle">Principio del registro</span>
-              </div>
-            )
+              )}
+            </div>
           )}
 
           {visible.length === 0 ? (
@@ -1772,7 +2374,7 @@ function LogViewerImpl({
                 <ErrorState compact title="No se ha podido cargar el registro" onRetry={onRetry} />
               ) : (
                 <span className="max-w-sm text-balance text-xs leading-5 text-subtle">
-                  {filtering ? 'Ninguna línea coincide con los filtros aplicados.' : emptyMessage ?? 'No hay registros disponibles.'}
+                  {filtering ? 'Ninguna línea coincide con la búsqueda.' : emptyMessage ?? 'No hay registros disponibles.'}
                 </span>
               )}
             </div>
@@ -1783,46 +2385,65 @@ function LogViewerImpl({
                canalón y las filas compartan anchura al desplazar de lado. */
             <div
               ref={canvasRef}
+              onClick={onCanvasClick}
               className={cx('log-canvas', wrap ? 'w-full' : 'w-max min-w-full')}
               style={{
                 paddingTop: layout.offsets[start],
                 paddingBottom: Math.max(0, layout.total - layout.offsets[end + 1]),
               }}
             >
-              {chunks.slice(start, end + 1).map((c) => (
-                <LogChunk
-                  key={c.key}
-                  chunkKey={c.key}
-                  rows={c.rows}
-                  origin={origin}
-                  wrap={wrap}
-                  gutter={gutter}
-                  showTs={showTs}
-                  query={q}
-                  onMeasure={onMeasure}
-                />
-              ))}
+              {chunks.slice(start, end + 1).map((c) => {
+                const first = c.rows[0].id;
+                const last = c.rows[c.rows.length - 1].id;
+                return (
+                  <LogChunk
+                    key={c.key}
+                    chunkKey={c.key}
+                    rows={c.rows}
+                    origin={origin}
+                    tsFormat={tsFormat}
+                    tick={tsFormat === 'relative' ? tick : 0}
+                    wrap={wrap}
+                    gutter={gutter}
+                    showTs={showTs}
+                    mark={query.mark}
+                    selectedId={selectedId !== null && selectedId >= first && selectedId <= last ? selectedId : null}
+                    onMeasure={onMeasure}
+                  />
+                );
+              })}
             </div>
           )}
         </div>
 
-        {/* Botón flotante para volver al final si el usuario scrollea hacia arriba */}
-        {!follow && visible.length > 0 && (
-          <div className="absolute bottom-3 right-4 z-20 pop-in">
+        {/* Volver al final cuando se ha subido a leer: al alcance del pulgar. */}
+        {!follow && !selected && visible.length > 0 && (
+          <div className="pop-in absolute bottom-3 right-4 z-20">
             <button
               type="button"
-              onClick={() => jump('bottom')}
-              className="press flex items-center gap-2 rounded-full border border-line bg-surface/95 px-3 py-1.5 text-xs font-semibold text-txt shadow-modal backdrop-blur-md hover:bg-surface2"
+              onClick={startFollowing}
+              className="press flex items-center gap-2 rounded-full border border-line bg-surface/95 px-3 py-1.5 text-xs font-semibold text-txt shadow-modal backdrop-blur-md hover:bg-surface2 max-sm:min-h-10"
             >
               <ArrowDown size={13} className="text-acc" />
               <span>Ir al final</span>
-              {unreadCount > 0 && (
+              {pendingNew > 0 && (
                 <span className="rounded-full bg-acc px-1.5 py-0.5 text-micro font-bold text-white">
-                  +{unreadCount > 99 ? '99+' : unreadCount}
+                  +{pendingNew > 999 ? '999+' : NF.format(pendingNew)}
                 </span>
               )}
             </button>
           </div>
+        )}
+
+        {selected && (
+          <LineDetail
+            key={selected.id}
+            n={selected.n}
+            row={selected.row}
+            canShowContext={filtering}
+            onShowContext={() => showInContext(selected.id)}
+            onClose={closeDetail}
+          />
         )}
       </div>
     </section>
@@ -1840,9 +2461,7 @@ function LogViewerImpl({
         // botón «Ir al final» y la última línea quedaban debajo de ella.
         className="console-in fixed inset-0 z-50 flex flex-col bg-bg p-3 pb-[max(12px,env(safe-area-inset-bottom))] outline-none sm:p-5"
       >
-        <div className="h-full w-full overflow-hidden rounded-xl border border-line shadow-modal">
-          {shell}
-        </div>
+        <div className="h-full w-full overflow-hidden rounded-xl border border-line shadow-modal">{shell}</div>
       </div>,
       document.body,
     );

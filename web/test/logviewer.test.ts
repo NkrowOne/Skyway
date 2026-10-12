@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { advanceView, CHUNK, createViewState, diffLines, ViewOptions } from '../src/components/LogViewer';
+import {
+  advanceView,
+  CHUNK,
+  createViewState,
+  detectLevel,
+  diffLines,
+  freezeLines,
+  parseQuery,
+  parseRawLine,
+  tsText,
+  ViewOptions,
+} from '../src/components/LogViewer';
 
-const OPTS: ViewOptions = { defaultStage: 'all', q: '', level: 'all', stage: 'all', tsFormat: 'time', tick: 0 };
+const OPTS: ViewOptions = { q: '', level: 'all' };
 
 describe('diffLines (relación entre dos versiones del buffer)', () => {
   it('sin recorte: solo líneas nuevas al final', () => {
@@ -136,5 +147,115 @@ describe('advanceView (modelo incremental del visor)', () => {
     const src = lines(0, 5);
     const a = advanceView(st, src, OPTS);
     expect(advanceView(st, src, OPTS)).toBe(a);
+  });
+});
+
+describe('freezeLines (vista quieta mientras se lee)', () => {
+  const L = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `l${from + i}`);
+
+  it('las líneas nuevas al final se quedan fuera y la vista es el mismo array', () => {
+    const frozen = L(0, 10);
+    const grown = frozen.concat(L(10, 15));
+    expect(freezeLines(frozen, grown)).toBe(frozen);
+  });
+
+  it('el historial cargado por delante sí entra, sin las nuevas del final', () => {
+    const frozen = L(10, 20);
+    const cur = L(0, 25);
+    expect(freezeLines(frozen, cur)).toEqual(L(0, 20));
+  });
+
+  it('lo que el buffer recorta por delante sale también de la vista', () => {
+    const frozen = L(0, 10);
+    const cur = L(4, 30);
+    expect(freezeLines(frozen, cur)).toEqual(L(4, 10));
+  });
+
+  it('otra fuente sustituye la vista y aplicarlo dos veces no cambia nada', () => {
+    const cur = ['x', 'y'];
+    expect(freezeLines(L(0, 3), cur)).toBe(cur);
+    const once = freezeLines(L(10, 20), L(0, 25));
+    expect(freezeLines(once, L(0, 25))).toBe(once);
+  });
+});
+
+describe('parseQuery (sintaxis de búsqueda)', () => {
+  const t = (q: string, text: string, lvl: 'err' | 'warn' | 'plain' = 'plain') => parseQuery(q).test(text, lvl);
+
+  it('palabras sueltas: todas, sin distinguir mayúsculas', () => {
+    expect(t('redis timeout', 'Redis connection TIMEOUT')).toBe(true);
+    expect(t('redis timeout', 'redis ok')).toBe(false);
+  });
+
+  it('frase exacta, exclusión y OR', () => {
+    expect(t('"connection refused"', 'ECONN: connection refused')).toBe(true);
+    expect(t('"connection refused"', 'refused connection')).toBe(false);
+    expect(t('error -healthcheck', 'error en healthcheck')).toBe(false);
+    expect(t('error -healthcheck', 'error en la base')).toBe(true);
+    expect(t('timeout OR refused', 'refused')).toBe(true);
+    expect(t('timeout OR refused', 'nada')).toBe(false);
+  });
+
+  it('expresión regular entre barras; una ruta no es una expresión', () => {
+    expect(t('/5\\d\\d/', 'GET / 503')).toBe(true);
+    expect(t('/5\\d\\d/', 'GET / 404')).toBe(false);
+    expect(t('/api/users', 'GET /api/users 200')).toBe(true);
+    expect(t('/api/users', 'GET /api/orders users')).toBe(false);
+  });
+
+  it('una expresión no válida se busca como texto y avisa', () => {
+    const q = parseQuery('/a(b/');
+    expect(q.error).not.toBeNull();
+    expect(q.test('xa(by', 'plain')).toBe(true);
+  });
+
+  it('level:error y level:warn filtran por nivel', () => {
+    expect(t('level:error', 'algo', 'err')).toBe(true);
+    expect(t('level:error', 'algo', 'warn')).toBe(false);
+    expect(t('@level:warn db', 'db lenta', 'warn')).toBe(true);
+  });
+
+  it('resalta los términos positivos, no los excluidos', () => {
+    const q = parseQuery('redis -debug "a.b"');
+    expect('x redis a.b debug'.match(q.mark!)).toEqual(['redis', 'a.b']);
+    expect(parseQuery('').active).toBe(false);
+  });
+});
+
+describe('parseRawLine y detectLevel', () => {
+  it('extrae el sello ISO de Docker (nanosegundos) y deja el texto', () => {
+    const r = parseRawLine('2026-10-12T12:03:22.123456789Z [r2] hola');
+    expect(r.ts).toBe(Date.UTC(2026, 9, 12, 12, 3, 22, 123));
+    expect(r.cleanText).toBe('[r2] hola');
+    expect(tsText(r, 'utc')).toMatch(/^12 oct\.? 12:03:22$/);
+  });
+
+  it('los registros antiguos con solo la hora la conservan sin inventar fecha', () => {
+    const r = parseRawLine('12:03:22 Clonando el repositorio');
+    expect(r.ts).toBeNull();
+    expect(r.clock).toBe('12:03:22');
+    expect(tsText(r, 'datetime')).toBe('12:03:22');
+  });
+
+  it('de una barra de progreso queda lo último que se pintó', () => {
+    expect(parseRawLine('2026-10-12T12:03:22Z 10%\r55%\r100%').cleanText).toBe('100%');
+  });
+
+  it('el nivel declarado manda sobre la heurística', () => {
+    expect(detectLevel('{"level":"error","msg":"x"}')).toBe('err');
+    expect(detectLevel('{"level":50,"msg":"x"}')).toBe('err');
+    expect(detectLevel('level=warn msg="disco al 90%"')).toBe('warn');
+    expect(detectLevel('INFO: 0 errors found')).toBe('plain');
+    expect(detectLevel('npm ERR! code 1')).toBe('err');
+    expect(detectLevel('[warn] deprecated option')).toBe('warn');
+  });
+
+  it('heurística con palabras completas', () => {
+    expect(detectLevel('TypeError: x is undefined')).toBe('err');
+    expect(detectLevel('Traceback (most recent call last):')).toBe('err');
+    expect(detectLevel('✖ Error: el contenedor no arranca')).toBe('err');
+    expect(detectLevel('⚠ No se pudo borrar el directorio')).toBe('warn');
+    expect(detectLevel('registered errorHandler middleware')).toBe('plain');
+    expect(detectLevel('Compiled with 0 errors')).toBe('plain');
   });
 });
