@@ -44,9 +44,14 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/services/SVC_ID/dep
 # Reiniciar / parar / arrancar
 curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/services/SVC_ID/restart"
 
-# Variables de entorno de un servicio
-curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"vars":{"NODE_ENV":"production"}}' "$BASE/api/services/SVC_ID/env"
+# Variables de entorno de un servicio: solo los cambios (lo demás se conserva)
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"set":{"NODE_ENV":"production"},"unset":["DEBUG"]}' "$BASE/api/services/SVC_ID/env"
+# (PUT con {"vars":{…}} reemplaza la lista ENTERA: borra lo que no vaya en ella)
+
+# Reconstruir un commit concreto (p. ej. una versión cuya imagen ya se purgó)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"commit":"<SHA de 40 caracteres>"}' "$BASE/api/services/SVC_ID/deploy"
 
 # Último despliegue con logs
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/deployments/DEP_ID"
@@ -101,6 +106,61 @@ Notas:
   # … usar el token de "token" con la API …
   docker exec skyway node server/dist/tools/token.js revocar --id "$(printf '%s' "$TOKEN_JSON" | jq -r .id)"
   ```
+
+### Bots y workers: una sola copia y parada limpia
+
+Un bot de polling (Telegram, Discord…) o un worker no admite dos copias a la
+vez: la segunda recibe un 409 o procesa el mismo trabajo. Sin dominio, sin ruta
+de healthcheck y sin otros servicios que lo llamen por la red interna, Skyway ya
+lo despliega con **una sola copia** (detiene la versión anterior antes de
+arrancar la nueva, sin copia de validación `--next`). Skyway solo ve las
+llamadas que están en variables, build args o comandos de arranque: si otro
+servicio llama a este desde su código, fija `"deployStrategy":"overlap"`. La
+estrategia se puede fijar por la API, junto con la gracia de parada (segundos
+entre SIGTERM y SIGKILL, 0–600; por defecto, `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`
+o 30) y, si hace falta, un comando que se ejecuta dentro del contenedor antes
+del SIGTERM:
+
+```bash
+# Fijar «una sola copia» y 20 s de gracia (no pide volver a desplegar: vale desde
+# el siguiente despliegue y en la siguiente parada)
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"config":{"deployStrategy":"recreate","stopGraceSeconds":20}}' "$BASE/api/services/SVC_ID"
+
+# Comando al parar (hasta 1000 caracteres; null lo quita). Se ejecuta en el
+# contenedor en marcha, como la terminal: exige el módulo «Terminal de comandos»
+# (403 si no) y queda en la auditoría. Después, volver a la elección automática
+# ("auto") o a la gracia por defecto (null)
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"config":{"stopCommand":"node scripts/vaciar-cola.js"}}' "$BASE/api/services/SVC_ID"
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"config":{"deployStrategy":"auto","stopGraceSeconds":null}}' "$BASE/api/services/SVC_ID"
+
+# Estrategia efectiva, su motivo y la gracia efectiva con su origen
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/services/SVC_ID" | jq .deploy
+# → {"strategy":"recreate","reason":"sin_trafico","automatic":true,"calledByOthers":false,
+#    "stopGraceSeconds":30,"stopGraceSource":"defecto"}
+
+# Detener: "forced" lista las copias que no terminaron con SIGTERM a tiempo
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/services/SVC_ID/stop" | jq .forced
+```
+
+Si una copia aparece en `forced` (o el registro del despliegue avisa de que se
+detuvo con SIGKILL), el proceso no atiende SIGTERM o necesita más tiempo. Como
+proceso principal del contenedor, una aplicación sin manejador de SIGTERM (Node
+sin `process.on('SIGTERM', …)`, Python sin `signal.signal(...)`) no recibe la
+señal: añade uno que cierre y salga. Si el comando de arranque es una sola orden,
+empiézalo con `exec` (Skyway lo ejecuta con `sh -c`). Sube la gracia solo si el
+proceso ya atiende SIGTERM: con una sola copia, la gracia se suma a los segundos
+sin servicio. `stop` y `restart` responden cuando termina la parada; si un proxy
+corta antes (Cloudflare espera 100 s), la parada sigue en el servidor. Cada copia
+recibe `SKYWAY_INSTANCE_ID` (distinta en cada copia y en cada despliegue),
+`SKYWAY_REPLICA` y `SKYWAY_REPLICAS` para repartir el trabajo entre réplicas
+(con una sola copia: en «sin corte», durante el intercambio dos copias comparten
+número de réplica) y `SKYWAY_VALIDATION=1` solo en la copia de validación de
+«sin corte». Para enviar correo desde un bot, conéctalo en modo API
+(`"mode":"api"` en `…/mail/connect`): la clave solo envía desde su buzón y no da
+acceso a su contenido. Detalle en `docs/FUNCIONALIDAD.md` §2 y §5.
 
 ### Correo (Mailway) a través de Skyway
 
@@ -164,6 +224,16 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 # crear nada: la vista previa (…/mail/connect/preview) lo dice en «conflicts».
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"serviceId":"SVC_ID","mailboxId":"MBX_ID","mode":"smtp","redeploy":true}' \
+  "$BASE/api/projects/PROJ_ID/mail/connect"
+
+# Un bot o un worker que solo envía: modo API. El servicio recibe MAILWAY_API_URL
+# (la dirección BASE de Mailway), MAILWAY_API_KEY y MAIL_FROM, y envía con
+# POST $MAILWAY_API_URL/v1/send (Authorization: Bearer $MAILWAY_API_KEY; JSON con
+# to, subject y text o html; Idempotency-Key para reintentar sin duplicar).
+# Sin "redeploy": true, el servicio sigue con la credencial anterior, ya revocada,
+# hasta el siguiente despliegue.
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"serviceId":"SVC_ID","mailboxId":"MBX_ID","mode":"api","redeploy":true}' \
   "$BASE/api/projects/PROJ_ID/mail/connect"
 
 # Plan de integraciones de una web (skyway.json o detección): revisarlo y
@@ -280,7 +350,8 @@ skyway deploy api -f      # despliega el servicio «api» y sigue el estado hast
 skyway restart api        # reinicia
 skyway stop api           # detiene (pide confirmación; -y la salta)
 skyway rewind api         # rollback: muestra los despliegues correctos y vuelves al que elijas
-skyway status api         # estado y último despliegue
+                          # (si su imagen ya se purgó, ofrece reconstruir su commit)
+skyway status api         # estado, último despliegue, cambios sin desplegar y despliegue automático
 skyway update             # actualiza el PROPIO Skyway en el servidor; si algo falla, vuelve a la versión anterior
 sudo skyway auto-update on --sistema   # lo mismo cada noche, y parches de seguridad del sistema
 sudo skyway auto-update status         # próxima ejecución, último resultado y registro
@@ -293,12 +364,19 @@ usuario). `skyway --help` lista todo.
 
 `skyway update` es distinto: no usa la API ni el token, opera **en local sobre
 el servidor** donde corre Skyway. Si hay algo nuevo en la rama remota, avanza el
-código solo en limpio, reconstruye la imagen (`docker compose up -d --build`) y
+código solo en limpio, reconstruye la imagen (`docker compose build` y `up -d`) y
 comprueba que el panel, Traefik y, con dominio, el HTTPS del panel responden;
 si algo falla, vuelve automáticamente a la versión anterior. Sin nada nuevo no reinicia
 nada (`--forzar` reconstruye igualmente). La base de datos vive en el volumen
 `skyway-data`, así que no se toca, y las apps desplegadas siguen corriendo (solo
-parpadea el panel unos segundos). Termina con 0 (actualizado o sin nada nuevo),
+parpadea el panel unos segundos). La imagen se construye con el panel aún en
+marcha y, antes de recrear el contenedor, mira si hay despliegues en curso
+(leyendo la base del panel desde el propio contenedor, en solo lectura): si los
+hay, los enumera y ofrece esperar a que terminen (con `-y` o `--auto`, espera;
+como mucho 30 minutos). Un despliegue cortado por el reinicio se reintenta una
+vez al arrancar, con su alerta. Al terminar avisa si la imagen se quedó sin
+Nixpacks y, a mano, ofrece borrar las imágenes sin etiqueta que deja cada
+actualización (`docker image prune -f`). Termina con 0 (actualizado o sin nada nuevo),
 1 (no se ha actualizado: sigue la versión anterior) o 2 (también ha fallado la
 vuelta atrás). Requiere `git`, `docker` y Docker Compose en el servidor.
 

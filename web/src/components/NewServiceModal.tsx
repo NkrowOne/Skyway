@@ -831,6 +831,12 @@ export default function NewServiceModal({
               <input className="input" placeholder="Se deduce del repositorio" value={name} onChange={(e) => setName(e.target.value)} />
             </Field>
           </div>
+          {/* Que el servicio nace con el despliegue automático activado se decía
+              solo en Ajustes, y no todo el mundo espera que un push despliegue. */}
+          <p className="-mt-1 text-xs text-subtle">
+            Despliegue automático activado: cada push a <span className="font-mono">{branch || 'main'}</span> se despliega (al
+            instante con la GitHub App; si no, en un minuto como máximo). Se puede desactivar en Ajustes del servicio.
+          </p>
 
           {/* El plan se enseña antes de crear nada; cada recurso se puede
               omitir, y lo que no se aplique aquí se aplica después desde Variables. */}

@@ -1,8 +1,11 @@
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** Código estable del error, si el servidor lo envía (p. ej. `image_purged`). */
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -43,7 +46,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
   if (!res.ok) {
     if (res.status === 401 && !AUTH_PATHS.test(path)) onUnauthorized?.();
-    throw new ApiError(res.status, body?.error || `Error ${res.status}`);
+    throw new ApiError(res.status, body?.error || `Error ${res.status}`, typeof body?.code === 'string' ? body.code : undefined);
   }
   return body as T;
 }

@@ -1,5 +1,8 @@
 import dns from 'dns';
+import net from 'net';
+import { parse as parseDomain } from 'tldts';
 import { getSetting } from './db';
+import { tlsEnabled } from './tls';
 
 const IPV4_RE = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 
@@ -56,11 +59,64 @@ export async function getServerIp(): Promise<{ ip: string | null; source: 'confi
 }
 
 /**
+ * IPv6 pública del servidor, si el administrador la ha indicado en Ajustes.
+ * No se autodetecta: muchos servidores tienen IPv6 sin que Traefik escuche en
+ * ella, y dar por buena una detectada aprobaría un AAAA que no funciona.
+ */
+export function getServerIpv6(): string | null {
+  const v = getSetting('serverIpv6')?.trim().toLowerCase();
+  return v && esIpv6Publicable(v) ? v : null;
+}
+
+/**
+ * IPv6 que puede ir en un registro AAAA. `net.isIPv6` admite también el
+ * identificador de zona («fe80::1%eth0»), que solo tiene sentido dentro de la
+ * máquina: ningún DNS lo publica y la URL que la canoniza no lo acepta.
+ */
+export function esIpv6Publicable(v: string): boolean {
+  return net.isIPv6(v) && !v.includes('%');
+}
+
+/** Misma dirección IPv6 escrita de dos formas («2001:db8::1» y «2001:0db8:0:0::1»). */
+export function mismaIpv6(a: string, b: string): boolean {
+  if (!esIpv6Publicable(a) || !esIpv6Publicable(b)) return false;
+  // La URL deja la dirección en su forma canónica (minúsculas, ceros comprimidos).
+  const canonica = (ip: string) => new URL(`http://[${ip}]`).hostname;
+  try {
+    return canonica(a) === canonica(b);
+  } catch {
+    // Una forma que la URL no entiende no es la dirección del servidor; sin
+    // esto, la comprobación del dominio respondía 500.
+    return false;
+  }
+}
+
+/**
  * Resolutor propio con plazo corto: el de Node espera hasta 5 s por intento y
  * reintenta cuatro veces, así que un DNS que no contesta tenía la comprobación
  * (y su plaza en el limitador) colgada cerca de medio minuto.
  */
 const resolver = new dns.promises.Resolver({ timeout: 4000, tries: 2 });
+
+/** «No existe» frente a «no se pudo consultar»: solo lo primero es una respuesta. */
+function sinRegistros(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  return code === 'ENOTFOUND' || code === 'ENODATA';
+}
+
+/**
+ * Zona DNS del dominio y nombre del registro dentro de ella, según la lista
+ * de sufijos públicos: www.panaderia.com.es → zona panaderia.com.es, nombre
+ * «www» (no com.es, como daba tomar las dos últimas etiquetas). Con un sufijo
+ * privado (github.io, duckdns.org…) la zona es la del usuario dentro del
+ * proveedor. null si no se puede saber (una IP, un sufijo desconocido).
+ */
+export function zonaDns(domain: string): { zone: string; name: string } | null {
+  const d = domain.trim().toLowerCase().replace(/\.$/, '');
+  const p = parseDomain(d, { allowPrivateDomains: true });
+  if (p.isIp || !p.domain || !p.publicSuffix) return null;
+  return { zone: p.domain, name: p.subdomain ? p.subdomain : '@' };
+}
 
 export interface DomainCheck {
   domain: string;
@@ -71,11 +127,20 @@ export interface DomainCheck {
    * No es un error: con el proxy, desde fuera solo se ven las IP de
    * Cloudflare. `cloudflare_flexible`: pasa por el proxy y apunta a este
    * servidor, pero Cloudflare entra en un bucle de redirecciones porque el
-   * modo SSL/TLS de la zona es «Flexible».
+   * modo SSL/TLS de la zona es «Flexible». `caa`: el dominio apunta aquí,
+   * pero un registro CAA no autoriza a Let's Encrypt y el certificado no se
+   * puede emitir.
    */
-  status: 'ok' | 'wrong_ip' | 'cloudflare_proxy' | 'cloudflare_flexible' | 'no_record' | 'unknown';
+  status: 'ok' | 'wrong_ip' | 'cloudflare_proxy' | 'cloudflare_flexible' | 'no_record' | 'caa' | 'unknown';
   resolvedIps: string[];
+  /** AAAA publicados (IPv6). Solo los rellena `checkDomain`. */
+  resolvedIpv6?: string[];
   expectedIp: string | null;
+  /** Zona en la que hay que crear el registro y su nombre dentro de ella («@» para el propio dominio). */
+  zone?: string | null;
+  name?: string | null;
+  /** Con `caa`: qué nombre publica el CAA que lo impide y a quién autoriza. */
+  caa?: CaaBloqueo | null;
   message: string;
   /** Comprobado con la API de Cloudflare: apunta a este servidor con el proxy activo. */
   viaCloudflare?: boolean;
@@ -180,16 +245,60 @@ const MENSAJE_PROXY_RECIEN_QUITADO =
 const MENSAJE_FLEXIBLE =
   'Cloudflare entra en un bucle de redirecciones porque el modo SSL/TLS de la zona es «Flexible». Cámbialo a «Completo (estricto)» en Cloudflare → SSL/TLS.';
 
+/** Lo que, además del A, mira `clasificarDns` cuando el A ya es el del servidor. */
+export interface ExtrasDns {
+  /** AAAA publicados del dominio (vacío si no tiene o no se pudieron consultar). */
+  resolvedIpv6?: string[];
+  /** IPv6 del servidor indicada en Ajustes (`getServerIpv6`), o null. */
+  serverIpv6?: string | null;
+}
+
 /**
  * Diagnóstico de un dominio a partir de lo que resuelve, sin red: separado de
  * `checkDomain` para poder probar cada caso sin un resolutor de verdad.
+ *
+ * Con el A del servidor, todavía no está bien si hay otro A además del suyo
+ * (el del hosting anterior, que un importador de zona añade y no sustituye:
+ * el tráfico se reparte) o un AAAA que no es la IPv6 del servidor (los
+ * visitantes con IPv6 siguen llegando al sitio anterior y Let's Encrypt, que
+ * prueba antes por IPv6, valida contra él y no emite). Con el proxy de
+ * Cloudflare el AAAA es de Cloudflare, así que solo se mira sin él.
  */
-export function clasificarDns(domain: string, resolvedIps: string[], expectedIp: string | null): DomainCheck {
+export function clasificarDns(domain: string, resolvedIps: string[], expectedIp: string | null, extras: ExtrasDns = {}): DomainCheck {
+  const resolvedIpv6 = extras.resolvedIpv6;
+  const conV6 = resolvedIpv6 ? { resolvedIpv6 } : {};
   if (expectedIp && resolvedIps.includes(expectedIp)) {
+    const otrasIpv4 = resolvedIps.filter((v4) => v4 !== expectedIp);
+    if (otrasIpv4.length > 0) {
+      return {
+        domain,
+        status: 'wrong_ip',
+        resolvedIps,
+        ...conV6,
+        expectedIp,
+        message: `El dominio apunta a este servidor (${expectedIp}) y también a ${otrasIpv4.join(', ')}: el tráfico se reparte entre los dos; elimina el registro A que no es de este servidor.`,
+      };
+    }
+    const ipv6 = extras.serverIpv6 ?? null;
+    const ajenas = (resolvedIpv6 ?? []).filter((v6) => !ipv6 || !mismaIpv6(v6, ipv6));
+    if (ajenas.length > 0) {
+      return {
+        domain,
+        status: 'wrong_ip',
+        resolvedIps,
+        ...conV6,
+        expectedIp,
+        message:
+          `El registro A apunta a este servidor, pero el dominio tiene también una dirección IPv6 (${ajenas.join(', ')}) que no es de este servidor: ` +
+          'elimina ese registro AAAA o los visitantes con IPv6 y Let\'s Encrypt seguirán llegando allí' +
+          (ipv6 ? '.' : ' (si es la IPv6 de este servidor, indícala en Ajustes → Dominios).'),
+      };
+    }
     return {
       domain,
       status: 'ok',
       resolvedIps,
+      ...conV6,
       expectedIp,
       message: 'El dominio apunta a este servidor.',
     };
@@ -199,7 +308,7 @@ export function clasificarDns(domain: string, resolvedIps: string[], expectedIp:
   // aunque no se conozca la IP de este servidor, y el mensaje genérico de
   // «apunta a otra IP» llevaba a corregir un registro que quizá está bien.
   if (resolvedIps.length > 0 && resolvedIps.every(esIpDeCloudflare)) {
-    return { domain, status: 'cloudflare_proxy', resolvedIps, expectedIp, message: MENSAJE_PROXY_CLOUDFLARE };
+    return { domain, status: 'cloudflare_proxy', resolvedIps, ...conV6, expectedIp, message: MENSAJE_PROXY_CLOUDFLARE };
   }
 
   if (!expectedIp) {
@@ -207,6 +316,7 @@ export function clasificarDns(domain: string, resolvedIps: string[], expectedIp:
       domain,
       status: 'unknown',
       resolvedIps,
+      ...conV6,
       expectedIp,
       message: `No se conoce la IP de este servidor para compararla con ${resolvedIps.join(', ')}: configúrala en Ajustes → Dominios.`,
     };
@@ -216,6 +326,7 @@ export function clasificarDns(domain: string, resolvedIps: string[], expectedIp:
     domain,
     status: 'wrong_ip',
     resolvedIps,
+    ...conV6,
     expectedIp,
     message: `El dominio apunta a ${resolvedIps.join(', ')} en lugar de ${expectedIp}.`,
   };
@@ -288,41 +399,137 @@ export async function completarConCloudflare(base: DomainCheck, opts: OpcionesCo
   }
   if (!verificacion.proxied) return { ...base, status: 'ok', message: MENSAJE_PROXY_RECIEN_QUITADO };
   const sondear = opts.sondear ?? bucleFlexible;
-  if (getSetting('letsencryptEmail') && (await sondear(base.domain).catch(() => false))) {
+  if (tlsEnabled() && (await sondear(base.domain).catch(() => false))) {
     return { ...base, status: 'cloudflare_flexible', viaCloudflare: true, message: MENSAJE_FLEXIBLE };
   }
   return { ...base, status: 'ok', viaCloudflare: true, message: MENSAJE_PROXY_AQUI };
 }
 
 /**
+ * AAAA del dominio, o null si no se pudo consultar (eso no debe convertir un
+ * dominio correcto en uno con error).
+ */
+async function consultarAaaa(domain: string): Promise<string[] | null> {
+  try {
+    return await resolver.resolve6(domain);
+  } catch (err) {
+    return sinRegistros(err) ? [] : null;
+  }
+}
+
+/** Lo que dice el CAA que se aplica a un nombre: quién lo publica y si autoriza a Let's Encrypt. */
+export interface CaaBloqueo {
+  /** Nombre que publica el CAA aplicable (el propio o el padre más cercano que tenga). */
+  name: string;
+  /** Autoridades que autoriza (`issue`), para el mensaje. */
+  issuers: string[];
+}
+
+/**
+ * ¿Impide un CAA que Let's Encrypt emita el certificado del nombre? Se busca
+ * el conjunto CAA más cercano subiendo por los padres (RFC 8659 §3): el del
+ * propio nombre o, si no tiene, el del primer padre que tenga alguno. Si ese
+ * conjunto tiene etiquetas `issue` y ninguna es `letsencrypt.org`, Let's
+ * Encrypt no emite; sin `issue` (solo `iodef` o `issuewild`) no hay
+ * restricción para un nombre sin comodín. Un CAA que no se pudo consultar no
+ * se da por bloqueo: devuelve null, igual que sin CAA.
+ */
+export async function caaQueImpide(domain: string): Promise<CaaBloqueo | null> {
+  const etiquetas = domain.trim().toLowerCase().replace(/\.$/, '').split('.').filter(Boolean);
+  // Sin bajar al TLD: ningún registro de un TLD restringe a sus dominios en la práctica.
+  for (let i = 0; i < etiquetas.length - 1; i++) {
+    const nombre = etiquetas.slice(i).join('.');
+    let registros: Awaited<ReturnType<typeof resolver.resolveCaa>>;
+    try {
+      registros = await resolver.resolveCaa(nombre);
+    } catch (err) {
+      if (sinRegistros(err)) continue;
+      return null;
+    }
+    if (registros.length === 0) continue;
+    const issue = registros
+      .map((r) => (typeof r.issue === 'string' ? r.issue : null))
+      .filter((v): v is string => v !== null)
+      .map((v) => v.split(';')[0].trim().toLowerCase());
+    if (issue.length === 0 || issue.includes('letsencrypt.org')) return null;
+    return { name: nombre, issuers: issue.map((v) => v || '(ninguna)') };
+  }
+  return null;
+}
+
+/**
  * Comprueba si un dominio ya apunta a este servidor, con diagnóstico legible.
  * Con `opts.verificar` (administrador), un nombre con el proxy de Cloudflare
- * se comprueba además con su API (`completarConCloudflare`).
+ * se comprueba además con su API (`completarConCloudflare`). Con el dominio
+ * ya correcto y Let's Encrypt configurado, mira también el CAA: si no
+ * autoriza a Let's Encrypt, el certificado no se puede emitir.
  */
 export async function checkDomain(domain: string, opts: OpcionesComprobacion = {}): Promise<DomainCheck> {
   const { ip: expectedIp } = await getServerIp();
+  const zona = zonaDns(domain);
+  const base = { domain, expectedIp, zone: zona?.zone ?? null, name: zona?.name ?? null, caa: null };
 
   let resolvedIps: string[] = [];
+  const aaaa = consultarAaaa(domain);
   try {
     resolvedIps = await resolver.resolve4(domain);
   } catch (err: any) {
-    if (err?.code === 'ENOTFOUND' || err?.code === 'ENODATA') {
+    const resolvedIpv6 = (await aaaa) ?? [];
+    if (sinRegistros(err)) {
       return {
-        domain,
+        ...base,
         status: 'no_record',
         resolvedIps: [],
-        expectedIp,
+        resolvedIpv6,
         message: 'El dominio aún no tiene un registro DNS.',
       };
     }
     return {
-      domain,
+      ...base,
       status: 'unknown',
       resolvedIps: [],
-      expectedIp,
+      resolvedIpv6,
       message: `No se ha podido consultar el DNS (${err?.code || err?.message}).`,
     };
   }
+  const resolvedIpv6 = (await aaaa) ?? [];
 
-  return completarConCloudflare(clasificarDns(domain, resolvedIps, expectedIp), opts);
+  const check = await completarConCloudflare(
+    { ...base, ...clasificarDns(domain, resolvedIps, expectedIp, { resolvedIpv6, serverIpv6: getServerIpv6() }) },
+    opts,
+  );
+  // El CAA solo importa si hay que emitir certificado.
+  if (check.status !== 'ok' || !tlsEnabled()) return check;
+  const caa = await caaQueImpide(domain);
+  if (!caa) return check;
+  return {
+    ...check,
+    caa,
+    status: 'caa',
+    message:
+      `El dominio apunta a este servidor, pero el registro CAA de ${caa.name} solo autoriza a ${caa.issuers.join(', ')} y Let's Encrypt no podrá emitir el certificado: ` +
+      `añade en ${caa.name} el registro CAA 0 issue "letsencrypt.org".`,
+  };
+}
+
+/** Destinos MX de un dominio y si se pudo consultar. */
+export interface ConsultaMx {
+  /** Destinos en minúsculas y sin punto final; vacío si no tiene MX (o solo el MX nulo de RFC 7505). */
+  hosts: string[];
+  /** false si el DNS no respondió: entonces `hosts` no dice nada. */
+  ok: boolean;
+}
+
+/** MX publicados de un dominio (para saber, antes de darlo de alta, dónde recibe hoy el correo). */
+export async function consultarMx(domain: string): Promise<ConsultaMx> {
+  try {
+    const mx = await resolver.resolveMx(domain);
+    const hosts = mx
+      .sort((a, b) => a.priority - b.priority)
+      .map((m) => m.exchange.trim().toLowerCase().replace(/\.$/, ''))
+      .filter((h) => h && h !== '.');
+    return { hosts: [...new Set(hosts)], ok: true };
+  } catch (err) {
+    return sinRegistros(err) ? { hosts: [], ok: true } : { hosts: [], ok: false };
+  }
 }

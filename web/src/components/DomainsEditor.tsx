@@ -1,13 +1,23 @@
 import { Fragment, ReactNode, useState } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, Cloud, ExternalLink, Plus, RefreshCw, X } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Cloud, ExternalLink, Plus, RefreshCw, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
-import { intervaloComprobacion, limpiarSinPareja, ordenarDominios, parejasWwwPendientes, parejaWww, ParejaWww } from '../dominios';
-import { CloudflareConfigView, DnsAutoResult, DomainCheck, DomainsConfig, Me } from '../types';
+import {
+  dominioUnicode,
+  intervaloComprobacion,
+  limpiarSinPareja,
+  nombreEnZona,
+  normalizarEntradaDominio,
+  ordenarDominios,
+  parejasWwwPendientes,
+  parejaWww,
+  ParejaWww,
+} from '../dominios';
+import { CloudflareConfigView, DnsAutoResult, DomainCheck, DomainsConfig, Me, PlanReemplazoDns } from '../types';
 import { cx, Tone } from '../utils';
 import { DnsAutoChip } from './DnsAutoResult';
-import { Button, Chip, ConfirmModal, CopyButton, useToast } from './ui';
+import { Button, Chip, ConfirmModal, CopyButton, ErrorState, Modal, Skeleton, useToast } from './ui';
 
 /*
  * El estado es un punto de color y una etiqueta corta, como en los paneles de
@@ -26,6 +36,8 @@ const STATUS_META: Record<DomainCheck['status'], { label: string; tone: Tone }> 
   cloudflare_proxy: { label: 'Proxy de Cloudflare', tone: 'info' },
   // Error: la web no carga (el navegador corta el bucle de redirecciones).
   cloudflare_flexible: { label: 'Bucle en Cloudflare', tone: 'err' },
+  // Error: apunta aquí, pero un registro CAA impide el certificado.
+  caa: { label: 'Certificado bloqueado (CAA)', tone: 'err' },
   unknown: { label: 'Sin verificar', tone: 'neutral' },
 };
 
@@ -41,18 +53,30 @@ const TONE_DOT: Record<Tone, string> = {
  * Estados en los que hay algo que corregir, en el DNS o en Cloudflare: su
  * detalle se abre solo. El proxy sin verificar no está: no hay nada que hacer.
  */
-const PENDIENTES: ReadonlySet<DomainCheck['status']> = new Set(['no_record', 'wrong_ip', 'cloudflare_flexible']);
+const PENDIENTES: ReadonlySet<DomainCheck['status']> = new Set(['no_record', 'wrong_ip', 'cloudflare_flexible', 'caa']);
 
-/** Divide un dominio en (nombre a crear, zona) de forma aproximada. */
+/**
+ * Reserva mientras la comprobación no ha dicho la zona: las dos últimas
+ * etiquetas. Falla con los sufijos de varios niveles (.com.es, .co.uk), por
+ * eso el nombre y la zona buenos los calcula el servidor con la lista de
+ * sufijos públicos (`check.zone` y `check.name`) y esto solo se usa mientras
+ * carga.
+ */
 function splitDnsName(domain: string): { name: string; zone: string } {
   const parts = domain.split('.');
   if (parts.length <= 2) return { name: '@', zone: domain };
   return { name: parts.slice(0, -2).join('.'), zone: parts.slice(-2).join('.') };
 }
 
+/** Zona y nombre del registro: los del servidor si ya los ha dicho. */
+function zonaYNombre(domain: string, check: DomainCheck | undefined): { name: string; zone: string } {
+  const aprox = splitDnsName(domain);
+  return check?.zone ? { zone: check.zone, name: check.name ?? '@' } : aprox;
+}
+
 /** El registro A que hay que crear, como lo muestran los proveedores: tipo, nombre y valor. */
-function TablaRegistro({ domain, serverIp }: { domain: string; serverIp: string | null }) {
-  const { name } = splitDnsName(domain);
+function TablaRegistro({ domain, serverIp, check }: { domain: string; serverIp: string | null; check?: DomainCheck }) {
+  const { name } = zonaYNombre(domain, check);
   const celda = 'px-3 py-1.5 align-middle';
   return (
     <div className="overflow-x-auto rounded-md border border-line">
@@ -82,6 +106,46 @@ function TablaRegistro({ domain, serverIp }: { domain: string; serverIp: string 
               ) : (
                 <span className="font-sans text-subtle">IP del servidor</span>
               )}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * El registro CAA que falta para que Let's Encrypt pueda emitir el
+ * certificado, con el nombre relativo a la zona como el A. Se añade y se
+ * conservan los que ya hay.
+ */
+function TablaCaa({ nombre }: { nombre: string }) {
+  const valor = '0 issue "letsencrypt.org"';
+  const celda = 'px-3 py-1.5 align-middle';
+  return (
+    <div className="overflow-x-auto rounded-md border border-line">
+      <table className="w-full text-left text-xs">
+        <thead className="text-subtle">
+          <tr className="border-b border-line">
+            <th className={cx(celda, 'w-16 font-medium')}>Tipo</th>
+            <th className={cx(celda, 'font-medium')}>Nombre</th>
+            <th className={cx(celda, 'font-medium')}>Valor</th>
+          </tr>
+        </thead>
+        <tbody className="font-mono text-txt">
+          <tr>
+            <td className={celda}>CAA</td>
+            <td className={cx(celda, 'py-0.5')}>
+              <span className="inline-flex items-center gap-0.5">
+                {nombre}
+                <CopyButton value={nombre} title="Copiar nombre" />
+              </span>
+            </td>
+            <td className={cx(celda, 'py-0.5')}>
+              <span className="inline-flex items-center gap-0.5">
+                {valor}
+                <CopyButton value={valor} title="Copiar valor" />
+              </span>
             </td>
           </tr>
         </tbody>
@@ -150,8 +214,8 @@ function DetalleDns({
   /** El DNS automático acaba de crear (o ya tenía) el registro A en Cloudflare. */
   enCloudflare?: boolean;
 }) {
-  const { zone } = splitDnsName(domain);
-  const zona = <span className="font-mono text-txt">{zone}</span>;
+  const { zone } = zonaYNombre(domain, check);
+  const zona = <span className="font-mono text-txt">{dominioUnicode(zone)}</span>;
   if (!check) return error ? <p className="text-xs text-err">{error.message}</p> : null;
   switch (check.status) {
     case 'ok': {
@@ -194,7 +258,7 @@ function DetalleDns({
       return (
         <>
           <p className="text-xs text-sub">Añade este registro en el DNS de {zona}:</p>
-          <TablaRegistro domain={domain} serverIp={serverIp} />
+          <TablaRegistro domain={domain} serverIp={serverIp} check={check} />
         </>
       );
     case 'wrong_ip':
@@ -203,9 +267,28 @@ function DetalleDns({
           <p className="text-xs text-sub">
             {check.message} Corrige el registro en el DNS de {zona}:
           </p>
-          <TablaRegistro domain={domain} serverIp={serverIp} />
+          <TablaRegistro domain={domain} serverIp={serverIp} check={check} />
+          <MasInformacion>
+            Si ese nombre tiene otro registro A, AAAA o CNAME (por ejemplo, del hosting anterior), cámbialo o elimínalo: con dos
+            registros, parte de los visitantes seguiría llegando al sitio anterior.
+          </MasInformacion>
         </>
       );
+    case 'caa': {
+      // Si el CAA lo publica un nivel por encima de la zona, el panel es el de ese nombre.
+      const caa = check.caa;
+      const enZona = caa ? nombreEnZona(caa.name, zone) : null;
+      const panel = caa && enZona === null ? caa.name : zone;
+      return (
+        <>
+          <p className="text-xs text-sub">
+            {check.message} Añádelo en el DNS de <span className="font-mono text-txt">{dominioUnicode(panel)}</span> y conserva los
+            que ya hay:
+          </p>
+          <TablaCaa nombre={enZona ?? '@'} />
+        </>
+      );
+    }
     case 'cloudflare_proxy':
       return (
         <>
@@ -246,7 +329,7 @@ function DetalleDns({
       return (
         <>
           <p className="text-xs text-sub">{check.message}</p>
-          {serverIp && <TablaRegistro domain={domain} serverIp={serverIp} />}
+          {serverIp && <TablaRegistro domain={domain} serverIp={serverIp} check={check} />}
         </>
       );
   }
@@ -275,6 +358,144 @@ function NombreDominio({ domain, className }: { domain: string; className?: stri
   );
 }
 
+/**
+ * Revisión y confirmación del reemplazo en Cloudflare del registro del hosting
+ * anterior (solo administrador). Enseña los registros exactos que se
+ * sustituyen; el servidor solo los cambia si siguen siendo esos.
+ */
+function ReemplazoDialog({
+  serviceId,
+  domain,
+  onClose,
+  onDone,
+}: {
+  serviceId: string;
+  domain: string;
+  onClose: () => void;
+  onDone: (result: DnsAutoResult) => void;
+}) {
+  const toast = useToast();
+  const [confirmado, setConfirmado] = useState(false);
+  const plan = useQuery({
+    queryKey: ['dnsReemplazo', serviceId, domain],
+    queryFn: () =>
+      api.get<{ plan: PlanReemplazoDns }>(`/services/${serviceId}/cloudflare-dns/replace?domain=${encodeURIComponent(domain)}`),
+    // Compara con la zona en vivo: cada apertura lo recalcula.
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+  const reemplazar = useMutation({
+    mutationFn: (p: PlanReemplazoDns) =>
+      api.post<{ dns: DnsAutoResult[] }>(`/services/${serviceId}/cloudflare-dns/replace`, {
+        domain,
+        records: p.actuales.map((r) => ({ id: r.id, type: r.type, content: r.content })),
+      }),
+    onSuccess: (res) => {
+      const r = res.dns[0];
+      if (r) {
+        onDone(r);
+        toast(`${domain}: ${r.message}`, 'ok');
+      }
+      onClose();
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const p = plan.data?.plan;
+  return (
+    <Modal open onClose={onClose} title={`Reemplazar en Cloudflare · ${dominioUnicode(domain)}`}>
+      {plan.isLoading ? (
+        <div className="flex flex-col gap-2" aria-busy>
+          <Skeleton className="h-4 w-2/3" />
+          <Skeleton className="h-20 w-full rounded-lg" />
+        </div>
+      ) : plan.isError || !p ? (
+        <ErrorState compact title="No se ha podido consultar Cloudflare" error={plan.error} onRetry={() => plan.refetch()} retrying={plan.isFetching} />
+      ) : p.motivo ? (
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-sub">{p.motivo}</p>
+          <div className="flex justify-end">
+            <Button onClick={onClose}>Cerrar</Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3 text-sm">
+          <p className="text-sub">
+            Se sustituirán estos registros de <span className="font-mono text-txt">{domain}</span> en la zona{' '}
+            <span className="font-mono text-txt">{p.zone}</span>:
+          </p>
+          <ul className="flex flex-col divide-y divide-line rounded-lg border border-line text-xs">
+            {p.actuales.map((r) => (
+              <li key={r.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-2">
+                <span className="w-12 shrink-0 font-mono font-semibold text-txt">{r.type}</span>
+                <span className="min-w-0 flex-1 break-all font-mono text-sub">{r.content}</span>
+                {r.proxied && (
+                  <Chip size="sm" tone="warn">
+                    Con proxy
+                  </Chip>
+                )}
+                <span className="text-subtle">TTL {r.ttl === 1 ? 'automático' : `${r.ttl} s`}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-sub">
+            {p.conservaA ? (
+              <>
+                Se conserva el registro A hacia <span className="font-mono text-txt">{p.ip}</span>, que ya apunta a este servidor.
+              </>
+            ) : (
+              <>
+                En su lugar se creará un registro A hacia <span className="font-mono text-txt">{p.ip}</span>
+                {p.proxied ? ', con el proxy de Cloudflare.' : ', sin proxy.'}
+              </>
+            )}{' '}
+            El cambio se hace en una sola operación y Skyway guarda una copia de lo que sustituye: puedes restaurarlo en Ajustes →
+            Cloudflare.
+          </p>
+          {p.avisos.length > 0 && (
+            <ul className="flex flex-col gap-1 rounded-lg border border-warn/30 bg-warn/[.07] px-3 py-2 text-xs text-sub">
+              {p.avisos.map((a) => (
+                <li key={a} className="flex items-start gap-1.5">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warn" />
+                  <span>{a}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <label className="flex items-start gap-2 text-xs text-sub">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 accent-acc"
+              checked={confirmado}
+              onChange={(e) => setConfirmado(e.target.checked)}
+            />
+            <span>
+              Confirmo que <span className="font-mono text-txt">{domain}</span> debe servirlo este servidor: el sitio anterior dejará de
+              recibir sus visitas en cuanto se propague el cambio.
+            </span>
+          </label>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={onClose}>
+              Cancelar
+            </Button>
+            <Button variant="danger" onClick={() => reemplazar.mutate(p)} loading={reemplazar.isPending} disabled={!confirmado}>
+              Reemplazar
+            </Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function BotonReemplazo({ onClick }: { onClick: () => void }) {
+  return (
+    <Button variant="ghost" size="sm" onClick={onClick} title="Revisar los registros actuales y sustituirlos por el de este servidor">
+      <Cloud size={12} /> Reemplazar en Cloudflare
+    </Button>
+  );
+}
+
 /** Explicación de la insignia «Principal» (al pasar el ratón). */
 const AYUDA_PRINCIPAL = 'Dirección principal: se usa como dirección pública de la web';
 
@@ -296,6 +517,8 @@ function DomainRow({
   onCambiarProxy,
   cambiandoProxy,
   motivoSinProxy = null,
+  onCreateDns,
+  onReplaceDns,
 }: {
   domain: string;
   /** Es el dominio principal: el de PUBLIC_URL. */
@@ -321,6 +544,18 @@ function DomainRow({
    * subdominio de la plataforma, que no necesita explicación.
    */
   motivoSinProxy?: string | null;
+  /**
+   * Crea el registro en Cloudflare de un dominio guardado que aún no tiene
+   * ninguno (solo administrador con Cloudflare configurado): por ejemplo, uno
+   * añadido antes de guardar el token.
+   */
+  onCreateDns?: () => void;
+  /**
+   * Abre la revisión del reemplazo en Cloudflare (solo administrador con
+   * Cloudflare configurado y el dominio ya guardado): tras un conflicto o,
+   * sin resultado del último guardado, si el dominio apunta a otra IP.
+   */
+  onReplaceDns?: () => void;
 }) {
   // null: lo decide el estado (abierto si hay algo que corregir, `PENDIENTES`);
   // un clic en el estado lo fija en uno u otro sentido.
@@ -350,6 +585,14 @@ function DomainRow({
   const activarProxy = onCambiarProxy && tls && motivoSinProxy === null ? () => onCambiarProxy(true) : undefined;
   const notaSinProxy = onCambiarProxy && tls && motivoSinProxy ? motivoSinProxy : undefined;
   const desactivarProxy = onCambiarProxy ? () => onCambiarProxy(false) : undefined;
+  // Así se escribe (panadería.es) aunque se guarde en ASCII (xn--panadera-i2a.es).
+  const unicode = dominioUnicode(domain);
+  // El resultado del DNS automático solo existe tras guardar en esta misma
+  // sesión. Un dominio añadido otro día o con el asistente de alta, que
+  // apunta todavía al hosting anterior, también tiene que poder trasladarse:
+  // lo dice la comprobación del DNS. La revisión explica si no hay nada que
+  // reemplazar (una zona que el token no ve, un nombre de la plataforma).
+  const reemplazo = (dns ? dns.action === 'conflict' : status === 'wrong_ip' && !check.isFetching) ? onReplaceDns : undefined;
 
   return (
     <li className="px-3 py-2.5">
@@ -360,8 +603,8 @@ function DomainRow({
         dedo, pasa debajo.
       */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="flex min-w-0 items-center gap-2 max-sm:basis-full">
-          <NombreDominio domain={domain} className="text-sm text-txt" />
+        <span className="flex min-w-0 items-center gap-2 max-sm:basis-full" title={unicode !== domain ? domain : undefined}>
+          <NombreDominio domain={unicode} className="text-sm text-txt" />
           {principal && (
             <Chip size="sm" title={AYUDA_PRINCIPAL}>
               Principal
@@ -455,6 +698,21 @@ function DomainRow({
               <Cloud size={12} /> Reintentar en Cloudflare
             </Button>
           )}
+          {reemplazo && <BotonReemplazo onClick={reemplazo} />}
+        </p>
+      )}
+      {!dns && reemplazo && (
+        <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-sub">
+          <span className="min-w-0 break-words">Si el registro actual está en tu Cloudflare, puedes revisarlo y sustituirlo desde aquí.</span>
+          <BotonReemplazo onClick={reemplazo} />
+        </p>
+      )}
+      {!dns && onCreateDns && status === 'no_record' && !check.isFetching && (
+        <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-sub">
+          <span className="min-w-0 break-words">Si el dominio está en tu Cloudflare, Skyway puede crear el registro.</span>
+          <Button variant="ghost" size="sm" onClick={onCreateDns} loading={retryingDns} title="Crear el registro A en Cloudflare">
+            <Cloud size={12} /> Crear en Cloudflare
+          </Button>
         </p>
       )}
       {visible && (check.data || check.error) && (
@@ -515,6 +773,8 @@ export default function DomainsEditor({
   guardados,
   onCambiarProxy,
   cambiandoProxy,
+  serviceId,
+  onDnsResult,
 }: {
   domains: string[];
   /** Dominios cuya pareja con o sin www se ha descartado (`dominiosSinPareja`). */
@@ -533,6 +793,10 @@ export default function DomainsEditor({
   onCambiarProxy?: (domain: string, proxied: boolean) => void;
   /** Dominio cuyo proxy se está cambiando. */
   cambiandoProxy?: string | null;
+  /** Servicio ya creado: permite reemplazar en Cloudflare el registro de un dominio guardado. */
+  serviceId?: string;
+  /** Nuevo resultado del DNS automático de un dominio (tras un reemplazo). */
+  onDnsResult?: (result: DnsAutoResult) => void;
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -542,6 +806,8 @@ export default function DomainsEditor({
   // Quitar una mitad de la pareja se confirma: la web deja de responder en esa forma.
   const [quitando, setQuitando] = useState<{ domain: string; queda: string } | null>(null);
   const [newRootDomain, setNewRootDomain] = useState('');
+  // Dominio cuya revisión del reemplazo en Cloudflare está abierta.
+  const [reemplazar, setReemplazar] = useState<string | null>(null);
 
   /*
    * `GET /settings` es solo del admin. Un propietario que lo consultaba recibía
@@ -582,6 +848,9 @@ export default function DomainsEditor({
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
+  // Reemplazar o crear en Cloudflare: solo el administrador y con el token
+  // guardado (sin él, la revisión respondería que falta configurarlo).
+  const cloudflareListo = isAdmin && !!cloudflare.data?.configured;
   const rootDomain = config.data?.rootDomain || null;
   const tls = !!config.data?.tls;
   const ip = serverIp.data?.ip ?? null;
@@ -625,9 +894,8 @@ export default function DomainsEditor({
   };
 
   // La pareja del dominio que se está escribiendo, si se va a ofrecer añadirla.
-  const escrito = custom.trim().toLowerCase();
-  const parejaEscrita =
-    /^[a-z0-9.-]+\.[a-z]{2,}$/.test(escrito) && !domains.includes(escrito) ? parejaWww(escrito, rootDomain) : null;
+  const escrito = normalizarEntradaDominio(custom);
+  const parejaEscrita = escrito && !domains.includes(escrito) ? parejaWww(escrito, rootDomain) : null;
   const ofrecerPareja = parejaEscrita && !domains.includes(parejaEscrita.falta) ? parejaEscrita : null;
 
   /*
@@ -643,11 +911,13 @@ export default function DomainsEditor({
     (c) => c.data && PENDIENTES.has(c.data.check.status) && c.data.check.status !== 'cloudflare_flexible',
   );
 
+  // Como el servidor: sin esquema ni ruta (se pega la URL de la web) y en
+  // ASCII («panadería.es» se guarda como xn--panadera-i2a.es).
   const add = (raw: string) => {
-    const domain = raw.trim().toLowerCase();
-    if (!domain) return;
-    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
-      toast(`«${domain}» no es un dominio válido`, 'err');
+    if (!raw.trim()) return;
+    const domain = normalizarEntradaDominio(raw);
+    if (!domain) {
+      toast(`«${raw.trim()}» no es un dominio válido: escribe solo el nombre, por ejemplo app.midominio.com.`, 'err');
       return;
     }
     if (domains.includes(domain)) {
@@ -713,6 +983,8 @@ export default function DomainsEditor({
                 }
                 cambiandoProxy={cambiandoProxy === d}
                 motivoSinProxy={motivoSinProxy(d)}
+                onCreateDns={cloudflareListo && onRetryDns && guardados?.includes(d) ? () => onRetryDns(d) : undefined}
+                onReplaceDns={cloudflareListo && serviceId && onDnsResult && guardados?.includes(d) ? () => setReemplazar(d) : undefined}
               />
             ))}
             {ofrecerGenerado && (
@@ -730,6 +1002,17 @@ export default function DomainsEditor({
             </p>
           )}
         </div>
+      )}
+      {reemplazar && serviceId && onDnsResult && (
+        <ReemplazoDialog
+          serviceId={serviceId}
+          domain={reemplazar}
+          onClose={() => setReemplazar(null)}
+          onDone={(r) => {
+            onDnsResult(r);
+            queryClient.invalidateQueries({ queryKey: ['domainCheck', r.domain] });
+          }}
+        />
       )}
 
       {/* Sin dominio raíz no hay subdominio que ofrecer. Hasta que llega la
@@ -821,6 +1104,20 @@ export default function DomainsEditor({
           <Chip size="sm" tone="ok" dot>
             TLS automático
           </Chip>
+        ) : config.data?.tlsBlocked ? (
+          // Activado en el panel, pero Traefik tiene un correo que Let's Encrypt
+          // rechaza: se sirve por HTTP en vez de redirigir a un HTTPS sin
+          // certificado válido.
+          <Chip size="sm" tone="err" dot>
+            TLS bloqueado —{' '}
+            {isAdmin ? (
+              <Link to="/settings" className="text-acc-soft hover:underline">
+                el correo de Let's Encrypt del servidor no es válido
+              </Link>
+            ) : (
+              'el administrador debe corregir el correo de Let\'s Encrypt del servidor'
+            )}
+          </Chip>
         ) : (
           <Chip size="sm" tone="warn" dot>
             Sin TLS —{' '}
@@ -844,8 +1141,8 @@ export default function DomainsEditor({
               dónde está. */}
           <span>
             {tls
-              ? 'Al guardar, los dominios nuevos de tu Cloudflare reciben su registro A con el proxy activado. Un registro existente no se modifica: su proxy se activa o desactiva en el detalle de cada dominio.'
-              : 'Al guardar, los dominios nuevos de tu Cloudflare reciben su registro A sin proxy: el proxy de Cloudflare requiere HTTPS. Un registro existente no se modifica.'}
+              ? 'Al guardar, los dominios nuevos de tu Cloudflare reciben su registro A con el proxy activado. Un registro existente no se modifica: su proxy se activa o desactiva en el detalle de cada dominio y, si apunta a otro sitio, se puede revisar y sustituir con «Reemplazar en Cloudflare».'
+              : 'Al guardar, los dominios nuevos de tu Cloudflare reciben su registro A sin proxy: el proxy de Cloudflare requiere HTTPS. Un registro existente no se modifica; si apunta a otro sitio, se puede revisar y sustituir con «Reemplazar en Cloudflare».'}
           </span>
         </p>
       )}

@@ -1,9 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, X } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, Power, X } from 'lucide-react';
 import { api } from '../../api';
-import { CloudflareProxyResult, DbTemplate, DnsAutoResult, Me, Service } from '../../types';
-import { cx } from '../../utils';
+import {
+  AutoDeployStatus,
+  CloudflareProxyResult,
+  DbTemplate,
+  DnsAutoResult,
+  Me,
+  Service,
+  ServiceDeployInfo,
+  ServiceWebhookInfo,
+} from '../../types';
+import { cx, timeAgo } from '../../utils';
 import { avisoDns } from '../DnsAutoResult';
 import DomainsEditor from '../DomainsEditor';
 import {
@@ -97,6 +106,11 @@ interface FormState {
   healthcheckPath: string;
   replicas: string;
   volumePaths: string[];
+  /** «Al desplegar»: 'auto' = sin elección (lo decide Skyway con la regla de `estrategiaDespliegue`). */
+  deployStrategy: 'auto' | 'overlap' | 'recreate';
+  /** Gracia de parada en segundos; vacío = RAILWAY_DEPLOYMENT_DRAINING_SECONDS o 30. */
+  stopGraceSeconds: string;
+  stopCommand: string;
 }
 
 function formFromService(service: Service): FormState {
@@ -128,12 +142,54 @@ function formFromService(service: Service): FormState {
     healthcheckPath: cfg.healthcheckPath ?? '',
     replicas: String((cfg as any).replicas ?? 1),
     volumePaths: ((cfg as any).volumes ?? []).map((v: { containerPath: string }) => v.containerPath),
+    deployStrategy: cfg.deployStrategy ?? 'auto',
+    stopGraceSeconds: typeof cfg.stopGraceSeconds === 'number' ? String(cfg.stopGraceSeconds) : '',
+    stopCommand: cfg.stopCommand ?? '',
   };
+}
+
+/** Texto de cada estrategia, igual que en el registro del despliegue. */
+const ESTRATEGIA = {
+  recreate: {
+    nombre: 'Una sola copia',
+    descripcion:
+      'Una sola copia: se detiene la versión anterior antes de arrancar la nueva; unos segundos sin servicio. Recomendado para bots y workers.',
+  },
+  overlap: {
+    nombre: 'Sin corte',
+    descripcion: 'Sin corte: la versión nueva se valida antes de retirar la anterior; durante unos segundos hay dos copias.',
+  },
+} as const;
+
+/** Línea de estado del sondeo: cuándo se comprobó la rama y si falló. */
+function EstadoAutoDeploy({ status }: { status: AutoDeployStatus }) {
+  if (status.error) {
+    return (
+      <p className="mt-2 flex items-start gap-1.5 rounded-lg border border-err/30 bg-err/[.06] px-3 py-2 text-xs text-sub">
+        <AlertTriangle size={12} className="mt-0.5 shrink-0 text-err" aria-hidden />
+        <span className="leading-relaxed">
+          <span className="font-semibold text-err">No se puede consultar la rama</span>
+          {status.failingSince ? ` desde ${timeAgo(status.failingSince)}` : ''}: {status.error}. Los push no se despliegan hasta
+          que se corrija (token caducado, GitHub App sin acceso al repositorio o rama renombrada).
+        </span>
+      </p>
+    );
+  }
+  return (
+    <p className="mt-2 text-xs text-subtle">
+      {status.okAt
+        ? `Última comprobación ${timeAgo(status.okAt)}${status.lastSeenSha ? ` · último commit ${status.lastSeenSha.slice(0, 7)}` : ''}.`
+        : 'Pendiente de la primera comprobación.'}
+    </p>
+  );
 }
 
 export default function ServiceSettingsTab({
   service,
   projectId,
+  autoDeploy = null,
+  webhook = null,
+  deploy = null,
   onChanged,
   onDeleted,
   onNeedsRedeploy,
@@ -141,6 +197,12 @@ export default function ServiceSettingsTab({
 }: {
   service: Service;
   projectId: string;
+  /** Estado del sondeo del auto-deploy (solo en servicios de repositorio con él activo). */
+  autoDeploy?: AutoDeployStatus | null;
+  /** Webhook manual: URL con el dominio del panel y si ya lo cubre la GitHub App. */
+  webhook?: ServiceWebhookInfo | null;
+  /** Cómo se despliega y se para el servicio según el servidor (`deploy` de GET /api/services/:id). */
+  deploy?: ServiceDeployInfo | null;
   onChanged: () => void;
   onDeleted: () => void;
   /** Aviso al panel de que hay cambios guardados que solo surten efecto al redesplegar. */
@@ -223,11 +285,15 @@ export default function ServiceSettingsTab({
         memoryMb: form.memoryMb ? Number(form.memoryMb) : null,
         diskMb: form.diskMb ? Number(form.diskMb) : null,
         alertsMuted: form.alertsMuted,
+        // Vacío: la gracia por defecto (o la de Railway). El servidor valida 0–600.
+        stopGraceSeconds: form.stopGraceSeconds.trim() === '' ? null : Number(form.stopGraceSeconds),
         ...(!isDb
           ? {
               healthcheckPath: form.healthcheckPath.trim() || null,
               volumes: form.volumePaths.map((p) => ({ containerPath: p })),
               replicas: Math.max(1, Number(form.replicas) || 1),
+              deployStrategy: form.deployStrategy,
+              stopCommand: form.stopCommand.trim() || null,
             }
           : {}),
       };
@@ -345,8 +411,33 @@ export default function ServiceSettingsTab({
     }
   };
 
-  const webhookUrl = `${window.location.origin}/api/webhooks/github/${service.id}`;
+  // La del servidor lleva el dominio del panel: la del navegador puede ser el
+  // túnel SSH (localhost), que GitHub no alcanza.
+  const webhookUrl = webhook?.url ?? `${window.location.origin}/api/webhooks/github/${service.id}`;
+  // Rutas que la imagen guarda con VOLUME y no tienen volumen: se pierden en cada despliegue.
+  const volumenesSinMontar = (cfg.imageVolumes ?? []).filter((p) => !form.volumePaths.includes(p));
   const replicasN = Number(form.replicas) || 1;
+
+  // Estrategia con lo que hay en el formulario, con la misma regla que el
+  // servidor (`estrategiaDespliegue`): así «Automático — ahora: …» y los avisos
+  // de réplicas cambian en cuanto se quita un dominio o se añade un volumen,
+  // antes de guardar. Que otro servicio lo llame por la red interna, el
+  // healthcheck del repositorio y las bibliotecas de Telegram o Discord solo los
+  // sabe el servidor (`deploy`). Un servicio de imagen sin puerto no tiene
+  // router ni sonda: su dominio o su healthcheck no le llevan tráfico.
+  const conEstado = form.volumePaths.length > 0 || form.hostPort.trim() !== '';
+  const sinPuerto = isImage && form.port.trim() === '';
+  const conDominio = !sinPuerto && form.domains.length > 0;
+  const healthcheckRepo = deploy?.repoHealthcheckPath ?? null;
+  const conHealthcheck = !sinPuerto && (form.healthcheckPath.trim() !== '' || !!healthcheckRepo);
+  const sinTrafico = !conDominio && !conHealthcheck && !deploy?.calledByOthers;
+  // Bibliotecas de Telegram o Discord detectadas en el repositorio: sin
+  // dominio, el bot va a «una sola copia» aunque tenga healthcheck o lo llamen.
+  const bibliotecasBot = deploy?.botLibraries ?? [];
+  const botSinDominio = !conDominio && bibliotecasBot.length > 0;
+  const automatica: 'recreate' | 'overlap' = botSinDominio || sinTrafico ? 'recreate' : 'overlap';
+  const efectiva: 'recreate' | 'overlap' =
+    isDb || conEstado ? 'recreate' : form.deployStrategy === 'auto' ? automatica : form.deployStrategy;
 
   return (
     <>
@@ -494,44 +585,54 @@ export default function ServiceSettingsTab({
               <span className="text-sm">
                 <span className="font-medium">Desplegar automáticamente al hacer push a <span className="font-mono">{form.branch}</span></span>
                 <span className="mt-1 block text-xs leading-relaxed text-subtle">
-                  La rama se comprueba cada pocos minutos. Si está desactivado, ningún push inicia un despliegue.
+                  Al instante con la GitHub App; si no, la rama se comprueba cada{' '}
+                  {autoDeploy && autoDeploy.pollSeconds !== 60 ? `${autoDeploy.pollSeconds} segundos` : 'minuto'}. Si está desactivado,
+                  ningún push inicia un despliegue.
                 </span>
               </span>
             </label>
+            {autoDeploy && form.autoDeploy && cfg.autoDeploy !== false && <EstadoAutoDeploy status={autoDeploy} />}
 
-            <details className="group mt-2.5">
-              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-subtle transition-colors hover:text-sub">
-                <ChevronRight size={12} className="shrink-0 text-subtle transition-transform group-open:rotate-90" />
-                Despliegue inmediato: configurar el webhook de GitHub
-              </summary>
-              <div className="details-body mt-2 flex flex-col gap-2 text-xs">
-                <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
-                  <span className="shrink-0 text-subtle">URL</span>
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <span className="truncate font-mono text-xs">{webhookUrl}</span>
-                    <CopyButton value={webhookUrl} />
-                  </span>
+            {webhook?.coveredByApp ? (
+              <p className="mt-2.5 text-xs leading-relaxed text-subtle">
+                Este repositorio ya recibe los push al instante por la GitHub App: no hace falta configurar un webhook en el
+                repositorio (con los dos, cada push llegaría dos veces).
+              </p>
+            ) : (
+              <details className="group mt-2.5">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-subtle transition-colors hover:text-sub">
+                  <ChevronRight size={12} className="shrink-0 text-subtle transition-transform group-open:rotate-90" />
+                  Despliegue inmediato: configurar el webhook de GitHub
+                </summary>
+                <div className="details-body mt-2 flex flex-col gap-2 text-xs">
+                  <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+                    <span className="shrink-0 text-subtle">URL</span>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate font-mono text-xs">{webhookUrl}</span>
+                      <CopyButton value={webhookUrl} />
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+                    <span className="text-subtle">Secreto</span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="font-mono text-xs">••••••••••••</span>
+                      <CopyButton value={cfg.webhookSecret ?? ''} />
+                    </span>
+                  </div>
+                  <ol className="list-decimal space-y-1 pl-5 text-xs text-subtle">
+                    <li>
+                      En el repositorio: <span className="font-mono">Settings → Webhooks → Add webhook</span>.
+                    </li>
+                    <li>
+                      Introduce la URL y el secreto; tipo de contenido <span className="font-mono">application/json</span>.
+                    </li>
+                    <li>
+                      Evento: solo <span className="font-mono">push</span>.
+                    </li>
+                  </ol>
                 </div>
-                <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
-                  <span className="text-subtle">Secreto</span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="font-mono text-xs">••••••••••••</span>
-                    <CopyButton value={cfg.webhookSecret ?? ''} />
-                  </span>
-                </div>
-                <ol className="list-decimal space-y-1 pl-5 text-xs text-subtle">
-                  <li>
-                    En el repositorio: <span className="font-mono">Settings → Webhooks → Add webhook</span>.
-                  </li>
-                  <li>
-                    Introduce la URL y el secreto; tipo de contenido <span className="font-mono">application/json</span>.
-                  </li>
-                  <li>
-                    Evento: solo <span className="font-mono">push</span>.
-                  </li>
-                </ol>
-              </div>
-            </details>
+              </details>
+            )}
           </SectionCard>
         )}
 
@@ -580,6 +681,8 @@ export default function ServiceSettingsTab({
               guardados={baseline.domains}
               onCambiarProxy={isAdmin ? (domain, proxied) => proxyCloudflare.mutate({ domain, proxied }) : undefined}
               cambiandoProxy={proxyCloudflare.isPending ? proxyCloudflare.variables?.domain : null}
+              serviceId={service.id}
+              onDnsResult={(r) => setDnsResults((prev) => ({ ...prev, [r.domain]: r }))}
             />
           </SectionCard>
         )}
@@ -644,9 +747,30 @@ export default function ServiceSettingsTab({
               </Field>
             )}
           </div>
+          {!isDb && replicasN > 1 && (botSinDominio || sinTrafico) && (
+            <p className="mt-2.5 flex items-start gap-1.5 rounded-lg border border-warn/35 bg-warn/[.06] px-3 py-2.5 text-xs text-sub">
+              <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warn" aria-hidden />
+              {botSinDominio ? (
+                <span className="leading-relaxed">
+                  El repositorio usa una biblioteca de bots de Telegram o Discord: con {replicasN} réplicas hay {replicasN} copias del bot en
+                  marcha a la vez de forma permanente, y un bot que pide actualizaciones (polling) o se conecta al gateway de Discord solo
+                  admite una. Vuelve a 1 réplica.
+                </span>
+              ) : (
+                <span className="leading-relaxed">
+                  Este servicio no recibe tráfico (sin dominio, healthcheck ni llamadas de otros servicios): con {replicasN} réplicas hay{' '}
+                  {replicasN} copias en marcha a la vez de forma permanente. Un bot de polling (Telegram, Discord…) solo admite una; un
+                  worker tiene que repartir el trabajo con <span className="font-mono">SKYWAY_REPLICA</span> y{' '}
+                  <span className="font-mono">SKYWAY_REPLICAS</span> o usar una cola.
+                </span>
+              )}
+            </p>
+          )}
           {!isDb && replicasN > 1 && (
             <p className="mt-2.5 rounded-lg border border-acc/30 bg-acc/[.08] px-3 py-2.5 text-xs text-sub">
-              Con {replicasN} réplicas el tráfico se distribuye y los despliegues son progresivos: siempre queda una réplica en servicio.
+              {efectiva === 'overlap'
+                ? `Con ${replicasN} réplicas el tráfico se distribuye y los despliegues son progresivos: siempre queda una réplica en servicio. `
+                : 'Con una sola copia, todas las réplicas se detienen antes de arrancar las nuevas. '}
               Requiere un servicio <strong className="text-txt">sin volúmenes ni puerto público</strong>
               {(form.volumePaths.length > 0 || form.hostPort) && (
                 <span className="text-err"> — esta condición no se cumple actualmente: retíralos antes de guardar</span>
@@ -674,6 +798,20 @@ export default function ServiceSettingsTab({
             description="Rutas cuyo contenido se conserva entre despliegues"
           >
             <div className="flex flex-col gap-2">
+              {volumenesSinMontar.map((p) => (
+                <div key={`imagen:${p}`} className="flex flex-col gap-2 rounded-lg border border-warn/35 bg-warn/[.06] px-3 py-2 text-xs sm:flex-row sm:items-center">
+                  <span className="flex min-w-0 flex-1 items-start gap-1.5 text-sub">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warn" aria-hidden />
+                    <span className="leading-relaxed">
+                      La imagen guarda datos en <span className="font-mono text-txt">{p}</span> sin volumen: se reinician en cada
+                      despliegue. Al añadirlo, los datos actuales del contenedor no se copian.
+                    </span>
+                  </span>
+                  <Button size="sm" variant="secondary" className="shrink-0" onClick={() => set('volumePaths', [...form.volumePaths, p])}>
+                    <Plus size={12} /> Añadir volumen
+                  </Button>
+                </div>
+              ))}
               {form.volumePaths.map((p) => (
                 <div key={p} className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2 max-sm:py-1">
                   <span className="min-w-0 truncate font-mono text-xs">{p}</span>
@@ -713,6 +851,105 @@ export default function ServiceSettingsTab({
             </div>
           </SectionCard>
         )}
+
+        <SectionCard
+          icon={<Power size={14} />}
+          iconClass="text-sub"
+          title="Despliegue y parada"
+          description={
+            isDb
+              ? 'Cómo se detiene la base de datos al desplegar, detener o reiniciar'
+              : 'Cómo se sustituye la versión en marcha y cómo se detiene cada copia'
+          }
+        >
+          <div className="flex flex-col gap-3">
+            {!isDb && (
+              <Field
+                label="Al desplegar"
+                hint={
+                  conEstado
+                    ? 'Con volúmenes o puerto público, la versión anterior siempre se detiene antes de arrancar la nueva.'
+                    : form.deployStrategy === 'auto'
+                      ? `${ESTRATEGIA[efectiva].descripcion} ${
+                          botSinDominio
+                            ? `Se aplica porque el repositorio usa una biblioteca de bots de Telegram o Discord (${bibliotecasBot.join(', ')}) y el servicio no tiene dominio: dos copias del bot a la vez se pisan.${
+                                conHealthcheck || deploy?.calledByOthers
+                                  ? ' Mientras se detiene la versión anterior y arranca la nueva, su healthcheck y las llamadas de otros servicios no reciben respuesta. Si el bot recibe webhooks a través de otro servicio, elige «Sin corte».'
+                                  : ''
+                              }`
+                            : sinTrafico
+                              ? 'Se aplica porque el servicio no tiene dominio, ruta de healthcheck (en Ajustes o en el repositorio) ni llamadas de otros servicios. Las llamadas escritas en el código o la configuración de otro servicio no se detectan: si las hay, elige «Sin corte».'
+                              : bibliotecasBot.length > 0
+                                ? 'Se aplica por su dominio, pero el repositorio usa una biblioteca de bots: si el bot pide actualizaciones (polling) en vez de recibir webhooks, elige «Una sola copia», porque con dos copias recibe un error 409.'
+                                : `Se aplica porque el servicio recibe tráfico (dominio, healthcheck o llamadas de otros servicios).${
+                                    healthcheckRepo && form.healthcheckPath.trim() === '' && !conDominio && !deploy?.calledByOthers
+                                      ? ` La ruta de healthcheck es la del repositorio (${healthcheckRepo}).`
+                                      : ''
+                                  }`
+                        }`
+                      : ESTRATEGIA[efectiva].descripcion
+                }
+              >
+                <select
+                  className="input"
+                  value={conEstado ? 'recreate' : form.deployStrategy}
+                  disabled={conEstado}
+                  onChange={(e) => set('deployStrategy', e.target.value as FormState['deployStrategy'])}
+                >
+                  <option value="auto">Automático (recomendado) — ahora: {ESTRATEGIA[automatica].nombre}</option>
+                  <option value="recreate">{ESTRATEGIA.recreate.nombre}</option>
+                  <option value="overlap">{ESTRATEGIA.overlap.nombre}</option>
+                </select>
+              </Field>
+            )}
+            {/* Uno debajo de otro: la ayuda de la gracia lleva un nombre de variable
+                largo que en media columna no cabe y desbordaría en un drawer estrecho. */}
+            <div className="flex flex-col gap-3">
+              <Field
+                label="Gracia de parada (s)"
+                hint={
+                  isDb
+                    ? 'SIGTERM y, si el motor no termina en este plazo, SIGKILL. De 10 a 600; vacío: 30 s.'
+                    : 'SIGTERM y, si el proceso no termina en este plazo, SIGKILL. Vacío: 30 s o RAILWAY_DEPLOYMENT_DRAINING_SECONDS.'
+                }
+              >
+                <input
+                  className="input tnum"
+                  type="number"
+                  inputMode="numeric"
+                  min={isDb ? '10' : '0'}
+                  max="600"
+                  // Lo que se aplicaría con el campo vacío: si la gracia viene del
+                  // propio servicio, el servidor no dice cuál sería sin ella.
+                  placeholder={String(deploy && deploy.stopGraceSource !== 'servicio' ? deploy.stopGraceSeconds : 30)}
+                  value={form.stopGraceSeconds}
+                  onChange={(e) => set('stopGraceSeconds', e.target.value)}
+                />
+              </Field>
+              {!isDb && (
+                <Field
+                  label="Comando al parar"
+                  hint={
+                    'Opcional. Se ejecuta dentro del contenedor antes del SIGTERM, con el mismo plazo. Usa las variables del servicio ($VARIABLE) en vez de escribir secretos.' +
+                    (efectiva === 'overlap' && form.stopCommand.trim() !== ''
+                      ? ' Con «Sin corte», el de la versión anterior se ejecuta cuando la nueva ya está en servicio (en la copia de validación no se ejecuta): no lo uses para deshacer lo que la nueva registra al arrancar, como el webhook de un bot; para eso, elige «Una sola copia».'
+                      : '')
+                  }
+                >
+                  <input
+                    className="input font-mono text-xs"
+                    value={form.stopCommand}
+                    onChange={(e) => set('stopCommand', e.target.value)}
+                    maxLength={1000}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                </Field>
+              )}
+            </div>
+          </div>
+        </SectionCard>
 
         {/*
           * Sin fondo rojo permanente: un panel de alarma que está siempre

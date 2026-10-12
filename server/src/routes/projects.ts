@@ -4,6 +4,7 @@ import { accessibleProjectRows, assertProjectAccess, assertProjectManage, curren
 import { audit } from '../audit';
 import {
   activeDeploymentsByProject,
+  bumpProjectConfigRev,
   clearProjectMemberships,
   createProject,
   countWorkspaceProjects,
@@ -16,17 +17,20 @@ import {
   listServices,
   listServicesForProjects,
   openAlertCountsByService,
+  patchProjectVars,
   projectDashboardMeta,
   projectSlugExists,
+  servicesWithPendingChanges,
   setProjectVars,
   setProjectWorkspace,
   updateProjectMeta,
 } from '../db';
-import { publicServiceConfig } from './services';
+import { envPatchSchema, invalidEnvKey, publicServiceConfig } from './services';
 import { toDeployFeedItem } from '../events';
 import { dockerAvailable } from '../docker/client';
 import { dockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
 import { triggerDeploy } from '../deploy/deployer';
+import { bloqueoPorCambioConCorreo } from '../domainmigration';
 import { markManualAction } from '../monitor';
 import { mailwayConfigured, releaseProjectClient } from '../mailway';
 import { confirmsDeletion, purgeProject, PurgeBlockedError, purgeSummary, warningsForAudit } from '../purge';
@@ -52,10 +56,11 @@ const PANEL_MAX_AGE_MS = 4000;
 /** Proyectos que se están eliminando: un segundo DELETE a la vez no repite el trabajo. */
 const deletingProjects = new Set<string>();
 
-function serviceWithRuntime(service: ServiceRow, snap: Snapshot) {
+function serviceWithRuntime(service: ServiceRow, snap: Snapshot, pending: ReadonlySet<string>) {
   const runtime: ServiceRuntime = runtimeIn(snap, service.id);
   // Vista de proyecto: la ven todos sus miembros, así que sin secretos.
-  return { ...service, config: publicServiceConfig(service.config), runtime };
+  // `pendingChanges`: cambios guardados que su último despliegue no lleva.
+  return { ...service, config: publicServiceConfig(service.config), runtime, pendingChanges: pending.has(service.id) };
 }
 
 export async function projectRoutes(app: FastifyInstance): Promise<void> {
@@ -149,7 +154,9 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     // estados que lo acompañan.
     const snap = await dockerSnapshot(PANEL_MAX_AGE_MS);
     const docker = snap.docker;
-    const services = listServices(id).map((s) => serviceWithRuntime(s, snap));
+    const rows = listServices(id);
+    const pending = servicesWithPendingChanges(rows);
+    const services = rows.map((s) => serviceWithRuntime(s, snap, pending));
     // activeDeploys va en la carga inicial para que la rejilla ya pinte «hay
     // una versión saliendo» en el primer render, sin esperar al stream.
     const active = activeDeploymentsByProject(id);
@@ -227,6 +234,8 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
       });
     }
     if (deletingProjects.has(id)) return reply.code(409).send({ error: 'El proyecto ya se está eliminando.' });
+    const cambioAbierto = bloqueoPorCambioConCorreo(id, 'eliminar el proyecto');
+    if (cambioAbierto) return reply.code(409).send({ error: cambioAbierto, code: 'migration_open' });
     if (!(await dockerAvailable(true))) {
       return reply.code(503).send({
         error: 'Docker no está disponible: no es posible eliminar el proyecto sin eliminar sus datos. Vuelve a intentarlo cuando Docker responda. No se ha eliminado nada.',
@@ -300,13 +309,43 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     if (!getProject(id)) return reply.code(404).send({ error: 'Proyecto no encontrado' });
     if (!assertProjectAccess(req, reply, id)) return reply;
     const body = z.object({ vars: z.record(z.string()) }).parse(req.body);
-    for (const key of Object.keys(body.vars)) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-        return reply.code(400).send({ error: `Nombre de variable inválido: ${key}` });
-      }
-    }
+    const mala = invalidEnvKey(Object.keys(body.vars));
+    if (mala !== null) return reply.code(400).send({ error: `Nombre de variable inválido: ${mala}`, code: 'invalid_key' });
     setProjectVars(id, body.vars);
+    bumpProjectConfigRev(id);
     audit(req, 'project_vars_updated', { type: 'project', id, detail: `${Object.keys(body.vars).length} variables` });
-    return { ok: true, needsRedeploy: true };
+    return { ok: true, needsRedeploy: true, affected: affectedServices(id) };
   });
+
+  /**
+   * Guardado del modal de variables compartidas: solo los cambios de quien
+   * edita (como `PATCH /services/:id/env`). Devuelve los servicios a los que
+   * llegan, que son todos los del proyecto, para ofrecer desplegarlos.
+   */
+  app.patch('/api/projects/:id/vars', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!getProject(id)) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+    if (!assertProjectAccess(req, reply, id)) return reply;
+    const body = envPatchSchema.parse(req.body ?? {});
+    const mala = invalidEnvKey([...Object.keys(body.set), ...body.unset]);
+    if (mala !== null) return reply.code(400).send({ error: `Nombre de variable inválido: ${mala}`, code: 'invalid_key' });
+    const cambiadas = Object.keys(body.set).length;
+    const quitadas = body.unset.filter((k) => !Object.hasOwn(body.set, k)).length;
+    if (cambiadas + quitadas > 0) {
+      patchProjectVars(id, body.set, body.unset);
+      bumpProjectConfigRev(id);
+      audit(req, 'project_vars_updated', { type: 'project', id, detail: `${cambiadas} definidas, ${quitadas} eliminadas` });
+    }
+    return { ok: true, needsRedeploy: cambiadas + quitadas > 0, vars: getProjectVars(id), affected: affectedServices(id) };
+  });
+}
+
+/**
+ * Servicios a los que llegan las variables compartidas (todos los del proyecto)
+ * y que tienen algo desplegado: los que hay que volver a desplegar para aplicarlas.
+ */
+function affectedServices(projectId: string): { id: string; name: string; type: string }[] {
+  const rows = listServices(projectId);
+  const pending = servicesWithPendingChanges(rows);
+  return rows.filter((s) => pending.has(s.id)).map((s) => ({ id: s.id, name: s.name, type: s.type }));
 }
