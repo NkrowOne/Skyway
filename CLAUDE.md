@@ -86,6 +86,10 @@ Si arreglas un fallo con una prueba que lo reproduce, mejor.
   guardan hasheados; el token de GitHub se enmascara en los logs de build).
 - **Versión**: `config.version`, `package.json` (raíz/server/web) y el
   encabezado de `docs/FUNCIONALIDAD.md` van sincronizados.
+- **Dependencias congeladas**: TypeScript 6/7, React 19, Tailwind 4, zod 4 y
+  vite 8 con `@vitejs/plugin-react` 6 no se suben salvo por algo crítico (un
+  fallo de seguridad grave que solo arregla la versión nueva). Dependabot no
+  las propone; el motivo de cada una está en `.github/dependabot.yml`.
 
 ## Seguridad (imprescindible)
 

@@ -56,6 +56,31 @@ updates:
       # los tipos de una versión posterior dejan usar lo que Node 22 no tiene.
       - dependency-name: "@types/node"
         versions: [">=23.0.0"]
+      # CONGELADAS: no se actualizan salvo por algo crítico (un fallo de
+      # seguridad grave que solo arregla la versión nueva, o que la nuestra
+      # deje de recibir parches). Funcionan bien como están y subirlas es una
+      # migración con riesgo que no aporta nada. Si llega ese caso, se hace en
+      # un PR propio, probado en el navegador, nunca con el de Dependabot. Las
+      # menores y los parches de estas sí siguen llegando.
+      # - TypeScript 6/7: el lint (typescript-eslint) aún no lo admite y los
+      #   editores pierden el autocompletado; el JavaScript que sale es igual.
+      # - React 19 (react, react-dom y sus tipos): cambia refs, StrictMode y
+      #   Suspense y engorda el panel; hay que revisarlo entero.
+      # - Tailwind 4: la configuración pasa a CSS y cambian clases. Los avisos
+      #   de seguridad de Tailwind 3 (braces, postcss-selector-parser) solo
+      #   afectan a la compilación, que lee nuestro propio CSS.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      - dependency-name: react
+        update-types: ["version-update:semver-major"]
+      - dependency-name: react-dom
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: tailwindcss
+        update-types: ["version-update:semver-major"]
 
   # Imágenes base del Dockerfile (Node sobre Alpine).
   - package-ecosystem: docker
