@@ -80,12 +80,20 @@ const LEVEL_JSON = /"(?:level|severity|lvl|levelname|loglevel|log\.level)"\s*:\s
 const LEVEL_KV = /(?:^|[\s,;])(?:level|lvl|severity)=["']?([A-Za-z]+)/i;
 const LEVEL_TAG =
   /^.{0,48}?(?:\b(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|FATAL|CRIT|CRITICAL|PANIC|EMERG|ALERT|SEVERE)\b|\[(trace|debug|info|notice|warn|warning|error|err|fatal|crit|critical|panic|emerg|alert)\])/;
-/* Heurística para el texto libre, con palabras completas: «errorHandler» o «ERROR_LOG» no son errores. */
-const ERR_HINT = /\b(?:errors?|fatal|panic|exception|traceback|uncaught)\b|✖|❌|✗/i;
+/*
+ * Heurística para el texto libre, con palabras completas: «errorHandler» o
+ * «ERROR_LOG» no son errores. `\b` no basta: trata «-», «.», «/» y «@» como
+ * separadores, y un `npm install` sano se llenaba de «errores» por paquetes
+ * como `http-errors@2.0.0` o `node_modules/error-ex`. Sin lookbehind, que
+ * Safari anterior a la 16.4 no entiende.
+ */
+const WORD_START = '(?:^|[^\\w.@/-])';
+const WORD_END = '(?=$|[^\\w@/.-]|\\.(?![\\w-]))';
+const ERR_HINT = new RegExp(`${WORD_START}(?:errors?|fatal|panic|exception|traceback|uncaught)${WORD_END}|✖|❌|✗`, 'i');
 /** TypeError, ValueError, NullPointerException…: sin límite de palabra delante. */
 const ERR_CLASS = /[A-Z][a-zA-Z]*(?:Error|Exception)\b/;
 const ERR_NONE = /\b(?:0|no|zero|sin|without)\s+(?:errors?|errores|exceptions?)\b/i;
-const WARN_HINT = /\b(?:warn|warning|warnings|deprecated|deprecation)\b|⚠/i;
+const WARN_HINT = new RegExp(`${WORD_START}(?:warn|warning|warnings|deprecated|deprecation)${WORD_END}|⚠`, 'i');
 const WARN_NONE = /\b(?:0|no|zero|sin|without)\s+(?:warnings?|avisos)\b/i;
 
 function levelFromWord(word: string): Level {
@@ -131,8 +139,13 @@ export interface ParsedRow {
   lvl: Level;
 }
 
-/** Sello ISO de Docker o del servidor al principio de la línea (fracción de 0 a 9 cifras). */
-const ISO_HEAD = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:[.,](\d{1,9}))?(Z|[+-]\d{2}:?\d{2})?(?=\s|$)/;
+/**
+ * Sello ISO de Docker o del servidor al principio de la línea (fracción de 0
+ * a 9 cifras). Solo con zona (`Z` o desfase): uno sin zona puede ser UTC o la
+ * hora local del contenedor, y leerlo como hora del navegador la desplazaba;
+ * se deja en el texto tal cual lo escribió la aplicación.
+ */
+const ISO_HEAD = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:[.,](\d{1,9}))?(Z|[+-]\d{2}:?\d{2})(?=\s|$)/;
 const CLOCK_HEAD = /^(\d{2}:\d{2}:\d{2})(?:\.\d+)?\s/;
 
 /** Parsea una línea de log: sello de tiempo (ISO/Docker o la hora sola de los registros antiguos) y nivel. */
@@ -150,7 +163,7 @@ export function parseRawLine(raw: string): ParsedRow {
        * vez de la «T», ni más de tres cifras de fracción (Docker da nueve).
        */
       const ms = (m[3] ?? '').padEnd(3, '0').slice(0, 3);
-      const zone = !m[4] || m[4] === 'Z' || m[4].includes(':') ? m[4] ?? '' : `${m[4].slice(0, 3)}:${m[4].slice(3)}`;
+      const zone = m[4] === 'Z' || m[4].includes(':') ? m[4] : `${m[4].slice(0, 3)}:${m[4].slice(3)}`;
       const t = Date.parse(`${m[1]}T${m[2]}.${ms}${zone}`);
       if (Number.isFinite(t)) {
         ts = t;
@@ -240,8 +253,12 @@ export function tsText(r: ParsedRow, format: TimestampFormat): string {
 export interface LogQuery {
   active: boolean;
   test: (text: string, lvl: Level) => boolean;
-  /** Resalta lo buscado (global, sin distinguir mayúsculas); null si no hay nada que resaltar. */
-  mark: RegExp | null;
+  /**
+   * Expresiones de lo buscado, una por término positivo (globales, sin
+   * distinguir mayúsculas). Van por separado: unidas en una sola, un `\1` de
+   * un término apuntaba al grupo de otro y el resaltado no casaba con el filtro.
+   */
+  marks: readonly RegExp[];
   /** Aviso para quien busca, si algo no se ha podido interpretar. */
   error: string | null;
 }
@@ -252,7 +269,8 @@ interface Term {
   lvl: Level | null;
 }
 
-const EMPTY_QUERY: LogQuery = { active: false, test: () => true, mark: null, error: null };
+const NO_MARKS: readonly RegExp[] = [];
+const EMPTY_QUERY: LogQuery = { active: false, test: () => true, marks: NO_MARKS, error: null };
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const literal = (s: string) => new RegExp(escapeRe(s), 'i');
@@ -280,7 +298,7 @@ export function parseQuery(input: string): LogQuery {
   const src = input.trim();
   if (!src) return EMPTY_QUERY;
   const alts: Term[][] = [[]];
-  const marks: string[] = [];
+  const marks: RegExp[] = [];
   let error: string | null = null;
   const n = src.length;
   let i = 0;
@@ -332,24 +350,16 @@ export function parseQuery(input: string): LogQuery {
       if (!lvl) re = literal(word);
     }
     alts[alts.length - 1].push({ neg, re, lvl });
-    if (!neg && re) marks.push(re.source);
+    if (!neg && re) marks.push(new RegExp(re.source, 'gi'));
   }
   const groups = alts.filter((a) => a.length > 0);
   if (!groups.length) return error ? { ...EMPTY_QUERY, error } : EMPTY_QUERY;
 
-  let mark: RegExp | null = null;
-  if (marks.length) {
-    try {
-      mark = new RegExp(marks.map((s) => `(?:${s})`).join('|'), 'gi');
-    } catch {
-      mark = null;
-    }
-  }
   const hit = (t: Term, text: string, lvl: Level) => (t.lvl ? lvl === t.lvl : t.re!.test(text));
   return {
     active: true,
     test: (text, lvl) => groups.some((g) => g.every((t) => hit(t, text, lvl) !== t.neg)),
-    mark,
+    marks: marks.length ? marks : NO_MARKS,
     error,
   };
 }
@@ -885,29 +895,52 @@ function loadPrefs(): ViewPrefs {
 
 /* ───────────────────────── Filas ─────────────────────────────────────────── */
 
+/**
+ * Tramos `[inicio, fin)` de la línea que casan con alguno de los términos,
+ * ordenados y fundidos donde se solapan.
+ */
+export function markRanges(line: string, marks: readonly RegExp[]): [number, number][] {
+  const found: [number, number][] = [];
+  for (const re of marks) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    let guard = 0;
+    while ((m = re.exec(line)) && guard++ < 200) {
+      if (m[0].length === 0) {
+        // Una expresión que casa con la cadena vacía no avanzaría nunca.
+        re.lastIndex++;
+        continue;
+      }
+      found.push([m.index, m.index + m[0].length]);
+    }
+  }
+  if (found.length < 2) return found;
+  found.sort((a, b) => a[0] - b[0]);
+  const out: [number, number][] = [found[0]];
+  for (let i = 1; i < found.length; i++) {
+    const last = out[out.length - 1];
+    if (found[i][0] <= last[1]) last[1] = Math.max(last[1], found[i][1]);
+    else out.push(found[i]);
+  }
+  return out;
+}
+
 /** Resalta todas las coincidencias de la búsqueda en la línea. */
-function highlight(line: string, mark: RegExp | null): React.ReactNode {
-  if (!mark || !line) return line;
-  mark.lastIndex = 0;
+function highlight(line: string, marks: readonly RegExp[]): React.ReactNode {
+  if (!marks.length || !line) return line;
+  const ranges = markRanges(line, marks);
+  if (!ranges.length) return line;
   const out: React.ReactNode[] = [];
   let last = 0;
-  let key = 0;
-  let m: RegExpExecArray | null;
-  while ((m = mark.exec(line)) && key < 200) {
-    if (m[0].length === 0) {
-      // Una expresión que casa con la cadena vacía no avanzaría nunca.
-      mark.lastIndex++;
-      continue;
-    }
-    if (m.index > last) out.push(line.slice(last, m.index));
+  ranges.forEach(([a, b], key) => {
+    if (a > last) out.push(line.slice(last, a));
     out.push(
-      <mark key={key++} className="log-mark">
-        {m[0]}
+      <mark key={key} className="log-mark">
+        {line.slice(a, b)}
       </mark>,
     );
-    last = m.index + m[0].length;
-  }
-  if (!out.length) return line;
+    last = b;
+  });
   if (last < line.length) out.push(line.slice(last));
   return out;
 }
@@ -921,7 +954,7 @@ const LogRow = memo(function LogRow({
   wrap,
   gutter,
   showTs,
-  mark,
+  marks,
   selected,
 }: {
   id: number;
@@ -933,7 +966,7 @@ const LogRow = memo(function LogRow({
   wrap: boolean;
   gutter: boolean;
   showTs: boolean;
-  mark: RegExp | null;
+  marks: readonly RegExp[];
   selected: boolean;
 }) {
   void tick;
@@ -957,7 +990,7 @@ const LogRow = memo(function LogRow({
           wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre',
         )}
       >
-        {highlight(row.cleanText, mark)}
+        {highlight(row.cleanText, marks)}
       </span>
     </div>
   );
@@ -977,7 +1010,7 @@ const LogChunk = memo(function LogChunk({
   wrap,
   gutter,
   showTs,
-  mark,
+  marks,
   selectedId,
   onMeasure,
 }: {
@@ -989,7 +1022,7 @@ const LogChunk = memo(function LogChunk({
   wrap: boolean;
   gutter: boolean;
   showTs: boolean;
-  mark: RegExp | null;
+  marks: readonly RegExp[];
   /** Solo la del bloque que la contiene: así una selección no repinta los demás. */
   selectedId: number | null;
   onMeasure: (key: number, el: HTMLDivElement | null) => void;
@@ -1008,7 +1041,7 @@ const LogChunk = memo(function LogChunk({
           wrap={wrap}
           gutter={gutter}
           showTs={showTs}
-          mark={mark}
+          marks={marks}
           selected={v.id === selectedId}
         />
       ))}
@@ -1271,7 +1304,8 @@ function LogViewerImpl({
   const copiedTimer = useRef<number>();
   useEffect(() => () => window.clearTimeout(copiedTimer.current), []);
   const [maximized, setMaximized] = useState(false);
-  const [clearedUntil, setClearedUntil] = useState<number>(0);
+  /** Líneas que había al pulsar «Limpiar la vista»: se ocultan las que sigan en el buffer. */
+  const [cleared, setCleared] = useState<readonly string[] | null>(null);
   /** Línea abierta en el detalle (con la generación del modelo en que se eligió). */
   const [picked, setPicked] = useState<{ gen: number; id: number } | null>(null);
   /** Línea a la que saltar al quitar los filtros («Ver en contexto»). */
@@ -1285,16 +1319,6 @@ function LogViewerImpl({
     }
   }, [prefs]);
   const setPref = <K extends keyof ViewPrefs>(key: K, value: ViewPrefs[K]) => setPrefs((p) => ({ ...p, [key]: value }));
-
-  /*
-   * «Limpiar la vista» guarda un índice absoluto. Si la fuente cambia (otro
-   * despliegue, otra pestaña) o el padre recorta el buffer por delante, ese
-   * índice apunta más allá del final y la consola se quedaba vacía para
-   * siempre. Se olvida en cuanto deja de tener sentido.
-   */
-  useEffect(() => {
-    if (clearedUntil > 0 && lines.length < clearedUntil) setClearedUntil(0);
-  }, [lines.length, clearedUntil]);
 
   // Tiempo relativo: sin un reloj, «hace 5 s» se quedaba congelado mientras
   // no llegaran líneas nuevas.
@@ -1314,10 +1338,20 @@ function LogViewerImpl({
   const q = deferredFilter.trim();
   const query = useMemo(() => parseQuery(q), [q]);
 
-  const effectiveLines = useMemo(
-    () => (clearedUntil > 0 && clearedUntil <= lines.length ? lines.slice(clearedUntil) : lines),
-    [lines, clearedUntil],
-  );
+  /*
+   * «Limpiar la vista» oculta las líneas que había entonces, buscándolas por
+   * contenido. Antes guardaba un índice, y con el buffer lleno (recorta por
+   * delante y no crece) ese índice apuntaba siempre al final: la consola se
+   * quedaba vacía para siempre. Si ya no queda ninguna, o la fuente es otra,
+   * se ve todo.
+   */
+  const effectiveLines = useMemo(() => {
+    if (!cleared) return lines;
+    const d = diffLines(cleared, lines);
+    if (d.kept === 0) return lines;
+    return lines.slice(Math.max(0, d.front) + d.kept);
+  }, [lines, cleared]);
+  const hiddenCount = lines.length - effectiveLines.length;
 
   /*
    * El seguimiento vive también en una ref, actualizada en el mismo instante
@@ -1716,11 +1750,17 @@ function LogViewerImpl({
   /*
    * Al cambiar la búsqueda o el nivel se vuelve al final, salvo que el
    * cambio venga de «Ver en contexto», que quita los filtros para saltar a
-   * una línea concreta.
+   * una línea concreta. La marca la consume este mismo efecto cuando ve los
+   * filtros ya quitados (la búsqueda llega en diferido, en otro render): si
+   * la quitara el salto, este efecto corría después en el mismo commit y
+   * mandaba la vista al final.
    */
   const jumpPendingRef = useRef(false);
   useEffect(() => {
-    if (jumpPendingRef.current) return;
+    if (jumpPendingRef.current) {
+      if (q === '' && level === 'all') jumpPendingRef.current = false;
+      return;
+    }
     startFollowing();
   }, [level, q, startFollowing]);
 
@@ -1810,7 +1850,6 @@ function LogViewerImpl({
     if (jumpId === null || q !== '' || level !== 'all') return;
     const el = ref.current;
     const finish = () => {
-      jumpPendingRef.current = false;
       jumpTriesRef.current = 0;
       setJumpId(null);
     };
@@ -2286,11 +2325,11 @@ function LogViewerImpl({
                     >
                       Ir al principio
                     </MenuItem>
-                    {clearedUntil === 0 ? (
+                    {hiddenCount === 0 ? (
                       <MenuItem
                         icon={<Trash2 size={14} />}
                         onClick={() => {
-                          setClearedUntil(lines.length);
+                          setCleared(lines);
                           setViewMenuOpen(false);
                         }}
                         className={cx(visible.length === 0 && 'pointer-events-none opacity-40')}
@@ -2298,8 +2337,8 @@ function LogViewerImpl({
                         Limpiar la vista
                       </MenuItem>
                     ) : (
-                      <MenuItem icon={<Trash2 size={14} />} onClick={() => setClearedUntil(0)}>
-                        Restaurar {NF.format(clearedUntil)} líneas ocultas
+                      <MenuItem icon={<Trash2 size={14} />} onClick={() => setCleared(null)}>
+                        Restaurar {NF.format(hiddenCount)} líneas ocultas
                       </MenuItem>
                     )}
                   </div>
@@ -2406,7 +2445,7 @@ function LogViewerImpl({
                     wrap={wrap}
                     gutter={gutter}
                     showTs={showTs}
-                    mark={query.mark}
+                    marks={query.marks}
                     selectedId={selectedId !== null && selectedId >= first && selectedId <= last ? selectedId : null}
                     onMeasure={onMeasure}
                   />

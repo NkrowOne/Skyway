@@ -631,12 +631,21 @@ export default function VariablesTab({
    */
   const presentKeys = useMemo(() => {
     if (viewMode !== 'raw') return new Set(rows.map((r) => r.key.trim()));
-    return new Set(
-      rawText.split('\n').map((line) => {
-        const eq = line.indexOf('=');
-        return (eq >= 0 ? line.slice(0, eq) : line).trim();
-      }),
-    );
+    /*
+     * En el texto, cada nombre cuenta también en mayúsculas, que es como se
+     * guardará si es nuevo: con `database_url=…` escrito a mano, la sugerencia
+     * DATABASE_URL seguía ofreciéndose y, al añadirla, su línea vacía pisaba
+     * el valor al guardar.
+     */
+    const keys = new Set<string>();
+    for (const line of rawText.split('\n')) {
+      const eq = line.indexOf('=');
+      const key = (eq >= 0 ? line.slice(0, eq) : line).trim();
+      if (!key) continue;
+      keys.add(key);
+      keys.add(key.toUpperCase());
+    }
+    return keys;
   }, [viewMode, rows, rawText]);
 
   useEffect(() => {
@@ -826,7 +835,14 @@ export default function VariablesTab({
           toast(`Línea no válida: ${trimmed}`, 'err');
           return;
         }
-        vars[upperKey(trimmed.slice(0, eq).trim(), keepCase)] = trimmed.slice(eq + 1);
+        const key = upperKey(trimmed.slice(0, eq).trim(), keepCase);
+        // Dos líneas con el mismo nombre (también `api_key` y `API_KEY`, que se
+        // guardan igual) se quedaban con el último valor sin avisar.
+        if (Object.prototype.hasOwnProperty.call(vars, key)) {
+          toast(`La variable ${key} aparece más de una vez. Deja una sola línea con ese nombre.`, 'err');
+          return;
+        }
+        vars[key] = trimmed.slice(eq + 1);
       }
     } else {
       for (const row of rows) {

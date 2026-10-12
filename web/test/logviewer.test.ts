@@ -6,6 +6,7 @@ import {
   detectLevel,
   diffLines,
   freezeLines,
+  markRanges,
   parseQuery,
   parseRawLine,
   tsText,
@@ -217,8 +218,23 @@ describe('parseQuery (sintaxis de búsqueda)', () => {
 
   it('resalta los términos positivos, no los excluidos', () => {
     const q = parseQuery('redis -debug "a.b"');
-    expect('x redis a.b debug'.match(q.mark!)).toEqual(['redis', 'a.b']);
+    expect(markRanges('x redis a.b debug', q.marks)).toEqual([
+      [2, 7],
+      [8, 11],
+    ]);
     expect(parseQuery('').active).toBe(false);
+  });
+
+  it('cada expresión resalta con sus propios grupos y los solapes se funden', () => {
+    // Unidas en una sola expresión, el \1 de la segunda apuntaba al grupo de la primera.
+    const q = parseQuery('/(a)x/ /(b)\\1/');
+    const line = 'ax bb';
+    expect(q.test(line, 'plain')).toBe(true);
+    expect(markRanges(line, q.marks)).toEqual([
+      [0, 2],
+      [3, 5],
+    ]);
+    expect(markRanges('redis', parseQuery('red redis').marks)).toEqual([[0, 5]]);
   });
 });
 
@@ -235,6 +251,13 @@ describe('parseRawLine y detectLevel', () => {
     expect(r.ts).toBeNull();
     expect(r.clock).toBe('12:03:22');
     expect(tsText(r, 'datetime')).toBe('12:03:22');
+  });
+
+  it('un sello sin zona no se interpreta: el texto queda como lo escribió la aplicación', () => {
+    const r = parseRawLine('2026-10-12T14:03:22 compilado');
+    expect(r.ts).toBeNull();
+    expect(r.cleanText).toBe('2026-10-12T14:03:22 compilado');
+    expect(parseRawLine('2026-10-12T14:03:22+0200 x').ts).toBe(Date.UTC(2026, 9, 12, 12, 3, 22));
   });
 
   it('de una barra de progreso queda lo último que se pintó', () => {
@@ -257,5 +280,11 @@ describe('parseRawLine y detectLevel', () => {
     expect(detectLevel('⚠ No se pudo borrar el directorio')).toBe('warn');
     expect(detectLevel('registered errorHandler middleware')).toBe('plain');
     expect(detectLevel('Compiled with 0 errors')).toBe('plain');
+    // Nombres de paquetes: «-», «.», «/» y «@» no separan palabras.
+    expect(detectLevel('+ http-errors@2.0.0')).toBe('plain');
+    expect(detectLevel('node_modules/error-ex/index.js')).toBe('plain');
+    expect(detectLevel('added eslint-plugin-deprecation@3.0.0')).toBe('plain');
+    expect(detectLevel('Failed with error.')).toBe('err');
+    expect(detectLevel('[error] upstream timed out')).toBe('err');
   });
 });

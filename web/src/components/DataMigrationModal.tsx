@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Database, XCircle } from 'lucide-react';
 import { api, openStream } from '../api';
-import { LOG_FLUSH_MS } from '../logbatch';
+import { Batcher, createBatcher } from '../logbatch';
 import { Button, Field, Modal, useToast } from './ui';
 import LogViewer from './LogViewer';
 
@@ -50,35 +50,19 @@ export default function DataMigrationModal({
   const [probe, setProbe] = useState<{ ok: boolean; message: string } | null>(null);
   const [streamLost, setStreamLost] = useState(false);
   const streamRef = useRef<EventSource | null>(null);
-  // Líneas recibidas y aún no pintadas: se vuelcan de una vez por frame en
-  // vez de un setState por línea, que con un dump rápido encolaba cientos de
-  // renders por segundo y congelaba el desplazamiento.
-  const pendingRef = useRef<string[]>([]);
-  const flushTimerRef = useRef(0);
-
-  const flush = () => {
-    if (flushTimerRef.current) window.clearTimeout(flushTimerRef.current);
-    flushTimerRef.current = 0;
-    if (pendingRef.current.length === 0) return;
-    const chunk = pendingRef.current;
-    pendingRef.current = [];
-    setLines((prev) => {
-      const next = prev.length + chunk.length > MAX_LINES ? [...prev, ...chunk].slice(-MAX_LINES) : [...prev, ...chunk];
-      return next;
-    });
-  };
-
-  // Por tandas y no por frame: ver `logbatch.ts`.
-  const push = (line: string) => {
-    pendingRef.current.push(line);
-    if (!flushTimerRef.current) flushTimerRef.current = window.setTimeout(flush, LOG_FLUSH_MS);
-  };
-
-  const cancelFlush = () => {
-    if (flushTimerRef.current) window.clearTimeout(flushTimerRef.current);
-    flushTimerRef.current = 0;
-    pendingRef.current = [];
-  };
+  // Líneas recibidas y aún no pintadas: se vuelcan por tandas (`logbatch.ts`)
+  // en vez de un setState por línea, que con un dump rápido encolaba cientos
+  // de renders por segundo y congelaba el desplazamiento.
+  const batchRef = useRef<Batcher<string> | null>(null);
+  if (!batchRef.current) {
+    batchRef.current = createBatcher<string>((chunk) =>
+      setLines((prev) => (prev.length + chunk.length > MAX_LINES ? [...prev, ...chunk].slice(-MAX_LINES) : [...prev, ...chunk])),
+    );
+  }
+  const batch = batchRef.current;
+  const flush = batch.flush;
+  const push = batch.push;
+  const cancelFlush = batch.clear;
 
   const state = useQuery({
     queryKey: ['dataMigration', serviceId],
@@ -146,7 +130,8 @@ export default function DataMigrationModal({
       streamRef.current = null;
       cancelFlush();
     }
-  }, [open]);
+    // `cancelFlush` es del lote, que vive lo que el modal: no cambia.
+  }, [open, cancelFlush]);
 
   const test = useMutation({
     mutationFn: () => api.post<{ ok: boolean; error?: string }>(`/services/${serviceId}/data-migration/test`, { sourceUrl }),

@@ -614,9 +614,9 @@ export default function LogsTab({
           </Menu>
         </div>
 
-        {/* Qué se está leyendo: lo que escribe la app, o lo que escribió el build.
-            En el móvil ocupa su fila entera y se reparte: dos pastillas anchas
-            que se aciertan con el pulgar. */}
+        {/* Qué se está leyendo: lo que escribe la app, o lo que escribió el
+            build. En el móvil comparte fila con el selector y pierde los
+            iconos: el alto que no ocupa la barra es para las líneas. */}
         <Segmented
           label="Origen del registro"
           value={stageTab}
