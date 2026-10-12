@@ -1506,6 +1506,17 @@ function LogViewerImpl({
    * gesto, en vez de mover el scroll: ver `keepPlace`.
    */
   const padAdjRef = useRef(0);
+  /**
+   * Fija la corrección y la aplica a la vez en todos los sitios que dependen
+   * de ella: la referencia, el techo del lienzo del último layout (lo usan el
+   * observador y el scroll antes del siguiente render) y el DOM.
+   */
+  const setPadAdj = useCallback((adj: number) => {
+    padAdjRef.current = adj;
+    const lay = layoutRef.current;
+    lay.canvasTop = lay.bannerTop + adj;
+    applyCanvasOffset(canvasRef.current, (lay.offsets[lay.start] ?? 0) + adj);
+  }, []);
 
   /*
    * Líneas visuales de un bloque. Con la monoespaciada y `break-all` el ajuste
@@ -1560,7 +1571,6 @@ function LogViewerImpl({
   onResizeRef.current = (entries) => {
     const heights = heightsRef.current;
     const lay = layoutRef.current;
-    const el = ref.current;
     let shift = 0;
     let dirty = false;
     for (const e of entries) {
@@ -1591,7 +1601,7 @@ function LogViewerImpl({
       if (lay.offsets[idx + 1] + lay.canvasTop <= scrollTopRef.current + 1) shift += h - used;
       dirty = true;
     }
-    if (shift && el) keepPlaceRef.current(shift);
+    if (shift) keepPlace(shift);
     if (dirty) relayout();
   };
   const onMeasure = useCallback((key: number, el: HTMLDivElement | null) => {
@@ -1625,10 +1635,10 @@ function LogViewerImpl({
     // no cambie: si no, se quedaban sin medida hasta que algo los moviera.
     colsRef.current = -1;
     if (padAdjRef.current) {
-      padAdjRef.current = 0;
+      setPadAdj(0);
       relayout();
     }
-  }, [wrap, maximized, relayout]);
+  }, [wrap, maximized, relayout, setPadAdj]);
 
   /*
    * Caracteres por línea (anchura de la columna de texto / anchura de un
@@ -1653,7 +1663,8 @@ function LogViewerImpl({
     if (cols === colsRef.current) return;
     colsRef.current = cols;
     linesCacheRef.current.clear();
-    padAdjRef.current = 0;
+    // Todo se vuelve a estimar: la corrección del gesto ya no se refiere a nada.
+    if (padAdjRef.current) setPadAdj(0);
     recalibrateRef.current = true;
     const heights = heightsRef.current;
     heights.clear();
@@ -1664,7 +1675,7 @@ function LogViewerImpl({
       if (h > 0 && rows) heights.set(key, { rows, h });
     }
     relayout();
-  }, [wrap, relayout]);
+  }, [wrap, relayout, setPadAdj]);
 
   const hasRows = visible.length > 0;
   useLayoutEffect(() => {
@@ -1695,37 +1706,30 @@ function LogViewerImpl({
    * bloqueado. Se quita del relleno superior, que no toca el scroll, y se
    * pasa al scroll cuando el gesto se asienta.
    */
-  const keepPlace = useCallback((delta: number) => {
-    const el = ref.current;
-    if (!el || Math.abs(delta) < 0.5) return;
-    if (!gestureRef.current) {
-      // Escritura directa, no `writeScrollTop`: si la compensación deja la
-      // vista junto al fondo, el evento de scroll debe poder reanudar el directo.
-      el.scrollTop += delta;
-      scrollTopRef.current = el.scrollTop;
-      return;
-    }
-    const lay = layoutRef.current;
-    padAdjRef.current -= delta;
-    lay.canvasTop = lay.bannerTop + padAdjRef.current;
-    applyCanvasOffset(canvasRef.current, (lay.offsets[lay.start] ?? 0) + padAdjRef.current);
-  }, []);
-  const keepPlaceRef = useRef(keepPlace);
-  keepPlaceRef.current = keepPlace;
+  const keepPlace = useCallback(
+    (delta: number) => {
+      const el = ref.current;
+      if (!el || Math.abs(delta) < 0.5) return;
+      // Programática: compensar no es un gesto y no decide si se sigue el final.
+      if (!gestureRef.current) writeScrollTop(el, el.scrollTop + delta);
+      else setPadAdj(padAdjRef.current - delta);
+    },
+    [writeScrollTop, setPadAdj],
+  );
 
   /** Pasa la corrección del relleno al scroll, ya sin gesto. */
   const foldPadAdj = useCallback(() => {
     const adj = padAdjRef.current;
     if (!adj) return;
-    padAdjRef.current = 0;
     const el = ref.current;
-    const lay = layoutRef.current;
-    lay.canvasTop = lay.bannerTop;
-    applyCanvasOffset(canvasRef.current, lay.offsets[lay.start] ?? 0);
+    // El scroll se lee ANTES de cambiar el relleno: después el navegador
+    // podría haberlo recortado al nuevo máximo y se restaría dos veces.
+    const top = el ? el.scrollTop : 0;
+    setPadAdj(0);
     // Siguiendo el final no hay nada que conservar: manda el fondo.
-    if (el && !followRef.current) writeScrollTop(el, el.scrollTop - adj);
+    if (el && !followRef.current) writeScrollTop(el, top - adj);
     relayout();
-  }, [writeScrollTop, relayout]);
+  }, [writeScrollTop, relayout, setPadAdj]);
 
   const scrollToBottom = useCallback(() => {
     const el = ref.current;
@@ -1812,13 +1816,12 @@ function LogViewerImpl({
     const lay = layoutRef.current;
     if (d.front > 0) {
       const idx = lay.index.get(model.prevFirstChunkKey);
-      /*
-       * Aquí sí se mueve el scroll aunque haya gesto: el historial entra
-       * junto al principio, donde no hay relleno que quitar, y sin moverlo se
-       * perdía el sitio de lectura. Solo llega con el gesto ya asentado o en
-       * uno nuevo que acaba de empezar.
-       */
-      if (idx !== undefined && idx > 0) writeScrollTop(el, el.scrollTop + lay.offsets[idx]);
+      // Con gesto en curso, la corrección va al lienzo (con margen negativo si
+      // no hay relleno que quitar) y pasa al scroll al asentarse.
+      if (idx !== undefined && idx > 0) {
+        keepPlace(lay.offsets[idx]);
+        relayout();
+      }
     } else if (d.front < 0 && model.chunks.length) {
       const a = anchorRef.current;
       const node = a ? canvasRef.current?.querySelector<HTMLElement>(`[data-id="${a.id}"]`) : null;
@@ -1838,12 +1841,12 @@ function LogViewerImpl({
         const j = prevLay.index.get(model.chunks[0].key);
         const removed = (j !== undefined ? prevLay.offsets[j] : 0) + model.partialCut * lay.lineH;
         if (removed > 0) {
-          keepPlace(-Math.min(removed, el.scrollTop));
+          keepPlace(-removed);
           relayout();
         }
       }
     }
-  }, [model, relayout, keepPlace, writeScrollTop]);
+  }, [model, relayout, keepPlace]);
 
   /*
    * Siguiendo el final, el fondo se garantiza cuando cambia lo pintado: líneas
