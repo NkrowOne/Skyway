@@ -33,6 +33,11 @@ updates:
         update-types: [patch]
         patterns: ["*"]
     ignore:
+      # zod 4 retira required_error, invalid_type_error y errorMap (las rutas
+      # los usan) y cambia los textos por defecto de los errores, que llegan
+      # a las respuestas de la API: es una migración aparte, como en Mailway.
+      - dependency-name: zod
+        update-types: ["version-update:semver-major"]
       # vite 8 compila con Rolldown y necesita @vitejs/plugin-react 6 (la 4.7
       # solo admite hasta vite 7): se sube junto con el plugin, a mano.
       - dependency-name: vite
