@@ -44,6 +44,10 @@ info() { printf '%s\n' "${C_DIM}$*${C_RESET}" >&2; }
 ok()   { printf '%s\n' "${C_OK}✓ $*${C_RESET}" >&2; }
 warn() { printf '%s\n' "${C_WARN}! $*${C_RESET}" >&2; }
 die()  { printf '%s\n' "${C_ERR}✗ $*${C_RESET}" >&2; exit 1; }
+# Salto de línea para los mensajes de varias líneas. Con printf '%s' un «\n»
+# escrito en el texto salía tal cual; interpretar las barras con '%b' también
+# alteraría lo que llega de fuera (un nombre de servicio con «\c» cortaba el mensaje).
+NL=$'\n'
 
 # ---------- configuración ----------
 load_config() {
@@ -206,7 +210,14 @@ cmd_status() {
 "'    .service as $s | .runtime as $r | .latestDeployment as $dep |
     "  \($s.name)   ·   \($proj)   ·   \($s.type)",
     "  estado: \(($r.state // "unknown") | es)",
-    "  último despliegue: \(if $dep then "\($dep.status)  \(($dep.commit_sha // "")[0:7])  \(($dep.commit_msg // "") | gsub("\n";" "))" else "—" end)"'
+    "  último despliegue: \(if $dep then "\($dep.status)  \(($dep.commit_sha // "")[0:7])  \(($dep.commit_msg // "") | gsub("\n";" "))" else "—" end)",
+    (if .pendingChanges then "  cambios sin desplegar: sí (se aplican al volver a desplegar: skyway deploy)" else empty end),
+    (if .autoDeploy then
+       "  despliegue automático: " +
+       (if .autoDeploy.error then "sin funcionar — \(.autoDeploy.error)"
+        elif .autoDeploy.okAt then "activo (última comprobación hace \((((now * 1000) - .autoDeploy.okAt) / 60000) | floor) min)"
+        else "activo (pendiente de la primera comprobación)" end)
+     else empty end)'
 }
 
 cmd_action() {
@@ -252,14 +263,26 @@ cmd_rewind() {
   local deps; deps=$(api GET "/services/$SVC_ID/deployments" \
     | jq -c '.deployments[] | select(.status == "success" and .image_tag != null)' || true)
   [[ -n "$deps" ]] || die "«$SVC_NAME» no tiene despliegues exitosos a los que volver."
-  local label='"\(.created_at/1000 | gmtime | strftime("%d/%m %H:%M"))   \((.commit_sha // "")[0:7] | if .=="" then "—" else . end)   \((.commit_msg // "") | gsub("\n";" ")[0:52])"'
+  # Solo se conservan las imágenes de las últimas versiones: las demás se marcan
+  # y, si se eligen, se ofrece reconstruir su commit en vez de un rollback que fallaría.
+  local label='"\(.created_at/1000 | gmtime | strftime("%d/%m %H:%M"))   \((.commit_sha // "")[0:7] | if .=="" then "—" else . end)   \((.commit_msg // "") | gsub("\n";" ")[0:52])\(if .imageAvailable == false then "   (sin imagen: se reconstruye)" else "" end)"'
   local chosen; chosen=$(menu_pick "$deps" "$label" "Rollback de «$SVC_NAME» — ¿a qué despliegue vuelvo?")
   local dep_id; dep_id=$(printf '%s' "$chosen" | jq -r '.id')
   local sha; sha=$(printf '%s' "$chosen" | jq -r '(.commit_sha // "")[0:7]')
-  confirm "¿Volver «$SVC_NAME» al despliegue ${sha:-$dep_id}?" || { info "Cancelado."; return 0; }
-  local out id; out=$(api POST "/deployments/$dep_id/rollback")
-  id=$(printf '%s' "$out" | jq -r '.deployment.id')
-  ok "Rollback lanzado para «$SVC_NAME» ${C_DIM}→ $sha${C_RESET}"
+  local out id
+  if [[ "$(printf '%s' "$chosen" | jq -r '.imageAvailable')" == "false" ]]; then
+    local full; full=$(printf '%s' "$chosen" | jq -r '.commit_sha // empty')
+    [[ -n "$full" ]] || die "La imagen de ese despliegue ya no está en el servidor y no tiene commit asociado: realiza un despliegue normal."
+    confirm "La imagen de esa versión ya no está en el servidor. ¿Reconstruir el commit $sha y desplegarlo?" || { info "Cancelado."; return 0; }
+    out=$(api POST "/services/$SVC_ID/deploy" --data "$(jq -cn --arg c "$full" '{commit: $c}')")
+    id=$(printf '%s' "$out" | jq -r '.deployment.id')
+    ok "Reconstrucción del commit $sha lanzada para «$SVC_NAME»"
+  else
+    confirm "¿Volver «$SVC_NAME» al despliegue ${sha:-$dep_id}?" || { info "Cancelado."; return 0; }
+    out=$(api POST "/deployments/$dep_id/rollback")
+    id=$(printf '%s' "$out" | jq -r '.deployment.id')
+    ok "Rollback lanzado para «$SVC_NAME» ${C_DIM}→ $sha${C_RESET}"
+  fi
   [[ "${FOLLOW:-0}" == "1" ]] && follow_deploy "$id"
 }
 
@@ -304,6 +327,8 @@ APT_SKYWAY='52skyway-actualizaciones'
 # pruebas los reducen para no esperar.
 INTENTOS="${SKYWAY_UPDATE_INTENTOS:-36}"
 PAUSA="${SKYWAY_UPDATE_PAUSA:-5}"
+# Cada cuánto se mira si siguen los despliegues en curso antes de reiniciar el panel.
+PAUSA_DESPLIEGUES="${SKYWAY_UPDATE_PAUSA_DESPLIEGUES:-5}"
 
 NOTA_DATOS='Los datos no se han tocado: viven en volúmenes de Docker, y las migraciones de la base de datos del panel solo añaden tablas y columnas, así que la versión anterior funciona con ella. Si alguna vez hiciera falta restaurarla, hay una copia diaria (hacia las 04:00) en Ajustes → Copias de seguridad del panel; la restauración es manual (docs/FUNCIONALIDAD.md, §9).'
 
@@ -491,6 +516,76 @@ volver_atras() {
   esperar_salud "$(pkg_version "$repo/package.json")"
 }
 
+# Despliegues en cola o en marcha, uno por línea («servicio (estado)»). Se leen
+# de la base del panel, en solo lectura, desde el propio contenedor: así no hace
+# falta token ni que el panel exponga nada en una ruta pública. Sale con error
+# si no se puede saber (contenedor parado, versión sin la tabla…).
+active_deploys() {
+  docker exec -i skyway node - 2>/dev/null <<'JS'
+try {
+  const Database = require('better-sqlite3');
+  const db = new Database((process.env.DATA_DIR || '/data') + '/skyway.db', { readonly: true, fileMustExist: true });
+  const rows = db
+    .prepare("SELECT s.name AS name, d.status AS status FROM deployments d JOIN services s ON s.id = d.service_id WHERE d.status IN ('queued', 'building', 'deploying') ORDER BY d.created_at")
+    .all();
+  for (const r of rows) console.log(`${r.name} (${r.status})`);
+} catch (e) {
+  process.exit(2);
+}
+JS
+}
+
+# Antes de recrear el contenedor: recrearlo corta los despliegues en curso (al
+# arrancar se reintentan una vez, pero el build de una web puede tardar minutos).
+# Con -y o --auto espera, como mucho 30 minutos. Devuelve 1 si quien actualiza
+# prefiere no reiniciar el panel todavía.
+wait_for_deploys() {
+  local list
+  list="$(active_deploys)" || { info "No se ha podido comprobar si hay despliegues en curso; se continúa."; return 0; }
+  [[ -n "$list" ]] || return 0
+  warn "Hay despliegues en curso; reiniciar el panel ahora los interrumpiría (al arrancar se reintentan una vez):${NL}$(printf '%s\n' "$list" | sed 's/^/    · /')"
+  if confirm "¿Esperar a que terminen antes de reiniciar el panel?"; then
+    local waited=0
+    while list="$(active_deploys)" && [[ -n "$list" ]]; do
+      if (( waited >= 1800 )); then
+        warn "Siguen en curso después de 30 minutos; se reinicia el panel igualmente."
+        return 0
+      fi
+      if (( waited % 60 == 0 )); then info "Esperando: $(printf '%s' "$list" | paste -sd ',' - | sed 's/,/, /g')"; fi
+      sleep "$PAUSA_DESPLIEGUES"
+      waited=$((waited + 5))
+    done
+    ok "No quedan despliegues en curso"
+    return 0
+  fi
+  confirm "¿Reiniciar el panel de todos modos?"
+}
+
+# Nixpacks se descarga al construir la imagen y, si falla, la imagen se
+# construye igual: sin este aviso, la actualización «terminaba bien» y los
+# repositorios sin Dockerfile dejaban de compilar en silencio.
+comprobar_nixpacks() {
+  if docker exec skyway nixpacks --version >/dev/null 2>&1; then
+    ok "Nixpacks disponible"
+  else
+    warn "Nixpacks no está instalado en la imagen: los repositorios sin Dockerfile no se podrán construir. Suele deberse a un fallo de red al descargarlo. Reconstruye la imagen sin caché:${NL}    cd $repo && $dc build --no-cache skyway && $dc up -d"
+  fi
+}
+
+# Cada build deja sin etiqueta la imagen anterior de Skyway: se acumulan. Solo
+# se ofrece a mano: la actualización nocturna no borra nada por su cuenta.
+ofrecer_limpieza() {
+  local colgantes; colgantes="$(docker images -f dangling=true -q 2>/dev/null | wc -l | tr -d ' ')" || colgantes=0
+  [[ "${colgantes:-0}" -gt 0 ]] || return 0
+  if confirm "Hay $colgantes imágenes sin etiqueta (versiones anteriores de Skyway y capas intermedias). ¿Eliminarlas para liberar espacio?"; then
+    local liberado
+    liberado="$(docker image prune -f 2>/dev/null | sed -n 's/^Total reclaimed space: *//p')" || liberado=""
+    ok "Imágenes sin etiqueta eliminadas${liberado:+ · liberado: $liberado}"
+  else
+    info "Puedes eliminarlas más tarde con «docker image prune -f» o desde Ajustes → Sistema → Liberar espacio."
+  fi
+}
+
 # Actualiza el PROPIO Skyway en el servidor. Se ejecuta desde una copia para
 # que actualizar el código no reescriba este mismo fichero a mitad de ejecución.
 cmd_update() {
@@ -611,17 +706,37 @@ cmd_update() {
   fi
 
   local version; version="$(pkg_version "$repo/package.json" || true)"
-  info "Reconstruyendo la imagen y recreando los contenedores (puede tardar unos minutos)…"
+  # Se construye ANTES de recrear nada: el panel sigue atendiendo (y
+  # desplegando) durante los minutos que tarda el build, y antes de reiniciarlo
+  # se espera a los despliegues en curso, que el reinicio cortaría.
+  info "Construyendo la imagen nueva (puede tardar unos minutos; el panel sigue en marcha)…"
   local motivo=''
-  if ! ( cd "$repo" && $dc up -d --build ); then
-    motivo="la reconstrucción de la imagen o el arranque de los contenedores ha fallado"
+  if ! ( cd "$repo" && $dc build ); then
+    motivo="la reconstrucción de la imagen ha fallado"
+  elif ! wait_for_deploys; then
+    # Quien actualiza prefiere no reiniciar todavía: el código vuelve a la
+    # versión que corre, para no dejar el repositorio en otra.
+    if [[ "$reanudar" == 0 ]] && git -C "$repo" reset --keep --quiet "$actual" 2>/dev/null; then
+      rm -f "$en_curso"
+      fallo "Actualización detenida antes de reiniciar el panel: no se ha cambiado nada. Vuelve a ejecutar «skyway update» cuando terminen los despliegues."
+    else
+      fallo "Actualización detenida antes de reiniciar el panel. Vuelve a ejecutar «skyway update» cuando terminen los despliegues: reconstruirá y comprobará de nuevo."
+    fi
+    exit 1
   else
-    info "Comprobando que todo responde (hasta unos 3 minutos)…"
-    if ! esperar_salud "$version"; then motivo="$FALLO"; fi
+    info "Recreando los contenedores…"
+    if ! ( cd "$repo" && $dc up -d --build ); then
+      motivo="la reconstrucción de la imagen o el arranque de los contenedores ha fallado"
+    else
+      info "Comprobando que todo responde (hasta unos 3 minutos)…"
+      if ! esperar_salud "$version"; then motivo="$FALLO"; fi
+    fi
   fi
 
   if [[ -z "$motivo" ]]; then
     rm -f "$en_curso" "$fallida"
+    comprobar_nixpacks
+    if [[ "$AUTO" != 1 ]]; then ofrecer_limpieza; fi
     if [[ "$previo" == "$nuevo" ]]; then
       # --forzar sin nada nuevo: se ha reconstruido lo mismo que ya había.
       ok "Skyway reconstruido y comprobado: versión ${version:-?} (commit $(corto "$nuevo"))."
@@ -917,7 +1032,8 @@ ${C_BOLD}skyway${C_RESET} — control de Skyway desde la terminal
   ${C_ACC}skyway ls${C_RESET}                        Lista los servicios accesibles
 
 En el servidor donde corre Skyway:
-  ${C_ACC}skyway update${C_RESET}  [-y] [--forzar]   Actualiza el propio Skyway y, si algo falla, vuelve a la versión anterior
+  ${C_ACC}skyway update${C_RESET}  [-y] [--forzar]   Actualiza el propio Skyway y, si algo falla, vuelve a la versión anterior.
+                                   Espera a los despliegues en curso antes de reiniciar el panel
   ${C_ACC}skyway update --auto${C_RESET}             Lo mismo sin preguntas, con aviso por los canales de alertas
   ${C_ACC}skyway auto-update${C_RESET} on [--hora HH:MM] [--sistema] | off [--sistema] | status
                                    Actualización automática cada noche (systemd; con sudo)

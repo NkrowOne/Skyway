@@ -9,6 +9,7 @@ import {
 } from '../db';
 import { aggregateReplicaState, configuredReplicas } from '../docker/containers';
 import { dockerSnapshot } from '../docker/sampler';
+import { tlsEnabled } from '../tls';
 import { ContainerState } from '../types';
 
 /**
@@ -26,7 +27,7 @@ export async function websiteRoutes(app: FastifyInstance): Promise<void> {
     // sitios como caídos.
     const snap = await dockerSnapshot(5000);
     const dockerUp = snap.docker;
-    const tls = !!getSetting('letsencryptEmail');
+    const tls = tlsEnabled();
     const sites: any[] = [];
 
     // Servicios y últimos despliegues de todos los proyectos en dos consultas:

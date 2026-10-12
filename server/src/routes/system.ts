@@ -14,6 +14,9 @@ import { findOrphanBackups, findOrphanVolumes, OrphanVolume, purgeOrphans } from
 import { nixpacksAvailable } from '../deploy/builder';
 import { channelsConfigured, dispatchToChannels } from '../notify';
 import { verifyGithubToken } from '../github/client';
+import { DEFAULT_KEEP_IMAGES } from '../deploy/deployer';
+import { refreshTraefikAcme } from '../tls';
+import { esIpv6Publicable } from '../domains';
 import { domainSchema } from './services';
 import {
   SYSTEM_BACKUP_RETENTION,
@@ -34,12 +37,14 @@ const SETTINGS_KEYS = [
   'rootDomain',
   'letsencryptEmail',
   'serverIp',
+  'serverIpv6',
   'alertCpuPercent',
   'alertMemPercent',
   'alertSustainMinutes',
   'alertWebhookUrl',
   'alertDiscordUrl',
   'alertTelegramChat',
+  'keepImages',
 ] as const;
 
 /** Núcleos del host: no cambian en caliente, y `os.cpus()` construye la lista entera en cada llamada. */
@@ -178,10 +183,17 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       for (const key of SETTINGS_KEYS) out[key] = getSetting(key);
       out.hasGithubToken = !!getSetting('githubToken');
       out.hasTelegramToken = !!getSetting('alertTelegramToken');
-      return { settings: out };
+      // El correo con el que Traefik se registra en Let's Encrypt (del .env del
+      // servidor), que es el que decide si se emiten certificados (ver tls.ts).
+      const acme = await refreshTraefikAcme();
+      return {
+        settings: out,
+        traefikAcme: { status: acme.status, email: acme.email },
+        defaults: { keepImages: DEFAULT_KEEP_IMAGES },
+      };
     });
 
-    secured.put('/api/settings', { preHandler: requireAdmin }, async (req) => {
+    secured.put('/api/settings', { preHandler: requireAdmin }, async (req, reply) => {
       const body = z
         .object({
           // Del dominio raíz salen los subdominios que el panel propone para
@@ -189,6 +201,18 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
           rootDomain: z.union([domainSchema, z.literal('')]).optional(),
           letsencryptEmail: z.union([z.string().trim().email(), z.literal('')]).optional(),
           serverIp: z.union([z.string().trim().regex(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, 'IP inválida'), z.literal('')]).optional(),
+          // Solo para dar por buenos los AAAA que apuntan a este servidor: si
+          // no se indica, cualquier AAAA de un dominio se trata como ajeno.
+          serverIpv6: z
+            .union([
+              z
+                .string()
+                .trim()
+                .toLowerCase()
+                .refine(esIpv6Publicable, 'IPv6 no válida: indica la dirección pública, sin identificador de zona («%eth0»).'),
+              z.literal(''),
+            ])
+            .optional(),
           githubToken: z.string().trim().optional(),
           alertCpuPercent: z.union([z.coerce.number().min(10).max(100), z.literal('')]).optional(),
           alertMemPercent: z.union([z.coerce.number().min(10).max(100), z.literal('')]).optional(),
@@ -197,8 +221,14 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
           alertDiscordUrl: z.union([z.string().trim().url(), z.literal('')]).optional(),
           alertTelegramToken: z.string().trim().optional(),
           alertTelegramChat: z.string().trim().optional(),
+          // Versiones por servicio cuya imagen se conserva para volver a ellas.
+          keepImages: z.union([z.string(), z.number()]).optional(),
         })
         .parse(req.body);
+      const keepImages = body.keepImages === undefined ? undefined : String(body.keepImages).trim();
+      if (keepImages !== undefined && keepImages !== '' && !(/^\d{1,2}$/.test(keepImages) && Number(keepImages) >= 1 && Number(keepImages) <= 50)) {
+        return reply.code(400).send({ error: 'Las versiones conservadas por servicio deben ser un número entre 1 y 50.', code: 'invalid_keep_images' });
+      }
 
       const setIf = (key: string, value: string | number | undefined) => {
         if (value !== undefined) setSetting(key, value === '' ? null : String(value));
@@ -206,6 +236,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       setIf('rootDomain', body.rootDomain);
       setIf('letsencryptEmail', body.letsencryptEmail);
       setIf('serverIp', body.serverIp);
+      setIf('serverIpv6', body.serverIpv6);
       setIf('githubToken', body.githubToken);
       setIf('alertCpuPercent', body.alertCpuPercent);
       setIf('alertMemPercent', body.alertMemPercent);
@@ -214,6 +245,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       setIf('alertDiscordUrl', body.alertDiscordUrl);
       setIf('alertTelegramToken', body.alertTelegramToken);
       setIf('alertTelegramChat', body.alertTelegramChat);
+      setIf('keepImages', keepImages);
       audit(req, 'settings_updated');
       return { ok: true };
     });

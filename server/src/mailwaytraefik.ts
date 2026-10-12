@@ -28,6 +28,8 @@
  * `domainguard.ts` reserva también los que aún esperan DNS.
  */
 import { getSetting, listAssignedDomains, listServices, setSetting } from './db';
+import { panelDomains } from './paneldomain';
+import { dockerAvailable, dockerQuery } from './docker/client';
 import { configuredReplicas, replicaName } from './docker/containers';
 import {
   MAILWAY_SETTING,
@@ -37,6 +39,7 @@ import {
   listAllWhitelabelDomains,
   mailwayConfigured,
   mailwayProject,
+  rememberContainerHosts,
 } from './mailway';
 
 // ---------- saneado (función pura) ----------
@@ -319,7 +322,8 @@ function mailwayContainerNames(): Set<string> {
  */
 export function bridgeOptions(): SanitizeOptions {
   const reserved = listAssignedDomains();
-  for (const d of (process.env.SKYWAY_DOMAIN ?? '').split(',')) if (d.trim()) reserved.push(d.trim().toLowerCase());
+  // Los del panel: SKYWAY_DOMAIN y los adicionales de SKYWAY_DOMAIN_EXTRA.
+  for (const d of panelDomains()) reserved.push(d);
   const names = mailwayContainerNames();
   return {
     reservedHosts: reserved,
@@ -440,6 +444,45 @@ async function refreshWhitelabelHosts(log?: Logger): Promise<void> {
   }
 }
 
+/**
+ * Contenedores que despliega el instalador de Mailway con sus propias rutas
+ * de Traefik (etiquetas del compose, que el puente no ve): el servidor de
+ * correo, el webmail y, en la instalación autónoma, el panel. Se comparan
+ * enteros: los contenedores de Skyway se llaman `skyway-…` y ningún cliente
+ * puede crear uno con estos nombres.
+ */
+const CONTENEDORES_MAILWAY = ['mailway-mail', 'mailway-webmail', 'mailway-panel'];
+const LECTURA_CONTENEDORES_MS = 60_000;
+let contenedoresLeidosEn = 0;
+
+/**
+ * Hosts de las reglas `Host(…)` de los contenedores de Mailway. Son nombres
+ * del operador que apuntan aquí aunque Mailway anuncie otros (tras reinstalar
+ * con nombres nuevos, el compose usa los nuevos y Mailway puede seguir
+ * anunciando los viejos): `domainguard.ts` los reserva igual. Nunca lanza;
+ * sin Docker se conserva la última lista.
+ */
+export async function refreshContainerHosts(force = false): Promise<void> {
+  if (!force && Date.now() - contenedoresLeidosEn < LECTURA_CONTENEDORES_MS) return;
+  contenedoresLeidosEn = Date.now();
+  try {
+    if (!(await dockerAvailable())) return;
+    const lista = await dockerQuery.listContainers({ all: true, filters: { name: CONTENEDORES_MAILWAY } });
+    const hosts = new Set<string>();
+    for (const c of lista) {
+      const nombres = (c.Names ?? []).map((n) => n.replace(/^\//, ''));
+      if (!nombres.some((n) => CONTENEDORES_MAILWAY.includes(n))) continue;
+      for (const [clave, valor] of Object.entries(c.Labels ?? {})) {
+        if (!/^traefik\.http\.routers\.[^.]+\.rule$/.test(clave)) continue;
+        for (const h of parseHostRule(valor) ?? []) hosts.add(h);
+      }
+    }
+    rememberContainerHosts([...hosts]);
+  } catch {
+    /* Docker no responde: se conserva la lista anterior */
+  }
+}
+
 /** Última configuración buena conocida, vuelta a sanear con los dominios de AHORA. */
 function lastGood(opts: SanitizeOptions): TraefikDynamicConfig {
   let base: unknown = state?.syncedAt ? state.config : null;
@@ -484,6 +527,8 @@ const SIN_CONFIGURAR =
 
 /** Configuración dinámica para el proveedor HTTP de Traefik. Nunca lanza. */
 export async function mailwayTraefikConfig(log?: Logger): Promise<TraefikDynamicConfig> {
+  // Con su propia cadencia y sin esperar: no retrasa la respuesta a Traefik.
+  void refreshContainerHosts();
   if (!mailwayConfigured()) {
     // Sin token no se puede leer nada nuevo, pero retirar las rutas dejaría sin
     // webmail a los clientes por un token rotado o borrado por error: solo las

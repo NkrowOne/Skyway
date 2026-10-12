@@ -9,7 +9,6 @@ import {
   countWorkspaceServices,
   createService,
   getProject,
-  getSetting,
   serviceSlugExists,
   setEnv,
   transaction,
@@ -27,6 +26,7 @@ import { parseTemplateCode } from '../railway/client';
 import { planRailwayTemplate, rewriteTemplateRefs } from '../railway/template';
 import { getStack, renderStackEnv, stackList, StackRenderCtx } from '../stacks';
 import { getTemplate } from '../templates';
+import { tlsEnabled } from '../tls';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from '../types';
 import { randomToken, slugify, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
 import { domainSchema, publicServiceConfig } from './services';
@@ -182,7 +182,7 @@ export async function stackRoutes(app: FastifyInstance): Promise<void> {
     const entry = stack.services.find((s) => s.public) ?? stack.services[stack.services.length - 1];
     // Sin dominio la pila sigue siendo utilizable desde el propio proyecto: las
     // URLs públicas apuntan al alias interno del servicio de entrada.
-    const scheme = getSetting('letsencryptEmail') ? 'https' : 'http';
+    const scheme = tlsEnabled() ? 'https' : 'http';
     const publicUrl = dominioPila
       ? `${scheme}://${dominioPila}`
       : `http://${slugs[entry.key]}:${entry.port ?? 80}`;

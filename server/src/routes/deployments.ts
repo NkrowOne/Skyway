@@ -12,7 +12,7 @@ import {
 } from '../db';
 import { cancelDeployment, triggerDeploy } from '../deploy/deployer';
 import { dockerAvailable } from '../docker/client';
-import { containerName, fetchLogsText, findContainer } from '../docker/containers';
+import { containerName, fetchLogsText, findContainer, imageExists, imageTagsOf } from '../docker/containers';
 import { onDeploy } from '../events';
 import { markManualAction } from '../monitor';
 import { sseInit } from '../sse';
@@ -32,10 +32,32 @@ function serviceAccess(req: FastifyRequest, reply: FastifyReply, serviceId: stri
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
+  /**
+   * Historial del servicio. En los de repositorio, cada despliegue correcto
+   * lleva `imageAvailable`: si su imagen sigue en el servidor (solo se
+   * conservan las de las últimas versiones, ajuste `keepImages`). Sin ella,
+   * volver a esa versión fallaría: el panel desactiva el botón y ofrece
+   * reconstruir el commit. Ausente si Docker no responde (no se sabe).
+   */
   app.get('/api/services/:id/deployments', async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!serviceAccess(req, reply, id)) return reply;
-    return { deployments: listDeployments(id, 25) };
+    const deployments = listDeployments(id, 25);
+    const service = getService(id);
+    const project = service ? getProject(service.project_id) : undefined;
+    if (!service || !project || service.type !== 'git' || !(await dockerAvailable())) return { deployments };
+    let tags: Set<string>;
+    try {
+      // Una sola consulta al daemon por el repositorio de imágenes del servicio.
+      tags = await imageTagsOf(`skyway/${project.slug}-${service.slug}`);
+    } catch {
+      return { deployments };
+    }
+    return {
+      deployments: deployments.map((d) =>
+        d.status === 'success' && d.image_tag ? { ...d, imageAvailable: tags.has(d.image_tag) } : d,
+      ),
+    };
   });
 
   app.get('/api/deployments/:id', async (req, reply) => {
@@ -75,6 +97,20 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     if (!service) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (service.type !== 'git') {
       return reply.code(400).send({ error: 'Solo los servicios de repositorio admiten volver a una versión anterior (los de imagen fija se vuelven a desplegar directamente)' });
+    }
+    // Sin la imagen el despliegue fallaría (y lanzaría una alerta de despliegue
+    // fallido en pleno incidente): se rechaza antes de crear nada. Si Docker no
+    // responde no se puede saber y se deja seguir, como antes.
+    if ((await dockerAvailable()) && !(await imageExists(deployment.image_tag))) {
+      return reply.code(409).send({
+        error:
+          `La imagen de esta versión ya no está en el servidor (solo se conservan las de las últimas versiones correctas). ` +
+          (deployment.commit_sha
+            ? `Para volver a ella, reconstruye el commit ${deployment.commit_sha.slice(0, 7)}.`
+            : 'Realiza un despliegue normal.'),
+        code: 'image_purged',
+        commit: deployment.commit_sha,
+      });
     }
     markManualAction(service.id);
     audit(req, 'service_rollback', { type: 'service', id: service.id, detail: `${service.name} → ${deployment.image_tag}` });

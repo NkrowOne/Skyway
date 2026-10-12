@@ -1,14 +1,16 @@
-import { FastifyInstance, FastifyRequest } from 'fastify';
+import { domainToASCII } from 'url';
+import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { assertProjectAccess, currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
 import { audit } from '../audit';
 import { cloudflareConfigurado } from '../cloudflareconfig';
-import { cambiarProxyCloudflare, dnsAutomaticoAdmin, dnsSinBase, verificarEnCloudflare } from '../cloudflaredns';
+import { cambiarProxyCloudflare, dnsAutomaticoAdmin, dnsSinBase, planReemplazo, reemplazarRegistros, verificarEnCloudflare } from '../cloudflaredns';
 import { dbConsoleEngine } from '../dbconsole';
 import { domainClaimError, dominiosConPareja } from '../domainguard';
 import { limpiarSinPareja, ordenarDominios } from '../dominioprincipal';
 import { markManualAction } from '../monitor';
 import {
+  bumpConfigRev,
   countWorkspaceServices,
   createService,
   getEnv,
@@ -18,11 +20,18 @@ import {
   getService,
   getSetting,
   latestDeployment,
+  listServices,
+  patchEnv,
+  servicesWithPendingChanges,
   setEnv,
   setServiceStopped,
   uniqueServiceSlug,
   updateService,
 } from '../db';
+import { autoDeployStatus } from '../autodeploy';
+import { FULL_SHA_RE } from '../deploy/builder';
+import { githubAppConfigured } from '../github/app';
+import { panelBaseUrl } from '../paneldomain';
 import {
   effectiveQuota,
   isWorkspaceActive,
@@ -33,7 +42,18 @@ import {
   workspaceOfProject,
   workspacePlan,
 } from '../quota';
-import { archiveContainerLogs } from '../deploy/deployer';
+import { archiveContainerLogs, despliegueEnCurso, limpiarRestosEnCola } from '../deploy/deployer';
+import {
+  bibliotecasDeBot,
+  comandoParada,
+  estrategiaDespliegue,
+  estrategiaEfectiva,
+  GRACIA_PARADA_MAXIMA,
+  GRACIA_PARADA_MINIMA_BASE_DE_DATOS,
+  graciaParada,
+  healthcheckDelRepositorio,
+  llamadoPorOtros,
+} from '../deploy/estrategia';
 import { EnvFileSource, envImportContextFor, fetchRepoEnvFiles, finalizeEnvImport, planEnvImport } from '../deploy/envimport';
 import { GithubError, parseGithubSlug } from '../github/client';
 import { resolveGitToken } from '../github/resolve';
@@ -44,10 +64,10 @@ import {
   configuredReplicas,
   containerName,
   getRuntime,
+  listServiceContainers,
+  pararConGracia,
   replicaName,
-  restartContainer,
   startContainer,
-  stopContainer,
   updateResources,
 } from '../docker/containers';
 import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
@@ -56,7 +76,7 @@ import { getTemplate, templateList } from '../templates';
 import { applyPlan, applyPlanFromRepo, ApplyResult, PlanChangedError, planWithMail } from '../integrations';
 import { adviseEnv } from '../needs';
 import { availableReferences, resolveServiceEnv } from '../variables';
-import { DatabaseConfig, GitConfig, ImageConfig, ServiceConfig, ServiceRow } from '../types';
+import { DatabaseConfig, GitConfig, ImageConfig, ProjectRow, ServiceConfig, ServiceRow } from '../types';
 import { randomToken, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
 import { confirmsDeletion, purgeService, PurgeBlockedError, purgeSummary, warningsForAudit } from '../purge';
 
@@ -106,11 +126,39 @@ export function publicServiceConfig<T extends ServiceConfig>(cfg: T): T {
  * regla que capturara el tráfico de los dominios de otros clientes.
  */
 const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/**
+ * Lo que escribe una persona como dominio, en la forma que va a Traefik y al
+ * DNS: sin esquema, ruta ni puerto (se pega a menudo la URL de la web), sin el
+ * punto final y en ASCII («panadería.es» → «xn--panadera-i2a.es», como hace
+ * Mailway). Devuelve '' si no es un nombre de host; la validación de
+ * `HOSTNAME` viene después, sobre el resultado.
+ */
+export function normalizarDominio(raw: string): string {
+  let host = raw.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) {
+    try {
+      host = new URL(host).hostname;
+    } catch {
+      return '';
+    }
+  } else {
+    host = host.split(/[/?#]/)[0].replace(/:\d+$/, '');
+  }
+  host = host.replace(/\.$/, '');
+  // domainToASCII devuelve '' para lo que no puede ser un dominio.
+  return host ? domainToASCII(host) : '';
+}
+
 export const domainSchema = z
   .string()
   .trim()
-  .transform((d) => d.toLowerCase())
-  .refine((d) => HOSTNAME.test(d), 'Dominio no válido: solo letras, números, guiones y puntos');
+  .max(2000)
+  .transform(normalizarDominio)
+  .refine(
+    (d) => HOSTNAME.test(d),
+    'Dominio no válido: escribe solo el nombre, por ejemplo app.midominio.com (se admiten acentos y «ñ»).',
+  );
 
 /**
  * Dominios cuya pareja con o sin www se descarta (`dominiosSinPareja`). Se
@@ -210,6 +258,24 @@ const patchSchema = z.object({
       replicas: z.coerce.number().int().min(1).max(10).optional(),
       backupSchedule: z.enum(['daily', 'weekly']).nullable().optional(),
       backupRetention: z.coerce.number().int().min(1).max(60).optional(),
+      // Despliegue y parada (`deploy/estrategia.ts`). 'auto' es la ausencia de
+      // elección, igual que en el constructor; null deja la gracia por defecto.
+      deployStrategy: z.enum(['overlap', 'recreate', 'auto']).optional(),
+      // Un número, o sus cifras como texto; vacío o null la deja sin fijar. Sin
+      // `z.coerce`: convertía "" en 0 (SIGKILL inmediato en cada parada) y
+      // `true` en 1.
+      stopGraceSeconds: z
+        .preprocess(
+          (v) => (v === '' ? null : typeof v === 'string' && /^\s*\d+\s*$/.test(v) ? Number(v) : v),
+          z
+            .number({ invalid_type_error: 'La gracia de parada es un número entero de segundos, de 0 a 600.' })
+            .int('La gracia de parada es un número entero de segundos, de 0 a 600.')
+            .min(0, 'La gracia de parada es un número entero de segundos, de 0 a 600.')
+            .max(GRACIA_PARADA_MAXIMA, 'La gracia de parada admite hasta 600 segundos.')
+            .nullable(),
+        )
+        .optional(),
+      stopCommand: z.string().trim().max(1000, 'El comando al parar admite hasta 1000 caracteres.').nullable().optional(),
     })
     .optional(),
   /**
@@ -243,6 +309,38 @@ const REDEPLOY_FIELDS = [
   'repoUrl', 'connectorId', 'githubInstallationId', 'branch', 'rootDir', 'dockerfilePath', 'builder', 'startCmd', 'buildCmd', 'port',
   'domains', 'hostPort', 'version', 'image', 'buildArgs', 'healthcheckPath', 'volumes', 'replicas',
 ] as const;
+
+/** Nombre de variable de entorno admitido. */
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Cambios de variables de quien edita (`set` y `unset`), calculados contra lo
+ * que cargó. Sustituye al reemplazo de la lista entera (PUT), que borraba lo que
+ * otros habían escrito entretanto (ver `patchEnv`).
+ */
+export const envPatchSchema = z.object({
+  set: z.record(z.string()).default({}),
+  unset: z.array(z.string().max(200)).max(1000).default([]),
+});
+
+/** Primera clave que no es un nombre de variable válido, o null. */
+export function invalidEnvKey(keys: Iterable<string>): string | null {
+  for (const key of keys) if (!ENV_KEY_RE.test(key)) return key;
+  return null;
+}
+
+/**
+ * ¿Recibe este servicio los push por el webhook de la GitHub App? Lo hace si
+ * clona con una instalación de la App que sigue conectada y activa: la App
+ * recibe los eventos de los repos a los que tiene acceso. Entonces el webhook
+ * manual sobra (y con los dos cada push desplegaba dos veces).
+ */
+function coveredByGithubApp(service: ServiceRow): boolean {
+  if (service.type !== 'git' || !githubAppConfigured()) return false;
+  const rowId = (service.config as GitConfig).githubInstallationId;
+  const row = rowId ? getGithubInstallation(rowId) : undefined;
+  return !!row && row.suspended !== 1;
+}
 
 function loadService(id: string): { service: ServiceRow; project: NonNullable<ReturnType<typeof getProject>> } | null {
   const service = getService(id);
@@ -482,6 +580,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
       const { result, plan } = applied;
       auditPlan(req, found.service, result);
+      if (result.applied.length > 0) bumpConfigRev([id]);
       let deploymentId: string | null = null;
       if (body.redeploy && result.applied.length > 0) {
         markManualAction(id);
@@ -502,16 +601,30 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const snap = await dockerSnapshot(PANEL_MAX_AGE_MS);
     const docker = snap.docker;
     const runtime = runtimeIn(snap, id);
+    const isGit = found.service.type === 'git';
     return {
       // El secreto del webhook sí va (Ajustes lo copia); los build args, tapados.
       service: { ...found.service, config: maskBuildArgs(found.service.config) },
       project: found.project,
       runtime,
       latestDeployment: latestDeployment(id) ?? null,
+      // Cambios guardados que su último despliegue correcto no lleva: lo guarda
+      // el servidor, así que el aviso sobrevive a cerrar el panel o recargar.
+      pendingChanges: servicesWithPendingChanges([found.service]).has(id),
+      // Sondeo del auto-deploy: última comprobación y su error, si lo hubo.
+      autoDeploy: isGit && (found.service.config as GitConfig).autoDeploy !== false ? autoDeployStatus(id) : null,
+      // Webhook manual: con el dominio del panel (no el del túnel SSH) y si ya
+      // lo cubre la GitHub App, para no configurar los dos.
+      webhook: isGit
+        ? { url: `${panelBaseUrl(req)}/api/webhooks/github/${id}`, coveredByApp: coveredByGithubApp(found.service) }
+        : null,
       // Quién tiene consola lo decide el servidor: el panel no puede saber si
       // una imagen cualquiera es una base de datos sin repetir aquí la tabla de
       // imágenes conocidas, y dos copias de esa tabla se separan a la primera.
       dbConsole: dbConsoleEngine(found.service),
+      // Cómo se despliega y se para: la estrategia efectiva y su motivo, para
+      // que Ajustes enseñe qué hace «Automático» con este servicio ahora.
+      deploy: infoDespliegue(found.service),
     };
   });
 
@@ -570,7 +683,9 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         if (key === 'autoDeploy' && found.service.type !== 'git') continue;
         if (key === 'autoImportEnv' && found.service.type !== 'git') continue;
         // Campos que no aplican a bases de datos: se ignoran sin efecto.
-        if (found.service.type === 'database' && ['replicas', 'healthcheckPath'].includes(key)) continue;
+        // Ni la estrategia ni el comando al parar: una base de datos se despliega
+        // siempre con una sola copia y su parada la gobierna el motor.
+        if (found.service.type === 'database' && ['replicas', 'healthcheckPath', 'deployStrategy', 'stopCommand'].includes(key)) continue;
         if (found.service.type !== 'database' && ['backupSchedule', 'backupRetention'].includes(key)) continue;
         // Un servicio git siempre escucha en un puerto: null no lo borra.
         if (key === 'port' && value === null && found.service.type === 'git') continue;
@@ -578,6 +693,20 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         // 'auto' es la ausencia de elección: se guarda como tal, y así volver a
         // «Automático» no cuenta como cambio frente a un servicio que nunca lo tocó.
         if (key === 'builder' && value === 'auto') normalized = undefined;
+        if (key === 'deployStrategy' && value === 'auto') normalized = undefined;
+        if (key === 'stopCommand' && value === '') normalized = undefined;
+        // Una base de datos nunca se para con menos de 10 s (`graciaParada` lo
+        // aplica igualmente): se dice aquí en vez de guardar lo que no se usará.
+        if (
+          key === 'stopGraceSeconds' &&
+          found.service.type === 'database' &&
+          typeof value === 'number' &&
+          value < GRACIA_PARADA_MINIMA_BASE_DE_DATOS
+        ) {
+          return reply
+            .code(400)
+            .send({ error: `La gracia de parada de una base de datos va de ${GRACIA_PARADA_MINIMA_BASE_DE_DATOS} a ${GRACIA_PARADA_MAXIMA} segundos.` });
+        }
 
         // Las lecturas devuelven los build args tapados (`•••`): un cliente de la
         // API que reenvíe la config tal cual conserva el valor que ya tenía en vez
@@ -735,8 +864,37 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // El comando al parar se ejecuta dentro del contenedor en marcha en cada
+    // parada (también al pulsar Reiniciar): equivale a la terminal y lleva sus
+    // mismas protecciones. Solo al guardar uno nuevo o distinto: conservar el
+    // que hay, o quitarlo, no abre nada.
+    const comandoNuevo = typeof newCfg.stopCommand === 'string' ? newCfg.stopCommand : undefined;
+    const comandoCambia = (comandoNuevo ?? null) !== (typeof oldCfg.stopCommand === 'string' ? oldCfg.stopCommand : null);
+    if (comandoNuevo !== undefined && comandoCambia) {
+      const ws = workspaceOfProject(found.project.id);
+      if (ws && !isAdmin && !isWorkspaceActive(ws)) {
+        return reply.code(403).send({ error: 'El workspace está suspendido: las operaciones están detenidas hasta reactivarlo.' });
+      }
+      if (!moduleAllowedForProject(found.project.id, 'exec', isAdmin)) {
+        return reply.code(403).send({ error: 'El comando al parar requiere el módulo «Terminal de comandos», que no está activo en este workspace.' });
+      }
+    }
+
+    // Los servicios que usan la dirección de este (`${{web.PUBLIC_URL}}`,
+    // `${{api.INTERNAL_URL}}`) la llevan escrita en su entorno desde su último
+    // despliegue: si cambian los dominios o el puerto, quedan con «cambios sin
+    // desplegar» para que se vea que también hay que volver a desplegarlos.
+    // Foto de su entorno resuelto antes de guardar; se compara después.
+    const fotoHermanos =
+      body.config?.domains !== undefined || body.config?.port !== undefined ? entornosDeHermanos(found.service) : null;
+
     const name = body.name ?? found.service.name;
     updateService(id, name, newCfg);
+    if (fotoHermanos) {
+      const despues = entornosDeHermanos(found.service);
+      const cambian = [...fotoHermanos].filter(([sid, antes]) => despues.has(sid) && despues.get(sid) !== antes).map(([sid]) => sid);
+      if (cambian.length > 0) bumpConfigRev(cambian);
+    }
 
     if (resourcesChanged && !(await dockerAvailable())) {
       // Sin Docker no se pueden aplicar en caliente: que el panel pida redesplegar
@@ -763,8 +921,18 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // Un cambio que solo surte efecto al redesplegar queda como «sin desplegar».
+    if (needsRedeploy) bumpConfigRev([id]);
     const updated = getService(id)!;
     audit(req, 'service_updated', { type: 'service', id, detail: updated.name });
+    if (comandoCambia) {
+      // Como la terminal (`service_exec`): los primeros 120 caracteres.
+      audit(req, 'service_stop_command', {
+        type: 'service',
+        id,
+        detail: `${updated.name}: ${comandoNuevo !== undefined ? comandoNuevo.slice(0, 120) : 'sin comando al parar'}`,
+      });
+    }
     // DNS automático solo de los dominios que añade ESTA petición: los que ya
     // tenía el servicio (quizá añadidos por el cliente) nunca se tocan al
     // guardar otra cosa. «Nuevo» respecto a la base de quien edita, no solo a
@@ -841,6 +1009,65 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
   );
 
   /**
+   * Reemplazo en Cloudflare del registro de la web del hosting anterior
+   * (traer una web a Skyway). Solo el administrador y en dos pasos: la
+   * revisión (GET, no toca nada) enseña los A/AAAA/CNAME exactos de ese
+   * nombre que se sustituirían, y la confirmación (POST, con sesión de
+   * navegador) los repite: si la zona ha cambiado entre medias, no se toca
+   * nada. Nunca se reemplazan los nombres de la plataforma ni los reservados
+   * a otro proyecto (`planReemplazo`). Lo borrado se guarda para restaurarlo
+   * en Ajustes → Cloudflare.
+   */
+  const dominioDelServicio = (service: ServiceRow, domain: string): boolean =>
+    ((service.config as { domains?: string[] }).domains ?? []).map((d) => d.trim().toLowerCase()).includes(domain);
+
+  app.get(
+    '/api/services/:id/cloudflare-dns/replace',
+    { preHandler: [requireAdmin, rateLimit({ max: 30, windowMs: 60_000 })] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const found = loadService(id);
+      if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+      const { domain } = z.object({ domain: z.string().trim().toLowerCase().min(1).max(253) }).parse(req.query ?? {});
+      if (!dominioDelServicio(found.service, domain)) {
+        return reply.code(404).send({ error: `El dominio ${domain} no está asignado a este servicio. Guarda antes los cambios.` });
+      }
+      return { plan: await planReemplazo(domain, found.project.id) };
+    },
+  );
+
+  app.post(
+    '/api/services/:id/cloudflare-dns/replace',
+    { preHandler: [requireAdmin, requireSession, rateLimit({ max: 10, windowMs: 60_000 })] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const found = loadService(id);
+      if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+      const body = z
+        .object({
+          domain: z.string().trim().toLowerCase().min(1).max(253),
+          // Los registros que el administrador ha revisado y confirma sustituir.
+          records: z
+            .array(z.object({ id: z.string().min(1).max(100), type: z.enum(['A', 'AAAA', 'CNAME']), content: z.string().max(500) }))
+            .min(1, 'Indica los registros que confirmas sustituir.')
+            .max(20),
+        })
+        .parse(req.body ?? {});
+      if (!dominioDelServicio(found.service, body.domain)) {
+        return reply.code(404).send({ error: `El dominio ${body.domain} no está asignado a este servicio. Guarda antes los cambios.` });
+      }
+      const dns = await reemplazarRegistros(
+        body.domain,
+        found.project.id,
+        body.records,
+        (action, target) => audit(req, action, target),
+        { type: 'service', id },
+      );
+      return { dns: [dns] };
+    },
+  );
+
+  /**
    * Elimina el servicio con TODOS sus datos (contenedores, volúmenes que no
    * comparta con otro servicio, imágenes construidas y copias de seguridad;
    * ver `purge.ts`), con la misma regla que el borrado de proyectos: sin
@@ -906,14 +1133,23 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     const found = loadService(id);
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
-    const body = z.object({ force: z.boolean().optional() }).parse(req.body ?? {});
+    const body = z
+      .object({
+        force: z.boolean().optional(),
+        // Reconstruir un commit concreto (una versión cuya imagen ya se purgó).
+        commit: z.string().trim().toLowerCase().regex(FULL_SHA_RE, 'El commit debe ser un SHA completo de 40 caracteres').optional(),
+      })
+      .parse(req.body ?? {});
+    if (body.commit && found.service.type !== 'git') {
+      return reply.code(400).send({ error: 'Solo los servicios de repositorio pueden reconstruir un commit concreto.', code: 'not_git' });
+    }
     markManualAction(id);
     audit(req, 'service_deploy', {
       type: 'service',
       id,
-      detail: `${found.service.name}${body.force ? ' (reconstrucción forzada)' : ''}`,
+      detail: `${found.service.name}${body.commit ? ` (reconstrucción del commit ${body.commit.slice(0, 7)})` : body.force ? ' (reconstrucción forzada)' : ''}`,
     });
-    const deployment = triggerDeploy(id, 'manual', { forceBuild: body.force });
+    const deployment = triggerDeploy(id, 'manual', { forceBuild: body.force, targetCommit: body.commit });
     reply.code(202);
     return { deployment };
   });
@@ -925,42 +1161,18 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
       if (!assertProjectAccess(req, reply, found.project.id)) return reply;
       if (!(await dockerAvailable())) return reply.code(503).send({ error: 'Docker no está disponible' });
+      // El monitor solo perdona una caída durante 3 min tras una acción
+      // manual, y una parada con una gracia larga (hasta 600 s, más el comando
+      // al parar) puede terminar fuera de esa ventana: se renueva mientras dura
+      // la acción y una vez más al acabar.
       markManualAction(id);
-      const total = configuredReplicas(found.service);
-      const lastDep = latestDeployment(found.service.id);
-      // Se actúa réplica a réplica: una que aún no existe (réplicas ampliadas en
-      // Ajustes sin redesplegar, o un servicio nunca desplegado) no puede
-      // convertir en 500 la acción sobre las que sí están.
-      let tocadas = 0;
-      let fallo: any = null;
-      for (let i = 1; i <= total; i++) {
-        const name = replicaName(found.project, found.service, i);
-        try {
-          if (action === 'start') {
-            await startContainer(name);
-          } else if (action === 'stop') {
-            await archiveContainerLogs(name, lastDep?.id);
-            await stopContainer(name);
-          } else {
-            await restartContainer(name);
-          }
-          tocadas += 1;
-        } catch (err: any) {
-          if (err?.statusCode === 404) continue;
-          fallo = err;
-        }
+      const latido = setInterval(() => markManualAction(id), 60_000);
+      try {
+        return await accionSobreCopias(req, reply, found.project, found.service, action);
+      } finally {
+        clearInterval(latido);
+        markManualAction(id);
       }
-      if (fallo) return reply.code(500).send({ error: fallo?.message || 'Operación fallida' });
-      if (tocadas === 0 && action !== 'stop') {
-        return reply.code(409).send({ error: 'El contenedor aún no existe: es necesario desplegar el servicio primero' });
-      }
-      audit(req, `service_${action}`, { type: 'service', id, detail: found.service.name });
-      // Una parada pedida desde aquí no es una caída: el panel la pinta en gris.
-      setServiceStopped(id, action === 'stop');
-      // La acción acaba de cambiar los contenedores: la foto compartida ya no
-      // vale y aquí se lee la verdad, no la caché.
-      invalidateDockerSnapshot();
-      return { ok: true, runtime: await getRuntime(containerName(found.project, found.service)) };
     });
   }
 
@@ -985,18 +1197,45 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
     if (!assertProjectAccess(req, reply, found.project.id)) return reply;
     const body = z.object({ vars: z.record(z.string()) }).parse(req.body);
-    for (const key of Object.keys(body.vars)) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-        return reply.code(400).send({ error: `Nombre de variable inválido: ${key}` });
-      }
-    }
+    const mala = invalidEnvKey(Object.keys(body.vars));
+    if (mala !== null) return reply.code(400).send({ error: `Nombre de variable inválido: ${mala}`, code: 'invalid_key' });
     setEnv(id, body.vars);
+    bumpConfigRev([id]);
     audit(req, 'service_env_updated', {
       type: 'service',
       id,
       detail: `${found.service.name}: ${Object.keys(body.vars).length} variables`,
     });
     return { ok: true, needsRedeploy: true };
+  });
+
+  /**
+   * Guardado de la pestaña Variables: solo los cambios de quien edita, sobre
+   * las variables ACTUALES. El PUT reemplazaba la lista entera y borraba en
+   * silencio lo que otro había escrito mientras se editaba: lo que importa el
+   * primer despliegue, los secretos que genera el manifiesto (que el siguiente
+   * despliegue regeneraría con otro valor) o las credenciales SMTP de Correo.
+   */
+  app.patch('/api/services/:id/env', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const found = loadService(id);
+    if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
+    const body = envPatchSchema.parse(req.body ?? {});
+    const mala = invalidEnvKey([...Object.keys(body.set), ...body.unset]);
+    if (mala !== null) return reply.code(400).send({ error: `Nombre de variable inválido: ${mala}`, code: 'invalid_key' });
+    const cambiadas = Object.keys(body.set).length;
+    const quitadas = body.unset.filter((k) => !Object.hasOwn(body.set, k)).length;
+    if (cambiadas + quitadas > 0) {
+      patchEnv(id, body.set, body.unset);
+      bumpConfigRev([id]);
+      audit(req, 'service_env_updated', {
+        type: 'service',
+        id,
+        detail: `${found.service.name}: ${cambiadas} definidas, ${quitadas} eliminadas`,
+      });
+    }
+    return { ok: true, needsRedeploy: cambiadas + quitadas > 0, vars: getEnv(id) };
   });
 
   /**
@@ -1055,6 +1294,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
               : `Se ${n === 1 ? 'importaría 1 variable' : `importarían ${n} variables`}${pendientes}.`,
         };
       }
+      if (n > 0) bumpConfigRev([id]);
       audit(req, 'service_env_imported', {
         type: 'service',
         id,
@@ -1085,4 +1325,195 @@ function auditPlan(req: FastifyRequest, service: ServiceRow, result: ApplyResult
     result.kept.length ? `sin tocar (puestas a mano): ${result.kept.join(', ')}` : '',
   ].filter(Boolean);
   audit(req, 'service_integrations_applied', { type: 'service', id: service.id, detail: `${service.name} · ${partes.join(' · ')}` });
+}
+
+/**
+ * Iniciar, Detener o Reiniciar todas las copias del servicio.
+ *
+ * Antes, si el servicio no tiene un despliegue en cola o en marcha, se tratan
+ * los restos de un intercambio cortado («--next», «--prev»): sin despliegue no
+ * son de nadie, y Detener tiene que alcanzarlos (un bot con una «--next» viva
+ * seguiría contestando). Va por la cola del servicio (`limpiarRestosEnCola`)
+ * para no coincidir con la limpieza que encola el arranque de Skyway. Al
+ * detener, una «--prev» que vuelve a su nombre no se arranca: se va a parar.
+ *
+ * Detener para todas las copias a la vez, con parada limpia, y responde
+ * `forced` con las que no terminaron con SIGTERM a tiempo. Reiniciar es parar
+ * con gracia y volver a arrancar el MISMO contenedor (conserva su identidad),
+ * como `docker restart`, pero con el comando al parar y sabiendo si hubo
+ * SIGKILL; y sigue la estrategia del servicio: con «sin corte», réplica a
+ * réplica (siempre queda una en servicio, como antes de la parada limpia); con
+ * «una sola copia», se paran todas y después arrancan todas (nunca conviven la
+ * que se para y la que arranca). Al registro del servidor solo va el resultado
+ * del comando, nunca lo que escribe: ese registro no es del proyecto.
+ */
+async function accionSobreCopias(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  project: ProjectRow,
+  service: ServiceRow,
+  action: 'start' | 'stop' | 'restart',
+) {
+  const id = service.id;
+  const registro = (l: string) => req.log.info(`«${service.name}»: ${l}`);
+  if (!despliegueEnCurso(id)) {
+    try {
+      await limpiarRestosEnCola(service, registro, { sinArrancar: action === 'stop' });
+    } catch (err) {
+      req.log.warn({ err }, `No se pudieron retirar los restos de un intercambio de «${service.name}»`);
+    }
+  }
+  let env: Record<string, string> = {};
+  try {
+    env = resolveServiceEnv(service);
+  } catch {
+    /* sin entorno resuelto, la gracia del servicio o la de por defecto */
+  }
+  const graciaSegundos = graciaParada(service, env).segundos;
+  const comando = comandoParada(service);
+  const lastDep = latestDeployment(id);
+  const nombres = await copiasDelServicio(project, service, action === 'stop');
+  // Copia a copia: una que aún no existe (réplicas ampliadas en Ajustes sin
+  // redesplegar, o un servicio nunca desplegado) no puede convertir en 500 la
+  // acción sobre las que sí están.
+  let tocadas = 0;
+  let fallo: any = null;
+  /** Copias que no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL. */
+  const forced: string[] = [];
+  if (action === 'start') {
+    for (const name of nombres) {
+      try {
+        await startContainer(name);
+        tocadas += 1;
+      } catch (err: any) {
+        if (err?.statusCode === 404) continue;
+        fallo = err;
+      }
+    }
+  } else {
+    const parar = (n: string) => pararConGracia(n, { graciaSegundos, comando, log: registro, salidaComando: false });
+    let resultados: PromiseSettledResult<Awaited<ReturnType<typeof parar>>>[];
+    if (action === 'restart' && nombres.length > 1 && estrategiaEfectiva(service).estrategia === 'overlap') {
+      // «Sin corte»: réplica a réplica. Todas a la vez dejaban una web con
+      // varias réplicas sin servicio durante la gracia y el arranque.
+      resultados = [];
+      for (const n of nombres) {
+        try {
+          const r = await parar(n);
+          if (r.existia) await startContainer(n);
+          resultados.push({ status: 'fulfilled', value: r });
+        } catch (err) {
+          resultados.push({ status: 'rejected', reason: err });
+        }
+      }
+    } else {
+      // Detener, o Reiniciar con «una sola copia»: todas a la vez (en serie, N
+      // réplicas con su gracia eran N veces la espera) y, al reiniciar, ninguna
+      // vuelve a arrancar hasta que se han parado todas.
+      resultados = await Promise.allSettled(nombres.map(parar));
+      if (action === 'restart') {
+        for (const [k, r] of resultados.entries()) {
+          if (r.status !== 'fulfilled' || !r.value.existia) continue;
+          try {
+            await startContainer(nombres[k]);
+          } catch (err) {
+            resultados[k] = { status: 'rejected', reason: err };
+          }
+        }
+      }
+    }
+    for (const [k, r] of resultados.entries()) {
+      if (r.status === 'rejected') {
+        if (r.reason?.statusCode !== 404) fallo = r.reason;
+        continue;
+      }
+      if (!r.value.existia) continue;
+      tocadas += 1;
+      if (r.value.forzada) forced.push(nombres[k]);
+      // Después de parar: el registro guarda también lo que la copia escribió
+      // al recibir SIGTERM (su cierre, o por qué no lo hubo). Al reiniciar, el
+      // contenedor es el mismo y conserva su registro.
+      if (action === 'stop') await archiveContainerLogs(nombres[k], lastDep?.id);
+    }
+  }
+  if (fallo) return reply.code(500).send({ error: fallo?.message || 'Operación fallida' });
+  if (tocadas === 0 && action !== 'stop') {
+    return reply.code(409).send({ error: 'El contenedor aún no existe: es necesario desplegar el servicio primero' });
+  }
+  audit(req, `service_${action}`, { type: 'service', id, detail: service.name });
+  // Una parada pedida desde aquí no es una caída: el panel la pinta en gris.
+  setServiceStopped(id, action === 'stop');
+  // La acción acaba de cambiar los contenedores: la foto compartida ya no vale
+  // y aquí se lee la verdad, no la caché.
+  invalidateDockerSnapshot();
+  return {
+    ok: true,
+    runtime: await getRuntime(containerName(project, service)),
+    ...(action !== 'start' ? { forced } : {}),
+  };
+}
+
+/**
+ * Copias del servicio sobre las que actúan Iniciar, Detener y Reiniciar: las
+ * réplicas configuradas y, al detener, también las que siguen en marcha con un
+ * índice mayor (réplicas reducidas en Ajustes sin volver a desplegar): Detener
+ * no puede dejar ninguna copia viva.
+ */
+async function copiasDelServicio(project: ProjectRow, service: ServiceRow, conSobrantes: boolean): Promise<string[]> {
+  const nombres = Array.from({ length: configuredReplicas(service) }, (_, i) => replicaName(project, service, i + 1));
+  if (!conSobrantes) return nombres;
+  const base = containerName(project, service);
+  const patron = new RegExp(`^${escaparRegExp(base)}-r\\d+$`);
+  try {
+    for (const c of await listServiceContainers(service.id)) {
+      if (patron.test(c.name) && !nombres.includes(c.name)) nombres.push(c.name);
+    }
+  } catch {
+    /* sin listado, al menos las configuradas */
+  }
+  return nombres;
+}
+
+function escaparRegExp(texto: string): string {
+  return texto.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Entorno resuelto de los DEMÁS servicios (no bases de datos) del proyecto, para compararlo. */
+function entornosDeHermanos(service: ServiceRow): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const s of listServices(service.project_id)) {
+    if (s.id === service.id || s.type === 'database') continue;
+    out.set(s.id, JSON.stringify(resolveServiceEnv(s)));
+  }
+  return out;
+}
+
+/**
+ * Cómo se despliega y se para el servicio (`ServiceDeployInfo` de la web): la
+ * estrategia efectiva y su motivo, si otro servicio lo llama por la red
+ * interna, el healthcheck del repositorio y las bibliotecas de Telegram o
+ * Discord (con eso Ajustes calcula el «ahora» de «Automático» mientras se
+ * edita) y la gracia de parada con su origen.
+ */
+function infoDespliegue(service: ServiceRow) {
+  const llamado = service.type === 'database' ? false : llamadoPorOtros(service);
+  const repoHealthcheck = healthcheckDelRepositorio(service);
+  const e = estrategiaDespliegue(service, llamado, repoHealthcheck);
+  let env: Record<string, string> = {};
+  try {
+    env = resolveServiceEnv(service);
+  } catch {
+    /* sin entorno resuelto, la gracia del servicio o la de por defecto */
+  }
+  const g = graciaParada(service, env);
+  return {
+    strategy: e.estrategia,
+    reason: e.motivo,
+    automatic: e.automatica,
+    calledByOthers: llamado,
+    repoHealthcheckPath: repoHealthcheck,
+    botLibraries: bibliotecasDeBot(service),
+    stopGraceSeconds: g.segundos,
+    stopGraceSource: g.origen,
+  };
 }

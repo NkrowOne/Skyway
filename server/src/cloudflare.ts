@@ -4,10 +4,12 @@
  * de los dominios de servicios (verificar el token, localizar la zona de un
  * nombre, leer sus registros y crear uno). No hay un método general para
  * modificar registros a propósito: el DNS automático nunca pisa un registro
- * existente. Las dos excepciones son acciones expresas del administrador:
- * borrar en Ajustes → Cloudflare un registro que creó el propio DNS
- * automático y que nadie ha cambiado, y desactivar el proxy («Desactivar proxy
- * en Cloudflare»), que solo envía `proxied: false` y nada más.
+ * existente. Las excepciones son acciones expresas del administrador: borrar
+ * en Ajustes → Cloudflare un registro que creó el propio DNS automático y que
+ * nadie ha cambiado; desactivar el proxy («Desactivar proxy en Cloudflare»),
+ * que solo envía `proxied: false` y nada más; y, con su confirmación expresa,
+ * sustituir el A/AAAA/CNAME del hosting anterior de un dominio que pasa a este
+ * servidor (`batch`, que lo sustituye de una vez y sin estados intermedios).
  *
  * Los errores de Cloudflare se traducen a mensajes en español listos para la
  * interfaz, con `statusCode` para el manejador global (nunca 401: la interfaz
@@ -64,6 +66,16 @@ export interface CfRegistroNuevo {
   ttl: number;
   proxied: boolean;
   comment: string;
+}
+
+/**
+ * Lote atómico (`/dns_records/batch`): Cloudflare aplica primero los borrados
+ * y después las altas, y si una operación falla no aplica ninguna. Sin
+ * modificaciones (`patches`/`puts`): Skyway no las usa.
+ */
+export interface CfLote {
+  deletes?: { id: string }[];
+  posts?: (Omit<CfRegistroNuevo, 'comment'> & { comment?: string })[];
 }
 
 export interface CfInfoToken {
@@ -468,6 +480,24 @@ export class CloudflareClient {
       { body: { proxied } },
     );
     return aRegistro(sobre.result);
+  }
+
+  /**
+   * Borra y crea en una sola operación atómica. Lo usa el reemplazo del
+   * registro de la web (y su restauración): hecho en dos pasos, un fallo entre
+   * medias dejaría el dominio sin dirección.
+   */
+  async batch(zoneId: string, lote: CfLote): Promise<{ deletes: CfRegistro[]; posts: CfRegistro[] }> {
+    const cuerpo: CfLote = {};
+    if (lote.deletes?.length) cuerpo.deletes = lote.deletes;
+    if (lote.posts?.length) cuerpo.posts = lote.posts;
+    const sobre = await this.peticion<{ deletes?: RegistroCrudo[]; posts?: RegistroCrudo[] }>(
+      'POST',
+      `/zones/${encodeURIComponent(zoneId)}/dns_records/batch`,
+      { body: cuerpo },
+    );
+    const r = sobre.result || {};
+    return { deletes: (r.deletes || []).map(aRegistro), posts: (r.posts || []).map(aRegistro) };
   }
 }
 
