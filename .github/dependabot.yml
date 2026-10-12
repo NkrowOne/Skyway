@@ -24,6 +24,14 @@ updates:
     commit-message:
       prefix: dependencias
     groups:
+      # React y sus tipos llegan juntos: por separado (react-dom 19 con react
+      # 18, #79) los tipos se mezclan y nada compila. Los parches siguen en
+      # «parches-npm», que va después; el primer grupo que encaja se queda la
+      # actualización.
+      react:
+        applies-to: version-updates
+        patterns: [react, react-dom, "@types/react", "@types/react-dom"]
+        update-types: [minor, major]
       parches-npm:
         applies-to: version-updates
         update-types: [patch]
