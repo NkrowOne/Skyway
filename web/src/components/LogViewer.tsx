@@ -765,11 +765,28 @@ interface Layout {
   /** Tramo de bloques pintados en este render. */
   start: number;
   end: number;
-  /** Distancia del techo del lienzo al techo del contenido del scroller. */
+  /** Bloques con alto medido (los que han servido para calibrar `lineH`). */
+  measuredCount: number;
+  /** Alto de la franja de «Cargar líneas anteriores» (0 si no está). */
+  bannerTop: number;
+  /**
+   * Distancia del techo del contenido del scroller al punto 0 de `offsets`:
+   * la franja más la corrección del gesto (`padAdj`).
+   */
   canvasTop: number;
 }
 
-const EMPTY_LAYOUT: Layout = { offsets: [0], total: 0, lineH: DEFAULT_LINE_H, index: new Map(), start: 0, end: -1, canvasTop: 0 };
+const EMPTY_LAYOUT: Layout = {
+  offsets: [0],
+  total: 0,
+  lineH: DEFAULT_LINE_H,
+  measuredCount: 0,
+  index: new Map(),
+  start: 0,
+  end: -1,
+  bannerTop: 0,
+  canvasTop: 0,
+};
 
 /**
  * Alto medido de un bloque, con las filas que tenía al medirlo: un bloque que
@@ -784,18 +801,35 @@ function measured(heights: Heights, c: Chunk): number | undefined {
   return m && m.rows === c.rows ? m.h : undefined;
 }
 
-function computeLayout(chunks: Chunk[], heights: Heights, estLines: (c: Chunk) => number, fallbackLineH: number): Layout {
+/**
+ * `fixedLineH`: alto de línea con el que estimar, o null para calibrarlo con
+ * los bloques medidos. Mientras se lee se deja fijo: recalibrarlo cambiaba la
+ * estimación de todos los bloques de arriba a la vez, el relleno superior con
+ * ellos, y el texto saltaba bajo el dedo.
+ */
+function computeLayout(
+  chunks: Chunk[],
+  heights: Heights,
+  estLines: (c: Chunk) => number,
+  fixedLineH: number | null,
+  fallbackLineH: number,
+): Layout {
   const n = chunks.length;
-  let px = 0;
-  let ln = 0;
-  for (const c of chunks) {
-    const h = measured(heights, c);
-    if (h !== undefined) {
-      px += h;
-      ln += estLines(c);
+  let lineH = fixedLineH ?? fallbackLineH;
+  let measuredCount = 0;
+  if (fixedLineH === null) {
+    let px = 0;
+    let ln = 0;
+    for (const c of chunks) {
+      const h = measured(heights, c);
+      if (h !== undefined) {
+        px += h;
+        ln += estLines(c);
+        measuredCount++;
+      }
     }
+    if (ln > 0 && px > 0) lineH = px / ln;
   }
-  const lineH = ln > 0 && px > 0 ? px / ln : fallbackLineH;
   const offsets = new Array<number>(n + 1);
   const index = new Map<number, number>();
   let off = 0;
@@ -811,7 +845,7 @@ function computeLayout(chunks: Chunk[], heights: Heights, estLines: (c: Chunk) =
   if (heights.size > n + 256) {
     for (const k of heights.keys()) if (!index.has(k)) heights.delete(k);
   }
-  return { offsets, total: off, lineH, index, start: 0, end: -1, canvasTop: 0 };
+  return { offsets, total: off, lineH, measuredCount, index, start: 0, end: -1, bannerTop: 0, canvasTop: 0 };
 }
 
 /**
@@ -849,6 +883,22 @@ function computeRange(offsets: number[], following: boolean, top: number, viewpo
   }
   const end = Math.max(start, a - 1);
   return [start, end];
+}
+
+/**
+ * Desplazamiento del lienzo: relleno superior y, si la corrección del gesto
+ * lo deja por debajo de cero, margen negativo. Recortarlo a cero perdía esa
+ * parte y el texto saltaba igualmente junto al principio.
+ */
+function canvasOffset(top: number): { paddingTop: number; marginTop: number } {
+  return top >= 0 ? { paddingTop: top, marginTop: 0 } : { paddingTop: 0, marginTop: top };
+}
+
+function applyCanvasOffset(canvas: HTMLElement | null, top: number): void {
+  if (!canvas) return;
+  const o = canvasOffset(top);
+  canvas.style.paddingTop = `${o.paddingTop}px`;
+  canvas.style.marginTop = `${o.marginTop}px`;
 }
 
 /* ───────────────────────── Preferencias de vista ─────────────────────────── */
@@ -1444,6 +1494,18 @@ function LogViewerImpl({
   const prevLayoutRef = useRef<Layout>(EMPTY_LAYOUT);
   const [layoutTick, setLayoutTick] = useState(0);
   const relayout = useCallback(() => setLayoutTick((n) => n + 1), []);
+  /** Alto de línea calibrado mientras se seguía el final; fijo mientras se lee. */
+  const lineHRef = useRef(DEFAULT_LINE_H);
+  /**
+   * Las medidas se han tirado (ajuste de línea, pantalla completa, otra
+   * anchura): se recalibra aunque se esté leyendo, hasta medir algún bloque.
+   */
+  const recalibrateRef = useRef(true);
+  /**
+   * Píxeles que se le quitan (o añaden) al relleno superior mientras dura un
+   * gesto, en vez de mover el scroll: ver `keepPlace`.
+   */
+  const padAdjRef = useRef(0);
 
   /*
    * Líneas visuales de un bloque. Con la monoespaciada y `break-all` el ajuste
@@ -1470,19 +1532,26 @@ function LogViewerImpl({
 
   const hasBanner = canLoadOlder || (startReached && visible.length > 0);
   chunksRef.current = chunks;
-  const layout = computeLayout(chunks, heightsRef.current, estLines, maximized ? 23 : DEFAULT_LINE_H);
-  layout.canvasTop = hasBanner ? BANNER_H : 0;
+  const calibrate = followRef.current || recalibrateRef.current;
+  const layout = computeLayout(chunks, heightsRef.current, estLines, calibrate ? null : lineHRef.current, maximized ? 23 : DEFAULT_LINE_H);
+  lineHRef.current = layout.lineH;
+  if (calibrate && layout.measuredCount > 0) recalibrateRef.current = false;
+  // Con la corrección del gesto el contenido se desplaza como lo haría con
+  // una franja de arriba más alta o más baja: cuenta en el techo del lienzo.
+  layout.bannerTop = hasBanner ? BANNER_H : 0;
+  layout.canvasTop = layout.bannerTop + padAdjRef.current;
   const [start, end] = computeRange(layout.offsets, followRef.current, scrollTopRef.current - layout.canvasTop, viewportRef.current || 600);
   layout.start = start;
   layout.end = end;
+  const canvasShift = canvasOffset(layout.offsets[start] + padAdjRef.current);
   prevLayoutRef.current = layoutRef.current;
   layoutRef.current = layout;
 
   /*
    * Medición de bloques con un único ResizeObserver. Un bloque entero por
    * encima del hueco que cambia de alto movería lo que se está leyendo: se
-   * compensa en el scroll, salvo con el dedo en la pantalla (en iOS cortaría
-   * el gesto; el desvío es de píxeles y se asume).
+   * compensa con `keepPlace` (en el scroll o, con el dedo en la pantalla, en
+   * el relleno superior).
    */
   const roRef = useRef<ResizeObserver | null>(null);
   const elKeyRef = useRef(new WeakMap<Element, number>());
@@ -1507,11 +1576,22 @@ function LogViewerImpl({
       heights.set(key, { rows, h });
       const used = lay.offsets[idx + 1] - lay.offsets[idx];
       if (Math.abs(h - used) < 0.5) continue;
-      if (followRef.current) continue;
+      /*
+       * Siguiendo el final no hay nada que compensar (manda el fondo), pero sí
+       * hay que calibrar el alto de línea con las primeras medidas. Antes no
+       * se recalculaba nada hasta el primer gesto: el log seguía estimado con
+       * el alto por defecto y, al empezar a subir, se recalibraba de golpe.
+       * Con miles de líneas el contenido encogía miles de píxeles bajo el dedo
+       * y la vista volvía casi al final: el scroll parecía bloqueado.
+       */
+      if (followRef.current) {
+        if (recalibrateRef.current || lay.measuredCount < 4) dirty = true;
+        continue;
+      }
       if (lay.offsets[idx + 1] + lay.canvasTop <= scrollTopRef.current + 1) shift += h - used;
       dirty = true;
     }
-    if (shift && el && !gestureRef.current) el.scrollTop += shift;
+    if (shift && el) keepPlaceRef.current(shift);
     if (dirty) relayout();
   };
   const onMeasure = useCallback((key: number, el: HTMLDivElement | null) => {
@@ -1539,7 +1619,16 @@ function LogViewerImpl({
   useLayoutEffect(() => {
     heightsRef.current.clear();
     linesCacheRef.current.clear();
-  }, [wrap, maximized]);
+    // Con todo por medir, la corrección del gesto ya no se refiere a nada.
+    recalibrateRef.current = true;
+    // Y `measureCols` vuelve a medir los bloques pintados aunque la anchura
+    // no cambie: si no, se quedaban sin medida hasta que algo los moviera.
+    colsRef.current = -1;
+    if (padAdjRef.current) {
+      padAdjRef.current = 0;
+      relayout();
+    }
+  }, [wrap, maximized, relayout]);
 
   /*
    * Caracteres por línea (anchura de la columna de texto / anchura de un
@@ -1564,6 +1653,8 @@ function LogViewerImpl({
     if (cols === colsRef.current) return;
     colsRef.current = cols;
     linesCacheRef.current.clear();
+    padAdjRef.current = 0;
+    recalibrateRef.current = true;
     const heights = heightsRef.current;
     heights.clear();
     const rowsByKey = new Map(chunksRef.current.map((c) => [c.key, c.rows]));
@@ -1593,6 +1684,48 @@ function LogViewerImpl({
     programmaticTopRef.current = el.scrollTop;
     scrollTopRef.current = programmaticTopRef.current;
   }, []);
+
+  /*
+   * El contenido de encima de lo que se lee ha crecido `delta` píxeles (un
+   * bloque recién pintado mide distinto de lo estimado, historial cargado…) y
+   * lo de debajo se ha desplazado: se devuelve a su sitio. Sin dedo en la
+   * pantalla, moviendo el scroll. Con el dedo —o con la inercia de después—
+   * no: en iOS escribir el scroll corta el gesto, y antes simplemente no se
+   * compensaba y el texto saltaba bajo el dedo, que se notaba como un scroll
+   * bloqueado. Se quita del relleno superior, que no toca el scroll, y se
+   * pasa al scroll cuando el gesto se asienta.
+   */
+  const keepPlace = useCallback((delta: number) => {
+    const el = ref.current;
+    if (!el || Math.abs(delta) < 0.5) return;
+    if (!gestureRef.current) {
+      // Escritura directa, no `writeScrollTop`: si la compensación deja la
+      // vista junto al fondo, el evento de scroll debe poder reanudar el directo.
+      el.scrollTop += delta;
+      scrollTopRef.current = el.scrollTop;
+      return;
+    }
+    const lay = layoutRef.current;
+    padAdjRef.current -= delta;
+    lay.canvasTop = lay.bannerTop + padAdjRef.current;
+    applyCanvasOffset(canvasRef.current, (lay.offsets[lay.start] ?? 0) + padAdjRef.current);
+  }, []);
+  const keepPlaceRef = useRef(keepPlace);
+  keepPlaceRef.current = keepPlace;
+
+  /** Pasa la corrección del relleno al scroll, ya sin gesto. */
+  const foldPadAdj = useCallback(() => {
+    const adj = padAdjRef.current;
+    if (!adj) return;
+    padAdjRef.current = 0;
+    const el = ref.current;
+    const lay = layoutRef.current;
+    lay.canvasTop = lay.bannerTop;
+    applyCanvasOffset(canvasRef.current, lay.offsets[lay.start] ?? 0);
+    // Siguiendo el final no hay nada que conservar: manda el fondo.
+    if (el && !followRef.current) writeScrollTop(el, el.scrollTop - adj);
+    relayout();
+  }, [writeScrollTop, relayout]);
 
   const scrollToBottom = useCallback(() => {
     const el = ref.current;
@@ -1638,6 +1771,7 @@ function LogViewerImpl({
     settleTimerRef.current = window.setTimeout(() => {
       settleTimerRef.current = 0;
       gestureRef.current = false;
+      foldPadAdj();
       if (followRef.current && pendingBottomRef.current) {
         pendingBottomRef.current = false;
         scrollToBottom();
@@ -1645,7 +1779,7 @@ function LogViewerImpl({
         maybeLoadOlder(ref.current);
       }
     }, 180);
-  }, [scrollToBottom, maybeLoadOlder]);
+  }, [scrollToBottom, maybeLoadOlder, foldPadAdj]);
   useEffect(
     () => () => {
       if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
@@ -1678,13 +1812,19 @@ function LogViewerImpl({
     const lay = layoutRef.current;
     if (d.front > 0) {
       const idx = lay.index.get(model.prevFirstChunkKey);
-      if (idx !== undefined && idx > 0) el.scrollTop += lay.offsets[idx];
+      /*
+       * Aquí sí se mueve el scroll aunque haya gesto: el historial entra
+       * junto al principio, donde no hay relleno que quitar, y sin moverlo se
+       * perdía el sitio de lectura. Solo llega con el gesto ya asentado o en
+       * uno nuevo que acaba de empezar.
+       */
+      if (idx !== undefined && idx > 0) writeScrollTop(el, el.scrollTop + lay.offsets[idx]);
     } else if (d.front < 0 && model.chunks.length) {
       const a = anchorRef.current;
       const node = a ? canvasRef.current?.querySelector<HTMLElement>(`[data-id="${a.id}"]`) : null;
       if (a && node) {
         const delta = node.getBoundingClientRect().top - el.getBoundingClientRect().top - a.top;
-        if (Math.abs(delta) > 0.5) writeScrollTop(el, el.scrollTop + delta);
+        keepPlace(delta);
         /*
          * El primer bloque, recortado, ya mide lo que mide en pantalla: se
          * anota para que el observador no lo compense una segunda vez.
@@ -1697,10 +1837,13 @@ function LogViewerImpl({
         const prevLay = prevLayoutRef.current;
         const j = prevLay.index.get(model.chunks[0].key);
         const removed = (j !== undefined ? prevLay.offsets[j] : 0) + model.partialCut * lay.lineH;
-        if (removed > 0) el.scrollTop = Math.max(0, el.scrollTop - removed);
+        if (removed > 0) {
+          keepPlace(-Math.min(removed, el.scrollTop));
+          relayout();
+        }
       }
     }
-  }, [model, relayout, writeScrollTop]);
+  }, [model, relayout, keepPlace, writeScrollTop]);
 
   /*
    * Siguiendo el final, el fondo se garantiza cuando cambia lo pintado: líneas
@@ -1878,6 +2021,7 @@ function LogViewerImpl({
   }, [jumpId, model, q, level, layoutTick, relayout, writeScrollTop]);
 
   const showInContext = (id: number) => {
+    foldPadAdj();
     jumpPendingRef.current = true;
     jumpTriesRef.current = 0;
     resumeOnCloseRef.current = false;
@@ -1931,6 +2075,7 @@ function LogViewerImpl({
   const jumpToTop = () => {
     const el = ref.current;
     if (!el) return;
+    foldPadAdj();
     followRef.current = false;
     setFollow(false);
     writeScrollTop(el, 0);
@@ -2427,7 +2572,7 @@ function LogViewerImpl({
               onClick={onCanvasClick}
               className={cx('log-canvas', wrap ? 'w-full' : 'w-max min-w-full')}
               style={{
-                paddingTop: layout.offsets[start],
+                ...canvasShift,
                 paddingBottom: Math.max(0, layout.total - layout.offsets[end + 1]),
               }}
             >
