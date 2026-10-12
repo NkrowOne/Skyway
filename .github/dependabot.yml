@@ -42,6 +42,12 @@ updates:
       # solo admite hasta vite 7): se sube junto con el plugin, a mano.
       - dependency-name: vite
         versions: [">=8.0.0"]
+      - dependency-name: "@vitejs/plugin-react"
+        versions: [">=6.0.0"]
+      # @types/node sigue a la versión de Node con la que corre el panel (22):
+      # los tipos de una versión posterior dejan usar lo que Node 22 no tiene.
+      - dependency-name: "@types/node"
+        versions: [">=23.0.0"]
 
   # Imágenes base del Dockerfile (Node sobre Alpine).
   - package-ecosystem: docker
