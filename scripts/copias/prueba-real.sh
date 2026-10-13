@@ -41,7 +41,10 @@ FALLOS=0
 PASOS=0
 bien() { PASOS=$((PASOS + 1)); printf '  ✓ %s\n' "$*"; }
 mal() { FALLOS=$((FALLOS + 1)); printf '  ✗ %s\n' "$*" >&2; }
-comprobar() { local d="$1"; shift; if "$@"; then bien "$d"; else mal "$d"; fi; }
+# Solo cuenta el código de salida: lo que imprime la orden (el resultado de
+# jq -e, el JSON de docker image inspect) ensuciaría el informe. Los errores
+# siguen saliendo por stderr.
+comprobar() { local d="$1"; shift; if "$@" >/dev/null; then bien "$d"; else mal "$d"; fi; }
 seccion() { printf '\n== %s ==\n' "$*"; }
 
 CONTENEDORES=(skyway skyway-traefik skyway-demo-db skyway-demo-web skyway-mailway-panel mailway-mail copias-prueba-s3)
